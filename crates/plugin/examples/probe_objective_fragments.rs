@@ -35,17 +35,21 @@ fn main() -> anyhow::Result<()> {
     type QuestObjectives = (String, String, Vec<(u16, String)>);
     let mut quests: HashMap<u32, QuestObjectives> = HashMap::new();
 
-    walk(&mut reader, end, b"QUST", &mut |form_id, subs| {
+    reader.for_each_record(end, Some(b"QUST"), |header, subs| {
+        let form_id = header.form_id;
         let mut edid = String::new();
         let mut full = String::new();
-        let vmad = subs.iter().find(|(t, _)| t == b"VMAD").map(|(_, d)| d);
-        for (sub_type, data) in subs {
-            match sub_type {
+        let vmad = subs
+            .iter()
+            .find(|s| s.sub_type == *b"VMAD")
+            .map(|s| s.data.as_slice());
+        for sub in &subs {
+            match &sub.sub_type {
                 b"EDID" => {
-                    edid = String::from_utf8_lossy(&data[..data.len().min(511)]).to_string()
+                    edid = String::from_utf8_lossy(&sub.data[..sub.data.len().min(511)]).to_string()
                 }
                 b"FULL" => {
-                    full = String::from_utf8_lossy(&data[..data.len().min(511)]).to_string()
+                    full = String::from_utf8_lossy(&sub.data[..sub.data.len().min(511)]).to_string()
                 }
                 _ => {}
             }
@@ -60,7 +64,7 @@ fn main() -> anyhow::Result<()> {
             .map(|fragment| (fragment.stage, fragment.script_name))
             .collect();
         quests.insert(form_id, (edid, full, stages));
-    });
+    })?;
 
     let archive = BsaArchive::open(&bsa_path)?;
     let mut surveyed = 0usize;
@@ -99,38 +103,4 @@ fn main() -> anyhow::Result<()> {
          {missing_pex} fragments absent from the archive"
     );
     Ok(())
-}
-
-/// A decompressed sub-record: its 4-byte type + owned data bytes.
-type OwnedSub = ([u8; 4], Vec<u8>);
-
-/// Recursively walk records, invoking `f` on every record of `want` type
-/// with its (decompressed) sub-records. Same pattern as
-/// `dump_qust_vmad_fragments`.
-fn walk(reader: &mut EsmReader, end: usize, want: &[u8; 4], f: &mut dyn FnMut(u32, &[OwnedSub])) {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let Ok(g) = reader.read_group_header() else {
-                return;
-            };
-            let sub_end = reader.group_content_end(&g);
-            walk(reader, sub_end, want, f);
-            continue;
-        }
-        let Ok(header) = reader.read_record_header() else {
-            return;
-        };
-        if &header.record_type == want {
-            match reader.read_sub_records(&header) {
-                Ok(subs) => {
-                    let owned: Vec<OwnedSub> =
-                        subs.into_iter().map(|s| (s.sub_type, s.data)).collect();
-                    f(header.form_id, &owned);
-                }
-                Err(_) => continue,
-            }
-        } else {
-            reader.skip_record(&header);
-        }
-    }
 }

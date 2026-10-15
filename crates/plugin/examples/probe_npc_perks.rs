@@ -10,7 +10,7 @@
 //! Usage:
 //!   cargo run -p byroredux-plugin --example probe_npc_perks -- <ESM> [ESM ...]
 
-use byroredux_plugin::esm::reader::{EsmReader, RecordHeader, SubRecord};
+use byroredux_plugin::esm::reader::EsmReader;
 
 fn main() -> anyhow::Result<()> {
     let paths: Vec<String> = std::env::args().skip(1).collect();
@@ -30,14 +30,11 @@ fn main() -> anyhow::Result<()> {
         let mut prkr_lengths: Vec<usize> = Vec::new();
         let mut sample: Vec<String> = Vec::new();
 
-        walk(&mut reader, bytes.len(), &mut |header, subs| {
-            if &header.record_type != b"NPC_" {
-                return;
-            }
+        reader.for_each_record(bytes.len(), Some(b"NPC_"), |_header, subs| {
             npc_total += 1;
             let mut record_prkr = 0usize;
             let mut edid = String::new();
-            for sub in subs {
+            for sub in &subs {
                 match &sub.sub_type {
                     b"EDID" => {
                         edid = String::from_utf8_lossy(&sub.data)
@@ -71,28 +68,6 @@ fn main() -> anyhow::Result<()> {
         if !sample.is_empty() {
             println!("  sample: {}", sample.join(", "));
         }
-    }
-    Ok(())
-}
-
-/// Depth-first GRUP walk, invoking `visit` for every record with its
-/// sub-record list.
-fn walk(
-    reader: &mut EsmReader,
-    end: usize,
-    visit: &mut impl FnMut(&RecordHeader, &[SubRecord]),
-) -> anyhow::Result<()> {
-    while reader.position() < end {
-        let Ok(header) = reader.read_record_header() else {
-            break;
-        };
-        if &header.record_type == b"GRUP" {
-            let group_end = reader.position() + header.data_size as usize - 24;
-            walk(reader, group_end.min(end), visit)?;
-            continue;
-        }
-        let subs = reader.read_sub_records(&header).unwrap_or_default();
-        visit(&header, &subs);
     }
     Ok(())
 }

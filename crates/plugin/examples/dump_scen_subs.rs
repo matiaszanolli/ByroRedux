@@ -27,7 +27,20 @@ fn main() -> anyhow::Result<()> {
     let mut reader = EsmReader::new(&bytes);
     let _header = reader.read_file_header()?;
     let mut survey = Survey::default();
-    walk_groups(&mut reader, bytes.len(), &filter, &mut survey)?;
+    reader.for_each_record(bytes.len(), Some(&RECORD_TYPE), |header, subs| {
+        survey.total += 1;
+        let editor_id = subs
+            .iter()
+            .find(|sub| sub.sub_type == *b"EDID")
+            .map(|sub| read_zstring(&sub.data))
+            .unwrap_or_default();
+        if !editor_id.to_ascii_lowercase().contains(&filter) {
+            return;
+        }
+
+        survey.matched += 1;
+        print_record(header, &editor_id, &subs, &mut survey);
+    })?;
 
     println!();
     println!("SCEN records total: {}", survey.total);
@@ -44,43 +57,6 @@ struct Survey {
     total: usize,
     matched: usize,
     subrecord_histogram: BTreeMap<String, usize>,
-}
-
-fn walk_groups(
-    reader: &mut EsmReader,
-    end: usize,
-    filter: &str,
-    survey: &mut Survey,
-) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let group = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&group);
-            walk_groups(reader, inner_end, filter, survey)?;
-            continue;
-        }
-
-        let header = reader.read_record_header()?;
-        if header.record_type != RECORD_TYPE {
-            reader.skip_record(&header);
-            continue;
-        }
-
-        let subs = reader.read_sub_records(&header)?;
-        survey.total += 1;
-        let editor_id = subs
-            .iter()
-            .find(|sub| sub.sub_type == *b"EDID")
-            .map(|sub| read_zstring(&sub.data))
-            .unwrap_or_default();
-        if !editor_id.to_ascii_lowercase().contains(filter) {
-            continue;
-        }
-
-        survey.matched += 1;
-        print_record(&header, &editor_id, &subs, survey);
-    }
-    Ok(())
 }
 
 fn print_record(header: &RecordHeader, editor_id: &str, subs: &[SubRecord], survey: &mut Survey) {

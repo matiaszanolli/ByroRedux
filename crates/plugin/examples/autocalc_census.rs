@@ -18,7 +18,10 @@ fn main() -> anyhow::Result<()> {
         let mut reader = EsmReader::new(&bytes);
         let _header = reader.read_file_header()?;
         let mut flags: Vec<u32> = Vec::new();
-        walk_groups(&mut reader, bytes.len(), &mut flags)?;
+        reader.for_each_record(bytes.len(), Some(b"NPC_"), |header, subs| {
+            let npc = parse_npc(header.form_id, &subs, GameKind::Fallout3NV, &None);
+            flags.push(npc.acbs_flags);
+        })?;
         let total = flags.len();
         let on = flags
             .iter()
@@ -37,26 +40,6 @@ fn main() -> anyhow::Result<()> {
             pct(on),
             pct(off)
         );
-    }
-    Ok(())
-}
-
-fn walk_groups(reader: &mut EsmReader<'_>, end: usize, flags: &mut Vec<u32>) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let group = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&group);
-            walk_groups(reader, inner_end, flags)?;
-            continue;
-        }
-        let header = reader.read_record_header()?;
-        if header.record_type != *b"NPC_" {
-            reader.skip_record(&header);
-            continue;
-        }
-        let subs = reader.read_sub_records(&header)?;
-        let npc = parse_npc(header.form_id, &subs, GameKind::Fallout3NV, &None);
-        flags.push(npc.acbs_flags);
     }
     Ok(())
 }

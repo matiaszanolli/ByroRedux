@@ -18,7 +18,7 @@
 
 use std::collections::BTreeMap;
 
-use byroredux_plugin::esm::reader::{EsmReader, RecordHeader, SubRecord};
+use byroredux_plugin::esm::reader::EsmReader;
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args()
@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     {
         let mut reader = EsmReader::new(&bytes);
         let _ = reader.read_file_header()?;
-        walk(&mut reader, bytes.len(), &mut |header, _subs| {
+        reader.for_each_record(bytes.len(), None, |header, _subs| {
             form_types.insert(
                 header.form_id,
                 String::from_utf8_lossy(&header.record_type).to_string(),
@@ -54,20 +54,17 @@ fn main() -> anyhow::Result<()> {
     let mut slot16: BTreeMap<u8, usize> = BTreeMap::new();
     let mut samples: Vec<String> = Vec::new();
 
-    walk(&mut reader, bytes.len(), &mut |header, subs| {
-        if &header.record_type != b"WEAP" {
-            return;
-        }
+    reader.for_each_record(bytes.len(), Some(b"WEAP"), |_header, subs| {
         weap_total += 1;
         let mut edid = String::new();
-        for sub in subs {
+        for sub in &subs {
             if &sub.sub_type == b"EDID" {
                 edid = String::from_utf8_lossy(&sub.data)
                     .trim_end_matches('\0')
                     .to_string();
             }
         }
-        for sub in subs {
+        for sub in &subs {
             if &sub.sub_type != b"VATS" {
                 continue;
             }
@@ -138,26 +135,6 @@ fn main() -> anyhow::Result<()> {
     println!("  slot 16 (u8): {slot16:?}");
     for s in &samples {
         println!("    {s}");
-    }
-    Ok(())
-}
-
-fn walk(
-    reader: &mut EsmReader,
-    end: usize,
-    visit: &mut impl FnMut(&RecordHeader, &[SubRecord]),
-) -> anyhow::Result<()> {
-    while reader.position() < end {
-        let Ok(header) = reader.read_record_header() else {
-            break;
-        };
-        if &header.record_type == b"GRUP" {
-            let group_end = reader.position() + header.data_size as usize - 24;
-            walk(reader, group_end.min(end), visit)?;
-            continue;
-        }
-        let subs = reader.read_sub_records(&header).unwrap_or_default();
-        visit(&header, &subs);
     }
     Ok(())
 }

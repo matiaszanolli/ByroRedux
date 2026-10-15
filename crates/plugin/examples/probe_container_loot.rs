@@ -79,17 +79,13 @@ fn main() -> anyhow::Result<()> {
         if !untracked_ids.is_empty() {
             let mut reader = byroredux_plugin::esm::reader::EsmReader::new(&bytes);
             reader.read_file_header()?;
-            while reader.remaining() > 0 {
-                if reader.is_group() {
-                    reader.read_group_header()?;
-                } else {
-                    let header = reader.read_record_header()?;
-                    if untracked_ids.contains_key(&header.form_id) {
-                        raw_types.insert(header.form_id, header.record_type);
-                    }
-                    reader.skip_record(&header);
+            // The selector is a FormID set, not a FourCC, so the walk takes
+            // no `want` and the closure filters.
+            reader.for_each_record(bytes.len(), None, |header, _subs| {
+                if untracked_ids.contains_key(&header.form_id) {
+                    raw_types.insert(header.form_id, header.record_type);
                 }
-            }
+            })?;
         }
         let mut untracked: Vec<_> = untracked_ids.into_iter().collect();
         untracked.sort_by_key(|&(form_id, count)| (std::cmp::Reverse(count), form_id));

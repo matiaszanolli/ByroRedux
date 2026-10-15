@@ -26,7 +26,16 @@ fn main() -> anyhow::Result<()> {
     let bytes = std::fs::read(path)?;
     let mut reader = EsmReader::new(&bytes);
     let _header = reader.read_file_header()?;
-    walk_groups(&mut reader, bytes.len(), record_type, &selector)
+    reader.for_each_record(bytes.len(), Some(&record_type), |header, subs| {
+        let editor_id = subs
+            .iter()
+            .find(|sub| sub.sub_type == *b"EDID")
+            .map(|sub| zstring(&sub.data))
+            .unwrap_or_default();
+        if selector.matches(header.form_id, &editor_id) {
+            print_record(header, &editor_id, &subs);
+        }
+    })
 }
 
 enum Selector {
@@ -54,37 +63,6 @@ impl Selector {
             Self::FormId(expected) => form_id == *expected,
         }
     }
-}
-
-fn walk_groups(
-    reader: &mut EsmReader<'_>,
-    end: usize,
-    record_type: [u8; 4],
-    selector: &Selector,
-) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let group = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&group);
-            walk_groups(reader, inner_end, record_type, selector)?;
-            continue;
-        }
-        let header = reader.read_record_header()?;
-        if header.record_type != record_type {
-            reader.skip_record(&header);
-            continue;
-        }
-        let subs = reader.read_sub_records(&header)?;
-        let editor_id = subs
-            .iter()
-            .find(|sub| sub.sub_type == *b"EDID")
-            .map(|sub| zstring(&sub.data))
-            .unwrap_or_default();
-        if selector.matches(header.form_id, &editor_id) {
-            print_record(&header, &editor_id, &subs);
-        }
-    }
-    Ok(())
 }
 
 fn print_record(header: &RecordHeader, editor_id: &str, subs: &[SubRecord]) {

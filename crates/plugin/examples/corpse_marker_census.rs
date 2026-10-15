@@ -62,7 +62,71 @@ fn main() -> anyhow::Result<()> {
         let _ = reader.read_file_header()?;
         let mut bases: HashMap<u32, Base> = HashMap::new();
         let mut refs: Vec<(u32, bool)> = Vec::new(); // (base form id, has XRGD)
-        walk(&mut reader, bytes.len(), &mut bases, &mut refs)?;
+        // Four record types matter (NPC_/CREA bases, ACHR/ACRE refs) — more
+        // than one FourCC, so the walk takes no `want` and the closure filters.
+        reader.for_each_record(bytes.len(), None, |header, subs| {
+            let kind @ (b"NPC_" | b"CREA" | b"ACHR" | b"ACRE") = &header.record_type else {
+                return;
+            };
+            match kind {
+                b"NPC_" | b"CREA" => {
+                    let mut editor_id = String::new();
+                    let mut health = None;
+                    let mut acbs_flags = 0u32;
+                    for sub in &subs {
+                        match &sub.sub_type {
+                            b"EDID" => {
+                                editor_id = sub
+                                    .data
+                                    .split(|b| *b == 0)
+                                    .next()
+                                    .map(|s| String::from_utf8_lossy(s).into_owned())
+                                    .unwrap_or_default();
+                            }
+                            b"ACBS" if sub.data.len() >= 4 => {
+                                acbs_flags = u32::from_le_bytes(sub.data[0..4].try_into().unwrap());
+                            }
+                            // NPC_ DATA (11 or 25 B): i32 Base Health @ 0.
+                            b"DATA" if *kind == *b"NPC_" && sub.data.len() >= 4 => {
+                                health = Some(i32::from_le_bytes(sub.data[0..4].try_into().unwrap()));
+                            }
+                            // CREA DATA (17 B): i16 health @ 4 (CreatureStats).
+                            b"DATA" if *kind == *b"CREA" && sub.data.len() >= 6 => {
+                                health =
+                                    Some(i16::from_le_bytes(sub.data[4..6].try_into().unwrap()) as i32);
+                            }
+                            _ => {}
+                        }
+                    }
+                    bases.insert(
+                        header.form_id,
+                        Base {
+                            editor_id,
+                            health,
+                            acbs_flags,
+                            is_creature: *kind == *b"CREA",
+                        },
+                    );
+                }
+                _ => {
+                    let mut base_fid = None;
+                    let mut xrgd = false;
+                    for sub in &subs {
+                        match &sub.sub_type {
+                            b"NAME" if sub.data.len() >= 4 => {
+                                base_fid =
+                                    Some(u32::from_le_bytes(sub.data[0..4].try_into().unwrap()));
+                            }
+                            b"XRGD" => xrgd = true,
+                            _ => {}
+                        }
+                    }
+                    if let Some(base_fid) = base_fid {
+                        refs.push((base_fid, xrgd));
+                    }
+                }
+            }
+        })?;
 
         let mut t = Totals::default();
         for (base_fid, xrgd) in &refs {
@@ -142,85 +206,6 @@ fn main() -> anyhow::Result<()> {
         println!("  bit23-only bases, healthy (first 16):");
         for name in t.bit23_only.iter().take(16) {
             println!("    {name}");
-        }
-    }
-    Ok(())
-}
-
-fn walk(
-    reader: &mut EsmReader<'_>,
-    end: usize,
-    bases: &mut HashMap<u32, Base>,
-    refs: &mut Vec<(u32, bool)>,
-) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let group = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&group);
-            walk(reader, inner_end, bases, refs)?;
-            continue;
-        }
-        let header = reader.read_record_header()?;
-        let kind @ (b"NPC_" | b"CREA" | b"ACHR" | b"ACRE") = &header.record_type else {
-            reader.skip_record(&header);
-            continue;
-        };
-        let subs = reader.read_sub_records(&header)?;
-        match kind {
-            b"NPC_" | b"CREA" => {
-                let mut editor_id = String::new();
-                let mut health = None;
-                let mut acbs_flags = 0u32;
-                for sub in &subs {
-                    match &sub.sub_type {
-                        b"EDID" => {
-                            editor_id = sub
-                                .data
-                                .split(|b| *b == 0)
-                                .next()
-                                .map(|s| String::from_utf8_lossy(s).into_owned())
-                                .unwrap_or_default();
-                        }
-                        b"ACBS" if sub.data.len() >= 4 => {
-                            acbs_flags = u32::from_le_bytes(sub.data[0..4].try_into()?);
-                        }
-                        // NPC_ DATA (11 or 25 B): i32 Base Health @ 0.
-                        b"DATA" if *kind == *b"NPC_" && sub.data.len() >= 4 => {
-                            health = Some(i32::from_le_bytes(sub.data[0..4].try_into()?));
-                        }
-                        // CREA DATA (17 B): i16 health @ 4 (CreatureStats).
-                        b"DATA" if *kind == *b"CREA" && sub.data.len() >= 6 => {
-                            health = Some(i16::from_le_bytes(sub.data[4..6].try_into()?) as i32);
-                        }
-                        _ => {}
-                    }
-                }
-                bases.insert(
-                    header.form_id,
-                    Base {
-                        editor_id,
-                        health,
-                        acbs_flags,
-                        is_creature: *kind == *b"CREA",
-                    },
-                );
-            }
-            _ => {
-                let mut base_fid = None;
-                let mut xrgd = false;
-                for sub in &subs {
-                    match &sub.sub_type {
-                        b"NAME" if sub.data.len() >= 4 => {
-                            base_fid = Some(u32::from_le_bytes(sub.data[0..4].try_into()?));
-                        }
-                        b"XRGD" => xrgd = true,
-                        _ => {}
-                    }
-                }
-                if let Some(base_fid) = base_fid {
-                    refs.push((base_fid, xrgd));
-                }
-            }
         }
     }
     Ok(())

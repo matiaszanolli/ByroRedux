@@ -12,20 +12,17 @@ use byroredux_plugin::esm::reader::EsmReader;
 /// Per-function census: total CTDAs, then splits by record type and Run-On.
 type FunctionCensus = (usize, BTreeMap<String, usize>, BTreeMap<u32, usize>);
 
-fn walk(
-    reader: &mut EsmReader<'_>,
-    end: usize,
-    counts: &mut BTreeMap<u32, FunctionCensus>,
-) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let group = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&group);
-            walk(reader, inner_end, counts)?;
-            continue;
-        }
-        let header = reader.read_record_header()?;
-        let subs = reader.read_sub_records(&header)?;
+fn main() -> anyhow::Result<()> {
+    let mut args = std::env::args().skip(1);
+    let path = args.next().expect("usage: ctda_function_census <ESM> [top N]");
+    let top: usize = args.next().and_then(|n| n.parse().ok()).unwrap_or(40);
+    let bytes = std::fs::read(&path)?;
+    let mut reader = EsmReader::new(&bytes);
+    let _header = reader.read_file_header()?;
+    let mut counts: BTreeMap<u32, FunctionCensus> = BTreeMap::new();
+    // Every record can carry CTDAs, so the walk takes no `want` — the
+    // closure filters on the sub-record type itself.
+    reader.for_each_record(bytes.len(), None, |header, subs| {
         let kind = String::from_utf8_lossy(&header.record_type).to_string();
         for sub in subs.iter().filter(|s| &s.sub_type == b"CTDA" && s.data.len() >= 24) {
             let function = u32::from_le_bytes(sub.data[8..12].try_into().unwrap());
@@ -35,19 +32,7 @@ fn walk(
             *entry.1.entry(kind.clone()).or_default() += 1;
             *entry.2.entry(run_on).or_default() += 1;
         }
-    }
-    Ok(())
-}
-
-fn main() -> anyhow::Result<()> {
-    let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: ctda_function_census <ESM> [top N]");
-    let top: usize = args.next().and_then(|n| n.parse().ok()).unwrap_or(40);
-    let bytes = std::fs::read(&path)?;
-    let mut reader = EsmReader::new(&bytes);
-    let _header = reader.read_file_header()?;
-    let mut counts = BTreeMap::new();
-    walk(&mut reader, bytes.len(), &mut counts)?;
+    })?;
     let total: usize = counts.values().map(|c| c.0).sum();
     let mut ranked: Vec<_> = counts.into_iter().collect();
     ranked.sort_by_key(|(_, c)| std::cmp::Reverse(c.0));

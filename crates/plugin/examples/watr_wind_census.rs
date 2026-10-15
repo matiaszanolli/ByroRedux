@@ -25,7 +25,37 @@ fn main() -> anyhow::Result<()> {
         let mut reader = EsmReader::new(&bytes);
         let _header = reader.read_file_header()?;
         let mut rows: Vec<WatrRow> = Vec::new();
-        walk_groups(&mut reader, bytes.len(), &mut rows)?;
+        reader.for_each_record(bytes.len(), Some(b"WATR"), |_header, subs| {
+            let editor_id = subs
+                .iter()
+                .find(|sub| sub.sub_type == *b"EDID")
+                .map(|sub| zstring(&sub.data))
+                .unwrap_or_default();
+            // Legacy records carry visual data in DATA; Skyrim+ carries it in DNAM.
+            let (payload, direction_offset, speed_offset) =
+                match subs.iter().find(|sub| sub.sub_type == *b"DATA") {
+                    Some(sub) if sub.data.len() >= 186 => (&sub.data, 100usize, 112usize),
+                    Some(sub) if sub.data.len() >= 8 => (&sub.data, 4usize, 0usize),
+                    _ => match subs.iter().find(|sub| sub.sub_type == *b"DNAM") {
+                        Some(sub) if sub.data.len() >= 124 => (&sub.data, 100usize, 112usize),
+                        _ => return,
+                    },
+                };
+            let read = |off: usize| {
+                f32::from_le_bytes([
+                    payload[off],
+                    payload[off + 1],
+                    payload[off + 2],
+                    payload[off + 3],
+                ])
+            };
+            rows.push((
+                editor_id,
+                payload.len(),
+                read(speed_offset),
+                read(direction_offset),
+            ));
+        })?;
 
         println!("== {path} — {} WATR records ==", rows.len());
         // Group by payload length: the layouts differ per length, and the
@@ -52,57 +82,6 @@ fn distinct(values: impl Iterator<Item = f32>) -> Vec<String> {
     out.sort();
     out.dedup();
     out
-}
-
-fn walk_groups(
-    reader: &mut EsmReader<'_>,
-    end: usize,
-    rows: &mut Vec<WatrRow>,
-) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let group = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&group);
-            walk_groups(reader, inner_end, rows)?;
-            continue;
-        }
-        let header = reader.read_record_header()?;
-        if header.record_type != *b"WATR" {
-            reader.skip_record(&header);
-            continue;
-        }
-        let subs = reader.read_sub_records(&header)?;
-        let editor_id = subs
-            .iter()
-            .find(|sub| sub.sub_type == *b"EDID")
-            .map(|sub| zstring(&sub.data))
-            .unwrap_or_default();
-        // Legacy records carry visual data in DATA; Skyrim+ carries it in DNAM.
-        let (payload, direction_offset, speed_offset) =
-            match subs.iter().find(|sub| sub.sub_type == *b"DATA") {
-                Some(sub) if sub.data.len() >= 186 => (&sub.data, 100usize, 112usize),
-                Some(sub) if sub.data.len() >= 8 => (&sub.data, 4usize, 0usize),
-                _ => match subs.iter().find(|sub| sub.sub_type == *b"DNAM") {
-                    Some(sub) if sub.data.len() >= 124 => (&sub.data, 100usize, 112usize),
-                    _ => continue,
-                },
-            };
-        let read = |off: usize| {
-            f32::from_le_bytes([
-                payload[off],
-                payload[off + 1],
-                payload[off + 2],
-                payload[off + 3],
-            ])
-        };
-        rows.push((
-            editor_id,
-            payload.len(),
-            read(speed_offset),
-            read(direction_offset),
-        ));
-    }
-    Ok(())
 }
 
 fn zstring(bytes: &[u8]) -> String {

@@ -22,67 +22,23 @@ fn main() -> anyhow::Result<()> {
 
     let mut reader = EsmReader::new(&bytes);
     let _hdr = reader.read_file_header()?;
-    let total = bytes.len();
     let mut found = 0;
-    walk_groups(&mut reader, total, &filters, &mut found)?;
+    // WTHS records live in the WTHS top-level group; the bounded walk's
+    // FourCC filter reaches every one of them.
+    reader.for_each_record(bytes.len(), Some(b"WTHS"), |h, subs| {
+        found += 1;
+        let edid = subs
+            .iter()
+            .find(|s| s.sub_type == *b"EDID")
+            .map(|s| read_zstring(&s.data))
+            .unwrap_or_default();
+        if filters.is_empty()
+            || filters.iter().any(|f| edid.to_lowercase().contains(&f.to_lowercase()))
+        {
+            print_wths(h, &edid, &subs);
+        }
+    })?;
     println!("\ntotal WTHS records: {found}");
-    Ok(())
-}
-
-fn walk_groups(
-    reader: &mut EsmReader,
-    end: usize,
-    filters: &[String],
-    found: &mut usize,
-) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let g = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&g);
-            if g.label == *b"WTHS" {
-                walk_wths_group(reader, inner_end, filters, found)?;
-            } else {
-                walk_groups(reader, inner_end, filters, found)?;
-            }
-        } else {
-            let h = reader.read_record_header()?;
-            reader.skip_record(&h);
-        }
-    }
-    Ok(())
-}
-
-fn walk_wths_group(
-    reader: &mut EsmReader,
-    end: usize,
-    filters: &[String],
-    found: &mut usize,
-) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let g = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&g);
-            walk_wths_group(reader, inner_end, filters, found)?;
-            continue;
-        }
-        let h = reader.read_record_header()?;
-        if h.record_type == *b"WTHS" {
-            let subs = reader.read_sub_records(&h)?;
-            *found += 1;
-            let edid = subs
-                .iter()
-                .find(|s| s.sub_type == *b"EDID")
-                .map(|s| read_zstring(&s.data))
-                .unwrap_or_default();
-            if filters.is_empty()
-                || filters.iter().any(|f| edid.to_lowercase().contains(&f.to_lowercase()))
-            {
-                print_wths(&h, &edid, &subs);
-            }
-        } else {
-            reader.skip_record(&h);
-        }
-    }
     Ok(())
 }
 

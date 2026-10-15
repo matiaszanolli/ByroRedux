@@ -15,32 +15,6 @@ use std::collections::BTreeMap;
 use byroredux_plugin::esm::reader::EsmReader;
 use byroredux_plugin::esm::records::script_instance::quest_alias_section;
 
-type OwnedSub = ([u8; 4], Vec<u8>);
-
-fn walk(reader: &mut EsmReader, end: usize, f: &mut dyn FnMut(u32, &[OwnedSub])) {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let Ok(g) = reader.read_group_header() else {
-                return;
-            };
-            let sub_end = reader.group_content_end(&g);
-            walk(reader, sub_end, f);
-            continue;
-        }
-        let Ok(header) = reader.read_record_header() else {
-            return;
-        };
-        if &header.record_type == b"QUST" {
-            if let Ok(subs) = reader.read_sub_records(&header) {
-                let owned: Vec<OwnedSub> = subs.into_iter().map(|s| (s.sub_type, s.data)).collect();
-                f(header.form_id, &owned);
-            }
-        } else {
-            reader.skip_record(&header);
-        }
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let path = args
@@ -55,12 +29,13 @@ fn main() -> anyhow::Result<()> {
     let mut alias_scripts = 0usize;
     let mut names: BTreeMap<String, usize> = BTreeMap::new();
     let mut inexact_samples = Vec::new();
-    walk(&mut reader, end, &mut |form_id, subs| {
-        let Some((_, vmad)) = subs.iter().find(|(t, _)| t == b"VMAD") else {
+    reader.for_each_record(end, Some(b"QUST"), |header, subs| {
+        let form_id = header.form_id;
+        let Some(vmad) = subs.iter().find(|s| s.sub_type == *b"VMAD") else {
             return;
         };
         vmads += 1;
-        let (aliases, ends_exactly) = quest_alias_section(vmad);
+        let (aliases, ends_exactly) = quest_alias_section(&vmad.data);
         if ends_exactly {
             exact += 1;
         } else {
@@ -78,7 +53,7 @@ fn main() -> anyhow::Result<()> {
                 *names.entry(script.name).or_default() += 1;
             }
         }
-    });
+    })?;
     println!("QUST VMADs: {vmads}; section ends exactly: {exact}; not exact: {inexact}");
     println!("with alias scripts: {with_aliases}; alias script instances: {alias_scripts}; distinct scripts: {}", names.len());
     if !inexact_samples.is_empty() {

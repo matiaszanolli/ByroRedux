@@ -28,7 +28,9 @@ fn main() -> anyhow::Result<()> {
     let _ = reader.read_file_header()?;
 
     let mut meshes = Vec::new();
-    collect(&mut reader, bytes.len(), &mut meshes)?;
+    reader.for_each_record(bytes.len(), Some(b"NAVM"), |header, subs| {
+        meshes.push(parse_navm(header.form_id, &subs, &None));
+    })?;
 
     match selector {
         Some(form_id) => dump_one(&meshes, form_id),
@@ -122,27 +124,4 @@ fn dump_one(meshes: &[NavmRecord], form_id: u32) {
             conn.mesh_form, conn.triangle
         );
     }
-}
-
-fn collect(
-    reader: &mut EsmReader<'_>,
-    end: usize,
-    out: &mut Vec<NavmRecord>,
-) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let group = reader.read_group_header()?;
-            let inner = reader.group_content_end(&group);
-            collect(reader, inner, out)?;
-            continue;
-        }
-        let header = reader.read_record_header()?;
-        if &header.record_type != b"NAVM" {
-            reader.skip_record(&header);
-            continue;
-        }
-        let subs = reader.read_sub_records(&header)?;
-        out.push(parse_navm(header.form_id, &subs, &None));
-    }
-    Ok(())
 }

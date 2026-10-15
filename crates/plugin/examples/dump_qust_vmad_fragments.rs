@@ -33,39 +33,6 @@ fn hexdump(bytes: &[u8]) {
     }
 }
 
-/// A decompressed sub-record: its 4-byte type + owned data bytes.
-type OwnedSub = ([u8; 4], Vec<u8>);
-
-/// Recursively walk records, invoking `f` on every record of `want` type
-/// with its (decompressed) sub-records.
-fn walk(reader: &mut EsmReader, end: usize, want: &[u8; 4], f: &mut dyn FnMut(u32, &[OwnedSub])) {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let Ok(g) = reader.read_group_header() else {
-                return;
-            };
-            let sub_end = reader.group_content_end(&g);
-            walk(reader, sub_end, want, f);
-            continue;
-        }
-        let Ok(header) = reader.read_record_header() else {
-            return;
-        };
-        if &header.record_type == want {
-            match reader.read_sub_records(&header) {
-                Ok(subs) => {
-                    let owned: Vec<OwnedSub> =
-                        subs.into_iter().map(|s| (s.sub_type, s.data)).collect();
-                    f(header.form_id, &owned);
-                }
-                Err(_) => continue,
-            }
-        } else {
-            reader.skip_record(&header);
-        }
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let esm_path = args
@@ -82,11 +49,13 @@ fn main() -> anyhow::Result<()> {
     let mut with_vmad = 0usize;
     let mut ver_hist: std::collections::BTreeMap<u8, usize> = std::collections::BTreeMap::new();
 
-    walk(&mut reader, end, b"QUST", &mut |form_id, subs| {
+    reader.for_each_record(end, Some(b"QUST"), |header, subs| {
+        let form_id = header.form_id;
         total_qust += 1;
-        let Some((_, vmad)) = subs.iter().find(|(t, _)| t == b"VMAD") else {
+        let Some(vmad) = subs.iter().find(|s| s.sub_type == *b"VMAD") else {
             return;
         };
+        let vmad = &vmad.data;
         with_vmad += 1;
 
         let (scripts, clean_end) = ScriptInstanceData::parse_with_consumed(vmad);
@@ -135,7 +104,7 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
-    });
+    })?;
 
     eprintln!(
         "[dump_qust_vmad_fragments] {esm_path}: {total_qust} QUST, {with_vmad} with VMAD, {shown} shown"

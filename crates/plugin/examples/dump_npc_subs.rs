@@ -47,52 +47,16 @@ fn main() -> anyhow::Result<()> {
 
     let mut reader = EsmReader::new(&bytes);
     let _hdr = reader.read_file_header()?;
-    let total = bytes.len();
-    walk_groups(&mut reader, total, &filters)?;
-    Ok(())
-}
-
-fn walk_groups(reader: &mut EsmReader, end: usize, filters: &[String]) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let g = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&g);
-            if g.label == *b"NPC_" {
-                walk_npc_group(reader, inner_end, filters)?;
-            } else {
-                walk_groups(reader, inner_end, filters)?;
-            }
-        } else {
-            let h = reader.read_record_header()?;
-            reader.skip_record(&h);
+    reader.for_each_record(bytes.len(), Some(b"NPC_"), |h, subs| {
+        let edid = subs
+            .iter()
+            .find(|s| s.sub_type == *b"EDID")
+            .map(|s| read_zstring(&s.data))
+            .unwrap_or_default();
+        if filters.iter().any(|f| edid.contains(f.as_str())) {
+            print_npc(&h, &edid, &subs);
         }
-    }
-    Ok(())
-}
-
-fn walk_npc_group(reader: &mut EsmReader, end: usize, filters: &[String]) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let g = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&g);
-            walk_npc_group(reader, inner_end, filters)?;
-            continue;
-        }
-        let h = reader.read_record_header()?;
-        if h.record_type == *b"NPC_" {
-            let subs = reader.read_sub_records(&h)?;
-            let edid = subs
-                .iter()
-                .find(|s| s.sub_type == *b"EDID")
-                .map(|s| read_zstring(&s.data))
-                .unwrap_or_default();
-            if filters.iter().any(|f| edid.contains(f.as_str())) {
-                print_npc(&h, &edid, &subs);
-            }
-        } else {
-            reader.skip_record(&h);
-        }
-    }
+    })?;
     Ok(())
 }
 

@@ -764,6 +764,54 @@ impl<'a> EsmReader<'a> {
         self.pos
     }
 
+    /// #5819 — the bounded recursive GRUP walk the census/probe examples
+    /// each hand-rolled (22 unbounded copies that stack-overflow a census
+    /// run on a corrupt ESM). Calls `f(header, subs)` for every record
+    /// whose type matches `want` (`None` = every record), recursing into
+    /// nested groups through `bounded_group_content_end` — the same
+    /// depth-checked engine `extract_records` uses. Reads to `end`
+    /// (typically `reader.remaining()`-relative or the file length);
+    /// call at a record/group boundary.
+    pub fn for_each_record(
+        &mut self,
+        end: usize,
+        want: Option<&[u8; 4]>,
+        mut f: impl FnMut(&RecordHeader, Vec<SubRecord>),
+    ) -> Result<()> {
+        fn walk(
+            reader: &mut EsmReader,
+            end: usize,
+            want: Option<&[u8; 4]>,
+            f: &mut impl FnMut(&RecordHeader, Vec<SubRecord>),
+            depth: u32,
+        ) -> Result<()> {
+            while reader.position() < end && reader.remaining() > 0 {
+                if reader.is_group() {
+                    let sub_group = reader.read_group_header()?;
+                    let Some(sub_end) = reader.bounded_group_content_end(
+                        &sub_group,
+                        depth,
+                        end,
+                        "for_each_record",
+                    ) else {
+                        continue;
+                    };
+                    walk(reader, sub_end, want, f, depth + 1)?;
+                    continue;
+                }
+                let header = reader.read_record_header()?;
+                if want.is_none_or(|want| &header.record_type == want) {
+                    let subs = reader.read_sub_records(&header)?;
+                    f(&header, subs);
+                } else {
+                    reader.skip_record(&header);
+                }
+            }
+            Ok(())
+        }
+        walk(self, end, want, &mut f, 0)
+    }
+
     pub fn remaining(&self) -> usize {
         self.data.len().saturating_sub(self.pos)
     }
@@ -2035,6 +2083,88 @@ mod tests {
         reader.seek_to(1000);
         assert_eq!(reader.position(), 64);
         assert_eq!(reader.remaining(), 0);
+    }
+
+    /// #5819 — `for_each_record` is the bounded walk the census/probe
+    /// examples all share. Pins its three contracts on a synthetic file
+    /// whose top-level GRUP holds a nested GRUP: `Some(want)` yields
+    /// exactly the matching records in file order with their sub-record
+    /// payloads, `None` yields every record, and a record of an unwanted
+    /// type is skipped by header without its subs decoded — proven by a
+    /// lying `data_size` that `read_sub_records` would reject as
+    /// truncated but a skip sails past.
+    #[test]
+    fn for_each_record_filters_recurses_and_skips_unwanted() {
+        let qust_outer = build_record(b"QUST", 0x0101, &[(b"EDID", b"Outer\0")]);
+        let npc = build_record(b"NPC_", 0x0201, &[(b"EDID", b"Actor\0")]);
+        let qust_nested = build_record(b"QUST", 0x0102, &[(b"EDID", b"Nested\0")]);
+        // A children-of-CELL group (type 6) nested inside the top-level group.
+        let nested = build_group(b"CELL", 6, &qust_nested);
+        let top_content = [qust_outer.clone(), npc.clone(), nested].concat();
+        let data = build_group(b"QUST", 0, &top_content);
+
+        // `Some(b"QUST")` yields exactly the two QUST records — the outer
+        // one first, the nested one second — with their sub-record payloads.
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let mut seen: Vec<(u32, Vec<([u8; 4], Vec<u8>)>)> = Vec::new();
+        reader
+            .for_each_record(data.len(), Some(b"QUST"), |header, subs| {
+                seen.push((
+                    header.form_id,
+                    subs.into_iter().map(|s| (s.sub_type, s.data)).collect(),
+                ));
+            })
+            .unwrap();
+        assert_eq!(
+            seen,
+            vec![
+                (0x0101, vec![(*b"EDID", b"Outer\0".to_vec())]),
+                (0x0102, vec![(*b"EDID", b"Nested\0".to_vec())]),
+            ],
+            "Some(want) must yield only the wanted records, outer-before-nested, with payloads"
+        );
+
+        // `None` yields every record, NPC_ included, in file order.
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let mut all: Vec<[u8; 4]> = Vec::new();
+        reader
+            .for_each_record(data.len(), None, |header, _subs| {
+                all.push(header.record_type);
+            })
+            .unwrap();
+        assert_eq!(all, vec![*b"QUST", *b"NPC_", *b"QUST"]);
+        assert_eq!(
+            reader.position(),
+            data.len(),
+            "the unfiltered walk consumes the file exactly"
+        );
+
+        // An unwanted record whose declared size runs past the buffer:
+        // `read_sub_records` would fail it ("Truncated record data"), so a
+        // clean walk over `Some(b"QUST")` proves it was skipped by header
+        // and never decoded.
+        let mut lying = Vec::new();
+        lying.extend_from_slice(b"NPC_");
+        lying.extend_from_slice(&0xFFFF_u32.to_le_bytes()); // data_size past EOF
+        lying.extend_from_slice(&0u32.to_le_bytes()); // flags
+        lying.extend_from_slice(&0x0202u32.to_le_bytes()); // form id
+        lying.resize(lying.len() + 8, 0); // Tes5Plus trailing metadata
+        let data = build_group(b"QUST", 0, &[qust_outer, lying].concat());
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let mut seen: Vec<u32> = Vec::new();
+        let walked =
+            reader.for_each_record(data.len(), Some(b"QUST"), |header, _subs| {
+                seen.push(header.form_id);
+            });
+        assert!(
+            walked.is_ok(),
+            "an unwanted record must be skipped, not decoded: {walked:?}"
+        );
+        assert_eq!(
+            seen,
+            vec![0x0101],
+            "only the QUST before the lying NPC_ is visited"
+        );
     }
 
     #[test]

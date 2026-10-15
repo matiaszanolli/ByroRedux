@@ -27,36 +27,19 @@ fn main() -> anyhow::Result<()> {
 
     let bytes = std::fs::read(&esm_path)?;
     let mut reader = EsmReader::new(&bytes);
-    let end = bytes.len();
-    walk(&mut reader, end, target);
-    Ok(())
-}
-
-fn walk(reader: &mut EsmReader, end: usize, target: u32) {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let Ok(g) = reader.read_group_header() else {
-                return;
-            };
-            let sub_end = reader.group_content_end(&g);
-            walk(reader, sub_end, target);
-            continue;
-        }
-        let Ok(header) = reader.read_record_header() else {
-            return;
-        };
-        if &header.record_type == b"QUST" && header.form_id == target {
-            if let Ok(subs) = reader.read_sub_records(&header) {
-                println!("QUST {:08X} — {} sub-records", header.form_id, subs.len());
-                for s in &subs {
-                    let name = std::str::from_utf8(&s.sub_type).unwrap_or("????");
-                    let hex: Vec<String> =
-                        s.data.iter().take(24).map(|b| format!("{b:02x}")).collect();
-                    println!("  {name:>4}  len={:<4}  {}", s.data.len(), hex.join(" "));
-                }
-            }
+    // Only the first matching QUST is dumped — the form ID is unique in a
+    // single plugin, so the guard just preserves the old stop-at-first hit.
+    let mut found = false;
+    reader.for_each_record(bytes.len(), Some(b"QUST"), |header, subs| {
+        if found || header.form_id != target {
             return;
         }
-        reader.skip_record(&header);
-    }
+        found = true;
+        println!("QUST {:08X} — {} sub-records", header.form_id, subs.len());
+        for s in &subs {
+            let name = std::str::from_utf8(&s.sub_type).unwrap_or("????");
+            let hex: Vec<String> = s.data.iter().take(24).map(|b| format!("{b:02x}")).collect();
+            println!("  {name:>4}  len={:<4}  {}", s.data.len(), hex.join(" "));
+        }
+    })
 }

@@ -25,7 +25,19 @@ fn main() -> anyhow::Result<()> {
     let mut reader = EsmReader::new(&bytes);
     let _header = reader.read_file_header()?;
     let mut survey = Survey::default();
-    walk_groups(&mut reader, bytes.len(), &selector, &mut survey)?;
+    reader.for_each_record(bytes.len(), Some(&RECORD_TYPE), |header, subs| {
+        survey.total += 1;
+        let editor_id = subs
+            .iter()
+            .find(|sub| sub.sub_type == *b"EDID")
+            .map(|sub| read_zstring(&sub.data))
+            .unwrap_or_default();
+        if !selector.matches(header.form_id, &editor_id) {
+            return;
+        }
+        survey.matched += 1;
+        print_record(header, &editor_id, &subs, &mut survey);
+    })?;
 
     println!();
     println!("PACK records total: {}", survey.total);
@@ -71,40 +83,6 @@ impl Selector {
             Self::FormId(expected) => form_id == *expected,
         }
     }
-}
-
-fn walk_groups(
-    reader: &mut EsmReader,
-    end: usize,
-    selector: &Selector,
-    survey: &mut Survey,
-) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let group = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&group);
-            walk_groups(reader, inner_end, selector, survey)?;
-            continue;
-        }
-        let header = reader.read_record_header()?;
-        if header.record_type != RECORD_TYPE {
-            reader.skip_record(&header);
-            continue;
-        }
-        let subs = reader.read_sub_records(&header)?;
-        survey.total += 1;
-        let editor_id = subs
-            .iter()
-            .find(|sub| sub.sub_type == *b"EDID")
-            .map(|sub| read_zstring(&sub.data))
-            .unwrap_or_default();
-        if !selector.matches(header.form_id, &editor_id) {
-            continue;
-        }
-        survey.matched += 1;
-        print_record(&header, &editor_id, &subs, survey);
-    }
-    Ok(())
 }
 
 fn print_record(header: &RecordHeader, editor_id: &str, subs: &[SubRecord], survey: &mut Survey) {

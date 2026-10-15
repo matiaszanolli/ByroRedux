@@ -27,7 +27,14 @@ fn main() -> anyhow::Result<()> {
     let mut reader = EsmReader::new(&bytes);
     let _header = reader.read_file_header()?;
     let mut survey = Survey::default();
-    walk_groups(&mut reader, bytes.len(), &mut survey)?;
+    reader.for_each_record(bytes.len(), Some(&RECORD_TYPE), |header, subs| {
+        survey.record_count += 1;
+        let signature = subrecord_signature(&subs);
+        *survey.signatures.entry(signature).or_default() += 1;
+        if survey.record_count <= PREVIEW_RECORD_LIMIT {
+            print_record(header, &subs);
+        }
+    })?;
 
     println!("VOLI records: {}", survey.record_count);
     println!("VOLI subrecord signatures:");
@@ -43,31 +50,6 @@ fn main() -> anyhow::Result<()> {
 struct Survey {
     record_count: usize,
     signatures: std::collections::HashMap<String, usize>,
-}
-
-fn walk_groups(reader: &mut EsmReader, end: usize, survey: &mut Survey) -> anyhow::Result<()> {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let group = reader.read_group_header()?;
-            let inner_end = reader.group_content_end(&group);
-            walk_groups(reader, inner_end, survey)?;
-            continue;
-        }
-
-        let header = reader.read_record_header()?;
-        if header.record_type == RECORD_TYPE {
-            let subs = reader.read_sub_records(&header)?;
-            survey.record_count += 1;
-            let signature = subrecord_signature(&subs);
-            *survey.signatures.entry(signature).or_default() += 1;
-            if survey.record_count <= PREVIEW_RECORD_LIMIT {
-                print_record(&header, &subs);
-            }
-        } else {
-            reader.skip_record(&header);
-        }
-    }
-    Ok(())
 }
 
 fn subrecord_signature(subs: &[SubRecord]) -> String {

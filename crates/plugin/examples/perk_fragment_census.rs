@@ -11,32 +11,6 @@ use std::collections::BTreeMap;
 use byroredux_plugin::esm::reader::EsmReader;
 use byroredux_plugin::esm::records::script_instance::parse_indexed_fragments;
 
-type OwnedSub = ([u8; 4], Vec<u8>);
-
-fn walk(reader: &mut EsmReader, end: usize, f: &mut dyn FnMut(u32, &[OwnedSub])) {
-    while reader.position() < end && reader.remaining() > 0 {
-        if reader.is_group() {
-            let Ok(g) = reader.read_group_header() else {
-                return;
-            };
-            let sub_end = reader.group_content_end(&g);
-            walk(reader, sub_end, f);
-            continue;
-        }
-        let Ok(header) = reader.read_record_header() else {
-            return;
-        };
-        if &header.record_type == b"PERK" {
-            if let Ok(subs) = reader.read_sub_records(&header) {
-                let owned: Vec<OwnedSub> = subs.into_iter().map(|s| (s.sub_type, s.data)).collect();
-                f(header.form_id, &owned);
-            }
-        } else {
-            reader.skip_record(&header);
-        }
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).ok_or_else(|| anyhow::anyhow!("usage: perk_fragment_census ESM"))?;
     let bytes = std::fs::read(&path)?;
@@ -44,10 +18,12 @@ fn main() -> anyhow::Result<()> {
     let end = bytes.len();
     let (mut perks, mut fragments, mut matched) = (0usize, 0usize, 0usize);
     let mut shapes: BTreeMap<String, usize> = BTreeMap::new();
-    walk(&mut reader, end, &mut |form_id, subs| {
-        let Some((_, vmad)) = subs.iter().find(|(t, _)| t == b"VMAD") else {
+    reader.for_each_record(end, Some(b"PERK"), |header, subs| {
+        let form_id = header.form_id;
+        let Some(vmad) = subs.iter().find(|s| s.sub_type == *b"VMAD") else {
             return;
         };
+        let vmad = &vmad.data;
         let frags = parse_indexed_fragments(vmad);
         if frags.is_empty() {
             return;
@@ -63,7 +39,8 @@ fn main() -> anyhow::Result<()> {
                 entries.push((point, epft, id, epf3));
             }
         };
-        for (tag, data) in subs {
+        for sub in &subs {
+            let (tag, data) = (&sub.sub_type, sub.data.as_slice());
             match tag {
                 b"PRKE" => {
                     if open {
@@ -93,7 +70,7 @@ fn main() -> anyhow::Result<()> {
                 println!("{form_id:08X}: fragment {} matches no EPFB (entries {entries:?})", fragment.index);
             }
         }
-    });
+    })?;
     println!("{perks} perks with fragments, {fragments} fragments, {matched} matching an entry's EPFB");
     for (shape, n) in shapes {
         println!("  {n:4}  {shape}");
