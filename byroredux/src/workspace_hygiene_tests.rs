@@ -783,6 +783,70 @@ fn readme_and_roadmap_hold_their_line_ceilings() {
     );
 }
 
+/// #5009 — production code in the bin crate must resolve archive content
+/// through the `asset_provider` layer, never by opening `BsaArchive` /
+/// `Ba2Archive` directly. The two stragglers this swept (debug_load's
+/// `resolve_nif_bytes`, `load_nif_from_args`' `--mesh` arm) both carried the
+/// pre-#4658 loop shape: first-listed-wins (inverting #3637), extract
+/// errors dropped on the floor, a re-open per request, and BSA-only
+/// dispatch — so a BA2 `--bsa` never resolved at all. The provider route
+/// (`TextureProvider::extract_mesh` / `extract_mesh_exact`) carries
+/// last-wins precedence, #4658's named corrupt-entry fall-through, BA2
+/// dispatch and the `Archive::open_shared` handle cache. `asset_provider`
+/// itself is the layer that owns the raw readers; everything under
+/// `#[cfg(test)]` is exempt (fixture builders legitimately open archives
+/// directly to construct ground truth).
+#[test]
+fn no_production_code_opens_archives_outside_the_provider_layer() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Composed at run time so this file does not contain the needles it
+    // searches for.
+    let needles: Vec<String> = [
+        ["byroredux_bsa::Bsa", "Archive::open("].concat(),
+        ["byroredux_bsa::Ba2", "Archive::open("].concat(),
+        ["Bsa", "Archive::open("].concat(),
+        ["Ba2", "Archive::open("].concat(),
+    ]
+    .to_vec();
+    let mut found = Vec::new();
+    visit_workspace_rs_files(&manifest.join("src"), &mut |path, contents| {
+        let relative = path
+            .strip_prefix(manifest.parent().unwrap_or(manifest))
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative.contains("asset_provider/") {
+            return; // the provider layer owns the raw readers
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let in_test_dir = path.components().any(|c| c.as_os_str() == "tests");
+        // `npc_spawn/tests.rs` — a bare `#[cfg(test)] mod tests;` sibling
+        // file, not a directory.
+        if name.ends_with("_tests.rs") || name == "tests.rs" || in_test_dir {
+            return; // fixture / ground-truth builders
+        }
+        // Strip interleaved `#[cfg(test)] mod` blocks; a `#[cfg(test)] fn`
+        // or `use` must not truncate the scan (#5469's strong needle).
+        let production = byroredux_core::source_scan::production_text_or_whole(contents);
+        for (idx, line) in production.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            if needles.iter().any(|needle| line.contains(needle.as_str())) {
+                found.push(format!("{}:{}  {}", relative, idx + 1, line.trim()));
+            }
+        }
+    });
+    assert!(
+        found.is_empty(),
+        "raw archive open outside the provider layer — resolve through \
+         TextureProvider::extract_mesh / extract_mesh_exact (BA2 dispatch, \
+         #3637 last-listed-wins, #4658 named corrupt entries, open_shared \
+         caching) instead of BsaArchive/Ba2Archive::open (#5009):\n{}",
+        found.join("\n"),
+    );
+}
+
 /// #5856 — count a crate's example *targets* the way cargo discovers them:
 /// every top-level `examples/*.rs` plus every `examples/<name>/main.rs`.
 /// Non-target files (`examples/common/archives.rs`, a shared module) are

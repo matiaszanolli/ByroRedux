@@ -120,12 +120,23 @@ pub fn execute_pending_debug_loads(
 
 /// Resolve NIF bytes via loose-file or CLI-BSA search, then call the
 /// existing `load_nif_bytes` import path. No new resolver code — the
-/// search is the same one `scene::load_nif_from_args` runs at boot,
-/// inlined here so a debug load doesn't need to round-trip through
-/// the args parser.
+/// archive half goes through the same `TextureProvider` the load below
+/// (and every boot-time resolver) uses, so it inherits the provider's
+/// #3637 last-listed-wins precedence, #4658's named corrupt-entry
+/// fall-through, BA2 dispatch, and the `Archive::open_shared` handle
+/// cache (#5009 replaced an inlined first-listed-wins BSA-only loop
+/// with exactly the pre-#4658 shape the providers shed).
 fn exec_load_nif(world: &mut World, ctx: &mut VulkanContext, path: &str, label: Option<&str>) {
     let display_label = label.unwrap_or(path);
-    let bytes = match resolve_nif_bytes(path) {
+    let args: Vec<String> = crate::cli_args::effective_args();
+    let tex_provider = build_texture_provider(&args);
+    let mut mat_provider = build_material_provider(&args);
+
+    // Loose file first (#4752 confinement), then the mesh archives.
+    let bytes = confine_to_roots(path, &startup_asset_roots())
+        .and_then(|candidate| std::fs::read(candidate).ok())
+        .or_else(|| tex_provider.extract_mesh(path));
+    let bytes = match bytes {
         Some(b) => b,
         None => {
             log::error!(
@@ -135,10 +146,6 @@ fn exec_load_nif(world: &mut World, ctx: &mut VulkanContext, path: &str, label: 
             return;
         }
     };
-
-    let args: Vec<String> = crate::cli_args::effective_args();
-    let tex_provider = build_texture_provider(&args);
-    let mut mat_provider = build_material_provider(&args);
 
     let (count, root) = crate::scene::load_nif_bytes(
         world,
@@ -160,45 +167,6 @@ fn exec_load_nif(world: &mut World, ctx: &mut VulkanContext, path: &str, label: 
     // vectors against history pixels that belonged to the old
     // scene.
     ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
-}
-
-/// Try `path` as a loose file first; on a miss, scan every `--bsa`
-/// CLI arg for a hit.
-fn resolve_nif_bytes(path: &str) -> Option<Vec<u8>> {
-    if let Some(bytes) = confine_to_roots(path, &startup_asset_roots())
-        .and_then(|candidate| std::fs::read(candidate).ok())
-    {
-        return Some(bytes);
-    }
-    let args: Vec<String> = crate::cli_args::effective_args();
-    for window in args.windows(2) {
-        if window[0] != "--bsa" {
-            continue;
-        }
-        let archive_path = &window[1];
-        match byroredux_bsa::BsaArchive::open(archive_path) {
-            Ok(archive) => {
-                if let Ok(data) = archive.extract(path) {
-                    log::info!(
-                        "debug load NIF '{}': resolved via '{}' ({} bytes)",
-                        path,
-                        archive_path,
-                        data.len()
-                    );
-                    return Some(data);
-                }
-            }
-            Err(e) => {
-                log::warn!(
-                    "debug load NIF '{}': failed to open --bsa '{}': {}",
-                    path,
-                    archive_path,
-                    e
-                );
-            }
-        }
-    }
-    None
 }
 
 /// The directories a debug load may read loose files from: the parent of

@@ -85,13 +85,10 @@ pub(super) fn load_nif_from_args(
 
     if let Some(bsa_idx) = args.iter().position(|a| a == "--bsa") {
         // BSA mode: --bsa <archive> {--mesh|--tree} <path_in_archive>.
-        let bsa_path = match args.get(bsa_idx + 1) {
-            Some(p) => p,
-            None => {
-                log::error!("--bsa requires an archive path");
-                return (0, None);
-            }
-        };
+        if args.get(bsa_idx + 1).is_none() {
+            log::error!("--bsa requires an archive path");
+            return (0, None);
+        }
         // `--tree` is shorthand for `--mesh` that documents the
         // user's intent to visualise a SpeedTree binary. The
         // routing inside `parse_import_and_merge` branches on the
@@ -110,21 +107,32 @@ pub(super) fn load_nif_from_args(
             }
         };
 
-        let archive = match byroredux_bsa::BsaArchive::open(bsa_path) {
-            Ok(a) => a,
-            Err(e) => {
-                log::error!("Failed to open BSA '{}': {}", bsa_path, e);
+        // #5009 — resolve through the provider built above instead of a
+        // raw `BsaArchive::open` of the first `--bsa`: the provider route
+        // dispatches BA2 as well as BSA, honours #3637 last-listed-wins
+        // across every `--bsa` (including the numeric siblings the
+        // provider auto-loads), and names corrupt entries instead of
+        // failing the whole load (#4658). `.spt` keys live outside the
+        // `meshes\` root (#3735), so they take the exact-key lookup.
+        let data = match if asset_path
+            .rsplit('.')
+            .next()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("spt"))
+        {
+            tex_provider.extract_mesh_exact(asset_path)
+        } else {
+            tex_provider.extract_mesh(asset_path)
+        } {
+            Some(d) => d,
+            None => {
+                log::error!(
+                    "Failed to extract '{asset_path}' from the --bsa mesh archives \
+                     (last-listed wins; corrupt entries are logged separately)"
+                );
                 return (0, None);
             }
         };
-        let data = match archive.extract(asset_path) {
-            Ok(d) => d,
-            Err(e) => {
-                log::error!("Failed to extract '{}': {}", asset_path, e);
-                return (0, None);
-            }
-        };
-        log::info!("Extracted {} bytes from BSA '{}'", data.len(), asset_path);
+        log::info!("Extracted {} bytes for '{}'", data.len(), asset_path);
         load_nif_bytes(
             world,
             ctx,
