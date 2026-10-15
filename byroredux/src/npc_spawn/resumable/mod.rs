@@ -574,6 +574,130 @@ pub(super) fn parent_part(world: &mut World, placement_root: EntityId, part_root
     tag_descendants_as_actor(world, part_root);
 }
 
+// ── #5794 — the shared finalize tail ─────────────────────────────────
+//
+// Both resumable paths (runtime mesh, pre-baked) ended in hand-copied
+// tails, and the copies drifted in history: the Draugr combat marker
+// landed on the runtime arm only (ec3a18d2f) and the pre-baked path
+// "stayed silent on Skyrim, the only game with Draugr" until #4700
+// caught it up two days later. Every per-actor component below is now
+// attached in exactly one place; the arms keep only what is genuinely
+// path-specific (idle/walk clip selection, inventory slots).
+
+/// The skeleton attach every finalize tail performs: animation targeting,
+/// the retained bone map for mid-life gear imports (P3), and the Draugr
+/// combat-clip family marker (#4700). `draugr` already carries the
+/// player-body exclusion — pass `combat_anim_draugr && !player_body`.
+pub(super) fn attach_skeleton_runtime(
+    world: &mut World,
+    placement_root: EntityId,
+    skeleton_root: EntityId,
+    skel_map: &SkeletonMap,
+    draugr: bool,
+) {
+    world.insert(
+        placement_root,
+        crate::components::AnimationTarget {
+            skeleton_root,
+            consumed_idle_serial: 0,
+        },
+    );
+    world.insert(
+        placement_root,
+        crate::npc_spawn::NpcSkeletonBones(skel_map.clone()),
+    );
+    if draugr {
+        world.insert(placement_root, crate::components::DraugrCombatAnim::default());
+    }
+}
+
+/// The walk pair (`WalkAnimation` + `WalkSpeed`) both tails attach for a
+/// resolved walk clip: the authored-stride speed and the spawn position
+/// the walk system diffs against.
+pub(super) fn attach_walk_animation(world: &mut World, placement_root: EntityId, handle: u32) {
+    let walk_speed = crate::npc_spawn::walk_speed_for(world, handle);
+    let last_pos = world
+        .query::<Transform>()
+        .and_then(|q| q.get(placement_root).map(|t| t.translation))
+        .unwrap_or_default();
+    world.insert(
+        placement_root,
+        crate::components::WalkAnimation {
+            walk_handle: handle,
+            walking: false,
+            last_pos,
+            captured: None,
+            transition_secs: 0.0,
+        },
+    );
+    world.insert(placement_root, crate::components::WalkSpeed(walk_speed));
+}
+
+/// The actor finish: AI package behavior + combat disposition (skipped
+/// for player bodies), actor tagging, and the loot-appearance restore.
+pub(super) fn finish_actor(
+    world: &mut World,
+    npc: &NpcRecord,
+    index: &EsmIndex,
+    placement_root: EntityId,
+    player_body: bool,
+    appearance: &mut NpcLootAppearance,
+    skel_map: &SkeletonMap,
+) {
+    if !player_body {
+        let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(npc, index);
+        super::ai_package::apply_ai_package_behavior(world, placement_root, &resolved, index);
+        super::arm_combat_disposition(world, placement_root, &resolved);
+    }
+    // Eviction state restores in stamp_quest_reference after the caller
+    // assigns the placed ACHR identity.
+    super::tag_descendants_as_actor(world, placement_root);
+    if !player_body {
+        super::loot_appearance::install(
+            world,
+            placement_root,
+            std::mem::take(appearance),
+            skel_map,
+        );
+    }
+}
+
+/// One armor-phase step shared by both resumable paths: spawn the queued
+/// unit or log the archive miss. The enum-specific phase transition stays
+/// in the caller (`PrebakedPhase::Armor` / `RuntimePhase::Armor`).
+pub(super) fn spawn_armor_or_log(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    npc: &NpcRecord,
+    skel_map: &SkeletonMap,
+    appearance: &mut NpcLootAppearance,
+    equipped_armor_count: &mut u32,
+    armor: &SpawnArmor,
+) {
+    if !spawn_armor_unit(
+        world,
+        ctx,
+        tex_provider,
+        mat_provider,
+        skel_map,
+        appearance,
+        equipped_armor_count,
+        armor,
+    ) {
+        log::debug!(
+            "NPC {:08X} ({}): armor {:08X} (from CNTO {:08X}) \
+             model '{}' not in archives",
+            npc.form_id,
+            npc.editor_id,
+            armor.resolved_fid,
+            armor.source_fid,
+            armor.model_path,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::prebaked::*;

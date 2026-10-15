@@ -319,26 +319,17 @@ pub(super) fn advance_prebaked_unit(
                 state.phase = PrebakedPhase::Finalize;
                 return UnitOutcome::Continue;
             };
-            if !spawn_armor_unit(
+            super::spawn_armor_or_log(
                 world,
                 ctx,
                 tex_provider,
                 mat_provider,
+                npc,
                 &state.skel_map,
                 &mut state.appearance,
                 &mut state.equipped_armor_count,
                 armor,
-            ) {
-                log::debug!(
-                    "NPC {:08X} ({}): armor {:08X} (from CNTO {:08X}) \
-                     model '{}' not in archives",
-                    npc.form_id,
-                    npc.editor_id,
-                    armor.resolved_fid,
-                    armor.source_fid,
-                    armor.model_path,
-                );
-            }
+            );
             let next = index + 1;
             state.phase = if next < state.armor.len() {
                 PrebakedPhase::Armor(next)
@@ -372,78 +363,35 @@ pub(super) fn finalize_prebaked(
         );
     }
     if let Some(skeleton_root) = state.skel_root {
-        world.insert(
+        super::attach_skeleton_runtime(
+            world,
             state.placement_root,
-            crate::components::AnimationTarget {
-                skeleton_root,
-                consumed_idle_serial: 0,
-            },
+            skeleton_root,
+            &state.skel_map,
+            state.combat_anim_draugr && !state.player_body,
         );
-        // P3 mid-life gear import — retain the assembled bone map so an
-        // equip of a never-worn item can import its mesh against the living
-        // actor's skeleton (the corpse path retains its own copy at death).
-        world.insert(
-            state.placement_root,
-            crate::npc_spawn::NpcSkeletonBones(state.skel_map.clone()),
-        );
-        // #4700 — the Draugr family marker, beside `AnimationTarget` as on
-        // the runtime path. Without it every take and impact/death sound
-        // `combat_feedback_system` gates on it stayed silent on Skyrim,
-        // the only game with Draugr.
-        if state.combat_anim_draugr && !state.player_body {
-            world.insert(
-                state.placement_root,
-                crate::components::DraugrCombatAnim::default(),
-            );
-        }
         // M42.10/M42.11 — prebaked-path actors (Skyrim+) resolve
         // the same decoded HKX walk clip the runtime path uses,
         // with the same authored-stride speed derivation. The player
         // body takes neither from the job — `player_body::` attaches
-        // its walk/idle playback beside the assembled root (see the
-        // runtime Finalize twin).
+        // its walk/idle playback beside the assembled root.
         if !state.player_body {
             if let Some(handle) = world
                 .try_resource::<crate::components::SkyrimWalkClip>()
                 .and_then(|r| r.0)
             {
-                let walk_speed = walk_speed_for(world, handle);
-                let last_pos = world
-                    .query::<Transform>()
-                    .and_then(|q| q.get(state.placement_root).map(|t| t.translation))
-                    .unwrap_or_default();
-                world.insert(
-                    state.placement_root,
-                    crate::components::WalkAnimation {
-                        walk_handle: handle,
-                        walking: false,
-                        last_pos,
-                        captured: None,
-                        transition_secs: 0.0,
-                    },
-                );
-                world.insert(
-                    state.placement_root,
-                    crate::components::WalkSpeed(walk_speed),
-                );
+                super::attach_walk_animation(world, state.placement_root, handle);
             }
         }
     }
-    if !state.player_body {
-        let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(npc, index);
-        apply_ai_package_behavior(world, state.placement_root, &resolved, index);
-        arm_combat_disposition(world, state.placement_root, &resolved);
-    }
-    // The caller restores eviction state after stamping the placed
-    // ACHR identity, shared with the runtime-mesh spawn path above.
-    tag_descendants_as_actor(world, state.placement_root);
-    if !state.player_body {
-        super::loot_appearance::install(
-            world,
-            state.placement_root,
-            std::mem::take(&mut state.appearance),
-            &state.skel_map,
-        );
-    }
+    super::finish_actor(
+        world,
+        npc,
+        index,
+        state.placement_root,
+        state.player_body,
+        &mut state.appearance,
+        &state.skel_map,
+    );
     UnitOutcome::Complete(Some(state.placement_root))
 }

@@ -1,15 +1,18 @@
 //! NIF animation clip conversion and subtree name map building.
 
 use byroredux_core::animation::{
-    AnimBoolKey, AnimColorKey, AnimFloatKey, AnimationClip, AnimationClipRegistry, BoolChannel, ColorChannel, ColorTarget,
-    CycleType, FloatChannel, FloatTarget, KeyType, RotationKey, ScaleKey, TextureFlipChannel,
-    TransformChannel, TranslationKey,
+    AnimationClip, AnimationClipRegistry, BoolChannel, ColorChannel, ColorTarget, CycleType,
+    FloatChannel, FloatTarget, TextureFlipChannel,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     Children, FlipTextureRole, HierarchyTraversalGuard, Material, Name, World,
 };
-use byroredux_core::math::{Quat, Vec2, Vec3};
+use byroredux_core::math::Vec2;
+#[cfg(test)]
+use byroredux_core::animation::types::KeyType;
+#[cfg(test)]
+use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
 use byroredux_renderer::VulkanContext;
 use rustc_hash::FxHashMap;

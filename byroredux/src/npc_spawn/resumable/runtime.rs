@@ -766,26 +766,17 @@ pub(super) fn advance_runtime_unit(
                 state.phase = RuntimePhase::Finalize;
                 return UnitOutcome::Continue;
             };
-            if !spawn_armor_unit(
+            super::spawn_armor_or_log(
                 world,
                 ctx,
                 tex_provider,
                 mat_provider,
+                npc,
                 &state.skel_map,
                 &mut state.appearance,
                 &mut state.equipped_armor_count,
                 armor,
-            ) {
-                log::debug!(
-                    "NPC {:08X} ({}): armor {:08X} (from CNTO {:08X}) \
-                     model '{}' not in archives",
-                    npc.form_id,
-                    npc.editor_id,
-                    armor.resolved_fid,
-                    armor.source_fid,
-                    armor.model_path,
-                );
-            }
+            );
             let next = index + 1;
             state.phase = if next < state.armor.len() {
                 RuntimePhase::Armor(next)
@@ -828,33 +819,18 @@ pub(super) fn advance_runtime_unit(
                 }
             }
             if let Some(skeleton) = state.skel_root {
-                world.insert(
-                    state.placement_root,
-                    crate::components::AnimationTarget {
-                        skeleton_root: skeleton,
-                        consumed_idle_serial: 0,
-                    },
-                );
-                // P3 mid-life gear import — retain the assembled bone map so
-                // an equip of a never-worn item can import its mesh against
-                // the living actor's skeleton (the corpse path retains its
-                // own copy at death).
-                world.insert(
-                    state.placement_root,
-                    crate::npc_spawn::NpcSkeletonBones(state.skel_map.clone()),
-                );
-                // P2 combat tail — Draugr-race actors play the Draugr
-                // combat clip family (attack/hit/death takes) through
-                // `systems::combat_anim`; presence of this component is
-                // the family marker. Inserted only with a skeleton —
+                // The shared per-actor attach (AnimationTarget, bone map,
+                // Draugr marker) — #5794; see `attach_skeleton_runtime`.
+                // The Draugr marker is inserted only with a skeleton —
                 // without one there is nothing for a take to animate
                 // (`docs/engine/p2-combat-anim-sound-fixture.md`).
-                if state.combat_anim_draugr && !state.player_body {
-                    world.insert(
-                        state.placement_root,
-                        crate::components::DraugrCombatAnim::default(),
-                    );
-                }
+                super::attach_skeleton_runtime(
+                    world,
+                    state.placement_root,
+                    skeleton,
+                    &state.skel_map,
+                    state.combat_anim_draugr && !state.player_body,
+                );
                 // #2567 — a creature animates off its own `idle.kf`, beside
                 // its skeleton. The shared per-cell pool holds the humanoid
                 // clip, whose bone names a creature rig doesn't have, so
@@ -922,40 +898,17 @@ pub(super) fn advance_runtime_unit(
                     .and_then(|r| r.0)
             };
             if let Some(handle) = walk_handle {
-                let walk_speed = walk_speed_for(world, handle);
-                let last_pos = world
-                    .query::<Transform>()
-                    .and_then(|q| q.get(state.placement_root).map(|t| t.translation))
-                    .unwrap_or_default();
-                world.insert(
-                    state.placement_root,
-                    crate::components::WalkAnimation {
-                        walk_handle: handle,
-                        walking: false,
-                        last_pos,
-                        captured: None,
-                        transition_secs: 0.0,
-                    },
-                );
-                world.insert(state.placement_root, crate::components::WalkSpeed(walk_speed));
+                super::attach_walk_animation(world, state.placement_root, handle);
             }
-            if !state.player_body {
-                let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(npc, index);
-                apply_ai_package_behavior(world, state.placement_root, &resolved, index);
-                arm_combat_disposition(world, state.placement_root, &resolved);
-            }
-            // Eviction state restores in stamp_quest_reference after the caller
-            // assigns the placed ACHR identity. npc.form_id is only the shared
-            // base record and cannot identify a particular actor's snapshot.
-            tag_descendants_as_actor(world, state.placement_root);
-            if !state.player_body {
-                super::loot_appearance::install(
-                    world,
-                    state.placement_root,
-                    std::mem::take(&mut state.appearance),
-                    &state.skel_map,
-                );
-            }
+            super::finish_actor(
+                world,
+                npc,
+                index,
+                state.placement_root,
+                state.player_body,
+                &mut state.appearance,
+                &state.skel_map,
+            );
             UnitOutcome::Complete(Some(state.placement_root))
         }
     }
