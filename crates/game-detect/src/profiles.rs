@@ -53,6 +53,41 @@ pub fn resolve_games_root(cli_arg: Option<&str>) -> PathBuf {
 /// profile's `subdir` field. Used at `--game <key>` expansion
 /// time when the profile's `root` is empty. Returns the explicit
 /// `entry.root` unchanged when set (per-user override path). Phase 20.
+/// #5739 — resolve a value against the current directory when relative.
+/// #5476: the launcher spawns the engine with
+/// `current_dir(engine.parent())`, so a relative `--profiles` path would
+/// otherwise resolve against the ENGINE's directory; `current_dir`
+/// failing leaves the value untouched so the downstream error message
+/// names what was actually attempted. Shared by byro-detect and
+/// byro-launcher (previously two hand-synced copies, both edited by
+/// #5476 on the same day).
+pub fn absolutise_against_cwd(value: &str) -> PathBuf {
+    let value = PathBuf::from(value);
+    if value.is_absolute() {
+        return value;
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(&value))
+        .unwrap_or(value)
+}
+
+/// #5739 — the strict `--profiles <path>` argument arm both tools share.
+/// The caller has already consumed the `--profiles` flag; this takes the
+/// value (a following flag is a usage error — #5167/#5294: a mistyped
+/// flag must not silently retarget real writes at the default profiles
+/// file) and absolutises it (#5476). A second occurrence is the
+/// caller's distinct error to report, so this returns the parsed path
+/// only.
+pub fn parse_profiles_arg<'a>(
+    args: &mut impl Iterator<Item = &'a String>,
+) -> Result<PathBuf, String> {
+    let value = args
+        .next()
+        .filter(|value| !value.starts_with('-'))
+        .ok_or_else(|| "--profiles needs a path".to_string())?;
+    Ok(absolutise_against_cwd(value))
+}
+
 pub fn resolve_profile_root(entry: &GameProfileEntry, games_root: &Path) -> PathBuf {
     if !entry.root.is_empty() {
         return PathBuf::from(&entry.root);

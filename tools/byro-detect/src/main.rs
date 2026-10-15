@@ -169,13 +169,9 @@ fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
             "-h" | "--help" => return Ok(None),
             "--write" => options.write = true,
             "--profiles" => {
-                let value = args
-                    .next()
-                    .filter(|value| !value.starts_with('-'))
-                    .ok_or("--profiles needs a path")?;
-                // #5476 — same absolutisation as the launcher: this
-                // tool's cwd is not where its outputs resolve later.
-                let path = absolutise_against_cwd(value);
+                // #5739 — the shared strict arm (#5167's usage errors,
+                // #5476's cwd absolutisation), beside `load_with_user_path`.
+                let path = byroredux_game_detect::profiles::parse_profiles_arg(&mut args)?;
                 if options.profiles.replace(path).is_some() {
                     return Err("--profiles given more than once".to_string());
                 }
@@ -184,17 +180,6 @@ fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
         }
     }
     Ok(Some(options))
-}
-
-/// #5476 — resolve `value` against the current directory when relative.
-fn absolutise_against_cwd(value: &str) -> PathBuf {
-    let value = PathBuf::from(value);
-    if value.is_absolute() {
-        return value;
-    }
-    std::env::current_dir()
-        .map(|cwd| cwd.join(&value))
-        .unwrap_or(value)
 }
 
 fn print_usage() {

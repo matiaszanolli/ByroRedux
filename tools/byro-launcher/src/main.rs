@@ -71,17 +71,13 @@ fn parse_args(args: Vec<String>) -> Result<Option<Options>, String> {
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
             "--profiles" => {
-                let value = args
-                    .next()
-                    .filter(|value| !value.starts_with('-'))
-                    .ok_or("--profiles needs a path")?;
-                // #5476 — absolutise against the launcher's cwd: the
-                // engine is spawned with `current_dir(engine.parent())`,
-                // so a relative path would otherwise resolve against the
-                // ENGINE's directory (for both the boot request and
-                // `$BYRO_PROFILES`) and every Play would fail with a
-                // confusing boot-request error.
-                let path = absolutise_against_cwd(value);
+                // #5476/#5739 — the shared strict arm; the cwd
+                // absolutisation matters because the engine is spawned
+                // with `current_dir(engine.parent())`, so a relative
+                // path would resolve against the ENGINE's directory and
+                // every Play would fail with a confusing boot-request
+                // error.
+                let path = byroredux_game_detect::profiles::parse_profiles_arg(&mut args)?;
                 if options.profiles.replace(path).is_some() {
                     return Err("--profiles given more than once".to_string());
                 }
@@ -90,19 +86,6 @@ fn parse_args(args: Vec<String>) -> Result<Option<Options>, String> {
         }
     }
     Ok(Some(options))
-}
-
-/// #5476 — resolve `value` against the current directory when relative.
-/// `current_dir` failing leaves the value untouched; the downstream
-/// error message then names what was actually attempted.
-fn absolutise_against_cwd(value: &str) -> PathBuf {
-    let value = PathBuf::from(value);
-    if value.is_absolute() {
-        return value;
-    }
-    std::env::current_dir()
-        .map(|cwd| cwd.join(&value))
-        .unwrap_or(value)
 }
 
 fn print_usage() {
