@@ -13,7 +13,7 @@
 pub(super) use crate::esm::records::common::{read_mesh_path, read_zstring};
 
 use super::CellOwnership;
-use crate::esm::reader::EsmReader;
+use crate::esm::reader::{EsmReader, GameKind};
 use crate::esm::records::common::read_lstring_or_zstring;
 use crate::esm::sub_reader::SubReader;
 
@@ -41,10 +41,13 @@ pub(super) struct CellSubrecordFields {
     pub(super) water_type_form: Option<u32>,
     pub(super) acoustic_space_form: Option<u32>,
     pub(super) music_type_form: Option<u32>,
-    /// #693 / O3-N-05 — pre-Skyrim XCMT (1-byte enum) and Skyrim XCCM
-    /// (4-byte CLMT FormID). Both fell to the catch-all `_` arm pre-fix.
+    /// #693 / O3-N-05 — pre-Skyrim XCMT (1-byte enum) and the TES4 / FO3 /
+    /// FNV XCCM (4-byte CLMT FormID). Both fell to the catch-all `_` arm
+    /// pre-fix.
     pub(super) music_type_enum: Option<u8>,
     pub(super) climate_override: Option<u32>,
+    /// #5463 — TES5 / FO4 XCCM, "Sky/Weather from Region" (REGN FormID).
+    pub(super) sky_region: Option<u32>,
     pub(super) location_form: Option<u32>,
     /// #4173 — XEZN encounter-zone FormID (references an ECZN record;
     /// spawn scaling / faction ownership per cell).
@@ -100,6 +103,7 @@ impl CellSubrecordFields {
         &mut self,
         reader: &EsmReader,
         cell_form_id: u32,
+        game: GameKind,
         sub: &crate::esm::reader::SubRecord,
     ) -> bool {
         match &sub.sub_type {
@@ -203,11 +207,21 @@ impl CellSubrecordFields {
             // use the worldspace default music) but pinned for
             // completeness.
             b"XCMT" if !sub.data.is_empty() => self.music_type_enum = Some(sub.data[0]),
-            // #693 / O3-N-05 — XCCM Skyrim climate override (per-cell
-            // CLMT FormID, exterior cells in vanilla — boss arenas,
-            // scripted-weather pockets — but a few interior mods have
-            // been seen with it for "outside through window" effects).
-            b"XCCM" => self.climate_override = read_form_id(reader, &sub.data),
+            // XCCM — same tag, different target by game (#5463). xEdit
+            // defines it as `'Climate', [CLMT]` on TES4 / FO3 / FNV
+            // (#693 / O3-N-05: per-cell climate override) but as
+            // `'Sky/Weather from Region', [REGN]` on TES5 (`wbDefinitionsTES5.pas`)
+            // and FO4 (`wbDefinitionsFO4.pas`). Vanilla Skyrim authors it on
+            // 214 interior cells, every one a REGN. FO76 / Starfield have no
+            // verified definition, so they keep the pre-#5463 CLMT decode.
+            b"XCCM" => {
+                let form = read_form_id(reader, &sub.data);
+                if xccm_targets_region(game) {
+                    self.sky_region = form;
+                } else {
+                    self.climate_override = form;
+                }
+            }
             b"XLCN" => self.location_form = read_form_id(reader, &sub.data),
             // #4173 — XEZN encounter zone (ECZN FormID), the CELL-side
             // half of the spawn-scaling pair; the ECZN records themselves
@@ -257,6 +271,12 @@ impl CellSubrecordFields {
 /// non-identity. Taking `&EsmReader` here makes that impossible to forget —
 /// the old bare-`&[u8]` signature let 26 cell/worldspace/landscape call sites
 /// silently bypass the convention the REFR walker beside them follows.
+/// Whether CELL `XCCM` is a REGN reference ("Sky/Weather from Region",
+/// TES5 / FO4) rather than a CLMT override (TES4 / FO3 / FNV). #5463.
+pub(super) fn xccm_targets_region(game: GameKind) -> bool {
+    matches!(game, GameKind::Skyrim | GameKind::Fallout4)
+}
+
 pub(super) fn read_form_id(reader: &EsmReader, data: &[u8]) -> Option<u32> {
     (data.len() >= 4)
         .then(|| u32::from_le_bytes([data[0], data[1], data[2], data[3]]))

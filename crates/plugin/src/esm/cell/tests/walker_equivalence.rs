@@ -8,7 +8,7 @@
 use super::super::walkers::parse_cell_group;
 use super::wrld::{
     build_cell_record, build_world_children_group, build_wrld_group, build_wrld_record,
-    parse_synthetic_wrld,
+    parse_synthetic_wrld_for_game,
 };
 use crate::esm::reader::{EsmReader, EsmVariant, GameKind};
 use std::collections::HashMap;
@@ -111,7 +111,8 @@ fn interior_and_exterior_walkers_decode_the_same_shared_sub_records_identically(
     let cell = build_cell_record(0x0000_00d7, &exterior_subs);
     let children = build_world_children_group(0x0000_003c, &cell);
     let wrld_buf = build_wrld_group(&[wrld, children]);
-    let (_worldspaces, _climates, _exterior, persistent) = parse_synthetic_wrld(&wrld_buf);
+    let (_worldspaces, _climates, _exterior, persistent) =
+        parse_synthetic_wrld_for_game(&wrld_buf, GameKind::Fallout3NV);
     let exterior = persistent
         .get("equivworld")
         .expect("worldspace persistent CELL must be indexed");
@@ -129,6 +130,7 @@ fn interior_and_exterior_walkers_decode_the_same_shared_sub_records_identically(
     assert_eq!(interior.music_type_form, exterior.music_type_form);
     assert_eq!(interior.music_type_enum, exterior.music_type_enum);
     assert_eq!(interior.climate_override, exterior.climate_override);
+    assert_eq!(interior.sky_region, exterior.sky_region);
     assert_eq!(interior.location_form, exterior.location_form);
     assert_eq!(interior.encounter_zone_form, exterior.encounter_zone_form);
     assert_eq!(interior.regions, exterior.regions);

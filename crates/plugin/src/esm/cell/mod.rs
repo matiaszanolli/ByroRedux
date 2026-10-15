@@ -322,12 +322,18 @@ pub struct CellData {
     /// which path produced the value. See #693 / O3-N-05.
     pub music_type_enum: Option<u8>,
     /// Per-cell climate override (XCCM, FormID — references a CLMT
-    /// record). Skyrim+ exterior cells can override the worldspace
-    /// CLMT default for that one cell; useful for boss arenas /
-    /// scripted weather pockets / interior-feeling exteriors. `None`
-    /// means inherit from worldspace. Pre-Skyrim cells don't ship
-    /// XCCM. See #693 / O3-N-05.
+    /// record) on TES4 / FO3 / FNV. A cell can override the worldspace
+    /// CLMT default for itself. `None` means inherit from worldspace.
+    /// TES5 / FO4 author the same tag as a REGN reference instead — see
+    /// [`CellData::sky_region`] (#5463). See #693 / O3-N-05.
     pub climate_override: Option<u32>,
+    /// "Sky/Weather from Region" (XCCM, FormID — references a REGN
+    /// record) on TES5 / FO4 (#5463). Vanilla Skyrim authors it on
+    /// interior cells only (214 in `Skyrim.esm`): an interior that shows
+    /// the sky takes its sky and weather from this region. Decoded but not
+    /// yet consumed — the interior sky-from-region consumer is forward
+    /// scope. Never a CLMT, so it must not feed `climate_override`.
+    pub sky_region: Option<u32>,
     /// Location (XLCN, FormID — references an LCTN record). Used by
     /// quest / Story Manager systems for "player is in location X"
     /// conditions.
@@ -1702,6 +1708,9 @@ fn merge_cell_override(base: &CellData, over: &mut CellData) {
     }
     if over.climate_override.is_none() {
         over.climate_override = base.climate_override;
+    }
+    if over.sky_region.is_none() {
+        over.sky_region = base.sky_region;
     }
     if over.location_form.is_none() {
         over.location_form = base.location_form;

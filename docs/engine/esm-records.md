@@ -293,7 +293,8 @@ pub struct CellData {
     pub acoustic_space_form: Option<u32>,      // XCAS
     pub music_type_form: Option<u32>,          // XCMO (Skyrim+)
     pub music_type_enum: Option<u8>,           // XCMT (pre-Skyrim, #693)
-    pub climate_override: Option<u32>,         // XCCM (Skyrim+, #693)
+    pub climate_override: Option<u32>,         // XCCM → CLMT (TES4/FO3/FNV, #693)
+    pub sky_region: Option<u32>,               // XCCM → REGN (TES5/FO4, #5463)
     pub location_form: Option<u32>,            // XLCN
     pub regions: Vec<u32>,                     // XCLR
     pub lighting_template_form: Option<u32>,   // LTMP → LGTM fallback (#566)

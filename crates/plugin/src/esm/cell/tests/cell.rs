@@ -1,7 +1,7 @@
 //! CELL (interior + exterior cell) parsing tests.
 //!
 //! XCLW water height, RCLR regional color override, Skyrim extended
-//! subrecords (FULL string, XCCM climate override, XCLL directional ambient
+//! subrecords (FULL string, XCCM climate/region, XCLL directional ambient
 //! cube), FNV XCLL color decode + 40-byte tail.
 
 use super::super::walkers::parse_cell_group;
@@ -733,18 +733,9 @@ fn parse_cell_tes4_xcmt_populates_music_type_enum() {
     assert_eq!(cell.music_type_form, None);
 }
 
-/// #693 / O3-N-05 — Skyrim+ exterior cells can override the
-/// worldspace climate via XCCM (4-byte CLMT FormID). Pre-fix the
-/// walker dropped it on the catch-all arm and the renderer fell
-/// back to the worldspace default everywhere, missing scripted
-/// weather pockets and boss-arena climate overrides.
-///
-/// The test exercises the interior walker (cheaper to set up than a
-/// full WRLD/CELL group), which now also accepts XCCM since it's
-/// well-formed on the rare interior mod that authors it. The wrld.rs
-/// path uses identical match-arm code (verified by sibling check).
-#[test]
-fn parse_cell_skyrim_xccm_populates_climate_override() {
+/// Parse one interior CELL carrying a single `XCCM` (4-byte FormID) under
+/// `game` and return the resulting `CellData`.
+fn parse_interior_cell_with_xccm(game: crate::esm::reader::GameKind, form: u32) -> CellData {
     let mut sub_data = Vec::new();
     let edid = "BossArena\0";
     sub_data.extend_from_slice(b"EDID");
@@ -755,7 +746,7 @@ fn parse_cell_skyrim_xccm_populates_climate_override() {
     sub_data.push(0x01);
     sub_data.extend_from_slice(b"XCCM");
     sub_data.extend_from_slice(&4u16.to_le_bytes());
-    sub_data.extend_from_slice(&0x0001_A2B3u32.to_le_bytes());
+    sub_data.extend_from_slice(&form.to_le_bytes());
 
     let mut buf = Vec::new();
     buf.extend_from_slice(b"CELL");
@@ -771,16 +762,36 @@ fn parse_cell_skyrim_xccm_populates_climate_override() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(
-        &mut reader,
-        end,
-        &mut cells,
-        crate::esm::reader::GameKind::Fallout3NV,
-    )
-    .unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, game).unwrap();
+    cells.remove("bossarena").expect("interior CELL present")
+}
 
-    let cell = cells.get("bossarena").expect("interior CELL present");
+/// #693 / O3-N-05 — on FO3 / FNV (and TES4) `XCCM` is a per-cell CLMT
+/// override. The test exercises the interior walker (cheaper to set up
+/// than a full WRLD/CELL group); the wrld.rs path shares the decode via
+/// `CellSubrecordFields::absorb`.
+#[test]
+fn parse_cell_fo3nv_xccm_populates_climate_override() {
+    let cell = parse_interior_cell_with_xccm(crate::esm::reader::GameKind::Fallout3NV, 0x0001_A2B3);
     assert_eq!(cell.climate_override, Some(0x0001_A2B3));
+    assert_eq!(cell.sky_region, None);
+}
+
+/// #5463 — on TES5 / FO4 the same tag is "Sky/Weather from Region" and
+/// targets a REGN (xEdit `wbDefinitionsTES5.pas` / `wbDefinitionsFO4.pas`;
+/// all 214 vanilla Skyrim.esm authors are interior cells naming a REGN).
+/// It must not land in `climate_override`, which the exterior consumer
+/// resolves against the CLMT map.
+#[test]
+fn parse_cell_tes5_fo4_xccm_is_a_region_not_a_climate() {
+    for game in [
+        crate::esm::reader::GameKind::Skyrim,
+        crate::esm::reader::GameKind::Fallout4,
+    ] {
+        let cell = parse_interior_cell_with_xccm(game, 0x000C_5857);
+        assert_eq!(cell.sky_region, Some(0x000C_5857), "{game:?}");
+        assert_eq!(cell.climate_override, None, "{game:?}");
+    }
 }
 
 #[test]

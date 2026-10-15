@@ -418,7 +418,7 @@ fn parse_cell_group_inner(
                         // Everything walker-shared falls through to
                         // `CellSubrecordFields::absorb` (#5309).
                         _ => {
-                            fields.absorb(reader, header.form_id, sub);
+                            fields.absorb(reader, header.form_id, game, sub);
                         }
                     }
                 }
@@ -435,6 +435,7 @@ fn parse_cell_group_inner(
                     music_type_form,
                     music_type_enum,
                     climate_override,
+                    sky_region,
                     location_form,
                     encounter_zone_form,
                     regions,
@@ -470,6 +471,7 @@ fn parse_cell_group_inner(
                             music_type_form,
                             music_type_enum,
                             climate_override,
+                            sky_region,
                             location_form,
                             encounter_zone_form,
                             regions: regions.clone(),
