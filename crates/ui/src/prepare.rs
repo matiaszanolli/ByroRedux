@@ -39,6 +39,8 @@
 use url::Url;
 
 use crate::avm2_host::{inject_into_parsed_movie, ScaleformHostObjectState};
+use crate::navigator::import_asset_paths_from_tags;
+use crate::{ScaleformHostCatalog, ScaleformProfile};
 
 /// #4470 — normalize Starfield's Scaleform SWF dialect before Ruffle sees
 /// it. The pinned `swf` reader (`2edfd97d`) still rejects a `PlaceObject3`
@@ -225,9 +227,6 @@ fn patch_place_object3_stream(
     }
     patched
 }
-
-use crate::navigator::import_asset_paths_from_tags;
-use crate::{ScaleformHostCatalog, ScaleformProfile};
 
 /// How many times [`prepare_movie`] decoded the movie. Reported so the
 /// property this module exists to hold — "one decompress, at most one tag
@@ -481,7 +480,7 @@ mod dialect_tests {
         out.extend_from_slice(b"FWS");
         out.push(12);
         out.extend_from_slice(&0u32.to_le_bytes()); // length, fixed below
-        // RECT: nbits=0 → 5 header bits + 0 field bits = 1 byte (0x00).
+                                                    // RECT: nbits=0 → 5 header bits + 0 field bits = 1 byte (0x00).
         out.push(0x00);
         out.extend_from_slice(&30u16.to_le_bytes()); // frame rate
         out.extend_from_slice(&1u16.to_le_bytes()); // frame count
@@ -670,8 +669,7 @@ mod dialect_tests {
     #[test]
     fn cws_header_claiming_u32_max_over_a_bomb_is_declined() {
         use std::io::Write;
-        let mut encoder =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
         encoder.write_all(&vec![0u8; 4 * 1024 * 1024]).unwrap();
         let body = encoder.finish().unwrap();
         assert!(body.len() < 16 * 1024, "fixture: the bomb is tiny on disk");
@@ -726,7 +724,6 @@ mod dialect_tests {
         cws.extend_from_slice(&body);
         let normalized = normalize_scaleform_dialect(&cws).expect("CWS is handled");
         assert_eq!(&normalized[0..3], b"FWS");
-        assert!(normalize_scaleform_dialect(&cws).is_some());
         // The patch is visible in the re-emitted stream.
         assert!(normalized.windows(2).any(|w| w == 0x0825u16.to_le_bytes()));
     }
