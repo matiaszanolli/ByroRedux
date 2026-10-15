@@ -136,6 +136,12 @@ pub const RESTIR_HISTORY_CAP_PARKED: f32 = 1024.0;
 pub const RESTIR_HISTORY_CAP_MOVING: f32 = 16.0;
 pub const RESTIR_ALPHA_FLOOR_PARKED: f32 = 0.002;
 pub const RESTIR_ALPHA_FLOOR_MOVING: f32 = 0.1;
+// Per-pixel mover taint: a pixel whose selected shadow ray hit an instance
+// that moved this build (`INSTANCE_FLAG_MOVED_THIS_FRAME`) keeps the moving
+// tail, and keeps it for this many hit-free frames past the moving cap before
+// rejoining the parked tail, so a shadow an occluder leaves behind fades at
+// the moving floor instead of ghosting at the parked one.
+pub const RESTIR_MOVER_SETTLE_FRAMES: f32 = 32.0;
 
 // `GpuCamera.dof_params.w`: the history mode `restir_history_mode` encodes
 // and `triangle.frag` decodes with two thresholds only — "camera parked" is
@@ -154,6 +160,9 @@ const _: () = {
     assert!(RESTIR_HISTORY_CAP_PARKED <= HALF_INTEGER_EXACT_MAX);
     assert!(RESTIR_HISTORY_CAP_MOVING <= RESTIR_HISTORY_CAP_PARKED);
     assert!(RESTIR_ALPHA_FLOOR_PARKED <= RESTIR_ALPHA_FLOOR_MOVING);
+    // The tainted count runs past the moving cap to the settle end; it must
+    // stay integer-exact in the half it is stored in.
+    assert!(RESTIR_HISTORY_CAP_MOVING + RESTIR_MOVER_SETTLE_FRAMES <= HALF_INTEGER_EXACT_MAX);
     // The thresholds sit half a step below their mode, so each mode is
     // strictly above its own threshold and the previous mode strictly below.
     assert!(HISTORY_MODE_MOVING < HISTORY_MODE_PARKED);
@@ -1460,6 +1469,12 @@ pub const INSTANCE_RENDER_LAYER_SHIFT: u32 = 4;
 pub const INSTANCE_RENDER_LAYER_MASK: u32 = 0x3;
 pub const INSTANCE_FLAG_FLAT_SHADING: u32 = 1 << 7;
 pub const INSTANCE_FLAG_LOD_BLOCK: u32 = 1 << 9;
+// bit 10 — this instance moved this build: a rigid model matrix that differs
+// from its previous one, or a skinned pose marked dirty. Read by
+// `triangle.frag` on the selected shadow ray's hit to taint that pixel's
+// direct-light history (the per-pixel replacement for the scene-wide
+// "anything moved" gate).
+pub const INSTANCE_FLAG_MOVED_THIS_FRAME: u32 = 1 << 10;
 // bit 8 — diffuse texture carries a genuine authored alpha channel
 // (BC2/BC3/BC7/RGBA). Set CPU-side from the cached `handle_has_alpha`
 // classification (`format_has_alpha`, which excludes BC1_RGBA). When
@@ -2417,6 +2432,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("RESTIR_HISTORY_CAP_MOVING", ShaderValue::Float(RESTIR_HISTORY_CAP_MOVING)),
     HeaderLine::Define("RESTIR_ALPHA_FLOOR_PARKED", ShaderValue::Float(RESTIR_ALPHA_FLOOR_PARKED)),
     HeaderLine::Define("RESTIR_ALPHA_FLOOR_MOVING", ShaderValue::Float(RESTIR_ALPHA_FLOOR_MOVING)),
+    HeaderLine::Define("RESTIR_MOVER_SETTLE_FRAMES", ShaderValue::Float(RESTIR_MOVER_SETTLE_FRAMES)),
     HeaderLine::Define("HISTORY_MODE_MOVING", ShaderValue::Float(HISTORY_MODE_MOVING)),
     HeaderLine::Define("HISTORY_MODE_PARKED", ShaderValue::Float(HISTORY_MODE_PARKED)),
     HeaderLine::Define("HISTORY_MODE_SCENE_STATIC", ShaderValue::Float(HISTORY_MODE_SCENE_STATIC)),
@@ -2757,6 +2773,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("INSTANCE_FLAG_FLAT_SHADING", ShaderValue::Uint(INSTANCE_FLAG_FLAT_SHADING)),
     HeaderLine::Define("INSTANCE_FLAG_DIFFUSE_ALPHA", ShaderValue::Uint(INSTANCE_FLAG_DIFFUSE_ALPHA)),
     HeaderLine::Define("INSTANCE_FLAG_LOD_BLOCK", ShaderValue::Uint(INSTANCE_FLAG_LOD_BLOCK)),
+    HeaderLine::Define("INSTANCE_FLAG_MOVED_THIS_FRAME", ShaderValue::Uint(INSTANCE_FLAG_MOVED_THIS_FRAME)),
     HeaderLine::Define("INSTANCE_TERRAIN_TILE_SHIFT", ShaderValue::Uint(INSTANCE_TERRAIN_TILE_SHIFT)),
     HeaderLine::Define("INSTANCE_TERRAIN_TILE_MASK", ShaderValue::Uint(INSTANCE_TERRAIN_TILE_MASK)),
     HeaderLine::Comment("LAND splat geometry (#5113): channel count + lanes per vertex weight word."),

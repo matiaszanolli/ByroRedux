@@ -13,7 +13,7 @@ use super::super::material::GpuMaterial;
 use super::super::pipeline::PipelineKey;
 use super::super::scene_buffer::{
     self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
-    INSTANCE_FLAG_DIFFUSE_ALPHA, INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_LOD_BLOCK, INSTANCE_FLAG_NON_UNIFORM_SCALE,
+    INSTANCE_FLAG_DIFFUSE_ALPHA, INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_LOD_BLOCK, INSTANCE_FLAG_MOVED_THIS_FRAME, INSTANCE_FLAG_NON_UNIFORM_SCALE,
     INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK, INSTANCE_RENDER_LAYER_SHIFT,
     INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT,
 };
@@ -224,6 +224,11 @@ impl VulkanContext {
                 m
             };
             previous_models.push(rebase_model_matrix(previous_source, render_origin));
+            // Per-instance motion for the shadow-history taint
+            // (`INSTANCE_FLAG_MOVED_THIS_FRAME`): the same rigid compare the
+            // scene-static fold uses, or this skinned entity's pose changed.
+            let instance_moved = (uses_rigid_history && previous_source != m)
+                || pose_dirty.contains(&draw_cmd.entity_id);
             if uses_rigid_history {
                 // #2468 — `previous_source` is this entity's last submitted
                 // model matrix (or `m` itself on first sight / camera cut),
@@ -349,6 +354,11 @@ impl VulkanContext {
                 }
                 if draw_cmd.is_lod {
                     f |= INSTANCE_FLAG_LOD_BLOCK;
+                }
+                // Read on a shadow ray's HIT, so it is assembled for every
+                // draw: an off-screen mover still occludes on-screen pixels.
+                if instance_moved {
+                    f |= INSTANCE_FLAG_MOVED_THIS_FRAME;
                 }
                 // Rasterizer-only bits from here down — skipped for draws
                 // that will not be rasterized (#1260, narrowed by #3978).
@@ -743,18 +753,24 @@ impl VulkanContext {
             && caustic_scene_key == self.prev_caustic_scene_key;
         self.prev_caustic_scene_key = caustic_scene_key;
         self.scene_static_last_build = caustic_scene_static;
-        // #5369 — same occluder gates (moved rigid, set change, skinned
-        // pose), but the rig key ignores intensity: a flickering light
-        // keeps the direct-light EMA's deep parked history while the
-        // caustic/SVGF accumulators above legitimately re-accumulate.
-        let restir_rig_static = !(rigid_instance_moved
-            || (rigid_history_live
-                && rigid_instance_set_changed(
-                    rigid_instance_first_sight,
-                    self.history.previous_rigid_models.len(),
-                    current_rigid_models.len(),
-                )))
-            && pose_dirty.is_empty()
+        // #5369 — the rig key ignores intensity: a flickering light keeps
+        // the direct-light EMA's deep parked history while the caustic/SVGF
+        // accumulators above legitimately re-accumulate.
+        //
+        // A moving occluder (rigid or skinned) no longer clears this
+        // scene-wide: any NPC idling anywhere did, every frame, which held
+        // every pixel at the 16-frame / 0.1-floor tail with the camera
+        // parked (FNV Atomic Wrangler: 106 dirty poses each frame) — the
+        // boiling a still camera never lost. Movers now taint only the
+        // pixels whose shadow ray hits them (`INSTANCE_FLAG_MOVED_THIS_FRAME`,
+        // read in triangle.frag). A set change stays scene-wide: an instance
+        // that vanished can no longer be hit.
+        let restir_rig_static = !(rigid_history_live
+            && rigid_instance_set_changed(
+                rigid_instance_first_sight,
+                self.history.previous_rigid_models.len(),
+                current_rigid_models.len(),
+            ))
             && restir_rig_key == self.prev_restir_rig_key;
         self.prev_restir_rig_key = restir_rig_key;
         self.restir_rig_static_last_build = restir_rig_static;

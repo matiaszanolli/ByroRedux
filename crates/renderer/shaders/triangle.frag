@@ -3480,6 +3480,9 @@ void main() {
             // cluster's lights share one visibility.
             vec3 prevAccum = vec3(0.0);
             float histPrev = 0.0;
+            // The stored history length is NEGATIVE while the pixel is
+            // mover-tainted (see the EMA below); its magnitude is the count.
+            bool prevTainted = false;
             bool reprojValid = false;
             vec3 geomN = normalize(fragNormalEffective);
             // `fragInstanceIndex` follows the per-frame sorted SSBO order and
@@ -3649,7 +3652,7 @@ void main() {
                 // Radiance is stricter than selection reuse: it is only valid
                 // on the exact reprojected surface. An in-bounds coordinate by
                 // itself says nothing about disocclusion.
-                if (sameSurface && rpHistLen > 0.0
+                if (sameSurface && rpHistLen != 0.0
                     && !isnan(rpHistLen) && !isinf(rpHistLen)
                     && !isnan(rp.accumR) && !isinf(rp.accumR)) {
                     reprojValid = true;
@@ -3659,7 +3662,8 @@ void main() {
                     // history mode selects below), not a hard 64: the old constant silently defeated
                     // `historyCap`'s raise and pinned the parked tail at
                     // ~1/65 no matter what the EMA constants said.
-                    histPrev = clamp(rpHistLen, 0.0, RESTIR_HISTORY_CAP_PARKED);
+                    histPrev = clamp(abs(rpHistLen), 0.0, RESTIR_HISTORY_CAP_PARKED);
+                    prevTainted = rpHistLen < 0.0;
                 }
             }
 
@@ -3702,7 +3706,7 @@ void main() {
                 float substratePlaneDist = abs(rsHistoryDepth.y - min(worldDist, 65504.0))
                     * max(abs(dot(geomN, V)), 0.1);
                 vec3 rsAccum = vec3(rs.accumR, rs.accumG, rs.accumB);
-                if (rsHistoryDepth.x > 0.0
+                if (rsHistoryDepth.x != 0.0
                     && !isnan(rsHistoryDepth.x) && !isinf(rsHistoryDepth.x)
                     && substratePlaneDist <= substrateDepthTolerance
                     && dot(geomN, rsGeomN) >= 0.906 // cos 25°, TEMPORAL_NORMAL_COS
@@ -4038,14 +4042,41 @@ void main() {
                 ratioFallback,
                 frameContribution / max(restirUnshadowedSum, vec3(1e-6)),
                 vec3(ratioLive));
+            //
+            // Mover taint. The deep parked tail no longer waits for the whole
+            // scene to hold still (any idling NPC cleared it every frame);
+            // instead a pixel whose selected shadow ray hit an instance that
+            // moved this build is TAINTED and keeps the moving tail (cap 16,
+            // floor 0.1), as the whole screen used to. With no further hit
+            // the count keeps rising, still at the moving floor, until it
+            // passes the moving cap by RESTIR_MOVER_SETTLE_FRAMES; then the
+            // taint clears and the pixel joins the parked tail. So a shadow
+            // an occluder leaves behind fades at the moving floor, not as a
+            // ghost at the parked one. The taint is stored as the sign of the
+            // history length (always a positive integer otherwise).
+            bool moverHit = selectedRayHitInstance != 0xFFFFFFFFu
+                && (instances[selectedRayHitInstance].flags
+                    & INSTANCE_FLAG_MOVED_THIS_FRAME) != 0u;
             vec3 accum;
             float histLen;
+            bool tainted = moverHit;
             if (reprojValid) {
                 bool sceneStatic = dofParams.w > HISTORY_MODE_SCENE_STATIC - 0.5;
-                float historyCap = sceneStatic ? RESTIR_HISTORY_CAP_PARKED : RESTIR_HISTORY_CAP_MOVING;
-                float alphaFloor = sceneStatic ? RESTIR_ALPHA_FLOOR_PARKED : RESTIR_ALPHA_FLOOR_MOVING;
-                histLen = min(histPrev + 1.0, historyCap);
-                float alpha = max(1.0 / histLen, alphaFloor);
+                if (moverHit) {
+                    histLen = min(histPrev + 1.0, RESTIR_HISTORY_CAP_MOVING);
+                } else if (prevTainted) {
+                    histLen = histPrev + 1.0;
+                    tainted = histLen
+                        < RESTIR_HISTORY_CAP_MOVING + RESTIR_MOVER_SETTLE_FRAMES;
+                } else {
+                    histLen = min(histPrev + 1.0, sceneStatic
+                        ? RESTIR_HISTORY_CAP_PARKED : RESTIR_HISTORY_CAP_MOVING);
+                }
+                bool deep = sceneStatic && !tainted;
+                float alpha = deep
+                    ? max(1.0 / histLen, RESTIR_ALPHA_FLOOR_PARKED)
+                    : max(1.0 / min(histLen, RESTIR_HISTORY_CAP_MOVING),
+                          RESTIR_ALPHA_FLOOR_MOVING);
                 accum = mix(prevAccum, ratioFrame, alpha);
             } else if (substrateValid) {
                 histLen = 1.0;
@@ -4057,7 +4088,10 @@ void main() {
             if (reprojValid) {
                 bool deepTail = dofParams.w > HISTORY_MODE_SCENE_STATIC - 0.5;
                 float h = histLen / (deepTail ? RESTIR_HISTORY_CAP_PARKED : RESTIR_HISTORY_CAP_MOVING);
-                restirHistoryDebug = deepTail ? vec3(0.3 * h, h, 0.3 * h) : vec3(h);
+                // Orange: mover-tainted (moving tail, settling).
+                restirHistoryDebug = tainted
+                    ? vec3(1.0, 0.55, 0.1)
+                    : (deepTail ? vec3(0.3 * h, h, 0.3 * h) : vec3(h));
             } else {
                 restirHistoryDebug = substrateValid ? vec3(0.1, 0.3, 1.0) : vec3(1.0, 0.0, 0.0);
             }
@@ -4069,7 +4103,7 @@ void main() {
             rc.W = restirW;
             rc.M = restirM;
             rc.histLenAndDepth = uintBitsToFloat(packHalf2x16(vec2(
-                histLen,
+                tainted ? -histLen : histLen,
                 min(worldDist, 65504.0)
             )));
             rc.accumR = accum.r;

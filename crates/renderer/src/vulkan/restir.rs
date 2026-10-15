@@ -373,13 +373,13 @@ mod tests {
         );
         assert!(
             src.contains("bool sceneStatic = dofParams.w > HISTORY_MODE_SCENE_STATIC - 0.5;")
-                && src.contains(
-                    "sceneStatic ? RESTIR_HISTORY_CAP_PARKED : RESTIR_HISTORY_CAP_MOVING"
-                )
-                && src.contains(
-                    "sceneStatic ? RESTIR_ALPHA_FLOOR_PARKED : RESTIR_ALPHA_FLOOR_MOVING"
-                )
-                && src.contains("clamp(rpHistLen, 0.0, RESTIR_HISTORY_CAP_PARKED)"),
+                && src.contains("? RESTIR_HISTORY_CAP_PARKED : RESTIR_HISTORY_CAP_MOVING")
+                // The parked floor applies only to an untainted pixel of a
+                // static scene; everything else takes the moving floor.
+                && src.contains("bool deep = sceneStatic && !tainted;")
+                && src.contains("max(1.0 / histLen, RESTIR_ALPHA_FLOOR_PARKED)")
+                && src.contains("RESTIR_ALPHA_FLOOR_MOVING);")
+                && src.contains("clamp(abs(rpHistLen), 0.0, RESTIR_HISTORY_CAP_PARKED)"),
             "direct-light history must converge when camera AND scene are static and \
              remain responsive otherwise (#4942: not the bare camera flag; #5369: \
              the parked tail is deep enough that the standing MC speckle sits \

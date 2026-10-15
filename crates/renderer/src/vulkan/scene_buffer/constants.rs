@@ -382,6 +382,12 @@ pub const INSTANCE_FLAG_DIFFUSE_ALPHA: u32 = 1 << 8;
 /// Distant terrain/object/placement LOD block. Raster-only diagnostic state:
 /// `terrain_lod` colours this blue so handoffs can be inspected in-frame.
 pub const INSTANCE_FLAG_LOD_BLOCK: u32 = 1 << 9;
+/// This instance moved this build: a rigid model matrix that differs from
+/// its previous one, or a skinned pose marked dirty. Read on the selected
+/// shadow ray's hit to keep that pixel's direct-light history short, so a
+/// moving NPC no longer drops the whole screen out of the parked tail.
+/// Assembled for every draw, rasterized or not: rays hit off-screen movers.
+pub const INSTANCE_FLAG_MOVED_THIS_FRAME: u32 = 1 << 10;
 
 /// Engine-synthesized material kinds for [`GpuMaterial::material_kind`]
 /// (moved off `GpuInstance` in R1 Phase 6, #785).
@@ -626,6 +632,7 @@ mod tests {
             ("FLAT_SHADING", INSTANCE_FLAG_FLAT_SHADING),
             ("DIFFUSE_ALPHA", INSTANCE_FLAG_DIFFUSE_ALPHA),
             ("LOD_BLOCK", INSTANCE_FLAG_LOD_BLOCK),
+            ("MOVED_THIS_FRAME", INSTANCE_FLAG_MOVED_THIS_FRAME),
         ];
         for (i, (a_name, a)) in flags.iter().enumerate() {
             // Each flag is a single bit.
