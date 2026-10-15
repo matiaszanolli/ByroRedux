@@ -2025,6 +2025,25 @@ fn ui_menu_sync_clears_hidden_or_absent_menus() {
     ));
 }
 
+/// #4757 — the production chain: both SWF load routes hand the UI an
+/// on-disk movie path, and the app feeds `ui.menu_name` (canonicalized at
+/// `install_player`) into the menu sync — so a real archive path must end
+/// with `UI.IsMenuOpen` answering true for the Bethesda menu name.
+#[test]
+fn a_loaded_archive_menu_path_answers_is_menu_open_for_the_bethesda_name() {
+    let slot = ExtensionHostSlot::initialize_default();
+    let host = slot.host().unwrap();
+    let mut world = World::new();
+    world.insert_resource(slot);
+
+    let menu_name = byroredux_ui::UiManager::installed_menu_name("interface\\hudmenu.swf");
+    extension_ui_menu_sync(&world, Some(menu_name.as_str()), true);
+
+    let host = host.lock().unwrap();
+    assert!(adapt_papyrus_ui_is_menu_open(&host.ui_menu_snapshot, "HUDMenu"));
+    assert!(!adapt_papyrus_ui_is_menu_open(&host.ui_menu_snapshot, "InventoryMenu"));
+}
+
 #[test]
 fn jcontainers_aliases_cover_typed_nested_values_negative_indices_and_isolation() {
     let first = PrincipalId::new("legacy.scripts.first-jcontainers").unwrap();

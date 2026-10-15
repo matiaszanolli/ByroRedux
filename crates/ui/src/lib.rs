@@ -139,10 +139,19 @@ impl UiManager {
         self.player.as_ref().map(SwfPlayer::profile)
     }
 
+    /// The `menu_name` a menu loaded as `name` reports. Both load routes
+    /// hand `install_player` an on-disk movie path (`interface\hudmenu.swf`),
+    /// while `UI.IsMenuOpen` compares real Bethesda menu names — the path's
+    /// stem canonicalizes so the two meet (#4757); anything unrecognized
+    /// passes through unchanged.
+    pub fn installed_menu_name(name: &str) -> String {
+        canonical_menu_name(name).unwrap_or_else(|| name.to_string())
+    }
+
     fn install_player(&mut self, player: SwfPlayer, name: &str) {
         self.set_input_focus(false);
         self.player = Some(player);
-        self.menu_name = canonical_menu_name(name).unwrap_or_else(|| name.to_string());
+        self.menu_name = Self::installed_menu_name(name);
         self.visible = true;
         self.set_input_focus(true);
         log::info!(
@@ -384,7 +393,7 @@ fn canonical_menu_name(name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod menu_name_tests {
-    use super::canonical_menu_name;
+    use super::{canonical_menu_name, UiManager};
 
     #[test]
     fn archive_and_dev_paths_resolve_to_bethesda_menu_names() {
@@ -397,6 +406,13 @@ mod menu_name_tests {
             Some("InventoryMenu")
         );
         assert_eq!(canonical_menu_name("modmenu.swf"), None);
+        // The public boundary both load routes go through reports the same
+        // canonical name (#4757); unknown stems pass through untouched.
+        assert_eq!(UiManager::installed_menu_name("interface\\hudmenu.swf"), "HUDMenu");
+        assert_eq!(
+            UiManager::installed_menu_name("Data\\Interface\\modmenu.swf"),
+            "Data\\Interface\\modmenu.swf"
+        );
     }
 }
 
