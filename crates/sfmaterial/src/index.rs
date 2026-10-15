@@ -10,8 +10,9 @@
 //! - **Key.** A material path maps to `BSResource::ID` by reflected
 //!   CRC-32 (poly `0xEDB88320`, init 0, no final XOR) over the
 //!   lowercased backslash path, hashed as two strings — stem, then
-//!   directory (the struct's field labels are rotated; the columns are
-//!   positional).
+//!   directory. The `PersistentID` field labels are rotated: `Dir` holds
+//!   the stem CRC and `Ext` the directory CRC (read by name — the decoded
+//!   `fields` map iterates alphabetically, not in on-disk order).
 //! - **Join.** The `BSComponentDB2::DBFileIndex.Objects` table carries
 //!   `PersistentID → DBID`; the two index instances (CompiledDB,
 //!   DBFileIndex) precede the component stream, and
@@ -199,8 +200,8 @@ fn bethesda_crc32(data: &[u8]) -> u32 {
 
 /// Normalise a material path to the CDB key: lowercased, backslash
 /// separators, no `data\` prefix, split into (directory, stem-without-
-/// extension). Returns `(stem_crc, dir_crc)` in `PersistentID` column
-/// order (stem first — the labels are rotated, this is positional).
+/// extension). Returns `(stem_crc, dir_crc)`: the `PersistentID`
+/// `Dir` (stem) and `Ext` (directory) columns — the labels are rotated.
 pub fn material_key(path: &str) -> (u32, u32) {
     let t = path.trim_end_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
     let mut t = t.replace('/', "\\").to_ascii_lowercase();
@@ -739,28 +740,23 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
                             None => parent_misses += 1,
                         }
                     }
+                    // #5465 — read the columns by NAME. `fields` is a
+                    // `BTreeMap`, so iteration order is alphabetical
+                    // (Dir, Ext, File), not the on-disk order (Dir, File,
+                    // Ext). The labels are rotated: `Dir` holds the stem
+                    // CRC, `Ext` the directory CRC, and `File` the constant
+                    // "mat" (unused).
                     let pid = match o.fields.get("PersistentID") {
                         Some(Value::Object(pid)) => {
-                            let mut cols = [0u32; 3];
-                            let mut n = 0;
-                            for v in pid.fields.values() {
-                                if let Value::U32(x) = v {
-                                    if n < 3 {
-                                        cols[n] = *x;
-                                    }
-                                    n += 1;
-                                }
-                            }
-                            if n == 3 {
-                                Some(cols)
-                            } else {
-                                None
+                            match (u32_field(pid, "Dir"), u32_field(pid, "Ext")) {
+                                (Some(stem), Some(dir)) => Some((stem, dir)),
+                                _ => None,
                             }
                         }
                         _ => None,
                     };
-                    if let Some([stem, dir, _ext]) = pid {
-                        idx.objects_by_key.insert((stem, dir), dbid);
+                    if let Some(key) = pid {
+                        idx.objects_by_key.insert(key, dbid);
                     }
                 })?;
                 if dbid_misses + parent_misses > 0 {
@@ -795,6 +791,13 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
         return Err(Error::ObjectTrailingBytes { leftover });
     }
     Ok(())
+}
+
+fn u32_field(o: &crate::value::ObjectInstance, name: &str) -> Option<u32> {
+    match o.fields.get(name) {
+        Some(Value::U32(v)) => Some(*v),
+        _ => None,
+    }
 }
 
 fn id_named(o: &crate::value::ObjectInstance, name: &str) -> Option<u32> {
