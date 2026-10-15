@@ -62,7 +62,7 @@ use byroredux_core::math::{Quat, Vec3};
 
 use byroredux_scripting::condition::entity_global_form_id;
 use byroredux_scripting::PackageTargetRegistry;
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::components::{SandboxSitClip, SeatReservations};
 
@@ -132,13 +132,17 @@ impl FrameSeats {
 struct EatSleepScratch {
     seats: FrameSeats,
     /// Seconds until an arrived-but-unseated actor may attempt again.
-    seat_retry: HashMap<EntityId, f32>,
+    seat_retry: FxHashMap<EntityId, f32>,
     /// Seconds until an actor whose anchor did not resolve may resolve it
     /// again (#5527).
-    anchor_retry: HashMap<EntityId, f32>,
+    anchor_retry: FxHashMap<EntityId, f32>,
     /// Continuous KCC-blocked walk seconds per walking actor (#5452) —
     /// runtime-only, the `WalkStuckTimer` role for this mover.
-    stuck_secs: HashMap<EntityId, f32>,
+    stuck_secs: FxHashMap<EntityId, f32>,
+    /// The frame's gathered actor list, kept for its capacity (#5707).
+    actors: Vec<EatSleepActor>,
+    /// Membership set over `actors` for the retry-map pruning (#5707).
+    live: FxHashSet<EntityId>,
 }
 
 /// Which procedure an actor carries this tick — collected first so the
@@ -181,71 +185,74 @@ pub(crate) fn make_eat_sleep_system() -> impl FnMut(&World, f32) + Send + Sync {
 
 fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch) {
     scratch.seats.begin_frame();
-    let mut actors: Vec<EatSleepActor> = Vec::new();
-    if let Some(query) = world.query::<EatBehavior>() {
-        for (npc, behavior) in query.iter() {
-            actors.push(EatSleepActor {
-                npc,
-                kind: EatOrSleep::Eat,
-                radius: behavior.radius,
-                location: behavior.location,
-                destination: None,
-                global: None,
-                rotation: Quat::IDENTITY,
-                walk_speed: None,
-            });
-        }
-    }
-    if let Some(query) = world.query::<SleepBehavior>() {
-        for (npc, behavior) in query.iter() {
-            actors.push(EatSleepActor {
-                npc,
-                kind: EatOrSleep::Sleep,
-                radius: behavior.radius,
-                location: behavior.location,
-                destination: None,
-                global: None,
-                rotation: Quat::IDENTITY,
-                walk_speed: None,
-            });
-        }
-    }
-    if actors.is_empty() {
-        return;
-    }
+    // #5707 — the gather reuses the scratch's buffers. Taken out of the
+    // scratch for the frame (the per-actor loop borrows the retry maps
+    // beside it) and handed back before every exit.
+    let mut actors = std::mem::take(&mut scratch.actors);
+    actors.clear();
+    scratch.live.clear();
     // One-shot guard: a seated actor is done (the package handover
-    // un-seats). Scoped so the destination/seat work below never holds
-    // two same-type guards.
+    // un-seats), so it never enters the list — a sleeper stays seated for
+    // hours of game time and would otherwise be re-gathered every frame.
+    // Probed while filling; the `Seated` guard drops with this block,
+    // before the destination/seat work below takes any same-type guard.
     {
         let seated_q = world.query::<Seated>();
-        actors.retain(|actor| {
-            !seated_q
-                .as_ref()
-                .is_some_and(|seated| seated.contains(actor.npc))
-        });
+        let is_seated = |npc: EntityId| seated_q.as_ref().is_some_and(|seated| seated.contains(npc));
+        if let Some(query) = world.query::<EatBehavior>() {
+            for (npc, behavior) in query.iter() {
+                if is_seated(npc) {
+                    continue;
+                }
+                actors.push(EatSleepActor {
+                    npc,
+                    kind: EatOrSleep::Eat,
+                    radius: behavior.radius,
+                    location: behavior.location,
+                    destination: None,
+                    global: None,
+                    rotation: Quat::IDENTITY,
+                    walk_speed: None,
+                });
+            }
+        }
+        if let Some(query) = world.query::<SleepBehavior>() {
+            for (npc, behavior) in query.iter() {
+                if is_seated(npc) {
+                    continue;
+                }
+                actors.push(EatSleepActor {
+                    npc,
+                    kind: EatOrSleep::Sleep,
+                    radius: behavior.radius,
+                    location: behavior.location,
+                    destination: None,
+                    global: None,
+                    rotation: Quat::IDENTITY,
+                    walk_speed: None,
+                });
+            }
+        }
     }
     if actors.is_empty() {
         scratch.seat_retry.clear();
         scratch.anchor_retry.clear();
         scratch.stuck_secs.clear();
+        scratch.actors = actors;
         return;
     }
     // Drop retry / stuck clocks of actors that seated, changed procedure
-    // or left.
-    if !scratch.seat_retry.is_empty() {
-        scratch
-            .seat_retry
-            .retain(|npc, _| actors.iter().any(|actor| actor.npc == *npc));
-    }
-    if !scratch.anchor_retry.is_empty() {
-        scratch
-            .anchor_retry
-            .retain(|npc, _| actors.iter().any(|actor| actor.npc == *npc));
-    }
-    if !scratch.stuck_secs.is_empty() {
-        scratch
-            .stuck_secs
-            .retain(|npc, _| actors.iter().any(|actor| actor.npc == *npc));
+    // or left: one membership set built from the gather, so the sweeps are
+    // O(retry entries) instead of O(entries × actors).
+    if !(scratch.seat_retry.is_empty()
+        && scratch.anchor_retry.is_empty()
+        && scratch.stuck_secs.is_empty())
+    {
+        scratch.live.extend(actors.iter().map(|actor| actor.npc));
+        let live = &scratch.live;
+        scratch.seat_retry.retain(|npc, _| live.contains(npc));
+        scratch.anchor_retry.retain(|npc, _| live.contains(npc));
+        scratch.stuck_secs.retain(|npc, _| live.contains(npc));
     }
     // #5527 — everything the loop below reads per actor, gathered in one
     // pass: a single read-lock acquire per storage instead of one
@@ -296,7 +303,7 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
         global,
         rotation,
         walk_speed,
-    } in actors
+    } in actors.drain(..)
     {
         // One-shot walk destination: resolve on first sight, reuse
         // after. Inserted through a scoped write so no read guard is
@@ -402,6 +409,8 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
             scratch.seat_retry.insert(npc, SEAT_RETRY_SECS);
         }
     }
+    // The drain emptied the list; hand the buffer back for next frame.
+    scratch.actors = actors;
 }
 
 /// #5391 — the walk destination for one actor's `PLDT` anchor, resolved
@@ -1218,6 +1227,40 @@ mod tests {
         eat_sleep_system_inner(&world, SEAT_RETRY_SECS, &mut scratch);
         assert!(world.get::<Seated>(actor).is_some(), "the retry seats the actor");
         assert!(scratch.seat_retry.is_empty(), "a seated actor keeps no retry clock");
+    }
+
+    /// #5707 — a seated sleeper stays under its behavior component for the
+    /// whole package window; it must not be re-gathered each frame, its
+    /// stale retry clocks are pruned, and the gather buffers are the
+    /// scratch's own (kept, empty, between frames).
+    #[test]
+    fn seated_actor_is_not_gathered_and_its_clocks_are_pruned() {
+        let (mut world, actor) = setup();
+        world.insert(
+            actor,
+            EatBehavior {
+                radius: Some(512.0),
+                location: EatSleepLocation::NearCurrentLocation,
+                form_id: 0xAA,
+            },
+        );
+        let mut scratch = EatSleepScratch::default();
+        eat_sleep_system_inner(&world, 0.1, &mut scratch);
+        assert_eq!(scratch.seat_retry.get(&actor), Some(&SEAT_RETRY_SECS));
+        assert!(scratch.actors.is_empty(), "the list is handed back drained");
+        // A second frame has a clock to prune, so the membership set fills.
+        eat_sleep_system_inner(&world, 0.1, &mut scratch);
+        assert!(scratch.live.contains(&actor), "an unseated actor is live");
+
+        let chair = world.spawn();
+        let seated = Seated {
+            furniture: chair,
+            animation_restore: Default::default(),
+        };
+        world.insert(actor, seated);
+        eat_sleep_system_inner(&world, 0.1, &mut scratch);
+        assert!(scratch.live.is_empty(), "a seated actor never enters the gather");
+        assert!(scratch.seat_retry.is_empty(), "its retry clock is pruned");
     }
 
     /// A floor topped at y=0 plus a tall wall across x=0 — a straight line
