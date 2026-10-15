@@ -99,21 +99,21 @@ fn convert_xyz_euler_keys_90_deg_x_matches_cw_positive_sign() {
     // Ground truth: the core SoT every other Gamebryo Euler consumer
     // uses, applied to the same (rx=FRAC_PI_2, ry=0, rz=0) input.
     let expected = byroredux_core::math::coord::euler_zup_to_quat_yup(FRAC_PI_2, 0.0, 0.0);
-    let got = keys[0].value; // [x, y, z, w], glam order
+    let got = keys[0].value; // glam Quat (x, y, z, w)
     assert!(
-        (got[0] - expected.x).abs() < 1e-5,
+        (got.x - expected.x).abs() < 1e-5,
         "x: got {got:?}, expected {expected:?}"
     );
     assert!(
-        (got[1] - expected.y).abs() < 1e-5,
+        (got.y - expected.y).abs() < 1e-5,
         "y: got {got:?}, expected {expected:?}"
     );
     assert!(
-        (got[2] - expected.z).abs() < 1e-5,
+        (got.z - expected.z).abs() < 1e-5,
         "z: got {got:?}, expected {expected:?}"
     );
     assert!(
-        (got[3] - expected.w).abs() < 1e-5,
+        (got.w - expected.w).abs() < 1e-5,
         "w: got {got:?}, expected {expected:?}"
     );
 
@@ -127,7 +127,7 @@ fn convert_xyz_euler_keys_90_deg_x_matches_cw_positive_sign() {
     // would also fail, but this makes the failure mode legible without
     // cross-referencing `euler_zup_to_quat_yup`).
     assert!(
-        got[0] < -0.5,
+        got.x < -0.5,
         "expected a negative (CW-positive) X component for a +90° \
          X-axis Gamebryo rotation, got {got:?} — a positive value here \
          means the CCW-positive bug (#2434) has regressed"
@@ -171,19 +171,19 @@ fn convert_xyz_euler_keys_matches_core_sot_for_asymmetric_multi_axis() {
     let expected = byroredux_core::math::coord::euler_zup_to_quat_yup(rx, ry, rz);
     let got = keys[0].value;
     assert!(
-        (got[0] - expected.x).abs() < 1e-5,
+        (got.x - expected.x).abs() < 1e-5,
         "x: got {got:?}, expected {expected:?}"
     );
     assert!(
-        (got[1] - expected.y).abs() < 1e-5,
+        (got.y - expected.y).abs() < 1e-5,
         "y: got {got:?}, expected {expected:?}"
     );
     assert!(
-        (got[2] - expected.z).abs() < 1e-5,
+        (got.z - expected.z).abs() < 1e-5,
         "z: got {got:?}, expected {expected:?}"
     );
     assert!(
-        (got[3] - expected.w).abs() < 1e-5,
+        (got.w - expected.w).abs() < 1e-5,
         "w: got {got:?}, expected {expected:?}"
     );
 }
@@ -299,7 +299,7 @@ fn convert_xyz_euler_keys_produces_rotation_keys() {
     };
 
     let (keys, key_type) = convert_xyz_euler_keys(&data);
-    assert_eq!(key_type, KeyType::Linear);
+    assert_eq!(key_type, byroredux_core::animation::types::KeyType::Linear);
     assert_eq!(
         keys.len(),
         2,
@@ -311,7 +311,7 @@ fn convert_xyz_euler_keys_produces_rotation_keys() {
     assert!((k0.time).abs() < 1e-5);
     // Identity quat in glam: (0, 0, 0, 1)
     assert!(
-        (k0.value[3] - 1.0).abs() < 1e-4,
+        (k0.value.w - 1.0).abs() < 1e-4,
         "w should be ~1 for identity: {:?}",
         k0.value
     );
@@ -320,7 +320,8 @@ fn convert_xyz_euler_keys_produces_rotation_keys() {
     let k1 = &keys[1];
     assert!((k1.time - 1.0).abs() < 1e-5);
     // Should be a unit quaternion
-    let len_sq = k1.value.iter().map(|v| v * v).sum::<f32>();
+    let v = k1.value;
+    let len_sq = v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
     assert!(
         (len_sq - 1.0).abs() < 1e-4,
         "quaternion should be unit: {:?}",

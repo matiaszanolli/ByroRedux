@@ -6,9 +6,11 @@
 use super::*;
 use crate::blocks::controller::ControlledBlock;
 use crate::blocks::interpolator::{
-    KeyType, NiBSplineCompTransformInterpolator, NiFloatData, NiLookAtInterpolator,
-    NiPathInterpolator, NiPosData, NiTransformData, NiTransformInterpolator,
+    NiBSplineCompTransformInterpolator, NiFloatData, NiLookAtInterpolator, NiPathInterpolator,
+    NiPosData, NiTransformData, NiTransformInterpolator,
 };
+use byroredux_core::animation::types::KeyType as CoreKeyType;
+use byroredux_core::math::{Quat, Vec3};
 use crate::scene::NifScene;
 
 pub fn extract_transform_channel(
@@ -141,9 +143,9 @@ pub fn constant_transform_channel(t: &crate::types::NiQuatTransform) -> Transfor
     } else {
         vec![TranslationKey {
             time: 0.0,
-            value: zup_to_yup_pos(pose_t),
-            forward: [0.0; 3],
-            backward: [0.0; 3],
+            value: Vec3::from_array(zup_to_yup_pos(pose_t)),
+            forward: Vec3::ZERO,
+            backward: Vec3::ZERO,
             tbc: None,
         }]
     };
@@ -155,7 +157,7 @@ pub fn constant_transform_channel(t: &crate::types::NiQuatTransform) -> Transfor
         None => Vec::new(),
         Some(q) => vec![RotationKey {
             time: 0.0,
-            value: zup_to_yup_quat(q),
+            value: Quat::from_array(zup_to_yup_quat(q)),
             tbc: None,
         }],
     };
@@ -172,11 +174,11 @@ pub fn constant_transform_channel(t: &crate::types::NiQuatTransform) -> Transfor
     };
     TransformChannel {
         translation_keys,
-        translation_type: KeyType::Linear,
+        translation_type: CoreKeyType::Linear,
         rotation_keys,
-        rotation_type: KeyType::Linear,
+        rotation_type: CoreKeyType::Linear,
         scale_keys,
-        scale_type: KeyType::Linear,
+        scale_type: CoreKeyType::Linear,
         priority: 0,
     }
 }
@@ -226,55 +228,9 @@ pub fn extract_transform_channel_path(
         return None;
     }
 
-    // Core-typed shadows of the two curves, so the shared evaluators apply.
-    let core_key_type = |t: KeyType| match t {
-        KeyType::Linear | KeyType::XyzRotation => core::KeyType::Linear,
-        KeyType::Quadratic => core::KeyType::Quadratic,
-        KeyType::Tbc => core::KeyType::Tbc,
-        KeyType::Constant => core::KeyType::Const,
-    };
-    let curve = |translation_keys, translation_type, scale_keys, scale_type| core::TransformChannel {
-        translation_keys,
-        translation_type,
-        rotation_keys: Vec::new(),
-        rotation_type: core::KeyType::Linear,
-        scale_keys,
-        scale_type,
-        priority: 0,
-    };
-    let path_curve = curve(
-        path_keys
-            .iter()
-            .map(|k| core::TranslationKey {
-                time: k.time,
-                value: k.value.into(),
-                forward: k.forward.into(),
-                backward: k.backward.into(),
-                tbc: k.tbc,
-            })
-            .collect(),
-        core_key_type(path_type),
-        Vec::new(),
-        core::KeyType::Linear,
-    );
-    let pct_curve = curve(
-        Vec::new(),
-        core::KeyType::Linear,
-        pct_keys
-            .iter()
-            .map(|k| core::ScaleKey {
-                time: k.time,
-                value: k.value,
-                forward: k.forward,
-                backward: k.backward,
-                tbc: k.tbc,
-            })
-            .collect(),
-        core_key_type(pct_type),
-    );
-
     // Sample times: a uniform grid over the percent span, bounded like the
     // B-spline resampler, plus every percent key time inside the window.
+    // (Read before the key vectors move into the curves below.)
     let (span_start, span_stop) = (pct_keys.first()?.time, pct_keys.last()?.time);
     let times: Vec<f32> = match sampling.reserve(span_start, span_stop, 1) {
         Some(w) if w.stop > w.start => {
@@ -294,21 +250,42 @@ pub fn extract_transform_channel_path(
         None => vec![span_start],
     };
 
+    // #5798 — the extracted keys are already the core types, so the
+    // shared evaluators take the curves as-is (this used to shadow-copy
+    // each key into a core-typed twin just to call them).
+    let path_curve = core::TransformChannel {
+        translation_keys: path_keys,
+        translation_type: path_type,
+        rotation_keys: Vec::new(),
+        rotation_type: core::KeyType::Linear,
+        scale_keys: Vec::new(),
+        scale_type: core::KeyType::Linear,
+        priority: 0,
+    };
+    let pct_curve = core::TransformChannel {
+        translation_keys: Vec::new(),
+        translation_type: core::KeyType::Linear,
+        rotation_keys: Vec::new(),
+        rotation_type: core::KeyType::Linear,
+        scale_keys: pct_keys,
+        scale_type: pct_type,
+        priority: 0,
+    };
+
     let translation_keys: Vec<TranslationKey> = times
         .into_iter()
         .filter_map(|t| {
             let percent = sample_scale(&pct_curve, t)?;
             let p = sample_translation(&path_curve, percent)?;
-            let value = [p.x, p.y, p.z];
-            (is_key_value_sane(t) && value.iter().all(|v| is_key_value_sane(*v))).then_some(
-                TranslationKey {
-                    time: t,
-                    value,
-                    forward: [0.0, 0.0, 0.0],
-                    backward: [0.0, 0.0, 0.0],
-                    tbc: None,
-                },
-            )
+            (is_key_value_sane(t)
+                && [p.x, p.y, p.z].iter().all(|v| is_key_value_sane(*v)))
+            .then_some(TranslationKey {
+                time: t,
+                value: p,
+                forward: Vec3::ZERO,
+                backward: Vec3::ZERO,
+                tbc: None,
+            })
         })
         .collect();
     if translation_keys.is_empty() {
@@ -316,11 +293,11 @@ pub fn extract_transform_channel_path(
     }
     Some(TransformChannel {
         translation_keys,
-        translation_type: KeyType::Linear,
+        translation_type: CoreKeyType::Linear,
         rotation_keys: Vec::new(),
-        rotation_type: KeyType::Linear,
+        rotation_type: CoreKeyType::Linear,
         scale_keys: Vec::new(),
-        scale_type: KeyType::Linear,
+        scale_type: CoreKeyType::Linear,
         priority: 0,
     })
 }

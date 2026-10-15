@@ -5,7 +5,29 @@
 
 use super::*;
 use crate::blocks::interpolator::{FloatKey, KeyGroup, KeyType, NiTransformData, Vec3Key};
+use byroredux_core::animation::types::KeyType as CoreKeyType;
+use byroredux_core::math::{Quat, Vec3};
 use std::collections::BTreeSet;
+
+/// Fold the wire interpolation enum (`blocks::interpolator::KeyType`, the
+/// nif.xml ordinals) onto the canonical core `KeyType` — the single place
+/// the two non-identity arms live (#5798; previously `anim_convert.rs`'s
+/// `convert_key_type` closure):
+///
+/// * `XyzRotation` — the euler-axis key groups are pre-composed into
+///   quaternion samples by [`convert_xyz_euler_keys`], so the runtime TRS
+///   path sees plain linear interpolation between them.
+/// * `Constant` — KEY_CONST, the stepped hold with no interpolation;
+///   previously collapsed to Linear, which wrongly LERPed step keys
+///   (LC-D5-02 / #1441).
+pub fn canonical_key_type(kt: KeyType) -> CoreKeyType {
+    match kt {
+        KeyType::Linear | KeyType::XyzRotation => CoreKeyType::Linear,
+        KeyType::Quadratic => CoreKeyType::Quadratic,
+        KeyType::Tbc => CoreKeyType::Tbc,
+        KeyType::Constant => CoreKeyType::Const,
+    }
+}
 
 pub fn is_flt_max(v: f32) -> bool {
     v.abs() >= FLT_MAX_SENTINEL
@@ -86,7 +108,7 @@ fn sane_tangent(v: f32) -> f32 {
     }
 }
 
-pub fn convert_vec3_keys(group: &KeyGroup<Vec3Key>) -> (Vec<TranslationKey>, KeyType) {
+pub fn convert_vec3_keys(group: &KeyGroup<Vec3Key>) -> (Vec<TranslationKey>, CoreKeyType) {
     let keys = group
         .keys
         .iter()
@@ -97,16 +119,16 @@ pub fn convert_vec3_keys(group: &KeyGroup<Vec3Key>) -> (Vec<TranslationKey>, Key
         .filter(|k| k.value.iter().all(|&c| is_key_value_sane(c)))
         .map(|k| TranslationKey {
             time: k.time,
-            value: zup_to_yup_pos(k.value),
-            forward: zup_to_yup_pos(k.tangent_forward.map(sane_tangent)),
-            backward: zup_to_yup_pos(k.tangent_backward.map(sane_tangent)),
+            value: Vec3::from_array(zup_to_yup_pos(k.value)),
+            forward: Vec3::from_array(zup_to_yup_pos(k.tangent_forward.map(sane_tangent))),
+            backward: Vec3::from_array(zup_to_yup_pos(k.tangent_backward.map(sane_tangent))),
             tbc: k.tbc,
         })
         .collect();
-    (keys, group.key_type)
+    (keys, canonical_key_type(group.key_type))
 }
 
-pub fn convert_quat_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyType) {
+pub fn convert_quat_keys(data: &NiTransformData) -> (Vec<RotationKey>, CoreKeyType) {
     let rotation_type = data.rotation_type.unwrap_or(KeyType::Linear);
 
     if rotation_type == KeyType::XyzRotation {
@@ -128,12 +150,12 @@ pub fn convert_quat_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyType) 
         .filter_map(|k| {
             normalized_rotation_sample(k.value).map(|q| RotationKey {
                 time: k.time,
-                value: zup_to_yup_quat(q),
+                value: Quat::from_array(zup_to_yup_quat(q)),
                 tbc: k.tbc,
             })
         })
         .collect();
-    (keys, rotation_type)
+    (keys, canonical_key_type(rotation_type))
 }
 
 /// Convert XYZ euler rotation key groups to quaternion keys.
@@ -141,9 +163,9 @@ pub fn convert_quat_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyType) 
 /// Each axis has its own `KeyGroup<FloatKey>` with potentially different key counts
 /// and interpolation types. We collect all unique timestamps, sample each axis at
 /// each time, compose the euler angles into a quaternion, and apply Z-up→Y-up conversion.
-pub fn convert_xyz_euler_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyType) {
+pub fn convert_xyz_euler_keys(data: &NiTransformData) -> (Vec<RotationKey>, CoreKeyType) {
     let Some(ref xyz) = data.xyz_rotations else {
-        return (Vec::new(), KeyType::Linear);
+        return (Vec::new(), CoreKeyType::Linear);
     };
 
     // Collect all unique timestamps across all 3 axes using ordered floats.
@@ -155,7 +177,7 @@ pub fn convert_xyz_euler_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyT
     }
 
     if times.is_empty() {
-        return (Vec::new(), KeyType::Linear);
+        return (Vec::new(), CoreKeyType::Linear);
     }
 
     let keys: Vec<RotationKey> = times
@@ -181,7 +203,7 @@ pub fn convert_xyz_euler_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyT
             // other consumer honours. `euler_zup_to_quat_yup` composes
             // AND axis-swaps in one step, so no separate
             // `zup_to_yup_quat` call is needed here.
-            let q = byroredux_core::math::coord::euler_zup_to_quat_yup(x, y, z);
+            let q: Quat = byroredux_core::math::coord::euler_zup_to_quat_yup(x, y, z);
             let yup = [q.x, q.y, q.z, q.w];
 
             // #1443 — a non-finite euler sample (NaN / ±inf) makes
@@ -193,14 +215,14 @@ pub fn convert_xyz_euler_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyT
 
             Some(RotationKey {
                 time,
-                value: yup,
+                value: Quat::from_array(yup),
                 tbc: None, // Euler→quat bakes interpolation; SLERP between samples
             })
         })
         .collect();
 
     // Output as Linear (SLERP between the pre-composed quaternion samples)
-    (keys, KeyType::Linear)
+    (keys, CoreKeyType::Linear)
 }
 
 /// Linearly sample a float key group at a given time.
@@ -275,7 +297,7 @@ impl Ord for OrderedF32 {
     }
 }
 
-pub fn convert_float_keys(group: &KeyGroup<FloatKey>) -> (Vec<ScaleKey>, KeyType) {
+pub fn convert_float_keys(group: &KeyGroup<FloatKey>) -> (Vec<ScaleKey>, CoreKeyType) {
     let keys = group
         .keys
         .iter()
@@ -290,5 +312,5 @@ pub fn convert_float_keys(group: &KeyGroup<FloatKey>) -> (Vec<ScaleKey>, KeyType
             tbc: k.tbc,
         })
         .collect();
-    (keys, group.key_type)
+    (keys, canonical_key_type(group.key_type))
 }

@@ -565,132 +565,32 @@ pub(crate) fn convert_nif_clip(
         na::CycleType::Reverse => CycleType::Reverse,
     };
 
+    // #5798 — the NIF side emits the canonical core key/channel types
+    // directly, so this boundary only interns names (plus the texture-flip
+    // role resolve below); the element-by-element key loops that dropped
+    // `phase` (#3345) are gone with the twin structs.
     let channels = nif
         .channels
         .iter()
-        .map(|(name, ch)| {
-            let sym = pool.intern(name);
-            let convert_key_type = |kt: byroredux_nif::blocks::interpolator::KeyType| match kt {
-                byroredux_nif::blocks::interpolator::KeyType::Linear => KeyType::Linear,
-                byroredux_nif::blocks::interpolator::KeyType::Quadratic => KeyType::Quadratic,
-                byroredux_nif::blocks::interpolator::KeyType::Tbc => KeyType::Tbc,
-                byroredux_nif::blocks::interpolator::KeyType::XyzRotation => KeyType::Linear,
-                // KEY_CONST = stepped hold (no interpolation). Previously
-                // collapsed to Linear, which wrongly LERPed step keys
-                // (LC-D5-02 / #1441). The NIF XYZ-Euler scalar sampler bakes
-                // its own Constant handling; this maps the runtime TRS path.
-                byroredux_nif::blocks::interpolator::KeyType::Constant => KeyType::Const,
-            };
-
-            let translation_keys = ch
-                .translation_keys
-                .iter()
-                .map(|k| TranslationKey {
-                    time: k.time,
-                    value: Vec3::from_array(k.value),
-                    forward: Vec3::from_array(k.forward),
-                    backward: Vec3::from_array(k.backward),
-                    tbc: k.tbc,
-                })
-                .collect();
-
-            let rotation_keys = ch
-                .rotation_keys
-                .iter()
-                .map(|k| RotationKey {
-                    time: k.time,
-                    value: Quat::from_xyzw(k.value[0], k.value[1], k.value[2], k.value[3]),
-                    tbc: k.tbc,
-                })
-                .collect();
-
-            let scale_keys = ch
-                .scale_keys
-                .iter()
-                .map(|k| ScaleKey {
-                    time: k.time,
-                    value: k.value,
-                    forward: k.forward,
-                    backward: k.backward,
-                    tbc: k.tbc,
-                })
-                .collect();
-
-            (
-                sym,
-                TransformChannel {
-                    translation_keys,
-                    translation_type: convert_key_type(ch.translation_type),
-                    rotation_keys,
-                    rotation_type: convert_key_type(ch.rotation_type),
-                    scale_keys,
-                    scale_type: convert_key_type(ch.scale_type),
-                    priority: ch.priority,
-                },
-            )
-        })
+        .map(|(name, ch)| (pool.intern(name), ch.clone()))
         .collect();
 
     let float_channels = nif
         .float_channels
         .iter()
-        .map(|(name, ch)| {
-            (
-                pool.intern(name),
-                FloatChannel {
-                    target: ch.target,
-                    keys: ch
-                        .keys
-                        .iter()
-                        .map(|k| AnimFloatKey {
-                            time: k.time,
-                            value: k.value,
-                        })
-                        .collect(),
-                },
-            )
-        })
+        .map(|(name, ch)| (pool.intern(name), ch.clone()))
         .collect();
 
     let color_channels = nif
         .color_channels
         .iter()
-        .map(|(name, ch)| {
-            (
-                pool.intern(name),
-                ColorChannel {
-                    target: ch.target,
-                    keys: ch
-                        .keys
-                        .iter()
-                        .map(|k| AnimColorKey {
-                            time: k.time,
-                            value: Vec3::from_array(k.value),
-                        })
-                        .collect(),
-                },
-            )
-        })
+        .map(|(name, ch)| (pool.intern(name), ch.clone()))
         .collect();
 
     let bool_channels = nif
         .bool_channels
         .iter()
-        .map(|(name, ch)| {
-            (
-                pool.intern(name),
-                BoolChannel {
-                    keys: ch
-                        .keys
-                        .iter()
-                        .map(|k| AnimBoolKey {
-                            time: k.time,
-                            value: k.value,
-                        })
-                        .collect(),
-                },
-            )
-        })
+        .map(|(name, ch)| (pool.intern(name), ch.clone()))
         .collect();
 
     let texture_flip_channels = nif
@@ -712,14 +612,7 @@ pub(crate) fn convert_nif_clip(
                 TextureFlipChannel {
                     role,
                     source_paths: ch.source_paths.clone(),
-                    keys: ch
-                        .keys
-                        .iter()
-                        .map(|k| AnimFloatKey {
-                            time: k.time,
-                            value: k.value,
-                        })
-                        .collect(),
+                    keys: ch.keys.clone(),
                 },
             ))
         })
@@ -1245,7 +1138,6 @@ mod clip_duration_weight_tests {
 mod canonical_animation_completeness_harness {
     use super::*;
     use byroredux_nif::anim as na;
-    use byroredux_nif::blocks::interpolator::KeyType as NifKeyType;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -1264,16 +1156,16 @@ mod canonical_animation_completeness_harness {
                 translation_keys: vec![
                     na::TranslationKey {
                         time: 0.25,
-                        value: [1.5, 2.5, 3.5],
-                        forward: [0.1, 0.2, 0.3],
-                        backward: [0.4, 0.5, 0.6],
+                        value: Vec3::new(1.5, 2.5, 3.5),
+                        forward: Vec3::new(0.1, 0.2, 0.3),
+                        backward: Vec3::new(0.4, 0.5, 0.6),
                         tbc: Some([0.7, 0.8, 0.9]),
                     },
                     na::TranslationKey {
                         time: 1.25,
-                        value: [4.5, 5.5, 6.5],
-                        forward: [0.9, 1.0, 1.1],
-                        backward: [1.2, 1.3, 1.4],
+                        value: Vec3::new(4.5, 5.5, 6.5),
+                        forward: Vec3::new(0.9, 1.0, 1.1),
+                        backward: Vec3::new(1.2, 1.3, 1.4),
                         tbc: Some([1.7, 1.8, 1.9]),
                     },
                 ],
@@ -1282,21 +1174,21 @@ mod canonical_animation_completeness_harness {
                 // translation used to be Linear, the exact value such a
                 // converter emits; `Constant` also exercises the #1441
                 // stepped-hold mapping arm).
-                translation_type: NifKeyType::Constant,
+                translation_type: KeyType::Const,
                 rotation_keys: vec![
                     na::RotationKey {
                         time: 0.5,
-                        // Already glam order (x, y, z, w) at this tier.
-                        value: [0.0, 0.6, 0.0, 0.8],
+                        // glam order (x, y, z, w) — the shared type.
+                        value: Quat::from_xyzw(0.0, 0.6, 0.0, 0.8),
                         tbc: Some([1.1, 1.2, 1.3]),
                     },
                     na::RotationKey {
                         time: 1.5,
-                        value: [0.0, 0.8, 0.0, 0.6],
+                        value: Quat::from_xyzw(0.0, 0.8, 0.0, 0.6),
                         tbc: Some([2.0, 2.1, 2.2]),
                     },
                 ],
-                rotation_type: NifKeyType::Quadratic,
+                rotation_type: KeyType::Quadratic,
                 scale_keys: vec![
                     na::ScaleKey {
                         time: 0.75,
@@ -1313,7 +1205,7 @@ mod canonical_animation_completeness_harness {
                         tbc: Some([2.3, 2.4, 2.5]),
                     },
                 ],
-                scale_type: NifKeyType::Tbc,
+                scale_type: KeyType::Tbc,
                 priority: 7,
             },
         );
@@ -1354,11 +1246,11 @@ mod canonical_animation_completeness_harness {
                     keys: vec![
                         na::AnimColorKey {
                             time: 0.25,
-                            value: [0.11, 0.22, 0.33],
+                            value: Vec3::new(0.11, 0.22, 0.33),
                         },
                         na::AnimColorKey {
                             time: 1.25,
-                            value: [0.44, 0.55, 0.66],
+                            value: Vec3::new(0.44, 0.55, 0.66),
                         },
                     ],
                 },

@@ -183,12 +183,13 @@ fn starfield_nif_light_positions_and_attenuation_ranges_share_units() {
 #[test]
 fn starfield_animation_scales_distances_but_not_timing_or_dimensionless_keys() {
     use crate::anim::*;
-    use crate::blocks::interpolator::KeyType;
+    use byroredux_core::animation::types::KeyType;
+    use byroredux_core::math::Vec3;
     let key = TranslationKey {
         time: 0.25,
-        value: [1.0, 2.0, 3.0],
-        forward: [0.5; 3],
-        backward: [-0.5; 3],
+        value: Vec3::new(1.0, 2.0, 3.0),
+        forward: Vec3::splat(0.5),
+        backward: Vec3::splat(-0.5),
         tbc: Some([0.1, 0.2, 0.3]),
     };
     let channel = TransformChannel {
@@ -242,9 +243,9 @@ fn starfield_animation_scales_distances_but_not_timing_or_dimensionless_keys() {
     super::super::units::animation(&scene, &mut clip);
     let channel = &clip.channels["joint"];
     let normalized = channel.translation_keys[0];
-    assert_eq!(normalized.value, [70.0, 140.0, 210.0]);
-    assert_eq!(normalized.forward, [35.0; 3]);
-    assert_eq!(normalized.backward, [-35.0; 3]);
+    assert_eq!(normalized.value, Vec3::new(70.0, 140.0, 210.0));
+    assert_eq!(normalized.forward, Vec3::splat(35.0));
+    assert_eq!(normalized.backward, Vec3::splat(-35.0));
     assert_eq!(normalized.time, key.time);
     assert_eq!(normalized.tbc, key.tbc);
     assert_eq!(channel.scale_keys[0].value, 2.0);

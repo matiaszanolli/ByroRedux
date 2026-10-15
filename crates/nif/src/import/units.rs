@@ -146,9 +146,10 @@ pub(crate) fn animation(scene: &NifScene, clip: &mut crate::anim::AnimationClip)
     }
     for channel in clip.channels.values_mut() {
         for key in &mut channel.translation_keys {
-            scale_vec(&mut key.value, scale);
-            scale_vec(&mut key.forward, scale);
-            scale_vec(&mut key.backward, scale);
+            // #5798 — keys are glam Vec3 now; scale in place.
+            key.value *= scale;
+            key.forward *= scale;
+            key.backward *= scale;
         }
     }
     for (_, channel) in &mut clip.float_channels {

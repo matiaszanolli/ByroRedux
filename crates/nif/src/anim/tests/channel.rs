@@ -867,10 +867,10 @@ fn resolve_color_keys_at_samples_bspline_comp_point3() {
     let last = keys.last().unwrap();
     // u=0 → CP[0] = [0.5; 3]; u=1 → CP[3] = [0.5; 3] (open-uniform
     // clamps at both endpoints).
-    for &c in &first.value {
+    for c in first.value.to_array() {
         assert!((c - 0.5).abs() < 1e-3, "first key channel = 0.5, got {c}");
     }
-    for &c in &last.value {
+    for c in last.value.to_array() {
         assert!((c - 0.5).abs() < 1e-3, "last key channel = 0.5, got {c}");
     }
 }
@@ -924,7 +924,7 @@ fn bspline_point3_color_sampler_skips_overflowed_samples() {
         &mut super::super::bspline::BsplineSampling::new(),
     );
     for k in &keys {
-        for &c in &k.value {
+        for c in k.value.to_array() {
             assert!(is_key_value_sane(c), "poisoned colour key reached the clip: {c}");
         }
     }
@@ -1416,7 +1416,7 @@ fn null_data_color_interpolator_emits_its_pose_value() {
         "a posed colour interpolator is one key (#3328)"
     );
     assert_eq!(keys[0].time, 0.0);
-    assert_eq!(keys[0].value, [0.1, 0.2, 0.3]);
+    assert_eq!(keys[0].value, byroredux_core::math::Vec3::new(0.1, 0.2, 0.3));
 }
 
 /// #3328, legacy Point3-as-RGB half — nif.xml documents the pose semantics
@@ -1434,7 +1434,11 @@ fn null_data_point3_interpolator_emits_its_pose_value() {
         })],
         ..NifScene::default()
     };
-    assert_eq!(resolve_color_keys_at(&scene, 0, &mut super::super::bspline::BsplineSampling::new())[0].value, [1.0, 0.5, 0.0]);
+    assert_eq!(
+        resolve_color_keys_at(&scene, 0, &mut super::super::bspline::BsplineSampling::new())[0]
+            .value,
+        byroredux_core::math::Vec3::new(1.0, 0.5, 0.0)
+    );
 
     // Sentinel components still mean "nothing here".
     let scene = NifScene {

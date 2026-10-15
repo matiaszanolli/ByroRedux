@@ -7,7 +7,6 @@
 //! whether the source was a KF file, an embedded NiControllerSequence,
 //! or a synthetic clip built in tests.
 
-use crate::blocks::interpolator::KeyType;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -42,102 +41,22 @@ impl CycleType {
     }
 }
 
-/// A single channel of transform animation for one named node.
-#[derive(Debug, Clone)]
-pub struct TransformChannel {
-    pub translation_keys: Vec<TranslationKey>,
-    pub translation_type: KeyType,
-    pub rotation_keys: Vec<RotationKey>,
-    pub rotation_type: KeyType,
-    pub scale_keys: Vec<ScaleKey>,
-    pub scale_type: KeyType,
-    /// Per-channel priority from ControlledBlock (0 = lowest).
-    pub priority: u8,
-}
-
-/// Translation keyframe in engine space (already converted from Z-up to Y-up).
-#[derive(Debug, Clone, Copy)]
-pub struct TranslationKey {
-    pub time: f32,
-    pub value: [f32; 3],
-    pub forward: [f32; 3],
-    pub backward: [f32; 3],
-    pub tbc: Option<[f32; 3]>,
-}
-
-/// Rotation keyframe — quaternion (x, y, z, w) in glam convention,
-/// already converted from Gamebryo's (w, x, y, z) and Z-up to Y-up.
-#[derive(Debug, Clone, Copy)]
-pub struct RotationKey {
-    pub time: f32,
-    pub value: [f32; 4], // x, y, z, w (glam order)
-    pub tbc: Option<[f32; 3]>,
-}
-
-/// Scale keyframe.
-#[derive(Debug, Clone, Copy)]
-pub struct ScaleKey {
-    pub time: f32,
-    pub value: f32,
-    pub forward: f32,
-    pub backward: f32,
-    pub tbc: Option<[f32; 3]>,
-}
-
-/// #3862 — `FloatTarget` and `ColorTarget` are re-exported from
-/// `byroredux-core`, not redeclared here.
+/// #3862 unified `FloatTarget` / `ColorTarget` (a second, identical
+/// 13- and 7-variant copy bridged by an identity match in
+/// `byroredux/src/anim_convert.rs`); #5798 finishes the move for the key
+/// and channel structs — they carried no information the core ones lack,
+/// so `convert_nif_clip`'s element-by-element key loops existed only to
+/// copy between the two spellings, and `phase` (#3345) was dropped for a
+/// week exactly because one of those literals missed a sibling field.
 ///
-/// They used to be a second, identical 13- and 7-variant copy, bridged to the
-/// core originals by a pure identity match in `byroredux/src/anim_convert.rs`
-/// (20 arms of `na::FloatTarget::X => FloatTarget::X`). Unlike [`KeyType`],
-/// whose NIF side is a genuine wire enum decoded from the file, these are
-/// *already* the post-translation vocabulary on both sides — `anim/channel.rs`
-/// maps the raw `operation` / `target_color` discriminators onto them — so the
-/// second copy added no translation, only a fourth place to edit for every new
-/// channel target. Same move `anim/coord.rs` already made for
-/// `byroredux_core::math::coord`.
-pub use byroredux_core::animation::types::{ColorTarget, FloatTarget};
-
-/// A float keyframe for non-transform channels.
-#[derive(Debug, Clone, Copy)]
-pub struct AnimFloatKey {
-    pub time: f32,
-    pub value: f32,
-}
-
-/// A color keyframe (RGB).
-#[derive(Debug, Clone, Copy)]
-pub struct AnimColorKey {
-    pub time: f32,
-    pub value: [f32; 3],
-}
-
-/// A bool keyframe (visibility).
-#[derive(Debug, Clone, Copy)]
-pub struct AnimBoolKey {
-    pub time: f32,
-    pub value: bool,
-}
-
-/// A float animation channel (alpha, UV params, shader floats).
-#[derive(Debug, Clone)]
-pub struct FloatChannel {
-    pub target: FloatTarget,
-    pub keys: Vec<AnimFloatKey>,
-}
-
-/// A color animation channel (material/shader colors).
-#[derive(Debug, Clone)]
-pub struct ColorChannel {
-    pub target: ColorTarget,
-    pub keys: Vec<AnimColorKey>,
-}
-
-/// A visibility animation channel.
-#[derive(Debug, Clone)]
-pub struct BoolChannel {
-    pub keys: Vec<AnimBoolKey>,
-}
+/// The remaining NIF-side declarations below are the genuine wire tier:
+/// [`CycleType`] (nif.xml ordinals), [`TextureFlipChannel`] (the raw
+/// `TexType` slot, resolved to a role at the translate boundary) and
+/// [`AnimationClip`] itself (String names, raw unsanitized scalars).
+pub use byroredux_core::animation::types::{
+    AnimBoolKey, AnimColorKey, AnimFloatKey, BoolChannel, ColorChannel, ColorTarget, FloatChannel,
+    FloatTarget, RotationKey, ScaleKey, TransformChannel, TranslationKey,
+};
 
 /// Texture-flipbook animation channel — `NiFlipController` semantics.
 ///

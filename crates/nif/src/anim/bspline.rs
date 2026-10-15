@@ -4,8 +4,10 @@
 //! point3 interpolators.
 
 use super::*;
+use byroredux_core::animation::types::KeyType as CoreKeyType;
+use byroredux_core::math::{Quat, Vec3};
 use crate::blocks::interpolator::{
-    KeyType, NiBSplineBasisData, NiBSplineCompFloatInterpolator,
+    NiBSplineBasisData, NiBSplineCompFloatInterpolator,
     NiBSplineCompTransformInterpolator, NiBSplineData,
 };
 use crate::scene::NifScene;
@@ -479,9 +481,9 @@ pub fn extract_transform_channel_bspline(
             if zup.iter().all(|v| is_key_value_sane(*v)) {
                 translation_keys.push(TranslationKey {
                     time: t,
-                    value: zup_to_yup_pos(zup),
-                    forward: [0.0, 0.0, 0.0],
-                    backward: [0.0, 0.0, 0.0],
+                    value: Vec3::from_array(zup_to_yup_pos(zup)),
+                    forward: Vec3::ZERO,
+                    backward: Vec3::ZERO,
                     tbc: None,
                 });
             }
@@ -496,9 +498,9 @@ pub fn extract_transform_channel_bspline(
             if pose.iter().all(|v| is_key_value_sane(*v)) {
                 translation_keys.push(TranslationKey {
                     time: t,
-                    value: zup_to_yup_pos(pose),
-                    forward: [0.0, 0.0, 0.0],
-                    backward: [0.0, 0.0, 0.0],
+                    value: Vec3::from_array(zup_to_yup_pos(pose)),
+                    forward: Vec3::ZERO,
+                    backward: Vec3::ZERO,
                     tbc: None,
                 });
             }
@@ -512,7 +514,7 @@ pub fn extract_transform_channel_bspline(
             if let Some(q) = normalized_rotation_sample([p[0], p[1], p[2], p[3]]) {
                 rotation_keys.push(RotationKey {
                     time: t,
-                    value: zup_to_yup_quat(q),
+                    value: Quat::from_array(zup_to_yup_quat(q)),
                     tbc: None,
                 });
             }
@@ -525,7 +527,7 @@ pub fn extract_transform_channel_bspline(
             if let Some(qn) = normalized_rotation_sample(q) {
                 rotation_keys.push(RotationKey {
                     time: t,
-                    value: zup_to_yup_quat(qn),
+                    value: Quat::from_array(zup_to_yup_quat(qn)),
                     tbc: None,
                 });
             }
@@ -558,11 +560,11 @@ pub fn extract_transform_channel_bspline(
 
     Some(TransformChannel {
         translation_keys,
-        translation_type: KeyType::Linear,
+        translation_type: CoreKeyType::Linear,
         rotation_keys,
-        rotation_type: KeyType::Linear,
+        rotation_type: CoreKeyType::Linear,
         scale_keys,
-        scale_type: KeyType::Linear,
+        scale_type: CoreKeyType::Linear,
         priority: 0,
     })
 }
@@ -587,9 +589,9 @@ pub fn static_transform_channel(interp: &NiBSplineCompTransformInterpolator) -> 
     } else {
         vec![TranslationKey {
             time: interp.start_time,
-            value: zup_to_yup_pos(pose_t),
-            forward: [0.0, 0.0, 0.0],
-            backward: [0.0, 0.0, 0.0],
+            value: Vec3::from_array(zup_to_yup_pos(pose_t)),
+            forward: Vec3::ZERO,
+            backward: Vec3::ZERO,
             tbc: None,
         }]
     };
@@ -597,7 +599,7 @@ pub fn static_transform_channel(interp: &NiBSplineCompTransformInterpolator) -> 
         None => Vec::new(),
         Some(q) => vec![RotationKey {
             time: interp.start_time,
-            value: zup_to_yup_quat(q),
+            value: Quat::from_array(zup_to_yup_quat(q)),
             tbc: None,
         }],
     };
@@ -614,11 +616,11 @@ pub fn static_transform_channel(interp: &NiBSplineCompTransformInterpolator) -> 
     };
     TransformChannel {
         translation_keys,
-        translation_type: KeyType::Linear,
+        translation_type: CoreKeyType::Linear,
         rotation_keys,
-        rotation_type: KeyType::Linear,
+        rotation_type: CoreKeyType::Linear,
         scale_keys,
-        scale_type: KeyType::Linear,
+        scale_type: CoreKeyType::Linear,
         priority: 0,
     }
 }

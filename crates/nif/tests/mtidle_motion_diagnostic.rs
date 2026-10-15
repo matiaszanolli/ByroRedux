@@ -17,6 +17,7 @@ mod common;
 
 use common::{open_mesh_archive, Game};
 
+use byroredux_core::math::{Quat, Vec3};
 use byroredux_nif::anim::{import_kf, RotationKey, TranslationKey};
 use byroredux_nif::parse_nif;
 
@@ -24,33 +25,20 @@ const MTIDLE_PATH: &str = r"meshes\characters\_male\locomotion\mtidle.kf";
 const SAMPLE_TIMES: &[f32] = &[0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0];
 const ROTATION_EPSILON: f32 = 1e-3;
 
-fn quat_diff(a: [f32; 4], b: [f32; 4]) -> f32 {
+fn quat_diff(a: Quat, b: Quat) -> f32 {
     // Component-wise max abs delta. Quaternions sit in [-1, 1] so the
     // raw-component metric is fine for "did anything move?" diagnosis.
-    let mut max = 0.0f32;
-    for i in 0..4 {
-        let d = (a[i] - b[i]).abs();
-        if d > max {
-            max = d;
-        }
-    }
-    max
+    let d = a - b;
+    d.x.abs().max(d.y.abs()).max(d.z.abs()).max(d.w.abs())
 }
 
-fn vec3_diff(a: [f32; 3], b: [f32; 3]) -> f32 {
-    let mut max = 0.0f32;
-    for i in 0..3 {
-        let d = (a[i] - b[i]).abs();
-        if d > max {
-            max = d;
-        }
-    }
-    max
+fn vec3_diff(a: Vec3, b: Vec3) -> f32 {
+    (a - b).abs().max_element()
 }
 
 /// Linear-interp the rotation key list at `time` — mirrors the import-
 /// side ordering. Returns `None` when there are no keys.
-fn sample_rotation(keys: &[RotationKey], time: f32) -> Option<[f32; 4]> {
+fn sample_rotation(keys: &[RotationKey], time: f32) -> Option<Quat> {
     if keys.is_empty() {
         return None;
     }
@@ -67,14 +55,13 @@ fn sample_rotation(keys: &[RotationKey], time: f32) -> Option<[f32; 4]> {
         if time >= w[0].time && time <= w[1].time {
             let span = (w[1].time - w[0].time).max(f32::EPSILON);
             let t = (time - w[0].time) / span;
-            let out = std::array::from_fn(|i| (1.0 - t) * w[0].value[i] + t * w[1].value[i]);
-            return Some(out);
+            return Some(w[0].value.lerp(w[1].value, t));
         }
     }
     Some(keys[keys.len() - 1].value)
 }
 
-fn sample_translation(keys: &[TranslationKey], time: f32) -> Option<[f32; 3]> {
+fn sample_translation(keys: &[TranslationKey], time: f32) -> Option<Vec3> {
     if keys.is_empty() {
         return None;
     }
@@ -91,8 +78,7 @@ fn sample_translation(keys: &[TranslationKey], time: f32) -> Option<[f32; 3]> {
         if time >= w[0].time && time <= w[1].time {
             let span = (w[1].time - w[0].time).max(f32::EPSILON);
             let t = (time - w[0].time) / span;
-            let out = std::array::from_fn(|i| (1.0 - t) * w[0].value[i] + t * w[1].value[i]);
-            return Some(out);
+            return Some(w[0].value.lerp(w[1].value, t));
         }
     }
     Some(keys[keys.len() - 1].value)
@@ -139,7 +125,7 @@ fn mtidle_kf_produces_visible_rotation_variation() {
         }
 
         // Inter-sample rotation delta.
-        let mut prev_rot: Option<[f32; 4]> = None;
+        let mut prev_rot: Option<Quat> = None;
         let mut max_local_rot = 0.0f32;
         for &t in SAMPLE_TIMES {
             if let Some(q) = sample_rotation(&channel.rotation_keys, t) {
@@ -153,7 +139,7 @@ fn mtidle_kf_produces_visible_rotation_variation() {
             }
         }
 
-        let mut prev_trans: Option<[f32; 3]> = None;
+        let mut prev_trans: Option<Vec3> = None;
         let mut max_local_trans = 0.0f32;
         for &t in SAMPLE_TIMES {
             if let Some(p) = sample_translation(&channel.translation_keys, t) {

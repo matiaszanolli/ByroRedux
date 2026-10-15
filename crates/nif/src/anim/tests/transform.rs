@@ -8,6 +8,8 @@ use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiLookAtInterpolator, NiPathInterpolator, NiPosData, Vec3Key,
 };
 use crate::scene::NifScene;
+use byroredux_core::animation::types::KeyType as CoreKeyType;
+use byroredux_core::math::Vec3;
 use std::sync::Arc;
 
 use super::dummy_controlled_block;
@@ -226,15 +228,15 @@ fn extract_transform_channel_emits_constant_pose_for_null_transform_data() {
 
     // Same Z-up → Y-up conversion the look-at pose gets: (1, 2, 3) → (1, 3, -2).
     let t = channel.translation_keys[0].value;
-    assert!((t[0] - 1.0).abs() < 1e-6);
-    assert!((t[1] - 3.0).abs() < 1e-6);
-    assert!((t[2] + 2.0).abs() < 1e-6);
+    assert!((t.x - 1.0).abs() < 1e-6);
+    assert!((t.y - 3.0).abs() < 1e-6);
+    assert!((t.z + 2.0).abs() < 1e-6);
 
     let r = channel.rotation_keys[0].value;
-    assert!(r[0].abs() < 1e-6);
-    assert!((r[1] - half).abs() < 1e-6);
-    assert!(r[2].abs() < 1e-6);
-    assert!((r[3] - half).abs() < 1e-6);
+    assert!(r.x.abs() < 1e-6);
+    assert!((r.y - half).abs() < 1e-6);
+    assert!(r.z.abs() < 1e-6);
+    assert!((r.w - half).abs() < 1e-6);
 
     assert!((channel.scale_keys[0].value - 0.75).abs() < 1e-6);
 }
@@ -325,17 +327,17 @@ fn extract_transform_channel_emits_constant_pose_for_lookat() {
 
     // Translation Z-up → Y-up: (1, 2, 3) → (1, 3, -2).
     let t = channel.translation_keys[0].value;
-    assert!((t[0] - 1.0).abs() < 1e-6);
-    assert!((t[1] - 3.0).abs() < 1e-6);
-    assert!((t[2] + 2.0).abs() < 1e-6);
+    assert!((t.x - 1.0).abs() < 1e-6);
+    assert!((t.y - 3.0).abs() < 1e-6);
+    assert!((t.z + 2.0).abs() < 1e-6);
 
     // Rotation: Z-up (w,x,y,z) = (√2/2, 0, 0, √2/2) → glam (x,y,z,w)
     // via zup_to_yup_quat = (0, √2/2, 0, √2/2).
     let r = channel.rotation_keys[0].value;
-    assert!(r[0].abs() < 1e-6);
-    assert!((r[1] - half).abs() < 1e-6);
-    assert!(r[2].abs() < 1e-6);
-    assert!((r[3] - half).abs() < 1e-6);
+    assert!(r.x.abs() < 1e-6);
+    assert!((r.y - half).abs() < 1e-6);
+    assert!(r.z.abs() < 1e-6);
+    assert!((r.w - half).abs() < 1e-6);
 
     // Scale passes through unchanged.
     assert!((channel.scale_keys[0].value - 0.75).abs() < 1e-6);
@@ -485,7 +487,7 @@ fn constant_transform_channel_drops_nan_and_overflow_pose_components() {
     let channel = constant_transform_channel(&nonunit);
     assert_eq!(channel.rotation_keys.len(), 1);
     let r = channel.rotation_keys[0].value;
-    assert!((r[0] - 0.6).abs() < 1e-5 && r[1].abs() < 1e-5 && (r[2] + 0.8).abs() < 1e-5);
+    assert!((r.x - 0.6).abs() < 1e-5 && r.y.abs() < 1e-5 && (r.z + 0.8).abs() < 1e-5);
 }
 
 /// #772 sibling — partial FLT_MAX (translation inactive, rotation
@@ -593,7 +595,7 @@ fn path_channel(
     extract_transform_channel(scene, &cb, sampling)
 }
 
-fn value_at(ch: &TransformChannel, t: f32) -> [f32; 3] {
+fn value_at(ch: &TransformChannel, t: f32) -> byroredux_core::math::Vec3 {
     ch.translation_keys
         .iter()
         .min_by(|a, b| (a.time - t).abs().total_cmp(&(b.time - t).abs()))
@@ -617,25 +619,23 @@ fn extract_transform_channel_composes_percent_curve_with_path() {
 
     let first = ch.translation_keys.first().unwrap();
     let last = ch.translation_keys.last().unwrap();
-    assert_eq!((first.time, first.value), (0.0, [0.0, 0.0, 0.0]));
+    assert_eq!((first.time, first.value), (0.0, Vec3::ZERO));
     assert_eq!(last.time, 4.0, "key times are animation time (percent keys), not path time");
-    assert_eq!(last.value, [20.0, 0.0, 0.0]);
+    assert_eq!(last.value, Vec3::new(20.0, 0.0, 0.0));
     // Every key is path(percent(t)): percent = t / 4, and the arch is
     // x = 20·p, y(Y-up, = Z-up z) = 5·(1 − |2p − 1|), z(Y-up) = 0.
     assert!(ch.translation_keys.len() > 30, "resampled, not the 3 path keys");
     for k in &ch.translation_keys {
         let p = k.time / 4.0;
-        let expect = [20.0 * p, 5.0 * (1.0 - (2.0 * p - 1.0).abs()), 0.0];
-        for axis in 0..3 {
-            assert!(
-                (k.value[axis] - expect[axis]).abs() < 1e-3,
-                "t={} axis {axis}: got {:?}, expected {expect:?}",
-                k.time,
-                k.value
-            );
-        }
+        let expect = Vec3::new(20.0 * p, 5.0 * (1.0 - (2.0 * p - 1.0).abs()), 0.0);
+        assert!(
+            (k.value - expect).abs().max_element() < 1e-3,
+            "t={}: got {:?}, expected {expect:?}",
+            k.time,
+            k.value
+        );
     }
-    assert_eq!(ch.translation_type, KeyType::Linear);
+    assert_eq!(ch.translation_type, CoreKeyType::Linear);
     assert!(ch.rotation_keys.is_empty(), "no invented identity rotation (#5571)");
     assert!(ch.scale_keys.is_empty(), "no invented identity scale (#5571)");
 }
@@ -659,7 +659,7 @@ fn out_of_range_percent_holds_the_path_end() {
     let scene = path_scene(Some(&[(0.0, 1.5), (2.0, 3.0)]));
     let ch = path_channel(&scene, &mut super::super::bspline::BsplineSampling::new()).unwrap();
     for k in &ch.translation_keys {
-        assert_eq!(k.value, [20.0, 0.0, 0.0]);
+        assert_eq!(k.value, Vec3::new(20.0, 0.0, 0.0));
     }
 }
 

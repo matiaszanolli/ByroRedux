@@ -21,8 +21,8 @@ mod sanitize_keyframe_streams {
     use crate::blocks::interpolator::{Color4Key, NiColorData, NiColorInterpolator, QuatKey};
     use crate::types::BlockRef;
 
-    fn all_finite3(v: [f32; 3]) -> bool {
-        v.iter().all(|c| c.is_finite())
+    fn all_finite3(v: byroredux_core::math::Vec3) -> bool {
+        [v.x, v.y, v.z].iter().all(|c| c.is_finite())
     }
 
     fn vec3_key(time: f32, value: [f32; 3]) -> Vec3Key {
@@ -170,9 +170,9 @@ mod sanitize_keyframe_streams {
         // glam (x, z, -y, w) = (0.6, 0, -0.8, 0). Asserting unit length
         // pins the boundary normalization itself.
         let v = keys[0].value;
-        let len_sq: f32 = v.iter().map(|c| c * c).sum();
+        let len_sq: f32 = v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
         assert!((len_sq - 1.0).abs() < 1e-5, "key must be unit length, got {len_sq}");
-        assert!((v[0] - 0.6).abs() < 1e-5 && v[1].abs() < 1e-5 && (v[2] + 0.8).abs() < 1e-5);
+        assert!((v.x - 0.6).abs() < 1e-5 && v.y.abs() < 1e-5 && (v.z + 0.8).abs() < 1e-5);
     }
 
     #[test]
@@ -284,6 +284,6 @@ mod sanitize_keyframe_streams {
         };
         let keys = resolve_color_keys_at(&scene, 1, &mut crate::anim::BsplineSampling::new());
         assert_eq!(keys.len(), 1, "only the clean RGB key survives");
-        assert_eq!(keys[0].value, [0.1, 0.2, 0.3]);
+        assert_eq!(keys[0].value, byroredux_core::math::Vec3::new(0.1, 0.2, 0.3));
     }
 }

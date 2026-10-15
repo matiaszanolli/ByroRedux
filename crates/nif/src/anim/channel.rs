@@ -4,6 +4,7 @@
 //! resolution.
 
 use super::*;
+use byroredux_core::math::Vec3;
 use crate::blocks::controller::{ControlledBlock, NiGeomMorpherController, NiMorphData};
 use crate::blocks::interpolator::{
     NiBSplineBasisData, NiBSplineCompFloatInterpolator, NiBSplineCompPoint3Interpolator,
@@ -150,7 +151,7 @@ pub fn resolve_flip_source_paths(
 ///
 /// Returns an empty Vec when the interpolator lands on neither. Alpha
 /// is dropped here to match the downstream `AnimColorKey` shape
-/// (`value: [f32; 3]`) — color animations on alpha channels were not
+/// (`value: Vec3`) — color animations on alpha channels were not
 /// supported pre-#431 either and callers that need alpha should drive
 /// a separate `NiAlphaController` float channel.
 pub fn resolve_color_keys(
@@ -175,7 +176,7 @@ fn static_color_pose(r: f32, g: f32, b: f32) -> Vec<AnimColorKey> {
     }
     vec![AnimColorKey {
         time: 0.0,
-        value: [r, g, b],
+        value: Vec3::new(r, g, b),
     }]
 }
 
@@ -204,7 +205,7 @@ pub fn resolve_color_keys_at(
                     .filter(|k| k.value[..3].iter().all(|&c| is_key_value_sane(c)))
                     .map(|k| AnimColorKey {
                         time: k.time,
-                        value: [k.value[0], k.value[1], k.value[2]],
+                        value: Vec3::new(k.value[0], k.value[1], k.value[2]),
                     })
                     .collect()
             })
@@ -234,7 +235,7 @@ pub fn resolve_color_keys_at(
                     .filter(|k| k.value.iter().all(|&c| is_key_value_sane(c)))
                     .map(|k| AnimColorKey {
                         time: k.time,
-                        value: k.value,
+                        value: Vec3::from_array(k.value),
                     })
                     .collect()
             })
@@ -285,7 +286,7 @@ pub fn sample_color_keys_bspline_point3(
         }
         vec![AnimColorKey {
             time: interp.start_time,
-            value: interp.value,
+            value: Vec3::from_array(interp.value),
         }]
     };
 
@@ -337,7 +338,7 @@ pub fn sample_color_keys_bspline_point3(
         if p.iter().all(|v| is_key_value_sane(*v)) {
             keys.push(AnimColorKey {
                 time: t,
-                value: [p[0], p[1], p[2]],
+                value: Vec3::new(p[0], p[1], p[2]),
             });
         }
     }
