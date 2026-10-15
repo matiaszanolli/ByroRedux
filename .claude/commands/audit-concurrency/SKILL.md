@@ -210,7 +210,9 @@ re-audit it here. This dimension owns how *systems* use it.
 - **Guard ↔ sandbox boundary.** `byroredux/src/extensions/` hosts untrusted WASM behind an
   `Arc<Mutex<ExtensionHost>>` (`ExtensionHostSlot`, `extensions/systems.rs`). Every dispatch path snapshots
   ECS state before guest entry, drops every ECS guard, enters the guest, and commits its returned command
-  batch afterwards (`extensions/dispatch.rs` module doc; `commands.rs::enter_guest`). A host `Mutex`
+  batch afterwards (`extensions/dispatch.rs` module doc; `commands.rs::enter_guest`). Since #5592 (91a28a4c9) the
+  eight `dispatch_*` families share one `ExtensionHost::deliver` body (grant + status gate, guest entry, log drain,
+  commit), so audit that body once and the per-family select closures for what they capture. A host `Mutex`
   guard or ECS guard held across guest entry — or a host function that re-acquires ECS storage the
   caller already holds — is a deadlock/reentrancy finding. Trust-boundary questions are `/audit-safety` Dim 8.
 **Output**: `/tmp/audit/concurrency/dim_3.md`
@@ -236,7 +238,9 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   others only by the non-empty-access tests, e.g. `footstep_declares_its_physics_reads`, #5556). The table and these scans live in `system_access_declaration_tests`
   (`byroredux/src/boot/schedule/mod.rs`).
   An under-declared parallel system makes `known_conflict_count() == 0` unsound (the same-session
-  `fly_camera_system` `GlobalTransform` write is the precedent, commit ac1d44f5c).
+  `fly_camera_system` `GlobalTransform` write is the precedent, commit ac1d44f5c; #5641, 17a84f442, was the drowning
+  death in `player_controller_system` raising the KILL story event without declaring `StoryEvent` + the cell-context
+  reads — now a `raise_kill_story_event` hop in `PARALLEL_SYSTEMS`).
 - **Cross-stage sequencing is invisible to the analyzer** (`analyze_pair` reasons within one stage). A
   consumer in an earlier stage than its single producer silently reads last frame's value while every KPI
   stays green. Pinned today: `player_wind_read_is_declared_and_weather_writer_is_exclusive` (WindField:
@@ -246,7 +250,10 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   (#3652/#3180/#4185 — each was a real one-frame-stale bug), `player_body_facing_runs_in_update_before_propagation`
   (#4995), `story_dispatch_and_forcegreet_update_ordering_is_pinned` (#5415, a9f94455d: CLOC producer → Story
   Manager dispatch → `quest_alias_refresh_system`, and `ambient_ai_package_system` → `forcegreet_system` → Late
-  dialogue selection), and the spoken-INFO path in Stage::Late must not claim the fragment journal cursor
+  dialogue selection), `hit_event_consumers_run_after_every_producer` (ee6468fd1: `HitEvent` is a one-frame marker
+  `event_cleanup_system` drains in Late, so `combat_damage_system` / `hit_event_system` registered ahead of the
+  projectile-flight and VM `ProcessTrapHit` producers dropped every dart-trap hit; a registration-order bug the
+  access analyzer cannot see), and the spoken-INFO path in Stage::Late must not claim the fragment journal cursor
   its same-frame `QuestStageAdvancedBatch` drains unread (#5297, 68a06509a). For any NEW single-writer / multi-reader resource,
   check writer-stage ≤ reader-stage and that a test like these pins it; fix by moving the *consumer* to
   a Late exclusive after the writer, not by moving the writer.

@@ -17,13 +17,13 @@ progress** — frame as CRITICAL/HIGH per `_audit-severity.md` (data loss is CRI
 
 ## Scope
 
-**Crate** `crates/save/src/` (~2.9k LOC — read all): `lib.rs` (design intent docstring, `SaveError`),
+**Crate** `crates/save/src/` (~3.2k LOC — read all): `lib.rs` (design intent docstring, `SaveError`),
 `snapshot.rs` (`Snapshot`, container header, `FORMAT_MAJOR` doc = the bump ledger, `encode`/`decode`),
-`registry.rs` (`SaveRegistry`; `register_component` / `register_replacing_component` / `register_resource`
-/ `register_form_id_component`; `ValidateFn`; `schema_fingerprint`), `driver.rs` (`save_world`,
+`registry.rs` (`SaveRegistry`; `register_component` / `register_replacing_component` /
+`register_component_preserving` / `register_resource` / `register_form_id_component`; `ValidateFn`; `schema_fingerprint`), `driver.rs` (`save_world`,
 `restore_world`, `validate_snapshot_types`, `restore_resources`, `restore_resources_subset`,
 `build_form_id_remap`, `apply_deltas`), `disk.rs` (`write_slot`, `slots_by_recency`, `SaveRing`),
-`validate.rs` (`validate_world` + 7 sub-checks). Tests: `crates/save/tests/round_trip.rs`.
+`validate.rs` (`validate_world` + 6 sub-checks). Tests: `crates/save/tests/round_trip.rs`.
 
 **Engine side** (`byroredux/src/save_io.rs`): `build_save_registry` (the curated type set),
 `MUTABLE_DELTA_COLUMNS` (**second** hardcoded list driving the live overlay), `PRE_RELOAD_RESOURCES`,
@@ -56,7 +56,7 @@ finds >0 items, and it fails when the invariant is broken.
 |---|---|
 | `registry_completeness_tests::every_component_or_resource_impl_is_saved_or_explicitly_allowlisted` | every `Component`/`Resource` impl in any `crates/*/src` (roots **discovered**, not listed) + `byroredux/src` is registered XOR in `NOT_SAVED_BY_DESIGN` with a reason; `PlayerNotifications`, `PickedUp` etc. are classified there |
 | `serde_default_guard_tests::serde_default_on_saved_struct_requires_format_major_bump` | any `#[serde(default)]` on a save-participating type (skip-only fields exempt) |
-| `serde_default_guard_tests::saved_type_shape_changes_require_format_major_bump` | hash of every `#[derive(..Serialize..)]` struct/enum body in `save_type_sources()` — discovered files that carry a `cfg_attr(feature = "save"` derive or define a registered type, plus four explicit nested-payload files — vs `BASELINE_SHAPE_FINGERPRINT`/`BASELINE_MAJOR` |
+| `serde_default_guard_tests::saved_type_shape_changes_require_format_major_bump` | hash of every `#[derive(..Serialize..)]` struct/enum body in `save_type_sources()` — discovered files that carry a `cfg_attr(feature = "save"` derive or define a registered type, plus seven explicit nested-payload files (since #5059 `945be7dc6`: `lighting.rs`, `crates/sdk` `identity.rs` / `script_function.rs`) — vs `BASELINE_SHAPE_FINGERPRINT`/`BASELINE_MAJOR`; the attribute scan reads the whole contiguous attribute block, so a save derive above a plain `#[derive(..)]` is seen (#5403 `e19cb0491`) |
 | `serde_default_guard_tests::set_in_chargen_renames_still_decode_v23_keys` | `serde(alias)` rename path stays decodable |
 | `round_trip_tests::delta_columns_carry_only_session_stable_fields` | no `FixedString`/`EntityId`/session handle in a `MUTABLE_DELTA_COLUMNS` type |
 | `round_trip_tests::delta_columns_removed_at_runtime_have_a_load_reconciler` | every delta column with a production removal site has a declared reconciler or "NoReconcilerNeeded" reason |
@@ -65,6 +65,7 @@ finds >0 items, and it fails when the invariant is broken.
 | `tests/round_trip.rs::typed_snapshot_preflight_rejects_bad_column_without_world_mutation` | typed preflight precedes `clear_entities` |
 | `live_reload_tests::{saved_resources_are_restored_before_the_cell_reload, pre_reload_restore_must_not_install_saved_item_instance_pool_early}` | pre-reload resource subset, #4135 |
 | `command_queue_tests::{a_save_taken_mid_cell_transition_is_refused_not_written, a_save_taken_while_chargen_disables_saving_is_refused_not_written, quicksave_ring_cursor_does_not_advance_on_validation_abort, player_save_actions_wait_for_the_quiescent_fifo_drain, quickload_empty_errors_and_corrupt_newest_falls_back}` | save-side refusal gates, ring, quiescent drain |
+| `live_reload_tests::post_reload_drain_steps_keep_their_order` | source-order pin inside `execute_pending_save_loads`: `restore_resources` → `restore_resident` → `reseat_ambient_packages_after_restore` → `build_form_id_remap` → `apply_deltas`, each called exactly once (#5060 `02fa8358c`; the `reconcile_worn_gear` single-call pin joined it, #5460 `bda5a1167`) |
 | `app_step.rs::the_save_drain_publishes_the_transition_flag_before_draining` | `CellTransitionInFlight` published before the drain |
 | `*_survives_save_load*` (`round_trip_tests.rs`, `consumable_tests.rs`) | per-type round trips incl. lock/enable ledgers, fragment/provider queues, cinematic trio, `Perks`/timed restorations, SM node state + `StoryEventAliasFill` reference FormIds |
 
@@ -114,7 +115,10 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   `execute_pending_save_loads` now resets it on every in-process load, #5435 `557ead21d`, pinned in
   `live_reload_tests.rs`).
 - **Removed-from-allowlist stays registered**: `CharacterController` (fractional breath/drowning carry),
-  `RigidBodyData`, `Material`, `RumbleOnActivate`, `FragmentExecutionQueue`, the cinematic trio — verify none
+  `RigidBodyData` (registered via `register_component_preserving`: its `serde(skip)` `part_surface_materials`
+  is re-derived by NIF import, so the overlay's `preserve` hook keeps the live slice instead of wiping it with
+  the row's empty default — #5686 `4e0c962c4`; a new `serde(skip)` import-derived field on an overlaid column
+  needs the same hook), `Material`, `RumbleOnActivate`, `FragmentExecutionQueue`, the cinematic trio — verify none
   regressed out of `build_save_registry`, and no re-added `NOT_SAVED_BY_DESIGN` entry re-excludes them.
 - **Two lists, one truth**: the live load overlays only columns in BOTH the registry and
   `MUTABLE_DELTA_COLUMNS`. A registered mutable column absent from the overlay is captured but never
@@ -167,27 +171,14 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 49 as of 2026-10-12 — v31 #5042
-  `ActorValue.base_authored`, v32 #5017 `ActorControlState.unconscious` + the parked `ReferenceState` control
-  state, v33 #5367 `14cff35ae` new saved resource `DialogueSpokenInfoForms` (Say-Once ledger; the doc still has no
-  v32→v33 entry, known-open #5459), v34 #5412 `a614eb273` `ActorValue.set_override`, v35 #5394 `03e51dfad` new
-  saved resource `StoryEventAliasFill`, v36 Wave 4 `RigidBodyData.surface_material` required byte, v37 #5542
-  `surface_material` widened `u8`→`u32` (Skyrim CRC32 materials), v38 #5300 `DialogueSpokenInfoForms` element
-  `u32`→`(speaker ref FormID, INFO FormID)` pair — Say Once is per actor, v39 M47.2 fragment `Effect::AddItem`
-  container `ObjectRef`→`ActorRef` + new `Effect::RemoveItem` (queued fragment tails are saved), v40 M47.2 new saved resource
-  `QuestScriptVariables` (+ `ActorRef::Speaker`, `Effect::SetQuestVariable`), v41 M47.2 `Effect::Conditional`
-  guards `StageDoneGuard` → `FragmentGuard`, v42 M47.2 new saved `ScriptedFactionChanges` + `Effect::ChangeFaction`, v43 M47.2 new saved
-  `LocationAliasBindings` (quest location aliases), v44 M47.2 `AddItem`/`RemoveItem` `count` `u32`→`ItemCount` + parked
-  `ReferenceState.perks`, v45 M47.2 new saved `CreatedReferences`, v46 M47.2 `CharacterLevel`
-  column (kill XP ended #2947's exemption), v47 M47.2 new saved `AliasOverrides` (ForceRefTo / Clear), v48 M47.2 new saved
-  `ReferenceActivationBlocks` (BlockActivation), v49 M47.2 new saved `MapMarkers` (AddToMap), v50 M47.2
-  new saved `LocationClearState` (cleared locations), v51 M47.2 new saved
-  `Bleedout` component (essential actors' bleedout), v52 M47.2 new saved
-  `ActorBaseProtectionOverrides` (SetEssential / SetProtected), v53 M47.2 new
-  saved `LevelUpPoints` component (unspent skill points / perks), v54 M47.2 new
-  saved `ScriptedRelationships` (SetRelationshipRank);
-  do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
-  only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 104 as of 2026-10-15, with one `vN -> vN+1`
+  entry per bump from v22 on; the ledger still lacks the v32→v33 entry — #5367 `14cff35ae`, new saved resource
+  `DialogueSpokenInfoForms` — known-open #5459. Recent anchors: v36 Wave 4 `RigidBodyData.surface_material`, v37 #5542
+  widened it `u8`→`u32`, v38 #5300 re-keyed `DialogueSpokenInfoForms` to a (speaker ref, INFO) pair, and v39–v104
+  are almost entirely M47.2 scripting state — new saved resource columns, `Effect` / `FragmentGuard` / `ValueExpr`
+  variants and fields reachable through queued fragment continuations (`FragmentExecutionQueue`), `CharacterLevel`
+  v46 (kill XP ended #2947's exemption), `Bleedout` v51, `LevelUpPoints` v53; do not hardcode the number elsewhere): intra-type shape changes need a bump because
+  `schema_fingerprint` hashes only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
   type bumps; `#[serde(default)]` is forbidden as a compatibility mechanism (guard) — even where the default
   would be correct for every old save. Read-compatible changes move the shape baseline **without** a bump:
   adding an enum variant to an externally-tagged `serde_json` enum (keyed by variant *name*, never ordinal —
@@ -205,9 +196,11 @@ First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git
   refresh-without-bump was not hiding a real field change to a registered type.
 - **Guard blind spots**: manual `impl Serialize` (no derive) types; a nested payload type of a plain-`derive`
   registered type (the `byroredux/src` pattern) defined in another file is outside `save_type_sources()` unless
-  added to its explicit list (known-open #5059: `LightSource.emitter`, the `crates/sdk` payloads); a save derive
-  that is not the *last* `#[…]` attribute before the declaration is skipped (known-open #5403:
-  `StoryManagerNodeState`, `SmNodeRuntime`); a new `Option<T>` field is hashed but
+  added to its explicit list (#5059 fixed in `945be7dc6` for `LightSource.emitter` and the `crates/sdk`
+  `FormRef` / `ScriptValue` payloads — the next such nested payload is the residue; the extension-manifest
+  declaration types sharing `script_function.rs` are exempt from the `serde(default)` scan, with a staleness
+  test); the shape scan once skipped a save derive that was not the *last* `#[…]` attribute (#5403 fixed in
+  `e19cb0491`, coverage markers assert `StoryManagerNodeState` / `SmNodeRuntime` contribute shapes); a new `Option<T>` field is hashed but
   looks like a routine baseline bump — confirm it got the bump; `serde(alias)` must never coexist with a
   dropped value semantic change.
 - **Second payload — extension state** (`Snapshot.resources["ByroExtensionState"]`, written by
@@ -273,9 +266,9 @@ First step: `grep -n 'fn validate_\|validate_[a-z_]*(world' crates/save/src/vali
 - **Coverage**: `validate_world` currently runs hierarchy, equipment, saved-entity references (session-local
   `EntityId` fields of columns excluded from the overlay — grep the function for the live column list),
   animation (`AnimationPlayer`, `AnimationStack` root + layer clips, `Seated.animation_restore`),
-  inventory instances vs `ItemInstancePool`, progression (`CharacterLevel.xp != 0` aborts because
-  `CharacterLevel` is unsaved; the player now carries one from its `NPC_` record (#4678), so the first XP
-  writer makes every save refuse until `CharacterLevel` is registered), and `Material` finiteness; the binary adds FormId resolvability and cinematic `EntityId` refs. Do
+  inventory instances vs `ItemInstancePool`, and `Material` finiteness (the progression check
+  `validate_progression_state` retired in `dbe562c1f` when `CharacterLevel` became a saved replacing column, v46);
+  the binary adds FormId resolvability and cinematic `EntityId` refs. Do
   not restate the list elsewhere — enumerate **inter-entity reference fields in any newly registered type
   not covered** (MEDIUM defense-in-depth gap) and any check that flags a legitimately sparse-but-spawned id
   (dangling = `>= next_entity`, not "no components").
@@ -310,13 +303,13 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is
   not redundant) → `restore_resident` (parked rows for resident placements, #4695) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local
   `EntityRef` handles must not resume, #4139) → `reseat_ambient_packages_after_restore` (re-pick packages
-  against the restored clock *before* the overlay, #4815; neither it nor `restore_resident` has a source-order
-  pin, known-open #5060) → `build_form_id_remap` → park the snapshot rows
+  against the restored clock *before* the overlay, #4815; its order against `restore_resident` and the overlay is
+  pinned by `post_reload_drain_steps_keep_their_order`, #5060 `02fa8358c`) → `build_form_id_remap` → park the snapshot rows
   whose `FormIdPair` did not resolve (`unresolved_form_id_pairs` → `park_unresolved_snapshot_rows` into
   `PersistentReferenceStates`, #5054 `17e720430` — the exterior reload streams only `radius_load`, so the
   save's hysteresis-band rows were dropped and their loot duplicated; `unresolved_snapshot_rows_are_parked_for_the_next_respawn`)
   → `apply_deltas(MUTABLE_DELTA_COLUMNS)` → dead/equipped-weapon reconcilers, `reconcile_worn_gear` (called
-  twice back-to-back, known-open #5460), `reset_player_factions_to_record` → diagnostic `validate_world` →
+  once; the duplicate was dropped in `a8b3d1902` and the count pinned by #5460 `bda5a1167`), `reset_player_factions_to_record` → diagnostic `validate_world` →
   `apply_player_pose` LAST (after the
   overlay of `CharacterController`, whose motion fields pose-restore then zeroes; a new field on either
   side needs an explicit decision). Any failure after the reload returns immediately, never falling through
@@ -337,9 +330,10 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   unconditional (bounded ring of 8, oldest dropped). The load drain lives in `step_save_loads` where the
   App owns `&mut World` + `&mut VulkanContext` and is skipped while an interior transition or foreign
   loading screen is active; the single `PendingSaveLoadSlot` is last-writer-wins and reports supersession.
-- **Pose**: yaw/pitch always to `InputState`; Character mode + live body → body `Transform` +
-  `GlobalTransform` + `set_kinematic_translation` (returns `false` without a Rapier handle) and clears
-  `vertical_velocity`/`is_grounded`/`wants_jump`; restore branches on the *live* mode (#2018), so
+- **Pose**: yaw/pitch always to `InputState`; Character mode + live body → `place_character_body`
+  (`byroredux/src/systems/character.rs`, the one teleport helper since #5591 `946310eb9`: body `Transform` +
+  `GlobalTransform` + `CharacterController::clear_momentum` — `vertical_velocity`/`is_grounded`/`wants_jump` —
+  + kinematic Rapier sync, no-op without a handle); restore branches on the *live* mode (#2018), so
   FlyCam-saved/Character-loaded relocates the body and the reverse repositions the camera.
 - **Context guards**: `LoadCommand` accepts interior OR exterior context and rejects only neither;
   `SaveInfoCommand` mirrors the three arms (#3500); `quickload_latest` walks `slots_by_recency` and falls back

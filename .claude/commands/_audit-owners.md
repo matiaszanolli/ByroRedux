@@ -54,6 +54,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/nif/` | nif; per-game | HIGH |
 | `crates/plugin/src/esm/records/{weather,weather_settings}.rs` | esm, exterior; per-game | HIGH |
 | `crates/plugin/src/esm/cell/wrld.rs` | esm, exterior; per-game | HIGH |
+| `crates/plugin/src/esm/records/misc/{location,relationship}.rs` | esm, scripting, performance Dim 7; per-game | HIGH |
 | `crates/plugin/` | esm, performance Dim 7; per-game | HIGH |
 | `crates/bsa/src/read_at.rs` | parsers, concurrency Dim 7 | MEDIUM |
 | `crates/bsa/` | parsers; per-game | HIGH |
@@ -67,6 +68,14 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/physics/` | physics, safety | HIGH |
 | `crates/scripting/src/magic.rs` | scripting, gameplay, character | MEDIUM |
 | `crates/scripting/src/load_order.rs` | scripting, save | MEDIUM |
+| `crates/scripting/src/{bleedout,bribe,speechcraft,crime_faction,crime_gold,destruction,detection_events,followers,map_markers,ownership,encounter_level}.rs` | scripting, gameplay | MEDIUM |
+| `crates/scripting/src/{skills,perk_entry_points,relationships}.rs` | scripting, character | MEDIUM |
+| `crates/scripting/src/faction_changes.rs` | scripting, character, save | MEDIUM |
+| `crates/scripting/src/{projectile_requests,havok_impulse}.rs` | scripting, gameplay, physics | MEDIUM |
+| `crates/scripting/src/sound_requests.rs` | scripting, audio | MEDIUM |
+| `crates/scripting/src/weather_state.rs` | scripting, exterior | MEDIUM |
+| `crates/scripting/src/{menus,messages}.rs` | scripting, ui, gameplay | MEDIUM |
+| `crates/scripting/src/{animation_graph,animation_modifiers,anim_subgraph}.rs` | scripting, gameplay, ecs Dim 9 | MEDIUM |
 | `crates/scripting/` | scripting | MEDIUM |
 | `crates/pex/` | papyrus | MEDIUM |
 | `crates/papyrus/` | papyrus | MEDIUM |
@@ -104,6 +113,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/unload.rs` | ecs Dim 7, save Dim 5, concurrency Dim 5, performance; per-game | HIGH |
 | `byroredux/src/cell_loader/exterior.rs` | exterior, ecs Dim 7, performance; per-game | HIGH |
 | `byroredux/src/cell_loader/load.rs` | ecs Dim 7, performance; per-game | HIGH |
+| `byroredux/src/cell_loader/tree_lod.rs` | exterior, performance; skyrim | MEDIUM |
+| `byroredux/src/cell_loader/{created,graph_nodes}.rs` | scripting, gameplay, performance; per-game | MEDIUM |
 | `byroredux/src/cell_loader` | per-game; performance | MEDIUM |
 | `byroredux/src/material_translate.rs` | nifal | HIGH |
 | `byroredux/src/ragdoll` | physics | HIGH |
@@ -125,12 +136,16 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/systems/story_events.rs` | scripting Dim 5, gameplay, concurrency Dim 3; skyrim | MEDIUM |
 | `byroredux/src/systems/forcegreet.rs` | gameplay Dim 2, scripting Dim 5, physics Dim 4, concurrency Dim 5; fnv, fo3, skyrim | MEDIUM |
 | `byroredux/src/systems/dialogue_voice.rs` | gameplay Dim 2, audio; fnv, fo3, oblivion | MEDIUM |
+| `byroredux/src/systems/{projectiles,trap_hits}.rs` | gameplay Dim 4, scripting Dim 5, ecs, performance | MEDIUM |
+| `byroredux/src/systems/scripted_sound.rs` | audio, scripting Dim 5, ecs, performance | MEDIUM |
+| `byroredux/src/systems/{graph_locomotion,archetype_idle}.rs` | gameplay Dim 5, ecs Dim 9, performance; fo4 | MEDIUM |
 | `byroredux/src/systems/` | ecs, performance | MEDIUM |
 | `byroredux/src/render/{sky,water,groundcover}.rs` | exterior, renderer, performance, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/render/` | renderer, performance, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/boot/` | concurrency Dim 4, ecs Dim 5, tooling | HIGH |
 | `byroredux/src/scheduler_access_tests.rs` | concurrency, ecs | HIGH |
 | `byroredux/src/save_io` | save | MEDIUM |
+| `byroredux/src/{barter,encumbrance}.rs` | gameplay Dim 1, scripting Dim 5, ecs | MEDIUM |
 | `byroredux/src/combat.rs` | gameplay, character, physics Dim 6 | MEDIUM |
 | `byroredux/src/inventory.rs` | gameplay, character Dim 4 | MEDIUM |
 | `byroredux/src/interaction.rs` | gameplay, ui, scripting Dim 5, save Dim 4 | MEDIUM |
@@ -149,7 +164,9 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/commands/env_health` | exterior, tooling | MEDIUM |
 | `byroredux/src/commands/actor_value.rs` | character Dim 4, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/{quest,condition}.rs` | scripting, ecs, tooling | MEDIUM |
+| `byroredux/src/commands/{anim_archetype,anim_event,bribe_info,cndf,script_var}.rs` | scripting, ecs, tooling | MEDIUM |
 | `byroredux/src/commands` | ecs, tooling | MEDIUM |
+| `byroredux/src/asset_provider/{actor_graph,archetype_idle,object_graph}.rs` | gameplay Dim 5, scripting Dim 5, parsers; fo4 | MEDIUM |
 | `byroredux/src/asset_provider/animation.rs` | scripting Dim 5, parsers | MEDIUM |
 | `byroredux/src/asset_provider/audio.rs` | audio | MEDIUM |
 | `byroredux/src/asset_provider/script.rs` | scripting, papyrus | MEDIUM |
@@ -175,6 +192,11 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/app_events.rs` | ui, ecs | MEDIUM |
 | `byroredux/src/app_frame.rs` | renderer, performance, concurrency, ui Dim 5+6 | HIGH |
 | `byroredux/src/app_step.rs` | save, performance, exterior | MEDIUM |
+| `byroredux/src/components/{terrain,environment}.rs` | ecs, exterior | MEDIUM |
+| `byroredux/src/components/audio.rs` | ecs, audio | MEDIUM |
+| `byroredux/src/components/render.rs` | ecs, renderer | MEDIUM |
+| `byroredux/src/components/{navmesh,ai_anim}.rs` | ecs, gameplay | MEDIUM |
+| `byroredux/src/components/indices.rs` | ecs, performance | MEDIUM |
 | `byroredux/src/components` | ecs | MEDIUM |
 | `byroredux/src/helpers.rs` | ecs | LOW |
 | `byroredux/src/main.rs` | ecs, tooling, ui Dim 6 | MEDIUM |
@@ -184,6 +206,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `scripts/renderer-eval-groundcover.sh` | exterior, runtime | LOW |
 | `scripts/check-byro-dbg-harness-contracts.sh` | runtime, tooling | LOW |
 | `scripts/` | runtime, performance | LOW |
+| `screenshots/` | runtime, tooling | LOW |
 | `assets/debug_profiles.toml` | tooling; per-game | MEDIUM |
 | `assets/` | tooling | LOW |
 | `docs/smoke-tests/sm1-story-manager.sh` | runtime, scripting | LOW |

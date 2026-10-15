@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --game <name> --depth shallow|deep"
 
 # ESM / Plugin Parser Audit
 
-Audit `crates/plugin/` (~71k LOC in `src/`) as a parser: GRUP walker, sub-record byte
+Audit `crates/plugin/` (~73k LOC in `src/`) as a parser: GRUP walker, sub-record byte
 accounting, per-record schema dispatch, FormID load-order remap, CELL/WRLD walkers, and
 the `EsmIndex` → ECS handoff. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each
 sample one game's slice; this skill owns the parser itself.
@@ -23,7 +23,7 @@ shared protocol (dedup, methodology, finding format). Do not duplicate them here
 `mod.rs` is a re-export barrel; `index.rs` `EsmIndex`; eight `dispatch_*.rs` routers;
 `grup_walker.rs`; per-type decoders incl. `actor/`, `items.rs`, `items/consumable.rs`,
 `container.rs`, `condition.rs`, `weather.rs`, `weather_settings.rs` (Starfield `WTHS`), `load_screen.rs`,
-`pkin.rs`, `misc/*.rs` incl. `story_manager.rs`),
+`pkin.rs`, `misc/*.rs` incl. `story_manager.rs`, `location.rs` (`LCTN`), `relationship.rs` (`RELA`)),
 `esm/cell/` (`walkers.rs`, `support.rs`, `wrld.rs`, `helpers.rs`, `mod.rs` data types),
 `esm/strings_table.rs`, `equip.rs`, and the Redux-native tier
 (`datastore`/`manifest`/`record`/`resolver`).
@@ -186,9 +186,11 @@ via `read_zstring` with no `remap_fid` (fixed in `136048a95`, #5493; pinned by
 `pkin_fltr_filter_path_stays_raw_under_remap` + `parse_scol_fltr_decodes_the_filter_path`).
 CTDA `param_1` is remapped only for functions whose first parameter is a FormID:
 `condition.rs::param1_is_form_id` mirrors the scripting catalog by raw function index (rows
-for fn 56/71/74 were missing until `722c06a76`, #5637); the drift guard lives in the scripting
+for fn 56/71/74 were missing until `722c06a76`, #5637; M47.2 added the location/keyword/
+relationship/quest-variable rows); `param2_is_form_id` is the second-parameter twin (fn 605/181/
+576/606/608 — everywhere else `param_2` is a literal); the drift guard lives in the scripting
 crate (`param1_form_id_table_matches_the_condition_catalog`) — a new catalogued
-FormID-first-param function needs its row.
+FormID-param function needs its row.
 **Checklist**:
 - `GlobalSlot::Regular` keeps 24 bits; `GlobalSlot::Light` (`0xFE` space) packs a 12-bit
   sub-index and keeps only the low **12** object-id bits (`0x0FFF` masks on both sides);
@@ -220,7 +222,7 @@ Paths: `crates/plugin/src/esm/records/{parse,index,items,container,actor_value_d
 First step: `cargo test -p byroredux-plugin -- dispatch_handled_fourccs every_index_map_is_a_category`
 **Guards**: `records::tests::dispatch_handled_fourccs_matches_the_live_dispatch_arms`
 (`DISPATCH_HANDLED_FOURCCS` ↔ the live match in `parse.rs`; era-gated arms count as
-handled, `PDCL` is deliberately absent, LCTN has no top-level arm);
+handled, `PDCL` is deliberately absent; `LCTN`/`LCRT`/`RELA` are routed through `dispatch_misc_stub` into typed maps since M47.2 — `parse.rs`'s `DISPATCH_HANDLED_FOURCCS` doc still says LCTN has no arm, that prose is stale);
 `index::tests::every_index_map_is_a_category_or_a_recorded_exclusion` (every `EsmIndex`
 map is a `categories()` row — `map_category!` or a hand-written row recognized by its count
 closure, like `dialogues` — or a reasoned exclusion: `record_types`, the derived
@@ -236,7 +238,10 @@ closure, like `dialogues` — or a reasoned exclusion: `record_types`, the deriv
 - Per-game schema splits within one record (`ARMO/WEAP/AMMO DATA`, `BOD2` vs `BMDT` vs
   Skyrim's pre-BOD2 `BODT` — 8 or 12 B, same leading biped mask, read in both `ARMO` and
   `ARMA` since `479414ffe` (#5358; every Skyrim.esm ARMA authors it, so BOD2-only decoding
-  zeroed all 766 masks), `SCOL/PKIN/TXST`, FO76 `LVLO`) switch on `GameKind`. **`ACRE` is not Oblivion-only**
+  zeroed all 766 masks), `SCOL/PKIN/TXST`, FO76 `LVLO`) switch on `GameKind`. Oblivion's 4-byte
+  `ARMO BMDT` is a u16 Biped Flags + General Flags byte — the mask is the u16 only
+  (`a8e37e5fd`, #5696; a u32 read put General Flags in bits 16-23 on 661 of 996 armors);
+  FO3/FNV keep the u32. **`ACRE` is not Oblivion-only**
   (FO3 ships 3,349 `ACRE` vs 2,154 `ACHR`) — flag any new per-game gate on it.
 - **Consumables / items decode contract** (decode only; consumption is `/audit-gameplay`):
   `ALCH` effect chains via `parse_alch_for_game`; `MgefRecord.instant_restoration_av` via
@@ -259,17 +264,27 @@ closure, like `dialogues` — or a reasoned exclusion: `record_types`, the deriv
   id after its `PNAM` predecessor), and the prune arm drops Deleted-INFO tombstones from every
   topic; whole-record `extend` erased 8.5–9.9k FNV INFOs per DLC. An override's `PNAM == 0`
   run keeps authored file order through one per-override contribution cursor
-  (`fold_info_into_topic`, `5356c8780`, #5494 — the first contribution goes to the front, later
+  (`fold_infos_into_topic`, `5356c8780`, #5494 — the first contribution goes to the front, later
   ones follow the previous; the run's position relative to the master's heads is an unsourced
-  engine choice).
+  engine choice). Since `0c2bd4d6d` (#5644) the fold is one pass over a FormID → node map;
+  `fold_info_into_topic_reference` is the test-only one-at-a-time twin and
+  `batched_info_fold_matches_the_one_at_a_time_fold` pins that the two agree.
   Top-level maps merge through `categories()`; `EsmCellIndex::merge_from` destructures
   exhaustively (#4904 — a `..` there is the regression that dropped `landscape_grasses`).
+- M47.2 added typed maps: `locations` (`LCTN`, `misc/location.rs`), `location_ref_types` (`LCRT`),
+  `relationships` (`RELA`, `misc/relationship.rs`), `condition_forms` (Starfield `CNDF`),
+  `keywords` (`KYWD` EDID only), `SNDR` into the `sounds` map via `parse_sndr` (`soun.rs`),
+  RACE FO4 `SRAC`/`SADD`/`SAKD`/`SGNM`/`SAPT`/`STKD`/`SRAF` subgraph data, `KWDA` on
+  `CommonNamedFields`, PERK entry bodies (`PerkEntry`/`PerkEntryBody`, EPFT/EPFD per the
+  xEdit layout), and a "Use Base Data" template chain terminal (`ResolvedNpc::base_data`). The
+  `EsmIndex::categories()` count is pinned in `records::tests` (109 at HEAD) — read the live
+  number there; each new map must be a category row or a recorded exclusion.
 - `actor_value_derive.rs` is the CHARAL feed — formulas belong to `/audit-character`.
 - Settled decodes — verify they hold, do not re-derive: `INAM` is one FormID array (#3356);
   `CREA CNAM` is not a class (#3383); `FACT` rank ladder (#3338); `ARMO` contributes every
   race-matching `ARMA` (#3357), `MOD3` is the female mesh (#3414); a `REFR` tombstone
   removes the placement wherever it lives (#3362); FO76 `HEDR` is patch-dependent — 279.0 on the 2026-09-20 patch, never pin it (#3405, #4643);
-  DIAL quest ownership reads `QSTI` **or** `QNAM` (Skyrim authors `QNAM`; `parse_dial`); FO3/FNV/Oblivion INFOs also carry their **own** owning quest in `InfoRecord.quest` (`QSTI`, remapped, 23,247/23,247 FNV INFOs; `dbc07e8f0`, #5271 — Skyrim+/FO4 author none, `0` = use the topic's ownership); INFO `DATA` is typed `InfoDataHeader` (info_type / next_speaker / flags1 / flags2; Goodbye = Flags 1 bit 0) and Skyrim's 8-byte `DATA` lands raw in `skyrim_data` (`25b678106`, #5295); `SMBN`/`SMEN`/`SMQN` decode into `story_manager_nodes` (`misc/story_manager.rs`, #5366 closed — the SM dispatches live): `SNAM` is the **previous** sibling (xEdit *Previous Node*; `846e4a6dd`, #5385 — the same-parent census holds in both directions and cannot settle it), `SMQN` `RNAM` is stored hours × 24 and decoded ÷ 24 (xEdit scale `1/24`; `a621d5352`, #5386 — node `HNAM` stays raw), and `XNAM`/`MNAM`/`HNAM`/`QNAM`/`FNAM`/`UNAM` + `DNAM` `0x2`/`0x40000` are named from xEdit (`5489cbe65`, #5420; per-quest `FNAM`/`UNAM` live on `SmQuestLink` beside the `NNAM`/`RNAM` they follow — a node-level field let each later quest overwrite the last, `0edd1dede`, #5515); INFO Flags 1 bit 5 = Random End (`random_end`, `0436bea5c`, #5397); REGN `WNAM` is the owning **worldspace** (`worldspace_form`, remapped), never a weather, and REGN `CNAM` is xEdit-undefined with zero vanilla occurrences (`bd052048a`, #5421); `NPC_.WNAM` is the per-NPC skin ARMO (`worn_skin`, remapped, no game gate — pre-Skyrim ships none; `edb5fbdfe`, #5359); Oblivion `RACE`'s body-section `ICON` run (INDX restarts at 0 past `NAM1`) lands in `body_part_textures` (`1b45763fa`, #5487); Starfield `WTHS` decodes the REFL/RDIF reflection *schema* only, not instance values (`weather_settings.rs`, #5364; the instance-value reader is open tracker #5627): `DIFF` is (u16 field index, inline value) pairs to the `0xFFFF` terminator and `USRD`/`MAPC` join the instance census (`f0f8dceef`, #5514; real-data pins 163 in-range indices / 47 `USRD`); the CDB builtin ids live in one table (`1f56d5742`, #5615); FO76 `LSCR` decodes on the modern (FO4-shape) arm incl. `BNAM` → icon (`47f927cbf`, #5345); FO3/FNV `PKDD` Dialogue Type is the u32 at offset 16, and Oblivion `PKDT` (4 B) / `PTDT` (12 B) legacy shapes are accepted (`dae08000d`, #5492/#5504); FO3/FNV non-auto-calc NPCs keep their authored `DATA` SPECIAL in `NpcRecord::data_attributes` (`4957536ba`, #5338); FO4 `NPC_` template flags resolve per flag through `template_actors` (`TPTA`, 13 entries in xEdit `wbTemplateFlags` order, `0` = use `TPLT`; `99c22a8db`, #5498); `MSWP` `CNAM` is the Color Remapping Index palette row (`color_remap_index`, `0b2ffed89`, #5497); `MGEF` `DATA` offsets/flags are named constants in `misc/magic.rs`'s `mgef_data` (`abe8d7e96`, #5614).
+  DIAL quest ownership reads `QSTI` **or** `QNAM` (Skyrim authors `QNAM`; `parse_dial`); FO3/FNV/Oblivion INFOs also carry their **own** owning quest in `InfoRecord.quest` (`QSTI`, remapped, 23,247/23,247 FNV INFOs; `dbc07e8f0`, #5271 — Skyrim+/FO4 author none, `0` = use the topic's ownership); INFO `DATA` is typed `InfoDataHeader` (info_type / next_speaker / flags1 / flags2; Goodbye = Flags 1 bit 0) and Skyrim's 8-byte `DATA` lands raw in `skyrim_data` (`25b678106`, #5295); `SMBN`/`SMEN`/`SMQN` decode into `story_manager_nodes` (`misc/story_manager.rs`, #5366 closed — the SM dispatches live): `SNAM` is the **previous** sibling (xEdit *Previous Node*; `846e4a6dd`, #5385 — the same-parent census holds in both directions and cannot settle it), `SMQN` `RNAM` is stored hours × 24 and decoded ÷ 24 (xEdit scale `1/24`; `a621d5352`, #5386 — node `HNAM` stays raw), and `XNAM`/`MNAM`/`HNAM`/`QNAM`/`FNAM`/`UNAM` + `DNAM` `0x2`/`0x40000` are named from xEdit (`5489cbe65`, #5420; per-quest `FNAM`/`UNAM` live on `SmQuestLink` beside the `NNAM`/`RNAM` they follow — a node-level field let each later quest overwrite the last, `0edd1dede`, #5515); INFO Flags 1 bit 5 = Random End (`random_end`, `0436bea5c`, #5397); REGN `WNAM` is the owning **worldspace** (`worldspace_form`, remapped), never a weather, and REGN `CNAM` is xEdit-undefined with zero vanilla occurrences (`bd052048a`, #5421); `NPC_.WNAM` is the per-NPC skin ARMO (`worn_skin`, remapped, no game gate — pre-Skyrim ships none; `edb5fbdfe`, #5359); Oblivion `RACE`'s body-section `ICON` run (INDX restarts at 0 past `NAM1`) lands in `body_part_textures` (`1b45763fa`, #5487); Starfield `WTHS` decodes the REFL/RDIF reflection *schema* only, not instance values (`weather_settings.rs`, #5364; the instance-value reader is open tracker #5627; the DIFF value walk is depth-capped at `MAX_NESTING_DEPTH` 64, `02187c7f9`, #5687, pinned by `hostile_self_referential_diffs_decline_at_the_depth_cap`): `DIFF` is (u16 field index, inline value) pairs to the `0xFFFF` terminator and `USRD`/`MAPC` join the instance census (`f0f8dceef`, #5514; real-data pins 163 in-range indices / 47 `USRD`); the CDB builtin ids live in one table (`1f56d5742`, #5615); FO76 `LSCR` decodes on the modern (FO4-shape) arm incl. `BNAM` → icon (`47f927cbf`, #5345); FO3/FNV `PKDD` Dialogue Type is the u32 at offset 16, and Oblivion `PKDT` (4 B) / `PTDT` (12 B) legacy shapes are accepted (`dae08000d`, #5492/#5504); FO3/FNV non-auto-calc NPCs keep their authored `DATA` SPECIAL in `NpcRecord::data_attributes` (`4957536ba`, #5338); FO4 `NPC_` template flags resolve per flag through `template_actors` (`TPTA`, 13 entries in xEdit `wbTemplateFlags` order, `0` = use `TPLT`; `99c22a8db`, #5498); `MSWP` `CNAM` is the Color Remapping Index palette row (`color_remap_index`, `0b2ffed89`, #5497); `MGEF` `DATA` offsets/flags are named constants in `misc/magic.rs`'s `mgef_data` (`abe8d7e96`, #5614).
 - `equip.rs::main_body_bit` FO76/Starfield arms are a **provisional inference**
   (`PROVISIONAL (#4074)`, pinned by `fo76_and_starfield_arms_are_marked_provisional`) —
   known and marked; report only if the marker is removed without an xEdit citation.
@@ -317,9 +332,19 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   `records/spatial_units_tests.rs`). Check new Starfield distance
   fields join it, dimensionless fields (XSCL, Euler) stay out, decoder defaults for an
   unauthored field are never lifted, and no path normalizes an index twice.
+- M47.2 placement/base fields, all remapped: REFR `XAPR` (activate parent + delay, `XAPD`
+  Parent Activate Only), `XMRK`→`FNAM` map-marker flags, per-reference `XEZN`
+  (`PlacedRef.encounter_zone_form`); base-object `DEST`/`DSTD` → `DestructionData`. `ECZN DATA`
+  is per game (`parse_eczn(.., game, ..)`: FO3/FNV 8 B, Skyrim/FO4/Starfield add the `LCTN` and
+  max level; xEdit `wbECZN`). `EsmCellIndex::cell_by_form_id` is a lazily-built O(1) lookup
+  (`cell_form_id_lookup`, #5489) that `merge_from` resets — a CELL-map edit after the first call
+  leaves it stale.
 - Lighting-template inheritance is per-field; "absent" and "authored zero" stay distinct.
-- Known open: TES5/FO4 CELL `XCCM` is "Sky/Weather from Region" (a REGN reference) but is
-  decoded and consumed as a CLMT climate override (#5463).
+- CELL `XCCM` is per-game (`3b28dca71`, #5463): TES4/FO3/FNV = Climate (CLMT) →
+  `CellData.climate_override`; TES5/FO4 = "Sky/Weather from Region" (REGN) → `sky_region`
+  (`xccm_targets_region`, `cell/helpers.rs`; decoded, no consumer yet; FO76/Starfield keep the
+  CLMT reading, no verified xEdit definition). Guards `parse_cell_fo3nv_xccm_populates_climate_override`,
+  `parse_cell_tes5_fo4_xccm_is_a_region_not_a_climate`. Regression = a REGN id reaching `climate_override`.
 - **XCLL** is size- and game-validated: `xcll_canonical_sizes(game)`; the ≥92-byte
   ambient-cube arm fires only for Skyrim/FO4/FO76 (Starfield has its own ≥108 arm) — a non-canonical 92+ XCLL on
   Oblivion/FO3NV keeps base + per-field reads and warns (guard: the cell test

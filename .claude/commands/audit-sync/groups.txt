@@ -8,12 +8,14 @@ safety: safety concurrency tech-debt
 esm: esm legacy-compat regression
 nif: nif nifal speedtree parsers
 ecs: ecs save
-scripting: scripting papyrus character
+scripting: scripting
+papyrus-character: papyrus character
 gameplay: gameplay physics audio
 exterior: exterior runtime
 fnv: fnv
 fo3: fo3
 oblivion: oblivion
 skyrim: skyrim
-fo4-starfield: fo4 starfield
+fo4: fo4
+starfield: starfield
 meta: ui tooling incremental publish suite sync

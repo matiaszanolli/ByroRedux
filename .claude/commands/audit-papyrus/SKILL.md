@@ -26,7 +26,8 @@ is no substitute for a bound).
 - `crates/papyrus/src/`: `token.rs`, `lexer.rs`, `ast.rs`, `span.rs`, `error.rs`, `lib.rs`,
   `parser/{mod,expr,stmt,script}.rs`.
 - Instruments: `crates/pex/examples/pex_corpus_smoke.rs` (decompiles every `.pex` in real archives; the
-  source of the decompile-rate claim), `pex_corpus_shapes.rs` + `docs/r5/corpus-shape-survey.txt`,
+  source of the decompile-rate claim), `pex_dump_fn.rs` (raw-bytecode disassembly of one failing function),
+  `pex_corpus_shapes.rs` + `docs/r5/corpus-shape-survey.txt`,
   `crates/bsa/examples/r5_extract_pex_ba2.rs` (corpus extractor).
 - Ground truth: crate docstrings (`crates/pex/src/lib.rs`, `decompile/mod.rs`), `docs/engine/{papyrus-parser,
   m47-2-design}.md` ("no opcode semantics guessed"). Reference decompiler: Champollion (`OPCODES`,
@@ -50,7 +51,8 @@ read the newest `docs/audits/AUDIT_SCRIPTING_*.md` (Dims 1-4 findings; pre-split
 8-dimension numbering) and `docs/engine/m47-2-design.md` §"Frontends in detail"/"Risks & mitigations" to
 separate designed declines from defects. Run `cargo test -p byroredux-pex -p byroredux-papyrus`.
 Delta-first: `git log --since=<last report> --format='%h %cs %s' -- crates/pex crates/papyrus` — these crates
-often have **zero** commits between passes; then re-verify the guards below rather than re-reading source.
+are quiet between some passes (and busy in others — M47.2 churned `lower.rs` and the parser's script items);
+if there are none, re-verify the guards below rather than re-reading source.
 
 ## Phase 2: Dimensions
 
@@ -122,26 +124,43 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
   jmpt inversion negates + swaps edges). A conditional-predecessor `last` (`||` shape the boolean pass should
   have collapsed) **fails closed** (`ControlFlowFailed`, #1732; `conditional_predecessor_fails_closed`) —
   a fix that resumes past the block drops statements. The module doc's "advanced past" wording is stale
-  (#4115 open, verified 2026-10-12).
-- **Three bookkept Champollion departures** — `boolean.rs`'s two, plus `lower.rs`'s `is` → object-typed `Cast`
+  (#4115 open, verified 2026-10-15).
+- **Three bookkept Champollion departures** — `boolean.rs`'s two (plus a third, newer guard below), and `lower.rs`'s `is` → object-typed `Cast`
   (#4477, `an_is_opcode_lowers_to_an_object_typed_cast`; recognizer-irrelevant only while no consumer keys on it).
   For the **`boolean.rs`** two — adjudicate benign-or-bug, evidence = corpus rate +
   fidelity gate, not speculation: (1) no debug-line guard (a same-named temp on a fall-through edge could be
   falsely collapsed into a fabricated `&&`/`||`); (2) termination guard (only re-process on a real merge —
   infinite loop hangs the decompiler). `&&` true edge falls through, `||` false edge; operand must recompute
   the same condition variable; prec `&&`=7/`||`=8; `take_operand` leaves no dangling `None`.
+  **Private-edge guard** (`944d0299e`): a fold deletes the operand block (and a non-exit rejoin), so it now
+  declines unless `incoming(operand) == 1` and, for an interior rejoin, `incoming(rejoin) == 2` — a shared
+  `return` epilogue that an early-exit `jmp` also targets left a dangling edge and failed `reconstruct` (the
+  last two corpus decompile failures: FO4 `StimBoxScript`, FO76 `Debug.TraceLog`; corpus now 100% on all four
+  games). Pins `or_whose_rejoin_is_a_shared_epilogue_is_left_uncollapsed`, `and_whose_rejoin_is_a_shared_epilogue_is_left_uncollapsed`. A new
+  fold that deletes a block without an in-edge count is the regression.
 - **Recursion**: `MAX_REBUILD_DEPTH = 1024` in `control_flow.rs` (`boolean.rs` derives it — not restated);
   both rebuilds return `RecursionLimit` (`rebuild_rejects_excessive_recursion_depth` exists in *both* files).
   It and `MAX_EXPR_DEPTH` (256) compose additively (~1,280) and independent edits erode the margin
-  (#4113 open, verified 2026-10-12) — check any change to either constant.
+  (#4113 open, verified 2026-10-15) — check any change to either constant.
 - **`lower.rs` totality**: `lower_expr`/`lower_stmt` never panic on any `NodeKind`; intentional lossy lowerings
   matter only if a recognizer keys on the lost info: statement-shaped node as sub-expression → `NoneLit`
-  (should be unreachable), `is` → `Cast`, `StructCreate` → `New` size 0, `lower_binary_op` default arm →
-  `Eq` (a real unknown op silently becomes `==`).
-- **Script assembly**: synthetic `::` variables dropped; the object's `conditional`/`hidden`/`default` user
-  flags (bit indices named by the file's own user-flag table, `has_user_flag` — shift guarded by
-  `flag_index < 32` on untrusted bytes) lower into the same `ScriptFlags` the `.psc` header parses, and a
-  variable's `conditional` into `is_conditional` (#5398 `ce90b481c`, `object_user_flags_lower_into_script_flags`);
+  (should be unreachable), `is` → `Cast`, `lower_binary_op` default arm →
+  `Eq` (a real unknown op silently becomes `==`). `StructCreate` is no longer lossy: it lowers to
+  `Expr::NewStruct` (FO4 `new S`, the shape the `.psc` parser now emits too).
+  **Locals**: `lower_local_decls` prepends one bare `VarDecl` per non-`::` local ahead of the body
+  (`0c6fe4d34` — without it every Champollion fragment prologue read as an assignment to an undeclared name and
+  the #5638 fragment guard declined it; `user_locals_are_declared_ahead_of_the_body_and_temporaries_are_not`).
+- **Script assembly**: FO4+ `struct_infos` lower to `ScriptItem::Struct` items first (members keep their stored
+  defaults; `pex_corpus_smoke`'s expected-item-count adds `struct_infos.len()`); synthetic `::` variables
+  dropped; variable and auto-property defaults lower to `initial_value` via `default_literal` (the backing
+  variable's stored default); the object's `conditional`/`hidden`/`default` user
+  flags (bit indices named by the file's own user-flag table, resolved ONCE per `Pex` by
+  `UserFlagMasks::from_pex` — #5683 `d8b1d333c`, the old per-variable *has_user_flag* rescan was O(F×V), ~18 s on
+  an 852 KB hostile file, `a_hostile_user_flag_table_decompiles_in_linear_time`; `flag_index < 32` guards the
+  shift on untrusted bytes) lower into the same `ScriptFlags` the `.psc` header parses, a
+  variable's `conditional` into `is_conditional` (#5398 `ce90b481c`, `object_user_flags_lower_into_script_flags`)
+  and a property's `const`/`mandatory`/`hidden`/`conditional` into `PropertyFlags` (#5685 `f7afb0e07`,
+  `property_user_flags_lower_into_property_flags`);
   **script scope = the empty-named state's functions**;
   every named state → a `State` item; exactly one (the first case-insensitive `is_auto_state` match against
   `auto_state_name`) is `is_auto` (#4473, `case_colliding_state_names_mark_exactly_one_auto`) — keying scope on the auto match inverted 983 vanilla scripts (#4319;
@@ -181,7 +200,8 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   a keyword's **mandatory operand** goes through `expect_same_line` / `expect_raw` / `expect_ident_raw`
   (`parser/mod.rs`; #5021, `3b7ffa670`): declaration names, the `Extends` target, the `(` after a function
   name, `State` after `Auto`, the If/ElseIf/While condition start, and `New`'s type and `[` — #5331 `fd5aa4ead`,
-  `parse_new_expr` — pinned by
+  `parse_new_expr`; the `[` is optional only for an `Object` type, where a same-line `new S` is FO4's
+  `Expr::NewStruct` — pinned by
   `a_mandatory_operand_on_the_next_line_is_an_error`, `auto_on_its_own_line_does_not_make_an_auto_state`,
   `extends_with_its_target_on_the_next_line_sets_no_parent`, `single_line_forms_of_the_5021_sites_still_parse`.
   Only closing keywords may keep the newline-skipping `expect`; a new declaration keyword that uses it is the
@@ -191,10 +211,18 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   truthiness test plus a fabricated `VarDecl`) with zero errors. It now records a recovered `UnexpectedToken` for
   anything but Newline/EOF/DocComment and skips to line end via `skip_to_line_end`, which leaves block terminators
   (`EndIf`, `Else*`, `End*`) unconsumed so a glued `x = 1 EndIf` still closes its block
-  (`glued_statement_tail_is_an_error_and_not_a_statement`); `parse_expr` (debug console, offline preflight) ends in
+  (`glued_statement_tail_is_an_error_and_not_a_statement`; `EndStruct` / `EndGroup` stay too, #5444 `3efa1c024`,
+  `glued_struct_and_group_terminators_stay_for_their_container`); `parse_expr` (debug console, offline preflight) ends in
   `require_input_end` (`parse_expr_rejects_trailing_tokens`). FO4 `is` is a keyword with an `Expr::Is` type-test
   node at cast precedence (`test_is_type_test`); downstream exhaustive matches treat it as transparent to the operand
   (the `.pex` side still lowers `OpCode::Is` to an object-typed `Cast`, so the two frontends do NOT yet share one shape).
+- **Doc comments and FO4 names** (`e96d687ec`): Papyrus puts an item's `{…}` doc on the line AFTER its header, so
+  `take_trailing_doc` (`parser/mod.rs`) consumes one right after each header's `expect_eol` (script header,
+  property, group, struct + member, function/event; #5325 — a bodied function's doc once became its first
+  "statement" and the function was dropped). Script name, `Extends` target and `Import` are qualified idents
+  (`DLC01:Foo`), and an event name may be the remote form `Sender.Event` kept dotted in the name so a
+  name-matching consumer declines it (#5328). Pins `a_doc_comment_after_a_bodied_function_header_documents_it`,
+  `namespaced_script_name_parent_and_import_keep_every_segment`.
 - **Precedence/associativity**: `BinaryOp::precedence` Or=1, And=2, comparisons=3, Add/Sub/StrCat=4,
   Mul/Div/Mod=5, unary=6, cast=7/postfix=8 (`PREC_*` in `expr.rs`); left-assoc hinges on `op_prec <= min_bp →
   break`. (Bethesda's inverted CTDA OR/AND precedence is a *condition-evaluation* concern in

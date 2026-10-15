@@ -20,18 +20,21 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Re-measured 2026-10-12 at 0d698d16c (the 239 commits since 2026-10-10 added and removed no `unsafe`; #5273 removed five earlier):
+only 2 real blocks). Re-measured 2026-10-15 at f4ae42a6f (the 337 commits since 2026-10-12 added no `unsafe`; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
 
-- `crates/renderer/src`: **935** word tokens (944 by the substring recipe; 939 on 2026-10-08) — 715 `unsafe {`
-  blocks (720), 96 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~145: prose and source-scan
-  strings), 35 `unsafe impl` (newest: `NoUninit for ModelPush`), ~811 `SAFETY` mentions. Net shrinks: the
+- `crates/renderer/src`: **922** word tokens (930 by the substring recipe; 935 on 2026-10-12) — 704 `unsafe {`
+  blocks (715), 96 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~145: prose and source-scan
+  strings), 35 `unsafe impl` (newest: `NoUninit for ModelPush`), ~796 `SAFETY` mentions. Net shrinks: #5593 swapped twelve local `try_or_cleanup!` macros and the per-FIF
+  param-UBO loops for `vulkan/mod.rs`'s shared `try_or_cleanup!` and `GpuBuffer::create_per_frame_uniforms` (one block
+  fewer in each of eleven passes); the
   #4599 poison-policy extraction cut `vulkan/buffer.rs` 40 → 19 blocks; #5273 (74ed66f0a) replaced the five
   `CStr::from_ptr` device/extension-name blocks in `vulkan/device.rs` with ash's bounded `*_as_c_str()` accessors
   (pinned by `device_names_read_through_bounded_accessors`); `vulkan/groundcover.rs` split into
-  `vulkan/groundcover/{construct,frame}.rs` (18 + 12). Densest files: `vulkan/gpu_timers.rs` (62),
-  `vulkan/groundcover_bench.rs` and `vulkan/acceleration/blas_static.rs` (29 each). Compare against the previous
+  `vulkan/groundcover/{construct,frame}.rs` (17 + 12). Densest files: `vulkan/gpu_timers.rs` (62),
+  `vulkan/acceleration/blas_static.rs` (29), `vulkan/groundcover_bench.rs` (28). Compare against the previous
   report, not this text.
-- Tail: `crates/fsr3-sys` 10 blocks (one is the test-only `byro_fsr3_abi_layout` probe; Dim 1), `crates/nif` 1
+- Tail: `crates/fsr3-sys` 10 blocks in `src` (one is the test-only `byro_fsr3_abi_layout` probe; Dim 1) plus 20 in the
+  `examples/vulkan_context_smoke.rs` harness, `crates/nif` 1
   POD-read site + 4 `unsafe impl AnyBitPattern` (Dim 2), `crates/core` 4 in `ecs/query.rs` (`/audit-ecs` Dim 3)
   + 1 in `string/mod.rs` (`from_utf8_unchecked` after an ASCII-only fold) + 1 test-only, `crates/pex` 1
   transmute (Dim 2), `byroredux` 2 — `cell_loader/unload.rs` 1 and the NVML GPU-name probe's
@@ -270,8 +273,11 @@ First step: `cargo tree -p byroredux-mod-runtime | grep -i wasi` (must print not
   `InstanceStatus`, not a hang; guest-controlled buffers are capped (`max_log_entries` / `max_log_message_bytes` /
   `max_log_bytes`, command and console-output budgets) with distinct `FaultKind`s. `SandboxRuntime::new` pins the
   wide-arithmetic and relaxed-SIMD proposals off (wasmtime 49 flipped the first on; the second lowers per CPU), and each
-  entry sets `Store::set_hostcall_fuel(max_log_message_bytes + 1024)` so a WIT `String` arg cannot make the host lift the
-  default 128 MiB before the size checks run (0781077b8, `runtime/sandbox.rs`). Fuel also charges `memory.fill` / `copy` /
+  entry sets `Store::set_hostcall_fuel(config.hostcall_fuel())` so a WIT `String` / list arg cannot make the host lift the
+  default 128 MiB before the size checks run (0781077b8, `runtime/sandbox.rs`). Since #5718 (0f2658642) the budget is the
+  larger of `MAX_HOSTCALL_LIFT_BYTES` (`limits.rs`, ~2 MiB: `set-result-string-array` at the SDK caps) and
+  `max_log_message_bytes + 1024`; the log-cap-only sizing trapped a legitimate mod, pinned by
+  `the_store_carries_the_derived_hostcall_budget_not_wasmtimes_default`. Fuel also charges `memory.fill` / `copy` /
   `init` per byte since wasmtime 48, pinned by `memory_fill_is_charged_per_byte_and_quarantines` (9046b5ac5).
 - **Lifecycle**: a fault in one `LifecyclePhase` cannot leave the instance usable; `shutdown` is idempotent; a
   trapping guest is quarantined, not retried in a loop.

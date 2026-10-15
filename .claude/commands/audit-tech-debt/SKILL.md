@@ -78,17 +78,22 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-10-12 at 0d698d16c (diff direction only, re-run, never quote): markers 24 (15 are `XXXX` false positives, 2 the
-   FO4 `HACK` FourCC — Dim 5), `allow(dead_code)` 44 (45 on 2026-10-10; the 11 added since 2026-10-08 are `cfg(test)`
-   TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 — not debt), `unimplemented!/todo!()` **0** (a
-   fresh hit is notable), `#[ignore]` 299 (287 on 2026-10-10; tools-inclusive — earlier reports scoped to `crates`+`byroredux`
+   Measured 2026-10-15 at f4ae42a6f (diff direction only, re-run, never quote): markers 24 (15 are `XXXX` false positives, 2 the
+   FO4 `HACK` FourCC — Dim 5), `allow(dead_code)` 41 (44 on 2026-10-12; 12 of them are `cfg(test)` TypeId-only markers in
+   `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 — not debt), `unimplemented!/todo!()` **0** (a
+   fresh hit is notable), `#[ignore]` 322 (299 on 2026-10-12; tools-inclusive — earlier reports scoped to `crates`+`byroredux`
    read lower),
-   production >2000 LOC: **4** (`shader_constants_data.rs` is a data table, Dim 1; `byroredux/src/components.rs`;
-   `crates/scripting/src/fragment/effects.rs`; `byroredux/src/save_io.rs`, new — it crossed to 2011. `byroredux/src/env_translate/`
-   left the list: it was one file at 1881 → 2186 across 2026-10-05..11 on the #5374/#5388/#5423/#5424 climate/LOD fixes and #5584 split it
-   per concern into `lod` / `climate` / `water` / `sky_weather` / `fallback`, none over 700 production LOC; watch-list within 5%:
-   `crates/nif/src/import/types.rs` (1997), `crates/audio/src/lib.rs`, `crates/plugin/src/esm/cell/mod.rs`,
-   `crates/scripting/src/translate/effects.rs`, `crates/scripting/examples/mq101_conformance.rs`), test-heavy >2000: 77.
+   production >2000 LOC: **6** — `crates/scripting/src/fragment/vm.rs` (6213; the M47.2 Papyrus VM, new since 2026-10-12 and
+   a single file), `crates/scripting/src/translate/effects.rs` (5295; it was a ~2000 watch-list row three days ago and the
+   M47.2 native-call arms tripled it), `crates/renderer/src/shader_constants_data.rs` (2900, a data table, Dim 1),
+   `byroredux/src/save_io.rs` (2136), `crates/plugin/src/esm/cell/mod.rs` (2108, crossed from the watch-list) and
+   `crates/scripting/src/condition.rs` (2005, just over). `byroredux/src/components.rs` (#5467, 6ef8976f2 →
+   `components/{render,terrain,environment,indices,input,audio,tuning,ai_anim,navmesh}.rs`) and
+   `crates/scripting/src/fragment/effects.rs` (#5468, adbd468e2 → `effects/{resolve,deferred,inventory,placement,scene,lock,player_control,vehicle_cinematic,ai_combat,quest_scoped,evaluate}.rs`)
+   left the list: each parent survives as a ~1000-LOC (effects) or ~30-LOC (components) hub, none of the new children over
+   1100. Watch-list within 5%: `crates/nif/src/import/types.rs` (1997), `crates/scripting/examples/mq101_conformance.rs` (1974),
+   `crates/audio/src/lib.rs` (1977), `crates/debug-ui/src/panels.rs` (1952), `crates/plugin/src/esm/records/misc/world.rs` (1912),
+   `crates/renderer/src/vulkan/context/init.rs` (1879), `byroredux/src/asset_provider/material/merge.rs` (1860); test-heavy >2000: 84.
    A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
@@ -138,7 +143,7 @@ consolidation site (an existing helper to extend, or the new one and its callers
 **Look for**: block-parser scaffolding (header → field → fixup) repeated across `crates/nif/src/blocks/`; texture-upload
 chains (BC1/BC3/BC5/RGBA) and image-layout barrier sequences repeated per pass in `crates/renderer/src/vulkan/`
 (`vulkan/image.rs` `GpuImage` and the shared barrier helpers are the consolidation targets — a pass that still
-hand-rolls create/bind/destroy is a candidate); `vk::WriteDescriptorSet` builder boilerplate; ESM sub-record parse loops
+hand-rolls create/bind/destroy is a candidate); `vk::WriteDescriptorSet` / `DescriptorSetLayoutBinding` builder boilerplate (one home since #5593, c6d36b4e7: `descriptors::{layout_binding,compute_binding,write_*}`, `vulkan/mod.rs`'s shared `try_or_cleanup!` and `GpuBuffer::create_per_frame_uniforms`, pinned by `passes_build_layouts_writes_and_teardown_through_the_shared_helpers` — a pass that re-spells the five-line binding chain or a local cleanup macro is a regression; the bindless texture layout is the one deliberate exception); ESM sub-record parse loops
 across `crates/plugin/src/esm/records/`; AI-procedure systems sharing scaffolding; near-identical per-game HUD/profile
 tables; source-scan helpers (`production_text`, `production_text_or_whole`, `strip_test_modules`, `count_identifier`) have ONE
 home, `crates/core/src/source_scan.rs` (#5100, 655b317c9; #5469, 334458b3f routed the ~40 surviving inline cuts through it) — a
@@ -268,8 +273,9 @@ cargo machete 2>/dev/null || echo "cargo machete not installed — scan Cargo.to
   the pin; wasmtime 49's MSRV is exactly 1.96.0, 15a6b1d2d, so the pin can rise but not fall). A red gate is a finding:
   list each failing lint and file, plus the crates it left unlinted — `--keep-going` lints every crate that still
   compiles, but a crate red under clippy leaves its dependents unchecked (a red `byroredux-nif` skips the bin).
-  Run `--all-targets --keep-going` too; test/example-target lints are outside the CI gate — report them as a
-  lower-priority bucket (the workspace example build itself went red once, the #3894 class, 530c9e7aa). Check every
+  CI also runs `--all-targets --keep-going` as a NON-blocking step (`continue-on-error`, #5621, a3ccd68fb: test/example-target
+  lints re-accumulate on active days; both forms were re-zeroed in 9896b1cf7 / 8b0b922f5) — a red non-blocking step is a
+  lower-priority bucket, not a gate failure (the workspace example build itself went red once, the #3894 class, 530c9e7aa). Check every
   `#[allow(clippy::…)]` carries a reason comment (the house style for `too_many_arguments`).
 - Each `#[allow(dead_code)]`: called now or still dead? Delete if dead. `pub fn` in a private module nobody imports (`cargo +nightly rustc -p <crate> -- -W unused`);
   `mod.rs`/`lib.rs` re-exports with no consumer; `_`-prefixed params that survived a refactor (delete, do not rename);

@@ -51,7 +51,7 @@ constraint CInfo decode is a NIF seam).
    nightly per title in `.github/workflows/real-data-gates.yml` (`BYROREDUX_REQUIRE_GAME_DATA=1`,
    so an absent corpus is a failed job). Locally: one title at a time,
    `BYROREDUX_<GAME>_DATA=<Data dir> cargo test -p byroredux-nif --test per_block_baselines <game> -- --ignored --nocapture`.
-   Still true 2026-10-10: the workflow parses since d98769436 (#4619, closed), but no
+   Still true 2026-10-15: the workflow parses since d98769436 (#4619, closed), but no
    `byroredux-game-data` self-hosted runner is registered (repo runner count 0) — every scheduled
    run queues and is cancelled at 24 h, so **no nightly result exists** (the corpus jobs now run `--no-fail-fast`, fa2af0e89, #5660, so one red test binary no longer hides the ones after it). A green default
    `cargo test` says nothing about parse rates; run the gate locally.
@@ -166,11 +166,17 @@ First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archiv
   regenerates after an intentional change. `run_baseline` compares each TSV's own `total=` header
   (`baseline_corpus_total`) against the walked corpus *before* the per-type comparator, so an
   install that grew or shrank fails naming the corpus drift rather than reading as parser loss
-  (#4628). Known-open harness gaps (dedup, do not re-file): the #5260 `total_blocks` pin
-  measures parser output, so a truncation regression reads as "corpus drift" (#5438);
-  `open_mesh_archive` and the Oblivion drift corpus still treat present-but-unopenable as
-  absent (#5439); the #5259 scan only matches the `ends_with(".nif")` spelling, so `nif_stats`'
-  directory mode still walks `.nif` only (#5440).
+  (#4628). The #5260 file-count pin: `diagnose_corpus` (`tests/block_coverage_baselines.rs`)
+  compares the NIF file count against that same `total=` header, so a `total_blocks` move on a
+  *matching* install reports as a **parser delta** (fewer / more — investigate before
+  regenerating), and only a file-count mismatch reads as corpus drift (92ad8247d, #5438).
+  `open_present_archive` (`tests/common/mod.rs`) owns the present-but-unopenable panic for
+  `open_mesh_archive`, `open_all_mesh_archives` and the Oblivion drift corpus, which now resolves
+  its directory through `game_data_dir` (5f414d681, #5439; `open_optional_mesh_archives` alone
+  still logs and continues, by design). `nif_stats`' directory mode routes through
+  `corpus::is_nif_entry` and the #5259 scan also rejects `eq_ignore_ascii_case("nif")` and
+  `== / != "nif"` compares (ffa85a0b4, #5440; pinned by
+  `the_corpus_scan_knows_both_hand_rolled_spellings`). Regression guards, not open gaps.
 - `kfm.rs` (KFM binary catalog, v1.2.0.0–2.2.0.0, transcribed from `NiKFMTool::ReadBinary`)
   has no engine consumer today — audit for version-gate fidelity and `allocate_vec` bounds
   only (its `read_cstring` bounds the `i32` length against remaining bytes and
@@ -288,7 +294,9 @@ from the data block's `sub_parts`, #5541);
   until a canonical joint kind exists (`docs/engine/physal.md`).
 - **`BSLightingShaderProperty::parse`** is a thin `bsver` dispatcher → `parse_skyrim`
   (83–129) / `parse_fo4` (130–154) / `parse_fo76_plus` (≥155); each reads only its own field
-  set; per-`shader_type` trailing count (0–7) matches nif.xml. Starfield captures
+  set; per-`shader_type` trailing count (0–7) matches nif.xml (`parse_shader_type_data_fo4`
+  handles only the FO4-specific types and delegates every "same as Skyrim" arm to
+  `parse_shader_type_data`, b99db0f11 #5737 — a duplicated arm is the regression). Starfield captures
   `starfield_tail` to `block_size`. The material-reference stub gate is `!name.is_empty()`
   for `bsver >= STARFIELD` (stubs are `.mat` names; the only suffix-less ones are the bare
   `Materials\` directory, not content hashes — #4439) but the suffix-aware
@@ -346,9 +354,9 @@ exactly for a `VF_TANGENTS | VF_NORMALS` descriptor and not otherwise, both pack
   input, admitted first against `STREAM_PARSE_INPUT_BYTES` (64 MiB) by the archive-declared size
   (`mesh_declared_size`) so nothing is allocated before admission; cells with < 8 fresh inputs
   keep a serial fast path. A coordinator-side extract-all barrier returning is the regression
-  (its doc comment was corrected to the per-task extract in 3deda6bb7, #5063). Known-open #5442:
-  the #5092 `streaming.rs` split dropped #1171's compile-time `PartialNifImport: Send`
-  assertion (still enforced at the channel send).
+  (its doc comment was corrected to the per-task extract in 3deda6bb7, #5063). Regression guard:
+  #1171's compile-time `PartialNifImport: Send` assertion (restored beside the struct in
+  `byroredux/src/streaming/mod.rs`, 7de61c2c2, #5442, after the #5092 split dropped it).
 - `NifStream` caps any single file-driven allocation (256 MB); confirm new readers route
   through the capped helpers, not raw `vec![0; n]`.
 - **B-spline resampling** (`anim/bspline.rs`) is import-side allocation the stream cap never

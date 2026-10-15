@@ -34,7 +34,10 @@ several read guards into one block for speed (#4616) reddens the lane. The `-p b
 on three production inversions — a gather taking `GlobalTransform` before `Transform` (every mover takes
 `Transform` first), a hair head-mount holding `MeshHandle` + `Children` across a `Parent` walk, a seated
 restore holding `Furniture` across a `GlobalTransform` read — and was re-greened by #5535 `1cb12fb3d`; a new
-multi-storage gather is the regression shape.
+multi-storage gather is the regression shape. Known-open #5032 (LOW): two *test* bodies
+(`save_io/round_trip_tests.rs`, `crates/scripting/src/scene/quest_alias_tests.rs`) hold a guard across a second
+acquisition and supply the closing back edge of the 2026-09 cycles; the lane is green without them closing one
+today, but they are the first suspects if it reddens.
 
 A wrong lock order is HIGH. This dimension owns the *machinery*; system-level cycles, canonical-order
 adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
@@ -121,7 +124,8 @@ First step: `grep -n 'unsafe' crates/core/src/ecs/query.rs` (expect exactly 4 de
   `collect_subtree_terminates_on_a_cycle`) landed with #5513 `9da80470d`: `retry_cinematic_readoption`,
   `loading_screen.rs`, `cinematic_retained_entities` / the unload purge (`cell_loader/unload.rs`),
   `release_finished_tethers` and `subtree_entities_under` all route through it. Nothing mechanical forces a new
-  whole-subtree walk to use it — grep for hand-rolled `Children` stacks.
+  whole-subtree walk to use it — grep for hand-rolled `Children` stacks; known-open #5713 (LOW): five survive
+  (`cell_loader/unload.rs`, `player_body.rs` among them), one written after the collector landed.
 
 ### 4. Resources & World-Level State
 
@@ -171,9 +175,10 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   `every_parallel_system_declares_everything_it_acquires` scans each parallel system's body (same-file
   callees to depth 3, plus the explicit cross-file hops in `PARALLEL_SYSTEMS`) and fails if an acquired
   type is missing from its `Access`; `the_parallel_system_table_covers_every_parallel_registration`
-  fails when an `add_to_with_access` lands outside the table; four exclusive fns are covered too
+  fails when an `add_to_with_access` lands outside the table; five exclusive fns are covered too
   (`npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`,
-  `npc_dialogue_selection_system` — #5307, plus its `play_line_voice` / `raise_hello_story_event`
+  `equipment_appearance_system` — its mid-life gear-import hop into `npc_spawn/loot_appearance.rs`, #5069
+  `9355fcb5c` — and `npc_dialogue_selection_system` — #5307, plus its `play_line_voice` / `raise_hello_story_event`
   cross-file hops since #5414 `9d8fd4cc9` and the cross-crate `evaluate_function` condition-evaluator hop since
   #5649 `197a9e245`, which added 18 acquisitions to its row), `footstep_system`'s `PhysicsWorld` /
   `RapierHandles` reads (`footstep_declares_its_physics_reads`, #5556 `ac710964e`), and
@@ -186,6 +191,8 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   RELEASE `assert_eq!`s in `install_runtime_registries` (#1394/#1602/#2690) — not `debug_assert!`, not a
   log line. Confirm the guards are live: `rg -n '#\[ignore' byroredux/src/scheduler_access_tests.rs byroredux/src/boot/schedule/mod.rs` returns nothing, and `PARALLEL_SYSTEMS.len()` equals the
   `add_to_with_access(` count.
+  The `player_controller_system` row's cross-file hops include `raise_kill_story_event` (the drowning death's
+  `StoryEvent` write + cell-context reads, #5641 `17a84f442`).
   **What the guard cannot see** (audit these by hand for every parallel system and any exclusive being
   promoted to parallel): it matches only single-type turbofish `query` / `query_mut` / `resource` /
   `resource_mut` (+ `try_`), `.get` / `.get_mut` / `.has` (#4994) and the generic
@@ -209,11 +216,16 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   new caller must name a system with no same-frame producer/consumer dependency.
   `add_*` warns on duplicate names; `try_add_*` returns `Err(name)` across the flat name space (#312).
 - Cross-stage sequencing (a consumer in an earlier stage than its producer) is invisible to the
-  analyzer — see `/audit-concurrency` Dim 4 for the pinned cases and the by-hand rule.
+  analyzer — see `/audit-concurrency` Dim 4 for the pinned cases and the by-hand rule. The same blind spot
+  covers same-stage order against a one-frame marker: `HitEvent` producers (melee, NPC strike, force-greet,
+  `Weapon.Fire` projectile flight, the VM's `ProcessTrapHit` flush inside the reference/alias script systems)
+  must register before both consumers `combat_damage_system` and `hit_event_system`, or `event_cleanup_system`
+  drains the hit unseen — dart-trap and projectile damage never landed until `ee6468fd1`, now pinned by
+  `hit_event_consumers_run_after_every_producer`. A new producer outside that list needs a name in the test.
 
 ### 6. Hot-Path Performance Invariants (regression guards)
 
-Paths: `crates/core/src/ecs/systems.rs`, `byroredux/src/systems/{animation,audio,bounds}.rs`, `byroredux/src/components.rs`
+Paths: `crates/core/src/ecs/systems.rs`, `byroredux/src/systems/{animation,audio,bounds}.rs`, `byroredux/src/components/audio.rs`
 First step: `cargo test -p byroredux-core ecs::systems`
 
 - **Transform propagation fast path** (#825/#1371, `make_transform_propagation_system`): the cached
@@ -236,9 +248,10 @@ First step: `cargo test -p byroredux-core ecs::systems`
   only when the `Name` count changes (#278); `events` / `seen_labels` scratch is hoisted and
   `clone`d not `mem::take`n (#828). Lock order inside channel apply is content-determined
   (#2399) — do not reintroduce a macro that hides the acquisition order.
-- **`FootstepScratch`** (`byroredux/src/components.rs`): `mem::take` + restore so `Vec` capacity
+- **`FootstepScratch`** (`byroredux/src/components/audio.rs`; `components.rs` is now a thin re-export over per-domain files, #5467): `mem::take` + restore so `Vec` capacity
   survives; a per-frame `Vec::new` regresses (#932). Placement (Late exclusive after
-  `camera_follow_system`) is pinned by `footstep_runs_after_camera_follow_in_late`.
+  `camera_follow_system`) is pinned by `footstep_runs_after_camera_follow_in_late`. Known-open #5714 (LOW): `footstep_system` plays no sound when
+  `PhysicsWorld` is absent although its comments promise the default sound.
 
 ### 7. Component Lifecycles (load/unload, transient, idempotency)
 
@@ -272,10 +285,16 @@ First step: `cargo test -p byroredux --bin byroredux -- rapier_release persisten
   `roster_tests::every_ai_procedure_behavior_component_is_registered`
   (`crates/debug-server/src/registration.rs`, #4063); teardown completeness
   (`clear_ambient_behavior`, `npc_spawn/ai_package.rs`) and behavior semantics are `/audit-gameplay`.
-- **Transient markers**: `ActivateEvent` / `HitEvent` / `TimerExpired` are removed by
+- **Transient markers** (two-pattern contract, #2672, `crates/scripting/src/cleanup.rs` `contract_tests`):
+  Pattern A markers with no single owning consumer (`ActivateEvent`, `HitEvent`, `SplashEvent`, `RippleEvent`,
+  `TimerExpired`, `AnimationTextKeyEvents`, the `*Batch` / command markers, …) are removed by
   `event_cleanup_system` (Late exclusive, registered after every consumer — pinned by
-  `transient_cleanup_is_the_last_late_exclusive`; a second cleanup site would double-free). Late readers
+  `transient_cleanup_is_the_last_late_exclusive`; a second cleanup site would double-free); Pattern B markers
+  (`StoryEvent`, the scene-package batches, …) drain in their one consumer and must not also be listed in
+  the cleanup. The cleanup system also resets the Papyrus `VmFrameBudget` (#5763). Late readers
   now include `equipment_appearance_system` and `npc_dialogue_selection_system`. `timer_tick_system` never accumulates negative time.
+  Known-open #5647 (MEDIUM): `StoryEvent` is one slot per entity with several producers (CLOC, KILL, scripted
+  kills), so two player-keyed events in one frame overwrite each other.
 - **`AnimationClipRegistry`** (`animation/registry.rs`): interns by ASCII-lowercased path (#790) so
   streaming does not grow it; `release()` clears a slot but never returns it — no free list, by design
   (#2689), because a released handle may still sit on an `AnimationPlayer` / `AnimationLayer`. Every
@@ -337,8 +356,18 @@ blending, root-motion split and text-key dispatch, driven by an ECS system.
 - **`sample_blended_transform`** is the per-bone-per-frame hot path: no allocation, single-layer
   short-circuit bit-identical to the general path (#3706,
   `single_layer_short_circuit_matches_two_pass_output`). Cost belongs to `/audit-performance`.
+- **Layer masks**: `AnimationLayer::bone_weights` + `AnimationStack::bone_index` (runtime-only, `serde(skip)`,
+  rebuilt by the owning behavior graph) scale a layer per bone through `bone_layer_weight`; `None` is the
+  unmasked path, and a bone the mask does not index counts in full. All three weight sites in
+  `sample_blended_transform` (single-layer short-circuit included) must go through it
+  (`bone_weights_mask_a_layer_per_bone`).
 - **Root motion**: `split_root_motion` applies once per tick and is drained — an undrained
-  `RootMotionDelta` integrates every frame.
+  `RootMotionDelta` integrates every frame. A blended stack's per-tick accumulation-root delta is the
+  weight-averaged `sampled_root_motion_delta` across every layer whose clip carries that root, not the
+  heaviest layer's alone (`animation_stack_root_motion_is_the_weighted_mix_of_its_layers`).
+- **Clip sinks**: the loose-NIF, KF and cell-REFR spawn sites attach a clip's non-transform channels and read
+  its start phase through `anim_convert::attach_clip_sinks` / `clip_start_phase` (#5590 `d58e7dbad`, pinned by
+  a source-scan test) — a hand-rolled fourth copy is the drift.
 - **Text keys**: `visit_stack_text_events` (`stack.rs`) emits each key exactly once across a loop
   wrap and still emits when one large `dt` spans several key times.
 - **Interpolation** (`interpolation.rs`): `find_key_pair` at t < first / t > last key; quaternion

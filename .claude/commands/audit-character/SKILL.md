@@ -31,7 +31,7 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   actor_value_derive.rs`, `crates/plugin/src/esm/records/actor/mod.rs` (`effective_actor_level`),
   `crates/plugin/src/equip.rs` (`resolve_inherited_*`), `byroredux/src/cell_loader/references/`,
   `byroredux/src/inventory.rs` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/
-  `Background`/`SpellList`/`RaceSpells` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`),
+  `Background`/`SpellList`/`RaceSpells` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`, `grant_experience`),
   `byroredux/src/commands/{actor_value,condition}.rs`.
 - Handoff: gameplay writers of `ActorValues` (consumables, restoration, combat — `byroredux/src/
   {inventory,combat}.rs`, `systems/restoration.rs`) belong to `/audit-gameplay`; CHARAL owns only whether
@@ -49,12 +49,14 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   documented conservative choice (#2937, closed as documented), disclosed in place and pinned.
 - VATS runtime (AP pool/regen, time-pause, limb health, hit roll) absent; only AP *formulas* exist.
 - Regen: `PoolRegenConfig` has **zero production insertion sites** (`pool_regen_tick_system` is
-  registered and early-returns on every game); `affliction_tick_system` has no scheduler registration; no
-  runtime level-up system (`level_cap()` has no consumers). Verify still true; a change is a wiring
-  event (Dim 5 doc sweep).
+  registered and early-returns on every game); `affliction_tick_system` has no scheduler registration.
+  Verify still true; a change is a wiring event (Dim 5 doc sweep). Level-up is no longer absent: M47.2's
+  `grant_experience` (`byroredux/src/combat.rs`, shared by Fallout kill experience and `levelup xp`) rolls
+  levels by `LevelingModel::xp_to_next` up to `level_cap()` and banks `skill_point_reward` into the saved
+  `LevelUpPoints` (Dim 3/4) — FO3/FNV/FO4 only; the TES models have no XP-driven roll.
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-10-12) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
+- Open (verified 2026-10-15) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
   #4232 (`effective_actor_level` returns 0 verbatim). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
@@ -142,8 +144,14 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
 Paths: `crates/core/src/character/{leveling,regen,affliction,reputation,components,skyrim,tes}.rs`
 First step: `cargo test -p byroredux-core character::leveling character::regen character::affliction character::reputation`
 - **Leveling**: three models (Fallout `XpCurve`, classic-TES `SkillUse`, Skyrim `SkillXp`) are enum *data*
-  variants with one consumer-side match; `level_cap()==0` = uncapped identically in all three (no consumer
-  exists yet — the off-by-one duty is future). Skyrim `with_gmst` requests exactly
+  variants with one consumer-side match; `level_cap()==0` = uncapped identically in all three; its one consumer is
+  `grant_experience` (`byroredux/src/combat.rs`: `capped = level_cap() > 0 && level >= level_cap()`, FO3 20 /
+  FNV 30 — the off-by-one duty is live, so verify a level-`cap` player does not roll to `cap + 1`). Fallout
+  rewards: `LevelingModel::skill_point_reward` (FO3 `10 + INT`, perk every level; FNV `10 + INT/2`, perk every
+  other level; FO4 `SpecialOrPerk` → no points, one perk; `None` for the TES models) banks into `LevelUpPoints`
+  (`character/components.rs`; the half point rides in `skill_point_fraction` via `grant_skill_points`; pin
+  `skill_point_rewards_follow_each_fallout`), with perk hook 10 (Adjust Gained Skill Points) composed at the
+  consumer, not in the ruleset. Skyrim `with_gmst` requests exactly
   `["fXPLevelUpBase","fXPLevelUpMult"]`; `xp_per_skill_rank` is a fixed engine coefficient *by design*
   (do not re-flag). Oblivion attribute-bonus banding + 10-major-skill-ups; Skyrim pool base 100, +10/level
   (`SKYRIM_POOL_BASE`, `pool_pick_gain`); `Perks::try_set_rank` rejects out-of-range rather than clamping.
@@ -169,8 +177,9 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   Template Actors array (`NpcRecord::template_actors: [u32; 13]`, 0 = use the `TPLT` default) and
   `walk_inherited_records` picks the flag's own entry when non-zero (#5498 `99c22a8db`; FO4-only data, no game
   branch — pinned by `crates/plugin/src/equip.rs` tests). Since #4457 the population boundary resolves
-  every category once through `ResolvedNpc::resolve` (`crates/plugin/src/equip.rs`) and consumers read the
-  resolved type; the guard pins production `resolve_inherited_*` calls per file (two left, both pre-spawn
+  every category once through `ResolvedNpc::resolve` (`crates/plugin/src/equip.rs`; M47.2 added the
+  `base_data` terminal for "Use Base Data", `TEMPLATE_FLAG_USE_BASE_DATA`, which carries Essential/Protected)
+  and consumers read the resolved type; the guard pins production `resolve_inherited_*` calls per file (two left, both pre-spawn
   race boundaries: `cell_loader/references/mod.rs` and `player_body.rs`, the latter joined in #5047
   `c20dcdb04`, which also moved the player's level/Background/outfit reads onto the Use-Stats/Use-Traits/
   Use-Inventory terminals) — a new direct call or a raw `npc.<field>` read is the recurrence
@@ -182,9 +191,12 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   `stamp_spell_list`, so `RaceSpells` was absent and the scripted `AddRaceSpells`/`RemoveRaceSpells` pair no-oped
   until `attach_to_player` stamped it from `resolve_racial_spells`). The player now carries `CharacterLevel`/`Background`
   from the resolved Player record (#4678); `CharacterLevel` is saved since M47.2's kill experience (v46),
-  which retired #2947's `validate_progression_state` guard. The player's `FactionRanks` is re-derived from the record
-  (Use-Factions terminal) on load, not saved (#5058 `be3cd9468`) — a scripted rank edit is lost on load by
-  design, exactly as for a respawned NPC.
+  which retired #2947's `validate_progression_state` guard; `LevelUpPoints` is saved too (`38539eee8`). The
+  player's `FactionRanks` is re-derived from the record (Use-Factions terminal) on load, not saved (#5058
+  `be3cd9468`); scripted edits (`FactionRanks::set_rank` / `remove`, Papyrus `SetFactionRank` /
+  `RemoveFromFaction`) are instead recorded by reference FormID in the saved `ScriptedFactionChanges` ledger
+  (`b3556ef6c`) and replayed on spawn and load — a direct write to `FactionRanks` that bypasses the ledger is
+  lost on load.
 - **Magic modifiers (#4415, closed)**: `byroredux_scripting::magic::apply_constant_modifiers` adds constant-spell
   amounts to an `ActorValues` *permanent modifier* at spawn and on `AddSpell`/`RemoveSpell`. Check it never
   writes base, that add/remove are symmetric, and that no other writer *overwrites* `permanent_mod`
@@ -195,7 +207,9 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   modifier + damage layers compose on top (a modifier-only placeholder entry once read as the bare modifier:
   Finesse CritChance 5). `GetActorValue` (`crates/scripting/src/condition.rs`) and
   `melee_damage_charal_bonus` must both call it; a consumer reading `derived_value` or the raw entry alone is
-  the regression. **Player pools** (#5039): the player's `PlayerOnly` Health/AP base is a *cache* of the
+  the regression. The composer derives its layer term as `value.current() - value.base`, never a hand-summed
+  subset, so a new layer in `ActorValue::current` cannot be missed (#5706 `ad26650ec` — the derived branch had
+  dropped `set_override`; pin `set_override_composes_onto_the_formula`). **Player pools** (#5039): the player's `PlayerOnly` Health/AP base is a *cache* of the
   formula, refreshed by `CharacterRuleset::refresh_player_only_bases` (allocation-free) at stamping, after
   `attach_to_player`'s constant spells, and every frame by `player_derived_stats_system`
   (`byroredux/src/systems/character.rs`, Update) — the one documented exception to computed-on-demand
@@ -221,7 +235,13 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   half is unparsed (#5338 `4957536ba`).
 - Skyrim `derive_skyrim_actor_values`: Health/Magicka/Stamina resolve **independently** (race base +
   signed ACBS offset, own AVIF; `RaceRecord.starting_*` are `Option<f32>`) — a missing pool suppresses
-  only itself. The capture's class/level term is deferred and must be disclosed in place (#4454).
+  only itself. The capture's class/level term is deferred and must be disclosed in place (#4454). It also
+  emits the 18 skills (`7c740eca0`, `derive_skyrim_skills`): auto-calc NPCs = `SKYRIM_BASE_SKILL` 15 + race
+  bonus + the class's `skyrim_skill_weights` share of 8 points/level (`skyrim_class_skill_points`, UESP *CLAS*;
+  capped at 100); a non-auto-calc NPC uses its `DNAM` `skill_values` as written (race bonus not added — the
+  combination is undocumented, so absent, not guessed). `SKYRIM_SKILLS` names the AVIF editor ids; Illusion is
+  `AVMysticism` (`a8dc9e8e6`) — an unresolved skill name drops silently, so the all-18 check
+  `vanilla_skyrim_skill_names_all_resolve_and_a_vanilla_npc_derives_them` (`#[ignore]`d) is the guard.
 - **One ceiling composition**: `ActorValue::undamaged()` (base + set_override + permanent + temporary) is the
   single ceiling; `current()` is `undamaged() − damage`. HUD bar fractions, debug vitals and the SDK projection
   read through it (the SDK folds `set_override` into base — `ActorValueState` has no override slot); a reader that
