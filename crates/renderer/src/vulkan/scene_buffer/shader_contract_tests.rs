@@ -1393,7 +1393,9 @@ fn restir_depth_compatibility_gates_clamp_world_dist_to_match_packed_history() {
     let cases = [
         (
             "temporalDepthCompatible",
-            "abs(rpHistoryDepth.y - min(worldDist, 65504.0)) <= temporalDepthTolerance",
+            // The plane-distance form multiplies this difference by |N·V|
+            // before comparing; the clamp is what this pin guards.
+            "abs(rpHistoryDepth.y - min(worldDist, 65504.0))",
         ),
         (
             "spatialDepthCompatible",

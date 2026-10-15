@@ -3544,8 +3544,21 @@ void main() {
                 // `worldDist` diverges as soon as either point passes
                 // 65504 BU, permanently failing this gate beyond that
                 // range. Clamp `worldDist` the same way before comparing.
+                //
+                // Compare the distance between the two points' PLANES, not
+                // along the view ray: the ray-distance difference times |N·V|,
+                // as the decal substrate test below does. Even a parked camera
+                // jitters every frame, and at a grazing angle half a pixel of
+                // jitter moves the sample several units along the ray on a
+                // flat floor — the raw ray-distance gate rejected the whole
+                // mid-distance floor at random each frame (a black band of
+                // permanently short history under `restir_history` with jitter
+                // on), re-rolling its shadow every frame. A point on another
+                // surface behind a partition is still off this plane.
                 bool temporalDepthCompatible =
-                    abs(rpHistoryDepth.y - min(worldDist, 65504.0)) <= temporalDepthTolerance;
+                    abs(rpHistoryDepth.y - min(worldDist, 65504.0))
+                        * max(abs(dot(geomN, V)), 0.1)
+                    <= temporalDepthTolerance;
                 bool sameSurface = rpSurfaceId == surfaceId
                     && temporalDepthCompatible
                     && dot(geomN, rpGeomN) >= TEMPORAL_NORMAL_COS;
