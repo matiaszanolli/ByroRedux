@@ -1463,27 +1463,10 @@ fn build_debug_ui_snapshot(
     include_inventory: bool,
     include_dialogue: bool,
 ) -> byroredux_debug_ui::PanelSnapshot {
+    // #5822 — the panels read core's snapshot type directly.
     let metrics = world
         .try_resource::<byroredux_core::ecs::MetricsSnapshot>()
-        .map(|m| byroredux_debug_ui::panels::MetricsSnapshotView {
-            sampled_at_secs: m.sampled_at_secs,
-            cpu_pct: m.cpu_pct,
-            ram_used_mb: m.ram_used_mb,
-            ram_total_mb: m.ram_total_mb,
-            process_ram_mb: m.process_ram_mb,
-            vram_used_mb: m.vram_used_mb,
-            vram_reserved_mb: m.vram_reserved_mb,
-            vram_budget_mb: m.vram_budget_mb,
-            gpu_busy_pct: m.gpu_busy_pct,
-            gpu_memory_busy_pct: m.gpu_memory_busy_pct,
-            driver_vram_used_mb: m.driver_vram_used_mb,
-            driver_vram_total_mb: m.driver_vram_total_mb,
-            vulkan_heap_used_mb: m.vulkan_heap_used_mb,
-            vulkan_heap_budget_mb: m.vulkan_heap_budget_mb,
-            gpu_pass_ms: m.gpu_pass_ms.iter().map(|(k, v)| (k.clone(), *v)).collect(),
-            cpu_pass_ms: m.cpu_pass_ms.iter().map(|(k, v)| (k.clone(), *v)).collect(),
-            top_systems_ms: m.top_systems_ms.clone(),
-        });
+        .map(|m| m.clone());
 
     let entities = if refresh_entities {
         // Resolve `Name` through the world's StringPool — `Name`

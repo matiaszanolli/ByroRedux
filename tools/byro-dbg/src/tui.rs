@@ -23,7 +23,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use byroredux_debug_protocol::{wire, DebugRequest, DebugResponse, EntityInfo};
+use byroredux_debug_protocol::{wire, DebugRequest, DebugResponse, EntityInfo, MetricsPayload};
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -166,35 +166,13 @@ impl ConsolePane {
 /// Whole-app state for the TUI run loop.
 struct App {
     tab: Tab,
-    metrics: Option<MetricsView>,
+    // #5822 — stored as received; no third hand-synced flatten.
+    metrics: Option<MetricsPayload>,
     entities: Option<Vec<EntityInfo>>,
     loader: LoaderForm,
     console: ConsolePane,
     status: String,
     should_quit: bool,
-}
-
-/// Flattened metrics snapshot for the UI — same fields as the
-/// protocol response, copied at receive so the renderer doesn't have
-/// to pattern-match the variant every frame.
-struct MetricsView {
-    sampled_at_secs: u64,
-    cpu_pct: f32,
-    ram_used_mb: u64,
-    ram_total_mb: u64,
-    process_ram_mb: u64,
-    vram_used_mb: u64,
-    vram_reserved_mb: u64,
-    vram_budget_mb: u64,
-    gpu_busy_pct: Option<f32>,
-    gpu_memory_busy_pct: Option<f32>,
-    driver_vram_used_mb: Option<u64>,
-    driver_vram_total_mb: Option<u64>,
-    vulkan_heap_used_mb: Option<u64>,
-    vulkan_heap_budget_mb: Option<u64>,
-    /// `None` per-entry means the bracket didn't run this snapshot
-    /// cycle. #2513 / REN-D20-NEW-03.
-    gpu_pass_ms: Vec<(String, Option<f32>)>,
 }
 
 impl App {
@@ -212,40 +190,8 @@ impl App {
 
     fn handle_response(&mut self, resp: DebugResponse) {
         match resp {
-            DebugResponse::Metrics {
-                sampled_at_secs,
-                cpu_pct,
-                ram_used_mb,
-                ram_total_mb,
-                process_ram_mb,
-                vram_used_mb,
-                vram_reserved_mb,
-                vram_budget_mb,
-                gpu_busy_pct,
-                gpu_memory_busy_pct,
-                driver_vram_used_mb,
-                driver_vram_total_mb,
-                vulkan_heap_used_mb,
-                vulkan_heap_budget_mb,
-                gpu_pass_ms,
-            } => {
-                self.metrics = Some(MetricsView {
-                    sampled_at_secs,
-                    cpu_pct,
-                    ram_used_mb,
-                    ram_total_mb,
-                    process_ram_mb,
-                    vram_used_mb,
-                    vram_reserved_mb,
-                    vram_budget_mb,
-                    gpu_busy_pct,
-                    gpu_memory_busy_pct,
-                    driver_vram_used_mb,
-                    driver_vram_total_mb,
-                    vulkan_heap_used_mb,
-                    vulkan_heap_budget_mb,
-                    gpu_pass_ms,
-                });
+            DebugResponse::Metrics(payload) => {
+                self.metrics = Some(payload);
             }
             DebugResponse::EntityList { entities } => {
                 self.entities = Some(entities);

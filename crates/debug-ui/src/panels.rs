@@ -54,7 +54,9 @@ pub struct PanelSnapshot {
     /// state. `None` (or empty) means no running quest has a displayed,
     /// unfinished objective.
     pub objectives: Option<Vec<ObjectiveView>>,
-    pub metrics: Option<MetricsSnapshotView>,
+    /// #5822 — core's snapshot directly; debug-ui depends on core, so
+    /// no hand-synced view copy is needed.
+    pub metrics: Option<byroredux_core::ecs::MetricsSnapshot>,
     /// Deterministically ordered clone of the universal settings registry.
     /// Settings are small and only cloned while the overlay is visible.
     pub settings: Vec<SettingEntry>,
@@ -378,39 +380,6 @@ pub fn draw_player_message(ctx: &Context, message: &str) {
         });
 }
 
-/// Local twin of `byroredux_core::ecs::MetricsSnapshot` — the
-/// debug-ui crate doesn't depend on core's resource types directly
-/// (the binary owns the conversion). Same field semantics.
-#[derive(Default, Clone)]
-pub struct MetricsSnapshotView {
-    pub sampled_at_secs: u64,
-    pub cpu_pct: f32,
-    pub ram_used_mb: u64,
-    pub ram_total_mb: u64,
-    pub process_ram_mb: u64,
-    pub vram_used_mb: u64,
-    pub vram_reserved_mb: u64,
-    pub vram_budget_mb: u64,
-    pub gpu_busy_pct: Option<f32>,
-    pub gpu_memory_busy_pct: Option<f32>,
-    pub driver_vram_used_mb: Option<u64>,
-    pub driver_vram_total_mb: Option<u64>,
-    pub vulkan_heap_used_mb: Option<u64>,
-    pub vulkan_heap_budget_mb: Option<u64>,
-    /// `None` per-entry means the bracket didn't run this snapshot
-    /// cycle — distinct from `Some(0.0)`, a bracket that genuinely
-    /// completed sub-microsecond. #2513 / REN-D20-NEW-03.
-    pub gpu_pass_ms: Vec<(String, Option<f32>)>,
-    /// CPU-side per-frame wall-clock breakdown
-    /// (`fence_wait` / `submit_present` / `cmd_record` / etc.).
-    /// Surfaces operations the GPU TIMESTAMP brackets can't see —
-    /// fence-blocked waits, present stalls, host-side recording.
-    pub cpu_pass_ms: Vec<(String, f32)>,
-    /// Per-system wall-time of the most recent `Scheduler::run`,
-    /// sorted desc by ms. Surfaces the ECS system that dominates
-    /// `atw_scheduler_ms` when that bracket reads ~500 ms. Phase 11.
-    pub top_systems_ms: Vec<(String, f32)>,
-}
 
 /// Actions the panels asked the App to perform. Drained by the
 /// binary after [`DebugUiState::run`] returns.
@@ -1478,7 +1447,7 @@ fn sanitize_material(mut value: MaterialValue) -> MaterialValue {
     value
 }
 
-fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
+fn draw_metrics(ui: &mut egui::Ui, snap: Option<&byroredux_core::ecs::MetricsSnapshot>) {
     let Some(m) = snap else {
         ui.label("Waiting for first metrics sample…");
         return;
@@ -1922,7 +1891,7 @@ const NESTED_GPU_BRACKETS: &[&str] = &["volumetrics_inject", "volumetrics_integr
 
 /// The overlay's "GPU passes Σ": every bracket that ran this cycle (#2513),
 /// excluding [`NESTED_GPU_BRACKETS`] so no pass is counted twice (#4977).
-fn gpu_pass_upper_bound_ms(gpu_pass_ms: &[(String, Option<f32>)]) -> f32 {
+fn gpu_pass_upper_bound_ms(gpu_pass_ms: &std::collections::BTreeMap<String, Option<f32>>) -> f32 {
     gpu_pass_ms
         .iter()
         .filter(|(name, _)| !NESTED_GPU_BRACKETS.contains(&name.as_str()))

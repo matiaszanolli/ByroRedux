@@ -213,8 +213,10 @@ pub fn print_response(response: &DebugResponse) {
             }
             println!("({} components)", components.len());
         }
-        DebugResponse::Metrics {
-            sampled_at_secs,
+        DebugResponse::Metrics(payload) => {
+            let byroredux_debug_protocol::MetricsPayload {
+                sampled_at_secs,
+
             cpu_pct,
             ram_used_mb,
             ram_total_mb,
@@ -229,7 +231,8 @@ pub fn print_response(response: &DebugResponse) {
             vulkan_heap_used_mb,
             vulkan_heap_budget_mb,
             gpu_pass_ms,
-        } => {
+            } = payload;
+
             println!("Metrics (sampled at unix={}):", sampled_at_secs);
             println!("  CPU: {:.1}% (whole-process)", cpu_pct);
             println!(

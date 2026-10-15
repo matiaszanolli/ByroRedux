@@ -182,7 +182,7 @@ mod tests {
         use crate::GameProfile;
 
         let cases = vec![
-            DebugResponse::Metrics {
+            DebugResponse::Metrics(crate::MetricsPayload {
                 sampled_at_secs: 1_700_000_000,
                 cpu_pct: 42.5,
                 ram_used_mb: 8192,
@@ -204,7 +204,7 @@ mod tests {
                     // round-trips as `None`/JSON `null`, not `0.0`.
                     ("taa".to_string(), None),
                 ],
-            },
+            }),
             DebugResponse::GameProfiles {
                 profiles: vec![GameProfile {
                     key: "fnv".to_string(),

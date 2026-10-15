@@ -1625,12 +1625,14 @@ fn both_dispatch_paths_build_the_filter_through_one_call_site() {
             .matches("apply_underwater_filter(&mut track_builder, underwater)")
             .count(),
         1,
-        "the underwater filter helper must be called from exactly the one          shared track build (#3179, #5738)"
+        "the underwater filter helper must be called from exactly the one \
+         shared track build (#3179, #5738)"
     );
     assert_eq!(
         lib_rs.matches("build_spatial_track(").count(),
         3, // definition + both dispatch loops
-        "both dispatch paths must build their spatial track through          build_spatial_track (#5738)"
+        "both dispatch paths must build their spatial track through \
+         build_spatial_track (#5738)"
     );
 }
 

@@ -171,7 +171,7 @@ fn eval_metrics(world: &World) -> DebugResponse {
             "MetricsSnapshot resource not present (was metrics_sample_system registered?)",
         );
     };
-    DebugResponse::Metrics {
+    DebugResponse::Metrics(byroredux_debug_protocol::MetricsPayload {
         sampled_at_secs: snap.sampled_at_secs,
         cpu_pct: snap.cpu_pct,
         ram_used_mb: snap.ram_used_mb,
@@ -194,7 +194,7 @@ fn eval_metrics(world: &World) -> DebugResponse {
             .iter()
             .map(|(k, v)| (k.clone(), *v))
             .collect(),
-    }
+    })
 }
 
 /// Push a load request onto the `PendingDebugLoadSlot`. Returns `Ok`

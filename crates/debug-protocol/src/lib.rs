@@ -241,49 +241,40 @@ pub enum DebugResponse {
     /// in lockstep with the core type by hand; the
     /// `metrics_response_mirrors_core_snapshot` test in the server
     /// pins the field set so a one-sided drift breaks the build.
-    Metrics {
-        /// Unix-epoch seconds at which the engine refreshed the
-        /// underlying snapshot. Zero before the first 2 Hz tick.
-        sampled_at_secs: u64,
-        /// Whole-process CPU usage in percent (0..N*100 across N cores).
-        cpu_pct: f32,
-        /// System-wide RAM used / total in MB.
-        ram_used_mb: u64,
-        ram_total_mb: u64,
-        /// Engine process RSS in MB.
-        process_ram_mb: u64,
-        /// GPU memory allocated / reserved by gpu-allocator in MB.
-        vram_used_mb: u64,
-        vram_reserved_mb: u64,
-        /// Sum of `DEVICE_LOCAL` heap capacities, in MB. Constant
-        /// after device pick.
-        vram_budget_mb: u64,
-        /// NVIDIA GPU busy percentage and driver-wide framebuffer memory.
-        /// `None` means NVML is unavailable or the Vulkan adapter could not
-        /// be matched uniquely.
-        gpu_busy_pct: Option<f32>,
-        gpu_memory_busy_pct: Option<f32>,
-        driver_vram_used_mb: Option<u64>,
-        driver_vram_total_mb: Option<u64>,
-        /// Live DEVICE_LOCAL Vulkan heap usage/budget from
-        /// VK_EXT_memory_budget, when exposed by the driver.
-        vulkan_heap_used_mb: Option<u64>,
-        vulkan_heap_budget_mb: Option<u64>,
-        /// Per-pass GPU elapsed time in milliseconds, ordered by
-        /// pass name. Surfaces `SkinCoverageStats::gpu_*_ms` today
-        /// (`"skin"`, `"skin_blas_refit"`, `"taa"`); extensible
-        /// without a wire bump. `None` means the bracket didn't run
-        /// this snapshot cycle — distinct from `Some(0.0)`, a
-        /// bracket that genuinely completed sub-microsecond.
-        /// #2513 / REN-D20-NEW-03.
-        gpu_pass_ms: Vec<(String, Option<f32>)>,
-    },
+    Metrics(MetricsPayload),
     /// Configured game profiles — populated from
     /// `assets/debug_profiles.toml` (engine defaults) merged with
     /// `~/.byroredux/profiles.toml` (per-user overrides). Phase 5.
     GameProfiles { profiles: Vec<GameProfile> },
     /// An error message.
     Error { message: String },
+}
+
+/// #5822 — the wire payload of [`DebugResponse::Metrics`], extracted so
+/// byro-dbg stores it as-is instead of flattening it into a third
+/// hand-synced view struct. Serde's newtype-variant encoding is
+/// transparent, so the JSON shape is unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsPayload {
+    pub sampled_at_secs: u64,
+    pub cpu_pct: f32,
+    pub ram_used_mb: u64,
+    pub ram_total_mb: u64,
+    pub process_ram_mb: u64,
+    pub vram_used_mb: u64,
+    pub vram_reserved_mb: u64,
+    pub vram_budget_mb: u64,
+    pub gpu_busy_pct: Option<f32>,
+    pub gpu_memory_busy_pct: Option<f32>,
+    pub driver_vram_used_mb: Option<u64>,
+    pub driver_vram_total_mb: Option<u64>,
+    pub vulkan_heap_used_mb: Option<u64>,
+    pub vulkan_heap_budget_mb: Option<u64>,
+    /// Per-pass GPU elapsed time in milliseconds, ordered by pass
+    /// name. `None` per-entry means the bracket didn't run this
+    /// snapshot cycle — distinct from `Some(0.0)`, a bracket that
+    /// genuinely completed sub-microsecond. #2513 / REN-D20-NEW-03.
+    pub gpu_pass_ms: Vec<(String, Option<f32>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
