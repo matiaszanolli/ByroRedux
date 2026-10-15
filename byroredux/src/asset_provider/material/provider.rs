@@ -269,6 +269,27 @@ pub(crate) const MAX_FAILED_PATHS: usize = 1024;
 pub(crate) const MAX_MAGIC_CACHE_ENTRIES: usize = 4096;
 
 impl MaterialProvider {
+    /// #5821 — record a failed material path once: the #1430
+    /// half-eviction on cap, the insert, the order-queue push and the
+    /// warn. Four resolve arms carried this block hand-synced (#951 and
+    /// #1430 each had to touch all of them); the eviction-cap policy is
+    /// one edit here now. `what` is built lazily so the non-first
+    /// (already-recorded) failure formats nothing.
+    fn record_failed(&mut self, key: String, what: impl FnOnce() -> String) {
+        half_evict(
+            &mut self.failed_paths_order,
+            self.failed_paths.len(),
+            MAX_FAILED_PATHS,
+            |old| {
+                self.failed_paths.remove(old);
+            },
+        );
+        if self.failed_paths.insert(key.clone()) {
+            self.failed_paths_order.push_back(key);
+            log::warn!("{}", what());
+        }
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             archives: Vec::new(),
@@ -448,23 +469,13 @@ impl MaterialProvider {
                     }
                     Err(parse_err) => {
                         // #1430 — half-eviction: keep the newer half resident.
-                        half_evict(
-                            &mut self.failed_paths_order,
-                            self.failed_paths.len(),
-                            MAX_FAILED_PATHS,
-                            |old| {
-                                self.failed_paths.remove(old);
-                            },
+                        self.record_failed(
+                            key.clone(),
+                            || format!(
+                                "BGSM leaf-only recovery parse failed for '{path}': \
+                                 {parse_err} (self-referential template depth-limit hit)"
+                            ),
                         );
-                        if self.failed_paths.insert(key.clone()) {
-                            self.failed_paths_order.push_back(key);
-                            log::warn!(
-                                "BGSM leaf-only recovery parse failed for '{}': {} \
-                                 (self-referential template depth-limit hit)",
-                                path,
-                                parse_err
-                            );
-                        }
                         return None;
                     }
                 };
@@ -483,18 +494,7 @@ impl MaterialProvider {
             }
             Err(e) => {
                 // #951 / SAFE-26 / #1430 — half-eviction on overflow.
-                half_evict(
-                    &mut self.failed_paths_order,
-                    self.failed_paths.len(),
-                    MAX_FAILED_PATHS,
-                    |old| {
-                        self.failed_paths.remove(old);
-                    },
-                );
-                if self.failed_paths.insert(key.clone()) {
-                    self.failed_paths_order.push_back(key);
-                    log::warn!("BGSM resolve failed for '{}': {}", path, e);
-                }
+                self.record_failed(key.clone(), || format!("BGSM resolve failed for '{path}': {e}"));
                 None
             }
         }
@@ -629,18 +629,10 @@ impl MaterialProvider {
         // "not found" gets the same bookkeeping as "found but failed to
         // parse".
         let Some(bytes) = self.extract_from_archives(&key) else {
-            half_evict(
-                &mut self.failed_paths_order,
-                self.failed_paths.len(),
-                MAX_FAILED_PATHS,
-                |old| {
-                    self.failed_paths.remove(old);
-                },
+            self.record_failed(
+                key.clone(),
+                || format!("BGEM not found in any loaded archive: '{path}'"),
             );
-            if self.failed_paths.insert(key.clone()) {
-                self.failed_paths_order.push_back(key);
-                log::warn!("BGEM not found in any loaded archive: '{}'", path);
-            }
             return None;
         };
         // #4672/#4664 — same diagnostic surface as the BGSM arm.
@@ -669,18 +661,7 @@ impl MaterialProvider {
                 // accumulates more slowly than working BGEM count, but
                 // capping both prevents the unbounded-growth class.
                 // #1430 — half-eviction here too.
-                half_evict(
-                    &mut self.failed_paths_order,
-                    self.failed_paths.len(),
-                    MAX_FAILED_PATHS,
-                    |old| {
-                        self.failed_paths.remove(old);
-                    },
-                );
-                if self.failed_paths.insert(key.clone()) {
-                    self.failed_paths_order.push_back(key);
-                    log::warn!("BGEM parse failed for '{}': {}", path, e);
-                }
+                self.record_failed(key.clone(), || format!("BGEM parse failed for '{path}': {e}"));
                 None
             }
         }
