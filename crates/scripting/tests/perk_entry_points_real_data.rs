@@ -15,9 +15,12 @@ use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::EsmIndex;
 use byroredux_plugin::esm::test_paths;
 use byroredux_scripting::perk_entry_points::{
+
     compose_damage_threshold, compose_entry_point, compose_entry_point_traced, fnv,
     install_perk_entry_points,
 };
+
+mod common;
 
 fn fnv_index() -> Option<EsmIndex> {
     let dir = std::env::var(test_paths::FNV_ENV).unwrap_or_else(|_| test_paths::FNV_DEFAULT.into());
@@ -41,8 +44,10 @@ fn actor_with(index: &EsmIndex, owned: &[(u32, u8)]) -> (World, byroredux_core::
 
 #[test]
 #[ignore = "needs FalloutNV.esm on disk"]
+
 fn vanilla_fnv_perks_compose_as_their_descriptions_say() {
     let Some(index) = fnv_index() else {
+        common::require_or_skip("FalloutNV.esm", &"fnv_index()");
         eprintln!("SKIP: FalloutNV.esm not found");
         return;
     };
@@ -101,6 +106,7 @@ fn vanilla_fnv_perks_compose_as_their_descriptions_say() {
 #[ignore = "needs FalloutNV.esm on disk"]
 fn vanilla_fnv_damage_threshold_perks_compose() {
     let Some(index) = fnv_index() else {
+        common::require_or_skip("FalloutNV.esm", &"fnv_index()");
         eprintln!("SKIP: FalloutNV.esm not found");
         return;
     };
@@ -127,6 +133,7 @@ fn vanilla_fnv_damage_threshold_perks_compose() {
 #[ignore = "needs FalloutNV.esm on disk"]
 fn the_fnv_table_is_populated() {
     let Some(index) = fnv_index() else {
+        common::require_or_skip("FalloutNV.esm", &"fnv_index()");
         eprintln!("SKIP: FalloutNV.esm not found");
         return;
     };

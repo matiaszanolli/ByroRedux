@@ -345,25 +345,6 @@ pub enum Token {
 }
 
 impl Token {
-    /// Returns true if this token can start an expression.
-    pub fn can_start_expr(&self) -> bool {
-        matches!(
-            self,
-            Token::IntLit(_)
-                | Token::FloatLit(_)
-                | Token::StringLit(_)
-                | Token::KwTrue
-                | Token::KwFalse
-                | Token::KwNone
-                | Token::Ident(_)
-                | Token::KwParent
-                | Token::KwSelf
-                | Token::KwNew
-                | Token::LParen
-                | Token::Minus
-                | Token::Bang
-        )
-    }
 }
 
 impl std::fmt::Display for Token {

@@ -15,6 +15,8 @@ use byroredux_scripting::papyrus_demo::quest_advance::da10_main_door;
 use byroredux_scripting::quest_stages::QuestFormId;
 use byroredux_scripting::translate_pex;
 
+mod common;
+
 const SKYRIM_MISC_BSA: &str = "/mnt/data/SteamLibrary/steamapps/common/\
 Skyrim Special Edition/Data/Skyrim - Misc.bsa";
 
@@ -35,8 +37,10 @@ fn extract_pex(stem: &str) -> Option<Vec<u8>> {
 
 #[test]
 #[ignore = "needs Skyrim SE game data on disk"]
+
 fn da10_pex_is_recognized_as_a_quest_stage_gate() {
     let Some(bytes) = extract_pex("DA10MainDoorScript") else {
+        common::require_or_skip("the Skyrim pex archive", &"extract_pex()");
         eprintln!("SKIP: DA10MainDoorScript.pex not found (no game data?)");
         return;
     };
@@ -82,6 +86,7 @@ fn da10_pex_reproduces_hand_builder_byte_for_byte() {
     use byroredux_scripting::papyrus_demo::quest_advance::QuestAdvanceOnActivate;
 
     let Some(bytes) = extract_pex("DA10MainDoorScript") else {
+        common::require_or_skip("the Skyrim pex archive", &"extract_pex()");
         eprintln!("SKIP: DA10MainDoorScript.pex not found (no game data?)");
         return;
     };
@@ -124,6 +129,7 @@ fn an_unrecognized_pex_is_a_silent_miss() {
     // IS recognized, so pick something the catalog doesn't claim: a plain
     // utility script. If it's absent, skip.
     let Some(bytes) = extract_pex("ObjectReference") else {
+        common::require_or_skip("the Skyrim pex archive", &"extract_pex()");
         eprintln!("SKIP: probe script not found (no game data?)");
         return;
     };
@@ -149,6 +155,7 @@ fn default_rumble_pex_is_recognized() {
         PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
     };
     let Some(bytes) = extract_pex("defaultRumbleOnActivate") else {
+        common::require_or_skip("the Skyrim pex archive", &"extract_pex()");
         eprintln!("SKIP: defaultRumbleOnActivate.pex not found (no game data?)");
         return;
     };

@@ -4373,6 +4373,21 @@ fn vm_cost_idle_burst_polling_runaway() {
         let c = vm_cost_us(iters, || crate::fragment_continuation_system(&world, 0.016));
         let d = vm_cost_us(iters, || crate::script_update_system(&world, 0.016, Some(1.0)));
         eprintln!("{n:>8} {a:>14.2} {b:>14.2} {c:>14.2} {d:>14.2}");
+        // #5857 — the census's one hard assertion: an idle frame at 20k
+        // registered references must stay inside a generous wall. This is
+        // not a micro-benchmark gate (CI hardware varies wildly); it exists
+        // so a 100x regression (a per-reference allocation, an accidental
+        // O(n²)) fails instead of merely printing a bigger table. Measured
+        // in the low hundreds of µs per system on the dev machine.
+        if n == 20_000 {
+            for (system, us) in [("ref_events", a), ("quest_frag", b), ("continuation", c), ("script_update", d)] {
+                assert!(
+                    us < 5_000.0,
+                    "{system} took {us:.0} µs/call at 20 000 idle references — \
+                     an order-of-magnitude VM regression"
+                );
+            }
+        }
     }
 
     eprintln!("\nB. burst: OnCellLoad to every attached reference in one frame");

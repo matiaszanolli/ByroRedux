@@ -47,30 +47,6 @@ impl Meters {
     }
 }
 
-/// A finite, non-negative extinction coefficient in inverse metres.
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
-pub struct ExtinctionPerMeter(f32);
-
-impl ExtinctionPerMeter {
-    pub fn new(value: f32) -> Self {
-        Self(if value.is_finite() {
-            value.max(0.0)
-        } else {
-            0.0
-        })
-    }
-
-    pub const fn get(self) -> f32 {
-        self.0
-    }
-
-    pub fn per_bethesda_unit(self) -> f32 {
-        self.0 / BETHESDA_UNITS_PER_METER
-    }
-}
-
 /// Linear-sRGB radiant intensity in the renderer's calibrated scene unit.
 ///
 /// The dimensional quantity is W·sr⁻¹. Legacy games have no absolute power

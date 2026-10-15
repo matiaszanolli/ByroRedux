@@ -439,11 +439,6 @@ impl Parser {
             .unwrap_or(false)
     }
 
-    /// Check if current token matches a keyword by identity.
-    pub fn check_keyword(&self, kw: &Token) -> bool {
-        self.check(kw)
-    }
-
     // ── Type parsing ──────────────────────────────────
 
     /// Parse a base type without array suffix: `Bool`, `Int`, `Float`, `String`, `Var`, `Ident`.

@@ -753,6 +753,9 @@ fn installed_oblivion_body_paths_exist_in_the_meshes_archive() {
         .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data".to_string());
     let bsa_path = std::path::Path::new(&data).join("Oblivion - Meshes.bsa");
     let Ok(archive) = byroredux_bsa::BsaArchive::open(&bsa_path) else {
+        // #5784 — a strict lane (`BYROREDUX_REQUIRE_GAME_DATA=1`) must fail,
+        // not report a vacuous ok, when the archive is absent.
+        require_game_data("BYROREDUX_OBLIVION_DATA", &bsa_path);
         eprintln!(
             "skipping installed_oblivion_body_paths_exist_in_the_meshes_archive: \
              {bsa_path:?} not available"

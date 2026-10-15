@@ -20,7 +20,7 @@
 //!   cargo run --release -p byroredux-bsa --example bsa_extract_one -- \
 //!     "<Skyrim Data>/Skyrim - Meshes0.bsa" \
 //!     "meshes\actors\skeever\character assets\skeleton.nif" /tmp/skeever_skeleton.nif
-//!   BYRO_SKEEVER_NIF=/tmp/skeever_skeleton.nfa cargo test -p byroredux \
+//!   BYRO_SKEEVER_NIF=/tmp/skeever_skeleton.nif cargo test -p byroredux \
 //!     --bin byroredux skeever -- --ignored --nocapture
 
 use super::*;

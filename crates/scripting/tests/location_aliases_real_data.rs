@@ -16,9 +16,12 @@ use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::{AliasFillType, EsmIndex};
 use byroredux_plugin::esm::test_paths;
 use byroredux_scripting::{
+
     install_location_table, install_scene_quest_aliases, refresh_scene_actor_bindings,
     LocationAliasBindings, QuestFormId,
 };
+
+mod common;
 
 fn skyrim_index() -> Option<EsmIndex> {
     let dir = std::env::var(test_paths::SKYRIM_SE_ENV)
@@ -33,9 +36,11 @@ fn skyrim_index() -> Option<EsmIndex> {
 /// world) hold a location that passes their conditions.
 #[test]
 #[ignore = "needs Skyrim SE game data on disk"]
+
 fn skyrim_location_aliases_fill_against_the_real_hierarchy() {
     use byroredux_scripting::condition::{evaluate, ConditionContext};
     let Some(index) = skyrim_index() else {
+        common::require_or_skip("Skyrim's Data", &"skyrim_index()");
         eprintln!("[Skyrim location aliases] skipping: game data unavailable");
         return;
     };
@@ -98,6 +103,7 @@ fn skyrim_location_aliases_fill_against_the_real_hierarchy() {
 fn skyrim_locations_clear_when_their_bosses_die() {
     use byroredux_scripting::{location_cleared, note_actor_death, LocationTable};
     let Some(index) = skyrim_index() else {
+        common::require_or_skip("Skyrim's Data", &"skyrim_index()");
         eprintln!("[Skyrim location clearing] skipping: game data unavailable");
         return;
     };

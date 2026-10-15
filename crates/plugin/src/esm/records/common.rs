@@ -284,10 +284,6 @@ pub fn read_string_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<String> {
 /// Collapses the `find_sub(subs, code).map(read_lstring_or_zstring)` two-liner
 /// that appears at every FULL / DESC / RNAM site. Use this instead of the
 /// open-coded pair. See TD3-007 / #1045.
-pub fn read_lstring_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<String> {
-    find_sub(subs, code).map(read_lstring_or_zstring)
-}
-
 pub fn read_u32_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<u32> {
     let data = find_sub(subs, code)?;
     if data.len() < 4 {

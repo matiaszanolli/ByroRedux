@@ -356,6 +356,10 @@ jobs:
             "bin dlc_rebake_of_a_master_owned_cell_decodes_from_the_dlc_csg"
             "bin exterior_precombine_instances_are_world_absolute"
             "bin riverwater_flowne_real_record_layers_run_downstream"
+            # #5784 — Dim 3 real-data tests whose names carry no game token,
+            # so no corpus substring filter reaches them.
+            "bin dark_texture_role_population_matches_the_documented_census"
+            "bin real_archive_torch_meshes_surface_particle_emitters"
             # nif whole-corpus harnesses that cite closed-HIGH fixes but sit
             # outside the three binaries the corpus job names
             "nif-corpus lod_and_facegen_geometry_no_longer_imports_flat"
