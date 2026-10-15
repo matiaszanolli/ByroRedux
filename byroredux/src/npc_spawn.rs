@@ -598,7 +598,12 @@ pub fn creature_idle_kf_path(dir: &str) -> String {
 }
 
 /// The FO3/FNV "Child" race translation: RACE DATA bit 2, gated on the
-/// game because Oblivion reuses that bit for BeastRace. One canonical
+/// game because Oblivion reuses that bit for BeastRace. TES5 also defines
+/// bit 2 as `Child` (xEdit `wbDefinitionsTES5.pas`; set on exactly the five
+/// vanilla child races), but this helper feeds only the KF-era body-path and
+/// walk-clip ladders, which Skyrim never takes (HKX walk, no humanoid body
+/// table) — so Skyrim is excluded as "no consumer", not as "no flag". Admit
+/// `GameKind::Skyrim` here when a Skyrim consumer of "is child" appears. One canonical
 /// helper (#5079) — the NPC spawn path, the player-body walk-clip
 /// resolution, and any future consumer must agree on whether a race is
 /// child, or the player and NPCs of one race pick different body or walk
