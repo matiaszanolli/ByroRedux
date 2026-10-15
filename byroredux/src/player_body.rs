@@ -35,14 +35,13 @@
 //! record — #5095: the pre-baked miss now assembles the head from the
 //! player's authored PNAM head-part HDPTs instead of leaving none).
 
-use std::collections::HashSet;
 
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
-    Children, Component, GlobalTransform, Parent, SparseSetStorage, Transform, World,
+    Component, GlobalTransform, Parent, SparseSetStorage, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::equip::Gender;
@@ -438,21 +437,12 @@ fn attach_player_locomotion_animation(
 /// Every entity strictly under `root`, cycle-safe. Unlike
 /// `mesh_entities_under` this walks all entities (part roots are not mesh
 /// entities themselves).
-fn descendant_entities(world: &World, root: EntityId) -> Vec<EntityId> {    let mut pending = vec![root];
-    let mut seen = HashSet::new();
-    let mut descendants = Vec::new();
-    while let Some(entity) = pending.pop() {
-        if !seen.insert(entity) {
-            continue;
-        }
-        if let Some(children) = world.get::<Children>(entity) {
-            pending.extend(children.0.iter().copied());
-        }
-        if entity != root {
-            descendants.push(entity);
-        }
-    }
-    descendants
+fn descendant_entities(world: &World, root: EntityId) -> Vec<EntityId> {
+    // #5713 — the shared cycle-safe subtree collector, minus the root.
+    byroredux_core::ecs::collect_subtree(world, root)
+        .into_iter()
+        .filter(|entity| *entity != root)
+        .collect()
 }
 
 /// The lowercase-with-extension plugin name for the player's FaceGen lookup.

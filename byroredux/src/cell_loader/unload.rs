@@ -64,15 +64,10 @@ fn player_owned_entities(world: &World) -> HashSet<EntityId> {
     }
     if let Some(body) = world.try_resource::<crate::player_body::PlayerBodyRootEntity>() {
         if let Some(root) = body.0 {
-            // Cycle-safe subtree walk, matching `cinematic_retained_entities`.
-            let mut stack = vec![root];
-            while let Some(entity) = stack.pop() {
-                if !protected.insert(entity) {
-                    continue;
-                }
-                if let Some(row) = world.get::<Children>(entity) {
-                    stack.extend(row.0.iter().copied());
-                }
+            // #5713 — the shared cycle-safe subtree collector (the same
+            // one `cinematic_retained_entities` routes through).
+            for entity in byroredux_core::ecs::collect_subtree(world, root) {
+                protected.insert(entity);
             }
         }
     }

@@ -31,7 +31,7 @@ use byroredux_core::ecs::components::water::{
 };
 use byroredux_core::ecs::components::ParticleEmitter;
 use byroredux_core::ecs::components::RenderLayer;
-use byroredux_core::ecs::{Children, EntityId, GlobalTransform, MeshHandle, Transform, World};
+use byroredux_core::ecs::{EntityId, GlobalTransform, MeshHandle, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::vulkan::GpuUploadCtx;
@@ -780,32 +780,19 @@ pub(super) fn apply_placed_water_type(
         let Some(planes) = world.query::<WaterPlane>() else {
             return 0;
         };
-        let children = world.query::<Children>();
+        // #4572 / #5713 — the shared cycle-safe collector carries the
+        // visited set + traversal budget; a corrupt save that links a
+        // cycle (validate_hierarchy checks Parent/Children agreement,
+        // not acyclicity) cannot loop this walk.
         let flows = world.query::<WaterFlow>();
-        let mut found = Vec::new();
-        let mut stack = vec![placement_root];
-        // #4572 -- visited set + budget, the HierarchyTraversalGuard rule
-        // the three core walks follow: a corrupt save that links a cycle
-        // (validate_hierarchy checks Parent/Children agreement, not
-        // acyclicity) would otherwise loop this walk forever.
-        let mut seen = std::collections::HashSet::new();
-        let mut guard = byroredux_core::ecs::HierarchyTraversalGuard::new(
-            world.next_entity_id() as usize,
-            0,
-        );
-        while let Some(entity) = stack.pop() {
-            if !seen.insert(entity) || !guard.step() {
-                break;
-            }
-            if let Some(plane) = planes.get(entity) {
+        byroredux_core::ecs::collect_subtree(world, placement_root)
+            .into_iter()
+            .filter_map(|entity| {
+                let plane = planes.get(entity)?;
                 let flow = flows.as_ref().and_then(|q| q.get(entity)).copied();
-                found.push((entity, *plane, flow));
-            }
-            if let Some(kids) = children.as_ref().and_then(|q| q.get(entity)) {
-                stack.extend(kids.0.iter().copied());
-            }
-        }
-        found
+                Some((entity, *plane, flow))
+            })
+            .collect::<Vec<_>>()
     };
     if targets.is_empty() {
         return 0;

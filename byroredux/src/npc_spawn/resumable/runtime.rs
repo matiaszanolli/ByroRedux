@@ -1229,31 +1229,12 @@ const HEAD_MOUNTED_PART_LABELS: [&str; 4] = ["hair", "eyebrow HDPT", "eye mesh",
 
 /// Whether any entity in `root`'s subtree carries a skinned mesh.
 pub(super) fn subtree_has_skinned_mesh(world: &World, root: EntityId) -> bool {
-    let (Some(skinned), children) = (
-        world.query::<byroredux_core::ecs::SkinnedMesh>(),
-        world.query::<byroredux_core::ecs::Children>(),
-    ) else {
-        return false;
-    };
-    let mut guard =
-        byroredux_core::ecs::HierarchyTraversalGuard::new(world.next_entity_id() as usize, 0);
-    let mut seen = std::collections::HashSet::new();
-    let mut stack = vec![root];
-    while let Some(entity) = stack.pop() {
-        if !seen.insert(entity) {
-            continue;
-        }
-        if !guard.step() {
-            break;
-        }
-        if skinned.get(entity).is_some() {
-            return true;
-        }
-        if let Some(kids) = children.as_ref().and_then(|q| q.get(entity)) {
-            stack.extend(kids.0.iter().copied());
-        }
-    }
-    false
+    // #5713 — the shared cycle-safe collector, then one SkinnedMesh
+    // probe per entity (the subtree is an NPC part hierarchy, small).
+    let skinned = world.query::<byroredux_core::ecs::SkinnedMesh>();
+    byroredux_core::ecs::collect_subtree(world, root)
+        .into_iter()
+        .any(|entity| skinned.as_ref().is_some_and(|q| q.get(entity).is_some()))
 }
 
 /// `entity`'s bind-pose transform expressed in `ancestor`'s space, composed
@@ -1300,29 +1281,16 @@ fn common_shape_rotation(world: &World, part_root: EntityId) -> Option<Quat> {
     // ragdoll / bounds / cinematic `Parent` → `Children` walks): two
     // lock-order cycles under `BYRO_LOCK_ORDER_CHECK=1`. The walk order and
     // the first-disagreement early-out are unchanged.
+    // #5713 — the shared cycle-safe collector (its Children guard is
+    // dropped on return, before `bind_transform_relative_to` composes
+    // Transform → Parent below). The walk order and the
+    // first-disagreement early-out in the composition loop are unchanged.
     let shapes = {
-        let children = world.query::<byroredux_core::ecs::Children>()?;
         let meshes = world.query::<byroredux_core::ecs::MeshHandle>()?;
-        let mut guard =
-            byroredux_core::ecs::HierarchyTraversalGuard::new(world.next_entity_id() as usize, 0);
-        let mut seen = std::collections::HashSet::new();
-        let mut stack = vec![part_root];
-        let mut shapes = Vec::new();
-        while let Some(entity) = stack.pop() {
-            if !seen.insert(entity) {
-                continue;
-            }
-            if !guard.step() {
-                return None;
-            }
-            if meshes.get(entity).is_some() {
-                shapes.push(entity);
-            }
-            if let Some(kids) = children.get(entity) {
-                stack.extend(kids.0.iter().copied());
-            }
-        }
-        shapes
+        byroredux_core::ecs::collect_subtree(world, part_root)
+            .into_iter()
+            .filter(|entity| meshes.get(*entity).is_some())
+            .collect::<Vec<_>>()
     };
     let mut common: Option<Quat> = None;
     for entity in shapes {
