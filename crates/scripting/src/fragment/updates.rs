@@ -422,31 +422,9 @@ pub fn script_update_system(world: &World, dt: f32, game_hours: Option<f64>) {
             resume: None,
         };
         log::debug!("{:08X}: {}.{event}", registration.owner, registration.script);
-        // The interpreter's frame budget is spent: the rest of the due
-        // registrations queue for the next frame, in order, unrun.
-        let effect = if super::budget::exhausted(world) {
-            match super::budget::defer(world, owner, vmad.as_ref(), vec![effect]) {
-                Ok(()) => continue,
-                Err(mut effects) => effects.remove(0),
-            }
-        } else {
-            effect
-        };
-        advances.extend(apply_fragment_guard_free(
-            world,
-            std::slice::from_ref(&effect),
-            owner,
-            vmad.as_ref(),
-        ));
+        // The frame-budget gate and the advance flush live in one place
+        // (`dispatch`) — this used to be a hand-copied 25-line tail.
+        advances.extend(run_papyrus_call(world, owner, vmad.as_ref(), effect));
     }
-    if advances.is_empty() {
-        return;
-    }
-    let Some(player) = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0)
-    else {
-        return;
-    };
-    crate::quest_stages::push_quest_stage_advances(world, player, advances);
+    flush_advances(world, advances);
 }

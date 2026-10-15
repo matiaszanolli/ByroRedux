@@ -259,18 +259,13 @@ pub fn package_fragment_system(world: &World, _dt: f32) {
                 args: vec![VmStored::Form(actor)],
                 resume: None,
             };
-            advances.extend(apply_fragment_guard_free(
+            advances.extend(run_papyrus_call(
                 world,
-                std::slice::from_ref(&effect),
                 QuestFormId(package),
                 set.vmad.as_ref(),
+                effect,
             ));
         }
     }
-    let Some(player) = player else {
-        return;
-    };
-    if !advances.is_empty() {
-        crate::quest_stages::push_quest_stage_advances(world, player, advances);
-    }
+    flush_advances(world, advances);
 }

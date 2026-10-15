@@ -381,14 +381,7 @@ pub fn run_quest_script_function(world: &World, script: &str, function: &str, ar
         resume: None,
     };
     let advances = apply_fragment_guard_free(world, std::slice::from_ref(&effect), quest, Some(&vmad));
-    if !advances.is_empty() {
-        if let Some(player) = world
-            .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-            .map(|player| player.0)
-        {
-            crate::quest_stages::push_quest_stage_advances(world, player, advances);
-        }
-    }
+    flush_advances(world, advances);
     Ok(quest.0)
 }
 
@@ -475,33 +468,11 @@ fn run_deliveries(world: &World, deliveries: Vec<Delivery>) {
             args: delivery.args,
             resume: None,
         };
-        // The interpreter's frame budget is spent: the rest of this frame's
-        // deliveries queue for the next one, in order, unrun.
-        let effect = if super::budget::exhausted(world) {
-            match super::budget::defer(world, owner, Some(&delivery.vmad), vec![effect]) {
-                Ok(()) => continue,
-                Err(mut effects) => effects.remove(0),
-            }
-        } else {
-            effect
-        };
-        advances.extend(apply_fragment_guard_free(
-            world,
-            std::slice::from_ref(&effect),
-            owner,
-            Some(&delivery.vmad),
-        ));
+        // The frame-budget gate and the advance flush live in one place
+        // (`dispatch`) — this used to be a hand-copied 25-line tail.
+        advances.extend(run_papyrus_call(world, owner, Some(&delivery.vmad), effect));
     }
-    if advances.is_empty() {
-        return;
-    }
-    let Some(player) = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0)
-    else {
-        return;
-    };
-    crate::quest_stages::push_quest_stage_advances(world, player, advances);
+    flush_advances(world, advances);
 }
 
 /// What changed about the actors since the reference scripts last looked: the

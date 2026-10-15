@@ -262,23 +262,9 @@ pub fn hit_event_system(world: &World, _dt: f32) {
             resume: None,
         };
         log::debug!("{:08X}: {}.OnHit", registration.owner, registration.script);
-        advances.extend(apply_fragment_guard_free(
-            world,
-            std::slice::from_ref(&effect),
-            owner,
-            vmad.as_ref(),
-        ));
+        advances.extend(run_papyrus_call(world, owner, vmad.as_ref(), effect));
     }
-    if advances.is_empty() {
-        return;
-    }
-    let Some(player) = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0)
-    else {
-        return;
-    };
-    crate::quest_stages::push_quest_stage_advances(world, player, advances);
+    flush_advances(world, advances);
 }
 
 #[cfg(test)]

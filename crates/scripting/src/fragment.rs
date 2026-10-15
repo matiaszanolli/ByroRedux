@@ -60,6 +60,7 @@ pub mod budget;
 mod alias_scripts;
 mod effects;
 mod distance;
+mod dispatch;
 mod anim_events;
 mod events;
 mod hits;
@@ -78,6 +79,7 @@ pub use budget::{VmFrameBudget, VmFrameUse, DEFAULT_FRAME_BUDGET, RUN_START_COST
 pub use alias_scripts::*;
 pub use effects::*;
 pub use distance::*;
+pub(crate) use dispatch::{flush_advances, run_papyrus_call};
 pub use anim_events::*;
 pub use hits::*;
 pub use events::{EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS};
@@ -124,6 +126,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/effects/scene.rs"),
     include_str!("fragment/effects/vehicle_cinematic.rs"),
     include_str!("fragment/distance.rs"),
+    include_str!("fragment/dispatch.rs"),
     include_str!("fragment/events.rs"),
     include_str!("fragment/hits.rs"),
     include_str!("fragment/owners.rs"),
