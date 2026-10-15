@@ -16,6 +16,7 @@ use super::descriptors::{
 use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
+use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -161,29 +162,13 @@ impl SsaoPipeline {
         // SAFETY: SamplerCreateInfo is fully populated above; handle
         // ownership transfers to `partial.depth_sampler`, freed by destroy().
         partial.depth_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::NEAREST)
-                        .min_filter(vk::Filter::NEAREST)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST)
                 .context("depth sampler")
         });
 
         // SAFETY: same contract as `depth_sampler` above.
         partial.ao_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::LINEAR)
-                        .min_filter(vk::Filter::LINEAR)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::LINEAR, vk::SamplerMipmapMode::NEAREST)
                 .context("ao sampler")
         });
 

@@ -53,6 +53,7 @@
 //! lifetime — same pattern as SVGF / volumetrics, simpler than
 //! flipping layouts between passes.
 
+use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
@@ -302,16 +303,7 @@ impl BloomPipeline {
         // SAFETY: trivial ash create call; `device` is live and the
         // SamplerCreateInfo is fully initialized for the duration of the call.
         partial.sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::LINEAR)
-                        .min_filter(vk::Filter::LINEAR)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::LINEAR, vk::SamplerMipmapMode::NEAREST)
                 .context("bloom sampler")
         });
 

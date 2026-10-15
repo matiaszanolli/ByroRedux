@@ -14,6 +14,7 @@ use super::descriptors::{
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::layout_binding;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -259,21 +260,10 @@ impl PresentationPipeline {
         upscaled_views: &[vk::ImageView],
         exposure_views: &[vk::ImageView],
     ) -> Result<()> {
-        self.sampler = unsafe {
-            // SAFETY: device is live; the returned sampler is stored for
-            // explicit teardown on every path.
-            device.create_sampler(
-                &vk::SamplerCreateInfo::default()
-                    .mag_filter(vk::Filter::LINEAR)
-                    .min_filter(vk::Filter::LINEAR)
-                    .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
-                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                None,
-            )
-        }
-        .context("create presentation sampler")?;
+        // #5809 — the shared clamp-to-edge sampler builder (SAFETY: its
+        // contract; handle stored for explicit teardown on every path).
+        self.sampler = unsafe { clamp_sampler(device, vk::Filter::LINEAR, vk::SamplerMipmapMode::NEAREST) }
+            .context("create presentation sampler")?;
 
         let bindings = presentation_set_bindings();
         validate_set_layout(0, &bindings, &presentation_shaders(), "presentation", &[])

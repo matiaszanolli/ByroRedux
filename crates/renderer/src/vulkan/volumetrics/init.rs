@@ -16,6 +16,7 @@
 //! methods and no call site outside this crate moved with them.
 
 use super::*;
+use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 // The relocated code addressed these as `super::<mod>` while it lived one
 // level up in `volumetrics.rs`. Importing them by name — rather than
@@ -277,17 +278,7 @@ impl VolumetricsPipeline {
         // extension chain, and the resulting sampler is owned by `partial`
         // until construction rollback or `destroy`.
         partial.history_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::NEAREST)
-                        .min_filter(vk::Filter::NEAREST)
-                        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST)
                 .context("Volumetrics history sampler")
         });
 
@@ -298,17 +289,7 @@ impl VolumetricsPipeline {
         // keeps its separate nearest-column sampler to avoid wall bleeding.
         // SAFETY: same ownership/lifetime contract as `history_sampler`.
         partial.transport_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::LINEAR)
-                        .min_filter(vk::Filter::LINEAR)
-                        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::LINEAR, vk::SamplerMipmapMode::NEAREST)
                 .context("Volumetrics transport sampler")
         });
 

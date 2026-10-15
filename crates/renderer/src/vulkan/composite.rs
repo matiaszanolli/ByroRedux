@@ -34,6 +34,7 @@ use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::FrameExtentSet;
+use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::layout_binding;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -477,16 +478,7 @@ impl CompositePipeline {
         // SAFETY: `device` is live for this call; the new sampler handle is
         // stored in `partial.hdr_sampler`, freed by `destroy` on later error.
         partial.hdr_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::LINEAR)
-                        .min_filter(vk::Filter::LINEAR)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::LINEAR, vk::SamplerMipmapMode::NEAREST)
                 .context("HDR sampler")
         });
 
@@ -498,17 +490,7 @@ impl CompositePipeline {
         // SAFETY: `device` is live for this call; the new sampler handle is
         // stored in `partial.nearest_sampler`, freed by `destroy` on later error.
         partial.nearest_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::NEAREST)
-                        .min_filter(vk::Filter::NEAREST)
-                        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST)
                 .context("NEAREST sampler (indirect + caustic)")
         });
 

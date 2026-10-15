@@ -65,6 +65,7 @@ use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::GpuUploadCtx;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
+use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -532,16 +533,7 @@ impl SvgfPipeline {
         // SAFETY: SamplerCreateInfo fully populated above; handle owned
         // by `partial.point_sampler`, freed by destroy().
         partial.point_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::NEAREST)
-                        .min_filter(vk::Filter::NEAREST)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST)
                 .context("SVGF point sampler")
         });
 

@@ -47,6 +47,7 @@ use super::svgf::should_force_history_reset;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::GpuUploadCtx;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
+use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -265,30 +266,12 @@ impl TaaPipeline {
         // SAFETY: SamplerCreateInfo populated above; handle owned by
         // `partial.linear_sampler`, freed by destroy().
         partial.linear_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::LINEAR)
-                        .min_filter(vk::Filter::LINEAR)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::LINEAR, vk::SamplerMipmapMode::NEAREST)
                 .context("TAA linear sampler")
         });
         // SAFETY: same contract as `linear_sampler` above.
         partial.point_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::NEAREST)
-                        .min_filter(vk::Filter::NEAREST)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST)
                 .context("TAA point sampler")
         });
 

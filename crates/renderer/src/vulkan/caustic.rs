@@ -42,6 +42,7 @@
 //! | 9       | GlobalVertices     | SSBO (mesh registry, current)       |
 //! | 10      | GlobalIndices      | SSBO (mesh registry, current)       |
 
+use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
@@ -423,16 +424,7 @@ impl CausticPipeline {
         // SAFETY: SamplerCreateInfo fully populated above; handle owned
         // by `partial.point_sampler`, freed by destroy().
         partial.point_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::NEAREST)
-                        .min_filter(vk::Filter::NEAREST)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST)
                 .context("caustic point sampler")
         });
 

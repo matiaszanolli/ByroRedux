@@ -30,6 +30,7 @@
 //! needs RenderDoc validation; mixing styles here preserves byte-
 //! equivalence with the pre-#1046 inline code.
 
+use anyhow::Context;
 use ash::vk;
 
 // ── WriteDescriptorSet helpers ──────────────────────────────────────
@@ -222,6 +223,37 @@ pub fn color_subresource_mips_layers(
 /// values are the caller's responsibility — validation layers catch
 /// mismatches at runtime.
 #[inline]
+/// #5809 — the clamp-to-edge point/linear sampler every full-screen pass
+/// creates. Fifteen sites hand-built the same `SamplerCreateInfo` chain
+/// (filter pair, three CLAMP_TO_EDGE address modes, optional NEAREST mip
+/// mode for history/transport textures); a sampler policy change
+/// (anisotropy, debug names, unnormalised coordinates) is now one edit.
+/// The two genuinely different samplers (helpers.rs's shadow sampler,
+/// texture_registry's wrap/repeat sampler) stay hand-built.
+pub(crate) unsafe fn clamp_sampler(
+    device: &ash::Device,
+    filter: vk::Filter,
+    mip: vk::SamplerMipmapMode,
+) -> Result<vk::Sampler, anyhow::Error> {
+    // SAFETY: the info is fully populated; the caller owns the handle and
+    // frees it in its partial-destroy path, same contract every migrated
+    // site already documented.
+    unsafe {
+        device
+            .create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .mag_filter(filter)
+                    .min_filter(filter)
+                    .mipmap_mode(mip)
+                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+                None,
+            )
+            .context("clamp-to-edge sampler")
+    }
+}
+
 pub(crate) unsafe fn memory_barrier(
     device: &ash::Device,
     cmd: vk::CommandBuffer,
@@ -985,6 +1017,31 @@ mod hand_rolled_descriptor_code_tests {
                 assert!(
                     !production.contains(&macro_def),
                     "{path} redefines try_or_cleanup! — use the shared one in vulkan/mod.rs (#5594)"
+                );
+            }
+            // #5809 — a new bare `create_sampler(` outside this file is
+            // almost certainly the clamp-to-edge point/linear shape
+            // again. Allowlisted: the shadow sampler (helpers.rs), the
+            // repeat/wrap sampler (texture_registry), sky_cube's
+            // max_lod mip chain, and the REPEAT noise samplers
+            // (cloud_noise, volumetrics density-noise).
+            let sampler_exempt = matches!(
+                path.as_str(),
+                p if p.ends_with("vulkan/context/helpers.rs")
+                    || p.ends_with("texture_registry/mod.rs")
+                    || p.ends_with("vulkan/sky_cube.rs")
+                    || p.ends_with("vulkan/cloud_noise.rs")
+                    || p.ends_with("vulkan/volumetrics/init.rs")
+                    || p.ends_with("vulkan/placeholder.rs")
+                    || p.ends_with("vulkan/groundcover_bench.rs")
+                    || p.ends_with("sky_cube/filter/tests.rs")
+            );
+            if !is_descriptors && !sampler_exempt {
+                assert!(
+                    !production.contains(".create_sampler("),
+                    "{path} hand-builds a sampler — use descriptors::clamp_sampler \
+                     (or, if genuinely different, extend the allowlist with a \
+                     reason) (#5809)"
                 );
             }
         }

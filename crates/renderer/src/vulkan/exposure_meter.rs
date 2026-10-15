@@ -21,6 +21,7 @@ use super::descriptors::{
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -77,16 +78,7 @@ impl ExposureMeterPipeline {
         // sampler state; the binding type just requires one.
         // SAFETY: trivial ash create; `device` live, create-info outlives call.
         partial.sampler = try_or_cleanup!(partial, device, allocator, unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::NEAREST)
-                        .min_filter(vk::Filter::NEAREST)
-                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
-                    None,
-                )
+            clamp_sampler(device, vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST)
                 .context("exposure meter sampler")
         });
 

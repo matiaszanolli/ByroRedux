@@ -61,7 +61,7 @@ mod tests {
         ("vulkan/image.rs", 1),
         ("vulkan/material_tests.rs", 1),
         ("vulkan/pipeline.rs", 1),
-        ("vulkan/presentation.rs", 2),
+        ("vulkan/presentation.rs", 1),
         ("vulkan/scene_buffer/upload.rs", 1),
         ("vulkan/skin_compute.rs", 2),
         ("vulkan/sky_cube.rs", 2),
