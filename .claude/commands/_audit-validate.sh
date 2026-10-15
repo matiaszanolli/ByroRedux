@@ -118,6 +118,9 @@ shopt -s nullglob
 command_files=(
     .claude/commands/audit-*/SKILL.md
     .claude/commands/_audit-*.md
+    # #5839 — the specialist agents are loaded into audit sub-agents and
+    # rotted for five months because no gate reached them.
+    .claude/agents/*.md
 )
 # #4771 — the audit-baseline READMEs are audit infrastructure too: the
 # runtime one cited the pre-split `audit-runtime.md` skill path for weeks
@@ -299,8 +302,10 @@ for skill in "${skill_files[@]}"; do
     # Extract backticked tokens that look like file paths. The trailing
     # bracket-set must match a known source/doc extension to keep noise low.
     while IFS=: read -r line_num token; do
-        # Strip leading backtick from grep match.
+        # Strip the backticks from grep match (the pattern requires a
+        # closing one since #5607 — see the comment above).
         token="${token#\`}"
+        token="${token%\`}"
         # Strip trailing `:NN` or `:NN-NN` line range.
         local_path="${token%:[0-9]*}"
         while read -r p; do
@@ -312,15 +317,13 @@ for skill in "${skill_files[@]}"; do
                 # wrong-dir sense; it can only be a deleted file. That is a
                 # real class and used to be invisible here. It is reported
                 # ADVISORY rather than FATAL because the extractor cannot
-                # tell a path from any other dotted token: console commands
-                # (`mem.frag`), and truncations of longer names produced by
-                # the extension pattern having no trailing boundary
-                # (`GpuInstance.vertex_offset` -> `GpuInstance.vert`,
-                # `self.shutdown` -> `self.sh`), all arrive here looking
-                # identical to real rot. Tightening that pattern to require
-                # a closing backtick was measured at 174 of 4,091 refs lost
-                # (4.3%), which trades this gate's coverage for its noise —
-                # so the noise is quarantined instead.
+                # tell a path from console-command dotted tokens (`mem.frag`).
+                # #5607 closed the truncation half: the pattern requires a
+                # closing backtick (plus an optional `:NN`/`:NN-NN` line
+                # range, so `foo.rs:42` keeps matching), which deletes the
+                # `GpuInstance.vertex_offset` -> `GpuInstance.vert` and
+                # `triangle_early.frag.spv` -> `triangle_early.frag`
+                # truncation classes outright.
                 if [[ "$p" != */* ]]; then
                     missing_basenames+=("$skill:$line_num — \`$p\`")
                 else
@@ -331,7 +334,7 @@ for skill in "${skill_files[@]}"; do
                 echo "ok: $skill:$line_num — $p"
             fi
         done < <(expand_braces "$local_path")
-    done < <(grep -noE '`[A-Za-z0-9_./{},-]+\.(rs|md|toml|comp|frag|vert|glsl|wgsl|sh|xml)' "$skill" || true)
+    done < <(grep -noE '`[A-Za-z0-9_./{},-]+\.(rs|md|toml|comp|frag|vert|glsl|wgsl|sh|xml|spv)(:[0-9]+(-[0-9]+)?)?`' "$skill" || true)
 done
 
 # ---------------------------------------------------------------------------
@@ -569,7 +572,11 @@ if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
     # bytes, and without it grep calls the whole concatenated stream binary and
     # emits nothing, silently truncating the corpus to ~70% and turning every
     # symbol past the first NUL into a false advisory.
+    # #5607 — smoke-test fixture .env files define constants the skills
+    # quote (FIXTURE_GATES, FIXTURE_DATA_ENV); without them in the corpus
+    # every one of those is a standing false advisory.
     git ls-files '*.rs' '*.glsl' '*.vert' '*.frag' '*.comp' '*.rgen' '*.rchit' \
+        '*.env' \
         | xargs cat 2>/dev/null \
         | grep -a -vE '!\s*[A-Za-z_][A-Za-z0-9_]*\s*\.contains\(|!\s*contains\(' \
         > "$src_blob" || true
@@ -588,7 +595,8 @@ if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
     # advisory and stays in its own section with its own count.
     symbol_advisory() {
         local label="$1"
-        shift
+        local fatal="${2:-}"
+        shift 2 2>/dev/null || shift 1
         local -a files=("$@")
         local suspect_count=0
         local sym
@@ -653,6 +661,17 @@ if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
 
         if (( suspect_count > 0 )); then
             echo
+            if [[ "$fatal" == "--fatal" ]]; then
+                # #5607 — the audit skills are the gate's own corpus: every
+                # symbol in them is hand-curated, the benign classes are
+                # filtered below, and a survivor here was a real rename
+                # exactly twice (#3197's two blind-spot closes). An advisory
+                # a reader learns to skip is how renamed guards hid.
+                echo "  $suspect_count suspect symbol(s) in $label — FAILING (the skills"
+                echo "  are hand-curated; italicise data/historical names or update the"
+                echo "  reference)."
+                exit 1
+            fi
             echo "  $suspect_count advisory symbol(s) in $label. Each is either (a) genuinely"
             echo "  renamed — update the reference, or (b) an intentional historical /"
             echo "  never-should-exist / not-yet-built name — italicise it instead of"
@@ -660,9 +679,9 @@ if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
         fi
     }
 
-    symbol_advisory "audit skills" "${command_files[@]}"
-    symbol_advisory "docs/engine reference docs" "${reference_docs[@]}"
-    symbol_advisory "workspace trees" "${workspace_trees[@]}"
+    symbol_advisory "audit skills" --fatal "${command_files[@]}"
+    symbol_advisory "docs/engine reference docs" "" "${reference_docs[@]}"
+    symbol_advisory "workspace trees" "" "${workspace_trees[@]}"
     echo
     echo "  Set SKIP_SYMBOL_CHECK=1 to silence these advisories."
 fi

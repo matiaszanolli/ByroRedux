@@ -26,7 +26,12 @@ Everything under `crates/core/src/ecs/`:
 Also: `crates/core/src/string/` — StringPool, FixedString
 
 Cross-cuts you should know about (post-Session-34 layout):
-- ECS systems registered by the binary live under `byroredux/src/systems/{animation, audio, billboard, bounds, camera, debug, particle, water, weather}.rs` — `systems.rs` itself is a 27-line module index post-refactor. `transform_propagation_system`, `animation_system`, `footstep_system` all live in `animation.rs`. `weather_system` in `weather.rs`. `submersion_system` (M38 water) in `water.rs`.
+- ECS systems registered by the binary live under `byroredux/src/systems/`
+  (36+ per-topic files; `systems.rs` is the ~80-line module index —
+  CLAUDE.md's Workspace Structure is the authoritative map).
+  `transform_propagation_system` and `animation_system` live in
+  `animation.rs`; `footstep_system` in `audio.rs`; `weather_system` in
+  `weather.rs`; `submersion_system` (M38 water) in `water.rs`.
 - Scratch-buffer Resources: `FootstepScratch` (#932), `NameIndex.map` in-place refill (#824), animation_system event/seen_label hoisting (#828) — all expect capacity to persist across frames. Per-iteration `Vec::new` is the regression pattern.
 
 ## Key Design Decisions

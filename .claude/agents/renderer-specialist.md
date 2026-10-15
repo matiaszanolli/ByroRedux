@@ -10,26 +10,24 @@ You are the **Renderer Specialist** for ByroRedux — a Vulkan-based game engine
 
 ## Your Domain
 
-Everything under `crates/renderer/`:
-- `src/vulkan/context.rs` — VulkanContext: owns all Vulkan state, frame rendering, lifecycle
-- `src/vulkan/pipeline.rs` — Graphics pipeline creation, shader modules
-- `src/vulkan/swapchain.rs` — Swapchain management, image views, format selection
-- `src/vulkan/sync.rs` — Semaphores (per-image), fences (per-frame), images_in_flight tracking
-- `src/vulkan/device.rs` — Physical device selection, logical device, queue families
-- `src/vulkan/allocator.rs` — gpu-allocator wrapper (Arc<Mutex<Allocator>>)
-- `src/vulkan/buffer.rs` — GpuBuffer (vertex/index, HOST_VISIBLE for now)
-- `src/vulkan/instance.rs` — Instance + validation layers
-- `src/vulkan/debug.rs` — Debug messenger → log crate
-- `src/vulkan/surface.rs` — Surface from raw handles
-- `src/mesh.rs` — MeshRegistry (handle → GpuMesh), cube_vertices()
-- `src/vertex.rs` — Vertex struct with binding/attribute descriptions
-- `shaders/` — GLSL shaders, pre-compiled SPIR-V
+Everything under `crates/renderer/` — the per-file map lives in CLAUDE.md's
+Workspace Structure (authoritative) and `docs/engine/renderer.md`; the
+load-bearing shape:
+- `src/vulkan/context/` — VulkanContext split (mod.rs + draw.rs /
+  resize.rs / resources.rs / helpers.rs): owns all Vulkan state, frame
+  rendering, reverse-order teardown
+- `src/vulkan/pipeline.rs` — graphics pipeline creation, shader modules
+  (per-draw data is the instance SSBO; the main pipeline declares no
+  push-constant range — the remaining ranges are small per-pass ones in
+  water/svgf/caustic/presentation/groundcover_models)
+- `src/vulkan/{swapchain,sync,device,allocator,buffer,instance,debug,surface}.rs`
+- `src/mesh.rs` + `mesh/`, `src/vertex.rs`, `src/texture_registry/`
+- `shaders/` — GLSL shaders, pre-compiled SPIR-V (include_bytes!)
 
 ## Key Dependencies
 - `ash` 0.38 — Raw Vulkan bindings
 - `ash-window` 0.13 — Surface creation
-- `gpu-allocator` 0.27 — GPU memory allocation
-- Push constants: 128 bytes (mat4 viewProj + mat4 model)
+- `gpu-allocator` — version pinned by the workspace Cargo.toml (0.28)
 - Dynamic viewport/scissor (no pipeline recreate on resize)
 
 ## Critical Invariants

@@ -1,6 +1,6 @@
 ---
 name: source-command-audit-scripting-skill
-description: Deep audit of the M30/M47 scripting runtime — the AST-to-ECS recognizer chain (decline-on-unmodeled), fragment and quest-stage dispatch, ECS event/timer/condition/trigger systems, cell-loader script attach, scene/package/cinematic playback, legacy ObScript quest execution, and the SKSE/JContainers provider-compat layer. Use when the user requests a scripting-runtime, recognizer, fragment-dispatch, event-runtime, ObScript, or provider/extender-compat audit.
+description: Deep audit of the M30/M47 scripting runtime — AST→ECS recognizer chain (decline-on-unmodeled), the M47.2 Papyrus VM that runs what the lowering declines (budget, reference/alias scripts, update/event registrations), fragment/quest-stage dispatch, ECS event/timer/condition/trigger systems, cell-loader script attach, scene/package/cinematic playback, legacy ObScript quest execution (M47.3), extender-compat provider layer. Compiler frontends (.pex decompiler, .psc parser) are /audit-papyrus. Use when the user requests a scripting-runtime, recognizer, fragment-dispatch, event-runtime, Papyrus-VM, ObScript, or provider/extender-compat audit.
 ---
 
 # Scripting Runtime Audit

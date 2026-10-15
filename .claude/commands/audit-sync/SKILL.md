@@ -42,7 +42,10 @@ Launch one background `general-purpose` agent per `groups.txt` line, all in a si
 
 The `meta` group also owns the following, and should check that every shim's description still matches its skill:
 - `_audit-common.md`, `_audit-owners.md`, `_audit-severity.md`, `_audit-validate.sh`, `_audit-route.sh`;
-- the `.agents/skills/source-command-*` shims, which are thin pointers to the canonical command.
+- the `.agents/skills/source-command-*` shims, which are thin pointers to the canonical command;
+- the `.claude/agents/*.md` specialists (#5839: they rotted for five months
+  because no sync group and no validator glob reached them — their layout
+  facts must point at CLAUDE.md / docs/engine instead of hand-typed trees).
 
 Agents must not start sub-agents. A nested agent's completion notice never reaches its parent (see `/audit-suite`, orchestration hazard).
 
