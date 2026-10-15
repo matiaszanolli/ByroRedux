@@ -124,49 +124,35 @@ pub fn extract_tangents_from_extra_data(
     Vec::new()
 }
 
-/// Synthesize per-vertex tangents from positions + normals + UVs +
-/// triangles when the source NIF doesn't ship authored tangents.
+/// Synthesize per-vertex tangents from Z-up NIF data when the source
+/// ships no authored tangents — the entry point the classic
+/// `NiTriShape` / `BSTriShape` paths call.
 ///
-/// Most Oblivion / FO3 / FNV interior content stores no
-/// `NiBinaryExtraData("Tangent space ...")` blob — Bethesda's runtime
-/// computes tangents at load time using a per-triangle accumulator
-/// (see `nifly::NiTriShapeData::CalcTangentSpace`). This function
-/// ports nifly's algorithm to produce the same per-vertex
-/// tangent + bitangent vectors and packs them into the
-/// `[Tx, Ty, Tz, bitangent_sign]` shape the shader expects.
+/// #5793 — a thin wrapper over [`synthesize_tangents_yup`], the single
+/// producer. The Z-up flavour used to be a line-for-line second copy of
+/// the Lengyel accumulation + Gram-Schmidt finalize, and every guard
+/// fix landed on one copy first (#2632 normalized N in Y-up only, and
+/// #3177 was literally its Z-up catch-up ten days later; #3176's
+/// zero-tangent seed reached both only because the audit named both).
+///
+/// Converting the inputs up front is bit-identical to the old
+/// accumulate-in-Z-up-then-swap finalize for the non-degenerate path:
+/// `zup_to_yup_pos` is an exact component permutation + negation
+/// (`(x, y, z) → (x, z, -y)`), rotations commute with the per-triangle
+/// normalize, and a rotated sum equals the sum of rotated parts. The
+/// degenerate-tangent fallback's seed permutation now also runs in
+/// Y-up; the two old spellings picked different-but-equally-valid
+/// directions there (any N-orthogonal unit vector is correct — the
+/// divergence was documented in AUDIT_INCREMENTAL_2026-05-22 ID-4 and
+/// is retired with the copy).
 ///
 /// Inputs:
-///   - `vertices` / `normals`: Z-up world-space, length == num_verts
+///   - `vertices` / `normals_zup`: Z-up world-space, length == num_verts
 ///   - `uvs`: per-vertex 2D coordinates, length == num_verts
 ///   - `triangles`: u16 indices, 3 per triangle
 ///
-/// Output: `Vec<[f32; 4]>` length == num_verts. Empty when any input
-/// is missing or vertex counts don't line up; caller falls back to
-/// the shader's screen-space derivative TBN path.
-///
-/// Algorithm (per nifly Geometry.cpp:2026-2106):
-///   1. For each triangle, compute sdir (∂P/∂U) and tdir (∂P/∂V)
-///      from position + UV deltas, with sign correction for flipped UVs.
-///   2. Accumulate per-vertex sdir and tdir (averaged across adjacent
-///      triangles).
-///   3. Per vertex: orthogonalize T (= sdir) against N (Gram-Schmidt),
-///      then B (= tdir) against both N and T. Degenerate cases (zero
-///      sdir or tdir) fall back to a permutation of the normal.
-///   4. Derive bitangent_sign as `sign(dot(B, cross(N, T)))` so the
-///      shader's `sign × cross(N, T)` reconstruction matches the
-///      authored handedness.
-///
-/// Convention (#786): unlike nifly which preserves Bethesda's swapped
-/// labelling (`bitangents = sdir`, `tangents = tdir`), we store
-/// `tangent = sdir = ∂P/∂U` so the value in `Vertex.tangent.xyz`
-/// matches the textbook (Lengyel) convention the renderer's
-/// `mat3(T, B, N) * tangentNormal` evaluates against. nifly's swap
-/// existed to round-trip the on-disk format losslessly; we don't
-/// write NIFs back, so we unswap on read for shader consistency.
-///
-/// Z-up → Y-up conversion is applied to the final tangent + the N used
-/// for sign derivation, mirroring the authored-decode path so both
-/// produce vectors in the same coordinate space.
+/// Output and the full algorithm/convention rationale (#786: tangent =
+/// ∂P/∂U, nifly's Bethesda swap un-done): see [`synthesize_tangents_yup`].
 pub fn synthesize_tangents(
     vertices: &[NiPoint3],
     normals_zup: &[NiPoint3],
@@ -177,176 +163,12 @@ pub fn synthesize_tangents(
     if n == 0 || normals_zup.len() != n || uvs.len() != n {
         return Vec::new();
     }
-
-    // Per-vertex accumulators for the U and V axis derivatives.
-    // `tan_u[i]` accumulates ∂P/∂U (sdir), `tan_v[i]` accumulates
-    // ∂P/∂V (tdir). nifly's `CalcTangentSpace` swaps the labels at
-    // output (`bitangents = tan1 = ∂P/∂U`, `tangents = tan2 = ∂P/∂V`)
-    // because Bethesda's NIF on-disk layout names them that way. Our
-    // shader's Path 1 (#783) builds `mat3(T, B, N)` against the
-    // Lengyel/textbook convention (T = ∂P/∂U), and Path 2 (screen-
-    // space derivative fallback) does the same. Pre-#786 we ported
-    // nifly's swap verbatim and stored ∂P/∂V in `Vertex.tangent.xyz`,
-    // mismatching the shader and producing the chrome regression on
-    // FNV `GSDocMitchellHouse` (R-N2 / #786). Confirmed by
-    // `DBG_VIZ_TANGENT` reading green on chrome fragments — Path 1
-    // was firing with a 90°-rotated TBN basis.
-    let mut tan_u = vec![[0.0f32; 3]; n];
-    let mut tan_v = vec![[0.0f32; 3]; n];
-
-    for tri in triangles {
-        let i1 = tri[0] as usize;
-        let i2 = tri[1] as usize;
-        let i3 = tri[2] as usize;
-        if i1 >= n || i2 >= n || i3 >= n {
-            continue;
-        }
-
-        let v1 = vertices[i1];
-        let v2 = vertices[i2];
-        let v3 = vertices[i3];
-        let w1 = uvs[i1];
-        let w2 = uvs[i2];
-        let w3 = uvs[i3];
-
-        let x1 = v2.x - v1.x;
-        let x2 = v3.x - v1.x;
-        let y1 = v2.y - v1.y;
-        let y2 = v3.y - v1.y;
-        let z1 = v2.z - v1.z;
-        let z2 = v3.z - v1.z;
-
-        let s1 = w2[0] - w1[0];
-        let s2 = w3[0] - w1[0];
-        let t1 = w2[1] - w1[1];
-        let t2 = w3[1] - w1[1];
-
-        let det = s1 * t2 - s2 * t1;
-        let r = if det >= 0.0 { 1.0 } else { -1.0 };
-
-        let mut sdir = [
-            (t2 * x1 - t1 * x2) * r,
-            (t2 * y1 - t1 * y2) * r,
-            (t2 * z1 - t1 * z2) * r,
-        ];
-        let mut tdir = [
-            (s1 * x2 - s2 * x1) * r,
-            (s1 * y2 - s2 * y1) * r,
-            (s1 * z2 - s2 * z1) * r,
-        ];
-
-        normalize_inplace(&mut sdir);
-        normalize_inplace(&mut tdir);
-
-        for &i in &[i1, i2, i3] {
-            tan_u[i][0] += sdir[0];
-            tan_u[i][1] += sdir[1];
-            tan_u[i][2] += sdir[2];
-            tan_v[i][0] += tdir[0];
-            tan_v[i][1] += tdir[1];
-            tan_v[i][2] += tdir[2];
-        }
-    }
-
-    // Per-vertex finalize: Gram-Schmidt against N, then derive
-    // bitangent sign for the shader's reconstruction.
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let n_zup = normals_zup[i];
-        // #3177 / #2632's Z-up sibling — `normals_zup` is unit-length only
-        // to quantization for a `byte_to_normal`-decoded `BSTriShape`
-        // source (`bs_tri_shape.rs`'s three independent byte reads perform
-        // no vector renormalization); the Gram-Schmidt projection below
-        // (and the degenerate branch's permutation + cross product) is
-        // only correct for `|n| == 1`. Normalize the local copy once here,
-        // mirroring `synthesize_tangents_yup`'s established guard.
-        let mut n_yup = byroredux_core::math::coord::zup_to_yup_pos([n_zup.x, n_zup.y, n_zup.z]);
-        normalize_inplace(&mut n_yup);
-
-        // #786 — store `tangent = ∂P/∂U` (standard Lengyel
-        // convention), inverting nifly's Bethesda-convention swap
-        // (`bitangents = tan1 = ∂P/∂U`). Our shader's `mat3(T, B, N)
-        // * tangentNormal` evaluates to `T*tn.x + B*tn.y + N*tn.z`
-        // and the BC5 normal map authors `tn.x` along the texture
-        // U axis; for that pairing to be correct, the value sitting
-        // in `vertexTangent.xyz` must be ∂P/∂U.
-        let tangent_zup = tan_u[i];
-        let bitangent_zup = tan_v[i];
-
-        let (tangent_yup, bitangent_yup) =
-            if vec3_is_zero(&tangent_zup) || vec3_is_zero(&bitangent_zup) {
-                // Degenerate fallback (nifly: permute N components). Project
-                // and normalize the permutation before crossing, matching
-                // the Y-up producer's #2632 guard; a raw permutation is not
-                // generally orthogonal to N.
-                let t_z = [n_zup.y, n_zup.z, n_zup.x];
-                let t_y_raw = byroredux_core::math::coord::zup_to_yup_pos(t_z); // #1617 — SoT (bit-identical)
-                let dot_nt = n_yup[0] * t_y_raw[0] + n_yup[1] * t_y_raw[1] + n_yup[2] * t_y_raw[2];
-                let mut t_y = [
-                    t_y_raw[0] - n_yup[0] * dot_nt,
-                    t_y_raw[1] - n_yup[1] * dot_nt,
-                    t_y_raw[2] - n_yup[2] * dot_nt,
-                ];
-                normalize_inplace(&mut t_y);
-                if vec3_is_zero(&t_y) {
-                    // #3176 — the cyclic permutation of N was itself
-                    // parallel to N (e.g. N == (1,1,1)/sqrt(3), which
-                    // permutes to itself), so the projection above removed
-                    // the entire vector. Fall back to a seed guaranteed
-                    // non-parallel to N instead of shipping a zero tangent.
-                    t_y = fallback_orthogonal_seed(n_yup);
-                }
-                let b_y = [
-                    n_yup[1] * t_y[2] - n_yup[2] * t_y[1],
-                    n_yup[2] * t_y[0] - n_yup[0] * t_y[2],
-                    n_yup[0] * t_y[1] - n_yup[1] * t_y[0],
-                ];
-                (t_y, b_y)
-            } else {
-                // Convert Z-up → Y-up first so the orthogonalization
-                // happens in the same coordinate space as the shader
-                // reads (consistent with the authored-decode path).
-                // #1617 — Z-up→Y-up direction swap through the coord SoT
-                // (same `(x, z, -y)` axis map as positions; bit-identical).
-                let mut t_yup = byroredux_core::math::coord::zup_to_yup_pos(tangent_zup);
-                let mut b_yup = byroredux_core::math::coord::zup_to_yup_pos(bitangent_zup);
-
-                normalize_inplace(&mut t_yup);
-                // T = T - N * dot(N, T)
-                let dot_nt = n_yup[0] * t_yup[0] + n_yup[1] * t_yup[1] + n_yup[2] * t_yup[2];
-                t_yup = [
-                    t_yup[0] - n_yup[0] * dot_nt,
-                    t_yup[1] - n_yup[1] * dot_nt,
-                    t_yup[2] - n_yup[2] * dot_nt,
-                ];
-                normalize_inplace(&mut t_yup);
-
-                normalize_inplace(&mut b_yup);
-                // B = B - N * dot(N, B)
-                let dot_nb = n_yup[0] * b_yup[0] + n_yup[1] * b_yup[1] + n_yup[2] * b_yup[2];
-                b_yup = [
-                    b_yup[0] - n_yup[0] * dot_nb,
-                    b_yup[1] - n_yup[1] * dot_nb,
-                    b_yup[2] - n_yup[2] * dot_nb,
-                ];
-                // B = B - T * dot(T, B)
-                let dot_tb = t_yup[0] * b_yup[0] + t_yup[1] * b_yup[1] + t_yup[2] * b_yup[2];
-                b_yup = [
-                    b_yup[0] - t_yup[0] * dot_tb,
-                    b_yup[1] - t_yup[1] * dot_tb,
-                    b_yup[2] - t_yup[2] * dot_tb,
-                ];
-                normalize_inplace(&mut b_yup);
-                (t_yup, b_yup)
-            };
-
-        // Bitangent sign: sign(dot(B, cross(N, T))) — shared helper so the
-        // operand order stays pinned across every tangent producer (#1516).
-        let sign = crate::types::bitangent_sign(n_yup, tangent_yup, bitangent_yup);
-
-        out.push([tangent_yup[0], tangent_yup[1], tangent_yup[2], sign]);
-    }
-    out
+    let to_yup = |v: &NiPoint3| {
+        byroredux_core::math::coord::zup_to_yup_pos([v.x, v.y, v.z])
+    };
+    let positions_yup: Vec<[f32; 3]> = vertices.iter().map(to_yup).collect();
+    let normals_yup: Vec<[f32; 3]> = normals_zup.iter().map(to_yup).collect();
+    synthesize_tangents_yup(&positions_yup, &normals_yup, uvs, triangles)
 }
 
 /// Convert a slice of raw Z-up BSTriShape tangent records into the
@@ -368,16 +190,15 @@ pub fn bs_tangents_zup_to_yup(zup: &[[f32; 4]]) -> Vec<[f32; 4]> {
         .collect()
 }
 
-/// Y-up sibling of [`synthesize_tangents`] for inputs already in the
-/// renderer's coordinate space — namely Starfield `BSGeometry`
+/// The single tangent-synthesis producer (#5793), for inputs already in
+/// the renderer's Y-up coordinate space — namely Starfield `BSGeometry`
 /// (positions / normals arrive in **source mesh-local Z-up units** —
 /// `BSGeometryMeshData.vertices`'s documented contract — and are
 /// basis-changed through `zup_to_yup_pos` at import, b9e961eeb) and SSE
 /// skin-reconstructed `BSTriShape` (positions / normals / uvs filled
-/// from `try_reconstruct_sse_geometry` which writes Y-up). The Z-up
-/// flavour applies a `(x, y, z) → (x, z, -y)` swap at both the
-/// per-vertex finalize and the accumulator-to-Y-up conversion; this
-/// flavour skips both swaps.
+/// from `try_reconstruct_sse_geometry` which writes Y-up). Z-up callers
+/// route through the [`synthesize_tangents`] wrapper, which converts
+/// inputs up front instead of maintaining a second copy of this body.
 ///
 /// Inputs:
 ///   - `positions_yup` / `normals_yup`: already-Y-up, length == num_verts
