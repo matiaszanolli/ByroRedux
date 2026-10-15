@@ -1137,9 +1137,7 @@ pub fn quest_alias_readiness_stage_system(world: &World, _dt: f32) {
     if emitted.is_empty() {
         return;
     }
-    let Some(player) = world
-        .try_resource::<PapyrusPlayerEntity>()
-        .map(|player| player.0)
+    let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world)
     else {
         return;
     };
@@ -1287,9 +1285,7 @@ pub fn quest_startup_system(world: &World, _dt: f32) {
     definitions.sort_by_key(|(quest, _, _)| quest.0);
     drop(registry);
 
-    let Some(player) = world
-        .try_resource::<PapyrusPlayerEntity>()
-        .map(|player| player.0)
+    let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world)
     else {
         return;
     };
@@ -1370,9 +1366,7 @@ pub fn quest_terminal_stage_system(world: &World, _dt: f32) {
         return;
     }
 
-    let player = world
-        .try_resource::<PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     let mut complete = HashSet::new();
     let mut fail = HashSet::new();
     let mut next_quests = Vec::new();

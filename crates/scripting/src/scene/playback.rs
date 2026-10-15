@@ -593,9 +593,7 @@ pub fn scene_playback_system(world: &World, dt: f32) {
             .collect()
     };
     let bindings = world.resource::<SceneActorBindings>().clone();
-    let subject = world
-        .try_resource::<PapyrusPlayerEntity>()
-        .map(|player| player.0)
+    let subject = crate::papyrus_demo::PapyrusPlayerEntity::get(world)
         .unwrap_or_default();
 
     let empty_completions = HashSet::new();

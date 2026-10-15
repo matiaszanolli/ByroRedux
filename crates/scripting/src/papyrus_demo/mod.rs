@@ -71,6 +71,19 @@ use byroredux_core::ecs::world::World;
 #[derive(Debug, Clone, Copy)]
 pub struct PapyrusPlayerEntity(pub EntityId);
 
+impl PapyrusPlayerEntity {
+    /// #5813 — the one accessor for "the player entity, if spawned".
+    /// This read was hand-spelled at 62 production sites (three path
+    /// spellings, four tail shapes); a move of the resource or a change
+    /// to its Option-ness is now one edit here. A second player resource
+    /// (`byroredux::systems::character::PlayerEntity`) is kept in sync
+    /// by `extension_player_entity_sync_system` — call sites reading
+    /// this one cannot silently get the other.
+    pub fn get(world: &World) -> Option<EntityId> {
+        world.try_resource::<Self>().map(|player| player.0)
+    }
+}
+
 // #3710 (ECS-P2-07) — the fully-qualified trait path this impl used to
 // carry (`impl byroredux_core::ecs::resource::Resource for X {}`) doesn't
 // match `registry_completeness_tests.rs`'s `extract_type_name`, which only

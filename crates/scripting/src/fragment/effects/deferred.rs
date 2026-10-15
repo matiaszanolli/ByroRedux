@@ -483,9 +483,7 @@ impl DeferredFragmentEffects {
             self.crime_gold_changes.clear();
         }
         if !self.camera_shakes.is_empty() || !self.controller_shakes.is_empty() {
-            let player = world
-                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-                .map(|player| player.0);
+            let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
             if let Some(player) = player {
                 if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::CameraShakeCommand>() {
                     if let Some(shake) = self.camera_shakes.last() {
@@ -809,9 +807,7 @@ impl DeferredFragmentEffects {
             }
         }
         if !self.faction_changes.is_empty() {
-            let player = world
-                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-                .map(|player| player.0);
+            let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
             for (actor, faction, change) in std::mem::take(&mut self.faction_changes) {
                 // `RemoveFromAllFactions` names no faction: the ledger records
                 // each one the actor was in as removed.

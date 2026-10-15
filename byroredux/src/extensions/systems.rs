@@ -565,9 +565,7 @@ pub(super) fn register_extension_setting(
 /// event cleanup, after built-in activation consumers have observed the same
 /// marker.
 pub(crate) fn extension_activation_dispatch_system(world: &World, _dt: f32) {
-    let missing_player = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-        .is_none();
+    let missing_player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world).is_none();
     let raw_activations: Vec<(EntityId, Option<EntityId>)> = {
         let Some(events) = world.query::<byroredux_scripting::ActivateEvent>() else {
             return;

@@ -1126,9 +1126,7 @@ pub fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<E
     // Bethesda's conventional PlayerRef sentinel (never a placed record).
     const PLAYER_REF_SENTINEL: u32 = 0x14;
     if form_id == PLAYER_REF_SENTINEL {
-        return world
-            .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-            .map(|player| player.0);
+        return crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     }
     let q = world.query::<FormIdComponent>()?;
     let pool = world.try_resource::<FormIdPool>()?;
@@ -1542,9 +1540,7 @@ pub fn evaluate_function(
             truth(crate::bleedout::is_bleeding_out(world, entity))
         }
         ConditionFunction::GetPlayerTeammate => {
-            let form = if world
-                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-                .is_some_and(|player| player.0 == entity)
+            let form = if crate::papyrus_demo::PapyrusPlayerEntity::get(world).is_some_and(|player| player == entity)
             {
                 Some(crate::PLAYER_REFERENCE)
             } else {

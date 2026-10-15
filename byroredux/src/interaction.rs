@@ -959,8 +959,7 @@ fn snapshot_interaction_candidates(world: &World, rows: &mut [InteractionCandida
         }
     }
     if rows.iter().any(|row| row.required_key.is_some()) {
-        let player = world.try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-            .map(|player| player.0);
+        let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
         if let Some(inventory) = player
             .and_then(|entity| world.get::<byroredux_core::ecs::components::Inventory>(entity))
         {
@@ -1063,9 +1062,7 @@ fn corpse_collider_actors(
 }
 
 fn ray_hit_actor(world: &World, origin: Vec3, direction: Vec3) -> Option<(EntityId, f32)> {
-    let player = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
     let excluded = player.and_then(|player| {
         world
             .get::<byroredux_physics::RapierHandles>(player)
@@ -1124,9 +1121,7 @@ fn target_has_line_of_sight(
     // same as before. The reverse lookup (hit body -> owning entity)
     // below re-acquires the same query AFTER the raycast completes and
     // scans it directly — no intermediate `Vec` is ever materialised.
-    let player = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
     let excluded_body = player.and_then(|entity| {
         world
             .query::<byroredux_physics::RapierHandles>()
@@ -1413,9 +1408,7 @@ fn carried_unlock_key(world: &World, target: EntityId) -> Option<u32> {
         .get::<Locked>(target)
         .and_then(|lock| lock.key_form_id)
         .filter(|key| *key != 0)?;
-    let player = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()?
-        .0;
+    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world)?;
     world
         .get::<byroredux_core::ecs::components::Inventory>(player)?
         .items
@@ -1543,9 +1536,7 @@ pub(crate) fn emit_activate_event(
     world: &World,
     target: EntityId,
 ) -> Result<EntityId, &'static str> {
-    let activator = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0)
+    let activator = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world)
         .unwrap_or(0);
 
     // CK *Reference*, Parent Activate Only: the reference "can ONLY be activated by

@@ -56,9 +56,7 @@ pub fn install_relationships(world: &mut World, index: &EsmIndex) -> usize {
 /// The `NPC_` base an actor entity was placed from; the player's is
 /// [`PLAYER_BASE`].
 pub fn actor_base(world: &World, entity: EntityId) -> Option<u32> {
-    let player = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     if Some(entity) == player {
         return Some(PLAYER_BASE);
     }

@@ -32,9 +32,7 @@ pub(crate) fn scripted_sound_system(world: &World, _dt: f32) {
     else {
         return;
     };
-    let player = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
     for play in plays {
         let Some(record) = index.sounds.get(&play.sound) else {
             log::debug!("Sound.Play {:08X}: not a sound descriptor", play.sound);

@@ -205,9 +205,7 @@ pub fn location_loaded(world: &World, location: u32) -> Option<bool> {
 }
 
 fn is_player(world: &World, entity: EntityId) -> bool {
-    world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .is_some_and(|player| player.0 == entity)
+    crate::papyrus_demo::PapyrusPlayerEntity::get(world).is_some_and(|player| player == entity)
 }
 
 /// The current location of `entity`: the player's published location, else

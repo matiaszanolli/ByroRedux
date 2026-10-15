@@ -47,9 +47,7 @@ pub(crate) fn flush_advances(world: &World, advances: Vec<QuestStageAdvanced>) {
     if advances.is_empty() {
         return;
     }
-    let Some(player) = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0)
+    let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world)
     else {
         return;
     };

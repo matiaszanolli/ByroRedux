@@ -40,9 +40,7 @@ impl Resource for TrapContacts {}
 
 /// The script-side reference of `entity` (`0x14` for the player).
 fn script_form(world: &World, entity: EntityId) -> Option<u32> {
-    let player = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
     if Some(entity) == player {
         return Some(byroredux_scripting::PLAYER_REFERENCE);
     }

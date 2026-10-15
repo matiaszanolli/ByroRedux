@@ -53,9 +53,7 @@ impl ConsoleCommand for InteractionStatusCommand {
                     None => "  camera_ray=none".to_string(),
                 });
                 if let Some((origin, direction)) = ray {
-                    let excluded = world
-                        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-                        .map(|player| player.0)
+                    let excluded = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world)
                         .and_then(|entity| {
                             world
                                 .get::<byroredux_physics::RapierHandles>(entity)

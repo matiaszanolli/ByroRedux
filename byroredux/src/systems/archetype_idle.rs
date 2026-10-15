@@ -69,9 +69,7 @@ pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
         Some(targets) => targets.iter().map(|(entity, target)| (entity, target.skeleton_root)).collect(),
         None => return,
     };
-    let player = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
     for (actor, skeleton_root) in actors {
         if Some(actor) == player || world.get::<Dead>(actor).is_some() {
             continue;

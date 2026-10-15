@@ -109,9 +109,7 @@ pub(super) fn apply_ai_combat_effect(
         }
         Effect::SetCrimeFaction { actor, faction } => {
             let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
-            let reference = if world
-                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-                .is_some_and(|player| player.0 == actor)
+            let reference = if crate::papyrus_demo::PapyrusPlayerEntity::get(world).is_some_and(|player| player == actor)
             {
                 0x14
             } else {

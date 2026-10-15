@@ -19,9 +19,7 @@ pub(super) fn apply_player_control_effect(
 ) -> Option<QuestStageAdvanced> {
     match effect {
         Effect::SetPlayerRestrained { restrained } => {
-            let Some(player) = world
-                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-                .map(|player| player.0)
+            let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world)
             else {
                 log::debug!("fragment SetRestrained skipped: player entity is unavailable");
                 return None;

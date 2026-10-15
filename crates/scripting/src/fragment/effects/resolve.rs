@@ -201,9 +201,7 @@ pub(super) fn reference_identity(
     world: &World,
     deferred: &DeferredFragmentEffects,
 ) -> Option<u32> {
-    let player = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     let identity = |entity: EntityId| {
         if Some(entity) == player {
             Some(0x14)
@@ -232,9 +230,7 @@ pub(super) fn resolve_actor(
     speaker: Option<EntityId>,
 ) -> Option<byroredux_core::ecs::storage::EntityId> {
     match via {
-        ActorRef::Player => world
-            .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-            .map(|player| player.0),
+        ActorRef::Player => crate::papyrus_demo::PapyrusPlayerEntity::get(world),
         ActorRef::Object(via) => resolve_object(vmad, world, context, via, bindings),
         // M47.2 — the line's speaker, supplied by the dialogue caller. A
         // fragment run without one (a quest or scene fragment never lowers
@@ -269,9 +265,7 @@ pub(super) fn resolve_npc_actor(
     speaker: Option<EntityId>,
 ) -> Option<byroredux_core::ecs::storage::EntityId> {
     let entity = resolve_actor(vmad, world, context, via, bindings, speaker)?;
-    let player = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     if player == Some(entity) {
         log::debug!(
             "fragment effect skipped: the resolved actor is the player, whose \

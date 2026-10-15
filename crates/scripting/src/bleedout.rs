@@ -193,9 +193,7 @@ pub fn is_bleeding_out(world: &World, entity: EntityId) -> bool {
 /// one not killed by the player, goes into (or stays in) bleedout instead,
 /// and the producer skips the death. The player is never spared.
 pub fn spare_from_death(world: &World, victim: EntityId, killer: Option<EntityId>) -> bool {
-    let player = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     if Some(victim) == player {
         return false;
     }

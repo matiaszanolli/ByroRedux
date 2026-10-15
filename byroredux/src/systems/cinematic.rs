@@ -203,9 +203,7 @@ pub(crate) fn cinematic_animation_event_system(world: &World, _dt: f32) {
         }
     }
 
-    let Some(player) = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0)
+    let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world)
     else {
         return;
     };

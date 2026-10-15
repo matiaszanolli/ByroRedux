@@ -221,9 +221,7 @@ pub fn package_fragment_system(world: &World, _dt: f32) {
     if fragments.is_empty() {
         return;
     }
-    let player = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     // (actor, package, event) in report order: completions first (they
     // happened during the frame the transitions were decided after).
     let mut runs: Vec<(EntityId, u32, PackageFragmentEvent)> = Vec::new();

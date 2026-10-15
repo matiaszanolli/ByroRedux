@@ -167,9 +167,7 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
     if emitted.is_empty() {
         return;
     }
-    let Some(player_entity) = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0)
+    let Some(player_entity) = crate::papyrus_demo::PapyrusPlayerEntity::get(world)
     else {
         return;
     };
@@ -267,9 +265,7 @@ pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
     // and closing a ring with the other two edges the quest systems record.
     // Every other `PapyrusPlayerEntity` site in the crate already copies the id out
     // of a statement-scoped temporary; this one did not.
-    let Some(player) = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0)
+    let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world)
     else {
         return;
     };

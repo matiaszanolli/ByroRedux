@@ -597,9 +597,7 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
     let aliases = alias_script_targets(world);
     let changes = actor_changes(world);
     let attached = world.query::<PapyrusReferenceScripts>();
-    let player = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     let form_of = |entity: EntityId| -> Option<u32> {
         if Some(entity) == player {
             return Some(0x14);
@@ -826,9 +824,7 @@ fn relay_engine_events(world: &World) {
     if !any {
         return;
     }
-    let player = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     let form_of = |entity: EntityId| -> Option<u32> {
         if Some(entity) == player {
             return Some(0x14);

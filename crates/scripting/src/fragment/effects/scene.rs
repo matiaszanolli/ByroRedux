@@ -84,9 +84,7 @@ pub(super) fn apply_scene_effect(
                     activator,
                     &deferred.scene_actor_bindings,
                 )?,
-                None => world
-                    .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-                    .map(|player| player.0)
+                None => crate::papyrus_demo::PapyrusPlayerEntity::get(world)
                     .unwrap_or(target_entity),
             };
             // Queue rather than insert: `quest_fragment_dispatch_system` is

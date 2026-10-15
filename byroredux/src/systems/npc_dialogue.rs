@@ -484,9 +484,7 @@ fn dispatch_spoken_fragment(
     }
     // #3580 — copy the entity out and drop the guard before the batch
     // storage acquisition (the scene dispatcher's lock-order note).
-    let Some(player) = world
-        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0)
+    let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world)
     else {
         return;
     };

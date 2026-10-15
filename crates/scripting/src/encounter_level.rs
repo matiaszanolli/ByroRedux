@@ -143,7 +143,7 @@ impl EncounterLevelRules {
 /// no level or the difficulty cannot be scaled.
 pub fn calculate_encounter_level(world: &World, reference: EntityId, difficulty: i32) -> Option<u32> {
     let rules = world.try_resource::<EncounterLevelRules>()?;
-    let player = world.try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()?.0;
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world)?;
     let player_level = world.get::<CharacterLevel>(player)?.level;
     let zone = rules.zone_of(world, reference);
     rules.at_difficulty(rules.resolved_level(zone, player_level.into()), difficulty)

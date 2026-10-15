@@ -54,9 +54,7 @@ pub fn is_in_combat(world: &World, actor: EntityId) -> bool {
     if world.get::<AiCombatState>(actor).is_some() {
         return true;
     }
-    let is_player = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .is_some_and(|player| player.0 == actor);
+    let is_player = crate::papyrus_demo::PapyrusPlayerEntity::get(world).is_some_and(|player| player == actor);
     is_player
         && world
             .query::<AiCombatState>()

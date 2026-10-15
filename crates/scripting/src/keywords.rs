@@ -92,9 +92,7 @@ pub fn install_keyword_table(world: &mut World, index: &EsmIndex) -> usize {
 /// The FormID a reference's keyword changes are keyed by; the player's is
 /// `PlayerRef` (`0x14`).
 fn reference_key(world: &World, entity: EntityId) -> Option<u32> {
-    let player = world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     if Some(entity) == player {
         return Some(0x14);
     }

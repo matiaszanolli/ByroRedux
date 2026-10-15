@@ -117,9 +117,7 @@ impl ConsoleCommand for ScanInfoCommand {
             Ok(entity) => entity,
             Err(message) => return CommandOutput::error(format!("scan.info: {message}")),
         };
-        let player = world
-            .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-            .map(|player| player.0);
+        let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
         let form = if Some(entity) == player {
             Some(byroredux_scripting::PLAYER_REFERENCE)
         } else {
@@ -181,9 +179,7 @@ impl ConsoleCommand for QuestForceAliasCommand {
                 Err(message) => return CommandOutput::error(format!("quest.force: {message}")),
             }
         };
-        let player = world
-            .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-            .map(|player| player.0);
+        let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
         let form = if Some(entity) == player {
             Some(byroredux_scripting::PLAYER_REFERENCE)
         } else {

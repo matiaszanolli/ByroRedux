@@ -858,9 +858,7 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
         .map(|fills| fills.0.clone())
         .unwrap_or_default();
     // #5394 — the player for PlayerRef-recorded event slots.
-    let story_player = world
-        .try_resource::<PapyrusPlayerEntity>()
-        .map(|player| player.0);
+    let story_player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     let mut external_aliases = Vec::new();
     let mut reserved = HashSet::new();
     // M47.2 — location aliases hold from quest start until the quest stops:
@@ -1158,9 +1156,7 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                         .flags
                         .has(ALIAS_FLAG_CLOSEST)
                         .then(|| {
-                            world
-                                .try_resource::<PapyrusPlayerEntity>()
-                                .map(|player| player.0)
+                            crate::papyrus_demo::PapyrusPlayerEntity::get(world)
                         })
                         .flatten()
                 })

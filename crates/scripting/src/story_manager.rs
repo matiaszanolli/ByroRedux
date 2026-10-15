@@ -868,9 +868,7 @@ pub(crate) const PLAYER_REF_FORM_ID: u32 = 0x14;
 /// (PlayerRef), else the placed reference FormId its alias candidate
 /// carries. `None` for an entity with neither (it stays session-only).
 fn reference_form_of(world: &World, entity: EntityId) -> Option<u32> {
-    if world
-        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-        .is_some_and(|player| player.0 == entity)
+    if crate::papyrus_demo::PapyrusPlayerEntity::get(world).is_some_and(|player| player == entity)
     {
         return Some(PLAYER_REF_FORM_ID);
     }

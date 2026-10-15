@@ -107,7 +107,7 @@ pub struct BribeInputs {
 /// The inputs and result of `npc.GetBribeAmount()`.
 pub fn bribe_inputs(world: &World, npc: EntityId) -> Option<BribeInputs> {
     let rules = world.try_resource::<BribeRules>()?;
-    let player = world.try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()?.0;
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world)?;
     let level = |entity| world.get::<CharacterLevel>(entity).map(|level| f32::from(level.level));
     let value = |entity, avif| actor_value_view(world, entity, avif, ActorValueView::Current);
     let inputs = BribeInputs {
@@ -132,7 +132,7 @@ pub fn bribe_inputs(world: &World, npc: EntityId) -> Option<BribeInputs> {
 /// player or the NPC carries no level.
 pub fn bribe_amount(world: &World, npc: EntityId) -> Option<i32> {
     let rules = world.try_resource::<BribeRules>()?;
-    let player = world.try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()?.0;
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world)?;
     let level = |entity| world.get::<CharacterLevel>(entity).map(|level| f32::from(level.level));
     let value = |entity, avif| actor_value_view(world, entity, avif, ActorValueView::Current);
     Some(rules.amount(

@@ -2872,9 +2872,7 @@ impl Vm<'_> {
             // CK *GetScale*: "the current scale of the reference".
             (Value::Form(reference), "getscale") if args.is_empty() => {
                 let entity = if *reference == PLAYER_REF {
-                    self.world
-                        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-                        .map(|player| player.0)
+                    crate::papyrus_demo::PapyrusPlayerEntity::get(self.world)
                 } else {
                     self.entity_of(*reference)
                 };
@@ -2887,9 +2885,7 @@ impl Vm<'_> {
             // CK *GetRace - Actor*: "the Race the actor is" (its record's).
             (Value::Form(actor), "getrace") if args.is_empty() => {
                 let entity = if *actor == PLAYER_REF {
-                    self.world
-                        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-                        .map(|player| player.0)
+                    crate::papyrus_demo::PapyrusPlayerEntity::get(self.world)
                 } else {
                     self.entity_of(*actor)
                 };
@@ -3336,7 +3332,7 @@ impl Vm<'_> {
                     return stop("IsInLocation without a location");
                 };
                 let entity = if *reference == PLAYER_REF {
-                    self.world.try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>().map(|player| player.0)
+                    crate::papyrus_demo::PapyrusPlayerEntity::get(self.world)
                 } else {
                     self.entity_of(*reference)
                 };
@@ -3821,10 +3817,7 @@ impl Vm<'_> {
     }
 
     fn entity_form(&self, entity: EntityId) -> Option<u32> {
-        let player = self
-            .world
-            .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-            .map(|player| player.0);
+        let player = crate::papyrus_demo::PapyrusPlayerEntity::get(self.world);
         if Some(entity) == player {
             return Some(PLAYER_REF);
         }

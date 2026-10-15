@@ -217,9 +217,7 @@ pub(crate) fn apply_effect(
             // `R1` holds an entity: the first reference, else the player
             // (flagged absent).
             let carrier = first.or_else(|| {
-                world
-                    .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-                    .map(|player| player.0)
+                crate::papyrus_demo::PapyrusPlayerEntity::get(world)
             })?;
             deferred.story_events.push(
                 crate::story_manager::StoryEvent {
@@ -368,9 +366,7 @@ pub(crate) fn apply_effect(
         Effect::PlayerCaps { delta } => {
             // `Game.GetCaps()` is `Game.GetForm(15)` in FO4's `Game.psc`.
             const CAPS: u32 = 0x0000_000F;
-            let player = world
-                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
-                .map(|player| player.0)?;
+            let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world)?;
             match delta.cmp(&0) {
                 std::cmp::Ordering::Greater => add_items(world, player, CAPS, *delta as u32),
                 std::cmp::Ordering::Less => {

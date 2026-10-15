@@ -161,7 +161,7 @@ pub fn trigger_object_count(world: &World, volume: EntityId) -> usize {
 /// No-ops gracefully when there's no player, no player transform, or no
 /// trigger volumes in the world.
 pub fn trigger_detection_system(world: &World) {
-    let Some(player) = world.try_resource::<PapyrusPlayerEntity>().map(|p| p.0) else {
+    let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world) else {
         return;
     };
     // The player's world position — the only spatial input detection needs.
