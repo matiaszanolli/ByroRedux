@@ -362,11 +362,11 @@ fn apply_environment(
         // cell transitions. Insert a default-zero state on first
         // exterior load only; subsequent loads reuse the existing
         // accumulator so clouds resume drift across interior visits.
-        if world.init_resource::<CloudSimState>();
+        world.init_resource::<CloudSimState>();
         // Surface response is simulation state, not authored WTHR data.
         // Seed it once so rain/snow survives cell streaming and the interior
         // visits that deliberately preserve worldspace weather.
-        if world.init_resource::<WeatherSurfaceState>();
+        world.init_resource::<WeatherSurfaceState>();
         // Full NAM0 table + per-climate TOD breakpoints + Skyrim DALC cube
         // (Z-up→Y-up once) + the exterior's base image space (this weather's
         // IMSP, else the worldspace's inherited INAM, #4914/#4416, plus the
@@ -893,8 +893,8 @@ fn insert_procedural_outdoor_environment(world: &mut World, sun_dir: [f32; 3]) {
     world.insert_resource(crate::env_translate::procedural_fallback_sky(sun_dir));
     // #803 — same survives-transitions pattern as the WTHR path: seed
     // CloudSimState only on the first exterior load.
-    if world.init_resource::<CloudSimState>();
-    if world.init_resource::<WeatherSurfaceState>();
+    world.init_resource::<CloudSimState>();
+    world.init_resource::<WeatherSurfaceState>();
     world.insert_resource(crate::env_translate::procedural_fallback_weather());
     ensure_game_time(world);
 }

@@ -254,7 +254,7 @@ pub(crate) fn begin_barter(world: &mut World, vendor: EntityId) -> Result<(), &'
             Some(stock) => (stock, false),
             None => (stand_in_container(world, container)?, true),
         };
-    if world.init_resource::<ActiveBarter>();
+    world.init_resource::<ActiveBarter>();
     world.resource_mut::<ActiveBarter>().0 = Some(BarterSession {
         vendor,
         faction,

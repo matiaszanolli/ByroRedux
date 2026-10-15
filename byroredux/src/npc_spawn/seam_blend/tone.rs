@@ -65,7 +65,7 @@ pub(crate) struct ToneSampler<'a> {
 
 impl<'a> ToneSampler<'a> {
     pub(crate) fn new(world: &mut World, provider: &'a TextureProvider) -> Self {
-        if world.init_resource::<SharedToneCache>();
+        world.init_resource::<SharedToneCache>();
         let shared = world.resource::<SharedToneCache>().clone();
         Self {
             provider,
