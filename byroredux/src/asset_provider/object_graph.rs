@@ -152,9 +152,7 @@ pub(crate) fn populate_object_graphs(world: &mut World, provider: &TextureProvid
     if pending.is_empty() {
         return 0;
     }
-    if world.try_resource::<ObjectGraphCache>().is_none() {
-        world.insert_resource(ObjectGraphCache::default());
-    }
+    if world.init_resource::<ObjectGraphCache>();
     let mut attached = 0;
     for (entity, project, own_sequences) in pending {
         // A project can be shared by NIFs with different sequences (generic

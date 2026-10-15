@@ -42,9 +42,7 @@ pub(crate) fn populate_idle_clip_runtime(
     if index.game != GameKind::Skyrim {
         return 0;
     }
-    if world.try_resource::<IdleClipCatalog>().is_none() {
-        world.insert_resource(IdleClipCatalog::default());
-    }
+    if world.init_resource::<IdleClipCatalog>();
     let already_loaded: HashSet<u32> = world
         .resource::<IdleClipCatalog>()
         .handles

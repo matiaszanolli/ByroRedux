@@ -101,9 +101,7 @@ pub(crate) fn populate_archetype_idles(world: &mut World, index: &EsmIndex, prov
     if entries.is_empty() {
         return 0;
     }
-    if world.try_resource::<ArchetypeIdleClips>().is_none() {
-        world.insert_resource(ArchetypeIdleClips::default());
-    }
+    if world.init_resource::<ArchetypeIdleClips>();
     // The idle clip *name* of each behavior graph, and the rig of each project.
     let mut idle_names: HashMap<String, Option<String>> = HashMap::new();
     let mut skeletons: HashMap<String, Option<HkxSkeleton>> = HashMap::new();

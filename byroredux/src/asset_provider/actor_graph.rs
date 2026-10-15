@@ -148,9 +148,7 @@ impl Resource for ActorClipProvider {}
 /// Attach the graphs actors are waiting for, and resolve the clips running graphs asked
 /// for. Returns how many graphs were attached.
 pub(crate) fn populate_actor_graphs(world: &mut World, provider: &TextureProvider) -> usize {
-    if world.try_resource::<ActorGraphCache>().is_none() {
-        world.insert_resource(ActorGraphCache::default());
-    }
+    if world.init_resource::<ActorGraphCache>();
     let pending: Vec<(EntityId, SubgraphData)> = match world.try_resource_mut::<PendingActorGraphs>() {
         Some(mut pending) => std::mem::take(&mut pending.0),
         None => Vec::new(),

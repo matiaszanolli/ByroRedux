@@ -537,9 +537,7 @@ pub(crate) fn install_experience_rules(
     match rules {
         Some(rules) => {
             world.insert_resource(rules);
-            if world.try_resource::<PlayerDamageDealt>().is_none() {
-                world.insert_resource(PlayerDamageDealt::default());
-            }
+            if world.init_resource::<PlayerDamageDealt>();
             true
         }
         None => {

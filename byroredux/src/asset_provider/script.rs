@@ -156,9 +156,7 @@ pub(crate) fn attach_vm_reference_script(
                     .ok()
                 })
             };
-            if world.try_resource::<VmReferenceScriptChecks>().is_none() {
-                world.insert_resource(VmReferenceScriptChecks::default());
-            }
+            if world.init_resource::<VmReferenceScriptChecks>();
             world
                 .resource_mut::<VmReferenceScriptChecks>()
                 .0
@@ -1063,9 +1061,7 @@ pub(crate) fn populate_scene_runtime(
     if alias_scripts > 0 {
         log::info!("Installed {alias_scripts} quest alias scripts");
     }
-    if world.try_resource::<VmAliasScriptChecks>().is_none() {
-        world.insert_resource(VmAliasScriptChecks::default());
-    }
+    if world.init_resource::<VmAliasScriptChecks>();
     // M47.2 — references that start disabled, for IsDisabled / IsEnabled.
     byroredux_scripting::install_authored_disabled_references(world, index);
     // M47.2 — Skyrim's SetAV("Name", v) resolves names through the AVIFs.

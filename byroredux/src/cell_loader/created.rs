@@ -255,9 +255,7 @@ pub(crate) fn spawn_created_references(
     for (form_id, _) in &spawned {
         log::info!("Spawned created reference {form_id:08X}");
     }
-    if world.try_resource::<CreatedReferenceEntities>().is_none() {
-        world.insert_resource(CreatedReferenceEntities::default());
-    }
+    if world.init_resource::<CreatedReferenceEntities>();
     let mut entities = world.resource_mut::<CreatedReferenceEntities>();
     entities.0.extend(spawned);
 }
