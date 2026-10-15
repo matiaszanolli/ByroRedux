@@ -11,7 +11,7 @@ use super::{
     join_with_timeout, parse_model_keys, pre_parse_cell_panic_safe, pre_parse_model_skip_reason,
     recv_next_batch_request, recv_next_live_request, stale_pending_coords, world_pos_to_grid, JoinTimeout, LoadCellPayload,
     LoadedCell, PayloadDecision, PreParseModelSkip, StreamingDeltas, StreamingLatencySummary,
-    StreamingTelemetry, StreamingWorkerTimings,
+    StreamingTelemetry, StreamingWorkerTimings, WorldStreamingState, lod_water_rebuild_due,
 };
 use crate::asset_provider::{ResolveExtractTotals, TextureProvider};
 use crate::cell_loader::UnloadPhaseTimings;
@@ -788,4 +788,44 @@ fn spt_check_is_case_insensitive_on_the_extension_only() {
     assert!(is_spt_model_path("TREE.SPT"));
     assert!(is_spt_model_path("tree.Spt"));
     assert!(!is_spt_model_path("SPT.sptx"));
+}
+
+
+/// #5705 — a crossing applies its ring one cell at a time; the distant-water
+/// rebuild (a fence-waited upload) must run once when the apply settles, not
+/// once per landed cell.
+#[test]
+fn lod_water_rebuilds_once_per_settled_crossing() {
+    let frame = Duration::from_millis(16);
+    let mut rebuilds = 0u32;
+    let mut since_last: Option<Duration> = None;
+    let mut waited = Duration::ZERO;
+    let mut wanted = true;
+    // 90 frames (~1.4 s) of cell-by-cell apply, then 20 settled frames.
+    for step in 0..110 {
+        let settled = step >= 90;
+        if wanted && lod_water_rebuild_due(settled, since_last, waited) {
+            rebuilds += 1;
+            wanted = false; // the rebuild consumes the dirty flag
+            since_last = Some(Duration::ZERO);
+            waited = Duration::ZERO;
+        } else {
+            since_last = since_last.map(|age| age + frame);
+            waited += frame;
+        }
+    }
+    assert_eq!(rebuilds, 1, "one rebuild for the whole crossing");
+}
+
+/// #5705 — the settle wait is bounded so continuous crossings cannot starve
+/// the rebuild, and the 250 ms spacing floor still applies.
+#[test]
+fn lod_water_rebuild_defer_is_bounded_and_spaced() {
+    let max = WorldStreamingState::LOD_WATER_MAX_DEFER;
+    assert!(!lod_water_rebuild_due(false, None, max - Duration::from_millis(1)));
+    assert!(lod_water_rebuild_due(false, None, max));
+    assert!(lod_water_rebuild_due(true, None, Duration::ZERO));
+    let floor = WorldStreamingState::LOD_WATER_REBUILD_INTERVAL;
+    assert!(!lod_water_rebuild_due(true, Some(floor - Duration::from_millis(1)), max));
+    assert!(lod_water_rebuild_due(true, Some(floor), Duration::ZERO));
 }

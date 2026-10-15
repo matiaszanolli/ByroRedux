@@ -440,8 +440,16 @@ pub struct WorldStreamingState {
     /// `loaded`'s key set (#3688).
     pub(crate) loaded_residency_changed: bool,
     /// The distant-water mesh's hole no longer matches the resident set and
-    /// is waiting out [`Self::LOD_WATER_REBUILD_INTERVAL`] (#5334).
+    /// is waiting for the apply to settle and for [`Self::LOD_WATER_REBUILD_INTERVAL`]
+    /// (#5334, #5705).
     pub(crate) lod_water_dirty: bool,
+    /// When [`Self::lod_water_dirty`] was first observed set; the start of
+    /// the [`lod_water_rebuild_due`] starvation bound (#5705).
+    pub(crate) lod_water_dirty_since: Option<std::time::Instant>,
+    /// Distant-water mesh rebuilds performed (#5705) — each is a ring
+    /// re-selection plus a fence-waited upload, so a crossing should add
+    /// one, not one per applied cell.
+    pub(crate) lod_water_rebuilds: u64,
     /// Boundary-to-ready and apply-slice aggregates. Read by the benchmark
     /// summary; otherwise passive, bounded runtime diagnostics.
     pub telemetry: StreamingTelemetry,
@@ -549,6 +557,8 @@ impl WorldStreamingState {
             lod_reconcile_pending: false,
             loaded_residency_changed: false,
             lod_water_dirty: false,
+            lod_water_dirty_since: None,
+            lod_water_rebuilds: 0,
             telemetry: StreamingTelemetry::default(),
             worker: Some(worker),
             request_tx: Some(request_tx),
@@ -635,13 +645,16 @@ impl WorldStreamingState {
     }
 
     /// Minimum spacing of residency-driven distant-water rebuilds (#5334).
-    /// Cells apply one at a time over several frames after a crossing; each
-    /// rebuild is a ring re-selection plus one fence-waited upload, so
-    /// rebuilding per applied cell would multiply the cost #5289 removed.
-    /// Coalescing leaves a few frames of coincident same-height quads over a
-    /// freshly applied cell, or a brief gap over a just-unloaded one.
+    /// Each rebuild is a ring re-selection plus one fence-waited upload on
+    /// the main thread.
     pub const LOD_WATER_REBUILD_INTERVAL: std::time::Duration =
         std::time::Duration::from_millis(250);
+
+    /// Longest a pending distant-water rebuild may wait for the full-detail
+    /// apply to settle (#5705). Art-direction value, not measured: it only
+    /// stops a player who keeps crossing grids from starving the rebuild
+    /// forever; a normal crossing (roughly 1–3 s of apply) settles first.
+    pub const LOD_WATER_MAX_DEFER: std::time::Duration = std::time::Duration::from_secs(4);
 
     /// Keep the distant-water mesh's hole equal to the actual resident set
     /// (#5334). The hole is *which cells are skipped*, so a residency change
@@ -649,6 +662,11 @@ impl WorldStreamingState {
     /// the mesh handle swaps; the entity, material, and textures persist.
     /// Called once per streaming step; it is two comparisons when nothing
     /// moved. `residency_changed` is this step's `loaded_residency_changed`.
+    ///
+    /// The rebuild waits for the full-detail apply to settle (#5705): cells
+    /// land one at a time over a crossing, and a rebuild per landing was
+    /// several fence-waited uploads on the frames already carrying the apply
+    /// slice. See [`lod_water_rebuild_due`] for the full predicate.
     pub fn refresh_lod_water(
         &mut self,
         world: &mut World,
@@ -657,21 +675,31 @@ impl WorldStreamingState {
         residency_changed: bool,
     ) {
         self.lod_water_dirty |= residency_changed;
+        let settled = self.pending.is_empty()
+            && self.active_apply.is_none()
+            && self.persistent_apply.is_none();
         let Some(plane) = self.lod_water.as_mut() else {
             return;
         };
-        if !self.lod_water_dirty && plane.center_grid == player_grid {
+        let wanted = self.lod_water_dirty || plane.center_grid != player_grid;
+        if !wanted {
+            self.lod_water_dirty_since = None;
             return;
         }
-        if plane
-            .last_rebuilt
-            .is_some_and(|at| at.elapsed() < Self::LOD_WATER_REBUILD_INTERVAL)
-        {
+        let now = std::time::Instant::now();
+        let dirty_since = *self.lod_water_dirty_since.get_or_insert(now);
+        if !lod_water_rebuild_due(
+            settled,
+            plane.last_rebuilt.map(|at| now.duration_since(at)),
+            now.duration_since(dirty_since),
+        ) {
             return;
         }
         // The attempt consumes the dirty flag whether it succeeds or not
         // (#5339): a failed upload is retried on the next real change.
         self.lod_water_dirty = false;
+        self.lod_water_dirty_since = None;
+        self.lod_water_rebuilds += 1;
         let loaded = &self.loaded;
         crate::cell_loader::rebuild_lod_water_mesh(
             world,
@@ -870,6 +898,28 @@ pub fn compute_streaming_deltas(
     to_unload.sort();
 
     StreamingDeltas { to_load, to_unload }
+}
+
+/// Whether a wanted distant-water rebuild runs this step (#5705, on top of
+/// #5334's spacing). `settled` is "no pending, active or persistent
+/// full-detail apply"; `since_last` is the time since the previous rebuild
+/// (`None` before the first); `waited` is how long the rebuild has been
+/// wanted.
+///
+/// * The previous rebuild is at least [`WorldStreamingState::LOD_WATER_REBUILD_INTERVAL`]
+///   old — the floor on spacing.
+/// * The apply has settled, so one crossing pays one rebuild instead of one
+///   per landed cell — or it has waited [`WorldStreamingState::LOD_WATER_MAX_DEFER`],
+///   so a player who keeps crossing grids is never starved.
+pub(crate) fn lod_water_rebuild_due(
+    settled: bool,
+    since_last: Option<std::time::Duration>,
+    waited: std::time::Duration,
+) -> bool {
+    if since_last.is_some_and(|age| age < WorldStreamingState::LOD_WATER_REBUILD_INTERVAL) {
+        return false;
+    }
+    settled || waited >= WorldStreamingState::LOD_WATER_MAX_DEFER
 }
 
 /// Cells with an in-flight worker request that have left the unload
