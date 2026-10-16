@@ -281,11 +281,14 @@ fn decompile_body(
 ///
 /// Compiler temporaries (`::temp0`) are skipped: the lift folds them into
 /// the expressions that consume them, and a name no source could spell is
-/// not a declaration anyone wrote.
+/// not a declaration anyone wrote. Only those, though (#5880): the
+/// compiler's `::mangled_<name>_<n>` renaming of a local re-declared in a
+/// sibling scope is a real user local the body still assigns and reads
+/// under that name, so it is declared like any other.
 fn lower_local_decls(func: &PexFunction) -> Vec<Spanned<Stmt>> {
     func.locals
         .iter()
-        .filter(|local| !local.name.starts_with("::"))
+        .filter(|local| !is_temp_var(&local.name))
         .map(|local| {
             sp(Stmt::VarDecl(past::Variable {
                 ty: sp(lower_type(&local.type_name)),
@@ -297,6 +300,14 @@ fn lower_local_decls(func: &PexFunction) -> Vec<Spanned<Stmt>> {
             }))
         })
         .collect()
+}
+
+/// Champollion's `isTempVar` (PscDecompiler.cpp:20-24): `::temp*` not ending
+/// in `_var` (those are property backing variables), or `::nonevar`.
+/// Case-insensitive, as the rest of the format is.
+fn is_temp_var(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    (lower.starts_with("::temp") && !lower.ends_with("_var")) || lower == "::nonevar"
 }
 
 fn lower_params(func: &PexFunction) -> Vec<Param> {
@@ -923,11 +934,29 @@ mod tests {
                 ..PexVariable::default()
             })
             .collect();
+        // #5878 — and 65,535 auto properties whose backing name never matches
+        // a same-length variable: the per-property `find` it replaced took 39 s.
+        pex.objects[0].variables.extend((0..65_535u32).map(|i| PexVariable {
+            name: format!("::aaaaaaaaaaX{i}"),
+            type_name: "Int".into(),
+            ..PexVariable::default()
+        }));
+        pex.objects[0].properties = (0..65_535u32)
+            .map(|i| crate::model::Property {
+                name: format!("P{i}"),
+                type_name: "Int".into(),
+                auto_var_name: Some(format!("::aaaaaaaaaaY{i}")),
+                flags: crate::model::property_flag::AUTOVAR
+                    | crate::model::property_flag::READ
+                    | crate::model::property_flag::WRITE,
+                ..crate::model::Property::default()
+            })
+            .collect();
         let started = std::time::Instant::now();
         let script = decompile_script(&pex).expect("decompiles");
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
-            "decompile of a 65,535 × 65,535 user-flag table took {:?}",
+            "decompile of a 65,535 × 65,535 user-flag / property table took {:?}",
             started.elapsed()
         );
         assert!(
@@ -1248,6 +1277,21 @@ mod tests {
                     name: "count".into(),
                     type_name: "Int".into(),
                 },
+                // #5880 — the compiler's rename of a sibling-scope
+                // re-declaration is a user local and IS declared; the
+                // `::nonevar` and `::TEMP1` spellings are still temporaries.
+                TypedName {
+                    name: "::mangled_i_0".into(),
+                    type_name: "Int".into(),
+                },
+                TypedName {
+                    name: "::nonevar".into(),
+                    type_name: "None".into(),
+                },
+                TypedName {
+                    name: "::TEMP1".into(),
+                    type_name: "Int".into(),
+                },
             ],
             instructions: vec![
                 ins(OpCode::Cast, vec![id("__temp"), id("self")]),
@@ -1270,9 +1314,12 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(declared, vec![("__temp", true), ("count", true)]);
+        assert_eq!(
+            declared,
+            vec![("__temp", true), ("count", true), ("::mangled_i_0", true)]
+        );
         assert!(
-            f.body[..2].iter().all(|s| matches!(s.node, Stmt::VarDecl(_))),
+            f.body[..3].iter().all(|s| matches!(s.node, Stmt::VarDecl(_))),
             "declarations lead the body"
         );
         assert!(

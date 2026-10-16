@@ -40,9 +40,9 @@
 //!    graph bounds that. [`MAX_REBUILD_DEPTH`] is what bounds it, and the
 //!    resulting `RecursionLimit` is a clean decline.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
-use super::cfg::{Cfg, END};
+use super::cfg::{Cfg, CodeBlock, END};
 use super::lift::{rebuild_expression, MAX_EXPR_DEPTH};
 use super::node::{Node, NodeKind, SYNTH_IP};
 use super::DecompileError;
@@ -71,18 +71,28 @@ pub fn rebuild_boolean_operators(
         return Ok(());
     }
     let (entry, exit) = (cfg.entry, cfg.exit);
-    BoolPass {
-        cfg,
-        scopes,
-        func_name,
-    }
-    .rebuild(entry, exit, 0)
+    BoolPass::new(cfg, scopes, func_name).rebuild(entry, exit, 0)
 }
 
 struct BoolPass<'a> {
     cfg: &'a mut Cfg,
     scopes: &'a mut BTreeMap<usize, Vec<Node>>,
     func_name: &'a str,
+    /// #5879 — in-edge count per block key: how many live blocks have
+    /// `key` as their `next` or `on_false` (a block pointing at `key` with
+    /// both edges counts once). Built once, then kept exact by
+    /// [`Self::unlink`] / [`Self::link`] at every CFG mutation in
+    /// [`Self::collapse`], so the private-edge guard is O(1) instead of a
+    /// scan of the whole CFG per fold.
+    in_edges: HashMap<usize, usize>,
+}
+
+/// The distinct successor keys of a block (`next`, and `on_false` when it
+/// differs) — the edges [`BoolPass::in_edges`] counts.
+fn successors(b: &CodeBlock) -> impl Iterator<Item = usize> {
+    [Some(b.next), (b.on_false != b.next).then_some(b.on_false)]
+        .into_iter()
+        .flatten()
 }
 
 /// The identifier a scope's last statement computes into — the assign
@@ -139,7 +149,48 @@ fn combine(left: Node, op: &str, right: Node, cond: &str) -> Node {
     }
 }
 
-impl BoolPass<'_> {
+impl<'a> BoolPass<'a> {
+    fn new(
+        cfg: &'a mut Cfg,
+        scopes: &'a mut BTreeMap<usize, Vec<Node>>,
+        func_name: &'a str,
+    ) -> Self {
+        let mut in_edges = HashMap::new();
+        for b in cfg.blocks.values() {
+            for t in successors(b) {
+                *in_edges.entry(t).or_insert(0) += 1;
+            }
+        }
+        Self {
+            cfg,
+            scopes,
+            func_name,
+            in_edges,
+        }
+    }
+
+    /// Record that `b` (a block being removed, or whose edges are being
+    /// replaced) no longer points at its successors.
+    fn unlink(&mut self, b: &CodeBlock) {
+        for t in successors(b) {
+            if let Some(n) = self.in_edges.get_mut(&t) {
+                *n = n.saturating_sub(1);
+            }
+        }
+    }
+
+    /// Record that `b` (a block now carrying new edges) points at its
+    /// successors.
+    fn link(&mut self, b: &CodeBlock) {
+        for t in successors(b) {
+            *self.in_edges.entry(t).or_insert(0) += 1;
+        }
+    }
+
+    fn incoming(&self, key: usize) -> usize {
+        self.in_edges.get(&key).copied().unwrap_or(0)
+    }
+
     /// `depth` bounds nested short-circuit recursion against a malformed /
     /// adversarial `.pex` (SCR-D2-01 / #1815) — see [`MAX_REBUILD_DEPTH`].
     fn rebuild(&mut self, start: usize, end: usize, depth: usize) -> Result<(), DecompileError> {
@@ -161,6 +212,9 @@ impl BoolPass<'_> {
                 continue;
             };
             let mut reprocess = false;
+            // #5877 — where the walk resumes if a nested range was recursed
+            // over and the collapse declined. `None` ⇒ the next block.
+            let mut resume_after_range: Option<usize> = None;
             if block.is_conditional() {
                 if let Some(cond) = block.condition.clone() {
                     // #3783 — test the block shape and read the scope by
@@ -185,10 +239,12 @@ impl BoolPass<'_> {
                             // Potential `&&`: true edge falls through.
                             self.rebuild(block.on_true(), block.on_false, depth + 1)?;
                             reprocess = self.collapse(current, &cond, BoolOp::And)?;
+                            resume_after_range = Some(block.on_false);
                         } else if block.on_false == end_plus_1 {
                             // Potential `||`: false edge falls through.
                             self.rebuild(block.on_false, block.on_true(), depth + 1)?;
                             reprocess = self.collapse(current, &cond, BoolOp::Or)?;
+                            resume_after_range = Some(block.on_true());
                         }
                     }
                 }
@@ -196,6 +252,19 @@ impl BoolPass<'_> {
 
             it = if reprocess {
                 current
+            } else if let Some(range_end) =
+                resume_after_range.filter(|&r| r > current && r <= end)
+            {
+                // #5877 — the operand range `[next block, range_end)` was
+                // just walked by the recursive call above; the collapse
+                // declined, so resuming at the next block would walk every
+                // block of it again (once more per nesting level: O(2^depth)
+                // for nested `if`/`while`, a 656-byte `.pex` took 6.6 s).
+                // Resume at the range end instead, as `control_flow::reconstruct`
+                // does with `jump_to`. Strictly forward (`> current`) and
+                // within the walk (`<= end`), so termination is unaffected;
+                // anything else keeps the old next-block step.
+                range_end
             } else {
                 self.cfg.next_key(current).unwrap_or(end)
             };
@@ -281,18 +350,15 @@ impl BoolPass<'_> {
         // additionally gets the operand's fall-through (counted only when
         // the rejoin is an interior block — the exit anchor is never
         // removed, so extra edges into it are harmless).
-        let incoming = |key: usize| {
-            self.cfg
-                .blocks
-                .values()
-                .filter(|b| b.next == key || b.on_false == key)
-                .count()
-        };
-        if incoming(operand_key) != 1 {
+        //
+        // #5879 — `incoming` reads the maintained `in_edges` counts; it was
+        // a scan of the whole CFG per call (O(B) per fold, O(B²) per
+        // function — ~47× slower on a 65k-instruction `||` chain).
+        if self.incoming(operand_key) != 1 {
             return Ok(false);
         }
         let rejoin_is_removed = self.cfg.block(rejoin_key).is_some_and(|r| r.end != END);
-        if rejoin_is_removed && incoming(rejoin_key) != 2 {
+        if rejoin_is_removed && self.incoming(rejoin_key) != 2 {
             return Ok(false);
         }
 
@@ -332,7 +398,9 @@ impl BoolPass<'_> {
         src_scope.push(combined);
 
         // The operand block is now folded into the expression — drop it.
-        self.cfg.blocks.remove(&operand_key);
+        if let Some(removed) = self.cfg.blocks.remove(&operand_key) {
+            self.unlink(&removed);
+        }
         self.scopes.remove(&operand_key);
 
         // Merge the rejoin block's statements in, and adopt its edges so
@@ -345,13 +413,19 @@ impl BoolPass<'_> {
 
         let reprocess = match rejoin {
             Some(r) if r.end != END => {
-                {
+                // `current` swaps its old edges for the rejoin's, and the
+                // rejoin block (with its own out-edges) goes away.
+                self.unlink(&src);
+                self.unlink(&r);
+                let adopted = {
                     let b = self.cfg.blocks.get_mut(&current).expect("source exists");
                     b.end = r.end;
                     b.condition = r.condition.clone();
                     b.next = r.next;
                     b.on_false = r.on_false;
-                }
+                    b.clone()
+                };
+                self.link(&adopted);
                 self.cfg.blocks.remove(&rejoin_key);
                 true
             }
@@ -359,11 +433,16 @@ impl BoolPass<'_> {
                 // Rejoin is the exit anchor: the block is no longer
                 // conditional (it now ends the function's straight-line flow).
                 let end = r.begin;
-                let b = self.cfg.blocks.get_mut(&current).expect("source exists");
-                b.end = end;
-                b.condition = r.condition.clone();
-                b.next = end;
-                b.on_false = end;
+                self.unlink(&src);
+                let adopted = {
+                    let b = self.cfg.blocks.get_mut(&current).expect("source exists");
+                    b.end = end;
+                    b.condition = r.condition.clone();
+                    b.next = end;
+                    b.on_false = end;
+                    b.clone()
+                };
+                self.link(&adopted);
                 false
             }
             None => false,
@@ -641,11 +720,7 @@ mod tests {
                 Node::constant(SYNTH_IP, id("b")),
             )],
         );
-        let mut pass = BoolPass {
-            cfg: &mut cfg,
-            scopes: &mut scopes,
-            func_name: "Degenerate",
-        };
+        let mut pass = BoolPass::new(&mut cfg, &mut scopes, "Degenerate");
         let collapsed = pass
             .collapse(0, "t", BoolOp::And)
             .expect("degenerate shape must decline, not error");
@@ -684,11 +759,7 @@ mod tests {
         };
         // Deliberately empty: `current` was removed by an inner collapse.
         let mut scopes: BTreeMap<usize, Vec<Node>> = BTreeMap::new();
-        let mut pass = BoolPass {
-            cfg: &mut cfg,
-            scopes: &mut scopes,
-            func_name: "VanishedSource",
-        };
+        let mut pass = BoolPass::new(&mut cfg, &mut scopes, "VanishedSource");
 
         let collapsed = pass
             .collapse(0, "t", BoolOp::And)
@@ -750,11 +821,7 @@ mod tests {
                 Node::constant(SYNTH_IP, id("b")),
             )],
         );
-        let mut pass = BoolPass {
-            cfg: &mut cfg,
-            scopes: &mut scopes,
-            func_name: "EmptySource",
-        };
+        let mut pass = BoolPass::new(&mut cfg, &mut scopes, "EmptySource");
 
         let collapsed = pass
             .collapse(0, "t", BoolOp::And)
@@ -813,11 +880,7 @@ mod tests {
                 )],
             );
         }
-        let mut pass = BoolPass {
-            cfg: &mut cfg,
-            scopes: &mut scopes,
-            func_name: "SelfRejoin",
-        };
+        let mut pass = BoolPass::new(&mut cfg, &mut scopes, "SelfRejoin");
 
         let collapsed = pass
             .collapse(0, "t", BoolOp::And)
@@ -842,11 +905,7 @@ mod tests {
             exit: 0,
         };
         let mut scopes = BTreeMap::new();
-        let mut pass = BoolPass {
-            cfg: &mut cfg,
-            scopes: &mut scopes,
-            func_name: "Deep",
-        };
+        let mut pass = BoolPass::new(&mut cfg, &mut scopes, "Deep");
         let err = pass
             .rebuild(0, 0, MAX_REBUILD_DEPTH + 1)
             .expect_err("over-deep recursion must error, not overflow");
@@ -866,6 +925,88 @@ mod tests {
             !text.contains("control-flow"),
             "and must not attribute itself to the control-flow pass: {text}"
         );
+    }
+
+    /// Run the pass directly and check the maintained in-edge counts
+    /// (#5879) against a full recount of the resulting CFG.
+    fn assert_in_edge_counts_stay_exact(f: Function) {
+        let object = Object::default();
+        let mut cfg = build_cfg(&f).unwrap();
+        let mut scopes = lift_function(&object, &f, &cfg).unwrap();
+        let (entry, exit) = (cfg.entry, cfg.exit);
+        let mut pass = BoolPass::new(&mut cfg, &mut scopes, "F");
+        pass.rebuild(entry, exit, 0).unwrap();
+        let mut want: HashMap<usize, usize> = HashMap::new();
+        for b in pass.cfg.blocks.values() {
+            for t in successors(b) {
+                *want.entry(t).or_insert(0) += 1;
+            }
+        }
+        for key in want.keys().chain(pass.in_edges.keys()) {
+            assert_eq!(
+                pass.incoming(*key),
+                want.get(key).copied().unwrap_or(0),
+                "in-edge count of block {key} drifted from the CFG"
+            );
+        }
+    }
+
+    #[test]
+    fn in_edge_counts_survive_and_or_and_epilogue_folds() {
+        let and_or = |jump: OpCode| Function {
+            return_type_name: "None".into(),
+            locals: vec![local("::temp0", "Bool"), local("x", "Int")],
+            instructions: vec![
+                ins(OpCode::Assign, vec![id("::temp0"), id("a")]),
+                ins(jump, vec![id("::temp0"), Value::Integer(2)]),
+                ins(OpCode::Assign, vec![id("::temp0"), id("b")]),
+                ins(OpCode::JmpF, vec![id("::temp0"), Value::Integer(2)]),
+                ins(OpCode::Assign, vec![id("x"), Value::Integer(1)]),
+                ins(OpCode::Return, vec![id("::NoneVar")]),
+            ],
+            ..Function::default()
+        };
+        assert_in_edge_counts_stay_exact(and_or(OpCode::JmpF));
+        assert_in_edge_counts_stay_exact(and_or(OpCode::JmpT));
+    }
+
+    /// `n` nested `if a == b` around one statement — the compiler shape of
+    /// the #5877 probe: `n × (cmp_eq t a b; jmpf t → end)`, `x = 1`, `return`.
+    fn nested_ifs(n: usize) -> Function {
+        let mut instructions = Vec::new();
+        for i in 0..n {
+            instructions.push(ins(OpCode::CmpEq, vec![id("::temp0"), id("a"), id("b")]));
+            // jmpf at index 2i+1 targets the final `return` at 2n+1.
+            instructions.push(ins(OpCode::JmpF, vec![id("::temp0"), Value::Integer((2 * n - 2 * i) as i32)]));
+        }
+        instructions.push(ins(OpCode::Assign, vec![id("x"), Value::Integer(1)]));
+        instructions.push(ins(OpCode::Return, vec![id("::NoneVar")]));
+        Function {
+            name: "Nested".into(),
+            return_type_name: "None".into(),
+            locals: vec![local("::temp0", "Bool"), local("x", "Int")],
+            instructions,
+            ..Function::default()
+        }
+    }
+
+    /// #5877 — the pass re-walked every nested `if`/`while` body once per
+    /// enclosing level: O(2^depth). 40 levels took ~30 h; it must now be
+    /// linear (and stay exact on the in-edge counts).
+    #[test]
+    fn deeply_nested_ifs_are_walked_once_not_exponentially() {
+        let f = nested_ifs(40);
+        let object = Object::default();
+        let mut cfg = build_cfg(&f).unwrap();
+        let mut scopes = lift_function(&object, &f, &cfg).unwrap();
+        let start = std::time::Instant::now();
+        rebuild_boolean_operators(&mut cfg, &mut scopes, &f.name).unwrap();
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "boolean pass over 40 nested ifs took {:?}",
+            start.elapsed()
+        );
+        assert_in_edge_counts_stay_exact(nested_ifs(12));
     }
 
     /// #3783 — the pass must not deep-clone a block's node scope before it
