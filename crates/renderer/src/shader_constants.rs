@@ -1,14 +1,16 @@
 // Shared constants that appear in both Rust renderer code and GLSL shaders.
 //
 // `build.rs` generates `shaders/include/shader_constants.glsl` from this
-// same data (both files `include!` `shader_constants_data.rs`). Every
+// same data (both files `include!` `shader_constants_gen.rs` + `shader_constants_data.rs`). Every
 // affected shader then `#include "include/shader_constants.glsl"` at the
 // top, compiled with `glslangValidator -V -I crates/renderer/shaders …`.
 //
 // Adding a constant: edit `shader_constants_data.rs`, run
 // `cargo build -p byroredux-renderer` (re-gen header), recompile shaders.
 
-// Pull in all pub consts from the single source of truth.
+// Pull in the header generator (its row macros first: `macro_rules!` is
+// textually scoped), then all pub consts from the single source of truth.
+include!("shader_constants_gen.rs");
 include!("shader_constants_data.rs");
 
 /// Total cluster count (derived — not emitted to GLSL header separately).

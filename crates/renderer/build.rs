@@ -33,11 +33,13 @@ struct Vertex {
 // Pull the same constants that shader_constants.rs uses. Because build.rs
 // runs in a separate compilation context it cannot import from the crate, so
 // we share the raw data file via include!.
+include!("src/shader_constants_gen.rs");
 include!("src/shader_constants_data.rs");
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/shader_constants_data.rs");
+    println!("cargo:rerun-if-changed=src/shader_constants_gen.rs");
     // #4490 — the .spv files are include_bytes!-tracked, but editing a .glsl
     // source alone recompiles nothing (cargo only sees the generated header
     // and the .spv bytes), which is the stale-SPIR-V trap documented in
