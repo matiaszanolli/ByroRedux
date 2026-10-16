@@ -216,7 +216,7 @@ see §5 phase 5.
    missing audio is the common modded shape, not an error. `.fuz`
    (Skyrim+) is a different container (`FUZE`, u32 version, u32 lip size,
    raw `.lip` bytes, then a RIFF **xWMA** audio stream — not XMA2;
-   `skyrim_fuz_container_shape`, #5464) — deliberately V2 scope; its
+   `skyrim_fuz_container_shape`, #5464) — deliberately V2 scope (tracked by #5912); its
    decoder is xWMA. Live gate (`dt1-dialogue-layers.sh` leg 3):
    the fresh-boot greeting resolves 1 segment / 5.0 s in
    `maleuniquedocmitchell`.
