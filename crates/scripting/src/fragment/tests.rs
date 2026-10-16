@@ -6218,3 +6218,22 @@ fn native_activations_flush_with_their_flag() {
     assert!(world.get::<crate::NativeActivation>(native).is_some());
     assert!(world.resource::<crate::PendingFragmentActivations>().is_empty());
 }
+
+/// #5887 — a `.psc`-sourced remote handler (`Event Actor.OnDeath(…)`) is
+/// spelled `Actor_OnDeath` like its `.pex` twin, so the VM's matcher binds
+/// it; the script's own `OnDeath` lookup still declines it.
+#[test]
+fn psc_remote_event_handler_binds_like_the_pex_spelling() {
+    let (script, errs) = byroredux_papyrus::parse_script(
+        "ScriptName Foo\n\
+         Event Actor.OnDeath(Actor akSender, Actor akKiller)\n\
+         EndEvent\n",
+    )
+    .expect("parses");
+    assert!(errs.is_empty(), "{errs:?}");
+    assert_eq!(
+        super::events::handler_in(&script, "OnDeath", true).as_deref(),
+        Some("Actor_OnDeath")
+    );
+    assert_eq!(super::events::handler_in(&script, "OnDeath", false), None);
+}

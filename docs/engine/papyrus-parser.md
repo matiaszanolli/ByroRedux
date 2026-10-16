@@ -127,9 +127,10 @@ covers type positions, expression primaries, the `ScriptName` and `Extends` name
 `Import` target (#5328).
 
 **Remote events (FO4+):** `Event Actor.OnDeath(Actor akSender, …)` handles another
-object's event. The event's `name` keeps the dotted source spelling (`Actor.OnDeath`, the
-sender itself possibly namespaced), so a consumer matching the script's own `OnDeath`
-declines it (#5328).
+object's event. The event's `name` is normalised to the compiler's mangled `Sender_Event` spelling
+(`Actor_OnDeath`, the sender itself possibly namespaced) — the same spelling the `.pex`
+frontend yields and the VM's remote/custom-event matcher binds (#5887) — so a consumer
+matching the script's own `OnDeath` still declines it (#5328).
 
 ## AST Types
 

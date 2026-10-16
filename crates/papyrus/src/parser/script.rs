@@ -369,10 +369,13 @@ impl Parser {
     /// An event's name: `IDENT`, or FO4's remote-event handler form
     /// `Sender.EventName` (`Event Actor.OnDeath(Actor akSender, …)`, also a
     /// custom event `Event MyQuestScript.MyEvent(…)`; the sender may be
-    /// namespaced). #5328 — the remote form is kept as its dotted source
-    /// spelling in the name, so a name-matching consumer looking for the
-    /// script's own `OnDeath` declines it instead of binding a handler for
-    /// another object's event.
+    /// namespaced). #5328 / #5887 — the remote form is normalised to the
+    /// compiler's mangled `Sender_EventName` spelling, which is what the
+    /// `.pex` frontend (`::remote_Sender_Event`, prefix stripped) and the
+    /// VM's handler matcher (`handler_in`) both use. A name-matching
+    /// consumer looking for the script's own `OnDeath` still declines it
+    /// (`Actor_OnDeath` ≠ `OnDeath`), and a `.psc`-sourced remote handler
+    /// now binds exactly like its `.pex` twin.
     fn parse_event_name(&mut self) -> Result<Spanned<Identifier>, ParseError> {
         self.expect_same_line("identifier (event name)")?;
         let first = self.parse_qualified_ident("event name")?;
@@ -382,7 +385,7 @@ impl Parser {
         self.advance_raw().unwrap(); // `.`
         let event = self.expect_ident_raw("remote event name")?;
         Ok(Spanned::new(
-            Identifier::new(format!("{}.{}", first.node.0, event.node.0)),
+            Identifier::new(format!("{}_{}", first.node.0, event.node.0)),
             first.span.merge(event.span),
         ))
     }
@@ -1864,6 +1867,13 @@ EndProperty
             // and a mandatory `[`: neither may sit on the next line.
             fn_body("Int[] a = New Int\n[5]"),
             fn_body("Int[] a = New\nInt[5]"),
+            // #5885 — the segment after a line-ending `:` is as mandatory
+            // as the first one, in every qualified-name position.
+            "ScriptName DLC01:\nFoo\n".to_string(),
+            "ScriptName Foo Extends DLC01:\nBase\n".to_string(),
+            "ScriptName T\nImport DLC01:\nUtils\n".to_string(),
+            "ScriptName T\nEvent DLC01:\nQ.OnX()\nEndEvent\n".to_string(),
+            fn_body("DLC01:\nBar x"),
         ];
         for src in &probes {
             let (tokens, _errs) = lex(src);
@@ -2050,8 +2060,9 @@ EndProperty
         }
     }
 
-    /// `Event <Sender>.<Event>(…)` keeps its dotted spelling, so a consumer
-    /// matching the script's own `OnDeath` does not bind it.
+    /// `Event <Sender>.<Event>(…)` is spelled `Sender_Event` (#5887, the
+    /// `.pex` mangling), so a consumer matching the script's own `OnDeath`
+    /// does not bind it while the VM's remote-event matcher does.
     #[test]
     fn remote_event_handlers_parse_with_their_sender_in_the_name() {
         let src = "ScriptName Foo\n\
@@ -2071,7 +2082,7 @@ EndProperty
             .collect();
         assert_eq!(
             names,
-            [("Actor.OnDeath", 2), ("DLC01:QuestScript.MyEvent", 2)]
+            [("Actor_OnDeath", 2), ("DLC01:QuestScript_MyEvent", 2)]
         );
     }
 
@@ -2084,18 +2095,61 @@ EndProperty
         assert_eq!(function_bodies(&script).count(), 1);
     }
 
+    /// #5886 — a same-line `{doc}` is a terminator only when it ends the
+    /// line: whatever follows it on that line must not parse as the next
+    /// body statement / item with 0 errors.
+    #[test]
+    fn a_same_line_doc_comment_cannot_share_its_line_with_the_next_item() {
+        for src in [
+            "ScriptName T\nFunction F() {d} Int x = 1\nEndFunction\n",
+            "ScriptName T\nFunction F() native {d} Int Property P Auto\n",
+            "ScriptName T\nInt a {doc} Int b\n",
+        ] {
+            let (tokens, _errs) = lex(src);
+            let mut parser = Parser::new(tokens);
+            let fatal = parser.parse_script().is_err();
+            assert!(
+                fatal || !parser.errors().is_empty(),
+                "a same-line doc let the tail glue with 0 errors: {src:?}"
+            );
+        }
+        // The documented forms stay clean: doc on the next line, and a doc
+        // on the header line followed by a line break.
+        for src in [
+            "ScriptName T\nFunction F()\n{d}\nInt x = 1\nEndFunction\n",
+            "ScriptName T\nFunction F() {d}\nInt x = 1\nEndFunction\n",
+            "ScriptName T {d}\nInt Property P Auto {d}\n",
+        ] {
+            let (_, errors) = parse_counting_errors(src);
+            assert_eq!(errors, 0, "{src:?}");
+        }
+    }
+
+    /// #5888 — `Parent` is a keyword only in expression-primary position;
+    /// F4SE's `ObjectReference.psc` has `struct ConnectPoint { string parent }`.
+    #[test]
+    fn parent_is_a_legal_member_name() {
+        let src = "ScriptName T\nStruct ConnectPoint\nString parent\nString name\nEndStruct\n\
+                   Function F(ConnectPoint cp)\nString s = cp.parent\nParent.OnInit()\nEndFunction\n";
+        let (script, errors) = parse_counting_errors(src);
+        assert_eq!(errors, 0);
+        let ScriptItem::Struct(st) = &script.body[0].node else {
+            panic!("struct")
+        };
+        let names: Vec<_> = st.members.iter().map(|m| m.name.node.0.as_str()).collect();
+        assert_eq!(names, ["Parent", "name"]);
+    }
+
     /// Opt-in corpus gate: every vanilla + F4SE `.psc` under
     /// `$FO4_PSC_DIR` (e.g. `Fallout 4/Data/Scripts/Source`) parses with no
     /// errors, apart from `KNOWN_GAPS`. Pre-#5325/#5328, 5 of the 29 F4SE
     /// files failed.
     #[test]
     fn fo4_script_sources_parse_clean_when_present() {
-        /// Files with a parse gap outside #5325/#5328. A listed file that
-        /// starts parsing clean fails the gate too, so this cannot rot.
-        const KNOWN_GAPS: &[(&str, &str)] = &[(
-            "ObjectReference.psc",
-            "struct member `string parent` — the `Parent` keyword in a name position",
-        )];
+        /// Files with a known parse gap. A listed file that starts parsing
+        /// clean fails the gate too, so this cannot rot. Empty since #5888
+        /// (`Parent` in a name position).
+        const KNOWN_GAPS: &[(&str, &str)] = &[];
         let Some(dir) = std::env::var_os("FO4_PSC_DIR") else {
             return;
         };

@@ -289,7 +289,24 @@ impl Parser {
                 self.pos += 1;
                 Ok(())
             }
-            Token::DocComment(_) => Ok(()), // doc comment on next line
+            // #5886 — a doc comment is a terminator only when it ends the
+            // line (it is then taken by `take_trailing_doc` /
+            // `skip_newlines_collect_doc`). `Function F() {d} Int x = 1`
+            // used to let the tail share the line with 0 errors.
+            Token::DocComment(_) => match self.tokens.get(self.pos + 1) {
+                None => Ok(()),
+                Some(t) if t.token == Token::Newline => Ok(()),
+                Some(t) => {
+                    let error = ParseError::unexpected_token(
+                        "end of line after doc comment",
+                        Some(t.token.clone()),
+                        t.span,
+                    );
+                    self.push_error(error);
+                    self.skip_to_line_end();
+                    Ok(())
+                }
+            },
             _ => {
                 let error = ParseError::unexpected_token(
                     "end of statement (newline)",
@@ -402,6 +419,12 @@ impl Parser {
             Token::KwNative => Some("Native".to_string()),
             Token::KwConst => Some("Const".to_string()),
             Token::KwGlobal => Some("Global".to_string()),
+            // #5888 — F4SE's `ObjectReference.psc` declares
+            // `struct ConnectPoint { string parent }`. `Parent` is a keyword
+            // only in expression-primary position (`parse_prefix` dispatches
+            // on it before ever reaching an identifier), so declaration
+            // names and `.member` names may use it.
+            Token::KwParent => Some("Parent".to_string()),
             _ => None,
         }
     }
@@ -417,10 +440,12 @@ impl Parser {
         let mut end_span = first.span;
 
         // #4472 — raw check: `foo` ⏎ `:bar()` must not glue into one
-        // qualified name.
+        // qualified name. #5885 — and the segment after `:` is a mandatory
+        // operand: `DLC01:` ⏎ `Foo` must not pull `Foo` up from the next
+        // line either (ScriptName, Extends, Import, event sender, types).
         while self.check_raw(&Token::Colon) {
             self.advance(); // consume ':'
-            let next = self.expect_ident(context)?;
+            let next = self.expect_ident_raw(context)?;
             name.push(':');
             name.push_str(&next.node.0);
             end_span = next.span;
