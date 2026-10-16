@@ -144,6 +144,14 @@ pub enum Error {
     )]
     RowInstanceMismatch { rows: usize, instances: usize },
 
+    // #5899 — a `PersistentID` shape drift unkeys every row; the build used
+    // to return `Ok` with an empty key map, so every `.mat` lookup missed.
+    #[error(
+        "none of the {rows} Objects rows carries a {{ Dir: u32, Ext: u32 }} PersistentID — \
+         no material path can be keyed"
+    )]
+    NoKeyedObjects { rows: usize },
+
     #[error(
         "DBFileIndex instance carried as a {kind:?} chunk — only OBJT/USER are supported; \
          reading a diff payload in offset order would misparse every field"

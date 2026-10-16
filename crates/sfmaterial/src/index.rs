@@ -169,6 +169,17 @@ pub struct MaterialIndex {
     translucency: std::collections::HashMap<u32, (Option<bool>, Option<f32>)>,
 }
 
+/// What [`MaterialIndex::parent_graph_defects`] found in the `Parent` graph.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ParentGraphDefects {
+    /// Distinct cycles.
+    cycles: usize,
+    /// Objects on a cycle, or whose chain runs into one.
+    cyclic: usize,
+    /// Objects with more distinct ancestors than `MAX_PARENT_DEPTH`.
+    over_deep: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Row {
     object: u32,
@@ -278,7 +289,86 @@ impl MaterialIndex {
                 instances,
             });
         }
+        let defects = idx.parent_graph_defects();
+        if defects.cycles > 0 || defects.over_deep > 0 {
+            log::warn!(
+                "sfmaterial: Parent graph degraded — {} cycle(s), {} object(s) inheriting \
+                 through one (no inheritance lost), {} object(s) with a chain past \
+                 MAX_PARENT_DEPTH = {MAX_PARENT_DEPTH} (inheritance truncated at the cap)",
+                defects.cycles,
+                defects.cyclic,
+                defects.over_deep
+            );
+        }
         Ok(idx)
+    }
+
+    /// #5900 — the corrupt-`Parent` census, taken once per build: lookups
+    /// re-walk the chains per mesh merge and per layer, so warning from the
+    /// walk flooded the log on every merge under a bad ancestor. Each object
+    /// has at most one parent, so one memoised pass over `parents` (O(n))
+    /// gives every object's distinct-ancestor count and whether its chain
+    /// ends in a cycle.
+    fn parent_graph_defects(&self) -> ParentGraphDefects {
+        #[derive(Clone, Copy)]
+        enum Seen {
+            /// On the walk in progress, at this path index.
+            OnPath(usize),
+            /// Distinct ancestors, and whether the chain ends in a cycle.
+            Done(usize, bool),
+        }
+        let mut seen: std::collections::HashMap<u32, Seen> =
+            std::collections::HashMap::with_capacity(self.parents.len());
+        let mut defects = ParentGraphDefects::default();
+        let mut path: Vec<u32> = Vec::new();
+        for &start in self.parents.keys() {
+            if seen.contains_key(&start) {
+                continue;
+            }
+            path.clear();
+            let mut current = start;
+            // What the last node on `path` inherits from: its parent's
+            // state, once the walk reaches a node it has already resolved.
+            let mut above = loop {
+                match seen.get(&current) {
+                    Some(&Seen::Done(ancestors, cyclic)) => break Some((ancestors, cyclic)),
+                    Some(&Seen::OnPath(at)) => {
+                        // `path[at..]` is a cycle: each member's ancestors
+                        // are the cycle's other members.
+                        defects.cycles += 1;
+                        let len = path.len() - at;
+                        for &member in &path[at..] {
+                            seen.insert(member, Seen::Done(len - 1, true));
+                        }
+                        path.truncate(at);
+                        break Some((len - 1, true));
+                    }
+                    None => {}
+                }
+                seen.insert(current, Seen::OnPath(path.len()));
+                path.push(current);
+                match self.parents.get(&current) {
+                    Some(&parent) => current = parent,
+                    None => break None,
+                }
+            };
+            // Resolve the rest of the path child-ward from its top. Only the
+            // top can lack a parent (a root, or a parent absent from the
+            // table): it has no ancestors. Every node below is a tail whose
+            // ancestors are its parent plus the parent's.
+            while let Some(node) = path.pop() {
+                let (ancestors, cyclic) = above.map_or((0, false), |(a, c)| (a + 1, c));
+                seen.insert(node, Seen::Done(ancestors, cyclic));
+                above = Some((ancestors, cyclic));
+            }
+        }
+        for state in seen.values() {
+            if let Seen::Done(ancestors, cyclic) = *state {
+                defects.cyclic += cyclic as usize;
+                defects.over_deep += (ancestors > MAX_PARENT_DEPTH) as usize;
+            }
+        }
+        defects
     }
 
     /// Number of keyed objects (vanilla base CDB: 500,403 — the whole
@@ -375,32 +465,20 @@ impl MaterialIndex {
     /// Scalars and settings of one object as inherited down its `Parent`
     /// chain (#5502): the object's own authored values first, then each
     /// ancestor's, nearest wins per field (a field is only filled while the
-    /// result still has it unset). The chain is bounded and cycle-safe; a
-    /// corrupt loop or an over-deep chain ends the walk with a warning
-    /// instead of silently truncating (#5672).
+    /// result still has it unset). The chain is bounded and cycle-safe: a
+    /// revisit (the start included) ends the walk once every node on the
+    /// cycle has contributed, and a chain past `MAX_PARENT_DEPTH` stops at
+    /// the cap. Both are reported once per build by
+    /// [`Self::parent_graph_defects`], not per walk (#5900).
     fn collect_settings(&self, obj: u32, out: &mut CdbMaterial) {
         let mut current = obj;
         let mut visited = std::collections::HashSet::from([obj]);
-        for depth in 0..=MAX_PARENT_DEPTH {
+        for _ in 0..=MAX_PARENT_DEPTH {
             self.collect_own_settings(current, out);
-            let Some(&parent) = self.parents.get(&current).filter(|&&p| p != obj) else {
-                break;
-            };
-            if depth == MAX_PARENT_DEPTH {
-                log::warn!(
-                    "sfmaterial: object {obj}'s Parent chain still has a parent past \
-                     MAX_PARENT_DEPTH = {MAX_PARENT_DEPTH} — inheritance truncated at the cap"
-                );
-                break;
+            match self.parents.get(&current) {
+                Some(&parent) if visited.insert(parent) => current = parent,
+                _ => break,
             }
-            if !visited.insert(parent) {
-                log::warn!(
-                    "sfmaterial: object {obj}'s Parent chain revisits {parent} — a cycle not \
-                     passing through the start; inheritance truncated at the revisit"
-                );
-                break;
-            }
-            current = parent;
         }
     }
 
@@ -722,14 +800,22 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
                 // RowInstanceMismatch): a misattributed row corrupts
                 // neighbouring materials, while an unkeyed object
                 // only loses its own lookup.
+                //
+                // #5899 — a `PersistentID` that drifts off `{ Dir: u32,
+                // Ext: u32 }` is the same silent class, but it unkeys every
+                // row at once, so it is counted too, and a table whose
+                // keyable rows ALL miss is a typed error.
                 let mut dbid_misses = 0usize;
                 let mut parent_misses = 0usize;
+                let mut pid_misses = 0usize;
+                let mut keyable_rows = 0usize;
                 stream_list(state, |v| {
                     let Value::Object(o) = v else { return };
                     let Some(dbid) = id_named(o, "DBID") else {
                         dbid_misses += 1;
                         return;
                     };
+                    keyable_rows += 1;
                     // #5502 — record the inheritance edge (0 = no parent).
                     if o.fields.contains_key("Parent") {
                         match id_named(o, "Parent") {
@@ -755,16 +841,23 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
                         }
                         _ => None,
                     };
-                    if let Some(key) = pid {
-                        idx.objects_by_key.insert(key, dbid);
+                    match pid {
+                        Some(key) => {
+                            idx.objects_by_key.insert(key, dbid);
+                        }
+                        None => pid_misses += 1,
                     }
                 })?;
-                if dbid_misses + parent_misses > 0 {
+                if dbid_misses + parent_misses + pid_misses > 0 {
                     log::warn!(
                         "sfmaterial: Objects table decode degraded — {dbid_misses} row(s) \
                          dropped (no keyable DBID), {parent_misses} Parent edge(s) dropped \
-                         (shape drift from {{ Value: u32 }}?)"
+                         (shape drift from {{ Value: u32 }}?), {pid_misses} PersistentID \
+                         key(s) dropped (shape drift from {{ Dir: u32, Ext: u32 }}?)"
                     );
+                }
+                if keyable_rows > 0 && pid_misses == keyable_rows {
+                    return Err(Error::NoKeyedObjects { rows: keyable_rows });
                 }
             }
             // Edges encode the blend graph; lookups follow ID refs
@@ -911,7 +1004,7 @@ pub mod test_support {
     /// A u16 builtin type ref (`ComponentInfo::Type` / `::Index`).
     const T_U16: i32 = 0xFFFF_FF0Bu32 as i32;
     /// A Float builtin type ref (`XMFLOAT4` channels).
-    const T_FLOAT: i32 = 0xFFFF_FF11u32 as i32;
+    pub const T_FLOAT: i32 = 0xFFFF_FF11u32 as i32;
     /// A List builtin type ref.
     const T_LIST: i32 = 0xFFFF_FF03u32 as i32;
     /// A Map builtin type ref.
@@ -1363,7 +1456,7 @@ pub mod test_support {
 mod tests {
     use super::test_support::{
         assemble_synthetic_cdb, synthetic_cdb_chunks, synthetic_cdb_chunks_with,
-        synthetic_material_cdb, synthetic_material_cdb_with_effect_settings, T_U32,
+        synthetic_material_cdb, synthetic_material_cdb_with_effect_settings, T_FLOAT, T_U32,
         SyntheticCdbChunks,
     };
     use super::*;
@@ -1661,9 +1754,9 @@ mod tests {
             "the drifted edge is dropped, not guessed at"
         );
 
-        // 2) The walk: a hand-built index — obj 0 chained 65 ancestors
-        // deep (one past the cap), with the at-cap ancestor carrying
-        // param slot 7 and the one past it slot 8.
+        // 2) The walk: a hand-built index — obj 0 chained 66 ancestors
+        // deep (past the cap), with the at-cap ancestor carrying param slot
+        // 7 and the one past it slot 8.
         let mut index = MaterialIndex::default();
         for i in 0..=65u32 {
             index.parents.insert(i, i + 1);
@@ -1673,10 +1766,6 @@ mod tests {
         let mut out = CdbMaterial::default();
         index.collect_settings(0, &mut out);
         assert!(
-            saw("object 0's Parent chain still has a parent past"),
-            "the over-deep chain warns"
-        );
-        assert!(
             out.param_floats.iter().any(|(slot, _)| *slot == 7),
             "the ancestor at the cap still contributes"
         );
@@ -1684,10 +1773,19 @@ mod tests {
             !out.param_floats.iter().any(|(slot, _)| *slot == 8),
             "the ancestor past the cap does not"
         );
+        // #5900 — the over-deep chain is reported by the build-time census
+        // (objects 0 and 1 have 66 and 65 ancestors), not by each walk.
+        assert_eq!(
+            index.parent_graph_defects(),
+            ParentGraphDefects {
+                cycles: 0,
+                cyclic: 0,
+                over_deep: 2
+            }
+        );
 
         // 3) A cycle that never passes back through the start: the
-        // revisit ends the walk with a warning instead of looping to
-        // the cap.
+        // revisit ends the walk after every ancestor contributed.
         let mut index = MaterialIndex::default();
         index.parents.insert(100, 101);
         index.parents.insert(101, 102);
@@ -1696,13 +1794,68 @@ mod tests {
         let mut out = CdbMaterial::default();
         index.collect_settings(100, &mut out);
         assert!(
-            saw("object 100's Parent chain revisits 101"),
-            "the non-start cycle warns"
-        );
-        assert!(
             out.param_floats.iter().any(|(slot, _)| *slot == 9),
             "the pre-revisit ancestors still contribute"
         );
+        assert_eq!(
+            index.parent_graph_defects(),
+            ParentGraphDefects {
+                cycles: 1,
+                cyclic: 3,
+                over_deep: 0
+            }
+        );
+
+        // 4) #5899 — `PersistentID.Dir` re-typed from u32 to a Float of the
+        // same width (chunks[3] is BSResource::ID; field 0's type ref sits
+        // at payload byte 12 + 4). Every row unkeys, so the build is a typed
+        // error instead of an `Ok` with no keyed objects, and it warns.
+        let mut chunks = synthetic_cdb_chunks("Data\\Textures\\widget_color.DDS");
+        chunks[3].1[16..20].copy_from_slice(&T_FLOAT.to_le_bytes());
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect_err("a PersistentID that keys no row must not build an empty index");
+        assert!(
+            matches!(err, Error::NoKeyedObjects { rows: 1 }),
+            "expected NoKeyedObjects {{ rows: 1 }}, got {err:?}"
+        );
+        assert!(
+            saw("1 PersistentID key(s) dropped"),
+            "the PersistentID shape drift warns: {:?}",
+            MSGS.lock().unwrap()
+        );
+    }
+
+    /// #5900 — a cycle back through the start (`A -> B -> A`, the self-loop
+    /// `A -> A`) is the same corrupt graph as one that is not, and the
+    /// census counts it; the walk still visits each node once. Clean
+    /// chains and tails into nothing report no defects.
+    #[test]
+    fn parent_census_counts_start_cycles_and_tails_and_ignores_clean_chains() {
+        let mut index = MaterialIndex::default();
+        index.parents.insert(1, 2);
+        index.parents.insert(2, 1); // 1 -> 2 -> 1
+        index.parents.insert(3, 3); // self-loop
+        index.parents.insert(4, 1); // a tail into the first cycle
+        index.parents.insert(5, 6); // clean: 5 -> 6 -> 7 (7 has no parent)
+        index.parents.insert(6, 7);
+        index.param_floats.insert(2, vec![(1, 1.0)]);
+        let mut out = CdbMaterial::default();
+        index.collect_settings(1, &mut out);
+        assert_eq!(out.param_floats, vec![(1, 1.0)], "the cycle member contributes once");
+        assert_eq!(
+            index.parent_graph_defects(),
+            ParentGraphDefects {
+                cycles: 2,
+                cyclic: 4,
+                over_deep: 0
+            }
+        );
+
+        let mut clean = MaterialIndex::default();
+        for i in 0..MAX_PARENT_DEPTH as u32 {
+            clean.parents.insert(i, i + 1);
+        }
+        assert_eq!(clean.parent_graph_defects(), ParentGraphDefects::default());
     }
 
     #[test]
