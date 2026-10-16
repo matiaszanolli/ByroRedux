@@ -275,29 +275,22 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
         // the take), so the survivors simply come back.
         active.0.extend(remaining);
     }
+    hits.retain(|&(target, shooter, _)| target != shooter && world.get::<Dead>(target).is_none());
     if hits.is_empty() {
         return;
     }
-    let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() else {
-        return;
-    };
-    for (target, shooter, damage) in hits {
-        if target == shooter || world.get::<Dead>(target).is_some() {
-            continue;
-        }
-        events.insert(
-            target,
-            byroredux_scripting::HitEvent {
-                aggressor: shooter,
-                source: shooter,
-                projectile: 0,
+    // #5860 — queued, not inserted: `HitEvent` is one row per target, and a
+    // direct insert replaced a same-frame melee hit. The trap-hit flush, which
+    // runs right after this, lands the queue and holds a hit whose target was
+    // already struck this frame.
+    if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
+        pending.0.extend(hits.into_iter().map(|(target, shooter, damage)| {
+            byroredux_scripting::TrapHit {
+                target,
+                trap: shooter,
                 damage,
-                power_attack: false,
-                sneak_attack: false,
-                bash_attack: false,
-                blocked: false,
-            },
-        );
+            }
+        }));
     }
 }
 
@@ -466,8 +459,8 @@ mod tests {
         assert!(launch_of(&world, &index_with_dart(0.0), ProjectileLaunch { ammo: 0, ..launch }).is_err());
     }
 
-    /// A dart flying into a live actor's collider queues the `HitEvent` for the
-    /// damage pipeline (shooter as the aggressor, the launch's damage); into a
+    /// A dart flying into a live actor's collider queues the hit the flush lands
+    /// as its `HitEvent` (shooter as the aggressor, the launch's damage); into a
     /// bare wall it only ends; and into the open it flies on.
     #[test]
     fn flight_into_an_actor_queues_a_hit_and_into_a_wall_only_ends() {
@@ -495,10 +488,64 @@ mod tests {
         // 0.5 s at 1300 u/s is 650 units: past both slabs at z -500, short of range.
         projectile_flight_system(&world, 0.5);
         assert!(world.resource::<ActiveProjectiles>().0.iter().all(|p| p.position.x == -300.0), "only the dart that missed flies on");
+        byroredux_scripting::pending_trap_hit_flush_system(&world, 0.0);
         let events = world.query::<byroredux_scripting::HitEvent>().unwrap();
         let hit = events.get(actor).expect("the actor was hit");
         assert_eq!((hit.aggressor, hit.damage), (shooter, 12.0));
         assert!(events.get(wall).is_none(), "a bare wall takes no HitEvent");
+    }
+
+    /// #5860 — a dart landing the frame a melee strike hit the same actor waits
+    /// a frame rather than replacing the strike, so both hits reach the damage
+    /// pipeline.
+    #[test]
+    fn a_same_frame_melee_hit_survives_a_projectile_hit() {
+        use byroredux_core::ecs::components::ActorVitals;
+        use byroredux_physics::PhysicsWorld;
+        use byroredux_scripting::HitEvent;
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<byroredux_physics::RapierHandles>();
+        world.register::<ActorVitals>();
+        world.register::<Dead>();
+        world.register::<byroredux_physics::ActorColliderOwner>();
+        world.insert_resource(ActiveProjectiles::default());
+        let mut physics = PhysicsWorld::new();
+        let actor_handles = physics.spawn_fixed_cuboid_handles(Vec3::splat(20.0), Vec3::new(0.0, 0.0, -500.0));
+        world.insert_resource(physics);
+        let (shooter, swordsman, actor) = (world.spawn(), world.spawn(), world.spawn());
+        world.insert(actor, actor_handles);
+        world.insert(actor, ActorVitals { health: 0x3E8 });
+        world.insert(
+            actor,
+            HitEvent {
+                aggressor: swordsman,
+                source: swordsman,
+                projectile: 0,
+                damage: 25.0,
+                power_attack: false,
+                sneak_attack: false,
+                bash_attack: false,
+                blocked: false,
+            },
+        );
+        world.resource_mut::<ActiveProjectiles>().0 = vec![Projectile { shooter, ..dart() }];
+        let landed = |world: &World| {
+            world
+                .query::<HitEvent>()
+                .unwrap()
+                .get(actor)
+                .map(|event| (event.aggressor, event.damage))
+        };
+
+        projectile_flight_system(&world, 0.5);
+        byroredux_scripting::pending_trap_hit_flush_system(&world, 0.0);
+        assert_eq!(landed(&world), Some((swordsman, 25.0)), "the melee hit stands");
+
+        // `event_cleanup_system` drains the frame's hits; the dart lands next.
+        world.remove::<HitEvent>(actor);
+        byroredux_scripting::pending_trap_hit_flush_system(&world, 0.0);
+        assert_eq!(landed(&world), Some((shooter, 12.0)));
     }
 
     /// A projectile advances speed × dt along its velocity, spending range, and
