@@ -281,6 +281,30 @@ const MAX_GENERATOR_DEPTH: usize = 32;
 /// quarter of a second to refuse.
 const MAX_GRAPH_STEPS: usize = 1_000_000;
 
+/// A graph's event and variable names by position, so inlining a sub-behavior looks each of
+/// its names up in a hash map instead of scanning the whole table (up to 4,096 events a
+/// graph, 64 sub-behaviors: tens of billions of comparisons the other way). Names compare
+/// ASCII-case-insensitively and the first of two equal names wins, as `event_id` and
+/// `variable_id` do.
+struct Interned {
+    events: std::collections::HashMap<String, i32>,
+    variables: std::collections::HashMap<String, usize>,
+}
+
+impl Interned {
+    fn of(graph: &BehaviorGraph) -> Self {
+        let mut events = std::collections::HashMap::with_capacity(graph.events.len());
+        for (index, name) in graph.events.iter().enumerate() {
+            events.entry(name.to_ascii_lowercase()).or_insert(index as i32);
+        }
+        let mut variables = std::collections::HashMap::with_capacity(graph.variables.len());
+        for (index, variable) in graph.variables.iter().enumerate() {
+            variables.entry(variable.name.to_ascii_lowercase()).or_insert(index);
+        }
+        Self { events, variables }
+    }
+}
+
 /// What one decode has walked: the objects it is inside right now (a pointer back
 /// to one of them is a cycle, which no generator, state machine or modifier tree
 /// legitimately has) and how many steps it has taken in all.
@@ -697,6 +721,12 @@ impl StateMachine {
 /// How many sub-behaviors [`BehaviorGraph::inline_references`] pulls in before it stops
 /// (a graph can refer to the same few behaviors from many states).
 const MAX_INLINED_REFERENCES: usize = 64;
+/// Machines nested in machines, through the generators of their states: the 32 levels of
+/// generator nesting a decoded file can reach below the root machine, plus the root. A sub-behavior
+/// inlined under a state counts against the same limit, so every recursive walk over the
+/// result (the remaps here, the runtime's `MachineRun`, dispatch and schedule, and the derived
+/// `Clone`/`Drop`) goes no deeper than it does on a file that was never inlined.
+const MAX_MACHINE_NESTING: usize = MAX_GENERATOR_DEPTH + 1;
 
 /// A number a modifier holds that names something of its graph.
 enum Slot<'a> {
@@ -801,6 +831,18 @@ fn offset_machine_modifier_ids(machine: &mut StateMachine, offset: u32) {
     }
 }
 
+/// How many machines deep `machine` goes: itself and the longest chain of machines nested in
+/// the states below it.
+fn machine_height(machine: &StateMachine) -> usize {
+    1 + machine
+        .states
+        .iter()
+        .flat_map(|state| &state.content.machines)
+        .map(machine_height)
+        .max()
+        .unwrap_or(0)
+}
+
 /// One past the highest modifier id of `machine`.
 fn machine_modifier_id_bound(machine: &StateMachine) -> u32 {
     let mut bound = 0;
@@ -861,26 +903,20 @@ fn remap_machine_variables(machine: &mut StateMachine, map: &[usize]) {
 impl BehaviorGraph {
     /// The id of `name` in this graph's events, adding it when it has none: behaviors
     /// share event *names*, so a referenced graph's events join its parent's table.
-    fn intern_event(&mut self, name: &str) -> i32 {
-        match self.event_id(name) {
-            Some(id) => id,
-            None => {
-                self.events.push(name.to_owned());
-                (self.events.len() - 1) as i32
-            }
-        }
+    fn intern_event(&mut self, names: &mut Interned, name: &str) -> i32 {
+        *names.events.entry(name.to_ascii_lowercase()).or_insert_with(|| {
+            self.events.push(name.to_owned());
+            (self.events.len() - 1) as i32
+        })
     }
 
     /// The index of `variable` in this graph's variables (by name), adding it when it has
     /// none: a referenced behavior's variables join its parent's table like its events.
-    fn intern_variable(&mut self, variable: &Variable) -> usize {
-        match self.variable_id(&variable.name) {
-            Some(id) => id,
-            None => {
-                self.variables.push(variable.clone());
-                self.variables.len() - 1
-            }
-        }
+    fn intern_variable(&mut self, names: &mut Interned, variable: &Variable) -> usize {
+        *names.variables.entry(variable.name.to_ascii_lowercase()).or_insert_with(|| {
+            self.variables.push(variable.clone());
+            self.variables.len() - 1
+        })
     }
 
     /// The index of the variable named `name` (case-insensitive).
@@ -895,11 +931,8 @@ impl BehaviorGraph {
     /// transitions. `resolve` loads a referenced behavior by the path it names; a
     /// reference it cannot load is left as it was.
     pub fn inline_references(&mut self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>) {
-        let Some(mut machine) = self.machine.take() else { return };
         let mut budget = MAX_INLINED_REFERENCES;
-        let mut ids = machine_modifier_id_bound(&machine);
-        self.inline_machine(&mut machine, resolve, &mut budget, &mut ids);
-        self.machine = Some(machine);
+        self.inline_references_with(resolve, &mut budget);
     }
 
     fn inline_machine(
@@ -908,6 +941,8 @@ impl BehaviorGraph {
         resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>,
         budget: &mut usize,
         ids: &mut u32,
+        names: &mut Interned,
+        depth: usize,
     ) {
         for state in &mut machine.states {
             let wanted = state.content.behavior_references.len();
@@ -924,11 +959,18 @@ impl BehaviorGraph {
                 let Some(mut inner) = resolve(&reference) else { continue };
                 // The referenced graph's own references first (its events are its own).
                 inner.inline_references_with(resolve, budget);
-                let inner_bound = inner.machine.as_ref().map_or(0, machine_modifier_id_bound);
+                let Some(inner_machine) = inner.machine.as_ref() else { continue };
+                // Nested under this machine it sits one level down: it must still fit the limit
+                // a decoded file keeps to (a graph that refers to itself would otherwise stack
+                // up to the whole budget of machines, every one walked recursively).
+                if depth + machine_height(inner_machine) > MAX_MACHINE_NESTING {
+                    continue;
+                }
+                let inner_bound = machine_modifier_id_bound(inner_machine);
                 let Some(mut inner_machine) = inner.machine.take() else { continue };
-                let map: Vec<i32> = inner.events.iter().map(|name| self.intern_event(name)).collect();
+                let map: Vec<i32> = inner.events.iter().map(|name| self.intern_event(names, name)).collect();
                 remap_machine_events(&mut inner_machine, &map);
-                let variable_map: Vec<usize> = inner.variables.iter().map(|variable| self.intern_variable(variable)).collect();
+                let variable_map: Vec<usize> = inner.variables.iter().map(|variable| self.intern_variable(names, variable)).collect();
                 remap_machine_variables(&mut inner_machine, &variable_map);
                 // Keep the sub-behavior's modifier ids apart from everything inlined so far.
                 offset_machine_modifier_ids(&mut inner_machine, *ids);
@@ -937,7 +979,7 @@ impl BehaviorGraph {
                 state.content.reference_machines[ordinal] = Some(state.content.machines.len() - 1);
             }
             for inner in &mut state.content.machines {
-                self.inline_machine(inner, resolve, budget, ids);
+                self.inline_machine(inner, resolve, budget, ids, names, depth + 1);
             }
         }
     }
@@ -945,7 +987,8 @@ impl BehaviorGraph {
     fn inline_references_with(&mut self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>, budget: &mut usize) {
         let Some(mut machine) = self.machine.take() else { return };
         let mut ids = machine_modifier_id_bound(&machine);
-        self.inline_machine(&mut machine, resolve, budget, &mut ids);
+        let mut names = Interned::of(self);
+        self.inline_machine(&mut machine, resolve, budget, &mut ids, &mut names, 1);
         self.machine = Some(machine);
     }
 
@@ -1972,5 +2015,83 @@ mod tests {
         let orphan = orphan.machine.unwrap();
         assert_eq!(orphan.states[0].content.behavior_references, ["Gone.hkx"]);
         assert_eq!(orphan.states[0].content.reference_machines, [None]);
+    }
+
+    /// A behavior that names itself would otherwise stack its whole inlining budget of machines
+    /// (64) under one another, and the walkers over the result recurse once per level.
+    #[test]
+    fn a_behavior_that_references_itself_stops_at_the_machine_nesting_limit() {
+        let looping = BehaviorGraph {
+            variables: Vec::new(),
+            events: Vec::new(),
+            machine: Some(machine_of(
+                0,
+                vec![state_of(0, None, StateContent { behavior_references: vec!["Self.hkx".into()], ..Default::default() })],
+            )),
+        };
+        let mut graph = looping.clone();
+        let mut resolved = 0;
+        graph.inline_references(&mut |_| {
+            resolved += 1;
+            Some(looping.clone())
+        });
+        let height = machine_height(graph.machine.as_ref().unwrap());
+        assert!(height > 1, "the first levels still inline");
+        assert!(height <= MAX_MACHINE_NESTING, "{height} machines deep");
+        assert!(resolved <= MAX_INLINED_REFERENCES);
+    }
+
+    /// Event and variable names join the parent's table case-insensitively, the first spelling
+    /// winning, whichever order the sub-behaviors come in.
+    #[test]
+    fn inlined_names_merge_case_insensitively_into_the_parents_tables() {
+        let transition = |event, to_state| Transition { event, to_state, priority: 0, flags: 0, ..Default::default() };
+        let variable = |name: &str| Variable { name: name.into(), kind: VariableKind::Real, initial: 0.0 };
+        let mut child_state = state_of(0, None, StateContent::default());
+        child_state.transitions = vec![transition(0, 0), transition(1, 0)];
+        let child = BehaviorGraph {
+            variables: vec![variable("speed"), variable("Turn")],
+            events: vec!["go".into(), "Halt".into()],
+            machine: Some(machine_of(0, vec![child_state])),
+        };
+        let mut parent = BehaviorGraph {
+            variables: vec![variable("Speed")],
+            events: vec!["Go".into()],
+            machine: Some(machine_of(
+                0,
+                vec![state_of(0, None, StateContent { behavior_references: vec!["Child.hkx".into()], ..Default::default() })],
+            )),
+        };
+        parent.inline_references(&mut |_| Some(child.clone()));
+        assert_eq!(parent.events, ["Go", "Halt"], "\"go\" is the parent's \"Go\"");
+        let names: Vec<&str> = parent.variables.iter().map(|variable| variable.name.as_str()).collect();
+        assert_eq!(names, ["Speed", "Turn"]);
+        let inner = &parent.machine.as_ref().unwrap().states[0].content.machines[0];
+        assert_eq!([inner.states[0].transitions[0].event, inner.states[0].transitions[1].event], [0, 1]);
+    }
+
+    /// 64 sub-behaviors that each name the same 4,096 events: a linear scan per name is tens
+    /// of billions of comparisons, the name index is a few hundred thousand lookups.
+    #[test]
+    fn inlining_many_sub_behaviors_with_many_events_is_not_quadratic() {
+        let events: Vec<String> = (0..MAX_EVENTS).map(|index| format!("Event{index}")).collect();
+        let child = BehaviorGraph {
+            variables: Vec::new(),
+            events: events.clone(),
+            machine: Some(machine_of(0, vec![state_of(0, None, StateContent::default())])),
+        };
+        let references: Vec<String> = (0..MAX_INLINED_REFERENCES).map(|index| format!("Child{index}.hkx")).collect();
+        let mut parent = BehaviorGraph {
+            variables: Vec::new(),
+            events: Vec::new(),
+            machine: Some(machine_of(
+                0,
+                vec![state_of(0, None, StateContent { behavior_references: references, ..Default::default() })],
+            )),
+        };
+        let started = std::time::Instant::now();
+        parent.inline_references(&mut |_| Some(child.clone()));
+        assert_eq!(parent.events, events, "every child's events are the same 4,096 names");
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "took {:?}", started.elapsed());
     }
 }
