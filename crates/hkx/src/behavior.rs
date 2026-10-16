@@ -266,6 +266,58 @@ fn layout(file: &Packfile) -> &'static Layout {
 /// Nested generators are followed this deep (a state machine in a blender in a
 /// state machine ...).
 const MAX_GENERATOR_DEPTH: usize = 32;
+
+/// The most steps one behavior-graph decode may take: an object entered counts one,
+/// once for every pointer that reaches it (a shared generator is read again from each
+/// parent, because each read builds its own owned subtree), and so does every entry of
+/// a child array it walks, null or not. The depth caps bound how deep the readers go,
+/// not how much they build: a few kilobytes of child pointers that fan out to shared
+/// descendants multiply per level.
+///
+/// The shipped graphs need at most 115,605 steps by `behavior_graph_steps` (Fallout 4's
+/// `_1stperson\behaviors\gunbehavior.hkx`, across the base game and every DLC and Creation
+/// archive; Skyrim SE's largest takes 353), and that one decodes in 27 ms, about 230 ns
+/// a step. The cap is about 8.6x the shipped maximum, so a graph at the cap costs about a
+/// quarter of a second to refuse.
+const MAX_GRAPH_STEPS: usize = 1_000_000;
+
+/// What one decode has walked: the objects it is inside right now (a pointer back
+/// to one of them is a cycle, which no generator, state machine or modifier tree
+/// legitimately has) and how many steps it has taken in all.
+struct Walk {
+    active: Vec<usize>,
+    steps: usize,
+    limit: usize,
+}
+
+impl Walk {
+    fn new(limit: usize) -> Self {
+        Self { active: Vec::new(), steps: 0, limit }
+    }
+
+    /// Count `steps` of work against the budget.
+    fn charge(&mut self, steps: usize) -> Result<()> {
+        self.steps = self.steps.saturating_add(steps);
+        if self.steps > self.limit {
+            return Err(HkxError::InvalidData("behavior graph takes too many steps to read"));
+        }
+        Ok(())
+    }
+
+    /// Step into `object`; pair every `Ok` with a [`leave`](Self::leave).
+    fn enter(&mut self, object: usize) -> Result<()> {
+        if self.active.contains(&object) {
+            return Err(HkxError::InvalidData("behavior graph object contains itself"));
+        }
+        self.charge(1)?;
+        self.active.push(object);
+        Ok(())
+    }
+
+    fn leave(&mut self) {
+        self.active.pop();
+    }
+}
 /// `hkbClipTriggerArray::m_triggers` and its element layout.
 const TRIGGERS_ARRAY: usize = 0x10;
 const TRIGGER_STRIDE: usize = 32;
@@ -1092,10 +1144,25 @@ fn read_generator(
     clip: &mut Option<StateClip>,
     content: &mut StateContent,
     depth: usize,
+    walk: &mut Walk,
 ) -> Result<Option<Generator>> {
     if depth > MAX_GENERATOR_DEPTH {
         return Ok(None);
     }
+    walk.enter(generator)?;
+    let node = read_generator_node(file, generator, clip, content, depth, walk);
+    walk.leave();
+    node
+}
+
+fn read_generator_node(
+    file: &Packfile,
+    generator: usize,
+    clip: &mut Option<StateClip>,
+    content: &mut StateContent,
+    depth: usize,
+    walk: &mut Walk,
+) -> Result<Option<Generator>> {
     let l = layout(file);
     Ok(match file.class_at(generator) {
         Some("hkbClipGenerator") => {
@@ -1117,16 +1184,16 @@ fn read_generator(
             }
         }
         Some("hkbStateMachine") => {
-            content.machines.push(read_machine_at(file, generator, depth + 1)?);
+            content.machines.push(read_machine_at(file, generator, depth + 1, walk)?);
             Some(Generator::Machine(content.machines.len() - 1))
         }
         Some("hkbModifierGenerator") => {
             let inner = match l.wrapped_generator.and_then(|field| file.object_pointer(generator + field)) {
-                Some(inner) => read_generator(file, inner, clip, content, depth + 1)?,
+                Some(inner) => read_generator(file, inner, clip, content, depth + 1, walk)?,
                 None => None,
             };
             let modifier = match file.object_pointer(generator + MODIFIER_GENERATOR_MODIFIER) {
-                Some(modifier) => read_modifier(file, modifier, 0)?,
+                Some(modifier) => read_modifier(file, modifier, 0, walk)?,
                 None => None,
             };
             match modifier {
@@ -1136,7 +1203,7 @@ fn read_generator(
         }
         Some("BSiStateTaggingGenerator" | "DynamicAnimationTaggingGenerator" | "BSOffsetAnimationGenerator") => {
             match l.wrapped_generator.and_then(|field| file.object_pointer(generator + field)) {
-                Some(inner) => read_generator(file, inner, clip, content, depth + 1)?,
+                Some(inner) => read_generator(file, inner, clip, content, depth + 1, walk)?,
                 None => None,
             }
         }
@@ -1149,7 +1216,7 @@ fn read_generator(
             let Some(inner) = l.wrapped_generator.and_then(|field| file.object_pointer(generator + field)) else {
                 return Ok(None);
             };
-            let mut node = read_generator(file, inner, clip, content, depth + 1)?;
+            let mut node = read_generator(file, inner, clip, content, depth + 1, walk)?;
             if let Some(Generator::Blender(blender)) = &mut node {
                 if blender.parameter_variable.is_none() {
                     blender.parameter_variable = bound_variable(file, generator, "fBlendParameter")?;
@@ -1160,10 +1227,11 @@ fn read_generator(
         Some("hkbManualSelectorGenerator") => {
             let Some(field) = l.selector_generators else { return Ok(None) };
             let (data, len) = array(file, generator + field, MAX_STATES, "selector generators")?;
+            walk.charge(len)?;
             let mut children = Vec::with_capacity(len);
             for index in 0..len {
                 if let Some(inner) = file.object_pointer(data + index * 8) {
-                    if let Some(child) = read_generator(file, inner, clip, content, depth + 1)? {
+                    if let Some(child) = read_generator(file, inner, clip, content, depth + 1, walk)? {
                         children.push(child);
                     }
                 }
@@ -1184,11 +1252,12 @@ fn read_generator(
         Some("hkbBlenderGenerator") => {
             let flags = file.u16(generator + l.blender_flags, "blender flags")?;
             let (data, len) = array(file, generator + l.blender_children, MAX_STATES, "blender children")?;
+            walk.charge(len)?;
             let mut children = Vec::with_capacity(len);
             for index in 0..len {
                 let Some(child) = file.object_pointer(data + index * 8) else { continue };
                 let Some(inner) = file.object_pointer(child + l.blender_child_generator) else { continue };
-                let Some(node) = read_generator(file, inner, clip, content, depth + 1)? else { continue };
+                let Some(node) = read_generator(file, inner, clip, content, depth + 1, walk)? else { continue };
                 let bone_weights = match file.object_pointer(child + BLENDER_CHILD_BONE_WEIGHTS) {
                     Some(array_object) => Some(read_bone_weights(file, array_object)?),
                     None => None,
@@ -1223,17 +1292,28 @@ fn event_at(file: &Packfile, field: usize) -> Result<i32> {
 
 /// A graph's modifier at `object`: `None` for the kinds the runtime has no use for, and for
 /// any Havok 2010 file (their layouts are not measured).
-fn read_modifier(file: &Packfile, object: usize, depth: usize) -> Result<Option<Arc<ModifierNode>>> {
+fn read_modifier(file: &Packfile, object: usize, depth: usize, walk: &mut Walk) -> Result<Option<Arc<ModifierNode>>> {
     if file.version() != 11 || depth > MAX_MODIFIER_DEPTH {
         return Ok(None);
     }
+    walk.enter(object)?;
+    let node = read_modifier_node(file, object, depth, walk);
+    walk.leave();
+    node
+}
+
+fn read_modifier_node(file: &Packfile, object: usize, depth: usize, walk: &mut Walk) -> Result<Option<Arc<ModifierNode>>> {
     let id = object as u32;
-    let child = |field: usize| -> Result<Option<Arc<ModifierNode>>> {
-        match file.object_pointer(object + field) {
-            Some(inner) => read_modifier(file, inner, depth + 1),
-            None => Ok(None),
-        }
-    };
+    // The kinds that wrap another modifier read it through here; `walk` is borrowed only
+    // for the call, so the closure is built where it is used.
+    macro_rules! child {
+        ($field:expr) => {
+            match file.object_pointer(object + $field) {
+                Some(inner) => read_modifier(file, inner, depth + 1, walk)?,
+                None => None,
+            }
+        };
+    }
     let kind = match file.class_at(object) {
         Some("BSAssignVariablesModifier") => {
             let (mut floats, mut ints) = (Vec::new(), Vec::new());
@@ -1258,7 +1338,7 @@ fn read_modifier(file: &Packfile, object: usize, depth: usize) -> Result<Option<
             Modifier::AssignVariables { floats, ints }
         }
         Some("BSModifyOnceModifier") => {
-            Modifier::ModifyOnce { on_activate: child(MODIFY_ONCE_ON_ACTIVATE)?, on_deactivate: child(MODIFY_ONCE_ON_DEACTIVATE)? }
+            Modifier::ModifyOnce { on_activate: child!(MODIFY_ONCE_ON_ACTIVATE), on_deactivate: child!(MODIFY_ONCE_ON_DEACTIVATE) }
         }
         Some("hkbEventsFromRangeModifier") => {
             let mut ranges = Vec::new();
@@ -1304,7 +1384,7 @@ fn read_modifier(file: &Packfile, object: usize, depth: usize) -> Result<Option<
             activate: event_at(file, object + EVENT_DRIVEN_ACTIVATE)?,
             deactivate: event_at(file, object + EVENT_DRIVEN_DEACTIVATE)?,
             active_by_default: file.u8(object + EVENT_DRIVEN_BY_DEFAULT, "event driven default")? != 0,
-            inner: child(EVENT_DRIVEN_MODIFIER)?,
+            inner: child!(EVENT_DRIVEN_MODIFIER),
         },
         Some("BSGetTimeStepModifier") => Modifier::TimeStep { variable: bound_variable(file, object, "timeStep")? },
         Some("hkbTimerModifier" | "BSTimerModifier") => Modifier::Timer {
@@ -1319,10 +1399,11 @@ fn read_modifier(file: &Packfile, object: usize, depth: usize) -> Result<Option<
         },
         Some("hkbModifierList") => {
             let (data, len) = array(file, object + MODIFIER_LIST_MODIFIERS, MAX_STATES, "modifier list")?;
+            walk.charge(len)?;
             let mut items = Vec::with_capacity(len);
             for index in 0..len {
                 if let Some(inner) = file.object_pointer(data + index * 8) {
-                    items.extend(read_modifier(file, inner, depth + 1)?);
+                    items.extend(read_modifier(file, inner, depth + 1, walk)?);
                 }
             }
             Modifier::List(items)
@@ -1332,7 +1413,7 @@ fn read_modifier(file: &Packfile, object: usize, depth: usize) -> Result<Option<
     Ok(Some(Arc::new(ModifierNode { id, kind })))
 }
 
-fn read_state(file: &Packfile, state: usize, depth: usize) -> Result<State> {
+fn read_state(file: &Packfile, state: usize, depth: usize, walk: &mut Walk) -> Result<State> {
     let l = layout(file);
     let transitions = match file.object_pointer(state + l.state_transitions) {
         Some(array_object) => read_transitions(file, array_object)?,
@@ -1341,7 +1422,7 @@ fn read_state(file: &Packfile, state: usize, depth: usize) -> Result<State> {
     let mut clip = None;
     let mut content = StateContent::default();
     if let Some(generator) = file.object_pointer(state + l.state_generator) {
-        content.generator = read_generator(file, generator, &mut clip, &mut content, depth)?;
+        content.generator = read_generator(file, generator, &mut clip, &mut content, depth, walk)?;
     }
     Ok(State {
         id: file.u32(state + l.state_id, "state id")? as i32,
@@ -1352,19 +1433,24 @@ fn read_state(file: &Packfile, state: usize, depth: usize) -> Result<State> {
     })
 }
 
-fn read_machine(file: &Packfile, machine: usize) -> Result<StateMachine> {
-    read_machine_at(file, machine, 0)
+fn read_machine(file: &Packfile, machine: usize, walk: &mut Walk) -> Result<StateMachine> {
+    walk.enter(machine)?;
+    let read = read_machine_at(file, machine, 0, walk);
+    walk.leave();
+    read
 }
 
-fn read_machine_at(file: &Packfile, machine: usize, depth: usize) -> Result<StateMachine> {
+/// A state machine `read_generator` has already entered (it is the generator).
+fn read_machine_at(file: &Packfile, machine: usize, depth: usize, walk: &mut Walk) -> Result<StateMachine> {
     let l = layout(file);
     let (data, len) = array(file, machine + l.machine_states, MAX_STATES, "states")?;
+    walk.charge(len)?;
     let mut states = Vec::with_capacity(len);
     for index in 0..len {
         let state = file
             .object_pointer(data + index * 8)
             .ok_or(HkxError::InvalidData("state pointer without a target"))?;
-        states.push(read_state(file, state, depth)?);
+        states.push(read_state(file, state, depth, walk)?);
     }
     let wildcard = match file.object_pointer(machine + l.machine_wildcard) {
         Some(array_object) => read_transitions(file, array_object)?,
@@ -1419,6 +1505,17 @@ fn read_variables(file: &Packfile, graph: usize, string_data: usize) -> Result<V
 
 /// Decode a behavior-graph packfile (`Behaviors\\*.hkx`).
 pub fn decode_behavior_graph(bytes: &[u8]) -> Result<BehaviorGraph> {
+    decode_behavior_graph_within(bytes, MAX_GRAPH_STEPS).map(|(graph, _)| graph)
+}
+
+/// How many steps decoding `bytes` takes (the figure [`MAX_GRAPH_STEPS`] bounds), for the
+/// corpus census that keeps that bound above what the shipped graphs need.
+#[doc(hidden)]
+pub fn behavior_graph_steps(bytes: &[u8]) -> Result<usize> {
+    decode_behavior_graph_within(bytes, usize::MAX).map(|(_, steps)| steps)
+}
+
+fn decode_behavior_graph_within(bytes: &[u8], limit: usize) -> Result<(BehaviorGraph, usize)> {
     let file = Packfile::parse(bytes)?;
     require_64_bit(&file)?;
     let l = layout(&file);
@@ -1429,15 +1526,16 @@ pub fn decode_behavior_graph(bytes: &[u8]) -> Result<BehaviorGraph> {
         .or_else(|| file.objects_of("hkbBehaviorGraphStringData").first().copied())
         .ok_or(HkxError::MissingClass("hkbBehaviorGraphStringData"))?;
     let events = string_array(&file, string_data + l.string_data_event_names, MAX_EVENTS, "event names")?;
+    let mut walk = Walk::new(limit);
     let machine = match file.object_pointer(graph + l.graph_root_generator) {
-        Some(root) if file.class_at(root) == Some("hkbStateMachine") => Some(read_machine(&file, root)?),
+        Some(root) if file.class_at(root) == Some("hkbStateMachine") => Some(read_machine(&file, root, &mut walk)?),
         _ => match file.objects_of("hkbStateMachine").first() {
-            Some(&machine) => Some(read_machine(&file, machine)?),
+            Some(&machine) => Some(read_machine(&file, machine, &mut walk)?),
             None => None,
         },
     };
     let variables = read_variables(&file, graph, string_data)?;
-    Ok(BehaviorGraph { variables, events, machine })
+    Ok((BehaviorGraph { variables, events, machine }, walk.steps))
 }
 
 /// How many objects of each class a packfile holds, most numerous first: the first
@@ -1499,6 +1597,104 @@ pub fn decode_project(bytes: &[u8]) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packfile::fixtures::PackfileBuilder;
+
+    /// Data layout of the `i`-th blender of a synthetic chain: the blender, its child array,
+    /// and its child records.
+    const BLENDER_STRIDE: usize = 0x200;
+    const CHILD_ARRAY: usize = 0x100;
+    const CHILDREN: usize = 0x140;
+
+    /// A Havok 2010 packfile of `blenders` `hkbBlenderGenerator`s: blender `i` has `fan(i)`
+    /// children, each blending blender `target(i)`. Everything else is zero, which the readers
+    /// take as "nothing authored".
+    fn blender_chain(blenders: usize, fan: impl Fn(usize) -> usize, target: impl Fn(usize) -> usize) -> Vec<u8> {
+        let l = &LAYOUT_2010;
+        let mut builder = PackfileBuilder { data: vec![0u8; blenders * BLENDER_STRIDE + 0x40], ..Default::default() };
+        let class = builder.class("hkbBlenderGenerator");
+        for i in 0..blenders {
+            let blender = i * BLENDER_STRIDE;
+            builder.virtual_fixups.push((blender as u32, 0, class));
+            let children = fan(i);
+            if children == 0 {
+                continue;
+            }
+            // The children array: a local pointer to its data, and the element count.
+            builder.local.push(((blender + l.blender_children) as u32, (blender + CHILD_ARRAY) as u32));
+            builder.data[blender + l.blender_children + 8..blender + l.blender_children + 12]
+                .copy_from_slice(&(children as u32).to_le_bytes());
+            for k in 0..children {
+                let child = blender + CHILDREN + k * 0x40;
+                // Array element -> child record; child record -> the generator it blends.
+                builder.global.push(((blender + CHILD_ARRAY + k * 8) as u32, 1, child as u32));
+                builder.global.push(((child + l.blender_child_generator) as u32, 1, (target(i) * BLENDER_STRIDE) as u32));
+            }
+        }
+        // `Packfile` binary-searches both tables.
+        builder.local.sort_unstable();
+        builder.global.sort_unstable();
+        builder.build()
+    }
+
+    /// Read the first blender of `bytes` the way `decode_behavior_graph` does, under a
+    /// `limit`-step budget, handing back what the walk cost.
+    fn read_first_blender(bytes: &[u8], limit: usize) -> (Result<Option<Generator>>, usize) {
+        let file = Packfile::parse(bytes).expect("a well-formed packfile");
+        let mut walk = Walk::new(limit);
+        let (mut clip, mut content) = (None, StateContent::default());
+        let read = read_generator(&file, 0, &mut clip, &mut content, 0, &mut walk);
+        (read, walk.steps)
+    }
+
+    #[test]
+    fn a_blender_that_blends_itself_is_refused_not_expanded() {
+        // Two children, both pointing back at the blender: 2^32 nodes before the depth cap.
+        let bytes = blender_chain(1, |_| 2, |_| 0);
+        let (read, steps) = read_first_blender(&bytes, MAX_GRAPH_STEPS);
+        assert!(matches!(read, Err(HkxError::InvalidData("behavior graph object contains itself"))), "{read:?}");
+        assert!(steps < 10, "a cycle is caught on the first re-entry, not after {steps} steps");
+    }
+
+    #[test]
+    fn a_cycle_through_two_blenders_is_refused() {
+        let bytes = blender_chain(2, |_| 2, |i| 1 - i);
+        let (read, _) = read_first_blender(&bytes, MAX_GRAPH_STEPS);
+        assert!(matches!(read, Err(HkxError::InvalidData("behavior graph object contains itself"))), "{read:?}");
+    }
+
+    #[test]
+    fn shared_descendants_past_the_step_budget_are_refused_in_bounded_work() {
+        // 30 blenders in a line, each with two children that both name the next one, the last
+        // with none: no cycle, but 2^30 reads without a budget.
+        let bytes = blender_chain(31, |i| if i < 30 { 2 } else { 0 }, |i| i + 1);
+        let (read, steps) = read_first_blender(&bytes, MAX_GRAPH_STEPS);
+        assert!(matches!(read, Err(HkxError::InvalidData("behavior graph takes too many steps to read"))), "{read:?}");
+        assert!(steps <= MAX_GRAPH_STEPS + 2, "the work stops at the budget, not {steps}");
+    }
+
+    #[test]
+    fn a_shared_descendant_that_is_not_a_cycle_still_reads() {
+        // Blender 0 has two children that both name blender 1, which has none. Blender 1 is
+        // entered twice, once from each child; neither is a cycle, and the walk is exactly:
+        // blender 0 (1) + its two array entries (2) + blender 1 twice (2).
+        let bytes = blender_chain(2, |i| if i == 0 { 2 } else { 0 }, |_| 1);
+        let (read, steps) = read_first_blender(&bytes, MAX_GRAPH_STEPS);
+        assert!(matches!(read, Ok(Some(Generator::Blender(_)))), "{read:?}");
+        assert_eq!(steps, 5);
+    }
+
+    #[test]
+    fn the_walk_unwinds_so_a_sibling_may_revisit_what_a_cousin_left() {
+        // After the first child's subtree is read and left, the same object under the second
+        // child is not "active" any more: a cycle needs the object to be an ancestor.
+        let mut walk = Walk::new(100);
+        walk.enter(8).unwrap();
+        walk.enter(16).unwrap();
+        walk.leave();
+        walk.enter(16).unwrap();
+        walk.leave();
+        assert!(walk.enter(8).is_err(), "the root is still an ancestor");
+    }
 
     fn animations_archive() -> Option<byroredux_bsa::BsaArchive> {
         let env = byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV;

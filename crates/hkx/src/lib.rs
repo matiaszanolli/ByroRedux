@@ -18,7 +18,7 @@ pub use animation::{
 
 pub use expression::{Condition, Statement};
 pub use behavior::{
-    class_census, decode_behavior_graph, decode_character, decode_project, dump_objects, BehaviorGraph, BlendChild,
+    behavior_graph_steps, class_census, decode_behavior_graph, decode_character, decode_project, dump_objects, BehaviorGraph, BlendChild,
     EventRange, ExpressionData, Generator, Modifier, ModifierNode,
     Blender, BoneWeights, Character, ClipMode, ClipTrigger, State, StateClip, StateContent, StateMachine, Transition,
     Variable, VariableKind, TRANSITION_FLAG_DISABLED,
