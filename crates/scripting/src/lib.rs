@@ -54,6 +54,7 @@ pub mod loc_ref_types;
 pub mod reference_flags;
 pub mod projectile_requests;
 pub mod sound_requests;
+pub mod trap_hit_requests;
 pub mod ownership;
 pub mod weather_state;
 pub mod location_keyword_data;
@@ -190,6 +191,7 @@ pub use activate_parents::{
 };
 pub use detection_events::{DetectionEvent, PendingDetectionEvents};
 pub use projectile_requests::{PendingProjectileLaunches, ProjectileLaunch};
+pub use trap_hit_requests::{pending_trap_hit_flush_system, PendingTrapHits, TrapHit};
 pub use sound_requests::{install_sound_editor_ids, PendingSoundPlays, SoundEditorIds, SoundPlay};
 pub use reference_flags::{ReferenceFlag, ReferenceFlagChange, ReferenceFlags};
 pub use input_layers::{Control, InputLayers};

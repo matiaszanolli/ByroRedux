@@ -170,8 +170,9 @@ pub struct DeferredFragmentEffects {
     /// transient command markers once the guards drop.
     pub(in crate::fragment) camera_shakes: Vec<crate::papyrus_demo::CameraShakeCommand>,
     pub(in crate::fragment) controller_shakes: Vec<crate::papyrus_demo::ControllerRumbleCommand>,
-    /// `ProcessTrapHit` calls: `(target, trap, damage)`, queued as the target's
-    /// `HitEvent` once the guards drop.
+    /// `ProcessTrapHit` calls: `(target, trap, damage)`, queued on
+    /// [`crate::PendingTrapHits`] once the guards drop (landed as the
+    /// target's `HitEvent` by `pending_trap_hit_flush_system`, #5872).
     pub(in crate::fragment) trap_hits: Vec<(byroredux_core::ecs::EntityId, byroredux_core::ecs::EntityId, f32)>,
     /// M47.2 — `SetNoFavorAllowed` / `SetActorCause` calls, applied to
     /// [`crate::ReferenceFlags`] after the guards drop.
@@ -653,22 +654,12 @@ impl DeferredFragmentEffects {
 
     fn flush_trap_hits(&mut self, world: &World) {
         if !self.trap_hits.is_empty() {
-            if let Some(mut events) = world.query_mut::<crate::HitEvent>() {
-                for (target, trap, damage) in self.trap_hits.drain(..) {
-                    events.insert(
-                        target,
-                        crate::HitEvent {
-                            aggressor: trap,
-                            source: trap,
-                            projectile: 0,
-                            damage,
-                            power_attack: false,
-                            sneak_attack: false,
-                            bash_attack: false,
-                            blocked: false,
-                        },
-                    );
-                }
+            if let Some(mut pending) = world.try_resource_mut::<crate::PendingTrapHits>() {
+                pending.0.extend(
+                    self.trap_hits
+                        .drain(..)
+                        .map(|(target, trap, damage)| crate::TrapHit { target, trap, damage }),
+                );
             }
             self.trap_hits.clear();
         }

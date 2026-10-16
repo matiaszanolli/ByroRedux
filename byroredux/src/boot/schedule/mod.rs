@@ -128,21 +128,45 @@ mod fragment_activation_order_tests {
             "byroredux_scripting::hit_event_system)",
         ] {
             for producer in [
-                // the VM effect flush (`ProcessTrapHit`) runs inside the script systems
+                // the VM effect flush (`ProcessTrapHit`) queues inside the script systems,
+                // and this system lands the queue as `HitEvent`s (#5872)
+                "byroredux_scripting::pending_trap_hit_flush_system",
                 "byroredux_scripting::reference_script_event_system",
                 "byroredux_scripting::alias_script_event_system",
                 "crate::systems::projectiles::projectile_flight_system",
                 "crate::combat::combat_input_system,",
                 "crate::systems::make_npc_combat_ai_system()",
             ] {
-                if setup.find(producer).is_none() {
-                    continue;
-                }
+                // #5875 — `pos` panics on a producer that is no longer
+                // registered, like a missing consumer: skipping it would leave
+                // this guard green while checking nothing after a rename.
                 assert!(
                     pos(producer) < pos(consumer),
                     "`{consumer}` must be registered after the `HitEvent` producer `{producer}`"
                 );
             }
+        }
+    }
+
+    /// #5872 — the queue is flushed after the script systems that fill it.
+    #[test]
+    fn trap_hit_flush_runs_after_the_script_systems_that_queue_into_it() {
+        let setup = BOOT_SRC
+            .split("mod fragment_activation_order_tests")
+            .next()
+            .expect("split always yields a first segment");
+        let pos = |needle: &str| {
+            setup
+                .find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` is no longer registered in boot/schedule/"))
+        };
+        let flush = pos("byroredux_scripting::pending_trap_hit_flush_system");
+        for producer in [
+            "byroredux_scripting::reference_script_event_system",
+            "byroredux_scripting::alias_script_event_system",
+            "byroredux_scripting::quest_fragment_dispatch",
+        ] {
+            assert!(pos(producer) < flush, "`{producer}` must be registered before the trap-hit flush");
         }
     }
 

@@ -710,6 +710,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("UpdateHandlerChecks", "M47.2 — per-script cache of whether the Papyrus VM runs an OnUpdate / OnUpdateGameTime handler, re-checked against the installed scripts on demand; never gameplay state"),
         ("VmFrameBudget", "M47.2 (#5763) — the Papyrus interpreter's per-frame statement allowance, renewed by event_cleanup_system at the end of every frame; a save is taken between frames, so nothing of it is live state"),
         ("ReferenceScriptIndex", "M47.2 (#5763) — FormID → entity for the references carrying PapyrusReferenceScripts, rebuilt from those components on the first lookup after an attach; derived, never gameplay state"),
+        ("PendingTrapHits", "M47.2 — ProcessTrapHit requests a script run recorded, landed as HitEvent by pending_trap_hit_flush_system the same Update frame (a Late request waits one frame); transient"),
         ("PendingSoundPlays", "M47.2 — Sound.Play requests a script run recorded, played by scripted_sound_system the same frame or dropped; transient"),
         ("ExplicitOwner", "M47.2 — a placed reference's XOWN form, stamped by the cell loader at every spawn; authored data, re-derived"),
         ("ExplicitEncounterZone", "M47.2 — a placed reference's XEZN form, stamped by the cell loader at every spawn; authored data, re-derived"),

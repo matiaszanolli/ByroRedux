@@ -566,6 +566,10 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // consumers run after EVERY producer: the melee / NPC strikes above, the VM effect flush
     // (`ProcessTrapHit`) and the projectile flight just before. (A consumer ahead of a
     // producer never sees its hits: the dart trap's darts dealt no damage that way.)
+    // #5872 — `ProcessTrapHit` requests (queued by every script flush, including the Late
+    // dialogue one, whose same-frame `HitEvent` would be drained unread) land as `HitEvent`s
+    // here: after the script systems and projectile flight, before every consumer.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::pending_trap_hit_flush_system);
     // M47.2 — the hits scripts registered for (Fallout 4 / Starfield
     // `RegisterForHitEvent`), delivered once each while the `HitEvent` markers
     // stand.

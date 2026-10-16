@@ -41,6 +41,8 @@ pub fn register(world: &mut World) {
     world.init_resource::<PendingDetectionEvents>();
     world.init_resource::<PendingProjectileLaunches>();
     world.init_resource::<PendingSoundPlays>();
+    // M47.2 — ProcessTrapHit requests awaiting the Update flush (transient).
+    world.init_resource::<PendingTrapHits>();
     // M47.2 — reference owners (derived).
     world.init_resource::<OwnerKinds>();
     world.register::<ExplicitOwner>();

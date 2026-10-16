@@ -5647,6 +5647,10 @@ fn trap_hits_and_shakes_reach_their_consumers() {
     world.insert(trap, FormIdComponent(trap_id));
     world.resource_mut::<QuestStageState>().set_stage(Q, 10);
     crate::fragment::quest_fragment_dispatch_system(&world);
+    // #5872 — the request is queued; the Update flush lands it as the HitEvent.
+    assert!(world.query::<crate::HitEvent>().unwrap().get(marker).is_none());
+    crate::pending_trap_hit_flush_system(&world, 0.0);
+    assert!(world.resource::<crate::PendingTrapHits>().0.is_empty());
     let events = world.query::<crate::HitEvent>().unwrap();
     let hit = events.get(marker).expect("the target was hit");
     assert_eq!((hit.aggressor, hit.source, hit.damage), (trap, trap, 7.5));

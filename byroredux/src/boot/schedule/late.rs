@@ -746,8 +746,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::LocationKeywordData>()
             // M47.2 — a spoken line's hit event registrations.
             .writes_resource::<byroredux_scripting::HitRegistrations>()
-            // M47.2 — a spoken line's ProcessTrapHit and its shake calls.
-            .writes::<byroredux_scripting::HitEvent>()
+            // M47.2 — a spoken line's ProcessTrapHit (queued for the next
+            // Update flush, #5872) and its shake calls.
+            .writes_resource::<byroredux_scripting::PendingTrapHits>()
             .writes::<byroredux_scripting::papyrus_demo::CameraShakeCommand>()
             .writes::<byroredux_scripting::papyrus_demo::ControllerRumbleCommand>()
             // M47.2 — a spoken line's animation event registrations.

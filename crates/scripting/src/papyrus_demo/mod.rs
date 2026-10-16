@@ -76,9 +76,11 @@ impl PapyrusPlayerEntity {
     /// This read was hand-spelled at 62 production sites (three path
     /// spellings, four tail shapes); a move of the resource or a change
     /// to its Option-ness is now one edit here. A second player resource
-    /// (`byroredux::systems::character::PlayerEntity`) is kept in sync
-    /// by `extension_player_entity_sync_system` — call sites reading
-    /// this one cannot silently get the other.
+    /// (`byroredux::systems::character::PlayerEntity`) exists. The two are
+    /// NOT synchronised by a system (`extension_player_entity_sync_system`
+    /// only copies `PlayerEntity` into the WASM host): they agree because
+    /// scene setup writes both to the same body, and in FlyCam they differ,
+    /// harmlessly. Reading this one never yields the other.
     pub fn get(world: &World) -> Option<EntityId> {
         world.try_resource::<Self>().map(|player| player.0)
     }

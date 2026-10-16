@@ -65,6 +65,18 @@ fn source_reference(world: &World, entity: EntityId) -> Option<u32> {
 }
 
 /// Raise this tick's trap-contact events.
+/// Contacts in `previous` that are gone from `now`, in a stable order.
+/// #5873 — `HashSet::difference` iterates in a per-process-seeded order, so the
+/// `OnTrapHitStop` scripts used to run in a different order every run.
+fn ended_contacts(
+    previous: &HashSet<(EntityId, EntityId)>,
+    now: &HashSet<(EntityId, EntityId)>,
+) -> Vec<(EntityId, EntityId)> {
+    let mut ended: Vec<_> = previous.difference(now).copied().collect();
+    ended.sort_unstable();
+    ended
+}
+
 pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
     // The scripted trap bodies: a Trap-layer rigid body that carries scripts.
     // One storage guard at a time (a snapshot each), so no lock order is implied.
@@ -179,7 +191,7 @@ pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
             }
         }
     }
-    let stops: Vec<(EntityId, EntityId)> = previous.difference(&now).copied().collect();
+    let stops = ended_contacts(&previous, &now);
     if let Some(mut contacts) = world.try_resource_mut::<TrapContacts>() {
         contacts.0 = now;
     }
@@ -264,6 +276,20 @@ mod tests {
         world.query_mut::<Dead>().unwrap().insert(near, Dead);
         trap_contact_system(&world, 0.0);
         assert!(world.resource::<TrapContacts>().0.is_empty(), "a dead actor is not a live target");
+    }
+
+    /// #5873 — stop events come out in (trap, actor) order, whatever the
+    /// set's iteration order is.
+    #[test]
+    fn ended_contacts_are_ordered() {
+        let mut world = World::new();
+        let ids: Vec<EntityId> = (0..16).map(|_| world.spawn()).collect();
+        let previous: HashSet<_> = ids.iter().rev().flat_map(|&t| ids.iter().rev().map(move |&a| (t, a))).collect();
+        let now: HashSet<_> = [(ids[0], ids[0])].into_iter().collect();
+        let ended = ended_contacts(&previous, &now);
+        assert_eq!(ended.len(), previous.len() - 1);
+        assert!(ended.windows(2).all(|w| w[0] < w[1]), "sorted and unique");
+        assert!(!ended.contains(&(ids[0], ids[0])));
     }
 
     /// The scripts sit on the placement root and the collider on a child of it:
