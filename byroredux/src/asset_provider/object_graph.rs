@@ -5,9 +5,11 @@
 //!
 //! A project is `meshes\<dir>\<Name>.hkx`; its character, the character's
 //! skeleton, behavior and animations are named relative to `<dir>`.
-//! Skyrim Special Edition's 64-bit Havok 2010 packfiles only; anything else
-//! fails to decode and the object keeps no graph (the animation natives then
-//! answer the way the CK documents a missing graph).
+//! The 64-bit packfiles of Skyrim Special Edition (Havok 2010) and Fallout 4
+//! (Havok 2014) decode; anything else fails to decode and the object keeps no
+//! graph (the animation natives then answer the way the CK documents a missing
+//! graph). A clip that cannot be loaded costs its own states and nothing else:
+//! the graph keeps running with those states left still, and the load says so.
 
 use super::animation::convert_hkx_clip;
 use super::TextureProvider;
@@ -37,6 +39,80 @@ fn mesh_path(relative: &str) -> String {
     }
 }
 
+/// Register every clip any state of `graph` plays, nested machines and blenders included.
+/// `path_of` names the file a clip's animation is read from and `load` reads and decodes
+/// it, but only for a clip not already registered. A clip it cannot load is reported and left
+/// out, so the states that play it stay still and every other state of the graph still
+/// animates (the runtime already treats an unregistered clip as "nothing to play"). `None`
+/// only when the graph has no machine at all.
+fn register_clips(
+    world: &mut World,
+    graph: &byroredux_hkx::BehaviorGraph,
+    skeleton: &byroredux_hkx::HkxSkeleton,
+    project_path: &str,
+    path_of: &dyn Fn(&str) -> String,
+    load: &mut dyn FnMut(&str) -> Result<byroredux_hkx::HkxAnimation, String>,
+) -> Option<HashMap<(String, bool), GraphClip>> {
+    fn collect<'a>(machine: &'a byroredux_hkx::StateMachine, out: &mut Vec<(&'a str, &'a byroredux_hkx::StateClip)>) {
+        for state in &machine.states {
+            for clip in state.clip.iter().chain(&state.content.blended_clips) {
+                out.push((&state.name, clip));
+            }
+            for inner in &state.content.machines {
+                collect(inner, out);
+            }
+        }
+    }
+    let mut playing = Vec::new();
+    collect(graph.machine.as_ref()?, &mut playing);
+    let mut clips = HashMap::new();
+    let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (state_name, clip) in playing {
+        let looping = clip.mode == byroredux_hkx::ClipMode::Looping;
+        let key = (clip.animation.to_ascii_lowercase(), looping);
+        if clips.contains_key(&key) || failed.contains(&clip.animation.to_ascii_lowercase()) {
+            continue;
+        }
+        let (handle, duration) = match load_clip(world, skeleton, state_name, looping, &path_of(&clip.animation), load) {
+            Ok(registered) => registered,
+            Err(why) => {
+                log::warn!(
+                    "behavior graph '{project_path}': state '{state_name}' plays clip '{}', which could not be loaded \
+                     ({why}); the graph runs without it",
+                    clip.animation
+                );
+                failed.insert(clip.animation.to_ascii_lowercase());
+                continue;
+            }
+        };
+        clips.insert(key, GraphClip { handle, duration });
+    }
+    Some(clips)
+}
+
+/// The registry handle and duration of `clip`, registering it from the file at `path` (read
+/// through `load`) unless a clip of that path and loop mode is registered already.
+fn load_clip(
+    world: &mut World,
+    skeleton: &byroredux_hkx::HkxSkeleton,
+    state_name: &str,
+    looping: bool,
+    path: &str,
+    load: &mut dyn FnMut(&str) -> Result<byroredux_hkx::HkxAnimation, String>,
+) -> Result<(u32, f32), String> {
+    let registry_key = format!("{}#{}", path.to_ascii_lowercase(), if looping { "loop" } else { "once" });
+    let existing = world.resource::<AnimationClipRegistry>().get_by_path(&registry_key);
+    if let Some(handle) = existing {
+        let duration = world.resource::<AnimationClipRegistry>().get(handle).map(|registered| registered.duration);
+        return duration.map(|duration| (handle, duration)).ok_or_else(|| "its registry entry is gone".to_owned());
+    }
+    let animation = load(path)?;
+    let converted = convert_hkx_clip(path, state_name, skeleton, &animation, &mut world.resource_mut::<StringPool>(), !looping, None);
+    let duration = converted.duration;
+    let handle = world.resource_mut::<AnimationClipRegistry>().get_or_insert_by_path(registry_key, || converted);
+    Ok((handle, duration))
+}
+
 /// Decode `project` and register its clips.
 fn load_graph(
     world: &mut World,
@@ -55,70 +131,22 @@ fn load_graph(
         bytes
     };
     let characters = byroredux_hkx::decode_project(&fetch(&project_path, "project")?)
-        .map_err(|error| log::debug!("behavior graph '{project_path}': project: {error}"))
+        .map_err(|error| log::warn!("behavior graph '{project_path}': project did not decode: {error}"))
         .ok()?;
     let character = byroredux_hkx::decode_character(&fetch(&relative(characters.first()?), "character")?)
-        .map_err(|error| log::debug!("behavior graph '{project_path}': character: {error}"))
+        .map_err(|error| log::warn!("behavior graph '{project_path}': character did not decode: {error}"))
         .ok()?;
     let graph = byroredux_hkx::decode_behavior_graph(&fetch(&relative(&character.behavior), "behavior")?)
-        .map_err(|error| log::debug!("behavior graph '{project_path}': behavior: {error}"))
+        .map_err(|error| log::warn!("behavior graph '{project_path}': behavior did not decode: {error}"))
         .ok()?;
     let skeleton = byroredux_hkx::decode_skeleton(&fetch(&relative(&character.rig), "skeleton")?)
-        .map_err(|error| log::debug!("behavior graph '{project_path}': skeleton: {error}"))
+        .map_err(|error| log::warn!("behavior graph '{project_path}': skeleton did not decode: {error}"))
         .ok()?;
 
-    // Every clip any state plays, nested machines and blenders included.
-    fn collect<'a>(machine: &'a byroredux_hkx::StateMachine, out: &mut Vec<(&'a str, &'a byroredux_hkx::StateClip)>) {
-        for state in &machine.states {
-            for clip in state.clip.iter().chain(&state.content.blended_clips) {
-                out.push((&state.name, clip));
-            }
-            for inner in &state.content.machines {
-                collect(inner, out);
-            }
-        }
-    }
-    let mut playing = Vec::new();
-    collect(graph.machine.as_ref()?, &mut playing);
-    let mut clips = HashMap::new();
-    for (state_name, clip) in playing {
-        let looping = clip.mode == byroredux_hkx::ClipMode::Looping;
-        let key = (clip.animation.to_ascii_lowercase(), looping);
-        if clips.contains_key(&key) {
-            continue;
-        }
-        let path = relative(&clip.animation);
-        let registry_key = format!("{}#{}", path.to_ascii_lowercase(), if looping { "loop" } else { "once" });
-        let existing = world.resource::<AnimationClipRegistry>().get_by_path(&registry_key);
-        let (handle, duration) = match existing {
-            Some(handle) => {
-                let duration = world.resource::<AnimationClipRegistry>().get(handle)?.duration;
-                (handle, duration)
-            }
-            None => {
-                let animation = fetch(&path, "clip").and_then(|bytes| {
-                    byroredux_hkx::decode_spline_animation(&bytes)
-                        .map_err(|error| log::debug!("behavior graph '{project_path}': clip '{path}': {error}"))
-                        .ok()
-                })?;
-                let converted = convert_hkx_clip(
-                    &path,
-                    state_name,
-                    &skeleton,
-                    &animation,
-                    &mut world.resource_mut::<StringPool>(),
-                    !looping,
-                    None,
-                );
-                let duration = converted.duration;
-                let handle = world
-                    .resource_mut::<AnimationClipRegistry>()
-                    .get_or_insert_by_path(registry_key, || converted);
-                (handle, duration)
-            }
-        };
-        clips.insert(key, GraphClip { handle, duration });
-    }
+    let clips = register_clips(world, &graph, &skeleton, &project_path, &relative, &mut |path| {
+        let bytes = provider.extract_mesh(path).ok_or_else(|| "it is not in the archives".to_owned())?;
+        byroredux_hkx::decode_spline_animation(&bytes).map_err(|error| error.to_string())
+    })?;
     Some(Arc::new(LoadedGraph { graph, clips, sequences: sequences.clone(), lazy: None }))
 }
 
@@ -207,4 +235,125 @@ pub(crate) fn populate_object_graphs(world: &mut World, provider: &TextureProvid
         attached += 1;
     }
     attached
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_hkx::{
+        BehaviorGraph, ClipMode, HkxAnimation, HkxBone, HkxSkeleton, HkxTransform, State, StateClip, StateContent, StateMachine,
+    };
+
+    fn state(id: i32, name: &str, animation: &str, mode: ClipMode) -> State {
+        State {
+            id,
+            name: name.into(),
+            transitions: Vec::new(),
+            clip: Some(StateClip {
+                animation: animation.into(),
+                mode,
+                playback_speed: 1.0,
+                start_time: 0.0,
+                user_fraction: 0.0,
+                triggers: Vec::new(),
+                playback_speed_variable: None,
+            }),
+            content: StateContent::default(),
+        }
+    }
+
+    fn graph_of(states: Vec<State>) -> BehaviorGraph {
+        BehaviorGraph {
+            variables: Vec::new(),
+            events: Vec::new(),
+            machine: Some(StateMachine { start_state: 0, start_state_variable: None, states, wildcard: Vec::new() }),
+        }
+    }
+
+    fn rig() -> HkxSkeleton {
+        HkxSkeleton {
+            name: "Rig".into(),
+            bones: vec![HkxBone { name: "NPC Root [Root]".into(), parent_index: -1, reference_pose: HkxTransform::IDENTITY }],
+        }
+    }
+
+    fn animation() -> HkxAnimation {
+        HkxAnimation {
+            duration: 1.0,
+            num_frames: 1,
+            frame_duration: 1.0,
+            tracks: vec![vec![HkxTransform::IDENTITY]],
+            track_to_bone: vec![0],
+            annotations: Vec::new(),
+            dropped_bones: Vec::new(),
+            reference_frame: None,
+            reference_frame_dropped: None,
+        }
+    }
+
+    fn world() -> World {
+        let mut world = World::new();
+        world.insert_resource(AnimationClipRegistry::new());
+        world.insert_resource(StringPool::new());
+        world
+    }
+
+    /// One clip the archives do not have (or that does not decode) costs the states that play
+    /// it, not the object's whole graph: the others register, and the runtime leaves the state
+    /// with no clip still. It used to return `None` for the whole project, cached for good.
+    #[test]
+    fn a_clip_that_cannot_load_costs_its_own_states_not_the_graph() {
+        let graph = graph_of(vec![
+            state(0, "Idle", "Animations\\Idle.hkx", ClipMode::Looping),
+            state(1, "Gone", "Animations\\Gone.hkx", ClipMode::SinglePlay),
+            state(2, "Broken", "Animations\\Broken.hkx", ClipMode::SinglePlay),
+            state(3, "Open", "Animations\\Open.hkx", ClipMode::SinglePlay),
+        ]);
+        let mut world = world();
+        let mut asked = Vec::new();
+        let clips = register_clips(&mut world, &graph, &rig(), "meshes\\x\\x.hkx", &|name| format!("meshes\\x\\{name}"), &mut |path| {
+            asked.push(path.to_owned());
+            if path.ends_with("Gone.hkx") {
+                Err("it is not in the archives".to_owned())
+            } else if path.ends_with("Broken.hkx") {
+                Err("HKX object class 'hkaSplineCompressedAnimation' is missing".to_owned())
+            } else {
+                Ok(animation())
+            }
+        })
+        .expect("a graph with a machine");
+        let mut registered: Vec<&str> = clips.keys().map(|(name, _)| name.as_str()).collect();
+        registered.sort_unstable();
+        assert_eq!(registered, ["animations\\idle.hkx", "animations\\open.hkx"]);
+        assert!(clips[&("animations\\idle.hkx".to_owned(), true)].duration > 0.0);
+        assert_eq!(asked.len(), 4, "each distinct clip is loaded once");
+    }
+
+    #[test]
+    fn a_clip_two_states_share_is_loaded_once_and_a_registered_one_not_at_all() {
+        let graph = graph_of(vec![
+            state(0, "A", "Animations\\Walk.hkx", ClipMode::Looping),
+            state(1, "B", "animations\\walk.hkx", ClipMode::Looping),
+        ]);
+        let mut world = world();
+        let loads = std::cell::Cell::new(0);
+        let mut load = |_: &str| {
+            loads.set(loads.get() + 1);
+            Ok(animation())
+        };
+        let first = register_clips(&mut world, &graph, &rig(), "p", &|name| name.to_owned(), &mut load).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(loads.get(), 1);
+        // A second graph naming the same file finds it in the registry and reads nothing.
+        let second = register_clips(&mut world, &graph, &rig(), "p", &|name| name.to_owned(), &mut load).unwrap();
+        assert_eq!(second, first);
+        assert_eq!(loads.get(), 1, "the registered clip is not read again");
+    }
+
+    #[test]
+    fn a_graph_without_a_machine_registers_nothing() {
+        let graph = BehaviorGraph { variables: Vec::new(), events: Vec::new(), machine: None };
+        let mut world = world();
+        assert!(register_clips(&mut world, &graph, &rig(), "p", &|name| name.to_owned(), &mut |_| Ok(animation())).is_none());
+    }
 }

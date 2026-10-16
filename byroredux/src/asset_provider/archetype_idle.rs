@@ -145,12 +145,12 @@ pub(crate) fn populate_archetype_idles(world: &mut World, index: &EsmIndex, prov
                 .or_insert_with(|| {
                     let bytes = provider.extract_mesh(&mesh_path(&format!("{directory}\\characterassets\\skeleton.hkx")))?;
                     byroredux_hkx::decode_skeleton(&bytes)
-                        .map_err(|error| log::debug!("archetype idle: skeleton of '{directory}': {error}"))
+                        .map_err(|error| log::warn!("archetype idle: skeleton of '{directory}' did not decode: {error}"))
                         .ok()
                 })
                 .as_ref()?;
             let animation = byroredux_hkx::decode_spline_animation(&provider.extract_mesh(&path)?)
-                .map_err(|error| log::debug!("archetype idle: '{path}': {error}"))
+                .map_err(|error| log::warn!("archetype idle: clip '{path}' did not decode: {error}"))
                 .ok()?;
             let clip = {
                 let mut pool = world.resource_mut::<StringPool>();
@@ -171,7 +171,7 @@ pub(crate) fn populate_archetype_idles(world: &mut World, index: &EsmIndex, prov
 fn load_graph(provider: &TextureProvider, path: &str) -> Option<BehaviorGraph> {
     let bytes = provider.extract_mesh(path)?;
     byroredux_hkx::decode_behavior_graph(&bytes)
-        .map_err(|error| log::debug!("archetype idle: graph '{path}': {error}"))
+        .map_err(|error| log::warn!("archetype idle: graph '{path}' did not decode: {error}"))
         .ok()
 }
 

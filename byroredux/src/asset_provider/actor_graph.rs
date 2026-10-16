@@ -97,7 +97,7 @@ fn decode_behavior(cache: &mut ActorGraphCache, provider: &TextureProvider, path
         .or_insert_with(|| {
             let bytes = provider.extract_mesh(path)?;
             byroredux_hkx::decode_behavior_graph(&bytes)
-                .map_err(|error| log::debug!("actor graph: '{path}': {error}"))
+                .map_err(|error| log::warn!("actor graph: behavior '{path}' did not decode: {error}"))
                 .ok()
         })
         .clone()
@@ -118,7 +118,10 @@ fn build(cache: &mut ActorGraphCache, provider: &TextureProvider, entry: &Subgra
         .entry(directory.clone())
         .or_insert_with(|| {
             let bytes = provider.extract_mesh(&mesh_path(&format!("{directory}\\characterassets\\skeleton.hkx")))?;
-            byroredux_hkx::decode_skeleton(&bytes).ok().map(Arc::new)
+            byroredux_hkx::decode_skeleton(&bytes)
+                .map_err(|error| log::warn!("actor graph: skeleton of '{directory}' did not decode: {error} - none of its clips can load"))
+                .ok()
+                .map(Arc::new)
         })
         .clone();
     let lazy = Arc::new(LazyClips::default());
@@ -262,19 +265,23 @@ fn resolve_wanted(world: &mut World, provider: &TextureProvider) {
                 .iter()
                 .map(|folder| format!("{folder}\\{remainder}.hkx"))
                 .find(|path| provider.has_mesh(path));
-            let resolved = path.and_then(|path| {
+            let resolved = path.as_ref().and_then(|path| {
                 let registry_key = format!("{path}#{}", if key.1 { "loop" } else { "once" });
                 if let Some(handle) = world.resource::<AnimationClipRegistry>().get_by_path(&registry_key) {
                     let duration = world.resource::<AnimationClipRegistry>().get(handle)?.duration;
                     return Some(GraphClip { handle, duration });
                 }
-                let skeleton = job.skeleton.as_ref()?;
-                let animation = byroredux_hkx::decode_spline_animation(&provider.extract_mesh(&path)?)
-                    .map_err(|error| log::debug!("actor graph: clip '{path}': {error}"))
+                let Some(skeleton) = job.skeleton.as_ref() else {
+                    log::debug!("actor graph clip '{path}' not loaded: the graph's skeleton did not decode (reported once, above)");
+                    return None;
+                };
+                let bytes = provider.extract_mesh(path)?;
+                let animation = byroredux_hkx::decode_spline_animation(&bytes)
+                    .map_err(|error| log::warn!("actor graph: clip '{path}' did not decode: {error}"))
                     .ok()?;
                 let converted = {
                     let mut pool = world.resource_mut::<StringPool>();
-                    convert_hkx_clip(&path, "graph", skeleton, &animation, &mut pool, !key.1, None)
+                    convert_hkx_clip(path, "graph", skeleton, &animation, &mut pool, !key.1, None)
                 };
                 let duration = converted.duration;
                 let handle = world
@@ -296,7 +303,11 @@ fn resolve_wanted(world: &mut World, provider: &TextureProvider) {
                     provided += 1;
                 }
                 None => {
-                    log::debug!("actor graph clip '{}' not found in {:?}", key.0, job.folders.first());
+                    // A found file that did not load has said why above; this is the file that
+                    // is simply not in any of the folders.
+                    if path.is_none() {
+                        log::debug!("actor graph clip '{}' not found in {:?}", key.0, job.folders.first());
+                    }
                     job.lazy.fail(key);
                 }
             }
