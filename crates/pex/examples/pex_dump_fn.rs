@@ -80,29 +80,46 @@ fn main() {
         }
         for state in &object.states {
             for f in &state.functions {
-                if let Some(want) = &want_fn {
-                    if !f.name.eq_ignore_ascii_case(want) {
-                        continue;
-                    }
-                }
-                println!("\n== state {:?} fn {} ({})", state.name, f.name, f.return_type_name);
-                println!("   params: {:?}", f.params.iter().map(|p| (&p.name, &p.type_name)).collect::<Vec<_>>());
-                println!("   locals: {:?}", f.locals.iter().map(|l| (&l.name, &l.type_name)).collect::<Vec<_>>());
-                for (i, ins) in f.instructions.iter().enumerate() {
-                    let mut line = format!("  {i:3} {:<18}", mnemonic(ins.op));
-                    for a in &ins.args {
-                        write!(line, " {}", val(a)).unwrap();
-                    }
-                    if !ins.var_args.is_empty() {
-                        line.push_str(" |");
-                        for a in &ins.var_args {
-                            write!(line, " {}", val(a)).unwrap();
-                        }
-                    }
-                    println!("{line}");
+                dump_function(&format!("state {:?} fn {}", state.name, f.name), &f.name, f, &want_fn);
+            }
+        }
+        // #5883 — a property's getter / setter bodies decompile too (via
+        // `build_named_function`), so a smoke failure inside one must be
+        // dumpable: they are named `<prop>.Get` / `<prop>.Set`.
+        for prop in &object.properties {
+            for (suffix, f) in [("Get", &prop.read_function), ("Set", &prop.write_function)] {
+                if let Some(f) = f {
+                    let name = format!("{}.{suffix}", prop.name);
+                    dump_function(&format!("property {name}"), &name, f, &want_fn);
                 }
             }
         }
+    }
+}
+
+/// Print one function's header and disassembly unless `want_fn` names a
+/// different function (case-insensitive match on `name`).
+fn dump_function(label: &str, name: &str, f: &byroredux_pex::Function, want_fn: &Option<String>) {
+    if let Some(want) = want_fn {
+        if !name.eq_ignore_ascii_case(want) {
+            return;
+        }
+    }
+    println!("\n== {label} ({})", f.return_type_name);
+    println!("   params: {:?}", f.params.iter().map(|p| (&p.name, &p.type_name)).collect::<Vec<_>>());
+    println!("   locals: {:?}", f.locals.iter().map(|l| (&l.name, &l.type_name)).collect::<Vec<_>>());
+    for (i, ins) in f.instructions.iter().enumerate() {
+        let mut line = format!("  {i:3} {:<18}", mnemonic(ins.op));
+        for a in &ins.args {
+            write!(line, " {}", val(a)).unwrap();
+        }
+        if !ins.var_args.is_empty() {
+            line.push_str(" |");
+            for a in &ins.var_args {
+                write!(line, " {}", val(a)).unwrap();
+            }
+        }
+        println!("{line}");
     }
 }
 

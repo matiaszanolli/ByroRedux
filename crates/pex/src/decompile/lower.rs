@@ -25,13 +25,15 @@
 //! `TypeTest` variant) first — if that happens, this lowering and its pin
 //! test are the two places to change.
 
+use std::collections::HashMap;
+
 use byroredux_papyrus::ast::{
     self as past, BinaryOp, CallArg, Event, Expr, Function, Param, Property, PropertyFlags, Script,
     ScriptFlags, ScriptItem, State, StateItem, Stmt, Type, UnaryOp, Variable,
 };
 use byroredux_papyrus::span::{Span, Spanned};
 
-use crate::model::{Function as PexFunction, Object, Pex, Value};
+use crate::model::{Function as PexFunction, Object, Pex, Value, Variable as PexVariable};
 
 use super::boolean::rebuild_boolean_operators;
 use super::cfg::build_cfg;
@@ -412,8 +414,17 @@ fn build_named_function(
 fn lower_property(
     masks: &UserFlagMasks,
     object: &Object,
+    backing_vars: &HashMap<String, &PexVariable>,
     prop: &crate::model::Property,
 ) -> Result<Property, DecompileError> {
+    // The auto property's backing variable (`::P_var`), looked up in the
+    // per-object map built once by the caller: scanning `object.variables`
+    // per property would be O(properties × variables) on a hostile file.
+    let backing = prop
+        .auto_var_name
+        .as_deref()
+        .and_then(|var| backing_vars.get(&var.to_ascii_lowercase()))
+        .copied();
     let mut flags = PropertyFlags::empty();
     let (getter, setter) = if prop.has_auto_var() {
         flags |= if prop.is_readable() && !prop.is_writable() {
@@ -439,15 +450,26 @@ fn lower_property(
     // frontend parses all four — lowering without them made the two
     // frontends disagree on any flagged property (`Const Auto Hidden`
     // lowered as plain `Auto`).
+    //
+    // #5882 — but vanilla user-flag tables never name `const`, and the
+    // `Auto Const` / `Auto Conditional` bits sit on the auto property's
+    // BACKING VARIABLE, not on the property (Champollion `writeProperty`:
+    // "The flags defined on the variable must be set on the property"). So
+    // the user-flag bits are the property's OR the backing variable's, and
+    // the backing variable's `const_flag` is `CONST`.
+    let user_flags = prop.user_flags | backing.map_or(0, |v| v.user_flags);
     for (mask, flag) in [
         (masks.constant, PropertyFlags::CONST),
         (masks.mandatory, PropertyFlags::MANDATORY),
         (masks.hidden, PropertyFlags::HIDDEN),
         (masks.conditional, PropertyFlags::CONDITIONAL),
     ] {
-        if prop.user_flags & mask != 0 {
+        if user_flags & mask != 0 {
             flags |= flag;
         }
+    }
+    if backing.is_some_and(|v| v.const_flag != 0) {
+        flags |= PropertyFlags::CONST;
     }
     Ok(Property {
         ty: sp(lower_type(&prop.type_name)),
@@ -457,11 +479,7 @@ fn lower_property(
         // stored default (`Int Property prereqStageOPT = -1 Auto` keeps the
         // `-1` on `::prereqStageOPT_var`). Dropping it made every compiled
         // script's property defaults read as absent.
-        initial_value: prop
-            .auto_var_name
-            .as_deref()
-            .and_then(|var| object.variables.iter().find(|v| v.name.eq_ignore_ascii_case(var)))
-            .and_then(|v| default_literal(&v.default_value)),
+        initial_value: backing.and_then(|v| default_literal(&v.default_value)),
         getter,
         setter,
         doc_comment: None,
@@ -557,9 +575,11 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
                     ty: sp(lower_type(&member.type_name)),
                     name: ident(&member.name),
                     initial_value: default_literal(&member.value),
-                    is_conditional: false,
+                    // #5882 — a struct member's user flags go through the
+                    // same table as a variable's.
+                    is_conditional: member.user_flags & masks.conditional != 0,
                     is_const: member.const_flag != 0,
-                    is_hidden: false,
+                    is_hidden: member.user_flags & masks.hidden != 0,
                 })
                 .collect(),
         })));
@@ -582,9 +602,17 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
         })));
     }
 
+    // First match wins, as the per-property `find` this replaces did.
+    let mut backing_vars: HashMap<String, &PexVariable> = HashMap::new();
+    for v in &object.variables {
+        backing_vars.entry(v.name.to_ascii_lowercase()).or_insert(v);
+    }
     for p in &object.properties {
         body.push(sp(ScriptItem::Property(Box::new(lower_property(
-            &masks, object, p,
+            &masks,
+            object,
+            &backing_vars,
+            p,
         )?))));
     }
 
@@ -740,49 +768,113 @@ mod tests {
         assert!(conditional_var, "the variable's conditional user flag lowers");
     }
 
-    /// #5685 — the property half of #5398: a property's `Const` /
-    /// `Mandatory` / `Hidden` / `Conditional` user flags lower into the
+    /// #5685 / #5882 — a property's `Mandatory` / `Hidden` bits (property
+    /// level) and `Const` / `Conditional` (the auto property's BACKING
+    /// VARIABLE: `const_flag` and the conditional user bit) lower into the
     /// same `PropertyFlags` the `.psc` frontend parses, alongside the
-    /// auto-var-derived `Auto` bit. Pre-fix, `Int Property P Auto
-    /// Conditional Hidden Mandatory` lowered from `.pex` as bare `Auto`.
+    /// auto-var-derived `Auto` bit. The user-flag table is the vanilla FO4
+    /// layout — no entry is named `const`.
     #[test]
     fn property_user_flags_lower_into_property_flags() {
-        use crate::model::{Property as PexProperty, UserFlag};
+        use crate::model::{Property as PexProperty, UserFlag, Variable as PexVariable};
         let mut pex = pex_with_function(PexFunction {
             name: "F".into(),
             return_type_name: "None".into(),
             ..PexFunction::default()
         });
-        pex.user_flags = vec![
-            UserFlag { name: "conditional".into(), flag_index: 1 },
-            UserFlag { name: "hidden".into(), flag_index: 2 },
-            UserFlag { name: "mandatory".into(), flag_index: 3 },
-            UserFlag { name: "const".into(), flag_index: 4 },
-        ];
-        pex.objects[0].properties = vec![PexProperty {
-            name: "P".into(),
+        pex.user_flags = [
+            "hidden",
+            "conditional",
+            "default",
+            "collapsedonref",
+            "collapsedonbase",
+            "mandatory",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, n)| UserFlag { name: (*n).into(), flag_index: i as u8 })
+        .collect();
+        let flagged = |name: &str, user_flags: u32| PexProperty {
+            name: name.into(),
             type_name: "Int".into(),
-            user_flags: 0b11100, // hidden | mandatory | const
+            user_flags,
+            auto_var_name: Some(format!("::{name}_var")),
             flags: crate::model::property_flag::AUTOVAR
                 | crate::model::property_flag::READ
                 | crate::model::property_flag::WRITE,
             ..PexProperty::default()
+        };
+        let var = |name: &str, user_flags: u32, const_flag: u8| PexVariable {
+            name: format!("::{name}_var"),
+            type_name: "Int".into(),
+            user_flags,
+            const_flag,
+            ..PexVariable::default()
+        };
+        pex.objects[0].variables = vec![
+            var("Plain", 0, 0),
+            var("AutoConst", 0, 1),
+            var("AutoCond", 0b10, 0),
+            var("Both", 0b10, 1),
+        ];
+        pex.objects[0].properties = vec![
+            flagged("Plain", 0b100001), // hidden | mandatory, on the property
+            flagged("AutoConst", 0),
+            flagged("AutoCond", 0),
+            flagged("Both", 0),
+        ];
+        let script = decompile_script(&pex).expect("decompiles");
+        let flags_of = |name: &str| {
+            script
+                .body
+                .iter()
+                .find_map(|item| match &item.node {
+                    ScriptItem::Property(p) if p.name.node.0 == name => Some(p.flags),
+                    _ => None,
+                })
+                .expect("the property lowers")
+        };
+        assert_eq!(
+            flags_of("Plain"),
+            PropertyFlags::AUTO | PropertyFlags::HIDDEN | PropertyFlags::MANDATORY,
+        );
+        assert_eq!(flags_of("AutoConst"), PropertyFlags::AUTO | PropertyFlags::CONST);
+        assert_eq!(flags_of("AutoCond"), PropertyFlags::AUTO | PropertyFlags::CONDITIONAL);
+        assert_eq!(
+            flags_of("Both"),
+            PropertyFlags::AUTO | PropertyFlags::CONST | PropertyFlags::CONDITIONAL
+        );
+    }
+
+    /// #5882 — struct members go through the same user-flag table.
+    #[test]
+    fn struct_member_user_flags_lower_into_variable_flags() {
+        use crate::model::{StructInfo, StructMember, UserFlag};
+        let mut pex = pex_with_function(PexFunction::default());
+        pex.user_flags = vec![
+            UserFlag { name: "hidden".into(), flag_index: 0 },
+            UserFlag { name: "conditional".into(), flag_index: 1 },
+        ];
+        pex.objects[0].struct_infos = vec![StructInfo {
+            name: "S".into(),
+            members: vec![StructMember {
+                name: "m".into(),
+                type_name: "Int".into(),
+                user_flags: 0b11,
+                ..StructMember::default()
+            }],
+            ..StructInfo::default()
         }];
         let script = decompile_script(&pex).expect("decompiles");
-        let prop = script
+        let member = script
             .body
             .iter()
             .find_map(|item| match &item.node {
-                ScriptItem::Property(p) => Some(&**p),
+                ScriptItem::Struct(st) => st.members.first(),
                 _ => None,
             })
-            .expect("the property lowers");
-        assert_eq!(
-            prop.flags,
-            PropertyFlags::AUTO | PropertyFlags::HIDDEN | PropertyFlags::MANDATORY
-                | PropertyFlags::CONST,
-            "every mapped user flag rides along with the auto bit"
-        );
+            .expect("the struct lowers");
+        assert!(member.is_hidden && member.is_conditional);
     }
 
     /// #5683 — the user-flag masks are one pass over the table: entries

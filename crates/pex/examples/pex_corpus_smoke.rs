@@ -296,8 +296,17 @@ fn main() {
         }
     }
 
-    // Non-zero exit on any parse failure so this is usable as a gate.
-    if stats.failed > 0 {
+    // Non-zero exit on any parse failure, decompile error, decompile panic or
+    // shape mismatch so this is usable as a gate for the "100% decompile,
+    // zero shape mismatches" claim (#5883) — not just for the parse rate.
+    let regressions = stats.decompiled_err + stats.decompiled_panic + stats.decompiled_shape_mismatch;
+    if stats.failed > 0 || regressions > 0 {
+        if regressions > 0 {
+            eprintln!(
+                "FAIL: {} decompile error(s), {} panic(s), {} shape mismatch(es)",
+                stats.decompiled_err, stats.decompiled_panic, stats.decompiled_shape_mismatch
+            );
+        }
         std::process::exit(1);
     }
 }
