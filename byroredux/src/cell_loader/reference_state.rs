@@ -47,6 +47,11 @@ struct ReferenceState {
     /// "Starts Unconscious" flag would knock a woken robot out again on every
     /// reload. Required: pre-v32 saves are rejected.
     control: Option<byroredux_scripting::ActorControlState>,
+    /// #5859 — the actor's `Bleedout`. A spared actor keeps Health ≤ 0 and
+    /// only `bleedout_system` gets it back up, so parking the values without
+    /// this left a respawned essential NPC standing at ≤ 0 Health, never to
+    /// recover. Required: pre-v106 saves are rejected.
+    bleedout: Option<byroredux_scripting::Bleedout>,
     dead: bool,
     /// P3 pickup tombstone: the player picked this placement's item up, so a
     /// respawned copy must come back hidden and uninteractive, not restocked.
@@ -155,6 +160,7 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
                         spells: None,
                         perks: None,
                         control: None,
+                        bleedout: None,
                         dead: false,
                         picked_up: false,
                     },
@@ -172,6 +178,11 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
             state.picked_up = picked_up_q.get(*entity).is_some();
         }
     }
+    if let Some(bleedout_q) = world.query::<byroredux_scripting::Bleedout>() {
+        for (entity, _, state) in &mut rows {
+            state.bleedout = bleedout_q.get(*entity).copied();
+        }
+    }
     let mut live_items: Vec<Option<Vec<ItemStack>>> = vec![None; rows.len()];
     if let Some(inventory_q) = world.query::<Inventory>() {
         for ((entity, _, _), items) in rows.iter().zip(&mut live_items) {
@@ -183,7 +194,7 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
         let instances = world.try_resource::<ItemInstancePool>();
         let mut kept = Vec::with_capacity(rows.len());
         for ((entity, pair, mut state), items) in rows.into_iter().zip(live_items) {
-            if items.is_none() && !state.dead && !state.picked_up {
+            if items.is_none() && !state.dead && !state.picked_up && state.bleedout.is_none() {
                 continue;
             }
             let stored = items.map(|items| {
@@ -307,6 +318,9 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
     // defers to whatever state this brings back.
     if let Some(control) = state.control {
         world.insert(entity, control);
+    }
+    if let Some(bleedout) = state.bleedout {
+        world.insert(entity, bleedout);
     }
     if state.dead {
         world.insert(entity, Dead);
@@ -696,6 +710,7 @@ pub(crate) fn park_unresolved_snapshot_rows(
     let mut perks = column::<byroredux_core::character::Perks>(snapshot, "Perks");
     let mut controls =
         column::<byroredux_scripting::ActorControlState>(snapshot, "ActorControlState");
+    let mut bleedouts = column::<byroredux_scripting::Bleedout>(snapshot, "Bleedout");
     let dead = column::<Dead>(snapshot, "Dead");
 
     // One resource guard at a time (#4982): read the store's keys, drop it,
@@ -715,7 +730,13 @@ pub(crate) fn park_unresolved_snapshot_rows(
             // #5017 — a control state alone is worth parking: it is how a
             // scripted wake-up outlives the spawn-time "Starts Unconscious".
             let has_control = controls.contains_key(&old);
-            if items.is_none() && !is_dead && !has_control && !already_parked.contains(&pair) {
+            let has_bleedout = bleedouts.contains_key(&old);
+            if items.is_none()
+                && !is_dead
+                && !has_control
+                && !has_bleedout
+                && !already_parked.contains(&pair)
+            {
                 continue;
             }
             let inventory = match items {
@@ -756,6 +777,7 @@ pub(crate) fn park_unresolved_snapshot_rows(
                     spells: spells.remove(&old).map(|list| list.0),
                     perks: perks.remove(&old),
                     control: controls.remove(&old),
+                    bleedout: bleedouts.remove(&old),
                     dead: is_dead,
                     picked_up: false,
                 },
@@ -807,6 +829,7 @@ pub(crate) fn mark_picked_up(world: &World, entity: EntityId) {
                     spells: None,
                     perks: None,
                     control: None,
+                    bleedout: None,
                     dead: false,
                     picked_up: true,
                 },
@@ -1439,6 +1462,79 @@ mod tests {
         let fresh = reference(&mut world, "Fallout4.esm", 0x601);
         apply_starts_unconscious(&mut world, fresh);
         assert!(is_unconscious(&world, fresh));
+    }
+
+    /// #5859 — an essential NPC evicted mid-bleedout comes back still down,
+    /// with the timer it left on, and then gets back up. Without the parked
+    /// `Bleedout` it respawned standing at ≤ 0 Health and never recovered.
+    #[test]
+    fn an_actor_evicted_mid_bleedout_still_bleeds_out_and_recovers() {
+        use byroredux_core::ecs::components::ActorVitals;
+        use byroredux_scripting::{bleedout_system, is_bleeding_out, Bleedout, BleedoutRules};
+        const HEALTH: u32 = 0x3E8;
+        let mut world = world();
+        world.register::<Bleedout>();
+        world.insert_resource(BleedoutRules {
+            death_time_secs: 20.0,
+            health_regain: 0.3,
+        });
+        let down = |health: f32| {
+            let mut values = ActorValues::new();
+            values.set_base(HEALTH, 100.0);
+            values.apply_damage(HEALTH, 100.0 - health);
+            values
+        };
+        let npc = reference(&mut world, "Skyrim.esm", 0x700);
+        world.insert(npc, Inventory::new());
+        world.insert(npc, down(-5.0));
+        world.insert(npc, Bleedout { remaining_secs: Some(12.0) });
+        evict(&mut world, &[npc]);
+
+        // Respawn at full authored health, then the parked row.
+        let npc = reference(&mut world, "Skyrim.esm", 0x700);
+        world.insert(npc, Inventory::new());
+        world.insert(npc, down(100.0));
+        world.insert(npc, ActorVitals { health: HEALTH });
+        assert!(restore(&mut world, npc));
+        assert_eq!(
+            world.get::<Bleedout>(npc).map(|state| state.remaining_secs),
+            Some(Some(12.0))
+        );
+        assert!(world.get::<ActorValues>(npc).unwrap().current(HEALTH) <= 0.0);
+
+        bleedout_system(&world, 12.5);
+        assert!(!is_bleeding_out(&world, npc), "the timer runs out");
+        assert_eq!(world.get::<ActorValues>(npc).unwrap().current(HEALTH), 30.0);
+    }
+
+    /// #5859 — the save-reload park path carries `Bleedout` too, even for an
+    /// actor with no other state worth parking.
+    #[test]
+    fn an_unresolved_bleedout_row_is_parked_for_the_next_respawn() {
+        use byroredux_scripting::Bleedout;
+        let mut src = world();
+        src.register::<Bleedout>();
+        src.insert_resource(byroredux_core::string::StringPool::new());
+        let down = reference(&mut src, "Band.esm", 0x400);
+        src.insert(down, Bleedout { remaining_secs: Some(7.0) });
+        let registry = crate::save_io::build_save_registry();
+        let snapshot = byroredux_save::save_world(&src, &registry).unwrap();
+        let bytes = byroredux_save::encode(&snapshot, registry.schema_fingerprint()).unwrap();
+        let decoded = byroredux_save::decode(&bytes, registry.schema_fingerprint()).unwrap();
+
+        let mut dst = world();
+        dst.register::<Bleedout>();
+        byroredux_save::restore_resources(&mut dst, &registry, &decoded).unwrap();
+        let remap = byroredux_save::build_form_id_remap(&dst, &registry, &decoded);
+        let unresolved = byroredux_save::unresolved_form_id_pairs(&registry, &decoded, &remap);
+        assert_eq!(park_unresolved_snapshot_rows(&mut dst, &decoded, &unresolved), 1);
+
+        let down = reference(&mut dst, "Band.esm", 0x400);
+        assert!(restore(&mut dst, down));
+        assert_eq!(
+            dst.get::<Bleedout>(down).map(|state| state.remaining_secs),
+            Some(Some(7.0))
+        );
     }
 
     /// #4814 — an authored "Starts Dead" actor is `Dead` at spawn completion
