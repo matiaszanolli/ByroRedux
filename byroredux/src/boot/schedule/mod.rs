@@ -683,10 +683,50 @@ mod system_access_declaration_tests {
     // `production()` splits the text — everything the walk needs precedes it.
     const CONDITION_SRC: &str = concat!(
         include_str!("../../../../crates/scripting/src/condition/eval.rs"),
+        include_str!("../../../../crates/scripting/src/condition/eval/actor.rs"),
+        include_str!("../../../../crates/scripting/src/condition/eval/global.rs"),
+        include_str!("../../../../crates/scripting/src/condition/eval/reference.rs"),
         include_str!("../../../../crates/scripting/src/condition/context.rs"),
         include_str!("../../../../crates/scripting/src/condition/requirement.rs"),
         include_str!("../../../../crates/scripting/src/condition/catalog.rs"),
     );
+
+    /// #5804 — every production file under `condition/` is in
+    /// [`CONDITION_SRC`] (the #3854 rule): a file left out is code the
+    /// callee walk stops reading while it still reports green. Walked, not
+    /// listed, so the file nobody wrote down is the one it catches.
+    #[test]
+    fn condition_src_covers_every_condition_file() {
+        let this_file = include_str!("mod.rs");
+        let (_, concat) = this_file
+            .split_once("const CONDITION_SRC: &str = concat!(")
+            .expect("the CONDITION_SRC concat! must exist");
+        let concat = concat.split_once(");").expect("the concat! is closed").0;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../crates/scripting/src/condition");
+        let mut dirs = vec![root.clone()];
+        let mut checked = 0usize;
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("condition/ is readable") {
+                let path = entry.expect("readable dir entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let relative = path.strip_prefix(&root).expect("under condition/");
+                let relative = relative.to_str().expect("UTF-8 path").replace('\\', "/");
+                if !relative.ends_with(".rs") || relative == "tests.rs" {
+                    continue;
+                }
+                assert!(
+                    concat.contains(&format!("src/condition/{relative}\")")),
+                    "condition/{relative} is missing from CONDITION_SRC"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 7, "expected the condition/ evaluator files, walked {checked}");
+    }
 
     /// The nine `add_to_with_access` registrations, each mapped to the
     /// function bodies that make up its acquisition surface.
