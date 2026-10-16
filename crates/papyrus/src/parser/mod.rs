@@ -276,8 +276,8 @@ impl Parser {
     /// `VarDecl` named `Actor`, with zero errors. Now the stray token is
     /// recorded as a recovered `UnexpectedToken` and the rest of the
     /// line is skipped, so strict-fail callers checking `errors()` see
-    /// it and the tail can no longer glue. DocComments still pass (a
-    /// `;;` doc comment precedes the next top-level item), and
+    /// it and the tail can no longer glue. A `{…}` doc comment
+    /// passes only when it ends the line (#5886), and
     /// [`Self::skip_to_line_end`] leaves block terminators (`EndIf`,
     /// `Else`, …) unconsumed so the enclosing block still finds them.
     pub fn expect_eol(&mut self) -> Result<(), ParseError> {

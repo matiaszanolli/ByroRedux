@@ -40,11 +40,10 @@ all four R5 reference scripts end-to-end (see [Integration tests](#integration-t
 ```
 .psc source text
      │
-     ├── preprocess()     Remove \ line continuations, build OffsetMap
-     │
      ├── lex()            logos tokenizer → Vec<LexedToken>
-     │                    Case-insensitive keywords, skip line/block comments,
-     │                    preserve { doc comments }, keep Newline tokens significant
+     │                    Case-insensitive keywords, skip line/block comments and
+     │                    \ line continuations, preserve { doc comments }, keep
+     │                    Newline tokens significant; spans index the source as given
      │
      └── Parser           Hand-written recursive descent
           ├── parse_expr()     Pratt parser (precedence climbing, depth-capped)
@@ -61,12 +60,13 @@ Two public entry points in `lib.rs`:
   `.psc` file. Returns `Ok((Script, recovered_errors))` even when some items had
   recoverable parse errors, so a tolerant caller gets the partial `Script` while a
   strict caller can check `result.1.is_empty()`. Only a missing `ScriptName` header or
-  a fatal lex error returns `Err`. Spans in the returned AST are remapped back to
-  original-source coordinates via the `OffsetMap`.
+  a fatal lex error returns `Err`. Every span (AST and errors) indexes the source text
+  as given: line continuations are a lexer skip rule, so there is no offset remapping
+  (#5881 / #5884).
 
 ### Why logos + hand-written recursive descent?
 
-- **logos** handles case-insensitive keyword matching natively via `ignore(ascii_case)`,
+- **logos** handles case-insensitive keyword matching natively via `ignore(case)`,
   produces token spans for free, compiles to a jump table (no runtime regex overhead).
 - **Hand-written recursive descent** gives full control over error messages and recovery.
   Papyrus has a simple, unambiguous grammar — no need for parser generators.
@@ -99,7 +99,7 @@ the Pratt postfix levels in `parser/expr.rs`):
 `+`/`-`, but the lexer has no dedicated `+`-vs-concat distinction yet, so it is declared
 in the AST and unused by the parser today.)
 
-**Keywords are case-insensitive** (`ignore(ascii_case)` on every `#[token]`). Identifiers
+**Keywords are case-insensitive** (`ignore(case)` on every `#[token]`). Identifiers
 are case-preserving; comparison goes through `Identifier::eq_ignore_case`.
 
 **Comments:** `;` single-line, `;/ ... /;` block, `{ ... }` doc comments. Line and block
@@ -107,12 +107,16 @@ comments are skipped at lex time; doc comments survive as `Token::DocComment(Str
 A doc comment belongs to the item whose header line it *follows* (FO4 CK *Script File
 Structure*) — `Parser::take_trailing_doc` attaches it to the `Function` / `Event` /
 `Property` before it, and consumes it after the script header, a `Group` header and each
-`Struct` member, which carry no doc field (#5325). A leading `{…}` is still accepted as a
-fallback for functions, events and properties.
+`Struct` member, which carry no doc field (#5325). There is no leading-doc form: a `{…}`
+*before* a `Function` / `Event` / `Property` is discarded at the top level and is a
+recorded parse error inside a `State` / `Group` / property-accessor container. A `{…}`
+that does not end its line (`Function F() {d} Int x = 1`) is an error (#5886), and an
+unterminated `;/`, `{` or string literal is a lex error (#5889).
 
-**Line continuation:** `\` at end of line joins the next line. Handled in `preprocess()`
-before lexing; an `OffsetMap` records the removed bytes so diagnostics still point at the
-original source.
+**Line continuation:** `\` at end of line joins the next line (blanks and a `;` comment
+may sit between the slash and the line break). It is a logos skip rule on `Token`, not a
+pre-pass, so a `\` that ends a `;` comment line is part of the comment and continues
+nothing, as the CK specifies (#5881).
 
 **Newlines are significant.** `Token::Newline` is preserved and acts as the statement
 terminator. `Parser::peek()` transparently skips newlines; `peek_raw()` does not — the
@@ -197,7 +201,7 @@ crates/papyrus/
     ast.rs              All AST types + flag bitsets + BinaryOp/UnaryOp precedence
     span.rs             Span, Spanned<T>
     token.rs            Token enum (logos derive), Display, can_start_expr()
-    lexer.rs            preprocess() + OffsetMap + lex() + LexedToken
+    lexer.rs            lex() + LexedToken + LexError
     error.rs            ParseError, ErrorKind, render()/offset_to_line_col()
     parser/
       mod.rs            Parser struct, token access, expect helpers, type parsing
@@ -294,7 +298,7 @@ list ( refreshed 2026-09-21: 108 unit + 4 round-trip). By module:
 
 - `parser/expr.rs` — 40 inline (literals, precedence, casts, calls, named args, member
   access, indexing, `new`, depth cap incl. the #4320 chain-link charge)
-- `lexer.rs` — 25 inline (preprocess, case-insensitive keywords, operators, literals,
+- `lexer.rs` — 24 inline (continuations, case-insensitive keywords, operators, literals,
   comments, newlines incl. the #4479 CR/exponent diagnostics)
 - `parser/stmt.rs` — 17 inline (Return, VarDecl, Assign/compound-assign, If/ElseIf/Else,
   While, nested blocks, type disambiguation)

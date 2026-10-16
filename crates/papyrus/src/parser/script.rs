@@ -68,12 +68,10 @@ impl Parser {
             // `skip_newlines_collect_doc` over `skip_newlines`: doc
             // comments at the top of a script (after the ScriptName
             // line) or between items would otherwise sit at the next
-            // peek and crash the type-prefix dispatcher. Doc-aware
-            // handlers (`parse_function`, `parse_event`,
-            // `parse_property`) re-collect inside themselves; for
-            // items that don't (Variable, State, Struct, …) the
-            // metadata is dropped, but the parse continues. Full
-            // doc-comment threading is M47.2 transpiler territory.
+            // peek and crash the type-prefix dispatcher. The collected
+            // doc is dropped: the documented form trails the item header
+            // and is taken by `take_trailing_doc`, so a leading `{…}`
+            // attaches to nothing.
             self.skip_newlines_collect_doc();
             if self.at_eof() {
                 break;
@@ -318,8 +316,9 @@ impl Parser {
         let params = self.parse_param_list()?;
         let flags = self.parse_function_flags();
         self.expect_eol()?;
-        // #5325 — the documented position is after the header; the leading
-        // form stays as a fallback.
+        // #5325 — the documented position is after the header. (The
+        // `doc_comment` collected above is always `None` in practice: the
+        // top-level item loop has already consumed any leading `{…}`.)
         let doc_comment = self.take_trailing_doc().or(doc_comment);
         let body = if flags.contains(FunctionFlags::NATIVE) {
             // Native functions have no body. The header is the
@@ -2138,6 +2137,20 @@ EndProperty
         };
         let names: Vec<_> = st.members.iter().map(|m| m.name.node.0.as_str()).collect();
         assert_eq!(names, ["Parent", "name"]);
+    }
+
+    /// #5890 — there is no leading-doc form: a top-level `{lead}` before a
+    /// `Function` is discarded (not attached, not an error). Pins the
+    /// behaviour the docs now describe.
+    #[test]
+    fn a_leading_doc_comment_attaches_to_nothing() {
+        let (script, errors) =
+            parse_counting_errors("ScriptName T\n{lead}\nFunction F()\nEndFunction\n");
+        assert_eq!(errors, 0);
+        let ScriptItem::Function(f) = &script.body[0].node else {
+            panic!("function")
+        };
+        assert_eq!(f.doc_comment, None);
     }
 
     /// Opt-in corpus gate: every vanilla + F4SE `.psc` under

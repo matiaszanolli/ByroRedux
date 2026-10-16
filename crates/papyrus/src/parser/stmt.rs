@@ -74,7 +74,7 @@ impl Parser {
         result
     }
 
-    /// Statement dispatch: skips leading newlines / doc-comments, then
+    /// Statement dispatch: skips leading newlines, then
     /// dispatches on the first significant token. The terminating newline is
     /// consumed by the per-stmt handler.
     fn parse_stmt_inner(&mut self) -> Result<Spanned<Stmt>, ParseError> {
