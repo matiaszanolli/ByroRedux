@@ -884,11 +884,25 @@ fn transfer_is_theft(
     player: byroredux_core::ecs::EntityId,
     source: byroredux_core::ecs::EntityId,
 ) -> bool {
-    let Some(owned) = world
-        .get::<byroredux_core::ecs::components::Owned>(source)
-        .map(|owned| *owned)
-    else {
-        return false;
+    // #5866 — one ownership read: a script's `SetActorOwner` / `SetFactionOwner`
+    // (a cleared owner is `Some(0)`) overrides the `XOWN` the cell loader
+    // stamped, for the theft rule exactly as for `GetActorOwner`.
+    let owned = match byroredux_scripting::owner_override(world, source) {
+        Some(0) => return false,
+        Some(owner) => byroredux_core::ecs::components::Owned {
+            owner_form_id: owner,
+            faction_rank: None,
+            global_var_form_id: None,
+        },
+        None => {
+            let Some(owned) = world
+                .get::<byroredux_core::ecs::components::Owned>(source)
+                .map(|owned| *owned)
+            else {
+                return false;
+            };
+            owned
+        }
     };
     let player_base = world
         .try_resource::<InventoryCatalog>()
@@ -2814,6 +2828,28 @@ mod tests {
         world.insert(player, FactionRanks::from_pairs([(0xF00D, 2)]));
         assert!(!transfer_is_theft(&world, player, shop_chest));
         world.remove::<FactionRanks>(player);
+        // #5866 — a script's ownership change reaches the theft rule: cleared
+        // or handed to the player it is no theft; handed to someone else it is.
+        world.init_resource::<byroredux_scripting::OwnerOverrides>();
+        {
+            use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+            world.register::<byroredux_core::ecs::components::FormIdComponent>();
+            if world.try_resource::<FormIdPool>().is_none() {
+                world.insert_resource(FormIdPool::new());
+            }
+            let id = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+                plugin: PluginId::from_filename("Skyrim.esm"),
+                local: LocalFormId(0xDEAD),
+            });
+            world.insert(shop_chest, byroredux_core::ecs::components::FormIdComponent(id));
+        }
+        assert!(transfer_is_theft(&world, player, shop_chest));
+        world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, 0);
+        assert!(!transfer_is_theft(&world, player, shop_chest), "SetActorOwner(None) clears it");
+        world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, PLAYER_NPC_FORM_ID);
+        assert!(!transfer_is_theft(&world, player, shop_chest));
+        world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, 0xABBA);
+        assert!(transfer_is_theft(&world, player, shop_chest));
         let outcome = transfer_loot(&world, player, shop_chest, LootSelection::All).unwrap();
         assert!(outcome.stolen);
         assert_eq!(

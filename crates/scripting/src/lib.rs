@@ -182,7 +182,7 @@ pub use encounter_level::{
     calculate_encounter_level, install_encounter_level_rules, EncounterLevelRules, ExplicitEncounterZone,
 };
 pub use ownership::{
-    actor_owner, actor_owner_with, faction_owner, faction_owner_with, install_owner_kinds, is_faction, ExplicitOwner,
+    actor_owner, actor_owner_with, owner_override, faction_owner, faction_owner_with, install_owner_kinds, is_faction, ExplicitOwner,
     OwnerKinds, OwnerOverrides,
 };
 pub use crime_gold::{crime_gold_with, CrimeGoldChange, FactionCrimeGold};

@@ -255,6 +255,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::FactionRanks>()
             // #4706 — the placed stack size pickup_loot grants.
             .reads::<crate::inventory::PlacedItemCount>()
+            // #5866 — the theft rule reads a script's ownership change first.
+            .reads_resource::<byroredux_scripting::OwnerOverrides>()
             .writes::<byroredux_core::ecs::components::Inventory>()
             // #4996 — pickup_loot's helpers. `mesh_entities_under` walks the
             // subtree; `mark_picked_up` resolves the ref's FormId and records

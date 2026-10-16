@@ -69,14 +69,21 @@ impl OwnerOverrides {
     }
 }
 
+/// The owner a script set on `entity`'s reference with `SetActorOwner` /
+/// `SetFactionOwner`, if it did: `Some(0)` is a cleared owner. The theft rule
+/// reads this before the cell loader's stamped `Owned`, so a script's ownership
+/// change reaches it (#5866).
+pub fn owner_override(world: &World, entity: EntityId) -> Option<u32> {
+    let reference = crate::condition::entity_global_form_id(world, entity)?;
+    world.try_resource::<OwnerOverrides>()?.get(reference)
+}
+
 /// The explicit owner of `entity`: a script's override of its reference, else the
 /// `XOWN` form the cell loader stamped. `pending` is the run's own latest set.
 fn explicit_owner(world: &World, entity: EntityId, pending: Option<u32>) -> Option<u32> {
     let owner = match pending {
         Some(owner) => owner,
-        None => match crate::condition::entity_global_form_id(world, entity)
-            .and_then(|reference| world.try_resource::<OwnerOverrides>()?.get(reference))
-        {
+        None => match owner_override(world, entity) {
             Some(owner) => owner,
             None => world.get::<ExplicitOwner>(entity)?.0,
         },
