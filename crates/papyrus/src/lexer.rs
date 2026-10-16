@@ -2,97 +2,6 @@ use crate::span::Span;
 use crate::token::Token;
 use logos::Logos;
 
-/// Pre-processes source text: removes `\` line continuations while building
-/// an offset map so we can report correct positions in the original source.
-pub fn preprocess(source: &str) -> (String, OffsetMap) {
-    let mut output = String::with_capacity(source.len());
-    let mut map = OffsetMap::new();
-    let mut chars = source.char_indices().peekable();
-
-    while let Some((i, ch)) = chars.next() {
-        if ch == '\\' {
-            // Check if this is a line continuation (backslash + newline)
-            if let Some(&(_, '\n')) = chars.peek() {
-                map.push(i, 2);
-                chars.next(); // skip \n
-                continue;
-            } else if let Some(&(_, '\r')) = chars.peek() {
-                chars.next(); // skip \r
-                if let Some(&(_, '\n')) = chars.peek() {
-                    map.push(i, 3);
-                    chars.next(); // skip \n
-                    continue;
-                } else {
-                    // Lone \r after backslash — treat as continuation
-                    map.push(i, 2);
-                    continue;
-                }
-            }
-        }
-        output.push(ch);
-    }
-
-    (output, map)
-}
-
-/// Maps byte offsets in preprocessed text back to the original source.
-#[derive(Debug, Clone)]
-pub struct OffsetMap {
-    /// Each entry: (preprocessed_offset, bytes_removed_at_this_point)
-    entries: Vec<(usize, usize)>,
-}
-
-impl OffsetMap {
-    fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
-    }
-
-    fn push(&mut self, original_offset: usize, bytes_removed: usize) {
-        let prior_removed: usize = self.entries.last().map(|(_, r)| *r).unwrap_or(0);
-        let preprocessed_offset = original_offset - prior_removed;
-        self.entries
-            .push((preprocessed_offset, prior_removed + bytes_removed));
-    }
-
-    /// Convert a preprocessed byte offset to the original source offset.
-    ///
-    /// #2668 (SCR-D4-NEW11-02) — `entries` is sorted by `pp_off` by
-    /// construction (`push` appends in preprocessed-offset order), so the
-    /// entry this needs — the last one with `pp_off <= preprocessed` — is
-    /// found by bisection instead of a linear scan. `partition_point`
-    /// returns the count of entries satisfying the predicate, i.e. one
-    /// past that entry's index; `0` means no entry qualifies (nothing
-    /// removed yet at this offset).
-    ///
-    /// #3944 — the order is **non-decreasing, not strictly increasing**,
-    /// and the difference matters. Back-to-back continuations
-    /// (`"a\\\n\\\nb"`) remove bytes without advancing the
-    /// preprocessed offset between them, so `push` emits duplicate
-    /// `pp_off` values: that input yields `[(1, 2), (1, 4)]`.
-    ///
-    /// **Do not replace `partition_point` with `binary_search_by_key`.**
-    /// Under duplicate keys `binary_search` may return *any* matching
-    /// index, and the only correct choice here is the **last** one — it
-    /// carries the largest cumulative `removed`. `partition_point` picks
-    /// it by construction; `binary_search` would silently under-count the
-    /// removed bytes and shift every diagnostic span on a file containing
-    /// two adjacent continuations.
-    pub fn to_original(&self, preprocessed: usize) -> usize {
-        let idx = self
-            .entries
-            .partition_point(|&(pp_off, _)| pp_off <= preprocessed);
-        let added_back = idx.checked_sub(1).map_or(0, |i| self.entries[i].1);
-        preprocessed + added_back
-    }
-
-    /// Convert a preprocessed span to original source span.
-    pub fn span_to_original(&self, span: Span) -> Span {
-        Span::new(self.to_original(span.start), self.to_original(span.end))
-    }
-}
-
 /// Tokenized source with span information.
 #[derive(Debug)]
 pub struct LexedToken {
@@ -100,8 +9,10 @@ pub struct LexedToken {
     pub span: Span,
 }
 
-/// Lex the preprocessed source into a vector of tokens with spans.
-/// Spans are in preprocessed coordinates — use OffsetMap to convert back.
+/// Lex the source into a vector of tokens with spans. Spans are byte offsets
+/// into `source` as given: `\` line continuations are skipped by a lexer
+/// rule ([`Token`]'s skip patterns), not stripped in a pre-pass, so no
+/// coordinate remapping is ever needed (#5881 / #5884).
 ///
 /// A lex failure (an out-of-range numeric literal per #1908, or any byte
 /// sequence matching no token pattern at all) still records a
@@ -233,141 +144,111 @@ mod malformed_number_tests {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_preprocess_no_continuations() {
-        let (result, _map) = preprocess("hello world\nnext line");
-        assert_eq!(result, "hello world\nnext line");
+    /// The tokens of `source` with every `Newline` dropped, as plain kinds.
+    fn kinds(source: &str) -> Vec<Token> {
+        let (tokens, errors) = lex(source);
+        assert!(errors.is_empty(), "{source:?}: {errors:?}");
+        tokens
+            .into_iter()
+            .map(|t| t.token)
+            .filter(|t| *t != Token::Newline)
+            .collect()
     }
 
     #[test]
-    fn test_preprocess_line_continuation() {
-        let (result, map) = preprocess("hello \\\nworld");
-        assert_eq!(result, "hello world");
-        // 'w' in preprocessed is at index 6; in original it's at index 8
-        assert_eq!(map.to_original(6), 8);
-    }
-
-    /// #2668 (SCR-D4-NEW11-02) — pins `to_original`'s bisection against a
-    /// multi-entry map at every interesting offset: before the first
-    /// continuation, exactly at each continuation's own preprocessed
-    /// offset (the boundary `partition_point`'s `<=` predicate must
-    /// include), strictly between two continuations, and past the last
-    /// one. A regression to a naive `<` predicate, or an off-by-one in the
-    /// `idx - 1` lookup, mis-maps exactly these boundary offsets.
-    #[test]
-    fn to_original_bisects_correctly_across_multiple_continuations() {
-        // Three continuations: "ab\\\ncd\\\nef\\\ngh" — each "\\\n" (2 bytes)
-        // removed, preprocessed text is "abcdefgh".
-        let (result, map) = preprocess("ab\\\ncd\\\nef\\\ngh");
-        assert_eq!(result, "abcdefgh");
-
-        // Before any continuation: nothing removed yet.
-        assert_eq!(map.to_original(0), 0, "'a'");
-        assert_eq!(map.to_original(1), 1, "'b'");
-        // At/after the first continuation (preprocessed offset 2 = 'c'):
-        // 2 bytes already removed by then.
-        assert_eq!(map.to_original(2), 4, "'c', first boundary");
-        assert_eq!(map.to_original(3), 5, "'d'");
-        // At/after the second continuation (preprocessed offset 4 = 'e'):
-        // 4 bytes removed by then.
-        assert_eq!(map.to_original(4), 8, "'e', second boundary");
-        assert_eq!(map.to_original(5), 9, "'f'");
-        // At/after the third continuation (preprocessed offset 6 = 'g'):
-        // 6 bytes removed by then.
-        assert_eq!(map.to_original(6), 12, "'g', third boundary");
-        assert_eq!(map.to_original(7), 13, "'h'");
-    }
-
-    /// #3944 — the duplicate-`pp_off` case, which is the *only* input
-    /// where `partition_point` and `binary_search_by_key` can disagree.
-    ///
-    /// Two back-to-back continuations remove bytes without advancing the
-    /// preprocessed offset between them, so both entries carry the same
-    /// key and only the last (largest cumulative `removed`) is correct.
-    /// #2668's own regression fixture used `pp_off ∈ {2, 4, 6}` — no
-    /// duplicates — so the behaviour was correct but unpinned, and the
-    /// docstring described the map as strictly increasing.
-    #[test]
-    fn to_original_picks_the_last_entry_under_duplicate_offsets() {
-        let (result, map) = preprocess("a\\\n\\\nb");
-        assert_eq!(result, "ab");
-        assert_eq!(
-            map.entries,
-            vec![(1, 2), (1, 4)],
-            "back-to-back continuations must produce duplicate pp_off keys — \
-             if this changes, the bisection's correctness argument changes too"
+    fn a_continuation_joins_two_lines_into_one_token_run() {
+        let (tokens, errors) = lex("hello \\\nworld");
+        assert!(errors.is_empty());
+        assert!(
+            matches!(
+                tokens.as_slice(),
+                [LexedToken { token: Token::Ident(a), .. }, LexedToken { token: Token::Ident(b), span }]
+                    if a == "hello" && b == "world" && *span == Span::new(8, 13)
+            ),
+            "{tokens:?}"
         );
-        // 'a' is at original 0; the four continuation bytes occupy 1..5;
-        // 'b' is at original 5. Reaching 5 requires the *last* duplicate's
-        // removed=4, not the first's removed=2.
-        assert_eq!(map.to_original(0), 0, "'a'");
+        for src in ["a \\\r\nb", "a \\\rb"] {
+            assert_eq!(kinds(src).len(), 2, "{src:?}");
+            assert!(!lex(src).0.iter().any(|t| t.token == Token::Newline), "{src:?}");
+        }
+    }
+
+    /// #5881 — the CK's own example (Script File Structure): the comment
+    /// consumes its trailing backslash, so the next line is NOT continued
+    /// into it.
+    #[test]
+    fn a_backslash_inside_a_comment_does_not_continue_it() {
+        let (tokens, errors) = lex(
+            "; Slash in this line is ignored, because it is in a comment \\\nx = 1 + 2 ; trailing \\\ny",
+        );
+        assert!(errors.is_empty());
+        let idents: Vec<_> = tokens
+            .iter()
+            .filter_map(|t| match &t.token {
+                Token::Ident(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(idents, ["x", "y"], "both lines after a comment survive");
         assert_eq!(
-            map.to_original(1),
-            5,
-            "'b' — a binary_search landing on the first duplicate would \
-             return 3 and mis-place every span after it"
+            tokens.iter().filter(|t| t.token == Token::Newline).count(),
+            2,
+            "each comment still ends at its own line break"
         );
     }
 
-    /// #3944 — a continuation at offset 0 makes the first entry's
-    /// `pp_off` zero, so `partition_point`'s `<=` predicate must include
-    /// it at `to_original(0)`. A `<` predicate returns 0 here and drops
-    /// the removal entirely.
+    /// #5881 — the CK also allows blanks and a comment between the
+    /// continuation slash and the line break.
     #[test]
-    fn to_original_handles_a_leading_continuation() {
-        let (result, map) = preprocess("\\\nabc");
-        assert_eq!(result, "abc");
-        assert_eq!(map.entries, vec![(0, 2)]);
-        assert_eq!(map.to_original(0), 2, "'a' sits past the removed bytes");
-        assert_eq!(map.to_original(1), 3, "'b'");
-    }
-
-    /// #3944 — CRLF continuations remove 3 bytes and lone-CR ones remove
-    /// 2, so a file mixing them produces an uneven `removed` ladder. The
-    /// bisection must track the cumulative total, not a per-entry
-    /// constant.
-    #[test]
-    fn to_original_handles_mixed_crlf_and_lone_cr_continuations() {
-        // "a" \<CRLF> "b" \<CR> "c"  →  removes 3 then 2.
-        let (result, map) = preprocess("a\\\r\nb\\\rc");
-        assert_eq!(result, "abc");
-        assert_eq!(
-            map.entries,
-            vec![(1, 3), (2, 5)],
-            "CRLF removes 3 bytes, lone CR removes 2; `removed` is cumulative"
-        );
-        assert_eq!(map.to_original(0), 0, "'a'");
-        assert_eq!(map.to_original(1), 4, "'b' — past the 3-byte CRLF removal");
-        assert_eq!(map.to_original(2), 7, "'c' — past both removals");
-    }
-
-    /// #3944 — the end-of-input identity: mapping the preprocessed
-    /// length back must land exactly on the source length, for every
-    /// shape above. An off-by-one in the `idx - 1` lookup or a missed
-    /// final entry shows up here and nowhere else.
-    #[test]
-    fn to_original_of_the_end_offset_is_the_source_length() {
-        for source in [
-            "ab\\\ncd\\\nef\\\ngh",
-            "a\\\n\\\nb",
-            "\\\nabc",
-            "a\\\r\nb\\\rc",
-            "no continuations at all",
-            "",
-        ] {
-            let (out, map) = preprocess(source);
+    fn a_continuation_may_be_followed_by_blanks_or_a_comment() {
+        for src in ["x = 1 + \\ ; note\n2", "x = 1 + \\   \n2", "x = 1 + \\\t\r\n2"] {
+            let k = kinds(src);
             assert_eq!(
-                map.to_original(out.len()),
-                source.len(),
-                "end offset must map to the source length for {source:?}"
+                k,
+                [Token::Ident("x".into()), Token::Eq, Token::IntLit(1), Token::Plus, Token::IntLit(2)],
+                "{src:?}"
             );
         }
     }
 
     #[test]
-    fn test_preprocess_crlf_continuation() {
-        let (result, _) = preprocess("hello \\\r\nworld");
-        assert_eq!(result, "hello world");
+    fn a_continuation_inside_a_string_is_dropped() {
+        let k = kinds("\"ab\\\ncd\" \"x\\\\y\"");
+        assert_eq!(
+            k,
+            [Token::StringLit("abcd".into()), Token::StringLit("x\\y".into())]
+        );
+    }
+
+    /// #5884 — spans index the caller's own text, even after a continuation.
+    #[test]
+    fn spans_after_a_continuation_are_original_offsets() {
+        let src = "a = 1 + \\\n2\nSKSE.Foo()";
+        let (tokens, errors) = lex(src);
+        assert!(errors.is_empty());
+        for t in &tokens {
+            if let Token::Ident(name) = &t.token {
+                assert_eq!(&src[t.span.start..t.span.end], name, "{t:?}");
+            }
+        }
+    }
+
+    /// #5889 — a missing terminator is a lex error at the opener, not a
+    /// silent swallow; the stream stays contiguous.
+    #[test]
+    fn unterminated_block_comment_string_and_doc_are_lex_errors() {
+        let (_, e) = lex("x\n;/ oops\nFunction G()\n");
+        assert_eq!(e.len(), 1, "unterminated block comment");
+        let (t, e) = lex("String s = \"abc\nInt y = 2\n");
+        assert_eq!(e.len(), 1, "unterminated string");
+        assert!(
+            t.iter().any(|t| t.token == Token::KwInt),
+            "the line after an unterminated string still lexes: {t:?}"
+        );
+        let (_, e) = lex("{ never closed\nFunction G()\n");
+        assert_eq!(e.len(), 1, "unterminated doc comment");
+        // …and the terminated forms are still clean.
+        assert!(lex(";/ ok /; x { doc } \"s\"").1.is_empty());
     }
 
     #[test]

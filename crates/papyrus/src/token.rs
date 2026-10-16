@@ -16,33 +16,39 @@ fn skip_line_comment(lex: &mut logos::Lexer<Token>) -> logos::Skip {
 }
 
 /// Skip callback for block comments: `;/ ... /;`
-fn skip_block_comment(lex: &mut logos::Lexer<Token>) -> logos::Skip {
+///
+/// #5889 — a missing `/;` is a lex error (routed into `lex()`'s error list
+/// with a placeholder token), not a silent swallow of the rest of the file.
+fn skip_block_comment(lex: &mut logos::Lexer<Token>) -> Result<logos::Skip, ()> {
     let remainder = lex.remainder();
     if let Some(end) = remainder.find("/;") {
         lex.bump(end + 2);
+        Ok(logos::Skip)
     } else {
-        // Unterminated block comment — consume everything
         lex.bump(remainder.len());
+        Err(())
     }
-    logos::Skip
 }
 
-/// Parse a doc comment `{ ... }` and return its contents.
-fn parse_doc_comment(lex: &mut logos::Lexer<Token>) -> String {
+/// Parse a doc comment `{ ... }` and return its contents. An unterminated
+/// one is a lex error (#5889).
+fn parse_doc_comment(lex: &mut logos::Lexer<Token>) -> Result<String, ()> {
     let remainder = lex.remainder();
     if let Some(end) = remainder.find('}') {
-        let content = remainder[..end].to_string();
+        let content = remainder[..end].trim().to_string();
         lex.bump(end + 1); // skip past closing `}`
-        content.trim().to_string()
+        Ok(content)
     } else {
-        // Unterminated — take everything
-        let content = remainder.to_string();
         lex.bump(remainder.len());
-        content.trim().to_string()
+        Err(())
     }
 }
 
-fn parse_string_literal(lex: &mut logos::Lexer<Token>) -> String {
+/// Parse a string literal body. A `\` + line break inside the string is a
+/// line continuation and is dropped (the CK treats it the same anywhere);
+/// a string that reaches a line break or EOF without its closing quote is a
+/// lex error (#5889), with the line break left for the `Newline` rule.
+fn parse_string_literal(lex: &mut logos::Lexer<Token>) -> Result<String, ()> {
     let remainder = lex.remainder();
     let mut result = String::new();
     let mut chars = remainder.char_indices();
@@ -50,7 +56,7 @@ fn parse_string_literal(lex: &mut logos::Lexer<Token>) -> String {
         match ch {
             '"' => {
                 lex.bump(i + 1);
-                return result;
+                return Ok(result);
             }
             '\\' => {
                 if let Some((_, escaped)) = chars.next() {
@@ -59,6 +65,12 @@ fn parse_string_literal(lex: &mut logos::Lexer<Token>) -> String {
                         't' => result.push('\t'),
                         '\\' => result.push('\\'),
                         '"' => result.push('"'),
+                        '\n' => {}
+                        '\r' => {
+                            if chars.clone().next().is_some_and(|(_, c)| c == '\n') {
+                                chars.next();
+                            }
+                        }
                         _ => {
                             result.push('\\');
                             result.push(escaped);
@@ -67,15 +79,14 @@ fn parse_string_literal(lex: &mut logos::Lexer<Token>) -> String {
                 }
             }
             '\n' | '\r' => {
-                // Unterminated string at end of line
                 lex.bump(i);
-                return result;
+                return Err(());
             }
             _ => result.push(ch),
         }
     }
     lex.bump(remainder.len());
-    result
+    Err(())
 }
 
 // A lexable-but-out-of-range literal (`0xFFFFFFFFFFFFFFFF`, a 40-digit
@@ -109,6 +120,13 @@ fn parse_float(lex: &mut logos::Lexer<Token>) -> Result<f64, ()> {
 // (CR-only) file lex to ZERO Newline tokens — one line to the parser,
 // voiding the statement-terminator contract and the #4321 protection.
 #[logos(skip r"[ \t]+")]
+// #5881 — a `\` line continuation is a lexer rule, not a pre-pass, so it
+// knows about comments and strings: the `;` comment callback consumes a
+// `\` that ends a comment line (CK: "including any backslash characters
+// that would otherwise let you continue"), and the CK-legal `\ ; note` /
+// `\   ` forms (blanks and a comment between the slash and the line
+// break) continue the line. Spans stay in source coordinates.
+#[logos(skip r"\\[ \t]*(;[^\r\n]*)?(\r\n|\r|\n)")]
 pub enum Token {
     // ── Newlines (significant for statement termination) ──
     // #4479 — CRLF, bare CR, and LF all terminate a line. Longest-match
@@ -342,9 +360,6 @@ pub enum Token {
     Colon,
     #[token("\\")]
     Backslash,
-}
-
-impl Token {
 }
 
 impl std::fmt::Display for Token {

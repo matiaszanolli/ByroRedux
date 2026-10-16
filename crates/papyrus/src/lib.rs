@@ -16,15 +16,14 @@ use span::Spanned;
 
 /// Parse a Papyrus expression string (for testing and console use).
 pub fn parse_expr(source: &str) -> Result<Spanned<Expr>, Vec<ParseError>> {
-    let (preprocessed, offset_map) = lexer::preprocess(source);
-    let (tokens, lex_errors) = lexer::lex(&preprocessed);
+    let (tokens, lex_errors) = lexer::lex(source);
 
     if !lex_errors.is_empty() {
         return Err(lex_errors
             .into_iter()
             .map(|e| ParseError {
                 kind: error::ErrorKind::LexError,
-                span: offset_map.span_to_original(e.span),
+                span: e.span,
             })
             .collect());
     }
@@ -37,10 +36,7 @@ pub fn parse_expr(source: &str) -> Result<Spanned<Expr>, Vec<ParseError>> {
             // return the parsed prefix and drop the tail silently.
             parser.require_input_end("expression");
             if parser.errors().is_empty() {
-                Ok(Spanned::new(
-                    expr.node,
-                    offset_map.span_to_original(expr.span),
-                ))
+                Ok(expr)
             } else {
                 Err(parser.into_errors())
             }
@@ -58,12 +54,12 @@ pub fn parse_expr(source: &str) -> Result<Spanned<Expr>, Vec<ParseError>> {
 /// Returns `Ok(Script)` even when some script items had recoverable
 /// parse errors (the script body holds whatever parsed successfully).
 /// Hard errors that couldn't be recovered (missing ScriptName header,
-/// fatal lex errors) return `Err(Vec<ParseError>)`. Spans in the
-/// returned `Script` are remapped back to original-source coordinates
-/// via the `OffsetMap`.
+/// fatal lex errors) return `Err(Vec<ParseError>)`. Every span in the
+/// returned `Script` and in the errors indexes `source` directly: line
+/// continuations are skipped by the lexer, so there is no offset remapping
+/// (#5884).
 pub fn parse_script(source: &str) -> Result<(Script, Vec<ParseError>), Vec<ParseError>> {
-    let (preprocessed, offset_map) = lexer::preprocess(source);
-    let (tokens, lex_errors) = lexer::lex(&preprocessed);
+    let (tokens, lex_errors) = lexer::lex(source);
 
     // #2025 / SCR-D4-NEW2-01 — lex errors no longer short-circuit the
     // whole file. `lexer::lex` already patched a synthetic placeholder
@@ -78,7 +74,7 @@ pub fn parse_script(source: &str) -> Result<(Script, Vec<ParseError>), Vec<Parse
         .into_iter()
         .map(|e| ParseError {
             kind: error::ErrorKind::LexError,
-            span: offset_map.span_to_original(e.span),
+            span: e.span,
         })
         .collect();
 
@@ -90,20 +86,14 @@ pub fn parse_script(source: &str) -> Result<(Script, Vec<ParseError>), Vec<Parse
             // `result.1.is_empty()`, while a tolerant caller can just
             // use the partial Script.
             let mut recovered_errors: Vec<ParseError> = lex_errors;
-            recovered_errors.extend(parser.into_errors().into_iter().map(|mut e| {
-                e.span = offset_map.span_to_original(e.span);
-                e
-            }));
+            recovered_errors.extend(parser.into_errors());
             Ok((script, recovered_errors))
         }
         Err(e) => {
             let mut errors = parser.into_errors();
             errors.push(e);
             let mut all_errors: Vec<ParseError> = lex_errors;
-            all_errors.extend(errors.into_iter().map(|mut e| {
-                e.span = offset_map.span_to_original(e.span);
-                e
-            }));
+            all_errors.extend(errors);
             Err(all_errors)
         }
     }
@@ -150,6 +140,54 @@ mod tests {
             "FunctionB is valid and unrelated to FunctionA's bad literal — it must still \
              parse, not be discarded along with the whole file. Got body: {:#?}",
             script.body
+        );
+    }
+
+    /// #5881 — the CK's own continuation-in-comment example, verbatim: the
+    /// statement after a comment ending in `\` must survive.
+    #[test]
+    fn a_comment_ending_in_a_backslash_does_not_eat_the_next_line() {
+        let src = "ScriptName T\n\
+                   Function F()\n\
+                   ; Slash in this line is ignored, because it is in a comment \\\n\
+                   Int x = 1 + 2 ; This line isn't inside the above comment\n\
+                   Int y = 2 ; see Data\\Scripts\\\n\
+                   Int z = 3\n\
+                   EndFunction\n\
+                   ; dir C:\\\n\
+                   Int Property P Auto\n";
+        let (script, errors) = parse_script(src).expect("parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        let f = script
+            .body
+            .iter()
+            .find_map(|i| match &i.node {
+                ScriptItem::Function(f) => Some(f),
+                _ => None,
+            })
+            .expect("F");
+        assert_eq!(f.body.len(), 3, "x, y and z all survive");
+        assert!(
+            script.body.iter().any(|i| matches!(&i.node, ScriptItem::Property(_))),
+            "the property after a `; dir C:\\` comment survives"
+        );
+    }
+
+    /// #5884 — AST spans index the original text even after continuations.
+    #[test]
+    fn ast_spans_stay_in_original_coordinates_after_a_continuation() {
+        let src = "ScriptName T\nFunction F()\nInt x = 1 + \\\n2\nSKSE.Foo()\nEndFunction\n";
+        let (script, errors) = parse_script(src).expect("parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        let ScriptItem::Function(f) = &script.body[0].node else {
+            panic!("function")
+        };
+        let last = f.body.last().expect("a statement");
+        assert!(
+            src[last.span.start..].starts_with("SKSE.Foo()"),
+            "last statement span starts at {} => {:?}",
+            last.span.start,
+            &src[last.span.start..]
         );
     }
 }

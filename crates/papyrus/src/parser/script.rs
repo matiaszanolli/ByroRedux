@@ -904,11 +904,10 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::{lex, preprocess};
+    use crate::lexer::lex;
 
     fn parse(src: &str) -> Script {
-        let (preprocessed, _map) = preprocess(src);
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex(src);
         let mut parser = Parser::new(tokens);
         let script = parser.parse_script().expect("parse_script must succeed");
         if !parser.errors().is_empty() {
@@ -931,8 +930,7 @@ mod tests {
     /// fix's contract is "no glue, errors recovered per-statement", not
     /// "zero errors".
     fn parse_recovering(src: &str) -> Script {
-        let (preprocessed, _map) = preprocess(src);
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex(src);
         let mut parser = Parser::new(tokens);
         parser
             .parse_script()
@@ -998,8 +996,7 @@ ScriptName Foo
 Int Property = 5 Auto
 Int Property GoodProp = 5 Auto
 ";
-        let (preprocessed, _map) = preprocess(src);
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex(src);
         let mut parser = Parser::new(tokens);
         let script = parser.parse_script().expect("header parses");
 
@@ -1331,8 +1328,7 @@ State MyState
     EndFunction
 EndState
 ";
-        let (preprocessed, _map) = preprocess(src);
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex(src);
         let mut parser = Parser::new(tokens);
         let script = parser.parse_script().expect("header parses");
 
@@ -1446,8 +1442,7 @@ EndState
         const SECS: u64 = 10;
         let (tx, rx) = mpsc::channel();
         let handle = std::thread::spawn(move || {
-            let (preprocessed, _map) = preprocess(src);
-            let (tokens, _errs) = lex(&preprocessed);
+            let (tokens, _errs) = lex(src);
             let mut parser = Parser::new(tokens);
             let script = parser.parse_script();
             let _ = tx.send((script, parser.errors().to_vec()));
@@ -1610,8 +1605,7 @@ EndProperty
     /// next line — a recovered error must surface, not a glued Assign.
     #[test]
     fn an_assign_operator_on_the_next_line_does_not_assign_the_previous_expr() {
-        let (preprocessed, _map) = preprocess("ScriptName T\nEvent E()\nx\n= 5\nEndEvent\n");
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex("ScriptName T\nEvent E()\nx\n= 5\nEndEvent\n");
         let mut parser = Parser::new(tokens);
         let _ = parser.parse_script();
         assert!(
@@ -1677,8 +1671,7 @@ EndProperty
 
     /// Parse, returning the recovered script and how many errors surfaced.
     fn parse_counting_errors(src: &str) -> (Script, usize) {
-        let (preprocessed, _map) = preprocess(src);
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex(src);
         let mut parser = Parser::new(tokens);
         let script = parser
             .parse_script()
@@ -1873,8 +1866,7 @@ EndProperty
             fn_body("Int[] a = New\nInt[5]"),
         ];
         for src in &probes {
-            let (preprocessed, _map) = preprocess(src);
-            let (tokens, _errs) = lex(&preprocessed);
+            let (tokens, _errs) = lex(src);
             let mut parser = Parser::new(tokens);
             let fatal = parser.parse_script().is_err();
             assert!(
@@ -1897,8 +1889,7 @@ EndProperty
 
     #[test]
     fn extends_with_its_target_on_the_next_line_sets_no_parent() {
-        let (preprocessed, _map) = preprocess("ScriptName Foo Extends\nBar\n");
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex("ScriptName Foo Extends\nBar\n");
         let mut parser = Parser::new(tokens);
         if let Ok(script) = parser.parse_script() {
             assert!(script.parent.is_none(), "`Extends` ⏎ `Bar` glued (#5021)");
@@ -2049,8 +2040,7 @@ EndProperty
 
     #[test]
     fn a_namespaced_parent_on_the_next_line_is_still_not_the_parent() {
-        let (preprocessed, _map) = preprocess("ScriptName Foo Extends\nDLC01:Base\n");
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex("ScriptName Foo Extends\nDLC01:Base\n");
         let mut parser = Parser::new(tokens);
         if let Ok(script) = parser.parse_script() {
             assert!(

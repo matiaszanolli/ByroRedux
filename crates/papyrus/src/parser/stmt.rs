@@ -347,18 +347,16 @@ mod tests {
         );
     }
     use super::*;
-    use crate::lexer::{lex, preprocess};
+    use crate::lexer::lex;
 
     fn parse_stmt_from(src: &str) -> Result<Stmt, ParseError> {
-        let (preprocessed, _map) = preprocess(src);
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex(src);
         let mut parser = Parser::new(tokens);
         parser.parse_stmt().map(|s| s.node)
     }
 
     fn parse_block_from(src: &str) -> Result<Vec<Stmt>, ParseError> {
-        let (preprocessed, _map) = preprocess(src);
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex(src);
         let mut parser = Parser::new(tokens);
         Ok(parser
             .parse_block(&[])?
@@ -374,8 +372,7 @@ mod tests {
     /// leaving exactly the first statement in the block.
     #[test]
     fn glued_statement_tail_is_an_error_and_not_a_statement() {
-        let (preprocessed, _map) = preprocess("Int x = 0 y = 2\n");
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex("Int x = 0 y = 2\n");
         let mut parser = Parser::new(tokens);
         let stmts = parser.parse_block(&[]).expect("block parses with recovery");
         assert_eq!(stmts.len(), 1, "only the first statement may parse");
@@ -395,8 +392,7 @@ mod tests {
     /// `parse_block` to find.
     #[test]
     fn glued_block_terminator_stays_for_the_enclosing_block() {
-        let (preprocessed, _map) = preprocess("Int x = 0 EndIf\nInt ok = 1\n");
-        let (tokens, _errs) = lex(&preprocessed);
+        let (tokens, _errs) = lex("Int x = 0 EndIf\nInt ok = 1\n");
         let mut parser = Parser::new(tokens);
         let stmts = parser
             .parse_block(&[Token::KwEndIf])
@@ -495,8 +491,7 @@ mod tests {
     fn stmt_depth_resets_between_top_level_calls() {
         // A successful parse must leave stmt_depth back at 0 so the next
         // top-level parse starts with a fresh budget.
-        let (pre, _) = preprocess("If True\nReturn\nEndIf\n");
-        let (tokens, _) = lex(&pre);
+        let (tokens, _) = lex("If True\nReturn\nEndIf\n");
         let mut parser = Parser::new(tokens);
         parser.parse_stmt().expect("first parse ok");
         assert_eq!(parser.stmt_depth, 0);

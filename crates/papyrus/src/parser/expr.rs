@@ -78,8 +78,8 @@ impl Parser {
         // `peek` skips `Token::Newline`, so a line opening with `(` became a
         // call on the previous line's expression (`SetStage(10)` ⏎
         // `(akRef as ObjectReference).Disable()` parsed as one statement with
-        // no error). Explicit `\` continuations are already joined by
-        // `preprocess`, and an operator ending a line still continues, since
+        // no error). Explicit `\` continuations are already skipped by
+        // the lexer, and an operator ending a line still continues, since
         // the operand after it is parsed through `parse_prefix`, which skips
         // newlines.
         while let Some(tok) = self.peek_raw() {
