@@ -333,7 +333,15 @@ void main() {
         vec2 accMom = mix(histMom, vec2(currLum, currLum2), alphaM);
 
         imageStore(outIndirect, p, vec4(accInd, 1.0));
-        imageStore(outMoments, p, vec4(accMom, min(histAge + 1.0, 255.0), 0.0));
+        // While a floor holds alpha up, the history is an EMA worth about
+        // 1/floor samples, not histAge of them. Letting the age climb to 255
+        // under the floor meant that the frame the camera parked, progressive
+        // mode resumed at alpha ~1/256 and froze the moving-phase noise in
+        // ("slow to settle" after every stop). Cap the stored age at the
+        // floor's equivalent count, so the 1/N run continues from what the
+        // history actually holds.
+        float ageCap = floorC > 0.0 ? 1.0 / floorC : 255.0;
+        imageStore(outMoments, p, vec4(accMom, min(histAge + 1.0, ageCap), 0.0));
     } else {
         imageStore(outIndirect, p, vec4(currInd, 1.0));
         imageStore(outMoments, p, vec4(currLum, currLum2, 1.0, 0.0));
