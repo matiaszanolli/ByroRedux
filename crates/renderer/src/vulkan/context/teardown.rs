@@ -234,6 +234,10 @@ impl VulkanContext {
         if let Some(ref mut svgf) = self.post.svgf {
             svgf.destroy(&self.device, alloc);
         }
+        // Reads the reservoir buffers, so it goes before them.
+        if let Some(ref mut shadow_filter) = self.post.shadow_filter {
+            shadow_filter.destroy(&self.device, alloc);
+        }
         // SAFETY: Drop runs after device_wait_idle; no in-flight
         // command references the reservoir buffers. (Already inside an
         // `unsafe` block, so no inner `unsafe` wrap needed.)

@@ -65,6 +65,19 @@ impl VulkanContext {
         self.render_debug_flags
     }
 
+    /// `r.shadowfilter` — enable or disable the direct-shadow spatial filter.
+    pub fn set_shadow_filter_enabled(&mut self, enabled: bool) {
+        if self.shadow_filter_enabled != enabled {
+            log::info!("shadow filter: {}", if enabled { "on" } else { "off" });
+            self.shadow_filter_enabled = enabled;
+        }
+    }
+
+    /// Whether the shadow filter exists and is enabled this frame.
+    pub fn shadow_filter_state(&self) -> (bool, bool) {
+        (self.post.shadow_filter.is_some(), self.shadow_filter_enabled)
+    }
+
     /// Queue one bounded selected-light visibility-ray capture.
     ///
     /// Coordinates are render-resolution pixels with the same upper-left

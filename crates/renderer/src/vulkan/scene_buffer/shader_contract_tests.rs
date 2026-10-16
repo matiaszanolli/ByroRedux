@@ -2188,6 +2188,7 @@ fn every_shader_struct_is_classified() {
         ),
         // #4906 — `gcPickLocalRecord`'s return bundle, never stored or uploaded.
         ("GcLocalPick", ShaderLocal),
+        ("ShadowFilterGuide", ShaderLocal),
         ("TerrainSample", ShaderLocal),
         ("LocalMedium", ShaderLocal),
         ("DisneyDiffuseSplit", ShaderLocal),

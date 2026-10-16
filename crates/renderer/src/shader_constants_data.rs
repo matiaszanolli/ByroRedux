@@ -143,6 +143,25 @@ pub const RESTIR_ALPHA_FLOOR_MOVING: f32 = 0.1;
 // the moving floor instead of ghosting at the parked one.
 pub const RESTIR_MOVER_SETTLE_FRAMES: f32 = 32.0;
 
+// Direct-shadow spatial filter (`shadow_filter.comp`): an edge-aware 5x5
+// B3 a-trous pass over the per-pixel ReSTIR shadow ratio, the spatial half
+// the ratio EMA lacked (shadows had no spatial filter at all, so they boiled
+// in motion). Edge stops: geometric normal (power), view-ray distance against
+// the local slope (scale, in units of the expected slope step), and the ratio
+// itself (sigma, in ratio units: a 0-to-1 hard edge weighs exp(-1/sigma)).
+pub const SHADOW_FILTER_NORMAL_POWER: f32 = 32.0;
+pub const SHADOW_FILTER_DEPTH_SLOPE_SCALE: f32 = 2.0;
+pub const SHADOW_FILTER_RATIO_SIGMA: f32 = 0.25;
+// The correction fades with the centre pixel's history length: full strength
+// up to this many frames (the moving tail's cap), then 1/length, so a ratio
+// the EMA has already converged (a parked 1024-frame tail) is not blurred.
+pub const SHADOW_FILTER_CONFIDENT_HISTORY: f32 = 16.0;
+// The reservoir stores view-ray distance as a half-float (about one unit of
+// step at 1 000-2 000 units); the depth edge-stop tolerates this fraction of
+// the distance as quantization, or it reads the steps as depth edges and
+// bands flat floors.
+pub const SHADOW_FILTER_DEPTH_REL_TOL: f32 = 0.004;
+
 // `GpuCamera.dof_params.w`: the history mode `restir_history_mode` encodes
 // and `triangle.frag` decodes with two thresholds only — "camera parked" is
 // `> HISTORY_MODE_PARKED - 0.5`, "scene-static (deep history)" is
@@ -2433,6 +2452,11 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("RESTIR_ALPHA_FLOOR_PARKED", ShaderValue::Float(RESTIR_ALPHA_FLOOR_PARKED)),
     HeaderLine::Define("RESTIR_ALPHA_FLOOR_MOVING", ShaderValue::Float(RESTIR_ALPHA_FLOOR_MOVING)),
     HeaderLine::Define("RESTIR_MOVER_SETTLE_FRAMES", ShaderValue::Float(RESTIR_MOVER_SETTLE_FRAMES)),
+    HeaderLine::Define("SHADOW_FILTER_NORMAL_POWER", ShaderValue::Float(SHADOW_FILTER_NORMAL_POWER)),
+    HeaderLine::Define("SHADOW_FILTER_DEPTH_SLOPE_SCALE", ShaderValue::Float(SHADOW_FILTER_DEPTH_SLOPE_SCALE)),
+    HeaderLine::Define("SHADOW_FILTER_RATIO_SIGMA", ShaderValue::Float(SHADOW_FILTER_RATIO_SIGMA)),
+    HeaderLine::Define("SHADOW_FILTER_CONFIDENT_HISTORY", ShaderValue::Float(SHADOW_FILTER_CONFIDENT_HISTORY)),
+    HeaderLine::Define("SHADOW_FILTER_DEPTH_REL_TOL", ShaderValue::Float(SHADOW_FILTER_DEPTH_REL_TOL)),
     HeaderLine::Define("HISTORY_MODE_MOVING", ShaderValue::Float(HISTORY_MODE_MOVING)),
     HeaderLine::Define("HISTORY_MODE_PARKED", ShaderValue::Float(HISTORY_MODE_PARKED)),
     HeaderLine::Define("HISTORY_MODE_SCENE_STATIC", ShaderValue::Float(HISTORY_MODE_SCENE_STATIC)),

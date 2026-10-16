@@ -124,6 +124,10 @@ layout(set = 0, binding = 8) uniform usampler2D waterCausticTex;
 // the sky-cube bake, so the background and reflections march one field.
 layout(set = 0, binding = 9) uniform sampler3D cloudBaseNoise;
 layout(set = 0, binding = 10) uniform sampler3D cloudDetailNoise;
+// Direct-shadow spatial filter correction, U * (filteredRatio - rawRatio)
+// (`shadow_filter.comp`). Valid only when `caustic_flags.y` > 0.5; otherwise
+// the binding holds a fallback view and is never read.
+layout(set = 0, binding = 11) uniform sampler2D shadowCorrectionTex;
 
 // CAUSTIC_FIXED_SCALE from shader_constants.glsl — generated from
 // src/shader_constants_data.rs. Build-time drift catch: edit
@@ -496,6 +500,12 @@ void main() {
     outTransparency = 0.0;
     vec4 direct4 = texture(hdrTex, fragUV);
     vec3 direct = direct4.rgb;
+    // Spatially filtered direct shadows: replace the shaded U * rawRatio by
+    // U * filteredRatio. Raw-output debug views return `direct4` below and
+    // so keep the unfiltered main-pass value.
+    if (params.caustic_flags.y > 0.5) {
+        direct = max(direct + texture(shadowCorrectionTex, fragUV).rgb, vec3(0.0));
+    }
 
     // Correctness oracles are already final in the main-pass direct
     // attachment. Do not let caustics, fog, volumetrics, bloom, or dither

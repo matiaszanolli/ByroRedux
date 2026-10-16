@@ -50,6 +50,12 @@ const CLAIM_STRIDE: vk::DeviceSize = 4;
 /// descriptor offset aligned to it is valid on every device.
 const CLAIM_OFFSET_ALIGN: vk::DeviceSize = 256;
 
+/// Bytes per pixel of unshadowed direct radiance (binding 23): RGB as three
+/// half floats packed into two `uint`s, written by the claim winner beside its
+/// reservoir. The shadow filter pass multiplies it by the filtered-minus-raw
+/// shadow ratio.
+const UNSHADOWED_STRIDE: vk::DeviceSize = 8;
+
 /// The claim word a slot starts each frame with: farther than any distance,
 /// so the first claiming fragment always wins its `atomicMin`.
 const UNCLAIMED: u32 = u32::MAX;
@@ -57,7 +63,8 @@ const UNCLAIMED: u32 = u32::MAX;
 /// Screen-sized, per-frame-in-flight reservoir storage buffers.
 pub struct ReservoirBuffers {
     /// One GPU-only STORAGE buffer per frame-in-flight: the reservoirs,
-    /// then the claim words at [`Self::claim_offset`].
+    /// then the claim words at [`Self::claim_offset`], then the unshadowed
+    /// direct radiance at [`Self::unshadowed_offset`].
     buffers: Vec<GpuBuffer>,
     width: u32,
     height: u32,
@@ -123,8 +130,17 @@ impl ReservoirBuffers {
         (width as vk::DeviceSize) * (height as vk::DeviceSize) * CLAIM_STRIDE
     }
 
+    fn unshadowed_offset_for(width: u32, height: u32) -> vk::DeviceSize {
+        (Self::claim_offset_for(width, height) + Self::claim_size_for(width, height))
+            .next_multiple_of(CLAIM_OFFSET_ALIGN)
+    }
+
+    fn unshadowed_size_for(width: u32, height: u32) -> vk::DeviceSize {
+        (width as vk::DeviceSize) * (height as vk::DeviceSize) * UNSHADOWED_STRIDE
+    }
+
     fn total_size(width: u32, height: u32) -> vk::DeviceSize {
-        Self::claim_offset_for(width, height) + Self::claim_size_for(width, height)
+        Self::unshadowed_offset_for(width, height) + Self::unshadowed_size_for(width, height)
     }
 
     /// The reservoir buffer this frame writes (set-1 binding 16).
@@ -157,6 +173,17 @@ impl ReservoirBuffers {
     /// Byte size of the claim words (binding 22's descriptor range).
     pub fn claim_size(&self) -> vk::DeviceSize {
         Self::claim_size_for(self.width, self.height)
+    }
+
+    /// Byte offset of the unshadowed direct radiance inside
+    /// [`Self::curr_buffer`] (binding 23's descriptor offset).
+    pub fn unshadowed_offset(&self) -> vk::DeviceSize {
+        Self::unshadowed_offset_for(self.width, self.height)
+    }
+
+    /// Byte size of the unshadowed direct radiance (binding 23's range).
+    pub fn unshadowed_size(&self) -> vk::DeviceSize {
+        Self::unshadowed_size_for(self.width, self.height)
     }
 
     /// Start a fresh history image. Pixels with no eligible fragment this

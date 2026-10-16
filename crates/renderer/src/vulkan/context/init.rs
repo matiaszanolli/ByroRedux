@@ -1241,6 +1241,26 @@ impl VulkanContext {
         for i in 0..n_frames {
             scene_buffers.write_reservoir_buffers(&device, i, &reservoir_buffers);
         }
+        // Direct-shadow spatial filter over the reservoirs' shadow ratio;
+        // composite binds its correction image when it exists.
+        let shadow_filter = match super::super::shadow_filter::ShadowFilterPipeline::new(
+            super::super::GpuUploadCtx {
+                device: &device,
+                allocator: &gpu_allocator,
+                queue: &graphics_queue,
+                command_pool: transfer_pool,
+            },
+            pipeline_cache,
+            &reservoir_buffers,
+            render_extent.width,
+            render_extent.height,
+        ) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                log::warn!("shadow filter creation failed: {e} — direct shadows unfiltered");
+                None
+            }
+        };
 
         // Composite samples SVGF's accumulated indirect (GENERAL layout)
         // when SVGF is available, else falls back to raw G-buffer indirect
@@ -1398,6 +1418,18 @@ impl VulkanContext {
                 }
             },
         };
+        let shadow_correction_views: Vec<vk::ImageView> = match shadow_filter {
+            Some(ref f) => (0..n_frames).map(|i| f.correction_view(i)).collect(),
+            None => albedo_views.clone(),
+        };
+        let shadow_correction = super::super::composite::ShadowCorrectionViews {
+            views: &shadow_correction_views,
+            layout: if shadow_filter.is_some() {
+                vk::ImageLayout::GENERAL
+            } else {
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+            },
+        };
         let composite = match CompositePipeline::new(
             &device,
             &gpu_allocator,
@@ -1412,6 +1444,7 @@ impl VulkanContext {
             &bloom_views,
             &reactive_views,
             &transparency_views,
+            shadow_correction,
             cloud_noise.views(),
             texture_registry.descriptor_set_layout,
             frame_extents,
@@ -1731,6 +1764,7 @@ impl VulkanContext {
                 bloom,
                 water_caustic_accum,
                 svgf,
+                shadow_filter,
                 taa,
                 gbuffer,
                 presentation,
@@ -1742,6 +1776,7 @@ impl VulkanContext {
             water,
             taa_failed: false,
             svgf_failed: false,
+            shadow_filter_enabled: true,
             svgf_recovery_frames: 0,
             // Stage 1 — exposure/tonemap runtime state, seeded from the
             // application-parsed config (CLI flags) and live-mutable via the

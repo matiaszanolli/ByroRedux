@@ -1,0 +1,159 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "include/shader_constants.glsl"
+#include "include/oct_codec.glsl"
+
+// Direct-shadow spatial filter: an edge-aware 5x5 B3 a-trous chain over the
+// per-pixel ReSTIR shadow ratio (`accum`, the Heitz-2018 ratio the direct
+// term is shaded by: Lo += U * accum). The ratio EMA filters shadows
+// temporally only; with the camera moving it runs at a 16-frame / 0.1-floor
+// tail, so penumbrae boiled in motion with no spatial filter behind them.
+//
+// Only the shadow ratio is filtered — never U (the unshadowed BRDF sum), so
+// texture and highlight detail is untouched. The last iteration writes the
+// correction U * (filtered - raw), which composite adds to direct light; an
+// absent or failed pass leaves composite exactly as before.
+//
+// Guides come from the claim winner's reservoir: geometric normal (pad0),
+// view-ray distance (histLenAndDepth.y), validity (a zero history length is
+// a zero-filled slot nothing claimed this frame). Edge stops: normal power,
+// distance against the local slope, and the ratio difference.
+
+layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y, local_size_z = 1) in;
+
+// std430 mirror of `struct Reservoir` in include/bindings.glsl (32 B). Not
+// yet pinned by a GLSL-copies lockstep test: change both together.
+struct Reservoir {
+    uint  lightAndSurface;
+    float W;
+    float M;
+    float histLenAndDepth;
+    float accumR;
+    float accumG;
+    float accumB;
+    float pad0;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer ReservoirBuffer {
+    Reservoir reservoirs[];
+};
+layout(std430, set = 0, binding = 1) readonly buffer UnshadowedBuffer {
+    uvec2 unshadowed[];
+};
+layout(set = 0, binding = 2, rgba16f) uniform image2D ratioA;
+layout(set = 0, binding = 3, rgba16f) uniform image2D ratioB;
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D outDelta;
+
+layout(push_constant) uniform Push {
+    uvec2 screen;
+    uint step;
+    // bit 0: read the raw ratio from the reservoirs (first iteration);
+    // bit 1: the source image is ratioB (else ratioA);
+    // bit 2: last iteration (write the correction, not a ratio image).
+    uint flags;
+} pc;
+
+struct ShadowFilterGuide {
+    bool valid;
+    float dist;
+    float histLen;
+    vec3 normal;
+};
+
+ShadowFilterGuide guideAt(ivec2 q) {
+    Reservoir r = reservoirs[uint(q.y) * pc.screen.x + uint(q.x)];
+    vec2 histDepth = unpackHalf2x16(floatBitsToUint(r.histLenAndDepth));
+    ShadowFilterGuide g;
+    g.valid = histDepth.x != 0.0 && !isnan(histDepth.x);
+    g.dist = histDepth.y;
+    g.histLen = abs(histDepth.x);
+    g.normal = octDecode(unpackSnorm2x16(floatBitsToUint(r.pad0)));
+    return g;
+}
+
+vec3 rawRatioAt(ivec2 q) {
+    Reservoir r = reservoirs[uint(q.y) * pc.screen.x + uint(q.x)];
+    vec3 ratio = vec3(r.accumR, r.accumG, r.accumB);
+    return any(isnan(ratio)) || any(isinf(ratio)) ? vec3(0.0) : max(ratio, vec3(0.0));
+}
+
+vec3 sourceRatioAt(ivec2 q) {
+    if ((pc.flags & 1u) != 0u) {
+        return rawRatioAt(q);
+    }
+    return ((pc.flags & 2u) != 0u ? imageLoad(ratioB, q) : imageLoad(ratioA, q)).rgb;
+}
+
+bool inScreen(ivec2 q) {
+    return q.x >= 0 && q.y >= 0 && q.x < int(pc.screen.x) && q.y < int(pc.screen.y);
+}
+
+void storeResult(ivec2 p, vec3 filtered, vec3 raw, uint idx, float strength) {
+    if ((pc.flags & 4u) != 0u) {
+        uvec2 packedU = unshadowed[idx];
+        vec3 U = vec3(unpackHalf2x16(packedU.x), unpackHalf2x16(packedU.y).x);
+        imageStore(outDelta, p, vec4(U * strength * (filtered - raw), 0.0));
+    } else if ((pc.flags & 2u) != 0u) {
+        imageStore(ratioA, p, vec4(filtered, 0.0));
+    } else {
+        imageStore(ratioB, p, vec4(filtered, 0.0));
+    }
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!inScreen(p)) return;
+    uint idx = uint(p.y) * pc.screen.x + uint(p.x);
+
+    ShadowFilterGuide gp = guideAt(p);
+    if (!gp.valid) {
+        // Nothing claimed this pixel (sky, blend-only, unlit): no ratio to
+        // filter and nothing for composite to correct.
+        storeResult(p, vec3(0.0), vec3(0.0), idx, 0.0);
+        return;
+    }
+    vec3 raw = rawRatioAt(p);
+    vec3 cP = sourceRatioAt(p);
+
+    // Local distance slope per pixel, from the nearest valid same-plane
+    // neighbours: a grazing floor changes view-ray distance by many units
+    // per pixel, a facing wall by almost none.
+    float slope = 0.0;
+    for (int a = 0; a < 2; a++) {
+        ivec2 q = p + (a == 0 ? ivec2(1, 0) : ivec2(0, 1));
+        if (!inScreen(q)) q = p - (a == 0 ? ivec2(1, 0) : ivec2(0, 1));
+        if (!inScreen(q)) continue;
+        ShadowFilterGuide gq = guideAt(q);
+        if (gq.valid && dot(gq.normal, gp.normal) > 0.9) {
+            slope = max(slope, abs(gq.dist - gp.dist));
+        }
+    }
+
+    const float h[3] = float[3](0.375, 0.25, 0.0625);
+    vec3 sum = vec3(0.0);
+    float wSum = 0.0;
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            ivec2 q = p + ivec2(dx, dy) * int(pc.step);
+            if (!inScreen(q)) continue;
+            ShadowFilterGuide gq = guideAt(q);
+            if (!gq.valid) continue;
+            float wN = pow(max(dot(gp.normal, gq.normal), 0.0), SHADOW_FILTER_NORMAL_POWER);
+            float expected = slope * length(vec2(dx, dy)) * float(pc.step);
+            float wZ = exp(-abs(gq.dist - gp.dist)
+                / (SHADOW_FILTER_DEPTH_SLOPE_SCALE * expected + 0.5
+                   + SHADOW_FILTER_DEPTH_REL_TOL * gp.dist));
+            vec3 cQ = sourceRatioAt(q);
+            vec3 dC = abs(cQ - cP);
+            float wR = exp(-max(max(dC.r, dC.g), dC.b) / SHADOW_FILTER_RATIO_SIGMA);
+            float w = h[abs(dx)] * h[abs(dy)] * wN * wZ * wR;
+            sum += w * cQ;
+            wSum += w;
+        }
+    }
+    vec3 filtered = wSum > 1e-6 ? sum / wSum : cP;
+    // Confidence: a long-converged ratio needs no spatial filtering.
+    float strength = clamp(SHADOW_FILTER_CONFIDENT_HISTORY / max(gp.histLen, 1.0), 0.0, 1.0);
+    storeResult(p, filtered, raw, idx, strength);
+}

@@ -711,6 +711,28 @@ impl VulkanContext {
                     &self.reservoir_buffers,
                 );
             }
+            // The shadow filter reads the recreated reservoir buffers; a
+            // failed recreate drops the pass (composite then reads no
+            // correction) rather than failing the resize.
+            if let Some(ref mut filter) = self.post.shadow_filter {
+                if let Err(e) = filter.recreate_on_resize(
+                    super::super::GpuUploadCtx {
+                        device: &self.device,
+                        allocator,
+                        queue: &self.graphics_queue,
+                        command_pool: self.transfer_pool,
+                    },
+                    &self.reservoir_buffers,
+                    self.frame_extents.render.width,
+                    self.frame_extents.render.height,
+                ) {
+                    log::warn!("shadow filter resize failed: {e} — direct shadows unfiltered");
+                    if let Some(mut filter) = self.post.shadow_filter.take() {
+                        // SAFETY: the resize path waited both frames in flight.
+                        unsafe { filter.destroy(&self.device, allocator) };
+                    }
+                }
+            }
         }
         // Recreate caustic accumulator images + rewrite its descriptor sets
         // before composite (composite samples caustic's views).
@@ -1068,6 +1090,18 @@ impl VulkanContext {
                 }
             },
         };
+        let shadow_correction_views: Vec<vk::ImageView> = match self.post.shadow_filter {
+            Some(ref f) => (0..MAX_FRAMES_IN_FLIGHT).map(|i| f.correction_view(i)).collect(),
+            None => views.albedo_views.clone(),
+        };
+        let shadow_correction = super::super::composite::ShadowCorrectionViews {
+            views: &shadow_correction_views,
+            layout: if self.post.shadow_filter.is_some() {
+                vk::ImageLayout::GENERAL
+            } else {
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+            },
+        };
         if let Some(ref mut composite) = self.post.composite {
             composite.recreate_on_resize(
                 &self.device,
@@ -1084,6 +1118,7 @@ impl VulkanContext {
                 &bloom_views,
                 &views.reactive_views,
                 &views.transparency_views,
+                shadow_correction,
                 self.post.cloud_noise.views(),
                 self.frame_extents,
             )?;

@@ -392,6 +392,7 @@ impl VulkanContext {
                 wca.barrier_post_render_pass(&self.device, cmd, frame);
             }
 
+            let mut filter_dispatched = false;
             if !self.svgf_failed {
                 // Captured before the &mut self.post.svgf borrow: the à-trous
                 // pass reads DBG_DISABLE_ATROUS out of the same render-debug
@@ -412,12 +413,36 @@ impl VulkanContext {
                     // error. This used to be wrapped in an `if let Err(…)` arm
                     // that no producer could ever populate.
                     svgf.dispatch(&self.device, cmd, frame, svgf_dbg_flags);
+                    // The direct-shadow spatial filter rides the SVGF bracket,
+                    // so its cost reads as part of `gpu_svgf`.
+                    if let Some(filter) = self.shadow_filter_active() {
+                        filter.dispatch(&self.device, cmd, frame, &self.reservoir_buffers);
+                        filter_dispatched = true;
+                    }
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_svgf_end(&self.device, cmd, frame);
                     }
                 }
             }
+            // SVGF absent or latched off: the correction composite reads must
+            // still be this frame's.
+            if !filter_dispatched {
+                if let Some(filter) = self.shadow_filter_active() {
+                    filter.dispatch(&self.device, cmd, frame, &self.reservoir_buffers);
+                }
+            }
         }
+    }
+
+    /// The shadow filter when it exists and `r.shadowfilter` has not turned
+    /// it off; composite's `caustic_flags.y` reads the same predicate.
+    pub(super) fn shadow_filter_active(
+        &self,
+    ) -> Option<&super::super::shadow_filter::ShadowFilterPipeline> {
+        self.post
+            .shadow_filter
+            .as_ref()
+            .filter(|_| self.shadow_filter_enabled)
     }
 
     /// Caustic scatter (#321): per-refractive-pixel refracted-light splat

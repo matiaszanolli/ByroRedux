@@ -89,6 +89,10 @@ pub(crate) struct RenderDebugControl {
     pub(crate) active_flags: u32,
     /// `r.dbg` request applied at the next frame boundary.
     pub(crate) pending_flags: Option<RenderDebugFlagsOp>,
+    /// `r.shadowfilter` request applied at the next frame boundary.
+    pub(crate) pending_shadow_filter: Option<bool>,
+    /// (exists, enabled) of the direct-shadow filter at the last boundary.
+    pub(crate) shadow_filter_state: (bool, bool),
     pub(crate) pending_probe_pixel: Option<[u32; 2]>,
     pub(crate) pending_probe_generation: Option<u32>,
     pub(crate) last_probe: Option<byroredux_renderer::SelectedRayProbeResult>,

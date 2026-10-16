@@ -1426,15 +1426,20 @@ fn apply_pending_debug_requests(
     // frame boundary, then harvest any fence-lagged result from the
     // prior frame slot. Console execution never reaches into the
     // Vulkan context directly.
-    let (pending_debug_mode, pending_debug_flags, pending_probe_pixel) = world
-        .try_resource_mut::<crate::components::RenderDebugControl>()
-        .map_or((None, None, None), |mut control| {
-            (
-                control.pending_mode.take(),
-                control.pending_flags.take(),
-                control.pending_probe_pixel.take(),
-            )
-        });
+    let (pending_debug_mode, pending_debug_flags, pending_shadow_filter, pending_probe_pixel) =
+        world
+            .try_resource_mut::<crate::components::RenderDebugControl>()
+            .map_or((None, None, None, None), |mut control| {
+                (
+                    control.pending_mode.take(),
+                    control.pending_flags.take(),
+                    control.pending_shadow_filter.take(),
+                    control.pending_probe_pixel.take(),
+                )
+            });
+    if let Some(enabled) = pending_shadow_filter {
+        ctx.set_shadow_filter_enabled(enabled);
+    }
     if let Some(mode) = pending_debug_mode {
         ctx.set_render_debug_mode(mode);
     }
@@ -1451,6 +1456,7 @@ fn apply_pending_debug_requests(
     if let Some(mut control) = world.try_resource_mut::<crate::components::RenderDebugControl>() {
         control.active_mode = ctx.render_debug_mode();
         control.active_flags = ctx.render_debug_flags();
+        control.shadow_filter_state = ctx.shadow_filter_state();
         if let Some(result) = probe_request_result {
             match result {
                 Ok((_pixel, generation)) => {

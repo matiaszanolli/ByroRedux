@@ -467,6 +467,10 @@ struct PostChain {
     /// without caustic contribution, same as pre-#1255 behaviour).
     water_caustic_accum: Option<super::water_caustic::WaterCausticAccum>,
     svgf: Option<SvgfPipeline>,
+    /// Direct-shadow spatial filter: its correction image is composite's
+    /// binding 11. `None` when creation failed; composite then reads no
+    /// correction (`CompositeParams.caustic_flags.y` stays 0).
+    shadow_filter: Option<super::shadow_filter::ShadowFilterPipeline>,
     /// TAA resolve pass — reprojects + clamps history to produce the final
     /// HDR image that composite samples. None when allocation fails; the
     /// fallback path feeds raw HDR directly into composite.
@@ -1081,6 +1085,10 @@ pub struct VulkanContext {
     /// to raw-indirect is more invasive and deferred until a real
     /// lost-device repro). See #479 SIBLING.
     pub svgf_failed: bool,
+    /// `r.shadowfilter on|off` — runtime A/B switch for the direct-shadow
+    /// spatial filter (on by default). Off skips its dispatch and zeroes
+    /// composite's `caustic_flags.y`, so the image is exactly unfiltered.
+    pub(super) shadow_filter_enabled: bool,
     /// Frames remaining in the SVGF temporal-α recovery window. When
     /// non-zero, the SVGF temporal pass uses an elevated α (0.5) for
     /// both color and moments so the noisy current frame gets more

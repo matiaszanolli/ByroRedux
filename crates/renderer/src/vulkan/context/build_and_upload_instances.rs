@@ -1104,6 +1104,7 @@ impl VulkanContext {
             sky_aperture_volumes: fog_volumes,
             underwater,
             water_caustic_active: self.post.water_caustic_accum.is_some(),
+            shadow_filter_active: self.shadow_filter_active().is_some(),
         };
         let composite_params = build_composite_params(composite_inputs);
         if let Some(ref mut composite) = self.post.composite {

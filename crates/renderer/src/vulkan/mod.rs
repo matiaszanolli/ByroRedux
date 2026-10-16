@@ -56,6 +56,7 @@ pub mod presentation;
 pub mod reflect;
 pub mod render_debug;
 pub mod restir;
+pub mod shadow_filter;
 pub mod scene_buffer;
 pub mod skin_compute;
 pub mod ssao;

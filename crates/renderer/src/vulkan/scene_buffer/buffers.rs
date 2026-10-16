@@ -439,6 +439,14 @@ pub(crate) fn build_scene_descriptor_bindings() -> Vec<vk::DescriptorSetLayoutBi
         vk::DescriptorType::STORAGE_BUFFER,
         vk::ShaderStageFlags::FRAGMENT,
     ));
+    // Binding 23: the claim winner's unshadowed direct radiance (fragment,
+    // write-only) — the U the shadow filter pass multiplies by its
+    // filtered-minus-raw shadow ratio. Another tail of binding 16's buffer.
+    bindings.push(layout_binding(
+        23,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     bindings
 }
 

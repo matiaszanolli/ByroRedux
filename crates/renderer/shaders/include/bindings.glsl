@@ -630,6 +630,15 @@ layout(std430, set = 1, binding = 17) readonly buffer ReservoirPrevBuffer {
 layout(std430, set = 1, binding = 22) buffer ReservoirClaimBuffer {
     uint reservoirClaim[];
 };
+// The claim winner's unshadowed direct radiance U (restirUnshadowedSum), the
+// factor its shadow ratio multiplies, packed as
+// uvec2(packHalf2x16(U.rg), packHalf2x16(vec2(U.b, 0.0))). The
+// shadow filter pass reads it beside the reservoir to correct direct light by
+// U * (filteredRatio - rawRatio). Written only with the reservoir, so a slot
+// whose reservoir is zero-filled carries a stale U the pass never reads.
+layout(std430, set = 1, binding = 23) writeonly buffer DirectUnshadowedBuffer {
+    uvec2 directUnshadowed[];
+};
 
 // One bounded selected-light visibility-ray record per frame-in-flight.
 // control.y is atomically claimed by the first eligible invocation at the

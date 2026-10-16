@@ -805,6 +805,9 @@ pub(super) struct CompositeParamsInputs<'a> {
     /// Whether `water_caustic_accum` is genuinely live this session — see
     /// `CompositeParams::caustic_flags` (#2508).
     pub(super) water_caustic_active: bool,
+    /// The direct-shadow spatial filter ran this frame, so composite's
+    /// binding 11 holds this frame's correction (`caustic_flags.y`).
+    pub(super) shadow_filter_active: bool,
 }
 
 /// Assemble this frame's `CompositeParams` (#2255 / TD1-NEW-02, extracted
@@ -837,6 +840,7 @@ pub(super) fn build_composite_params(
         sky_aperture_volumes,
         underwater,
         water_caustic_active,
+        shadow_filter_active,
     } = inputs;
     let is_exterior = sky_params.is_exterior;
     let interior_show_sky = !is_exterior && sky_params.interior_show_sky;
@@ -971,7 +975,12 @@ pub(super) fn build_composite_params(
         ],
         inv_view_proj: inv_vp_arr,
         underwater,
-        caustic_flags: [if water_caustic_active { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+        caustic_flags: [
+            if water_caustic_active { 1.0 } else { 0.0 },
+            if shadow_filter_active { 1.0 } else { 0.0 },
+            0.0,
+            0.0,
+        ],
         // SKYAL — the directional light surfaces receive; lights the clouds.
         sun_illuminance: dome.sun_illuminance,
         sky_aperture_count: [aperture_count as u32, 0, 0, 0],
@@ -1250,6 +1259,7 @@ mod composite_params_tests {
             sky_aperture_volumes: &aperture_volumes,
             underwater: [0.0; 4],
             water_caustic_active: false,
+            shadow_filter_active: false,
         };
         let composite = build_composite_params(inputs);
         let cube = build_sky_cube_params(inputs, &composite);
@@ -1400,6 +1410,7 @@ mod composite_params_tests {
             sky_aperture_volumes: &[],
             underwater: [0.0; 4],
             water_caustic_active: false,
+            shadow_filter_active: false,
         };
         let room_composite = build_composite_params(base);
         let cube = build_sky_cube_params(base, &room_composite);
@@ -1462,6 +1473,7 @@ mod composite_params_tests {
             sky_aperture_volumes: &[],
             underwater: [0.1, 0.2, 0.3, 0.4],
             water_caustic_active: true,
+            shadow_filter_active: false,
         });
 
         // `fog_params` carries near/far/clip/power in that exact order —
@@ -1534,6 +1546,7 @@ mod composite_params_tests {
             sky_aperture_volumes: &[],
             underwater: [0.0; 4],
             water_caustic_active: false,
+            shadow_filter_active: false,
         });
         assert_eq!(params.caustic_flags[0], 0.0);
     }

@@ -39,6 +39,16 @@ use crate::vulkan::descriptors::layout_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
+/// Composite binding 11's source: the direct-shadow spatial filter's
+/// per-frame correction views in `GENERAL`, or — with the filter absent —
+/// any always-valid per-frame view with its layout (composite then never
+/// reads it: `caustic_flags.y` is 0).
+#[derive(Clone, Copy)]
+pub struct ShadowCorrectionViews<'a> {
+    pub views: &'a [vk::ImageView],
+    pub layout: vk::ImageLayout,
+}
+
 const COMPOSITE_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
 const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.spv");
 
@@ -232,7 +242,10 @@ pub struct CompositeParams {
     /// pressure). In the fallback case binding 8 aliases binding 5
     /// (`causticTex`), so summing both would double-count the glass
     /// contribution instead of contributing zero; `composite.frag` gates
-    /// the sum on this flag. `yzw` reserved. #2508.
+    /// the sum on this flag. #2508. `y` = the direct-shadow spatial filter
+    /// ran this frame, so binding 11 (`shadowCorrectionTex`) holds this
+    /// frame's `U * (filtered - raw)`; `0.0` = binding 11 is a fallback view
+    /// composite must not read. `zw` reserved.
     pub caustic_flags: [f32; 4],
     /// SKYAL — xyz = the directional light surfaces receive
     /// (`SkyParams::sun_illuminance`), w unused. Lights the volumetric cloud
@@ -341,6 +354,7 @@ impl CompositePipeline {
         bloom_views: &[vk::ImageView],
         reactive_views: &[vk::ImageView],
         transparency_views: &[vk::ImageView],
+        shadow_correction: ShadowCorrectionViews<'_>,
         cloud_noise: CloudNoiseViews,
         bindless_layout: vk::DescriptorSetLayout,
         extents: FrameExtentSet,
@@ -359,6 +373,7 @@ impl CompositePipeline {
             bloom_views,
             reactive_views,
             transparency_views,
+            shadow_correction,
             cloud_noise,
             bindless_layout,
             extents,
@@ -384,6 +399,7 @@ impl CompositePipeline {
         bloom_views: &[vk::ImageView],
         reactive_views: &[vk::ImageView],
         transparency_views: &[vk::ImageView],
+        shadow_correction: ShadowCorrectionViews<'_>,
         cloud_noise: CloudNoiseViews,
         bindless_layout: vk::DescriptorSetLayout,
         extents: FrameExtentSet,
@@ -749,6 +765,13 @@ impl CompositePipeline {
                 vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 vk::ShaderStageFlags::FRAGMENT,
             ),
+            // 11: direct-shadow spatial filter correction, U * (filtered -
+            // raw), read only when `caustic_flags.y` says it ran this frame.
+            layout_binding(
+                11,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
         ];
         validate_set_layout(
             0,
@@ -886,6 +909,10 @@ impl CompositePipeline {
                 .sampler(cloud_noise.sampler)
                 .image_view(cloud_noise.detail)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let shadow_correction_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.nearest_sampler)
+                .image_view(shadow_correction.views[i])
+                .image_layout(shadow_correction.layout)];
             let set = partial.descriptor_sets[i];
             let writes = [
                 write_combined_image_sampler(set, 0, &hdr_info),
@@ -899,6 +926,7 @@ impl CompositePipeline {
                 write_combined_image_sampler(set, 8, &water_caustic_info), // #1257
                 write_combined_image_sampler(set, 9, &cloud_base_info),
                 write_combined_image_sampler(set, 10, &cloud_detail_info),
+                write_combined_image_sampler(set, 11, &shadow_correction_info),
             ];
             // SAFETY: descriptor sets owned by `partial`; writes reference
             // HDR / depth / indirect / albedo / caustic / volumetric /
@@ -1134,6 +1162,7 @@ impl CompositePipeline {
         bloom_views: &[vk::ImageView],
         reactive_views: &[vk::ImageView],
         transparency_views: &[vk::ImageView],
+        shadow_correction: ShadowCorrectionViews<'_>,
         cloud_noise: CloudNoiseViews,
         extents: FrameExtentSet,
     ) -> Result<()> {
@@ -1245,8 +1274,9 @@ impl CompositePipeline {
                     .sampler(self.hdr_sampler)
                     .image_view(bloom_views[i])
                     .image_layout(vk::ImageLayout::GENERAL)];
-                // Typed [_; 11] array (was [_; 8] pre-#1257, [_; 9] pre-SKYAL
-                // clouds) — compile catches divergence from the 11-binding layout. Init
+                // Typed [_; 12] array (was [_; 8] pre-#1257, [_; 9] pre-SKYAL
+                // clouds, [_; 11] pre-shadow-filter) — compile catches
+                // divergence from the 12-binding layout. Init
                 // path at the post-`new()` writer above mirrors this
                 // exact shape.
                 let cloud_base_info = [vk::DescriptorImageInfo::default()
@@ -1257,8 +1287,12 @@ impl CompositePipeline {
                     .sampler(cloud_noise.sampler)
                     .image_view(cloud_noise.detail)
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let shadow_correction_info = [vk::DescriptorImageInfo::default()
+                    .sampler(self.nearest_sampler)
+                    .image_view(shadow_correction.views[i])
+                    .image_layout(shadow_correction.layout)];
                 let set = self.descriptor_sets[i];
-                let writes: [vk::WriteDescriptorSet; 11] = [
+                let writes: [vk::WriteDescriptorSet; 12] = [
                     write_combined_image_sampler(set, 0, &hdr_info),
                     write_combined_image_sampler(set, 1, &indirect_info),
                     write_combined_image_sampler(set, 2, &albedo_info),
@@ -1270,6 +1304,7 @@ impl CompositePipeline {
                     write_combined_image_sampler(set, 8, &water_caustic_info),
                     write_combined_image_sampler(set, 9, &cloud_base_info),
                     write_combined_image_sampler(set, 10, &cloud_detail_info),
+                    write_combined_image_sampler(set, 11, &shadow_correction_info),
                 ];
                 // SAFETY: descriptor sets owned by `self`; writes
                 // reference freshly-recreated HDR views (owned by `self`)

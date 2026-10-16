@@ -1204,6 +1204,51 @@ impl ConsoleCommand for RenderDebugFlagsCommand {
     }
 }
 
+/// `r.shadowfilter [on|off]` — read or switch the direct-shadow spatial
+/// filter (`shadow_filter.comp`), for same-window A/B.
+pub(crate) struct ShadowFilterCommand;
+impl ConsoleCommand for ShadowFilterCommand {
+    fn name(&self) -> &str {
+        "r.shadowfilter"
+    }
+
+    fn description(&self) -> &str {
+        "Direct-shadow spatial filter: r.shadowfilter [on|off]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(mut control) = world.try_resource_mut::<crate::components::RenderDebugControl>()
+        else {
+            return CommandOutput::line("RenderDebugControl resource not present");
+        };
+        let (exists, enabled) = control.shadow_filter_state;
+        let request = match args.trim() {
+            "" => {
+                return CommandOutput::line(format!(
+                    "shadow filter: {}",
+                    if !exists {
+                        "unavailable (creation failed)"
+                    } else if enabled {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                ));
+            }
+            "on" => true,
+            "off" => false,
+            other => {
+                return CommandOutput::line(format!("r.shadowfilter: expected on|off, got {other:?}"));
+            }
+        };
+        control.pending_shadow_filter = Some(request);
+        CommandOutput::line(format!(
+            "queued shadow filter {} (applies next frame)",
+            if request { "on" } else { "off" }
+        ))
+    }
+}
+
 /// `world.owners` — cross-subsystem ownership accounting for the EX-08
 /// exterior soak (#2374).
 ///

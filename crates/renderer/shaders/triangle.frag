@@ -4144,6 +4144,12 @@ void main() {
                 uint priorClaim = atomicMin(reservoirClaim[pixelIdx], claimKey);
                 if (claimKey <= priorClaim) {
                     reservoirsCurr[pixelIdx] = rc;
+                    // The factor `accum` multiplies above, for the shadow
+                    // filter pass's U * (filteredRatio - rawRatio).
+                    vec3 unshadowedU = min(restirUnshadowedSum, vec3(65504.0));
+                    directUnshadowed[pixelIdx] = uvec2(
+                        packHalf2x16(unshadowedU.rg),
+                        packHalf2x16(vec2(unshadowedU.b, 0.0)));
                 }
             }
         }

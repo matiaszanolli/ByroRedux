@@ -167,7 +167,8 @@ impl super::buffers::SceneBuffers {
     /// binding 17 = the previous frame's slot read as temporal history
     /// (`prev`). Ping-pong is owned by `ReservoirBuffers`, which
     /// resolves the curr/prev buffers per frame. Binding 22 is the per-pixel
-    /// ownership claim (#5765), the claim words in the tail of `curr`.
+    /// ownership claim (#5765), the claim words in the tail of `curr`;
+    /// binding 23 the claim winner's unshadowed direct radiance, after them.
     /// Called at init and re-called after a swapchain resize recreates the
     /// buffers. Mirrors `write_cluster_buffers`. See `vulkan::restir`.
     pub fn write_reservoir_buffers(
@@ -192,11 +193,17 @@ impl super::buffers::SceneBuffers {
             offset: reservoirs.claim_offset(),
             range: reservoirs.claim_size(),
         }];
+        let unshadowed_info = [vk::DescriptorBufferInfo {
+            buffer: curr_buffer,
+            offset: reservoirs.unshadowed_offset(),
+            range: reservoirs.unshadowed_size(),
+        }];
         let set = self.descriptor_sets[frame_index];
         let writes = [
             write_storage_buffer(set, 16, &curr_info),
             write_storage_buffer(set, 17, &prev_info),
             write_storage_buffer(set, 22, &claim_info),
+            write_storage_buffer(set, 23, &unshadowed_info),
         ];
         unsafe {
             // SAFETY: `device` is live; `set` is device-allocated and live; the
