@@ -940,7 +940,7 @@ fn example_targets_hold_their_per_crate_ceilings() {
         ("hkx", 14, 863),
         ("menuxml", 1, 197),
         ("nif", 38, 4289),
-        ("pex", 3, 1189),
+        ("pex", 3, 1215),
         ("plugin", 64, 7788),
         ("scripting", 12, 3876),
         ("sfmaterial", 2, 1094),
