@@ -53,6 +53,13 @@ pub struct HkxAnimation {
     /// one: Fallout 4 authors its locomotion clips in place and keeps the travel here,
     /// where Skyrim keeps it in the root bone's own track.
     pub reference_frame: Option<ReferenceFrame>,
+    /// Why a reference frame the clip carries was not read (`reference_frame` is `None` for it),
+    /// so the clip plays in place instead of travelling: a truncated or unbound sample table,
+    /// too many samples, a bad duration, a non-finite sample, or samples further apart than an
+    /// `f32` can interpolate. `None` when the clip has a frame that was read, and when it has
+    /// none at all. Like `dropped_bones`, a consumer reports it with the clip path, which this
+    /// decoder never sees.
+    pub reference_frame_dropped: Option<&'static str>,
 }
 
 /// The motion an animation extracts from its pose: the root's path through the world over
@@ -621,6 +628,10 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         }
     }
 
+    let (reference_frame, reference_frame_dropped) = match read_reference_frame(&pack) {
+        Ok(frame) => (frame, None),
+        Err(reason) => (None, Some(reason)),
+    };
     Ok(HkxAnimation {
         duration,
         num_frames,
@@ -629,42 +640,68 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         track_to_bone: kept_bones,
         annotations,
         dropped_bones,
-        reference_frame: read_reference_frame(&pack),
+        reference_frame,
+        reference_frame_dropped,
     })
 }
 
 /// `hkaDefaultAnimatedReferenceFrame`: Havok 2014 (Fallout 4) layout - the duration and the
 /// `hkArray<hkVector4>` of samples follow the up and forward vectors. A Havok 2010 packfile
 /// carries no such object in the vanilla clips, so none is read there.
-fn read_reference_frame(pack: &Packfile<'_>) -> Option<ReferenceFrame> {
+///
+/// `Ok(None)` is a clip with no extracted motion (no such object, or one with no samples);
+/// `Err` is a frame the clip carries and this cannot use, which the clip reports instead of
+/// quietly playing in place.
+fn read_reference_frame(pack: &Packfile<'_>) -> std::result::Result<Option<ReferenceFrame>, &'static str> {
     const MAX_SAMPLES: usize = 65_536;
     const DURATION: usize = 0x40;
     const SAMPLES: usize = 0x48;
     if pack.version() != 11 {
-        return None;
+        return Ok(None);
     }
-    let frame = pack.object("hkaDefaultAnimatedReferenceFrame").ok()?;
-    let duration = pack.f32(frame + DURATION, "reference frame duration").ok()?;
-    let count = pack.u32(frame + SAMPLES + 8, "reference frame samples").ok()? as usize;
-    if count == 0 || count > MAX_SAMPLES || !duration.is_finite() || duration <= 0.0 {
-        return None;
+    let Ok(frame) = pack.object("hkaDefaultAnimatedReferenceFrame") else {
+        return Ok(None);
+    };
+    let duration = pack
+        .f32(frame + DURATION, "reference frame duration")
+        .map_err(|_| "its duration lies outside the file")?;
+    let count = pack
+        .u32(frame + SAMPLES + 8, "reference frame samples")
+        .map_err(|_| "its sample count lies outside the file")? as usize;
+    if count == 0 {
+        return Ok(None);
     }
-    let data = pack.local_target(frame + SAMPLES)?;
+    if count > MAX_SAMPLES {
+        return Err("it holds more samples than the decoder keeps");
+    }
+    let data = pack.local_target(frame + SAMPLES).ok_or("its sample array is unbound")?;
     let mut samples = Vec::with_capacity(count);
     for index in 0..count {
         let at = data + index * 16;
-        let sample = [
-            pack.f32(at, "reference frame x").ok()?,
-            pack.f32(at + 4, "reference frame y").ok()?,
-            pack.f32(at + 8, "reference frame z").ok()?,
-            pack.f32(at + 12, "reference frame yaw").ok()?,
-        ];
-        if !sample.iter().all(|value| value.is_finite()) {
-            return None;
-        }
-        samples.push(sample);
+        let read = |offset: usize| pack.f32(at + offset, "reference frame sample").map_err(|_| "its sample array runs past the file");
+        samples.push([read(0)?, read(4)?, read(8)?, read(12)?]);
     }
-    Some(ReferenceFrame { duration, samples })
+    check_reference_samples(duration, &samples)?;
+    Ok(Some(ReferenceFrame { duration, samples }))
+}
+
+/// Whether `samples` over `duration` seconds can be sampled at all: the duration positive and
+/// finite, every value finite, and no two neighbours so far apart that their difference
+/// overflows `f32` - a lerp across such a pair is `inf * 0 = NaN` at the sample itself, the
+/// non-finite scalar #5662/#5691 keep out of the pose.
+fn check_reference_samples(duration: f32, samples: &[[f32; 4]]) -> std::result::Result<(), &'static str> {
+    if !duration.is_finite() || duration <= 0.0 {
+        return Err("its duration is not a positive finite number");
+    }
+    if samples.iter().flatten().any(|value| !value.is_finite()) {
+        return Err("it holds a non-finite sample");
+    }
+    // Position only: the yaw is never interpolated.
+    let overflows = samples.windows(2).any(|pair| (0..3).any(|axis| !(pair[1][axis] - pair[0][axis]).is_finite()));
+    if overflows {
+        return Err("two neighbouring samples are further apart than an f32 can interpolate");
+    }
+    Ok(())
 }
 
 fn read_annotations(
@@ -2368,4 +2405,37 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn reference_samples_need_a_positive_finite_duration_and_finite_values() {
+        let line = [[0.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0, 0.5]];
+        assert_eq!(check_reference_samples(1.5, &line), Ok(()));
+        for duration in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(check_reference_samples(duration, &line).is_err(), "duration {duration}");
+        }
+        let mut bad = line;
+        bad[1][2] = f32::NAN;
+        assert_eq!(check_reference_samples(1.0, &bad), Err("it holds a non-finite sample"));
+    }
+
+    /// Two finite samples of opposite sign near f32::MAX have an infinite difference, and a
+    /// lerp across them is `inf * 0 = NaN` exactly on the sample - the root bone's key.
+    #[test]
+    fn neighbouring_samples_whose_difference_overflows_are_refused() {
+        let jump = [[3.0e38, 0.0, 0.0, 0.0], [-3.0e38, 0.0, 0.0, 0.0]];
+        assert_eq!(
+            check_reference_samples(1.0, &jump),
+            Err("two neighbouring samples are further apart than an f32 can interpolate"),
+        );
+        // The same jump on any positional axis, but not on the yaw, which is never interpolated.
+        let up = [[0.0, 0.0, 3.0e38, 0.0], [0.0, 0.0, -3.0e38, 0.0]];
+        assert!(check_reference_samples(1.0, &up).is_err());
+        let turn = [[0.0, 0.0, 0.0, 3.0e38], [0.0, 0.0, 0.0, -3.0e38]];
+        assert_eq!(check_reference_samples(1.0, &turn), Ok(()));
+        // Large but representable steps are fine, and one sample has no neighbour.
+        let far = [[1.0e38, 0.0, 0.0, 0.0], [-1.0e38, 0.0, 0.0, 0.0]];
+        assert_eq!(check_reference_samples(1.0, &far), Ok(()));
+        assert_eq!(check_reference_samples(1.0, &far[..1]), Ok(()));
+    }
 }
+

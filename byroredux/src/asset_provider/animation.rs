@@ -452,6 +452,14 @@ pub(super) fn convert_hkx_clip(
             animation.dropped_bones,
         );
     }
+    // #5894 — a reference frame the clip carries but the decoder could not use: without this
+    // the clip plays in place exactly like one that never had a frame, and nothing names it.
+    if let Some(reason) = animation.reference_frame_dropped {
+        log::warn!(
+            "HKX '{path}' (event '{idle_event}'): reference-frame root motion not read, {reason} \
+             - the clip plays in place",
+        );
+    }
     let mut channels =
         FxHashMap::with_capacity_and_hasher(animation.tracks.len(), Default::default());
     for (track_index, samples) in animation.tracks.iter().enumerate() {
@@ -683,6 +691,7 @@ mod tests {
             track_to_bone: vec![0, 1],
             annotations: Vec::<HkxAnnotation>::new(),
             dropped_bones: Vec::new(),
+            reference_frame_dropped: None,
             reference_frame: Some(ReferenceFrame {
                 duration: 1.0,
                 samples: vec![[0.0, 0.0, 0.0, 0.0], [0.0, 50.0, 0.0, 0.0], [0.0, 100.0, 0.0, 0.0]],
@@ -729,6 +738,7 @@ mod tests {
             track_to_bone: vec![0, 5],
             annotations: Vec::<HkxAnnotation>::new(),
             dropped_bones: Vec::new(),
+            reference_frame_dropped: None,
             reference_frame: None,
         };
 
@@ -742,6 +752,38 @@ mod tests {
              out-of-range track (bone 5) must be dropped, not panic and \
              not silently produce a channel for a bone that doesn't exist",
         );
+    }
+
+    /// #5894 — a reference frame the decoder refused is reported (a `log::warn!`, not a return
+    /// value, so only the behaviour is pinned here): the clip converts as one without a frame,
+    /// with no accumulation root, rather than failing or inventing motion.
+    #[test]
+    fn a_refused_reference_frame_converts_as_a_clip_that_plays_in_place() {
+        use byroredux_hkx::{HkxBone, HkxTransform};
+
+        let skeleton = HkxSkeleton {
+            name: "TestSkeleton".to_string(),
+            bones: vec![HkxBone {
+                name: "NPC Root [Root]".to_string(),
+                parent_index: -1,
+                reference_pose: HkxTransform::IDENTITY,
+            }],
+        };
+        let animation = HkxAnimation {
+            duration: 1.0,
+            num_frames: 1,
+            frame_duration: 1.0,
+            tracks: vec![vec![HkxTransform::IDENTITY]],
+            track_to_bone: vec![0],
+            annotations: Vec::new(),
+            dropped_bones: Vec::new(),
+            reference_frame: None,
+            reference_frame_dropped: Some("it holds a non-finite sample"),
+        };
+        let mut pool = StringPool::new();
+        let clip = convert_hkx_clip("test.hkx", "IdleTest", &skeleton, &animation, &mut pool, false, None);
+        assert_eq!(clip.channels.len(), 1);
+        assert!(clip.accum_root_name.is_none());
     }
 
     /// NIFAL canonical-boundary completeness harness for the **HKX half**
@@ -794,6 +836,7 @@ mod tests {
                 text: "sound: footstep".to_string(),
             }],
             dropped_bones: Vec::new(),
+            reference_frame_dropped: None,
             reference_frame: None,
         };
 
@@ -897,6 +940,7 @@ mod tests {
             track_to_bone: vec![0],
             annotations: Vec::<HkxAnnotation>::new(),
             dropped_bones: Vec::new(),
+            reference_frame_dropped: None,
             reference_frame: None,
         };
 
@@ -971,6 +1015,7 @@ mod tests {
             track_to_bone: vec![0],
             annotations: Vec::new(),
             dropped_bones: Vec::new(),
+            reference_frame_dropped: None,
             reference_frame: None,
         };
         let mut pool = StringPool::new();
