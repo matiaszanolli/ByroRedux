@@ -9,7 +9,8 @@ graph transforms.
 > the Z-up→Y-up helpers were consolidated into a single source of truth
 > (`#1044` / TD3-002/003/004 — see [Consolidation](#consolidation-1044--td3-00x)
 > below), the REFR Euler→quaternion convention was corrected from an
-> XYZ-product to a ZYX-product (`#`, 2026-05-26), and several file paths
+> XYZ-product to a ZYX-product (2026-05-26; reverted 2026-10-16 — see
+> [Euler angles](#impact-on-euler-angles-refr-data)), and several file paths
 > moved when `import.rs` / `cell_loader.rs` were split into submodule
 > directories (Sessions 34/35). All paths, formulas, and constants in this
 > doc are verified against the current tree.
@@ -126,14 +127,14 @@ directly on NIF matrices without transposing — see the doc comment on
 
 For **Euler angles** stored in ESM/ESP REFR DATA subrecords, the
 convention matters because the same float value represents opposite
-rotations in CW vs CCW conventions. Bethesda applies the CW rotations as a
-**ZYX matrix product** — X applied first in object-local axes, Z applied
-last when reading the product left-to-right (matching the Creation Kit /
-xEdit documented "rotate around X first, then Y, then Z" convention):
+rotations in CW vs CCW conventions. Bethesda applies the CW rotations as
+Gamebryo's `FromEulerAnglesXYZ` — an **XYZ matrix product** under column
+vectors (`v' = M · v`): Z applied first to the vertex, then Y, then X, about
+world axes (equivalently X, then Y, then Z in object-local axes):
 
 ```
-Bethesda CW (Z-up):  R = Rz_cw(rz) · Ry_cw(ry) · Rx_cw(rx)
-Standard CCW:        R = Rz_std(-rz) · Ry_std(-ry) · Rx_std(-rx)
+Bethesda CW (Z-up):  R = Rx_cw(rx) · Ry_cw(ry) · Rz_cw(rz)
+Standard CCW:        R = Rx_std(-rx) · Ry_std(-ry) · Rz_std(-rz)
 ```
 
 Each CW rotation by `t` equals a glam CCW rotation by `-t`. The Z-up→Y-up
@@ -146,32 +147,44 @@ C · Rz(-rz) · C^T = Ry(-rz)     Z maps to Y
 ```
 
 Composing under the axis swap (composition order preserved) gives the
-shipping formula in
+shipping formula (`--rotation-mode 0`) in
 [`crates/core/src/math/coord.rs`](../../crates/core/src/math/coord.rs):
 
 ```rust
-pub fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
-    Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx)
-}
+Quat::from_rotation_x(-rx) * Quat::from_rotation_z(ry) * Quat::from_rotation_y(-rz)
 ```
 
-**Canonical reference**: OpenMW's static-REFR placement in
-`apps/openmw/mwrender/objectpaging.cpp:853-855` (the shared ESM3+ESM4 path
-covering Oblivion / FO3 / FNV / Skyrim REFRs):
-`Quat(rot.z,(0,0,-1)) * Quat(rot.y,(0,-1,0)) * Quat(rot.x,(-1,0,0))`. Each
-negated axis encodes the CW-positive convention; the Z-Y-X order matches
-Bethesda CK / xEdit.
+**References** — four independent sources, none of which depends on a
+row-vs-column storage reading:
 
-> **History (2026-05-26).** The pre-`#386aabb4` ship used the *XYZ-product*
-> variant (`Rx · Ry · Rz` in Z-up). It was empirically picked from a
-> single-cell sign-off on `GSDocMitchellHouse` (2026-05-07), whose REFRs are
-> dominated by Z-only rotations — and XYZ-product / ZYX-product produce
-> **identical** results when only `rz` is non-zero. The two diverge for
-> multi-axis REFRs (slope-tilted exterior walls, sloped architecture),
-> producing displaced or 90°-rotated walls. The ZYX-product / OpenMW formula
-> fixes that, and a pair of multi-axis regression pins in
-> `crates/core/src/math/coord.rs` (`euler_multi_axis_matches_openmw_objectpaging`,
-> `euler_zyx_order_pinned_by_rx_then_rz`) lock it in.
+- **Gamebryo 3.2 `efd.lib`** (Debug, `Matrix3_Win32.obj`): `FromEulerAnglesXYZ`
+  builds the three axis matrices, calls `operator*(Y, Z)`, then
+  `operator*(X, tmp)` — `RX · (RY · RZ)`. `efd/Matrix3.h` pins column vectors
+  and CW: "a 90-degree rotation of [0,1,0] about [0,0,1] gives [1,0,0]".
+- **CK wiki** `SetAngle - ObjectReference`: "The Z-axis rotation is applied
+  first, followed by the Y-axis and finally the X-axis … extrinsic
+  left-handed".
+- **OpenMW** `components/misc/convert.hpp::makeOsgQuat`:
+  `Quat(z,-Z) * Quat(y,-Y) * Quat(x,-X)`. `osg::Quat::operator*` multiplies in
+  *reverse* Hamilton order (`a*b` = "a, then b"; OpenMW's actor look direction
+  `Quat(pitch,-X) * Quat(yaw,-Z)` in `mwworld/worldimp.cpp` is only correct
+  under that reading), so the expression applies Z, then Y, then X.
+- **`GSProspectorSaloonInterior` A/B render**: the multi-axis
+  `NVGSRmWindowSeparate` / `NVCraftsmanRmWindowSeparate` wall REFRs close the
+  room under mode 0 and leave dark slabs / sky gaps under mode 1.
+
+The multi-axis pins `euler_matches_gamebryo_from_euler_angles_xyz` and
+`zyx_product_disagrees_with_gamebryo_on_multi_axis` check the helper against
+an independent re-implementation of the `efd::Matrix3` header matrices, not
+against a formula derived from the helper's own assumption.
+
+> **History.** Mode 0 shipped on 2026-05-07 (signed off on the Z-only
+> `GSDocMitchellHouse`). On 2026-05-26 (`20074410`) it was flipped to the ZYX
+> product (mode 1) by reading OpenMW's `osg::Quat` expression as a Hamilton
+> product; that misplaced every multi-axis REFR (~30% of FNV interior REFRs —
+> `cell_rot_sweep` on the Strip casinos and the Prospector Saloon). Restored
+> 2026-10-16. Modes 0 and 1 agree whenever only `rz` is non-zero, so Z-only
+> cells can never arbitrate the dispute.
 
 #### `--rotation-mode` diagnostic switch
 
@@ -179,18 +192,18 @@ REFR placement does **not** call the canonical helper directly; it goes
 through a runtime A/B dispatcher in
 [`byroredux/src/cell_loader/euler.rs`](../../byroredux/src/cell_loader/euler.rs)
 (`euler_zup_to_quat_yup_refr`) so an operator can re-triage candidate
-conventions without rewiring the engine. `--rotation-mode N` (default `1`,
+conventions without rewiring the engine. `--rotation-mode N` (default `0`,
 parsed by `rotation_mode_arg` in `byroredux/src/boot/cli.rs`); any value
 outside `0..=3` is passed through unclamped to `euler_zup_to_quat_yup_mode`'s
-own `_ =>` arm, which falls back to the safe shipping formula (mode 1) rather
+own `_ =>` arm, which falls back to the safe shipping formula (mode 0) rather
 than silently producing garbage placement. Until `#4126` the CLI pre-clamped
 with `.min(3)`, turning an out-of-range value into diagnostic mode 3; the
 pass-through is pinned by `an_out_of_range_mode_reaches_the_library_fallback`:
 
 | Mode | Convention | Z-up product | Status |
 |------|------------|--------------|--------|
-| 0 | CW  | `Rx · Ry · Rz` | pre-2026-05-26 ship; kept for A/B only |
-| **1** | **CW**  | **`Rz · Ry · Rx`** | **current ship — matches OpenMW; also the out-of-range fallback** |
+| **0** | **CW**  | **`Rx · Ry · Rz`** | **current ship — Gamebryo `FromEulerAnglesXYZ`; also the out-of-range fallback** |
+| 1 | CW  | `Rz · Ry · Rx` | 2026-05-26 → 2026-10-16 ship; kept for A/B only |
 | 2 | CCW | `Rz · Ry · Rx` | diagnostic |
 | 3 | CCW | `Rx · Ry · Rz` | diagnostic |
 
@@ -392,7 +405,7 @@ Vulkan's texture coordinate convention. No conversion needed.
 | NIF rotation matrix | NIF world, Z-up   | `C·M·C^T` → quat     | Y-up world      |
 | NIF quaternion key  | NIF, Z-up (w,x,y,z)| `(x, z, -y, w)` + normalise | Y-up (x,y,z,w) |
 | REFR position       | ESM world, Z-up   | `(x, z, -y)`         | Y-up world      |
-| REFR Euler angles   | ESM world, Z-up CW| Negate + conjugate (ZYX) | Y-up quat (CCW) |
+| REFR Euler angles   | ESM world, Z-up CW| Negate + conjugate (XYZ) | Y-up quat (CCW) |
 | Cell grid (gx, gy)  | ESM grid          | `(gx·4096, 0, -gy·4096)` | Y-up world  |
 | UV coordinates      | NIF, top-left     | None                 | Vulkan, top-left|
 | Triangle indices    | NIF, CW front     | None                 | CW → CCW via Y-flip |

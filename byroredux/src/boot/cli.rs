@@ -448,7 +448,7 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
 ///
 /// Returned **unclamped** (#4126): an out-of-range value must reach
 /// `euler_zup_to_quat_yup_mode`'s own `_ =>` arm, which falls back to the
-/// shipping formula (mode 1). A `.min(3)` here used to turn e.g. `4` into
+/// shipping formula (mode 0). A `.min(3)` here used to turn e.g. `4` into
 /// mode 3 — one of the explicitly-wrong CCW diagnostic conventions.
 pub(super) fn rotation_mode_arg(args: &[String]) -> Option<u8> {
     crate::cli_args::parse_string_arg(args, "--rotation-mode")?

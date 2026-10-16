@@ -133,15 +133,16 @@ pub fn zup_to_yup_quat_wxyz(wxyz: [f32; 4]) -> [f32; 4] {
     normalize_quat(q)
 }
 
-/// Convert Bethesda Z-up Euler angles (CW convention, ZYX-product
-/// — X applied first to the vertex, Z applied last) to a glam Y-up
-/// rotation quaternion.
+/// Convert Bethesda Z-up Euler angles (CW convention, XYZ-product
+/// — Z applied first to the vertex, X applied last, about world axes)
+/// to a glam Y-up rotation quaternion.
 ///
-/// Bethesda uses Gamebryo's clockwise-positive rotation convention
-/// applied as a ZYX matrix product (X applied first in object-local
-/// axes — equivalently, Z applied last when reading the matrix
-/// product left-to-right):
-///   `R_zup = Rz_cw(rz) · Ry_cw(ry) · Rx_cw(rx)`
+/// Bethesda uses Gamebryo's `FromEulerAnglesXYZ`: clockwise-positive
+/// axis matrices composed as an XYZ product under column vectors
+/// (`v' = M · v`):
+///   `R_zup = Rx_cw(rx) · Ry_cw(ry) · Rz_cw(rz)`
+/// i.e. extrinsic Z, then Y, then X — equivalently intrinsic
+/// (object-local) X, then Y, then Z.
 ///
 /// Each CW rotation by angle `t` equals a CCW rotation by `-t` under
 /// glam's standard convention. The coord change `C: (x,y,z)_zup →
@@ -151,37 +152,44 @@ pub fn zup_to_yup_quat_wxyz(wxyz: [f32; 4]) -> [f32; 4] {
 ///   `C · Rz(-rz) · Cᵀ = Ry(-rz)`     (z → y)
 ///
 /// Composing under the axis swap (composition order preserved):
-///   `R_yup = Ry(-rz) · Rz(ry) · Rx(-rx)`
+///   `R_yup = Rx(-rx) · Rz(ry) · Ry(-rz)`
 ///
-/// **Canonical reference**: OpenMW's static-REFR placement in
-/// `apps/openmw/mwrender/objectpaging.cpp:853-855` (the ESM3+ESM4
-/// shared path covering Oblivion / FO3 / FNV / Skyrim REFRs):
-/// ```text
-/// Quat(rot.z, (0,0,-1)) * Quat(rot.y, (0,-1,0)) * Quat(rot.x, (-1,0,0))
-/// ```
-/// Each negated axis = CW-positive convention (negate the angle).
-/// The Z-Y-X composition matches Bethesda CK / xEdit's documented
-/// "rotate around X first, then Y, then Z in object-local axes".
+/// **References** (four independent, storage-convention-free):
+/// - Gamebryo 3.2 `efd.lib` (Debug, `Matrix3_Win32.obj`):
+///   `FromEulerAnglesXYZ` builds X/Y/Z via `MakeXRotation` etc., then
+///   calls `operator*(Y, Z)` followed by `operator*(X, tmp)` —
+///   `RX · (RY · RZ)`. `efd/Matrix3.h` pins column vectors + CW: "a
+///   90-degree rotation of [0,1,0] about [0,0,1] gives [1,0,0]".
+/// - CK wiki `SetAngle - ObjectReference`: "The Z-axis rotation is
+///   applied first, followed by the Y-axis and finally the X-axis …
+///   extrinsic left-handed".
+/// - OpenMW `components/misc/convert.hpp::makeOsgQuat`:
+///   `Quat(z,-Z) * Quat(y,-Y) * Quat(x,-X)`. `osg::Quat::operator*`
+///   multiplies in reverse Hamilton order (`a*b` = "a, then b" —
+///   compare OpenMW's actor look direction `Quat(pitch,-X) *
+///   Quat(yaw,-Z)` in `mwworld/worldimp.cpp`, correct only under that
+///   reading), so the expression is Z first, then Y, then X.
+/// - `GSProspectorSaloonInterior` A/B render: the multi-axis
+///   `NVGSRmWindowSeparate` / `NVCraftsmanRmWindowSeparate` walls
+///   close the room under this formula and leave dark slabs / sky
+///   gaps under the ZYX product.
 ///
-/// **History**: pre-2026-05-26 ship was the XYZ-product variant
-/// (`Rx · Rz · Ry` in Y-up). That was empirically picked from a
-/// single-cell sign-off on `GSDocMitchellHouse` (2026-05-07), whose
-/// REFRs are dominated by Z-only rotations — and XYZ-product /
-/// ZYX-product produce **identical** results when only `rz` is
-/// non-zero. The two formulas diverge for multi-axis REFRs (slope-
-/// tilted exterior walls / sloped architecture), producing displaced
-/// / 90°-rotated walls. The ZYX-product / OpenMW formula fixes that.
-/// `--rotation-mode 0` in `byroredux::cell_loader::euler` preserves
-/// the pre-fix formula for A/B triage.
+/// **History**: shipped as XYZ on 2026-05-07, flipped to the ZYX
+/// product (`--rotation-mode 1`) on 2026-05-26 (`20074410`) by reading
+/// the OpenMW expression as a Hamilton product — which broke ~30% of
+/// FNV interior REFRs (every multi-axis one). Restored here. Modes 0
+/// and 1 agree whenever only `rz` is non-zero, which is why Z-only
+/// cells could never arbitrate the dispute.
 #[inline]
 pub fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
     euler_zup_to_quat_yup_mode(REFR_ROTATION_MODE_SHIP, rx, ry, rz)
 }
 
-/// The shipping REFR rotation mode — CW angle convention, ZYX product.
-/// [`euler_zup_to_quat_yup`] is exactly this mode; the other three are
-/// diagnostic-only. See [`euler_zup_to_quat_yup_mode`].
-pub const REFR_ROTATION_MODE_SHIP: u8 = 1;
+/// The shipping REFR rotation mode — CW angle convention, XYZ product
+/// (Gamebryo `FromEulerAnglesXYZ`). [`euler_zup_to_quat_yup`] is exactly
+/// this mode; the other three are diagnostic-only. See
+/// [`euler_zup_to_quat_yup_mode`].
+pub const REFR_ROTATION_MODE_SHIP: u8 = 0;
 
 /// The four candidate Euler→Y-up conversions the REFR-placement A/B
 /// triage sweeps over. **Single source of truth** for the formulas —
@@ -192,25 +200,27 @@ pub const REFR_ROTATION_MODE_SHIP: u8 = 1;
 /// conclusions about a convention the engine no longer used).
 ///
 ///   0: CW + XYZ-product  — `Rx(-rx) · Rz(ry) · Ry(-rz)`
-///      (pre-2026-05-26 ship; kept for A/B triage only)
+///      (current ship; Gamebryo `FromEulerAnglesXYZ` — see
+///      [`euler_zup_to_quat_yup`])
 ///   1: CW + ZYX-product  — `Ry(-rz) · Rz(ry) · Rx(-rx)`
-///      (current ship; matches OpenMW — see [`euler_zup_to_quat_yup`])
+///      (2026-05-26 → 2026-10-16 ship, from a Hamilton misreading of
+///      OpenMW's `osg::Quat` product; kept for A/B triage only)
 ///   2: CCW + ZYX-product — `Ry(rz) · Rz(-ry) · Rx(rx)` (no negation)
 ///   3: CCW + XYZ-product — `Rx(rx) · Rz(-ry) · Ry(rz)` (no negation)
 ///
-/// Modes 0 and 1 agree whenever only `rz` is non-zero — which is why the
-/// single-cell `GSDocMitchellHouse` sign-off (2026-05-07) could not tell
-/// them apart. Any mode outside `0..=3` falls back to the shipping
+/// Modes 0 and 1 agree whenever only `rz` is non-zero — which is why
+/// Z-only cells (the 2026-05-07 `GSDocMitchellHouse` sign-off) cannot
+/// tell them apart. Any mode outside `0..=3` falls back to the shipping
 /// default so a bad `--rotation-mode` argument can't produce garbage
 /// placement.
 #[inline]
 pub fn euler_zup_to_quat_yup_mode(mode: u8, rx: f32, ry: f32, rz: f32) -> Quat {
     match mode {
-        0 => Quat::from_rotation_x(-rx) * Quat::from_rotation_z(ry) * Quat::from_rotation_y(-rz),
+        1 => Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx),
         2 => Quat::from_rotation_y(rz) * Quat::from_rotation_z(-ry) * Quat::from_rotation_x(rx),
         3 => Quat::from_rotation_x(rx) * Quat::from_rotation_z(-ry) * Quat::from_rotation_y(rz),
-        // Mode 1 and any out-of-range value: the shipping formula.
-        _ => Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx),
+        // Mode 0 and any out-of-range value: the shipping formula.
+        _ => Quat::from_rotation_x(-rx) * Quat::from_rotation_z(ry) * Quat::from_rotation_y(-rz),
     }
 }
 
@@ -323,81 +333,77 @@ mod tests {
         assert!((q.w - 1.0).abs() < 1e-6);
     }
 
-    /// Regression pin for the ZYX-product / OpenMW-derived convention.
-    ///
-    /// Multi-axis input (`rx=ry=π/2, rz=0`) is mode-discriminating:
-    /// XYZ-product and ZYX-product produce IDENTICAL results when at
-    /// most one of `rx/ry/rz` is non-zero (the trap that let the
-    /// 2026-05-07 `GSDocMitchellHouse` sign-off pick the wrong default).
-    /// The test below would have caught that.
-    ///
-    /// Ground truth derived geometrically:
-    ///   Input vector (Z-up): `v_zup = (0, 1, 0)` — a unit "north" arrow.
-    ///   In Y-up coords via `(x, z, -y)`: `v_yup = (0, 0, -1)`.
-    ///   Apply OpenMW formula in Z-up:
-    ///     Rx_cw(π/2) = Rx(-π/2): Y → -Z. `(0,1,0) → (0,0,-1)`.
-    ///     Ry_cw(π/2) = Ry(-π/2): Z → -X. `(0,0,-1) → (1,0,0)`.
-    ///     Rz_cw(0)   = identity.        `(1,0,0)` stays.
-    ///   Output (Z-up): `(1, 0, 0)`.
-    ///   In Y-up coords: `(1, 0, 0)`.
-    /// So our Y-up quat applied to `(0, 0, -1)` must yield `(1, 0, 0)`.
-    #[test]
-    fn euler_multi_axis_matches_openmw_objectpaging() {
-        use std::f32::consts::FRAC_PI_2;
-        let q = euler_zup_to_quat_yup(FRAC_PI_2, FRAC_PI_2, 0.0);
-        let v_in_yup = Vec3::new(0.0, 0.0, -1.0);
-        let v_out = q * v_in_yup;
-        assert!(
-            (v_out.x - 1.0).abs() < 1e-5,
-            "x mismatch: got {}, expected 1.0",
-            v_out.x
-        );
-        assert!(
-            v_out.y.abs() < 1e-5,
-            "y mismatch: got {}, expected 0.0",
-            v_out.y
-        );
-        assert!(
-            v_out.z.abs() < 1e-5,
-            "z mismatch: got {}, expected 0.0",
-            v_out.z
-        );
+    /// Applies the Gamebryo `efd::Matrix3` CW axis matrices (copied from
+    /// the `efd/Matrix3.h` header comment, column vectors `M · v`) to a
+    /// Z-up vector as `RX · (RY · (RZ · v))` — `FromEulerAnglesXYZ`'s
+    /// product as disassembled from `efd.lib`. Independent of glam and of
+    /// the dispatcher, so it can arbitrate the composition order.
+    fn gamebryo_from_euler_xyz_apply(rx: f32, ry: f32, rz: f32, v: [f32; 3]) -> [f32; 3] {
+        let mul = |m: [[f32; 3]; 3], v: [f32; 3]| {
+            [
+                m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+                m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+                m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+            ]
+        };
+        let (sx, cx) = rx.sin_cos();
+        let (sy, cy) = ry.sin_cos();
+        let (sz, cz) = rz.sin_cos();
+        let m_x = [[1.0, 0.0, 0.0], [0.0, cx, sx], [0.0, -sx, cx]];
+        let m_y = [[cy, 0.0, -sy], [0.0, 1.0, 0.0], [sy, 0.0, cy]];
+        let m_z = [[cz, sz, 0.0], [-sz, cz, 0.0], [0.0, 0.0, 1.0]];
+        mul(m_x, mul(m_y, mul(m_z, v)))
     }
 
-    /// Second pin — a different multi-axis input to lock the ZYX
-    /// composition order, not just the per-axis sign. Uses `rx=π/2`
-    /// and `rz=π/2` (with `ry=0`); same ground-truth derivation,
-    /// different geometric result.
-    ///
-    /// Ground truth (Z-up):
-    ///   v = (0, 1, 0).
-    ///   Rx_cw(π/2) = Rx(-π/2): (0,1,0) → (0,0,-1).
-    ///   Ry_cw(0)   = identity.
-    ///   Rz_cw(π/2) = Rz(-π/2): X → -Y, Y → X. `(0,0,-1)` stays (Z preserved).
-    ///   Output: (0, 0, -1).
-    /// In Y-up via `(x, z, -y)`: `(0, -1, 0)`.
-    /// So Y-up quat applied to `(0, 0, -1)` must yield `(0, -1, 0)`.
+    /// The header's own worked example pins the CW sign: "a 90-degree
+    /// rotation of [0,1,0] about [0,0,1] gives the vector [1,0,0]".
     #[test]
-    fn euler_zyx_order_pinned_by_rx_then_rz() {
+    fn gamebryo_reference_matrices_match_header_example() {
+        let out = gamebryo_from_euler_xyz_apply(0.0, 0.0, std::f32::consts::FRAC_PI_2, [0.0, 1.0, 0.0]);
+        assert!((out[0] - 1.0).abs() < 1e-6 && out[1].abs() < 1e-6 && out[2].abs() < 1e-6, "{out:?}");
+    }
+
+    /// Regression pin for the Gamebryo XYZ-product convention against
+    /// the independent reference above, over multi-axis triples where
+    /// the XYZ and ZYX products diverge (they agree whenever only one
+    /// angle is non-zero — the trap behind both the 2026-05-07 and the
+    /// 2026-05-26 flips). Includes the `GSProspectorSaloonInterior`
+    /// window-wall REFR `00108729` at (-90°, -90°, 270°).
+    #[test]
+    fn euler_matches_gamebryo_from_euler_angles_xyz() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        let triples = [
+            (FRAC_PI_2, FRAC_PI_2, 0.0),
+            (FRAC_PI_2, 0.0, FRAC_PI_2),
+            (-FRAC_PI_2, -FRAC_PI_2, 1.5 * PI),
+            (0.3, -1.2, 2.4),
+            (-0.7, 0.9, -0.15),
+        ];
+        let probes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.3, -0.5, 0.8]];
+        for (rx, ry, rz) in triples {
+            let q = euler_zup_to_quat_yup(rx, ry, rz);
+            for v in probes {
+                let want = zup_to_yup_pos(gamebryo_from_euler_xyz_apply(rx, ry, rz, v));
+                let got = q * Vec3::from(zup_to_yup_pos(v));
+                assert!(
+                    (got - Vec3::from(want)).length() < 1e-5,
+                    "({rx}, {ry}, {rz}) applied to {v:?}: got {got:?}, Gamebryo gives {want:?}"
+                );
+            }
+        }
+    }
+
+    /// The ZYX product (`--rotation-mode 1`, the 2026-05-26 ship) must
+    /// disagree with Gamebryo on a multi-axis triple — otherwise the pin
+    /// above couldn't tell the two apart.
+    #[test]
+    fn zyx_product_disagrees_with_gamebryo_on_multi_axis() {
         use std::f32::consts::FRAC_PI_2;
-        let q = euler_zup_to_quat_yup(FRAC_PI_2, 0.0, FRAC_PI_2);
-        let v_in_yup = Vec3::new(0.0, 0.0, -1.0);
-        let v_out = q * v_in_yup;
-        assert!(
-            v_out.x.abs() < 1e-5,
-            "x mismatch: got {}, expected 0.0",
-            v_out.x
-        );
-        assert!(
-            (v_out.y - (-1.0)).abs() < 1e-5,
-            "y mismatch: got {}, expected -1.0",
-            v_out.y
-        );
-        assert!(
-            v_out.z.abs() < 1e-5,
-            "z mismatch: got {}, expected 0.0",
-            v_out.z
-        );
+        let q = euler_zup_to_quat_yup_mode(1, FRAC_PI_2, 0.0, FRAC_PI_2);
+        let v = [0.0, 1.0, 0.0];
+        let want = Vec3::from(zup_to_yup_pos(gamebryo_from_euler_xyz_apply(FRAC_PI_2, 0.0, FRAC_PI_2, v)));
+        let got = q * Vec3::from(zup_to_yup_pos(v));
+        assert!((got - want).length() > 0.5, "mode 1 unexpectedly matched Gamebryo: {got:?}");
     }
 
     /// TD3-202 / #1112 — `EXTERIOR_CELL_UNITS` is a Bethesda spec
@@ -432,10 +438,12 @@ mod tests {
     }
 
     /// #2438 / COORD-5 — the shipping helper must stay byte-identical to
-    /// mode 1 of the dispatcher, so `--rotation-mode 1` and every
-    /// non-REFR caller agree by construction rather than by convention.
+    /// the dispatcher's shipping mode, so the default `--rotation-mode`
+    /// and every non-REFR caller agree by construction rather than by
+    /// convention.
     #[test]
-    fn ship_helper_equals_mode_one() {
+    fn ship_helper_equals_ship_mode() {
+        assert_eq!(REFR_ROTATION_MODE_SHIP, 0);
         for (rx, ry, rz) in [
             (0.0_f32, 0.0, 0.0),
             (0.3, -1.2, 2.4),
@@ -443,11 +451,11 @@ mod tests {
             (1.5707964, 0.5, -2.0),
         ] {
             let ship = euler_zup_to_quat_yup(rx, ry, rz);
-            let mode1 = euler_zup_to_quat_yup_mode(REFR_ROTATION_MODE_SHIP, rx, ry, rz);
+            let ship_mode = euler_zup_to_quat_yup_mode(REFR_ROTATION_MODE_SHIP, rx, ry, rz);
             assert_eq!(
                 ship.to_array(),
-                mode1.to_array(),
-                "ship helper diverged from mode 1 at ({rx}, {ry}, {rz})"
+                ship_mode.to_array(),
+                "ship helper diverged from the ship mode at ({rx}, {ry}, {rz})"
             );
         }
     }
