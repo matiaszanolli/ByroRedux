@@ -60,6 +60,12 @@ pub struct HkxAnimation {
     /// none at all. Like `dropped_bones`, a consumer reports it with the clip path, which this
     /// decoder never sees.
     pub reference_frame_dropped: Option<&'static str>,
+    /// The animation binding marks the clip additive (`hkaAnimationBinding::m_blendHint` is
+    /// `ADDITIVE` or `ADDITIVE_DEPRECATED`): its tracks are deltas to lay over another pose,
+    /// not a pose, and played as one they are wrong. Read for Havok 2014 packfiles, whose
+    /// binding layout was measured; a Havok 2010 packfile reports `false` (that layout's
+    /// `blendHint` offset is unmeasured here).
+    pub additive: bool,
 }
 
 /// The motion an animation extracts from its pose: the root's path through the world over
@@ -227,6 +233,8 @@ struct Layout {
     float_block_offsets: ArrayField,
     spline_data: ArrayField,
     binding_track_to_bone: ArrayField,
+    /// `hkaAnimationBinding::m_blendHint`, a Havok 2014 offset (see [`Layout::new`]).
+    binding_blend_hint: usize,
     track_name: usize,
     track_annotations: ArrayField,
     track_stride: usize,
@@ -272,6 +280,9 @@ impl Layout {
         binding.pointer(); // m_originalSkeletonName
         binding.pointer(); // m_animation
         let binding_track_to_bone = binding.array();
+        binding.array(); // m_floatTrackToFloatSlotIndices
+        binding.array(); // m_partitionIndices (Havok 2013+; a Havok 2010 binding has none)
+        let binding_blend_hint = binding.byte();
 
         let mut track = Fields::plain(pointer);
         let track_name = track.pointer();
@@ -301,6 +312,7 @@ impl Layout {
             float_block_offsets,
             spline_data,
             binding_track_to_bone,
+            binding_blend_hint,
             track_name,
             track_annotations,
             track_stride: track.size(),
@@ -403,6 +415,10 @@ fn decode_skeleton_at(pack: &Packfile<'_>, layout: &Layout, object: usize) -> Re
 /// the engine's animation sampler then interpolates between those keys.
 pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
     let pack = Packfile::parse(bytes)?;
+    decode_spline_in(&pack)
+}
+
+fn decode_spline_in(pack: &Packfile<'_>) -> Result<HkxAnimation> {
     let layout = Layout::new(pack.pointer_size());
     let object = pack.object("hkaSplineCompressedAnimation")?;
     let animation_type = pack.u32(object + layout.animation_type, "animation type")?;
@@ -582,32 +598,7 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         }
     }
 
-    let binding = pack.object("hkaAnimationBinding")?;
-    let binding_count = pack.u32(
-        binding + layout.binding_track_to_bone.count,
-        "transform binding count",
-    )? as usize;
-    let track_to_bone = if binding_count == 0 {
-        (0..transform_count)
-            .map(|index| {
-                u16::try_from(index).map_err(|_| HkxError::InvalidData("bone index overflow"))
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        if binding_count != transform_count {
-            return Err(HkxError::InvalidData(
-                "transform binding count disagrees with tracks",
-            ));
-        }
-        let offset = pack
-            .local_target(binding + layout.binding_track_to_bone.pointer)
-            .ok_or(HkxError::InvalidData("transform binding array is unbound"))?;
-        let raw = pack.data_slice(offset, binding_count * 2, "transform bindings")?;
-        raw.as_chunks::<2>().0
-            .iter()
-            .map(|bytes| Ok(u16::from_le_bytes(*bytes)))
-            .collect::<Result<Vec<_>>>()?
-    };
+    let track_to_bone = read_track_to_bone(pack, &layout, transform_count)?;
     let annotations = read_annotations(&pack, &layout, object, duration)?;
 
     // #5662 — drop the flagged tracks (samples were never taken for them)
@@ -642,6 +633,298 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         dropped_bones,
         reference_frame,
         reference_frame_dropped,
+        additive: read_additive(pack, &layout),
+    })
+}
+
+/// Transform track index → skeleton bone index, from the clip's `hkaAnimationBinding`. An empty
+/// binding is the Havok identity mapping.
+fn read_track_to_bone(pack: &Packfile<'_>, layout: &Layout, transform_count: usize) -> Result<Vec<u16>> {
+    let binding = pack.object("hkaAnimationBinding")?;
+    let binding_count = pack.u32(binding + layout.binding_track_to_bone.count, "transform binding count")? as usize;
+    if binding_count == 0 {
+        return (0..transform_count)
+            .map(|index| u16::try_from(index).map_err(|_| HkxError::InvalidData("bone index overflow")))
+            .collect();
+    }
+    if binding_count != transform_count {
+        return Err(HkxError::InvalidData("transform binding count disagrees with tracks"));
+    }
+    let offset = pack
+        .local_target(binding + layout.binding_track_to_bone.pointer)
+        .ok_or(HkxError::InvalidData("transform binding array is unbound"))?;
+    let raw = pack.data_slice(offset, binding_count * 2, "transform bindings")?;
+    Ok(raw.as_chunks::<2>().0.iter().map(|bytes| u16::from_le_bytes(*bytes)).collect())
+}
+
+/// Whether the clip's binding says it is additive. `hkaAnimationBinding::BlendHint` is `NORMAL` 0,
+/// `ADDITIVE_DEPRECATED` 1, `ADDITIVE` 2; measured on Fallout 4's Havok 2014 packfiles, where every
+/// clip that stores static values is `NORMAL` and the delta-only ones are additive. A Havok 2010
+/// binding has no partition array, so its `blendHint` sits elsewhere: not read, so `false`.
+fn read_additive(pack: &Packfile<'_>, layout: &Layout) -> bool {
+    if pack.version() != 11 {
+        return false;
+    }
+    let Ok(binding) = pack.object("hkaAnimationBinding") else { return false };
+    pack.u8(binding + layout.binding_blend_hint, "blend hint").is_ok_and(|hint| matches!(hint, 1 | 2))
+}
+
+/// Decode an animation clip of either kind Fallout 4 ships: an `hkaSplineCompressedAnimation` or an
+/// `hkaLosslessCompressedAnimation` (see [`decode_lossless_in`]). A Havok 2010 packfile is always
+/// the spline kind.
+pub fn decode_animation(bytes: &[u8]) -> Result<HkxAnimation> {
+    let pack = Packfile::parse(bytes)?;
+    if pack.version() == 11 && pack.object("hkaLosslessCompressedAnimation").is_ok() {
+        decode_lossless_in(&pack)
+    } else {
+        decode_spline_in(&pack)
+    }
+}
+
+/// How a lossless clip stores one channel of one track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Channel {
+    /// Not stored: the channel is at its neutral value (zero translation, identity rotation).
+    Absent,
+    /// The `n`th entry of the clip's static array: one value for the whole clip.
+    Static(usize),
+    /// The `n`th series of the clip's dynamic array: one value per frame.
+    Dynamic(usize),
+}
+
+impl Channel {
+    /// A descriptor is `(index << 2) | code`: code 0 with no index is [`Absent`](Self::Absent), 1 is
+    /// static and 2 is dynamic. 3, or code 0 with an index, is not a layout this reads.
+    fn from_descriptor(descriptor: u16) -> Result<Self> {
+        let index = usize::from(descriptor >> 2);
+        match (descriptor & 3, index) {
+            (0, 0) => Ok(Self::Absent),
+            (1, _) => Ok(Self::Static(index)),
+            (2, _) => Ok(Self::Dynamic(index)),
+            _ => Err(HkxError::InvalidData("unknown lossless channel descriptor")),
+        }
+    }
+}
+
+/// Field offsets of `hkaLosslessCompressedAnimation`, the clip class Fallout 4 uses for its
+/// first-person additive poses and a few third-person ones. It is not in the Havok SDK, so this
+/// is the layout measured on the 856 clips of `Fallout4 - Animations.ba2` (every count and
+/// index below ties out on all of them; every quaternion in them is unit length).
+///
+/// Per track there are three descriptors - a translation `(x, y, z, 0)` of four `u16`s, a rotation
+/// `u16` and a `u8` that is 0 throughout - that say, per channel, whether it is absent, static or
+/// dynamic. Static values are one float / one quaternion each. Dynamic ones are stored
+/// **frame-major**: the `k` series of a clip are interleaved, so series `s` at frame `f` is entry
+/// `f * k + s` (measured by the step between neighbouring frames: 0.012 rad that way against 0.67
+/// rad channel-major). The three arrays and the byte beyond those are a scale channel set the
+/// vanilla clips never fill; one that is not empty is refused, not skipped.
+struct LosslessLayout {
+    translations: ArrayField,
+    static_translations: ArrayField,
+    translation_channels: ArrayField,
+    rotations: ArrayField,
+    static_rotations: ArrayField,
+    rotation_channels: ArrayField,
+    /// Never filled in the vanilla corpus: refused when they are.
+    spare: [ArrayField; 3],
+    track_flags: ArrayField,
+    num_frames: usize,
+}
+
+impl LosslessLayout {
+    fn new(pointer: usize) -> Self {
+        let mut clip = Fields::referenced_object(pointer);
+        clip.int(); // m_type
+        clip.int(); // m_duration
+        clip.int(); // m_numberOfTransformTracks
+        clip.int(); // m_numberOfFloatTracks
+        clip.pointer(); // m_extractedMotion
+        clip.array(); // m_annotationTracks
+        clip.end_base_class(); // hkaAnimation -> hkaLosslessCompressedAnimation
+        let translations = clip.array();
+        let static_translations = clip.array();
+        let translation_channels = clip.array();
+        let rotations = clip.array();
+        let static_rotations = clip.array();
+        let rotation_channels = clip.array();
+        let spare_a = clip.array();
+        let spare_b = clip.array();
+        let track_flags = clip.array();
+        let spare_c = clip.array();
+        let num_frames = clip.int();
+        Self {
+            translations,
+            static_translations,
+            translation_channels,
+            rotations,
+            static_rotations,
+            rotation_channels,
+            spare: [spare_a, spare_b, spare_c],
+            track_flags,
+            num_frames,
+        }
+    }
+}
+
+/// The data of an `hkArray` of `element` bytes each at `field` of the object at `object`: its
+/// offset and count, checked to lie inside the file. An empty array is `(0, 0)`.
+fn array_data(pack: &Packfile<'_>, object: usize, field: ArrayField, element: usize, label: &'static str) -> Result<(usize, usize)> {
+    let count = pack.u32(object + field.count, label)? as usize;
+    if count == 0 {
+        return Ok((0, 0));
+    }
+    let offset = pack.local_target(object + field.pointer).ok_or(HkxError::InvalidData("lossless array is unbound"))?;
+    let bytes = count.checked_mul(element).ok_or(HkxError::InvalidData("lossless array size overflows"))?;
+    pack.data_slice(offset, bytes, label)?;
+    Ok((offset, count))
+}
+
+/// An `f32` array's value at `index`, already bounds-checked by [`array_data`].
+fn float_at(pack: &Packfile<'_>, array: (usize, usize), index: usize, label: &'static str) -> Result<f32> {
+    debug_assert!(index < array.1);
+    pack.f32(array.0 + index * 4, label)
+}
+
+/// An `hkaLosslessCompressedAnimation` (see [`LosslessLayout`]).
+fn decode_lossless_in(pack: &Packfile<'_>) -> Result<HkxAnimation> {
+    if pack.version() != 11 || pack.pointer_size() != 8 {
+        return Err(HkxError::UnsupportedLayout("lossless clips are read from 64-bit Havok 2014 packfiles only"));
+    }
+    let base = Layout::new(8);
+    let layout = LosslessLayout::new(8);
+    let object = pack.object("hkaLosslessCompressedAnimation")?;
+    let duration = pack.f32(object + base.animation_duration, "animation duration")?;
+    let transform_count = pack.u32(object + base.transform_tracks, "transform-track count")? as usize;
+    let float_count = pack.u32(object + base.float_tracks, "float-track count")?;
+    let frame_count = pack.u32(object + layout.num_frames, "animation frame count")? as usize;
+    let sample_count = transform_count
+        .checked_mul(frame_count)
+        .ok_or(HkxError::InvalidData("animation sample count overflows usize"))?;
+    if !duration.is_finite()
+        || duration < 0.0
+        || float_count != 0
+        || transform_count == 0
+        || transform_count > MAX_TRANSFORM_TRACKS
+        || frame_count == 0
+        || sample_count > MAX_TRANSFORM_SAMPLES
+    {
+        return Err(HkxError::InvalidData("unsupported lossless clip dimensions"));
+    }
+
+    // The descriptors: one per track, exactly. Anything this layout does not account for is
+    // refused rather than dropped, so a clip it misreads never plays wrong silently.
+    let (descriptor_t, count_t) = array_data(pack, object, layout.translation_channels, 8, "translation descriptors")?;
+    let (descriptor_r, count_r) = array_data(pack, object, layout.rotation_channels, 2, "rotation descriptors")?;
+    if count_t != transform_count || count_r != transform_count {
+        return Err(HkxError::InvalidData("lossless descriptor count disagrees with tracks"));
+    }
+    let (flags, count_flags) = array_data(pack, object, layout.track_flags, 1, "track flags")?;
+    if count_flags != 0 && (count_flags != transform_count || pack.data_slice(flags, count_flags, "track flags")?.iter().any(|flag| *flag != 0)) {
+        return Err(HkxError::UnsupportedLayout("lossless clip with per-track flags"));
+    }
+    for spare in layout.spare {
+        if pack.u32(object + spare.count, "lossless array")? != 0 {
+            return Err(HkxError::UnsupportedLayout("lossless clip with a channel set this decoder does not read"));
+        }
+    }
+
+    let translations = array_data(pack, object, layout.translations, 4, "dynamic translations")?;
+    let static_translations = array_data(pack, object, layout.static_translations, 4, "static translations")?;
+    let rotations = array_data(pack, object, layout.rotations, 16, "dynamic rotations")?;
+    let static_rotations = array_data(pack, object, layout.static_rotations, 16, "static rotations")?;
+    // Dynamic series are `frame_count` long: the array is a whole number of frames.
+    if translations.1 % frame_count != 0 || rotations.1 % frame_count != 0 {
+        return Err(HkxError::InvalidData("lossless series do not divide into frames"));
+    }
+    let (series_t, series_r) = (translations.1 / frame_count, rotations.1 / frame_count);
+
+    let mut channels_t = Vec::with_capacity(transform_count);
+    let mut channels_r = Vec::with_capacity(transform_count);
+    for track in 0..transform_count {
+        let mut axes = [Channel::Absent; 3];
+        for (axis, slot) in axes.iter_mut().enumerate() {
+            *slot = Channel::from_descriptor(pack.u16(descriptor_t + track * 8 + axis * 2, "translation descriptor")?)?;
+        }
+        // The fourth `u16` of the element is padding.
+        if pack.u16(descriptor_t + track * 8 + 6, "translation descriptor")? != 0 {
+            return Err(HkxError::InvalidData("unknown lossless translation descriptor"));
+        }
+        let rotation = Channel::from_descriptor(pack.u16(descriptor_r + track * 2, "rotation descriptor")?)?;
+        let in_range = |channel: Channel, statics: usize, series: usize| match channel {
+            Channel::Absent => true,
+            Channel::Static(index) => index < statics,
+            Channel::Dynamic(index) => index < series,
+        };
+        if !axes.iter().all(|axis| in_range(*axis, static_translations.1, series_t)) || !in_range(rotation, static_rotations.1, series_r) {
+            return Err(HkxError::InvalidData("lossless descriptor names a value the clip does not store"));
+        }
+        channels_t.push(axes);
+        channels_r.push(rotation);
+    }
+
+    let mut tracks = vec![Vec::with_capacity(frame_count); transform_count];
+    let mut non_finite_tracks = vec![false; transform_count];
+    for frame in 0..frame_count {
+        for track in 0..transform_count {
+            let mut translation = [0.0f32; 3];
+            for (axis, value) in translation.iter_mut().enumerate() {
+                *value = match channels_t[track][axis] {
+                    Channel::Absent => 0.0,
+                    Channel::Static(index) => float_at(pack, static_translations, index, "static translation")?,
+                    Channel::Dynamic(series) => float_at(pack, translations, frame * series_t + series, "dynamic translation")?,
+                };
+            }
+            let rotation_at = |array: (usize, usize), index: usize| -> Result<[f32; 4]> {
+                let at = array.0 + index * 16;
+                Ok([pack.f32(at, "rotation")?, pack.f32(at + 4, "rotation")?, pack.f32(at + 8, "rotation")?, pack.f32(at + 12, "rotation")?])
+            };
+            let rotation = match channels_r[track] {
+                Channel::Absent => HkxTransform::IDENTITY.rotation,
+                Channel::Static(index) => rotation_at(static_rotations, index)?,
+                Channel::Dynamic(series) => rotation_at(rotations, frame * series_r + series)?,
+            };
+            if !translation.iter().chain(&rotation).all(|value| value.is_finite()) {
+                non_finite_tracks[track] = true;
+            }
+            tracks[track].push(HkxTransform { translation, rotation, scale: [1.0; 3] });
+        }
+    }
+
+    // #5662 - the same policy as the spline path: a track that stores a non-finite value is
+    // dropped (its bone keeps the bind pose) and reported, and a clip with nothing left fails.
+    if non_finite_tracks.iter().all(|bad| *bad) {
+        return Err(HkxError::InvalidData("every transform track stores a non-finite value"));
+    }
+    let track_to_bone = read_track_to_bone(pack, &base, transform_count)?;
+    let mut dropped_bones = Vec::new();
+    let mut kept_tracks = Vec::with_capacity(tracks.len());
+    let mut kept_bones = Vec::with_capacity(track_to_bone.len());
+    for ((samples, bone), bad) in tracks.into_iter().zip(track_to_bone).zip(&non_finite_tracks) {
+        if *bad {
+            dropped_bones.push(bone);
+        } else {
+            kept_tracks.push(samples);
+            kept_bones.push(bone);
+        }
+    }
+
+    let (reference_frame, reference_frame_dropped) = match read_reference_frame(pack) {
+        Ok(frame) => (frame, None),
+        Err(reason) => (None, Some(reason)),
+    };
+    // The samples run from time 0 to `duration` at an even spacing; a single frame has none.
+    let frame_duration = if frame_count > 1 { duration / (frame_count - 1) as f32 } else { duration };
+    Ok(HkxAnimation {
+        duration,
+        num_frames: u32::try_from(frame_count).map_err(|_| HkxError::InvalidData("animation frame count overflows u32"))?,
+        frame_duration,
+        tracks: kept_tracks,
+        track_to_bone: kept_bones,
+        annotations: read_annotations(pack, &base, object, duration)?,
+        dropped_bones,
+        reference_frame,
+        reference_frame_dropped,
+        additive: read_additive(pack, &base),
     })
 }
 
@@ -1662,6 +1945,9 @@ mod tests {
                 float_block_offsets: array(0x68, 0x70),
                 spline_data: array(0x98, 0xa0),
                 binding_track_to_bone: array(0x20, 0x28),
+                // Havok 2014's binding (a Havok 2010 one has no partition array); measured on
+                // Fallout 4's clips, where it is the 0/1/2 byte after the three arrays.
+                binding_blend_hint: 0x50,
                 track_name: 0,
                 track_annotations: array(0x08, 0x10),
                 track_stride: 0x18,
@@ -1670,6 +1956,23 @@ mod tests {
                 annotation_stride: 0x10,
             }
         );
+    }
+
+    /// The lossless clip's field offsets, as measured on `Fallout4 - Animations.ba2`'s 856 clips:
+    /// ten `hkArray`s from the end of `hkaAnimation` (0x38), then the frame count.
+    #[test]
+    fn lossless_layout_walk_reproduces_the_measured_fallout_4_offsets() {
+        let layout = LosslessLayout::new(8);
+        let array = |pointer, count| ArrayField { pointer, count };
+        assert_eq!(layout.translations, array(0x38, 0x40));
+        assert_eq!(layout.static_translations, array(0x48, 0x50));
+        assert_eq!(layout.translation_channels, array(0x58, 0x60));
+        assert_eq!(layout.rotations, array(0x68, 0x70));
+        assert_eq!(layout.static_rotations, array(0x78, 0x80));
+        assert_eq!(layout.rotation_channels, array(0x88, 0x90));
+        assert_eq!(layout.spare, [array(0x98, 0xa0), array(0xa8, 0xb0), array(0xc8, 0xd0)]);
+        assert_eq!(layout.track_flags, array(0xb8, 0xc0));
+        assert_eq!(layout.num_frames, 0xd8);
     }
 
     /// The 2011 release's 32-bit packfiles must decode to the same rig and the
@@ -2436,6 +2739,205 @@ mod tests {
         let far = [[1.0e38, 0.0, 0.0, 0.0], [-1.0e38, 0.0, 0.0, 0.0]];
         assert_eq!(check_reference_samples(1.0, &far), Ok(()));
         assert_eq!(check_reference_samples(1.0, &far[..1]), Ok(()));
+    }
+
+    // ── hkaLosslessCompressedAnimation ────────────────────────────────────────────────────────
+
+    use crate::packfile::fixtures::PackfileBuilder;
+
+    const ANIM: usize = 0x000;
+    const BINDING: usize = 0x100;
+    const T_DYN: usize = 0x200;
+    const T_STAT: usize = 0x220;
+    const T_CH: usize = 0x240;
+    const R_DYN: usize = 0x260;
+    const R_STAT: usize = 0x2c0;
+    const R_CH: usize = 0x2e0;
+    const BONES: usize = 0x300;
+
+    fn put_f32(data: &mut [u8], at: usize, values: &[f32]) {
+        for (index, value) in values.iter().enumerate() {
+            data[at + index * 4..at + index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    fn put_u16(data: &mut [u8], at: usize, values: &[u16]) {
+        for (index, value) in values.iter().enumerate() {
+            data[at + index * 2..at + index * 2 + 2].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    fn put_u32(data: &mut [u8], at: usize, value: u32) {
+        data[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    /// A Havok 2014 lossless clip of 3 tracks and 3 frames over 1 s, bound to bones 5, 7 and 9:
+    /// - track 0: translation x static 5.0, y dynamic series 0, z absent; rotation dynamic series 0
+    /// - track 1: translation y dynamic series 1, the rest absent; rotation static quaternion 0
+    /// - track 2: translation absent; rotation dynamic series 1
+    ///
+    /// Two series of each kind, so the frame-major order (`frame * series_count + series`) is
+    /// what the expected values below depend on.
+    fn lossless_clip() -> PackfileBuilder {
+        let layout = LosslessLayout::new(8);
+        let base = Layout::new(8);
+        let mut builder = PackfileBuilder { data: vec![0u8; 0x340], v11: true, ..Default::default() };
+        let anim_class = builder.class("hkaLosslessCompressedAnimation");
+        let binding_class = builder.class("hkaAnimationBinding");
+        builder.virtual_fixups.push((ANIM as u32, 0, anim_class));
+        builder.virtual_fixups.push((BINDING as u32, 0, binding_class));
+
+        let data = &mut builder.data;
+        put_f32(data, ANIM + base.animation_duration, &[1.0]);
+        put_u32(data, ANIM + base.transform_tracks, 3);
+        put_u32(data, ANIM + layout.num_frames, 3);
+        // Dynamic translation floats, frame-major: [series 0, series 1] for each of three frames.
+        put_f32(data, T_DYN, &[10.0, 20.0, 11.0, 21.0, 12.0, 22.0]);
+        put_f32(data, T_STAT, &[5.0]);
+        // Per track (x, y, z, 0): code 1 = static, 2 = dynamic, index in the bits above.
+        put_u16(data, T_CH, &[1, 2, 0, 0, /* track 1 */ 0, 6, 0, 0, /* track 2 */ 0, 0, 0, 0]);
+        // Dynamic quaternions, frame-major: series 0 then series 1 for each frame.
+        #[rustfmt::skip]
+        put_f32(data, R_DYN, &[
+            0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 1.0, 0.0,
+            0.5, 0.5, 0.5, 0.5,  0.0, 1.0, 0.0, 0.0,
+            1.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 1.0,
+        ]);
+        put_f32(data, R_STAT, &[0.0, 0.5f32.sqrt(), 0.0, 0.5f32.sqrt()]);
+        put_u16(data, R_CH, &[2, 1, 6]);
+        put_u16(data, BONES, &[5, 7, 9]);
+        let counts = [
+            (layout.translations, T_DYN, 6),
+            (layout.static_translations, T_STAT, 1),
+            (layout.translation_channels, T_CH, 3),
+            (layout.rotations, R_DYN, 6),
+            (layout.static_rotations, R_STAT, 1),
+            (layout.rotation_channels, R_CH, 3),
+        ];
+        for (field, target, count) in counts {
+            put_u32(&mut builder.data, ANIM + field.count, count);
+            builder.local.push(((ANIM + field.pointer) as u32, target as u32));
+        }
+        put_u32(&mut builder.data, BINDING + base.binding_track_to_bone.count, 3);
+        builder.local.push(((BINDING + base.binding_track_to_bone.pointer) as u32, BONES as u32));
+        builder
+    }
+
+    fn transform(translation: [f32; 3], rotation: [f32; 4]) -> HkxTransform {
+        HkxTransform { translation, rotation, scale: [1.0; 3] }
+    }
+
+    #[test]
+    fn a_lossless_clip_decodes_absent_static_and_dynamic_channels_frame_major() {
+        let bytes = lossless_clip().build();
+        let clip = decode_animation(&bytes).expect("a well-formed lossless clip");
+        assert_eq!((clip.num_frames, clip.duration, clip.frame_duration), (3, 1.0, 0.5));
+        assert_eq!(clip.track_to_bone, [5, 7, 9]);
+        assert!(clip.dropped_bones.is_empty() && !clip.additive && clip.reference_frame.is_none());
+        let side = 0.5f32.sqrt();
+        assert_eq!(
+            clip.tracks[0],
+            [
+                transform([5.0, 10.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                transform([5.0, 11.0, 0.0], [0.5, 0.5, 0.5, 0.5]),
+                transform([5.0, 12.0, 0.0], [1.0, 0.0, 0.0, 0.0]),
+            ],
+            "static x, dynamic y (series 0 = every other float), absent z",
+        );
+        let turned = [0.0, side, 0.0, side];
+        assert_eq!(
+            clip.tracks[1],
+            [transform([0.0, 20.0, 0.0], turned), transform([0.0, 21.0, 0.0], turned), transform([0.0, 22.0, 0.0], turned)],
+            "dynamic y from series 1, a static rotation",
+        );
+        assert_eq!(
+            clip.tracks[2],
+            [
+                transform([0.0; 3], [0.0, 0.0, 1.0, 0.0]),
+                transform([0.0; 3], [0.0, 1.0, 0.0, 0.0]),
+                transform([0.0; 3], [0.0, 0.0, 0.0, 1.0]),
+            ],
+            "absent translation, the rotation series 1",
+        );
+        // The spline entry point does not mistake it for a spline clip.
+        assert!(matches!(decode_spline_animation(&bytes), Err(HkxError::MissingClass("hkaSplineCompressedAnimation"))));
+    }
+
+    #[test]
+    fn the_binding_blend_hint_marks_a_lossless_clip_additive() {
+        let hint = BINDING + Layout::new(8).binding_blend_hint;
+        for (value, additive) in [(0u8, false), (1, true), (2, true), (3, false)] {
+            let mut builder = lossless_clip();
+            builder.data[hint] = value;
+            assert_eq!(decode_animation(&builder.build()).unwrap().additive, additive, "blend hint {value}");
+        }
+    }
+
+    /// A clip this layout cannot account for is refused, never played wrong: each case below
+    /// perturbs one field of the fixture.
+    #[test]
+    fn a_lossless_clip_with_a_descriptor_or_array_it_cannot_read_is_refused() {
+        let layout = LosslessLayout::new(8);
+        let cases: Vec<(&str, Box<dyn Fn(&mut PackfileBuilder)>)> = vec![
+            ("descriptor code 3", Box::new(|b| put_u16(&mut b.data, T_CH, &[3]))),
+            ("code 0 with an index", Box::new(|b| put_u16(&mut b.data, T_CH, &[4]))),
+            ("a rotation index past the series", Box::new(|b| put_u16(&mut b.data, R_CH, &[(2 << 2) | 2]))),
+            ("a static translation past the array", Box::new(|b| put_u16(&mut b.data, T_CH, &[(1 << 2) | 1]))),
+            ("a non-zero fourth translation u16", Box::new(|b| put_u16(&mut b.data, T_CH + 6, &[1]))),
+            ("series that are not whole frames", Box::new(move |b| put_u32(&mut b.data, ANIM + layout.translations.count, 5))),
+            ("one descriptor too few", Box::new(move |b| put_u32(&mut b.data, ANIM + layout.rotation_channels.count, 2))),
+            ("a scale channel set", Box::new(move |b| put_u32(&mut b.data, ANIM + layout.spare[0].count, 1))),
+            ("float tracks", Box::new(|b| put_u32(&mut b.data, ANIM + Layout::new(8).float_tracks, 1))),
+            ("no frames", Box::new(move |b| put_u32(&mut b.data, ANIM + layout.num_frames, 0))),
+            ("a non-finite duration", Box::new(|b| put_f32(&mut b.data, ANIM + Layout::new(8).animation_duration, &[f32::NAN]))),
+        ];
+        for (name, mutate) in cases {
+            let mut builder = lossless_clip();
+            mutate(&mut builder);
+            assert!(decode_animation(&builder.build()).is_err(), "{name} must be refused");
+        }
+    }
+
+    #[test]
+    fn a_lossless_clip_cannot_ask_for_more_samples_than_the_cap_before_anything_is_allocated() {
+        let layout = LosslessLayout::new(8);
+        let mut builder = lossless_clip();
+        // 3 tracks x u32::MAX frames: far past MAX_TRANSFORM_SAMPLES, in a ~1 KB file.
+        put_u32(&mut builder.data, ANIM + layout.num_frames, u32::MAX);
+        assert!(matches!(
+            decode_animation(&builder.build()),
+            Err(HkxError::InvalidData("unsupported lossless clip dimensions")),
+        ));
+        let mut builder = lossless_clip();
+        put_u32(&mut builder.data, ANIM + Layout::new(8).transform_tracks, MAX_TRANSFORM_TRACKS as u32 + 1);
+        assert!(decode_animation(&builder.build()).is_err());
+    }
+
+    /// The same policy as the spline path (#5662): a track holding a non-finite value is dropped
+    /// and reported, the others keep playing, and a clip with nothing left is refused.
+    #[test]
+    fn a_lossless_track_with_a_non_finite_value_is_dropped_and_reported() {
+        let mut builder = lossless_clip();
+        put_f32(&mut builder.data, T_DYN, &[f32::NAN]); // track 0's dynamic y at frame 0
+        let clip = decode_animation(&builder.build()).expect("two tracks are fine");
+        assert_eq!(clip.dropped_bones, [5]);
+        assert_eq!(clip.track_to_bone, [7, 9]);
+        assert_eq!(clip.tracks.len(), 2);
+
+        let mut builder = lossless_clip();
+        put_f32(&mut builder.data, T_STAT, &[f32::INFINITY]); // track 0 only
+        put_f32(&mut builder.data, T_DYN, &[f32::NAN, f32::NAN]); // frame 0 of both series: tracks 0 and 1
+        put_f32(&mut builder.data, R_DYN + 16, &[f32::NAN]); // track 2's rotation at frame 0
+        assert!(decode_animation(&builder.build()).is_err(), "every track dropped");
+    }
+
+    #[test]
+    fn a_lossless_clip_can_name_a_missing_binding_and_still_decode_with_identity_bones() {
+        let mut builder = lossless_clip();
+        let base = Layout::new(8);
+        put_u32(&mut builder.data, BINDING + base.binding_track_to_bone.count, 0);
+        let clip = decode_animation(&builder.build()).unwrap();
+        assert_eq!(clip.track_to_bone, [0, 1, 2], "an empty binding is the identity mapping");
     }
 }
 

@@ -99,7 +99,7 @@ pub(crate) fn populate_idle_clip_runtime(
             let Some(bytes) = provider.extract_mesh(&path) else {
                 continue;
             };
-            match byroredux_hkx::decode_spline_animation(&bytes) {
+            match byroredux_hkx::decode_animation(&bytes) {
                 Ok(animation) => {
                     resolved_clip = Some((path, animation));
                     break;
@@ -193,7 +193,7 @@ pub(crate) fn populate_skyrim_walk_clip(world: &mut World, index: &EsmIndex, pro
         );
         return None;
     };
-    let animation = match byroredux_hkx::decode_spline_animation(&anim_bytes) {
+    let animation = match byroredux_hkx::decode_animation(&anim_bytes) {
         Ok(animation) => animation,
         Err(error) => {
             log::warn!("Skyrim walk clip: HKX '{SKYRIM_WALK_PATH}' is not usable: {error}");
@@ -295,7 +295,7 @@ pub(crate) fn populate_draugr_combat_clips(
                 return Some((handle, secs));
             }
             let bytes = provider.extract_mesh(path)?;
-            let animation = match byroredux_hkx::decode_spline_animation(&bytes) {
+            let animation = match byroredux_hkx::decode_animation(&bytes) {
                 Ok(animation) => animation,
                 Err(error) => {
                     log::warn!("Draugr combat clips: HKX '{path}' is not usable: {error}");
@@ -458,6 +458,16 @@ pub(super) fn convert_hkx_clip(
         log::warn!(
             "HKX '{path}' (event '{idle_event}'): reference-frame root motion not read, {reason} \
              - the clip plays in place",
+        );
+    }
+    // #5897 - the binding marks the clip additive: its tracks are deltas to lay over another
+    // pose. Fallout 4's first-person weapon clips and a few others are. The engine has no
+    // additive layering for Havok clips, so this converts them as the absolute pose it can
+    // play - wrong, which is better said than silent.
+    if animation.additive {
+        log::warn!(
+            "HKX '{path}' (event '{idle_event}'): an additive clip is played as an absolute pose; \
+             additive layering of Havok clips is not implemented",
         );
     }
     let mut channels =
@@ -692,6 +702,7 @@ mod tests {
             annotations: Vec::<HkxAnnotation>::new(),
             dropped_bones: Vec::new(),
             reference_frame_dropped: None,
+            additive: false,
             reference_frame: Some(ReferenceFrame {
                 duration: 1.0,
                 samples: vec![[0.0, 0.0, 0.0, 0.0], [0.0, 50.0, 0.0, 0.0], [0.0, 100.0, 0.0, 0.0]],
@@ -739,6 +750,7 @@ mod tests {
             annotations: Vec::<HkxAnnotation>::new(),
             dropped_bones: Vec::new(),
             reference_frame_dropped: None,
+            additive: false,
             reference_frame: None,
         };
 
@@ -779,6 +791,7 @@ mod tests {
             dropped_bones: Vec::new(),
             reference_frame: None,
             reference_frame_dropped: Some("it holds a non-finite sample"),
+            additive: false,
         };
         let mut pool = StringPool::new();
         let clip = convert_hkx_clip("test.hkx", "IdleTest", &skeleton, &animation, &mut pool, false, None);
@@ -837,6 +850,7 @@ mod tests {
             }],
             dropped_bones: Vec::new(),
             reference_frame_dropped: None,
+            additive: false,
             reference_frame: None,
         };
 
@@ -941,6 +955,7 @@ mod tests {
             annotations: Vec::<HkxAnnotation>::new(),
             dropped_bones: Vec::new(),
             reference_frame_dropped: None,
+            additive: false,
             reference_frame: None,
         };
 
@@ -1016,6 +1031,7 @@ mod tests {
             annotations: Vec::new(),
             dropped_bones: Vec::new(),
             reference_frame_dropped: None,
+            additive: false,
             reference_frame: None,
         };
         let mut pool = StringPool::new();

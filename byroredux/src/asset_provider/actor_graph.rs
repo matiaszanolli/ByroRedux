@@ -276,7 +276,7 @@ fn resolve_wanted(world: &mut World, provider: &TextureProvider) {
                     return None;
                 };
                 let bytes = provider.extract_mesh(path)?;
-                let animation = byroredux_hkx::decode_spline_animation(&bytes)
+                let animation = byroredux_hkx::decode_animation(&bytes)
                     .map_err(|error| log::warn!("actor graph: clip '{path}' did not decode: {error}"))
                     .ok()?;
                 let converted = {

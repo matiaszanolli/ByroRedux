@@ -145,7 +145,7 @@ fn load_graph(
 
     let clips = register_clips(world, &graph, &skeleton, &project_path, &relative, &mut |path| {
         let bytes = provider.extract_mesh(path).ok_or_else(|| "it is not in the archives".to_owned())?;
-        byroredux_hkx::decode_spline_animation(&bytes).map_err(|error| error.to_string())
+        byroredux_hkx::decode_animation(&bytes).map_err(|error| error.to_string())
     })?;
     Some(Arc::new(LoadedGraph { graph, clips, sequences: sequences.clone(), lazy: None }))
 }
@@ -288,6 +288,7 @@ mod tests {
             dropped_bones: Vec::new(),
             reference_frame: None,
             reference_frame_dropped: None,
+            additive: false,
         }
     }
 

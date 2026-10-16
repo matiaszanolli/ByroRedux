@@ -1574,8 +1574,11 @@ state:
   behavior graph (variables, blends and events of `MTBehavior` are not evaluated), but its *start* is data and
   the archetype is visible on screen through it. Fallout 4's HKX files are Havok 2014 packfiles
   (file version 11, a predicate area before the section table; `byroredux-hkx` reads them: all 328
-  behavior graphs decode with `LAYOUT_2014`, 13,133 of 14,000 clips and all 121 skeletons;
-  the 857 `hkaLosslessCompressedAnimation` clips, first-person additive poses, are not read). A graph's start
+  behavior graphs decode with `LAYOUT_2014`, 13,989 of 13,990 clips and all 121 skeletons; the one
+  clip left is a bare `hkaAnimationContainer`. 856 of those clips are `hkaLosslessCompressedAnimation`
+  (`decode_animation` reads them; 589 are additive deltas, which the engine has no layering for and
+  reports as such), a class the Havok SDK does not have, read from the layout measured on those
+  files: see `LosslessLayout` in `crates/hkx/src/animation.rs`). A graph's start
   is `BehaviorGraph::start_clip`: follow each machine's start state down and into the sub-behaviors a
   state refers to, to the first clip. The humanoid `MTBehavior.hkx` enters `MTIdles`, refers to
   `DialogueBehavior.hkx` and starts in `Animations\PoseA_Idle1.hkt`. Which file that name means is the

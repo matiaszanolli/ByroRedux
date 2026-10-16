@@ -7,7 +7,7 @@
 //! ```
 
 use byroredux_bsa::Ba2Archive;
-use byroredux_hkx::{decode_skeleton, decode_spline_animation};
+use byroredux_hkx::{decode_animation, decode_skeleton};
 use std::collections::BTreeMap;
 
 fn main() {
@@ -29,7 +29,7 @@ fn main() {
         let result = if skeleton {
             decode_skeleton(&bytes).map(|_| ())
         } else if lower.contains("\\animations\\") {
-            decode_spline_animation(&bytes).map(|clip| {
+            decode_animation(&bytes).map(|clip| {
                 // A rotation that flips between neighbouring samples means a wrong
                 // quaternion decode: count clips with any such jump.
                 let jumps = clip

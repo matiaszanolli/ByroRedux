@@ -407,7 +407,6 @@ pub(crate) mod fixtures {
     use super::*;
 
     pub(crate) const HEADER: usize = HEADER_SIZE;
-    pub(crate) const SECTION_TABLE: usize = 2 * SECTION_HEADER_SIZE;
 
     /// Assembles a minimal but *structurally real* 64-bit little-endian
     /// Havok 2010 packfile: a `__classnames__` section holding the class
@@ -421,6 +420,9 @@ pub(crate) mod fixtures {
         pub(crate) local: Vec<(u32, u32)>,
         pub(crate) global: Vec<(u32, u32, u32)>,
         pub(crate) virtual_fixups: Vec<(u32, u32, u32)>,
+        /// Write a Havok 2014 (version 11) packfile: a predicate area before the section table
+        /// and 0x40-byte section headers, as Fallout 4's clips are laid out.
+        pub(crate) v11: bool,
     }
 
     impl PackfileBuilder {
@@ -440,7 +442,11 @@ pub(crate) mod fixtures {
         /// `tweak` gets the finished buffer so a test can corrupt one field
         /// without hand-rolling the whole layout again.
         pub(crate) fn build_with(&self, tweak: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
-            let names_start = HEADER + SECTION_TABLE;
+            // Havok 2014 follows the header with a predicate area (here 0x10 zero bytes, as in
+            // Fallout 4's clips) and uses 0x40-byte section headers.
+            let (predicate, section_header) = if self.v11 { (0x10, SECTION_HEADER_SIZE_V11) } else { (0, SECTION_HEADER_SIZE) };
+            let table = HEADER + predicate;
+            let names_start = table + 2 * section_header;
             let names_len = self.classnames.len();
             let data_start = names_start + names_len;
 
@@ -452,12 +458,14 @@ pub(crate) mod fixtures {
             let mut bytes = vec![0u8; names_start];
             bytes[0..4].copy_from_slice(&MAGIC_0.to_le_bytes());
             bytes[4..8].copy_from_slice(&MAGIC_1.to_le_bytes());
-            bytes[0x0C..0x10].copy_from_slice(&8u32.to_le_bytes()); // Havok 2010
+            bytes[0x0C..0x10].copy_from_slice(&(if self.v11 { 11u32 } else { 8 }).to_le_bytes());
+            bytes[0x3E..0x40].copy_from_slice(&(predicate as u16).to_le_bytes());
             bytes[0x10] = 8; // 64-bit pointers
             bytes[0x11] = 1; // little endian
             bytes[0x13] = 1; // empty-base-class optimization, as MSVC writes
             bytes[0x14..0x18].copy_from_slice(&2u32.to_le_bytes());
-            bytes[0x28..0x28 + 14].copy_from_slice(b"hk_2010.2.0-r1");
+            let contents: &[u8; 14] = if self.v11 { b"hk_2014.1.0-r1" } else { b"hk_2010.2.0-r1" };
+            bytes[0x28..0x28 + 14].copy_from_slice(contents);
 
             let section = |bytes: &mut Vec<u8>,
                            index: usize,
@@ -468,7 +476,7 @@ pub(crate) mod fixtures {
                            virt: usize,
                            exports: usize,
                            end: usize| {
-                let base = HEADER + index * SECTION_HEADER_SIZE;
+                let base = table + index * section_header;
                 bytes[base..base + tag.len()].copy_from_slice(tag.as_bytes());
                 let put = |bytes: &mut Vec<u8>, field: usize, value: usize| {
                     bytes[base + field..base + field + 4]

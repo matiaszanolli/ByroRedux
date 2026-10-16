@@ -149,7 +149,7 @@ pub(crate) fn populate_archetype_idles(world: &mut World, index: &EsmIndex, prov
                         .ok()
                 })
                 .as_ref()?;
-            let animation = byroredux_hkx::decode_spline_animation(&provider.extract_mesh(&path)?)
+            let animation = byroredux_hkx::decode_animation(&provider.extract_mesh(&path)?)
                 .map_err(|error| log::warn!("archetype idle: clip '{path}' did not decode: {error}"))
                 .ok()?;
             let clip = {
