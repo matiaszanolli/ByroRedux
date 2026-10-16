@@ -90,8 +90,14 @@ pub struct ReferenceFrame {
 /// and #5006's mask-table cost already ties output to file bytes at ~64
 /// samples per file byte — so the only work this backstop did was admit
 /// the audit probe's 279 KB file at 15.7 M samples / 597 MiB. Now set
-/// from the census at 8× the measured maximum.
-const MAX_TRANSFORM_SAMPLES: usize = 1_000_000;
+/// from the census at 8× the Skyrim maximum.
+///
+/// Fallout 4 is closer: its largest clip is a voice lip-sync one
+/// (`sound\voice\fallout4.esm\npcfmagnolia\0019ddf3_1.hkx`, 95 tracks × 6,149 frames) at 584,155
+/// samples, 1.7× under the cap, pinned by `fallout_4_animations_archive_census_is_exact`. A
+/// line 1.7× longer than the longest vanilla one would be refused; the cap bounds decoded
+/// output at ~40 MB, and raising it is a deliberate call for the day a mod needs it.
+pub(crate) const MAX_TRANSFORM_SAMPLES: usize = 1_000_000;
 
 // ── #5847 — the hostile-input plausibility ceilings that used to be five
 // anonymous `4096`s. None is a format limit; each is a backstop far above
@@ -1512,10 +1518,6 @@ fn bspline_weights(
         .collect())
 }
 
-/// Havok THREECOMP40: three signed 12-bit values plus a two-bit omitted
-/// component index and one sign bit. The stored values cover
-/// `[-1/sqrt(2), +1/sqrt(2)]`; the omitted largest component is recovered
-/// from the unit-length constraint.
 /// `THREECOMP48`: the 40-bit "smallest three" with 15-bit components. Three
 /// little-endian words; each holds one component in its low 15 bits, the omitted
 /// component's index sits in the top bits of the first two words and the sign of
@@ -1551,6 +1553,10 @@ fn decode_three_component_48(bytes: &[u8]) -> Result<[f32; 4]> {
     normalize_quaternion(output)
 }
 
+/// Havok THREECOMP40: three signed 12-bit values plus a two-bit omitted
+/// component index and one sign bit. The stored values cover
+/// `[-1/sqrt(2), +1/sqrt(2)]`; the omitted largest component is recovered
+/// from the unit-length constraint.
 fn decode_three_component_40(bytes: &[u8]) -> Result<[f32; 4]> {
     if bytes.len() != 5 {
         return Err(HkxError::Truncated("40-bit quaternion"));
@@ -1733,31 +1739,12 @@ mod tests {
         r"meshes\actors\character\animations\cartprisonerdexit.hkx",
     ];
 
-    /// #4660 — resolves like the other real-data harnesses: a set `env`
-    /// override is binding (#3850) instead of silently falling back, and
-    /// under `BYROREDUX_REQUIRE_GAME_DATA` an absent archive fails, naming
-    /// the path, instead of skipping green.
+    /// #4660 - resolves like the other real-data harnesses (`corpus_tests`): a set `env`
+    /// override is binding (#3850) instead of silently falling back, and under
+    /// `BYROREDUX_REQUIRE_GAME_DATA` an absent archive fails, naming the path, instead of
+    /// skipping green.
     fn animations_archive(env: &str, default: &str) -> Option<byroredux_bsa::BsaArchive> {
-        let data_dir = match std::env::var(env).ok().filter(|s| !s.is_empty()) {
-            Some(v) => {
-                let p = std::path::PathBuf::from(&v);
-                assert!(p.is_dir(), "{env} points to {v:?}, which is not a directory");
-                p
-            }
-            None => std::path::PathBuf::from(default),
-        };
-        let archive_path = data_dir.join("Skyrim - Animations.bsa");
-        if !archive_path.is_file() {
-            if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
-                panic!(
-                    "BYROREDUX_REQUIRE_GAME_DATA is set, but {archive_path:?} is not a file \
-                     ({env} unset, or pointing at the wrong install)"
-                );
-            }
-            eprintln!("SKIP: {} not found (no game data?)", archive_path.display());
-            return None;
-        }
-        Some(byroredux_bsa::BsaArchive::open(archive_path).unwrap())
+        crate::corpus_tests::bsa_archive(env, default, "Skyrim - Animations.bsa")
     }
 
     /// #5006 (PAR-D1-2026-09-29-01) — vanilla census of the spline
@@ -2670,20 +2657,7 @@ mod tests {
     #[test]
     #[ignore = "needs Fallout 4 game data on disk"]
     fn fallout_4_skeleton_and_clip_decode() {
-        let env = byroredux_plugin::esm::test_paths::FO4_ENV;
-        let dir = std::env::var(env)
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| byroredux_plugin::esm::test_paths::FO4_DEFAULT.to_owned());
-        let path = std::path::Path::new(&dir).join("Fallout4 - Animations.ba2");
-        if !path.is_file() {
-            if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
-                panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file");
-            }
-            eprintln!("SKIP: {} not found (no game data?)", path.display());
-            return;
-        }
-        let archive = byroredux_bsa::Ba2Archive::open(path).unwrap();
+        let Some(archive) = crate::corpus_tests::fallout_4_animations() else { return };
         let skeleton = decode_skeleton(
             &archive.extract(r"meshes\actors\character\characterassets\skeleton.hkx").unwrap(),
         )
@@ -2938,6 +2912,124 @@ mod tests {
         put_u32(&mut builder.data, BINDING + base.binding_track_to_bone.count, 0);
         let clip = decode_animation(&builder.build()).unwrap();
         assert_eq!(clip.track_to_bone, [0, 1, 2], "an empty binding is the identity mapping");
+    }
+
+    // ── the Havok 2014 (Fallout 4) paths the default lane used to leave to game data ───────────
+
+    /// A packfile holding one zeroed `hkaSplineCompressedAnimation` of the given `animation_type`.
+    fn spline_stub(v11: bool, animation_type: u32) -> Vec<u8> {
+        let mut builder = PackfileBuilder { data: vec![0u8; 0x100], v11, ..Default::default() };
+        let class = builder.class("hkaSplineCompressedAnimation");
+        builder.virtual_fixups.push((0, 0, class));
+        put_u32(&mut builder.data, Layout::new(8).animation_type, animation_type);
+        builder.build()
+    }
+
+    /// `HK_SPLINE_COMPRESSED_ANIMATION` is 5 in Havok 2010 and 3 in Havok 2014 (which dropped the
+    /// delta and wavelet kinds): the gate takes the right value for the file's own version. The
+    /// stub has no tracks, so a clip that passes the gate stops at the dimension check.
+    #[test]
+    fn the_spline_type_gate_follows_the_packfile_version() {
+        let passes = |v11, kind| matches!(decode_spline_animation(&spline_stub(v11, kind)), Err(HkxError::InvalidData("unsupported spline clip dimensions")));
+        let refused = |v11, kind| matches!(decode_spline_animation(&spline_stub(v11, kind)), Err(HkxError::InvalidData("animation is not spline-compressed")));
+        assert!(passes(true, 3) && refused(true, 5), "Havok 2014 is type 3");
+        assert!(passes(false, 5) && refused(false, 3), "Havok 2010 is type 5");
+        assert!(refused(true, 0) && refused(false, 0));
+    }
+
+    /// The test-side inverse of `decode_three_component_48`: the omitted (largest) component's
+    /// index in the top bit of the first two words, its sign in the top bit of the third, and the
+    /// other three as 15-bit values over `[-1/sqrt(2), 1/sqrt(2)]`.
+    fn pack_three_component_48(q: [f32; 4]) -> [u8; 6] {
+        let omitted = (0..4).max_by(|&a, &b| q[a].abs().total_cmp(&q[b].abs())).unwrap();
+        let scale = 16383.0 * std::f32::consts::SQRT_2;
+        let kept: Vec<f32> = (0..4).filter(|&index| index != omitted).map(|index| q[index]).collect();
+        let mut words: Vec<u16> = kept.iter().map(|value| ((value * scale).round() as i32 + 16383) as u16 & 0x7fff).collect();
+        words[0] |= ((omitted & 1) as u16) << 15;
+        words[1] |= (((omitted >> 1) & 1) as u16) << 15;
+        words[2] |= u16::from(q[omitted] < 0.0) << 15;
+        let mut bytes = [0u8; 6];
+        for (index, word) in words.iter().enumerate() {
+            bytes[index * 2..index * 2 + 2].copy_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn three_component_48_round_trips_whichever_component_is_omitted() {
+        let normalised = |q: [f32; 4]| {
+            let length = q.iter().map(|c| c * c).sum::<f32>().sqrt();
+            q.map(|c| c / length)
+        };
+        let cases = [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, -1.0],
+            [0.5, 0.5, 0.5, 0.5],
+            [-0.5, 0.5, -0.5, 0.5],
+            normalised([0.1, 0.2, 0.3, 0.9]),
+            normalised([0.1, 0.2, -0.95, 0.3]),
+            normalised([0.7, -0.2, 0.3, 0.1]),
+            normalised([0.2, 0.9, 0.1, -0.3]),
+        ];
+        for q in cases {
+            let decoded = decode_three_component_48(&pack_three_component_48(q)).unwrap();
+            for axis in 0..4 {
+                assert!((decoded[axis] - q[axis]).abs() < 1e-3, "{q:?} -> {decoded:?}");
+            }
+        }
+        assert!(decode_three_component_48(&[0; 5]).is_err());
+    }
+
+    /// A Havok 2014 packfile holding an `hkaDefaultAnimatedReferenceFrame`: its duration at +0x40, the
+    /// sample array at +0x48 (pointer, count) pointing at 16-byte `(x, y, z, yaw)` records.
+    fn reference_frame_stub(v11: bool, duration: f32, samples: &[[f32; 4]], count: u32, bound: bool) -> Vec<u8> {
+        let mut builder = PackfileBuilder { data: vec![0u8; 0x200], v11, ..Default::default() };
+        let class = builder.class("hkaDefaultAnimatedReferenceFrame");
+        builder.virtual_fixups.push((0, 0, class));
+        put_f32(&mut builder.data, 0x40, &[duration]);
+        put_u32(&mut builder.data, 0x48 + 8, count);
+        if bound {
+            builder.local.push((0x48, 0x100));
+        }
+        for (index, sample) in samples.iter().enumerate() {
+            put_f32(&mut builder.data, 0x100 + index * 16, sample);
+        }
+        builder.build()
+    }
+
+    fn read_frame(bytes: &[u8]) -> std::result::Result<Option<ReferenceFrame>, &'static str> {
+        read_reference_frame(&Packfile::parse(bytes).unwrap())
+    }
+
+    #[test]
+    fn a_reference_frame_reads_from_its_havok_2014_offsets() {
+        let samples = [[0.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0, 0.5], [4.0, 5.0, 6.0, 1.0]];
+        let frame = read_frame(&reference_frame_stub(true, 2.0, &samples, 3, true)).unwrap().expect("a frame");
+        assert_eq!((frame.duration, frame.samples), (2.0, samples.to_vec()));
+        // No object, or one with no samples, is a clip without extracted motion, not an error.
+        assert_eq!(read_frame(&PackfileBuilder { v11: true, ..Default::default() }.build()), Ok(None));
+        assert_eq!(read_frame(&reference_frame_stub(true, 2.0, &[], 0, false)), Ok(None));
+        // A Havok 2010 packfile carries none in the vanilla clips: never read there.
+        assert_eq!(read_frame(&reference_frame_stub(false, 2.0, &samples, 3, true)), Ok(None));
+    }
+
+    #[test]
+    fn a_reference_frame_the_clip_carries_but_the_decoder_cannot_use_says_why() {
+        let line = [[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]];
+        let unusable = |bytes: Vec<u8>| read_frame(&bytes).expect_err("must be refused");
+        assert_eq!(unusable(reference_frame_stub(true, 1.0, &line, 65_537, true)), "it holds more samples than the decoder keeps");
+        assert_eq!(unusable(reference_frame_stub(true, 1.0, &line, 2, false)), "its sample array is unbound");
+        assert_eq!(unusable(reference_frame_stub(true, 1.0, &line, 100, true)), "its sample array runs past the file");
+        assert_eq!(unusable(reference_frame_stub(true, f32::NAN, &line, 2, true)), "its duration is not a positive finite number");
+        assert_eq!(unusable(reference_frame_stub(true, 0.0, &line, 2, true)), "its duration is not a positive finite number");
+        assert_eq!(unusable(reference_frame_stub(true, 1.0, &[line[0], [f32::NAN, 0.0, 0.0, 0.0]], 2, true)), "it holds a non-finite sample");
+        let jump = [[3.0e38, 0.0, 0.0, 0.0], [-3.0e38, 0.0, 0.0, 0.0]];
+        assert_eq!(
+            unusable(reference_frame_stub(true, 1.0, &jump, 2, true)),
+            "two neighbouring samples are further apart than an f32 can interpolate",
+        );
     }
 }
 

@@ -279,7 +279,7 @@ const MAX_GENERATOR_DEPTH: usize = 32;
 /// archive; Skyrim SE's largest takes 353), and that one decodes in 27 ms, about 230 ns
 /// a step. The cap is about 8.6x the shipped maximum, so a graph at the cap costs about a
 /// quarter of a second to refuse.
-const MAX_GRAPH_STEPS: usize = 1_000_000;
+pub(crate) const MAX_GRAPH_STEPS: usize = 1_000_000;
 
 /// A graph's event and variable names by position, so inlining a sub-behavior looks each of
 /// its names up in a hash map instead of scanning the whole table (up to 4,096 events a
@@ -1746,20 +1746,7 @@ mod tests {
     }
 
     fn animations_archive() -> Option<byroredux_bsa::BsaArchive> {
-        let env = byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV;
-        let dir = std::env::var(env)
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| byroredux_plugin::esm::test_paths::SKYRIM_SE_DEFAULT.to_owned());
-        let path = std::path::Path::new(&dir).join("Skyrim - Animations.bsa");
-        if !path.is_file() {
-            if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
-                panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file");
-            }
-            eprintln!("SKIP: {} not found (no game data?)", path.display());
-            return None;
-        }
-        Some(byroredux_bsa::BsaArchive::open(path).unwrap())
+        crate::corpus_tests::skyrim_se_animations()
     }
 
     /// The swinging blade: its single root state holds a blender over two nested
@@ -1827,20 +1814,7 @@ mod tests {
     }
 
     fn fo4_animations_archive() -> Option<byroredux_bsa::Ba2Archive> {
-        let env = byroredux_plugin::esm::test_paths::FO4_ENV;
-        let dir = std::env::var(env)
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| byroredux_plugin::esm::test_paths::FO4_DEFAULT.to_owned());
-        let path = std::path::Path::new(&dir).join("Fallout4 - Animations.ba2");
-        if !path.is_file() {
-            if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
-                panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file");
-            }
-            eprintln!("SKIP: {} not found (no game data?)", path.display());
-            return None;
-        }
-        Some(byroredux_bsa::Ba2Archive::open(path).unwrap())
+        crate::corpus_tests::fallout_4_animations()
     }
 
     /// Fallout 4 ships Havok 2014 packfiles (file version 11): the LED display's
@@ -2146,4 +2120,56 @@ mod tests {
         assert!(read(0).is_empty());
         assert!(read(3).is_empty(), "past the two weights");
     }
+
+    /// A Havok 2014 packfile of `lists` `hkbModifierList`s: list `i` holds `fan` entries, each
+    /// pointing at list `target(i)`.
+    fn modifier_lists(lists: usize, fan: usize, target: impl Fn(usize) -> usize, v11: bool) -> Vec<u8> {
+        const LIST_STRIDE: usize = 0x80;
+        let mut builder = PackfileBuilder { data: vec![0u8; lists * LIST_STRIDE + 0x40], v11, ..Default::default() };
+        let class = builder.class("hkbModifierList");
+        for i in 0..lists {
+            let list = i * LIST_STRIDE;
+            builder.virtual_fixups.push((list as u32, 0, class));
+            let entries = list + 0x40;
+            builder.local.push(((list + MODIFIER_LIST_MODIFIERS) as u32, entries as u32));
+            builder.data[list + MODIFIER_LIST_MODIFIERS + 8..list + MODIFIER_LIST_MODIFIERS + 12].copy_from_slice(&(fan as u32).to_le_bytes());
+            for k in 0..fan {
+                builder.global.push(((entries + k * 8) as u32, 1, (target(i) * LIST_STRIDE) as u32));
+            }
+        }
+        builder.local.sort_unstable();
+        builder.global.sort_unstable();
+        builder.build()
+    }
+
+    fn read_first_modifier(bytes: &[u8], limit: usize) -> Result<Option<Arc<ModifierNode>>> {
+        let file = Packfile::parse(bytes).expect("a well-formed packfile");
+        read_modifier(&file, 0, 0, &mut Walk::new(limit))
+    }
+
+    /// The modifier walk is guarded like the generator walk (#5891): a list that holds itself is
+    /// refused, a list of shared (acyclic) entries is not, and a Havok 2010 file has no
+    /// modifiers to read at all.
+    #[test]
+    fn a_modifier_list_that_holds_itself_is_refused() {
+        let cyclic = modifier_lists(1, 2, |_| 0, true);
+        assert!(matches!(read_first_modifier(&cyclic, MAX_GRAPH_STEPS), Err(HkxError::InvalidData("behavior graph object contains itself"))));
+        let ring = modifier_lists(2, 1, |i| 1 - i, true);
+        assert!(matches!(read_first_modifier(&ring, MAX_GRAPH_STEPS), Err(HkxError::InvalidData("behavior graph object contains itself"))));
+        // Two entries sharing one empty list: the shared list is entered twice and left twice.
+        let shared = modifier_lists(2, 0, |_| 1, true);
+        assert!(matches!(read_first_modifier(&shared, MAX_GRAPH_STEPS), Ok(Some(_))));
+        assert!(matches!(read_first_modifier(&modifier_lists(1, 2, |_| 0, false), MAX_GRAPH_STEPS), Ok(None)));
+    }
+
+    /// Entries that fan out below the depth cap still cost: 16 nested lists of 2 entries each is
+    /// 2^16 reads, and the budget stops it when the step cap is lowered to the work it would take.
+    #[test]
+    fn modifier_lists_that_fan_out_are_stopped_by_the_step_budget() {
+        let chain = modifier_lists(18, 2, |i| (i + 1).min(17), true);
+        let budget = 1_000;
+        let read = read_first_modifier(&chain, budget);
+        assert!(matches!(read, Err(HkxError::InvalidData("behavior graph takes too many steps to read"))), "{read:?}");
+    }
 }
+

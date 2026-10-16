@@ -561,6 +561,29 @@ mod tests {
         builder
     }
 
+    /// Fallout 4's Havok 2014 layout: a predicate area before the section table and 0x40-byte
+    /// section headers. The same fixup tables and objects must come out of it.
+    #[test]
+    fn a_havok_2014_packfile_parses_with_its_predicate_area_and_wide_section_headers() {
+        let bytes = PackfileBuilder { v11: true, ..sample() }.build();
+        let pack = Packfile::parse(&bytes).unwrap();
+        assert_eq!(pack.version(), 11);
+        assert_eq!(pack.object("hkaSkeleton").unwrap(), 0x20);
+        assert_eq!(pack.local_target(0x30), Some(0x50));
+        assert_eq!(pack.global_target(0x40), Some((0, 4)));
+        // The version-8 build of the same content reads identically.
+        let old_bytes = sample().build();
+        let old = Packfile::parse(&old_bytes).unwrap();
+        assert_eq!((old.version(), old.object("hkaSkeleton").unwrap(), old.local_target(0x30)), (8, 0x20, Some(0x50)));
+        // A version-11 file whose contents say Havok 2010 is refused, not decoded with 2014 offsets.
+        let mut mislabelled = bytes.clone();
+        mislabelled[0x28..0x28 + 7].copy_from_slice(b"hk_2010");
+        assert!(matches!(
+            Packfile::parse(&mislabelled).err(),
+            Some(HkxError::UnsupportedLayout("packfile contents do not match its file version")),
+        ));
+    }
+
     #[test]
     fn parses_sections_fixups_and_objects() {
         let bytes = sample().build();

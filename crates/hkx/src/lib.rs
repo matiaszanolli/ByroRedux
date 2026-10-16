@@ -8,6 +8,8 @@
 
 mod animation;
 mod behavior;
+#[cfg(test)]
+mod corpus_tests;
 mod expression;
 mod packfile;
 

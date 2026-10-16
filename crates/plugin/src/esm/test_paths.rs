@@ -44,7 +44,7 @@ use std::path::PathBuf;
 /// the canonical Steam path on the reference dev machine. The returned
 /// path is NOT validated for existence — callers should check
 /// `.is_dir()` / `.is_file()` and skip the test on miss.
-fn data_dir(env_var: &str, default: &str) -> PathBuf {
+pub fn data_dir(env_var: &str, default: &str) -> PathBuf {
     // #3850: an explicitly-set override is BINDING. Pre-fix this returned the
     // env var's value unchecked, so a typo'd path surfaced much later as a
     // confusing "file not found" against a path the caller never named. An
