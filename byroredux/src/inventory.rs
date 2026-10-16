@@ -666,15 +666,7 @@ fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -> PlayerInv
 }
 
 fn add_stack(inventory: &mut Inventory, form_id: u32, count: u32) -> InventoryIndex {
-    if let Some(index) = inventory
-        .items
-        .iter()
-        .position(|stack| stack.base_form_id == form_id && stack.instance.is_none())
-    {
-        inventory.items[index].count = inventory.items[index].count.saturating_add(count);
-        return InventoryIndex(index as u32);
-    }
-    inventory.push(ItemStack::new(form_id, count))
+    inventory.add(ItemStack::new(form_id, count))
 }
 
 fn equip_armor(
@@ -1000,10 +992,12 @@ pub(crate) fn transfer_loot(
                 let destination = inventories
                     .get_mut(player)
                     .expect("validated under the same guard");
-                // Append whole stacks: existing equipment indices stay stable
-                // and distinct instance-pool identities are never merged or
-                // discarded.
-                destination.items.extend(stacks);
+                // Existing equipment indices stay stable and distinct
+                // instance-pool identities are never merged or discarded;
+                // plain stacks fold into the matching row (#5871).
+                for stack in stacks {
+                    destination.add(stack);
+                }
             }
             LootSelection::Stack(index) => {
                 let stack = source_inventory
@@ -1022,7 +1016,7 @@ pub(crate) fn transfer_loot(
                 let destination = inventories
                     .get_mut(player)
                     .expect("validated under the same guard");
-                destination.items.push(stack);
+                destination.add(stack);
             }
         }
     }
@@ -1254,7 +1248,7 @@ pub(crate) fn pickup_loot(
         let Some(destination) = inventories.get_mut(player) else {
             return false;
         };
-        destination.items.push(ItemStack::new(base, count));
+        destination.add(ItemStack::new(base, count));
     }
     // A `&World` system inserts through the query write guard (the
     // `apply_player_drowning_damage` pattern), which needs the storage to
@@ -2663,8 +2657,14 @@ mod tests {
         container_loot_system(&world, 0.0);
         container_loot_system(&world, 0.0);
         let inventory = world.get::<Inventory>(player).unwrap();
-        assert_eq!(&inventory.items[..original.len()], original.as_slice());
-        assert_eq!(&inventory.items[original.len()..], stacks.as_slice());
+        // #5871 — the plain 0x5678 stack folds into the player's existing
+        // row for it (saturating); the rows keep their positions, and the
+        // instanced stacks keep their identities as appended rows.
+        let mut expected = original.clone();
+        let merged = expected.iter().position(|row| row.base_form_id == 0x5678).unwrap();
+        expected[merged].count = u32::MAX;
+        assert_eq!(&inventory.items[..original.len()], expected.as_slice());
+        assert_eq!(&inventory.items[original.len()..], &stacks[1..]);
         drop(inventory);
         assert!(world.get::<Inventory>(container).unwrap().is_empty());
         assert_eq!(
@@ -2699,10 +2699,13 @@ mod tests {
         container_loot_system(&world, 0.0);
 
         assert!(world.get::<Inventory>(container).unwrap().is_empty());
+        // #5871 — folded into the player's existing 0x5678 row (12 + 7).
+        let inventory = world.get::<Inventory>(player).unwrap();
         assert_eq!(
-            world.get::<Inventory>(player).unwrap().items.last(),
-            Some(&ItemStack::new(0x5678, 7))
+            inventory.items.iter().find(|row| row.base_form_id == 0x5678),
+            Some(&ItemStack::new(0x5678, 19))
         );
+        assert_eq!(inventory.items.iter().filter(|row| row.base_form_id == 0x5678).count(), 1);
     }
 
     #[test]
@@ -2844,7 +2847,9 @@ mod tests {
         container_loot_system(&world, 0.0);
         container_loot_system(&world, 0.0);
         assert!(world.get::<Inventory>(corpse).unwrap().is_empty());
-        assert_eq!(world.get::<Inventory>(player).unwrap().len(), 5);
+        // #5871 — the corpse's plain 0x1234 / 0x9ABC fold into the player's
+        // existing rows for them instead of appending two more.
+        assert_eq!(world.get::<Inventory>(player).unwrap().len(), 3);
         assert_eq!(
             world
                 .get::<EquipmentSlots>(corpse)

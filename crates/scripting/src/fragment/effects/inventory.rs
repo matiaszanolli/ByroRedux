@@ -73,11 +73,14 @@ pub fn remove_items(
             }
         }
         if let Some(destination) = destination {
-            inventories
+            let destination = inventories
                 .get_mut(destination)
-                .expect("validated under the same guard")
-                .items
-                .extend(moved);
+                .expect("validated under the same guard");
+            // #5871 — plain stacks fold into the destination's row for the
+            // form instead of fragmenting one row per transfer.
+            for stack in moved {
+                destination.add(stack);
+            }
         }
     }
     if removed == 0 {
@@ -253,7 +256,7 @@ pub fn add_items(world: &World, container: EntityId, item_form_id: u32, count: u
     inventories
         .get_mut(container)
         .expect("just present or inserted above")
-        .push(ItemStack::new(item_form_id, count));
+        .add(ItemStack::new(item_form_id, count));
     drop(inventories);
     // `OnItemAdded` sees a scripted add like any other (M47.2).
     crate::emit_item_transfers(

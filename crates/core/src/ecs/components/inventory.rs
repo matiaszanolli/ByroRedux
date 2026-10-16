@@ -109,6 +109,32 @@ impl Inventory {
         InventoryIndex(idx)
     }
 
+    /// Add a stack, merging a plain one into the existing plain row of the
+    /// same form. Returns the row it landed in.
+    ///
+    /// #5871 — items without an instance used to be appended as a new row
+    /// per transfer (every `AddItem`, both legs of every barter click), so
+    /// gold and goods fragmented into a row per trade on both sides, were
+    /// saved that way and were each listed by the inventory menu. Rows are
+    /// never removed or reordered here, so [`EquipmentSlots`] indices stay
+    /// valid; a zeroed row (an emptied stack keeps its position) is reused
+    /// the same as a live one. A stack carrying an `instance` is its own
+    /// identity and is always appended unchanged.
+    pub fn add(&mut self, stack: ItemStack) -> InventoryIndex {
+        if stack.instance.is_none() {
+            if let Some(index) = self
+                .items
+                .iter()
+                .position(|row| row.base_form_id == stack.base_form_id && row.instance.is_none())
+            {
+                let row = &mut self.items[index];
+                row.count = row.count.saturating_add(stack.count);
+                return InventoryIndex(index as u32);
+            }
+        }
+        self.push(stack)
+    }
+
     pub fn get(&self, idx: InventoryIndex) -> Option<&ItemStack> {
         self.items.get(idx.0 as usize)
     }
@@ -482,5 +508,29 @@ mod tests {
         assert_eq!(slots.weapon, None);
 
         assert!(!slots.release(InventoryIndex(9)), "already released");
+    }
+
+    /// #5871 — plain stacks of one form share a row (a zeroed row is reused);
+    /// an instanced stack is its own row; rows never move or disappear.
+    #[test]
+    fn add_folds_plain_stacks_into_one_row_per_form() {
+        let mut inv = Inventory::new();
+        let gold = inv.add(ItemStack::new(0xF, 5));
+        assert_eq!(inv.add(ItemStack::new(0xF, 7)), gold);
+        let other = inv.add(ItemStack::new(0x1, 1));
+        assert_eq!(inv.items, vec![ItemStack::new(0xF, 12), ItemStack::new(0x1, 1)]);
+
+        let instanced = ItemStack {
+            instance: Some(ItemInstanceId(NonZeroU32::new(3).unwrap())),
+            ..ItemStack::new(0xF, 1)
+        };
+        let row = inv.add(instanced);
+        assert_ne!(row, gold, "an instance is its own identity");
+        assert_eq!(inv.add(ItemStack::new(0xF, 1)), gold, "…and never absorbs a plain stack");
+        assert_eq!(inv.len(), 3);
+
+        inv.items[other.0 as usize].count = 0;
+        assert_eq!(inv.add(ItemStack::new(0x1, 4)), other, "a zeroed row is reused in place");
+        assert_eq!(inv.len(), 3);
     }
 }

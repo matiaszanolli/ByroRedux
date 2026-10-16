@@ -6237,3 +6237,24 @@ fn psc_remote_event_handler_binds_like_the_pex_spelling() {
     );
     assert_eq!(super::events::handler_in(&script, "OnDeath", false), None);
 }
+
+/// #5871 — repeated scripted adds and barter-style transfers fold into one
+/// row per form on both sides instead of appending a row per transfer.
+#[test]
+fn repeated_add_and_transfer_do_not_fragment_inventory_rows() {
+    use byroredux_core::ecs::components::{Inventory, ItemStack};
+    const GOLD: u32 = 0xF;
+    let mut world = World::new();
+    world.register::<Inventory>();
+    let (player, vendor) = (world.spawn(), world.spawn());
+    world.insert(vendor, Inventory { items: vec![ItemStack::new(GOLD, 100), ItemStack::new(0x77, 3)] });
+    crate::add_items(&world, player, GOLD, 10);
+    crate::add_items(&world, player, GOLD, 5);
+    for _ in 0..3 {
+        crate::remove_items(&world, vendor, 0x77, 1, Some(player));
+        crate::remove_items(&world, player, GOLD, 2, Some(vendor));
+    }
+    let rows = |e| world.get::<Inventory>(e).unwrap().items.clone();
+    assert_eq!(rows(player), vec![ItemStack::new(GOLD, 9), ItemStack::new(0x77, 3)]);
+    assert_eq!(rows(vendor), vec![ItemStack::new(GOLD, 106), ItemStack::new(0x77, 0)]);
+}
