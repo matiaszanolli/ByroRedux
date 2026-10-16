@@ -234,6 +234,9 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         byroredux_scripting::fragment_activation_flush_system,
     );
+    // #5868 — a scripted / relayed activation of a load door by the player
+    // opens it (the E-press path queues its own transition directly).
+    scheduler.add_exclusive(Stage::Update, crate::interaction::door_activation_system);
     scheduler.add_exclusive_with_access(
         Stage::Update,
         crate::inventory::container_loot_system,

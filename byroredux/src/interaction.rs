@@ -1377,6 +1377,14 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
     if !withheld.is_empty() {
         candidates.retain(|entity, _| !withheld.contains(entity));
     }
+    // #5865 — a Parent-Activate-Only reference cannot be activated directly,
+    // so it is no target and offers no prompt.
+    if world
+        .try_resource::<byroredux_scripting::ActivateParentTable>()
+        .is_some()
+    {
+        candidates.retain(|entity, _| !activates_only_through_parents(world, *entity));
+    }
     // #4698 — a `Disable()`d placement keeps its root (#3278: FormID,
     // `DoorTeleport`, `Locked`, container `Inventory`) but spawns nothing
     // visible or solid, so it must not be a candidate either. Read live,
@@ -1420,7 +1428,10 @@ fn carried_unlock_key(world: &World, target: EntityId) -> Option<u32> {
 /// Commit a key unlock only on activation, not while displaying the prompt.
 /// The key remains in inventory; the existing saved ledger overrides XLOC on
 /// future cell loads just as it does for a scripted Lock(false).
-fn unlock_with_carried_key(world: &World, target: EntityId) -> bool {
+///
+/// #5865 — `commit == false` only answers whether the key would open it, so an
+/// activation that is going to be refused anyway does not spend the lock.
+fn unlock_with_carried_key(world: &World, target: EntityId, commit: bool) -> bool {
     if world.get::<Locked>(target).is_none() {
         return true;
     }
@@ -1439,6 +1450,9 @@ fn unlock_with_carried_key(world: &World, target: EntityId) -> bool {
             .is_none()
     {
         return false;
+    }
+    if !commit {
+        return true;
     }
     if let Some(mut locks) = world.query_mut::<Locked>() {
         locks.remove(target);
@@ -1476,10 +1490,19 @@ pub(crate) fn ray_sphere_distance(origin: Vec3, direction: Vec3, bound: WorldBou
 
 fn activate_target(world: &World, target: InteractionTarget) {
     // #4701 — a dead player opens no doors and fires no `ActivateEvent`.
-    if !crate::systems::player_can_act(world)
-        || activation_is_blocked(world, target.entity)
-        || !unlock_with_carried_key(world, target.entity)
-    {
+    if !crate::systems::player_can_act(world) || activation_is_blocked(world, target.entity) {
+        return;
+    }
+    // #5865 — the refusals come BEFORE the key is spent: a script-blocked
+    // reference (default processing off) or a Parent-Activate-Only one opens
+    // nothing, so it must stay locked. A Parent-Activate-Only reference is not
+    // even a target (`populate_candidates`); this guards the direct call.
+    if activates_only_through_parents(world, target.entity) {
+        log::debug!("interaction: entity {} activates only through its parents", target.entity);
+        return;
+    }
+    let blocked = byroredux_scripting::default_activation_blocked(world, target.entity);
+    if !unlock_with_carried_key(world, target.entity, !blocked) {
         return;
     }
     let event = emit_activate_event(world, target.entity);
@@ -1493,7 +1516,6 @@ fn activate_target(world: &World, target: InteractionTarget) {
 
     // M47.2 — a script-blocked reference still sent `OnActivate` above; its
     // default processing (the door's transition) does not run.
-    let blocked = byroredux_scripting::default_activation_blocked(world, target.entity);
     let outcome = if blocked {
         format!("{event_outcome}; default activation blocked by script")
     } else if target.kind == InteractionKind::Door {
@@ -1530,6 +1552,69 @@ fn activate_target(world: &World, target: InteractionTarget) {
     }
 }
 
+/// The load doors an `ActivateEvent` from the player asks to open this frame.
+///
+/// #5868 — the E-press path queued the transition itself; nothing else read
+/// `ActivateEvent` for a `DoorTeleport`, so a script `Door.Activate()`, a
+/// lever wired through an activate parent, or a parent relay was a silent
+/// no-op. A script-blocked door (default processing off) and a locked one do
+/// not open; only the player's activation carries through a load door.
+fn door_activation_targets(world: &World) -> Vec<EntityId> {
+    let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world) else {
+        return Vec::new();
+    };
+    let candidates: Vec<EntityId> = {
+        let (Some(events), Some(doors)) = (
+            world.query::<byroredux_scripting::ActivateEvent>(),
+            world.query::<DoorTeleport>(),
+        ) else {
+            return Vec::new();
+        };
+        events
+            .iter()
+            .filter(|(entity, event)| event.activator == player && doors.get(*entity).is_some())
+            .map(|(entity, _)| entity)
+            .collect()
+    };
+    candidates
+        .into_iter()
+        .filter(|&door| world.get::<Locked>(door).is_none())
+        .filter(|&door| !byroredux_scripting::default_activation_blocked(world, door))
+        .collect()
+}
+
+/// Queue the transition for every load door [`door_activation_targets`] names.
+/// A transition the E-press path already queued this frame (the slot holds one)
+/// stands; the slot takes a single pending transition.
+pub(crate) fn door_activation_system(world: &World, _dt: f32) {
+    for door in door_activation_targets(world) {
+        let already_queued = world
+            .try_resource::<crate::cell_loader::PendingCellTransitionSlot>()
+            .is_some_and(|slot| slot.0.is_some());
+        if already_queued {
+            return;
+        }
+        match crate::cell_loader::queue_door_transition(world, door) {
+            Ok(queued) => log::info!(
+                "interaction: scripted activation of door {door}; queued {}",
+                queued.destination_label
+            ),
+            Err(error) => log::warn!("interaction: door {door} activated, transition not queued: {error}"),
+        }
+    }
+}
+
+/// CK *Reference*, Parent Activate Only: the reference "can ONLY be activated by
+/// an Activate Parent - direct activation (e.g. by the player) will not be
+/// possible" (scripts and the parent's relay still can).
+fn activates_only_through_parents(world: &World, target: EntityId) -> bool {
+    let Some(table) = world.try_resource::<byroredux_scripting::ActivateParentTable>() else {
+        return false;
+    };
+    byroredux_scripting::condition::entity_global_form_id(world, target)
+        .is_some_and(|form| table.takes_parent_activation_only(form))
+}
+
 /// Emit the engine-canonical activation marker and return the resolved
 /// activator entity. Normal input and diagnostic commands both use this path.
 pub(crate) fn emit_activate_event(
@@ -1539,15 +1624,7 @@ pub(crate) fn emit_activate_event(
     let activator = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world)
         .unwrap_or(0);
 
-    // CK *Reference*, Parent Activate Only: the reference "can ONLY be activated by
-    // an Activate Parent - direct activation (e.g. by the player) will not be
-    // possible" (scripts and the parent's relay still can).
-    let parent_only = byroredux_scripting::condition::entity_global_form_id(world, target).is_some_and(|form| {
-        world
-            .try_resource::<byroredux_scripting::ActivateParentTable>()
-            .is_some_and(|table| table.takes_parent_activation_only(form))
-    });
-    if parent_only {
+    if activates_only_through_parents(world, target) {
         return Err("activates only through its activate parents");
     }
     let mut events = world
@@ -2118,7 +2195,7 @@ mod tests {
             );
             assert!(activation_is_blocked(&world, door));
             assert!(select_interaction_target(&world).is_none());
-            assert!(!unlock_with_carried_key(&world, door));
+            assert!(!unlock_with_carried_key(&world, door, true));
             assert!(world.has::<Locked>(door));
         }
     }
@@ -2852,5 +2929,59 @@ mod tests {
             bindings.action_for_key(KeyCode::F9),
             Some(InputAction::Quickload)
         );
+    }
+
+    /// #5868 — a player-sourced `ActivateEvent` on an unlocked, unblocked load
+    /// door asks for its transition; an NPC's, or a locked door's, does not.
+    #[test]
+    fn scripted_player_activation_targets_unlocked_load_doors_only() {
+        let mut world = World::new();
+        world.register::<byroredux_scripting::ActivateEvent>();
+        world.register::<DoorTeleport>();
+        world.register::<Locked>();
+        let player = world.spawn();
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
+        let npc = world.spawn();
+        let door = |world: &mut World, activator| {
+            let door = world.spawn();
+            world.insert(
+                door,
+                DoorTeleport { destination_form_id: 0x1234, position_zup: [0.0; 3], rotation_zup: [0.0; 3] },
+            );
+            world.insert(door, byroredux_scripting::ActivateEvent { activator });
+            door
+        };
+        let open = door(&mut world, player);
+        let by_npc = door(&mut world, npc);
+        let locked = door(&mut world, player);
+        world.insert(locked, Locked { lock_level: 1, key_form_id: None });
+        assert_eq!(door_activation_targets(&world), vec![open]);
+        let _ = by_npc;
+    }
+
+    /// #5865 — an activation that will be refused must not spend the key:
+    /// `commit == false` answers "would the carried key open it" and leaves the
+    /// lock (and its saved ledger) alone.
+    #[test]
+    fn a_refused_activation_leaves_the_lock_alone() {
+        use byroredux_core::ecs::components::{Inventory, ItemStack};
+        const KEY: u32 = 0x77;
+        let mut world = World::new();
+        world.register::<Locked>();
+        world.register::<Inventory>();
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
+        let player = world.spawn();
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
+        world.insert(player, Inventory { items: vec![ItemStack::new(KEY, 1)] });
+        let door = world.spawn();
+        world.insert(door, Locked { lock_level: 1, key_form_id: Some(KEY) });
+
+        assert!(unlock_with_carried_key(&world, door, false), "the key would open it");
+        assert!(world.get::<Locked>(door).is_some(), "…but nothing was spent");
+        assert!(crate::notifications::drain(&world).is_empty());
+
+        assert!(unlock_with_carried_key(&world, door, true));
+        assert!(world.get::<Locked>(door).is_none());
+        assert_eq!(crate::notifications::drain(&world), vec!["Unlocked with key".to_owned()]);
     }
 }
