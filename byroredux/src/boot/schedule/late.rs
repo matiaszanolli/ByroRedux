@@ -290,7 +290,14 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::LocationTable>()
             .writes_resource::<byroredux_scripting::LocationClearState>()
             .writes::<byroredux_core::animation::AnimationPlayer>()
-            .writes::<byroredux_core::animation::AnimationStack>(),
+            .writes::<byroredux_core::animation::AnimationStack>()
+            // #5861 / #5870 — reconcile_dead_actor drops the corpse's behavior
+            // graph runtime and reports its package ending.
+            .writes::<byroredux_scripting::ObjectAnimationGraph>()
+            .writes::<crate::systems::GraphLocomotion>()
+            .writes::<crate::systems::ConsoleWalk>()
+            .writes_resource::<byroredux_scripting::ActivePackages>()
+            .writes_resource::<byroredux_scripting::PendingPackageTransitions>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

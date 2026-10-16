@@ -158,6 +158,11 @@ pub(crate) fn populate_actor_graphs(world: &mut World, provider: &TextureProvide
     };
     let mut attached = 0;
     for (actor, entry) in pending {
+        // #5861 — a corpse gets no graph: it would re-animate it (FO4 ragdolls
+        // do not activate yet, so nothing overrides the restored pose).
+        if world.get::<byroredux_core::ecs::components::Dead>(actor).is_some() {
+            continue;
+        }
         let key = super::idle_key(&entry);
         let known = world.resource::<ActorGraphCache>().graphs.contains_key(&key);
         if !known {

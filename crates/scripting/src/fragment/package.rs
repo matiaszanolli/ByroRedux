@@ -198,6 +198,46 @@ pub fn report_package_transition(world: &World, actor: EntityId, from: Option<u3
     }
 }
 
+/// The package the host last reported `actor` running (`None`: none, or
+/// never reported). The `from` of the next transition is this, not what the
+/// AI's own bookkeeping believes: a package only began once it was reported
+/// (#5864).
+pub fn reported_package(world: &World, actor: EntityId) -> Option<Option<u32>> {
+    world
+        .try_resource::<ActivePackages>()
+        .map(|active| active.0.get(&actor).copied())
+}
+
+/// Forget `actors` in [`ActivePackages`] without running any fragment: they
+/// are leaving the world (cell unload), not changing package (#5870). A dead
+/// actor reports a real `→ None` transition instead.
+pub fn retire_active_packages(world: &World, actors: &[EntityId]) {
+    if actors.is_empty() {
+        return;
+    }
+    if let Some(mut active) = world.try_resource_mut::<ActivePackages>() {
+        for actor in actors {
+            active.0.remove(actor);
+        }
+    }
+}
+
+/// A save load replaced the session: the package reports still queued, and the
+/// per-entity package map, describe actors that no longer exist (their
+/// `EntityId`s may be reused by unrelated ones). The reload's own spawns and
+/// first-tick confirmations report afresh (#5864).
+pub fn discard_package_reports(world: &World) {
+    if let Some(mut pending) = world.try_resource_mut::<PendingPackageTransitions>() {
+        pending.0.clear();
+    }
+    if let Some(mut pending) = world.try_resource_mut::<PendingPackageEnds>() {
+        pending.0.clear();
+    }
+    if let Some(mut active) = world.try_resource_mut::<ActivePackages>() {
+        active.0.clear();
+    }
+}
+
 /// Run the package fragments of this frame's transitions.
 pub fn package_fragment_system(world: &World, _dt: f32) {
     let transitions = match world.try_resource_mut::<PendingPackageTransitions>() {

@@ -843,8 +843,14 @@ pub(super) fn apply_ai_package_behavior(
         AmbientBehavior::from_package(package, template, resolved.shell.form_id, world)
     });
 
-    // M47.2 — the spawn-time winner begins (its Begin fragment runs).
-    byroredux_scripting::report_package_transition(world, placement_root, None, active_package_form_id);
+    // M47.2 / #5864 — the spawn-time winner is NOT reported here. It is chosen
+    // before the quest-alias overlays (stamped after spawn) and, on a save
+    // load, the restored clock exist, so the first-tick confirmation may pick
+    // a different package; reporting `None -> A` now would run A's
+    // Begin/Change for a package the actor never ran. The first tick
+    // (`last_evaluated_game_minute: None`) reports the confirmed winner. This
+    // call only clears what an earlier occupant of a reused entity id left.
+    byroredux_scripting::report_package_transition(world, placement_root, None, None);
     world.insert(
         placement_root,
         AmbientPackageRuntime {
@@ -1027,6 +1033,17 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
     drop(registry);
 
     for &(actor, active_id, behavior, changed) in &updates {
+        // M47.2 — the package fragments: the old package changed, the new
+        // one began. #5864 — `from` is what was last REPORTED running, so the
+        // first tick after spawn (nothing reported yet) reports `None -> A`
+        // even when the winner is the one spawn stamped, and a package that
+        // never began is never "changed". An unchanged, already-reported
+        // winner is a no-op.
+        let runtime_active = world
+            .get::<AmbientPackageRuntime>(actor)
+            .and_then(|runtime| runtime.active_package_form_id);
+        let previous = byroredux_scripting::reported_package(world, actor).unwrap_or(runtime_active);
+        byroredux_scripting::report_package_transition(world, actor, previous, active_id);
         if !changed {
             continue;
         }
@@ -1034,12 +1051,6 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
             "[m42-reselect] actor {actor} -> pack {:?}",
             active_id.map(|id| format!("{id:08X}"))
         );
-        // M47.2 — the package fragments: the old package changed, the new
-        // one began.
-        let previous = world
-            .get::<AmbientPackageRuntime>(actor)
-            .and_then(|runtime| runtime.active_package_form_id);
-        byroredux_scripting::report_package_transition(world, actor, previous, active_id);
         clear_ambient_behavior(world, actor);
         if let Some(behavior) = behavior {
             behavior.insert_at_runtime(world, actor);
@@ -2394,5 +2405,82 @@ mod tests {
              resolve a Skyrim+ Patrol leaf with a real radius — got {resolved_patrol_with_radius} \
              of {with_packages}"
         );
+    }
+
+    /// #5864 — the spawn-time winner is not reported (it is chosen before the
+    /// alias overlays / restored clock exist); the first-tick confirmation
+    /// reports the confirmed one once, and a later unchanged tick reports
+    /// nothing.
+    #[test]
+    fn the_package_transition_is_reported_by_the_first_tick_not_the_spawn() {
+        use byroredux_scripting::{ActivePackages, PackageTransition, PendingPackageTransitions};
+        let mut world = World::new();
+        register_runtime(&mut world, 12.0);
+        world.insert_resource(PendingPackageTransitions::default());
+        world.insert_resource(ActivePackages::default());
+        let actor = world.spawn();
+        let packages = vec![pack(0x700, PROCEDURE_DIALOGUE + 1, None)];
+        let npc = NpcRecord {
+            form_id: 0xAA,
+            ai_packages: vec![0x700],
+            ..Default::default()
+        };
+        let mut index = EsmIndex::default();
+        for package in packages.iter().cloned() {
+            index.packages.insert(package.form_id, package);
+        }
+        apply_ai_package_behavior(&mut world, actor, &ResolvedNpc::resolve(&npc, &index), &index);
+        assert!(
+            world.resource::<PendingPackageTransitions>().0.is_empty(),
+            "spawn reported a package the actor has not confirmed"
+        );
+        assert_eq!(world.resource::<ActivePackages>().0.get(&actor), None);
+
+        install_package_records(&mut world, packages);
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(
+            world.resource::<PendingPackageTransitions>().0,
+            vec![PackageTransition { actor, from: None, to: Some(0x700) }]
+        );
+        assert_eq!(world.resource::<ActivePackages>().0.get(&actor), Some(&0x700));
+
+        world.resource_mut::<PendingPackageTransitions>().0.clear();
+        if let Some(mut runtimes) = world.query_mut::<AmbientPackageRuntime>() {
+            runtimes.get_mut(actor).unwrap().last_evaluated_game_minute = None;
+        }
+        ambient_ai_package_system(&world, 0.0);
+        assert!(
+            world.resource::<PendingPackageTransitions>().0.is_empty(),
+            "an already-reported winner is not reported again"
+        );
+    }
+
+    /// #5870 — death reports the running package ending; #5864's load drain
+    /// forgets everything the outgoing session reported.
+    #[test]
+    fn death_retires_the_reported_package_and_a_load_discards_reports() {
+        use byroredux_scripting::{ActivePackages, PackageTransition, PendingPackageTransitions};
+        let mut world = World::new();
+        register_runtime(&mut world, 12.0);
+        world.insert_resource(PendingPackageTransitions::default());
+        world.insert_resource(ActivePackages::default());
+        let actor = world.spawn();
+        byroredux_scripting::report_package_transition(&world, actor, None, Some(0x700));
+        world.resource_mut::<PendingPackageTransitions>().0.clear();
+        world.insert(actor, Dead);
+
+        crate::combat::reconcile_dead_actor(&world, actor);
+        assert_eq!(
+            world.resource::<PendingPackageTransitions>().0,
+            vec![PackageTransition { actor, from: Some(0x700), to: None }]
+        );
+        assert_eq!(world.resource::<ActivePackages>().0.get(&actor), None);
+        crate::combat::reconcile_dead_actor(&world, actor);
+        assert_eq!(world.resource::<PendingPackageTransitions>().0.len(), 1, "a second reconcile reports nothing");
+
+        byroredux_scripting::report_package_transition(&world, actor, None, Some(0x701));
+        byroredux_scripting::discard_package_reports(&world);
+        assert!(world.resource::<PendingPackageTransitions>().0.is_empty());
+        assert!(world.resource::<ActivePackages>().0.is_empty());
     }
 }

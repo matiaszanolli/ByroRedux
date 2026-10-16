@@ -405,4 +405,22 @@ mod tests {
         let graphs = world.query::<ObjectAnimationGraph>().unwrap();
         assert_eq!(graphs.get(actor).unwrap().state(), 0, "never started moving");
     }
+
+    /// #5861 — death takes the behavior-graph runtime with the animation
+    /// players: left behind, the graph step and `moveStop` put a clip back on
+    /// the corpse (FO4 ragdolls do not activate yet to override the pose).
+    #[test]
+    fn a_dead_actor_loses_its_graph_and_locomotion_state() {
+        let (mut world, actor) = world_with_actor();
+        world.register::<ConsoleWalk>();
+        world.register::<Dead>();
+        walk(&world, actor, 3, 0.1, Vec3::ZERO);
+        world.insert(actor, ConsoleWalk { velocity: Vec3::X, remaining: 5.0 });
+        world.insert(actor, Dead);
+        assert!(world.get::<GraphLocomotion>(actor).is_some(), "the fixture built locomotion state");
+        crate::combat::reconcile_dead_actor(&world, actor);
+        assert!(world.get::<ObjectAnimationGraph>(actor).is_none());
+        assert!(world.get::<GraphLocomotion>(actor).is_none());
+        assert!(world.get::<ConsoleWalk>(actor).is_none());
+    }
 }

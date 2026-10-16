@@ -153,7 +153,7 @@ pub use fragment::{
     raise_unload_events, raise_reference_call, run_debug_statement, run_quest_script_function, raise_reference_event, ActorWatch, PendingUnloadDeliveries,
     alias_script_event_system, check_alias_script, install_quest_alias_scripts, is_alias_owner, AliasScript,
     AliasScriptOwners, QuestAliasScripts, ALIAS_OWNER_BASE, DELIVERED_ALIAS_EVENTS,
-    package_fragment_system, populate_fragments, populate_package_fragments, FragmentSet, FragmentTable, report_package_end, report_package_transition, ActivePackages, PackageEnd, PackageFragmentSet,
+    package_fragment_system, populate_fragments, populate_package_fragments, FragmentSet, FragmentTable, report_package_end, report_package_transition, discard_package_reports, reported_package, retire_active_packages, ActivePackages, PackageEnd, PackageFragmentSet,
     PackageFragments, PackageTransition, PendingPackageEnds, PendingPackageTransitions,
     report_terminal_selection, terminal_fragment_system, PendingTerminalSelections, TerminalFragments, TerminalItem, TerminalSelection,
     perk_fragment_system, report_perk_entry, PendingPerkEntries, PerkEntryId, PerkEntryRun, PerkFragments,

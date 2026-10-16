@@ -255,11 +255,11 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             // subtree meshes; transfer_is_theft reads ownership.
             .writes::<crate::inventory::PickedUp>()
             .reads::<byroredux_core::ecs::components::Owned>()
+            // #5866 — the theft rule reads a script's ownership change first.
+            .reads_resource::<byroredux_scripting::OwnerOverrides>()
             .reads::<byroredux_core::ecs::components::FactionRanks>()
             // #4706 — the placed stack size pickup_loot grants.
             .reads::<crate::inventory::PlacedItemCount>()
-            // #5866 — the theft rule reads a script's ownership change first.
-            .reads_resource::<byroredux_scripting::OwnerOverrides>()
             .writes::<byroredux_core::ecs::components::Inventory>()
             // #4996 — pickup_loot's helpers. `mesh_entities_under` walks the
             // subtree; `mark_picked_up` resolves the ref's FormId and records
@@ -605,7 +605,14 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::LocationTable>()
             .writes_resource::<byroredux_scripting::LocationClearState>()
             .writes::<byroredux_core::animation::AnimationPlayer>()
-            .writes::<byroredux_core::animation::AnimationStack>(),
+            .writes::<byroredux_core::animation::AnimationStack>()
+            // #5861 / #5870 — reconcile_dead_actor drops the corpse's behavior
+            // graph runtime and reports its package ending.
+            .writes::<byroredux_scripting::ObjectAnimationGraph>()
+            .writes::<crate::systems::GraphLocomotion>()
+            .writes::<crate::systems::ConsoleWalk>()
+            .writes_resource::<byroredux_scripting::ActivePackages>()
+            .writes_resource::<byroredux_scripting::PendingPackageTransitions>(),
     );
     // Animated props' behavior graphs: clip-trigger events move their state machines on.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::object_graph_step_system);

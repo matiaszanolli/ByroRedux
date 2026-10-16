@@ -543,6 +543,10 @@ pub fn execute_pending_save_loads(
     // outgoing one.
     reset_story_location_cursor(world);
     discard_pending_story_events(world);
+    // #5864 — and the package transitions the outgoing session's actors
+    // reported: running their Begin/Change fragments in the loaded session
+    // would fire for actors that never ran those packages.
+    byroredux_scripting::discard_package_reports(world);
 
     // The cell/session replacement invalidates every transient SDK entity
     // handle even when the restored population happens to reuse the same raw

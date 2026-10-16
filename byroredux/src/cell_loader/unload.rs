@@ -435,6 +435,8 @@ fn unload_cell_inner(
     // M47.2 — the scripts of the references about to despawn hear
     // `OnCellDetach` / `OnUnload`.
     byroredux_scripting::raise_unload_events(world, &victims);
+    // #5870 — the unloaded actors' reported packages go with them.
+    byroredux_scripting::retire_active_packages(world, &victims);
     timings.snapshot_capture = phase_started.elapsed();
 
     let (mesh_drops, freed_meshes, texture_drops) =

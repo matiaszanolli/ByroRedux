@@ -842,8 +842,11 @@ on package transitions. The PACK `VMAD` fragment section decodes per xEdit's
 `wbScriptFragmentsPack` (flags: 1 Begin, 2 End, 4 Change). A fragment installs
 only when the VM's check accepts it, and it runs with `akActor` bound to the
 actor running the package. The AI reports each actor's package changes: the
-spawn-time winner, a re-selection and a combat / unconscious suspension. The
-old package's Change fragment then runs, followed by the new one's Begin. The
+first-tick confirmation of the winner (spawn only stamps the behaviour: the
+winner is chosen before the quest-alias overlays and a save's restored clock
+exist, #5864), a re-selection, a combat / unconscious suspension and the
+actor's death (`→ None`, #5870). The old package's Change fragment then runs,
+followed by the new one's Begin. The
 CK's *OnEnd* / *OnChange - Package* pages define End as a normal end and
 Change as ended or preempted. This engine re-selects by conditions and
 schedules, so every switch is a preemption (Change + Begin). The one
@@ -852,7 +855,12 @@ actor `Traveled` it reports `report_package_end(actor, package)` for the
 actor's active package (once; the actor keeps the package until re-selection),
 and `package_fragment_system` runs that package's End fragment. Sandbox,
 Wander and the other procedures never finish here, so their End fragments
-don't run.
+don't run. **Not reachable on shipped content yet (#5869):** `TravelBehavior`
+installs only from the flat `procedure_type == 6` arm, which only FO3 / FNV /
+Oblivion packages reach, and PACK `VMAD` exists only on Skyrim+, whose packages
+resolve through the procedure tree (Sandbox and Patrol leaves only,
+[`packal.md`](packal.md)). Today only the synthetic VM test drives this End;
+resolving the Travel leaf on tree packages is `packal.md` scope.
 
 With the VM, 84.1% of the Skyrim corpus runs (Fallout 4: 79.9%, Starfield
 78.5%) (lowered + interpreted; `fragment_coverage`, `VM_REASONS=1` lists why

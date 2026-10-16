@@ -369,7 +369,12 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
         }
     }
     // M47.2 — arriving is the Travel procedure completing: the package's End
-    // fragment runs (the one completion this engine models).
+    // fragment runs (the one completion this engine models). #5869 — only a
+    // flat `procedure_type == 6` package installs `TravelBehavior` (FO3 / FNV /
+    // Oblivion), and those games' packages carry no PF_ fragments; Skyrim+
+    // packages resolve through the procedure tree, which has no Travel leaf
+    // yet (`docs/engine/packal.md`), so this is driven only by the synthetic VM
+    // test until that lands.
     for d in scratch.decisions.iter().filter(|d| d.state.is_none()) {
         let package = world
             .get::<crate::components::AmbientPackageRuntime>(d.entity)

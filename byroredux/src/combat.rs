@@ -999,6 +999,22 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
         remove_component::<EquippedWeapon>(world, actor);
     }
     disable_actor_ai(world, actor);
+    // #5870 — the package the actor was running ends with it: report
+    // `-> None` so its Change fragment runs and `GetCurrentPackage` stops
+    // answering with a corpse's last package. A second reconcile (save-load
+    // sweep) finds nothing reported and is a no-op.
+    if let Some(Some(package)) = byroredux_scripting::reported_package(world, actor) {
+        byroredux_scripting::report_package_transition(world, actor, Some(package), None);
+    }
+    // #5861 — a corpse's behavior-graph runtime goes with its animation
+    // players. Left in place, the graph step, `graph_locomotion_system` (which
+    // sends `moveStop` for a parked corpse) and the lazy-clip restart in
+    // `resolve_wanted` (every actor sharing the graph) all put a clip back on
+    // it through `apply_playback_for`; FO4 ragdolls do not activate yet, so
+    // nothing overrides the restored pose and the corpse stands and idles.
+    remove_component::<byroredux_scripting::ObjectAnimationGraph>(world, actor);
+    remove_component::<crate::systems::GraphLocomotion>(world, actor);
+    remove_component::<crate::systems::ConsoleWalk>(world, actor);
     // #3708 (ECS-P2-03) — `disable_actor_ai` -> `clear_ambient_behavior`
     // deliberately does NOT remove `AmbientPackageRuntime` (it's shared
     // with the live schedule-handover path, where that runtime state must
