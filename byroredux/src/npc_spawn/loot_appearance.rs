@@ -280,14 +280,13 @@ pub(crate) fn equipment_appearance_system(world: &World, _dt: f32) {
 }
 
 /// #5028 — queue release of worn gear whose item left the inventory
-/// entirely (an `ItemTransfer` with `added == false`). #5268 — the path
-/// is forward-latent: no production producer can emit `added == false`
-/// for the player yet. `transfer_loot` emits it on the *source* only and
-/// refuses `player == source`; `pickup_loot` emits only `added: true`;
-/// and no drop / sell / destroy path exists. The only cellless wearer in
-/// practice is the player, so the drain here waits for the first
-/// player-side removal path (its six tests insert the event by hand).
-/// The wearer's live `Inventory` is consulted anyway so a future partial
+/// entirely (an `ItemTransfer` with `added == false`). #5863 — the path is
+/// live: `remove_items` (a barter sale, `GetCaps`' caps spend, a player
+/// `RemoveItem`, `DropObject`) emits `added == false` for the player, and
+/// `transfer_loot` emits it on the *source* (it refuses `player == source`).
+/// `pickup_loot` emits only `added: true`. The only cellless wearer in
+/// practice is the player, whose gear hangs off the body root.
+/// The wearer's live `Inventory` is consulted anyway so a partial
 /// move cannot release gear that is still held — and a zeroed row does
 /// not count as held, because rows are zeroed in place, never removed.
 /// Only wearers with **no** `CellRoot` qualify:

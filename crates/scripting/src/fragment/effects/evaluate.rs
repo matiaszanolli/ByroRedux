@@ -576,6 +576,30 @@ pub(super) fn set_actor_value_base(world: &World, actor: EntityId, avif: u32, va
         .set_base(avif, value);
 }
 
+/// #5862 — a script's actor-value write may have taken `actor`'s Health to
+/// zero or below. Nothing else sweeps actors at Health <= 0, so queue the
+/// same death a scripted `Kill` does: `scripted_kill_system` spares an
+/// essential / protected actor (bleedout) and otherwise marks it `Dead`,
+/// raises KILL and queues the teardown. Idempotent for an actor that is
+/// already dead or still above zero; the caller holds no `ActorValues` guard.
+pub(super) fn queue_health_death(world: &World, actor: EntityId) {
+    use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead};
+    if world.get::<Dead>(actor).is_some() {
+        return;
+    }
+    let Some(health) = world.get::<ActorVitals>(actor).map(|vitals| vitals.health) else {
+        return;
+    };
+    let lethal = world
+        .get::<ActorValues>(actor)
+        .is_some_and(|values| values.current(health) <= 0.0);
+    if lethal {
+        if let Some(mut pending) = world.try_resource_mut::<crate::story_manager::PendingScriptKills>() {
+            pending.0.push((actor, None, false));
+        }
+    }
+}
+
 /// The `LCTN` a location-typed [`ObjectRef`] names: a direct property's
 /// FormID, or the location bound to the location alias the property points
 /// at.

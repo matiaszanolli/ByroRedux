@@ -490,6 +490,7 @@ pub(crate) fn apply_effect(
             let avif = resolve_property_form_id(vmad, actor_value.property_name())?;
             let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
             set_actor_value_base(world, actor, avif, value);
+            queue_health_death(world, actor);
             None
         }
         Effect::SetActorValueNamed { actor, name, value } => {
@@ -510,6 +511,7 @@ pub(crate) fn apply_effect(
             };
             let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
             set_actor_value_base(world, actor, avif, value);
+            queue_health_death(world, actor);
             None
         }
         Effect::DamageActorValue {
@@ -535,15 +537,20 @@ pub(crate) fn apply_effect(
                     .and_then(|names| names.resolve(name))?,
             };
             let amount = evaluate_value(amount, context, vmad, world, stages, deferred)?;
-            let mut values = world.query_mut::<byroredux_core::ecs::components::ActorValues>()?;
-            if values.get_mut(actor).is_none() {
-                values.insert(actor, byroredux_core::ecs::components::ActorValues::new());
+            {
+                let mut values = world.query_mut::<byroredux_core::ecs::components::ActorValues>()?;
+                if values.get_mut(actor).is_none() {
+                    values.insert(actor, byroredux_core::ecs::components::ActorValues::new());
+                }
+                let values = values.get_mut(actor).expect("present or inserted");
+                if *restore {
+                    values.restore(avif, amount);
+                } else {
+                    values.apply_damage(avif, amount);
+                }
             }
-            let values = values.get_mut(actor).expect("present or inserted");
-            if *restore {
-                values.restore(avif, amount);
-            } else {
-                values.apply_damage(avif, amount);
+            if !*restore {
+                queue_health_death(world, actor);
             }
             None
         }

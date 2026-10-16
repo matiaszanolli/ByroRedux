@@ -2798,6 +2798,57 @@ fn damage_and_restore_actor_value_move_the_damage_layer() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// #5862 — a script taking Health to zero (`DamageActorValue`, `SetActorValue`)
+/// owes the same death edge a scripted `Kill` has: the actor is queued for
+/// `scripted_kill_system` (spare / `Dead` / KILL / teardown). Above zero,
+/// restores and non-Health values queue nothing.
+#[test]
+fn script_health_writes_queue_the_death_edge() {
+    use byroredux_core::ecs::components::{ActorValues, ActorVitals};
+    use byroredux_plugin::esm::records::AvifRecord;
+    const HEALTH: u32 = 0x0000_02D4;
+    const OTHER: u32 = 0x0000_05F0;
+    let script = parsed_source(
+        "ScriptName QF_VmHealthDeath extends Quest\n\
+         Function Fragment_1()\n\
+           Actor player = Game.GetPlayer()\n\
+           player.DamageActorValue(\"Variable06\", 99.0)\n\
+           player.DamageActorValue(\"Health\", 10.0)\n\
+           player.RestoreActorValue(\"Health\", 5.0)\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           Actor player = Game.GetPlayer()\n\
+           player.SetActorValue(\"Health\", 0.0)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_2", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<ActorValues>();
+    world.register::<ActorVitals>();
+    world.init_resource::<crate::story_manager::PendingScriptKills>();
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    for (form_id, name) in [(HEALTH, "AVHealth"), (OTHER, "AVVariable06")] {
+        index.actor_values.insert(
+            form_id,
+            AvifRecord { form_id, editor_id: name.into(), ..Default::default() },
+        );
+    }
+    crate::install_actor_value_names(&mut world, &index);
+    let mut values = ActorValues::new();
+    values.set_base(HEALTH, 10.0);
+    values.set_base(OTHER, 10.0);
+    world.insert(player, values);
+    world.insert(player, ActorVitals { health: HEALTH });
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    // Health 10 − 10 (+5 restore) is 5 in the end, but the damage step hit 0
+    // in between: the edge is queued the moment Health reaches zero.
+    let kills = world.resource::<crate::story_manager::PendingScriptKills>().0.clone();
+    assert_eq!(kills, vec![(player, None, false)], "queued once, for the Health write only");
+}
+
 /// `Math` natives, `Utility.GetCurrentGameTime` (days from the host's game
 /// clock) and `Game.AddAchievement` (recorded once).
 #[test]

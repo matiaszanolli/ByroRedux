@@ -6258,3 +6258,54 @@ fn repeated_add_and_transfer_do_not_fragment_inventory_rows() {
     assert_eq!(rows(player), vec![ItemStack::new(GOLD, 9), ItemStack::new(0x77, 3)]);
     assert_eq!(rows(vendor), vec![ItemStack::new(GOLD, 106), ItemStack::new(0x77, 0)]);
 }
+
+/// #5863 — taking an equipped item out of an inventory (a barter sale, a
+/// scripted `RemoveItem`) is an unequip: the slot is released, the combat
+/// weapon goes with its row, and the unequip is announced.
+#[test]
+fn removing_an_equipped_item_unequips_it() {
+    use byroredux_core::ecs::components::{
+        EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemStack,
+    };
+    const SWORD: u32 = 0x1234;
+    const SHIRT: u32 = 0x5678;
+    let mut world = World::new();
+    world.register::<Inventory>();
+    world.register::<EquipmentSlots>();
+    world.register::<EquippedWeapon>();
+    world.register::<crate::EquipmentEventBatch>();
+    world.register::<crate::ItemEventBatch>();
+    let (actor, vendor) = (world.spawn(), world.spawn());
+    world.insert(
+        actor,
+        Inventory { items: vec![ItemStack::new(SWORD, 1), ItemStack::new(SHIRT, 1)] },
+    );
+    let mut slots = EquipmentSlots::new();
+    slots.equip_weapon(InventoryIndex(0));
+    slots.equip(0b10, InventoryIndex(1));
+    world.insert(actor, slots);
+    world.insert(
+        actor,
+        EquippedWeapon {
+            inventory_index: InventoryIndex(0),
+            base_form_id: SWORD,
+            damage: 12.0,
+            reach: 1.0,
+            speed: 1.0,
+        },
+    );
+    crate::remove_items(&world, actor, SWORD, 1, Some(vendor));
+    assert!(world.get::<EquippedWeapon>(actor).is_none(), "the sold weapon stops hitting");
+    assert_eq!(world.get::<EquipmentSlots>(actor).unwrap().weapon, None);
+    assert!(world.get::<EquipmentSlots>(actor).unwrap().is_equipped(InventoryIndex(1)), "the shirt stays on");
+    assert_eq!(
+        world.get::<crate::EquipmentEventBatch>(actor).unwrap().0,
+        vec![crate::EquipmentChange { item_form_id: SWORD, equipped: false }],
+    );
+
+    // A partial take from a still-held stack changes nothing.
+    world.get_mut::<Inventory>(actor).unwrap().items[1].count = 3;
+    crate::remove_items(&world, actor, SHIRT, 1, None);
+    assert!(world.get::<EquipmentSlots>(actor).unwrap().is_equipped(InventoryIndex(1)));
+    assert_eq!(world.get::<crate::EquipmentEventBatch>(actor).unwrap().0.len(), 1);
+}

@@ -86,12 +86,32 @@ pub fn remove_items(
     if removed == 0 {
         return;
     }
+    // #5863 — an emptied row that was equipped is an unequip: the slot is
+    // released (below), the combat weapon is dropped with its row, and the
+    // unequip is announced (`OnObjectUnequipped`, the visible armor), as
+    // `transfer_loot` does. Selling an equipped weapon used to leave its
+    // damage in `attack_damage` until a reload, and a removed armor stayed
+    // on the NPC for the session.
+    let mut unequipped: Vec<crate::EquipmentChange> = Vec::new();
     if !emptied.is_empty() {
         if let Some(mut equipment) = world.query_mut::<EquipmentSlots>() {
             if let Some(slots) = equipment.get_mut(source) {
                 for index in &emptied {
-                    slots.release(*index);
+                    if slots.release(*index) {
+                        unequipped.push(crate::EquipmentChange {
+                            item_form_id,
+                            equipped: false,
+                        });
+                    }
                 }
+            }
+        }
+        if let Some(mut weapons) = world.query_mut::<byroredux_core::ecs::components::EquippedWeapon>() {
+            if weapons
+                .get(source)
+                .is_some_and(|weapon| emptied.contains(&weapon.inventory_index))
+            {
+                weapons.remove(source);
             }
         }
     }
@@ -111,6 +131,9 @@ pub fn remove_items(
         stolen: false,
     };
     crate::emit_item_transfers(world, source, [transfer(false)]);
+    if !unequipped.is_empty() {
+        crate::emit_equipment_changes(world, source, unequipped);
+    }
     if let Some(destination) = destination {
         crate::emit_item_transfers(world, destination, [transfer(true)]);
     }
