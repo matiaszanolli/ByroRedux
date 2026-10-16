@@ -550,8 +550,16 @@ mod level_up_tests {
         world.insert(player, perks);
 
         // 200 XP reaches level 2 (150·1 + 50); 350 more reaches level 3.
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
         crate::combat::grant_experience(&world, player, 200);
         crate::combat::grant_experience(&world, player, 350);
+        // #5874 — XP, each level reached and the banked rewards are announced.
+        let notices = crate::notifications::drain(&world);
+        assert!(notices.iter().any(|n| n == "+200 XP"), "{notices:?}");
+        assert!(notices.iter().any(|n| n == "Level up! You reached level 2"), "{notices:?}");
+        assert!(notices.iter().any(|n| n == "Level up! You reached level 3"), "{notices:?}");
+        assert!(notices.iter().any(|n| n.contains("skill points")), "{notices:?}");
+        assert!(notices.iter().any(|n| n.contains("perk point")), "{notices:?}");
         assert_eq!(world.get::<CharacterLevel>(player).unwrap().level, 3);
         let banked = *world.get::<LevelUpPoints>(player).unwrap();
         assert_eq!(

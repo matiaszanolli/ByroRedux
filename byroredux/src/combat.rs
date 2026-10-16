@@ -618,6 +618,10 @@ fn award_kill_experience(world: &World, victim: EntityId, health_avif: u32) {
 /// Callers hold no storage guard.
 pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
     use byroredux_core::character::{CharacterLevel, LevelUpPoints};
+    // #5874 — progression reaches the player as notices, not only the log.
+    if xp > 0 {
+        crate::notifications::push(world, format!("+{xp} XP"));
+    }
     let leveling = world
         .try_resource::<CharacterRuleset>()
         .map(|ruleset| ruleset.leveling);
@@ -641,6 +645,7 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
                 progress.level = progress.level.saturating_add(1);
                 reached.push(progress.level);
                 log::info!("Player reached level {}", progress.level);
+                crate::notifications::push(world, format!("Level up! You reached level {}", progress.level));
             }
         }
     }
@@ -686,6 +691,15 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
         rewards.skill_points,
         rewards.perk_points
     );
+    // Banked points can only be spent from the `levelup` console command
+    // today, so say what is waiting.
+    let (skill_points, perk_points) = (rewards.skill_points, rewards.perk_points);
+    if granted.0 > 0.0 {
+        crate::notifications::push(world, format!("+{:.0} skill points ({skill_points} unspent)", granted.0));
+    }
+    if granted.1 > 0 {
+        crate::notifications::push(world, format!("+{} perk point(s) ({perk_points} unspent)", granted.1));
+    }
 }
 
 /// New Vegas Damage Threshold (M47.2): the flat damage an actor's DT absorbs
