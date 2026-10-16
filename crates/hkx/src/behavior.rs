@@ -1151,6 +1151,12 @@ fn read_clip(file: &Packfile, clip: usize) -> Result<StateClip> {
     })
 }
 
+/// The element a binding's `offsetInArrayPlusOne` names: that field is a signed int, and 0 or
+/// a negative value (a file can say `0x80000000`, whose predecessor does not exist) names none.
+fn bone_of_binding(offset_plus_one: u32) -> Option<usize> {
+    usize::try_from((offset_plus_one as i32).checked_sub(1)?).ok()
+}
+
 /// `hkbBoneWeightArray`: its weights (`boneWeights` at the bindable base's end), and the
 /// elements variables drive (bindings on the array whose member is `boneWeights`, the
 /// element being the binding's `offsetInArrayPlusOne`).
@@ -1166,8 +1172,8 @@ fn read_bone_weights(file: &Packfile, array_object: usize) -> Result<BoneWeights
                 continue;
             }
             let variable = file.u32(element + BINDING_VARIABLE_INDEX, "binding variable")? as i32;
-            let offset = file.u32(element + BINDING_OFFSET_IN_ARRAY, "binding array offset")? as i32;
-            if let (Ok(variable), Some(bone)) = (usize::try_from(variable), usize::try_from(offset - 1).ok()) {
+            let offset = file.u32(element + BINDING_OFFSET_IN_ARRAY, "binding array offset")?;
+            if let (Ok(variable), Some(bone)) = (usize::try_from(variable), bone_of_binding(offset)) {
                 if bone < weights.len() {
                     bound.push((bone, variable));
                 }
@@ -2093,5 +2099,51 @@ mod tests {
         parent.inline_references(&mut |_| Some(child.clone()));
         assert_eq!(parent.events, events, "every child's events are the same 4,096 names");
         assert!(started.elapsed() < std::time::Duration::from_secs(3), "took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_binding_offset_names_the_element_before_it_and_none_for_zero_or_negative() {
+        assert_eq!(bone_of_binding(1), Some(0));
+        assert_eq!(bone_of_binding(5), Some(4));
+        assert_eq!(bone_of_binding(0), None);
+        // `i32::MIN - 1` used to overflow (a panic in the dev profile, which checks).
+        assert_eq!(bone_of_binding(0x8000_0000), None);
+        assert_eq!(bone_of_binding(u32::MAX), None, "-1");
+    }
+
+    /// A Havok 2010 `hkbBoneWeightArray` of two weights, bound by one `boneWeights` binding
+    /// of variable 3 to the element `offset_plus_one` names.
+    fn bone_weight_array(offset_plus_one: u32) -> Vec<u8> {
+        let mut builder = PackfileBuilder { data: vec![0u8; 0x200], ..Default::default() };
+        // The array object at 0: weights at +0x30 (local pointer to 0x100, count 2), bindings at +0x10.
+        builder.local.push((BONE_WEIGHTS as u32, 0x100));
+        builder.data[BONE_WEIGHTS + 8..BONE_WEIGHTS + 12].copy_from_slice(&2u32.to_le_bytes());
+        builder.data[0x100..0x104].copy_from_slice(&0.25f32.to_le_bytes());
+        builder.data[0x104..0x108].copy_from_slice(&0.75f32.to_le_bytes());
+        builder.global.push((BINDABLE_BINDING_SET as u32, 1, 0x140));
+        // The binding set at 0x140: one binding at 0x180.
+        builder.local.push(((0x140 + BINDING_SET_BINDINGS) as u32, 0x180));
+        builder.data[0x140 + BINDING_SET_BINDINGS + 8..0x140 + BINDING_SET_BINDINGS + 12].copy_from_slice(&1u32.to_le_bytes());
+        // The binding: member path "boneWeights" (a string at 0x1C0), variable 3, the offset.
+        builder.data[0x1C0..0x1CC].copy_from_slice(b"boneWeights\0");
+        builder.local.push(((0x180 + BINDING_MEMBER_PATH) as u32, 0x1C0));
+        builder.data[0x180 + BINDING_VARIABLE_INDEX..0x180 + BINDING_VARIABLE_INDEX + 4].copy_from_slice(&3u32.to_le_bytes());
+        builder.data[0x180 + BINDING_OFFSET_IN_ARRAY..0x180 + BINDING_OFFSET_IN_ARRAY + 4].copy_from_slice(&offset_plus_one.to_le_bytes());
+        builder.local.sort_unstable();
+        builder.global.sort_unstable();
+        builder.build()
+    }
+
+    #[test]
+    fn a_bone_weight_binding_with_an_overflowing_offset_is_ignored_not_a_panic() {
+        let read = |offset| {
+            let bytes = bone_weight_array(offset);
+            let file = Packfile::parse(&bytes).expect("a well-formed packfile");
+            read_bone_weights(&file, 0).expect("the array decodes").bound
+        };
+        assert_eq!(read(2), [(1, 3)], "the second weight is driven by variable 3");
+        assert!(read(0x8000_0000).is_empty());
+        assert!(read(0).is_empty());
+        assert!(read(3).is_empty(), "past the two weights");
     }
 }
