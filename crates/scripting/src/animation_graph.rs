@@ -280,6 +280,13 @@ fn start_state_of(machine: &StateMachine, variables: &[f32]) -> i32 {
         .unwrap_or(machine.start_state)
 }
 
+/// The most scheduled trigger events one [`ObjectAnimationGraph::step`] handles. A looping
+/// clip raises a few a second, so a frame owes this many only after a long stall (a pause
+/// in a debugger: the frame time is not clamped) or when the file authored a runaway loop
+/// length (`duration / playback_speed`, and the speed is whatever the file says). Past it the
+/// occurrences a periodic trigger missed are skipped, not replayed.
+const MAX_TRIGGERS_PER_STEP: usize = 1024;
+
 /// An event waiting for its time: raised by a clip trigger of the machine at
 /// `path` (indices into the current states' nested machines, from the root).
 #[derive(Debug, Clone)]
@@ -382,6 +389,8 @@ pub struct ObjectAnimationGraph {
     /// triggers fired (a trigger raises its event whether or not a transition
     /// answers it, as an animation notify does). Runtime only.
     raised: Vec<String>,
+    /// A runaway trigger was already reported for this graph: say it once, not every frame.
+    runaway_reported: bool,
 }
 
 impl Component for ObjectAnimationGraph {
@@ -424,6 +433,7 @@ impl ObjectAnimationGraph {
             now: 0.0,
             scheduled: Vec::new(),
             raised: Vec::new(),
+            runaway_reported: false,
             variables,
             pending_fade: 0.0,
             sync_phase: 0.0,
@@ -944,10 +954,53 @@ impl ObjectAnimationGraph {
         }
     }
 
-    /// A looping clip's trigger that just fired comes round again a loop later.
+    /// A looping clip's trigger that just fired comes round again a loop later - when a
+    /// loop later is a later time. A period that rounds away against the graph clock (a
+    /// huge playback speed, or a clock hours old beside a short loop) would put the trigger
+    /// back at the instant it just fired, due again at once, for ever.
     fn rearm(&mut self, fired: &Scheduled) {
-        if let Some(period) = fired.period {
-            self.scheduled.push(Scheduled { at: fired.at + period, ..fired.clone() });
+        let Some(period) = fired.period else { return };
+        let at = fired.at + period;
+        if at > fired.at && at.is_finite() {
+            self.scheduled.push(Scheduled { at, ..fired.clone() });
+        } else {
+            self.report_runaway("its loop is shorter than the graph clock can tell apart");
+        }
+    }
+
+    /// Move every periodic trigger that is still due at `limit` to its first occurrence after
+    /// it, keeping its phase: the occurrences in between are skipped. One whose period is too
+    /// small for that to land after `limit` in `f32` is dropped; a one-shot stays due.
+    fn skip_missed(&mut self, limit: f32) {
+        let mut dropped = false;
+        self.scheduled.retain_mut(|scheduled| {
+            if scheduled.at > limit {
+                return true;
+            }
+            let Some(period) = scheduled.period else { return true };
+            let mut next = scheduled.at + ((limit - scheduled.at) / period).floor() * period + period;
+            if next <= limit {
+                // The loops divide the frame evenly and `f32` rounded the last one back onto
+                // its end: that occurrence is skipped with the rest.
+                next += period;
+            }
+            if next > limit && next.is_finite() {
+                scheduled.at = next;
+                true
+            } else {
+                dropped = true;
+                false
+            }
+        });
+        if dropped {
+            self.report_runaway("it comes round faster than a frame can hold");
+        }
+    }
+
+    fn report_runaway(&mut self, why: &str) {
+        if !self.runaway_reported {
+            self.runaway_reported = true;
+            log::warn!("behavior graph on entity {}: a looping trigger is dropped, {why}", self.root);
         }
     }
 
@@ -985,7 +1038,16 @@ impl ObjectAnimationGraph {
     pub fn step(&mut self, dt: f32) -> Vec<Playback> {
         let mut started = Vec::new();
         let limit = self.now + dt.max(0.0);
+        let mut handled = 0;
         while let Some(due) = self.pop_due(limit) {
+            handled += 1;
+            if handled > MAX_TRIGGERS_PER_STEP {
+                // `due` was taken off the schedule but not handled: it goes back, and skips
+                // forward with the rest.
+                self.scheduled.push(due);
+                self.skip_missed(limit);
+                break;
+            }
             self.now = self.now.max(due.at);
             self.note_raised(due.event);
             self.rearm(&due);
@@ -2186,6 +2248,89 @@ mod tests {
         let started = graph.step(0.2);
         assert_eq!(graph.state(), 1, "the end-of-clip Pulled event moved it on");
         assert_eq!(started[0].hold_at, Some(0.0), "settling into a held pose");
+    }
+
+    /// One state playing a looping clip of `duration` seconds at `speed`, which raises
+    /// event 0 (`Tick`, answered by nothing) at the start of every loop.
+    fn looping_ticker(speed: f32, duration: f32) -> ObjectAnimationGraph {
+        let tick = ClipTrigger { local_time: 0.0, event: 0, relative_to_end: false, annotation: false };
+        let machine = StateMachine {
+            start_state: 0,
+            start_state_variable: None,
+            states: vec![State {
+                id: 0,
+                name: "Loop".into(),
+                transitions: vec![],
+                clip: Some(clip("a/loop.hkx", ClipMode::Looping, speed, vec![tick])),
+                content: Default::default(),
+            }],
+            wildcard: vec![],
+        };
+        let graph = BehaviorGraph { variables: Vec::new(), events: vec!["Tick".into()], machine: Some(machine) };
+        let mut clips = HashMap::new();
+        clips.insert(("a/loop.hkx".to_owned(), true), GraphClip { handle: 1, duration });
+        ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips, sequences: HashMap::new(), lazy: None }), 5).unwrap()
+    }
+
+    /// Run `work` on its own thread and fail the test, rather than hang the suite, if it does
+    /// not come back: the regression these tests pin is an endless `step`.
+    fn within_ten_seconds<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(work());
+        });
+        result.recv_timeout(std::time::Duration::from_secs(10)).expect("the trigger schedule never caught up with the frame")
+    }
+
+    #[test]
+    fn a_huge_playback_speed_cannot_hang_the_step() {
+        // duration / 1e30 is a loop of 1e-30 s: the trigger is due ~1e28 times in one frame.
+        let raised = within_ten_seconds(|| {
+            let mut graph = looping_ticker(1.0e30, 1.0);
+            graph.start();
+            graph.step(1.0 / 60.0);
+            graph.step(1.0 / 60.0);
+            graph.take_raised().len()
+        });
+        assert!(raised <= 2 * (MAX_TRIGGERS_PER_STEP + 1), "{raised} events from two frames");
+    }
+
+    #[test]
+    fn a_loop_the_graph_clock_cannot_resolve_does_not_hang_the_step() {
+        // At 2^24 s the f32 clock is 2 s apart: a 1 s loop fires and its next time is the
+        // same instant, due again at once for ever (no transition answers Tick to end it).
+        let (raised, left) = within_ten_seconds(|| {
+            let mut graph = looping_ticker(1.0, 1.0);
+            graph.now = 16_777_216.0;
+            graph.start();
+            graph.step(0.5);
+            (graph.take_raised().len(), graph.scheduled.len())
+        });
+        assert_eq!(raised, 1, "the trigger fires once");
+        assert_eq!(left, 0, "and is not re-armed at the instant it fired");
+    }
+
+    #[test]
+    fn a_long_stall_skips_the_missed_loops_and_keeps_the_phase() {
+        // 1000 s of stalled frame time owes 10,000 ticks of a 0.1 s loop.
+        let (raised, next) = within_ten_seconds(|| {
+            let mut graph = looping_ticker(1.0, 0.1);
+            graph.start();
+            graph.step(1000.0);
+            (graph.take_raised().len(), graph.scheduled.iter().map(|s| s.at).collect::<Vec<_>>())
+        });
+        assert!(raised <= MAX_TRIGGERS_PER_STEP + 1, "{raised} events from one frame");
+        assert_eq!(next.len(), 1, "the trigger is still scheduled: {next:?}");
+        assert!(next[0] > 1000.0 && next[0] <= 1000.11, "on its phase, just after the frame: {}", next[0]);
+    }
+
+    #[test]
+    fn an_ordinary_loop_raises_every_tick_that_falls_in_the_frame() {
+        let mut graph = looping_ticker(1.0, 0.1);
+        graph.start();
+        graph.step(0.35);
+        assert_eq!(graph.take_raised().len(), 4, "ticks at 0, 0.1, 0.2 and 0.3 s");
+        assert_eq!(graph.scheduled.len(), 1);
     }
 
     /// The swinging blade's shape: a root state holding two inner machines, one
