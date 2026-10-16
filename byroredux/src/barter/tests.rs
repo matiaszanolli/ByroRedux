@@ -207,6 +207,13 @@ fn barter_trades_with_an_unloaded_merchant_chest_and_parks_its_stock() {
 
     end_barter(&mut world);
     assert!(session(&world).is_none());
+    // #5867 — a dead vendor (a corpse's OnEnd fragment reaching
+    // `ShowBarterMenu`) opens no session.
+    world.register::<byroredux_core::ecs::components::Dead>();
+    world.insert(vendor, byroredux_core::ecs::components::Dead);
+    assert_eq!(begin_barter(&mut world, vendor), Err("that actor is dead"));
+    assert!(session(&world).is_none());
+    world.remove::<byroredux_core::ecs::components::Dead>(vendor);
     begin_barter(&mut world, vendor).unwrap();
     let view = snapshot(&world).unwrap();
     assert_eq!(

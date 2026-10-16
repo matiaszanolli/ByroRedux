@@ -576,6 +576,22 @@ pub(crate) fn end_open_conversation(world: &World) {
 /// head of the Late selection system; a no-op every frame no Goodbye
 /// line is open.
 fn npc_dialogue_goodbye_close_check(world: &World) {
+    // #5867 — the conversation ends when its partner can no longer hold one:
+    // dead, bleeding out / unconscious, or fighting. The page used to stay
+    // open, listing a corpse's topics (every click refused) and answering
+    // `IsInDialogueWithPlayer` for it, until the player closed it and the dead
+    // speaker's OnEnd fragments could open a barter with the corpse.
+    let partner_gone = world
+        .try_resource::<DialogueSurfaceState>()
+        .and_then(|surface| surface.npc)
+        .is_some_and(|npc| npc_refuses_dialogue(world, npc).is_some());
+    if partner_gone {
+        end_open_conversation(world);
+        if let Some(mut surface) = world.try_resource_mut::<DialogueSurfaceState>() {
+            surface.close_requested = true;
+        }
+        return;
+    }
     let due = world
         .try_resource::<DialogueSurfaceState>()
         .and_then(|surface| surface.close_after)
@@ -1226,6 +1242,46 @@ mod tests {
         let surface = world.resource::<DialogueSurfaceState>();
         assert!(surface.close_requested);
         assert_eq!(surface.close_after, None);
+    }
+
+    /// #5867 — an open conversation ends when its partner dies, bleeds out or
+    /// starts fighting: the page is asked to close and the selection clears,
+    /// instead of listing a corpse's topics until the player closes it.
+    #[test]
+    fn a_conversation_ends_when_its_partner_can_no_longer_talk() {
+        for kill in [
+            |world: &mut World, npc| world.insert(npc, Dead),
+            |world: &mut World, npc| {
+                world.insert(npc, AiCombatState { target: npc, attack_cooldown_remaining: 0.0 })
+            },
+        ] {
+            let mut world = World::new();
+            world.register::<ActivateEvent>();
+            world.register::<NpcDialogueTopic>();
+            world.register::<SceneAliasCandidate>();
+            world.register::<Dead>();
+            world.register::<AiCombatState>();
+            world.insert_resource(DialogueRegistry::default());
+            world.insert_resource(DialogueSurfaceState::default());
+            world.insert_resource(byroredux_core::ecs::resources::TotalTime(10.0));
+            let player = spawn_player(&mut world);
+            let patron = spawn_actor(&mut world, 0xAB_0001, 0x97_0001);
+            world.insert_resource(greeting_index(true));
+            world.insert(patron, ActivateEvent { activator: player });
+            npc_dialogue_selection_system(&world);
+            if let Some(mut events) = world.query_mut::<ActivateEvent>() {
+                events.remove(patron);
+            }
+            assert!(selected(&world, patron).is_some(), "the conversation opened");
+            assert!(!world.resource::<DialogueSurfaceState>().close_requested);
+
+            kill(&mut world, patron);
+            npc_dialogue_selection_system(&world);
+            assert!(selected(&world, patron).is_none(), "the partner can no longer talk");
+            let surface = world.resource::<DialogueSurfaceState>();
+            assert!(surface.close_requested);
+            assert_eq!(surface.npc, None);
+        }
     }
 
     fn selected(world: &World, npc: EntityId) -> Option<NpcDialogueTopic> {

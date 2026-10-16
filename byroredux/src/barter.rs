@@ -238,6 +238,11 @@ fn player(world: &World) -> Option<EntityId> {
 /// Open a barter session with `vendor`'s merchant faction.
 pub(crate) fn begin_barter(world: &mut World, vendor: EntityId) -> Result<(), &'static str> {
     end_barter(world);
+    // #5867 — no trading with a corpse, a fighter or an unconscious vendor
+    // (a dead speaker's OnEnd fragment can reach `ShowBarterMenu`).
+    if let Some(reason) = crate::systems::npc_dialogue::npc_refuses_dialogue(world, vendor) {
+        return Err(reason);
+    }
     let (faction, container) = {
         let rules = world
             .try_resource::<BarterRules>()
