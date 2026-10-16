@@ -962,7 +962,7 @@ fn lifecycle_events_reach_reference_scripts() {
             .resource::<crate::QuestScriptVariables>()
             .get(QuestFormId(REF), crate::QuestScriptVariables::property_key("Trail"))
     };
-    world.insert(actor, crate::bleedout::Bleedout { remaining_secs: 20.0 });
+    world.insert(actor, crate::bleedout::Bleedout { remaining_secs: Some(20.0) });
     crate::reference_script_event_system(&world, 0.0);
     assert_eq!(trail(&world), Some(5.0), "entering bleedout");
     crate::reference_script_event_system(&world, 0.0);

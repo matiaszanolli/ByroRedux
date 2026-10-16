@@ -64,16 +64,16 @@ fn an_essential_actor_bleeds_out_instead_of_dying() {
         },
     );
     assert!(spare_from_death(&world, actor, Some(player)));
-    assert_eq!(world.get::<Bleedout>(actor).map(|state| state.remaining_secs), Some(20.0));
+    assert_eq!(world.get::<Bleedout>(actor).map(|state| state.remaining_secs), Some(Some(20.0)));
     assert!(crate::is_unconscious(&world, actor), "bleedout is unconscious");
     let mut unconscious = Vec::new();
     crate::collect_unconscious(&world, &mut unconscious);
     assert_eq!(unconscious, vec![actor]);
-    world.get_mut::<Bleedout>(actor).unwrap().remaining_secs = 5.0;
+    world.get_mut::<Bleedout>(actor).unwrap().remaining_secs = Some(5.0);
     assert!(spare_from_death(&world, actor, None));
     assert_eq!(
         world.get::<Bleedout>(actor).map(|state| state.remaining_secs),
-        Some(5.0),
+        Some(Some(5.0)),
         "a blow while down does not restart the bleedout"
     );
 
@@ -228,4 +228,30 @@ fn script_overrides_of_the_actor_base_win() {
         .set(BASE, false, true);
     assert!(is_essential(&world, actor));
     assert!(!is_protected(&world, actor), "SetEssential clears protected");
+}
+
+/// #5858 — with no `BleedoutRules` (Starfield, FO76) a spared actor has no
+/// recovery time and stays down, rather than a non-finite `f32` a save
+/// cannot hold.
+#[test]
+fn without_rules_a_spared_actor_has_no_recovery_time_and_stays_down() {
+    let (mut world, player, actor) = world();
+    world.remove_resource::<BleedoutRules>();
+    world.insert(
+        actor,
+        ActorProtection {
+            essential: true,
+            protected: false,
+        },
+    );
+    assert!(spare_from_death(&world, actor, Some(player)));
+    assert_eq!(world.get::<Bleedout>(actor).map(|state| state.remaining_secs), Some(None));
+    bleedout_system(&world, 1_000.0);
+    assert!(is_bleeding_out(&world, actor), "no rules: never gets back up");
+    world.insert_resource(BleedoutRules {
+        death_time_secs: 20.0,
+        health_regain: 0.3,
+    });
+    bleedout_system(&world, 1_000.0);
+    assert!(is_bleeding_out(&world, actor), "a timer-less bleedout never counts down");
 }

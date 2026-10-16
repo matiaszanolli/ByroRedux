@@ -111,7 +111,7 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // ghost }` (#5017 added the second bool, M47.2 `SetGhost` the third). No session-local identity. Replacing registration (#5052): a
     // saved absence clears a live restraint on the process-lifetime player.
     "ActorControlState",
-    // M47.2 — `Bleedout { remaining_secs: f32 }`. No session-local identity.
+    // M47.2 — `Bleedout { remaining_secs: Option<f32> }` (#5858). No session-local identity.
     // Replacing: a saved absence gets a live bleeding actor back up.
     "Bleedout",
     // #3165 — the player entity outlives cell reload, so its mutable breath

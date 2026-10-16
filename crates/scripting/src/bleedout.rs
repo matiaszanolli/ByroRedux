@@ -114,7 +114,10 @@ fn base_protection(world: &World, entity: EntityId) -> ActorProtection {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bleedout {
-    pub remaining_secs: f32,
+    /// `None` when the game has no [`BleedoutRules`] (Starfield, FO76): the
+    /// actor stays down. #5858 — this was `f32::INFINITY`, which a save
+    /// writes as JSON `null` and the load then rejects.
+    pub remaining_secs: Option<f32>,
 }
 
 impl Component for Bleedout {
@@ -210,12 +213,15 @@ pub fn spare_from_death(world: &World, victim: EntityId, killer: Option<EntityId
     }
     let remaining_secs = world
         .try_resource::<BleedoutRules>()
-        .map_or(f32::INFINITY, |rules| rules.death_time_secs);
+        .map(|rules| rules.death_time_secs);
     let Some(mut bleedouts) = world.query_mut::<Bleedout>() else {
         return true;
     };
     bleedouts.insert(victim, Bleedout { remaining_secs });
-    log::info!("Actor {victim} enters bleedout for {remaining_secs} s");
+    match remaining_secs {
+        Some(secs) => log::info!("Actor {victim} enters bleedout for {secs} s"),
+        None => log::info!("Actor {victim} enters bleedout with no recovery time"),
+    }
     true
 }
 
@@ -228,8 +234,11 @@ pub fn bleedout_system(world: &World, dt: f32) {
     let mut recovered = Vec::new();
     if let Some(mut bleedouts) = world.query_mut::<Bleedout>() {
         for (entity, state) in bleedouts.iter_mut() {
-            state.remaining_secs -= dt;
-            if state.remaining_secs <= 0.0 {
+            let Some(remaining_secs) = state.remaining_secs.as_mut() else {
+                continue;
+            };
+            *remaining_secs -= dt;
+            if *remaining_secs <= 0.0 {
                 recovered.push(entity);
             }
         }

@@ -72,7 +72,7 @@ fn delta_columns_carry_only_session_stable_fields() {
         // #2292 — ActorControlState: a single bool (`restrained`). No
         // FixedString / EntityId / session handle → delta-safe.
         "ActorControlState",
-        // M47.2 — Bleedout: a single f32. Delta-safe.
+        // M47.2 — Bleedout: a single Option<f32>. Delta-safe.
         "Bleedout",
         // #3165 — CharacterController is f32/bool-only. Breath and drowning
         // carry are gameplay state; pose restore clears its three transient
@@ -634,6 +634,41 @@ fn player_and_actor_control_state_survive_save_load_round_trip() {
         .get::<ActorControlState>(npc)
         .expect("ActorControlState must round-trip");
     assert!(restored_actor.restrained);
+}
+
+/// Regression: #5858 — a bleedout with no recovery time (a game with no
+/// `BleedoutRules`) was `f32::INFINITY`, which serde_json writes as `null`,
+/// so every later save failed its load-time type check. Both a timed and a
+/// timer-less bleedout must decode and restore.
+#[test]
+fn bleedout_with_and_without_a_recovery_time_survives_save_load_round_trip() {
+    use byroredux_scripting::Bleedout;
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    let timed = src.spawn();
+    src.insert(timed, Bleedout { remaining_secs: Some(12.5) });
+    let untimed = src.spawn();
+    src.insert(untimed, Bleedout { remaining_secs: None });
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    // `restore_world` runs the load-time type check that rejected `null`.
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    assert_eq!(
+        dst.get::<Bleedout>(timed).map(|state| state.remaining_secs),
+        Some(Some(12.5))
+    );
+    assert_eq!(
+        dst.get::<Bleedout>(untimed).map(|state| state.remaining_secs),
+        Some(None)
+    );
 }
 
 /// Regression: #2379 (SAVE-D1-14) — a scripted `.SetMotionType()` call

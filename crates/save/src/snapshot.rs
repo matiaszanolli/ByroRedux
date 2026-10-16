@@ -520,7 +520,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v103 -> v104 (M47.2): `MapMarkers` gained the star-map-visible set
 /// (`SetMarkerVisibleOnStarMap`).
-pub const FORMAT_MAJOR: u16 = 104;
+///
+/// v104 -> v105 (#5858): `Bleedout.remaining_secs` became `Option<f32>`
+/// (`None` = no recovery time). It was `f32::INFINITY` without
+/// `BleedoutRules`, which JSON writes as `null` and the load rejected.
+pub const FORMAT_MAJOR: u16 = 105;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
