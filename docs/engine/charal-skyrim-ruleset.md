@@ -709,6 +709,35 @@ move Carry Weight); core suite 511 green (up from 508), workspace green,
 0 new clippy warnings. Skyrim's `derived` table now has 2 entries: Light
 Armor Rating (multiplier, player-only) and Carry Weight (absolute,
 actor-general, base-Stamina-derived).
+
+## Skyrim NPC derivation (CLAS) — LOCKED
+
+For auto-calculated NPCs, the `CLAS` record supplies the skill and attribute
+weights and `NPC_.ACBS` supplies the effective level. The level is
+`max(calc_min, 1)` when the PC-Level-Mult flag is set, otherwise
+`max(record_level, 0)`. The three attributes start with the race's RACE.DATA
+Health, Magicka, and Stamina values; NPC ACBS offsets are then added to the
+matching starting values. The master-backed level-growth rule gives Health
+`+5 × (level − 1)` and distributes `10 × (level − 1)` points across Magicka
+and Stamina using their class weights.
+
+The 18 skills start at **15**. The class skill weights allocate
+`8 × max(level − 1, 0)` points: complete weighted rounds first, then remaining
+points in descending weight order, breaking ties by **higher actor-value index
+first**. Skyrim.esm's baked `DNAM` values settle the UESP *CLAS* page's
+conflicting prose and example; the oracle comparison agrees with this order for
+916 of 929 sampled auto-calc NPCs. Positive race skill bonuses are added after
+class allocation, and final skills are clamped to 0–100. The UESP page does not
+specify how overflow is redistributed when a skill reaches 100; the capture
+records the observed master result and does not infer redistribution.
+
+For auto-calc-off NPCs, `DNAM` skill values are the oracle and are used as
+authored. The race bonus and class allocator are not applied to those stored
+values. A missing/non-finite/non-positive derived attribute is omitted by the
+current importer rather than synthesized. Sources: [UESP Skyrim:Classes]
+(https://en.uesp.net/wiki/Skyrim:Classes), Skyrim.esm NPC `DNAM` values, and
+the xEdit record definitions.
+
 ## XP / level curve — LOCKED
 
 Skyrim's character XP curve is authored by the GMST settings

@@ -284,8 +284,10 @@ and the `levelup xp` console command) banks the ruleset's
 `LevelReward::SkillPoints` in the saved `LevelUpPoints`. Fallout 3 grants
 `10 + INT` skill points and a perk every level. New Vegas grants `10 + INT/2`
 with the half point carried, and a perk every other level (Fallout wiki
-*Skill point*; the GMSTs both masters author, `iLevelUpSkillPointsBase` 11 and
-`Interval` 1, give FO3's rule). Points are composed by hook 10 (`Adjust
+*Skill point*). Both masters author the same `iLevelUpSkillPointsBase=11` and
+`iLevelUpSkillPointsInterval=1`; those values do not distinguish FO3 from FNV
+or derive either runtime formula. The per-game `LevelingModel` rules supply the
+awards above. Points are composed by hook 10 (`Adjust
 Gained Skill Points`: `Educated`, +3 in FO3 and +2 in FNV). With no level-up
 menu yet, the `levelup` console command spends them: a skill rises one per
 point, never past 100, and a perk point adds a perk rank (requirements are

@@ -458,8 +458,8 @@ Source: fandom *Level*. Steeper than FO4's `75·L+125`, fitting the hard caps. S
 
 **Level cap:** FO3 **20** (30 with *Broken Steel*); FNV **30** (50 with the four
 add-ons, +5 each). **Perk cadence:** FO3 = 1 perk **every level**; FNV = 1 perk
-**every other level** (well-known; not on the pages pulled so far — mark for a citing
-pass).
+**every other level**. These cadences are also represented in the games'
+`LevelingModel` data; they are not inferred from the shared skill-point GMSTs.
 
 **Level-up reward:** modify **skills** (the Skill Rate points above) + gain a perk on
 the cadence — and crucially **SPECIAL is *fixed* after chargen**: FO3/FNV grant **no**
@@ -469,6 +469,37 @@ fandom *Level* ("Level up": *"modify skills but not primary statistics … also 
 special perks"*). So `LevelReward` for FO3/FNV = `SkillPoints { base: 10, int_mult: 1.0
 (FO3) / 0.5 (FNV), perk_cadence: 1 (FO3) / 2 (FNV) }`, SPECIAL immutable; FO4 =
 `SpecialOrPerk`.
+
+## Level-up rewards and kill experience — LOCKED
+
+The authored `iLevelUpSkillPointsBase=11` and
+`iLevelUpSkillPointsInterval=1` values are identical in Fallout3.esm and
+FalloutNV.esm. They do not distinguish the games and do not derive either
+runtime award formula. The engine rules are FO3 `10 + INT` skill points and
+FNV `10 + INT/2`, carrying a half point between level-ups; perk cadence is one
+per level in FO3 and every other level in FNV. Neither game grants a SPECIAL
+point on level-up. Sources: Fallout 3 and New Vegas leveling references and the
+per-game `LevelingModel` rows.
+
+For NPC kills, the difficulty-band GMSTs select rewards of **0 / 10 / 20 / 30 /
+50 XP** (Very Easy through Very Hard) when no plugin authors an
+`iXPRewardKillNPC*` override. Each band includes victims whose level is at or
+below its `iXPLevelKill*` upper bound; levels above the final bound use Very
+Hard. The player must have dealt at least **40%** of the victim's health to
+earn kill XP. The award then passes through hook 9 (`Adjust Experience Points`)
+and the game's XP curve and cap. Source: [GECK Experience Settings]
+(https://geckwiki.com/index.php?title=Experience_Settings) and the Fallout 3 /
+New Vegas master and executable settings tables.
+
+## Bleedout and encumbrance defaults — LOCKED
+
+Fallout 3 and New Vegas use a **10-second** essential-actor bleedout timer and
+recover **30%** of undamaged health (`fEssentialDeathTime` and
+`fEssentialHealthPercentReGain`). Authored settings override those defaults.
+The Fallout movement penalty when over-encumbered is a **0.4** speed multiplier
+(`fMoveEncumEffect`), also overridable by authored game settings. Sources:
+GECK / Creation Kit settings and the Fallout 3 executable defaults, as
+captured by the engine settings tables.
 
 ## NPC stat storage — NOTE (distinct from FO4)
 
