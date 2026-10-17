@@ -21,14 +21,13 @@
 //! ## Why the blade buffer is sized the way it is
 //!
 //! [`GROUNDCOVER_MAX_CHUNKS`] × [`GROUNDCOVER_MAX_BLADES_PER_CHUNK`] ×
-//! `size_of::<GpuGroundCoverBlade>()` (16 B) = 64 MiB device-local, against
-//! the 4 GB total budget: 256 chunks × 16,384 blades since the candidate
-//! budget rose to 256 per thread on 2026-09-16 (`7996edf61`, design §12.13) —
-//! 4× the 16 MiB the original 1,024 × 1,024 and then 256 × 4,096 arenas
-//! held. The chunks the distance cull can keep at the shipped 512-unit chunk
-//! and 3000-unit draw distance bound at ~167 (the binary's
-//! `chunk_cap_covers_every_chunk_in_reach`), so this is ~1.5× headroom. The
-//! host assigns these fixed slices through a camera-centred
+//! `size_of::<GpuGroundCoverBlade>()` (16 B) = 128 MiB device-local, against
+//! the 4 GB total budget: 512 chunks × 16,384 blades since the candidate
+//! budget rose to 256 per thread on 2026-09-16 (`7996edf61`, design §12.13).
+//! At the shipped 512-unit chunk and 8000-unit draw distance, the widest
+//! allowed 180-degree view wedge reaches about 475 chunks; the binary's
+//! `chunk_cap_covers_every_chunk_in_reach` pins that the 512-slot arena covers
+//! it with headroom. The host assigns these fixed slices through a camera-centred
 //! residency ring: a chunk keeps its index while resident and newly visible
 //! chunks enter through a bounded placement queue. A change that makes the
 //! ring exceed this physical arena still fails the capacity assertion rather
