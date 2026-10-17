@@ -37,7 +37,7 @@ const MIN_HIT_CORRIDOR_BU: f32 = 4.0;
 const MUZZLE_OFFSET_BU: f32 = 2.0;
 
 /// One projectile in flight.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Projectile {
     pub position: Vec3,
     pub velocity: Vec3,
@@ -48,6 +48,10 @@ pub(crate) struct Projectile {
     pub damage: f32,
     pub shooter: EntityId,
     pub radius: f32,
+    /// Bodies owned by the shooter when this projectile launched. This list is
+    /// stable for the projectile's flight and avoids walking every physics
+    /// entity to rebuild it each frame.
+    launcher_bodies: std::sync::Arc<[byroredux_physics::RigidBodyHandle]>,
 }
 
 /// Every projectile in flight.
@@ -117,6 +121,7 @@ fn launch_of(
         damage: weapon_damage + ammo_damage.max(0.0),
         shooter: source,
         radius: proj.collision_radius.max(0.0),
+        launcher_bodies: std::sync::Arc::from([]),
     })
 }
 
@@ -135,10 +140,19 @@ pub(crate) fn projectile_launch_system(world: &World, _dt: f32) {
     else {
         return;
     };
+    let owners: Vec<_> = world
+        .query::<byroredux_physics::RapierHandles>()
+        .map(|handles| handles.iter().map(|(entity, handles)| (entity, handles.body)).collect())
+        .unwrap_or_default();
+    let mut launcher_cache = std::collections::HashMap::new();
     let mut started = Vec::new();
     for launch in launches {
         match launch_of(world, &index, launch) {
-            Ok(projectile) => {
+            Ok(mut projectile) => {
+                let bodies = launcher_cache
+                    .entry(projectile.shooter)
+                    .or_insert_with(|| std::sync::Arc::from(launcher_bodies(world, projectile.shooter, &owners)));
+                projectile.launcher_bodies = std::sync::Arc::clone(bodies);
                 log::debug!(
                     "Weapon.Fire {:08X} from {:08X}: {} damage at {} u/s",
                     launch.weapon,
@@ -157,7 +171,7 @@ pub(crate) fn projectile_launch_system(world: &World, _dt: f32) {
 }
 
 /// What a projectile's step did.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Step {
     /// Still flying, now at this projectile.
     Flying(Projectile),
@@ -200,46 +214,39 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
     };
     // Resolve body ownership before taking the physics world (the melee sweep's
     // lock order).
-    let owners: Vec<_> = world
+    let owners: std::collections::HashMap<_, _> = world
         .query::<byroredux_physics::RapierHandles>()
-        .map(|handles| handles.iter().map(|(entity, handles)| (entity, handles.body)).collect())
+        .map(|handles| handles.iter().map(|(entity, handles)| (handles.body, entity)).collect())
         .unwrap_or_default();
-    // The launcher's own colliders (its body, its children's, the bare collision
-    // entities its REFR owns): a projectile starts at the muzzle, inside them.
-    let mut launchers: std::collections::HashMap<EntityId, Vec<byroredux_physics::RigidBodyHandle>> =
-        std::collections::HashMap::new();
-    for projectile in &flying {
-        launchers
-            .entry(projectile.shooter)
-            .or_insert_with(|| launcher_bodies(world, projectile.shooter, &owners));
-    }
-    // Actors' bodies, resolved before the physics world is taken.
-    let actor_bodies: std::collections::HashSet<byroredux_physics::RigidBodyHandle> = owners
-        .iter()
-        .filter(|(entity, _)| resolve_actor(world, *entity).is_some())
-        .map(|(_, body)| *body)
-        .collect();
     let mut remaining = Vec::with_capacity(flying.len());
     let mut hits: Vec<(EntityId, EntityId, f32)> = Vec::new();
     for projectile in flying {
-        let excluded = launchers.get(&projectile.shooter).map(Vec::as_slice).unwrap_or(&[]);
+        let excluded = projectile.launcher_bodies.as_ref();
+        // The query filter visits only colliders in the cast's broadphase. Resolve
+        // actor ownership for those candidates instead of probing every physics
+        // entity before every projectile step.
+        let is_actor_body = |body| {
+            owners
+                .get(&body)
+                .is_some_and(|entity| resolve_actor(world, *entity).is_some())
+        };
         let mut hit_body = None;
         let step = {
             let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
-            advance(projectile, dt, |origin, direction, length| {
+            advance(projectile.clone(), dt, |origin, direction, length| {
                 let physics = physics.as_ref()?;
                 // Solid geometry with a thin ray (the projectile's own radius): a
                 // corridor as wide as an actor's bone boxes would start inside the
                 // wall the launcher is mounted in. Actors with the wider corridor.
                 let solid = physics.cast_ray_corridor_where(origin, direction, length, projectile.radius, &|body| {
-                    !actor_bodies.contains(&body) && !excluded.contains(&body)
+                    !is_actor_body(body) && !excluded.contains(&body)
                 });
                 let actor = physics.cast_ray_corridor_where(
                     origin,
                     direction,
                     length,
                     projectile.radius.max(MIN_HIT_CORRIDOR_BU),
-                    &|body| actor_bodies.contains(&body) && !excluded.contains(&body),
+                    &|body| is_actor_body(body) && !excluded.contains(&body),
                 );
                 let hit = match (solid, actor) {
                     (Some(solid), Some(actor)) => Some(if actor.distance <= solid.distance { actor } else { solid }),
@@ -254,15 +261,12 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
             Step::Expired => log::debug!("projectile from {} expired at {:?}", projectile.shooter, projectile.position),
             Step::Hit { distance } => {
                 let target = hit_body.and_then(|body| {
-                    owners
-                        .iter()
-                        .find_map(|(entity, handle)| (*handle == body).then_some(*entity))
-                        .and_then(|collider| resolve_actor(world, collider))
+                    owners.get(&body).and_then(|collider| resolve_actor(world, *collider))
                 });
                 log::debug!(
                     "projectile from {} hit entity {:?} after {distance:.0} u: actor {target:?}",
                     projectile.shooter,
-                    hit_body.and_then(|body| owners.iter().find_map(|(entity, handle)| (*handle == body).then_some(*entity)))
+                    hit_body.and_then(|body| owners.get(&body).copied())
                 );
                 if let Some(target) = target {
                     hits.push((target, projectile.shooter, projectile.damage));
@@ -358,6 +362,7 @@ mod tests {
             damage: 12.0,
             shooter: 7,
             radius: 1.0,
+            launcher_bodies: std::sync::Arc::from([]),
         }
     }
 
@@ -493,6 +498,40 @@ mod tests {
         let hit = events.get(actor).expect("the actor was hit");
         assert_eq!((hit.aggressor, hit.damage), (shooter, 12.0));
         assert!(events.get(wall).is_none(), "a bare wall takes no HitEvent");
+    }
+
+    #[test]
+    fn flight_ignores_the_launchers_cached_body() {
+        use byroredux_core::ecs::components::ActorVitals;
+        use byroredux_physics::PhysicsWorld;
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<byroredux_physics::RapierHandles>();
+        world.register::<ActorVitals>();
+        world.register::<Dead>();
+        world.register::<byroredux_physics::ActorColliderOwner>();
+        world.insert_resource(ActiveProjectiles::default());
+
+        let mut physics = PhysicsWorld::new();
+        let launcher_handles = physics.spawn_fixed_cuboid_handles(Vec3::splat(20.0), Vec3::new(0.0, 0.0, -50.0));
+        let actor_handles = physics.spawn_fixed_cuboid_handles(Vec3::splat(20.0), Vec3::new(0.0, 0.0, -500.0));
+        world.insert_resource(physics);
+
+        let shooter = world.spawn();
+        let actor = world.spawn();
+        world.insert(shooter, launcher_handles);
+        world.insert(actor, actor_handles);
+        world.insert(actor, ActorVitals { health: 0x3E8 });
+        world.resource_mut::<ActiveProjectiles>().0.push(Projectile {
+            shooter,
+            launcher_bodies: std::sync::Arc::from([launcher_handles.body]),
+            ..dart()
+        });
+
+        projectile_flight_system(&world, 0.5);
+        byroredux_scripting::pending_trap_hit_flush_system(&world, 0.0);
+        let hit = world.get::<byroredux_scripting::HitEvent>(actor).expect("the actor beyond the launcher is hit");
+        assert_eq!(hit.aggressor, shooter);
     }
 
     /// #5860 — a dart landing the frame a melee strike hit the same actor waits
