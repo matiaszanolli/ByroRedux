@@ -74,6 +74,21 @@ fn package_conditions_fully_modeled(
         .all(|condition| byroredux_scripting::condition::is_modeled(world, condition))
 }
 
+/// Whether a flat Dialogue package can install its ambient player-facing
+/// conversation bridge. Keep this gate shared by package selection and
+/// installation so a declined package cannot starve lower scheduled work.
+fn dialogue_installs_ambient(package: &PackRecord, world: &World) -> bool {
+    let targets_player = match package.target.map(|target| target.target) {
+        None => true,
+        Some(PackTargetKind::SpecificReference(0x0000_0014)) => true,
+        Some(_) => false,
+    };
+
+    package_conditions_fully_modeled(&package.conditions, world)
+        && targets_player
+        && package.dialogue_type == 0
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum AmbientBehavior {
     Sandbox {
@@ -287,15 +302,7 @@ impl AmbientBehavior {
             // static check is exact: a PTDT that names anything else
             // (or names an object/other kind) greets its authored
             // reference, not the player.
-            let targets_player = match package.target.map(|target| target.target) {
-                None => true,
-                Some(PackTargetKind::SpecificReference(0x0000_0014)) => true,
-                Some(_) => false,
-            };
-            if package_conditions_fully_modeled(&package.conditions, world)
-                && targets_player
-                && package.dialogue_type == 0
-            {
+            if dialogue_installs_ambient(package, world) {
                 Some(Self::Dialogue {
                     topic: package.dialogue_topic,
                 })
@@ -306,7 +313,10 @@ impl AmbientBehavior {
                     package.form_id,
                     package.editor_id,
                     package_conditions_fully_modeled(&package.conditions, world),
-                    targets_player,
+                    matches!(
+                        package.target.map(|target| target.target),
+                        None | Some(PackTargetKind::SpecificReference(0x0000_0014))
+                    ),
                     package.dialogue_type,
                 );
                 None
@@ -762,21 +772,13 @@ fn select_active_package<'a>(
     let context = ConditionContext::for_subject(actor);
     byroredux_plugin::esm::records::active_package(packages, game_hour, |package| {
         package_conditions_pass(&package.conditions, world, &context)
-            // #5499 — #5376's install gates decline a Dialogue package
-            // whose conditions pass only through fail-open (any
-            // uncatalogued CTDA function passes the list), but selection
-            // still crowned it winner and recorded the FormID, so every
-            // later minute tick re-selected the same package and the
-            // actor ran NO ambient procedure for as long as the schedule
-            // covered the hour — 56 FNV and 57 FO3 NPC bases standing at
-            // their spawn point around the clock (Goodsprings' Sunny,
-            // Primm's troopers, the Boomer gate guards), each with a
-            // runnable Eat/Sleep/Sandbox/Travel package scheduled below
-            // the declined one. The scan now continues past such a
-            // package to the next eligible one; the fail-open policy is
-            // unchanged for every other procedure.
+            // #5499 / #5722 — skip any Dialogue package the installer
+            // would decline: fail-open conditions, non-player targets, or
+            // Say-To type. This leaves the scan free to choose the next
+            // runnable package below it. The fail-open policy is unchanged
+            // for every other procedure.
             && (package.procedure_type != PROCEDURE_DIALOGUE
-                || package_conditions_fully_modeled(&package.conditions, world))
+                || dialogue_installs_ambient(package, world))
     })
 }
 
@@ -1278,19 +1280,28 @@ mod tests {
             target: PackTargetKind::SpecificReference(0x000E_27FC),
             count_or_distance: 0,
         });
-        let (world, actor) = setup_actor(12.0, vec![offtarget]);
+        let (world, actor) =
+            setup_actor(12.0, vec![offtarget, pack(0x604, PROCEDURE_SANDBOX, None)]);
         assert!(
             !world.has::<crate::systems::forcegreet::ForceGreetDirective>(actor),
             "a package targeting another reference must not force a player conversation"
+        );
+        assert!(
+            world.has::<byroredux_core::ecs::components::SandboxBehavior>(actor),
+            "selection skips the fully-modeled off-target Dialogue package"
         );
 
         // Say-To (dialogue_type 1): one spoken line, no menu.
         let mut say_to = pack(0x602, PROCEDURE_DIALOGUE, None);
         say_to.dialogue_type = 1;
-        let (world, actor) = setup_actor(12.0, vec![say_to]);
+        let (world, actor) = setup_actor(12.0, vec![say_to, pack(0x605, PROCEDURE_SANDBOX, None)]);
         assert!(
             !world.has::<crate::systems::forcegreet::ForceGreetDirective>(actor),
             "a Say-To package is a spoken line, not a player conversation"
+        );
+        assert!(
+            world.has::<byroredux_core::ecs::components::SandboxBehavior>(actor),
+            "selection skips the fully-modeled Say-To Dialogue package"
         );
 
         // #5499 — the decline is now a *selection* decision: a fail-open
