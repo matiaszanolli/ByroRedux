@@ -736,8 +736,8 @@ impl PhysicsWorld {
     /// body sits at its placement origin and an exterior terrain tile's
     /// at the world origin, so the old midpoint played a clutter impact
     /// 300 m out at ~150 m, past any attenuation range. Falls back to
-    /// the dynamic side's body translation when the pair has no solver
-    /// contacts (a force threshold can cross while the shapes merely
+    /// the dynamic side's body translation when the pair is gone or has
+    /// no solver contacts (a force threshold can cross while the shapes merely
     /// overlap), then to the origin midpoint. `None` when either
     /// collider is a dead handle or has no parent body.
     pub fn contact_event_position(&self, event: &ContactForceEvent) -> Option<Vec3> {
@@ -765,12 +765,12 @@ impl PhysicsWorld {
             if let Some((_, position)) = deepest {
                 return Some(position);
             }
-            for handle in [a, b] {
-                if let Some(body) = self.bodies.get(handle) {
-                    if body.is_dynamic() {
-                        let p = body.translation();
-                        return Some(Vec3::new(p.x, p.y, p.z));
-                    }
+        }
+        for handle in [a, b] {
+            if let Some(body) = self.bodies.get(handle) {
+                if body.is_dynamic() {
+                    let p = body.translation();
+                    return Some(Vec3::new(p.x, p.y, p.z));
                 }
             }
         }
@@ -4458,6 +4458,63 @@ mod tests {
         assert!(
             (position - old_midpoint).length() > 100.0,
             "the fix must move the sound hundreds of metres from the old origin midpoint"
+        );
+    }
+
+    #[test]
+    fn contact_event_position_uses_dynamic_body_when_pair_is_gone() {
+        let mut w = PhysicsWorld::new();
+        let terrain = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        let terrain_collider = w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(200.0, 10.0, 200.0)
+                .translation(Vector::new(300.0, -10.0, 200.0))
+                .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+                .build(),
+            terrain,
+            &mut w.bodies,
+        );
+        let ball = w.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(300.0, 8.0, 200.0))
+                .build(),
+        );
+        let ball_collider = w.colliders.insert_with_parent(
+            ColliderBuilder::ball(0.5)
+                .density(1.0)
+                .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+                .build(),
+            ball,
+            &mut w.bodies,
+        );
+        w.dynamic_bodies.push(ball);
+        w.wake();
+
+        let event = (0..240)
+            .find_map(|_| {
+                w.step(PHYSICS_DT);
+                w.take_contact_force_events()
+                    .into_iter()
+                    .find(|event| event.started)
+            })
+            .expect("dropping a ball onto the tile must cross the threshold");
+        w.bodies
+            .get_mut(ball)
+            .unwrap()
+            .set_translation(Vector::new(300.0, 100.0, 200.0), true);
+        w.step(PHYSICS_DT);
+        assert!(
+            w.narrow_phase
+                .contact_pair(terrain_collider, ball_collider)
+                .is_none(),
+            "the old contact pair must be gone while its queued event is resolved"
+        );
+
+        let position = w.contact_event_position(&event).unwrap();
+        let current = w.bodies.get(ball).unwrap().translation();
+        assert_eq!(position, Vec3::new(current.x, current.y, current.z));
+        assert!(
+            (position.x - 150.0).abs() > 100.0 && (position.z - 100.0).abs() > 50.0,
+            "the dynamic-side fallback must avoid the terrain body's origin midpoint: {position:?}"
         );
     }
 
