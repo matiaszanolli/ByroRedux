@@ -114,6 +114,9 @@ fn no_block_sizes_drift_detector_has_zero_false_positives_on_real_corpus() {
     let mut footer_mismatches = Vec::new();
     let mut stale_tail_files_seen = BTreeSet::new();
     let mut footer_files_checked = 0usize;
+    let mut extract_failures = 0usize;
+    let mut parse_failures = 0usize;
+    let mut failure_samples = Vec::new();
 
     for name in ARCHIVE_NAMES {
         let path = data_dir.join(name);
@@ -130,8 +133,15 @@ fn no_block_sizes_drift_detector_has_zero_false_positives_on_real_corpus() {
             .collect();
         for f in &files {
             total_files += 1;
-            let Ok(bytes) = archive.extract(f) else {
-                continue;
+            let bytes = match archive.extract(f) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    extract_failures += 1;
+                    if failure_samples.len() < 10 {
+                        failure_samples.push(format!("{name}:{f} extract: {error}"));
+                    }
+                    continue;
+                }
             };
             let (scene, consumed) = match byroredux_nif::parse_nif_with_options_and_consumed(
                 &bytes,
@@ -139,13 +149,19 @@ fn no_block_sizes_drift_detector_has_zero_false_positives_on_real_corpus() {
             ) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    footer_mismatches.push(format!("{name}:{f} (parse error: {error})"));
+                    parse_failures += 1;
+                    if failure_samples.len() < 10 {
+                        failure_samples.push(format!("{name}:{f} parse: {error}"));
+                    }
                     continue;
                 }
             };
             let Ok((header, block_data_offset)) = byroredux_nif::header::NifHeader::parse(&bytes)
             else {
-                footer_mismatches.push(format!("{name}:{f} (header parse failed after NIF parse)"));
+                parse_failures += 1;
+                if failure_samples.len() < 10 {
+                    failure_samples.push(format!("{name}:{f} header parse failed after NIF parse"));
+                }
                 continue;
             };
             if header.version < byroredux_nif::version::NifVersion::V5_0_0_1
@@ -218,6 +234,14 @@ fn no_block_sizes_drift_detector_has_zero_false_positives_on_real_corpus() {
         FIRST_FEW.lock().unwrap(),
     );
     assert!(footer_files_checked > 0, "no sizeless Oblivion footer was checked");
+    assert_eq!(
+        extract_failures, 0,
+        "failed to extract {extract_failures} of {total_files} NIF entries; first failures: {failure_samples:#?}",
+    );
+    assert_eq!(
+        parse_failures, 0,
+        "failed to parse {parse_failures} of {total_files} NIF entries; first failures: {failure_samples:#?}",
+    );
     assert!(
         footer_mismatches.is_empty(),
         "sizeless Oblivion NIFs must end at the root footer, except for the eight known stale-tail terrain LOD files: {footer_mismatches:#?}",
