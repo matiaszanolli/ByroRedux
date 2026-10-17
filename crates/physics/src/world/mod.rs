@@ -297,9 +297,10 @@ pub struct PhysicsWorld {
     /// ECS collision-event consumer exists).
     event_collector: ChannelEventCollector,
     contact_force_rx: std::sync::Mutex<std::sync::mpsc::Receiver<ContactForceEvent>>,
-    // NOTE: a `Mutex`, not a bare `Receiver` — the narrow phase invokes the
-    // event handler from rayon workers, so `PhysicsWorld` must stay `Sync`,
-    // and `std::sync::mpsc::Receiver` is not. Single-consumer either way.
+    // NOTE: a `Mutex`, not a bare `Receiver` — `Receiver` is `!Sync`, while
+    // `PhysicsWorld` is a `Sync` ECS resource. With Rapier's `parallel`
+    // feature enabled, the narrow-phase callback may also run on rayon
+    // workers; this build does not enable that feature. Single-consumer either way.
     /// The `started` force-threshold crossings drained from the channel
     /// over the last `step`, taken by [`Self::take_contact_force_events`]
     /// (the Wave-4 clutter-impact consumer). Cleared once at `step` entry
