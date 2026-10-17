@@ -154,6 +154,37 @@ fn humanoid_chain(world: &mut World) -> (EntityId, Vec<EntityId>) {
     (root, bones)
 }
 
+fn dead_pose_world(rename_body: Option<usize>) -> (World, EntityId, EntityId) {
+    let mut world = World::new();
+    let (root, bones) = humanoid_chain(&mut world);
+    if let Some(index) = rename_body {
+        let symbol = world
+            .resource_mut::<byroredux_core::string::StringPool>()
+            .intern("Wolf Tail01");
+        world.insert(bones[index], byroredux_core::ecs::Name(symbol));
+    }
+    world.register::<byroredux_core::ecs::components::Dead>();
+    world.register::<crate::components::AnimationTarget>();
+    world.register::<byroredux_physics::Ragdoll>();
+    world.register::<crate::ragdoll::RagdollActive>();
+    world.insert_resource(byroredux_physics::PhysicsWorld::new());
+    world.insert(
+        root,
+        crate::components::AnimationTarget {
+            skeleton_root: root,
+            consumed_idle_serial: 0,
+        },
+    );
+    world.insert(root, byroredux_core::ecs::components::Dead);
+    let mut entries = vec![entry([0.0; 3], [0.0; 3]); 18];
+    entries[0] = entry([0.0; 3], [-std::f32::consts::FRAC_PI_2, 0.0, 0.0]);
+    world.insert(
+        root,
+        crate::ragdoll_pose::AuthoredRagdollPose(entries),
+    );
+    (world, root, bones[0])
+}
+
 #[test]
 fn posing_sets_local_rotations_and_recomposes_globals() {
     let mut world = World::new();
@@ -196,6 +227,66 @@ fn a_non_humanoid_ragdoll_is_not_posed() {
     let before = world.get::<Transform>(bones[1]).unwrap().rotation;
     assert!(pose_skeleton(&world, root, &entries).is_err());
     assert_eq!(world.get::<Transform>(bones[1]).unwrap().rotation, before);
+}
+
+#[test]
+fn death_reconciliation_applies_and_consumes_the_authored_xrgd_pose() {
+    let (world, actor, com) = dead_pose_world(None);
+
+    let note = crate::combat::reconcile_dead_actor(&world, actor);
+
+    assert!(note.starts_with("; posed 18 bones from XRGD"), "{note}");
+    assert_eq!(world.get::<Transform>(com).unwrap().translation, Vec3::ZERO);
+    assert!(world.get::<crate::ragdoll_pose::AuthoredRagdollPose>(actor).is_none());
+    assert!(world.get::<crate::ragdoll::RagdollActive>(actor).is_some());
+}
+
+#[test]
+fn death_reconciliation_consumes_a_refused_pose_and_still_activates() {
+    let (world, actor, com) = dead_pose_world(Some(5));
+
+    let note = crate::combat::reconcile_dead_actor(&world, actor);
+
+    assert!(note.starts_with("; XRGD pose not applied"), "{note}");
+    assert_eq!(
+        world.get::<Transform>(com).unwrap().translation,
+        Vec3::new(0.0, 69.0, 0.0),
+        "refusal leaves the spawn pose for ordinary ragdoll activation"
+    );
+    assert!(world.get::<crate::ragdoll_pose::AuthoredRagdollPose>(actor).is_none());
+    assert!(world.get::<crate::ragdoll::RagdollActive>(actor).is_some());
+}
+
+#[test]
+fn starts_dead_spawn_parks_xrgd_before_queuing_reconciliation() {
+    let source = include_str!("cell_loader/references/mod.rs");
+    let start = source.find("pub(super) fn load_references_budgeted").unwrap();
+    let loader = &source[start..];
+    let gate = loader
+        .find("if placed_ref.starts_dead && !placed_ref.ragdoll_pose.is_empty()")
+        .expect("XRGD pose parking stays gated on Starts Dead and a non-empty pose");
+    let body = &loader[gate..];
+    let insert = body
+        .find("AuthoredRagdollPose(")
+        .expect("pose is parked on the actor root");
+    let reconcile = body
+        .find("apply_starts_dead(world, root)")
+        .expect("dead reconciliation is queued");
+    assert!(insert < reconcile, "the pose must be parked before death reconciliation");
+}
+
+#[test]
+fn reconciliation_poses_before_ragdoll_activation() {
+    let source = include_str!("combat.rs");
+    let start = source.find("pub(crate) fn reconcile_dead_actor").unwrap();
+    let reconcile = &source[start..source[start..].find("\n}\n").unwrap() + start];
+    let pose = reconcile
+        .find("pose_skeleton(world, skeleton_root, &pose.0)")
+        .expect("the parked XRGD pose is applied");
+    let activate = reconcile
+        .find("match crate::ragdoll::activate_ragdoll(world, skeleton_root)")
+        .expect("death reconciliation activates the ragdoll");
+    assert!(pose < activate, "the XRGD pose must be applied before activation seeds bodies");
 }
 
 #[test]
