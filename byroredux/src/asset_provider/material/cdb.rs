@@ -17,6 +17,9 @@ use byroredux_sfmaterial::{CdbHeaderInfo, CdbMaterial, ComponentDatabaseFile, Ma
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// At most one CDB index build may hold its inflated archive payload at once.
+static CDB_BUILD_GATE: Mutex<()> = Mutex::new(());
+
 /// True for a Starfield component-database path — the base
 /// `materials\materialsbeta.cdb` or any DLC/Creation-namespaced
 /// `materials\creations\<plugin>\materialsbeta.cdb`. #1571 / SF-D3-03.
@@ -102,9 +105,16 @@ pub(crate) fn sf_cdb_index_cache() -> &'static Mutex<HashMap<String, CdbIndexSlo
 /// it when absent. The returned `Arc` is the caller's own handle: an eviction
 /// racing a build cannot lose the build's result for that caller.
 fn cdb_index_slot(key: &str) -> CdbIndexSlot {
-    let mut cache = sf_cdb_index_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cdb_index_slot_with_inserted(key).0
+}
+
+/// Return the shared slot and whether this call installed it.
+fn cdb_index_slot_with_inserted(key: &str) -> (CdbIndexSlot, bool) {
+    let mut cache = sf_cdb_index_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(slot) = cache.get(key) {
-        return Arc::clone(slot);
+        return (Arc::clone(slot), false);
     }
     if cache.len() >= SF_CDB_CACHE_MAX_ENTRIES {
         if let Some(evicted) = cache.keys().next().cloned() {
@@ -113,7 +123,7 @@ fn cdb_index_slot(key: &str) -> CdbIndexSlot {
     }
     let slot = CdbIndexSlot::default();
     cache.insert(key.to_owned(), Arc::clone(&slot));
-    slot
+    (slot, true)
 }
 
 /// Test-only direct injection of a prebuilt index under a cache key —
@@ -139,8 +149,13 @@ pub(crate) fn sf_cdb_index_cache_insert_for_test(key: &str, index: Arc<MaterialI
 fn cdb_material_index(source: &str, inner: &str) -> Option<Arc<MaterialIndex>> {
     let key = format!("{source}|{inner}");
     cdb_index_slot(&key)
-        .get_or_init(|| build_cdb_material_index(source, inner))
+        .get_or_init(|| build_cdb_material_index_serialized(source, inner))
         .clone()
+}
+
+fn build_cdb_material_index_serialized(source: &str, inner: &str) -> Option<Arc<MaterialIndex>> {
+    let _gate = CDB_BUILD_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    build_cdb_material_index(source, inner)
 }
 
 /// The un-memoised build behind [`cdb_material_index`]'s slot.
@@ -196,28 +211,23 @@ fn build_cdb_material_index(source: &str, inner: &str) -> Option<Arc<MaterialInd
 /// discovery instead of landing inside the first `.mat` merge (or, worse, a
 /// streamed apply slice that `FrameTimeBudget` cannot preempt).
 ///
-/// The result is published through the same slot [`cdb_material_index`]
-/// reads, so a lookup that arrives mid-build parks on that build rather than
-/// starting a second one. Prefetch builds are serialised process-wide by
-/// `PREFETCH_GATE`: each holds the ~105 MB inflated blob plus the index, so
-/// N discovered CDBs must not peak at N× that at once. A slot that already
-/// exists (built, building, or memoised failed) is left alone.
+/// The slot is installed synchronously before the worker is queued. Any
+/// lookup that reaches a still-queued CDB therefore parks on its slot, and
+/// the shared build gate inside the slot initializer serialises both
+/// prefetch and lazy builds. Each build holds the ~105 MB inflated blob plus
+/// the index, so N discovered CDBs must not peak at N× that at once. A slot
+/// that already exists (built, building, or memoised failed) is left alone.
 fn prefetch_cdb_material_index(source: &str, inner: &str) {
-    static PREFETCH_GATE: Mutex<()> = Mutex::new(());
     let key = format!("{source}|{inner}");
-    if sf_cdb_index_cache()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains_key(&key)
-    {
+    let (slot, inserted) = cdb_index_slot_with_inserted(&key);
+    if !inserted {
         return;
     }
     let (source, inner) = (source.to_owned(), inner.to_owned());
     let spawned = std::thread::Builder::new()
         .name("sf-cdb-index".to_owned())
         .spawn(move || {
-            let _gate = PREFETCH_GATE.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = cdb_material_index(&source, &inner);
+            let _ = slot.get_or_init(|| build_cdb_material_index_serialized(&source, &inner));
         });
     if let Err(e) = spawned {
         // The lookup path still builds lazily; prefetch is only an overlap.
@@ -525,6 +535,62 @@ mod tests {
         );
         assert!(cdb_material_index(source, inner).is_none());
 
+        sf_cdb_index_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+    }
+
+    /// A queued prefetch owns its single-flight slot before its worker can
+    /// take the shared build gate, so a lookup waits instead of building
+    /// outside the gate on the calling thread.
+    #[test]
+    fn lookup_waits_for_a_queued_prefetch_slot() {
+        let gate = CDB_BUILD_GATE.lock().unwrap_or_else(|e| e.into_inner());
+        let source = "byroredux-cdb-test:queued-prefetch.ba2";
+        let inner = "materials\\materialsbeta.cdb";
+        let key = format!("{source}|{inner}");
+        sf_cdb_index_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+
+        prefetch_cdb_material_index(source, inner);
+        let slot = sf_cdb_index_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .cloned()
+            .expect("prefetch installs its slot before queuing the worker");
+        assert!(
+            slot.get().is_none(),
+            "the held gate keeps the queued slot empty"
+        );
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let lookup = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(cdb_material_index(source, inner).is_none())
+                .unwrap();
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("lookup thread started");
+        assert!(
+            matches!(
+                result_rx.recv_timeout(std::time::Duration::from_millis(250)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "lookup must park on the queued slot until the serialized build can run"
+        );
+
+        drop(gate);
+        assert!(result_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the queued CDB build completed"));
+        lookup.join().unwrap();
         sf_cdb_index_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
