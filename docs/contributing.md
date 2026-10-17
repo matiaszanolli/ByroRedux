@@ -309,6 +309,14 @@ no shader source/artifact drift, and NIF heap allocation stays within budget.
 The integration tests (`--ignored`) are not in CI — they require game
 data files that cannot be redistributed.
 
+The real-data corpus workflow (`.github/workflows/real-data-gates.yml`) is
+manual-only because this repository currently has no registered
+`byroredux-game-data` self-hosted runner. Its scheduled trigger is disabled;
+dispatching it without that runner will queue the data jobs without executing
+them. Run the suites above locally, and do not treat a queued or cancelled
+workflow run as a passing gate. Restore the schedule after registering the
+runner (#5905).
+
 ---
 
 ## Conventions

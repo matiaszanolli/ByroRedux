@@ -1,16 +1,24 @@
 name: Real-data corpus gates
 
+# MANUAL-ONLY: this repository currently has no registered runner with the
+# `byroredux-game-data` label. The schedule is disabled so nightly runs do not
+# queue forever or get mistaken for passing coverage. Re-enable it only after
+# that runner is registered; until then, run the documented suites locally.
+# See #5905.
+
 # #3919 — `ci.yml` runs `cargo test --workspace`, which never executes an
 # `#[ignore]`d test, and the three NIF corpus harnesses that catch a vanilla-
 # content parse regression (`parse_real_nifs`, `per_block_baselines`,
 # `block_coverage_baselines`) are all `#[ignore]`d because they need game data.
 # #3918 dropped 296 `NiSkinPartition` blocks across two shipped titles and sat
 # on `main` for two days with CI green; the gate that would have named the
-# exact block and delta was never invoked. This lane runs those harnesses
-# nightly on the self-hosted runner that carries game data, one job per title
-# so a red result names the game, with `BYROREDUX_REQUIRE_GAME_DATA=1` (#3850)
-# so an absent corpus is a failed job rather than a silent `ok`, and a post-run
-# check that the title's filter matched at least one test.
+# exact block and delta was never invoked. The lane was designed to run those
+# harnesses nightly on the self-hosted runner that carries game data, one job
+# per title so a red result names the game, with
+# `BYROREDUX_REQUIRE_GAME_DATA=1` (#3850) so an absent corpus is a failed job
+# rather than a silent `ok`, and a post-run check that the title's filter
+# matched at least one test. It is manual-only until that runner is registered
+# (#5905).
 #
 # #4659 — the `parsers` job generalises the same gate to the non-NIF readers of
 # game-archive input (BSA/BA2/CSG, BGSM/BGEM, Starfield CDB, Havok HKX,
@@ -24,8 +32,6 @@ name: Real-data corpus gates
 # `BYROREDUX_REQUIRE_GAME_DATA=1`, and no lane ever built the crate.
 
 on:
-  schedule:
-    - cron: '17 4 * * *'
   workflow_dispatch:
     inputs:
       game:
