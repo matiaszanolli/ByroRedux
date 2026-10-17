@@ -892,6 +892,20 @@ mod lod_source_tests {
     }
 
     #[test]
+    fn oblivion_inherit_all_parse_stamp_routes_child_lod_to_tamriel() {
+        // The plugin parser pins that an Oblivion WNAM child with no PNAM
+        // receives the 0x1B inherit-all stamp. Feed that parsed shape through
+        // the production source walk: terrain LOD must use the root's quads.
+        let mut map = HashMap::new();
+        map.insert("tamriel".to_string(), world(0x01, None, 0));
+        map.insert(
+            "bravilworld".to_string(),
+            world(0x02, Some(0x01), 0x1B),
+        );
+        assert_eq!(lod_source_worldspace(&map, "bravilworld"), "tamriel");
+    }
+
+    #[test]
     fn child_without_the_bit_keeps_itself() {
         let map = chain();
         assert_eq!(lod_source_worldspace(&map, "dcworld01"), "dcworld01");
