@@ -2317,7 +2317,7 @@ mod tests {
         );
         assert!(
             executable.contains(
-                "bool glassIORAllowed = isGlass && !isThinGlass\n&& reflectionGlassRayEnabled && !isWindow;"
+                "bool glassIORAllowed = isGlass && !isThinGlass\n&& reflectionGlassRayEnabled && !isWindow && !viewRestirRaw;"
             ) && !executable.contains("rtLOD < RT_LOD_IOR"),
             "thick glass transmission must be adaptive-quality bounded, not distance-disabled"
         );

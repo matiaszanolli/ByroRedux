@@ -214,6 +214,7 @@ void main() {
     bool viewFacingRatio = debugMode == RENDER_DEBUG_FACING_RATIO;
     bool viewRestirLight = debugMode == RENDER_DEBUG_RESTIR_LIGHT;
     bool viewRestirHistory = debugMode == RENDER_DEBUG_RESTIR_HISTORY;
+    bool viewRestirRaw = viewRestirHistory || viewRestirLight;
     // The water oracles are drawn by water.frag; everything else recedes.
     bool viewWaterDebug = debugMode == RENDER_DEBUG_WATER_TERM
         || debugMode == RENDER_DEBUG_WATER_NORMAL
@@ -1908,7 +1909,7 @@ void main() {
         albedo   = glassBase * fragColor.rgb;
     }
 
-    if (isWindow && reflectionGlassRayEnabled) {
+    if (isWindow && reflectionGlassRayEnabled && !viewRestirRaw) {
         // Fire the portal-escape ray through the glass plane, along the
         // pane's normal axis, not along `-V` (camera look direction).
         // Pre-#421 the ray used `-V`, which at oblique viewing angles
@@ -2101,7 +2102,7 @@ void main() {
     // between this path and the fallback, producing screen-space checkerboard
     // blocks. Thin glass stays wholly on the shared, zero-ray Fresnel path.
     bool glassIORAllowed = isGlass && !isThinGlass
-        && reflectionGlassRayEnabled && !isWindow;
+        && reflectionGlassRayEnabled && !isWindow && !viewRestirRaw;
     int refractPassthruBudget = 2;
     if (glassIORAllowed) {
         uint budgetTier = min(rayBudget.qualityTier, uint(MAX_RAY_QUALITY_TIER));

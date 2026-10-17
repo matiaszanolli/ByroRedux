@@ -486,6 +486,37 @@ mod tests {
         assert!(!substrate.contains("reservoirsCurr["));
     }
 
+    #[test]
+    fn raw_restir_views_bypass_portal_and_thick_glass_early_returns() {
+        let src = include_str!("../../shaders/triangle.frag");
+        assert!(src.contains("bool viewRestirRaw = viewRestirHistory || viewRestirLight;"));
+        assert!(src.contains("if (isWindow && reflectionGlassRayEnabled && !viewRestirRaw)"));
+        assert!(src.contains(
+            "bool glassIORAllowed = isGlass && !isThinGlass\n        && reflectionGlassRayEnabled && !isWindow && !viewRestirRaw;"
+        ));
+
+        let portal = src
+            .find("if (isWindow && reflectionGlassRayEnabled && !viewRestirRaw)")
+            .expect("window portal path must be bypassed for raw ReSTIR views");
+        let thick_glass = src
+            .find("bool glassIORAllowed = isGlass && !isThinGlass")
+            .expect("thick-glass IOR path must be bypassed for raw ReSTIR views");
+        let history_view = src
+            .find("if (viewRestirHistory)")
+            .expect("raw ReSTIR history view must remain at the finalized output");
+        assert!(portal < history_view && thick_glass < history_view);
+
+        // ReSTIR debug views are triangle-fragment diagnostics; water and
+        // composite shaders have no corresponding late raw-view branch.
+        for sibling in [
+            include_str!("../../shaders/water.frag"),
+            include_str!("../../shaders/composite.frag"),
+        ] {
+            assert!(!sibling.contains("RENDER_DEBUG_RESTIR_HISTORY"));
+            assert!(!sibling.contains("RENDER_DEBUG_RESTIR_LIGHT"));
+        }
+    }
+
     /// #5617 — the numbers behind those names. The shader reads them from the
     /// generated header, so the values are pinned here (not as literals in
     /// `triangle.frag`) and the header must carry every one; a retune is one

@@ -6597,8 +6597,9 @@ fn window_portal_ray_leaves_the_pane_away_from_the_viewer() {
 #[test]
 fn window_portal_orients_gate_ray_and_sky_sample_from_the_viewer() {
     let frag = include_str!("../../../shaders/triangle.frag");
+    assert!(frag.contains("if (isWindow && reflectionGlassRayEnabled && !viewRestirRaw) {"));
     let block = frag
-        .split_once("if (isWindow && reflectionGlassRayEnabled) {")
+        .split_once("if (isWindow && reflectionGlassRayEnabled && !viewRestirRaw) {")
         .expect("triangle.frag lost the window-portal block")
         .1
         .split_once("float glassFresnel = 0.0;")
