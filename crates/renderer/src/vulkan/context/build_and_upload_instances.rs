@@ -28,6 +28,62 @@ use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use ash::vk;
 use std::time::Instant;
 
+/// Fold material and stable ambient inputs into the progressive SVGF key.
+/// Continuous cloud motion and weather animation time are omitted so they do
+/// not keep the whole image at the recovery alpha floor.
+fn fold_svgf_scene_inputs(
+    mut key: u64,
+    materials: &[GpuMaterial],
+    fog_inputs: &[f32],
+    sky: &SkyParams,
+) -> u64 {
+    fn fold_floats(key: &mut u64, values: &[f32]) {
+        for value in values {
+            *key = crate::vulkan::caustic::fold_caustic_key_f32(*key, *value);
+        }
+    }
+
+    key = crate::vulkan::caustic::fold_caustic_key_u64(key, materials.len() as u64);
+    for material in materials {
+        key = crate::vulkan::caustic::fold_caustic_key_u64(
+            key,
+            super::super::material::hash_gpu_material_fields(material),
+        );
+    }
+    fold_floats(&mut key, fog_inputs);
+    fold_floats(&mut key, &sky.zenith_color);
+    fold_floats(&mut key, &sky.exterior_zenith_color);
+    fold_floats(&mut key, &sky.horizon_color);
+    fold_floats(&mut key, &sky.lower_color);
+    fold_floats(&mut key, &sky.sun_direction);
+    fold_floats(&mut key, &sky.sun_color);
+    fold_floats(&mut key, &[sky.sun_size, sky.sun_intensity, sky.sun_angular_radius]);
+    fold_floats(&mut key, &sky.sun_illuminance);
+    fold_floats(&mut key, &sky.portal_sun_radiance);
+    fold_floats(&mut key, &sky.portal_sun_direction);
+    key = crate::vulkan::caustic::fold_caustic_key_u64(key, sky.is_exterior as u64);
+    key = crate::vulkan::caustic::fold_caustic_key_u64(key, sky.interior_show_sky as u64);
+    key = crate::vulkan::caustic::fold_caustic_key_u64(key, sky.sun_texture_index as u64);
+    if let Some(dalc) = sky.dalc_cube {
+        key = crate::vulkan::caustic::fold_caustic_key_u64(key, 1);
+        for axis in [
+            dalc.pos_x,
+            dalc.neg_x,
+            dalc.pos_y,
+            dalc.neg_y,
+            dalc.pos_z,
+            dalc.neg_z,
+            dalc.specular,
+        ] {
+            fold_floats(&mut key, &axis);
+        }
+        fold_floats(&mut key, &[dalc.fresnel_power]);
+    } else {
+        key = crate::vulkan::caustic::fold_caustic_key_u64(key, 0);
+    }
+    key
+}
+
 /// Output of [`VulkanContext::build_and_upload_instances`] — the locals
 /// `draw_frame`'s own tail (bookkeeping after `record_geometry_pass`) and
 /// the immediately-following `record_geometry_pass` / `record_post_passes`
@@ -735,6 +791,27 @@ impl VulkanContext {
                     crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, *v);
             }
         }
+        // #5767 — materials and stable ambient/fog inputs also determine
+        // the filtered indirect-light image, including time-of-day changes.
+        let material_count = materials.len().min(scene_buffer::MAX_MATERIALS);
+        caustic_scene_key = fold_svgf_scene_inputs(
+            caustic_scene_key,
+            &materials[..material_count],
+            &[
+                fog_color[0],
+                fog_color[1],
+                fog_color[2],
+                fog_near,
+                fog_far,
+                fog_extinction_per_meter,
+                fog_single_scatter_albedo,
+                fog_scale_height_meters,
+                fog_clip,
+                fog_power,
+                fog_height_reference,
+            ],
+            sky_params,
+        );
         // The accumulator's history is valid only when nothing that
         // determines a splat's landing point changed: the camera (the
         // pre-#2468 gate), the light rig or caustic-source placement (the
@@ -2184,5 +2261,47 @@ mod instance_capacity_growth_pin {
         assert!(acquire.contains(".tick_retired_instance_buffers(&self.device, alloc);"));
         let descriptors = include_str!("../scene_buffer/descriptors.rs");
         assert!(descriptors.contains("self.retired_instance_buffers\n            .drain("));
+    }
+}
+
+#[cfg(test)]
+mod svgf_scene_input_key_tests {
+    use super::fold_svgf_scene_inputs;
+    use crate::vulkan::context::SkyParams;
+    use crate::vulkan::material::GpuMaterial;
+
+    #[test]
+    fn material_fog_and_sky_changes_rekey_progressive_history() {
+        let material = GpuMaterial::default();
+        let sky = SkyParams::default();
+        let key = fold_svgf_scene_inputs(17, &[material], &[0.1, 100.0], &sky);
+
+        let mut emissive = material;
+        emissive.emissive_mult += 1.0;
+        assert_ne!(key, fold_svgf_scene_inputs(17, &[emissive], &[0.1, 100.0], &sky));
+        assert_ne!(key, fold_svgf_scene_inputs(17, &[material], &[0.2, 100.0], &sky));
+
+        let mut changed_sky = SkyParams::default();
+        changed_sky.sun_illuminance[0] += 1.0;
+        assert_ne!(
+            key,
+            fold_svgf_scene_inputs(17, &[material], &[0.1, 100.0], &changed_sky)
+        );
+        changed_sky = SkyParams::default();
+        changed_sky.zenith_color[1] += 1.0;
+        assert_ne!(
+            key,
+            fold_svgf_scene_inputs(17, &[material], &[0.1, 100.0], &changed_sky)
+        );
+    }
+
+    #[test]
+    fn continuously_scrolling_clouds_do_not_rekey_history() {
+        let material = GpuMaterial::default();
+        let mut sky = SkyParams::default();
+        let key = fold_svgf_scene_inputs(23, &[material], &[], &sky);
+        sky.cloud_scroll[0] += 0.25;
+        sky.weather_time_seconds += 5.0;
+        assert_eq!(key, fold_svgf_scene_inputs(23, &[material], &[], &sky));
     }
 }

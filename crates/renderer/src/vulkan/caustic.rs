@@ -175,6 +175,12 @@ pub(crate) fn fold_caustic_key_f32(key: u64, v: f32) -> u64 {
     (key ^ v.to_bits() as u64).wrapping_mul(CAUSTIC_KEY_PRIME)
 }
 
+/// Fold an already-computed content hash into a caustic scene key.
+#[inline]
+pub(crate) fn fold_caustic_key_u64(key: u64, value: u64) -> u64 {
+    (key ^ value).wrapping_mul(CAUSTIC_KEY_PRIME)
+}
+
 /// Start a caustic scene key. See [`fold_caustic_key_f32`].
 #[inline]
 pub(crate) fn caustic_key_seed() -> u64 {
