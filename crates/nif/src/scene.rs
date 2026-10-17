@@ -121,8 +121,13 @@ pub struct NifScene {
     /// `saturating_sub` yields zero remaining and the tail comes back empty.
     /// Under-read is the failure mode these parsers actually exhibit.
     ///
-    /// Empty for every non-Starfield file — only blocks overriding
-    /// [`crate::blocks::NiObject::opaque_tail_len`] contribute.
+    /// Skyrim+ `BSLightingShaderProperty` and `BSEffectShaderProperty` report
+    /// length 0 when their non-Starfield layouts end at the parser boundary;
+    /// Starfield reports the captured trailing length, including a genuine
+    /// zero-length tail. Other tail-capturing block types contribute only in
+    /// their supported game era. A zero-length bucket therefore does not by
+    /// itself identify a Starfield file; positive lengths count bytes the
+    /// parser preserved without decoding.
     pub opaque_tail_histogram: BTreeMap<String, BTreeMap<usize, u32>>,
     /// Havok-to-engine unit scale for this NIF. Computed from the
     /// header version triplet at parse time via `havok_scale_for_variant`
