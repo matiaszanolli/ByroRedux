@@ -471,6 +471,16 @@ fn select_info<'a>(
                 return None;
             }
         }
+        // #5752 — an unmodeled INFO condition cannot be evaluated from
+        // engine state. Do not let its safe-default satisfy a literal
+        // comparison and select a line whose authored gate we cannot read.
+        if info
+            .conditions
+            .iter()
+            .any(|condition| !crate::condition::is_modeled(world, condition))
+        {
+            return None;
+        }
         (actor_matches(info, world, actor) && evaluate(&info.conditions, world, &context))
             .then_some((i, info))
     });
@@ -906,6 +916,23 @@ mod tests {
             .expect("the hijacker qualifies ungated");
         assert_eq!(line.response_text, "the hijacker's line");
         }
+    }
+
+    #[test]
+    fn uncatalogued_info_condition_is_declined_instead_of_matching_zero() {
+        let mut unknown = info(0x811, 0, "unreadable condition");
+        unknown.conditions = cond(
+            76,
+            byroredux_plugin::esm::records::condition::ComparisonOp::Eq,
+            0.0,
+            false,
+        );
+        let record = topic(vec![unknown, info(0x812, 0, "fallback")]);
+        let (world, _, actor, _) = setup(vec![record.clone()]);
+
+        let selected =
+            select_first_info(&record, &world, Some(actor), None).expect("fallback line");
+        assert_eq!(selected.form_id, 0x812);
     }
 
     /// A quest gate on a CATALOGUED function evaluates for real: running
