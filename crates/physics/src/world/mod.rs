@@ -17,7 +17,6 @@ mod queries;
 mod recovery;
 
 pub use queries::{CharacterMoveParams, CharacterMoveResult};
-pub use queries::FOOTSTEP_SURFACE_PROBE_REACH;
 use recovery::{body_state_is_finite, restore_invalid_dynamic_bodies, DynamicBodySnapshot};
 #[cfg(test)]
 use recovery::MAX_DYNAMIC_SUBSTEP_DISPLACEMENT;
@@ -4173,7 +4172,7 @@ mod tests {
         const PLAYER_CAPSULE_CENTRE_HEIGHT: f32 = 46.0 + 18.0;
         const _: () = {
             assert!(
-                super::queries::FOOTSTEP_SURFACE_PROBE_REACH
+                PhysicsWorld::FOOTSTEP_SURFACE_PROBE_REACH
                     > PLAYER_CAPSULE_CENTRE_HEIGHT * 1.5,
                 "the probe must comfortably clear the capsule centre"
             );

@@ -278,7 +278,13 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
         if let Some(pw) = world.try_resource::<byroredux_physics::PhysicsWorld>() {
             triggers
                 .iter()
-                .map(|pos| pw.surface_material_under(*pos, byroredux_physics::FOOTSTEP_SURFACE_PROBE_REACH, own_body))
+                .map(|pos| {
+                    pw.surface_material_under(
+                        *pos,
+                        byroredux_physics::PhysicsWorld::FOOTSTEP_SURFACE_PROBE_REACH,
+                        own_body,
+                    )
+                })
                 .collect()
         } else {
             Vec::new()
