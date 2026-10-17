@@ -1,7 +1,8 @@
 //! Tangent-space extraction + synthesis.
 //!
-//! Extra-data tangent capture, Mikkelsen-style synthesis fallback, and
-//! Zup→Yup quaternion fix-up for BS tangent payloads.
+//! Extra-data tangent capture, Lengyel-style synthesis fallback (nifly
+//! `CalcTangentSpace`: per-triangle accumulation + Gram-Schmidt, not
+//! MikkTSpace), and Zup→Yup quaternion fix-up for BS tangent payloads.
 
 use byroredux_core::bytes::le_f32_at;
 use crate::scene::NifScene;
@@ -135,11 +136,16 @@ pub fn extract_tangents_from_extra_data(
 /// #3177 was literally its Z-up catch-up ten days later; #3176's
 /// zero-tangent seed reached both only because the audit named both).
 ///
-/// Converting the inputs up front is bit-identical to the old
+/// Converting the inputs up front is mathematically identical to the old
 /// accumulate-in-Z-up-then-swap finalize for the non-degenerate path:
 /// `zup_to_yup_pos` is an exact component permutation + negation
 /// (`(x, y, z) → (x, z, -y)`), rotations commute with the per-triangle
-/// normalize, and a rotated sum equals the sum of rotated parts. The
+/// normalize, and a rotated sum equals the sum of rotated parts. It is
+/// not bit-identical: the per-triangle normalize now sums the squares in
+/// Y-up component order (`x² + z² + y²` rather than `x² + y² + z²`), and
+/// float32 addition is not associative, so a tangent can differ in the
+/// last ulp from what the Z-up copy produced. Do not pin it with an
+/// exact-equality golden. The
 /// degenerate-tangent fallback's seed permutation now also runs in
 /// Y-up; the two old spellings picked different-but-equally-valid
 /// directions there (any N-orthogonal unit vector is correct — the
@@ -304,13 +310,9 @@ pub fn synthesize_tangents_yup(
                 // too — pick `[n_yup.y, n_yup.z, n_yup.x]` and let B fall
                 // out of `cross(N, T)` so the basis is right-handed.
                 //
-                // Note: this permutation is NOT the Y-up image of the Z-up
-                // flavor's `[n_zup.y, n_zup.z, n_zup.x]` permutation —
-                // both produce valid orthogonal tangents for the degenerate
-                // case but the chosen direction differs by space. Documented
-                // divergence (AUDIT_INCREMENTAL_2026-05-22 ID-4); both are
-                // acceptable since the degenerate case has no canonical
-                // tangent and any orthogonal-to-N direction is correct.
+                // The degenerate case has no canonical tangent: any
+                // orthogonal-to-N direction is correct, so the seed is
+                // simply chosen in the space this producer works in.
                 //
                 // #2632 / SF2D2-D2-04 — a raw cyclic permutation of N's
                 // components is NOT generally orthogonal to N (e.g. any N
@@ -386,8 +388,7 @@ pub fn synthesize_tangents_yup(
 /// primary seed (a Gram-Schmidt-projected cyclic permutation of `N`)
 /// collapses to zero — which happens exactly when the permutation is
 /// itself parallel to `N` (e.g. `N == (1,1,1)/sqrt(3)`, the all-equal-
-/// components case both producers' comments name as the motivation for
-/// projecting in the first place). #3176.
+/// components case that motivates projecting in the first place). #3176.
 ///
 /// Crosses `n` (assumed unit) with the world axis least aligned with it.
 /// A unit vector's smallest component is at most `1/sqrt(3)` in

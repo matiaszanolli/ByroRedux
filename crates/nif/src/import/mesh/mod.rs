@@ -3,7 +3,7 @@
 //! Split out of the 2 212-LOC monolith into per-shape-flavor +
 //! cross-cutting-concern submodules:
 //!
-//! - [`tangent`]      — tangent-space extraction + Mikkelsen-style synthesis
+//! - [`tangent`]      — tangent-space extraction + Lengyel-style synthesis (nifly `CalcTangentSpace`)
 //! - [`ni_tri_shape`] — classic `NiTriShape` (Oblivion / FO3 / FNV / Skyrim LE)
 //! - [`bs_tri_shape`] — packed-half `BSTriShape` (Skyrim SE / FO4 / FO76)
 //! - [`bs_geometry`]  — Starfield `BSGeometry` external + internal branches

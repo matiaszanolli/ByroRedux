@@ -286,7 +286,7 @@ crates/
         ni_tri_shape.rs      Classic `NiTriShape` + `GeomData<'a>`
         bs_tri_shape.rs      Skyrim SE+ packed-half BSTriShape
         bs_geometry.rs       Starfield `BSGeometry` extraction
-        tangent.rs           Tangent extraction + Mikkelsen synthesis
+        tangent.rs           Tangent extraction + Lengyel synthesis (nifly CalcTangentSpace)
         sse_recon.rs         Skyrim SE skinned-geometry reconstruction (#559)
         skin.rs              Skinning data extraction + bone-pose flattening
       material/              MaterialInfo, texture/alpha/decal property extraction

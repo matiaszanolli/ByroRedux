@@ -534,7 +534,7 @@ transformations:
   (#1076/#1077)
 - **Strip-to-triangle conversion** for `NiTriStripsData`
 - **Tangent synthesis** — empty BSGeometry / SSE-reconstructed tangents
-  route through Mikkelsen Y-up synthesis (#1086 / #1204 / #1232)
+  route through Lengyel Y-up synthesis (#1086 / #1204 / #1232)
 - **Collision import** ([`import/collision/`](../../crates/nif/src/import/collision/mod.rs))
   with the Havok→engine transform (via `import_nif_with_collision`)
 - **Depth + revisit guards** on all five import walkers: the #1269 depth

@@ -171,7 +171,7 @@ rendering side.
 ### Geometry / transform — **converged (reference template)**
 
 Z-up → Y-up conversion (`crates/nif/src/import/coord.rs`), tangent extraction +
-Mikkelsen synthesis (`mesh/tangent.rs`), local-bound derivation, degenerate-rotation
+Lengyel synthesis (`mesh/tangent.rs`), local-bound derivation, degenerate-rotation
 SVD repair (`crates/nif/src/rotation.rs` — `sanitize_rotation` /
 `repair_rotation_svd_or_identity`, fired once at parse; `transform.rs::compose_transforms`
 assumes already-sanitized rotations). Per-game vertex decode (NiTriShape / BSTriShape packed

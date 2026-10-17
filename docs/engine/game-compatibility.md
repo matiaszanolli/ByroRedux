@@ -275,7 +275,7 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
   BSVER ≥ 168 (retail; the historical FO76-vs-Starfield cutoff was 170).
   `BSGeometry` extraction iterates every LOD slot (#1209), resolves
   external `.mesh` files via the `geometries\<hash>.mesh` canonical path
-  (#1292), and routes empty tangents through Y-up Mikkelsen synthesis
+  (#1292), and routes empty tangents through Y-up Lengyel synthesis
   (#1232/#1293).
 - **Cell loading**: **walkable Cydonia interior** (Session 42 bring-up,
   #1289 / #1291 / #1292 / #1294 / #1295). Empirical measurement via the
