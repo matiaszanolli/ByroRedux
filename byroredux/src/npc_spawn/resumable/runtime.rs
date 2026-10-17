@@ -1331,9 +1331,14 @@ fn common_shape_rotation(world: &World, part_root: EntityId) -> Option<Quat> {
     // dropped on return, before `bind_transform_relative_to` composes
     // Transform → Parent below). The walk order and the
     // first-disagreement early-out in the composition loop are unchanged.
+    // #5954 — collect the subtree *before* taking the `MeshHandle` read
+    // guard: `collect_subtree` acquires `Children` internally, so calling it
+    // with `meshes` alive recorded `MeshHandle` → `Children`, the edge #5535
+    // removed.
+    let subtree = byroredux_core::ecs::collect_subtree(world, part_root);
     let shapes = {
         let meshes = world.query::<byroredux_core::ecs::MeshHandle>()?;
-        byroredux_core::ecs::collect_subtree(world, part_root)
+        subtree
             .into_iter()
             .filter(|entity| meshes.get(*entity).is_some())
             .collect::<Vec<_>>()
