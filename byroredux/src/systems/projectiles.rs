@@ -218,18 +218,22 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
         .query::<byroredux_physics::RapierHandles>()
         .map(|handles| handles.iter().map(|(entity, handles)| (handles.body, entity)).collect())
         .unwrap_or_default();
+    // #5955 — actors' bodies, resolved once per frame before the physics world
+    // is taken. `resolve_actor` reads `ActorColliderOwner` / `ActorVitals`, and
+    // `PhysicsWorld` is a sink in the canonical lock order: resolving lazily
+    // from the ray-cast filter recorded `ActorVitals` → … → `PhysicsWorld` →
+    // `ActorVitals`. Per-frame, not per-projectile-step, so the cost is
+    // O(owners) once however many projectiles are flying.
+    let actor_bodies: std::collections::HashSet<byroredux_physics::RigidBodyHandle> = owners
+        .iter()
+        .filter(|(_, entity)| resolve_actor(world, **entity).is_some())
+        .map(|(body, _)| *body)
+        .collect();
     let mut remaining = Vec::with_capacity(flying.len());
     let mut hits: Vec<(EntityId, EntityId, f32)> = Vec::new();
     for projectile in flying {
         let excluded = projectile.launcher_bodies.as_ref();
-        // The query filter visits only colliders in the cast's broadphase. Resolve
-        // actor ownership for those candidates instead of probing every physics
-        // entity before every projectile step.
-        let is_actor_body = |body| {
-            owners
-                .get(&body)
-                .is_some_and(|entity| resolve_actor(world, *entity).is_some())
-        };
+        let is_actor_body = |body| actor_bodies.contains(&body);
         let mut hit_body = None;
         let step = {
             let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
