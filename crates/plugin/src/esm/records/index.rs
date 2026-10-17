@@ -295,11 +295,10 @@ pub struct EsmIndex {
     /// LVLD/LVLF/LVLO layout to LVLI/LVLN/LVLC, so the same
     /// `parse_leveled_list` handles this too (#3617). `RecordType::LVSP`
     /// existed with no dispatch arm at all — 306 `Oblivion.esm` records
-    /// silently produced nothing; a resolver that receives a leveled
-    /// spell FormID (via a future `SPLO` decoder — not parsed anywhere
-    /// in this crate yet, a separate gap) still has nowhere to look it
-    /// up without this map. No production reader yet: the `SPLO` →
-    /// spell-list → MGEF runtime that consumes it is tracked by #4415.
+    /// silently produced nothing. NPC_ / CREA `SPLO` entries are decoded
+    /// into actor spell lists, and `equip::resolve_actor_spells` and
+    /// `equip::resolve_racial_spells` expand their leveled entries through
+    /// this map at the actor's level (#4415).
     pub leveled_spells: HashMap<u32, LeveledList>,
     pub npcs: HashMap<u32, NpcRecord>,
     /// Creature base records (FO3 bestiary: super mutants, deathclaws,
