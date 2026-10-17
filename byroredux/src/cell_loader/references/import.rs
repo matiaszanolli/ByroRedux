@@ -494,8 +494,8 @@ pub(super) fn parse_and_import_spt(
         // SpeedTree `.spt` placeholders have no NiAVObject root, so no
         // NiAVObject.flags to propagate. #1235 / LC-D1-NEW-01.
         root_flags: 0,
-        // SpeedTree placeholders carry no flame markers — they're
-        // pure billboard quads. Phase 18.
+        // SpeedTree placeholders have no `AttachLight` node — they're
+        // pure billboard quads.
         attach_light_offset: None,
         projectile_offset: None,
         // SpeedTree `.spt` is a separate format with no BSConnectPoint
