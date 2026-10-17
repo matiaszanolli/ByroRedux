@@ -174,10 +174,14 @@ default_textures_bsas = [
 # Footstep / splash / REGN audio, same gap as FO3 (#5433) and FNV (#3788).
 # The Oblivion rows in FOOTSTEP_CANDIDATES / WATER_SPLASH_CANDIDATES are
 # verified against this archive by
-# `default_sound_candidates_hit_their_tagged_game_archive`. The
-# `Oblivion - Voices1/2.bsa` archives are deliberately not listed: Oblivion
-# has no dialogue voice runtime (#5367 Phase V is FO3/FNV).
-default_sounds_bsas = ["Oblivion - Sounds.bsa"]
+# `default_sound_candidates_hit_their_tagged_game_archive`. #5526 — the
+# `Oblivion - Voices1/2.bsa` archives carry the dialogue (#5367 Phase V's
+# Oblivion race/sex `.mp3` convention).
+default_sounds_bsas = [
+    "Oblivion - Sounds.bsa",
+    "Oblivion - Voices1.bsa",
+    "Oblivion - Voices2.bsa",
+]
 default_materials_bsas = []
 # Vanilla DLC (#3924, sibling of the Skyrim AE tier below). Present-only: a
 # GOTY install carries all of these, a base install none. They hold 1,580 NIFs

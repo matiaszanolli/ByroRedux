@@ -220,17 +220,23 @@ see §5 phase 5.
    decoder is xWMA. Live gate (`dt1-dialogue-layers.sh` leg 3):
    the fresh-boot greeting resolves 1 segment / 5.0 s in
    `maleuniquedocmitchell`.
-   **Scope: this is the FO3/FNV convention, not a universal one.** Oblivion
-   is out of scope (#5526): `Oblivion.esm` authors 0 `VTCK` on its 2,482 NPC_
-   and 0 `VTYP` records, so the voice-type lookup is always `None`, and its
-   voices (`Oblivion - Voices1/2.bsa`: 38,898 `.mp3` + 38,882 `.lip`) are
+   **Two conventions, not one universal rule.** The above is FO3/FNV.
+   Oblivion (#5526) authors 0 `VTCK` on its 2,482 NPC_ and 0 `VTYP` records,
+   so there is no voice type to key on; its voices (`Oblivion - Voices1/2.bsa`:
+   38,898 `.mp3` + 38,882 `.lip`) are
    `sound\voice\oblivion.esm\<voice race full name, lowercased>\<m|f>\<quest
    EDID>_<topic EDID>_<formid 8-hex>_<n>.mp3` — **not** truncated (quests run
    to 22 characters, quest + topic to 46). The race folder is the speaker's
-   race mapped through RACE `VNAM` (by sex) to the voice race's FULL name
-   (`RaceRecord::voice_forms`, decoded, no consumer yet). An Oblivion line
-   keeps the Phase-L subtitle estimate until a per-game voice-path table
-   entry lands.
+   race mapped through RACE `VNAM` `(male, female)` by sex to the voice race's
+   FULL name (`RaceRecord::voice_forms`; `oblivion_voice_race`), so a race
+   without its own folder borrows one. `dialogue_voice::
+   oblivion_voice_path_candidates` composes the path, the Oblivion profile
+   mounts both Voices archives, and an ignored real-data test
+   (`an_installed_oblivion_voice_line_resolves_and_decodes`) pins a known line
+   through the same provider and `.mp3` decoder playback uses. A speaker whose
+   race has no `VNAM` or a nameless voice race keeps the Phase-L subtitle
+   estimate rather than a guessed folder. Not yet gated live (the dt1 smoke is
+   FNV), and the DLC voice archives are untouched by this change.
 
 ## 6. What this document does NOT decide
 

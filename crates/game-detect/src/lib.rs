@@ -336,11 +336,20 @@ mod tests {
             .as_array()
             .map(|a| a.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>())
             .unwrap_or_default();
-        assert!(
-            sounds.contains(&"Oblivion - Sounds.bsa"),
-            "oblivion.default_sounds_bsas {sounds:?} must list Oblivion - Sounds.bsa — \
-             without it footsteps, splash and REGN audio silently fall back",
-        );
+        // #5526 — and the dialogue: Phase V's Oblivion convention reads
+        // `sound\voice\oblivion.esm\<race>\<m|f>\*.mp3` from the Voices archives.
+        for required in [
+            "Oblivion - Sounds.bsa",
+            "Oblivion - Voices1.bsa",
+            "Oblivion - Voices2.bsa",
+        ] {
+            assert!(
+                sounds.contains(&required),
+                "oblivion.default_sounds_bsas {sounds:?} must list {required} — \
+                 without it footsteps, splash, REGN audio and dialogue voice \
+                 silently fall back",
+            );
+        }
     }
 
     #[test]

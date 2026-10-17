@@ -1,16 +1,19 @@
 //! #5367 Phase V — per-line dialogue voice playback.
 //!
-//! **Scope: FO3 / FNV / (Skyrim `.fuz` deferred) only.** The shape below is
-//! the FO3/FNV convention, not a universal Bethesda rule. Oblivion is out of
-//! scope (#5526): `Oblivion.esm` authors no NPC `VTCK` and no `VTYP`
-//! records, so the voice-type resolve below is always `None` there, and its
-//! voices ship as `sound\voice\oblivion.esm\<voice race full name>\<m|f>\
-//! <quest>_<topic>_<formid 8-hex>_<n>.mp3` — untruncated, `.mp3`, keyed by
-//! race and sex through RACE `VNAM` (`RaceRecord::voice_forms`, decoded but
-//! unconsumed) instead of a voice type. Oblivion lines keep the
-//! subtitle-estimate fallback.
+//! **Scope: FO3 / FNV and Oblivion; Skyrim `.fuz` deferred.** There are two
+//! authored conventions, not one universal Bethesda rule.
 //!
-//! Bethesda's authored convention (pinned against FNV's
+//! **Oblivion (#5526)** authors no NPC `VTCK` and no `VTYP` records, so there
+//! is no voice type to key on. Its voices ship (`Oblivion - Voices1/2.bsa`,
+//! 38,898 `.mp3`) as `sound\voice\oblivion.esm\<voice race full name,
+//! lowercased>\<m|f>\<quest>_<topic>_<INFO local id 8-hex>_<n>.mp3` —
+//! untruncated, `.mp3`, keyed by the speaker's race and sex: the race's
+//! `VNAM` (`RaceRecord::voice_forms`, `(male, female)`) names the *voice
+//! race*, whose FULL name is the folder (the folders are argonian, breton,
+//! dremora, high elf, imperial, nord and redguard; every other race borrows
+//! one). See [`oblivion_voice_path_candidates`].
+//!
+//! **FO3 / FNV** — Bethesda's authored convention (pinned against FNV's
 //! `Fallout - Voices1.bsa` and FO3's `Fallout - Voices.bsa`):
 //! `sound\voice\<plugin file>\<voice-type EDID>\<quest>_<topic>_<INFO
 //! local id 8-hex>_<response>.ogg` — e.g. Doc Mitchell's greeting (INFO
@@ -114,6 +117,53 @@ pub(crate) fn voice_path_candidates(
     )]
 }
 
+/// Candidate archive paths for one Oblivion response segment (#5526):
+/// `sound\voice\<plugin>\<voice race>\<m|f>\<quest>_<topic>_<local id
+/// 8-hex>_<response>.mp3`. Unlike the FO3/FNV shape the EDIDs are never
+/// truncated (quests run to 22 characters, quest + topic to 46 in
+/// `Oblivion - Voices1/2.bsa`). `voice_race` is the voice race's lowercased
+/// FULL name; `female` picks the `f` / `m` folder. Empty for a quest-less
+/// line, which has no authored shape.
+pub(crate) fn oblivion_voice_path_candidates(
+    plugin: &str,
+    voice_race: &str,
+    female: bool,
+    quest_edid: &str,
+    topic_edid: &str,
+    local_id: u32,
+    response: u8,
+) -> Vec<String> {
+    if voice_race.is_empty() || quest_edid.is_empty() || topic_edid.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "sound\\voice\\{plugin}\\{voice_race}\\{}\\{}_{}_{:08x}_{response}.mp3",
+        if female { 'f' } else { 'm' },
+        quest_edid.to_ascii_lowercase(),
+        topic_edid.to_ascii_lowercase(),
+        local_id & 0x00FF_FFFF
+    )]
+}
+
+/// The lowercased FULL name of the voice race an Oblivion NPC speaks with:
+/// its RACE's `VNAM` `(male, female)` voice race for the NPC's sex, resolved
+/// to that RACE's name. `None` when the race, its `VNAM` or the voice race's
+/// name is missing — the line then keeps the subtitle estimate rather than
+/// guessing a folder (#5526).
+pub(crate) fn oblivion_voice_race(
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    npc: &byroredux_plugin::esm::records::NpcRecord,
+) -> Option<String> {
+    use byroredux_plugin::equip::Gender;
+    let (male, female) = index.races.get(&npc.race_form_id)?.voice_forms?;
+    let voice_race = match Gender::from_acbs_flags(npc.acbs_flags) {
+        Gender::Female => female,
+        _ => male,
+    };
+    let name = index.races.get(&voice_race)?.full_name.to_ascii_lowercase();
+    (!name.is_empty()).then_some(name)
+}
+
 /// The owning plugin's lowercase basename and the plugin-local id of an
 /// INFO FormID (#5393/#5395). Resolves through the session's
 /// [`GlobalFormIdResolver`] — the same slot decode every other
@@ -146,12 +196,15 @@ fn voice_owner(world: &World, form_id: u32) -> Option<(String, u32)> {
 fn resolve_voice_segments(
     world: &World,
     plugin: &str,
-    voice_type: &str,
+    // The speaker's voice key for the log line only: the voice-type EDID
+    // (FO3/FNV) or the voice race (Oblivion).
+    voice_label: &str,
     quest_edid: &str,
     topic_edid: &str,
-    local_id: u32,
     info_form_id: u32,
     responses: &[u8],
+    // The per-game archive-path convention for one response number.
+    candidates_for: &dyn Fn(u8) -> Vec<String>,
 ) -> Option<Vec<std::sync::Arc<byroredux_audio::Sound>>> {
     let mut sounds = Vec::with_capacity(responses.len());
     {
@@ -164,14 +217,7 @@ fn resolve_voice_segments(
         // and a first-time combat sound closed a cycle.
         let mut cache = world.try_resource_mut::<byroredux_audio::VoiceSoundCache>()?;
         for (segment, &response) in responses.iter().enumerate() {
-            let candidates = voice_path_candidates(
-                plugin,
-                voice_type,
-                quest_edid,
-                topic_edid,
-                local_id,
-                response,
-            );
+            let candidates = candidates_for(response);
             let sound = candidates.iter().find_map(|path| {
                 cache.get_or_load(path, || {
                     let provider = world.try_resource::<SoundArchiveProvider>()?;
@@ -184,7 +230,7 @@ fn resolve_voice_segments(
             let Some(sound) = sound else {
                 log::debug!(
                     "#5367 V: no voice file for info {info_form_id:#X} segment {response} \
-                     (voice type '{voice_type}', plugin {plugin}, quest '{quest_edid}', \
+                     (voice '{voice_label}', plugin {plugin}, quest '{quest_edid}', \
                      topic '{topic_edid}')",
                 );
                 if segment == 0 {
@@ -247,17 +293,28 @@ pub(crate) fn play_line_voice(
         log::debug!("#5367 V: base {base:#X} not in npcs index");
         return None;
     };
-    let Some(voice_type) = index
-        .voice_types
-        .get(&npc_record.voice_form_id)
-        .map(|vt| vt.editor_id.to_ascii_lowercase())
-    else {
+    // The speaker's voice key. FO3/FNV: the voice-type EDID through VTCK ->
+    // VTYP. Oblivion authors neither record (#5526): its key is the voice
+    // race folder plus the sex folder, through the speaker's RACE `VNAM`.
+    let oblivion = index.game == byroredux_plugin::esm::reader::GameKind::Oblivion;
+    let voice_key = if oblivion {
+        oblivion_voice_race(&index, npc_record)
+    } else {
+        index
+            .voice_types
+            .get(&npc_record.voice_form_id)
+            .map(|vt| vt.editor_id.to_ascii_lowercase())
+    };
+    let Some(voice_type) = voice_key else {
         log::debug!(
-            "#5367 V: voice type {:#X} not indexed (npc base {base:#X})",
-            npc_record.voice_form_id
+            "#5367 V: no voice key (voice type {:#X} / race {:#X}) for npc base {base:#X}",
+            npc_record.voice_form_id,
+            npc_record.race_form_id,
         );
         return None;
     };
+    let female = byroredux_plugin::equip::Gender::from_acbs_flags(npc_record.acbs_flags)
+        == byroredux_plugin::equip::Gender::Female;
     let Some((plugin, local_id)) = voice_owner(world, info.form_id) else {
         log::debug!("#5367 V: no plugin for info {:#X}", info.form_id);
         return None;
@@ -281,15 +338,24 @@ pub(crate) fn play_line_voice(
             })
             .collect()
     };
+    let candidates_for = |response: u8| {
+        if oblivion {
+            oblivion_voice_path_candidates(
+                &plugin, &voice_type, female, quest_edid, topic_edid, local_id, response,
+            )
+        } else {
+            voice_path_candidates(&plugin, &voice_type, quest_edid, topic_edid, local_id, response)
+        }
+    };
     let sounds = resolve_voice_segments(
         world,
         &plugin,
         &voice_type,
         quest_edid,
         topic_edid,
-        local_id,
         info.form_id,
         &responses,
+        &candidates_for,
     )?;
 
     let mut total = 0.0;
@@ -413,6 +479,113 @@ mod tests {
 
     /// #5395 (FNV-D5-01) — the file name carries the plugin-local id:
     /// a DLC INFO at load-order slot 1 is written with a `00` top byte.
+    /// #5526 — Oblivion's authored shape, pinned to a file that exists in
+    /// `Oblivion - Voices1.bsa`: `sound\voice\oblivion.esm\high elf\f\
+    /// dark17following_greeting_0000566f_1.mp3`. The EDIDs are never
+    /// truncated (quests run to 22 characters, quest + topic to 46), the
+    /// extension is `.mp3`, the folders are voice race then sex.
+    #[test]
+    fn oblivion_voice_paths_match_the_authored_convention() {
+        let paths = oblivion_voice_path_candidates(
+            "oblivion.esm",
+            "high elf",
+            true,
+            "Dark17Following",
+            "GREETING",
+            0x0000_566F,
+            1,
+        );
+        assert_eq!(
+            paths,
+            vec!["sound\\voice\\oblivion.esm\\high elf\\f\\dark17following_greeting_0000566f_1.mp3"]
+        );
+        // Male folder, the load-order byte stripped, and no truncation however
+        // long the pair is (the FO3/FNV rule would cut this at 25 characters).
+        let long = oblivion_voice_path_candidates(
+            "oblivion.esm",
+            "breton",
+            false,
+            "AVeryLongQuestEdid22ch",
+            "AnEquallyLongTopicEdidForTheTest",
+            0x0100_00AB,
+            3,
+        );
+        assert_eq!(
+            long,
+            vec!["sound\\voice\\oblivion.esm\\breton\\m\\averylongquestedid22ch_anequallylongtopicedidforthetest_000000ab_3.mp3"]
+        );
+        // A quest-less line, or a speaker with no voice race, has no authored shape.
+        assert!(oblivion_voice_path_candidates("oblivion.esm", "nord", false, "", "T", 1, 1).is_empty());
+        assert!(oblivion_voice_path_candidates("oblivion.esm", "", false, "Q", "T", 1, 1).is_empty());
+    }
+
+    /// #5526 — the voice race comes from the speaker's RACE `VNAM`
+    /// `(male, female)` by sex, resolved to that RACE's FULL name; a race
+    /// borrowing another's voice (Dark Elf speaking with the Breton folder)
+    /// is the point. Anything missing is `None`, never a guessed folder.
+    #[test]
+    fn oblivion_voice_race_follows_the_speakers_race_vnam_by_sex() {
+        use byroredux_plugin::esm::records::{EsmIndex, NpcRecord, RaceRecord};
+        let race = |form_id: u32, name: &str, voice_forms: Option<(u32, u32)>| RaceRecord {
+            form_id,
+            full_name: name.to_string(),
+            voice_forms,
+            ..Default::default()
+        };
+        let mut index = EsmIndex::default();
+        index.races.insert(0x10, race(0x10, "Dark Elf", Some((0x11, 0x12))));
+        index.races.insert(0x11, race(0x11, "High Elf", None));
+        index.races.insert(0x12, race(0x12, "Breton", None));
+        index.races.insert(0x13, race(0x13, "Nameless", Some((0x14, 0x14))));
+        index.races.insert(0x14, race(0x14, "", None));
+        index.races.insert(0x15, race(0x15, "No Vnam", None));
+        let npc = |race_form_id: u32, acbs_flags: u32| NpcRecord {
+            race_form_id,
+            acbs_flags,
+            ..Default::default()
+        };
+
+        assert_eq!(oblivion_voice_race(&index, &npc(0x10, 0)).as_deref(), Some("high elf"));
+        assert_eq!(oblivion_voice_race(&index, &npc(0x10, 1)).as_deref(), Some("breton"));
+        assert_eq!(oblivion_voice_race(&index, &npc(0x13, 0)), None, "an unnamed voice race");
+        assert_eq!(oblivion_voice_race(&index, &npc(0x15, 0)), None, "a race with no VNAM");
+        assert_eq!(oblivion_voice_race(&index, &npc(0x99, 0)), None, "an unknown race");
+    }
+
+    /// #5526 against the installed archive: the example path from the audit
+    /// resolves in `Oblivion - Voices1.bsa` and decodes as `.mp3` through the
+    /// same provider and decoder the playback path uses.
+    #[test]
+    #[ignore = "needs Oblivion game data on disk"]
+    fn an_installed_oblivion_voice_line_resolves_and_decodes() {
+        let dir = std::env::var_os("BYROREDUX_OBLIVION_DATA")
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data".into()
+            });
+        let archive = dir.join("Oblivion - Voices1.bsa");
+        if !archive.is_file() {
+            eprintln!("skipping: {archive:?} not installed");
+            return;
+        }
+        let args = vec!["--sounds-bsa".to_string(), archive.to_string_lossy().into_owned()];
+        let provider = crate::asset_provider::audio::build_sound_archive_provider(&args);
+        let path = oblivion_voice_path_candidates(
+            "oblivion.esm",
+            "high elf",
+            true,
+            "Dark17Following",
+            "Greeting",
+            0x0000_566F,
+            3,
+        )
+        .remove(0);
+        let bytes = provider.extract(&path).unwrap_or_else(|| panic!("{path} is not in the archive"));
+        let sound = byroredux_audio::load_sound_from_bytes(bytes).expect("the .mp3 decodes");
+        assert!(sound.duration().as_secs_f64() > 0.0);
+    }
+
     #[test]
     fn voice_path_candidates_strip_the_load_order_byte() {
         let paths = voice_path_candidates("deadmoney.esm", "vt", "NVDLC01Eli", "GREETING", 0x0101_1216, 1);
@@ -496,8 +669,17 @@ mod tests {
             "vcg01",
             "GREETING",
             0x0010_7222,
-            0x0010_7222,
             &[1],
+            &|response| {
+                voice_path_candidates(
+                    "falloutnv.esm",
+                    "maleuniquedocmitchell",
+                    "vcg01",
+                    "GREETING",
+                    0x0010_7222,
+                    response,
+                )
+            },
         );
         assert!(voiced.is_none(), "an empty archive voices nothing");
         // And the pairing does not panic under BYRO_LOCK_ORDER_CHECK=1 —
