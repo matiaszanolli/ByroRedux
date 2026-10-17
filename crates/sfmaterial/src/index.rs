@@ -595,74 +595,50 @@ impl MaterialIndex {
                     .or_default()
                     .push((row.index, *v));
             }
+            // #5525 — the alpha, effect and emissive settings components are
+            // read by `capture_settings`, shared with the loose `.mat`
+            // decoder; this only files the result per object.
             "BSMaterial::AlphaSettingsComponent" => {
-                let threshold = match o.fields.get("AlphaTestThreshold") {
-                    Some(Value::Float(v)) => Some(*v),
-                    _ => None,
-                };
-                let opacity = match o.fields.get("HasOpacity") {
-                    Some(Value::Bool(v)) => Some(*v),
-                    _ => None,
+                let Some(c) = crate::capture_settings(class_name, o) else {
+                    return;
                 };
                 self.alpha
                     .entry(row.object)
                     .and_modify(|e| {
                         if e.0.is_none() {
-                            e.0 = threshold;
+                            e.0 = c.alpha_test_threshold;
                         }
                         if e.1.is_none() {
-                            e.1 = opacity;
+                            e.1 = c.has_opacity;
                         }
                     })
-                    .or_insert((threshold, opacity));
+                    .or_insert((c.alpha_test_threshold, c.has_opacity));
             }
             "BSMaterial::EffectSettingsComponent" => {
-                let glass = match o.fields.get("IsGlass") {
-                    Some(Value::Bool(v)) => Some(*v),
-                    _ => None,
+                let Some(c) = crate::capture_settings(class_name, o) else {
+                    return;
                 };
-                // #5277 — the authored blend-state enum string, the only
-                // live CDB blend signal (the Alpha side's Blender edge has
-                // zero top-level instances in the base CDB, schema probe
-                // 2026-10-09). Consumed at the merge boundary the way the
-                // FO4 BGSM arm consumes `alpha_blend_mode`.
-                let blend = match o.fields.get("BlendingMode") {
-                    Some(Value::String(v)) => Some(v.clone()),
-                    _ => None,
-                };
-                self.effect.entry(row.object).or_insert(glass);
+                self.effect.entry(row.object).or_insert(c.is_glass);
                 self.effect_blend
                     .entry(row.object)
                     .and_modify(|e| {
                         if e.is_none() {
-                            *e = blend.clone();
+                            *e = c.blending_mode.clone();
                         }
                     })
-                    .or_insert(blend);
+                    .or_insert(c.blending_mode);
             }
             // #5283 — Enabled + the nested EmittanceSettings (tint /
             // luminous emittance), the authored emissive for the CDB era.
-            // `Settings` is an INLINE nested object (schema probe
-            // 2026-10-09), not a graph edge, so it arrives on the same
-            // instance.
             "BSMaterial::EmissiveSettingsComponent" => {
-                let enabled = match o.fields.get("Enabled") {
-                    Some(Value::Bool(v)) => Some(*v),
-                    _ => None,
+                let Some(c) = crate::capture_settings(class_name, o) else {
+                    return;
                 };
-                let mut tint = None;
-                let mut emittance = None;
-                if let Some(Value::Object(settings)) = o.fields.get("Settings") {
-                    if let Some(color) = xmcolor4(settings, "EmissiveTint") {
-                        tint = Some([color[0], color[1], color[2]]);
-                    }
-                    if let Some(Value::Float(v)) = settings.fields.get("LuminousEmittance") {
-                        emittance = Some(*v);
-                    }
-                }
-                self.emissive
-                    .entry(row.object)
-                    .or_insert((enabled, tint, emittance));
+                self.emissive.entry(row.object).or_insert((
+                    c.emissive_enabled,
+                    c.emissive_tint,
+                    c.luminous_emittance,
+                ));
             }
             // #5673 — Enabled + the nested TranslucencySettings (UseSSS /
             // TransmissiveScale), the same inline-`Settings` shape the

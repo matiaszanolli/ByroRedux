@@ -66,6 +66,7 @@ mod chunk;
 mod error;
 mod index;
 mod reader;
+mod settings;
 mod string_table;
 mod types;
 mod value;
@@ -79,6 +80,7 @@ pub use index::{
     SLOT_TRANSMISSIVE,
 };
 pub use reader::{CdbHeaderInfo, CdbVisitInfo, ComponentDatabaseFile, ParseLimits};
+pub use settings::{capture_settings, FieldSource, SettingsCapture};
 pub use types::{BuiltinType, Class, ClassFlags, Field, TypeReference};
 pub use value::{ObjectInstance, Ref, Value};
 

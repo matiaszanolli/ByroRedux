@@ -111,20 +111,16 @@ pub(crate) fn parse_loose_mat(bytes: &[u8]) -> Option<(LooseMatStage, CdbMateria
                     recognized = true;
                 }
             }
-            "AlphaSettingsComponent" => {
-                if let Some(v) = json_f32(data.get("AlphaTestThreshold")) {
-                    out.alpha_test_threshold = Some(v);
-                    recognized = true;
-                }
-                if let Some(v) = json_bool(data.get("HasOpacity")) {
-                    out.has_opacity = Some(v);
-                    recognized = true;
-                }
-            }
-            "EffectSettingsComponent" => {
-                if let Some(v) = json_bool(data.get("IsGlass")) {
-                    out.is_glass = Some(v);
-                    recognized = true;
+            // #5525 — the alpha, effect (IsGlass, BlendingMode) and emissive
+            // settings components are read by the same `capture_settings` the
+            // compiled CDB decoder uses, so the two producers of a
+            // `CdbMaterial` cannot drift per component.
+            "AlphaSettingsComponent" | "EffectSettingsComponent" | "EmissiveSettingsComponent" => {
+                if let Some(capture) = byroredux_sfmaterial::capture_settings(type_name, LooseFields(data)) {
+                    if !capture.is_empty() {
+                        capture.fill_unset(&mut out);
+                        recognized = true;
+                    }
                 }
             }
             "TranslucencySettingsComponent" | "TranslucencySettings" => {
@@ -150,6 +146,34 @@ pub(crate) fn parse_loose_mat(bytes: &[u8]) -> Option<(LooseMatStage, CdbMateria
         },
         out,
     ))
+}
+
+/// A loose component's `Data` map as a [`byroredux_sfmaterial::FieldSource`]:
+/// string-typed scalars, and nested structs as `{"Type", "Data"}` wrappers
+/// (read off the installed Creation files, #5396).
+#[derive(Clone, Copy)]
+struct LooseFields<'a>(&'a serde_json::Map<String, serde_json::Value>);
+
+impl byroredux_sfmaterial::FieldSource for LooseFields<'_> {
+    fn bool_field(self, name: &str) -> Option<bool> {
+        json_bool(self.0.get(name))
+    }
+
+    fn f32_field(self, name: &str) -> Option<f32> {
+        json_f32(self.0.get(name))
+    }
+
+    fn string_field(self, name: &str) -> Option<String> {
+        self.0.get(name)?.as_str().map(str::to_owned)
+    }
+
+    fn nested(self, name: &str) -> Option<Self> {
+        self.0.get(name)?.get("Data")?.as_object().map(Self)
+    }
+
+    fn color4_field(self, name: &str) -> Option<[f32; 4]> {
+        xmfloat4(self.0.get(name)?)
+    }
 }
 
 /// A texture path in the archive convention: backslash separators and
@@ -279,6 +303,77 @@ mod tests {
         ]}]}"#;
         let (_, mat) = parse_loose_mat(json).expect("parses");
         assert!(mat.flat_color_slots.is_empty());
+    }
+
+    /// #5525 — the effect and emissive settings the compiled decoder
+    /// captures are captured from the loose form too, in the nested
+    /// `{"Type", "Data"}` layout the installed files use (a real pawnshop
+    /// `EmissiveSettingsComponent` wraps its `Settings` exactly so).
+    #[test]
+    fn effect_and_emissive_settings_are_captured_like_the_compiled_decoder() {
+        let json = br#"{"Objects": [{"Components": [
+            {"Data": {"IsGlass": "true", "BlendingMode": "Additive"}, "Index": 0, "Type": "BSMaterial::EffectSettingsComponent"},
+            {"Data": {"Enabled": "true", "Settings": {"Type": "BSMaterial::EmittanceSettings", "Data": {
+                "LuminousEmittance": "432.0",
+                "EmissiveTint": {"Type": "BSMaterial::Color", "Data": {"Value": {"Type": "XMFLOAT4", "Data":
+                    {"x": "1.0", "y": "0.8", "z": "0.6", "w": "1.0"}}}}}}},
+             "Index": 0, "Type": "BSMaterial::EmissiveSettingsComponent"}
+        ]}]}"#;
+        let (stage, mat) = parse_loose_mat(json).expect("decodes");
+        assert_eq!(stage, LooseMatStage::Decoded);
+        assert_eq!(mat.is_glass, Some(true));
+        assert_eq!(mat.blending_mode.as_deref(), Some("Additive"));
+        assert_eq!(mat.emissive_enabled, Some(true));
+        assert_eq!(mat.emissive_tint, Some([1.0, 0.8, 0.6]));
+        assert_eq!(mat.luminous_emittance, Some(432.0));
+    }
+
+    /// The real installed emissive components (the 12 QOG pawnshop parts)
+    /// author `Settings` with `AdaptiveEmittance` only — no `Enabled`, tint or
+    /// luminance (they inherit from the `ColorEmissive` shader model they
+    /// import). A diff authors only what it changes, so nothing is captured and
+    /// the file is not claimed as decoded on that component's account.
+    #[test]
+    fn a_real_pawnshop_emissive_component_captures_nothing_and_invents_nothing() {
+        let json = br#"{"Objects": [{"Components": [
+            {"Data": {"Settings": {"Data": {"AdaptiveEmittance": "true", "EnableAdaptiveLimits": "true"},
+                                   "Type": "BSMaterial::EmittanceSettings"}},
+             "Index": 0, "Type": "BSMaterial::EmissiveSettingsComponent", "Version": 1}
+        ]}]}"#;
+        let (stage, mat) = parse_loose_mat(json).expect("parses");
+        assert_eq!(stage, LooseMatStage::Undecodable);
+        assert_eq!(mat.emissive_enabled, None);
+        assert_eq!(mat.emissive_tint, None);
+        assert_eq!(mat.luminous_emittance, None);
+    }
+
+    /// #5525 — the drift guard: one authored component, expressed as a typed
+    /// CDB instance and as loose JSON, captures identically, because both go
+    /// through `capture_settings`.
+    #[test]
+    fn the_compiled_and_loose_representations_capture_identically() {
+        use byroredux_sfmaterial::{capture_settings, ObjectInstance, Value};
+        use std::collections::BTreeMap;
+
+        let compiled = ObjectInstance {
+            class_name: "BSMaterial::EffectSettingsComponent".into(),
+            type_id: 0,
+            fields: BTreeMap::from([
+                ("IsGlass".to_string(), Value::Bool(true)),
+                ("BlendingMode".to_string(), Value::String("SourceSoftAdditive".into())),
+            ]),
+        };
+        let loose: serde_json::Value = serde_json::json!({
+            "IsGlass": "true",
+            "BlendingMode": "SourceSoftAdditive",
+        });
+        let from_compiled = capture_settings("BSMaterial::EffectSettingsComponent", &compiled);
+        let from_loose = capture_settings(
+            "BSMaterial::EffectSettingsComponent",
+            LooseFields(loose.as_object().unwrap()),
+        );
+        assert!(from_compiled.is_some());
+        assert_eq!(from_compiled, from_loose);
     }
 
     #[test]
