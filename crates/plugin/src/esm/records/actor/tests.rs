@@ -1679,6 +1679,60 @@ fn race_head_parts_stop_at_the_body_section_marker() {
     );
 }
 
+/// #5487 — body-section ICONs use their own INDX table after NAM1; they
+/// must be captured as body skins without leaking into the head texture
+/// table, even when both sections author the same index.
+#[test]
+fn race_body_part_textures_follow_body_section_gender_and_index() {
+    let subs = vec![
+        sub(b"NAM0", b""),
+        sub(b"INDX", 0u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Head\\Head.dds\0"),
+        sub(b"NAM1", b""),
+        sub(b"MNAM", b""),
+        sub(b"INDX", 0u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Argonian\\Male\\UpperBodyMale.dds\0"),
+        sub(b"INDX", 1u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Argonian\\Male\\LegMale.dds\0"),
+        sub(b"FNAM", b""),
+        sub(b"INDX", 0u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Argonian\\Female\\UpperBodyFemale.dds\0"),
+        sub(b"INDX", 1u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Argonian\\Female\\LegFemale.dds\0"),
+    ];
+    let race = parse_race(0x0000_0001, &subs, GameKind::Oblivion, &None);
+
+    assert_eq!(
+        race.head_part_textures,
+        vec![(0, "Characters\\Head\\Head.dds".to_string(), None)],
+    );
+    assert_eq!(
+        race.body_part_textures,
+        vec![
+            (
+                0,
+                "Characters\\Argonian\\Male\\UpperBodyMale.dds".to_string(),
+                Some(0),
+            ),
+            (
+                1,
+                "Characters\\Argonian\\Male\\LegMale.dds".to_string(),
+                Some(0),
+            ),
+            (
+                0,
+                "Characters\\Argonian\\Female\\UpperBodyFemale.dds".to_string(),
+                Some(1),
+            ),
+            (
+                1,
+                "Characters\\Argonian\\Female\\LegFemale.dds".to_string(),
+                Some(1),
+            ),
+        ],
+    );
+}
+
 /// Each head part's `ICON` follows its `MODL` under the same `INDX`, per
 /// gender section, and an ear slot may author an `ICON` with no `MODL`.
 /// Layout from FO3 `Caucasian` (`INDX 0` → `MODL HeadHuman.NIF` →

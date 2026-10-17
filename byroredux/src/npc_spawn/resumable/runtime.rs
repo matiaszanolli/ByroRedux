@@ -126,6 +126,26 @@ pub(super) fn head_part_texture(
         .next()
 }
 
+/// Select the RACE body-section `ICON` for one Oblivion mesh slot. Untagged
+/// entries are shared; a gender-tagged entry applies only to that gender.
+fn race_body_texture(
+    race: Option<&RaceRecord>,
+    icon_idx: u32,
+    want_gender_tag: u8,
+) -> Option<String> {
+    race.and_then(|race| {
+        race.body_part_textures
+            .iter()
+            .find(|(idx, texture, section)| {
+                *idx == icon_idx
+                    && !texture.is_empty()
+                    && section.is_none_or(|tag| tag == want_gender_tag)
+            })
+            .map(|(_, texture, _)| texture.clone())
+    })
+    .filter(|texture| !texture.is_empty())
+}
+
 /// Shared filter behind [`head_part_paths`] / [`head_part_texture`]: the
 /// entries of an `(INDX, path, gender section)` list matching `roles`, in
 /// role order.
@@ -226,24 +246,14 @@ pub(super) fn prepare_runtime_state(
     };
     // #5487 — pair each mesh with the race's body-section ICON skin for
     // its slot (Oblivion only; FO3/FNV body skins ride the head table).
-    let body_skin = |path: &str| -> Option<String> {
-        let icon_idx = crate::npc_spawn::humanoid_body_path_icon_index(game, path)?;
-        race.and_then(|race| {
-            race.body_part_textures
-                .iter()
-                .find(|(idx, texture, section)| {
-                    *idx == icon_idx
-                        && !texture.is_empty()
-                        && section.is_none_or(|tag| tag == want_gender_tag)
-                })
-                .map(|(_, texture, _)| texture.clone())
-        })
-        .filter(|texture| !texture.is_empty())
-    };
     let (body_paths, body_textures): (Vec<String>, Vec<Option<String>>) =
         humanoid_body_paths(game, gender, is_child)
             .iter()
-            .map(|path| ((*path).to_owned(), body_skin(path)))
+            .map(|path| {
+                let texture = crate::npc_spawn::humanoid_body_path_icon_index(game, path)
+                    .and_then(|icon_idx| race_body_texture(race, icon_idx, want_gender_tag));
+                ((*path).to_owned(), texture)
+            })
             .filter(|(path, _)| {
                 let body_piece_mask = humanoid_body_path_biped_mask(game, path);
                 let covered = if path.ends_with("upperbody.nif") {
@@ -384,6 +394,42 @@ pub(super) fn prepare_runtime_state(
         combat_anim_draugr: is_draugr_race(race),
         player_body,
         phase: RuntimePhase::Skeleton,
+    }
+}
+
+#[cfg(test)]
+mod body_skin_tests {
+    use super::race_body_texture;
+    use byroredux_plugin::esm::records::RaceRecord;
+
+    #[test]
+    fn race_body_skin_selects_gendered_and_shared_icons() {
+        let race = RaceRecord {
+            body_part_textures: vec![
+                (0, "male.dds".to_string(), Some(0)),
+                (0, "female.dds".to_string(), Some(1)),
+                (1, "shared.dds".to_string(), None),
+                (2, "other-male.dds".to_string(), Some(0)),
+                (2, String::new(), Some(1)),
+            ],
+            ..RaceRecord::default()
+        };
+
+        assert_eq!(race_body_texture(Some(&race), 0, 0).as_deref(), Some("male.dds"));
+        assert_eq!(
+            race_body_texture(Some(&race), 0, 1).as_deref(),
+            Some("female.dds")
+        );
+        assert_eq!(
+            race_body_texture(Some(&race), 1, 0).as_deref(),
+            Some("shared.dds")
+        );
+        assert_eq!(
+            race_body_texture(Some(&race), 1, 1).as_deref(),
+            Some("shared.dds")
+        );
+        assert_eq!(race_body_texture(Some(&race), 2, 1), None);
+        assert_eq!(race_body_texture(None, 0, 0), None);
     }
 }
 
