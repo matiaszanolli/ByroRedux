@@ -1,13 +1,14 @@
 //! M42 — Eat (FO3/FNV `PKDT` procedure 3) and Sleep (procedure 4)
 //! procedures, v0.
 //!
-//! Both share one runtime: walk once to the package's `PLDT` anchor
+//! Both share one runtime: walk to the package's `PLDT` anchor
 //! (#5391 — [`EatSleepLocation`]: a `NearReference` lands the actor at
 //! the authored furniture, "near editor location" at its
 //! [`EditorPlacement`], "in cell" stays put while that cell is resident
 //! and idles otherwise, and every other type stays where the actor
-//! stands — no random walk), then occupy the nearest furniture marker
-//! within the location radius through the
+//! stands — no random walk), then walk to the nearest furniture marker
+//! within the location radius when it lies beyond the arrival threshold,
+//! and occupy it through the
 //! sandbox seating path (`collect_marker_seats` + `pick_nearest_seat` +
 //! `apply_seat_assignments` — the same reservations, root snap, and
 //! sit-enter final-frame park). Eat seats at **sit** markers; Sleep at
@@ -67,9 +68,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::components::{SandboxSitClip, SeatReservations};
 
 /// The one-shot walk destination's arrival threshold (world units) —
-/// inside this, the actor stops walking and seats. Small relative to
-/// the seat-search radius so the seat pick, not the walk, decides the
-/// final resting furniture.
+/// inside this, the actor may seat at the selected marker. A farther
+/// marker becomes the next walk destination instead of a snap.
 const ARRIVE_RADIUS: f32 = 64.0;
 
 /// Real seconds between seat attempts for an arrived actor that could not
@@ -87,6 +87,12 @@ const ANCHOR_RETRY_SECS: f32 = SEAT_RETRY_SECS;
 
 /// One world-space seat: `((furniture entity, marker index), transform)`.
 type Seat = ((EntityId, u32), GlobalTransform);
+
+enum SeatAttempt {
+    Seated,
+    Approach(Vec3),
+    Retry,
+}
 
 /// The cell's seat markers, gathered at most once per frame per kind and
 /// shared by every Eat/Sleep actor that attempts a seat that frame
@@ -305,9 +311,9 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
         walk_speed,
     } in actors.drain(..)
     {
-        // One-shot walk destination: resolve on first sight, reuse
-        // after. Inserted through a scoped write so no read guard is
-        // held across it.
+        // Resolve the package anchor on first sight and reuse it after.
+        // A distant seat marker can replace it with the second walk goal
+        // below. Insert through a scoped write so no read guard is held.
         let destination = match destination {
             Some(destination) => destination,
             None => {
@@ -402,11 +408,26 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
                 continue;
             }
         }
-        if seat_at_marker(world, npc, kind, Some(search_radius), &mut scratch.seats) {
-            scratch.seat_retry.remove(&npc);
-            super::navmesh_path::clear_cached_path(world, npc);
-        } else {
-            scratch.seat_retry.insert(npc, SEAT_RETRY_SECS);
+        match seat_at_marker(world, npc, kind, Some(search_radius), &mut scratch.seats) {
+            SeatAttempt::Seated => {
+                scratch.seat_retry.remove(&npc);
+                super::navmesh_path::clear_cached_path(world, npc);
+            }
+            SeatAttempt::Approach(destination) => {
+                // The package anchor can be the actor's current position
+                // (InCell), while its nearest marker is across the room.
+                // Walk to that marker before the shared seating helper is
+                // allowed to snap the actor into place.
+                if let Some(mut states) = world.query_mut::<EatSleepState>() {
+                    states.insert(npc, EatSleepState { destination });
+                }
+                scratch.seat_retry.remove(&npc);
+                scratch.stuck_secs.remove(&npc);
+                super::navmesh_path::clear_cached_path(world, npc);
+            }
+            SeatAttempt::Retry => {
+                scratch.seat_retry.insert(npc, SEAT_RETRY_SECS);
+            }
         }
     }
     // The drain emptied the list; hand the buffer back for next frame.
@@ -484,15 +505,16 @@ fn cell_is_resident(world: &World, cell_form_id: u32) -> bool {
 }
 
 /// Seat one arrived actor at its procedure's marker kind, reusing the
-/// sandbox seating path (reservation, root snap, sit-enter park). Returns
-/// whether the actor was seated; `false` means "try again later".
+/// sandbox seating path (reservation, root snap, sit-enter park). A marker
+/// beyond the arrival threshold becomes a walk goal; `Retry` means there is
+/// no usable seat yet.
 fn seat_at_marker(
     world: &World,
     npc: EntityId,
     kind: EatOrSleep,
     radius: Option<f32>,
     frame_seats: &mut FrameSeats,
-) -> bool {
+) -> SeatAttempt {
     // #5495 — creatures never take furniture: the per-cell sit clip's
     // channels are human-rig bones, so seating a creature freezes it in
     // a human pose at the marker for the life of the cell. The actor has
@@ -501,7 +523,7 @@ fn seat_at_marker(
         .get::<byroredux_core::ecs::components::CreatureActor>(npc)
         .is_some()
     {
-        return false;
+        return SeatAttempt::Retry;
     }
     // No sit-enter clip → no seating path (Skyrim+/Havok games, or the
     // clip wasn't archived) — the actor has already walked to the
@@ -509,7 +531,7 @@ fn seat_at_marker(
     // sandbox actor in a clip-less cell.
     let Some((sit_handle, hold_time)) = world.try_resource::<SandboxSitClip>().and_then(|r| r.0)
     else {
-        return false;
+        return SeatAttempt::Retry;
     };
     let is_sleep = matches!(kind, EatOrSleep::Sleep);
     let use_sleep_markers = is_sleep && !frame_seats.sleep(world).is_empty();
@@ -531,10 +553,10 @@ fn seat_at_marker(
         frame_seats.sit(world)
     };
     if collected.is_empty() {
-        return false;
+        return SeatAttempt::Retry;
     }
     let Some(current) = world.get::<GlobalTransform>(npc).map(|t| t.translation) else {
-        return false;
+        return SeatAttempt::Retry;
     };
     let seat = {
         let empty = std::collections::HashMap::new();
@@ -554,8 +576,11 @@ fn seat_at_marker(
         )
     };
     let Some(((furn_e, marker_idx), seat)) = seat else {
-        return false;
+        return SeatAttempt::Retry;
     };
+    if (seat.translation - current).length() > ARRIVE_RADIUS {
+        return SeatAttempt::Approach(seat.translation);
+    }
     // Reserve through the shared resource so a sandboxing actor (or a
     // second diner) cannot take the same marker.
     if let Some(mut reservations) = world.try_resource_mut::<SeatReservations>() {
@@ -572,7 +597,7 @@ fn seat_at_marker(
         seat.translation.y,
         seat.translation.z,
     );
-    true
+    SeatAttempt::Seated
 }
 
 fn is_sleep_marker(marker: &FurnitureMarker) -> bool {
@@ -756,10 +781,59 @@ mod tests {
             },
         );
 
-        eat_sleep_system(&world, 1.0);
+        eat_sleep_system(&world, 0.1);
+        assert!(
+            world.get::<Seated>(actor).is_none(),
+            "a far In-Cell marker becomes a walk destination instead of a snap"
+        );
+        assert_eq!(
+            world
+                .get::<EatSleepState>(actor)
+                .expect("state inserted")
+                .destination,
+            Vec3::new(2000.0, 0.0, 0.0),
+            "the chosen marker replaces the actor's In-Cell stay-put anchor"
+        );
+        assert_eq!(
+            world
+                .get::<Transform>(actor)
+                .expect("transform")
+                .translation,
+            Vec3::ZERO,
+            "the first seat search must not teleport the actor"
+        );
+
+        let mut propagate = byroredux_core::ecs::systems::make_transform_propagation_system();
+        let mut previous = Vec3::ZERO;
+        for _ in 0..256 {
+            eat_sleep_system(&world, 0.5);
+            propagate(&world, 0.5);
+            let current = world
+                .get::<GlobalTransform>(actor)
+                .expect("global")
+                .translation;
+            assert!(
+                (current - previous).length() <= super::super::sandbox::SEAT_SEARCH_RADIUS,
+                "the actor walks toward the bed instead of snapping across the cell"
+            );
+            previous = current;
+            if world.get::<Seated>(actor).is_some() {
+                break;
+            }
+        }
         assert!(
             world.get::<Seated>(actor).is_some(),
-            "an In-Cell package reaches a bed beyond the default radius (#5500)"
+            "the actor walks to the bed beyond the default radius and then seats (#5500)"
+        );
+        assert!(
+            (world
+                .get::<GlobalTransform>(actor)
+                .expect("global")
+                .translation
+                - Vec3::new(2000.0, 0.0, 0.0))
+                .length()
+                <= ARRIVE_RADIUS,
+            "the actor seats at the bed after walking within the arrival radius"
         );
     }
 
