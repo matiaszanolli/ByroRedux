@@ -887,6 +887,14 @@ impl VolumetricsPipeline {
             let (write_lo, write_hi) = fog_cluster_write_range(
                 (cluster_lo, cluster_hi), self.fog_cluster_dirty_range[frame],
             );
+            // #5958 — widen the slot's dirty range to everything this frame
+            // may touch BEFORE the fallible uploads. If the entry write
+            // flushes (or the index write fails) after copying bytes, the
+            // early return leaves counts in the mapped slice that the
+            // narrowed range would not cover; the union keeps them inside the
+            // next frame's rewrite. Narrowed to this frame's range only once
+            // both writes have succeeded.
+            self.fog_cluster_dirty_range[frame] = (write_lo, write_hi);
             if write_lo < write_hi {
                 self.fog_cluster_buffers[frame].write_mapped_at(
                     device,
@@ -2734,6 +2742,32 @@ mod unit_tests {
             "the store must clamp into the finite fp16 range — the RGBA16F \
              target overflows above 65504 and Inf re-enters next frame \
              through `current`, where the history guard cannot scrub it (#4782)"
+        );
+    }
+
+    /// #5958 — `fog_cluster_dirty_range[frame]` describes which entry slots the
+    /// GPU-side array may hold non-zero counts in. It must be widened to the
+    /// union before the fallible mapped writes and narrowed only after both
+    /// succeed; committing the narrow range after a failed flush leaves the
+    /// failed frame's counts outside the next frame's rewrite.
+    #[test]
+    fn fog_cluster_dirty_range_widens_before_the_uploads_and_narrows_after() {
+        let src = crate::source_scan::production_text(include_str!("volumetrics.rs"));
+        let widen = src
+            .find("self.fog_cluster_dirty_range[frame] = (write_lo, write_hi);")
+            .expect("the dirty range must be widened to the union first (#5958)");
+        let entries = src
+            .find("self.fog_cluster_buffers[frame].write_mapped_at(")
+            .expect("the entry upload");
+        let indices = src
+            .find(".write_mapped(device, &self.fog_cluster_indices[..index_len])?;")
+            .expect("the index upload");
+        let narrow = src
+            .find("self.fog_cluster_dirty_range[frame] = (cluster_lo, cluster_hi);")
+            .expect("the dirty range narrows to this frame's range");
+        assert!(
+            widen < entries && entries < indices && indices < narrow,
+            "widen -> entry write -> index write -> narrow (#5958)"
         );
     }
 
