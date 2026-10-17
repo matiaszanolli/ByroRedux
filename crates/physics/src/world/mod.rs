@@ -908,6 +908,7 @@ impl PhysicsWorld {
             if b.body_type() == RigidBodyType::Dynamic {
                 b.add_force(force, wake_up);
                 if wake_up {
+                    self.forget_spawn_sleep(handle);
                     self.wake();
                 }
                 return true;
@@ -931,6 +932,7 @@ impl PhysicsWorld {
             if b.body_type() == RigidBodyType::Dynamic {
                 b.add_torque(torque, wake_up);
                 if wake_up {
+                    self.forget_spawn_sleep(handle);
                     self.wake();
                 }
                 return true;
@@ -997,6 +999,14 @@ impl PhysicsWorld {
                     && !settled_colliders.contains(&event.collider2)
             });
         }
+    }
+
+    /// Explicit wake requests take ownership of a newcomer before its first
+    /// physics step. Do not let the spawn-settle workaround put it back to
+    /// sleep and erase the requested motion.
+    fn forget_spawn_sleep(&mut self, handle: RigidBodyHandle) {
+        self.spawn_sleep_pending
+            .retain(|(pending_handle, _)| *pending_handle != handle);
     }
 
     /// #5540 — record that the water pass owns `body`'s user force this
@@ -1098,6 +1108,7 @@ impl PhysicsWorld {
         if let Some(b) = self.bodies.get_mut(handle) {
             if b.body_type() == RigidBodyType::Dynamic {
                 b.apply_impulse(impulse, true);
+                self.forget_spawn_sleep(handle);
                 self.wake();
                 return true;
             }
@@ -1119,6 +1130,9 @@ impl PhysicsWorld {
         if let Some(b) = self.bodies.get_mut(handle) {
             b.reset_forces(wake_up);
             b.reset_torques(wake_up);
+            if wake_up {
+                self.forget_spawn_sleep(handle);
+            }
             return true;
         }
         false
@@ -1154,6 +1168,7 @@ impl PhysicsWorld {
         // the `ActiveCollisionTypes` filter withheld.
         body.set_body_type(body_type, wake_up);
         if wake_up {
+            self.forget_spawn_sleep(handle);
             self.wake();
         }
         // #4682 — keep the recovery-snapshot index informed. A flip TO
@@ -3910,6 +3925,31 @@ mod tests {
             w.bodies[h].linvel().y > 0.0,
             "upward impulse must yield upward velocity; vy = {}",
             w.bodies[h].linvel().y
+        );
+    }
+
+    /// An explicit wake before the newcomer's first step must not be
+    /// mistaken for Rapier's begin-touch wake and immediately re-slept.
+    #[test]
+    fn explicit_impulse_keeps_newcomer_awake_through_first_step() {
+        let mut w = PhysicsWorld::new();
+        let h = spawn_ball(&mut w, 100.0);
+        let spawn = w.bodies[h].translation();
+        w.spawn_sleep_pending.push((h, spawn));
+        let mass = w.body_mass(h).expect("mass");
+
+        // A 1 BU/s horizontal impulse moves less than the 4 BU settle
+        // threshold in one tick, but it is still intentional motion.
+        assert!(w.apply_impulse(h, byroredux_core::math::Vec3::X * mass));
+        assert!(w.spawn_sleep_pending.is_empty());
+        w.step(PHYSICS_DT);
+
+        let body = &w.bodies[h];
+        assert!(!body.is_sleeping(), "explicitly woken newcomer stays awake");
+        assert!(body.linvel().x > 0.0, "the gentle impulse keeps its velocity");
+        assert!(
+            (body.translation() - spawn).length() < SPAWN_SLEEP_DRIFT_BU,
+            "fixture stays inside the begin-touch drift threshold"
         );
     }
 
