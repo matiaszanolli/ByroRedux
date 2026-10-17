@@ -1049,7 +1049,7 @@ impl PhysicsWorld {
                 let Some(body) = self.bodies.get(handle) else {
                     continue;
                 };
-                // Cheap body flags before the SipHash set lookup.
+                // Cheap body flags before the FxHashSet membership check.
                 if !body.is_dynamic()
                     || body.is_sleeping()
                     || self.water_force_targets.contains(&handle)
@@ -1095,11 +1095,9 @@ impl PhysicsWorld {
     /// request — the impulse would be integrated into a velocity nothing
     /// steps.
     ///
-    /// **No production consumer yet** (#2889): the intended one is the WATAL
-    /// Phase 3 splash kick / actor-jumping-out-of-water effect, which is not
-    /// built. Exercised only by this module's unit tests until then — stated
-    /// here so the gap is visible from the API rather than discovered by
-    /// grep.
+    /// Production consumer: `scripted_havok_impulse_system` handles Papyrus
+    /// `ApplyHavokImpulse` requests. The planned WATAL Phase 3 splash kick /
+    /// actor-jumping-out-of-water effect (#2889) is still unbuilt.
     pub fn apply_impulse(
         &mut self,
         handle: RigidBodyHandle,
