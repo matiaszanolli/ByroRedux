@@ -362,7 +362,7 @@ impl VolumetricsPipeline {
                     vk::BufferUsageFlags::STORAGE_BUFFER,
                 )
             ));
-            let mut moment_buffer = try_or_cleanup!(
+            let moment_buffer = try_or_cleanup!(
                 partial,
                 device,
                 allocator,
@@ -374,23 +374,28 @@ impl VolumetricsPipeline {
                     vk::BufferUsageFlags::STORAGE_BUFFER,
                 )
             );
+            partial.combustion_light_moment_buffers.push(moment_buffer);
+            let moment_init = (|| -> Result<()> {
+                let moment_buffer = partial
+                    .combustion_light_moment_buffers
+                    .last_mut()
+                    .expect("moment buffer was just pushed");
+                moment_buffer.mapped_slice_mut()?.fill(0);
+                moment_buffer.flush_if_needed(device)
+            })();
             try_or_cleanup!(
                 partial,
                 device,
                 allocator,
-                (|| -> Result<()> {
-                    moment_buffer.mapped_slice_mut()?.fill(0);
-                    moment_buffer.flush_if_needed(device)
-                })()
+                moment_init
             );
-            partial.combustion_light_moment_buffers.push(moment_buffer);
             // #4784 — per-slot coarse transport-occupancy mask on the 16³
             // fog-cluster grid. Host-visible because `dispatch` zeroes it and
             // seed-marks transported-source clusters before every submit (the
             // all-slots fence wait at the top of `draw_frame` has retired its
             // previous reader); the inject pass then accumulates GPU marks
             // into it, and the NEXT frame's inject reads it as the skip gate.
-            let mut occupancy_buffer = try_or_cleanup!(
+            let occupancy_buffer = try_or_cleanup!(
                 partial,
                 device,
                 allocator,
@@ -401,16 +406,21 @@ impl VolumetricsPipeline {
                     vk::BufferUsageFlags::STORAGE_BUFFER,
                 )
             );
+            partial.combustion_occupancy_buffers.push(occupancy_buffer);
+            let occupancy_init = (|| -> Result<()> {
+                let occupancy_buffer = partial
+                    .combustion_occupancy_buffers
+                    .last_mut()
+                    .expect("occupancy buffer was just pushed");
+                occupancy_buffer.mapped_slice_mut()?.fill(0);
+                occupancy_buffer.flush_if_needed(device)
+            })();
             try_or_cleanup!(
                 partial,
                 device,
                 allocator,
-                (|| -> Result<()> {
-                    occupancy_buffer.mapped_slice_mut()?.fill(0);
-                    occupancy_buffer.flush_if_needed(device)
-                })()
+                occupancy_init
             );
-            partial.combustion_occupancy_buffers.push(occupancy_buffer);
         }
 
         // ── 3. Descriptor set layout ──────────────────────────────────
