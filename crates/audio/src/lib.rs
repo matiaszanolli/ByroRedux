@@ -354,9 +354,10 @@ pub(crate) const SEND_TRACK_CAPACITY: usize = 32;
 ///   ([`AudioWorld::play_oneshot_following`]): the follow pass tracks
 ///   the entity exactly like `Emitter`, but there is no emitter
 ///   component lifecycle — the sound plays to natural termination
-///   unless [`AudioWorld::stop_sounds_for`] stops it (dialogue voice:
-///   the NPC carries no `AudioEmitter`, and its line must survive SFX
-///   emitter churn while still tracking a walking speaker).
+///   unless [`AudioWorld::stop_sounds_for`] stops it or the followed
+///   entity loses `GlobalTransform` (dialogue voice: the NPC carries no
+///   `AudioEmitter`, and its line must survive SFX emitter churn while
+///   still tracking a walking speaker).
 ///
 /// Whether the underlying kira sound is looping (set via
 /// `loop_region(..)` at dispatch) is decided at the `Pending` /
@@ -378,10 +379,10 @@ struct ActiveSound {
     underwater: bool,
     /// Fade-out duration captured from `AudioEmitter.unload_fade_ms` at
     /// dispatch time. Read by `prune_stopped_sounds` when the source
-    /// entity loses its emitter component (cell unload). Applies to
-    /// looping AND non-looping post-#858 / SAFE-23 — one-shots
-    /// usually terminate naturally before the fade is needed, but
-    /// despawn-mid-playback routes through the same tween. See #845.
+    /// entity loses its emitter component or an anchored source loses its
+    /// transform. Applies to looping AND non-looping post-#858 / SAFE-23 —
+    /// one-shots usually terminate naturally before the fade is needed,
+    /// but mid-playback unload routes through the same tween. See #845.
     unload_fade_ms: f32,
     /// Set to `true` once `prune_stopped_sounds` has issued the
     /// fade-out `stop` call for this active sound. The handle's
@@ -405,8 +406,9 @@ enum SoundSource {
     /// `OneShotSound + AudioEmitter` dispatch: follows the entity, stops
     /// with the emitter component, removes it on completion.
     Emitter(EntityId),
-    /// Entity-anchored queue play: follows the entity, stops only via
-    /// [`AudioWorld::stop_sounds_for`], no emitter lifecycle.
+    /// Entity-anchored queue play: follows the entity, stops via
+    /// [`AudioWorld::stop_sounds_for`] or when the entity loses its
+    /// `GlobalTransform`; no emitter lifecycle.
     Anchored(EntityId),
 }
 
@@ -428,6 +430,13 @@ impl SoundSource {
             SoundSource::Emitter(entity) => Some(*entity),
             SoundSource::Detached | SoundSource::Anchored(_) => None,
         }
+    }
+}
+
+fn orphaned_anchored_entity(source: &SoundSource, has_global_transform: bool) -> Option<EntityId> {
+    match source {
+        SoundSource::Anchored(entity) if !has_global_transform => Some(*entity),
+        _ => None,
     }
 }
 
@@ -1097,8 +1106,9 @@ pub fn audio_system(world: &World, _dt: f32) {
 /// is no entity to follow — and music is non-spatial, so neither is
 /// touched here. `Anchored` queue plays (#5410, dialogue voice) follow
 /// exactly like emitters. An entity that has been despawned or lost its
-/// `GlobalTransform` mid-playback is skipped; the prune sweep owns the
-/// `Emitter` half's termination, `stop_sounds_for` the `Anchored` half's.
+/// `GlobalTransform` mid-playback is skipped; the prune sweep stops both
+/// `Emitter` sounds on emitter removal and `Anchored` sounds on transform
+/// loss.
 ///
 /// Per-tick cost: one `GlobalTransform` lookup per entity-backed
 /// active sound plus one kira `set_position` command **only on ticks
@@ -1531,11 +1541,36 @@ fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
     // playing past the despawn at the stale entity transform until
     // natural termination (50 ms – 3 s typical), surfacing as faint
     // cross-cell SFX bleed on fast interior↔interior fast-travel.
-    // #5410 — only `SoundSource::Emitter` entries carry that despawn
-    // coupling. Detached queue plays have no entity by contract, and
-    // `Anchored` plays (dialogue voice) deliberately keep talking
-    // through SFX emitter churn on the same speaker: both run to
-    // natural termination (or an explicit `stop_sounds_for`).
+    // #5410 — only `SoundSource::Emitter` entries carry emitter-removal
+    // coupling. Anchored dialogue survives SFX emitter churn, but cannot
+    // keep playing after its followed speaker loses `GlobalTransform`.
+    let has_anchored_sounds = audio_world
+        .active_sounds
+        .iter()
+        .any(|sound| !sound.stop_issued && matches!(&sound.source, SoundSource::Anchored(_)));
+    let orphaned_anchored: std::collections::HashSet<EntityId> = if has_anchored_sounds {
+        world
+            .query::<GlobalTransform>()
+            .map(|gt_q| {
+                audio_world
+                    .active_sounds
+                    .iter()
+                    .filter_map(|sound| {
+                        if sound.stop_issued || !matches!(&sound.source, SoundSource::Anchored(_)) {
+                            return None;
+                        }
+                        let has_global_transform = sound
+                            .source
+                            .followed_entity()
+                            .is_some_and(|entity| gt_q.get(entity).is_some());
+                        orphaned_anchored_entity(&sound.source, has_global_transform)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        std::collections::HashSet::new()
+    };
     let emitter_q = world.query::<AudioEmitter>();
     let mut to_stop_indices: Vec<usize> = Vec::new();
     for (idx, s) in audio_world.active_sounds.iter().enumerate() {
@@ -1546,6 +1581,11 @@ fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
         // ringbuf `stop` command (idempotent in effect, wasted CPU
         // on the active-list walk). See #844.
         if s.stop_issued {
+            continue;
+        }
+        if matches!(&s.source, SoundSource::Anchored(entity) if orphaned_anchored.contains(entity))
+        {
+            to_stop_indices.push(idx);
             continue;
         }
         let Some(entity) = s.source.emitter_coupled() else {

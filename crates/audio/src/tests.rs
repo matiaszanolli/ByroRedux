@@ -4,6 +4,25 @@
 
 use super::*;
 
+#[test]
+fn only_transformless_anchored_sources_are_prune_orphans() {
+    let entity = 7;
+    assert_eq!(
+        orphaned_anchored_entity(&SoundSource::Anchored(entity), false),
+        Some(entity)
+    );
+    assert_eq!(
+        orphaned_anchored_entity(&SoundSource::Anchored(entity), true),
+        None
+    );
+    assert_eq!(
+        orphaned_anchored_entity(&SoundSource::Emitter(entity), false),
+        None,
+        "emitter sources retain their separate AudioEmitter lifecycle"
+    );
+    assert_eq!(orphaned_anchored_entity(&SoundSource::Detached, false), None);
+}
+
 fn test_sound() -> Arc<StaticSoundData> {
     Arc::new(StaticSoundData {
         sample_rate: 22_050,
@@ -1888,6 +1907,28 @@ fn anchored_voice_follows_survives_prune_and_stops() {
         world.resource::<AudioWorld>().active_sound_count(),
         0,
         "the faded line must leave the active list"
+    );
+
+    // The orphan half: an anchored line still has no AudioEmitter, so
+    // despawning its speaker must be detected through GlobalTransform and
+    // faded by the prune pass.
+    world.resource_mut::<AudioWorld>().play_oneshot_following(
+        npc,
+        Arc::clone(&sound),
+        glam::Vec3::new(3.0, 0.0, 5.0),
+        Attenuation::default(),
+        0.0,
+    );
+    audio_system(&world, 0.016);
+    assert_eq!(world.resource::<AudioWorld>().active_sound_count(), 1);
+    world.despawn(npc);
+    audio_system(&world, 0.016);
+    std::thread::sleep(Duration::from_millis(30));
+    audio_system(&world, 0.016);
+    assert_eq!(
+        world.resource::<AudioWorld>().active_sound_count(),
+        0,
+        "a despawned speaker's anchored voice must fade instead of playing at stale coordinates"
     );
 }
 
