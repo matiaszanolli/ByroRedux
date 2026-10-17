@@ -249,6 +249,26 @@ struct Layout {
     annotation_stride: usize,
 }
 
+/// Havok 2014's `hkaDefaultAnimatedReferenceFrame` fields after the
+/// `hkReferencedObject` base: type, up, forward, duration, sample array.
+#[derive(Debug, PartialEq, Eq)]
+struct ReferenceFrameLayout {
+    duration: usize,
+    samples: ArrayField,
+}
+
+impl ReferenceFrameLayout {
+    fn new(pointer: usize) -> Self {
+        let mut fields = Fields::referenced_object(pointer);
+        fields.int(); // m_frameType
+        fields.take(16, 16); // m_up
+        fields.take(16, 16); // m_forward
+        let duration = fields.int();
+        let samples = fields.array(); // m_referenceFrameSamples
+        Self { duration, samples }
+    }
+}
+
 impl Layout {
     fn new(pointer: usize) -> Self {
         let mut skeleton = Fields::referenced_object(pointer);
@@ -943,19 +963,18 @@ fn decode_lossless_in(pack: &Packfile<'_>) -> Result<HkxAnimation> {
 /// quietly playing in place.
 fn read_reference_frame(pack: &Packfile<'_>) -> std::result::Result<Option<ReferenceFrame>, &'static str> {
     const MAX_SAMPLES: usize = 65_536;
-    const DURATION: usize = 0x40;
-    const SAMPLES: usize = 0x48;
     if pack.version() != 11 {
         return Ok(None);
     }
     let Ok(frame) = pack.object("hkaDefaultAnimatedReferenceFrame") else {
         return Ok(None);
     };
+    let layout = ReferenceFrameLayout::new(pack.pointer_size());
     let duration = pack
-        .f32(frame + DURATION, "reference frame duration")
+        .f32(frame + layout.duration, "reference frame duration")
         .map_err(|_| "its duration lies outside the file")?;
     let count = pack
-        .u32(frame + SAMPLES + 8, "reference frame samples")
+        .u32(frame + layout.samples.count, "reference frame samples")
         .map_err(|_| "its sample count lies outside the file")? as usize;
     if count == 0 {
         return Ok(None);
@@ -963,7 +982,9 @@ fn read_reference_frame(pack: &Packfile<'_>) -> std::result::Result<Option<Refer
     if count > MAX_SAMPLES {
         return Err("it holds more samples than the decoder keeps");
     }
-    let data = pack.local_target(frame + SAMPLES).ok_or("its sample array is unbound")?;
+    let data = pack
+        .local_target(frame + layout.samples.pointer)
+        .ok_or("its sample array is unbound")?;
     let mut samples = Vec::with_capacity(count);
     for index in 0..count {
         let at = data + index * 16;
@@ -2982,21 +3003,38 @@ mod tests {
         assert!(decode_three_component_48(&[0; 5]).is_err());
     }
 
-    /// A Havok 2014 packfile holding an `hkaDefaultAnimatedReferenceFrame`: its duration at +0x40, the
-    /// sample array at +0x48 (pointer, count) pointing at 16-byte `(x, y, z, yaw)` records.
+    /// A Havok 2014 packfile holding an `hkaDefaultAnimatedReferenceFrame`.
     fn reference_frame_stub(v11: bool, duration: f32, samples: &[[f32; 4]], count: u32, bound: bool) -> Vec<u8> {
+        reference_frame_stub_with_pointer(v11, 8, duration, samples, count, bound)
+    }
+
+    fn reference_frame_stub_with_pointer(
+        v11: bool,
+        pointer: usize,
+        duration: f32,
+        samples: &[[f32; 4]],
+        count: u32,
+        bound: bool,
+    ) -> Vec<u8> {
         let mut builder = PackfileBuilder { data: vec![0u8; 0x200], v11, ..Default::default() };
         let class = builder.class("hkaDefaultAnimatedReferenceFrame");
         builder.virtual_fixups.push((0, 0, class));
-        put_f32(&mut builder.data, 0x40, &[duration]);
-        put_u32(&mut builder.data, 0x48 + 8, count);
+        let layout = ReferenceFrameLayout::new(pointer);
+        put_f32(&mut builder.data, layout.duration, &[duration]);
+        put_u32(&mut builder.data, layout.samples.count, count);
         if bound {
-            builder.local.push((0x48, 0x100));
+            builder.local.push((layout.samples.pointer as u32, 0x100));
         }
         for (index, sample) in samples.iter().enumerate() {
             put_f32(&mut builder.data, 0x100 + index * 16, sample);
         }
-        builder.build()
+        if pointer == 4 {
+            // Deliberately populate the old 64-bit fields so a reader that
+            // regresses to the hard-coded offsets returns the wrong frame.
+            put_f32(&mut builder.data, 0x40, &[99.0]);
+            put_u32(&mut builder.data, 0x48 + 8, 0);
+        }
+        builder.build_with(|bytes| bytes[0x10] = pointer as u8)
     }
 
     fn read_frame(bytes: &[u8]) -> std::result::Result<Option<ReferenceFrame>, &'static str> {
@@ -3013,6 +3051,35 @@ mod tests {
         assert_eq!(read_frame(&reference_frame_stub(true, 2.0, &[], 0, false)), Ok(None));
         // A Havok 2010 packfile carries none in the vanilla clips: never read there.
         assert_eq!(read_frame(&reference_frame_stub(false, 2.0, &samples, 3, true)), Ok(None));
+    }
+
+    #[test]
+    fn a_32_bit_havok_2014_reference_frame_uses_pointer_sized_offsets() {
+        assert_eq!(
+            ReferenceFrameLayout::new(4),
+            ReferenceFrameLayout {
+                duration: 0x30,
+                samples: ArrayField {
+                    pointer: 0x34,
+                    count: 0x38,
+                },
+            }
+        );
+        assert_eq!(
+            ReferenceFrameLayout::new(8),
+            ReferenceFrameLayout {
+                duration: 0x40,
+                samples: ArrayField {
+                    pointer: 0x48,
+                    count: 0x50,
+                },
+            }
+        );
+
+        let samples = [[0.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0, 0.5]];
+        let bytes = reference_frame_stub_with_pointer(true, 4, 2.0, &samples, 2, true);
+        let frame = read_frame(&bytes).unwrap().expect("32-bit reference frame");
+        assert_eq!((frame.duration, frame.samples), (2.0, samples.to_vec()));
     }
 
     #[test]
