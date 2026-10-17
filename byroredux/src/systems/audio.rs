@@ -287,7 +287,7 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
                 })
                 .collect()
         } else {
-            Vec::new()
+            vec![None; triggers.len()]
         };
 
     // #5556 — snapshot the (Arc-cloned) per-surface table BEFORE the
@@ -925,10 +925,17 @@ mod footstep_tests {
     }
 
     /// Walking exactly one threshold distance fires exactly one
-    /// footstep. Vertical motion is excluded — only XZ delta counts.
+    /// default footstep even without a PhysicsWorld. Vertical motion is
+    /// excluded — only XZ delta counts.
     #[test]
-    fn stride_threshold_fires_exactly_one_footstep() {
+    fn stride_threshold_fires_one_default_footstep_without_physics_world() {
         let (mut world, _sound) = synth_world(0.7);
+        assert!(
+            world
+                .try_resource::<byroredux_physics::PhysicsWorld>()
+                .is_none(),
+            "the synthesized world intentionally has no PhysicsWorld"
+        );
         let entity = world.spawn();
         world.insert(entity, Transform::IDENTITY);
         world.insert(
@@ -955,17 +962,21 @@ mod footstep_tests {
         // Tick 2: stride accumulates one threshold, hits it, fires.
         footstep_system(&world, 0.016);
 
-        // Count the footsteps the system *triggered* this tick, not the
-        // one-shots that reached the kira queue. `play_oneshot` drops on
-        // an inactive manager (headless CI / no audio device), so
-        // `pending_oneshot_count()` is device-dependent; `triggers` is
-        // populated regardless and is the true measure of the stride
-        // logic under test.
+        // The headless AudioWorld drops playback without a device but still
+        // counts each one-shot request, so this catches a short surface list
+        // truncating the trigger loop.
         let scratch = world.resource::<crate::components::FootstepScratch>();
         assert_eq!(
             scratch.triggers.len(),
             1,
             "a one-threshold horizontal stride must fire exactly one footstep"
+        );
+        assert_eq!(
+            world
+                .resource::<byroredux_audio::AudioWorld>()
+                .oneshots_requested(),
+            1,
+            "without a PhysicsWorld the footstep still requests its default sound"
         );
     }
 
