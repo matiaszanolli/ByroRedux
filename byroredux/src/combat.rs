@@ -1644,6 +1644,41 @@ mod tests {
         assert_eq!(kill(8, 60.0, to_next - 10), (2, 20), "rolls over into level 2");
     }
 
+    #[test]
+    fn experience_roll_stops_at_the_fallout_new_vegas_level_cap() {
+        use byroredux_core::character::{CharacterLevel, LevelingModel};
+
+        let advance = |level| {
+            let mut world = World::new();
+            world.register::<CharacterLevel>();
+            world.insert_resource(CharacterRuleset::new(LevelingModel::FNV));
+            let player = world.spawn();
+            world.insert(player, CharacterLevel { level, xp: 0 });
+            grant_experience(&world, player, 10_000);
+            let progress = *world
+                .get::<CharacterLevel>(player)
+                .expect("level remains present");
+            progress
+        };
+
+        assert_eq!(
+            advance(29),
+            CharacterLevel {
+                level: 30,
+                xp: 5_600,
+            },
+            "level 29 crosses once and stops at the cap, retaining unused XP"
+        );
+        assert_eq!(
+            advance(30),
+            CharacterLevel {
+                level: 30,
+                xp: 10_000,
+            },
+            "a capped character may accumulate XP but cannot advance beyond 30"
+        );
+    }
+
     /// The rules install only where the load order authors both the
     /// `AVDamageThreshold` actor value and `fMinDamMultiplier`.
     #[test]

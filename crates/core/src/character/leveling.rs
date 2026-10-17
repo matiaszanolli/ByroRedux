@@ -225,40 +225,24 @@ impl LevelingModel {
         }
     }
 
-    /// Skill points granted at a level-up for the given Intelligence, or
-    /// `None` when the game awards none (FO4, or any skill-use game). The 0.5
-    /// carry for odd INT in FNV is the caller's concern (accumulate the
-    /// fractional part across levels); this returns the exact per-level amount.
+    /// Skill-point portion of [`Self::skill_point_reward`] for the given
+    /// Intelligence. FO4 returns `Some(0.0)` because its level reward is a
+    /// SPECIAL-or-perk choice; skill-use games return `None`.
     #[inline]
     pub fn skill_points(&self, intelligence: u8) -> Option<f32> {
-        match self {
-            Self::XpCurve {
-                reward: LevelReward::SkillPoints { base, int_mult, .. },
-                ..
-            } => Some(base + int_mult * f32::from(intelligence)),
-            _ => None,
-        }
+        self.skill_point_reward(0, f32::from(intelligence))
+            .map(|(points, _)| points)
     }
 
-    /// Whether reaching `level` (a level-up, so `level >= 2`) offers a perk.
-    /// FO4 offers the SPECIAL-or-perk choice at every level; FO3/FNV on their
-    /// cadence; Skyrim grants a perk every level; classic-TES skill-use games
-    /// have no perks. The cadence phase (which exact levels) is the simple
-    /// modulo; refine per game if a citing pass pins an offset.
+    /// Whether reaching `level` offers a perk, using the perk flag from
+    /// [`Self::skill_point_reward`]. Skyrim's `SkillXp` model is the one
+    /// exception: its level reward is outside the Fallout helper, but it
+    /// grants a perk at every level. Classic-TES skill-use games grant none.
     #[inline]
     pub fn grants_perk_at(&self, level: u16) -> bool {
-        match self {
-            Self::XpCurve {
-                reward: LevelReward::SpecialOrPerk,
-                ..
-            } => true,
-            Self::XpCurve {
-                reward: LevelReward::SkillPoints { perk_cadence, .. },
-                ..
-            } => *perk_cadence != 0 && level.is_multiple_of(u16::from(*perk_cadence)),
-            Self::SkillXp { .. } => true,
-            Self::SkillUse { .. } => false,
-        }
+        self.skill_point_reward(level, 0.0)
+            .map(|(_, perk)| perk)
+            .unwrap_or(matches!(self, Self::SkillXp { .. }))
     }
 
     /// The base-game hard level cap (`0` = uncapped). DLC-specific raises are
@@ -319,8 +303,8 @@ mod tests {
         // FNV: 10 + INT/2 → INT 10 = 15, INT 9 = 14.5 (carry is caller's job).
         assert_eq!(LevelingModel::FNV.skill_points(10), Some(15.0));
         assert_eq!(LevelingModel::FNV.skill_points(9), Some(14.5));
-        // FO4 and Oblivion grant no skill points.
-        assert_eq!(LevelingModel::FO4.skill_points(10), None);
+        // FO4's combined reward has no skill points; its points component is 0.
+        assert_eq!(LevelingModel::FO4.skill_points(10), Some(0.0));
         assert_eq!(LevelingModel::OBLIVION.skill_points(10), None);
     }
 
