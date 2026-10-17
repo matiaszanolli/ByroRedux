@@ -87,8 +87,21 @@ fn save_type_sources() -> Vec<PathBuf> {
     // #5585 — `build_save_registry` moved from `save_io.rs` to
     // `save_io/registry.rs`; the register-row scan follows it.
     let registry_source = include_str!("registry.rs");
-    let registered = registered_type_names(registry_source);
+    let mut registered: Vec<String> = registered_type_names(registry_source)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
     let mut candidates = save_scan_candidates();
+    // #5802 — a subsystem that registers its own saved column
+    // (`register_saved`, called from `build_save_registry`) is a registry
+    // source too; its rows must reach the scan like the hub's.
+    for path in &candidates {
+        if let Ok(source) = std::fs::read_to_string(path) {
+            if source.contains("fn register_saved(") {
+                registered.extend(registered_type_names(&source).into_iter().map(str::to_owned));
+            }
+        }
+    }
 
     candidates.retain(|path| {
         let Ok(source) = std::fs::read_to_string(path) else {

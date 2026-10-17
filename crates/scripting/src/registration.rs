@@ -43,9 +43,11 @@ pub fn register(world: &mut World) {
     world.init_resource::<PendingSoundPlays>();
     // M47.2 — ProcessTrapHit requests awaiting the Update flush (transient).
     world.init_resource::<PendingTrapHits>();
-    // M47.2 — reference owners (derived).
-    world.init_resource::<OwnerKinds>();
-    world.register::<ExplicitOwner>();
+    // M47.2 — reference owners, faction crime gold and crime factions: each
+    // subsystem installs its own resources (#5802).
+    ownership::install(world);
+    crime_gold::install(world);
+    crime_faction::install(world);
     // M47.2 — form lists scripts read (derived).
     world.init_resource::<FormLists>();
     // M47.2 — the weather scripts can ask about (derived).
@@ -61,12 +63,6 @@ pub fn register(world: &mut World) {
     world.init_resource::<HitRegistrations>();
     // M47.2 — scripted SetLinkedRef links (saved).
     world.init_resource::<LinkedRefOverrides>();
-    // M47.2 — scripted SetActorOwner / SetFactionOwner (saved).
-    world.init_resource::<OwnerOverrides>();
-    // M47.2 — faction crime gold (saved).
-    world.init_resource::<FactionCrimeGold>();
-    // M47.2 — scripted SetCrimeFaction assignments (saved).
-    world.init_resource::<CrimeFactionOverrides>();
     // M47.2 — SetBribed / SetIntimidated flags and ChangeAnimArchetype
     // assignments (saved).
     world.init_resource::<SpeechcraftOutcomes>();

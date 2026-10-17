@@ -865,6 +865,7 @@ dependencies = [
  "byroredux-papyrus",
  "byroredux-pex",
  "byroredux-plugin",
+ "byroredux-save",
  "byroredux-sdk",
  "log",
  "rustc-hash 2.1.3",

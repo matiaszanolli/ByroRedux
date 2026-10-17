@@ -24,6 +24,20 @@ pub struct FactionCrimeGold {
 
 impl Resource for FactionCrimeGold {}
 
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub.
+pub fn install(world: &mut World) {
+    world.init_resource::<FactionCrimeGold>();
+}
+
+/// #5802 — this subsystem's saved column. Called by the binary's
+/// `build_save_registry` in its row order (the schema fingerprint is
+/// order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<FactionCrimeGold>("FactionCrimeGold");
+}
+
 /// One script edit of a faction's crime gold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrimeGoldChange {

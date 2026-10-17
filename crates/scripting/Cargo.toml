@@ -6,12 +6,16 @@ edition.workspace = true
 [features]
 # M45 — derive serde on the script-owned game-state components
 # (`ScriptTimer`) so the save crate can snapshot them. Off by default;
-# the binary turns it on.
-save = ["serde", "byroredux-core/save"]
+# the binary turns it on. #5802 — and lets a subsystem register its own saved
+# columns (`register_saved`) instead of the binary's registry hub spelling them.
+save = ["serde", "byroredux-core/save", "dep:byroredux-save"]
 
 [dependencies]
 byroredux-core = { workspace = true }
 serde = { workspace = true, optional = true }
+# #5802 — `SaveRegistry`, for the subsystems' `register_saved`. The save crate
+# depends on core alone, so no cycle.
+byroredux-save = { workspace = true, optional = true }
 # M47.1 — scripting needs the `Condition` / `ConditionList` types
 # from `byroredux_plugin::esm::records::condition` so the evaluator
 # can operate on parser-produced data. No cycle: plugin parses ESM

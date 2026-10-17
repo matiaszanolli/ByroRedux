@@ -494,13 +494,14 @@ pub fn build_save_registry() -> SaveRegistry {
         // M47.2 — ObjectReference.SetLinkedRef links.
         .register_resource::<byroredux_scripting::LinkedRefOverrides>("LinkedRefOverrides")
         // M47.3 — the ObScript quest scripts' local variables.
-        .register_resource::<byroredux_scripting::obscript_quests::ObScriptQuestLocals>("ObScriptQuestLocals")
-        // M47.2 — SetActorOwner / SetFactionOwner.
-        .register_resource::<byroredux_scripting::OwnerOverrides>("OwnerOverrides")
-        // M47.2 — Faction crime gold.
-        .register_resource::<byroredux_scripting::FactionCrimeGold>("FactionCrimeGold")
-        // M47.2 — Actor.SetCrimeFaction.
-        .register_resource::<byroredux_scripting::CrimeFactionOverrides>("CrimeFactionOverrides")
+        .register_resource::<byroredux_scripting::obscript_quests::ObScriptQuestLocals>("ObScriptQuestLocals");
+    // M47.2 — SetActorOwner / SetFactionOwner, faction crime gold and
+    // Actor.SetCrimeFaction: each subsystem registers its own column (#5802),
+    // here, at its place in the row order the schema fingerprint hashes.
+    byroredux_scripting::ownership::register_saved(&mut r);
+    byroredux_scripting::crime_gold::register_saved(&mut r);
+    byroredux_scripting::crime_faction::register_saved(&mut r);
+    r
         // M47.2 — Actor.SetBribed / SetIntimidated flags.
         .register_resource::<byroredux_scripting::SpeechcraftOutcomes>("SpeechcraftOutcomes")
         // M47.2 — Actor.ChangeAnimArchetype assignments.

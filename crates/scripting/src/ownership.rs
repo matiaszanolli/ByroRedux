@@ -69,6 +69,23 @@ impl OwnerOverrides {
     }
 }
 
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: the owner kinds (derived), the spawn-stamped
+/// [`ExplicitOwner`] storage, and the script overrides (saved).
+pub fn install(world: &mut World) {
+    world.init_resource::<OwnerKinds>();
+    world.register::<ExplicitOwner>();
+    world.init_resource::<OwnerOverrides>();
+}
+
+/// #5802 — this subsystem's saved column, `SetActorOwner` /
+/// `SetFactionOwner`. Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<OwnerOverrides>("OwnerOverrides");
+}
+
 /// The owner a script set on `entity`'s reference with `SetActorOwner` /
 /// `SetFactionOwner`, if it did: `Some(0)` is a cleared owner. The theft rule
 /// reads this before the cell loader's stamped `Owned`, so a script's ownership

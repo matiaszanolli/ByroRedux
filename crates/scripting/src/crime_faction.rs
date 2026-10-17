@@ -57,6 +57,21 @@ impl CrimeFactionOverrides {
     }
 }
 
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub. The authored [`CrimeFactions`] arrive with the load order
+/// ([`install_crime_factions`]).
+pub fn install(world: &mut World) {
+    world.init_resource::<CrimeFactionOverrides>();
+}
+
+/// #5802 — this subsystem's saved column, `Actor.SetCrimeFaction`. Called by
+/// the binary's `build_save_registry` in its row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<CrimeFactionOverrides>("CrimeFactionOverrides");
+}
+
 /// The faction `actor` (reference FormID `reference`) reports crimes to.
 pub fn crime_faction(world: &World, entity: EntityId, reference: u32) -> Option<u32> {
     if let Some(faction) = world
