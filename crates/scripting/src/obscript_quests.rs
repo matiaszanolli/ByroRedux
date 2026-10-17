@@ -20,7 +20,7 @@
 //! | `0x1059` / `0x1000` | Message / MessageBox | queued in the native message UI; MessageBox waits for an answer |
 //! | `0x100c` | GetSecondsPassed | per-script elapsed since last tick |
 //! | `0x101f` | GetButtonPressed | consumes the pending answer, or −1 when none is available |
-//! | condition 79 | GetQuestVariable | reads the named quest variable, falling back to its authored default |
+//! | condition 79 | GetQuestVariable | reads the quest's persisted [`ObScriptQuestLocals`] slot |
 //! | everything else | — | traced no-op returning 0, counted in [`ObScriptQuestTimers`] |
 
 use std::collections::HashMap;
@@ -76,9 +76,9 @@ impl ObScriptEffectLog {
 
 /// The local variables quest scripts hold between GameMode runs: quest FormID to
 /// the 1-based `SLSD` slot and its value. A variable no run assigned is absent and
-/// reads `0`, the value every ObScript local starts at. These compiled `SLSD`
-/// slots are separate from the named quest variables read by condition
-/// function 79. Saved: a quest script's variables are gameplay state.
+/// reads `0`, the value every ObScript local starts at. `GetQuestVariable`
+/// (condition function 79) reads it. Saved: a quest script's variables are
+/// gameplay state.
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ObScriptQuestLocals {
@@ -537,6 +537,106 @@ mod host_tests {
             None
         );
         assert_eq!(declined(&world, 0x15), 1, "a remote-variable Set (0x15)");
+    }
+}
+
+#[cfg(test)]
+mod persisted_locals_tests {
+    use super::*;
+    use crate::obscript_vm::BLOCK_GAME_MODE;
+    use byroredux_plugin::esm::records::{ScriptLocalVar, ScriptType};
+
+    const QUEST: u32 = 0x0001_2345;
+
+    fn statement(op: u16, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = op.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    fn set_short_local_to_incremented_value() -> Vec<u8> {
+        // `set s1 to s1 + 1`: the first run reads the absent local as 0;
+        // each later run must seed the VM from the value stored by the prior run.
+        let expression = [b' ', b's', 1, 0, b' ', b'1', b' ', b'+'];
+        let mut payload = vec![b's'];
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&(expression.len() as u16).to_le_bytes());
+        payload.extend_from_slice(&expression);
+        let assignment = statement(0x15, &payload);
+
+        let mut begin_payload = BLOCK_GAME_MODE.to_le_bytes().to_vec();
+        begin_payload.extend_from_slice(&(assignment.len() as u32).to_le_bytes());
+        let mut bytes = statement(0x10, &begin_payload);
+        bytes.extend(assignment);
+        bytes.extend(statement(0x11, &[]));
+        bytes
+    }
+
+    #[test]
+    fn quest_game_mode_local_is_read_on_the_next_tick_and_by_condition_79() {
+        use byroredux_plugin::esm::records::condition::{
+            ComparisonOp, Condition, ConditionValue, RunOn,
+        };
+        use byroredux_plugin::esm::reader::GameKind;
+
+        let mut world = World::new();
+        let script = ScriptRecord {
+            form_id: 1,
+            editor_id: "TestQuestScript".into(),
+            script_type: ScriptType::Quest,
+            compiled: set_short_local_to_incremented_value(),
+            locals: vec![ScriptLocalVar {
+                index: 1,
+                var_type: 1,
+                name: "counter".into(),
+            }],
+            ..Default::default()
+        };
+        let mut table = QuestScriptTable::default();
+        table.scripts.insert(
+            QUEST,
+            QuestScript {
+                script: Arc::new(script),
+                quest: QuestFormId(QUEST),
+            },
+        );
+        world.insert_resource(table);
+        world.insert_resource(ObScriptQuestLocals::default());
+        world.insert_resource(crate::ScriptGame(GameKind::Oblivion));
+
+        assert_eq!(
+            run_quest_game_mode(&world, QUEST, 5.0),
+            Some(BlockOutcome::Completed)
+        );
+        assert_eq!(
+            run_quest_game_mode(&world, QUEST, 5.0),
+            Some(BlockOutcome::Completed)
+        );
+        assert_eq!(
+            world
+                .try_resource::<ObScriptQuestLocals>()
+                .unwrap()
+                .get(QUEST, 1),
+            2.0,
+            "tick two must start from the slot saved by tick one"
+        );
+
+        let condition = Condition {
+            function_index: 79,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(2.0),
+            param_1: QUEST,
+            param_2: 1,
+            run_on: RunOn::Subject,
+            ..Default::default()
+        };
+        let subject = world.spawn();
+        assert!(crate::condition::evaluate_condition(
+            &condition,
+            &world,
+            &crate::condition::ConditionContext::for_subject(subject),
+        ));
     }
 }
 

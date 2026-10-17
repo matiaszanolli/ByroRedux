@@ -89,6 +89,55 @@ fn cond(
 }
 
 #[test]
+fn get_quest_variable_uses_obscript_locals_only_for_legacy_game_paths() {
+    use byroredux_plugin::esm::reader::GameKind;
+
+    const QUEST: u32 = 0x0001_2345;
+    let mut world = World::new();
+    crate::register(&mut world);
+    let subject = world.spawn();
+    let mut locals = crate::obscript_quests::ObScriptQuestLocals::default();
+    locals.store(QUEST, &std::collections::HashMap::from([(3, 12.5)]));
+    world.insert_resource(locals);
+    let mut condition = cond(79, ComparisonOp::Eq, 12.5, false).with_param_1(QUEST);
+    condition.param_2 = 3;
+
+    for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
+        world.insert_resource(crate::ScriptGame(game));
+        assert!(
+            is_modeled(&world, &condition),
+            "{game:?} models condition 79"
+        );
+        assert!(evaluate_condition(&condition, &world, &ctx(subject)));
+    }
+
+    // Without quest-local state, the legacy function reads its zero default.
+    let mut empty = World::new();
+    crate::register(&mut empty);
+    empty.insert_resource(crate::ScriptGame(GameKind::Oblivion));
+    let empty_subject = empty.spawn();
+    assert!(evaluate_condition(
+        &cond(79, ComparisonOp::Eq, 0.0, false).with_param_1(QUEST),
+        &empty,
+        &ctx(empty_subject),
+    ));
+
+    // Newer games use another function at index 79; preserve the pass-through.
+    for game in [GameKind::Skyrim, GameKind::Fallout4] {
+        world.insert_resource(crate::ScriptGame(game));
+        assert!(
+            !is_modeled(&world, &condition),
+            "{game:?} does not model condition 79"
+        );
+        assert!(evaluate_condition(
+            &cond(79, ComparisonOp::Eq, -1.0, false),
+            &world,
+            &ctx(subject),
+        ));
+    }
+}
+
+#[test]
 fn empty_condition_list_returns_true() {
     let world = World::new();
     let result = evaluate(&Vec::new(), &world, &ctx(0));
