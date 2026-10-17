@@ -570,6 +570,16 @@ pub const GROUNDCOVER_LOD_MORPH_UNITS: f32 = 200.0;
 /// where density dropped while the blades' pixel-floor widening kept growing
 /// their footprint. The authored-model tier keeps `GROUNDCOVER_FADE_START`.
 pub const GROUNDCOVER_BLADE_FADE_START: f32 = 7000.0;
+const _: () = {
+    assert!(
+        GROUNDCOVER_FADE_START < GROUNDCOVER_DRAW_DISTANCE,
+        "ground-cover density fade must start before its draw-distance end"
+    );
+    assert!(
+        GROUNDCOVER_BLADE_FADE_START < GROUNDCOVER_DRAW_DISTANCE,
+        "ground-cover blade fade must start before its draw-distance end"
+    );
+};
 /// Largest widening a blade takes to pay back distance thinning, and the
 /// largest total widening (LOD blade-count reduction x thinning) a blade may
 /// take; coverage falls off gracefully past either (the terrain's own detail
