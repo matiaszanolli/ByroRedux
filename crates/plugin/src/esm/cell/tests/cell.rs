@@ -755,28 +755,38 @@ fn parse_interior_cell_with_xccm(game: crate::esm::reader::GameKind, form: u32) 
     buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
     buf.extend_from_slice(&0u32.to_le_bytes());
     buf.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
-    buf.extend_from_slice(&[0u8; 8]);
+    let variant = if game == crate::esm::reader::GameKind::Oblivion {
+        crate::esm::reader::EsmVariant::Oblivion
+    } else {
+        crate::esm::reader::EsmVariant::Tes5Plus
+    };
+    if variant == crate::esm::reader::EsmVariant::Oblivion {
+        buf.extend_from_slice(&[0u8; 4]);
+    } else {
+        buf.extend_from_slice(&[0u8; 8]);
+    }
     buf.extend_from_slice(&sub_data);
 
-    let mut reader = super::super::super::reader::EsmReader::with_variant(
-        &buf,
-        super::super::super::reader::EsmVariant::Tes5Plus,
-    );
+    let mut reader = super::super::super::reader::EsmReader::with_variant(&buf, variant);
     let end = buf.len();
     let mut cells = HashMap::new();
     parse_cell_group(&mut reader, end, &mut cells, game).unwrap();
     cells.remove("bossarena").expect("interior CELL present")
 }
 
-/// #693 / O3-N-05 — on FO3 / FNV (and TES4) `XCCM` is a per-cell CLMT
-/// override. The test exercises the interior walker (cheaper to set up
-/// than a full WRLD/CELL group); the wrld.rs path shares the decode via
-/// `CellSubrecordFields::absorb`.
+/// #693 / O3-N-05 — on Oblivion and FO3 / FNV `XCCM` is a per-cell CLMT
+/// override. Exercise both header variants through the interior walker;
+/// the wrld.rs path shares the decode via `CellSubrecordFields::absorb`.
 #[test]
-fn parse_cell_fo3nv_xccm_populates_climate_override() {
-    let cell = parse_interior_cell_with_xccm(crate::esm::reader::GameKind::Fallout3NV, 0x0001_A2B3);
-    assert_eq!(cell.climate_override, Some(0x0001_A2B3));
-    assert_eq!(cell.sky_region, None);
+fn parse_cell_oblivion_fo3nv_xccm_populates_climate_override() {
+    for game in [
+        crate::esm::reader::GameKind::Oblivion,
+        crate::esm::reader::GameKind::Fallout3NV,
+    ] {
+        let cell = parse_interior_cell_with_xccm(game, 0x0001_A2B3);
+        assert_eq!(cell.climate_override, Some(0x0001_A2B3), "{game:?}");
+        assert_eq!(cell.sky_region, None, "{game:?}");
+    }
 }
 
 /// #5463 — on TES5 / FO4 the same tag is "Sky/Weather from Region" and
