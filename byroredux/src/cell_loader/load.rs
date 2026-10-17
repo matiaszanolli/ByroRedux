@@ -721,6 +721,13 @@ impl InteriorCellApplyJob {
         let resolved_lighting = resolve_cell_lighting(cell, &index);
         let image_space = cell_image_space(cell, &index);
         let show_sky = cell.show_sky.unwrap_or(false);
+        crate::scene::apply_show_sky_interior_climate(
+            world,
+            ctx,
+            tex_provider,
+            &index,
+            cell,
+        );
         log::info!("Cell lighting: {:?}", resolved_lighting);
 
         let navmesh_first = world.next_entity_id();

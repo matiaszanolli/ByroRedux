@@ -243,6 +243,30 @@ fn apply_environment(
     climate: Option<&byroredux_plugin::esm::records::ClimateRecord>,
     default_weather: Option<&byroredux_plugin::esm::records::WeatherRecord>,
 ) {
+    let image_spaces = crate::env_translate::ImageSpaceSources {
+        worldspaces: &wctx.record_index.cells.worldspaces,
+        worldspace_key: &wctx.worldspace_key,
+        image_spaces: &wctx.record_index.image_spaces,
+        modifiers: &wctx.record_index.imagespace_modifiers,
+    };
+    apply_environment_with_sources(
+        world,
+        ctx,
+        tex_provider,
+        climate,
+        default_weather,
+        &image_spaces,
+    );
+}
+
+fn apply_environment_with_sources(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    climate: Option<&byroredux_plugin::esm::records::ClimateRecord>,
+    default_weather: Option<&byroredux_plugin::esm::records::WeatherRecord>,
+    image_spaces: &crate::env_translate::ImageSpaceSources<'_>,
+) {
     // Bootstrap sun direction from the canonical sun model (EXAL step 4):
     // `tod_hours` + the engine south-tilt drive `compute_sun_arc` — the same
     // model `weather_system` runs every frame — so the initial resources seed
@@ -376,12 +400,7 @@ fn apply_environment(
         let new_weather = crate::env_translate::translate_weather(
             wthr,
             climate,
-            &crate::env_translate::ImageSpaceSources {
-                worldspaces: &wctx.record_index.cells.worldspaces,
-                worldspace_key: &wctx.worldspace_key,
-                image_spaces: &wctx.record_index.image_spaces,
-                modifiers: &wctx.record_index.imagespace_modifiers,
-            },
+            image_spaces,
         );
         // First-time bootstrap: insert directly. A subsequent worldspace
         // change (door-walking interior↔exterior, M40 Phase 2) will
@@ -446,6 +465,74 @@ fn apply_environment(
     // scheduler's own `weather_system(world, dt)` runs moments later and
     // simply resamples again from the (by-then-ticked) clock.
     crate::systems::weather_system(world, 0.0);
+}
+
+fn show_sky_interior_climate<'a>(
+    show_sky: bool,
+    cell_climate_override: Option<u32>,
+    climates: &'a std::collections::HashMap<u32, byroredux_plugin::esm::records::ClimateRecord>,
+    weathers: &'a std::collections::HashMap<u32, byroredux_plugin::esm::records::WeatherRecord>,
+) -> Option<(
+    &'a byroredux_plugin::esm::records::ClimateRecord,
+    &'a byroredux_plugin::esm::records::WeatherRecord,
+)> {
+    if !show_sky {
+        return None;
+    }
+    let climate_id =
+        crate::env_translate::resolve_cell_climate(cell_climate_override, None, climates)?;
+    let climate = climates.get(&climate_id)?;
+    let (weather, _) = crate::env_translate::resolve_default_weather(climate, weathers)?;
+    Some((climate, weather))
+}
+
+/// Apply the authored XCCM climate to an interior that exposes the outdoor
+/// sky. The environment installer is shared with exterior cell overrides so
+/// cloud textures, TOD lighting and weather transitions follow the same path.
+pub(crate) fn apply_show_sky_interior_climate(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    cell: &byroredux_plugin::esm::cell::CellData,
+) -> bool {
+    let show_sky = cell.show_sky.unwrap_or(false);
+    let climate_id = cell.climate_override;
+    let Some((climate, weather)) =
+        show_sky_interior_climate(show_sky, climate_id, &index.climates, &index.weathers)
+    else {
+        if show_sky {
+            if let Some(climate_id) = climate_id {
+                if let Some(climate) = index.climates.get(&climate_id) {
+                    log::warn!(
+                        "Show-Sky interior '{}' climate {:08X} has no default weather — keeping the current sky",
+                        cell.editor_id,
+                        climate.form_id,
+                    );
+                }
+            }
+        }
+        return false;
+    };
+
+    // `apply_environment_with_sources` samples the weather immediately, so
+    // set the interior gate before it resamples the sky for the first frame.
+    world.insert_resource(crate::components::InteriorSkyExposureRes(true));
+    let image_spaces = crate::env_translate::ImageSpaceSources {
+        worldspaces: &index.cells.worldspaces,
+        worldspace_key: "",
+        image_spaces: &index.image_spaces,
+        modifiers: &index.imagespace_modifiers,
+    };
+    apply_environment_with_sources(
+        world,
+        ctx,
+        tex_provider,
+        Some(climate),
+        Some(weather),
+        &image_spaces,
+    );
+    true
 }
 
 /// Re-resolve the climate in effect for the cell the player just entered,
@@ -1763,5 +1850,40 @@ mod tests {
             "leaving the tagged cell must re-resolve to no directive"
         );
         assert_eq!(cache.map(|(grid, _)| grid), Some((1, 1)));
+    }
+
+    #[test]
+    fn show_sky_interior_climate_resolves_its_xccm_default_weather() {
+        use byroredux_plugin::esm::records::climate::ClimateWeather;
+
+        const CLIMATE: u32 = 0x0000_0011;
+        const WEATHER: u32 = 0x0000_0022;
+        let climates = std::collections::HashMap::from([(
+            CLIMATE,
+            byroredux_plugin::esm::records::ClimateRecord {
+                form_id: CLIMATE,
+                weathers: vec![ClimateWeather {
+                    weather_form_id: WEATHER,
+                    chance: 100,
+                }],
+                ..Default::default()
+            },
+        )]);
+        let weathers = std::collections::HashMap::from([(
+            WEATHER,
+            byroredux_plugin::esm::records::WeatherRecord {
+                form_id: WEATHER,
+                editor_id: "OblivionRealmWeather".into(),
+                ..Default::default()
+            },
+        )]);
+
+        let (climate, weather) =
+            show_sky_interior_climate(true, Some(CLIMATE), &climates, &weathers)
+                .expect("Show-Sky XCCM resolves its climate default");
+        assert_eq!(climate.form_id, CLIMATE);
+        assert_eq!(weather.form_id, WEATHER);
+        assert!(show_sky_interior_climate(false, Some(CLIMATE), &climates, &weathers).is_none());
+        assert!(show_sky_interior_climate(true, None, &climates, &weathers).is_none());
     }
 }

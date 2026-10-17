@@ -201,7 +201,7 @@ mod world_setup;
 // duplication. See cell_loader::transition.
 pub(crate) use world_setup::{
     apply_cell_climate_override, apply_cell_region_ambient, assemble_exterior_streaming,
-    begin_exterior_streaming, ExteriorBootstrapMode,
+    apply_show_sky_interior_climate, begin_exterior_streaming, ExteriorBootstrapMode,
 };
 // The four `scene/*_tests.rs` child modules reach for these helpers
 // via `use super::*;` so they need to be in scope at the parent
