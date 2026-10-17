@@ -5777,6 +5777,63 @@ fn dispatch_set_actor_value_sets_the_base() {
     assert_eq!(world.get::<ActorValues>(player).unwrap().current(AGGRESSION), 2.0);
 }
 
+#[test]
+fn dispatch_set_actor_value_routes_player_derived_pool_to_override() {
+    use crate::translate::compose::ObjectRef;
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::character::{
+        CharacterLevel, CharacterRuleset, DerivedInput, DerivedStatFormula, LevelingModel,
+    };
+    use byroredux_core::ecs::components::ActorValues;
+
+    const ENDURANCE: u32 = 0x07;
+    const HEALTH: u32 = 0x2D4;
+    let mut world = fixture();
+    world.register::<ActorValues>();
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let ruleset = CharacterRuleset::new(LevelingModel::FO4).with_derived(
+        HEALTH,
+        DerivedStatFormula::bilinear(
+            DerivedInput::actor_value(ENDURANCE),
+            4.5,
+            DerivedInput::LEVEL,
+            2.5,
+            0.5,
+            77.5,
+        )
+        .floored()
+        .player_only(),
+    );
+    let mut player_values = ActorValues::from_pairs([(ENDURANCE, 5.0)]);
+    ruleset.refresh_player_only_bases(&mut player_values, 1);
+    world.insert(player, player_values);
+    world.insert(player, CharacterLevel { level: 1, xp: 0 });
+    world.insert_resource(ruleset);
+
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("pHealth", HEALTH)]),
+        vec![Effect::SetActorValue {
+            actor: ActorRef::Player,
+            actor_value: ObjectRef::Property("pHealth".into()),
+            value: crate::translate::effects::ValueExpr::Literal(500.0),
+        }],
+    );
+
+    let ruleset = world.resource::<CharacterRuleset>();
+    {
+        let values = world.get::<ActorValues>(player).unwrap();
+        let health = values.get(HEALTH).unwrap();
+        assert_eq!(health.base, 105.0, "the ruleset owns the formula base");
+        assert_eq!(health.set_override, 500.0);
+        assert_eq!(values.current(HEALTH), 605.0);
+    }
+    let mut refreshed = world.get::<ActorValues>(player).unwrap().clone();
+    ruleset.refresh_player_only_bases(&mut refreshed, 1);
+    assert_eq!(refreshed.current(HEALTH), 605.0, "the write survives refresh");
+    assert_eq!(refreshed.get(HEALTH).unwrap().base, 105.0);
+}
+
 /// M47.2 — `ShowBarterMenu` hands the vendor to the engine's barter menu.
 #[test]
 fn show_barter_menu_requests_the_vendor() {

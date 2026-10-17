@@ -559,10 +559,15 @@ pub(super) fn actor_reference_form_id(
     })
 }
 
-/// Set `actor`'s base `avif`, creating `ActorValues` if it has none.
-/// `ActorValues` is direct component storage — written in place, the same
-/// nested-acquisition exception the inventory arms take.
+/// Set `actor`'s `avif`, creating `ActorValues` if it has none. A player's
+/// player-only derived pool is an override over its ruleset formula; writing
+/// its base would be lost on the next derived-stat refresh. Read the player
+/// and ruleset resources before taking the `ActorValues` write guard (#3441).
 pub(super) fn set_actor_value_base(world: &World, actor: EntityId, avif: u32, value: f32) {
+    let is_player_derived_pool = crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(actor)
+        && world
+            .try_resource::<byroredux_core::character::CharacterRuleset>()
+            .is_some_and(|ruleset| ruleset.is_player_derived_pool(avif));
     let Some(mut values) = world.query_mut::<byroredux_core::ecs::components::ActorValues>()
     else {
         return;
@@ -570,10 +575,12 @@ pub(super) fn set_actor_value_base(world: &World, actor: EntityId, avif: u32, va
     if values.get_mut(actor).is_none() {
         values.insert(actor, byroredux_core::ecs::components::ActorValues::new());
     }
-    values
-        .get_mut(actor)
-        .expect("present or inserted")
-        .set_base(avif, value);
+    let values = values.get_mut(actor).expect("present or inserted");
+    if is_player_derived_pool {
+        values.set_override(avif, value);
+    } else {
+        values.set_base(avif, value);
+    }
 }
 
 /// #5862 — a script's actor-value write may have taken `actor`'s Health to
