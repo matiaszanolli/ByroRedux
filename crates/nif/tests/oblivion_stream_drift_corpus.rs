@@ -52,6 +52,36 @@ const STALE_TAIL_LOD_FILES: &[&str] = &[
     r"meshes\landscape\lod\60.-32.-32.32.nif",
 ];
 
+#[test]
+fn optional_oblivion_mesh_archives_skip_absent_and_reject_present_invalid_files() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "byroredux-oblivion-optional-archives-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create temporary Oblivion data dir");
+    let absent = common::open_optional_mesh_archives_from(Game::Oblivion, &data_dir);
+    assert!(absent.is_empty(), "absent optional DLC archives remain skipped");
+
+    let invalid_archive = data_dir.join("DLCFrostcrag.bsa");
+    std::fs::write(&invalid_archive, b"not a BSA archive").expect("write invalid BSA");
+    let failed_open = std::panic::catch_unwind(|| {
+        common::open_optional_mesh_archives_from(Game::Oblivion, &data_dir)
+    });
+    assert!(
+        failed_open.is_err(),
+        "a present but unopenable vanilla Oblivion DLC archive must fail the corpus gate"
+    );
+
+    std::fs::write(data_dir.join("_ResourcePack.bsa"), b"not a BSA archive")
+        .expect("write invalid Skyrim SE archive");
+    assert!(
+        common::open_optional_mesh_archives_from(Game::SkyrimSE, &data_dir).is_empty(),
+        "the account-varying Skyrim SE optional tier remains tolerant"
+    );
+
+    std::fs::remove_dir_all(&data_dir).expect("remove temporary Oblivion data dir");
+}
+
 struct CountingLogger;
 
 impl log::Log for CountingLogger {

@@ -442,19 +442,38 @@ pub fn open_all_mesh_archives(game: Game) -> Option<Vec<(&'static str, MeshArchi
 /// present, skipping the ones that aren't.
 ///
 /// The deliberate inverse of [`open_all_mesh_archives`]'s all-or-nothing
-/// rule: this tier is account-varying by definition, so "absent" is the
-/// normal case and must not take the whole game down with it. Only safe
-/// for rate-based gates — never for the count-keyed baseline harnesses.
-/// See [`Game::optional_mesh_archives`] for why the split exists (#3369).
+/// rule: absent optional archives are normal. Oblivion's static vanilla DLC
+/// archives must still fail when present but unopenable; only Skyrim SE's
+/// account-varying Creation Club tier tolerates that case. Only safe for
+/// rate-based gates — never for the count-keyed baseline harnesses. See
+/// [`Game::optional_mesh_archives`] for why the split exists (#3369).
 pub fn open_optional_mesh_archives(game: Game) -> Vec<(&'static str, MeshArchive)> {
     let Some(data) = game_data_dir(game) else {
         return Vec::new();
     };
+    open_optional_mesh_archives_from(game, &data)
+}
+
+/// Open a game's optional archives below `data`. Split from
+/// [`open_optional_mesh_archives`] so the per-game failure policy can be
+/// tested against temporary present-but-invalid archives without changing
+/// process-wide game-data environment variables.
+pub fn open_optional_mesh_archives_from(
+    game: Game,
+    data: &std::path::Path,
+) -> Vec<(&'static str, MeshArchive)> {
     let mut opened = Vec::new();
     for name in game.optional_mesh_archives() {
         let path = data.join(name);
         if !path.is_file() {
             continue; // Not on this install — expected, not a failure.
+        }
+        if game == Game::Oblivion {
+            opened.push((
+                *name,
+                open_present_archive(game.label(), &path, game.archive_kind()),
+            ));
+            continue;
         }
         let result = match game.archive_kind() {
             ArchiveKind::Bsa => BsaArchive::open(&path).map(MeshArchive::Bsa),
