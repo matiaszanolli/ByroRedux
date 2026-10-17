@@ -329,13 +329,15 @@ fn load_default_from(user_path: Option<&std::path::Path>) -> GameProfileRegistry
         }
     }
 
-    // Root overrides from the launcher's detection pass (`[roots]` in the
-    // per-user file). Applied *after* both merges and touching only `root`,
+    // Root overrides from the selected user file. An explicit path is the
+    // file the caller was pointed at; only the default loader falls back to
+    // `$BYRO_PROFILES` / the home file. Applied *after* both merges and
+    // touching only `root`,
     // which is the whole reason detection writes a narrow table instead of a
     // full `[profiles.<key>]` block: a shipped profile that later gains an
     // archive must still gain it on a machine detection has touched. See
     // `byroredux_game_detect::overrides`.
-    if let Some(user_path) = selected_user_path() {
+    if let Some(user_path) = root_overrides_path(user_path, selected_user_path()) {
         match crate::RootOverrides::load(&user_path) {
             Ok(overrides) => apply_root_overrides(overrides.roots, &mut out),
             Err(error) => eprintln!("[roots] could not read {}: {error}", user_path.display()),
@@ -353,6 +355,13 @@ fn load_default_from(user_path: Option<&std::path::Path>) -> GameProfileRegistry
     }
 
     GameProfileRegistry::new(out)
+}
+
+fn root_overrides_path(
+    user_path: Option<&std::path::Path>,
+    selected_path: Option<PathBuf>,
+) -> Option<PathBuf> {
+    user_path.map(std::path::Path::to_path_buf).or(selected_path)
 }
 
 fn merge_from(path: &Path, out: &mut BTreeMap<String, GameProfileEntry>) {
@@ -545,6 +554,23 @@ mod tests {
              cwd-relative path: {}",
             fallback.display()
         );
+    }
+
+    #[test]
+    fn explicit_profile_file_also_supplies_root_overrides() {
+        let explicit = PathBuf::from("explicit-profiles.toml");
+        let selected = PathBuf::from("selected-profiles.toml");
+        assert_eq!(
+            root_overrides_path(Some(&explicit), Some(selected.clone())),
+            Some(explicit),
+            "an explicit --profiles file owns its [roots] overlay"
+        );
+        assert_eq!(
+            root_overrides_path(None, Some(selected.clone())),
+            Some(selected),
+            "the default loader falls back to the selected user file"
+        );
+        assert_eq!(root_overrides_path(None, None), None);
     }
 
     #[test]
