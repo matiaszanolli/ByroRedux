@@ -32,11 +32,25 @@
 mod common;
 
 use common::Game;
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 static DRIFT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static FIRST_FEW: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Eight Tamriel terrain-LOD files have a correct root footer followed by
+/// stale bytes left by an older, longer file at the same archive path.
+const STALE_TAIL_LOD_FILES: &[&str] = &[
+    r"meshes\landscape\lod\60.32.-32.32.nif",
+    r"meshes\landscape\lod\60.-64.-64.32.nif",
+    r"meshes\landscape\lod\60.00.-64.32.nif",
+    r"meshes\landscape\lod\60.00.-32.32.nif",
+    r"meshes\landscape\lod\60.32.-64.32.nif",
+    r"meshes\landscape\lod\60.-32.00.32.nif",
+    r"meshes\landscape\lod\60.-96.-64.32.nif",
+    r"meshes\landscape\lod\60.-32.-32.32.nif",
+];
 
 struct CountingLogger;
 
@@ -97,6 +111,9 @@ fn no_block_sizes_drift_detector_has_zero_false_positives_on_real_corpus() {
 
     let mut total_files = 0usize;
     let mut archives_opened = 0usize;
+    let mut footer_mismatches = Vec::new();
+    let mut stale_tail_files_seen = BTreeSet::new();
+    let mut footer_files_checked = 0usize;
 
     for name in ARCHIVE_NAMES {
         let path = data_dir.join(name);
@@ -116,7 +133,68 @@ fn no_block_sizes_drift_detector_has_zero_false_positives_on_real_corpus() {
             let Ok(bytes) = archive.extract(f) else {
                 continue;
             };
-            let _ = byroredux_nif::parse_nif(&bytes);
+            let (scene, consumed) = match byroredux_nif::parse_nif_with_options_and_consumed(
+                &bytes,
+                &byroredux_nif::ParseOptions::default(),
+            ) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    footer_mismatches.push(format!("{name}:{f} (parse error: {error})"));
+                    continue;
+                }
+            };
+            let Ok((header, block_data_offset)) = byroredux_nif::header::NifHeader::parse(&bytes)
+            else {
+                footer_mismatches.push(format!("{name}:{f} (header parse failed after NIF parse)"));
+                continue;
+            };
+            if header.version < byroredux_nif::version::NifVersion::V5_0_0_1
+                || !header.block_sizes.is_empty()
+                || header.num_blocks == 0
+            {
+                continue;
+            }
+            footer_files_checked += 1;
+            if scene.truncated || scene.root_index != Some(0) {
+                footer_mismatches.push(format!(
+                    "{name}:{f} (truncated={}, root_index={:?}, expected first block)",
+                    scene.truncated, scene.root_index,
+                ));
+            }
+            let footer_start = block_data_offset + consumed;
+            if footer_start + 4 > bytes.len() {
+                footer_mismatches.push(format!("{name}:{f} (footer starts past EOF)"));
+                continue;
+            }
+            let root_count = u32::from_le_bytes(
+                bytes[footer_start..footer_start + 4]
+                    .try_into()
+                    .expect("four-byte root count"),
+            ) as usize;
+            let Some(expected_footer_bytes) = root_count
+                .checked_mul(4)
+                .and_then(|root_bytes| root_bytes.checked_add(4))
+            else {
+                footer_mismatches.push(format!("{name}:{f} (root footer size overflows)"));
+                continue;
+            };
+            let remaining = bytes.len() - footer_start;
+            let is_stale_tail = STALE_TAIL_LOD_FILES.contains(&f.to_ascii_lowercase().as_str());
+            if remaining != expected_footer_bytes {
+                if is_stale_tail && remaining > expected_footer_bytes {
+                    stale_tail_files_seen.insert(f.to_ascii_lowercase());
+                } else {
+                    footer_mismatches.push(format!(
+                        "{name}:{f} (remaining={remaining}, expected={expected_footer_bytes}, roots={root_count}, truncated={}, root_index={:?})",
+                        scene.truncated,
+                        scene.root_index,
+                    ));
+                }
+            } else if is_stale_tail {
+                footer_mismatches.push(format!(
+                    "{name}:{f} is allowlisted but no longer has stale trailing bytes"
+                ));
+            }
         }
     }
 
@@ -138,5 +216,18 @@ fn no_block_sizes_drift_detector_has_zero_false_positives_on_real_corpus() {
          fixed-size (re-measure and shrink the list), or there's real drift to \
          investigate. First few: {:#?}",
         FIRST_FEW.lock().unwrap(),
+    );
+    assert!(footer_files_checked > 0, "no sizeless Oblivion footer was checked");
+    assert!(
+        footer_mismatches.is_empty(),
+        "sizeless Oblivion NIFs must end at the root footer, except for the eight known stale-tail terrain LOD files: {footer_mismatches:#?}",
+    );
+    assert_eq!(
+        stale_tail_files_seen,
+        STALE_TAIL_LOD_FILES
+            .iter()
+            .map(|path| path.to_string())
+            .collect(),
+        "the stale-tail allowlist must match the measured corpus exactly",
     );
 }

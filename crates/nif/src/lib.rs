@@ -182,10 +182,24 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
 
 /// Parse a NIF file with options (e.g., skip animation blocks).
 pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result<NifScene> {
+    parse_nif_with_options_and_consumed(data, options).map(|(scene, _)| scene)
+}
+
+/// Parse a NIF and return the number of bytes consumed from its block-data
+/// section. This is useful to validate the footer boundary on formats such
+/// as Oblivion that do not carry a per-block size table.
+pub fn parse_nif_with_options_and_consumed(
+    data: &[u8],
+    options: &ParseOptions,
+) -> io::Result<(NifScene, usize)> {
     // Three-phase parse (#1672) — header / block dispatch / post-link.
     let (header, block_data_offset) = parse_header(data)?;
     let dispatched = dispatch_blocks(data, block_data_offset, &header, options)?;
-    Ok(finalize_scene(dispatched, &header, options))
+    let block_bytes_consumed = dispatched.block_bytes_consumed;
+    Ok((
+        finalize_scene(dispatched, &header, options),
+        block_bytes_consumed,
+    ))
 }
 
 /// Outputs of the block-dispatch phase ([`dispatch_blocks`]) handed to the
@@ -193,6 +207,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
 /// telemetry the latter folds into the [`NifScene`]. Extracted under #1672.
 struct DispatchedBlocks {
     blocks: Vec<Box<dyn NiObject>>,
+    block_bytes_consumed: usize,
     truncated: bool,
     dropped_block_count: usize,
     recovered_blocks: usize,
@@ -807,6 +822,7 @@ fn dispatch_blocks(
 
     Ok(DispatchedBlocks {
         blocks,
+        block_bytes_consumed: stream.position() as usize,
         truncated,
         dropped_block_count,
         recovered_blocks,
@@ -826,6 +842,7 @@ fn finalize_scene(
 ) -> NifScene {
     let DispatchedBlocks {
         blocks,
+        block_bytes_consumed: _,
         truncated,
         dropped_block_count,
         recovered_blocks,
