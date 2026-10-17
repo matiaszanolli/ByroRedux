@@ -4153,17 +4153,19 @@ void main() {
                 }
             }
         }
-        // ReSTIR-selected light per pixel: stable categorical hue from the
-        // light index (IQ cosine palette over a golden-ratio hue walk), so
-        // a light-leak patch names the light responsible; near-black = no
-        // selection this pixel. Placed after finalize so `restirY` is the
-        // surviving selection.
+        // ReSTIR history: temporal reuse depth and substrate validity, with
+        // orange marking mover-tainted history.
         if (viewRestirHistory) {
             outColor = vec4(restirHistoryDebug, 1.0);
             outRawIndirect = vec4(0.0);
             outAlbedo = vec4(1.0);
             return;
         }
+        // ReSTIR-selected light per pixel: stable categorical hue from the
+        // light index (IQ cosine palette over a golden-ratio hue walk), so
+        // a light-leak patch names the light responsible; near-black = no
+        // selection this pixel. Placed after finalize so `restirY` is the
+        // surviving selection.
         if (viewRestirLight) {
             vec3 lightColor = vec3(0.0);
             if (useRestir && restirY != 0xFFFFFFFFu) {
