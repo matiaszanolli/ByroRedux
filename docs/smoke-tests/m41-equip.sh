@@ -57,6 +57,22 @@ BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}"
 LOG_DIR="$(mktemp -d)"
 trap 'rm -rf "$LOG_DIR"' EXIT
 
+# Count the NAMED entities in the Nth `entities <Component>` listing of a
+# byro-dbg session log. Each listing ends with its own `(N entities)` line
+# and rows read `Entity <id> "<name>"` (a row without a Name component has no
+# quoted name). NPCs carry a Name; the player body does not, so a named count
+# measures spawned NPCs and cannot be met by the player's own EquipmentSlots.
+named_in_listing () {
+    awk -v want="$2" '
+        /Entity [0-9]+ "/ { named++ }
+        /^\([0-9]+ entities\)/ {
+            blk++
+            if (blk == want) { print named + 0; found = 1; exit }
+            named = 0
+        }
+        END { if (!found) print 0 }' "$1"
+}
+
 # Returns the PID of the background engine on success; cleans up on
 # bench failure.
 #
@@ -183,19 +199,28 @@ EOF
     slots_count=$(grep -oE '^\([0-9]+ entities\)' "$dbg_log" | sed -n '2p' | grep -oE '[0-9]+' || echo 0)
     : "${inv_count:=0}"
     : "${slots_count:=0}"
+    # Listing 2 is `entities EquipmentSlots`. The player body also carries
+    # EquipmentSlots (#5962), so the hard floor counts named entities only.
+    local named_slots
+    named_slots=$(named_in_listing "$dbg_log" 2)
+    : "${named_slots:=0}"
 
     tex_miss=$(grep -oE '[0-9]+ unique missing textures' "$dbg_log" | grep -oE '^[0-9]+' || echo 0)
     : "${tex_miss:=0}"
 
-    echo "smoke[$label]: Inventory=$inv_count entities, EquipmentSlots=$slots_count entities, tex.missing=$tex_miss unique"
+    echo "smoke[$label]: Inventory=$inv_count entities, EquipmentSlots=$slots_count entities ($named_slots named), tex.missing=$tex_miss unique"
     # Equip-signal floor (SK-D3-02). Pre-fix the equip counts were WARN-only,
     # so a regression dropping ALL NPC gear still passed as long as the
     # static-mesh floor held — the one test that exercises the full outfit
     # chain couldn't catch a silent equip regression. When the caller gives a
     # positive `equip_floor`, enforce it as a HARD floor on the real equip
-    # signals. Skyrim WhiterunBanneredMare authors 6 named residents — saadia,
-    # brenuin, mikael, sinmir, amaundmotierreend, hulda — each carrying both
-    # Inventory and EquipmentSlots, so its floor is 6. `equip_floor=0` keeps
+    # signals. Skyrim WhiterunBanneredMare spawns 5 named residents — saadia,
+    # brenuin, mikael, sinmir, hulda — each carrying both Inventory and
+    # EquipmentSlots, so its floor is 5. (A sixth, amaundmotierreend, is
+    # authored Initially Disabled — ACHR 0004FA2F, record flag 0x800 — and is
+    # withheld since #4813; the player body is a seventh EquipmentSlots
+    # carrier but is unnamed, so the named count below excludes it and it can
+    # no longer stand in for a missing resident, #5962.) `equip_floor=0` keeps
     # the legacy soft-warn for cells whose equipped-NPC count isn't yet a
     # stable guard (FO4 humanoid actors are gated on the .hkx loader, M41.x).
     if (( equip_floor > 0 )); then
@@ -205,11 +230,11 @@ EOF
         else
             echo "smoke[$label]: PASS — Inventory=$inv_count >= $equip_floor"
         fi
-        if (( slots_count < equip_floor )); then
-            echo "smoke[$label]: HARD FAIL — EquipmentSlots=$slots_count entities < equip floor $equip_floor (LVLI dispatch empty / outfit regression?)"
+        if (( named_slots < equip_floor )); then
+            echo "smoke[$label]: HARD FAIL — named EquipmentSlots=$named_slots (of $slots_count) < equip floor $equip_floor (LVLI dispatch empty / outfit regression?)"
             hard_fail=1
         else
-            echo "smoke[$label]: PASS — EquipmentSlots=$slots_count >= $equip_floor"
+            echo "smoke[$label]: PASS — named EquipmentSlots=$named_slots >= $equip_floor"
         fi
     else
         if (( inv_count == 0 )); then
@@ -247,10 +272,10 @@ skyrim_run () {
     # Soft tex.missing ceiling at 30 — Whiterun ships textures across
     # Textures0-7.bsa and the script now passes all of them, so any
     # remaining miss after the archive expansion is environment drift.
-    # equip_floor 6 — the named Bannered Mare residents (saadia, brenuin,
-    # mikael, sinmir, amaundmotierreend, hulda) must each spawn with both
-    # Inventory and EquipmentSlots, or the outfit chain regressed (SK-D3-02).
-    run_cell skyrim 1200 700 30 6 \
+    # equip_floor 5 — the named Bannered Mare residents (saadia, brenuin,
+    # mikael, sinmir, hulda) must each spawn with both Inventory and
+    # EquipmentSlots, or the outfit chain regressed (SK-D3-02, #5962).
+    run_cell skyrim 1200 700 30 5 \
         --esm "$SKYRIM_DATA/Skyrim.esm" \
         --cell WhiterunBanneredMare \
         --bsa "$SKYRIM_DATA/Skyrim - Meshes0.bsa" \
