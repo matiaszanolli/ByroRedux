@@ -113,7 +113,7 @@ pub fn capture_settings<F: FieldSource>(class: &str, fields: F) -> Option<Settin
     Some(capture)
 }
 
-impl<'a> FieldSource for &'a crate::ObjectInstance {
+impl FieldSource for &crate::ObjectInstance {
     fn bool_field(self, name: &str) -> Option<bool> {
         match self.fields.get(name) {
             Some(crate::Value::Bool(v)) => Some(*v),

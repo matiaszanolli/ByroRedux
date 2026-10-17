@@ -269,7 +269,7 @@ impl Checker<'_> {
             }
             return self.fail(|| "Utility.Wait called for its value".into());
         }
-        let result = self.check_native(receiver.clone(), Kind::None, &name, &arg_kinds, statement);
+        let result = self.check_native(receiver.clone(), Kind::None, name, arg_kinds, statement);
         if result.is_none() {
             return self.fail(|| {
                 // A literal string argument names what was asked for

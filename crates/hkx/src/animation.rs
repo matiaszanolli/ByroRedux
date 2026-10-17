@@ -512,9 +512,9 @@ fn decode_spline_in(pack: &Packfile<'_>) -> Result<HkxAnimation> {
         return Err(HkxError::InvalidData("unsupported spline clip dimensions"));
     }
     let block_offsets =
-        read_pack_u32_array(&pack, object, layout.block_offsets, "block-offset array")?;
+        read_pack_u32_array(pack, object, layout.block_offsets, "block-offset array")?;
     let float_block_offsets = read_pack_u32_array(
-        &pack,
+        pack,
         object,
         layout.float_block_offsets,
         "float block-offset array",
@@ -625,7 +625,7 @@ fn decode_spline_in(pack: &Packfile<'_>) -> Result<HkxAnimation> {
     }
 
     let track_to_bone = read_track_to_bone(pack, &layout, transform_count)?;
-    let annotations = read_annotations(&pack, &layout, object, duration)?;
+    let annotations = read_annotations(pack, &layout, object, duration)?;
 
     // #5662 — drop the flagged tracks (samples were never taken for them)
     // and report their bones, so the clip keeps every valid track.
@@ -645,7 +645,7 @@ fn decode_spline_in(pack: &Packfile<'_>) -> Result<HkxAnimation> {
         }
     }
 
-    let (reference_frame, reference_frame_dropped) = match read_reference_frame(&pack) {
+    let (reference_frame, reference_frame_dropped) = match read_reference_frame(pack) {
         Ok(frame) => (frame, None),
         Err(reason) => (None, Some(reason)),
     };

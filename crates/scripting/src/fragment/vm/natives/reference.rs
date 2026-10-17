@@ -260,7 +260,7 @@ impl Checker<'_> {
             }
             (Kind::Object, "gettriggerobjectcount") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object | Kind::Player, "getscale") if arg_kinds.is_empty() => return Some(Kind::Num),
-            (Kind::Object | Kind::Player, "placeatme") if place_at_me_args_ok(&arg_kinds) => {
+            (Kind::Object | Kind::Player, "placeatme") if place_at_me_args_ok(arg_kinds) => {
                 return Some(Kind::Object);
             }
             _ => {}
