@@ -1323,6 +1323,42 @@ fn apply_buoyancy_with_scratch(
                         )
                     })
                 });
+                // The surface arm applies authored damping to multibody
+                // links because Rapier does not apply rigid-body damping to
+                // articulations. A marker-only current owns the link's force
+                // accumulator too, so preserve those authored coefficients
+                // here when no surface arm did it this frame.
+                if surface.is_none() && pw.is_multibody_link(t.handles.body) {
+                    let damping = pw.bodies.get(t.handles.body).and_then(|b| {
+                        if b.is_sleeping() {
+                            return None;
+                        }
+                        let mass = b.mass();
+                        let linear = b.linear_damping().max(0.0);
+                        let angular = b.angular_damping().max(0.0);
+                        if linear <= 0.0 && angular <= 0.0 {
+                            return None;
+                        }
+                        let v = b.linvel();
+                        let w = b.angvel();
+                        Some((
+                            Vec3::new(
+                                -linear * mass * v.x,
+                                -linear * mass * v.y,
+                                -linear * mass * v.z,
+                            ),
+                            Vec3::new(
+                                -angular * mass * w.x,
+                                -angular * mass * w.y,
+                                -angular * mass * w.z,
+                            ),
+                        ))
+                    });
+                    if let Some((force, torque)) = damping {
+                        pw.add_force(t.handles.body, force, false);
+                        pw.add_torque(t.handles.body, torque, false);
+                    }
+                }
                 if let Some(f) = current {
                     // Per-frame term, so no wake — see the surface branch.
                     pw.add_force(t.handles.body, f, false);
@@ -3799,6 +3835,9 @@ mod ragdoll_stale_contact_tests {
         use crate::physics_sync_system;
         use crate::world::PHYSICS_DT;
         let (world, handles) = damped_ragdoll_in_marker_only_current();
+        // Keep the terminal speed above Rapier's sleep threshold now that
+        // the link's authored damping correctly acts against the current.
+        world.resource_mut::<PhysicsWaterConstants>().current_drag = 10.0;
         for _ in 0..60 {
             physics_sync_system(&world, PHYSICS_DT);
         }
@@ -3809,6 +3848,28 @@ mod ragdoll_stale_contact_tests {
             "the +X current must accelerate the damped link (vx = {vx}); pre-fix the \
              damping pass wiped the current's force and vx stayed ~0"
         );
+    }
+
+    /// #5934 — when a current marker is the only water owner of a ragdoll
+    /// link, its force must not suppress the link's authored damping.
+    #[test]
+    fn marker_only_current_keeps_authored_link_damping() {
+        use crate::physics_sync_system;
+        use crate::world::PHYSICS_DT;
+        let (world, handles) = damped_ragdoll_in_marker_only_current();
+        world.resource_mut::<PhysicsWorld>().gravity.y = -686.7;
+
+        for _ in 0..60 {
+            physics_sync_system(&world, PHYSICS_DT);
+        }
+
+        let vy = world.resource::<PhysicsWorld>().bodies[handles[0]].linvel().y;
+        assert!(
+            vy > -600.0,
+            "authored link damping should slow marker-only free fall (vy = {vy}); \\
+             without it the link approaches undamped gravity at about -684 BU/s"
+        );
+        assert!(vy < -100.0, "gravity still accelerates the link (vy = {vy})");
     }
 
     /// #5698 — `water_force_targets` is cleared at the TOP of the scan, so an
