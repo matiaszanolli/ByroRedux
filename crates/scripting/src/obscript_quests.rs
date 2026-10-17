@@ -331,10 +331,8 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
             }
             // GetSecondsPassed
             0x100c => Some(ObScriptValue::Num(self.elapsed)),
-            // GetButtonPressed — the quest's answered box, once (M47.3).
-            0x101f => Some(ObScriptValue::Num(
-                crate::messages::take_button(self.world, QuestFormId(self.quest)) as f32,
-            )),
+            // GetButtonPressed — the last answered box, once (M47.3).
+            0x101f => Some(ObScriptValue::Num(crate::messages::take_button(self.world) as f32)),
             // GetSelf — the owning quest's form id (quest scripts).
             0x10ce => Some(ObScriptValue::Ref(self.quest)),
             // GetGlobalValue-style global reads arrive via the ' G<n>' escape

@@ -129,28 +129,26 @@ pub struct ScriptMessage {
     pub source: Option<QuestFormId>,
 }
 
-/// Each ObScript quest's last answered message-box button, consumed by its
-/// `GetButtonPressed`. `NOT_SAVED_BY_DESIGN`: an answer the script has not
-/// yet read is UI state, gone with the box (the CS wiki: it returns the
-/// button "the first time this is called after a MessageBox button has
-/// been pressed").
+/// The last answered ObScript message-box button, consumed by the first
+/// `GetButtonPressed` call regardless of which quest reads it.
+/// `NOT_SAVED_BY_DESIGN`: the answer is UI state, gone with the box.
 #[derive(Debug, Default)]
-pub struct ButtonPresses(pub HashMap<QuestFormId, i32>);
+pub struct ButtonPresses(pub Option<i32>);
 
 impl Resource for ButtonPresses {}
 
-/// The player answered `source`'s box with `button`.
-pub fn record_button(world: &World, source: QuestFormId, button: usize) {
+/// The player answered an ObScript box with `button`.
+pub fn record_button(world: &World, button: usize) {
     if let Some(mut presses) = world.try_resource_mut::<ButtonPresses>() {
-        presses.0.insert(source, button as i32);
+        presses.0 = Some(button as i32);
     }
 }
 
 /// `GetButtonPressed`: the answer once, then -1.
-pub fn take_button(world: &World, source: QuestFormId) -> i32 {
+pub fn take_button(world: &World) -> i32 {
     world
         .try_resource_mut::<ButtonPresses>()
-        .and_then(|mut presses| presses.0.remove(&source))
+        .and_then(|mut presses| presses.0.take())
         .unwrap_or(-1)
 }
 

@@ -109,8 +109,10 @@ fn obscript_message_boxes_answer_get_button_pressed_once() {
     assert_eq!(shown[0].text, "Erected by the Grateful Citizens of Bruma, 3E 433.");
     assert_eq!(shown[0].buttons, vec!["Done".to_owned()]);
     assert_eq!(shown[0].source, Some(quest));
-    assert_eq!(take_button(&world, quest), -1, "not answered yet");
-    record_button(&world, quest, 0);
-    assert_eq!(take_button(&world, quest), 0);
-    assert_eq!(take_button(&world, quest), -1, "only the first call after the press");
+    assert_eq!(take_button(&world), -1, "not answered yet");
+    record_button(&world, 0);
+    // The answer is global: the next script to read it may belong to a
+    // different quest than the one that raised the box.
+    assert_eq!(take_button(&world), 0);
+    assert_eq!(take_button(&world), -1, "only the first call after the press");
 }

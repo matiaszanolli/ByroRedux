@@ -65,8 +65,9 @@ pub(crate) fn front_message_box(world: &World) -> Option<byroredux_debug_ui::Mes
 }
 
 /// The front box is answered with `choice` (`None`: dismissed without one,
-/// as with no UI); an ObScript box's answer reaches its quest's
-/// `GetButtonPressed`. Returns whether another box is waiting.
+/// as with no UI); an ObScript box's answer reaches the first subsequent
+/// `GetButtonPressed` call, regardless of its quest. Returns whether another
+/// box is waiting.
 pub(crate) fn answer_message_box(world: &World, choice: Option<usize>) -> bool {
     let (answered, more) = {
         let Some(mut boxes) = world.try_resource_mut::<MessageBoxQueue>() else {
@@ -75,8 +76,10 @@ pub(crate) fn answer_message_box(world: &World, choice: Option<usize>) -> bool {
         let answered = boxes.0.pop_front();
         (answered, !boxes.0.is_empty())
     };
-    if let (Some(source), Some(choice)) = (answered.and_then(|answered| answered.source), choice) {
-        byroredux_scripting::messages::record_button(world, source, choice);
+    if let (Some(answered), Some(choice)) = (answered, choice) {
+        if answered.source.is_some() {
+            byroredux_scripting::messages::record_button(world, choice);
+        }
     }
     more
 }
@@ -123,5 +126,25 @@ mod tests {
         assert_eq!(front_message_box(&world).unwrap().text, "Leave?");
         assert!(!answer_message_box(&world, Some(0)));
         assert!(!route_script_messages(&world), "raised once");
+    }
+
+    #[test]
+    fn obscript_button_answer_is_consumed_globally_once() {
+        use byroredux_scripting::messages::{take_button, ButtonPresses};
+        use byroredux_scripting::{quest_stages::QuestFormId, ScriptMessage};
+
+        let mut world = World::new();
+        world.insert_resource(ButtonPresses::default());
+        world.insert_resource(MessageBoxQueue(VecDeque::from([ScriptMessage {
+            title: String::new(),
+            text: "Continue?".to_owned(),
+            message_box: true,
+            buttons: vec!["Yes".to_owned(), "No".to_owned()],
+            source: Some(QuestFormId(0x0001_C3D0)),
+        }])));
+
+        assert!(!answer_message_box(&world, Some(1)));
+        assert_eq!(take_button(&world), 1);
+        assert_eq!(take_button(&world), -1);
     }
 }
