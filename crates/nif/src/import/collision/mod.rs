@@ -905,7 +905,7 @@ mod dispatch_coverage_tests {
     /// a missing `resolve_shape_inner` must not pass vacuously.
     #[test]
     fn resolve_scan_reads_only_the_resolve_shape_inner_body() {
-        let src = "fn shape_leaf_materials_inner() {\n    x.downcast_ref::<BhkListShape>();\n}\n\
+        let src = "fn material_walk_inner() {\n    x.downcast_ref::<BhkListShape>();\n}\n\
                    fn resolve_shape_inner() {\n    x.downcast_ref::<BhkBoxShape>();\n}\n\
                    fn other() {\n    x.downcast_ref::<BhkMoppBvTreeShape>();\n}\n";
         let resolved = resolved_shape_structs_in(src);

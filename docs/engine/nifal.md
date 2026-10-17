@@ -541,9 +541,12 @@ both `BleakFallsBarrow01` and the `WhiterunDragonsreach` control. Oblivion's
 separate inverted-contact-normal follow-up remains tracked by #2193.
 
 **Havok surface material — raw per-game id, translation parked (#5574).** The
-collision tree's `bhkMaterial` value reaches the canonical `RigidBodyData` as
-`surface_material` (body-level first non-zero) and `part_surface_materials`
-(leaf-aligned with `collision_shape_to_parts`). It is the **per-game id, not a
+collision tree's `bhkMaterial` value reaches the canonical `RigidBodyData` at
+the parser-to-canonical boundary as `surface_material` (the first authored
+leaf, reduced by `body_surface_material` from `resolve_shape_with_materials`)
+and `part_surface_materials` (leaf-aligned with `collision_shape_to_parts`).
+Zero is authored STONE on Oblivion/FO3/FNV and NONE on Skyrim and later. It is
+the **per-game id, not a
 canonical surface**: Oblivion's 0–31 enum, FO3/FNV's 0–127 enum and Skyrim's
 CRC32 of the Creation Kit material name (`SKY_HAV_MAT_STONE` = 3741512247) share
 one `u32`, and `0` is STONE on the first two but `SKY_HAV_MAT_NONE` on Skyrim. It

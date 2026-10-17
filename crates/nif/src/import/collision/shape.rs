@@ -1087,7 +1087,7 @@ mod cycle_tests {
     }
 
     #[test]
-    fn shape_leaf_materials_match_resolve_order_and_inherit_containers() {
+    fn resolved_leaf_materials_match_resolve_order_and_inherit_containers() {
         // Scene (Skyrim):
         //   [0] BhkListShape { material 0, children [1, 2] }
         //   [1] BhkSphereShape { material 3 }
@@ -1111,7 +1111,8 @@ mod cycle_tests {
     /// #5549 — on Oblivion and FO3/FNV `0` is `STONE`, a REAL material:
     /// there is no "unset" value. A leaf authored STONE under a container
     /// with a different material keeps STONE (it must not inherit), and a
-    /// `[STONE, WOOD]` body reports STONE, not the first non-zero WOOD.
+    /// `[STONE, WOOD]` body reports STONE, not WOOD as a first-nonzero rule
+    /// would.
     #[test]
     fn stone_zero_is_an_authored_material_on_oblivion_and_fo3_fnv() {
         for bsver in [crate::version::bsver::OBLIVION, 34] {

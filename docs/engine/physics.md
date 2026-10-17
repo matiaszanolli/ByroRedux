@@ -451,11 +451,13 @@ for. Pinned by
 
 Every collider also carries the body's authored **Havok surface
 material** in its user-data, so gameplay can ask "what kind of ground
-is this". The source is `RigidBodyData::surface_material` — the
-body-level reduction of the shape tree's first authored `HavokMaterial`
-(`first_shape_material`), plus the leaf-aligned per-part sequence
-`RigidBodyData::part_surface_materials`, which `collision_shape_to_
-parts` maps 1:1 onto parts so a compound body whose bhk children carry
+is this". At the NIFAL parser-to-canonical boundary,
+`RigidBodyData::surface_material` is reduced by `body_surface_material` to
+the first authored leaf from `resolve_shape_with_materials`. Zero is authored
+STONE on Oblivion/FO3/FNV and NONE on Skyrim and later. The leaf-aligned
+per-part sequence is stored in `RigidBodyData::part_surface_materials`;
+`collision_shape_to_parts` maps it 1:1 onto parts so a compound body whose
+bhk children carry
 different materials reads back per-part. Both are `serde(skip)`-ed:
 the NIF is re-parsed on load and the values re-derived. Consumers:
 

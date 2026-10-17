@@ -123,11 +123,13 @@ pub struct RigidBodyData {
     /// of the Creation Kit material name (`SKY_HAV_MAT_STONE` =
     /// 3741512247) — truncating it to a byte collided 8 material pairs
     /// and made the value unjoinable to MATT records (#5542). Body-level
-    /// reduction of the shape tree's first non-zero material; gameplay
-    /// consumers are surface-aware footsteps and impacts, which need
-    /// "what kind of ground is this", not the per-triangle split. `0` =
-    /// STONE on Oblivion/FO3/FNV (and `SKY_HAV_MAT_NONE` on Skyrim), and
-    /// the default for every non-NIF-derived body.
+    /// NIFAL parser-to-canonical reduction of the shape tree's first
+    /// authored leaf (`body_surface_material`, over the sequence produced by
+    /// `resolve_shape_with_materials`). `0` is authored STONE on
+    /// Oblivion/FO3/FNV, but `SKY_HAV_MAT_NONE` on Skyrim and later; `0` is
+    /// also the default for every non-NIF-derived body. Gameplay consumers
+    /// are surface-aware footsteps and impacts, which need "what kind of
+    /// ground is this", not the per-triangle split.
     ///
     /// Deliberately the raw per-game id, not a canonical surface: no
     /// sourced Havok-material → surface table exists yet, so the
@@ -139,8 +141,8 @@ pub struct RigidBodyData {
     /// `collision_shape_to_parts`' output order — one entry per collider
     /// part the shape flattens to, so a compound body whose bhk children
     /// carry different materials puts each part's own material into its
-    /// collider's user-data. Derived from the NIF collision tree
-    /// (`shape_leaf_materials`) and NOT saved: the tree is re-parsed from
+    /// collider's user-data. Derived from the NIF collision tree by
+    /// `resolve_shape_with_materials` and NOT saved: the tree is re-parsed from
     /// content on load and re-derived at import, so a snapshot never
     /// carries it (`serde(skip)` — the #3470 class; the save-shape
     /// fingerprint moves without a FORMAT_MAJOR bump). The live-load

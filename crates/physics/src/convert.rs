@@ -1477,7 +1477,7 @@ mod tests {
     #[test]
     fn parts_carry_their_leaf_surface_materials() {
         // Three leaves: Sphere(mat 7), Box (unauthored → 0 in the slice),
-        // Capsule(mat 9) — the slice is what `shape_leaf_materials`
+        // Capsule(mat 9) — the slice is what `resolve_shape_with_materials`
         // produces for that tree.
         let shape = CollisionShape::Compound {
             children: vec![

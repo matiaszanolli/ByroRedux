@@ -420,7 +420,7 @@ pub fn build_ragdoll(
         // Bone colliders carry the STONE (0) surface material: bones are
         // not footstep surfaces, and the ragdoll template's authored
         // body materials are not threaded through the spec yet (the
-        // material walk exists — `shape_leaf_materials` — so carrying
+        // material walk exists — `resolve_shape_with_materials` — so carrying
         // them is a spec-field addition when a consumer needs it).
         let parts = collision_shape_to_parts(
             &ragdoll_dynamic_shape(&b.shape),
