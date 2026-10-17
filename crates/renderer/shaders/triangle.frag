@@ -1530,11 +1530,20 @@ void main() {
     //
     // Enums from `BSLightingShaderType` (nif.xml): 0 Default · 1 Envmap
     // · 2 Glow · 3 Parallax · 4 FaceTint · 5 SkinTint · 6 HairTint
-    // · 7 ParallaxOcc · 8 MultiIndexSnow · 11 MultiLayerParallax
-    // · 14 SparkleSnow · 16 EyeEnvmap · 19 MultiTexture.
+    // · 7 ParallaxOcc · 8 Multitexture Landscape · 9 LOD Landscape
+    // · 10 Snow · 11 MultiLayerParallax · 12 Tree Anim · 13 LOD Objects
+    // · 14 SparkleSnow · 15 LOD Objects HD · 16 EyeEnvmap · 17 Cloud
+    // · 18 LOD Landscape Noise · 19 Multitexture Landscape LOD Blend
+    // · 20 FO4 Dismemberment. Types 8–10, 12, 13, 15 and 17–20 carry no
+    // trailing payload and are never authored in a NIF (runtime-assigned).
     //
     // Already dispatched elsewhere by data presence (no ladder entry):
-    //   · 1  Envmap       — `inst.envMapIndex != 0u` fed by POM/PBR path.
+    //   · 1  Envmap       — `mat.envMapIndex != 0u || mat.materialKind
+    //                       == 1u` (the explicit-environment gate in the
+    //                       reflection block); the strength rides in
+    //                       `mat.multiLayerEnvmapStrength`, which the CPU
+    //                       pack fills from `env_map_scale` for every kind
+    //                       except 11.
     //   · 2  Glow         — `mat.glowMapIndex` above.
     //   · 3  Parallax     — `mat.parallaxMapIndex` (POM ray-march).
     //   · 7  ParallaxOcc  — same path as 3.
@@ -1597,8 +1606,10 @@ void main() {
     // a future reader searching by `materialKind == N` finds the
     // intended consumers.
     //   · materialKind == 11 (MultiLayerParallax): the authored inner
-    //       texture layer is sampled above. Refraction/Fresnel coupling
-    //       still needs the full cubemap path.
+    //       texture layer is sampled above and `multiLayerEnvmapStrength`
+    //       already scales the environment reflection. The packed
+    //       `multiLayerRefractionScale` has no shader read yet — the
+    //       refraction/Fresnel coupling is the missing part (#5961).
     //   · materialKind == 16 (EyeEnvmap): use
     //       `eyeLeftCenter` / `eyeRightCenter` + `eyeCubemapScale` to
     //       reflect a cubemap sample off the iris center (not the

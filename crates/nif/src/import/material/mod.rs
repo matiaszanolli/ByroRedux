@@ -847,8 +847,9 @@ pub(super) struct MaterialInfo {
     // Each variant of `ShaderTypeData` exposes different trailing
     // fields. Capturing them at import time lets the renderer later
     // branch on `material_kind` without re-reading the NIF. Renderer-
-    // side dispatch is tracked separately (SK-D3-02); until that lands
-    // these values ride unused on `MaterialInfo`.
+    // side dispatch landed with #344 / #562 — see `apply_shader_type_data`
+    // in `shader_data.rs` for which variants are shaded and which are
+    // only packed.
     /// Raw `BSLightingShaderProperty.shader_type`. Values 0–20 are the
     /// vanilla Bethesda enum (Default, EnvironmentMap, GlowShader,
     /// Parallax, FaceTint, SkinTint, HairTint, ParallaxOcc,

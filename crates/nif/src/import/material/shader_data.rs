@@ -90,10 +90,16 @@ pub(crate) fn capture_effect_shader_data(shader: &BSEffectShaderProperty) -> BsE
 /// pass-through for types that carry no trailing data) were pattern-
 /// matched out and dropped. Issue #343 / SK-D3-01.
 ///
-/// Renderer-side dispatch on `MaterialInfo.material_kind` is tracked
-/// separately (SK-D3-02). Until that lands these values ride unused on
-/// the `Material` component; the purpose here is to ensure no variant
-/// is silently discarded at the import boundary.
+/// Renderer-side dispatch on `MaterialInfo.material_kind` landed with
+/// #344 / #562. The live consumers in `triangle.frag` are SkinTint (5),
+/// HairTint (6) and SparkleSnow (14) in the variant ladder,
+/// MultiLayerParallax (11) for the inner layer and its environment
+/// strength (also `include/ray_hit.glsl`), ParallaxOcc (7) through the
+/// POM path (passes / scale), and EnvironmentMap (1) through the
+/// explicit-environment gate. EyeEnvmap (16) and MultiLayerParallax's
+/// `refraction_scale` are packed into the GPU material but not yet
+/// shaded (#5961). The purpose of this function is to ensure no
+/// variant is silently discarded at the import boundary.
 pub(crate) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeData) {
     // Env-map scale lives on its own field for backwards compatibility with
     // pre-#343 readers; the other variants copy through `ShaderTypeFields`.
