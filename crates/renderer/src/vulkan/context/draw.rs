@@ -119,6 +119,7 @@ impl VulkanContext {
         // skin chain commits is latched between these two points.
         self.skin_state_submitted = false;
         self.skin_pending_populated.clear();
+        self.discard_pending_skip_clear_latches(); // #5956
         // #3569 / D9-01 — reset alongside `skin_dispatch_ran`: this frame's
         // upload hasn't happened yet, so any stale `true` from a previous
         // frame's failure must not leak into this frame's rollback check.
@@ -654,6 +655,7 @@ impl VulkanContext {
         // during recording now and promoted here, on the one line that means
         // "this frame's commands are on the queue".
         self.promote_skin_frame_state(frame);
+        self.promote_skip_clear_latches(frame); // #5956
         if let Some(ref mut svgf) = self.post.svgf {
             svgf.mark_frame_completed();
         }
@@ -1176,6 +1178,40 @@ mod skin_dispatch_ran_ordering_tests {
             promote < submit_ok,
             "promote_skin_frame_state must sit in the post-submit block \
              alongside svgf/taa/volumetrics mark_frame_completed (#917/#3991)"
+        );
+    }
+
+    /// #5956 — the volumetrics / caustic skip-clear latches vouch for a
+    /// `vkCmdClearColorImage` recorded into this frame's command buffer, so
+    /// they are committed post-submit with the rest of the #917 chain. A
+    /// record-time write survives a discarded command buffer and suppresses the
+    /// clear on the retry (stale fog flickers on that slot).
+    #[test]
+    fn skip_clear_latches_are_promoted_after_submit_not_at_record_time() {
+        let src = super::draw_frame_body();
+        let reset = src
+            .find("self.discard_pending_skip_clear_latches();")
+            .expect("draw_frame must reset the pending skip-clear latches (#5956)");
+        let submit_failed = src
+            .find("if let Some(e) = submit_failed {")
+            .expect("the queue_submit failure arm must exist");
+        let promote = src
+            .find("self.promote_skip_clear_latches(frame);")
+            .expect("draw_frame must promote the skip-clear latches after submit (#5956)");
+        let post_submit = src
+            .find("svgf.mark_frame_completed();")
+            .expect("the #917 post-submit block must still exist");
+        assert!(reset < submit_failed, "the pending latches reset at the top, before any Err site");
+        assert!(
+            submit_failed < promote && promote < post_submit,
+            "latch promotion must sit below the last tail Err site, beside the #917 siblings"
+        );
+
+        let record = crate::source_scan::production_text(include_str!("post_passes.rs"));
+        assert!(
+            !record.contains("cleared_on_skip[frame] = next_latch"),
+            "the record-time passes must stage the latch in `pending_*_cleared_on_skip`, \
+             not write the committed array (#5956)"
         );
     }
 

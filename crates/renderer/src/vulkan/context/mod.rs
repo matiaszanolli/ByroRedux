@@ -1150,6 +1150,17 @@ pub struct VulkanContext {
     /// volume. Reset to `false` the moment a real dispatch runs (or fails —
     /// see the comment at the call site) and on resize.
     pub volumetrics_cleared_on_skip: [bool; MAX_FRAMES_IN_FLIGHT],
+    /// #5956 — the latch values `record_caustic_splat_pass` /
+    /// `record_volumetrics_pass` computed for this frame's slot, held until
+    /// `queue_submit` returns `Ok` and only then written into
+    /// [`Self::caustic_cleared_on_skip`] / [`Self::volumetrics_cleared_on_skip`].
+    /// The skip-clear recorded a `vkCmdClearColorImage`; if one of
+    /// `draw_frame`'s tail `Err` sites discards the command buffer the clear
+    /// never runs, and a latch committed at record time would suppress it on
+    /// the retry (same class as #3991 / #917). `None` = this frame recorded no
+    /// decision. Reset at the top of `draw_frame`.
+    pending_caustic_cleared_on_skip: Option<bool>,
+    pending_volumetrics_cleared_on_skip: Option<bool>,
     /// Reused volume list shared by the volumetric dispatch gate and injection.
     volumetric_fog_scratch: Vec<super::volumetrics::GpuFogVolume>,
     pipeline_cache: vk::PipelineCache,

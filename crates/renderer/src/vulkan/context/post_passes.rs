@@ -92,6 +92,28 @@ fn volumetric_open_sky_flag(sky: &SkyParams) -> f32 {
 }
 
 impl VulkanContext {
+    /// #5956 — drop the skip-clear latch values staged by the previous frame's
+    /// recording. Called at the top of `draw_frame`, so a frame that bails (or
+    /// whose submit failed) never promotes a decision for a clear that did not
+    /// reach the queue.
+    pub(super) fn discard_pending_skip_clear_latches(&mut self) {
+        self.pending_caustic_cleared_on_skip = None;
+        self.pending_volumetrics_cleared_on_skip = None;
+    }
+
+    /// #5956 — commit the staged volumetrics / caustic skip-clear latches. Runs
+    /// once `queue_submit` has returned `Ok`: the neutral `vkCmdClearColorImage`
+    /// they vouch for is on the queue. A tail `Err` site returns first, with the
+    /// staged values dropped, so the retry decides (and clears) again.
+    pub(super) fn promote_skip_clear_latches(&mut self, frame: usize) {
+        if let Some(latch) = self.pending_caustic_cleared_on_skip.take() {
+            self.caustic_cleared_on_skip[frame] = latch;
+        }
+        if let Some(latch) = self.pending_volumetrics_cleared_on_skip.take() {
+            self.volumetrics_cleared_on_skip[frame] = latch;
+        }
+    }
+
     /// Copy the live depth buffer into the sampleable depth-history image
     /// for next frame's soft-particle fade. Called once per frame right
     /// after the main render pass ends, while the depth image sits in
@@ -534,7 +556,8 @@ impl VulkanContext {
             // pattern every subsequent frame. See `skip_clear_decision`.
             let (should_clear, next_latch) =
                 skip_clear_decision(ran, self.caustic_cleared_on_skip[frame]);
-            self.caustic_cleared_on_skip[frame] = next_latch;
+            // #5956 — promoted by `draw_frame` once `queue_submit` succeeds.
+            self.pending_caustic_cleared_on_skip = Some(next_latch);
             if should_clear {
                 caustic.clear_for_skip(&self.device, cmd, frame);
             }
@@ -903,7 +926,8 @@ impl VulkanContext {
                     // see `skip_clear_decision`.
                     let (should_clear, next_latch) =
                         skip_clear_decision(ran, self.volumetrics_cleared_on_skip[frame]);
-                    self.volumetrics_cleared_on_skip[frame] = next_latch;
+                    // #5956 — promoted by `draw_frame` once `queue_submit` succeeds.
+                    self.pending_volumetrics_cleared_on_skip = Some(next_latch);
                     if should_clear {
                         vol.record_neutral_frame(&self.device, cmd, frame);
                     } else if !ran {
