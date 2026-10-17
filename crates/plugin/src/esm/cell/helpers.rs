@@ -325,6 +325,12 @@ impl CellSubrecordFields {
     }
 }
 
+/// Whether CELL `XCCM` is a REGN reference ("Sky/Weather from Region",
+/// TES5 / FO4) rather than a CLMT override (TES4 / FO3 / FNV). #5463.
+pub(super) fn xccm_targets_region(game: GameKind) -> bool {
+    matches!(game, GameKind::Skyrim | GameKind::Fallout4)
+}
+
 /// Read a 4-byte FormID from a sub-record payload. Returns `None` when
 /// the payload is too short to hold a u32 — defensive against truncated
 /// records the walker would otherwise pass through. Used by the
@@ -337,12 +343,6 @@ impl CellSubrecordFields {
 /// non-identity. Taking `&EsmReader` here makes that impossible to forget —
 /// the old bare-`&[u8]` signature let 26 cell/worldspace/landscape call sites
 /// silently bypass the convention the REFR walker beside them follows.
-/// Whether CELL `XCCM` is a REGN reference ("Sky/Weather from Region",
-/// TES5 / FO4) rather than a CLMT override (TES4 / FO3 / FNV). #5463.
-pub(super) fn xccm_targets_region(game: GameKind) -> bool {
-    matches!(game, GameKind::Skyrim | GameKind::Fallout4)
-}
-
 pub(super) fn read_form_id(reader: &EsmReader, data: &[u8]) -> Option<u32> {
     (data.len() >= 4)
         .then(|| u32::from_le_bytes([data[0], data[1], data[2], data[3]]))

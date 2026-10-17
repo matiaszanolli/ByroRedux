@@ -4,8 +4,8 @@
 //! `LandscapeData`; nothing verifies that two horizontally/vertically
 //! adjacent cells' shared edge row/column actually agree, despite LAND's
 //! 33×33 grid being authored to share edge vertices by construction (row 0 =
-//! south edge, col 0 = west edge — `crates/plugin/src/esm/cell/mod.rs:165-
-//! 167`). A real authoring mismatch (a botched DLC/mod override that
+//! south edge, col 0 = west edge — see `LandscapeData::heights` in
+//! `crates/plugin/src/esm/cell/landscape.rs`). A real authoring mismatch (a botched DLC/mod override that
 //! re-declares one tile's LAND but not its neighbor's) would show up as a
 //! visible height crack or a lit-normal seam at the cell boundary; nothing
 //! today catches it before it reaches the screen.

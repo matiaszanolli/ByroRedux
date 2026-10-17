@@ -274,7 +274,7 @@ pub struct EsmCellIndex {
 ```
 
 `CellData` has grown well past the four fields it carried in Session 12.
-The current shape (see [`cell/mod.rs`](../../crates/plugin/src/esm/cell/mod.rs)
+The current shape (see [`cell/cell_data.rs`](../../crates/plugin/src/esm/cell/cell_data.rs)
 for the authoritative struct + per-field docs) covers, among others:
 
 ```rust

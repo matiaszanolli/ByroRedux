@@ -190,7 +190,9 @@ crates/
     src/record.rs            Record (component bundles), ErasedComponentData
     src/datastore.rs         DataStore resource, ResolvedRecord, Conflict
     src/resolver.rs          DependencyResolver (DAG), ConflictResolution
-    src/esm/cell/            CELL walker + per-feature submodules (helpers / support / walkers / wrld)
+    src/esm/cell/            CELL walker + per-feature submodules (helpers / support / walkers / wrld,
+                             plus the data tier: base_objects / cell_data / index / landscape /
+                             lighting / placed_ref / worldspace)
       tests/                 CELL parsing regression tests (per-topic siblings)
   renderer/                  Vulkan graphics (ash, gpu-allocator, image)
     src/vulkan/              pipeline, device, swapchain, sync, allocator, buffer,
