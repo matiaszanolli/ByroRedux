@@ -38,8 +38,8 @@
 //!
 //! - [`load_sound_from_bytes`] — decode a fully-buffered audio blob
 //!   (typically extracted from a Bethesda BSA) through kira's
-//!   symphonia-backed `StaticSoundData::from_cursor` path. WAV + OGG
-//!   covered by kira's default features.
+//!   symphonia-backed `StaticSoundData::from_cursor` path. The workspace
+//!   enables WAV/PCM and OGG/Vorbis explicitly in `Cargo.toml`.
 //! - [`SoundCache`] — process-lifetime path-keyed cache of decoded
 //!   `Arc<StaticSoundData>`. Repeat plays of the same SFX (footsteps,
 //!   weapon fire, dialogue line) skip the decode cost entirely.
@@ -1652,9 +1652,11 @@ pub fn spawn_oneshot_at(
 /// `StaticSoundData::from_cursor` to `T: AsRef<[u8]> + Send + Sync` (no
 /// longer `'static`), since the data is fully decoded during the call.
 ///
-/// Format detection is automatic via symphonia's probe (kira pulls
-/// in symphonia with the `wav`, `ogg`, `mp3`, and `flac` features by
-/// default). The two formats present in vanilla `Fallout - Sound.bsa`
+/// Format detection is automatic via symphonia's probe. The workspace
+/// explicitly enables kira's `wav` + `pcm`, `ogg` + `vorbis`, `mp3`, and
+/// `flac` features in the root `Cargo.toml` (the container features need
+/// their matching codec features). The two formats present in vanilla
+/// `Fallout - Sound.bsa`
 /// — WAV (4233 / 6465 files) and OGG Vorbis (2232 / 6465 files) —
 /// both decode through this path.
 ///

@@ -156,6 +156,8 @@ separate integration gap. See the gaps table below.
 | One-shot sounds + footstep system | ✓ |
 | Looping ambient (tweened stop on despawn) | ✓ |
 | Streaming music (OGG, crossfade) | ✓ |
+| NPC dialogue voice playback (Phase V; archive-backed segmented lines) | ✓ |
+| Contact-force impact sounds (Wave 4) | ◐ config-driven dispatch mechanism shipped; default/per-material sound content is not populated |
 | Per-cell reverb send (`-12 dB` interior / silent exterior) | ✓ |
 | Underwater low-pass (submersion-driven, 900 Hz wet / dry bypass) | ✓ |
 | Water-surface splash + ripple one-shots (WATAL events) | ✓ |

@@ -356,8 +356,9 @@ pub(crate) fn try_load_default_footstep(
 /// (1,533). FO4's `Fallout4 - Sounds.ba2` ships its splashes as `.xwm`,
 /// which `byroredux_audio` doesn't decode, so it has no row.
 pub(crate) struct DefaultSoundCandidate {
-    /// Game tags (the `debug_profiles.toml` profile names) whose vanilla
-    /// sound archive carries `key`.
+    /// Sound-candidate game tags whose vanilla sound archive carries
+    /// `key` (for example, `skyrimse`; the matching debug profile is
+    /// named `skyrim_se`).
     pub(crate) games: &'static [&'static str],
     /// Archive-relative key, exactly as [`SoundArchiveProvider::extract`]
     /// expects it.

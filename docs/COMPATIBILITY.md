@@ -261,7 +261,7 @@ Bars are eyeballed weight, not a computed metric — read the rows, not the bars
 | `[~]` | Faction records (FACT) | — | Parsed; rank/relation runtime pending |
 | `[~]` | Perk records (PERK) | 3 entry types, ~120 entry points | Catalogued + parsed; modifier pipeline not applied |
 | `[ ]` | **Dialogue trees / conversation UI** | Full dialogue system | The single biggest unbuilt surface |
-| `[ ]` | Voice lines / `.fuz` audio | — | |
+| `[~]` | Voice lines / `.fuz` audio | — | Phase V archive-backed, segmented NPC voice playback is wired |
 | `[ ]` | Story Manager (~25 events) | Radiant Story | |
 | `[ ]` | Quest objectives / journal UI | — | |
 | `[ ]` | Package priority stack | Package stack evaluation | |
@@ -314,17 +314,19 @@ Bars are eyeballed weight, not a computed metric — read the rows, not the bars
 
 | ✔ | Feature | Original baseline | Notes |
 |:-:|---------|-------------------|-------|
-| `[x]` | Audio backend | Bethesda/XAudio | **kira 0.10** via `byroredux-audio` |
+| `[x]` | Audio backend | Bethesda/XAudio | **kira 0.12** via `byroredux-audio`; workspace codec features are explicit (`wav` + `pcm`, `ogg` + `vorbis`, `mp3`, `flac`) |
 | `[x]` | 3D spatial audio | — | Per-emitter spatial sub-tracks, lazy listener, prune-on-Stopped |
 | `[x]` | BSA-decoded sound assets | — | `StaticSoundData::from_cursor` + `SoundCache` |
 | `[x]` | Footstep audio | — | XZ-plane stride accumulator, vertical motion excluded |
 | `[x]` | Looping emitters | — | Stops on `AudioEmitter` removal / cell unload, tweened |
 | `[x]` | Streaming music | — | Multi-minute OGG, single-slot, crossfade |
+| `[x]` | NPC dialogue voice playback | — | Phase V resolves archive-backed, segmented lines using per-game path conventions |
+| `[~]` | Contact-force impact sounds | — | Wave 4 dispatch mechanism is config-driven; default/per-material sound content is not populated |
 | `[x]` | Reverb send per cell type | — | −12 dB interior, silent exterior, auto-flipped by `reverb_zone_system` |
 | `[~]` | FOOT material lookup | Per-material footsteps | Havok material available; still hardcoded to dirt |
 | `[~]` | REGN region ambient layers | Region sound | Records parsed; no ambient layer driver |
 | `[ ]` | Occlusion / raycast attenuation | — | |
-| `[ ]` | Voice / `.fuz` dialogue audio | — | |
+| `[~]` | Voice / `.fuz` dialogue audio | — | Phase V archive-backed, segmented NPC voice playback is wired |
 | `[ ]` | MUSC music-type switching | — | |
 | `[ ]` | Combat / stealth music states | — | |
 
