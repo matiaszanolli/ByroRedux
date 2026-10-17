@@ -454,6 +454,11 @@ attachment until #4005, contradicting both — the code was right.
 
 [`gpu_types.rs`](../../crates/renderer/src/vulkan/scene_buffer/gpu_types.rs)
 
+Fog RGB is authored in display-space sRGB and retained that way in
+`CellLightingRes` for diagnostics. `build_render_data` decodes it once through
+`fog_colour_radiance` before it enters renderer data; `GpuCamera.fog.xyz` and
+the volumetric fog tint therefore carry linear-light RGB.
+
 | Offset | Size | Field | Contents |
 |---|---|---|---|
 | 0 | 64 | `view_proj` | `mat4` — combined view-projection |
@@ -462,7 +467,7 @@ attachment until #4005, contradicting both — the code was right.
 | 192 | 16 | `position` | xyz = world position; w = `frame_counter & 0xFF_FFFF` |
 | 208 | 16 | `flags` | x = RT enabled (1.0); yzw = ambient RGB |
 | 224 | 16 | `screen` | x = width; y = height; z = fog_near; w = fog_far |
-| 240 | 16 | `fog` | xyz = fog colour; w = fog enabled (1.0) |
+| 240 | 16 | `fog` | xyz = linear-light fog radiance RGB; w = fog enabled (1.0) |
 | 256 | 16 | `jitter` | xy = TAA Halton jitter (NDC); z = debug flags (bitcast f32); w = is_exterior |
 | 272 | 16 | `sky_tint` | xyz = TOD/weather zenith colour; w = sun angular radius (rad) |
 | 288 | 16 | `sun_direction` | xyz = direction **to** sun (unit); w = sun intensity |

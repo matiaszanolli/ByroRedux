@@ -306,7 +306,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 cameraPos;   // xyz = world position, w = frame counter
     vec4 sceneFlags;  // x = RT enabled (1.0), yzw = ambient color (RGB)
     vec4 screen;      // x = width, y = height, z = fog near, w = fog far
-    vec4 fog;         // xyz = fog color (RGB), w = fog enabled (1.0)
+    vec4 fog;         // xyz = linear-light fog radiance RGB, w = fog enabled (1.0)
     vec4 jitter;      // xy = sub-pixel TAA jitter in NDC, z = bitcast<f32>(render_debug_flags), w = is_exterior flag (1.0 = exterior cell, 0.0 = interior). #1125.
     // #925 / REN-D15-NEW-03 — mirror of composite's `sky_zenith.xyz`
     // (linear RGB). Used by the window-portal escape below so

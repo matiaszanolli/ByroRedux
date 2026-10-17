@@ -94,10 +94,11 @@ continues to own its temperature, soot, emission, and velocity evolution.
   intensity in watts per steradian, and range in metres. The shared GPU
   encoder owns the only Bethesda-unit conversion, so runtime lighting has no
   game-specific unit or schema branches.
-- The authored linear fog colour is normalized by its strongest channel and
-  multiplied into the global single-scatter albedo. This preserves the legacy
-  hue without changing extinction or raising the medium's peak scattering
-  energy; authored black remains a finite, purely absorptive medium.
+- The authored sRGB fog colour is decoded once at the render boundary, then
+  its linear-light value is normalized by its strongest channel and multiplied
+  into the global single-scatter albedo. This preserves the legacy hue without
+  changing extinction or raising the medium's peak scattering energy; authored
+  black remains a finite, purely absorptive medium.
 - The extinction fit minimizes
   `Σ (exp(-sigma_t*d)-T_legacy(d))²/d²` over the authored interval. Skyrim's
   authored maximum opacity is included in the target transmittance. Invalid,

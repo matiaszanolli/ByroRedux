@@ -116,11 +116,11 @@ pub struct VolumetricsParams {
     /// x = single-scatter albedo, y = backward HG lobe g,
     /// z = forward-lobe mixture, w = height-fog scale height in world units.
     pub medium_params: [f32; 4],
-    /// rgb = normalized authored fog chromaticity. The inject shader
+    /// rgb = normalized linear-light fog chromaticity. The inject shader
     /// multiplies this by `medium_params.x` to recover spectral
     /// single-scatter albedo without letting tint alter extinction or the
     /// authored medium's peak scattering energy. w = the sanitized peak of
-    /// the authored apparent fog colour, allowing the homogeneous-medium
+    /// the decoded apparent fog radiance, allowing the homogeneous-medium
     /// source term to converge back to that colour even in sunless interiors.
     pub fog_tint: [f32; 4],
     /// x = temporal history weight, y = relative density rejection strength,
@@ -255,11 +255,12 @@ pub const DEFAULT_DENSITY_REJECTION: f32 = 4.0;
 /// in the shader still cuts history quickly at a flash/explosion edge.
 pub const DEFAULT_EMISSIVE_HISTORY_WEIGHT: f32 = 0.75;
 
-/// Convert authored fog colour into a finite, energy-neutral chromaticity.
+/// Convert linear-light fog radiance into a finite, energy-neutral chromaticity.
 ///
-/// Bethesda's fog colour is an apparent in-scattering tint, while the
+/// The sRGB-authored fog colour is decoded at the render boundary. This
+/// function receives that linear-light apparent in-scattering tint, while the
 /// canonical medium stores a separate scalar single-scatter albedo. Dividing
-/// by the strongest channel preserves the authored channel ratios and leaves
+/// by the strongest channel preserves the linear-light channel ratios and leaves
 /// that scalar as the peak spectral albedo. Black (or invalid/negative) tint
 /// normalizes to zero chromaticity — which the injection shader then handles,
 /// not pure absorption: `volumetrics_inject.comp` promotes a zero-chromaticity
@@ -285,11 +286,11 @@ pub fn normalize_fog_tint(color: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// Pack an authored apparent fog colour for volumetric injection.
+/// Pack decoded linear-light fog radiance for volumetric injection.
 ///
 /// RGB stores energy-neutral chromaticity for directional/local-light
-/// scattering, while A stores the original peak radiance. Their product
-/// reconstructs the sanitized authored colour for the medium's equilibrium
+/// scattering, while A stores the sanitized peak radiance. Their product
+/// reconstructs the linear-light fog colour for the medium's equilibrium
 /// source term. This is what keeps interior fog visible when a CELL has no
 /// directional source: extinction alone can only darken the scene.
 pub fn pack_fog_tint(color: [f32; 3]) -> [f32; 4] {
