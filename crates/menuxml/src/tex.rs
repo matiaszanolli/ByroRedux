@@ -151,6 +151,18 @@ fn blocks(width: u32, height: u32) -> impl Iterator<Item = (u32, u32)> {
     (0..bh).flat_map(move |by| (0..bw).map(move |bx| (bx, by)))
 }
 
+/// Validate the complete compressed payload before reserving the RGBA canvas.
+fn bc_output(bytes: &[u8], width: u32, height: u32, bytes_per_block: usize) -> Option<Rgba8> {
+    let block_count = usize::try_from(width.div_ceil(4))
+        .ok()?
+        .checked_mul(usize::try_from(height.div_ceil(4)).ok()?)?;
+    let payload_len = block_count.checked_mul(bytes_per_block)?;
+    if bytes.get(128..)?.len() < payload_len {
+        return None;
+    }
+    Some(Rgba8::new(width, height))
+}
+
 /// Decode the BC1 colour half of a block into `out` at pixel (px, py).
 /// `has_alpha` selects the 3-colour + transparent mode when c0 <= c1.
 fn bc1_colors(
@@ -204,12 +216,9 @@ fn bc1_colors(
 }
 
 fn decode_dxt1(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
-    let mut out = Rgba8::new(width, height);
+    let mut out = bc_output(bytes, width, height, 8)?;
     for (bx, by) in blocks(width, height) {
         let off = 128 + ((by as usize * width.div_ceil(4) as usize + bx as usize) * 8);
-        if off + 8 > bytes.len() {
-            return None;
-        }
         let c0 = u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap());
         let c1 = u16::from_le_bytes(bytes[off + 2..off + 4].try_into().unwrap());
         let indices = u32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap());
@@ -219,12 +228,9 @@ fn decode_dxt1(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
 }
 
 fn decode_dxt3(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
-    let mut out = Rgba8::new(width, height);
+    let mut out = bc_output(bytes, width, height, 16)?;
     for (bx, by) in blocks(width, height) {
         let off = 128 + ((by as usize * width.div_ceil(4) as usize + bx as usize) * 16);
-        if off + 16 > bytes.len() {
-            return None;
-        }
         // 8 bytes of 4-bit explicit alpha, row-major within the block.
         let alpha: [u8; 8] = bytes[off..off + 8].try_into().unwrap();
         let c0 = u16::from_le_bytes(bytes[off + 8..off + 10].try_into().unwrap());
@@ -246,12 +252,9 @@ fn decode_dxt3(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
 }
 
 fn decode_dxt5(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
-    let mut out = Rgba8::new(width, height);
+    let mut out = bc_output(bytes, width, height, 16)?;
     for (bx, by) in blocks(width, height) {
         let off = 128 + ((by as usize * width.div_ceil(4) as usize + bx as usize) * 16);
-        if off + 16 > bytes.len() {
-            return None;
-        }
         let a0 = bytes[off];
         let a1 = bytes[off + 1];
         // 16 3-bit selectors packed little-endian into 6 bytes.
@@ -434,6 +437,18 @@ mod uncompressed_decode_tests {
         b
     }
 
+    fn dxt_dds(width: u32, height: u32, fourcc: &[u8; 4]) -> Vec<u8> {
+        let mut b = vec![0u8; 128];
+        b[0..4].copy_from_slice(b"DDS ");
+        b[4..8].copy_from_slice(&124u32.to_le_bytes());
+        b[12..16].copy_from_slice(&height.to_le_bytes());
+        b[16..20].copy_from_slice(&width.to_le_bytes());
+        b[76..80].copy_from_slice(&32u32.to_le_bytes());
+        b[80..84].copy_from_slice(&0x4u32.to_le_bytes());
+        b[84..88].copy_from_slice(fourcc);
+        b
+    }
+
     fn px(img: &Rgba8) -> [u8; 4] {
         [img.pixels[0], img.pixels[1], img.pixels[2], img.pixels[3]]
     }
@@ -499,6 +514,15 @@ mod uncompressed_decode_tests {
             &[0, 0, 0, 255],
         ))
         .is_none());
+    }
+
+    /// BC payload size is checked for every decoder before allocating the
+    /// full RGBA canvas, including the 8192² case that would reserve 256 MiB.
+    #[test]
+    fn truncated_bc_payload_is_rejected_before_allocation() {
+        for fourcc in [b"DXT1", b"DXT3", b"DXT5"] {
+            assert!(Rgba8::decode_dds(&dxt_dds(8192, 8192, fourcc)).is_none());
+        }
     }
 
     /// #5400 — the vanilla Oblivion A4R4G4B4 layout (flags 0x41, masks
