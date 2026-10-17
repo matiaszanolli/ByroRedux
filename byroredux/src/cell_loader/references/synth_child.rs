@@ -560,12 +560,29 @@ pub(super) fn spawn_synth_child(
     // those live outside the `meshes\` root — see `resolve_spt_model_path`.
     // Every other model reference gets the generic `meshes\` composition.
     let is_spt = model_lower.ends_with(".spt");
-    let model_path = if is_spt {
-        super::import::resolve_spt_model_path(&stat.model_path, |p| tex_provider.has_mesh_exact(p))
-    } else if model_lower.starts_with("meshes\\") || model_lower.starts_with("meshes/") {
-        stat.model_path.clone()
+    // #5523 — a SCOL whose authored `MODL` is in no archive but whose
+    // derived `scol\<owner>\cm<id>.nif` is (114 DLCRobot SCOLs author
+    // dev-plugin paths) draws the derived combined mesh. Both this and the
+    // expansion gate read `scol_cm_path`, so a SCOL that gets here with no
+    // resolvable CM was already expanded and keeps its authored path.
+    let model_src: std::borrow::Cow<'_, str> = if index.scols.contains_key(&child_form_id) {
+        match super::super::refr::scol_cm_path(child_form_id, index, load_order, &|p| {
+            tex_provider.has_mesh(p)
+        }) {
+            Some(path) => std::borrow::Cow::Owned(path),
+            None => std::borrow::Cow::Borrowed(stat.model_path.as_str()),
+        }
     } else {
-        format!("meshes\\{}", stat.model_path)
+        std::borrow::Cow::Borrowed(stat.model_path.as_str())
+    };
+    let model_path = if is_spt {
+        super::import::resolve_spt_model_path(&model_src, |p| tex_provider.has_mesh_exact(p))
+    } else if model_src.to_ascii_lowercase().starts_with("meshes\\")
+        || model_src.to_ascii_lowercase().starts_with("meshes/")
+    {
+        model_src.to_string()
+    } else {
+        format!("meshes\\{model_src}")
     };
 
     // Fetch parsed+imported NIF from the process-lifetime
@@ -603,7 +620,7 @@ pub(super) fn spawn_synth_child(
     let cache_key = if is_spt {
         super::super::nif_import_registry::spt_cache_key(&stat.model_path, child_form_id)
     } else {
-        canonical_model_path_key(&stat.model_path)
+        canonical_model_path_key(&model_src)
     };
     let cached = if let Some(entry) = accum.pending_new.get(&cache_key).cloned() {
         accum.this_call_hits += 1;

@@ -24,7 +24,8 @@ use super::euler::euler_zup_to_quat_yup_refr;
 use super::load_order::{self, plugin_for_form_id, LoadOrder};
 use super::nif_import_registry::{canonical_model_path_key, CachedNifImport, NifImportRegistry};
 use super::refr::{
-    build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements, RefrTextureOverlay,
+    build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements_if, scol_cm_path,
+    RefrTextureOverlay,
 };
 use super::spawn::{light_radius_or_default, spawn_placed_instances};
 use super::FrameTimeBudget;
@@ -597,12 +598,22 @@ pub(super) fn load_references_budgeted(
                     index,
                 )
                 .unwrap_or_else(|| {
-                    expand_scol_placements(
+                    // #5523 — a SCOL whose combined mesh is in no archive
+                    // (neither its authored MODL nor the derived
+                    // `scol\<owner>\cm<id>.nif`) expands into its parts
+                    // instead of spawning nothing.
+                    expand_scol_placements_if(
                         placed_ref.base_form_id,
                         outer_pos,
                         outer_rot,
                         outer_scale,
                         index,
+                        &|scol| {
+                            scol_cm_path(scol, index, load_order, &|path| {
+                                tex_provider.has_mesh(path)
+                            })
+                            .is_none()
+                        },
                     )
                 });
                 (synth_refs, refr_overlay)

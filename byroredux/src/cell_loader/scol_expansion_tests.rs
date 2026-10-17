@@ -9,6 +9,7 @@
 //! drops the combined file), the cell loader synthesises one
 //! REFR per child placement with the composed transform.
 use super::*;
+use crate::cell_loader::refr::scol_derived_cm_path;
 use byroredux_plugin::esm::cell::{EsmCellIndex, StaticObject};
 use byroredux_plugin::esm::records::{PkinRecord, ScolPart, ScolPlacement, ScolRecord};
 
@@ -540,4 +541,107 @@ fn expand_scol_with_empty_pkin_part_falls_through_to_the_leaf() {
         synths[0].0, pkin_id,
         "the leaf path keeps the PKIN base form so it still reaches stat-miss accounting"
     );
+}
+
+// ── #5523 — a SCOL whose combined mesh is in no archive ──────────────
+
+/// A DLCRobot-shaped SCOL: a dev-plugin `MODL`, one part, one placement.
+fn stale_modl_scol(index: &mut EsmCellIndex, scol_id: u32, modl: &str) {
+    index.statics.insert(scol_id, mk_stat(scol_id, "RobotScol", modl));
+    index.scols.insert(
+        scol_id,
+        ScolRecord {
+            form_id: scol_id,
+            editor_id: "RobotScol".to_string(),
+            model_path: modl.to_string(),
+            parts: vec![ScolPart {
+                base_form_id: 0x0010_0001,
+                placements: vec![ScolPlacement {
+                    pos: [10.0, 0.0, 0.0],
+                    rot: [0.0, 0.0, 0.0],
+                    scale: 1.0,
+                }],
+            }],
+            filter: String::new(),
+            full_name: String::new(),
+            has_script: false,
+        },
+    );
+}
+
+/// The shipped CM sits under the owning master: `meshes\scol\<owner>\
+/// cm<plugin-local id, 8 hex>.nif` (all 114 DLCRobot stale-MODL SCOLs
+/// resolve this way). The owner is the load-order plugin of the form's slot,
+/// and the local id drops the load-order byte.
+#[test]
+fn derived_cm_path_names_the_owning_master_and_the_local_id() {
+    let load_order = super::load_order::LoadOrder::all_regular(vec![
+        "fallout4.esm".to_string(),
+        "dlcrobot.esm".to_string(),
+    ]);
+    assert_eq!(
+        scol_derived_cm_path(0x0100_F3AD, &load_order).as_deref(),
+        Some("meshes\\scol\\dlcrobot.esm\\cm0000f3ad.nif")
+    );
+    assert_eq!(
+        scol_derived_cm_path(0x0024_9DF2, &load_order).as_deref(),
+        Some("meshes\\scol\\fallout4.esm\\cm00249df2.nif")
+    );
+    assert_eq!(
+        scol_derived_cm_path(0x0500_0001, &load_order),
+        None,
+        "a form whose slot is not in the load order has no owner to name"
+    );
+}
+
+/// The authored `MODL` wins when it resolves; the derived path is the
+/// fallback; neither is `None` (the caller then expands).
+#[test]
+fn scol_cm_path_prefers_the_authored_modl_then_the_derived_path() {
+    let load_order = super::load_order::LoadOrder::all_regular(vec![
+        "fallout4.esm".to_string(),
+        "dlcrobot.esm".to_string(),
+    ]);
+    let scol_id = 0x0100_F3AD;
+    let stale = r"SCOL\Gravato_DLC01SCOL.esp\CM0000F3AD.NIF";
+    let derived = "meshes\\scol\\dlcrobot.esm\\cm0000f3ad.nif";
+    let mut index = EsmCellIndex::default();
+    stale_modl_scol(&mut index, scol_id, stale);
+
+    // Both present: the authored path.
+    assert_eq!(
+        scol_cm_path(scol_id, &index, &load_order, &|_| true).as_deref(),
+        Some(stale)
+    );
+    // Only the derived path ships (the stale-MODL case).
+    assert_eq!(
+        scol_cm_path(scol_id, &index, &load_order, &|p| p == derived).as_deref(),
+        Some(derived)
+    );
+    // Neither ships (the absent-CM case).
+    assert_eq!(scol_cm_path(scol_id, &index, &load_order, &|_| false), None);
+}
+
+/// Absent CM: the SCOL expands into its parts instead of spawning nothing.
+/// With the CM present (or the predicate saying so) it stays the hot path.
+#[test]
+fn a_scol_with_an_absent_cm_expands_but_a_present_one_does_not() {
+    let scol_id = 0x0100_F3AD;
+    let mut index = EsmCellIndex::default();
+    stale_modl_scol(&mut index, scol_id, r"SCOL\Gravato_DLC01SCOL.esp\CM0000F3AD.NIF");
+    let expand = |cm_missing: &dyn Fn(u32) -> bool| {
+        expand_scol_placements_if(scol_id, Vec3::ZERO, Quat::IDENTITY, 1.0, &index, cm_missing)
+    };
+
+    let kept = expand(&|_| false);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].0, scol_id, "a resolvable CM keeps the single-entry hot path");
+
+    let expanded = expand(&|scol| scol == scol_id);
+    assert_eq!(expanded.len(), 1, "one part, one placement");
+    assert_eq!(expanded[0].0, 0x0010_0001, "the part's base spawns instead of the SCOL");
+
+    // The default gate (no predicate) is unchanged: MODL set → no expansion.
+    let default = expand_scol_placements(scol_id, Vec3::ZERO, Quat::IDENTITY, 1.0, &index);
+    assert_eq!(default[0].0, scol_id);
 }

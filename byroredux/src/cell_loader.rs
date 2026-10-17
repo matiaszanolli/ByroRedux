@@ -141,7 +141,10 @@ pub(crate) use nif_import_registry::{
     canonical_model_path_key, CachedNifImport, NifImportRegistry,
 };
 #[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use refr::{build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements};
+pub(crate) use refr::{
+    build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements,
+    expand_scol_placements_if, scol_cm_path,
+};
 
 pub(crate) use euler::euler_zup_to_quat_yup_refr;
 pub use euler::set_refr_rotation_mode_diag;

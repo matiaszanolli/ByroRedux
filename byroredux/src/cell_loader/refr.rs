@@ -679,8 +679,15 @@ fn push_expanded_child(
     // gate (#1182), bounded by the shared `MAX_PKIN_DEPTH`. LVLI children
     // are still single-level — unimplemented per #386.
     if depth + 1 < MAX_PKIN_DEPTH && index.scols.contains_key(&child_form_id) {
-        let nested =
-            expand_scol_placements_with_depth(child_form_id, pos, rot, scale, index, depth + 1);
+        let nested = expand_scol_placements_with_depth(
+            child_form_id,
+            pos,
+            rot,
+            scale,
+            index,
+            &|_| false,
+            depth + 1,
+        );
         if !nested.is_empty() {
             out.extend(nested);
             return;
@@ -710,17 +717,19 @@ fn push_expanded_child(
 /// Vanilla FO4 ships 2616 / 2617 SCOLs with a cached `CM*.NIF` in
 /// `statics[base].model_path`, so the normal path runs for those.
 /// Mod-added SCOLs hit the expansion branch. The gate is `model_path`
-/// emptiness only: a SCOL whose `MODL` is set but whose CM file is absent
-/// from the archives (13 vanilla placements) or sits under a different
-/// name (114 DLCRobot SCOLs author dev-plugin `MODL` paths; the shipped CM
-/// is `scol\<owner>\cm<local id>.nif`) is an `extract_mesh` miss at spawn
-/// and renders nothing — it does NOT fall back to expansion (#5523, open).
-/// SCOL-of-SCOL
+/// emptiness only here: a SCOL whose `MODL` is set but whose CM file is
+/// absent from the archives (13 vanilla placements) or sits under a
+/// different name (114 DLCRobot SCOLs author dev-plugin `MODL` paths; the
+/// shipped CM is `scol\<owner>\cm<local id>.nif`) is handled by the loader
+/// through [`expand_scol_placements_if`] and [`scol_cm_path`] (#5523): the
+/// derived CM is drawn when it exists, else the SCOL is expanded. A SCOL
+/// nested under a PKIN keeps the emptiness-only gate. SCOL-of-SCOL
 /// nesting is resolved recursively up to [`MAX_PKIN_DEPTH`] levels
 /// (#1182 / FO4-D4-005) so a child SCOL's placements fan out instead
 /// of being silently dropped at the caller's `index.statics.get`
 /// lookup. Vanilla FO4 has no SCOL-of-SCOL — the recursion is forward
 /// insurance against future Bethesda DLC / modded content. See #585.
+#[cfg(test)]
 pub(crate) fn expand_scol_placements(
     base_form_id: u32,
     outer_pos: Vec3,
@@ -728,7 +737,76 @@ pub(crate) fn expand_scol_placements(
     outer_scale: f32,
     index: &esm::cell::EsmCellIndex,
 ) -> Vec<(u32, Vec3, Quat, f32)> {
-    expand_scol_placements_with_depth(base_form_id, outer_pos, outer_rot, outer_scale, index, 0)
+    expand_scol_placements_if(base_form_id, outer_pos, outer_rot, outer_scale, index, &|_| false)
+}
+
+/// [`expand_scol_placements`] that also expands a SCOL whose combined mesh
+/// resolves nowhere: `cm_missing(scol)` is true when neither its authored
+/// `MODL` nor the derived `scol\<owner>\cm<id>.nif` (see
+/// [`scol_cm_path`]) is in the archives (#5523). The expander itself has no
+/// archive access, so the caller supplies that answer.
+pub(crate) fn expand_scol_placements_if(
+    base_form_id: u32,
+    outer_pos: Vec3,
+    outer_rot: Quat,
+    outer_scale: f32,
+    index: &esm::cell::EsmCellIndex,
+    cm_missing: &dyn Fn(u32) -> bool,
+) -> Vec<(u32, Vec3, Quat, f32)> {
+    expand_scol_placements_with_depth(
+        base_form_id,
+        outer_pos,
+        outer_rot,
+        outer_scale,
+        index,
+        cm_missing,
+        0,
+    )
+}
+
+/// The derived location of a SCOL's combined mesh:
+/// `meshes\scol\<owner plugin>\cm<plugin-local id, 8 hex>.nif`. A
+/// SCOL's `MODL` is not always where the CM ships — 114 DLCRobot SCOLs
+/// author dev-plugin paths (`SCOL\Gravato_DLC01SCOL.esp\CM0000F3AD.NIF`)
+/// while the shipped mesh sits under the owning master (#5523). `None` when
+/// the load order has no plugin for the form's slot.
+pub(crate) fn scol_derived_cm_path(
+    base_form_id: u32,
+    load_order: &super::load_order::LoadOrder,
+) -> Option<String> {
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    let owner = super::load_order::plugin_for_form_id(base_form_id, load_order)?;
+    let local = match byroredux_scripting::load_order::global_slot_of(base_form_id) {
+        GlobalSlot::Regular(_) => base_form_id & 0x00FF_FFFF,
+        GlobalSlot::Medium(_) => base_form_id & 0x0000_FFFF,
+        GlobalSlot::Light(_) => base_form_id & 0x0000_0FFF,
+    };
+    Some(format!("meshes\\scol\\{owner}\\cm{local:08x}.nif"))
+}
+
+/// The combined-mesh path a SCOL REFR should spawn, or `None` when the CM is
+/// in no archive (the caller then expands the SCOL's parts instead, #5523):
+/// the authored `MODL` when it resolves, else the derived
+/// [`scol_derived_cm_path`] when that does. Both the expansion gate and the
+/// static-mesh spawn read this, so they cannot disagree about which file a
+/// SCOL is drawn from.
+pub(crate) fn scol_cm_path(
+    base_form_id: u32,
+    index: &esm::cell::EsmCellIndex,
+    load_order: &super::load_order::LoadOrder,
+    mesh_exists: &dyn Fn(&str) -> bool,
+) -> Option<String> {
+    if let Some(authored) = index
+        .statics
+        .get(&base_form_id)
+        .map(|s| s.model_path.as_str())
+        .filter(|path| !path.is_empty())
+    {
+        if mesh_exists(authored) {
+            return Some(authored.to_owned());
+        }
+    }
+    scol_derived_cm_path(base_form_id, load_order).filter(|path| mesh_exists(path))
 }
 
 fn expand_scol_placements_with_depth(
@@ -737,17 +815,20 @@ fn expand_scol_placements_with_depth(
     outer_rot: Quat,
     outer_scale: f32,
     index: &esm::cell::EsmCellIndex,
+    cm_missing: &dyn Fn(u32) -> bool,
     depth: u32,
 ) -> Vec<(u32, Vec3, Quat, f32)> {
     // Expand only when the outer REFR's base is a SCOL with no valid
     // cached model. `statics.get(base).model_path` empty — or the base
-    // isn't in `statics` at all (mod-added SCOL without EDID/MODL) —
-    // plus the base form IS in `scols`.
+    // isn't in `statics` at all (mod-added SCOL without EDID/MODL) — or
+    // the CM resolves in no archive (#5523) — plus the base form IS in
+    // `scols`.
     let must_expand = index.scols.contains_key(&base_form_id)
-        && index
+        && (index
             .statics
             .get(&base_form_id)
-            .is_none_or(|s| s.model_path.is_empty());
+            .is_none_or(|s| s.model_path.is_empty())
+            || cm_missing(base_form_id));
     if !must_expand {
         return vec![(base_form_id, outer_pos, outer_rot, outer_scale)];
     }
@@ -788,6 +869,7 @@ fn expand_scol_placements_with_depth(
                     final_rot,
                     final_scale,
                     index,
+                    cm_missing,
                     depth + 1,
                 );
                 if !nested.is_empty() {
