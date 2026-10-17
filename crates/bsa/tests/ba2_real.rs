@@ -691,6 +691,8 @@ fn fo76_ba2_corpus_opens_and_lists() {
     };
     let mut opened = 0usize;
     let mut entries = 0u64;
+    let mut extracted = 0u64;
+    let mut errors = Vec::new();
     for entry in std::fs::read_dir(&data).expect("read FO76 Data") {
         let path = entry.expect("dir entry").path();
         if path.extension().and_then(|e| e.to_str()) != Some("ba2") {
@@ -701,13 +703,80 @@ fn fo76_ba2_corpus_opens_and_lists() {
         let count = archive.file_count();
         assert!(count > 0, "FO76 archive {:?} lists no files", path);
         entries += count as u64;
+        let files = archive.list_files();
+        assert_eq!(count, files.len(), "FO76 archive {:?} listing count", path);
+        for file in files {
+            match archive.extract(file) {
+                Ok(_) => extracted += 1,
+                Err(error) => {
+                    errors.push((path.clone(), file.to_string(), error.to_string()));
+                    if errors.len() >= 16 {
+                        break;
+                    }
+                }
+            }
+        }
+        if errors.len() >= 16 {
+            break;
+        }
         opened += 1;
     }
-    assert!(
-        opened >= 40,
-        "FO76 Data held 40 .ba2 files at audit time (2026-09-21); found {opened}"
-    );
-    eprintln!("[FO76] opened {opened} BA2 archives, {entries} total entries");
+    assert_eq!(opened, 40, "FO76 BA2 archive census changed");
+    eprintln!("[FO76] opened {opened} BA2 archives, {entries} entries, {extracted} extracted, {} errors", errors.len());
+    assert_eq!(entries, 679_240, "FO76 BA2 file census changed");
+    assert_eq!(extracted, entries, "not every FO76 BA2 entry extracted: {errors:?}");
+}
+
+/// #5903 — pin the complete FO4 BA2 listing before the full extraction sweep.
+#[test]
+#[ignore = "needs FO4 game data on disk"]
+fn fo4_ba2_vanilla_corpus_full_extract_zero_errors() {
+    let Some(data) = fo4_data_dir() else {
+        return;
+    };
+    let mut archives: Vec<_> = std::fs::read_dir(&data)
+        .unwrap_or_else(|e| panic!("read FO4 Data {data:?}: {e}"))
+        .map(|entry| entry.unwrap_or_else(|e| panic!("FO4 directory entry: {e}")).path())
+        .filter(|path| {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            name.ends_with(".ba2")
+                && (name.starts_with("fallout4 ") || name.starts_with("dlc") || name.starts_with("cc"))
+        })
+        .collect();
+    archives.sort();
+    let mut entries = 0usize;
+    let mut extracted = 0usize;
+    let mut errors = Vec::new();
+    for path in &archives {
+        let archive = Ba2Archive::open(path)
+            .unwrap_or_else(|e| panic!("FO4 archive {path:?} must open: {e}"));
+        assert!(archive.file_count() > 0, "FO4 archive {path:?} lists no files");
+        let files = archive.list_files();
+        assert_eq!(archive.file_count(), files.len());
+        entries += archive.file_count();
+        for file in files {
+            match archive.extract(file) {
+                Ok(_) => extracted += 1,
+                Err(error) => {
+                    errors.push((path.clone(), file.to_string(), error.to_string()));
+                    if errors.len() >= 16 {
+                        break;
+                    }
+                }
+            }
+        }
+        if errors.len() >= 16 {
+            break;
+        }
+    }
+    eprintln!("[FO4] opened {} BA2 archives, {entries} entries, {extracted} extracted, {} errors", archives.len(), errors.len());
+    assert_eq!(archives.len(), 117, "FO4 BA2 archive census changed");
+    assert_eq!(entries, 547_808, "FO4 BA2 file census changed");
+    assert_eq!(extracted, entries, "not every FO4 BA2 entry extracted: {errors:?}");
 }
 
 /// #4665 — the FO76 DX10 path specifically: extract one DDS texture out

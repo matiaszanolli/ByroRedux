@@ -411,3 +411,105 @@ fn parse_vanilla_headhuman_tri_header() {
         },
     );
 }
+
+/// #5903 — pin the complete vanilla sidecar census, not only `headhuman`.
+/// The counts were measured across every BSA in each unmodded Data folder;
+/// each listed sidecar is extracted and passed through its production parser.
+#[test]
+#[ignore = "needs Oblivion, FO3 and FNV game data on disk"]
+fn vanilla_facegen_sidecar_census_is_exact() {
+    let games = [
+        (
+            "Oblivion",
+            "BYROREDUX_OBLIVION_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+            (154, 20, 86),
+        ),
+        (
+            "FO3",
+            "BYROREDUX_FO3_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            (250, 36, 49),
+        ),
+        (
+            "FNV",
+            "BYROREDUX_FNV_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            (275, 36, 49),
+        ),
+    ];
+
+    for (game, env_var, fallback, expected) in games {
+        let data = if let Some(value) = std::env::var(env_var).ok().filter(|s| !s.is_empty()) {
+            let path = PathBuf::from(&value);
+            assert!(path.is_dir(), "{env_var} points to {path:?}, not a directory");
+            path
+        } else {
+            let path = PathBuf::from(fallback);
+            if !path.is_dir() {
+                require_game_data(env_var, &path);
+                eprintln!("[{game}] data unavailable; skipping corpus census");
+                continue;
+            }
+            path
+        };
+
+        let mut archives: Vec<_> = std::fs::read_dir(&data)
+            .unwrap_or_else(|e| panic!("[{game}] read {data:?}: {e}"))
+            .map(|entry| entry.unwrap_or_else(|e| panic!("[{game}] directory entry: {e}")).path())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("bsa"))
+            })
+            .collect();
+        archives.sort();
+
+        let mut counts = [0usize; 3];
+        let mut failures = Vec::new();
+        for archive_path in &archives {
+            let archive = BsaArchive::open(archive_path)
+                .unwrap_or_else(|e| panic!("[{game}] open {archive_path:?}: {e}"));
+            for entry in archive.list_files() {
+                let kind = match entry.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+                    "egm" => 0,
+                    "egt" => 1,
+                    "tri" => 2,
+                    _ => continue,
+                };
+                counts[kind] += 1;
+                match archive.extract(entry) {
+                    Ok(bytes) => {
+                        let parsed = match kind {
+                            0 => EgmFile::parse(&bytes).map(|_| ()),
+                            1 => EgtFile::parse(&bytes).map(|_| ()),
+                            _ => TriHeader::parse(&bytes).map(|_| ()),
+                        };
+                        if let Err(error) = parsed {
+                            failures.push((archive_path.clone(), entry.to_string(), error.to_string()));
+                        }
+                    }
+                    Err(error) => failures.push((archive_path.clone(), entry.to_string(), error.to_string())),
+                }
+                if failures.len() >= 16 {
+                    break;
+                }
+            }
+            if failures.len() >= 16 {
+                break;
+            }
+        }
+
+        eprintln!(
+            "[{game}] FaceGen corpus: {} archives, {} EGM / {} EGT / {} TRI, {} errors",
+            archives.len(), counts[0], counts[1], counts[2], failures.len()
+        );
+        assert_eq!(
+            archives.len(),
+            if game == "Oblivion" { 17 } else if game == "FO3" { 16 } else { 21 },
+            "[{game}] BSA archive census changed"
+        );
+        assert_eq!((counts[0], counts[1], counts[2]), expected, "[{game}] FaceGen sidecar census changed");
+        assert!(failures.is_empty(), "[{game}] FaceGen parse/extract failures: {failures:?}");
+    }
+}

@@ -96,6 +96,19 @@ fn skyrimse_data_dir() -> Option<PathBuf> {
     )
 }
 
+fn skyrimle_data_dir() -> Option<PathBuf> {
+    std::env::var_os("BYROREDUX_SKYRIMLE_DATA")
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+}
+
+fn fo3_data_dir() -> Option<PathBuf> {
+    data_dir(
+        "BYROREDUX_FO3_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+    )
+}
+
 /// Oblivion ships v103 BSAs (zlib compression, 16-byte folder
 /// records, u32 offsets, no `embed_file_names` flag — the
 /// `version >= 104` gate at `archive.rs:188` excludes v103). Open
@@ -238,13 +251,120 @@ fn oblivion_all_bsas_v103_brute_force_extract_zero_errors() {
         );
     }
     if archives_opened == VANILLA_AND_DLC_ARCHIVES.len() {
-        assert!(
-            total_files > 100_000,
-            "expected on the order of 147k files across all 17 vanilla+DLC archives \
-             (audit's own measured figure); got {total_files} — investigate before \
-             trusting a lower count as a real pass"
+        assert_eq!(
+            total_files, 147_629,
+            "Oblivion vanilla + DLC BSA listing census changed"
         );
     }
+}
+
+/// #5903 — the remaining v104/v105 BSA generations need the same full
+/// archive walk and extraction coverage as Oblivion's v103 corpus.
+#[test]
+#[ignore = "needs FO3, FNV and Skyrim SE game data on disk"]
+fn fo3_fnv_and_skyrimse_bsa_corpus_census() {
+    for (label, data, expected_archives, expected_entries) in [
+        ("FO3", fo3_data_dir(), 16usize, 159_155u64),
+        ("FNV", fnv_data_dir(), 21usize, 182_177u64),
+        ("Skyrim SE", skyrimse_data_dir(), 23usize, 172_961u64),
+    ] {
+        let Some(data) = data else {
+            eprintln!("[{label}] data unavailable; skipping");
+            continue;
+        };
+        let mut paths: Vec<_> = std::fs::read_dir(&data)
+            .unwrap_or_else(|e| panic!("[{label}] read {data:?}: {e}"))
+            .map(|entry| entry.unwrap_or_else(|e| panic!("[{label}] directory entry: {e}")).path())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("bsa"))
+            })
+            .collect();
+        paths.sort();
+        let mut entries = 0u64;
+        let mut extracted = 0u64;
+        let mut errors = Vec::new();
+        for path in &paths {
+            let archive = BsaArchive::open(path)
+                .unwrap_or_else(|e| panic!("[{label}] open {path:?}: {e}"));
+            let files = archive.list_files();
+            assert_eq!(archive.file_count(), files.len());
+            entries += archive.file_count() as u64;
+            for file in files {
+                match archive.extract(file) {
+                    Ok(_) => extracted += 1,
+                    Err(error) => {
+                        errors.push((path.clone(), file.to_string(), error.to_string()));
+                        if errors.len() >= 16 {
+                            break;
+                        }
+                    }
+                }
+            }
+            if errors.len() >= 16 {
+                break;
+            }
+        }
+        eprintln!(
+            "[{label}] {} BSA archives, {entries} entries, {extracted} extracted, {} errors",
+            paths.len(), errors.len()
+        );
+        assert_eq!(paths.len(), expected_archives, "[{label}] BSA archive census changed");
+        assert_eq!(entries, expected_entries, "[{label}] BSA file census changed");
+        assert_eq!(extracted, entries, "[{label}] not every BSA file extracted: {errors:?}");
+    }
+}
+
+/// #5903 — Skyrim LE is optional because most machines only install SE.
+#[test]
+#[ignore = "needs Skyrim LE game data on disk; set BYROREDUX_SKYRIMLE_DATA"]
+fn skyrimle_bsa_corpus_full_extract_zero_errors() {
+    let Some(data) = skyrimle_data_dir() else {
+        eprintln!("[Skyrim LE] set BYROREDUX_SKYRIMLE_DATA to enable corpus sweep");
+        return;
+    };
+    let mut paths: Vec<_> = std::fs::read_dir(&data)
+        .unwrap_or_else(|e| panic!("[Skyrim LE] read {data:?}: {e}"))
+        .map(|entry| entry.unwrap_or_else(|e| panic!("[Skyrim LE] directory entry: {e}")).path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("bsa"))
+        })
+        .collect();
+    paths.sort();
+    let mut entries = 0u64;
+    let mut extracted = 0u64;
+    let mut errors = Vec::new();
+    for path in &paths {
+        let archive = BsaArchive::open(path)
+            .unwrap_or_else(|e| panic!("[Skyrim LE] open {path:?}: {e}"));
+        let files = archive.list_files();
+        assert_eq!(archive.file_count(), files.len());
+        entries += archive.file_count() as u64;
+        for file in files {
+            match archive.extract(file) {
+                Ok(_) => extracted += 1,
+                Err(error) => {
+                    errors.push((path.clone(), file.to_string(), error.to_string()));
+                    if errors.len() >= 16 {
+                        break;
+                    }
+                }
+            }
+        }
+        if errors.len() >= 16 {
+            break;
+        }
+    }
+    eprintln!(
+        "[Skyrim LE] {} BSA archives, {entries} entries, {extracted} extracted, {} errors",
+        paths.len(), errors.len()
+    );
+    assert!(!paths.is_empty(), "Skyrim LE Data contains no BSA archives");
+    assert!(entries > 0, "Skyrim LE BSA corpus contains no files");
+    assert_eq!(extracted, entries, "not every Skyrim LE BSA file extracted: {errors:?}");
 }
 
 /// FNV ships v104 BSAs (zlib compression, 16-byte folder records, u32
