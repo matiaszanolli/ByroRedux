@@ -283,11 +283,9 @@ mod tests {
         ("triangle.frag", "RESTIR_LUMA_Y"),
         ("triangle.frag", "RESTIR_LUMA_Z"),
         ("triangle.frag", "RESTIR_M_CAP"),
-        ("triangle.frag", "TEMPORAL_NORMAL_COS"),
         ("triangle.frag", "SPATIAL_SAMPLES"),
         ("triangle.frag", "SPATIAL_RADIUS"),
         ("triangle.frag", "SPATIAL_M_CAP"),
-        ("triangle.frag", "SPATIAL_NORMAL_COS"),
         // Water + caustics.
         ("caustic_splat.comp", "TINT_CHANNEL_FLOOR"),
         ("caustic_splat.comp", "CAUSTIC_TEMPORAL_JITTER_PX"),

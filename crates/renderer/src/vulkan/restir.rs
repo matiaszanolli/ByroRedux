@@ -391,7 +391,7 @@ mod tests {
                 // differencing (see `restir_depth_compatibility_gates_
                 // clamp_world_dist_to_match_packed_history`).
                 && src.contains("abs(rpHistoryDepth.y - min(worldDist, 65504.0))")
-                && src.contains("dot(geomN, rpGeomN) >= TEMPORAL_NORMAL_COS"),
+                && src.contains("dot(geomN, rpGeomN) >= RESTIR_SURFACE_NORMAL_COS"),
             "ReSTIR temporal history must validate surface identity, depth, and normal"
         );
         assert!(
@@ -412,6 +412,78 @@ mod tests {
              the parked tail is deep enough that the standing MC speckle sits \
              under one perceivable level, and mode 3 keeps it under flicker)"
         );
+    }
+
+    #[test]
+    fn restir_substrate_and_surface_gates_use_generated_constants() {
+        use crate::shader_constants::{
+            render_shader_constants_header, RESTIR_DEPTH_REL_TOL,
+            RESTIR_SUBSTRATE_DEPTH_FLOOR, RESTIR_SURFACE_NORMAL_COS,
+            RESTIR_TEMPORAL_DEPTH_FLOOR, RESTIR_VIEW_COS_FLOOR,
+        };
+
+        assert_eq!(RESTIR_SURFACE_NORMAL_COS, 0.906);
+        assert_eq!(RESTIR_TEMPORAL_DEPTH_FLOOR, 2.0);
+        assert_eq!(RESTIR_SUBSTRATE_DEPTH_FLOOR, 8.0);
+        assert_eq!(RESTIR_DEPTH_REL_TOL, 0.005);
+        assert_eq!(RESTIR_VIEW_COS_FLOOR, 0.1);
+
+        let header = render_shader_constants_header();
+        for name in [
+            "RESTIR_SURFACE_NORMAL_COS",
+            "RESTIR_TEMPORAL_DEPTH_FLOOR",
+            "RESTIR_SUBSTRATE_DEPTH_FLOOR",
+            "RESTIR_DEPTH_REL_TOL",
+            "RESTIR_VIEW_COS_FLOOR",
+        ] {
+            assert!(header.contains(&format!("#define {name} ")));
+        }
+
+        let src = include_str!("../../shaders/triangle.frag");
+        assert!(src.contains("dot(geomN, rsGeomN) >= RESTIR_SURFACE_NORMAL_COS"));
+        assert!(src.contains("max(worldDist, rsHistoryDepth.y) * RESTIR_DEPTH_REL_TOL"));
+        assert!(src.contains("RESTIR_SUBSTRATE_DEPTH_FLOOR"));
+        assert!(src.contains("max(abs(dot(geomN, V)), RESTIR_VIEW_COS_FLOOR)"));
+        assert!(!src.contains(">= 0.906"));
+        assert!(!src.contains("TEMPORAL_NORMAL_COS ="));
+        assert!(!src.contains("SPATIAL_NORMAL_COS ="));
+    }
+
+    #[test]
+    fn restir_only_stores_visible_opaque_surface_reservoirs() {
+        let src = include_str!("../../shaders/triangle.frag");
+        assert!(src.contains("bool stableTemporalSurface = !isAlphaBlend && !isGlass;"));
+
+        let write = src
+            .find("reservoirsCurr[pixelIdx] = rc;")
+            .expect("the current reservoir write must exist");
+        assert_eq!(
+            src.matches("reservoirsCurr[pixelIdx] = rc;").count(),
+            1,
+            "all current-frame reservoir writes must remain behind the ownership gate"
+        );
+        let gate = src[..write]
+            .rfind("if (stableTemporalSurface) {")
+            .expect("the current reservoir write must follow the opaque-surface gate");
+        let gate_body = &src[gate..write];
+        assert!(gate_body.contains("atomicMin(reservoirClaim[pixelIdx], claimKey)"));
+        assert_eq!(
+            gate_body.matches('{').count() - gate_body.matches('}').count(),
+            2,
+            "the write must remain nested inside both the stable-surface and winning-claim gates"
+        );
+
+        let substrate_start = src
+            .find("bool substrateValid = false;")
+            .expect("the decal substrate path must exist");
+        let substrate_end = src[substrate_start..]
+            .find("// ── ReSTIR-DI spatial reuse")
+            .map(|offset| substrate_start + offset)
+            .expect("the substrate path must end before spatial reuse");
+        let substrate = &src[substrate_start..substrate_end];
+        assert!(substrate.contains("if (useTemporal && isAlphaBlend && !isGlass"));
+        assert!(substrate.contains("reservoirsPrev[uint(prevFrag.y) * scrW + uint(prevFrag.x)]"));
+        assert!(!substrate.contains("reservoirsCurr["));
     }
 
     /// #5617 — the numbers behind those names. The shader reads them from the
@@ -662,7 +734,7 @@ mod tests {
         assert!(
             src.contains("rnSurfaceId == surfaceId")
                 && src.contains("spatialDepthCompatible")
-                && src.contains("dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS"),
+                && src.contains("dot(geomN, nGeomN) >= RESTIR_SURFACE_NORMAL_COS"),
             "spatial reservoir reuse must not cross stable receiver, depth, or normal edges"
         );
         assert!(

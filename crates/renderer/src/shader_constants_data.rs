@@ -136,6 +136,13 @@ pub const RESTIR_HISTORY_CAP_PARKED: f32 = 1024.0;
 pub const RESTIR_HISTORY_CAP_MOVING: f32 = 16.0;
 pub const RESTIR_ALPHA_FLOOR_PARKED: f32 = 0.002;
 pub const RESTIR_ALPHA_FLOOR_MOVING: f32 = 0.1;
+// ReSTIR surface/plane compatibility gates shared by temporal reuse, decal
+// substrate reuse and spatial-neighbour rejection in `triangle.frag`.
+pub const RESTIR_SURFACE_NORMAL_COS: f32 = 0.906;
+pub const RESTIR_TEMPORAL_DEPTH_FLOOR: f32 = 2.0;
+pub const RESTIR_SUBSTRATE_DEPTH_FLOOR: f32 = 8.0;
+pub const RESTIR_DEPTH_REL_TOL: f32 = 0.005;
+pub const RESTIR_VIEW_COS_FLOOR: f32 = 0.1;
 // Per-pixel mover taint: a pixel whose selected shadow ray hit an instance
 // that moved this build (`INSTANCE_FLAG_MOVED_THIS_FRAME`) keeps the moving
 // tail, and keeps it for this many hit-free frames past the moving cap before
@@ -2341,6 +2348,11 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float RESTIR_HISTORY_CAP_MOVING),
     shader_define!(Float RESTIR_ALPHA_FLOOR_PARKED),
     shader_define!(Float RESTIR_ALPHA_FLOOR_MOVING),
+    shader_define!(Float RESTIR_SURFACE_NORMAL_COS),
+    shader_define!(Float RESTIR_TEMPORAL_DEPTH_FLOOR),
+    shader_define!(Float RESTIR_SUBSTRATE_DEPTH_FLOOR),
+    shader_define!(Float RESTIR_DEPTH_REL_TOL),
+    shader_define!(Float RESTIR_VIEW_COS_FLOOR),
     shader_define!(Float RESTIR_MOVER_SETTLE_FRAMES),
     shader_define!(Float SHADOW_FILTER_NORMAL_POWER),
     shader_define!(Float SHADOW_FILTER_DEPTH_SLOPE_SCALE),

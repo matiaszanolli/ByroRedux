@@ -3520,7 +3520,6 @@ void main() {
                 float rpHistLen = rpHistoryDepth.x;
                 vec3 rpGeomN = octDecode(
                     unpackSnorm2x16(floatBitsToUint(rp.pad0)));
-                const float TEMPORAL_NORMAL_COS = 0.906; // cos 25°
                 // A stable surface id identifies the draw, not a unique
                 // point on that draw. Large architectural meshes therefore
                 // need a depth check as well: after camera motion, an
@@ -3536,8 +3535,8 @@ void main() {
                 // camera motion; larger motion safely gives up history rather
                 // than accepting a thin-wall jump.
                 float temporalDepthTolerance = max(
-                    2.0,
-                    max(worldDist, rpHistoryDepth.y) * 0.005);
+                    RESTIR_TEMPORAL_DEPTH_FLOOR,
+                    max(worldDist, rpHistoryDepth.y) * RESTIR_DEPTH_REL_TOL);
                 // #2777 / REN-D2-01 — `rpHistoryDepth.y` was packed through
                 // `packHalf2x16`, so the write side clamped it to the
                 // largest finite half-float (65504.0) to avoid packing
@@ -3560,11 +3559,11 @@ void main() {
                 // surface behind a partition is still off this plane.
                 bool temporalDepthCompatible =
                     abs(rpHistoryDepth.y - min(worldDist, 65504.0))
-                        * max(abs(dot(geomN, V)), 0.1)
+                        * max(abs(dot(geomN, V)), RESTIR_VIEW_COS_FLOOR)
                     <= temporalDepthTolerance;
                 bool sameSurface = rpSurfaceId == surfaceId
                     && temporalDepthCompatible
-                    && dot(geomN, rpGeomN) >= TEMPORAL_NORMAL_COS;
+                    && dot(geomN, rpGeomN) >= RESTIR_SURFACE_NORMAL_COS;
                 // Silhouette search. A parked camera still jitters every
                 // frame, so an edge moves by up to half a pixel: the surface
                 // that owns this pixel now (a stool leg, a railing) owned the
@@ -3579,7 +3578,7 @@ void main() {
                 // on a surface match, and the winner's reservoir loads once.
                 if (!sameSurface) {
                     ivec2 prevPix = ivec2(prevFrag);
-                    float planeScale = max(abs(dot(geomN, V)), 0.1);
+                    float planeScale = max(abs(dot(geomN, V)), RESTIR_VIEW_COS_FLOOR);
                     float bestPlane = temporalDepthTolerance;
                     uint bestIdx = 0xFFFFFFFFu;
                     for (int t = 0; t < 9; t++) {
@@ -3597,7 +3596,7 @@ void main() {
                             - min(worldDist, 65504.0)) * planeScale;
                         if (qPlane <= bestPlane && dot(geomN, octDecode(unpackSnorm2x16(
                                 floatBitsToUint(reservoirsPrev[qIdx].pad0))))
-                                >= TEMPORAL_NORMAL_COS) {
+                                >= RESTIR_SURFACE_NORMAL_COS) {
                             bestPlane = qPlane;
                             bestIdx = qIdx;
                         }
@@ -3701,15 +3700,15 @@ void main() {
                 vec2 rsHistoryDepth = unpackHalf2x16(floatBitsToUint(rs.histLenAndDepth));
                 vec3 rsGeomN = octDecode(unpackSnorm2x16(floatBitsToUint(rs.pad0)));
                 float substrateDepthTolerance = max(
-                    8.0,
-                    max(worldDist, rsHistoryDepth.y) * 0.005);
+                    RESTIR_SUBSTRATE_DEPTH_FLOOR,
+                    max(worldDist, rsHistoryDepth.y) * RESTIR_DEPTH_REL_TOL);
                 float substratePlaneDist = abs(rsHistoryDepth.y - min(worldDist, 65504.0))
-                    * max(abs(dot(geomN, V)), 0.1);
+                    * max(abs(dot(geomN, V)), RESTIR_VIEW_COS_FLOOR);
                 vec3 rsAccum = vec3(rs.accumR, rs.accumG, rs.accumB);
                 if (rsHistoryDepth.x != 0.0
                     && !isnan(rsHistoryDepth.x) && !isinf(rsHistoryDepth.x)
                     && substratePlaneDist <= substrateDepthTolerance
-                    && dot(geomN, rsGeomN) >= 0.906 // cos 25°, TEMPORAL_NORMAL_COS
+                    && dot(geomN, rsGeomN) >= RESTIR_SURFACE_NORMAL_COS
                     && !any(isnan(rsAccum)) && !any(isinf(rsAccum))) {
                     substrateValid = true;
                     substrateAccum = max(rsAccum, vec3(0.0));
@@ -3756,7 +3755,6 @@ void main() {
                 const int   SPATIAL_SAMPLES = 5;
                 const float SPATIAL_RADIUS  = 16.0; // neighbour disk radius (px)
                 const float SPATIAL_M_CAP   = 8.0;  // per-neighbour trust bound
-                const float SPATIAL_NORMAL_COS = 0.906; // cos 25° (Bitterli §5)
                 // Centre on the reprojected location when valid (keeps the disk
                 // geometrically aligned under motion); else on this pixel.
                 vec2 spatialCenter = reprojValid ? prevFrag : gl_FragCoord.xy;
@@ -3804,7 +3802,7 @@ void main() {
                         && visibilityMaskNeedsTrace(lights[rnLightIndex].params.z)
                         && rn.M > 0.0
                         && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)
-                        && dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS) {
+                        && dot(geomN, nGeomN) >= RESTIR_SURFACE_NORMAL_COS) {
                         vec3 rnTransmission;
                         vec3 rnRad = shadowableLightRadiance(
                             rnLightIndex, N, geometricNormal, V, NdotV, F0, albedo,
