@@ -503,12 +503,15 @@ captured by the engine settings tables.
 
 ## NPC stat storage — NOTE (distinct from FO4)
 
-FO3/FNV predate FO4's `PRPS` `(AVIF, value)` array. Auto-calc-OFF NPCs store explicit
-skill/SPECIAL values in their `NPC_` record (DNAM-era layout); auto-calc-ON NPCs are
-computed from class base attributes (the #1663 path). This is the FO3/FNV analog of
-FO4's "read PRPS / read DNAM Calculated Health" — different wire format, same idea
-(stored-or-computed). Full byte layout: a follow-up when wiring FO3/FNV NPC derived
-stats.
+FO3/FNV predate FO4's `PRPS` `(AVIF, value)` array. The `NPC_ DATA` block carries base
+Health (`i32`) and seven authored SPECIAL bytes. When ACBS auto-calc bit 4 is clear,
+CHARAL uses those authored SPECIAL values; when it is set, it uses the class base
+attributes. If an auto-calc-OFF template terminal has no `DATA`, derivation falls back
+to the class attributes. Skills are still derived from SPECIAL with the GECK formula:
+the separate `DNAM` skill half is not parsed. This is the FO3/FNV analog of FO4's
+"read PRPS / read DNAM Calculated Health" — different wire formats, with an authored
+SPECIAL path and derived skills. The `NPC_ DATA` layout is `i32 health` followed by
+`7 × u8 SPECIAL` (11 bytes; some records carry a 25-byte form with a trailing field).
 
 ## Karma — LOCKED (new category: signed, clamped, event-driven reputation AV)
 

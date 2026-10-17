@@ -612,8 +612,11 @@ ruleset/derived-stat machinery underneath them has actually shipped for a
 while). Struck-through items are done; the remaining two are genuinely open.
 
 1. ~~Fallout numeric substrate — `ActorValues`~~ — shipped (#1663).
-2. ~~FNV/FO3 population — SPECIAL→skills auto-calc~~ — shipped (#1663, `fad3890b`).
-   The reference realisation (§3 AUTHORED model, `derive_npc_actor_values`).
+2. ~~FNV/FO3 population — SPECIAL→skills auto-calc~~ — shipped (#1663, `fad3890b`);
+   #5338 also wired authored `NPC_ DATA` SPECIAL when ACBS auto-calc bit 4 is clear.
+   Skills for that branch still derive from SPECIAL with the GECK formula because
+   the separate `DNAM` skill half remains unparsed. The reference realisation (§3
+   AUTHORED model, `derive_npc_actor_values`).
 3. ~~**FO4 `CharacterRuleset` builder**~~ — shipped: `fallout4_ruleset()`
    (`crates/core/src/character/fallout.rs`), SPECIAL roster + Health/Action
    Points/Carry Weight/Melee Damage derived formulas, 4 tests green. **What's
