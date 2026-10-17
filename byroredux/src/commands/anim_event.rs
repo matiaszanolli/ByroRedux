@@ -148,6 +148,35 @@ impl ConsoleCommand for AnimPoseCommand {
 /// (`Speed`, `Direction`, `moveStart`/`moveStop`) follow the motion like any other.
 pub(crate) struct ActorWalkCommand;
 
+const MAX_ACTOR_WALK_SPEED: f32 = 10_000.0;
+const MAX_ACTOR_WALK_SECONDS: f32 = 60.0;
+
+fn parse_actor_walk_parameters(
+    speed: &str,
+    seconds: &str,
+    turns: Option<&str>,
+) -> Result<(f32, f32, f32), &'static str> {
+    let speed = speed.parse::<f32>().map_err(|_| "speed must be a number")?;
+    let seconds = seconds.parse::<f32>().map_err(|_| "seconds must be a number")?;
+    if !speed.is_finite() || !seconds.is_finite() {
+        return Err("speed and seconds must be finite");
+    }
+    if speed.abs() > MAX_ACTOR_WALK_SPEED {
+        return Err("speed must be between -10000 and 10000");
+    }
+    let turns = match turns {
+        Some(value) => {
+            let turns = value.parse::<f32>().map_err(|_| "turns must be a number")?;
+            if !turns.is_finite() {
+                return Err("turns must be finite");
+            }
+            turns.rem_euclid(1.0)
+        }
+        None => 0.0,
+    };
+    Ok((speed, seconds.clamp(0.0, MAX_ACTOR_WALK_SECONDS), turns))
+}
+
 impl ConsoleCommand for ActorWalkCommand {
     fn name(&self) -> &str {
         "actor.walk"
@@ -166,10 +195,13 @@ impl ConsoleCommand for ActorWalkCommand {
             Ok(entity) => entity,
             Err(message) => return CommandOutput::error(format!("actor.walk: {message}")),
         };
-        let (Ok(speed), Ok(seconds)) = (speed.parse::<f32>(), seconds.parse::<f32>()) else {
-            return CommandOutput::error("actor.walk: speed and seconds are numbers");
+        let Ok((speed, seconds, turns)) =
+            parse_actor_walk_parameters(speed, seconds, tokens.next())
+        else {
+            return CommandOutput::error(
+                "actor.walk: speed, seconds, and turns must be finite numbers; speed is capped at 10000 and duration at 60s",
+            );
         };
-        let turns = tokens.next().and_then(|turns| turns.parse::<f32>().ok()).unwrap_or(0.0);
         let Some(rotation) = world
             .query::<byroredux_core::ecs::components::Transform>()
             .and_then(|transforms| transforms.get(entity).map(|transform| transform.rotation))
@@ -181,10 +213,26 @@ impl ConsoleCommand for ActorWalkCommand {
         let forward = rotation * crate::systems::GRAPH_MODEL_FORWARD;
         let right = rotation * crate::systems::GRAPH_MODEL_RIGHT;
         let velocity = (forward * angle.cos() + right * angle.sin()) * speed;
+        if !velocity.is_finite() {
+            return CommandOutput::error("actor.walk: computed velocity is not finite");
+        }
         let Some(mut walks) = world.query_mut::<crate::systems::ConsoleWalk>() else {
             return CommandOutput::error("actor.walk: ConsoleWalk is not registered");
         };
         walks.insert(entity, crate::systems::ConsoleWalk { velocity, remaining: seconds });
         CommandOutput::line(format!("walking {entity} at {speed} for {seconds}s"))
+    }
+}
+
+#[cfg(test)]
+mod actor_walk_tests {
+    use super::*;
+
+    #[test]
+    fn actor_walk_rejects_non_finite_values_and_caps_duration() {
+        assert!(parse_actor_walk_parameters("NaN", "1", None).is_err());
+        assert!(parse_actor_walk_parameters("1", "inf", None).is_err());
+        assert!(parse_actor_walk_parameters("1", "1", Some("-inf")).is_err());
+        assert_eq!(parse_actor_walk_parameters("2", "120", Some("1.25")), Ok((2.0, 60.0, 0.25)));
     }
 }

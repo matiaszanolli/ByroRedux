@@ -1195,6 +1195,10 @@ impl ConsoleCommand for CamPosCommand {
                 "cam.pos: failed to parse coordinates from `{args}`"
             ));
         };
+        let position = Vec3::new(x, y, z);
+        if !byroredux_physics::PhysicsWorld::translation_is_sane(position) {
+            return CommandOutput::error(format!("cam.pos: refusing invalid position {position:?}"));
+        }
         let Some(active) = world.try_resource::<ActiveCamera>() else {
             return CommandOutput::line("ActiveCamera resource not present");
         };
@@ -1210,7 +1214,7 @@ impl ConsoleCommand for CamPosCommand {
             let Some(transform) = tq.get_mut(cam_entity) else {
                 return CommandOutput::line(format!("Camera entity {cam_entity} has no Transform"));
             };
-            transform.translation = Vec3::new(x, y, z);
+            transform.translation = position;
         }
         if crate::systems::carry_player_body_to_camera(world) {
             CommandOutput::line(format!(
@@ -1343,6 +1347,20 @@ impl ConsoleCommand for CamTpCommand {
 #[cfg(test)]
 mod combat_status_tests {
     use super::*;
+
+    #[test]
+    fn cam_pos_rejects_non_finite_coordinates_without_moving_camera() {
+        let mut world = World::new();
+        let camera = world.spawn();
+        let initial = Vec3::new(10.0, 20.0, 30.0);
+        world.insert_resource(ActiveCamera(camera));
+        world.insert(camera, Transform::from_translation(initial));
+
+        let output = CamPosCommand.execute(&world, "NaN 0 0");
+
+        assert!(output.lines.join("\n").contains("refusing invalid position"));
+        assert_eq!(world.get::<Transform>(camera).unwrap().translation, initial);
+    }
 
     #[test]
     fn rounded_zero_is_not_reported_as_cooldown_ready() {

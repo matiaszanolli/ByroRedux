@@ -924,6 +924,10 @@ pub(crate) fn place_character_body(
     pos: Vec3,
     rotation: Option<Quat>,
 ) -> Option<bool> {
+    if !byroredux_physics::PhysicsWorld::translation_is_sane(pos) {
+        log::warn!("refusing to place the player body at an invalid position: {pos:?}");
+        return None;
+    }
     {
         let mut tq = world.query_mut::<Transform>()?;
         if let Some(t) = tq.get_mut(body) {
@@ -1768,6 +1772,19 @@ mod tests {
         place_character_body(&world, body, pos, Some(Quat::IDENTITY));
         assert_eq!(world.get::<Transform>(body).unwrap().rotation, Quat::IDENTITY);
         assert_eq!(world.get::<GlobalTransform>(body).unwrap().rotation, Quat::IDENTITY);
+    }
+
+    #[test]
+    fn place_character_body_rejects_non_finite_positions_before_writing() {
+        let mut world = World::new();
+        let body = world.spawn();
+        let initial = Vec3::new(1.0, 2.0, 3.0);
+        world.insert(body, Transform::from_translation(initial));
+        world.insert(body, GlobalTransform::new(initial, Quat::IDENTITY, 1.0));
+
+        assert_eq!(place_character_body(&world, body, Vec3::new(f32::NAN, 0.0, 0.0), None), None);
+        assert_eq!(world.get::<Transform>(body).unwrap().translation, initial);
+        assert_eq!(world.get::<GlobalTransform>(body).unwrap().translation, initial);
     }
 
     /// #5591 — no site hand-clears the controller's momentum any more.

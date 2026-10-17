@@ -92,9 +92,19 @@ pub(crate) fn console_walk_system(world: &World, dt: f32) {
     let Some(mut transforms) = world.query_mut::<Transform>() else { return };
     let mut done = Vec::new();
     for (entity, walk) in walks.iter_mut() {
+        if !dt.is_finite() || !walk.remaining.is_finite() || !walk.velocity.is_finite() {
+            done.push(entity);
+            continue;
+        }
         let step = dt.min(walk.remaining).max(0.0);
         if let Some(transform) = transforms.get_mut(entity) {
-            transform.translation += walk.velocity * step;
+            let destination = transform.translation + walk.velocity * step;
+            if byroredux_physics::PhysicsWorld::translation_is_sane(destination) {
+                transform.translation = destination;
+            } else {
+                done.push(entity);
+                continue;
+            }
         }
         walk.remaining -= step;
         if walk.remaining <= 0.0 {
@@ -421,6 +431,21 @@ mod tests {
         crate::combat::reconcile_dead_actor(&world, actor);
         assert!(world.get::<ObjectAnimationGraph>(actor).is_none());
         assert!(world.get::<GraphLocomotion>(actor).is_none());
+        assert!(world.get::<ConsoleWalk>(actor).is_none());
+    }
+
+    #[test]
+    fn console_walk_discards_non_finite_motion_without_poisoning_transform() {
+        let mut world = World::new();
+        world.register::<ConsoleWalk>();
+        world.register::<Transform>();
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::ZERO));
+        world.insert(actor, ConsoleWalk { velocity: Vec3::splat(f32::INFINITY), remaining: f32::NAN });
+
+        console_walk_system(&world, 1.0 / 60.0);
+
+        assert_eq!(world.get::<Transform>(actor).unwrap().translation, Vec3::ZERO);
         assert!(world.get::<ConsoleWalk>(actor).is_none());
     }
 }
