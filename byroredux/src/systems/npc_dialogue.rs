@@ -176,12 +176,19 @@ fn top_level_menu<'a>(
     world: &World,
     npc: EntityId,
     player: EntityId,
-) -> Vec<&'a DialRecord> {
+    selected: Option<(&'a DialRecord, &'a InfoRecord)>,
+) -> Vec<(&'a DialRecord, &'a InfoRecord)> {
     owned
         .iter()
         .copied()
         .filter(|record| topic_entry(index, record) == TopicEntry::TopLevel)
-        .filter(|record| select_first_info(record, world, Some(npc), Some(player)).is_some())
+        .filter_map(|record| {
+            let info = selected
+                .filter(|(selected_record, _)| selected_record.form_id == record.form_id)
+                .map(|(_, info)| info)
+                .or_else(|| select_first_info(record, world, Some(npc), Some(player)))?;
+            Some((record, info))
+        })
         .collect()
 }
 
@@ -193,18 +200,20 @@ fn linked_menu<'a>(
     world: &World,
     npc: EntityId,
     player: EntityId,
-) -> Vec<&'a DialRecord> {
+) -> Vec<(&'a DialRecord, &'a InfoRecord)> {
     info.topic_links
         .iter()
         .filter_map(|topic| index.dialogues.get(topic))
-        .filter(|record| select_first_info(record, world, Some(npc), Some(player)).is_some())
+        .filter_map(|record| {
+            select_first_info(record, world, Some(npc), Some(player)).map(|info| (record, info))
+        })
         .collect()
 }
 
-fn topic_entries(records: &[&DialRecord]) -> Vec<DialogueTopicEntry> {
+fn topic_entries(records: &[(&DialRecord, &InfoRecord)]) -> Vec<DialogueTopicEntry> {
     records
         .iter()
-        .map(|record| DialogueTopicEntry {
+        .map(|(record, _)| DialogueTopicEntry {
             topic_form_id: record.form_id,
             name: if record.full_name.is_empty() {
                 record.editor_id.clone()
@@ -215,25 +224,26 @@ fn topic_entries(records: &[&DialRecord]) -> Vec<DialogueTopicEntry> {
         .collect()
 }
 
-/// Speak `record`'s first passing INFO and package it with the list that
-/// follows it: the INFO's passing links, or `fallback_menu` when it links
-/// nowhere. An empty list still shows the spoken topic.
+/// Speak the already-selected INFO and package it with the list that follows
+/// it: the INFO's passing links, or `fallback_menu` when it links nowhere.
+/// Carrying the INFO prevents a second evaluation of stateful conditions.
 fn select_on_topic<'a>(
     index: &'a EsmIndex,
     record: &'a DialRecord,
+    info: &'a InfoRecord,
     world: &World,
     npc: EntityId,
     player: EntityId,
-    fallback_menu: &[&'a DialRecord],
+    fallback_menu: &[(&'a DialRecord, &'a InfoRecord)],
 ) -> Option<(NpcDialogueTopic, &'a DialRecord)> {
-    let info = select_first_info(record, world, Some(npc), Some(player))?;
     let linked = linked_menu(index, info, world, npc, player);
-    let menu: &[&DialRecord] = if !linked.is_empty() {
+    let single = [(record, info)];
+    let menu: &[(&DialRecord, &InfoRecord)] = if !linked.is_empty() {
         &linked
     } else if !fallback_menu.is_empty() {
         fallback_menu
     } else {
-        std::slice::from_ref(&record)
+        &single
     };
     Some((
         NpcDialogueTopic {
@@ -300,22 +310,24 @@ fn open_conversation<'a>(
     npc: EntityId,
     player: EntityId,
 ) -> Option<(NpcDialogueTopic, &'a DialRecord)> {
-    let blocking = owned.iter().copied().find(|record| {
-        topic_entry(index, record) == TopicEntry::Blocking
-            && select_first_info(record, world, Some(npc), Some(player)).is_some()
+    let blocking = owned.iter().copied().find_map(|record| {
+        (topic_entry(index, record) == TopicEntry::Blocking)
+            .then(|| select_first_info(record, world, Some(npc), Some(player)))
+            .flatten()
+            .map(|info| (record, info))
     });
-    if let Some(record) = blocking {
+    if let Some((record, info)) = blocking {
         // Blocking: the list is whatever links from this line, never the
         // normal topics.
-        return select_on_topic(index, record, world, npc, player, &[]);
+        return select_on_topic(index, record, info, world, npc, player, &[]);
     }
-    let menu = top_level_menu(index, owned, world, npc, player);
-    if let Some(first) = menu.first() {
-        let first = *first;
-        return select_on_topic(index, first, world, npc, player, &menu);
+    let menu = top_level_menu(index, owned, world, npc, player, None);
+    if let Some((first, info)) = menu.first().copied() {
+        return select_on_topic(index, first, info, world, npc, player, &menu);
     }
     let greeting = generic_greeting_record(index)?;
-    select_on_topic(index, greeting, world, npc, player, &[])
+    let info = select_first_info(greeting, world, Some(npc), Some(player))?;
+    select_on_topic(index, greeting, info, world, npc, player, &[])
 }
 
 /// Apply one selection: registry install (the presentation side's record
@@ -530,7 +542,10 @@ pub(crate) fn forcegreet_open(world: &World, npc: EntityId, topic: Option<u32>) 
     let Some(record) = record else {
         return false;
     };
-    let Some((selected, record)) = select_on_topic(&index, record, world, npc, player, &[])
+    let Some(info) = select_first_info(record, world, Some(npc), Some(player)) else {
+        return false;
+    };
+    let Some((selected, record)) = select_on_topic(&index, record, info, world, npc, player, &[])
     else {
         return false;
     };
@@ -804,7 +819,7 @@ pub(crate) fn select_topic_by_form_id(
         };
         index.0.clone()
     };
-    let Some(record) = index.dialogues.get(&topic_form_id).cloned() else {
+    let Some(record) = index.dialogues.get(&topic_form_id) else {
         return Err(format!("no topic {topic_form_id:08X} in the loaded plugins"));
     };
     let owned_quests = running_quests_binding_entity(world, npc);
@@ -820,8 +835,13 @@ pub(crate) fn select_topic_by_form_id(
         .ok_or_else(|| "no player".to_string())?;
     // After this line, its links become the list; a line that links nowhere
     // returns to the Top-Level topics (#5037).
-    let menu = top_level_menu(&index, &owned, world, npc, player);
-    let Some((topic, record)) = select_on_topic(&index, &record, world, npc, player, &menu)
+    let Some(info) = select_first_info(record, world, Some(npc), Some(player)) else {
+        return Err(format!(
+            "no INFO on topic {topic_form_id:08X} passes its conditions right now"
+        ));
+    };
+    let menu = top_level_menu(&index, &owned, world, npc, player, Some((record, info)));
+    let Some((topic, record)) = select_on_topic(&index, record, info, world, npc, player, &menu)
     else {
         return Err(format!(
             "no INFO on topic {topic_form_id:08X} passes its conditions right now"
@@ -996,6 +1016,59 @@ mod tests {
             infos: vec![info(INFO_RUMORS, 0, "Keep your head down.")],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn selected_info_is_not_re_evaluated_after_menu_filtering() {
+        use byroredux_plugin::esm::records::condition::{
+            ComparisonOp, Condition, ConditionValue,
+        };
+
+        let mut record = fixture_topic();
+        record.infos[0].conditions = vec![Condition {
+            function_index: 77, // GetRandomPercent
+            comparator: ComparisonOp::Lt,
+            comparand: ConditionValue::Literal(101.0),
+            ..Default::default()
+        }];
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.dialogues.insert(record.form_id, record.clone());
+        let owned = [index.dialogues.get(&record.form_id).unwrap()];
+        let mut world = World::new();
+        world.insert_resource(byroredux_scripting::story_manager::StoryManagerRng {
+            state: 0xC0FFEE,
+        });
+        let npc = world.spawn();
+        let player = world.spawn();
+
+        let menu = top_level_menu(&index, &owned, &world, npc, player, None);
+        let (selected_record, selected_info) = menu
+            .first()
+            .copied()
+            .expect("the random-gated topic qualifies");
+        let rng_after_menu = world
+            .resource::<byroredux_scripting::story_manager::StoryManagerRng>()
+            .state;
+
+        let (selection, _) = select_on_topic(
+            &index,
+            selected_record,
+            selected_info,
+            &world,
+            npc,
+            player,
+            &menu,
+        )
+        .expect("the INFO selected by the menu pass is spoken");
+
+        assert_eq!(selection.info_form_id, selected_info.form_id);
+        assert_eq!(
+            world
+                .resource::<byroredux_scripting::story_manager::StoryManagerRng>()
+                .state,
+            rng_after_menu,
+            "selection must reuse the INFO chosen during filtering"
+        );
     }
 
     fn install_index(world: &mut World) {
