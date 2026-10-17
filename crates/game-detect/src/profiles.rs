@@ -49,11 +49,7 @@ pub fn resolve_games_root(cli_arg: Option<&str>) -> PathBuf {
     PathBuf::from(DEFAULT_GAMES_ROOT)
 }
 
-/// Compose a profile's data directory from `games_root` + the
-/// profile's `subdir` field. Used at `--game <key>` expansion
-/// time when the profile's `root` is empty. Returns the explicit
-/// `entry.root` unchanged when set (per-user override path). Phase 20.
-/// #5739 — resolve a value against the current directory when relative.
+/// Resolve a value against the current directory when it is relative.
 /// #5476: the launcher spawns the engine with
 /// `current_dir(engine.parent())`, so a relative `--profiles` path would
 /// otherwise resolve against the ENGINE's directory; `current_dir`
@@ -90,6 +86,10 @@ pub fn parse_profiles_arg<'a>(
     Ok(absolutise_against_cwd(value))
 }
 
+/// Compose a profile's data directory from `games_root` + the
+/// profile's `subdir` field. Used at `--game <key>` expansion
+/// time when the profile's `root` is empty. Returns the explicit
+/// `entry.root` unchanged when set (per-user override path). Phase 20.
 pub fn resolve_profile_root(entry: &GameProfileEntry, games_root: &Path) -> PathBuf {
     if !entry.root.is_empty() {
         return PathBuf::from(&entry.root);
