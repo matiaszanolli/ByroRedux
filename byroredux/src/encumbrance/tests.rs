@@ -49,6 +49,22 @@ fn rules_install_per_game() {
         world.resource::<EncumbranceRules>().effect,
         Some(OverEncumbered::SpeedMult(0.5))
     );
+    for invalid in [f32::NAN, f32::INFINITY, -0.25] {
+        authored.game_settings.get_mut(&0x10).unwrap().value = SettingValue::Float(invalid);
+        install_encumbrance_rules(&mut world, &authored);
+        assert_eq!(
+            world.resource::<EncumbranceRules>().effect,
+            Some(OverEncumbered::SpeedMult(FALLOUT_MOVE_ENCUM_EFFECT)),
+            "invalid fMoveEncumEffect {invalid:?} falls back to the engine default"
+        );
+    }
+    authored.game_settings.get_mut(&0x10).unwrap().value = SettingValue::Float(4.0);
+    install_encumbrance_rules(&mut world, &authored);
+    assert_eq!(
+        world.resource::<EncumbranceRules>().effect,
+        Some(OverEncumbered::SpeedMult(1.0)),
+        "over-encumbrance cannot increase movement speed"
+    );
     install_encumbrance_rules(&mut world, &index(GameKind::Skyrim));
     assert_eq!(world.resource::<EncumbranceRules>().effect, Some(OverEncumbered::NoSprint));
     install_encumbrance_rules(&mut world, &index(GameKind::Fallout4));
@@ -69,6 +85,9 @@ fn movement_follows_the_effect_once_over() {
     let slow = Some(OverEncumbered::SpeedMult(0.4));
     assert_eq!(at(100.0, slow), (1.0, true), "at capacity");
     assert_eq!(at(100.5, slow), (0.4, true));
+    assert_eq!(at(150.0, Some(OverEncumbered::SpeedMult(f32::NAN))), (0.4, true));
+    assert_eq!(at(150.0, Some(OverEncumbered::SpeedMult(-2.0))), (0.4, true));
+    assert_eq!(at(150.0, Some(OverEncumbered::SpeedMult(3.0))), (1.0, true));
     assert_eq!(at(150.0, Some(OverEncumbered::NoSprint)), (1.0, false));
     assert_eq!(at(150.0, None), (1.0, true));
 }

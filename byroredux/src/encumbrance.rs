@@ -62,7 +62,9 @@ impl PlayerEncumbrance {
     /// The movement speed multiplier and whether sprinting is allowed.
     pub(crate) fn movement(&self) -> (f32, bool) {
         match (self.over(), self.effect) {
-            (true, Some(OverEncumbered::SpeedMult(mult))) => (mult, true),
+            (true, Some(OverEncumbered::SpeedMult(mult))) => {
+                (fallout_move_encumbrance_multiplier(Some(mult)), true)
+            }
             (true, Some(OverEncumbered::NoSprint)) => (1.0, false),
             _ => (1.0, true),
         }
@@ -73,6 +75,15 @@ impl PlayerEncumbrance {
 /// (the value precedes a pointer to the name) and the GECK page. FalloutNV.exe
 /// is encrypted on disk; New Vegas runs the same engine.
 const FALLOUT_MOVE_ENCUM_EFFECT: f32 = 0.4;
+/// Encumbrance slows movement; it never grants a speed increase.
+const MAX_FALLOUT_MOVE_ENCUM_EFFECT: f32 = 1.0;
+
+fn fallout_move_encumbrance_multiplier(authored: Option<f32>) -> f32 {
+    authored
+        .filter(|mult| mult.is_finite() && *mult >= 0.0)
+        .unwrap_or(FALLOUT_MOVE_ENCUM_EFFECT)
+        .min(MAX_FALLOUT_MOVE_ENCUM_EFFECT)
+}
 
 /// Install (or remove) [`EncumbranceRules`]: needs the load order's
 /// `CarryWeight` actor value.
@@ -83,9 +94,7 @@ pub(crate) fn install_encumbrance_rules(world: &mut World, index: &EsmIndex) -> 
     };
     let effect = match index.game {
         GameKind::Fallout3NV => Some(OverEncumbered::SpeedMult(
-            index
-                .game_setting_float("fMoveEncumEffect")
-                .unwrap_or(FALLOUT_MOVE_ENCUM_EFFECT),
+            fallout_move_encumbrance_multiplier(index.game_setting_float("fMoveEncumEffect")),
         )),
         GameKind::Skyrim => Some(OverEncumbered::NoSprint),
         _ => None,
