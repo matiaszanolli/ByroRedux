@@ -343,6 +343,24 @@ never has to know it came from a spline. These interpolators are
 reachable on FNV and FO3 too, not only Skyrim+ — don't rule them out by
 game era.
 
+**Bounds and fallback.** For a `NiControllerSequence`,
+`usable_sequence_span` supplies its valid `[start, stop]` window and each
+interpolator is sampled only over the intersection with its own span. Sampling
+is capped at 108,000 samples per channel (30 Hz × one hour) and one million
+generated keys across the entire `import_kf` pass, including all sequences.
+When the aggregate budget is exhausted, a declined B-spline channel becomes
+the interpolator's static pose instead of allocating more keys. Mesh-embedded
+controllers have no owning sequence span, so only the per-channel ceiling
+applies.
+
+`NiPathInterpolator` also uses this bounded resampler. It composes the
+parametric `NiPosData` path with the `NiFloatData` percent curve as
+`position(t) = path(percent(t))`, then emits linear translation keys over the
+percent curve's animation-time span. A path without percent data is skipped
+because it has no time-to-path mapping; rotation and scale remain empty so the
+node keeps its bind pose. The B-spline span, per-channel ceiling, and
+per-`import_kf` key budget apply to this resampling as well.
+
 ## Tests
 
 Animation runtime tests live alongside the modules in

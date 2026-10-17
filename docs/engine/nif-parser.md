@@ -97,9 +97,15 @@ crates/nif/src/
     ├── material/     Session 36 split — MaterialInfo extraction (mod.rs + walker.rs +
     │                 shader_data.rs) plus per-topic *_tests.rs siblings (alpha / decal /
     │                 double-sided / emissive-source / PBR / texture-slot / sky-water / …)
-    ├── collision.rs  Havok→engine transform + bhk*Shape → CollisionShape / RigidBodyData
-    ├── transform.rs  Transform composition
-    └── coord.rs      Z-up (Gamebryo) → Y-up (renderer) quaternion conversion
+    ├── attach_light.rs  Resolve imported light nodes and their attached transforms
+    ├── collision/    Havok→engine transform + bhk*Shape → CollisionShape / RigidBodyData
+    │   ├── mod.rs       Collision import entry points and shared helpers
+    │   ├── ragdoll.rs   Ragdoll template extraction
+    │   └── shape.rs     bhk*Shape resolution and per-leaf materials
+    ├── transform.rs    Transform composition
+    ├── coord.rs        Z-up (Gamebryo) → Y-up (renderer) quaternion conversion
+    ├── units.rs        Gamebryo-to-engine unit conversion
+    └── precombine.rs   FO4 precombined-geometry import
 ```
 
 The split between `blocks/` (binary parsers) and `import/` (scene to
@@ -111,7 +117,7 @@ without dragging in `glam` or any renderer types.
 > `blocks/tri_shape/mod.rs` → `blocks/tri_shape/`, `blocks/collision/mod.rs` →
 > `blocks/collision/`, `blocks/controller/mod.rs` → `blocks/controller/`,
 > `import/mesh/mod.rs` → `import/mesh/`, `import/material/mod.rs` →
-> `import/material/`, `import/walk/mod.rs` → `import/walk/`, `anim.rs` →
+> `import/material/`, `import/walk/mod.rs` → `import/walk/`, *anim.rs* →
 > `anim/`. The `Imported*` structs moved out of `import/mod.rs` into
 > `import/types.rs`, and the SVD rotation repair moved out of
 > `import/transform.rs` to the top-level `rotation.rs`. Translate stale
@@ -531,8 +537,10 @@ transformations:
   route through Mikkelsen Y-up synthesis (#1086 / #1204 / #1232)
 - **Collision import** ([`import/collision/`](../../crates/nif/src/import/collision/mod.rs))
   with the Havok→engine transform (via `import_nif_with_collision`)
-- **Depth + cycle guards** on the import walkers (#1269) so malformed
-  scene graphs can't blow the stack or loop forever
+- **Depth + revisit guards** on all five import walkers: the #1269 depth
+  cap stops pathological nesting, while shared `revisit_guard` checks a
+  per-walk `new_visited` bitset to skip repeated/cyclic block references
+  (#5485), preventing stack overflow and repeated traversal.
 
 The output is `Vec<ImportedMesh>` plus optional `Vec<ImportedCollision>` /
 `Vec<ImportedLight>` / particle emitters. Each `ImportedMesh` has
@@ -843,7 +851,7 @@ directories: `blocks/tri_shape/mod.rs` → `tri_shape/` (#1118 TD9-005, agd / bs
 ni_tri_shape), `blocks/collision/mod.rs` → `collision/` (9 production + test siblings),
 `blocks/controller/mod.rs` → `controller/` (legacy / sequence / morph / shader),
 `import/mesh/mod.rs` → `mesh/`, `import/material/mod.rs` → `material/` (walker + shader_data),
-`import/walk/mod.rs` → `walk/`, and `anim.rs` → `anim/`. The `Imported*` structs moved
+`import/walk/mod.rs` → `walk/`, and *anim.rs* → `anim/`. The `Imported*` structs moved
 to `import/types.rs`, the SVD rotation repair to the top-level `rotation.rs` (#1044),
 and the lib.rs recovery tests to a sibling `tests.rs` (#1118 TD9-002). New
 top-level files: `shader_flags.rs` (named flag constants + typed variant view,
