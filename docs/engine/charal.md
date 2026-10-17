@@ -639,7 +639,7 @@ while). Struck-through items are done; the remaining two are genuinely open.
    > the identical gap on the Skyrim arm at the same time (#3381).
 4. ~~**Canonical model**~~ — shipped: `CharacterLevel` / `Perks` / `Background`
    components (`character/components.rs`), `CharacterRuleset` is a real
-   `Resource` (`impl Resource for CharacterRuleset`, `ruleset.rs:128`).
+   `Resource` (`impl Resource for CharacterRuleset`, `ruleset.rs`).
 5. ~~**Derived-stat deriver**~~ — shipped: `DerivedStatFormula` (`derived.rs`)
    + per-game formula tables for FO3/FNV/FO4 (`fallout.rs`) and Oblivion/Skyrim
    (`tes.rs`/`skyrim.rs`).
