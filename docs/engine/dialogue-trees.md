@@ -56,12 +56,16 @@ guessed); Skyrim force-greet scale is bounded below by the 260 packs
 whose EDID names one, and the true count waits on the Skyrim PKDT
 procedure decode that `misc/pack.rs` defers to the AI runtime.
 
-Line-lifetime flags, FNV `DATA.Flags1` distribution (same shape on
-FO3): Goodbye bit on ~7 700 INFOs, Random on ~5 500, SayOnce on
-~3 500 — and `select_info` reads none of them: it picks the
-first-passing INFO, replays it forever, and never ends a conversation
-from a spoken line (conversation end today is only the dialogue page's
-Close/Escape, `main.rs`'s `end_open_conversation` call).
+Line-lifetime flags shipped with #5367. `select_info` evaluates Goodbye,
+Random and ordinary Say Once flags; the per-speaker Say-Once ledger is
+save-persistent, and Goodbye closes after the line finishes. FO3/FNV
+`DATA.Flags2` is preserved but not consumed: bit 0 (Say Once a Day) does
+not suppress a line after its first play. That behavior needs a
+time-stamped per-speaker ledger using `fSayOncePerDayInfoTimer` (12 hours
+in the shipped games). Bit 1 (Always Darken) is a prompt-shading hint;
+the native dialogue page does not model it. The corpus census found bit 0
+on 105 `FalloutNV.esm` and 89 FNV DLC INFOs, and on 1,108 FO3 INFOs;
+Always Darken appears on 6 FNV and 46 FO3 INFOs.
 
 **The player-visible hole**: `npc_dialogue.rs`'s own scope note — "a
 patron bound to no running quest selects nothing." Activation on a
