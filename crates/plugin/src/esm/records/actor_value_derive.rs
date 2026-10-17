@@ -630,6 +630,7 @@ fn derive_autocalc_actor_values(
 
 #[cfg(test)]
 mod tests {
+    use byroredux_core::character::SkillSet;
 
     /// #2934 — `special_index` is a POSITIONAL lookup into
     /// `ClassRecord::base_attributes`, which is stored in ATTR order
@@ -678,6 +679,26 @@ mod tests {
             editor_id: editor_id.to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn plugin_skyrim_skill_avif_roster_matches_charal() {
+        let mut plugin_roster = SKYRIM_SKILLS.to_vec();
+        plugin_roster.sort_unstable();
+
+        let mut charal_roster: Vec<_> = SkillSet::SKYRIM
+            .skills()
+            .iter()
+            .map(|skill| skill.editor_id)
+            .collect();
+        charal_roster.sort_unstable();
+
+        assert_eq!(plugin_roster.len(), 18);
+        assert_eq!(charal_roster.len(), 18);
+        assert_eq!(
+            plugin_roster, charal_roster,
+            "plugin AVIF lookup names must stay set-equal to CHARAL's Skyrim skill roster"
+        );
     }
 
     /// Build an index whose AVIF records cover the 7 SPECIAL + 13 FNV
