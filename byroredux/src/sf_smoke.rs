@@ -118,6 +118,62 @@ pub fn run(esm_path: &Path, cell_edid: &str) -> Result<()> {
     Ok(())
 }
 
+/// What the cell's pack-in (PKIN) REFRs fan out to (#5533).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PackInTally {
+    /// REFRs whose base form is a PKIN.
+    refs: usize,
+    /// Of those, the REFRs the expander places nothing for (an empty pack-in
+    /// or an empty template cell): they spawn nothing.
+    empty: usize,
+    /// Template children the expander places, summed over the REFRs (the
+    /// PKIN's own primary placement excluded).
+    children: usize,
+    /// Of those children, how many have a base form in `statics`.
+    children_resolved: usize,
+}
+
+/// Tally the pack-in REFRs through the engine's own expander, so the count is
+/// what the cell loader would actually instance.
+///
+/// `parse_pkin_group` registers every PKIN as a nominal empty-model static so
+/// the expander can find the base. Counting that hit as "resolved" made the
+/// 370 Cydonia pack-in REFRs read as understood while their 12,218 template
+/// children never entered the metric — which is how four reports listed
+/// "PKIN 370" as resolved without anyone seeing the pack-in gap (SF-D4-01).
+fn tally_pack_ins(
+    refs: &[&byroredux_plugin::esm::cell::PlacedRef],
+    cells_index: &byroredux_plugin::esm::cell::EsmCellIndex,
+) -> PackInTally {
+    use byroredux_core::math::{Quat, Vec3};
+    let mut tally = PackInTally::default();
+    for r in refs {
+        tally.refs += 1;
+        let placements = crate::cell_loader::expand_pkin_placements(
+            r.base_form_id,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            cells_index,
+        )
+        .unwrap_or_default();
+        let children: Vec<u32> = placements
+            .iter()
+            .map(|&(form_id, ..)| form_id)
+            .filter(|&form_id| form_id != r.base_form_id)
+            .collect();
+        if children.is_empty() {
+            tally.empty += 1;
+        }
+        tally.children += children.len();
+        tally.children_resolved += children
+            .iter()
+            .filter(|form_id| cells_index.statics.contains_key(form_id))
+            .count();
+    }
+    tally
+}
+
 fn print_cell_report(
     cell: &CellData,
     cells_index: &byroredux_plugin::esm::cell::EsmCellIndex,
@@ -181,8 +237,13 @@ fn print_cell_report(
     let mut absorbed_by_type: HashMap<String, usize> = HashMap::new();
     let mut absorbed_total = 0usize;
     let mut resolved = 0usize;
+    // #5533 — pack-in REFRs get their own bucket instead of resolving through
+    // the nominal empty-model static `parse_pkin_group` registers for them.
+    let mut pack_in_refs: Vec<&byroredux_plugin::esm::cell::PlacedRef> = Vec::new();
     for r in &cell.references {
-        if let Some(obj) = cells_index.statics.get(&r.base_form_id) {
+        if cells_index.packins.contains_key(&r.base_form_id) {
+            pack_in_refs.push(r);
+        } else if let Some(obj) = cells_index.statics.get(&r.base_form_id) {
             *resolved_by_type
                 .entry(obj.record_type.as_str().to_string())
                 .or_default() += 1;
@@ -209,13 +270,21 @@ fn print_cell_report(
     }
 
     let pct = 100.0 * resolved as f32 / total as f32;
+    let pack_in = tally_pack_ins(&pack_in_refs, cells_index);
+    let pack_in_pct = 100.0 * pack_in.refs as f32 / total as f32;
     println!("─── resolve rate ──────────────────────────────────────────");
     println!("resolved   : {} / {} ({:.1}%)", resolved, total, pct);
+    if pack_in.refs > 0 {
+        println!(
+            "pack-in    : {} / {} ({:.1}%) — own bucket, NOT counted as resolved",
+            pack_in.refs, total, pack_in_pct
+        );
+    }
     println!(
         "unresolved : {} / {} ({:.1}%)",
-        total - resolved,
+        total - resolved - pack_in.refs,
         total,
-        100.0 - pct
+        100.0 - pct - pack_in_pct
     );
 
     if !resolved_by_type.is_empty() {
@@ -236,6 +305,23 @@ fn print_cell_report(
         for (ty, count) in by_type {
             println!("  {:>4}  {:>5}", ty, count);
         }
+    }
+
+    if pack_in.refs > 0 {
+        println!("─── pack-in (PKIN) REFRs ───────────────────────────────────");
+        println!(
+            "pack-in    : {} REFRs → {} template children ({} resolve to a base form, \
+             {} do not); {} REFR(s) expand to nothing",
+            pack_in.refs,
+            pack_in.children,
+            pack_in.children_resolved,
+            pack_in.children - pack_in.children_resolved,
+            pack_in.empty
+        );
+        println!(
+            "the children are what the cell loader instances (#5489); they are not in \
+             the resolve rate above"
+        );
     }
 
     // #2637 — print the by-design buckets BEFORE the unresolved section, so a
@@ -366,6 +452,98 @@ mod unresolved_attribution_tests {
                 "form {form_id:#010X} is indexed and must be attributed to {expected}"
             );
         }
+    }
+
+    /// #5533 — a PKIN REFR resolves through the nominal empty-model static the
+    /// parser registers for it, which is why four Starfield reports counted
+    /// "PKIN 370" as resolved. The tally keeps those REFRs out of the resolved
+    /// count and reports what they fan out to: template children through the
+    /// engine's expander, how many of them resolve, and how many REFRs expand
+    /// to nothing.
+    #[test]
+    fn pack_in_refs_are_tallied_with_their_template_children() {
+        use super::{tally_pack_ins, PackInTally};
+        use byroredux_plugin::esm::cell::{CellData, EsmCellIndex, PlacedRef, StaticObject};
+        use byroredux_plugin::esm::records::PkinRecord;
+        use byroredux_plugin::record::RecordType;
+
+        let stat = |form_id: u32, record_type: RecordType, model: &str| StaticObject {
+            form_id,
+            editor_id: String::new(),
+            model_path: model.to_string(),
+            record_type,
+            light_data: None,
+            addon_data: None,
+            has_script: false,
+            script_instance: None,
+            script_form_id: 0,
+            visible_when_distant: false,
+            destruction: None,
+        };
+        let placed = |form_id: u32, base: u32| PlacedRef {
+            form_id,
+            ..crate::cell_loader::refr_texture_overlay_tests::empty_placed_ref(base)
+        };
+        let pkin = |form_id: u32, contents: Vec<u32>| PkinRecord {
+            form_id,
+            editor_id: String::new(),
+            full_name: String::new(),
+            contents,
+            version: 0,
+            flags: 0,
+            filter: String::new(),
+        };
+
+        let mut index = EsmCellIndex::default();
+        // The nominal static `parse_pkin_group` registers for each PKIN.
+        for pkin_id in [0x100u32, 0x101] {
+            index.statics.insert(pkin_id, stat(pkin_id, RecordType::PKIN, ""));
+        }
+        // PKIN 0x100: a template cell of three references, two of which resolve.
+        index.statics.insert(0x500, stat(0x500, RecordType::STAT, "a.nif"));
+        index.statics.insert(0x501, stat(0x501, RecordType::STAT, "b.nif"));
+        index.packins.insert(0x100, pkin(0x100, vec![0x900]));
+        index.cells.insert(
+            "template".into(),
+            CellData {
+                form_id: 0x900,
+                is_interior: true,
+                references: vec![placed(1, 0x500), placed(2, 0x501), placed(3, 0xDEAD)],
+                ..Default::default()
+            },
+        );
+        // PKIN 0x101: contents name nothing placeable.
+        index.packins.insert(0x101, pkin(0x101, vec![]));
+
+        let refs = [placed(10, 0x100), placed(11, 0x100), placed(12, 0x101)];
+        let refs: Vec<&PlacedRef> = refs.iter().collect();
+        assert_eq!(
+            tally_pack_ins(&refs, &index),
+            PackInTally {
+                refs: 3,
+                empty: 1,
+                children: 6,
+                children_resolved: 4,
+            }
+        );
+    }
+
+    /// The report must keep the pack-in bucket out of the resolved count.
+    #[test]
+    fn the_report_counts_pack_in_refs_in_their_own_bucket() {
+        const SRC: &str = include_str!("sf_smoke.rs");
+        let production = &SRC[..SRC
+            .find("mod unresolved_attribution_tests")
+            .expect("this test module must keep its name")];
+        assert!(
+            production.contains("own bucket, NOT counted as resolved"),
+            "the headline must say pack-in REFRs are not resolved (#5533)"
+        );
+        assert!(
+            production.contains("if cells_index.packins.contains_key(&r.base_form_id) {"),
+            "the tally loop must divert pack-in REFRs before the `statics` hit that \
+             would count their nominal empty-model static as resolved (#5533)"
+        );
     }
 
     /// The residual must stay residual: a form in no map at all is still
