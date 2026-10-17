@@ -698,20 +698,21 @@ pub fn execute_pending_save_loads(
     // M45.1 refinement — put the player back where they saved, on top of
     // the reloaded cell (which spawns the player at the default door).
     if let Some(pose) = snapshot_player_pose(&snapshot) {
-        apply_player_pose(world, &pose);
-        log::info!(
-            "save load: restored player pose at ({:.1}, {:.1}, {:.1}) yaw={:.2} pitch={:.2} ({})",
-            pose.position[0],
-            pose.position[1],
-            pose.position[2],
-            pose.yaw,
-            pose.pitch,
-            if pose.character_mode {
-                "character"
-            } else {
-                "flycam"
-            },
-        );
+        if apply_player_pose(world, &pose) {
+            log::info!(
+                "save load: restored player pose at ({:.1}, {:.1}, {:.1}) yaw={:.2} pitch={:.2} ({})",
+                pose.position[0],
+                pose.position[1],
+                pose.position[2],
+                pose.yaw,
+                pose.pitch,
+                if pose.character_mode {
+                    "character"
+                } else {
+                    "flycam"
+                },
+            );
+        }
     }
     if let Err(error) = crate::extensions::queue_session_event(
         world,

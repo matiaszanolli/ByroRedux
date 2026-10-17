@@ -177,13 +177,33 @@ pub fn capture_player_pose(world: &World) {
 /// the camera next frame) or the camera directly (FlyCam). Falls back to
 /// the camera when Character mode was saved but no player body is live
 /// (e.g. a `--fly` reload), so the look direction is at least honoured.
-pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) {
+///
+/// #5530 — the pose comes from a save file, so it is validated first: a
+/// non-finite or world-bound-exceeding position (the physics sanity bound,
+/// [`byroredux_physics::PhysicsWorld::translation_is_sane`]) or a non-finite
+/// look angle is refused whole, logged, and the player stays where the
+/// reloaded cell spawned them. Returns whether the pose was applied.
+pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) -> bool {
+    let position = Vec3::from_array(pose.position);
+    if !byroredux_physics::PhysicsWorld::translation_is_sane(position)
+        || !pose.yaw.is_finite()
+        || !pose.pitch.is_finite()
+    {
+        log::error!(
+            "save load: refusing a corrupt player pose (position {:?}, yaw {}, pitch {}); \
+             the player keeps the cell's spawn point (#5530)",
+            pose.position,
+            pose.yaw,
+            pose.pitch,
+        );
+        return false;
+    }
     if let Some(mut input) = world.try_resource_mut::<crate::components::InputState>() {
         input.yaw = pose.yaw;
         input.pitch = pose.pitch;
     }
 
-    let pos = Vec3::from_array(pose.position);
+    let pos = position;
     let body = world
         .try_resource::<crate::systems::PlayerEntity>()
         .and_then(|r| r.0);
@@ -227,7 +247,7 @@ pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) {
             // velocity into the reloaded cell; the kinematic Rapier body is synced
             // so the KCC's next collide-and-slide starts from the restored spot.
             crate::systems::place_character_body(world, body, body_pos, None);
-            return;
+            return true;
         }
     }
 
@@ -235,4 +255,5 @@ pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) {
     // saved spot with a yaw/pitch-derived rotation.
     let rot = crate::systems::camera_look_rotation(pose.yaw, pose.pitch);
     crate::cell_loader::reposition_camera(world, pos, rot);
+    true
 }

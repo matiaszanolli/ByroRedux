@@ -2824,6 +2824,16 @@ mod tests {
     /// derived velocity's predictive AABB also tripped the multi-SAP grid
     /// bound and panicked the broad phase.)
     #[test]
+    fn translation_is_sane_matches_the_keyframe_bound() {
+        use glam::Vec3;
+        assert!(PhysicsWorld::translation_is_sane(Vec3::new(3.0e5, -3.0e5, 1.0e6)));
+        assert!(PhysicsWorld::translation_is_sane(Vec3::splat(1.0e8)));
+        assert!(!PhysicsWorld::translation_is_sane(Vec3::new(0.0, 1.0e8 * 1.01, 0.0)));
+        assert!(!PhysicsWorld::translation_is_sane(Vec3::new(f32::NAN, 0.0, 0.0)));
+        assert!(!PhysicsWorld::translation_is_sane(Vec3::new(0.0, f32::INFINITY, 0.0)));
+    }
+
+    #[test]
     fn accept_keyframe_target_refuses_insane_but_finite_poses() {
         let mut w = PhysicsWorld::new();
         let handle = w.bodies.insert(RigidBodyBuilder::kinematic_position_based().build());

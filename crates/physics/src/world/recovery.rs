@@ -290,9 +290,7 @@ impl PhysicsWorld {
         target: &Pose,
     ) -> bool {
         let t = target.translation;
-        let sane = t.is_finite()
-            && t.abs().max_element() <= KEYFRAME_TARGET_SANE_BOUND_BU
-            && target.rotation.is_finite();
+        let sane = Self::translation_is_sane(t) && target.rotation.is_finite();
         if sane {
             return true;
         }
@@ -310,6 +308,17 @@ impl PhysicsWorld {
             );
         }
         false
+    }
+
+    /// #5530 — whether a world-space translation is one the simulation
+    /// should be handed: finite and within [`KEYFRAME_TARGET_SANE_BOUND_BU`]
+    /// (authored worlds top out near ±3e5 BU, so beyond 1e8 is corruption).
+    /// The same bound [`Self::accept_keyframe_target`] applies to keyframed
+    /// bones, exposed so a caller holding untrusted coordinates (a save
+    /// file's player pose) refuses them against the one definition of
+    /// "insane" instead of restating it.
+    pub fn translation_is_sane(t: glam::Vec3) -> bool {
+        t.is_finite() && t.abs().max_element() <= KEYFRAME_TARGET_SANE_BOUND_BU
     }
 
     /// Lifetime refused-keyframe-target count, for `phys.stats` (#5161).

@@ -700,3 +700,53 @@ fn load_discards_story_event_markers_pending_from_the_outgoing_session() {
     let events = world.query::<StoryEvent>().expect("storage");
     assert_eq!(events.iter().count(), 0);
 }
+
+/// #5530 — a save file's pose is untrusted. A non-finite or beyond-the-world
+/// position, or a non-finite look angle, is refused whole: nothing moves, the
+/// look angles stay, and the call reports it. In both modes the player keeps
+/// the spawn the reloaded cell gave them.
+#[test]
+fn a_corrupt_saved_pose_is_refused_and_leaves_the_player_where_the_cell_spawned_them() {
+    use crate::components::InputState;
+    use crate::systems::PlayerMode;
+    use byroredux_core::ecs::{ActiveCamera, Transform};
+
+    let mut world = World::new();
+    world.insert_resource(PlayerMode::FlyCam);
+    world.insert_resource(InputState {
+        yaw: 0.5,
+        pitch: 0.25,
+        ..InputState::default()
+    });
+    let spawn = Vec3::new(1.0, 2.0, 3.0);
+    let cam = world.spawn();
+    world.insert(cam, Transform::from_translation(spawn));
+    world.insert_resource(ActiveCamera(cam));
+
+    let good = PlayerPose {
+        position: [10.0, 20.0, 30.0],
+        yaw: 1.0,
+        pitch: -0.5,
+        character_mode: false,
+    };
+    for corrupt in [
+        PlayerPose { position: [f32::NAN, 0.0, 0.0], ..good },
+        PlayerPose { position: [0.0, f32::INFINITY, 0.0], ..good },
+        PlayerPose { position: [0.0, 0.0, 3.0e30], ..good },
+        PlayerPose { yaw: f32::NAN, ..good },
+        PlayerPose { pitch: f32::INFINITY, ..good },
+    ] {
+        assert!(!apply_player_pose(&mut world, &corrupt), "{corrupt:?} must be refused");
+        let tq = world.query::<Transform>().unwrap();
+        assert_eq!(tq.get(cam).unwrap().translation, spawn);
+        drop(tq);
+        let input = world.resource::<InputState>();
+        assert_eq!((input.yaw, input.pitch), (0.5, 0.25), "look angles stay on a refusal");
+    }
+
+    // The control: a sane pose is applied, so the refusals above are the gate and
+    // not an apply that never works in this fixture.
+    assert!(apply_player_pose(&mut world, &good));
+    let tq = world.query::<Transform>().unwrap();
+    assert_eq!(tq.get(cam).unwrap().translation, Vec3::new(10.0, 20.0, 30.0));
+}
