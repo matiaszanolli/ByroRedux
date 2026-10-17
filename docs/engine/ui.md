@@ -750,9 +750,12 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has **103 default tests plus 3 ignored** installed-corpus smokes
-(measured 2026-10-12 with `cargo test -p byroredux-ui`; the four extra over
-the 2026-10-09 count are the #5456/#5479 dialect-shim pins). #5274's
+The UI crate has **116 default tests plus 3 ignored** installed-corpus smokes
+(measured 2026-10-17 with `cargo test -p byroredux-ui`; the 13 extra over the
+2026-10-12 count of 103 are the #5719 ceiling pins, the #5732 callback /
+empty-`ImportAssets` pins, and the #5966/#5967 pins: the declared-length
+ceiling on every decode site, and the measured `SwfDecodeCounts` over real
+CWS movies). #5274's
 provenance rework — the lib target's own summary. `-- --list` includes the
 ignored tests in its count, which is how this line's predecessor
 double-counted them as "101 default plus 3 ignored". Re-measure rather than
@@ -882,7 +885,16 @@ profile with a ninth font slot).
   (the #5456/#5479 PlaceObject3 family) on the uncompressed/freshly
   inflated stream; conforming FWS/ZWS containers return `None` and take
   the stock path. Whatever this shim accepts is the dialect contract —
-  its pins are the four extra ui tests.
+  its pins are the dialect-shim ui tests. The stock path honours the
+  container header's own `u32` length, so the shim's private inflate cap
+  (#5719) is not a bound on its own: `ensure_declared_len_within_ceiling`
+  (#5966, `MAX_SWF_BODY_BYTES` = 128 MiB over FWS/CWS/ZWS claims) gates
+  `prepare_movie`, the navigator's dependency decodes,
+  `ScaleformProfile::detect` and both host-call scanners before any decode,
+  and a source-shape test fails on a new `decompress_swf(` call without it.
+  `SwfDecodeCounts::decompresses` (#5967) is measured: a CWS menu open
+  reads 1, an uncompressed movie 0, a shim that inflates and then declines
+  reads 2.
 - `menu.rs` (MenuXml) — `MAX_DECODED_TEXTURE_BYTES` (#5658): the
   1 GiB budget `MenuRenderer` holds decoded menu textures under, sized
   from the vanilla census (979.9 MiB total for Oblivion's 6,111 files

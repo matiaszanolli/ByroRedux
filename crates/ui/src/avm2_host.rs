@@ -75,6 +75,7 @@ pub(crate) fn inject_host_object_adapter(
         return Ok((swf_data.to_vec(), ScaleformHostObjectState::NotRequired));
     }
 
+    crate::prepare::ensure_declared_len_within_ceiling(swf_data)?;
     let decompressed =
         decompress_swf(swf_data).map_err(|error| format!("decompressing SWF: {error}"))?;
     let movie = parse_swf(&decompressed).map_err(|error| format!("parsing SWF: {error}"))?;
@@ -368,6 +369,7 @@ fn multiname_local_name(abc: &AbcFile, index: Index<Multiname>) -> Option<Vec<u8
 /// [`referenced_host_methods_in_tags`].
 #[cfg(test)]
 pub(crate) fn referenced_host_methods(swf_data: &[u8]) -> Result<BTreeSet<String>, String> {
+    crate::prepare::ensure_declared_len_within_ceiling(swf_data)?;
     let decompressed =
         decompress_swf(swf_data).map_err(|error| format!("decompressing SWF: {error}"))?;
     let movie = parse_swf(&decompressed).map_err(|error| format!("parsing SWF: {error}"))?;

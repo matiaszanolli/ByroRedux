@@ -118,6 +118,7 @@ impl Avm1HostCallInventory {
 
 /// Scan a compressed or uncompressed SWF for `GameDelegate.call` sites.
 pub fn referenced_host_methods(swf_data: &[u8]) -> Result<Avm1HostCallInventory, String> {
+    crate::prepare::ensure_declared_len_within_ceiling(swf_data)?;
     let decompressed =
         decompress_swf(swf_data).map_err(|error| format!("decompressing SWF: {error}"))?;
     let movie = parse_swf(&decompressed).map_err(|error| format!("parsing SWF: {error}"))?;

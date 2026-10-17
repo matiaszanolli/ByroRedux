@@ -524,6 +524,8 @@ fn import_asset_paths(
     if !is_swf(movie_data) {
         return Ok((Vec::new(), Vec::new()));
     }
+    // #5966 — the dependency path never saw the shim's #5719 ceiling.
+    crate::prepare::ensure_declared_len_within_ceiling(movie_data)?;
     // #4470 — dependency movies speak the same Scaleform dialect as the
     // root (Starfield's imported components carry the same flag-clear
     // PlaceObject3 records); normalize before the parse.
@@ -586,6 +588,9 @@ fn prepare_import_asset_swf(movie_data: &[u8]) -> Result<(Vec<u8>, bool), String
     if !is_swf(movie_data) {
         return Ok((movie_data.to_vec(), false));
     }
+    // #5966 — runs before the shim on the dependency path, so the ceiling
+    // has to gate this raw decode itself.
+    crate::prepare::ensure_declared_len_within_ceiling(movie_data)?;
     let decompressed = swf::decompress_swf(movie_data)
         .map_err(|error| format!("failed to decompress imported Scaleform movie: {error}"))?;
     if !decompressed.header.is_action_script_3() {
@@ -677,13 +682,31 @@ mod tests {
     use swf::{FileAttributes, SwfStr, Tag};
 
     use super::{
-        archive_movie_url, archive_path_from_url, extend_import_asset_paths, placeholder_movie,
-        NavigatorState, ScaleformNavigatorRuntime, ScaleformResourceProvider,
-        MAX_IMPORT_ASSET_PATHS,
+        archive_movie_url, archive_path_from_url, extend_import_asset_paths, import_asset_paths,
+        placeholder_movie, prepare_import_asset_swf, NavigatorState, ScaleformNavigatorRuntime,
+        ScaleformResourceProvider, MAX_IMPORT_ASSET_PATHS,
     };
     use crate::{ScaleformProfile, SwfPlayer};
 
     struct MemoryProvider(HashMap<String, Vec<u8>>);
+
+    /// #5966 — the dependency path decodes imported movies with the raw
+    /// stock reader, once before the dialect shim (`prepare_import_asset_swf`)
+    /// and once after it (`import_asset_paths`); neither ever saw the #5719
+    /// ceiling. A hostile `u32::MAX` claim over a small bomb must be refused
+    /// by BOTH before any inflate, as a recorded degraded dependency.
+    #[test]
+    fn dependency_decodes_refuse_an_over_ceiling_claim() {
+        let bomb = crate::prepare::hostile_cws_header_bomb();
+        let error = prepare_import_asset_swf(&bomb).unwrap_err();
+        assert!(
+            error.contains("ceiling"),
+            "prepare_import_asset_swf: {error}"
+        );
+        let url = url::Url::parse("file:///interface/hudmenu.swf").unwrap();
+        let error = import_asset_paths(&url, &bomb).unwrap_err();
+        assert!(error.contains("ceiling"), "import_asset_paths: {error}");
+    }
 
     #[test]
     fn import_asset_path_graph_is_bounded_and_latches_the_cap() {

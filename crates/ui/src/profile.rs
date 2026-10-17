@@ -22,6 +22,8 @@ impl ScaleformProfile {
     /// Whole-stream inflate: prefer [`Self::from_header`] wherever the caller
     /// already decompressed the movie (#2968).
     pub fn detect(swf_data: &[u8]) -> Result<Self> {
+        crate::prepare::ensure_declared_len_within_ceiling(swf_data)
+            .map_err(|message| anyhow!(message))?;
         let decompressed = swf::decompress_swf(swf_data)
             .map_err(|error| anyhow!("Failed to parse SWF: {error}"))?;
         Ok(Self::from_header(&decompressed.header))
