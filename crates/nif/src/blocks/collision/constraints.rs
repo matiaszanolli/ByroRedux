@@ -344,8 +344,9 @@ impl LimitedHingeCInfo {
     /// `Perp Axis In A1 × Perp Axis In A2`. A degenerate (parallel or zero)
     /// pair yields a zero axis, which the PHYSAL translate boundary already
     /// rejects as non-finite/degenerate input the same way it does for any
-    /// other joint. `Perp Axis In B1` has no Oblivion counterpart and is
-    /// zeroed, exactly as [`Self::parse_oblivion`] does for the limited hinge.
+    /// other joint. Neither B-side perpendicular has an Oblivion counterpart,
+    /// so both are zeroed here. The limited-hinge layout does serialize B2;
+    /// its missing B1 is derived by [`Self::parse_oblivion`].
     fn parse_hinge_oblivion(stream: &mut NifStream) -> io::Result<Self> {
         let pivot_a = super::read_vec4(stream)?;
         let perp_axis_in_a1 = super::read_vec4(stream)?;

@@ -385,12 +385,12 @@ fn ragdoll_joint(r: &RagdollCInfo, scale: f32) -> Option<ImportedJointKind> {
 /// (`Perp Axis In A1`/`Perp Axis In B1`) through so the solver boundary
 /// (`crates/physics/src/ragdoll.rs::build_joint`) can build the hinge's
 /// angle-limit frame from the content author's own reference instead of
-/// synthesizing an arbitrary one. `perp_axis_in_b1` is zeroed by
-/// `LimitedHingeCInfo::parse_oblivion` on Oblivion/Morrowind content — a
-/// zero vector is still finite, so it round-trips through `finite_vec`
-/// unchanged; `build_joint`'s `frame_rot` falls back to a synthesized
-/// perpendicular for a degenerate secondary axis, matching this function's
-/// pre-fix behavior exactly for that era.
+/// synthesizing an arbitrary one. Oblivion/Morrowind limited hinges derive
+/// their missing B1 as `Perp B2 × Axis B` in
+/// `LimitedHingeCInfo::parse_oblivion`. The separate plain-hinge parser still
+/// zero-fills both absent B-side perpendiculars; those zeros pass through
+/// `finite_vec`, and `build_joint` synthesizes a perpendicular for that
+/// plain-hinge case.
 fn limited_hinge_joint(h: &LimitedHingeCInfo, scale: f32) -> Option<ImportedJointKind> {
     Some(ImportedJointKind::LimitedHinge {
         axis_a: finite_vec(havok_dir_to_engine(h.axis_a))?,
