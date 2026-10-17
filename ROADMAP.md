@@ -786,7 +786,7 @@ a new claim without one.
 | `byroredux-game-detect`       | Install detection and pre-launch validation                                                                    |
 | `byroredux-settings-io`       | Persistent user settings — `(id, value)` pairs overlaid on the universal registry                              |
 | `byroredux-save`              | M45 save/load — full-ECS-snapshot format, type-erased registry, atomic write + ring                            |
-| `byroredux-hkx`               | Minimal safe Havok packfile reader (Skyrim LE/SE rigs and clips)                                               |
+| `byroredux-hkx`               | Minimal safe Havok packfile reader (Skyrim LE/SE and FO4 skeletons, clips, and FO4 behavior graphs)             |
 | `byroredux-fsr3-sys`          | Narrow Rust ABI for AMD FidelityFX FSR 3.1's Vulkan upscaler (no frame generation)                             |
 | `byroredux-mod-runtime`       | Sandboxed executable-mod runtime — WebAssembly Components behind semantic host services                        |
 | `byroredux-menuxml`           | Oblivion / FO3 / FNV legacy MenuXml UI — FOLD evaluator, layout, CPU raster (M48.4/M48.5)                      |

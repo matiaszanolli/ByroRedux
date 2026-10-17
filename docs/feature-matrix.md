@@ -82,9 +82,11 @@ extracts fine — that framing was a stale premise, closed by #699.)
 FO4 humanoid actors are `~` because `character assets\skeleton.nif` is absent
 from vanilla FO4 BA2s (only `_1stperson` skeleton exists). `Inventory` +
 `EquipmentSlots` components still land; visible skinned geometry awaits a
-Havok `.hkx` loader for FO4's packfile layout (M41.x, Tier 5) — the
-`crates/hkx` reader that shipped covers Skyrim only (the 2011 release's
-32-bit packfiles and Special Edition's 64-bit ones).
+complete vanilla skeleton asset. The `crates/hkx` reader covers Skyrim's
+Havok 2010 packfiles (the 2011 release's 32-bit packfiles and Special
+Edition's 64-bit ones) and FO4's Havok 2014 packfiles, including skeletons,
+clips, and behavior graphs. The FO4 real-data census is pinned by
+`fallout_4_behavior_graph_census_is_exact` in `crates/hkx/src/corpus_tests.rs`.
 
 AI / behavior is `~` (M42, Tier 7) — 10 of ~17 `PACK` procedures have a
 runtime, and since M42.10 (2026-09-18) they run **by default** (single
@@ -94,8 +96,9 @@ data is decoded anywhere in this codebase), plus Eat/Sleep v0
 (`eat_sleep_system`, walk to the PLDT anchor then seat at the nearest
 furniture marker) and Dialogue (the force-greet bridge, #5367 Phase F).
 Walking NPCs are animated
-(authored per-body-class walk clips — KF games plus the Skyrim humanoid
-HKX path; FO4+ still slides) and their steps are physics-backed through
+(authored per-body-class walk clips — KF games, Skyrim's humanoid HKX path,
+and FO4's Havok 2014 behavior-graph path; FO4 ambient NPC walking is not
+wired to this animation path yet) and their steps are physics-backed through
 Rapier's kinematic character controller, at each actor's authored stride
 speed (M42.11). v0 scope limits still apply: package selection (schedule
 + priority + CTDA conditions) runs at spawn and is re-evaluated once per
@@ -129,17 +132,18 @@ the full trace.
 | Particle animation (birth rate, grow/fade size) | ✓ | All |
 | Runtime morph updates (FaceGen) | ✗ | — spawn-time only |
 | UV scrolling (animated UV offset) | ✓ | `AnimatedUvTransform` written by `animation_system`, consumed in `render/static_meshes.rs` (#525) |
-| Havok `.hkx` skeleton + clip loader | ~ | Skyrim LE + SE — see note |
+| Havok `.hkx` skeleton + clip loader | ~ | Skyrim LE + SE and FO4 — see note |
 
-The `.hkx` row is `~` because `crates/hkx` (shipped 2026-08-01) reads
-Skyrim's Havok 2010 packfiles — Special Edition's 64-bit layout, and since
-`fb8173fe` (2026-09-14) the 2011 release's 32-bit one: it decodes `hkaSkeleton` and
-expands static / spline-compressed `hkaSplineCompressedAnimation`
-transform tracks, with no behavior-graph loading or execution. It is wired
-into the animation asset provider to install the MQ101 cart-idle catalog
-from real game data — a deliberate vertical slice, not general NPC
-locomotion. FO4 and Starfield `.hkx` remain unread (different packfile
-layouts); see the gaps table below.
+The `.hkx` row is `~` because Starfield's layout remains unread. `crates/hkx`
+reads Skyrim's Havok 2010 packfiles — Special Edition's 64-bit layout and,
+since `fb8173fe` (2026-09-14), the 2011 release's 32-bit one — plus FO4's
+Havok 2014 packfiles. It decodes `hkaSkeleton`, static / spline-compressed
+clip tracks, and FO4 behavior graphs; the FO4 census is pinned by
+`fallout_4_behavior_graph_census_is_exact` in
+`crates/hkx/src/corpus_tests.rs`. Skyrim's reader is wired into the animation
+asset provider for the MQ101 cart-idle catalog; FO4's graph runtime is wired
+for authored behavior-graph animation, while ambient NPC walking remains a
+separate integration gap. See the gaps table below.
 
 ---
 
@@ -328,7 +332,7 @@ the scheduler at all.
 | Starfield CDB material system (`materialsbeta.cdb`) | ✓ Phase 1 |
 | XCLL 108-byte interior lighting (volumetric height-fog model) | ✓ |
 | Static-trimesh collider synthesize from render geometry | ✓ |
-| `.hkx` animation skeleton | ✗ — `crates/hkx` reads Skyrim's (LE + SE) Havok 2010 packfiles only, not Starfield's layout |
+| `.hkx` animation skeleton | ✗ — `crates/hkx` reads Skyrim's Havok 2010 and FO4's Havok 2014 packfiles, not Starfield's layout |
 
 ---
 
@@ -342,8 +346,8 @@ the scheduler at all.
 | Gap | Blocking what | Milestone |
 |---|---|---|
 | Oblivion exterior (TES4 worldspace + LAND) | Oblivion exterior render | M32.5 follow-up |
-| Havok `.hkx` loader (FO4 / Starfield layouts) | FO4 humanoid actors; Starfield animation | M41.x (Tier 5) |
-| General NPC locomotion from `.hkx` | Skyrim actors animating outside the MQ101 cart-idle catalog | M41.x (Tier 5) |
+| Starfield Havok `.hkx` loader | Starfield animation | M41.x follow-up |
+| General NPC locomotion from `.hkx` / behavior graphs | Skyrim actors animating outside the MQ101 cart-idle catalog; FO4 ambient NPC walking | M41.x follow-up |
 | `.btr` terrain normal maps | distant-terrain normal detail on Skyrim SE/FO4. Distance-based multi-band selection is **no longer a gap** — the four-level ladder shipped in #2371 and runs on every quad-based scheme, FO3/FNV included (#3508) | M35 |
 | Remaining `PACK` procedures (Find/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/UseWeapon) | NPCs perform item-use/combat/magic behaviors | M42 (Tier 7) |
 | Full Papyrus transpiler (M47.2) + VM | Arbitrary script execution on real content — the recognizer slice ships the static path and the bounded VM (`fragment/vm.rs`) runs the scripts the lowering declines | M47.2 (Tier 3) |
