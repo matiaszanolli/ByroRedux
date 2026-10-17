@@ -69,12 +69,16 @@ carried forward.
   dropping 3,729 references at the old 128 cap. `MAX_LIGHTS = 1023` now leaves
   packed ReSTIR index 1023 as the invalid sentinel; the per-cluster cap is 512.
   Adaptive cold-start ray budgeting prevents the former Cydonia device loss.
-  The ignored `cornell_forced_low_blas_budget_preserves_rt_shadows` hardware
-  gate runs L2 with a one-byte static-BLAS budget, requires the explicit
-  pressure-override warning and a complete two-instance TLAS, then checks the
-  same blocked/control visibility probes as the normal L2 oracle. It passes on
-  the RTX 4070 Ti. Missing retained rigid BLAS are restored from dedicated or
-  global source buffers before the next TLAS publication.
+  The ignored one-byte-budget Cornell gate records bounded degradation rather
+  than claiming shadows survive an impossible budget: at HEAD it requires a
+  healthy process, two eligible instances, one emitted TLAS instance, and
+  `missing_rigid=1` / `verdict=FAIL`. The September 3 RTX 4070 Ti pass predates
+  #3979's bounded admission guard; an October 17 capture on that GPU confirms
+  the current one-byte result. `cornell_cache_pressure_recovers_visible_shadows`
+  covers the viable case, requiring the complete TLAS and the normal blocked /
+  control visibility probes after unused-cache eviction and recovery. Missing
+  retained rigid BLAS are restored from dedicated or global source buffers
+  when the active working set fits the budget.
 - **R3 complete.** Selected-light,
   shadow-visibility, direct, raw-indirect, material-lobe, and RT-LOD views are
   available through the existing debug selectors. Every correctness view

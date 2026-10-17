@@ -431,21 +431,21 @@ fn cornell_l5_exposes_canonical_material_lobes() {
 }
 
 /// Force the static-BLAS budget below even this tiny scene's live set. The
-/// pre-TLAS pass must protect both eligible rigid meshes, preserve a complete
-/// TLAS and keep the blocked/unblocked visibility probes unchanged.
+/// bounded admission policy must keep the process healthy and report the
+/// rigid caster it cannot admit instead of claiming a complete TLAS.
 #[test]
 #[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
-fn cornell_forced_low_blas_budget_preserves_rt_shadows() {
-    let workdir = OracleArtifacts::new("forced-blas-pressure");
-    let l2 = capture(
+fn cornell_forced_low_blas_budget_reports_missing_rigid_tlas_entry() {
+    let workdir = OracleArtifacts::new("forced-blas-overbudget");
+    let _l2 = capture_with_verdict(
         workdir.path(),
         "l2",
         SHADOW_VISIBILITY_DEBUG,
         "lights_uploaded=1",
-        "tlas_emitted=2",
+        "tlas_eligible=2 tlas_emitted=1 missing_skinned=0 missing_rigid=1",
+        "FAIL",
         &["--rt-test-blas-budget-bytes", "1"],
     );
-    assert_l2_shadow_transport(&l2);
 }
 
 /// A viable active set must recover from a budget occupied by unused cache.
@@ -724,6 +724,26 @@ fn capture(
     expected_tlas: &str,
     extra_args: &[&str],
 ) -> RgbImage {
+    capture_with_verdict(
+        workdir,
+        rung,
+        debug_flags,
+        expected_lights,
+        expected_tlas,
+        "PASS",
+        extra_args,
+    )
+}
+
+fn capture_with_verdict(
+    workdir: &Path,
+    rung: &str,
+    debug_flags: &str,
+    expected_lights: &str,
+    expected_tlas: &str,
+    expected_verdict: &str,
+    extra_args: &[&str],
+) -> RgbImage {
     let capture_sequence = CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let output_path = workdir.join(format!("{capture_sequence:03}-cornell-{rung}.png"));
     let output_string = output_path
@@ -822,17 +842,17 @@ fn capture(
         "Cornell {rung} exited with {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
         output.status
     );
-    for expected in [
-        "rt-integrity:",
-        "verdict=PASS",
-        expected_lights,
-        expected_tlas,
-    ] {
+    for expected in ["rt-integrity:", expected_lights, expected_tlas] {
         assert!(
             stdout.contains(expected),
             "Cornell {rung} output is missing `{expected}`\nstdout:\n{stdout}"
         );
     }
+    let verdict = format!("verdict={expected_verdict}");
+    assert!(
+        stdout.contains(&verdict),
+        "Cornell {rung} output is missing `{verdict}`\nstdout:\n{stdout}"
+    );
     if let Some(index) = extra_args
         .iter()
         .position(|arg| *arg == "--rt-test-blas-budget-bytes")
