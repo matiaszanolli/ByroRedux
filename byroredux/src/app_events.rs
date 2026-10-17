@@ -357,12 +357,6 @@ impl ApplicationHandler for App {
             self.loading_screen.focus_lost();
             self.release_world_input_for_ui();
         }
-        // The player taking control ends the explicit-start pin.
-        if matches!(&event, WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed)
-            || matches!(&event, WindowEvent::MouseInput { state: ElementState::Pressed, .. })
-        {
-            crate::components::ExplicitStartPin::release(&self.world);
-        }
         if self.loading_screen.active()
             && matches!(&event, WindowEvent::KeyboardInput { .. }
                 | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
@@ -556,6 +550,16 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
+                    // The player taking control ends the explicit-start pin
+                    // (#5968). Only a press that reached this world-input arm
+                    // counts: the loading cover, the bench harness, egui, the
+                    // native menus and a focused Scaleform menu all return
+                    // above, and a modal opener is not control of the world.
+                    if event.state == ElementState::Pressed
+                        && press_takes_world_control(code, inventory_pressed)
+                    {
+                        crate::components::ExplicitStartPin::release(&self.world);
+                    }
                     let mut input = self.world.resource_mut::<InputState>();
                     match event.state {
                         ElementState::Pressed => {
@@ -610,10 +614,17 @@ impl ApplicationHandler for App {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if !self.world.resource::<InputState>().mouse_captured => self.capture_world_input(),
+            } if !self.world.resource::<InputState>().mouse_captured => {
+                // Clicking the world to capture the cursor is taking control.
+                crate::components::ExplicitStartPin::release(&self.world);
+                self.capture_world_input();
+            }
             WindowEvent::MouseInput { state, button, .. }
                 if self.world.resource::<InputState>().mouse_captured =>
             {
+                if state == ElementState::Pressed {
+                    crate::components::ExplicitStartPin::release(&self.world);
+                }
                 let mut input = self.world.resource_mut::<InputState>();
                 match state {
                     ElementState::Pressed => {
@@ -1746,6 +1757,15 @@ fn honour_egui_consumed(
     egui_consumed && interactive_surface_showing && !lifecycle_event
 }
 
+/// Whether a pressed key that reached the world-input arm is the player
+/// taking control of the world (#5968), which ends the explicit-start pin.
+/// Escape opens the native pause menu and the Inventory binding opens the
+/// inventory page: both hand control to a modal rather than take it, so
+/// neither releases the pin.
+fn press_takes_world_control(code: KeyCode, inventory_pressed: bool) -> bool {
+    code != KeyCode::Escape && !inventory_pressed
+}
+
 // Moved here with the `resumed` arm it pins (#2731); see the note in
 // `app_frame.rs` for why the `include_str!` target has to follow the code.
 /// A deterministic bench must remember the scene/CLI camera before the
@@ -1770,6 +1790,62 @@ mod bench_camera_startup_order_tests {
             seed < scheduler,
             "bench origin must be captured before character camera sync can overwrite it"
         );
+    }
+}
+
+/// #5968 — the explicit-start pin ends when the player takes control of the
+/// world, "the first key or mouse press". `window_event` quarantines input
+/// before the world-input arms: the loading cover discards it, a finite bench
+/// owns the world, egui and the native menus consume it, a focused Scaleform
+/// menu routes it. A press the router swallows is not the player taking
+/// control, so releasing the pin ahead of those returns let a stray press on a
+/// focus-stealing bench window, or a key that only dismissed a modal, unpin the
+/// MQ101 start-up `MoveTo` the pin exists to block.
+#[cfg(test)]
+mod explicit_start_pin_release_tests {
+    use super::*;
+
+    /// Truth table of the predicate: ordinary keys take control; the two
+    /// modal openers do not.
+    #[test]
+    fn only_a_non_modal_key_press_takes_world_control() {
+        assert!(press_takes_world_control(KeyCode::KeyW, false));
+        assert!(press_takes_world_control(KeyCode::Space, false));
+        assert!(!press_takes_world_control(KeyCode::Escape, false));
+        // The inventory binding is configurable; whatever key it is bound to
+        // opens a modal page, so it is not control of the world.
+        assert!(!press_takes_world_control(KeyCode::Tab, true));
+    }
+
+    /// Source-order pin: every release in `window_event` sits after each
+    /// input quarantine, and the old up-front release is gone.
+    #[test]
+    fn the_pin_is_released_after_every_input_quarantine() {
+        let production =
+            byroredux_core::source_scan::production_text(include_str!("app_events.rs"));
+        let start = production
+            .find("fn window_event(")
+            .expect("window_event must exist");
+        let body = &production[start..];
+        let release = "ExplicitStartPin::release(";
+        let first_release = body
+            .find(release)
+            .expect("window_event must still release the explicit-start pin");
+        for (needle, what) in [
+            ("self.loading_screen.active()", "the loading-cover input discard"),
+            ("harness_owns_input(", "the bench-harness quarantine"),
+            ("honour_egui_consumed(", "the egui-consumed gate"),
+            ("self.route_scaleform_window_event(&event)", "the Scaleform menu route"),
+        ] {
+            let at = body
+                .find(needle)
+                .unwrap_or_else(|| panic!("window_event lost {what} ({needle})"));
+            assert!(
+                at < first_release,
+                "the explicit-start pin is released before {what}: a press that \
+                 branch swallows would unpin the start (#5968)"
+            );
+        }
     }
 }
 
