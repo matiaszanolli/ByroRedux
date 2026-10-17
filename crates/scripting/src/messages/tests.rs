@@ -8,6 +8,8 @@ fn printf_conversions_take_the_show_arguments() {
         substitute_numbers("learn 20%% faster (%.0f days, %.2f)", &[3.0, 1.5]),
         "learn 20% faster (3 days, 1.50)"
     );
+    assert_eq!(substitute_numbers("%0.f", &[3.0]), "3");
+    assert_eq!(substitute_numbers("%2.0f", &[3.0]), "3");
     assert_eq!(substitute_numbers("%d and %.0f", &[7.9]), "7 and 0", "missing args read 0");
     assert_eq!(substitute_numbers("100% sure", &[]), "100% sure", "a bare % stays");
 }

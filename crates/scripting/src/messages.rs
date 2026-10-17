@@ -182,9 +182,10 @@ pub struct PendingScriptMessages(pub Vec<ScriptMessage>);
 
 impl Resource for PendingScriptMessages {}
 
-/// Substitute `args` into `text`'s `printf` conversions: `%[.N]f`, `%d` /
-/// `%i`, and `%%`. A conversion past the last argument reads 0 (the
-/// `Show` defaults); anything else after `%` stays as written.
+/// Substitute `args` into `text`'s `printf` conversions: `%[width][.precision]f`,
+/// `%d` / `%i`, and `%%`. Width is ignored; a conversion past the last
+/// argument reads 0 (the `Show` defaults); anything else after `%` stays as
+/// written.
 pub fn substitute_numbers(text: &str, args: &[f32]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -199,7 +200,7 @@ pub fn substitute_numbers(text: &str, args: &[f32]) -> String {
             out.push('%');
             continue;
         }
-        // `%[.precision](f|d|i)`.
+        // `%[width][.precision](f|d|i)`; width is accepted but not applied.
         let mut spec = String::new();
         while let Some(&d) = chars.peek() {
             if d == '.' || d.is_ascii_digit() {
@@ -214,10 +215,13 @@ pub fn substitute_numbers(text: &str, args: &[f32]) -> String {
             Some('f') => {
                 chars.next();
                 next += 1;
-                let precision = spec
-                    .strip_prefix('.')
-                    .and_then(|p| p.parse::<usize>().ok())
-                    .unwrap_or(6);
+                let precision = spec.split_once('.').map_or(6, |(_, precision)| {
+                    if precision.is_empty() {
+                        0
+                    } else {
+                        precision.parse::<usize>().unwrap_or(6)
+                    }
+                });
                 out.push_str(&format!("{value:.precision$}"));
             }
             Some('d') | Some('i') => {
