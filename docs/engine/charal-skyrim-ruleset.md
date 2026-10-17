@@ -104,8 +104,10 @@ buyPriceModifier  = HagglingB × AllureB × (1 − FortifyBarterPotion) × (1 �
 sellPrice = round(itemValue × sellPriceModifier / basePriceFactor)
 buyPrice  = round(itemValue × buyPriceModifier  × basePriceFactor)
 
-Trade price cap: sellPrice ≤ itemValue × 1.00,  buyPrice ≥ itemValue × 1.05
+Trade price cap: sellPrice ≤ itemValue × 0.95,  buyPrice ≥ itemValue × 1.05
 ```
+The sell ceiling is the executable default `fBarterSellMax=0.95`; the buy
+floor is `fBarterBuyMin=1.05`. Skyrim.esm does not author either setting.
 `HagglingS` = 1.10/1.15/1.20/1.25/1.30 at ranks 1–5; `AllureS` = 1.10.
 `HagglingB` is the **reciprocal of `HagglingS`, rounded to 2 decimal places**
 (0.91/0.87/0.83/0.80/0.77) — the wiki explicitly warns not to use the
