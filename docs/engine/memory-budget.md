@@ -184,8 +184,9 @@ measured allocations.
 `bone_world` staging, and `bone_world` device-copy are each FIF-doubled
 (3 families × 2 FIF = 6 × 12.6 MB ≈ 75.5 MB), plus two single (non-FIF)
 buffers — `bind_inverses_persistent` and the `bind_inverse_upload_staging`
-scratch (`1 366 × MAX_BONES_PER_MESH(144) × 64 B ≈ 12.6 MB`, M29.6). Total
-≈ 75.5 + 12.6 + 12.6 ≈ **100.6 MB**. See
+scratch (`MAX_SKIN_SLOTS` = 1 364 × `MAX_BONES_PER_MESH` (144) × 64 B ≈ 12.6 MB,
+M29.6). The first-sight upload cap equals the slot pool capacity by construction.
+Total ≈ 75.5 + 12.6 + 12.6 ≈ **100.6 MB**. See
 [`scene_buffer/buffers.rs`](../../crates/renderer/src/vulkan/scene_buffer/buffers.rs)
 `allocate_scene_render_buffers`.
 
