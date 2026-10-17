@@ -210,9 +210,11 @@ pub(crate) struct MaterialProvider {
     pub(crate) sf_cdb_count: usize,
     /// #3398 Phase 2 — `(archive source, in-archive path)` for every
     /// discovered CDB, in load order (base first, then DLC/Creations).
-    /// The material index is built lazily on the first `.mat` lookup
-    /// (`lookup_cdb_material`), not at discovery — a session that loads
-    /// no Starfield content never pays the ~2 s / ~470 MB build.
+    /// Discovery starts a background index build (#5291). A `.mat` lookup
+    /// that arrives first builds it or waits on that same single-flight
+    /// build (`lookup_cdb_material`). The vanilla base build takes ~1.6 s
+    /// and peaks at ~247 MB RSS, with ~115 MB resident after the source blob
+    /// is dropped; see `cdb.rs` and `docs/engine/memory-budget.md`.
     pub(crate) sf_cdb_sources: Vec<(String, String)>,
     /// #1585 / F6 — per-`MaterialProvider`-instance cache of the
     /// `<Plugin> - Geometry.csg` companion blob, keyed by the cell's master

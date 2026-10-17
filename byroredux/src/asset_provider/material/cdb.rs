@@ -6,7 +6,9 @@
 //! different from the BGSM/BGEM one: discover the archive, probe its header,
 //! memoise the answer, and — on a lookup miss — apply a PBR fallback so
 //! `.mat` materials are not silently untranslated. The per-material lookup
-//! itself is the lazily built `MaterialIndex` (see `provider.rs`).
+//! itself uses the `MaterialIndex` built in the background at discovery
+//! when possible; a lookup builds it or waits on the same single-flight slot
+//! if it arrives first (see below).
 
 use super::*;
 
@@ -321,7 +323,8 @@ pub(crate) fn probe_starfield_cdb(bytes: &[u8], source: &str) -> Option<CdbHeade
             log::info!(
                 "Starfield CDB '{source}' present: {} chunks ({} bytes, header-only probe). \
                  `.mat` material paths on NIFs will route through Disney BSDF \
-                 (the material index is built lazily on the first lookup).",
+                 (the index is built in the background at discovery; a lookup \
+                 that arrives first builds it or waits on the same build).",
                 info.chunk_count,
                 bytes.len(),
             );
