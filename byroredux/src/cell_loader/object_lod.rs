@@ -396,6 +396,24 @@ fn insert_object_lod_submesh_material(
     world.insert(entity, material);
 }
 
+/// The archive path of one object-LOD quad and the path of its worldspace
+/// atlas. #5496 — both are authored on the LOD source worldspace: the quad
+/// index selects the ancestor's quads for an inheriting child, so keying
+/// either path on the child extracted nothing and the ring stayed empty.
+pub(crate) fn object_lod_quad_paths(
+    wctx: &ExteriorWorldContext,
+    scheme: ObjectLodScheme,
+    level: i32,
+    qx: i32,
+    qy: i32,
+) -> (String, String) {
+    let lod_key = wctx.lod_worldspace_key();
+    (
+        object_lod_archive_path(scheme, lod_key, level, qx, qy),
+        object_lod_atlas_path(scheme, lod_key),
+    )
+}
+
 /// Resolve + import + spawn one quad's `.bto`. Returns `None` when the quad
 /// has no baked `.bto` (the common case), `Some(empty)`-equivalent is handled
 /// by the caller. Each imported sub-mesh becomes an [`IsLodTerrain`] entity
@@ -426,7 +444,7 @@ fn spawn_object_lod_quad(
         qx,
         qy,
     } = quad;
-    let path = object_lod_archive_path(scheme, &wctx.worldspace_key, level, qx, qy);
+    let (path, atlas_path) = object_lod_quad_paths(wctx, scheme, level, qx, qy);
     let bytes = tex_provider.extract_mesh(&path)?;
     let scene = match byroredux_nif::parse_nif(&bytes) {
         Ok(s) => s,
@@ -459,7 +477,6 @@ fn spawn_object_lod_quad(
     // Shared object atlas for the worldspace (`<world>.objects.dds`). `0` /
     // fallback → the LOD draws untextured-grey, still better than no distant
     // objects. Resolved once and reused across the quad's sub-meshes.
-    let atlas_path = object_lod_atlas_path(scheme, &wctx.worldspace_key);
     let atlas = resolve_texture(ctx, tex_provider, Some(atlas_path.as_str()));
     let atlas = if atlas == ctx.texture_registry.fallback() {
         0

@@ -112,15 +112,21 @@ pub(crate) fn legacy_landscape_lod_supported(game: GameKind) -> bool {
 /// (`legacy_lod_index::LegacyLodQuadIndex`) by footprint instead. The
 /// `(0, 0)` early return below survives for the synth/placement grids that
 /// still consume it.
+///
+/// #5496 — the quads were authored against the LOD source worldspace's
+/// minimum cell (the PNAM "Use LOD Data" ancestor of an inheriting child),
+/// so the origin resolves there too: the child's own bounds (a rooftop, a
+/// walled city) would misalign every inherited quad.
 pub(crate) fn worldspace_lod_grid_origin(wctx: &ExteriorWorldContext) -> (i32, i32) {
     if !combined_lod_supported(wctx.record_index.game) {
         return (0, 0);
     }
 
+    let lod_key = wctx.lod_worldspace_key();
     let cells = &wctx.record_index.cells;
     if let Some(origin) = cells
         .worldspaces
-        .get(&wctx.worldspace_key)
+        .get(lod_key)
         .and_then(|worldspace| worldspace.usable_cell_bounds())
         .map(|(min, _)| min)
     {
@@ -129,7 +135,7 @@ pub(crate) fn worldspace_lod_grid_origin(wctx: &ExteriorWorldContext) -> (i32, i
 
     cells
         .exterior_cells
-        .get(&wctx.worldspace_key)
+        .get(lod_key)
         .and_then(|world_cells| {
             world_cells
                 .keys()
@@ -703,6 +709,66 @@ mod tests {
         let context = exterior_context(index, "dlc01soulcairn");
 
         assert_eq!(worldspace_lod_grid_origin(&context), (-52, -55));
+    }
+
+    /// A Skyrim index with an LOD-authoring parent (`tamriel`, usable
+    /// bounds from cell -50) and an LOD-inheriting child (`whiterunworld`,
+    /// `PNAM` bit `0x02`, its own bounds from cell -2): the shape of every
+    /// walled hold city (#5496).
+    fn inheriting_child_index() -> EsmIndex {
+        let mut index = EsmIndex {
+            game: GameKind::Skyrim,
+            ..Default::default()
+        };
+        index.cells.worldspaces.insert(
+            "tamriel".into(),
+            WorldspaceRecord {
+                form_id: 0x3C,
+                usable_min: (-50.0 * EXTERIOR_CELL_UNITS, -50.0 * EXTERIOR_CELL_UNITS),
+                usable_max: (50.0 * EXTERIOR_CELL_UNITS, 50.0 * EXTERIOR_CELL_UNITS),
+                ..Default::default()
+            },
+        );
+        index.cells.worldspaces.insert(
+            "whiterunworld".into(),
+            WorldspaceRecord {
+                form_id: 0x1A26F,
+                parent_worldspace: Some(0x3C),
+                parent_flags: 0x02, // pnam::INHERIT_LOD
+                usable_min: (-2.0 * EXTERIOR_CELL_UNITS, -2.0 * EXTERIOR_CELL_UNITS),
+                usable_max: (2.0 * EXTERIOR_CELL_UNITS, 2.0 * EXTERIOR_CELL_UNITS),
+                ..Default::default()
+            },
+        );
+        index
+    }
+
+    /// #5496 (reopened) — the quads of an LOD-inheriting child are the
+    /// ancestor's, authored against the ancestor's minimum cell. The grid
+    /// origin used the child's own bounds, shifting every inherited quad.
+    #[test]
+    fn lod_grid_origin_of_an_inheriting_child_is_the_ancestors() {
+        let context = exterior_context(inheriting_child_index(), "whiterunworld");
+        assert_eq!(worldspace_lod_grid_origin(&context), (-50, -50));
+
+        // The same child without the bit keeps its own bounds.
+        let mut index = inheriting_child_index();
+        index.cells.worldspaces.get_mut("whiterunworld").unwrap().parent_flags = 0;
+        let context = exterior_context(index, "whiterunworld");
+        assert_eq!(worldspace_lod_grid_origin(&context), (-2, -2));
+    }
+
+    /// #5496 (reopened) — selection finds the ancestor's quads, so the
+    /// archive and atlas paths must name the ancestor too: keyed on the
+    /// child, the extract found nothing and the ring stayed empty.
+    #[test]
+    fn object_lod_paths_of_an_inheriting_child_name_the_ancestor() {
+        use crate::cell_loader::object_lod::{object_lod_quad_paths, ObjectLodScheme};
+        let context = exterior_context(inheriting_child_index(), "whiterunworld");
+        let (archive, atlas) = object_lod_quad_paths(&context, ObjectLodScheme::BakedBto, 4, 0, -8);
+        assert_eq!(archive, "meshes\\terrain\\tamriel\\objects\\tamriel.4.0.-8.bto");
+        assert!(atlas.contains("tamriel"), "atlas path keyed on the ancestor: {atlas}");
+        assert!(!atlas.contains("whiterun"), "atlas path must not name the child: {atlas}");
     }
 
     #[test]
