@@ -1720,6 +1720,33 @@ mod tests {
     }
 
     #[test]
+    fn corridor_filter_keeps_parentless_colliders_and_zero_radius_is_a_ray() {
+        let mut world = PhysicsWorld::new();
+        world.colliders.insert(
+            ColliderBuilder::cuboid(4.0, 4.0, 4.0)
+                .translation(Vec3::new(0.0, 0.0, 20.0))
+                .build(),
+        );
+        world.update_query_pipeline();
+
+        let origin = Vec3::ZERO;
+        let direction = Vec3::Z;
+        let deny_every_body = |_| false;
+
+        let corridor = world
+            .cast_ray_corridor_where(origin, direction, 40.0, 1.0, &deny_every_body)
+            .expect("a parentless collider has no body handle for the predicate to reject");
+        assert!(corridor.body.is_none());
+        assert!((14.9..=15.1).contains(&corridor.distance));
+
+        let ray = world
+            .cast_ray_corridor_where(origin, direction, 40.0, 0.0, &deny_every_body)
+            .expect("zero corridor radius must use the predicate-filtered ray query");
+        assert!(ray.body.is_none());
+        assert!((15.9..=16.1).contains(&ray.distance));
+    }
+
+    #[test]
     fn scripted_motion_type_updates_a_live_body() {
         let mut world = PhysicsWorld::new();
         let handle = world.bodies.insert(RigidBodyBuilder::dynamic().build());

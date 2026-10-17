@@ -309,47 +309,18 @@ impl PhysicsWorld {
         corridor_radius: f32,
         excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
     ) -> Option<PhysicsRayHit> {
-        if max_distance <= 0.0 || !max_distance.is_finite() {
-            return None;
-        }
-        let direction = direction.normalize_or_zero();
-        if direction.length_squared() == 0.0 {
-            return None;
-        }
-        if corridor_radius <= 0.0 {
-            return self.cast_ray(origin, direction, max_distance, excluded_body);
-        }
-
-        use rapier3d::parry::query::ShapeCastOptions;
-        use rapier3d::prelude::*;
-        let shape = Ball::new(corridor_radius);
-        let pos = Pose::from_translation(origin);
         let mut filter = QueryFilter::default().exclude_sensors();
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
-        self.queries(filter)
-            .cast_shape(
-                &pos,
-                direction,
-                &shape,
-                ShapeCastOptions {
-                    target_distance: 0.0,
-                    stop_at_penetration: false,
-                    max_time_of_impact: max_distance,
-                    compute_impact_geometry_on_penetration: false,
-                },
-            )
-            .map(|(collider, hit)| PhysicsRayHit {
-                body: self.colliders.get(collider).and_then(|hit| hit.parent()),
-                distance: hit.time_of_impact,
-            })
+        self.cast_ray_corridor_filtered(origin, direction, max_distance, corridor_radius, filter)
     }
 
-    /// [`Self::cast_ray_corridor`] over only the bodies `allow` accepts (a projectile
-    /// sweeps solid geometry with a thin ray and actors with a wider corridor: a
-    /// corridor as wide as a bone box would start inside the wall a launcher is
-    /// mounted in).
+    /// [`Self::cast_ray_corridor`] over parented bodies accepted by `allow` (a
+    /// projectile sweeps solid geometry with a thin ray and actors with a wider
+    /// corridor: a corridor as wide as a bone box would start inside the wall a
+    /// launcher is mounted in). Parentless colliders remain eligible because no
+    /// body handle exists for `allow` to reject.
     pub fn cast_ray_corridor_where(
         &self,
         origin: byroredux_core::math::Vec3,
@@ -358,6 +329,21 @@ impl PhysicsWorld {
         corridor_radius: f32,
         allow: &dyn Fn(rapier3d::prelude::RigidBodyHandle) -> bool,
     ) -> Option<PhysicsRayHit> {
+        let include = |_: ColliderHandle, collider: &Collider| {
+            collider.parent().is_none_or(allow)
+        };
+        let filter = QueryFilter::default().exclude_sensors().predicate(&include);
+        self.cast_ray_corridor_filtered(origin, direction, max_distance, corridor_radius, filter)
+    }
+
+    fn cast_ray_corridor_filtered(
+        &self,
+        origin: byroredux_core::math::Vec3,
+        direction: byroredux_core::math::Vec3,
+        max_distance: f32,
+        corridor_radius: f32,
+        filter: QueryFilter<'_>,
+    ) -> Option<PhysicsRayHit> {
         if max_distance <= 0.0 || !max_distance.is_finite() {
             return None;
         }
@@ -365,13 +351,22 @@ impl PhysicsWorld {
         if direction.length_squared() == 0.0 {
             return None;
         }
+
+        let queries = self.queries(filter);
+        if corridor_radius <= 0.0 {
+            let ray = Ray::new(origin, direction);
+            return queries
+                .cast_ray(&ray, max_distance, true)
+                .map(|(collider, distance)| PhysicsRayHit {
+                    body: self.colliders.get(collider).and_then(|hit| hit.parent()),
+                    distance,
+                });
+        }
+
         use rapier3d::parry::query::ShapeCastOptions;
-        use rapier3d::prelude::*;
-        let shape = Ball::new(corridor_radius.max(0.01));
+        let shape = Ball::new(corridor_radius);
         let pos = Pose::from_translation(origin);
-        let skip = |_: ColliderHandle, collider: &Collider| collider.parent().is_some_and(allow);
-        let filter = QueryFilter::default().exclude_sensors().predicate(&skip);
-        self.queries(filter)
+        queries
             .cast_shape(
                 &pos,
                 direction,
