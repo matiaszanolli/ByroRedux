@@ -2737,6 +2737,34 @@ mod unit_tests {
         );
     }
 
+    /// #5957 — the integration pass sums up to `froxel_z_slices` slabs in fp32
+    /// and stores to the RGBA16F `integrated` volume, which composite and bloom
+    /// read with no non-finite guard. The #4782 clamp stops at the injection
+    /// store, so the integrate store needs its own: non-finite scrubbed, the
+    /// rest clamped into the finite fp16 range, before the `imageStore`.
+    #[test]
+    fn integrate_store_scrubs_non_finite_and_clamps_to_fp16() {
+        let shader = include_str!("../../shaders/volumetrics_integrate.comp");
+        let scrub = shader
+            .find("if (any(isnan(integratedStore)) || any(isinf(integratedStore))) {")
+            .expect("the integrate store-side non-finite scrub (#5957)");
+        let ceiling = shader
+            .find("clamp(integratedStore, vec4(0.0), vec4(6.0e4))")
+            .expect("the finite fp16 range clamp on the integrate store (#5957)");
+        let store = shader
+            .find("imageStore(integrated, ivec3(col, slice), integratedStore);")
+            .expect("the integrate store must write the guarded value");
+        assert!(
+            scrub < ceiling && ceiling < store,
+            "the integrate store must scrub and clamp before the RGBA16F write \
+             — composite/bloom have no non-finite guard (#5957)"
+        );
+        assert!(
+            !shader.contains("vec4(inscatter_total, trans_cumulative)\n        );"),
+            "the raw running sums must not be stored directly (#5957)"
+        );
+    }
+
     /// #4774 / REN-D8-2026-09-23-02 — the transported combustion field must
     /// be WRITTEN at the texel-centre distance, the distance of the
     /// normalized midpoint. Writing at the arithmetic mean of the two

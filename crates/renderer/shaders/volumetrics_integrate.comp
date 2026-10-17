@@ -95,10 +95,20 @@ void main() {
         inscatter_total += inscatter * trans_cumulative * sourceIntegral;
         trans_cumulative *= slabTransmittance;
 
-        imageStore(
-            integrated,
-            ivec3(col, slice),
-            vec4(inscatter_total, trans_cumulative)
-        );
+        // #5957 — the injection store is clamped into the finite fp16 range
+        // (#4782), but this fp32 sum of up to `size.z` slabs is not bounded by
+        // it, and `integrated` is RGBA16F (ceiling 65504). composite/bloom
+        // read it with no non-finite guard, so an overflowed lane stored here
+        // would reach the screen as an Inf/NaN smear. Same guard as #4782:
+        // zero anything non-finite, clamp the rest into the finite range. The
+        // running sums stay unclamped so one saturated slice does not bias the
+        // slices behind it.
+        vec4 integratedStore = vec4(inscatter_total, trans_cumulative);
+        if (any(isnan(integratedStore)) || any(isinf(integratedStore))) {
+            integratedStore = vec4(0.0);
+        } else {
+            integratedStore = clamp(integratedStore, vec4(0.0), vec4(6.0e4));
+        }
+        imageStore(integrated, ivec3(col, slice), integratedStore);
     }
 }
