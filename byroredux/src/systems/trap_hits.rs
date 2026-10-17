@@ -19,9 +19,9 @@
 //! trap object is in contact" with no stated cadence, so it is sent once, with
 //! the start, as the initial hit; the material number is 0.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use byroredux_core::ecs::components::{Dead, RigidBodyData};
+use byroredux_core::ecs::components::{ActorVitals, Dead, RigidBodyData};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_scripting::translate::effects::VmStored;
@@ -34,7 +34,16 @@ const MAX_PARENT_HOPS: usize = 8;
 
 /// Which (trap, actor) pairs were in contact last tick.
 #[derive(Debug, Default)]
-pub(crate) struct TrapContacts(pub HashSet<(EntityId, EntityId)>);
+pub(crate) struct TrapContacts(pub HashSet<(EntityId, EntityId)>, TrapLayerCache);
+
+/// The Trap-layer body list is stable between `RigidBodyData` insertions and
+/// removals. `structural_generation` lets the contact pass skip its full-world
+/// discovery scan on ordinary frames.
+#[derive(Debug, Default)]
+struct TrapLayerCache {
+    generation: Option<u64>,
+    bodies: Vec<EntityId>,
+}
 
 impl Resource for TrapContacts {}
 
@@ -47,14 +56,34 @@ fn script_form(world: &World, entity: EntityId) -> Option<u32> {
     byroredux_scripting::condition::entity_global_form_id(world, entity)
 }
 
-/// The actor a collider belongs to, if it is a live one.
-fn live_actor(world: &World, collider_entity: EntityId) -> Option<EntityId> {
-    let actor = world
-        .get::<byroredux_physics::ActorColliderOwner>(collider_entity)
-        .map(|owner| owner.0)
-        .unwrap_or(collider_entity);
-    world.get::<byroredux_core::ecs::components::ActorVitals>(actor)?;
-    world.get::<Dead>(actor).is_none().then_some(actor)
+/// Map only live actors' physics bodies to their owning actor. Trap contacts
+/// need this small set; scanning every world body and resolving each one is
+/// unnecessary.
+fn live_actor_bodies(
+    world: &World,
+) -> HashMap<byroredux_physics::RigidBodyHandle, EntityId> {
+    let mut owners = HashMap::new();
+    if let Some(actors) = world.query::<ActorVitals>() {
+        for (actor, _) in actors.iter() {
+            if world.get::<Dead>(actor).is_none() {
+                if let Some(handles) = world.get::<byroredux_physics::RapierHandles>(actor) {
+                    owners.insert(handles.body, actor);
+                }
+            }
+        }
+    }
+    if let Some(colliders) = world.query::<byroredux_physics::ActorColliderOwner>() {
+        for (collider, owner) in colliders.iter() {
+            if world.get::<ActorVitals>(owner.0).is_some()
+                && world.get::<Dead>(owner.0).is_none()
+            {
+                if let Some(handles) = world.get::<byroredux_physics::RapierHandles>(collider) {
+                    owners.insert(handles.body, owner.0);
+                }
+            }
+        }
+    }
+    owners
 }
 
 /// The local form id of the REFR a bare collision entity came from.
@@ -78,24 +107,42 @@ fn ended_contacts(
 }
 
 pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
-    // The scripted trap bodies: a Trap-layer rigid body that carries scripts.
-    // One storage guard at a time (a snapshot each), so no lock order is implied.
-    let trap_layer: Vec<EntityId> = match world.query::<RigidBodyData>() {
-        Some(bodies) => bodies
-            .iter()
-            .filter(|(_, data)| data.havok_layer == LAYER_TRAP)
-            .map(|(entity, _)| entity)
-            .collect(),
-        None => return,
+    let cached = world
+        .try_resource::<TrapContacts>()
+        .map(|contacts| (contacts.1.generation, contacts.1.bodies.clone()));
+    // Rebuild only when RigidBodyData's structural generation changes. Havok
+    // layer is import-time data; runtime motion edits do not change membership.
+    let (generation, trap_layer, rebuilt) = {
+        let Some(bodies) = world.query::<RigidBodyData>() else { return };
+        let generation = bodies.storage().structural_generation();
+        match cached {
+            Some((Some(cached_generation), trap_layer)) if cached_generation == generation => {
+                (generation, trap_layer, false)
+            }
+            _ => (
+                generation,
+                bodies
+                    .iter()
+                    .filter(|(_, data)| data.havok_layer == LAYER_TRAP)
+                    .map(|(entity, _)| entity)
+                    .collect(),
+                true,
+            ),
+        }
     };
+    if rebuilt {
+        if let Some(mut contacts) = world.try_resource_mut::<TrapContacts>() {
+            contacts.1 = TrapLayerCache { generation: Some(generation), bodies: trap_layer.clone() };
+        }
+    }
     // The scripts sit on the placement root, the colliders on the root or a child
     // of it: a trap body is owned by the nearest scripted entity up its parents.
     // (One guard at a time: the ancestor chains first, then the scripts.)
-    let trap_layer_all = trap_layer.clone();
     let chains: Vec<(EntityId, Vec<EntityId>)> = {
         let parents = world.query::<byroredux_core::ecs::components::Parent>();
         trap_layer
-            .into_iter()
+            .iter()
+            .copied()
             .map(|entity| {
                 let mut chain = vec![entity];
                 while chain.len() < MAX_PARENT_HOPS {
@@ -127,7 +174,7 @@ pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
     let scripted = {
         let mut owned: std::collections::HashSet<EntityId> = scripted.iter().map(|(entity, _)| *entity).collect();
         let mut scripted = scripted;
-        let bare: Vec<(EntityId, u32)> = trap_layer_all
+        let bare: Vec<(EntityId, u32)> = trap_layer
             .iter()
             .filter(|entity| !owned.contains(entity))
             .filter_map(|&entity| Some((entity, source_reference(world, entity)?)))
@@ -158,12 +205,10 @@ pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
     if traps.is_empty() && previous.is_empty() {
         return;
     }
-    // Body -> entity, resolved before the physics world is taken (the melee
-    // sweep's lock order).
-    let owners: std::collections::HashMap<_, _> = world
-        .query::<byroredux_physics::RapierHandles>()
-        .map(|handles| handles.iter().map(|(entity, handles)| (handles.body, entity)).collect())
-        .unwrap_or_default();
+    // Resolve actor bodies before the physics world is taken (the melee
+    // sweep's lock order). The overlap query uses this small set to skip world
+    // geometry before shape intersection.
+    let actor_bodies = live_actor_bodies(world);
     // The physics world is held only to gather the overlaps; the actors are
     // resolved after it is released (component reads under it would order
     // ActorVitals after PhysicsWorld, against the character systems' order).
@@ -173,17 +218,23 @@ pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
         };
         traps
             .iter()
-            .filter_map(|&(trap, body)| Some((trap, physics.body_motion(body)?, physics.bodies_overlapping_body(body))))
+            .filter_map(|&(trap, body)| {
+                Some((
+                    trap,
+                    physics.body_motion(body)?,
+                    physics.bodies_overlapping_body_where(body, &|other| actor_bodies.contains_key(&other)),
+                ))
+            })
             .collect()
     };
     let mut now: HashSet<(EntityId, EntityId)> = HashSet::new();
     let mut starts: Vec<(EntityId, EntityId, byroredux_physics::BodyMotion)> = Vec::new();
     for (trap, motion, others) in overlaps {
         for other in others {
-            let Some(actor) = owners.get(&other).and_then(|&collider| live_actor(world, collider)) else {
+            let Some(&actor) = actor_bodies.get(&other) else {
                 continue;
             };
-            if actor == trap || !now.insert((trap, actor)) {
+            if world.get::<Dead>(actor).is_some() || actor == trap || !now.insert((trap, actor)) {
                 continue;
             }
             if !previous.contains(&(trap, actor)) {
@@ -242,6 +293,7 @@ mod tests {
         let mut physics = PhysicsWorld::new();
         let trap_handles = physics.spawn_fixed_cuboid_handles(Vec3::splat(20.0), Vec3::ZERO);
         let actor_handles = physics.spawn_fixed_cuboid_handles(Vec3::splat(20.0), Vec3::new(30.0, 0.0, 0.0));
+        let wall_handles = physics.spawn_fixed_cuboid_handles(Vec3::splat(20.0), Vec3::ZERO);
         let far_handles = physics.spawn_fixed_cuboid_handles(Vec3::splat(20.0), Vec3::new(500.0, 0.0, 0.0));
         world.insert_resource(physics);
         let trap = world.spawn();
@@ -261,6 +313,8 @@ mod tests {
         let far = world.spawn();
         world.insert(far, far_handles);
         world.insert(far, ActorVitals { health: 0x3E8 });
+        let _wall = world.spawn();
+        world.insert(_wall, wall_handles);
         (world, trap, near)
     }
 
@@ -269,6 +323,14 @@ mod tests {
     #[test]
     fn contact_starts_with_an_overlap_and_ends_with_the_actor() {
         let (world, trap, near) = trap_world();
+        let actor_bodies = live_actor_bodies(&world);
+        let trap_body = world.get::<byroredux_physics::RapierHandles>(trap).unwrap().body;
+        let near_body = world.get::<byroredux_physics::RapierHandles>(near).unwrap().body;
+        let overlaps = world
+            .resource::<PhysicsWorld>()
+            .bodies_overlapping_body_where(trap_body, &|body| actor_bodies.contains_key(&body));
+        assert_eq!(overlaps, vec![near_body], "the broad wall overlap is filtered before shape intersection");
+
         trap_contact_system(&world, 0.0);
         assert_eq!(world.resource::<TrapContacts>().0, HashSet::from([(trap, near)]), "only the overlapping actor");
         trap_contact_system(&world, 0.0);
@@ -276,6 +338,34 @@ mod tests {
         world.query_mut::<Dead>().unwrap().insert(near, Dead);
         trap_contact_system(&world, 0.0);
         assert!(world.resource::<TrapContacts>().0.is_empty(), "a dead actor is not a live target");
+    }
+
+    #[test]
+    fn trap_layer_cache_rebuilds_after_a_body_is_inserted() {
+        let (mut world, trap, near) = trap_world();
+        trap_contact_system(&world, 0.0);
+
+        let handles = world
+            .resource_mut::<PhysicsWorld>()
+            .spawn_fixed_cuboid_handles(Vec3::splat(20.0), Vec3::ZERO);
+        let added = world.spawn();
+        world.insert(added, handles);
+        world.insert(added, RigidBodyData { havok_layer: LAYER_TRAP, ..RigidBodyData::static_body() });
+        world.insert(
+            added,
+            PapyrusReferenceScripts(vec![ReferenceScript {
+                script: "TrapHitBase".into(),
+                vmad: std::sync::Arc::new(ScriptInstanceData { version: 5, object_format: 2, scripts: Vec::new() }),
+                events: vec!["OnTrapHitStart".into()],
+            }]),
+        );
+
+        trap_contact_system(&world, 0.0);
+        assert_eq!(
+            world.resource::<TrapContacts>().0,
+            HashSet::from([(trap, near), (added, near)]),
+            "a structural body change refreshes the cached Trap-layer subset"
+        );
     }
 
     /// #5873 — stop events come out in (trap, actor) order, whatever the

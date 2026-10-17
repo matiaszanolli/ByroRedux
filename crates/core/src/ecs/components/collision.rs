@@ -192,6 +192,9 @@ impl Default for RigidBodyData {
 
 impl Component for RigidBodyData {
     type Storage = SparseSetStorage<Self>;
+    // Trap contact discovery caches the Trap-layer subset and rebuilds it when
+    // bodies are inserted, replaced, or removed.
+    const TRACK_CHANGES: bool = true;
 }
 
 #[cfg(test)]

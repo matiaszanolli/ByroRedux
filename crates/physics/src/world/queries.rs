@@ -570,6 +570,18 @@ impl PhysicsWorld {
     /// phase does not pair by default. The query pipeline must be current, as for
     /// the floor probes.
     pub fn bodies_overlapping_body(&self, body: RigidBodyHandle) -> Vec<RigidBodyHandle> {
+        self.bodies_overlapping_body_where(body, &|_| true)
+    }
+
+    /// The bodies whose solid colliders overlap any collider of `body` and pass
+    /// `include` (sensors and `body` itself excluded), each once. The predicate
+    /// runs before shape intersection, so callers can avoid narrow-phase work for
+    /// irrelevant bodies.
+    pub fn bodies_overlapping_body_where(
+        &self,
+        body: RigidBodyHandle,
+        include: &dyn Fn(RigidBodyHandle) -> bool,
+    ) -> Vec<RigidBodyHandle> {
         let Some(rb) = self.bodies.get(body) else {
             return Vec::new();
         };
@@ -581,7 +593,13 @@ impl PhysicsWorld {
             if collider.is_sensor() {
                 continue;
             }
-            let filter = QueryFilter::default().exclude_sensors().exclude_rigid_body(body);
+            let predicate = |_: ColliderHandle, other: &Collider| {
+                other.parent().is_some_and(include)
+            };
+            let filter = QueryFilter::default()
+                .exclude_sensors()
+                .exclude_rigid_body(body)
+                .predicate(&predicate);
             let queries = self.queries(filter);
             for (_handle, other) in queries.intersect_shape(*collider.position(), collider.shape()) {
                 if let Some(parent) = other.parent() {
