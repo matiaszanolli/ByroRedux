@@ -138,6 +138,29 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/terminal.rs"),
     include_str!("fragment/updates.rs"),
     include_str!("fragment/vm.rs"),
+    // #5800 — vm.rs split into vm/*.rs and vm/natives/*.rs.
+    include_str!("fragment/vm/checker.rs"),
+    include_str!("fragment/vm/interp.rs"),
+    include_str!("fragment/vm/registrations.rs"),
+    include_str!("fragment/vm/script_model.rs"),
+    include_str!("fragment/vm/value.rs"),
+    include_str!("fragment/vm/natives/mod.rs"),
+    include_str!("fragment/vm/natives/actor.rs"),
+    include_str!("fragment/vm/natives/alias.rs"),
+    include_str!("fragment/vm/natives/animation.rs"),
+    include_str!("fragment/vm/natives/collections.rs"),
+    include_str!("fragment/vm/natives/combat.rs"),
+    include_str!("fragment/vm/natives/destruction.rs"),
+    include_str!("fragment/vm/natives/favor.rs"),
+    include_str!("fragment/vm/natives/form_list.rs"),
+    include_str!("fragment/vm/natives/forms.rs"),
+    include_str!("fragment/vm/natives/game_utility.rs"),
+    include_str!("fragment/vm/natives/linked_refs.rs"),
+    include_str!("fragment/vm/natives/location.rs"),
+    include_str!("fragment/vm/natives/ownership_crime.rs"),
+    include_str!("fragment/vm/natives/quest.rs"),
+    include_str!("fragment/vm/natives/reference.rs"),
+    include_str!("fragment/vm/natives/scanning.rs"),
 );
 
 #[cfg(test)]
@@ -214,6 +237,31 @@ mod sources_completeness {
         assert!(
             effect_files >= 10,
             "expected the post-#5468 effects/ submodules, walked {effect_files}"
+        );
+
+        // #5800 — `vm.rs` split into `vm/*.rs` and `vm/natives/*.rs`: the
+        // same rule two levels down. `vm/tests.rs` is excluded like
+        // `fragment/tests.rs`, for the same reason.
+        let mut vm_files = 0usize;
+        for sub in ["vm", "vm/natives"] {
+            for entry in std::fs::read_dir(dir.join(sub)).expect("fragment/vm/ must exist") {
+                let path = entry.expect("readable dir entry").path();
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if !name.ends_with(".rs") || name == "tests.rs" {
+                    continue;
+                }
+                assert!(
+                    concat.contains(&format!("include_str!(\"fragment/{sub}/{name}\")")),
+                    "fragment/{sub}/{name} is missing from the SOURCES concat!."
+                );
+                vm_files += 1;
+            }
+        }
+        assert!(
+            vm_files >= 20,
+            "expected the post-#5800 vm/ and vm/natives/ submodules, walked {vm_files}"
         );
     }
 }
