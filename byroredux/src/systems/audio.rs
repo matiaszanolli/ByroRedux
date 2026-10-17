@@ -367,27 +367,37 @@ fn select_footstep_sound(
 /// sound selection mirrors the footstep path's: the impacted side's
 /// authored per-material entry wins, else collider 2's, else the
 /// default; `select_impact_sound` pins it.
+fn sync_contact_force_subscription(world: &World, enabled: bool) {
+    let changed = world
+        .try_resource::<byroredux_physics::PhysicsWorld>()
+        .is_some_and(|pw| pw.contact_force_events_enabled() != enabled);
+    if changed {
+        if let Some(mut pw) = world.try_resource_mut::<byroredux_physics::PhysicsWorld>() {
+            pw.set_contact_force_events_enabled(enabled);
+        }
+    }
+}
+
 pub(crate) fn impact_audio_system(world: &World, _dt: f32) {
-    // Snapshot the (Arc-cloned) sound table before any other resource
-    // lock: the play loop must not hold an ImpactConfig read beside the
-    // AudioWorld write (same one-lock-at-a-time discipline as
-    // footstep_system's scratch note).
-    let Some((surface_sounds, default, volume, min_force)) =
-        world.try_resource::<crate::components::ImpactConfig>().map(|config| {
+    // Check for a consumer without cloning the table. Physics can step
+    // many frames without producing a started force crossing, so clone the
+    // sound handles only after finding at least one playable impact.
+    let Some((has_sound, min_force)) = world
+        .try_resource::<crate::components::ImpactConfig>()
+        .map(|config| {
             (
-                config.surface_sounds.clone(),
-                config.default_sound.clone(),
-                config.volume,
+                config.default_sound.is_some() || !config.surface_sounds.is_empty(),
                 config.min_force_magnitude,
             )
         })
     else {
+        sync_contact_force_subscription(world, false);
         return;
     };
-    if default.is_none() && surface_sounds.is_empty() {
-        // No content data: nothing any crossing could play. The events
-        // stay buffered in the PhysicsWorld until its next `step` clears
-        // them.
+    sync_contact_force_subscription(world, has_sound);
+    if !has_sound {
+        // No content data: nothing any crossing could play, and the
+        // subscription sync above leaves force-event callbacks disarmed.
         return;
     }
 
@@ -418,6 +428,24 @@ pub(crate) fn impact_audio_system(world: &World, _dt: f32) {
     }
     drop(pw);
     if impacts.is_empty() {
+        return;
+    }
+
+    // Snapshot the sound handles after releasing PhysicsWorld. The play
+    // loop still never holds ImpactConfig beside the AudioWorld write.
+    let Some((surface_sounds, default, volume)) = world
+        .try_resource::<crate::components::ImpactConfig>()
+        .map(|config| {
+            (
+                config.surface_sounds.clone(),
+                config.default_sound.clone(),
+                config.volume,
+            )
+        })
+    else {
+        return;
+    };
+    if default.is_none() && surface_sounds.is_empty() {
         return;
     }
 
@@ -814,6 +842,37 @@ mod footstep_tests {
         assert!(
             select_impact_sound(&surface_sounds, None, 0).is_none(),
             "no default and no authored entry plays nothing"
+        );
+    }
+
+    #[test]
+    fn impact_contact_events_follow_sound_content() {
+        let (mut world, sound) = synth_world(0.7);
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+        world.insert_resource(crate::components::ImpactConfig {
+            default_sound: None,
+            surface_sounds: std::collections::BTreeMap::new(),
+            volume: 0.7,
+            min_force_magnitude: 5_000.0,
+        });
+
+        impact_audio_system(&world, 0.016);
+        assert!(
+            !world
+                .resource::<byroredux_physics::PhysicsWorld>()
+                .contact_force_events_enabled(),
+            "no impact sounds means dynamic colliders need no force-event subscription"
+        );
+
+        world
+            .resource_mut::<crate::components::ImpactConfig>()
+            .default_sound = Some(sound);
+        impact_audio_system(&world, 0.016);
+        assert!(
+            world
+                .resource::<byroredux_physics::PhysicsWorld>()
+                .contact_force_events_enabled(),
+            "adding an impact sound arms force-event subscriptions"
         );
     }
 

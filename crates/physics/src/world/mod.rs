@@ -297,6 +297,9 @@ pub struct PhysicsWorld {
     /// ECS collision-event consumer exists).
     event_collector: ChannelEventCollector,
     contact_force_rx: std::sync::Mutex<std::sync::mpsc::Receiver<ContactForceEvent>>,
+    /// Whether dynamic colliders currently subscribe to contact-force
+    /// callbacks. The audio consumer toggles this with its sound content.
+    contact_force_events_enabled: bool,
     // NOTE: a `Mutex`, not a bare `Receiver` — `Receiver` is `!Sync`, while
     // `PhysicsWorld` is a `Sync` ECS resource. With Rapier's `parallel`
     // feature enabled, the narrow-phase callback may also run on rayon
@@ -496,6 +499,7 @@ impl PhysicsWorld {
             pipeline: PhysicsPipeline::new(),
             event_collector,
             contact_force_rx: std::sync::Mutex::new(contact_force_rx),
+            contact_force_events_enabled: false,
             pending_force_events: Vec::new(),
             integration_parameters,
             gravity: Vector::new(0.0, -686.7, 0.0),
@@ -717,6 +721,48 @@ impl PhysicsWorld {
     /// pipeline). The Wave-4 clutter-impact sound consumer drives this.
     pub fn take_contact_force_events(&mut self) -> Vec<ContactForceEvent> {
         std::mem::take(&mut self.pending_force_events)
+    }
+
+    /// Whether dynamic colliders subscribe to Rapier's contact-force events.
+    pub fn contact_force_events_enabled(&self) -> bool {
+        self.contact_force_events_enabled
+    }
+
+    /// Enable force-event subscriptions only while an impact sound consumer
+    /// has content. Existing dynamic colliders are updated on a state change;
+    /// newcomer registration reads the stored flag for future colliders.
+    pub fn set_contact_force_events_enabled(&mut self, enabled: bool) {
+        if self.contact_force_events_enabled == enabled {
+            return;
+        }
+        self.contact_force_events_enabled = enabled;
+
+        let dynamic_bodies: std::collections::HashSet<_> = self
+            .dynamic_bodies
+            .iter()
+            .filter(|handle| self.bodies.get(**handle).is_some_and(|body| body.is_dynamic()))
+            .copied()
+            .collect();
+        for (_, collider) in self.colliders.iter_mut() {
+            let dynamic_parent = collider
+                .parent()
+                .is_some_and(|parent| dynamic_bodies.contains(&parent));
+            let active_events = if enabled && dynamic_parent {
+                rapier3d::prelude::ActiveEvents::CONTACT_FORCE_EVENTS
+            } else {
+                rapier3d::prelude::ActiveEvents::empty()
+            };
+            collider.set_active_events(active_events);
+        }
+
+        if !enabled {
+            self.pending_force_events.clear();
+            self.contact_force_rx
+                .lock()
+                .expect("contact-force event receiver poisoned")
+                .try_iter()
+                .for_each(drop);
+        }
     }
 
     /// The authored Havok surface material packed into a collider's
@@ -1480,13 +1526,15 @@ impl PhysicsWorld {
         // unboundedly. Appended, not assigned: the substep loop may run
         // several steps per frame and the consumer takes once per frame.
         let events_before_substep = self.pending_force_events.len();
-        self.pending_force_events.extend(
-            self.contact_force_rx
-                .lock()
-                .expect("contact-force event receiver poisoned")
-                .try_iter()
-                .filter(|event| event.started),
-        );
+        if self.contact_force_events_enabled {
+            self.pending_force_events.extend(
+                self.contact_force_rx
+                    .lock()
+                    .expect("contact-force event receiver poisoned")
+                    .try_iter()
+                    .filter(|event| event.started),
+            );
+        }
         // The previous substep's quarantined bodies: this step processed
         // their disable, so they come back now, parked (see the
         // `quarantine_cooldown` field doc), and one more step is armed so the
@@ -4302,6 +4350,7 @@ mod tests {
     /// to trip the invalid-solve restore on that same substep.
     fn impact_fixture(exploder: bool) -> PhysicsWorld {
         let mut w = PhysicsWorld::new();
+        w.set_contact_force_events_enabled(true);
         uncap_rigid_body_speed(&mut w);
         let floor = w.bodies.insert(RigidBodyBuilder::fixed().build());
         w.colliders.insert_with_parent(
@@ -4376,6 +4425,7 @@ mod tests {
     #[test]
     fn contact_force_started_event_carries_surface_materials() {
         let mut w = PhysicsWorld::new();
+        w.set_contact_force_events_enabled(true);
         let floor = w.bodies.insert(RigidBodyBuilder::fixed().build());
         w.colliders.insert_with_parent(
             ColliderBuilder::cuboid(200.0, 10.0, 200.0)
@@ -4433,6 +4483,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn disabling_contact_force_subscriptions_stops_dynamic_events() {
+        let mut w = PhysicsWorld::new();
+        w.set_contact_force_events_enabled(true);
+        let floor = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(200.0, 10.0, 200.0)
+                .translation(Vector::new(0.0, -10.0, 0.0))
+                .build(),
+            floor,
+            &mut w.bodies,
+        );
+        let ball = w.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(0.0, 8.0, 0.0))
+                .build(),
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::ball(0.5).density(1.0).build(),
+            ball,
+            &mut w.bodies,
+        );
+        w.dynamic_bodies.push(ball);
+
+        w.set_contact_force_events_enabled(false);
+        for _ in 0..240 {
+            w.step(PHYSICS_DT);
+            assert!(
+                w.take_contact_force_events().is_empty(),
+                "disabled impact audio must not collect contact-force events"
+            );
+            if w.bodies[ball].translation().y < 2.0 {
+                break;
+            }
+        }
+    }
+
     /// #5675 — the impact position is the contact point, not the parent
     /// bodies' origin midpoint. The exterior-terrain shape is the worst
     /// case: a fixed body parked at the world origin with its collider
@@ -4444,6 +4531,7 @@ mod tests {
     #[test]
     fn contact_event_position_is_the_contact_not_the_body_origins() {
         let mut w = PhysicsWorld::new();
+        w.set_contact_force_events_enabled(true);
         // Terrain-tile shape: body at the world origin…
         let terrain = w.bodies.insert(RigidBodyBuilder::fixed().build());
         // …collider top surface at y = 0, centred at (300, -10, 200).
@@ -4503,6 +4591,7 @@ mod tests {
     #[test]
     fn contact_event_position_uses_dynamic_body_when_pair_is_gone() {
         let mut w = PhysicsWorld::new();
+        w.set_contact_force_events_enabled(true);
         let terrain = w.bodies.insert(RigidBodyBuilder::fixed().build());
         let terrain_collider = w.colliders.insert_with_parent(
             ColliderBuilder::cuboid(200.0, 10.0, 200.0)

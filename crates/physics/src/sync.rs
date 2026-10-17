@@ -1056,6 +1056,7 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         .collect();
 
     let mut pw = world.resource_mut::<PhysicsWorld>();
+    let contact_force_events_enabled = pw.contact_force_events_enabled();
 
     let mut registered: Vec<(EntityId, RapierHandles)> = Vec::with_capacity(converted.len());
 
@@ -1152,7 +1153,11 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
             // unsubscribed). The threshold stays rapier's 0.0 default;
             // the consumer gates on force magnitude.
             let active_events =
-                if matches!(n.body_data.motion_type, byroredux_core::ecs::components::MotionType::Dynamic)
+                if contact_force_events_enabled
+                    && matches!(
+                        n.body_data.motion_type,
+                        byroredux_core::ecs::components::MotionType::Dynamic
+                    )
                 {
                     rapier3d::prelude::ActiveEvents::CONTACT_FORCE_EVENTS
                 } else {
