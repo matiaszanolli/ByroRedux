@@ -411,13 +411,17 @@ impl ConsoleCommand for LevelUpCommand {
                         rewards.skill_points, skill.editor_id
                     ));
                 }
-                if let Some(mut values) =
+                let Some(mut value_query) =
                     world.query_mut::<byroredux_core::ecs::components::ActorValues>()
-                {
-                    if let Some(values) = values.get_mut(player) {
-                        values.mod_permanent(avif, spend as f32);
-                    }
-                }
+                else {
+                    return CommandOutput::error("levelup: no actor-value storage");
+                };
+                let Some(values) = value_query.get_mut(player) else {
+                    return CommandOutput::error("levelup: player has no actor values");
+                };
+                let base = values.get(avif).map_or(0.0, |value| value.base);
+                values.set_base(avif, base + spend as f32);
+                drop(value_query);
                 if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
                     if let Some(stored) = stored.get_mut(player) {
                         stored.skill_points -= spend;
@@ -440,16 +444,36 @@ impl ConsoleCommand for LevelUpCommand {
                 if rewards.perk_points == 0 {
                     return CommandOutput::error("levelup: no perk points");
                 }
+                let Some(max_rank) = world
+                    .try_resource::<byroredux_scripting::perk_entry_points::PerkEntryTable>()
+                    .and_then(|table| table.num_ranks(perk))
+                else {
+                    return CommandOutput::error(format!("levelup: {perk:08X} is not a known PERK"));
+                };
                 let rank = {
                     let Some(mut perks) = world.query_mut::<Perks>() else {
                         return CommandOutput::error("levelup: no perk storage");
                     };
+                    let current_rank = perks.get(player).map_or(0, |owned| owned.rank(perk));
+                    let Some(rank) = current_rank.checked_add(1) else {
+                        return CommandOutput::error(format!(
+                            "levelup: perk {perk:08X} rank cannot increase further"
+                        ));
+                    };
+                    if rank > max_rank {
+                        return CommandOutput::error(format!(
+                            "levelup: perk {perk:08X} is already at its maximum rank ({max_rank})"
+                        ));
+                    }
                     if perks.get_mut(player).is_none() {
                         perks.insert(player, Perks::default());
                     }
                     let owned = perks.get_mut(player).expect("present or inserted");
-                    let rank = owned.rank(perk).saturating_add(1);
-                    owned.set_rank(perk, rank);
+                    if !owned.try_set_rank(perk, rank, max_rank) {
+                        return CommandOutput::error(format!(
+                            "levelup: perk {perk:08X} rejected rank {rank} (maximum {max_rank})"
+                        ));
+                    }
                     rank
                 };
                 if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
@@ -493,6 +517,7 @@ mod level_up_tests {
         const INTELLIGENCE: u32 = 0x2C6;
         const SCIENCE: u32 = 0x2DB;
         const EDUCATED: u32 = 0x0003_1DD8;
+        const RANKED_PERK: u32 = 0x0000_1234;
         let mut world = World::new();
         byroredux_scripting::register(&mut world);
         world.register::<ActorValues>();
@@ -517,6 +542,7 @@ mod level_up_tests {
             EDUCATED,
             PerkRecord {
                 form_id: EDUCATED,
+                num_ranks: 1,
                 entries: vec![PerkEntry {
                     rank: 0,
                     priority: 0,
@@ -534,6 +560,14 @@ mod level_up_tests {
                 ..Default::default()
             },
         );
+        index.perks.insert(
+            RANKED_PERK,
+            PerkRecord {
+                form_id: RANKED_PERK,
+                num_ranks: 2,
+                ..Default::default()
+            },
+        );
         byroredux_scripting::install_actor_value_names(&mut world, &index);
         byroredux_scripting::perk_entry_points::install_perk_entry_points(&mut world, &index);
         world.insert_resource(falloutnv_ruleset(|name| match name {
@@ -547,6 +581,7 @@ mod level_up_tests {
         world.insert(player, CharacterLevel { level: 1, xp: 0 });
         let mut perks = Perks::default();
         perks.set_rank(EDUCATED, 1);
+        perks.set_rank(RANKED_PERK, 1);
         world.insert(player, perks);
 
         // 200 XP reaches level 2 (150·1 + 50); 350 more reaches level 3.
@@ -574,10 +609,31 @@ mod level_up_tests {
             100.0,
             "capped at 100"
         );
+        let (science_base, science_permanent) = {
+            let values = world.get::<ActorValues>(player).unwrap();
+            let science = values.get(SCIENCE).unwrap();
+            (science.base, science.permanent_mod)
+        };
+        assert_eq!(science_base, 100.0, "spent points are part of the AV base");
+        assert_eq!(science_permanent, 0.0, "skill points are not perk modifiers");
         assert_eq!(world.get::<LevelUpPoints>(player).unwrap().skill_points, 28);
-        let _ = LevelUpCommand.execute(&world, "perk 31DD8");
-        assert_eq!(world.get::<Perks>(player).unwrap().rank(EDUCATED), 2);
+        let _ = LevelUpCommand.execute(&world, "perk 1234");
+        assert_eq!(world.get::<Perks>(player).unwrap().rank(RANKED_PERK), 2);
+        assert_eq!(world.get::<Perks>(player).unwrap().rank(EDUCATED), 1);
         assert_eq!(world.get::<LevelUpPoints>(player).unwrap().perk_points, 0);
+
+        let mut rewards = *world.get::<LevelUpPoints>(player).unwrap();
+        rewards.perk_points = 2;
+        world.insert(player, rewards);
+        let unknown = LevelUpCommand.execute(&world, "perk DEADBEEF").lines.join("\n");
+        assert!(unknown.contains("not a known PERK"), "{unknown}");
+        assert_eq!(world.get::<Perks>(player).unwrap().rank(0xDEAD_BEEF), 0);
+        assert_eq!(world.get::<LevelUpPoints>(player).unwrap().perk_points, 2);
+
+        let capped = LevelUpCommand.execute(&world, "perk 1234").lines.join("\n");
+        assert!(capped.contains("maximum rank (2)"), "{capped}");
+        assert_eq!(world.get::<Perks>(player).unwrap().rank(RANKED_PERK), 2);
+        assert_eq!(world.get::<LevelUpPoints>(player).unwrap().perk_points, 2);
 
         // `Game.RewardPlayerXP(100)` with FO4's modifier (fXPModBase 1.0 +
         // fXPModMult 0.03 · INT 9) grants 127; `abDirect` grants 100.

@@ -133,23 +133,34 @@ pub struct PerkEntryPointEntry {
     pub tabs: Vec<PerkConditionTab>,
 }
 
-/// Every perk's entry-point entries, keyed by PERK FormID. `NOT_SAVED_BY_DESIGN`:
-/// re-derived from the load order every boot.
+/// Perk entry-point entries and authored rank limits, keyed by PERK FormID.
+/// `NOT_SAVED_BY_DESIGN`: re-derived from the load order every boot.
 #[derive(Debug, Default, Clone)]
 pub struct PerkEntryTable {
     game: Option<GameKind>,
     perks: HashMap<u32, Arc<Vec<PerkEntryPointEntry>>>,
+    rank_limits: HashMap<u32, u8>,
 }
 
 impl Resource for PerkEntryTable {}
 
 impl PerkEntryTable {
-    /// Fold `index.perks` into composition entries. Entries whose function is
-    /// not value math, or whose parameters did not decode, are left out.
+    /// Fold `index.perks` into composition entries and rank limits. Entries
+    /// whose function is not value math, or whose parameters did not decode,
+    /// are left out of the composition table but retain their rank limit.
     pub fn from_index(index: &EsmIndex) -> Self {
         let game = index.game;
+        let rank_limits = index
+            .perks
+            .iter()
+            .map(|(&form_id, perk)| (form_id, perk.num_ranks))
+            .collect();
         if !matches!(game, GameKind::Fallout3NV | GameKind::Skyrim) {
-            return Self::default();
+            return Self {
+                game: None,
+                perks: HashMap::new(),
+                rank_limits,
+            };
         }
         let mut perks = HashMap::new();
         for (&form_id, perk) in &index.perks {
@@ -184,6 +195,7 @@ impl PerkEntryTable {
         Self {
             game: Some(game),
             perks,
+            rank_limits,
         }
     }
 
@@ -202,6 +214,12 @@ impl PerkEntryTable {
     /// The entries of one perk, if it contributes any.
     pub fn entries(&self, perk_form_id: u32) -> Option<&[PerkEntryPointEntry]> {
         self.perks.get(&perk_form_id).map(|entries| entries.as_slice())
+    }
+
+    /// The authored maximum rank for a PERK record, including perks with no
+    /// value-math entries. `None` means the FormID is not a known PERK.
+    pub fn num_ranks(&self, perk_form_id: u32) -> Option<u8> {
+        self.rank_limits.get(&perk_form_id).copied()
     }
 }
 
