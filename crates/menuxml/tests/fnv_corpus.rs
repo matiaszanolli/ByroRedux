@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use byroredux_bsa::BsaArchive;
 use byroredux_menuxml::font::Font;
 use byroredux_menuxml::menu::MenuAssets;
+use byroredux_menuxml::parse::{parse_document, MenuFileSource};
 use byroredux_menuxml::profile::MenuProfile;
 
 mod common;
@@ -75,6 +76,22 @@ fn open_assets() -> Option<NvAssets> {
     })
 }
 
+struct NoIncludes;
+
+struct ArchiveIncludes<'a>(&'a BsaArchive);
+
+impl MenuFileSource for NoIncludes {
+    fn menu_xml(&self, _path: &str) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+impl MenuFileSource for ArchiveIncludes<'_> {
+    fn menu_xml(&self, path: &str) -> Option<Vec<u8>> {
+        self.0.extract(path).ok()
+    }
+}
+
 /// The corpus facts the FNV profile + HUD driver depend on. The audit
 /// measured 121 menu XMLs in `Fallout - Misc.bsa`; the floor below only
 /// guards against wholesale corpus loss.
@@ -124,6 +141,44 @@ fn fnv_corpus_facts() {
             .unwrap_or_else(|| panic!("font {index} ({name}) atlas beside the .fnt"));
         Font::parse(&fnt, &atlas).unwrap_or_else(|e| panic!("font {index} parses: {e}"));
     }
+}
+
+/// #5902 — every FNV menu XML is parsed both with and without include
+/// splicing, with the vanilla corpus and tile totals pinned.
+#[test]
+#[ignore = "needs FNV game data on disk"]
+fn fnv_menu_xml_corpus_parses_with_exact_totals() {
+    let Some(assets) = open_assets() else {
+        return;
+    };
+    let xmls: Vec<String> = assets
+        .misc
+        .list_files()
+        .into_iter()
+        .filter(|path| path.to_ascii_lowercase().ends_with(".xml"))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(xmls.len(), 121, "FNV vanilla menu XML census changed");
+
+    let mut tiles = 0usize;
+    let mut spliced_tiles = 0usize;
+    let mut largest = 0usize;
+    for path in &xmls {
+        let bytes = assets.misc.extract(path).expect("extract FNV menu XML");
+        let text = String::from_utf8(bytes).expect("FNV menu XML is UTF-8");
+        let mut no_includes = NoIncludes;
+        let document = parse_document(&text, &mut no_includes);
+        assert!(!document.tiles.is_empty(), "{path} parsed empty");
+        tiles += document.tiles.len();
+        let included = parse_document(&text, &mut ArchiveIncludes(&assets.misc));
+        assert!(!included.tiles.is_empty(), "{path} parsed empty with includes");
+        largest = largest.max(included.tiles.len());
+        spliced_tiles += included.tiles.len();
+    }
+
+    assert_eq!(tiles, 1_060, "FNV un-spliced tile total changed");
+    assert_eq!(spliced_tiles, 2_206, "FNV include-spliced tile total changed");
+    assert_eq!(largest, 195, "FNV largest menu tile count changed");
 }
 
 /// #5669 — header census of every DDS under `textures\interface\`: the
