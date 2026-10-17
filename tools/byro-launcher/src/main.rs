@@ -19,12 +19,13 @@ mod preflight;
 mod settings_screen;
 mod state;
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let profiles_path = match parse_args(std::env::args().skip(1).collect()) {
+    let profiles_path = match parse_args(std::env::args_os().skip(1).collect()) {
         Ok(None) => {
             print_usage();
             return Ok(());
@@ -64,13 +65,13 @@ struct Options {
 /// (`--profile`) or a flag swallowed as a value (`--profiles --x`) must
 /// be a usage error rather than silently retargeting real writes at the
 /// default file. `Ok(None)` means `--help`.
-fn parse_args(args: Vec<String>) -> Result<Option<Options>, String> {
+fn parse_args(args: Vec<OsString>) -> Result<Option<Options>, String> {
     let mut options = Options::default();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-h" | "--help" => return Ok(None),
-            "--profiles" => {
+        match arg.to_str() {
+            Some("-h" | "--help") => return Ok(None),
+            Some("--profiles") => {
                 // #5476/#5739 — the shared strict arm; the cwd
                 // absolutisation matters because the engine is spawned
                 // with `current_dir(engine.parent())`, so a relative
@@ -82,7 +83,8 @@ fn parse_args(args: Vec<String>) -> Result<Option<Options>, String> {
                     return Err("--profiles given more than once".to_string());
                 }
             }
-            other => return Err(format!("unrecognised argument {other:?}")),
+            Some(other) => return Err(format!("unrecognised argument {other:?}")),
+            None => return Err(format!("unrecognised non-UTF-8 argument {arg:?}")),
         }
     }
     Ok(Some(options))
@@ -135,8 +137,8 @@ fn run_launcher(options: eframe::NativeOptions, profiles_path: PathBuf) -> efram
 mod tests {
     use super::*;
 
-    fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| (*s).to_owned()).collect()
+    fn args(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(|s| OsString::from(*s)).collect()
     }
 
     /// #5294 — the pre-fix scanner (`position(== "--profiles")` +
@@ -176,5 +178,27 @@ mod tests {
 
         // Help wins regardless of position.
         assert_eq!(parse_args(args(&["--profiles", "a", "--help"])), Ok(None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accepts_a_non_utf8_profiles_path_without_panicking() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let parsed = parse_args(vec![
+            OsString::from("--profiles"),
+            OsString::from_vec(b"/tmp/\xff-profiles.toml".to_vec()),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            parsed.profiles.unwrap().as_os_str().as_encoded_bytes(),
+            b"/tmp/\xff-profiles.toml"
+        );
+    }
+
+    #[test]
+    fn rejects_an_empty_profiles_path() {
+        assert!(parse_args(args(&["--profiles", ""])).is_err());
     }
 }

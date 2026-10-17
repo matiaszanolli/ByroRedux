@@ -16,6 +16,7 @@
 //! developer's: it records each detected data directory as a `[roots]` entry,
 //! which the engine's profile loader applies over the shipped registry.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -23,7 +24,7 @@ use byroredux_game_detect as detect;
 use byroredux_game_detect::validate::{Severity, ValidationReport};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let options = match parse_args(&args) {
         Ok(Some(options)) => options,
         Ok(None) => {
@@ -161,14 +162,14 @@ struct Options {
 /// (`--profile`) or a flag swallowed as a value (`--profiles --write`) must be
 /// a usage error rather than silently retargeting the write at the default
 /// profiles file.
-fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
+fn parse_args(args: &[OsString]) -> Result<Option<Options>, String> {
     let mut options = Options::default();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-h" | "--help" => return Ok(None),
-            "--write" => options.write = true,
-            "--profiles" => {
+        match arg.to_str() {
+            Some("-h" | "--help") => return Ok(None),
+            Some("--write") => options.write = true,
+            Some("--profiles") => {
                 // #5739 — the shared strict arm (#5167's usage errors,
                 // #5476's cwd absolutisation), beside `load_with_user_path`.
                 let path = byroredux_game_detect::profiles::parse_profiles_arg(&mut args)?;
@@ -176,7 +177,8 @@ fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
                     return Err("--profiles given more than once".to_string());
                 }
             }
-            other => return Err(format!("unrecognised argument {other:?}")),
+            Some(other) => return Err(format!("unrecognised argument {other:?}")),
+            None => return Err(format!("unrecognised non-UTF-8 argument {arg:?}")),
         }
     }
     Ok(Some(options))
@@ -207,7 +209,7 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Option<Options>, String> {
-        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        let args: Vec<OsString> = args.iter().map(OsString::from).collect();
         parse_args(&args)
     }
 
@@ -249,5 +251,24 @@ mod tests {
         assert!(parse(&["--profiles", "--write"]).is_err());
         assert!(parse(&["--profiles"]).is_err());
         assert!(parse(&["--profiles", "a", "--profiles", "b"]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accepts_a_non_utf8_profiles_path_without_panicking() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let args = vec![
+            OsString::from("--profiles"),
+            OsString::from_vec(b"/tmp/\xff-profiles.toml".to_vec()),
+        ];
+        let parsed = parse_args(&args).unwrap().unwrap();
+        let path = parsed.profiles.unwrap();
+        assert_eq!(path.as_os_str().as_encoded_bytes(), b"/tmp/\xff-profiles.toml");
+    }
+
+    #[test]
+    fn rejects_an_empty_profiles_path() {
+        assert!(parse(&["--profiles", ""]).is_err());
     }
 }

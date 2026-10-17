@@ -61,14 +61,14 @@ pub fn resolve_games_root(cli_arg: Option<&str>) -> PathBuf {
 /// names what was actually attempted. Shared by byro-detect and
 /// byro-launcher (previously two hand-synced copies, both edited by
 /// #5476 on the same day).
-pub fn absolutise_against_cwd(value: &str) -> PathBuf {
-    let value = PathBuf::from(value);
+pub fn absolutise_against_cwd(value: impl AsRef<std::path::Path>) -> PathBuf {
+    let value = value.as_ref();
     if value.is_absolute() {
-        return value;
+        return value.to_path_buf();
     }
     std::env::current_dir()
-        .map(|cwd| cwd.join(&value))
-        .unwrap_or(value)
+        .map(|cwd| cwd.join(value))
+        .unwrap_or_else(|_| value.to_path_buf())
 }
 
 /// #5739 — the strict `--profiles <path>` argument arm both tools share.
@@ -79,11 +79,13 @@ pub fn absolutise_against_cwd(value: &str) -> PathBuf {
 /// caller's distinct error to report, so this returns the parsed path
 /// only.
 pub fn parse_profiles_arg<'a>(
-    args: &mut impl Iterator<Item = &'a String>,
+    args: &mut impl Iterator<Item = &'a std::ffi::OsString>,
 ) -> Result<PathBuf, String> {
     let value = args
         .next()
-        .filter(|value| !value.starts_with('-'))
+        .filter(|value| {
+            !value.is_empty() && !value.to_string_lossy().starts_with('-')
+        })
         .ok_or_else(|| "--profiles needs a path".to_string())?;
     Ok(absolutise_against_cwd(value))
 }
