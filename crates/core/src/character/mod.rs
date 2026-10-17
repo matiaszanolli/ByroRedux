@@ -35,9 +35,9 @@
 //!   [`PoolRegenAccumulator`] (the fixed-step clock, mirrors
 //!   `crates/physics`'s accumulator) + [`PoolRegenConfig`] (per-game resolved
 //!   AVIF ids) + [`pool_regen_tick_system`] (the driver).
-//! * [`components`] — [`CharacterLevel`] / [`Perks`] / [`Background`] /
-//!   [`FactionReputation`] / [`FactionStanding`] / [`PerkRank`], the
-//!   structural per-actor ECS components.
+//! * [`components`] — [`CharacterLevel`] / [`LevelUpPoints`] / [`Perks`] /
+//!   [`Background`] / [`FactionReputation`] / [`FactionStanding`] /
+//!   [`PerkRank`], the structural per-actor ECS components.
 //! * [`attribute`] — [`Attribute`] / [`AttributeSet`]: the per-family
 //!   attribute roster (`FALLOUT` SPECIAL, `TES_CLASSIC`, and Skyrim's
 //!   deliberately empty set) plus its canonical ordering.

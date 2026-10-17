@@ -268,7 +268,7 @@ scheduler registration), not just present as a buildable function.
 | Ruleset wired (`CharacterRuleset`: derived-stat formulas + leveling model) | ~ built, unwired | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ |
 | NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ✓ pools + 18 skills | ✓ stored `PRPS`+`DNAM` | ✗ wire layout uncaptured (#4453) | ✗ wire layout uncaptured (#4453) |
 | Creature (`CREA`) actor-value population at spawn | ✗ `CREA.DATA` layout unsourced | ✓ SPECIAL + Health | ✓ SPECIAL + Health | n/a (no `CREA`) | n/a | n/a | n/a |
-| Runtime leveling (XP grant / level-up) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| Runtime leveling (XP grant / level-up) | ✗ | ✓ | ✓ | ~ | ~ | ✗ | ✗ |
 | Pool regen tick (Fatigue/Magicka — Health deliberately unmodelled, Stamina has no row; #4463) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
 | Affliction tick (radiation/disease/addiction) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
 
@@ -306,12 +306,16 @@ decoders (`crates/plugin/src/esm/reader.rs`, the `DNAM` tail flagged
 unconfirmed), but since #4453 their profiles pin `NpcStatModel::None` — the
 parse reaches no actor until a wire-layout capture lands (#4453).
 
-Leveling, pool regen, and affliction are uniformly `✗` across every game:
-`CharacterLevel.xp` is stamped `0` at spawn and nothing increments it;
-`pool_regen_tick_system` is registered in `Stage::Update` every frame but
-early-returns forever because its required `PoolRegenConfig` resource is
-inserted only inside unit tests, never in `byroredux/src/boot/`; `affliction_tick_system`
-is not registered in the scheduler at all.
+Runtime leveling is wired end to end for FO3/FNV and partially for FO4/Skyrim;
+Oblivion, FO76 and Starfield still have no live leveling path. `grant_experience`
+increments `CharacterLevel.xp`, rolls levels to the active model's cap and
+banks modeled rewards. Kill XP, `RewardPlayerXP`, `levelup xp` and Skyrim's
+`Game.AdvanceSkill` can reach it; see the Coverage Matrix above for each game's
+leveling coverage. Pool regen remains inert: `pool_regen_tick_system` is
+registered in `Stage::Update` every frame but early-returns forever because
+its required `PoolRegenConfig` resource is inserted only inside unit tests,
+never in `byroredux/src/boot/`. `affliction_tick_system` is not registered in
+the scheduler at all.
 
 ---
 
