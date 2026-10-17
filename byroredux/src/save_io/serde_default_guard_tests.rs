@@ -1098,7 +1098,15 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `Bleedout.remaining_secs` became `Option<f32>`.
     // 2026-10-16 (#5859) — refreshed WITH a major bump (v105 -> v106):
     // `ReferenceState` gained the required `bleedout` field.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x7ae3_7666_43bd_428b;
+    // 2026-10-16 (#5801) — refreshed WITHOUT a major bump: the
+    // `translate/effects.rs` split moved `Effect`, `FragmentGuard`,
+    // `GuardComparison`, `ValueExpr`, `ArithOp`, `ActorRef`, `ActorBaseRef`,
+    // `ItemCount`, `ActorValueArg`, `ActorValueReading` and
+    // `FragmentProviderCall` to `translate/effects/model.rs`, and `VmResume`,
+    // `VmFrame`, `VmStep`, `VmStored` to `translate/effects/vm_bridge.rs`.
+    // Path-stripped dumps of both sides are identical, so a save's JSON is
+    // byte-identical.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0e4b_1d88_bfd1_82e1;
     // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
     // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
     // keys each shape by its file, so the move alone shifted it; a dump of
