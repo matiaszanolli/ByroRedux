@@ -64,6 +64,15 @@ impl Variant {
             Variant::Bgem => "BGEM",
         }
     }
+
+    /// Exact file counts in the vanilla FO4 base Materials.ba2 archive
+    /// (no DLC), measured by the corpus census.
+    fn expected_count(self) -> usize {
+        match self {
+            Variant::Bgsm => 6_616,
+            Variant::Bgem => 283,
+        }
+    }
 }
 
 /// `"BGSM"` / `"BGEM"` read as little-endian u32 (the crate keeps its own
@@ -361,11 +370,12 @@ fn run_variant(expect: Variant) {
         stats.drift.len(),
         &stats.drift[..stats.drift.len().min(5)]
     );
-    assert!(
-        stats.total > 0,
-        "[{}] expected at least one {} file in the Materials archive",
+    assert_eq!(
+        stats.total,
+        expect.expected_count(),
+        "[{}] unexpected number of {} files in the vanilla Materials archive",
         expect.label(),
-        expect.label()
+        expect.label(),
     );
     assert!(
         stats.success_rate() >= MIN_SUCCESS_RATE,
@@ -463,9 +473,13 @@ fn parse_rate_fo76_materials_corpus() {
     for (path, err) in stats.failures.iter().take(10) {
         eprintln!("  FAIL {path}: {err}");
     }
-    assert!(
-        stats.total > 0,
-        "expected FO76 material files in SeventySix - Materials.ba2"
+    assert_eq!(
+        stats.total, 29_991,
+        "unexpected number of material files in SeventySix - Materials.ba2"
+    );
+    assert_eq!(
+        stats.json_text, 2,
+        "the FO76 Material-Editor JSON allowlist changed"
     );
     // The audit measured 29,989/29,991 OK with exactly 2 known JSON files;
     // both exceptions are accounted for above, so the remainder must be
