@@ -126,9 +126,13 @@ struct Observed {
 /// Feed every graph-driven actor's `Speed` / `Direction` variables and `moveStart` /
 /// `moveStop` events from its motion; see the module docs. Exclusive, after the movers.
 pub(crate) fn graph_locomotion_system(world: &World, dt: f32) {
-    let observed: Vec<Observed> = {
+    // Two phases so no guard is held across another acquisition: `Transform` is
+    // taken last and alone. Holding it while reading `WalkAnimation` / `Seated` /
+    // `Dead` / the cinematic state recorded `Transform` -> `WalkAnimation`, the
+    // reverse of the movers that hold `WalkAnimation` and then write `Transform`
+    // (a lock-order cycle under BYRO_LOCK_ORDER_CHECK=1).
+    let candidates: Vec<(EntityId, bool)> = {
         let Some(graphs) = world.query::<ObjectAnimationGraph>() else { return };
-        let Some(transforms) = world.query::<Transform>() else { return };
         let walkers = world.query::<WalkAnimation>();
         let seated = world.query::<Seated>();
         let dead = world.query::<Dead>();
@@ -136,16 +140,21 @@ pub(crate) fn graph_locomotion_system(world: &World, dt: f32) {
         graphs
             .iter()
             .filter(|(entity, _)| !walkers.as_ref().is_some_and(|walkers| walkers.contains(*entity)))
-            .filter_map(|(entity, _)| {
+            .map(|(entity, _)| {
+                let parked = seated.as_ref().is_some_and(|q| q.contains(entity))
+                    || dead.as_ref().is_some_and(|q| q.contains(entity))
+                    || cinematic.as_ref().is_some_and(|q| q.contains(entity));
+                (entity, parked)
+            })
+            .collect()
+    };
+    let observed: Vec<Observed> = {
+        let Some(transforms) = world.query::<Transform>() else { return };
+        candidates
+            .into_iter()
+            .filter_map(|(entity, parked)| {
                 let transform = transforms.get(entity)?;
-                Some(Observed {
-                    entity,
-                    position: transform.translation,
-                    rotation: transform.rotation,
-                    parked: seated.as_ref().is_some_and(|q| q.contains(entity))
-                        || dead.as_ref().is_some_and(|q| q.contains(entity))
-                        || cinematic.as_ref().is_some_and(|q| q.contains(entity)),
-                })
+                Some(Observed { entity, position: transform.translation, rotation: transform.rotation, parked })
             })
             .collect()
     };
@@ -402,6 +411,22 @@ mod tests {
         // Forward (-Z) turned a quarter by +90 degrees of yaw is -X.
         assert!((moved - Vec3::new(-10.0, 0.0, 0.0)).length() < 1e-4, "{moved:?}");
         assert_eq!(world.get::<RootMotionDelta>(actor).unwrap().0, Vec3::ZERO, "consumed");
+    }
+
+    /// The observation must never hold `Transform` across another acquisition: the walk
+    /// animation system takes `WalkAnimation` then `Transform`, so reading `WalkAnimation`
+    /// (or `Seated` / `Dead` / the cinematic state) under a live `Transform` guard closes
+    /// a lock-order cycle. Bites under `BYRO_LOCK_ORDER_CHECK=1` (the CI lock-order lane
+    /// and the engine bench), which records the first order and panics on the reverse.
+    #[test]
+    fn the_observation_does_not_hold_transform_across_another_acquisition() {
+        let (mut world, _actor) = world_with_actor();
+        world.register::<WalkAnimation>();
+        {
+            let _walkers = world.query::<WalkAnimation>().unwrap();
+            let _transforms = world.query::<Transform>().unwrap();
+        }
+        graph_locomotion_system(&world, 0.016);
     }
 
     /// A one-tick jump (a teleport) and a seated actor are not walking.
