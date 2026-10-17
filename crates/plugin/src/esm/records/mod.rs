@@ -58,7 +58,8 @@ pub use soun::{parse_sndr, parse_soun, SounRecord};
 
 pub use actor::{
     decode_ai_data, effective_actor_level, parse_clas, parse_fact, parse_npc, parse_race,
-    ActorAiData, Aggression, ClassRecord, Confidence, CreatureStats, FactionMembership,
+    ActorAiData, ActorResponsibility, Aggression, ClassRecord, Confidence, CreatureStats,
+    FactionMembership,
     FactionRecord, FactionRelation, NpcFaceMorphs, NpcInventoryEntry, NpcRecord, RaceRecord, SubgraphData, SubgraphRole,
     VendorData, ACBS_PC_LEVEL_MULT, CREATURE_DATA_LEN,
 };

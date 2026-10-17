@@ -179,6 +179,55 @@ fn fnv_spawned_actor_gets_derived_health_and_combat_consumes_it() {
     );
 }
 
+#[test]
+fn skyrim_spawn_seeds_morality_from_inherited_aidt_responsibility() {
+    use byroredux_core::character::CharacterRulesProfile;
+    use byroredux_plugin::esm::records::{
+        ActorAiData, ActorResponsibility, Aggression, AvifRecord, Confidence,
+    };
+
+    let morality = 0x620;
+    let mut index = EsmIndex {
+        character_rules: CharacterRulesProfile::SKYRIM,
+        ..EsmIndex::default()
+    };
+    index.actor_values.insert(
+        morality,
+        AvifRecord {
+            form_id: morality,
+            editor_id: "AVMorality".to_owned(),
+            ..AvifRecord::default()
+        },
+    );
+    let template = NpcRecord {
+        form_id: 0x1000,
+        ai_data: Some(ActorAiData {
+            aggression: Aggression::Unaggressive,
+            confidence: Confidence::Average,
+            responsibility: Some(ActorResponsibility::NoCrime),
+            attack_radius: None,
+        }),
+        ..NpcRecord::default()
+    };
+    index.npcs.insert(template.form_id, template);
+    let npc = NpcRecord {
+        form_id: 0x1001,
+        template_form_id: 0x1000,
+        template_flags: byroredux_plugin::equip::TEMPLATE_FLAG_USE_AI_DATA,
+        ..NpcRecord::default()
+    };
+
+    let mut world = World::new();
+    world.register::<ActorValues>();
+    let actor = world.spawn();
+    stamp_actor_values(&mut world, actor, &ResolvedNpc::resolve(&npc, &index), &index);
+
+    let values = world
+        .get::<ActorValues>(actor)
+        .expect("the AIDT Morality value must seed ActorValues");
+    assert_eq!(values.current(morality), 3.0);
+}
+
 // ── M41.5 Phase A — idle desync + pool selection ──────────────────
 
 /// #3390 — a placed FNV creature must reach the world with `ActorVitals`.

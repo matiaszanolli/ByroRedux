@@ -1353,6 +1353,7 @@ mod tests {
             ai_data: Some(ActorAiData {
                 aggression: Aggression::VeryAggressive,
                 confidence: Confidence::Average,
+                responsibility: None,
                 attack_radius: None,
             }),
             ..Default::default()

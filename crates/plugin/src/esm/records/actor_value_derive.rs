@@ -228,6 +228,20 @@ pub fn derive_resolved_actor_values(
         NpcStatModel::CreatureData => derive_creature_actor_values(stats, index),
         NpcStatModel::None => Vec::new(),
     };
+    // Skyrim's AIDT responsibility is the authored Morality AV consumed by
+    // dialogue/bribe formulas. Resolve it through the Use-AI-Data chain, just
+    // like the combat disposition stamp, and preserve a more specific value
+    // if the stat model already supplied Morality.
+    if let (Some(ai), Some(morality)) = (
+        resolved.ai_data.ai_data,
+        index.actor_value_form_id("Morality"),
+    ) {
+        if let Some(responsibility) = ai.responsibility {
+            if !values.iter().any(|(id, _)| *id == morality) {
+                values.push((morality, responsibility as u8 as f32));
+            }
+        }
+    }
     // #4447 — the body-condition seeding base is profile data
     // (`CharacterRulesProfile::body_condition_base`: FO3/FNV = 100 per the
     // GECK Stats List, every other family = none), not a `game ==` kind

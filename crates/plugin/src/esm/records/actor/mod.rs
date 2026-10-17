@@ -34,11 +34,25 @@ pub enum Confidence {
     Foolhardy,
 }
 
+/// Skyrim `AIDT` Responsibility (`wbResponsibilityEnum`), also exposed as
+/// the NPC's Morality actor value for dialogue and bribe formulas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ActorResponsibility {
+    AnyCrime = 0,
+    ViolenceAgainstEnemies = 1,
+    PropertyCrimeOnly = 2,
+    NoCrime = 3,
+}
+
 /// #4414 — the `AIDT` combat-start inputs, canonical across games.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ActorAiData {
     pub aggression: Aggression,
     pub confidence: Confidence,
+    /// Skyrim `AIDT` responsibility byte @3; other game layouts leave it
+    /// unset. Its numeric value is the Skyrim Morality actor value.
+    pub responsibility: Option<ActorResponsibility>,
     /// With "Aggro Radius Behavior" set, the distance inside which a
     /// Neutral or Enemy is attacked at once. Skyrim/FO4 author it as the
     /// Attack radius; FO3/FNV author one Aggro Radius and the GECK says a
@@ -48,6 +62,7 @@ pub struct ActorAiData {
 }
 
 /// #4414 — `AIDT` per game (xEdit `wbAIDT`): aggression @0, confidence @1;
+/// Skyrim responsibility @3;
 /// FO3/FNV aggro-radius behaviour bool @15 and radius s32 @16; Skyrim/FO4
 /// flags @6 (bit 0 = aggro-radius behaviour), Attack radius u32 @16.
 pub fn decode_ai_data(data: &[u8], game: GameKind) -> Option<ActorAiData> {
@@ -69,6 +84,17 @@ pub fn decode_ai_data(data: &[u8], game: GameKind) -> Option<ActorAiData> {
         4 => Confidence::Foolhardy,
         _ => return None,
     };
+    let responsibility = if game == GameKind::Skyrim {
+        match data[3] {
+            0 => Some(ActorResponsibility::AnyCrime),
+            1 => Some(ActorResponsibility::ViolenceAgainstEnemies),
+            2 => Some(ActorResponsibility::PropertyCrimeOnly),
+            3 => Some(ActorResponsibility::NoCrime),
+            _ => None,
+        }
+    } else {
+        None
+    };
     let word = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
     let attack_radius = if game == GameKind::Fallout3NV {
         (data[15] != 0).then(|| word(16) as i32 as f32 / 2.0)
@@ -79,6 +105,7 @@ pub fn decode_ai_data(data: &[u8], game: GameKind) -> Option<ActorAiData> {
     Some(ActorAiData {
         aggression,
         confidence,
+        responsibility,
         attack_radius,
     })
 }

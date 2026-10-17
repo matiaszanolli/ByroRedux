@@ -83,6 +83,38 @@ fn npc_extracts_race_class_factions_inventory() {
     assert_eq!(n.level, 5);
 }
 
+#[test]
+fn skyrim_npc_decodes_aidt_responsibility_for_morality() {
+    for (raw, expected) in [
+        (0, ActorResponsibility::AnyCrime),
+        (1, ActorResponsibility::ViolenceAgainstEnemies),
+        (2, ActorResponsibility::PropertyCrimeOnly),
+        (3, ActorResponsibility::NoCrime),
+    ] {
+        let mut aidt = [0u8; 20];
+        aidt[0] = 1; // Aggressive
+        aidt[1] = 2; // Average confidence
+        aidt[3] = raw;
+        let npc = parse_npc(0x1234, &[sub(b"AIDT", &aidt)], GameKind::Skyrim, &None);
+        assert_eq!(
+            npc.ai_data.and_then(|data| data.responsibility),
+            Some(expected),
+            "AIDT responsibility {raw} must preserve its Morality value"
+        );
+    }
+
+    let mut aidt = [0u8; 20];
+    aidt[0] = 1;
+    aidt[1] = 2;
+    aidt[3] = 3;
+    let fallout = parse_npc(0x1234, &[sub(b"AIDT", &aidt)], GameKind::Fallout3NV, &None);
+    assert_eq!(
+        fallout.ai_data.and_then(|data| data.responsibility),
+        None,
+        "the Skyrim responsibility interpretation must not leak into Fallout AIDT"
+    );
+}
+
 /// #1650 — Oblivion's 16-byte ACBS (no disposition / template field)
 /// must parse via the `GameKind::Oblivion` arm. Pre-fix the 16-byte
 /// payload never reached the `>= 24` FNV arm, so every Oblivion actor

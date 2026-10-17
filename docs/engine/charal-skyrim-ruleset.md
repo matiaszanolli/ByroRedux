@@ -85,6 +85,11 @@ v11 = (NpcLevel × fBribeNPCLevelMult + PlayerLevel) − ((PlayerSpeech − NpcS
 bribeValue = v11 ^ fBribeCostCurve × fBribeScale × NpcMorality
 ```
 Bribe success is just "player has ≥ bribeValue gold" — no roll.
+The Morality AV comes from the NPC's Skyrim `AIDT` Responsibility byte
+(`wbResponsibilityEnum`): 0 Any Crime, 1 Violence Against Enemies,
+2 Property Crime Only, 3 No Crime. The NPC's resolved "Use AI Data" template
+source supplies this value. Source: [UESP Skyrim:Followers]
+(https://en.uesp.net/wiki/Skyrim:Followers) and xEdit `wbAIDT`.
 
 None of these three are CHARAL derived stats; they're gameplay-system
 consumers of the Speech AV, same routing as Pickpocket above.
