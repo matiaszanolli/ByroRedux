@@ -142,9 +142,11 @@ pub(crate) use nif_import_registry::{
 };
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use refr::{
-    build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements,
-    expand_scol_placements_if, scol_cm_path,
+    build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements_if, scol_cm_path,
 };
+// The no-predicate wrapper is only what the expansion tests call (#5523).
+#[cfg(test)]
+pub(crate) use refr::expand_scol_placements;
 
 pub(crate) use euler::euler_zup_to_quat_yup_refr;
 pub use euler::set_refr_rotation_mode_diag;
@@ -613,7 +615,7 @@ mod reference_enable_gate_tests;
 #[cfg(test)]
 mod scripted_lock_gate_tests;
 #[cfg(test)]
-mod refr_texture_overlay_tests;
+pub(crate) mod refr_texture_overlay_tests;
 #[cfg(test)]
 mod root_index_tests;
 #[cfg(test)]
