@@ -23,22 +23,17 @@
 //!   `byroredux_scripting::condition::resolve_entity_by_global_form_id`
 //!   resolves it to a live [`EntityId`], and that entity's
 //!   [`GlobalTransform`] gives the destination.
-//! - On any miss (unresolved target, or no target FormID at all): fall
-//!   back to `super::wander::pick_wander_target` (reused directly, not
+//! - With no target FormID, or after the retry window for an unresolved
+//!   target: fall back to `super::wander::pick_wander_target` (reused directly, not
 //!   duplicated) — a hash-picked point within `radius` of the actor's own
 //!   spawn position, the same v0 approximation Wander uses.
 //!
-//! This resolution happens once, lazily, on `travel_system`'s first tick
-//! per actor — i.e. *after* the whole cell has finished loading, which
-//! sidesteps the same-pass spawn-ordering concern Sandbox's 2026-07-14
-//! `NearReference` investigation raised (a target later in the same
-//! REFR list not being live yet doesn't apply here — by the time any
-//! system's first tick runs, the whole cell is loaded). It still won't
-//! resolve most targets: that investigation found only ~12% of
-//! `NearReference` targets resolve to anything spawnable at all (most
-//! are off-cell, or the hardcoded XMarker family `cell_loader` never
-//! spawns) — this system inherits that same ceiling, just from a
-//! strictly better vantage point than a spawn-time attempt would have had.
+//! A missing authored target is retried for [`ANCHOR_RETRY_SECS`] before
+//! Travel falls back to its hash-picked point. The scheduler can run between
+//! budgeted cell-load slices, so a target whose REFR sorts after the actor
+//! may become live during that window. Targets that remain unavailable
+//! (including off-cell and unspawned XMarker references) still use the
+//! documented fallback.
 //!
 //! ## v0 scope (mirrors `wander.rs`'s documented approximations)
 //!
@@ -75,7 +70,11 @@ use byroredux_core::ecs::components::{
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_scripting::condition::resolve_entity_by_global_form_id;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+
+/// Seconds to keep retrying a missing PLDT reference before using the
+/// procedure's documented fallback. Shared with Eat/Sleep anchor retries.
+pub(crate) const ANCHOR_RETRY_SECS: f32 = 2.0;
 
 /// Fallback pick radius (world units) around an actor's spawn position,
 /// used when `TravelBehavior.radius` is `None` (no PLDT / radius 0) *and*
@@ -107,6 +106,38 @@ pub(crate) fn resolve_near_reference_target(
     world
         .get::<GlobalTransform>(target_entity)
         .map(|gt| gt.translation)
+}
+
+/// Whether to defer a fallback while a `NearReference` target may still be
+/// arriving in the budgeted cell load. A missing reference gets one full
+/// retry window before the caller may use its procedure-specific fallback.
+pub(crate) fn defer_unresolved_reference(
+    world: &World,
+    target_form_id: Option<u32>,
+    entity: EntityId,
+    dt: f32,
+    retries: &mut HashMap<EntityId, f32>,
+) -> bool {
+    if target_form_id.is_none() || resolve_near_reference_target(world, target_form_id).is_some() {
+        retries.remove(&entity);
+        return false;
+    }
+
+    match retries.get_mut(&entity) {
+        Some(remaining) => {
+            *remaining -= dt.max(0.0);
+            if *remaining > 0.0 {
+                true
+            } else {
+                retries.remove(&entity);
+                false
+            }
+        }
+        None => {
+            retries.insert(entity, ANCHOR_RETRY_SECS);
+            true
+        }
+    }
 }
 
 /// Resolve (or pick) a `NearReference`-anchored destination once, on first
@@ -190,6 +221,7 @@ impl super::navmesh_path::WalkDecision for TravelDecision {
 struct TravelScratch {
     pending: Vec<TravelPending>,
     decisions: Vec<TravelDecision>,
+    anchor_retry: HashMap<EntityId, f32>,
 }
 
 /// Drive straight-line walk-to-destination-once locomotion for every
@@ -200,8 +232,10 @@ struct TravelScratch {
 /// them.
 fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     let Some(behavior_q) = world.query::<TravelBehavior>() else {
+        scratch.anchor_retry.clear();
         return;
     };
+    scratch.anchor_retry.retain(|entity, _| behavior_q.contains(*entity));
 
     // ── Pass 1a: resolve destinations (reads only; `resolve_destination`
     // may itself read `GlobalTransform`, so `PhysicsWorld` is NOT acquired
@@ -234,14 +268,28 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             let current = transform.translation;
             let state = state_q.as_ref().and_then(|q| q.get(entity)).copied();
             let destination = match state {
-                Some(s) => s.destination,
-                None => resolve_destination(
-                    world,
-                    behavior.target_form_id,
-                    behavior.radius.unwrap_or(TRAVEL_DEFAULT_RADIUS),
-                    behavior.form_id,
-                    current,
-                ),
+                Some(s) => {
+                    scratch.anchor_retry.remove(&entity);
+                    s.destination
+                }
+                None => {
+                    if defer_unresolved_reference(
+                        world,
+                        behavior.target_form_id,
+                        entity,
+                        dt,
+                        &mut scratch.anchor_retry,
+                    ) {
+                        continue;
+                    }
+                    resolve_destination(
+                        world,
+                        behavior.target_form_id,
+                        behavior.radius.unwrap_or(TRAVEL_DEFAULT_RADIUS),
+                        behavior.form_id,
+                        current,
+                    )
+                }
             };
 
             // EX-16 item 3 Phase 3: reuse the cached path if it was
@@ -411,6 +459,35 @@ mod tests {
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 
     #[test]
+    fn unresolved_reference_fallback_waits_for_the_shared_retry_window() {
+        let mut world = World::new();
+        let actor = world.spawn();
+        let mut retries = HashMap::new();
+        assert!(defer_unresolved_reference(
+            &world,
+            Some(0x1234),
+            actor,
+            0.0,
+            &mut retries
+        ));
+        assert!(defer_unresolved_reference(
+            &world,
+            Some(0x1234),
+            actor,
+            ANCHOR_RETRY_SECS * 0.5,
+            &mut retries
+        ));
+        assert!(!defer_unresolved_reference(
+            &world,
+            Some(0x1234),
+            actor,
+            ANCHOR_RETRY_SECS * 0.5,
+            &mut retries
+        ));
+        assert!(retries.is_empty(), "expired timers are removed before fallback");
+    }
+
+    #[test]
     fn travel_system_falls_back_to_hash_pick_with_no_target_and_no_physics() {
         // No target_form_id, no PhysicsWorld — same shape as
         // wander_system's no-physics test. Must move and lazily insert
@@ -504,6 +581,61 @@ mod tests {
             Vec3::new(300.0, 10.0, 400.0),
             "destination must be the resolved target's live position, not a hash-picked fallback"
         );
+    }
+
+    #[test]
+    fn travel_retries_a_near_reference_that_spawns_after_the_actor() {
+        let mut world = World::new();
+        world.register::<TravelBehavior>();
+        world.register::<TravelState>();
+        world.register::<Traveled>();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<FormIdComponent>();
+        world.insert_resource(FormIdPool::default());
+
+        // Spawn the package actor first; its referenced REFR is still in a
+        // later budgeted cell-load slice.
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            actor,
+            TravelBehavior {
+                radius: Some(200.0),
+                target_form_id: Some(0x0001_59E2),
+                form_id: 0x0004_0004,
+            },
+        );
+        let mut scratch = TravelScratch::default();
+        travel_system_inner(&world, 0.0, &mut scratch);
+        assert!(
+            world.get::<TravelState>(actor).is_none(),
+            "a missing target must not freeze the first fallback into TravelState"
+        );
+        assert_eq!(
+            world.get::<Transform>(actor).expect("transform").translation,
+            Vec3::ZERO,
+            "the actor waits while its authored target may still spawn"
+        );
+
+        let mut pool = world.remove_resource::<FormIdPool>().expect("pool");
+        let fid = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(0x0001_59E2),
+        });
+        world.insert_resource(pool);
+        let target = world.spawn();
+        let destination = Vec3::new(300.0, 10.0, 400.0);
+        world.insert(target, FormIdComponent(fid));
+        world.insert(target, GlobalTransform::new(destination, Quat::IDENTITY, 1.0));
+
+        travel_system_inner(&world, 0.1, &mut scratch);
+        assert_eq!(
+            world.get::<TravelState>(actor).expect("state").destination,
+            destination,
+            "the retry picks up the later-spawned authored target"
+        );
+        assert!(scratch.anchor_retry.is_empty());
     }
 
     /// M47.2 — arriving reports the active package's completion (once), so

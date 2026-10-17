@@ -13,10 +13,11 @@
 //! 1. **Collect** — close to the PTDT target's *live* position (re-read
 //!    every tick, exactly like `follow_system`) until within
 //!    [`ESCORT_COLLECT_DISTANCE`].
-//! 2. **Lead** — resolve the PLDT destination once (exactly like
-//!    `travel_system`'s `resolve_destination`, same `NearReference`-or-
-//!    hash-pick fallback) and walk straight there, tagging [`Escorted`]
-//!    on arrival — a terminal marker mirroring [`super::travel::Traveled`].
+//! 2. **Lead** — resolve the PLDT destination after the shared retry window
+//!    for a missing `NearReference`, then use the same hash-pick fallback
+//!    as `travel_system` if it remains unavailable. Walk there, tagging
+//!    [`Escorted`] on arrival — a terminal marker mirroring
+//!    [`super::travel::Traveled`].
 //!
 //! ## No target to collect
 //!
@@ -66,7 +67,9 @@
 
 use super::locomotion::{step_along_waypoints, LOCOMOTION_ARRIVAL_EPSILON};
 use super::navmesh_path::resolve_cached_waypoints;
-use super::travel::resolve_destination as resolve_travel_destination;
+use super::travel::{
+    defer_unresolved_reference, resolve_destination as resolve_travel_destination,
+};
 use crate::components::{NavPath, NavmeshTile};
 use byroredux_core::ecs::components::{
     EscortBehavior, EscortState, Escorted, GlobalTransform, Transform,
@@ -74,7 +77,7 @@ use byroredux_core::ecs::components::{
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_scripting::condition::resolve_entity_by_global_form_id;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// Distance (world units) within which the target is considered
 /// "collected" — the collect phase ends and the lead phase begins.
@@ -208,6 +211,7 @@ impl super::navmesh_path::WalkDecision for EscortDecision {
 struct EscortScratch {
     pending: Vec<EscortPending>,
     decisions: Vec<EscortDecision>,
+    destination_retry: HashMap<EntityId, f32>,
 }
 
 /// Drive the two-phase collect-then-lead locomotion for every
@@ -220,8 +224,12 @@ struct EscortScratch {
 /// `GlobalTransform`.
 fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
     let Some(behavior_q) = world.query::<EscortBehavior>() else {
+        scratch.destination_retry.clear();
         return;
     };
+    scratch
+        .destination_retry
+        .retain(|entity, _| behavior_q.contains(*entity));
 
     // ── Pass 1a: resolve targets/destinations (reads only). Both the
     // collect target's live position and `resolve_destination`'s
@@ -308,6 +316,15 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
             };
 
             if collected {
+                if defer_unresolved_reference(
+                    world,
+                    behavior.destination_form_id,
+                    entity,
+                    dt,
+                    &mut scratch.destination_retry,
+                ) {
+                    continue;
+                }
                 // Transition into the lead phase this tick — resolve the
                 // destination and start walking immediately, mirroring
                 // travel_system moving on the very tick it resolves. A
@@ -537,6 +554,43 @@ mod tests {
             state.destination.is_some(),
             "must resolve a lead-phase destination immediately"
         );
+    }
+
+    #[test]
+    fn escort_lead_retries_a_destination_that_spawns_after_the_actor() {
+        let mut world = World::new();
+        register_all(&mut world);
+
+        // No PTDT target means Escort enters its lead phase immediately, but
+        // the destination REFR has not been spawned by this load slice yet.
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            actor,
+            EscortBehavior {
+                target_form_id: None,
+                destination_form_id: Some(0x0007_0001),
+                destination_radius: Some(200.0),
+                collect_distance: None,
+                form_id: 0x0007_0002,
+            },
+        );
+        let mut scratch = EscortScratch::default();
+        escort_system_inner(&world, 0.0, &mut scratch);
+        assert!(
+            world.get::<EscortState>(actor).is_none(),
+            "a missing lead destination must not be frozen as the fallback"
+        );
+
+        let destination = Vec3::new(300.0, 10.0, 400.0);
+        spawn_entity_at(&mut world, 0x0007_0001, destination);
+        escort_system_inner(&world, 0.1, &mut scratch);
+        assert_eq!(
+            world.get::<EscortState>(actor).expect("state").destination,
+            Some(destination),
+            "the lead phase retries and uses the later-spawned PLDT target"
+        );
+        assert!(scratch.destination_retry.is_empty());
     }
 
     #[test]

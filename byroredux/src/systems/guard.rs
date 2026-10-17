@@ -11,6 +11,7 @@
 //! **fallback differs from Travel's on purpose**: Travel picks a random
 //! point within radius because its whole job is "go explore somewhere";
 //! Guard's job is "hold a post", so a package with no resolvable anchor
+//! retries a missing `NearReference` for the shared anchor window, then
 //! falls back to the actor's own spawn position — the same "center is the
 //! actor's own position" convention `SandboxBehavior`/`WanderBehavior` use
 //! for their search/wander center, not Travel's "wander to a random point"
@@ -69,7 +70,7 @@ use crate::components::{NavPath, NavmeshTile};
 use byroredux_core::ecs::components::{GuardBehavior, GuardState, Transform};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// Fallback leash tolerance (world units) around a guard's anchor, used
 /// when `GuardBehavior.radius` is `None` (no PLDT / radius 0). Same scale
@@ -83,8 +84,8 @@ const GUARD_DEFAULT_RADIUS: f32 = super::locomotion::AI_PACKAGE_DEFAULT_RADIUS;
 /// `travel_system::resolve_near_reference_target` (shared with
 /// Travel/Escort — #2561, this module previously duplicated that logic
 /// inline), falling back to `home` — the actor's own spawn position — on
-/// any miss. See this module's doc for why the fallback is `home` rather
-/// than Travel's random-pick-within-radius.
+/// any miss after the shared retry window. See this module's doc for why the
+/// fallback is `home` rather than Travel's random-pick-within-radius.
 fn resolve_anchor(world: &World, behavior: &GuardBehavior, home: Vec3) -> Vec3 {
     super::travel::resolve_near_reference_target(world, behavior.anchor_form_id).unwrap_or(home)
 }
@@ -150,6 +151,7 @@ impl super::navmesh_path::WalkDecision for GuardDecision {
 struct GuardScratch {
     pending: Vec<GuardPending>,
     decisions: Vec<GuardDecision>,
+    anchor_retry: HashMap<EntityId, f32>,
 }
 
 /// Drive anchor-hold-and-return locomotion for every [`GuardBehavior`]
@@ -159,8 +161,10 @@ struct GuardScratch {
 /// position for them.
 fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
     let Some(behavior_q) = world.query::<GuardBehavior>() else {
+        scratch.anchor_retry.clear();
         return;
     };
+    scratch.anchor_retry.retain(|entity, _| behavior_q.contains(*entity));
 
     // ── Pass 1a: resolve anchors (reads only; `resolve_anchor` may itself
     // read `GlobalTransform`, so `PhysicsWorld` is NOT acquired in this
@@ -190,8 +194,20 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
             let existing_state = state_q.as_ref().and_then(|q| q.get(entity)).copied();
 
             let (anchor, state) = match existing_state {
-                Some(s) => (s.anchor, None),
+                Some(s) => {
+                    scratch.anchor_retry.remove(&entity);
+                    (s.anchor, None)
+                }
                 None => {
+                    if super::travel::defer_unresolved_reference(
+                        world,
+                        behavior.anchor_form_id,
+                        entity,
+                        dt,
+                        &mut scratch.anchor_retry,
+                    ) {
+                        continue;
+                    }
                     let anchor = resolve_anchor(world, behavior, current);
                     (anchor, Some(GuardState { anchor }))
                 }
@@ -419,6 +435,54 @@ mod tests {
             Vec3::new(300.0, 10.0, 400.0),
             "anchor must be the resolved target's live position, not a hash-picked fallback"
         );
+    }
+
+    #[test]
+    fn guard_retries_an_anchor_that_spawns_after_the_actor() {
+        let mut world = World::new();
+        world.register::<GuardBehavior>();
+        world.register::<GuardState>();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<FormIdComponent>();
+        world.insert_resource(FormIdPool::default());
+
+        // The guard wins its package before the referenced post is spawned.
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            actor,
+            GuardBehavior {
+                anchor_form_id: Some(0x000B_0001),
+                radius: None,
+                form_id: 0x000B_0002,
+            },
+        );
+        let mut scratch = GuardScratch::default();
+        guard_system_inner(&world, 0.0, &mut scratch);
+        assert!(
+            world.get::<GuardState>(actor).is_none(),
+            "a missing post must not freeze the guard at its spawn position"
+        );
+
+        let mut pool = world.remove_resource::<FormIdPool>().expect("pool");
+        let fid = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(0x000B_0001),
+        });
+        world.insert_resource(pool);
+        let anchor = world.spawn();
+        let destination = Vec3::new(300.0, 10.0, 400.0);
+        world.insert(anchor, FormIdComponent(fid));
+        world.insert(anchor, GlobalTransform::new(destination, Quat::IDENTITY, 1.0));
+
+        guard_system_inner(&world, 0.1, &mut scratch);
+        assert_eq!(
+            world.get::<GuardState>(actor).expect("state").anchor,
+            destination,
+            "the retry picks up the later-spawned authored post"
+        );
+        assert!(scratch.anchor_retry.is_empty());
     }
 
     #[test]

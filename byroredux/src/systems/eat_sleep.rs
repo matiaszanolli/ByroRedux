@@ -83,7 +83,7 @@ const SEAT_RETRY_SECS: f32 = 2.0;
 /// same reason: a cell that becomes resident or a reference that finishes
 /// loading is picked up within one in-game minute, without a map probe (and
 /// a lowercase cell-key allocation) per idle actor per frame.
-const ANCHOR_RETRY_SECS: f32 = SEAT_RETRY_SECS;
+const ANCHOR_RETRY_SECS: f32 = super::travel::ANCHOR_RETRY_SECS;
 
 /// One world-space seat: `((furniture entity, marker index), transform)`.
 type Seat = ((EntityId, u32), GlobalTransform);
