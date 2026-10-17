@@ -410,7 +410,9 @@ pub fn skyrim_class_skill_points(weights: &[u8; 18], level: i32) -> [i32; 18] {
     }
     let mut leftover = total - sets * sum;
     let mut order: Vec<usize> = (0..18).filter(|&i| weights[i] > 0).collect();
-    order.sort_by_key(|&i| (std::cmp::Reverse(weights[i]), i));
+    // Skyrim's class-skill allocation breaks equal weights by descending
+    // actor-value index, as confirmed against Skyrim.esm's NPC DNAM values.
+    order.sort_by_key(|&i| (std::cmp::Reverse(weights[i]), std::cmp::Reverse(i)));
     let mut taken = [0i32; 18];
     while leftover > 0 {
         let mut progressed = false;
@@ -1950,6 +1952,15 @@ mod tests {
     /// all six, a second to the two heaviest.
     #[test]
     fn skyrim_class_points_follow_the_documented_assignment_order() {
+        // Level 2 earns 8 points. With three weight-2 skills the 2-point
+        // remainder cuts the tied round after the two highest AVIFs.
+        let mut tied_weights = [0u8; 18];
+        tied_weights[0] = 2;
+        tied_weights[1] = 2;
+        tied_weights[2] = 2;
+        let tied = skyrim_class_skill_points(&tied_weights, 2);
+        assert_eq!((tied[0], tied[1], tied[2]), (2, 3, 3));
+
         let mut weights = [0u8; 18];
         for (index, weight) in [(22, 4), (17, 3), (23, 2), (21, 2), (16, 2), (10, 2)] {
             weights[index - 6] = weight;
