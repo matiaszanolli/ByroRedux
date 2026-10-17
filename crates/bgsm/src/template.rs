@@ -32,6 +32,14 @@ use std::sync::Arc;
 /// filesystem-agnostic — integrations wrap Materials.ba2 extraction,
 /// loose-file lookup, or a test-harness HashMap.
 pub trait TemplateResolver {
+    /// Return the cache and cycle-detection key for `path`. Integrations
+    /// whose files can be named in more than one way (for example, with or
+    /// without a `materials\\` prefix) should map those aliases to one key.
+    /// The default only folds case, preserving the historical behavior.
+    fn canonicalize(&self, path: &str) -> String {
+        path.to_ascii_lowercase()
+    }
+
     /// Return the raw bytes of a BGSM file referenced by its
     /// case-insensitive path. `None` means "not found"; the resolver
     /// returns the empty body as `Some(vec![])` if the archive does
@@ -110,7 +118,8 @@ pub enum ResolveError {
     DepthLimit { path: String, limit: usize },
 }
 
-/// LRU cache of resolved template chains. Keyed by lowercase path.
+/// LRU cache of resolved template chains. Keys come from the resolver's
+/// canonicalization hook; the default is a lowercase path.
 ///
 /// Eviction is insertion-order: the oldest key is dropped when the
 /// cache exceeds `capacity`. Good enough for the template use case —
@@ -118,7 +127,7 @@ pub enum ResolveError {
 /// transitive one-off leafs get evicted first.
 pub struct TemplateCache {
     capacity: usize,
-    /// Keyed by lowercase path. Each entry's `parent` points at
+    /// Keyed by canonical path. Each entry's `parent` points at
     /// another resolved chain that may or may not still be in the
     /// cache — `Arc` makes that safe.
     entries: HashMap<String, Arc<ResolvedMaterial>>,
@@ -151,8 +160,8 @@ impl TemplateCache {
     /// Whether a resolved chain for `path` is already cached, without
     /// resolving (and therefore without touching the archive).
     ///
-    /// Lowercases like [`Self::resolve`] and [`Self::insert_resolved`] so the
-    /// answer matches what those would key on. Added for #3899: the engine's
+    /// Lowercases `path`; with a custom [`TemplateResolver::canonicalize`],
+    /// pass the already-canonicalized key. Added for #3899: the engine's
     /// magic peek needs to know "have we already parsed this?" — a cache hit
     /// implies the material kind, which is the whole answer the peek was
     /// re-extracting and re-inflating the file to compute.
@@ -171,8 +180,9 @@ impl TemplateCache {
     /// documents, where a mirror silently diverged from production and the
     /// suite stayed green.
     ///
-    /// Keys are lowercased like [`Self::resolve`]'s, and the entry
-    /// participates in normal LRU bookkeeping.
+    /// The path should already use the resolver's canonical form; this
+    /// method lowercases it and the entry participates in normal LRU
+    /// bookkeeping.
     pub fn insert_resolved(&mut self, path: &str, resolved: Arc<ResolvedMaterial>) {
         self.insert(path.to_ascii_lowercase(), resolved);
     }
@@ -181,10 +191,9 @@ impl TemplateCache {
     /// to return `Arc::ptr_eq`-identical results between calls as long
     /// as the entry stays in the cache.
     ///
-    /// **Cyclic chains are the exception** and are deliberately never
-    /// cached — see [`Self::resolve_depth`] (#2701). They re-parse on
-    /// every resolve, which is the price of load-order-independent
-    /// results on broken authoring.
+    /// **Multi-file cyclic chains are the exception** and are deliberately
+    /// never cached — see [`Self::resolve_depth`] (#2701). A self-reference
+    /// is cut at its own node and can be cached safely.
     pub fn resolve<R: TemplateResolver>(
         &mut self,
         resolver: &mut R,
@@ -225,12 +234,12 @@ impl TemplateCache {
     /// resolve `C` fresh, hit that cached `B`, and produce
     /// `D → C → B → C(end)` — a chain with `C` on it twice.
     ///
-    /// `visited` tracks the canonicalised (lowercase) keys of every
-    /// ancestor on the current walk. When a parent's key matches an
-    /// ancestor (`A → B → A` self-ref, or any longer cycle), the
-    /// parent is parsed but its own `parent` chain is terminated —
-    /// the cycle-anchor's authored fields still surface via
-    /// [`ResolvedMaterial::walk`], but the walker won't loop. See
+    /// `visited` tracks the resolver-canonicalised keys of every ancestor
+    /// on the current walk. A parent key equal to this node is a self-loop:
+    /// cut that edge immediately and cache the parentless node, since its
+    /// result does not depend on the entry point. If the key instead matches
+    /// an earlier ancestor (`A → B → A`, or any longer cycle), terminate the
+    /// parent chain and do not cache it. See
     /// #1148: vanilla FO4 `defaulttemplate_wet.bgsm` self-references
     /// (4 materials per MedTek cell hit this) — pre-fix the resolver
     /// bailed via `DepthLimit` and the caller recovered with a
@@ -245,7 +254,7 @@ impl TemplateCache {
         remaining: usize,
         visited: &mut Vec<String>,
     ) -> Result<(Arc<ResolvedMaterial>, bool), ResolveError> {
-        let key = path.to_ascii_lowercase();
+        let key = resolver.canonicalize(path);
 
         if let Some(hit) = self.entries.get(&key) {
             // Cache entries are cycle-free by construction (the insert
@@ -277,8 +286,13 @@ impl TemplateCache {
         let mut truncated = false;
         let parent = match parent_path {
             Some(pp) if !pp.is_empty() => {
-                let parent_key = pp.to_ascii_lowercase();
-                if visited.iter().any(|v| v == &parent_key) {
+                let parent_key = resolver.canonicalize(&pp);
+                if parent_key == key {
+                    // A self-loop is entry-independent: cutting this edge
+                    // always leaves the same node and authored fields. It
+                    // is therefore safe to cache, unlike a multi-node cycle.
+                    None
+                } else if visited.iter().any(|v| v == &parent_key) {
                     // Cycle detected — terminate the chain at the
                     // current node (don't recurse). The cycle anchor's
                     // authored fields are already visible via the
@@ -355,6 +369,23 @@ mod tests {
         fn read(&mut self, path: &str) -> Option<Vec<u8>> {
             self.read_count += 1;
             self.files.get(&path.to_ascii_lowercase()).cloned()
+        }
+    }
+
+    struct MaterialPathResolver(StubResolver);
+
+    impl TemplateResolver for MaterialPathResolver {
+        fn canonicalize(&self, path: &str) -> String {
+            let path = path.replace('/', "\\").to_ascii_lowercase();
+            if path.starts_with("materials\\") {
+                path
+            } else {
+                format!("materials\\{path}")
+            }
+        }
+
+        fn read(&mut self, path: &str) -> Option<Vec<u8>> {
+            self.0.read(path)
         }
     }
 
@@ -597,11 +628,8 @@ mod tests {
     #[test]
     fn resolve_breaks_self_reference_cycle() {
         // `self.bgsm` declares itself as its own template — Bethesda's
-        // canonical `defaulttemplate_wet.bgsm` shape. Cycle detected
-        // one level into the recursion (the parent's parent_path is
-        // already on the visited stack), so the final chain is
-        // outer + inner_terminal = depth 2. The inner_terminal has
-        // parent=None.
+        // canonical `defaulttemplate_wet.bgsm` shape. The self-edge is cut
+        // at the node itself, yielding a cacheable parentless result.
         let mut resolver = StubResolver::new();
         resolver.add("self.bgsm", bgsm_with_template("self.bgsm"));
 
@@ -609,16 +637,44 @@ mod tests {
         let r = cache
             .resolve(&mut resolver, "self.bgsm")
             .expect("self-reference must NOT bail with DepthLimit");
-        assert_eq!(r.depth(), 2, "outer + inner_terminal");
+        assert_eq!(r.depth(), 1, "self-reference is cut at the node");
         let chain: Vec<_> = r.walk().collect();
-        assert!(chain[1].parent.is_none(), "cycle break at inner");
-        // Both nodes carry the same file (same path resolved twice).
-        // The walker's first-Some-wins semantic still produces the
-        // correct merged material on real content.
+        assert!(chain[0].parent.is_none(), "self-reference has no parent");
         assert_eq!(
             chain[0].file.root_material_path.as_deref(),
             Some("self.bgsm"),
         );
+        assert_eq!(cache.len(), 1);
+        let reads = resolver.read_count;
+        cache.resolve(&mut resolver, "self.bgsm").unwrap();
+        assert_eq!(resolver.read_count, reads, "self-loop result is cached");
+    }
+
+    #[test]
+    fn normalized_self_reference_is_cached_across_path_aliases() {
+        let mut files = StubResolver::new();
+        files.add(
+            "materials\\template\\defaulttemplate_wet.bgsm",
+            bgsm_with_template("template/DefaultTemplate_Wet.bgsm"),
+        );
+        let mut resolver = MaterialPathResolver(files);
+        let mut cache = TemplateCache::new(16);
+
+        let first = cache
+            .resolve(
+                &mut resolver,
+                "materials\\template\\defaulttemplate_wet.bgsm",
+            )
+            .unwrap();
+        assert_eq!(first.depth(), 1);
+        let reads = resolver.0.read_count;
+        let second = cache
+            .resolve(&mut resolver, "template/defaulttemplate_wet.bgsm")
+            .unwrap();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(resolver.0.read_count, reads);
+        assert_eq!(cache.len(), 1);
     }
 
     #[test]
@@ -729,13 +785,11 @@ mod tests {
         assert!(chain[2].parent.is_none(), "cycle break at B, not at C");
     }
 
-    /// #2701 follow-on: the price of the rule above is that cyclic
-    /// chains re-parse on every resolve. Pinned so the cost is a
-    /// decision rather than a surprise — and so that *clean* chains are
-    /// shown to still cache normally, which is the case that matters for
-    /// vanilla content.
+    /// Multi-node cycles re-parse on every resolve because their truncated
+    /// chains depend on the entry point. Self-loops are entry-independent
+    /// and cache; clean chains continue to cache normally.
     #[test]
-    fn cyclic_chains_reparse_while_clean_chains_still_cache() {
+    fn multi_node_cycles_reparse_while_self_loops_and_clean_chains_cache() {
         let mut resolver = StubResolver::new();
         resolver.add("self.bgsm", bgsm_with_template("self.bgsm"));
         resolver.add("clean.bgsm", bgsm_with_template("root.bgsm"));
@@ -744,20 +798,15 @@ mod tests {
         let mut cache = TemplateCache::new(16);
         let first = cache.resolve(&mut resolver, "self.bgsm").unwrap();
         let second = cache.resolve(&mut resolver, "self.bgsm").unwrap();
-        assert!(
-            !Arc::ptr_eq(&first, &second),
-            "a self-referential file re-resolves rather than returning a \
-             cached truncation"
-        );
-        assert_eq!(first.depth(), second.depth(), "…and resolves identically");
-        assert_eq!(cache.len(), 0, "the cycle contributed no entries");
+        assert!(Arc::ptr_eq(&first, &second), "self-loops are cacheable");
+        assert_eq!(cache.len(), 1, "the self-loop contributes one entry");
 
         // A clean chain is unaffected: both nodes cached, repeat resolve
         // is Arc-identical.
         let clean_first = cache.resolve(&mut resolver, "clean.bgsm").unwrap();
         let clean_second = cache.resolve(&mut resolver, "clean.bgsm").unwrap();
         assert!(Arc::ptr_eq(&clean_first, &clean_second));
-        assert_eq!(cache.len(), 2, "clean.bgsm + root.bgsm");
+        assert_eq!(cache.len(), 3, "self.bgsm + clean.bgsm + root.bgsm");
     }
 
     #[test]

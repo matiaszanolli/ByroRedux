@@ -420,6 +420,10 @@ impl MaterialProvider {
             archives: &'a [Archive],
         }
         impl<'a> TemplateResolver for ArchiveReader<'a> {
+            fn canonicalize(&self, path: &str) -> String {
+                normalize_material_path(path).to_ascii_lowercase()
+            }
+
             fn read(&mut self, path: &str) -> Option<Vec<u8>> {
                 let normalized = normalize_material_path(path);
                 // #3637 — same last-listed-wins precedence as
