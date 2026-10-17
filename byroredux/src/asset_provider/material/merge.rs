@@ -93,24 +93,6 @@ fn trace_merge_outcome(path: &str, outcome: MergeOutcome) {
     }
 }
 
-/// Mark only the texture roles an external material actually filled. Inline
-/// NIF values win the merge and retain `NifTextureSet`; this before/after
-/// comparison records that precedence instead of guessing from the final
-/// material path in `mat.dump`.
-///
-/// #3903 — this was the fifth hand-written role walk in the codebase and the
-/// only one left unguarded: it listed all 22 canonical roles by name, so a
-/// 23rd compiled clean and silently dropped out of provenance reporting. Its
-/// three siblings were given `map_ref`/`roles()`/`values()` cross-check tests
-/// by #3349, #3734 and #2697.
-///
-/// Rather than add a fourth such test, the hand-list is gone: both passes go
-/// through [`MaterialTextureSet::zip_map_ref`], which builds the result as a
-/// struct literal and therefore touches every field *by construction*. A new
-/// role is now a compile error in `zip_map_ref` itself — one place, enforced
-/// by the type system rather than by a test that has to be remembered. The
-/// `decals` array rides along through `zip_map_ref`'s `from_fn`, which is
-/// where the old loop's separate index walk lived.
 /// #5284 — the CDB resolve tail, once. Four sites used to hand-copy this
 /// block (`.mat` gate, unknown-kind fallthrough, BGSM miss, BGEM miss), and
 /// the BGSM/BGEM copies returned without `trace_merge_outcome` — so a CDB
@@ -154,6 +136,24 @@ fn resolve_through_cdb(
     outcome
 }
 
+/// Mark only the texture roles an external material actually filled. Inline
+/// NIF values win the merge and retain `NifTextureSet`; this before/after
+/// comparison records that precedence instead of guessing from the final
+/// material path in `mat.dump`.
+///
+/// #3903 — this was the fifth hand-written role walk in the codebase and the
+/// only one left unguarded: it listed all 22 canonical roles by name, so a
+/// 23rd compiled clean and silently dropped out of provenance reporting. Its
+/// three siblings were given `map_ref`/`roles()`/`values()` cross-check tests
+/// by #3349, #3734 and #2697.
+///
+/// Rather than add a fourth such test, the hand-list is gone: both passes go
+/// through [`MaterialTextureSet::zip_map_ref`], which builds the result as a
+/// struct literal and therefore touches every field *by construction*. A new
+/// role is now a compile error in `zip_map_ref` itself — one place, enforced
+/// by the type system rather than by a test that has to be remembered. The
+/// `decals` array rides along through `zip_map_ref`'s `from_fn`, which is
+/// where the old loop's separate index walk lived.
 fn record_external_texture_sources(
     material: &mut ImportedMaterial,
     before: &MaterialTextureSet<Option<byroredux_core::string::FixedString>>,
