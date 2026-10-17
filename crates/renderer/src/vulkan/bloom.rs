@@ -69,11 +69,11 @@ use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
 
-const BLOOM_DOWNSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_downsample.comp.spv");
-const BLOOM_UPSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_upsample.comp.spv");
+pub(super) const BLOOM_DOWNSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_downsample.comp.spv");
+pub(super) const BLOOM_UPSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_upsample.comp.spv");
 /// #2796 / REN-D16-01 — reads composite's own assembled scene back as a
 /// storage image and writes bloom into it in place. See `apply_to_scene`.
-const BLOOM_APPLY_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_apply.comp.spv");
+pub(super) const BLOOM_APPLY_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_apply.comp.spv");
 
 /// Number of mip levels in the down-pyramid. The up-pyramid has
 /// `BLOOM_MIP_COUNT - 1` levels (the smallest mip is the seed for
@@ -263,6 +263,30 @@ pub struct BloomPipeline {
     pub extent: vk::Extent2D,
 }
 
+pub(super) fn bloom_downsample_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
+    ]
+}
+
+pub(super) fn bloom_upsample_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(2, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(3, vk::DescriptorType::UNIFORM_BUFFER),
+    ]
+}
+
+pub(super) fn bloom_apply_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        compute_binding(0, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+    ]
+}
+
 impl BloomPipeline {
     pub fn new(
         device: &ash::Device,
@@ -309,11 +333,7 @@ impl BloomPipeline {
 
         // ── 2. Descriptor set layouts ─────────────────────────────────
         // Downsample: 0=src sampler, 1=dst storage, 2=params UBO.
-        let down_bindings = [
-            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
-        ];
+        let down_bindings = bloom_downsample_layout_bindings();
         validate_set_layout(
             0,
             &down_bindings,
@@ -338,12 +358,7 @@ impl BloomPipeline {
 
         // Upsample: 0=smaller sampler, 1=same sampler, 2=dst storage,
         // 3=params UBO.
-        let up_bindings = [
-            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(2, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(3, vk::DescriptorType::UNIFORM_BUFFER),
-        ];
+        let up_bindings = bloom_upsample_layout_bindings();
         validate_set_layout(
             0,
             &up_bindings,
@@ -368,10 +383,7 @@ impl BloomPipeline {
 
         // #2796 / REN-D16-01 — apply: 0=scene storage (read-modify-write),
         // 1=bloom output sampler.
-        let apply_bindings = [
-            compute_binding(0, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-        ];
+        let apply_bindings = bloom_apply_layout_bindings();
         validate_set_layout(
             0,
             &apply_bindings,

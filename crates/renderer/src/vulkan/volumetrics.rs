@@ -45,7 +45,7 @@ use ash::vk;
 
 mod combustion;
 mod fog_clusters;
-mod init;
+pub(super) mod init;
 pub(crate) mod noise;
 
 // #5094 — the fog-cluster build and the combustion light moments split
@@ -59,9 +59,9 @@ use noise::{
     cached_base_density_noise, cached_detail_density_noise, BASE_NOISE_SIZE, DETAIL_NOISE_SIZE,
 };
 
-const VOLUMETRICS_INJECT_COMP_SPV: &[u8] =
+pub(super) const VOLUMETRICS_INJECT_COMP_SPV: &[u8] =
     include_bytes!("../../shaders/volumetrics_inject.comp.spv");
-const VOLUMETRICS_INTEGRATE_COMP_SPV: &[u8] =
+pub(super) const VOLUMETRICS_INTEGRATE_COMP_SPV: &[u8] =
     include_bytes!("../../shaders/volumetrics_integrate.comp.spv");
 
 /// Parameters uploaded to the volumetric injection shader as a UBO

@@ -85,8 +85,8 @@ const _: () = assert!(
      lowering it aliases the read-previous and write-current slots to the same index"
 );
 
-const SVGF_TEMPORAL_COMP_SPV: &[u8] = include_bytes!("../../shaders/svgf_temporal.comp.spv");
-const SVGF_ATROUS_COMP_SPV: &[u8] = include_bytes!("../../shaders/svgf_atrous.comp.spv");
+pub(super) const SVGF_TEMPORAL_COMP_SPV: &[u8] = include_bytes!("../../shaders/svgf_temporal.comp.spv");
+pub(super) const SVGF_ATROUS_COMP_SPV: &[u8] = include_bytes!("../../shaders/svgf_atrous.comp.spv");
 
 /// Number of à-trous wavelet iterations (Schied 2017 §4.3). Each doubles
 /// the tap stride (1, 2, 4), giving the 5×5 B3-spline chain a 14-pixel
@@ -419,6 +419,53 @@ pub struct SvgfInputViews<'a> {
     pub depth_view: vk::ImageView,
 }
 
+pub(super) fn svgf_temporal_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        // 0: curr indirect (sampler2D)
+        compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 1: motion
+        compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 2: curr mesh_id (usampler2D)
+        compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 3: prev mesh_id
+        compute_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 4: prev indirect history
+        compute_binding(4, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 5: prev moments history
+        compute_binding(5, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 6: out indirect
+        compute_binding(6, vk::DescriptorType::STORAGE_IMAGE),
+        // 7: out moments
+        compute_binding(7, vk::DescriptorType::STORAGE_IMAGE),
+        // 8: params UBO
+        compute_binding(8, vk::DescriptorType::UNIFORM_BUFFER),
+        // 9: curr normal (sampler2D, octahedral RG16_SNORM) — #650
+        compute_binding(9, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 10: prev normal (other frame-in-flight slot of the same
+        // G-buffer normal attachment) — #650
+        compute_binding(10, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+    ]
+}
+
+pub(super) fn svgf_atrous_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        // 0: in colour (sampler2D) — temporal output, then ping-pong
+        compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 1: moments (sampler2D) — variance source (μ2 − μ1²)
+        compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 2: normal (sampler2D, octahedral)
+        compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 3: mesh_id (usampler2D)
+        compute_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 4: out colour (storage image)
+        compute_binding(4, vk::DescriptorType::STORAGE_IMAGE),
+        // 5: albedo (sampler2D)
+        compute_binding(5, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 6: depth (sampler2D)
+        compute_binding(6, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+    ]
+}
+
 impl SvgfPipeline {
     pub fn new(
         device: &ash::Device,
@@ -550,31 +597,7 @@ impl SvgfPipeline {
         );
 
         // ── 4. Descriptor set layout ──────────────────────────────────
-        let bindings = [
-            // 0: curr indirect (sampler2D)
-            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 1: motion
-            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 2: curr mesh_id (usampler2D)
-            compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 3: prev mesh_id
-            compute_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 4: prev indirect history
-            compute_binding(4, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 5: prev moments history
-            compute_binding(5, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 6: out indirect
-            compute_binding(6, vk::DescriptorType::STORAGE_IMAGE),
-            // 7: out moments
-            compute_binding(7, vk::DescriptorType::STORAGE_IMAGE),
-            // 8: params UBO
-            compute_binding(8, vk::DescriptorType::UNIFORM_BUFFER),
-            // 9: curr normal (sampler2D, octahedral RG16_SNORM) — #650
-            compute_binding(9, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 10: prev normal (other frame-in-flight slot of the same
-            // G-buffer normal attachment) — #650
-            compute_binding(10, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-        ];
+        let bindings = svgf_temporal_layout_bindings();
         validate_set_layout(
             0,
             &bindings,
@@ -811,22 +834,7 @@ impl SvgfPipeline {
         depth_view: vk::ImageView,
     ) -> Result<()> {
         // Binding layout — see svgf_atrous.comp.
-        let bindings = [
-            // 0: in colour (sampler2D) — temporal output, then ping-pong
-            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 1: moments (sampler2D) — variance source (μ2 − μ1²)
-            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 2: normal (sampler2D, octahedral)
-            compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 3: mesh_id (usampler2D)
-            compute_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 4: out colour (storage image)
-            compute_binding(4, vk::DescriptorType::STORAGE_IMAGE),
-            // 5: albedo (sampler2D)
-            compute_binding(5, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 6: depth (sampler2D)
-            compute_binding(6, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-        ];
+        let bindings = svgf_atrous_layout_bindings();
         validate_set_layout(
             0,
             &bindings,

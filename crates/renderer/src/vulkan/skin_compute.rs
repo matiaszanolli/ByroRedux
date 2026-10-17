@@ -29,8 +29,8 @@ use crate::shader_constants::VERTEX_STRIDE_FLOATS;
 use anyhow::{Context, Result};
 use ash::vk;
 
-const SKIN_VERTICES_COMP_SPV: &[u8] = include_bytes!("../../shaders/skin_vertices.comp.spv");
-const SKIN_PALETTE_COMP_SPV: &[u8] = include_bytes!("../../shaders/skin_palette.comp.spv");
+pub(super) const SKIN_VERTICES_COMP_SPV: &[u8] = include_bytes!("../../shaders/skin_vertices.comp.spv");
+pub(super) const SKIN_PALETTE_COMP_SPV: &[u8] = include_bytes!("../../shaders/skin_palette.comp.spv");
 
 /// Compute workgroup size (local_size_x in skin_vertices.comp +
 /// skin_palette.comp). Both shaders source this from the generated
@@ -401,6 +401,22 @@ pub struct SkinComputePipeline {
     descriptor_writes_this_frame: std::cell::Cell<u32>,
 }
 
+pub(super) fn skin_vertices_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        compute_binding(0, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(1, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(2, vk::DescriptorType::STORAGE_BUFFER),
+    ]
+}
+
+pub(super) fn skin_palette_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        compute_binding(0, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(1, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(2, vk::DescriptorType::STORAGE_BUFFER),
+    ]
+}
+
 impl SkinComputePipeline {
     /// Create the pipeline. Buffer bindings are deferred to per-dispatch
     /// (see struct doc-comment for rationale).
@@ -413,11 +429,7 @@ impl SkinComputePipeline {
         // output). One set per (slot × frame_in_flight); the pool
         // sizes for `max_slots × MAX_FRAMES_IN_FLIGHT × 3` storage
         // buffer descriptors total.
-        let bindings = [
-            compute_binding(0, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(1, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(2, vk::DescriptorType::STORAGE_BUFFER),
-        ];
+        let bindings = skin_vertices_layout_bindings();
         // Cross-check the layout against SPIR-V reflection so a future
         // shader edit that reorders / renames bindings fails the build
         // instead of silently mis-binding. See cluster_cull's same
@@ -1044,11 +1056,7 @@ impl SkinPaletteComputePipeline {
     pub fn new(device: &ash::Device, pipeline_cache: vk::PipelineCache) -> Result<Self> {
         // Three storage-buffer bindings: bone_world (in), bind_inverses
         // (in), palette (out). All COMPUTE-only.
-        let bindings = [
-            compute_binding(0, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(1, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(2, vk::DescriptorType::STORAGE_BUFFER),
-        ];
+        let bindings = skin_palette_layout_bindings();
         validate_set_layout(
             0,
             &bindings,

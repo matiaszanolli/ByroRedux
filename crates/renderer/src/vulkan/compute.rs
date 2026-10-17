@@ -16,7 +16,7 @@ use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
-const CLUSTER_CULL_COMP_SPV: &[u8] = include_bytes!("../../shaders/cluster_cull.comp.spv");
+pub(super) const CLUSTER_CULL_COMP_SPV: &[u8] = include_bytes!("../../shaders/cluster_cull.comp.spv");
 
 /// Per-cluster entry: offset into the flat light index list + count.
 #[repr(C)]
@@ -70,6 +70,16 @@ pub struct ClusterCullPipeline {
     /// Bindings 5+6 in the scene descriptor set.
     pub scene_cluster_grid_buffers: Vec<vk::Buffer>,
     pub scene_light_index_buffers: Vec<vk::Buffer>,
+}
+
+pub(super) fn cluster_cull_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        compute_binding(0, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(1, vk::DescriptorType::UNIFORM_BUFFER),
+        compute_binding(2, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(3, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(4, vk::DescriptorType::STORAGE_BUFFER),
+    ]
 }
 
 impl ClusterCullPipeline {
@@ -144,13 +154,7 @@ impl ClusterCullPipeline {
         }
 
         // Compute descriptor set layout.
-        let bindings = [
-            compute_binding(0, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(1, vk::DescriptorType::UNIFORM_BUFFER),
-            compute_binding(2, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(3, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(4, vk::DescriptorType::STORAGE_BUFFER),
-        ];
+        let bindings = cluster_cull_layout_bindings();
         validate_set_layout(
             0,
             &bindings,

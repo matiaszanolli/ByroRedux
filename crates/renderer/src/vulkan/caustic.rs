@@ -59,7 +59,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_splat.comp.spv");
+pub(super) const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_splat.comp.spv");
 
 /// Per-channel caustic accumulator — RGB radiance packed as fixed-point in
 /// three R32_UINT array layers. Composite divides by `CAUSTIC_FIXED_SCALE`
@@ -324,6 +324,35 @@ pub struct CausticPipeline {
     geometry_bound: [AtomicBool; MAX_FRAMES_IN_FLIGHT],
 }
 
+pub(super) fn caustic_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        // 0 depth
+        compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 1 normal
+        compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 2 mesh_id
+        compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 3 lights
+        compute_binding(3, vk::DescriptorType::STORAGE_BUFFER),
+        // 4 camera UBO
+        compute_binding(4, vk::DescriptorType::UNIFORM_BUFFER),
+        // 5 instances
+        compute_binding(5, vk::DescriptorType::STORAGE_BUFFER),
+        // 6 TLAS
+        compute_binding(6, vk::DescriptorType::ACCELERATION_STRUCTURE_KHR),
+        // 7 output
+        compute_binding(7, vk::DescriptorType::STORAGE_IMAGE),
+        // 8 params
+        compute_binding(8, vk::DescriptorType::UNIFORM_BUFFER),
+        // 9 global vertices. Written per frame because streaming can
+        // replace the mesh registry's backing buffer.
+        compute_binding(9, vk::DescriptorType::STORAGE_BUFFER),
+        // 10 global indices. Paired with binding 9 for committed-hit
+        // triangle reconstruction in caustic_splat.comp.
+        compute_binding(10, vk::DescriptorType::STORAGE_BUFFER),
+    ]
+}
+
 impl CausticPipeline {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -437,32 +466,7 @@ impl CausticPipeline {
     );
 
         // ── 4. Descriptor set layout ──────────────────────────────────
-        let bindings = [
-            // 0 depth
-            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 1 normal
-            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 2 mesh_id
-            compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 3 lights
-            compute_binding(3, vk::DescriptorType::STORAGE_BUFFER),
-            // 4 camera UBO
-            compute_binding(4, vk::DescriptorType::UNIFORM_BUFFER),
-            // 5 instances
-            compute_binding(5, vk::DescriptorType::STORAGE_BUFFER),
-            // 6 TLAS
-            compute_binding(6, vk::DescriptorType::ACCELERATION_STRUCTURE_KHR),
-            // 7 output
-            compute_binding(7, vk::DescriptorType::STORAGE_IMAGE),
-            // 8 params
-            compute_binding(8, vk::DescriptorType::UNIFORM_BUFFER),
-            // 9 global vertices. Written per frame because streaming can
-            // replace the mesh registry's backing buffer.
-            compute_binding(9, vk::DescriptorType::STORAGE_BUFFER),
-            // 10 global indices. Paired with binding 9 for committed-hit
-            // triangle reconstruction in caustic_splat.comp.
-            compute_binding(10, vk::DescriptorType::STORAGE_BUFFER),
-        ];
+        let bindings = caustic_layout_bindings();
         validate_set_layout(
             0,
             &bindings,

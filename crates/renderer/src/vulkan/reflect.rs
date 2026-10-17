@@ -1235,22 +1235,105 @@ mod tests {
 
     #[test]
     fn validate_ssao_layout_matches() {
-        let expected = [
-            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
-        ];
         validate_set_layout(
             0,
-            &expected,
+            &crate::vulkan::ssao::ssao_layout_bindings(),
             &[ReflectedShader {
                 name: "ssao.comp",
-                spirv: SSAO_SPV,
+                spirv: crate::vulkan::ssao::SSAO_COMP_SPV,
             }],
             "ssao",
             &[],
         )
         .expect("ssao layout should match its shader");
+    }
+
+    #[test]
+    fn refactored_pipeline_layouts_match_their_committed_shaders() {
+        macro_rules! assert_layout {
+            ($name:literal, $bindings:expr, $($shader:literal => $spirv:expr),+ $(,)?) => {
+                validate_set_layout(
+                    0,
+                    &$bindings,
+                    &[$(ReflectedShader { name: $shader, spirv: $spirv }),+],
+                    $name,
+                    &[],
+                )
+                .unwrap_or_else(|error| panic!("{0} layout drifted: {error:#}", $name));
+            };
+        }
+
+        assert_layout!(
+            "cluster_cull",
+            crate::vulkan::compute::cluster_cull_layout_bindings(),
+            "cluster_cull.comp" => crate::vulkan::compute::CLUSTER_CULL_COMP_SPV,
+        );
+        assert_layout!(
+            "taa",
+            crate::vulkan::taa::taa_layout_bindings(),
+            "taa.comp" => crate::vulkan::taa::TAA_COMP_SPV,
+        );
+        assert_layout!(
+            "svgf",
+            crate::vulkan::svgf::svgf_temporal_layout_bindings(),
+            "svgf_temporal.comp" => crate::vulkan::svgf::SVGF_TEMPORAL_COMP_SPV,
+        );
+        assert_layout!(
+            "svgf_atrous",
+            crate::vulkan::svgf::svgf_atrous_layout_bindings(),
+            "svgf_atrous.comp" => crate::vulkan::svgf::SVGF_ATROUS_COMP_SPV,
+        );
+        assert_layout!(
+            "exposure_meter",
+            crate::vulkan::exposure_meter::exposure_meter_layout_bindings(),
+            "exposure_meter.comp" => crate::vulkan::exposure_meter::EXPOSURE_METER_COMP_SPV,
+        );
+        assert_layout!(
+            "caustic",
+            crate::vulkan::caustic::caustic_layout_bindings(),
+            "caustic_splat.comp" => crate::vulkan::caustic::CAUSTIC_SPLAT_COMP_SPV,
+        );
+        assert_layout!(
+            "bloom_downsample",
+            crate::vulkan::bloom::bloom_downsample_layout_bindings(),
+            "bloom_downsample.comp" => crate::vulkan::bloom::BLOOM_DOWNSAMPLE_COMP_SPV,
+        );
+        assert_layout!(
+            "bloom_upsample",
+            crate::vulkan::bloom::bloom_upsample_layout_bindings(),
+            "bloom_upsample.comp" => crate::vulkan::bloom::BLOOM_UPSAMPLE_COMP_SPV,
+        );
+        assert_layout!(
+            "bloom_apply",
+            crate::vulkan::bloom::bloom_apply_layout_bindings(),
+            "bloom_apply.comp" => crate::vulkan::bloom::BLOOM_APPLY_COMP_SPV,
+        );
+        assert_layout!(
+            "composite",
+            crate::vulkan::composite::composite_layout_bindings(),
+            "composite.vert" => crate::vulkan::composite::COMPOSITE_VERT_SPV,
+            "composite.frag" => crate::vulkan::composite::COMPOSITE_FRAG_SPV,
+        );
+        assert_layout!(
+            "skin_compute",
+            crate::vulkan::skin_compute::skin_vertices_layout_bindings(),
+            "skin_vertices.comp" => crate::vulkan::skin_compute::SKIN_VERTICES_COMP_SPV,
+        );
+        assert_layout!(
+            "skin_palette",
+            crate::vulkan::skin_compute::skin_palette_layout_bindings(),
+            "skin_palette.comp" => crate::vulkan::skin_compute::SKIN_PALETTE_COMP_SPV,
+        );
+        assert_layout!(
+            "volumetrics",
+            crate::vulkan::volumetrics::init::volumetrics_inject_layout_bindings(),
+            "volumetrics_inject.comp" => crate::vulkan::volumetrics::VOLUMETRICS_INJECT_COMP_SPV,
+        );
+        assert_layout!(
+            "volumetrics_integrate",
+            crate::vulkan::volumetrics::init::volumetrics_integrate_layout_bindings(),
+            "volumetrics_integrate.comp" => crate::vulkan::volumetrics::VOLUMETRICS_INTEGRATE_COMP_SPV,
+        );
     }
 
     #[test]

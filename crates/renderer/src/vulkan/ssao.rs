@@ -21,7 +21,7 @@ use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
-const SSAO_COMP_SPV: &[u8] = include_bytes!("../../shaders/ssao.comp.spv");
+pub(super) const SSAO_COMP_SPV: &[u8] = include_bytes!("../../shaders/ssao.comp.spv");
 
 /// SSAO parameters uploaded as a UBO.
 #[repr(C)]
@@ -72,6 +72,14 @@ pub struct SsaoPipeline {
     depth_sampler: vk::Sampler,
     pub width: u32,
     pub height: u32,
+}
+
+pub(super) fn ssao_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
+    ]
 }
 
 impl SsaoPipeline {
@@ -182,11 +190,7 @@ impl SsaoPipeline {
         );
 
         // Descriptor set layout.
-        let bindings = [
-            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
-        ];
+        let bindings = ssao_layout_bindings();
         validate_set_layout(
             0,
             &bindings,

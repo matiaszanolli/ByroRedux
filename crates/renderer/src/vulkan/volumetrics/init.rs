@@ -25,6 +25,88 @@ use crate::vulkan::descriptors::compute_binding;
 // reformatting and stays diffable against the original.
 use super::super::{descriptors, pipeline, texture};
 
+pub(in crate::vulkan) fn volumetrics_inject_layout_bindings(
+) -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        compute_binding(0, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(1, vk::DescriptorType::UNIFORM_BUFFER),
+        // 2: scene TLAS (Phase 2c). Updated each frame via
+        // `write_tlas` from `draw_frame` before dispatch — same flow
+        // as `CausticPipeline::write_tlas`. Used by the injection
+        // shader's shadow visibility ray query.
+        compute_binding(2, vk::DescriptorType::ACCELERATION_STRUCTURE_KHR),
+        // 3/4/5: Phase 2b point/spot light injection — the same
+        // per-frame lights SSBO + cluster grid + light-index list
+        // `ClusterCullPipeline` already builds for the fragment
+        // shader (`triangle.frag`'s `lights[]` / `clusters[]` /
+        // `clusterLightIndices[]`), reused here rather than
+        // building a separate froxel-space light-culling
+        // structure. Written per-frame via `write_lights_and_clusters`
+        // (same deferred-write flow as `write_tlas`, since the
+        // buffer *contents* are rebuilt every frame even though the
+        // handles are frame-in-flight-stable).
+        compute_binding(3, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(4, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(5, vk::DescriptorType::STORAGE_BUFFER),
+        // 6: previous frame's raw V-buffer for temporal reprojection.
+        compute_binding(6, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 7/8/9: analytic local fog primitives and their camera-centered
+        // 16^3 world-space clustered cull list.
+        compute_binding(7, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(8, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(9, vk::DescriptorType::STORAGE_BUFFER),
+        // Immutable boot-generated Perlin-Worley base density and
+        // higher-frequency erosion detail.
+        compute_binding(10, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(11, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 12/13: current write + previous sampled scalar emission share.
+        // This provenance cannot be reconstructed from the RGBA V-buffer
+        // after thermal emission and stochastic lighting are combined.
+        compute_binding(12, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(13, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 14/15: current write + previous sampled canonical chemistry
+        // `(fuel, temperature, soot extinction, radiance calibration)`.
+        compute_binding(14, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(15, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 16/17: current write + previous sampled canonical dynamics
+        // `(world-space velocity xyz, specific overpressure)`.
+        compute_binding(16, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(17, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 18: fixed-point transported-field radiant moments. GPU writes
+        // this slot; the host drains it only after the slot fence.
+        compute_binding(18, vk::DescriptorType::STORAGE_BUFFER),
+        // 19/20/21: current GpuInstance table plus canonical global
+        // vertex/index SSBOs. A TLAS committed hit's custom index lands
+        // directly in binding 19, and its primitive index addresses the
+        // matching rigid triangle in bindings 20/21.
+        compute_binding(19, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(20, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(21, vk::DescriptorType::STORAGE_BUFFER),
+        // 22/23: current write + previous sampled spectral scattering
+        // coefficient. Keeping optics separate leaves bindings 14-17 as
+        // single-purpose thermochemical and kinematic state.
+        compute_binding(22, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(23, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        // 24/25: #4784 — this frame's transport-occupancy mask (GPU
+        // atomicOr marks) and the previous frame's (the read-side skip
+        // gate). Same per-FIF previous-rotation as bindings 14-23.
+        compute_binding(24, vk::DescriptorType::STORAGE_BUFFER),
+        compute_binding(25, vk::DescriptorType::STORAGE_BUFFER),
+    ]
+}
+
+pub(in crate::vulkan) fn volumetrics_integrate_layout_bindings(
+) -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        // 0: read-only injection volume
+        compute_binding(0, vk::DescriptorType::STORAGE_IMAGE),
+        // 1: write-only integrated volume
+        compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
+        // 2: dt UBO
+        compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
+    ]
+}
+
 impl VolumetricsPipeline {
     pub fn new(
         device: &ash::Device,
@@ -424,72 +506,7 @@ impl VolumetricsPipeline {
         }
 
         // ── 3. Descriptor set layout ──────────────────────────────────
-        let bindings = [
-            compute_binding(0, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(1, vk::DescriptorType::UNIFORM_BUFFER),
-            // 2: scene TLAS (Phase 2c). Updated each frame via
-            // `write_tlas` from `draw_frame` before dispatch — same flow
-            // as `CausticPipeline::write_tlas`. Used by the injection
-            // shader's shadow visibility ray query.
-            compute_binding(2, vk::DescriptorType::ACCELERATION_STRUCTURE_KHR),
-            // 3/4/5: Phase 2b point/spot light injection — the same
-            // per-frame lights SSBO + cluster grid + light-index list
-            // `ClusterCullPipeline` already builds for the fragment
-            // shader (`triangle.frag`'s `lights[]` / `clusters[]` /
-            // `clusterLightIndices[]`), reused here rather than
-            // building a separate froxel-space light-culling
-            // structure. Written per-frame via `write_lights_and_clusters`
-            // (same deferred-write flow as `write_tlas`, since the
-            // buffer *contents* are rebuilt every frame even though the
-            // handles are frame-in-flight-stable).
-            compute_binding(3, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(4, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(5, vk::DescriptorType::STORAGE_BUFFER),
-            // 6: previous frame's raw V-buffer for temporal reprojection.
-            compute_binding(6, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 7/8/9: analytic local fog primitives and their camera-centered
-            // 16^3 world-space clustered cull list.
-            compute_binding(7, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(8, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(9, vk::DescriptorType::STORAGE_BUFFER),
-            // Immutable boot-generated Perlin-Worley base density and
-            // higher-frequency erosion detail.
-            compute_binding(10, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(11, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 12/13: current write + previous sampled scalar emission share.
-            // This provenance cannot be reconstructed from the RGBA V-buffer
-            // after thermal emission and stochastic lighting are combined.
-            compute_binding(12, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(13, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 14/15: current write + previous sampled canonical chemistry
-            // `(fuel, temperature, soot extinction, radiance calibration)`.
-            compute_binding(14, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(15, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 16/17: current write + previous sampled canonical dynamics
-            // `(world-space velocity xyz, specific overpressure)`.
-            compute_binding(16, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(17, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 18: fixed-point transported-field radiant moments. GPU writes
-            // this slot; the host drains it only after the slot fence.
-            compute_binding(18, vk::DescriptorType::STORAGE_BUFFER),
-            // 19/20/21: current GpuInstance table plus canonical global
-            // vertex/index SSBOs. A TLAS committed hit's custom index lands
-            // directly in binding 19, and its primitive index addresses the
-            // matching rigid triangle in bindings 20/21.
-            compute_binding(19, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(20, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(21, vk::DescriptorType::STORAGE_BUFFER),
-            // 22/23: current write + previous sampled spectral scattering
-            // coefficient. Keeping optics separate leaves bindings 14-17 as
-            // single-purpose thermochemical and kinematic state.
-            compute_binding(22, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(23, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            // 24/25: #4784 — this frame's transport-occupancy mask (GPU
-            // atomicOr marks) and the previous frame's (the read-side skip
-            // gate). Same per-FIF previous-rotation as bindings 14-23.
-            compute_binding(24, vk::DescriptorType::STORAGE_BUFFER),
-            compute_binding(25, vk::DescriptorType::STORAGE_BUFFER),
-        ];
+        let bindings = volumetrics_inject_layout_bindings();
         validate_set_layout(
             0,
             &bindings,
@@ -723,14 +740,7 @@ impl VolumetricsPipeline {
         }
 
         // ── 8. Integration descriptor set layout ──────────────────────
-        let int_bindings = [
-            // 0: read-only injection volume
-            compute_binding(0, vk::DescriptorType::STORAGE_IMAGE),
-            // 1: write-only integrated volume
-            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
-            // 2: dt UBO
-            compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
-        ];
+        let int_bindings = volumetrics_integrate_layout_bindings();
         validate_set_layout(
             0,
             &int_bindings,

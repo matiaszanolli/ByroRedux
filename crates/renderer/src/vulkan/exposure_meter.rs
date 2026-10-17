@@ -26,7 +26,7 @@ use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
-const EXPOSURE_METER_COMP_SPV: &[u8] = include_bytes!("../../shaders/exposure_meter.comp.spv");
+pub(super) const EXPOSURE_METER_COMP_SPV: &[u8] = include_bytes!("../../shaders/exposure_meter.comp.spv");
 
 // One 64-thread workgroup performs the whole reduction — no cross-workgroup
 // sync exists or is needed; the dispatch is always (1, 1, 1).
@@ -58,6 +58,14 @@ pub struct ExposureMeterPipeline {
     param_buffers: Vec<GpuBuffer>,
 }
 
+pub(super) fn exposure_meter_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
+    ]
+}
+
 impl ExposureMeterPipeline {
     pub fn new(
         device: &ash::Device,
@@ -82,11 +90,7 @@ impl ExposureMeterPipeline {
                 .context("exposure meter sampler")
         });
 
-        let bindings = [
-            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
-        ];
+        let bindings = exposure_meter_layout_bindings();
         validate_set_layout(
             0,
             &bindings,

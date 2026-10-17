@@ -74,7 +74,7 @@ const _: () = assert!(
      lowering it aliases the read-previous and write-current slots to the same index"
 );
 
-const TAA_COMP_SPV: &[u8] = include_bytes!("../../shaders/taa.comp.spv");
+pub(super) const TAA_COMP_SPV: &[u8] = include_bytes!("../../shaders/taa.comp.spv");
 
 /// History format. RGBA16F matches the HDR render target so no precision
 /// is lost on reprojection. Alpha is always 1.0 and is never read.
@@ -194,6 +194,21 @@ pub struct TaaInputViews<'a> {
     pub reactive_views: &'a [vk::ImageView],
 }
 
+pub(super) fn taa_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(4, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(5, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(6, vk::DescriptorType::UNIFORM_BUFFER),
+        compute_binding(7, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(8, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(9, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+    ]
+}
+
 impl TaaPipeline {
     pub fn new(
         device: &ash::Device,
@@ -286,18 +301,7 @@ impl TaaPipeline {
             )
         );
 
-        let bindings = [
-            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(4, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(5, vk::DescriptorType::STORAGE_IMAGE),
-            compute_binding(6, vk::DescriptorType::UNIFORM_BUFFER),
-            compute_binding(7, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(8, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-            compute_binding(9, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
-        ];
+        let bindings = taa_layout_bindings();
         validate_set_layout(
             0,
             &bindings,

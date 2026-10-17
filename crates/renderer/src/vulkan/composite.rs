@@ -49,8 +49,8 @@ pub struct ShadowCorrectionViews<'a> {
     pub layout: vk::ImageLayout,
 }
 
-const COMPOSITE_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
-const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.spv");
+pub(super) const COMPOSITE_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
+pub(super) const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.spv");
 
 pub const MAX_SKY_APERTURES: usize = crate::shader_constants::MAX_COMPOSITE_SKY_APERTURES as usize;
 
@@ -327,6 +327,94 @@ pub struct CompositePipeline {
 
     /// Extent of the HDR scene inputs owned by this pipeline.
     pub render_extent: vk::Extent2D,
+}
+
+pub(super) fn composite_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        layout_binding(
+            0,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        layout_binding(
+            1,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        layout_binding(
+            2,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        layout_binding(
+            3,
+            vk::DescriptorType::UNIFORM_BUFFER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        layout_binding(
+            4,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        // 5: caustic accumulator as usampler2D — R32_UINT sampled view.
+        layout_binding(
+            5,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        // 6: volumetric froxel volume as sampler3D (M55 Phase 4).
+        // Shader ray-marches this volume per fragment to add
+        // inscattered light + extinction modulation.
+        layout_binding(
+            6,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        // 7: bloom output mip 0 (M58). #2796 / REN-D16-01 — no longer
+        // read by composite.frag (bloom now dispatches AFTER this
+        // pass and adds itself via `bloom.rs::apply_to_scene`
+        // instead); kept declared here, unread, so `bloom_views`
+        // stays wired through the existing descriptor-set plumbing
+        // rather than renumbering every binding after it.
+        layout_binding(
+            7,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        // 8: water-side caustic accumulator (#1257 / Phase E of
+        // #1210). R32_UINT sampled view, NEAREST filter required
+        // per the existing integer-format-sampling rule (binding 5
+        // sibling). Composite sums this alongside binding 5 so
+        // both caustic writers (caustic_splat.comp + water.frag)
+        // contribute to the same direct-light caustic term.
+        layout_binding(
+            8,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        // 9, 10: SKYAL cloud density volumes (sampler3D), for the
+        // volumetric cloud body `sky_radiance` marches per clear-depth
+        // pixel. Owned by `CloudNoiseVolumes`, not by this pipeline:
+        // they are resolution-independent and shared with the sky-cube
+        // bake, and this pipeline is rebuilt on every resize.
+        layout_binding(
+            9,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        layout_binding(
+            10,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        // 11: direct-shadow spatial filter correction, U * (filtered -
+        // raw), read only when `caustic_flags.y` says it ran this frame.
+        layout_binding(
+            11,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+    ]
 }
 
 impl CompositePipeline {
@@ -688,91 +776,7 @@ impl CompositePipeline {
         // caustic, volumetric (M55 Phase 4), bloom (#2796), water-side
         // caustic accumulator (#1257), SKYAL cloud density base + detail
         // (9, 10) — see per-binding comments below.
-        let ds_bindings = [
-            layout_binding(
-                0,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-            layout_binding(
-                1,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-            layout_binding(
-                2,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-            layout_binding(
-                3,
-                vk::DescriptorType::UNIFORM_BUFFER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-            layout_binding(
-                4,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-            // 5: caustic accumulator as usampler2D — R32_UINT sampled view.
-            layout_binding(
-                5,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-            // 6: volumetric froxel volume as sampler3D (M55 Phase 4).
-            // Shader ray-marches this volume per fragment to add
-            // inscattered light + extinction modulation.
-            layout_binding(
-                6,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-            // 7: bloom output mip 0 (M58). #2796 / REN-D16-01 — no longer
-            // read by composite.frag (bloom now dispatches AFTER this
-            // pass and adds itself via `bloom.rs::apply_to_scene`
-            // instead); kept declared here, unread, so `bloom_views`
-            // stays wired through the existing descriptor-set plumbing
-            // rather than renumbering every binding after it.
-            layout_binding(
-                7,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-            // 8: water-side caustic accumulator (#1257 / Phase E of
-            // #1210). R32_UINT sampled view, NEAREST filter required
-            // per the existing integer-format-sampling rule (binding 5
-            // sibling). Composite sums this alongside binding 5 so
-            // both caustic writers (caustic_splat.comp + water.frag)
-            // contribute to the same direct-light caustic term.
-            layout_binding(
-                8,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-            // 9, 10: SKYAL cloud density volumes (sampler3D), for the
-            // volumetric cloud body `sky_radiance` marches per clear-depth
-            // pixel. Owned by `CloudNoiseVolumes`, not by this pipeline:
-            // they are resolution-independent and shared with the sky-cube
-            // bake, and this pipeline is rebuilt on every resize.
-            layout_binding(
-                9,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-            layout_binding(
-                10,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-            // 11: direct-shadow spatial filter correction, U * (filtered -
-            // raw), read only when `caustic_flags.y` says it ran this frame.
-            layout_binding(
-                11,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                vk::ShaderStageFlags::FRAGMENT,
-            ),
-        ];
+        let ds_bindings = composite_layout_bindings();
         validate_set_layout(
             0,
             &ds_bindings,
