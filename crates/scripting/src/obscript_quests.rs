@@ -17,9 +17,10 @@
 //! | `0x1036` / `0x1037` | StartQuest / StopQuest | start/stop + script-loop attach/detach |
 //! | `0x103a` / `0x103b` | GetStage / GetStageDone | [`QuestStageState`] reads |
 //! | `0x1038` | GetQuestRunning | 1 when the quest is running |
-//! | `0x1059` / `0x1000` | Message / MessageBox | effect-log entry (HUD is later work) |
+//! | `0x1059` / `0x1000` | Message / MessageBox | queued in the native message UI; MessageBox waits for an answer |
 //! | `0x100c` | GetSecondsPassed | per-script elapsed since last tick |
-//! | `0x101f` | GetButtonPressed | −1 (no message menu this phase) |
+//! | `0x101f` | GetButtonPressed | consumes the pending answer, or −1 when none is available |
+//! | condition 79 | GetQuestVariable | reads the named quest variable, falling back to its authored default |
 //! | everything else | — | traced no-op returning 0, counted in [`ObScriptQuestTimers`] |
 
 use std::collections::HashMap;
@@ -75,9 +76,9 @@ impl ObScriptEffectLog {
 
 /// The local variables quest scripts hold between GameMode runs: quest FormID to
 /// the 1-based `SLSD` slot and its value. A variable no run assigned is absent and
-/// reads `0`, the value every ObScript local starts at. `GetQuestVariable`
-/// (condition function 79) reads it. Saved: a quest script's variables are
-/// gameplay state.
+/// reads `0`, the value every ObScript local starts at. These compiled `SLSD`
+/// slots are separate from the named quest variables read by condition
+/// function 79. Saved: a quest script's variables are gameplay state.
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ObScriptQuestLocals {
