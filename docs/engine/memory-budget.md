@@ -1106,7 +1106,7 @@ allocation code uses — and held to this table by
 | SKYAL sky bake | `sky_cube::sky_bake_resident_bytes` | **2,098,048 B** (2.0 MiB) | Per FIF slot: the RGBA16F 128² cubemap with its full GGX mip chain (`sky_cube_bytes_per_frame`, 1,048,560 B), the 144 B SH irradiance buffer (Set 1 binding 21) and the param UBO. Absent when `SkyCubePipeline` fails to initialise |
 | SKYAL cloud noise | `cloud_noise::cloud_noise_bytes` | **294,912 B** (288 KiB) | The shared 64³ + 32³ R8 density volumes (`CloudNoiseVolumes`), one pair, not per FIF. Volumetrics owns a separate copy; see its section |
 
-About 19.8 MB together, flat across resolutions.
+About 154.6 MB (~147.5 MiB) together, flat across resolutions.
 
 ### Not yet ledgered
 
