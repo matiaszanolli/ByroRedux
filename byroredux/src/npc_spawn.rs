@@ -42,40 +42,6 @@ use crate::scene::load_nif_bytes_with_skeleton;
 
 use byroredux_plugin::equip::{Gender, ResolvedNpc};
 
-/// Path inside the meshes archive for the default humanoid skeleton.
-///
-/// Returns `None` for game variants that do not pre-bake a singleton
-/// skeleton path at this convention — currently no targeted variant
-/// returns `None`, but the optional return is preserved so future
-/// per-race skeleton lookup (creatures, bestiary) can route through
-/// the same helper without an API break.
-///
-/// Vanilla path table verified by listing every archive (re-verified
-/// 2026-05-26 against FO4/FO76/Starfield BA2s; the prior 2026-04-28
-/// pass mis-extended the Skyrim path to FO4+ and missed the folder-name
-/// change Bethesda made after Skyrim):
-///
-/// - **FNV / FO3** ship a single `meshes\characters\_male\skeleton.nif`
-///   used by both genders. There is no `_female/skeleton.nif`
-///   sibling in vanilla content (BSA scan: 0 hits).
-/// - **Skyrim** (LE/SE) ships the unified
-///   `meshes\actors\character\character assets\skeleton.nif` — note
-///   the **space** in `character assets`. The `skeletonbeast.nif`
-///   sibling is the Argonian/Khajiit variant. This table is only the
-///   fallback; `npc_skeleton_path` prefers Skyrim's authored RACE ANAM.
-/// - **FO4 / FO76** ship the same shape but renamed the folder to
-///   `characterassets` (no space). Pre-fix this function returned the
-///   Skyrim-shaped path for FO4/FO76 too, so every NPC in every FO4
-///   interior failed the skeleton lookup and silently rendered as
-///   floating equipment (`F1` of the 2026-05-26 Fallout symptom
-///   sweep). Verified against `Fallout4 - Meshes.ba2`: 0 files match
-///   the space form, 1 file matches the no-space form.
-/// - **Starfield** moved humanoids out of `\character\` entirely —
-///   the skeleton is at `meshes\actors\human\characterassets\skeleton.nif`.
-///   Same no-space convention as FO4/FO76.
-///
-/// Oblivion is not yet a target for NPC spawning (M41.0 closes on
-/// FNV first); the path is the same as FNV's by convention.
 /// Stamp a [`FactionRanks`] component on the NPC's placement root from its
 /// `NPC_` `SNAM` faction list, so the M47.1 `GetFactionRank` condition can
 /// read it (#1665). No-op when the NPC declares no factions. Faction ids are
@@ -514,6 +480,20 @@ pub(crate) fn install_fallback_ragdoll_template(
     );
 }
 
+/// Path inside the meshes archive for the default humanoid skeleton.
+///
+/// Race-specific skeletons take precedence in [`npc_skeleton_path`]; this
+/// table supplies the game's shared humanoid fallback.
+///
+/// - **Oblivion / FO3 / FNV** use `meshes\characters\_male\skeleton.nif`.
+///   Oblivion targets NPC spawning and shares this path with FO3/FNV; its
+///   beast rig is handled separately (OBL-D3-01).
+/// - **Skyrim** (LE/SE) uses
+///   `meshes\actors\character\character assets\skeleton.nif`; the
+///   `skeletonbeast.nif` sibling is Skyrim's Argonian/Khajiit variant.
+/// - **FO4 / FO76** use `meshes\actors\character\characterassets\skeleton.nif`.
+/// - **Starfield** uses `meshes\actors\human\characterassets\skeleton_facebones.nif`,
+///   which includes the face joints required by NPC FaceGen parts.
 pub fn humanoid_skeleton_path(game: GameKind) -> Option<&'static str> {
     match game {
         GameKind::Oblivion | GameKind::Fallout3NV => Some(r"meshes\characters\_male\skeleton.nif"),
