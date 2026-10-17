@@ -123,8 +123,9 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
   `DerivedInput` `0` = unused, `u32::MAX` = level — no path may build a real FormID equal to either.
 - **Scope contract**: `DerivedScope` (player-only vs actor-general) is what contains the #2937
   deferral. A row with no scope annotation in its capture is *unsourced* (#4450: documented + pinned);
-  every consumer that evaluates for an arbitrary entity must check scope (`crates/scripting/src/
-  condition.rs` and, since #4452, `melee_damage_charal_bonus` do). `PlayerOnly` rows are evaluated for the
+  every consumer that evaluates for an arbitrary entity must check scope
+  (`crates/scripting/src/condition/eval.rs` and, since #4452,
+  `melee_damage_charal_bonus` do). `PlayerOnly` rows are evaluated for the
   player only (stamped #4674, refreshed per frame since #5039) — verify no NPC path reaches them. FO3/FNV
   shared-row scopes cite the GECK *Stats Tab — NPC* page (#5240 `3826c2792`,
   `fo3_fnv_geck_npc_page_scopes_the_shared_derived_rows`); Melee Damage is annotated CONFLICTED and kept
@@ -205,7 +206,7 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   `CharacterRuleset::actor_value` is the one composer — an authored carried base (`ActorValue::base_authored`,
   set only by `set_base`) wins; otherwise an actor-general `Absolute` row supplies the base and the entry's
   modifier + damage layers compose on top (a modifier-only placeholder entry once read as the bare modifier:
-  Finesse CritChance 5). `GetActorValue` (`crates/scripting/src/condition.rs`) and
+  Finesse CritChance 5). `GetActorValue` (`crates/scripting/src/condition/eval.rs`) and
   `melee_damage_charal_bonus` must both call it; a consumer reading `derived_value` or the raw entry alone is
   the regression. The composer derives its layer term as `value.current() - value.base`, never a hand-summed
   subset, so a new layer in `ActorValue::current` cannot be missed (#5706 `ad26650ec` — the derived branch had

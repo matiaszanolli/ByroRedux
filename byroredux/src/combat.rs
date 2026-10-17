@@ -886,9 +886,10 @@ fn melee_damage_charal_bonus(world: &World, aggressor: EntityId) -> f32 {
     };
     // `CharacterRuleset` -> `ActorValues` is the direction settled by #3441
     // (see `docs/engine/ecs.md`'s canonical order): the resource is the
-    // outer lock, and `condition.rs`'s `GetActorValue` arm — the only site
-    // that reads the component first — clones and drops before touching the
-    // ruleset. Do not invert these two.
+    // outer lock, and the `GetActorValue` arm in
+    // `crates/scripting/src/condition/eval.rs` — the only site that reads the
+    // component first — clones and drops before touching the ruleset. Do not
+    // invert these two.
     let Some(ruleset) = world.try_resource::<CharacterRuleset>() else {
         return 0.0;
     };
@@ -899,8 +900,9 @@ fn melee_damage_charal_bonus(world: &World, aggressor: EntityId) -> f32 {
         .get::<CharacterLevel>(aggressor)
         .map_or(1, |level| level.level);
     // #4452 — DerivedScope's consumer contract, the same both-fields check
-    // `GetActorValue` runs (`condition.rs`): this helper evaluates the row
-    // for an *arbitrary* aggressor, so a `PlayerOnly` row must not leak its
+    // as `GetActorValue` in `crates/scripting/src/condition/eval.rs`: this
+    // helper evaluates the row for an *arbitrary* aggressor, so a `PlayerOnly`
+    // row must not leak its
     // player formula onto an NPC, and a `Multiplier` row's raw ratio must
     // not be added to weapon damage (#2933's leak shape). Tautologically
     // false for every shipped MeleeDamage row (FO3/FNV's is

@@ -181,8 +181,8 @@ impl ActorValues {
     /// longer lands here (an overwrite discarded every active ability bonus
     /// on the pool — see [`Self::set_override`]). Live caller: the condition
     /// evaluator's ruleset composition peels the permanent layer off a
-    /// private copy for a `Base`-view read (`condition.rs`, M47.2
-    /// `GetBaseValue`).
+    /// private copy for the M47.2 `GetBaseValue` read in
+    /// `crates/scripting/src/condition/eval.rs`.
     pub fn set_permanent(&mut self, avif_form_id: u32, value: f32) {
         self.values.entry(avif_form_id).or_default().permanent_mod = value;
     }

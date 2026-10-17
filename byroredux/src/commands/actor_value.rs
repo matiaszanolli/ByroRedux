@@ -14,7 +14,7 @@ use byroredux_core::ecs::components::ActorValues;
 
 /// `setav <entity|.> <av_formid> <value>` — set an actor value's **base**.
 /// On the player's derived pools (Health/AP, per the active ruleset) the
-/// write routes into the permanent-modifier layer instead (#5239): the
+/// write routes into the `set_override` layer instead (#5239/#5412): the
 /// per-frame refresh owns the base there, and the GECK documents that a
 /// player `SetActorValue` never modifies base health.
 pub(crate) struct SetAvCommand;
@@ -250,10 +250,11 @@ mod tests {
     }
 
     /// #5239 — `setav` on the player's derived pools survives the per-frame
-    /// refresh: the write routes into the permanent-modifier layer (the
-    /// GECK's SetActorValue behaviour — "80 from base health, and 100 for
-    /// the rest"), so `player_derived_stats_system` re-derives only the
-    /// base half. The pre-#5239 plain base write was silently reverted one
+    /// refresh: the write routes into `set_override`, leaving the
+    /// permanent-modifier layer untouched (the GECK's SetActorValue
+    /// behaviour — "80 from base health, and 100 for the rest"), so
+    /// `player_derived_stats_system` re-derives only the base half. The
+    /// pre-#5239 plain base write was silently reverted one
     /// tick after reporting success.
     #[test]
     fn setav_on_player_derived_pool_survives_the_refresh() {
