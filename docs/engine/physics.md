@@ -304,6 +304,19 @@ between modes (`toggle_player_mode`, modelled on Bethesda's `tcl`): on
 Fly → Character it snaps the body to the camera's position minus
 `eye_height` and re-arms gravity.
 
+## Ragdolls and authored corpse poses
+
+`combat::reconcile_dead_actor` activates production ragdolls for live deaths,
+placed actors authored as `Starts Dead`, and the save-load reconciliation
+sweep. The `ragdoll <id>` console command is the manual debug path. When an
+actor carries an `XRGD` pose, reconciliation tries the transient
+`AuthoredRagdollPose` before seeding the ragdoll bodies. Pose interpretation is
+pinned to the humanoid skeleton's named body order rather than selected by
+`GameKind`; an unsupported skeleton or refused pose leaves the current pose in
+place and does not prevent ragdoll activation. The component is consumed once
+and is not saved. The evidence and entry mapping are documented in
+[`physal.md`](physal.md).
+
 ### Controller tuning
 
 `CharacterController::HUMAN` is sized to a vanilla-Skyrim Nord male:

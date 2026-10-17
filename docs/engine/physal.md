@@ -218,6 +218,20 @@ bone fails to resolve are dropped, constraint indices remapped). On the
 `ragdoll <id>` console trigger, `activate_ragdoll` reads each bone's current
 `GlobalTransform`, seeds a world-space `RagdollSpec`, and calls the sink.
 
+Production activation comes from `combat::reconcile_dead_actor`, reached for
+live deaths, actors authored `Starts Dead`, and the save-load reconciliation
+sweep; `ragdoll <id>` remains the manual debug path. Before activation, a
+transient `AuthoredRagdollPose` may apply the placed actor's `XRGD` pose so the
+corpse starts from its authored pose rather than the spawn pose. This mapping
+is skeleton-keyed, not a `GameKind` branch: entry *k* maps to body *k* in the
+18-body humanoid set, rotations use the empirically derived Gamebryo XYZ
+product with negated angles, and entry zero places the COM at the reference.
+The pose is consumed once and is not saved. Unknown skeletons, missing or
+invalid entries, and other pose refusals leave the skeleton unchanged; normal
+ragdoll activation then uses its current pose and can still collapse from the
+spawn pose. See `byroredux/src/ragdoll_pose.rs` for the evidence and pinned
+bone-name order.
+
 ### Build + step + writeback — solver (`crates/physics`)
 
 `build_ragdoll` creates one dynamic body + collider per spec body (mass split
