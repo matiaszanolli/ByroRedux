@@ -517,9 +517,9 @@ fn reverb_send_defaults_to_silent() {
 /// **Phase 6**: `set_reverb_send_db` persists the new level.
 /// New sub-tracks created after the call use the new level;
 /// already-playing sounds keep their construction-time level
-/// (kira's `with_send` API is build-time only). This test pins
-/// only the resource-side state — actual audible reverb on a
-/// running stream needs the real-data lifecycle test for that.
+/// because the engine does not retarget their existing send routes yet.
+/// This test pins only the resource-side state — actual audible reverb on
+/// a running stream needs the real-data lifecycle test for that.
 #[test]
 fn set_reverb_send_db_persists() {
     let mut world = AudioWorld::headless();

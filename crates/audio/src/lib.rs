@@ -110,10 +110,12 @@
 //!   reverb. Cell-load logic (an interior detector that runs after
 //!   `cell_loader` finishes) toggles to `-12 dB` for interiors,
 //!   back to silent for exteriors. Send level changes apply to
-//!   *new* sounds — already-playing sounds keep their construction-
-//!   time level, which is fine for short SFX (footsteps, gunshots
-//!   loop the per-frame send level naturally as new sounds replace
-//!   old ones).
+//!   *new* sounds today — the engine does not call kira's
+//!   `SpatialTrackHandle::set_send` to retarget existing routes. Kira
+//!   can change an existing route's level, but `set_send` cannot add a
+//!   route to a track built dry; `apply_reverb_send` omits `with_send`
+//!   while the send level is muted. Short SFX naturally pick up a new
+//!   level as new sounds replace old ones.
 //!
 //! # Water audio (WATAL consumer, shipped)
 //!
@@ -874,20 +876,16 @@ impl AudioWorld {
     /// reverb; `-6.0` is more pronounced; `0.0` is full wet (rare —
     /// the dry-too-wet ratio normally wants the wet attenuated).
     ///
-    /// **Limitation (#847):** kira 0.12's `with_send` is build-time
-    /// only on `SpatialTrackBuilder` — there is no
-    /// `SpatialTrackHandle::set_send_volume`, so a level change
-    /// cannot retro-apply to already-playing tracks. Long-running
-    /// looping ambients (cathedral chant, generator hum, REGN
-    /// wind layer) spawned *before* this call keep their construction-
-    /// time send level until they're stopped and re-dispatched. For
-    /// short SFX (footsteps, gunshots, dialogue lines) the level
-    /// naturally refreshes as new sounds replace old ones; for long
-    /// ambients, a future cell-load reverb-flip handler must re-issue
-    /// each looping emitter through the dispatch path with the new
-    /// send level for the change to take effect. Until that handler
-    /// lands, callers should treat `set_reverb_send_db` as a "next-
-    /// dispatch" knob, not a live mixer fader.
+    /// **Current limitation (#847):** this changes the level used for
+    /// newly-built spatial tracks; the engine does not retarget existing
+    /// routes. Kira 0.12 provides `SpatialTrackHandle::set_send` to change
+    /// an existing route's level, but it cannot add a missing route. This
+    /// builder calls `with_send` only when the send is audible, so a track
+    /// built while the level is muted has no route to retarget. Long-running
+    /// ambients keep their current level until the engine updates their
+    /// route or re-dispatches them. A future live reverb fader can make
+    /// every track route through the send at `SILENCE_DB` from construction
+    /// time, then use `set_send` to ramp that existing route on and off.
     pub fn set_reverb_send_db(&mut self, db: f32) {
         self.reverb_send_db = db;
     }
