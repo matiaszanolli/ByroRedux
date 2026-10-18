@@ -118,3 +118,14 @@ fn obscript_message_boxes_answer_get_button_pressed_once() {
     assert_eq!(take_button(&world), 0);
     assert_eq!(take_button(&world), -1, "only the first call after the press");
 }
+
+/// A mod-supplied precision never reaches `format!` unbounded: 65 536 used to
+/// panic and a smaller one allocated that many digits per conversion (#6011).
+#[test]
+fn printf_precision_is_clamped() {
+    let huge = substitute_numbers("%.65536f", &[1.5]);
+    assert_eq!(huge.len(), "1.".len() + MAX_PRINTF_PRECISION);
+    let many = substitute_numbers(&"%.65535f".repeat(2000), &[1.5]);
+    assert!(many.len() < 2000 * (2 + MAX_PRINTF_PRECISION) + 1);
+    assert_eq!(substitute_numbers("%.2f", &[1.5]), "1.50", "ordinary precision is unchanged");
+}

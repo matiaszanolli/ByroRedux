@@ -182,6 +182,12 @@ pub struct PendingScriptMessages(pub Vec<ScriptMessage>);
 
 impl Resource for PendingScriptMessages {}
 
+/// Largest precision `%.Nf` honours. The text comes from mod plugins and
+/// scripts: `format!` panics on a precision of 65 536 or more and a smaller
+/// one still emits that many digits per conversion. An `f32` carries about
+/// nine significant digits, so anything past this is padding (#6011).
+const MAX_PRINTF_PRECISION: usize = 20;
+
 /// Substitute `args` into `text`'s `printf` conversions: `%[width][.precision]f`,
 /// `%d` / `%i`, and `%%`. Width is ignored; a conversion past the last
 /// argument reads 0 (the `Show` defaults); anything else after `%` stays as
@@ -221,7 +227,8 @@ pub fn substitute_numbers(text: &str, args: &[f32]) -> String {
                     } else {
                         precision.parse::<usize>().unwrap_or(6)
                     }
-                });
+                })
+                .min(MAX_PRINTF_PRECISION);
                 out.push_str(&format!("{value:.precision$}"));
             }
             Some('d') | Some('i') => {
