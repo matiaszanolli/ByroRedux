@@ -1585,6 +1585,8 @@ fn consume_item(world: &mut World, index: u32, form_id: u32) -> MutationResult {
         world.resource_mut::<ItemInstancePool>().release(instance);
     }
     crate::notifications::push(world, format!("Used {name}"));
+    // New Vegas challenges that count items used (`Use an Item`, `Use an Item from a List`).
+    byroredux_scripting::challenges::note(world, byroredux_scripting::challenges::ChallengeEvent::ItemUsed { item: form_id });
     MutationResult::Consumed
 }
 

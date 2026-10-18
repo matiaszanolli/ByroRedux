@@ -35,6 +35,11 @@ impl MapMarkers {
         self.visible.contains(&marker)
     }
 
+    /// Every marker a script made visible on the map.
+    pub fn visible_markers(&self) -> Vec<u32> {
+        self.visible.iter().copied().collect()
+    }
+
     /// `SetMarkerVisibleOnStarMap`.
     pub fn set_star_map_visible(&mut self, marker: u32, visible: bool) {
         if visible {

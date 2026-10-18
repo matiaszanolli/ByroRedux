@@ -441,6 +441,14 @@ pub fn note_death(world: &World, victim: EntityId, killer: Option<EntityId>) {
     if let Some(mut records) = world.try_resource_mut::<KillRecords>() {
         records.record(reference, base, killer);
     }
+    // What the player kills is counted: the GECK misc stats "People Killed", "Creatures Killed" and "Total
+    // Things Killed", and the challenges that name a kill.
+    if killer == Some(crate::PLAYER_REFERENCE) {
+        let creature = world.has::<byroredux_core::ecs::components::CreatureActor>(victim);
+        crate::obscript_more::mod_misc_stat(world, if creature { "Creatures Killed" } else { "People Killed" }, 1);
+        crate::obscript_more::mod_misc_stat(world, "Total Things Killed", 1);
+        crate::challenges::note(world, crate::challenges::ChallengeEvent::Kill { base });
+    }
 }
 
 /// Whether `actor` has its weapon out: flagged by `SetAlert`, or fighting (an actor in combat has

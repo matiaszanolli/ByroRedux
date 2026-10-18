@@ -1116,6 +1116,8 @@ pub(crate) fn populate_scene_runtime(
     }
     // M47.2 — essential actors' bleedout timing (fEssentialDeathTime).
     byroredux_scripting::install_bleedout_rules(world, index);
+    // M47.3 — `PushActorAway`'s force cap (`fKnockbackForceMax`).
+    crate::systems::knockdown::install_force_max(world, index);
     // M47.2 — Game.RewardPlayerXP's Intelligence modifier (FO4 GMSTs).
     crate::combat::install_xp_modifier_rules(world, index);
     // M47.2 — Fallout 3 / New Vegas kill experience (GMST level bands).

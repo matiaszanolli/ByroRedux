@@ -224,6 +224,51 @@ pub(crate) fn music_system(world: &World, _dt: f32) {
     }
 }
 
+// ── SetActorAlpha ──────────────────────────────────────────────────────────────────────────────────
+
+/// The alpha each actor was last given and the meshes it was written to, so a change is applied once and
+/// a return to full opacity takes the override back off. `NOT_SAVED_BY_DESIGN`: rebuilt from the saved
+/// ledger value on the first frame.
+#[derive(Debug, Default)]
+pub(crate) struct ScriptAlphaApplied(std::collections::HashMap<u32, (f32, Vec<EntityId>)>);
+
+impl byroredux_core::ecs::Resource for ScriptAlphaApplied {}
+
+/// `SetActorAlpha <0..1>` (SAA): the meshes of the actor are drawn at that opacity — `AnimatedAlpha`, the
+/// sink the renderer reads over the material's own alpha. 1 gives the material back.
+pub(crate) fn actor_alpha_system(world: &World, _dt: f32) {
+    use byroredux_core::ecs::components::AnimatedAlpha;
+    let wanted = byroredux_scripting::obscript_more::actor_alphas(world);
+    let applied_forms: Vec<u32> = world.try_resource::<ScriptAlphaApplied>().map(|applied| applied.0.keys().copied().collect()).unwrap_or_default();
+    if wanted.is_empty() && applied_forms.is_empty() {
+        return;
+    }
+    for &(form, alpha) in &wanted {
+        let Some(entity) = byroredux_scripting::condition::resolve_entity_by_global_form_id(world, form) else { continue };
+        let up_to_date = world.try_resource::<ScriptAlphaApplied>().is_some_and(|applied| applied.0.get(&form).is_some_and(|(current, _)| *current == alpha));
+        if up_to_date {
+            continue;
+        }
+        let meshes = crate::npc_spawn::loot_appearance::mesh_entities_under(world, entity);
+        if let Some(mut alphas) = world.query_mut::<AnimatedAlpha>() {
+            for &mesh in &meshes {
+                if alpha < 1.0 {
+                    alphas.insert(mesh, AnimatedAlpha(alpha));
+                } else {
+                    alphas.remove(mesh);
+                }
+            }
+        }
+        if let Some(mut applied) = world.try_resource_mut::<ScriptAlphaApplied>() {
+            if alpha < 1.0 {
+                applied.0.insert(form, (alpha, meshes));
+            } else {
+                applied.0.remove(&form);
+            }
+        }
+    }
+}
+
 // ── EssentialDeathReload ───────────────────────────────────────────────────────────────────────────
 
 /// `EssentialDeathReload`: the death-reload — the message was shown when the command ran; the game goes

@@ -116,6 +116,9 @@ struct Entry {
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChallengeState {
     entries: BTreeMap<u32, Entry>,
+    /// The map markers already counted as discovered (`Locations Discovered`, and the challenges that
+    /// name a marker), so each is counted once.
+    discovered_markers: std::collections::BTreeSet<u32>,
 }
 
 impl Resource for ChallengeState {}
@@ -251,8 +254,23 @@ pub fn note(world: &World, event: ChallengeEvent) {
     }
 }
 
+/// Count the map markers that became visible since the last pass: each is one `Locations Discovered`
+/// (a GECK misc stat) and an event for the challenges that name it.
+fn note_discovered_markers(world: &World) {
+    let Some(markers) = world.try_resource::<crate::MapMarkers>().map(|markers| markers.visible_markers()) else { return };
+    let fresh: Vec<u32> = match world.try_resource_mut::<ChallengeState>() {
+        Some(mut state) => markers.into_iter().filter(|&marker| state.discovered_markers.insert(marker)).collect(),
+        None => return,
+    };
+    for marker in fresh {
+        crate::obscript_more::mod_misc_stat(world, "Locations Discovered", 1);
+        note(world, ChallengeEvent::MarkerDiscovered { marker });
+    }
+}
+
 /// Complete the misc-stat challenges whose stat has risen far enough. Exclusive: a reward script runs.
 pub fn challenge_system(world: &World, _dt: f32) {
+    note_discovered_markers(world);
     let Some(defs) = world.try_resource::<ChallengeDefs>().map(|defs| defs.clone()) else { return };
     let mut finished = Vec::new();
     {
@@ -371,6 +389,16 @@ mod tests {
         note(&world, ChallengeEvent::MarkerDiscovered { marker: 0x1234 });
         assert_eq!(completed(&world, VAULT), Some(false));
         note(&world, ChallengeEvent::MarkerDiscovered { marker: MARKER });
+        assert_eq!(completed(&world, VAULT), Some(true));
+    }
+
+    #[test]
+    fn a_marker_made_visible_counts_once_as_a_location_and_for_its_challenge() {
+        let world = world(vec![chal(VAULT, kind::DISCOVER_MARKER, 1, 0, 0, MARKER)]);
+        world.try_resource_mut::<crate::MapMarkers>().unwrap().add(MARKER, false);
+        challenge_system(&world, 0.0);
+        challenge_system(&world, 0.0);
+        assert_eq!(crate::obscript_more::misc_stat(&world, "Locations Discovered"), 1, "counted once");
         assert_eq!(completed(&world, VAULT), Some(true));
     }
 

@@ -516,6 +516,11 @@ pub fn ai_disabled_actors(world: &World) -> Vec<EntityId> {
     forms.into_iter().filter_map(|form| live(world, form)).collect()
 }
 
+/// The opacity scripts gave actors (`SetActorAlpha`, stored under `0x1129`), by reference.
+pub fn actor_alphas(world: &World) -> Vec<(u32, f32)> {
+    ledger(world, |l| l.values_of(0x1129)).unwrap_or_default()
+}
+
 /// The query functions the app installed (a default one, with none, when it installed none).
 fn engine_queries(world: &World) -> EngineQueries {
     world.try_resource::<EngineQueries>().map(|queries| *queries).unwrap_or_default()
