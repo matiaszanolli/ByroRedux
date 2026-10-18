@@ -1304,3 +1304,53 @@ mod tests {
         assert!(handles.secondary_values().all(|&handle| handle != 0));
     }
 }
+
+/// The archive path of a texture a script names (`SwapTexture`'s `interface\endgame\endscrn_PF05`): under
+/// `textures\`, with the `.dds` the archive stores.
+pub(crate) fn script_texture_path(name: &str) -> String {
+    let mut path = name.trim().replace('/', "\\");
+    if !path.to_ascii_lowercase().starts_with("textures\\") {
+        path = format!("textures\\{path}");
+    }
+    if !path.to_ascii_lowercase().ends_with(".dds") {
+        path.push_str(".dds");
+    }
+    path
+}
+
+/// Give every mesh under `swap.target` whose material texture is named `swap.slot` the texture
+/// `swap.texture`. Returns how many meshes changed.
+pub(crate) fn apply_texture_swap(
+    world: &byroredux_core::ecs::World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    swap: &byroredux_scripting::obscript_more::TextureSwap,
+) -> usize {
+    use byroredux_core::ecs::components::{Material, TextureHandle};
+    let slot = swap.slot.to_ascii_lowercase();
+    let meshes: Vec<_> = crate::npc_spawn::loot_appearance::mesh_entities_under(world, swap.target)
+        .into_iter()
+        .filter(|&mesh| {
+            world
+                .get::<Material>(mesh)
+                .and_then(|material| material.texture_path.as_ref().map(|path| path.to_ascii_lowercase().contains(&slot)))
+                .unwrap_or(false)
+        })
+        .collect();
+    if meshes.is_empty() {
+        return 0;
+    }
+    let path = script_texture_path(&swap.texture);
+    let handle = resolve_texture(ctx, tex_provider, Some(&path));
+    for &mesh in &meshes {
+        if let Some(mut handles) = world.query_mut::<TextureHandle>() {
+            handles.insert(mesh, TextureHandle(handle));
+        }
+        if let Some(mut materials) = world.query_mut::<Material>() {
+            if let Some(material) = materials.get_mut(mesh) {
+                material.texture_path = Some(path.clone());
+            }
+        }
+    }
+    meshes.len()
+}

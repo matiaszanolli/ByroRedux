@@ -122,7 +122,7 @@ impl DetectionConfig {
         })
     }
 
-    fn range(&self, exterior: bool) -> f32 {
+    pub(crate) fn range(&self, exterior: bool) -> f32 {
         if exterior {
             self.max_distance * self.exterior_mult
         } else {

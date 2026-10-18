@@ -428,6 +428,10 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::PatrolState>();
     world.register::<crate::components::AmbientPackageRuntime>();
     world.register::<crate::components::IdleResume>();
+    world.register::<crate::systems::knockdown::KnockedDown>();
+    world.register::<crate::systems::flee::FleeState>();
+    world.register::<crate::systems::script_requests::UseWeaponRun>();
+    world.register::<byroredux_scripting::AiSuspended>();
     world.init_resource::<crate::systems::magic_shader::ShaderTintRestore>();
     // ObScript `GetDetected`: the sight test the hostility pass uses.
     world.insert_resource(byroredux_scripting::SightQuery(crate::systems::actor_detects));

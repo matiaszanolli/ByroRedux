@@ -1055,6 +1055,32 @@ impl App {
         self.world.insert_resource(provider);
     }
 
+    /// ObScript `SwapTexture <ref> "<slot>" "<texture>"`: the meshes under the reference whose texture is
+    /// named `slot` take `texture`, resolved with the streaming session's archive provider (or one built
+    /// from the command line when no session runs). Needs the renderer, so it runs here.
+    fn step_texture_swaps(&mut self) {
+        let swaps = match self.world.try_resource_mut::<byroredux_scripting::obscript_more::PendingTextureSwaps>() {
+            Some(mut pending) if !pending.0.is_empty() => std::mem::take(&mut pending.0),
+            _ => return,
+        };
+        let Some(ctx) = self.renderer.as_mut() else {
+            log::warn!("SwapTexture dropped: no renderer");
+            return;
+        };
+        let built;
+        let provider = match self.streaming.as_ref() {
+            Some(state) => &state.tex_provider,
+            None => {
+                built = crate::asset_provider::build_texture_provider(&crate::cli_args::effective_args());
+                &built
+            }
+        };
+        for swap in swaps {
+            let applied = crate::asset_provider::apply_texture_swap(&self.world, ctx, provider, &swap);
+            log::info!("SwapTexture {:?} -> {:?}: {applied} mesh(es) changed", swap.slot, swap.texture);
+        }
+    }
+
     /// ObScript `PlayIdle` on the `.kf` games: resolve the `.kf` of an IDLE an actor is waiting on with
     /// the streaming session's archive provider or the one kept for actor clips. The idle playback
     /// system plays it once the catalog has the clip.
@@ -1134,6 +1160,7 @@ impl App {
         self.step_created_references();
         self.step_actor_graphs();
         self.step_kf_idles();
+        self.step_texture_swaps();
         if self.loading_screen.waiting_for_presentation() || self.loading_screen.owns_save() {
             return;
         }

@@ -18,6 +18,8 @@ pub struct ProjectileLaunch {
     pub weapon: u32,
     /// The ammo form, or 0 for "the current ammo".
     pub ammo: u32,
+    /// The reference to aim at (`UseWeapon`'s target), or 0 to fire along the source's forward.
+    pub aim_at: u32,
 }
 
 /// The `Weapon.Fire` calls awaiting the host.

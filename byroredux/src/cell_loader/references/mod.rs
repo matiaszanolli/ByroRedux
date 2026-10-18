@@ -35,7 +35,7 @@ mod import;
 
 use attach::{attach_script_for_refr, trigger_volume_from_primitive};
 // M47.2 — also the barter menu's stand-in for an unloaded merchant chest.
-pub(crate) use attach::attach_container_inventory;
+pub(crate) use attach::{attach_container_inventory, authored_container_inventory};
 // Re-exported (not just `use`d) so the sibling `spawn` module can share this
 // helper instead of duplicating its body (D22-3 / #2121).
 pub(crate) use attach::attach_light_flicker_if_needed;

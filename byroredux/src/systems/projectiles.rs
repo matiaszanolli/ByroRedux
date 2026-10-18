@@ -60,6 +60,16 @@ pub(crate) struct ActiveProjectiles(pub Vec<Projectile>);
 
 impl Resource for ActiveProjectiles {}
 
+/// How far above its placement an actor's body centre is: an NPC's placement root stands at its feet, the
+/// player body's transform is already its capsule centre.
+fn body_centre_offset(world: &World, entity: EntityId) -> Vec3 {
+    let player = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0);
+    if Some(entity) == player || world.get::<byroredux_core::ecs::components::ActorVitals>(entity).is_none() {
+        return Vec3::ZERO;
+    }
+    Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT
+}
+
 /// Why a launch did not start (logged at debug).
 fn launch_of(
     world: &World,
@@ -102,16 +112,29 @@ fn launch_of(
         .get::<GlobalTransform>(source)
         .map(|t| (t.translation, t.rotation, t.scale))
         .ok_or("the source has no placement")?;
-    let direction = (transform.1 * -Vec3::Z).normalize_or_zero();
-    if direction == Vec3::ZERO {
+    let forward = (transform.1 * -Vec3::Z).normalize_or_zero();
+    if forward == Vec3::ZERO {
         return Err("the source has no forward".into());
     }
+    // `UseWeapon` aims at its target's centre from the shooter's, instead of along the shooter's forward.
+    let aim = if launch.aim_at != 0 {
+        byroredux_scripting::condition::resolve_entity_by_global_form_id(world, launch.aim_at)
+            .and_then(|target| world.get::<GlobalTransform>(target).map(|t| (target, t.translation)))
+            .map(|(target, position)| (position + body_centre_offset(world, target), body_centre_offset(world, source)))
+    } else {
+        None
+    };
+    let direction = match aim {
+        Some((target_point, shooter_offset)) => (target_point - (transform.0 + shooter_offset)).normalize_or_zero(),
+        None => forward,
+    };
+    let direction = if direction == Vec3::ZERO { forward } else { direction };
     // The model's own `ProjectileNode` when it authors one (a dart port's muzzle is
     // 16 units ahead of its origin, outside the wall it is mounted in); else a
     // short step past the source.
     let start = match world.get::<crate::components::ProjectileMuzzle>(source) {
         Some(muzzle) => transform.0 + transform.1 * (muzzle.0 * transform.2),
-        None => transform.0 + direction * MUZZLE_OFFSET_BU,
+        None => transform.0 + aim.map_or(Vec3::ZERO, |(_, shooter_offset)| shooter_offset) + direction * MUZZLE_OFFSET_BU,
     };
     Ok(Projectile {
         position: start,
@@ -447,7 +470,7 @@ mod tests {
             port,
             GlobalTransform { translation: Vec3::new(10.0, 20.0, 30.0), ..GlobalTransform::IDENTITY },
         );
-        let launch = ProjectileLaunch { source: 0xB1, weapon: 0xA1, ammo: 0xA2 };
+        let launch = ProjectileLaunch { source: 0xB1, weapon: 0xA1, ammo: 0xA2, aim_at: 0 };
         let flight = launch_of(&world, &index_with_dart(0.0), launch).expect("a dart flies");
         assert_eq!(flight.shooter, port);
         assert_eq!(flight.damage, 5.0, "weapon 3 + ammo 2");

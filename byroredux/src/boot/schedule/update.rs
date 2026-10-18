@@ -622,6 +622,19 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::obscript_objects::obscript_destruction_system);
     // M47.3 — `Resurrect`: bring the actors back that scripts named this frame.
     scheduler.add_exclusive(Stage::Update, crate::systems::revive::revive_system);
+    // M47.3 — `PushActorAway` (knock the actor down, then stand it up where it came to rest), `ForceFlee`,
+    // `UseWeapon`, `ResetInventory`, `SetPCSleepHours`, `PlayMusic` and `EssentialDeathReload`: the app's
+    // half of the commands that raise a request.
+    scheduler.add_exclusive(Stage::Update, crate::systems::knockdown::push_actor_system);
+    scheduler.add_exclusive(Stage::Update, crate::systems::knockdown::get_up_system);
+    scheduler.add_exclusive(Stage::Update, crate::systems::flee::flee_system);
+    scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::use_weapon_system);
+    scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::reset_inventory_system);
+    scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::sleep_system);
+    scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::music_system);
+    scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::reload_system);
+    // M47.3 — the New Vegas challenges whose stat has risen far enough complete (reward script and all).
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::challenges::challenge_system);
     scheduler.add_exclusive_with_access(
         Stage::Update,
         crate::combat::combat_damage_system,

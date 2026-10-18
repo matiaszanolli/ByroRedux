@@ -206,11 +206,25 @@ pub(crate) fn attach_container_inventory(
     base_form_id: u32,
     index: &esm::records::EsmIndex,
 ) -> bool {
-    use byroredux_core::ecs::components::{Inventory, ItemStack};
-
-    let Some(cont) = index.containers.get(&base_form_id) else {
+    let Some(inventory) = authored_container_inventory(world, base_form_id, index) else {
         return false;
     };
+    world.insert(entity, inventory);
+    crate::cell_loader::reference_state::restore(world, entity);
+    true
+}
+
+/// What a `CONT` record authors for a container: its `CNTO` list, leveled entries drawn at the
+/// player's level (one while no player exists yet). `None` when `base_form_id` is no container. Used
+/// when a container's reference loads and when a script resets its inventory.
+pub(crate) fn authored_container_inventory(
+    world: &byroredux_core::ecs::world::World,
+    base_form_id: u32,
+    index: &esm::records::EsmIndex,
+) -> Option<byroredux_core::ecs::components::Inventory> {
+    use byroredux_core::ecs::components::{Inventory, ItemStack};
+
+    let cont = index.containers.get(&base_form_id)?;
     let mut inventory = Inventory::new();
     // Initial loading can precede player spawn. Level one is the bootstrap
     // policy until a live player level exists; subsequent cell loads use it.
@@ -242,9 +256,7 @@ pub(crate) fn attach_container_inventory(
             inventory.push(ItemStack::new(form_id, count));
         }
     }
-    world.insert(entity, inventory);
-    crate::cell_loader::reference_state::restore(world, entity);
-    true
+    Some(inventory)
 }
 
 /// The compiled-ObScript dialect a game's scripts parse under — `None` for

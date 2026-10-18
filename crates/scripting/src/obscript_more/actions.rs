@@ -68,7 +68,7 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         0x11e2 => match (caller(world, ctx), form_arg(args, 0)) {
             (Some((source, _)), Some(weapon)) => {
                 if let Some(mut pending) = world.try_resource_mut::<crate::PendingProjectileLaunches>() {
-                    pending.0.push(crate::projectile_requests::ProjectileLaunch { source, weapon, ammo: 0 });
+                    pending.0.push(crate::projectile_requests::ProjectileLaunch { source, weapon, ammo: 0, aim_at: 0 });
                 }
                 done(format!("FireWeapon {weapon:08X} from {source:08X}"))
             }

@@ -230,7 +230,11 @@ pub fn collect_unconscious(world: &World, out: &mut Vec<EntityId>) {
         );
     }
     if let Some(held) = world.query::<AiSuspended>() {
-        out.extend(held.iter().map(|(entity, _)| entity).filter(|entity| !out.contains(entity)));
+        for (entity, _) in held.iter() {
+            if !out.contains(&entity) {
+                out.push(entity);
+            }
+        }
     }
     // `SetActorsAI 0`: "turns off and on the processing of an actor" (GECK).
     for entity in crate::obscript_more::ai_disabled_actors(world) {
