@@ -261,9 +261,20 @@ pub(super) fn event_arg(value: &Value) -> Option<VmStored> {
     }
 }
 
+/// Deepest array/struct nesting a stored script variable keeps. Structs are
+/// shared by reference and a member assignment is not type-checked, so
+/// `s.m = s` builds a cycle the write-back would follow forever; real FO4
+/// structs nest one or two levels (#5983).
+const MAX_STORED_DEPTH: usize = 8;
+
 /// `value` as a stored object (see [`crate::ScriptObject`]); `None` for what
-/// a script variable cannot hold (a nested array).
+/// a script variable cannot hold (a nested array, or nesting deeper than
+/// [`MAX_STORED_DEPTH`] — which includes any cycle).
 pub(super) fn to_stored(value: &Value) -> Option<crate::ScriptObject> {
+    to_stored_at(value, 0)
+}
+
+fn to_stored_at(value: &Value, depth: usize) -> Option<crate::ScriptObject> {
     Some(match value {
         Value::None => crate::ScriptObject::None,
         Value::Bool(b) => crate::ScriptObject::Bool(*b),
@@ -276,22 +287,28 @@ pub(super) fn to_stored(value: &Value) -> Option<crate::ScriptObject> {
             alias: *alias,
         },
         Value::Array(items) => {
+            if depth >= MAX_STORED_DEPTH {
+                return None;
+            }
             let mut stored = Vec::new();
             for item in items.borrow().iter() {
                 if matches!(item, Value::Array(_)) {
                     return None;
                 }
-                stored.push(to_stored(item)?);
+                stored.push(to_stored_at(item, depth + 1)?);
             }
             crate::ScriptObject::Array(stored)
         }
         Value::Struct(members) => {
+            if depth >= MAX_STORED_DEPTH {
+                return None;
+            }
             let mut stored = Vec::new();
             for (name, member) in members.borrow().iter() {
                 if matches!(member, Value::Array(_)) {
                     return None;
                 }
-                stored.push((name.clone(), to_stored(member)?));
+                stored.push((name.clone(), to_stored_at(member, depth + 1)?));
             }
             crate::ScriptObject::Struct(stored)
         }

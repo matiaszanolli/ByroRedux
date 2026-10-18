@@ -5073,6 +5073,20 @@ fn vm_float_modulo_overflow_wraps() {
     assert!(matches!(ok, Value::Int(1)), "ordinary truncating modulo is unchanged");
 }
 
+/// A struct that contains itself cannot be stored: the run-end write-back
+/// refuses it instead of recursing until the stack overflows (#5983), while
+/// ordinary two-level nesting still stores.
+#[test]
+fn vm_cyclic_struct_is_not_stored() {
+    let cyclic = Rc::new(RefCell::new(vec![("m".to_owned(), Value::Int(1))]));
+    cyclic.borrow_mut()[0].1 = Value::Struct(Rc::clone(&cyclic));
+    assert!(to_stored(&Value::Struct(cyclic)).is_none(), "a self-containing struct is refused");
+
+    let inner = Value::Struct(Rc::new(RefCell::new(vec![("x".to_owned(), Value::Int(2))])));
+    let outer = Value::Struct(Rc::new(RefCell::new(vec![("in".to_owned(), inner)])));
+    assert!(to_stored(&outer).is_some(), "a struct holding a struct stores");
+}
+
 /// `Array.Insert` past the ceiling is refused like `Add` (#5791).
 #[test]
 fn vm_array_insert_is_capped() {
