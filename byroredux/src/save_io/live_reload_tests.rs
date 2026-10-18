@@ -613,6 +613,44 @@ fn pre_reload_restore_must_not_install_saved_item_instance_pool_early() {
     assert!(world.resource::<ItemInstancePool>().get(saved_id_2).is_some());
 }
 
+/// #5919 — the scripted-faction ledger is what `stamp_quest_reference`
+/// replays onto each NPC the reload re-spawns, so it must be installed by the
+/// *pre*-reload subset: a live (default) ledger at that moment returns every
+/// recruited follower to its record factions, and the wholesale post-reload
+/// restore arrives after the NPCs were stamped.
+#[test]
+fn pre_reload_restore_installs_the_scripted_faction_ledger() {
+    use byroredux_scripting::ScriptedFactionChanges;
+
+    const FOLLOWER: u32 = 0x0001_A696;
+    const PLAYER_FACTION: u32 = 0x0000_0DB1;
+    let reg = build_save_registry();
+    let mut source = World::new();
+    source.insert_resource(StringPool::new());
+    source.insert_resource(FormIdPool::new());
+    let mut ledger = ScriptedFactionChanges::default();
+    ledger.record(FOLLOWER, PLAYER_FACTION, Some(0));
+    source.insert_resource(ledger);
+    let snapshot = save_world(&source, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    // The live session after "start engine, quickload": the ledger is empty.
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(ScriptedFactionChanges::default());
+    assert!(world.resource::<ScriptedFactionChanges>().changes_for(FOLLOWER).is_empty());
+
+    byroredux_save::restore_resources_subset(&mut world, &reg, &decoded, PRE_RELOAD_RESOURCES)
+        .unwrap();
+    assert_eq!(
+        world.resource::<ScriptedFactionChanges>().changes_for(FOLLOWER),
+        [(PLAYER_FACTION, Some(0))],
+        "the saved ledger must be live before the reload re-spawns the cell's NPCs"
+    );
+}
+
 /// #5435 — an in-process load must not leak the outgoing session's CLOC
 /// location. Before the reset, loading a save in a different cell raised a
 /// CLOC whose `L1` was the pre-load session's LCTN, and loading a save in

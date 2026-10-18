@@ -19,7 +19,12 @@ use super::*;
 /// (`cell_loader::spawn::scripted_lock_override`, #4136) — both are
 /// FormID-keyed ledgers the spawn path reads while the reload is
 /// actively building the new cell, so a post-reload restore would
-/// arrive after the placements they govern were already stamped. Everything else — most importantly `ItemInstancePool` —
+/// arrive after the placements they govern were already stamped. The same holds
+/// for `ScriptedFactionChanges` (#5919): `stamp_quest_reference` replays it onto
+/// each NPC as the reload re-spawns the cell, and nothing re-applies it to
+/// actors already stamped (`FactionRanks` is re-derived, not saved), so a ledger
+/// installed afterwards would leave every resident NPC on its record factions.
+/// Everything else — most importantly `ItemInstancePool` —
 /// must wait for the post-reload wholesale [`byroredux_save::restore_resources`]
 /// call, because the reload's own teardown (`unload_cell` →
 /// `release_victim_item_instances`) still needs the **live** value of
@@ -33,6 +38,7 @@ pub(super) const PRE_RELOAD_RESOURCES: &[&str] = &[
     "ReferenceEnableState",
     "ReferenceLockState",
     "ReferenceScriptState",
+    "ScriptedFactionChanges",
 ];
 
 fn notify_player(world: &World, message: impl Into<String>) {
