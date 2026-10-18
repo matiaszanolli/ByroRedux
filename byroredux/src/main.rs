@@ -98,10 +98,48 @@ mod debug_server_gate_tests {
     }
 }
 
+/// `--version` / `--help` answers, so a binary release can be identified and
+/// asked what it does without opening a window (the engine otherwise treats
+/// any unknown argument as a path to load and starts rendering).
+///
+/// `BYRO_RELEASE` / `BYRO_COMMIT` are stamped by the release workflow at build
+/// time; a source build reports itself as such.
+fn early_info(first_arg: Option<&std::ffi::OsStr>) -> Option<String> {
+    let release = option_env!("BYRO_RELEASE").unwrap_or("source build");
+    let commit = option_env!("BYRO_COMMIT").map(|sha| &sha[..sha.len().min(9)]);
+    match first_arg?.to_str()? {
+        "--version" | "-V" => Some(match commit {
+            Some(commit) => format!("byroredux {} ({release}, {commit})", env!("CARGO_PKG_VERSION")),
+            None => format!("byroredux {} ({release})", env!("CARGO_PKG_VERSION")),
+        }),
+        "--help" | "-h" => Some(format!(
+            "byroredux {} ({release})\n\
+             \n\
+             Usage: byroredux [mesh.nif] [options]\n\
+             \n\
+             Examples (run from the game's Data directory; bare archive names resolve there):\n\
+             \x20 byroredux --esm FalloutNV.esm --cell GSProspectorSaloonInterior \\\n\
+             \x20   --bsa \"Fallout - Meshes.bsa\" --textures-bsa \"Fallout - Textures.bsa\"\n\
+             \x20 byroredux path/to/mesh.nif [--kf animation.kf]\n\
+             \n\
+             byro-launcher finds installed games and starts the engine for you. The full\n\
+             option set and per-game commands: docs/getting-started.md and the repro\n\
+             commands in ROADMAP.md.",
+            env!("CARGO_PKG_VERSION"),
+        )),
+        _ => None,
+    }
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args_os();
     let executable = args.next().unwrap_or_else(|| "byroredux".into());
-    if args.next().as_deref() == Some(std::ffi::OsStr::new("texture-upscale")) {
+    let first = args.next();
+    if let Some(text) = early_info(first.as_deref()) {
+        println!("{text}");
+        return Ok(());
+    }
+    if first.as_deref() == Some(std::ffi::OsStr::new("texture-upscale")) {
         let mut command_name = executable;
         command_name.push(" texture-upscale");
         return byro_texture_upscale::run_cli_from(std::iter::once(command_name).chain(args));
@@ -1854,5 +1892,34 @@ mod dialogue_page_leave_tests {
              resume_from_game_menu to each run the shared dialogue-page \
              teardown before their flip (#5409)"
         );
+    }
+}
+
+#[cfg(test)]
+mod early_info_tests {
+    use super::early_info;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn version_and_help_answer_without_starting_the_engine() {
+        for flag in ["--version", "-V"] {
+            let text = early_info(Some(OsStr::new(flag))).expect("a version line");
+            assert!(text.starts_with("byroredux "), "{text}");
+            assert_eq!(text.lines().count(), 1, "one line, scriptable: {text}");
+        }
+        for flag in ["--help", "-h"] {
+            let text = early_info(Some(OsStr::new(flag))).expect("usage text");
+            assert!(text.contains("Usage: byroredux"), "{text}");
+        }
+    }
+
+    /// Everything else is the engine's own business: a path, a flag, no
+    /// argument at all, or the `texture-upscale` subcommand.
+    #[test]
+    fn other_arguments_are_left_to_the_engine() {
+        assert_eq!(early_info(None), None);
+        for arg in ["mesh.nif", "--esm", "--cell", "texture-upscale", "--versions"] {
+            assert_eq!(early_info(Some(OsStr::new(arg))), None, "{arg}");
+        }
     }
 }

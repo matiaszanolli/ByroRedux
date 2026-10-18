@@ -11,7 +11,10 @@ session. Choose the outcome you want:
 
 ByroRedux is an engine under active development, not a packaged replacement
 for the original games. It does not include Bethesda assets, plugins, or
-scripts, and it does not currently provide a launcher or installer.
+scripts, and it has no installer. Prebuilt Linux binaries, including the
+`byro-launcher` window, are published per session on the
+[Releases page](https://github.com/matiaszanolli/ByroRedux/releases); this
+guide covers building from source.
 
 ## 1. Get the source
 

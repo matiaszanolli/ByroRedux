@@ -39,3 +39,6 @@ crates/*/examples/tmp_*
 # catch it.
 *.orig
 *.rej
+
+# Release tarballs (scripts/package-release.sh)
+/dist/

@@ -316,6 +316,20 @@ docs: session N closeout — <one-line theme>
 
 ---
 
+## Step 7 — Offer the release
+
+Binaries are published at the close of each session (`docs/releasing.md`). After
+the closeout commit is pushed and CI on it is green, tell the user the tag to
+cut — `v0.<this session's number>` — and the command:
+
+```
+git tag -a v0.<N> -m "Session <N>" && git push origin v0.<N>
+```
+
+Do not tag without being asked; a release is public and cannot be quietly undone.
+
+---
+
 ## Failure modes to avoid
 
 - **Don't auto-apply edits without showing the diff.** This is the

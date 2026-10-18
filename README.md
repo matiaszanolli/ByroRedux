@@ -42,10 +42,15 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 
 ## Start here
 
-ByroRedux is currently a source-built engine project, not a packaged game or
-launcher. It does not redistribute Bethesda game data.
+ByroRedux is an alpha engine project. It does not redistribute Bethesda game
+data. Linux x86_64 binaries (engine, `byro-launcher`, `byro-detect`, `byro-dbg`)
+are published as pre-releases on the
+[Releases page](https://github.com/matiaszanolli/ByroRedux/releases), one per
+working session (`v0.<session number>`); see [Releasing](docs/releasing.md).
 
-- **New user:** follow [Getting Started](docs/getting-started.md) for a first
+- **Just want to try it:** download the latest release, read its `README.txt`,
+  and run `./byro-launcher` from the extracted folder.
+- **Building from source:** follow [Getting Started](docs/getting-started.md) for a first
   build, test run, real-content launch, and troubleshooting.
 - **Contributor:** continue with [Contributing](docs/contributing.md) for the
   development loop, CI checks, and project conventions.

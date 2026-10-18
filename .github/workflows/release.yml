@@ -1,0 +1,155 @@
+name: Release
+
+# Builds the Linux alpha binaries and publishes them as a GitHub pre-release.
+#
+# Releases are cut at the close of each working session and named after it:
+# tag `v0.<session number>` (e.g. `v0.101`), on a commit whose CI is green.
+#
+#   git tag -a v0.101 -m "Session 101" && git push origin v0.101
+#
+# `workflow_dispatch` with `publish: false` is a dry run: the same build and
+# packaging, uploaded as a workflow artifact instead of a release. Use it to
+# check the pipeline (or a new runner image) before tagging.
+#
+# Built on ubuntu-22.04 on purpose: the binary links the runner's glibc, so the
+# oldest practical runner sets the oldest distro it runs on (glibc 2.35).
+
+on:
+  push:
+    tags: ["v0.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release name to package under (dry run), e.g. v0.101
+        required: true
+        type: string
+      publish:
+        description: Publish a GitHub pre-release (otherwise only upload the tarball as an artifact)
+        required: true
+        default: false
+        type: boolean
+      runner:
+        description: Runner image to build on
+        required: true
+        default: ubuntu-22.04
+        type: choice
+        options:
+          - ubuntu-22.04
+          - ubuntu-24.04
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  BYRO_RELEASE: ${{ inputs.tag || github.ref_name }}
+  BYRO_COMMIT: ${{ github.sha }}
+
+jobs:
+  linux:
+    name: Linux x86_64 binaries
+    runs-on: ${{ inputs.runner || 'ubuntu-22.04' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A release is a statement that this commit works. Refuse to publish from
+      # one CI has not passed (or has not finished) rather than ship a red build.
+      - name: Require a green CI run on this commit
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          conclusion="$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" \
+            --json conclusion,status --jq 'map(select(.status=="completed")) | .[0].conclusion // "none"')"
+          echo "CI conclusion for $GITHUB_SHA: $conclusion"
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::CI has not succeeded on $GITHUB_SHA ($conclusion). Wait for it, then re-run this workflow."
+            exit 1
+          fi
+
+      - name: Require the tagged commit to be on main
+        if: github.event_name == 'push'
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$RELEASE_TAG is not on main"; exit 1; }
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux
+
+      - name: System libraries
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2-dev libvulkan-dev
+
+      - name: Build
+        run: cargo build --release --locked -p byroredux -p byro-launcher -p byro-detect -p byro-dbg
+
+      - name: Smoke-test the binaries without a GPU
+        run: |
+          target/release/byroredux --version
+          target/release/byroredux --help >/dev/null
+          target/release/byro-launcher --help >/dev/null
+          target/release/byro-detect --help >/dev/null
+          # Every shared library the engine needs is either a system library the
+          # README names or part of the C runtime; anything else is a packaging bug.
+          ldd target/release/byroredux
+          if ldd target/release/byroredux | grep -q 'not found'; then
+            echo "::error::byroredux has an unresolved shared library"; exit 1
+          fi
+
+      - name: Package
+        id: package
+        run: |
+          tarball="$(scripts/package-release.sh "$RELEASE_TAG" dist | tail -n1)"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          ls -l dist
+          cat dist/SHA256SUMS
+
+      - name: Release notes
+        run: |
+          prev="$(git tag --list 'v0.*' --sort=-v:refname | grep -vx "$RELEASE_TAG" | head -n1 || true)"
+          {
+            echo "**Alpha.** Linux x86_64 binaries of ByroRedux at \`${BYRO_COMMIT:0:9}\`. No Bethesda content is included; you need your own copy of a supported game."
+            echo
+            echo "- **Needs:** a Vulkan 1.3 GPU/driver with \`VK_KHR_ray_query\`, glibc 2.35+, \`libvulkan1\`, \`libasound2\`, \`libstdc++6\`."
+            echo "- **Run:** extract, \`cd\` into the folder, then \`./byro-detect\` and \`./byro-launcher\`. The engine and launcher read \`assets/\` from the current directory. See \`README.txt\` inside the archive."
+            echo "- **Verify:** \`sha256sum -c SHA256SUMS\`; \`./byroredux --version\` should report \`$RELEASE_TAG\`."
+            echo "- **Known rough edges:** [ROADMAP.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/ROADMAP.md) (Known Issues) and the [open issues](https://github.com/${GITHUB_REPOSITORY}/issues)."
+            echo
+            if [ -n "$prev" ]; then
+              echo "### Changes since $prev"
+              echo
+              git log --no-merges --format='- %s (%h)' "$prev..$GITHUB_SHA" | head -n 200
+            else
+              echo "First release. Session narratives: [HISTORY.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/HISTORY.md)."
+            fi
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Upload (dry run)
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish
+        uses: actions/upload-artifact@v4
+        with:
+          name: byroredux-${{ env.RELEASE_TAG }}-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish pre-release
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --target "$GITHUB_SHA" \
+            --title "ByroRedux $RELEASE_TAG (alpha)" \
+            --notes-file release-notes.md \
+            --prerelease \
+            "${{ steps.package.outputs.tarball }}" dist/SHA256SUMS

@@ -58,6 +58,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Reject grep-blinding NUL bytes
         run: scripts/check-text-source-integrity.sh
+      - name: Self-test the release packaging script
+        run: scripts/package-release.sh --self-test
 
   unused-dependencies:
     name: Unused dependencies
