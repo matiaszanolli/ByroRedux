@@ -5053,6 +5053,16 @@ fn vm_array_add_count_is_capped() {
     );
 }
 
+/// `Array.Remove(index, count)` with a count that would overflow `index +
+/// count` clamps to the array end instead of panicking (#5981).
+#[test]
+fn vm_array_remove_huge_count_clamps() {
+    assert!(
+        run_body_enables_marker("Int[] a = new Int[3]\n  a.Remove(1, 2147483647)\n"),
+        "an overflowing count removes through the end and the run continues"
+    );
+}
+
 /// `Array.Insert` past the ceiling is refused like `Add` (#5791).
 #[test]
 fn vm_array_insert_is_capped() {

@@ -341,7 +341,7 @@ impl Vm<'_> {
                 if index < 0 || index >= len {
                     return stop("array Remove out of range");
                 }
-                let end = (index + count).min(len);
+                let end = index.saturating_add(count).min(len);
                 items.drain(index as usize..end as usize);
                 Value::None
             }
