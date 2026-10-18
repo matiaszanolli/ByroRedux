@@ -165,6 +165,8 @@ pub(crate) fn handles(cmd: u16) -> bool {
             | CMD_UNEQUIP_ITEM
             | CMD_PLAY_SOUND_3D
             | CMD_ADD_REPUTATION
+            | CMD_SET_POS
+            | CMD_SET_SCALE
     )
 }
 
@@ -658,6 +660,34 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             }
             return Action::Done { value: None, effect: format!("AddReputation {repu:08X} +{points}") };
         }
+        // `SetPos <axis> <value>`: "the position of the calling object relative to the world on the
+        // specified axis" (GECK) — world axes are Gamebryo's Z-up, the transform is Y-up. A child
+        // entity's transform is local to its parent, so only a root entity is moved this way.
+        CMD_SET_POS => {
+            let Some(entity) = caller_entity else { return Action::Declined };
+            let axis = num(args, 0) as usize;
+            if axis > 2 || world.has::<byroredux_core::ecs::components::Parent>(entity) {
+                return Action::Declined;
+            }
+            let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::components::Transform>() else {
+                return Action::Declined;
+            };
+            let Some(transform) = transforms.get_mut(entity) else { return Action::Declined };
+            let mut zup = byroredux_core::math::coord::yup_to_zup_pos(transform.translation.to_array());
+            zup[axis] = num(args, 1);
+            transform.translation = byroredux_core::math::Vec3::from(byroredux_core::math::coord::zup_to_yup_pos(zup));
+            return Action::Done { value: None, effect: format!("SetPos {caller:08X} axis {axis} {}", num(args, 1)) };
+        }
+        // `SetScale <factor>`: "sets the scale of the calling object ... 1.0 being normal size".
+        CMD_SET_SCALE => {
+            let Some(entity) = caller_entity else { return Action::Declined };
+            let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::components::Transform>() else {
+                return Action::Declined;
+            };
+            let Some(transform) = transforms.get_mut(entity) else { return Action::Declined };
+            transform.scale = num(args, 0).max(0.0);
+            return Action::Done { value: None, effect: format!("SetScale {caller:08X} {}", num(args, 0)) };
+        }
         CMD_RESET_HEALTH => {
             let Some(actor) = caller_entity else { return Action::Declined };
             let vitals: Vec<u32> = crate::obscript_actor_values::RESET_HEALTH_CODES
@@ -710,6 +740,11 @@ const CMD_GET_IN_SAME_CELL: u16 = 0x1020;
 const CMD_GET_IS_CURRENT_PACKAGE: u16 = 0x10a1;
 const CMD_GET_HEALTH_PERCENTAGE: u16 = 0x11af;
 const CMD_GET_CURRENT_TIME: u16 = 0x1012;
+const CMD_GET_POS: u16 = 0x1006;
+const CMD_SET_POS: u16 = 0x1007;
+const CMD_GET_STARTING_POS: u16 = 0x100a;
+const CMD_GET_SCALE: u16 = 0x1018;
+const CMD_SET_SCALE: u16 = 0x113c;
 
 /// Every getter this module answers.
 pub(crate) fn is_getter(cmd: u16) -> bool {
@@ -733,6 +768,9 @@ pub(crate) fn is_getter(cmd: u16) -> bool {
             | CMD_GET_IS_CURRENT_PACKAGE
             | CMD_GET_CURRENT_TIME
             | CMD_GET_HEALTH_PERCENTAGE
+            | CMD_GET_POS
+            | CMD_GET_STARTING_POS
+            | CMD_GET_SCALE
     )
 }
 
@@ -861,6 +899,24 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
             Getter::Value(if ceiling > 0.0 { (current / ceiling).clamp(0.0, 1.0) } else { 0.0 })
         }
         CMD_GET_HEALTH_PERCENTAGE => Getter::Unhandled,
+        // GECK *GetPos*: "the position of the calling object relative to the world on the specified
+        // axis" (world axes are Z-up; the transform is Y-up). *GetStartingPos*: where the plugin
+        // placed it.
+        CMD_GET_POS | CMD_GET_STARTING_POS => {
+            let axis = num(args, 0) as usize;
+            let translation = if cmd == CMD_GET_POS {
+                world.get::<byroredux_core::ecs::components::GlobalTransform>(subject).map(|t| t.translation)
+            } else {
+                world.get::<crate::EditorLocation>(subject).map(|placed| placed.translation)
+            };
+            match translation {
+                Some(translation) if axis <= 2 => Getter::Value(byroredux_core::math::coord::yup_to_zup_pos(translation.to_array())[axis]),
+                _ => Getter::Declined,
+            }
+        }
+        CMD_GET_SCALE => world
+            .get::<byroredux_core::ecs::components::Transform>(subject)
+            .map_or(Getter::Declined, |transform| Getter::Value(transform.scale)),
         CMD_GET_DESTROYED => Getter::Value(f32::from(u8::from(crate::destruction::is_destroyed(world, caller)))),
         CMD_GET_RESTRAINED => {
             Getter::Value(f32::from(u8::from(world.get::<crate::ActorControlState>(subject).is_some_and(|state| state.restrained))))
@@ -1240,6 +1296,33 @@ mod tests {
         crate::fragment::report_package_transition(&world, actor, None, Some(WALK));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK]), &ctx), Getter::Value(1.0));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK + 1]), &ctx), Getter::Value(0.0));
+    }
+
+    #[test]
+    fn position_and_scale_are_read_and_written_in_the_z_up_world_axes() {
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+        use byroredux_core::math::Vec3;
+        let (mut world, actor, _) = world();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<crate::EditorLocation>();
+        // Y-up (1, 3, -2) is Z-up (x 1, y 2, z 3).
+        world.insert(actor, Transform { translation: Vec3::new(1.0, 3.0, -2.0), rotation: Default::default(), scale: 1.0 });
+        world.insert(actor, GlobalTransform { translation: Vec3::new(1.0, 3.0, -2.0), ..Default::default() });
+        world.insert(actor, crate::EditorLocation { translation: Vec3::new(5.0, 6.0, -7.0), rotation: Default::default() });
+        let ctx = context(Some(ACTOR));
+        let axis = |a: f32| [ObScriptValue::Num(a)];
+        assert_eq!(getter(&world, CMD_GET_POS, &axis(0.0), &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_POS, &axis(1.0), &ctx), Getter::Value(2.0));
+        assert_eq!(getter(&world, CMD_GET_POS, &axis(2.0), &ctx), Getter::Value(3.0));
+        assert_eq!(getter(&world, CMD_GET_STARTING_POS, &axis(2.0), &ctx), Getter::Value(6.0));
+        assert_eq!(getter(&world, CMD_GET_POS, &axis(3.0), &ctx), Getter::Declined, "not an axis");
+        // `SetPos z 10`: only the world Z moves.
+        assert!(done(&run(&world, CMD_SET_POS, &[ObScriptValue::Num(2.0), ObScriptValue::Num(10.0)], &ctx)));
+        assert_eq!(world.get::<Transform>(actor).unwrap().translation, Vec3::new(1.0, 10.0, -2.0));
+        assert_eq!(getter(&world, CMD_GET_SCALE, &[], &ctx), Getter::Value(1.0));
+        assert!(done(&run(&world, CMD_SET_SCALE, &[ObScriptValue::Num(0.5)], &ctx)));
+        assert_eq!(getter(&world, CMD_GET_SCALE, &[], &ctx), Getter::Value(0.5));
     }
 
     #[test]

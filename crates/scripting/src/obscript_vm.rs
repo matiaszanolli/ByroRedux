@@ -109,6 +109,11 @@ pub const BLOCK_ON_TRIGGER: u16 = 0x18;
 pub const BLOCK_ON_TRIGGER_ENTER: u16 = 0x1a;
 pub const BLOCK_ON_TRIGGER_LEAVE: u16 = 0x1b;
 
+/// The commands whose first parameter is an axis letter: `Rotate`, `GetPos`, `SetPos`, `GetAngle`,
+/// `SetAngle`, `GetStartingPos`, `GetStartingAngle` (`0x1004`, `0x1006`..`0x100b`, the same on all
+/// three games).
+const AXIS_COMMANDS: [u16; 7] = [0x1004, 0x1006, 0x1007, 0x1008, 0x1009, 0x100a, 0x100b];
+
 /// Maximum recursive nesting accepted from untrusted compiled ObScript.
 const MAX_OBSCRIPT_VM_NESTING: usize = 32;
 
@@ -473,7 +478,7 @@ impl<'a> Vm<'a> {
                         .call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(cmd))], None);
                     return Some(args_end);
                 };
-                let args = self.decode_args(args_start, args_end)?;
+                let args = self.decode_args_for(cmd, args_start, args_end)?;
                 self.host.call(cmd, &args, Some(caller));
                 if self.host.ends_script() {
                     self.returned = true;
@@ -505,7 +510,7 @@ impl<'a> Vm<'a> {
                 op if !is_flow_op(op) => {
                     // Implicit-caller statement call: the line opcode is
                     // the command id.
-                    let args = self.decode_args(start, end)?;
+                    let args = self.decode_args_for(op, start, end)?;
                     self.host.call(op, &args, None);
                     if self.host.ends_script() {
                         self.returned = true;
@@ -772,7 +777,7 @@ impl<'a> Vm<'a> {
                         if arg_end > bytes.len() {
                             break;
                         }
-                        let Some(args) = self.decode_args(start + arg_start, start + arg_end) else {
+                        let Some(args) = self.decode_args_for(cmd, start + arg_start, start + arg_end) else {
                             self.host.call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(cmd))], None);
                             i += 9 + arg_len;
                             stack.push(ObScriptValue::Num(0.0));
@@ -861,7 +866,7 @@ impl<'a> Vm<'a> {
                         }
                         // `i` is slice-relative; decode_args indexes the
                         // whole script buffer, so translate to absolute.
-                        let Some(args) = self.decode_args(start + arg_start, start + arg_end)
+                        let Some(args) = self.decode_args_for(cmd, start + arg_start, start + arg_end)
                         else {
                             // Arguments this VM cannot frame: counted, never run on guesses.
                             self.host.call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(cmd))], None);
@@ -907,6 +912,31 @@ impl<'a> Vm<'a> {
     }
 
     /// Decode `[u16 count][count typed args]` call arguments.
+    /// [`Self::decode_args`] for command `cmd`: the commands whose first parameter is an *axis*
+    /// (`GetPos x`, `SetAngle z 90`) write it as one bare letter — `X`, `Y`, `Z` — which the
+    /// generic decoder would take for the nested-call tag and the two zero-payload tags. Here the
+    /// letter is the axis, answered as `0`, `1`, `2`.
+    fn decode_args_for(&mut self, cmd: u16, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {
+        if !AXIS_COMMANDS.contains(&cmd) || start + 3 > end {
+            return self.decode_args(start, end);
+        }
+        let count = byroredux_core::bytes::le_u16_at(self.bytes, start)?;
+        let axis = match self.bytes[start + 2] {
+            b'X' | b'x' => 0.0,
+            b'Y' | b'y' => 1.0,
+            b'Z' | b'z' => 2.0,
+            _ => return self.decode_args(start, end),
+        };
+        let mut args = vec![ObScriptValue::Num(axis)];
+        let mut o = start + 3;
+        for _ in 1..count {
+            let (value, next) = self.decode_arg_item(o, end, 0)?;
+            args.push(value.unwrap_or(ObScriptValue::Num(0.0)));
+            o = next;
+        }
+        Some(args)
+    }
+
     fn decode_args(&mut self, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {
         self.decode_args_at_depth(start, end, 0)
     }
@@ -1913,6 +1943,22 @@ mod tests {
         ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut VmState::default(), &mut host);
         assert_eq!(host.calls, vec![(CMD_MESSAGE, vec![ObScriptValue::Ref(0x0010_2030)], None)]);
         assert!(host.messages.is_empty(), "not a text message");
+    }
+
+    /// `Set antler_x to AntlerREF.GetPos x` in vanilla New Vegas (`REPCONDavisonDialogScript`):
+    /// `20 72 02 00 | 58 06 10 03 00 | 01 00 58` — the axis is one bare letter `X`, which the generic
+    /// argument decoder took for a nested-call tag and could not read at all (the whole expression
+    /// was dropped). For the axis commands it is the axis, `0` for X, `1` for Y, `2` for Z.
+    #[test]
+    fn an_axis_argument_is_decoded_as_the_axis() {
+        for (letter, axis) in [(0x58u8, 0.0f32), (0x59, 1.0), (0x5a, 2.0)] {
+            let expr = [0x20, b'r', 2, 0, b'X', 0x06, 0x10, 3, 0, 1, 0, letter].to_vec();
+            let mut script = script(wrap_body(set_stmt(b'f', 3, &expr, 0)), vec![local(3, "antler", 0)], vec![]);
+            script.refs = vec![ScriptRef::Object(0xA), ScriptRef::Object(0xB)];
+            let mut host = Recorder::default();
+            ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut VmState::default(), &mut host);
+            assert_eq!(host.calls, vec![(0x1006, vec![ObScriptValue::Num(axis)], Some(0xB))], "axis {letter:#x}");
+        }
     }
 
     #[test]
