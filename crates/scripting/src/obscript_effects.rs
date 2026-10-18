@@ -580,6 +580,7 @@ const CMD_GET_DESTROYED: u16 = 0x10cb;
 const CMD_GET_RESTRAINED: u16 = 0x10f4;
 const CMD_GET_IN_SAME_CELL: u16 = 0x1020;
 const CMD_GET_IS_CURRENT_PACKAGE: u16 = 0x10a1;
+const CMD_GET_CURRENT_TIME: u16 = 0x1012;
 
 /// Every getter this module answers.
 pub(crate) fn is_getter(cmd: u16) -> bool {
@@ -601,6 +602,7 @@ pub(crate) fn is_getter(cmd: u16) -> bool {
             | CMD_GET_IN_SAME_CELL
             | CMD_GET_LINKED_REF
             | CMD_GET_IS_CURRENT_PACKAGE
+            | CMD_GET_CURRENT_TIME
     )
 }
 
@@ -613,6 +615,15 @@ pub(crate) fn is_getter(cmd: u16) -> bool {
 pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &Context) -> Getter {
     if !is_getter(cmd) {
         return Getter::Unhandled;
+    }
+    // CS *GetCurrentTime*: "the current game time, in decimal format, e.g. 4:30 am = 4.5,
+    // 7:45 pm = 19.75" — the hour of the game clock the update system reports each frame.
+    // No reference is involved.
+    if cmd == CMD_GET_CURRENT_TIME {
+        return world
+            .try_resource::<crate::fragment::ScriptUpdates>()
+            .and_then(|updates| updates.game_hours())
+            .map_or(Getter::Declined, |hours| Getter::Value(hours.rem_euclid(24.0) as f32));
     }
     let Some(caller) = context.caller.filter(|&form| form != 0) else {
         return Getter::Declined;
@@ -1088,6 +1099,16 @@ mod tests {
         crate::fragment::report_package_transition(&world, actor, None, Some(WALK));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK]), &ctx), Getter::Value(1.0));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK + 1]), &ctx), Getter::Value(0.0));
+    }
+
+    #[test]
+    fn get_current_time_is_the_hour_of_the_game_clock() {
+        let (world, _, _) = world();
+        // No clock reported yet: nothing to read, so it is declined, not midnight.
+        assert_eq!(getter(&world, CMD_GET_CURRENT_TIME, &[], &context(None)), Getter::Declined);
+        // Day 1, 06:30 (30.5 game hours since the runtime began): "4:30 am = 4.5".
+        crate::script_update_system(&world, 0.0, Some(30.5));
+        assert_eq!(getter(&world, CMD_GET_CURRENT_TIME, &[], &context(None)), Getter::Value(6.5));
     }
 
     #[test]

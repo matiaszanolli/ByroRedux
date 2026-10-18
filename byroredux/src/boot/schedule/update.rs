@@ -123,6 +123,10 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         let game_hours = world
             .try_resource::<crate::components::GameTimeRes>()
             .map(|time| time.absolute_hours());
+        // M47.3 — the `GameHour` global is the game clock (CS *GetCurrentTime*).
+        if let Some(hour) = world.try_resource::<crate::components::GameTimeRes>().map(|time| time.hour) {
+            byroredux_scripting::globals::sync_game_clock_globals(world, hour);
+        }
         byroredux_scripting::script_update_system(world, dt, game_hours)
     }
     fn check_alias_scripts_dispatch(world: &World, _dt: f32) {

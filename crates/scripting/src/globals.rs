@@ -65,9 +65,63 @@ impl Globals {
 
 impl Resource for Globals {}
 
+/// The `GameHour` GLOB: the CS documents `GetCurrentTime` ("the same value can be
+/// accessed by referring to the special global variable Gamehour"), so a script that
+/// reads the global must see the game clock, not the value the record authors.
+/// `NOT_SAVED_BY_DESIGN`: found in the records when the globals are installed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GameClockGlobals {
+    /// The FormID of the `GameHour` GLOB, if the load order has one.
+    pub hour: Option<u32>,
+}
+
+impl Resource for GameClockGlobals {}
+
+impl GameClockGlobals {
+    /// Find the clock globals among the parsed records, by editor ID.
+    pub fn from_records(records: &HashMap<u32, GlobalRecord>) -> Self {
+        Self {
+            hour: records
+                .values()
+                .find(|record| record.editor_id.eq_ignore_ascii_case("GameHour"))
+                .map(|record| record.form_id),
+        }
+    }
+}
+
+/// Write the game clock's hour of day into the `GameHour` global, so scripts and
+/// conditions that read it see the live time. A no-op without the global.
+pub fn sync_game_clock_globals(world: &byroredux_core::ecs::World, hour_of_day: f32) {
+    let Some(form) = world.try_resource::<GameClockGlobals>().and_then(|clock| clock.hour) else {
+        return;
+    };
+    if let Some(mut globals) = world.try_resource_mut::<Globals>() {
+        globals.set(form, hour_of_day);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `GameHour` is the game clock: the sync writes it, and a world without the global (or
+    /// without globals at all) is left alone.
+    #[test]
+    fn the_game_hour_global_follows_the_clock() {
+        use byroredux_plugin::esm::records::SettingValue;
+        let mut world = byroredux_core::ecs::World::new();
+        sync_game_clock_globals(&world, 5.0); // no resources: nothing to do
+        let mut records = HashMap::new();
+        records.insert(0x38, GlobalRecord { form_id: 0x38, editor_id: "GameHour".into(), value: SettingValue::Float(8.0) });
+        records.insert(0x39, GlobalRecord { form_id: 0x39, editor_id: "GameDaysPassed".into(), value: SettingValue::Float(1.0) });
+        world.insert_resource(Globals::from_records(&records));
+        world.insert_resource(GameClockGlobals::from_records(&records));
+        assert_eq!(world.resource::<GameClockGlobals>().hour, Some(0x38));
+        sync_game_clock_globals(&world, 21.5);
+        let globals = world.resource::<Globals>();
+        assert_eq!((globals.get(0x38), globals.get(0x39)), (Some(21.5), Some(1.0)), "only GameHour moves");
+    }
+
     use byroredux_plugin::esm::records::SettingValue;
 
     fn rec(form_id: u32, value: SettingValue) -> GlobalRecord {

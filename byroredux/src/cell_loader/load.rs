@@ -270,6 +270,7 @@ pub(crate) fn ensure_globals_resource(
         .is_none()
     {
         world.insert_resource(byroredux_scripting::globals::Globals::from_records(records));
+        world.insert_resource(byroredux_scripting::globals::GameClockGlobals::from_records(records));
     }
 }
 
