@@ -53,6 +53,17 @@ pub const CMD_SET_GLOBAL: u16 = u16::MAX;
 /// under the same census as any other unmodeled command (#5629 / #5630).
 pub const CMD_DECLINED: u16 = u16::MAX - 2;
 
+/// Synthetic host command for a read of a **remote variable** (`Quest.var`,
+/// `SomeRef.var` in an expression): `args` are the reference and the variable's ordinal in
+/// that reference's script. The compiled form is `' r<ref u16>'` immediately followed by
+/// `'s'` or `'f'` and the ordinal `u16` (read off the masters: `VCG01.bBeganTest == 0` is
+/// `20 72 04 00 73 06 00`), and the statement form `set Quest.var to ...` is the target
+/// `r<ref u16> <s|f><ordinal u16>` (#5630).
+pub const CMD_GET_REMOTE_VARIABLE: u16 = u16::MAX - 3;
+/// Synthetic host command for the write: `args` are the reference, the ordinal and the
+/// value (already narrowed for a `short` / `long`).
+pub const CMD_SET_REMOTE_VARIABLE: u16 = u16::MAX - 4;
+
 /// The `Set` statement opcode, reported as the declined id for an
 /// unmodeled remote-variable assignment.
 const OP_SET: u16 = 0x15;
@@ -618,6 +629,36 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// `set <ref>.var to expr`: `[r ref u16][s|f ordinal u16][u16 expr_len][expr]`.
+    fn exec_remote_set(&mut self, start: usize, end: usize) {
+        let declined = |vm: &mut Self| {
+            vm.host.call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(OP_SET))], None);
+        };
+        let (Some(ref_index), Some(&kind), Some(ordinal), Some(expr_len)) = (
+            byroredux_core::bytes::le_u16_at(self.bytes, start + 1),
+            self.bytes.get(start + 3),
+            byroredux_core::bytes::le_u16_at(self.bytes, start + 4),
+            byroredux_core::bytes::le_u16_at(self.bytes, start + 6),
+        ) else {
+            return declined(self);
+        };
+        let (expr_start, expr_end) = (start + 8, start + 8 + usize::from(expr_len));
+        if !matches!(kind, b's' | b'f') || expr_end > end {
+            return declined(self);
+        }
+        let value = self.eval_expr(expr_start, expr_end);
+        let Some(form) = self.resolve_ref_var(ref_index) else {
+            return declined(self);
+        };
+        // A `short` / `long` narrows, a `float` keeps the value.
+        let value = if kind == b's' { value.trunc() } else { value };
+        self.host.call(
+            CMD_SET_REMOTE_VARIABLE,
+            &[ObScriptValue::Ref(form), ObScriptValue::Num(f32::from(ordinal)), ObScriptValue::Num(value)],
+            None,
+        );
+    }
+
     /// `Set` payload: `[target escape][u16 expr_len][expr]`. Targets:
     /// `' s<n>'`/`' f<n>'` locals (narrowed per declared type) and
     /// `' G<n>'` globals (routed to the host as a global write).
@@ -627,17 +668,17 @@ impl<'a> Vm<'a> {
     /// `set Quest.var to expr`. In all 1 646 Oblivion / 4 240 FNV / 1 290
     /// FO3 vanilla `Set`s of that shape the trailing bytes are `s`/`f` plus
     /// a nonzero ordinal (not the zeroed "secondary index" this doc once
-    /// claimed). The variable lives in another script, which the VM does
-    /// not model, so the statement is declined and counted (#5630) —
-    /// storing the value as the object's identity, as this used to, made
-    /// every later `' r<n>'` naming that object resolve to a small integer.
+    /// claimed). The variable lives in another script: the host writes it
+    /// ([`CMD_SET_REMOTE_VARIABLE`]) and a write it cannot make is declined and
+    /// counted (#5630) — storing the value as the object's identity, as this
+    /// used to, made every later `' r<n>'` naming that object resolve to a small
+    /// integer.
     fn exec_set(&mut self, start: usize, end: usize) {
         let Some(&tag) = self.bytes.get(start) else {
             return;
         };
         if tag == b'r' {
-            self.host
-                .call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(OP_SET))], None);
+            self.exec_remote_set(start, end);
             return;
         }
         // Target escape: `'s'+idx` is 3 bytes (the leading space of the
@@ -705,6 +746,28 @@ impl<'a> Vm<'a> {
             if bytes[i] == 0x20 && i + 1 < bytes.len() && is_escape_tag(bytes[i + 1]) {
                 let tag = bytes[i + 1];
                 let consumed = match tag {
+                    // `' r<ref>'` + `'s'|'f'` + `<ordinal>`: a remote variable read
+                    // (`Quest.var`), seven bytes. A reference on its own is the four.
+                    b'r' if i + 7 <= bytes.len() && matches!(bytes[i + 4], b's' | b'f') => {
+                        let idx = byroredux_core::bytes::le_u16_at(bytes, i + 2).unwrap_or(0);
+                        let ordinal = byroredux_core::bytes::le_u16_at(bytes, i + 5).unwrap_or(0);
+                        let value = match self.resolve_ref_var(idx) {
+                            Some(form) => self
+                                .host
+                                .call(
+                                    CMD_GET_REMOTE_VARIABLE,
+                                    &[ObScriptValue::Ref(form), ObScriptValue::Num(f32::from(ordinal))],
+                                    None,
+                                )
+                                .map_or(0.0, |v| v.as_num()),
+                            None => {
+                                self.host.call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(CMD_GET_REMOTE_VARIABLE))], None);
+                                0.0
+                            }
+                        };
+                        stack.push(ObScriptValue::Num(value));
+                        Some(7)
+                    }
                     b'r' if i + 4 <= bytes.len() => {
                         let idx = byroredux_core::bytes::le_u16_at(bytes, i + 2).unwrap_or(0);
                         let resolved = self.resolve_ref_var(idx).unwrap_or(0);
@@ -1608,10 +1671,10 @@ mod tests {
     /// #5630: a tag-`r` `Set` is `set <ref>.<remote var> to expr`, a write
     /// into another script's variable. It used to be stored as `ref_vars[idx]
     /// = value`, so after `set Q.iFlag to 1` every later `' r<idx>'` naming
-    /// `Q` resolved to form 1. It is declined instead (counted under the
-    /// `Set` opcode), and the object still resolves to itself.
+    /// `Q` resolved to form 1. It now reaches the host as a remote-variable write
+    /// ([`CMD_SET_REMOTE_VARIABLE`]), and the object still resolves to itself.
     #[test]
-    fn a_remote_variable_set_is_declined_and_does_not_shadow_the_object() {
+    fn a_remote_variable_set_reaches_the_host_and_does_not_shadow_the_object() {
         // `r<ref 1> s<ordinal 1>` — the 6-byte target, then `[len][expr]`.
         let mut remote = vec![b'r'];
         remote.extend_from_slice(&1u16.to_le_bytes());
@@ -1635,7 +1698,11 @@ mod tests {
         assert_eq!(
             host.calls,
             vec![
-                (CMD_DECLINED, vec![ObScriptValue::Num(f32::from(OP_SET))], None),
+                (
+                    CMD_SET_REMOTE_VARIABLE,
+                    vec![ObScriptValue::Ref(0xA), ObScriptValue::Num(1.0), ObScriptValue::Num(1.0)],
+                    None
+                ),
                 (
                     SETSTAGE,
                     vec![ObScriptValue::Ref(0xA), ObScriptValue::Num(10.0)],
@@ -1644,6 +1711,29 @@ mod tests {
             ],
             "the later SetStage still targets the object, not the value written"
         );
+    }
+
+    /// The bytes of `VCG01.bGiveTest` in vanilla New Vegas: `set VCG01.bGiveTest to 1` is
+    /// `15 00 0a 00 | 72 04 00 73 0d 00 | 02 00 | 20 31`, and `VCG01.bBeganTest == 0` reads
+    /// `20 72 04 00 73 06 00 20 30 20 3d 3d`. Both go to the host with the ordinal (13, 6)
+    /// of the variable in the quest's own script — a read that used to see only the quest's
+    /// form id, so `if Quest.var == 0` compared a FormID.
+    #[test]
+    fn remote_variables_read_and_write_by_ordinal_on_the_vanilla_bytes() {
+        let set = [0x15, 0, 0x0a, 0, b'r', 4, 0, b's', 0x0d, 0, 2, 0, 0x20, b'1'].to_vec();
+        // `set bLocal to VCG01.bBeganTest + 5` into local slot 3.
+        let expr = [&[0x20, b'r', 4, 0, b's', 6, 0][..], &[0x20, b'n', 5, 0, 0, 0], b"+ "].concat();
+        let read = set_stmt(b's', 3, &expr, 0);
+        let mut script = script(wrap_body([set, read].concat()), vec![local(3, "bLocal", 1)], vec![]);
+        script.refs = vec![ScriptRef::Object(0xA), ScriptRef::Variable(2), ScriptRef::Object(0xB), ScriptRef::Object(0xC)];
+        let mut host = Recorder::default();
+        let mut state = VmState::default();
+        ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut state, &mut host);
+        // Ref index 4 is the fourth entry: 0xC.
+        assert_eq!(host.calls[0], (CMD_SET_REMOTE_VARIABLE, vec![ObScriptValue::Ref(0xC), ObScriptValue::Num(13.0), ObScriptValue::Num(1.0)], None));
+        assert_eq!(host.calls[1], (CMD_GET_REMOTE_VARIABLE, vec![ObScriptValue::Ref(0xC), ObScriptValue::Num(6.0)], None));
+        // The Recorder answers an unknown command with 0, so the local is 0 + 5.
+        assert_eq!(state.locals.get(&3), Some(&5.0));
     }
 
     #[test]

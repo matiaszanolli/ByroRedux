@@ -1249,6 +1249,33 @@ mod tests {
         world.try_resource::<crate::obscript_quests::ObScriptQuestTimers>().unwrap().unknown_commands.get(&owner).and_then(|m| m.get(&cmd)).copied().unwrap_or(0)
     }
 
+    /// A reference's own variables are remote-readable by ordinal through the name of its script's
+    /// local at that ordinal: `Q.bRunTimer` on an object script reads and writes the same saved
+    /// variable the reference's own `GameMode` sees.
+    #[test]
+    fn a_remote_variable_reads_and_writes_a_references_object_script_locals() {
+        use crate::obscript_vm::{CMD_GET_REMOTE_VARIABLE, CMD_SET_REMOTE_VARIABLE};
+        use crate::obscript_vm::{ObScriptHost, ObScriptValue};
+        let (mut world, target, other) = world_with_activator(script_with(&[(BLOCK_GAME_MODE, counting_body())]));
+        // The caller is a different reference: `target`'s script is the one with `counter` at slot 1.
+        world.insert_resource(crate::obscript_quests::ObScriptQuestTimers::default());
+        let script = ScriptRecord::default();
+        let mut host = ObScriptCommandHost::new(&world, ACTIVATOR, Some(other), 0.0, &script);
+        let target_ref = ObScriptValue::Ref(REF);
+        let counter_slot = ObScriptValue::Num(1.0);
+        assert_eq!(host.call(CMD_GET_REMOTE_VARIABLE, &[target_ref, counter_slot], None), Some(ObScriptValue::Num(0.0)));
+        host.call(CMD_SET_REMOTE_VARIABLE, &[target_ref, counter_slot, ObScriptValue::Num(7.0)], None);
+        assert_eq!(counter(&world, target), 7.0, "the variable the reference's own script reads");
+        assert_eq!(host.call(CMD_GET_REMOTE_VARIABLE, &[target_ref, counter_slot], None), Some(ObScriptValue::Num(7.0)));
+        // A slot the script does not have is declined.
+        host.call(CMD_GET_REMOTE_VARIABLE, &[target_ref, ObScriptValue::Num(9.0)], None);
+        assert_eq!(host.declined.get(), 1);
+        // The script's own reference is not read this way: its variables are mid-run in the VM.
+        let mut own = ObScriptCommandHost::new(&world, REF, Some(target), 0.0, &script);
+        own.call(CMD_GET_REMOTE_VARIABLE, &[target_ref, counter_slot], None);
+        assert_eq!(own.declined.get(), 1);
+    }
+
     /// An item's `OnAdd` block runs the frame the item is added, `RemoveMe` takes one from the
     /// holder and ends the block ("acts as a return"): the statement after it never runs.
     #[test]

@@ -245,6 +245,11 @@ impl ObScriptQuestLocals {
         self.delays.insert(quest, seconds);
     }
 
+    /// Write `quest`'s variable `slot`: a remote `set Quest.var to ...` from another script.
+    pub fn set(&mut self, quest: u32, slot: u16, value: f32) {
+        self.values.entry(quest).or_default().insert(slot, value);
+    }
+
     /// The value of `quest`'s variable `slot` (0 when never assigned).
     pub fn get(&self, quest: u32, slot: u16) -> f32 {
         self.values.get(&quest).and_then(|slots| slots.get(&slot)).copied().unwrap_or(0.0)
@@ -562,6 +567,19 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                 self.decline(declined);
                 None
             }
+            // `Quest.var` read / `set Quest.var to ...`: a variable in another script.
+            crate::obscript_vm::CMD_GET_REMOTE_VARIABLE => {
+                match self.remote_variable(ref_arg(0).unwrap_or(0), num(1) as u16, None) {
+                    Some(value) => Some(ObScriptValue::Num(value)),
+                    None => self.decline(cmd),
+                }
+            }
+            crate::obscript_vm::CMD_SET_REMOTE_VARIABLE => {
+                if self.remote_variable(ref_arg(0).unwrap_or(0), num(1) as u16, Some(num(2))).is_none() {
+                    self.decline(cmd);
+                }
+                None
+            }
             crate::obscript_vm::CMD_SET_GLOBAL => {
                 let form = caller.unwrap_or(0);
                 let value = num(0);
@@ -783,6 +801,49 @@ impl ObScriptCommandHost<'_> {
         };
         let authored = definitions.objectives(quest);
         authored.is_empty() || authored.contains(&objective)
+    }
+
+    /// A variable of another script, by its ordinal in that script's local table (what a
+    /// compiled `Quest.var` carries): the quest's, or the one of the reference's own object
+    /// script. Read it, or — with `write` — set it and answer the value written. `None`
+    /// when the script is not one this host holds the variables of: an unknown form, a
+    /// reference that is not loaded or has no object script, or the script running now (its
+    /// own variables are mid-run in the VM, and a second copy here would be overwritten when
+    /// the run stores them).
+    fn remote_variable(&self, form: u32, ordinal: u16, write: Option<f32>) -> Option<f32> {
+        if form == 0 || form == self.owner {
+            return None;
+        }
+        if self.world.try_resource::<QuestScriptTable>().is_some_and(|table| table.scripts.contains_key(&form)) {
+            let mut locals = self.world.try_resource_mut::<ObScriptQuestLocals>()?;
+            return Some(match write {
+                Some(value) => {
+                    locals.set(form, ordinal, value);
+                    value
+                }
+                None => locals.get(form, ordinal),
+            });
+        }
+        let entity = resolve_entity_by_global_form_id(self.world, form)?;
+        let script_id = self.world.get::<crate::obscript_objects::ObScriptInstance>(entity)?.script;
+        let name = {
+            let table = self.world.try_resource::<crate::obscript_objects::ObScriptObjectTable>()?;
+            let record = &table.scripts.get(&script_id)?.record;
+            record.locals.iter().find(|local| local.index == u32::from(ordinal))?.name.clone()
+        };
+        match write {
+            Some(value) => {
+                let mut variables = self.world.query_mut::<crate::vm_state::ScriptVariables>()?;
+                variables.get_mut(entity)?.set_by_name(&name, value);
+                Some(value)
+            }
+            None => Some(
+                self.world
+                    .get::<crate::vm_state::ScriptVariables>(entity)?
+                    .get(byroredux_plugin::esm::records::condition::ConditionStringId::from_text(&name))
+                    .unwrap_or(0.0),
+            ),
+        }
     }
 
     /// The condition function `cmd` names when it is one of [`SCRIPT_GETTERS`].
@@ -1028,6 +1089,33 @@ mod host_tests {
         // Written on the quest itself there is no reference to disable.
         assert_eq!(call(&world, DISABLE, &[]), Some(ObScriptValue::Num(0.0)));
         assert_eq!(declined(&world, DISABLE), 1);
+    }
+
+    /// A remote variable names a variable of another script by its ordinal in that script's
+    /// local table: a quest's are its saved locals, so `set Q.var to 3` in one script is what
+    /// `Q`'s own script, and `GetQuestVariable`, read next.
+    #[test]
+    fn a_remote_variable_reads_and_writes_the_quests_locals() {
+        const READ: u16 = crate::obscript_vm::CMD_GET_REMOTE_VARIABLE;
+        const WRITE: u16 = crate::obscript_vm::CMD_SET_REMOTE_VARIABLE;
+        let mut world = world();
+        world.insert_resource(ObScriptQuestLocals::default());
+        let mut table = QuestScriptTable::default();
+        table.scripts.insert(
+            OTHER,
+            QuestScript { script: Arc::new(ScriptRecord::default()), quest: QuestFormId(OTHER), authored_delay: 0.0 },
+        );
+        world.insert_resource(table);
+        let quest = ObScriptValue::Ref(OTHER);
+        assert_eq!(call(&world, READ, &[quest, ObScriptValue::Num(6.0)]), Some(ObScriptValue::Num(0.0)), "never assigned reads 0");
+        assert_eq!(declined(&world, READ), 0);
+        call(&world, WRITE, &[quest, ObScriptValue::Num(6.0), ObScriptValue::Num(3.0)]);
+        assert_eq!(call(&world, READ, &[quest, ObScriptValue::Num(6.0)]), Some(ObScriptValue::Num(3.0)));
+        assert_eq!(world.try_resource::<ObScriptQuestLocals>().unwrap().get(OTHER, 6), 3.0, "the quest's own slot");
+        // A form whose variables this host does not hold is a counted decline, never a made-up 0.
+        call(&world, READ, &[ObScriptValue::Ref(0x00FF_FFFF), ObScriptValue::Num(1.0)]);
+        call(&world, WRITE, &[ObScriptValue::Ref(0x00FF_FFFF), ObScriptValue::Num(1.0), ObScriptValue::Num(1.0)]);
+        assert_eq!((declined(&world, READ), declined(&world, WRITE)), (1, 1));
     }
 
     /// A caller that is not a live reference cannot be asked: it is a counted
