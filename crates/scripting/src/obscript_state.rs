@@ -225,6 +225,7 @@ impl Component for ReviveRequest {
 /// This subsystem's resources and components.
 pub fn install(world: &mut World) {
     world.register::<ReviveRequest>();
+    world.register::<PlayingScriptedIdle>();
     world.register::<OnResetEvent>();
     world.init_resource::<CellVisits>();
     world.init_resource::<PendingCellResets>();
@@ -338,6 +339,88 @@ pub struct SwimQuery(pub fn(&World, EntityId) -> bool);
 
 impl Resource for SwimQuery {}
 
+/// The `DNAM` animation type of every weapon, by base FormID (`GetWeaponAnimType`). Fallout 3 / New Vegas
+/// only (Oblivion's weapons carry no such byte). `NOT_SAVED_BY_DESIGN`: rebuilt from the records.
+#[derive(Debug, Default, Clone)]
+pub struct WeaponAnimTypes(std::collections::HashMap<u32, u8>);
+
+impl Resource for WeaponAnimTypes {}
+
+impl WeaponAnimTypes {
+    pub fn from_index(index: &byroredux_plugin::esm::records::EsmIndex) -> Self {
+        use byroredux_plugin::esm::records::ItemKind;
+        if index.game != byroredux_plugin::esm::reader::GameKind::Fallout3NV {
+            return Self::default();
+        }
+        Self(
+            index
+                .items
+                .iter()
+                .filter_map(|(&form, item)| match &item.kind {
+                    ItemKind::Weapon { anim_type, .. } => Some((form, *anim_type)),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
+    pub fn get(&self, weapon: u32) -> Option<u8> {
+        self.0.get(&weapon).copied()
+    }
+}
+
+/// An actor playing a scripted one-shot idle (`PlayIdle`); the app's idle runtime adds it when the idle
+/// starts and removes it when the actor goes back to what it was doing. `NOT_SAVED_BY_DESIGN`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlayingScriptedIdle;
+
+impl Component for PlayingScriptedIdle {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// The polygons of every `REGN`, for `IsPlayerInRegion`. `NOT_SAVED_BY_DESIGN`: rebuilt from the records.
+#[derive(Debug, Default, Clone)]
+pub struct RegionAreas(std::collections::HashMap<u32, (Option<u32>, Vec<Vec<(f32, f32)>>)>);
+
+impl Resource for RegionAreas {}
+
+impl RegionAreas {
+    pub fn from_index(index: &byroredux_plugin::esm::records::EsmIndex) -> Self {
+        Self(
+            index
+                .regions
+                .values()
+                .map(|region| (region.form_id, (region.worldspace_form, region.areas.iter().map(|area| area.points.clone()).collect())))
+                .collect(),
+        )
+    }
+
+    /// Whether the world point `(x, y)` (Z-up) is inside one of `region`'s polygons, in `worldspace` when
+    /// the region names one.
+    pub fn contains(&self, region: u32, worldspace: u32, x: f32, y: f32) -> bool {
+        let Some((owner, polygons)) = self.0.get(&region) else { return false };
+        if owner.is_some_and(|owner| owner != worldspace) {
+            return false;
+        }
+        polygons.iter().any(|polygon| point_in_polygon(polygon, x, y))
+    }
+}
+
+/// Even-odd ray casting.
+fn point_in_polygon(polygon: &[(f32, f32)], x: f32, y: f32) -> bool {
+    let mut inside = false;
+    let mut j = polygon.len().wrapping_sub(1);
+    for i in 0..polygon.len() {
+        let (xi, yi) = polygon[i];
+        let (xj, yj) = polygon[j];
+        if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 /// The reference FormID scripts name `entity` by: `0x14` for the player (`PlayerRef`), else its
 /// placed reference's FormID.
 pub fn reference_form(world: &World, entity: EntityId) -> Option<u32> {
@@ -369,6 +452,19 @@ pub fn is_weapon_out(world: &World, actor: EntityId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_point_is_in_a_region_when_a_polygon_holds_it() {
+        let square = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        assert!(point_in_polygon(&square, 5.0, 5.0));
+        assert!(!point_in_polygon(&square, 11.0, 5.0));
+        assert!(!point_in_polygon(&[], 0.0, 0.0));
+        let mut areas = RegionAreas::default();
+        areas.0.insert(7, (Some(0xA), vec![square]));
+        assert!(areas.contains(7, 0xA, 1.0, 1.0));
+        assert!(!areas.contains(7, 0xB, 1.0, 1.0), "another worldspace");
+        assert!(!areas.contains(8, 0xA, 1.0, 1.0), "an unknown region");
+    }
 
     #[test]
     fn notes_are_added_once_and_removed() {

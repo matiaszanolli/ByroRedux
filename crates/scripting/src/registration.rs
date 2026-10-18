@@ -51,6 +51,8 @@ pub fn register(world: &mut World) {
     crime_gold::install(world);
     crime_faction::install(world);
     crate::obscript_state::install(world);
+    crate::obscript_ledger::install(world);
+    crate::obscript_more::install(world);
     crate::magic_effects::install(world);
     crate::magic_shaders::install(world);
     world.register::<crate::obscript_anim::HeadLook>();

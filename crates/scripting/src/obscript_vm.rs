@@ -177,7 +177,7 @@ pub trait ObScriptHost {
     /// editor ID>`, `GetGS <setting name>`, `ShowWarning "text"`): the form the name stands for, the
     /// setting's value, ... — whatever the command then receives as its argument. `None` when the host
     /// cannot say; the command is then declined.
-    fn text_argument(&mut self, _cmd: u16, _text: &str) -> Option<ObScriptValue> {
+    fn text_argument(&mut self, _cmd: u16, _text: &str, _rest: &[ObScriptValue]) -> Option<ObScriptValue> {
         None
     }
 
@@ -192,7 +192,7 @@ pub trait ObScriptHost {
 
 /// Commands whose one argument is a string, not a form index or a number: `PlayIdle` (GECK: "takes the
 /// actual editorID string of the idle as parameter"), `GetGS <setting>` and `ShowWarning "text"`.
-const STRING_FORM_COMMANDS: [u16; 3] = [0x1190, 0x1100, 0x11b9];
+const STRING_FORM_COMMANDS: [u16; 5] = [0x1190, 0x1100, 0x11b9, 0x1137, 0x1138];
 
 /// `MessageBox` (`0x1000`).
 pub const CMD_MESSAGE_BOX: u16 = 0x1000;
@@ -973,12 +973,22 @@ impl<'a> Vm<'a> {
         let length = usize::from(byroredux_core::bytes::le_u16_at(self.bytes, start + 2)?);
         let text_start = start + 4;
         let text_end = text_start.checked_add(length)?;
-        if count != 1 || text_end > end {
+        if count == 0 || text_end > end {
             return self.decode_args_at_depth(start, end, 0);
         }
+        // The arguments after the string (`ModPCMiscStat "Locks Picked" 1`): ordinary ones.
+        let mut rest = Vec::new();
+        let mut offset = text_end;
+        for _ in 1..count {
+            let (value, next) = self.decode_arg_item(offset, end, 0)?;
+            rest.extend(value);
+            offset = next;
+        }
         let text = String::from_utf8_lossy(&self.bytes[text_start..text_end]).into_owned();
-        let value = self.host.text_argument(cmd, &text).unwrap_or(ObScriptValue::Ref(0));
-        Some(vec![value])
+        let value = self.host.text_argument(cmd, &text, &rest).unwrap_or(ObScriptValue::Ref(0));
+        let mut args = vec![value];
+        args.extend(rest);
+        Some(args)
     }
 
     fn decode_args(&mut self, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {

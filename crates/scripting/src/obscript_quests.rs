@@ -97,6 +97,9 @@ pub fn command_is_modeled(cmd: u16, fallout: bool) -> bool {
     }
     // `MoveToMarkerWithFade` and `GetLinkedRef` are Fallout commands; the numbers are
     // other commands in Oblivion (`PurgeCellBuffers` for `0x116b`).
+    if crate::obscript_more::models(cmd, fallout) {
+        return true;
+    }
     if !fallout && matches!(cmd, 0x124f | 0x116b | 0x11af) {
         return false;
     }
@@ -392,12 +395,19 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
         self.ends.replace(false)
     }
 
-    fn text_argument(&mut self, cmd: u16, text: &str) -> Option<ObScriptValue> {
+    fn text_argument(&mut self, cmd: u16, text: &str, rest: &[ObScriptValue]) -> Option<ObScriptValue> {
         match cmd {
             // `PlayIdle <idle>`: the IDLE the editor ID names.
             0x1190 => crate::idle_names::idle_by_editor_id(self.world, text).map(ObScriptValue::Ref),
             // `GetGS <setting>`: the game setting's value.
             0x1100 => crate::obscript_state::game_setting(self.world, text).map(ObScriptValue::Num),
+            // `GetPCMiscStat "name"`: the player's count of that stat (the command then answers it).
+            0x1138 => Some(ObScriptValue::Num(crate::obscript_more::misc_stat(self.world, text) as f32)),
+            // `ModPCMiscStat "name" <amount>`: add to that stat.
+            0x1137 => {
+                crate::obscript_more::mod_misc_stat(self.world, text, rest.first().map_or(0.0, |v| v.as_num()) as i32);
+                Some(ObScriptValue::Num(0.0))
+            }
             // `ShowWarning "text"`: the warning is written to the log and shown as a notification.
             0x11b9 => {
                 log::warn!("ObScript ShowWarning: {text}");
@@ -659,6 +669,31 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     return self.decline(cmd);
                 };
                 self.fallout_quest_command(cmd, QuestFormId(target), args)
+            }
+            // The commands `obscript_more` models, per game: the opcode numbers overlap between the
+            // Oblivion and Fallout tables, so it is asked with the loaded game (it precedes the
+            // getters so an Oblivion `PurgeCellBuffers` is not read as Fallout's `GetLinkedRef`).
+            _ if crate::obscript_more::models(cmd, crate::ScriptGame::is_fallout3_nv(self.world)) => {
+                match crate::obscript_more::run(
+                    self.world,
+                    cmd,
+                    args,
+                    &crate::obscript_actions::Context {
+                        caller,
+                        known: self.reference.map(|entity| (self.owner, entity)),
+                        action_ref: self.action_ref,
+                        owner: self.owner,
+                        elapsed: self.elapsed,
+                    },
+                ) {
+                    Action::Done { value, effect: text } => {
+                        if !text.is_empty() {
+                            effect(self, text);
+                        }
+                        value
+                    }
+                    _ => self.decline(cmd),
+                }
             }
             _ if crate::obscript_effects::is_getter(cmd) => {
                 match crate::obscript_effects::getter(

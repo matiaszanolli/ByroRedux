@@ -245,6 +245,32 @@ pub fn faction_reaction(world: &World, actor: EntityId, other: EntityId) -> Opti
     Some(reaction_raw(combined_reaction(&own, &other, &overrides, &catalog)) as i32)
 }
 
+/// ObScript *SetFactionReaction*: "set the specified faction's reaction towards the target faction". The
+/// number the script gives is a disposition-style modifier; the engine's combat reaction has four
+/// states, so a positive value is Friend, a negative one Enemy and zero Neutral. `false` when the load
+/// order's identity is not installed or either faction is unknown.
+pub fn set_faction_reaction(world: &World, faction: u32, other_faction: u32, value: f32) -> bool {
+    let Some(identity) = world.try_resource::<crate::LoadOrderIdentity>() else { return false };
+    let (Some(faction), Some(other)) = (identity.form_ref(faction), identity.form_ref(other_faction)) else {
+        return false;
+    };
+    drop(identity);
+    let reaction = if value > 0.0 {
+        CombatReaction::Friend
+    } else if value < 0.0 {
+        CombatReaction::Enemy
+    } else {
+        CombatReaction::Neutral
+    };
+    match world.try_resource_mut::<FactionRelations>() {
+        Some(mut relations) => {
+            relations.set_reaction(faction, other, reaction);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Inverse of [`CombatReaction::from_raw`].
 fn reaction_raw(reaction: CombatReaction) -> u32 {
     match reaction {

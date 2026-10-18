@@ -22,6 +22,8 @@ pub struct ActorBaseTrait {
     pub unique: bool,
     /// The `VTCK` voice type; `0` when the record authors none.
     pub voice: u32,
+    /// `CREA`'s `wbCreatureTypeEnum` value (0 Animal ... 7 Giant); `None` for an `NPC_`.
+    pub creature_type: Option<u8>,
 }
 
 /// Every `NPC_` base's traits, by base FormID.
@@ -48,6 +50,7 @@ pub fn install_actor_base_traits(world: &mut World, index: &EsmIndex) -> usize {
                     female: npc.acbs_flags & 1 != 0,
                     unique: npc.acbs_flags & 0x20 != 0,
                     voice: npc.voice_form_id,
+                    creature_type: npc.creature_stats.map(|stats| stats.creature_type),
                 },
             )
         })
@@ -77,8 +80,8 @@ mod tests {
         let mut world = World::new();
         assert_eq!(install_actor_base_traits(&mut world, &index), 2);
         let traits = world.resource::<ActorBaseTraits>();
-        assert_eq!(traits.get(1), Some(ActorBaseTrait { female: true, unique: false, voice: 0x77 }));
-        assert_eq!(traits.get(2), Some(ActorBaseTrait { female: false, unique: false, voice: 0 }));
+        assert_eq!(traits.get(1), Some(ActorBaseTrait { female: true, unique: false, voice: 0x77, creature_type: None }));
+        assert_eq!(traits.get(2), Some(ActorBaseTrait { female: false, unique: false, voice: 0, creature_type: None }));
         assert_eq!(traits.get(3), None);
     }
 }

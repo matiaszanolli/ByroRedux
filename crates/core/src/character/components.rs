@@ -255,6 +255,17 @@ impl FactionReputation {
         e.infamy = e.infamy.saturating_add(points).min(REPUTATION_AXIS_MAX);
     }
 
+    /// Set Fame outright (ObScript `SetReputation <repu> 1 <points>`), clamped to
+    /// [`REPUTATION_AXIS_MAX`]. Unlike [`Self::add_fame`] it may lower it — a script restoring a saved value.
+    pub fn set_fame(&mut self, repu_form_id: u32, points: u16) {
+        self.entry_mut(repu_form_id).fame = points.min(REPUTATION_AXIS_MAX);
+    }
+
+    /// Set Infamy outright (ObScript `SetReputation <repu> 0 <points>`), clamped to [`REPUTATION_AXIS_MAX`].
+    pub fn set_infamy(&mut self, repu_form_id: u32, points: u16) {
+        self.entry_mut(repu_form_id).infamy = points.min(REPUTATION_AXIS_MAX);
+    }
+
     /// Zero both axes for a faction — the scripted-reset exception (NCR/Legion
     /// story beats, faction-armour disguise). No-op if the faction is unknown.
     pub fn reset(&mut self, repu_form_id: u32) {

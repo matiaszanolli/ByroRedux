@@ -142,6 +142,8 @@ pub(crate) fn handles(cmd: u16) -> bool {
             | CMD_TRIGGER_HIT_SHADER
             | CMD_SHOW_WARNING
             | CMD_AUTO_SAVE
+            | CMD_FORCE_SAVE
+            | CMD_SYSTEM_SAVE
             | CMD_ADD_ITEM
             | CMD_REMOVE_ITEM
             | CMD_EQUIP_ITEM
@@ -244,7 +246,7 @@ impl Binder {
 }
 
 /// The form a reference argument resolved to; `None` for an absent or null one.
-fn form_arg(args: &[ObScriptValue], i: usize) -> Option<u32> {
+pub(crate) fn form_arg(args: &[ObScriptValue], i: usize) -> Option<u32> {
     match args.get(i) {
         Some(ObScriptValue::Ref(form)) if *form != 0 => Some(*form),
         _ => None,
@@ -285,12 +287,12 @@ fn set_flag<T: byroredux_core::ecs::storage::Component>(world: &World, entity: E
     }
 }
 
-fn num(args: &[ObScriptValue], i: usize) -> f32 {
+pub(crate) fn num(args: &[ObScriptValue], i: usize) -> f32 {
     args.get(i).map_or(0.0, ObScriptValue::as_num)
 }
 
 /// Whether the actor `form` resolves to a live entity.
-fn live(world: &World, form: u32) -> Option<EntityId> {
+pub(crate) fn live(world: &World, form: u32) -> Option<EntityId> {
     crate::condition::resolve_entity_by_global_form_id(world, form)
 }
 
@@ -324,6 +326,8 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             | CMD_SET_WEATHER
             | CMD_RELEASE_WEATHER_OVERRIDE
             | CMD_AUTO_SAVE
+            | CMD_FORCE_SAVE
+            | CMD_SYSTEM_SAVE
     );
     let caller = context.caller.filter(|&form| form != 0);
     if needs_caller && caller.is_none() {
@@ -431,6 +435,9 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
         }
         // `AutoSave`: "saves the game ... as an autosave" — the same request `Game.RequestAutoSave` raises.
         CMD_AUTO_SAVE => vec![Effect::RequestSave { auto: true }],
+        // `ForceSave` ("a new save in a new slot, as if the player manually did so") and `SystemSave` (the one
+        // overwritten "SYS" save): the manual-save request `Game.RequestSave` raises.
+        CMD_FORCE_SAVE | CMD_SYSTEM_SAVE => vec![Effect::RequestSave { auto: false }],
         // `SetOpenState <0|1>`: a door the engine tracks no open/closed state for yet gets one (the
         // two-state activator, which is saved) so the call is not lost and `GetOpenState` reads it back.
         CMD_SET_OPEN_STATE => {
@@ -1108,6 +1115,8 @@ const CMD_GET_SCALE: u16 = 0x1018;
 const CMD_SET_SCALE: u16 = 0x113c;
 const CMD_PLAY_GROUP: u16 = 0x1013;
 const CMD_AUTO_SAVE: u16 = 0x115e;
+const CMD_FORCE_SAVE: u16 = 0x1217;
+const CMD_SYSTEM_SAVE: u16 = 0x127b;
 const CMD_PLAY_IDLE: u16 = 0x1190;
 const CMD_PICK_IDLE: u16 = 0x1064;
 const CMD_RESET_3D_STATE: u16 = 0x1146;
@@ -2247,6 +2256,8 @@ mod tests {
         assert_eq!(getter(&world, CMD_GET_SITTING, &[], &ctx), Getter::Value(3.0));
         // `AutoSave` names no reference.
         assert!(done(&run(&world, CMD_AUTO_SAVE, &[], &context(None))));
+        assert!(done(&run(&world, CMD_FORCE_SAVE, &[], &context(None))));
+        assert!(done(&run(&world, CMD_SYSTEM_SAVE, &[], &context(None))));
     }
 
     #[test]
