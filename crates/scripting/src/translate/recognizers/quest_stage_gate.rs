@@ -266,7 +266,29 @@ fn recognize_set_stage_trigger(
     // #4326 — the shipped script's two options differ: `disableWhenDone` calls
     // `self.Disable(false)`, `onlyOnce` calls `GotoState("hasBeenTriggered")`.
     // Both stop the trigger in-session; only the first disables the reference.
-    let disable_when_done = opt_bool_property("disableWhenDone")?.unwrap_or(false);
+    //
+    // #5969 — an option the placement's VMAD omits keeps the *script's*
+    // declared default, as `prereqStageOPT` does above: the shipped scripts
+    // declare `doOnce` / `disableWhenDone` / `onlyOnce` `= True`, and most
+    // vanilla placements omit them. Only a script that declares no
+    // initializer falls back to `false`.
+    let script_bool = |name: &str| -> bool {
+        script
+            .body
+            .iter()
+            .find_map(|item| match &item.node {
+                ScriptItem::Property(p) if p.name.node.0.eq_ignore_ascii_case(name) => {
+                    match p.initial_value.as_ref().map(|v| &v.node) {
+                        Some(byroredux_papyrus::ast::Expr::BoolLit(value)) => Some(*value),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .unwrap_or(false)
+    };
+    let disable_when_done = opt_bool_property("disableWhenDone")?
+        .unwrap_or_else(|| script_bool("disableWhenDone"));
     let once_only = match variant {
         SetStageTrigger::SpecificActor => "onlyOnce",
         SetStageTrigger::Player => "doOnce",
@@ -276,7 +298,8 @@ fn recognize_set_stage_trigger(
         conditions,
         target_stage,
         activator_gate,
-        disable_after_advance: disable_when_done || opt_bool_property(once_only)?.unwrap_or(false),
+        disable_after_advance: disable_when_done
+            || opt_bool_property(once_only)?.unwrap_or_else(|| script_bool(once_only)),
         disable_reference_after_advance: disable_when_done,
         start_if_stopped: variant == SetStageTrigger::Player,
     };
@@ -738,7 +761,7 @@ mod tests {
     /// the decompiler restores them from the backing variables.
     const PLAYER_TRIGGER_SRC: &str = "ScriptName defaultSetStageTrigScript extends ObjectReference\n\
         Bool Property doOnce = True Auto\n\
-        Bool Property disableWhenDone = False Auto\n\
+        Bool Property disableWhenDone = True Auto\n\
         Int Property prereqStageOPT = -1 Auto\n\
         Quest Property myQuest Auto\n\
         Int Property stage Auto\n\
@@ -801,7 +824,35 @@ mod tests {
         assert!(component.conditions.is_empty(), "prereq -1: no prerequisite");
         assert!(matches!(component.activator_gate, ActivatorGate::PlayerOnly));
         assert!(component.start_if_stopped);
-        assert!(!component.disable_after_advance, "doOnce comes from the VMAD, not the source");
+        assert!(
+            component.disable_after_advance && component.disable_reference_after_advance,
+            "an omitted `doOnce` / `disableWhenDone` keep the script's `= True` (#5969)"
+        );
+
+        // A VMAD that sets both options false overrides the script defaults.
+        let recognized = translate_script(
+            &source,
+            GameKind::Skyrim,
+            Some(&player_trigger_instance(vec![
+                ScriptProperty {
+                    name: "doOnce".into(),
+                    status: 1,
+                    value: PropertyValue::Bool(false),
+                },
+                ScriptProperty {
+                    name: "disableWhenDone".into(),
+                    status: 1,
+                    value: PropertyValue::Bool(false),
+                },
+            ])),
+            None,
+        )
+        .expect("recognized");
+        let explicit = world.spawn();
+        (recognized.spawn)(&mut world, explicit);
+        let component = world.get::<QuestAdvanceOnActivate>(explicit).unwrap().clone();
+        assert!(!component.disable_after_advance, "doOnce = False in the VMAD wins");
+        assert!(!component.disable_reference_after_advance);
 
         // A VMAD prerequisite and doOnce.
         let recognized = translate_script(
@@ -827,7 +878,7 @@ mod tests {
         let component = world.get::<QuestAdvanceOnActivate>(other).unwrap().clone();
         assert_eq!(component.conditions[0].param_2, 5);
         assert!(component.disable_after_advance);
-        assert!(!component.disable_reference_after_advance);
+        assert!(component.disable_reference_after_advance, "disableWhenDone defaults to True");
     }
 
     /// M47.2 — the player entering starts the stopped quest and sets the
@@ -974,6 +1025,19 @@ mod tests {
         }
     }
 
+    /// `defaultSetStageTRIGSpecificActor` as shipped: both options declare
+    /// `= True` (#5969), unlike [`specific_actor_source`]'s bare event.
+    fn specific_actor_source_with_shipped_defaults() -> byroredux_papyrus::ast::Script {
+        let src = "ScriptName defaultSetStageTRIGSpecificActor extends ObjectReference\n\
+                   Bool Property disableWhenDone = True Auto\n\
+                   Bool Property onlyOnce = True Auto\n\
+                   Event OnTriggerEnter(ObjectReference triggerRef)\n\
+                   EndEvent\n";
+        let (script, errors) = parse_script(src).expect("specific actor trigger parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        script
+    }
+
     fn specific_actor_source() -> byroredux_papyrus::ast::Script {
         let src = "ScriptName defaultSetStageTRIGSpecificActor extends ObjectReference\n\
                    Event OnTriggerEnter(ObjectReference triggerRef)\n\
@@ -1034,7 +1098,8 @@ mod tests {
         (recognized.spawn)(&mut world, entity);
         let component = world
             .get::<QuestAdvanceOnActivate>(entity)
-            .expect("quest stage trigger component");
+            .expect("quest stage trigger component")
+            .clone();
         assert_eq!(component.target_stage, 22);
         assert!(
             component.conditions.is_empty(),
@@ -1042,9 +1107,21 @@ mod tests {
         );
         assert!(
             !component.disable_after_advance,
-            "absent `disableWhenDone`/`onlyOnce` default to false"
+            "absent options on a script that declares no initializer default to false"
         );
         assert!(!component.disable_reference_after_advance);
+
+        // #5969 — the shipped script declares both `= True`, so a placement
+        // that omits them fires once and disables itself.
+        let shipped = specific_actor_source_with_shipped_defaults();
+        let source = ScriptSource::PapyrusSource(&shipped);
+        let recognized = translate_script(&source, GameKind::Skyrim, Some(&instance), None)
+            .expect("recognized with the shipped script");
+        let other = world.spawn();
+        (recognized.spawn)(&mut world, other);
+        let component = world.get::<QuestAdvanceOnActivate>(other).unwrap().clone();
+        assert!(component.disable_after_advance);
+        assert!(component.disable_reference_after_advance);
     }
 
     /// #2186 — the same shape, but the `Quest Property` is alias-bound.
