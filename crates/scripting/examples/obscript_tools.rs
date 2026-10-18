@@ -31,6 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "avif" => avif::run(args),
         "avcodes" => avcodes::run(args),
         "find" => find::run(args),
+        "exprcheck" => exprcheck::run(args),
         _ => {
             eprintln!("usage: obscript_tools <census|names|live|dump|walk> <ESM> ...");
             std::process::exit(2);
@@ -71,7 +72,9 @@ mod census {
     impl ObScriptHost for Recorder {
         fn call(&mut self, cmd: u16, args: &[ObScriptValue], _caller: Option<u32>) -> Option<ObScriptValue> {
             let id = if cmd == CMD_DECLINED {
-                args.first().map_or(0, |v| v.as_num() as u16)
+                // A statement or expression the VM could not frame or resolve: kept apart from
+                // the commands that ran, under the id it carries with the top bit set.
+                0x8000 | args.first().map_or(0, |v| v.as_num() as u16)
             } else {
                 cmd
             };
@@ -222,6 +225,31 @@ mod census {
                     *names.entry(w).or_insert(0) += 1;
                 }
             }
+        }
+        // The same for every block of every object script: what the VM itself could not frame or
+        // resolve (the top-bit ids), which no host can answer.
+        let mut vm_declines: BTreeMap<u16, usize> = BTreeMap::new();
+        let mut object_blocks = 0usize;
+        for script in index.scripts.values().filter(|s| s.script_type == ScriptType::Object && !s.compiled.is_empty()) {
+            let program = ObScriptProgram::new(script);
+            let Some(blocks) = program.blocks() else { continue };
+            for block in blocks {
+                object_blocks += 1;
+                for answer in [0.0f32, 1.0] {
+                    let mut host = Recorder { answer, calls: HashMap::new() };
+                    let mut state = VmState::default();
+                    program.run_at(&block, &mut state, &mut host);
+                    for (&id, _) in host.calls.iter().filter(|(&id, _)| id & 0x8000 != 0) {
+                        *vm_declines.entry(id & 0x7fff).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        let mut rows: Vec<_> = vm_declines.into_iter().collect();
+        rows.sort_by_key(|&(id, n)| (std::cmp::Reverse(n), id));
+        println!("== object-script blocks run: {object_blocks}; ids the VM declined to frame/resolve (block runs, both answers) ==");
+        for (id, n) in rows.iter().take(25) {
+            println!("  {id:#06x}: {n}");
         }
         let mut delays: BTreeMap<String, usize> = BTreeMap::new();
         for quest in index.quests.values().filter(|q| q.script_ref != 0) {
@@ -762,6 +790,90 @@ mod find {
         for s in found.into_iter().take(limit) {
             println!("{:08X} {} ({:?}, {} bytes)", s.form_id, s.editor_id, s.script_type, s.compiled.len());
         }
+        Ok(())
+    }
+}
+
+/// `exprcheck <ESM>` — every expression (`Set` right-hand sides, `If` / `ElseIf` conditions) of every
+/// script, tokenised strictly: the escapes the VM understands, and a count of each byte that follows a
+/// space and an escape letter it does not.
+mod exprcheck {
+    use std::collections::BTreeMap;
+
+    use byroredux_plugin::esm::parse_esm;
+
+    fn u16_at(b: &[u8], at: usize) -> Option<usize> {
+        Some(usize::from(u16::from_le_bytes([*b.get(at)?, *b.get(at + 1)?])))
+    }
+
+    pub fn run(mut a: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error::Error>> {
+        let esm = a.next().expect("esm");
+        let index = parse_esm(&std::fs::read(&esm)?)?;
+        let mut exprs = 0usize;
+        let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+        let mut unknown: BTreeMap<String, usize> = BTreeMap::new();
+        for s in index.scripts.values() {
+            let b = &s.compiled;
+            let mut at = 0usize;
+            while at + 4 <= b.len() {
+                let op = u16_at(b, at).unwrap();
+                let end = if op == 0x1c { at + 8 + u16_at(b, at + 6).unwrap() } else { at + 4 + u16_at(b, at + 2).unwrap() };
+                if end > b.len() {
+                    break;
+                }
+                let expr: Option<&[u8]> = match op {
+                    0x16 | 0x18 => {
+                        let len = u16_at(b, at + 6).unwrap_or(0);
+                        b.get(at + 8..at + 8 + len)
+                    }
+                    0x15 => {
+                        let tag = b[at + 4];
+                        let len_at = if tag == b'r' { at + 4 + 6 } else { at + 4 + 3 };
+                        u16_at(b, len_at).and_then(|len| b.get(len_at + 2..len_at + 2 + len))
+                    }
+                    _ => None,
+                };
+                if let Some(e) = expr {
+                    exprs += 1;
+                    let mut i = 0usize;
+                    while i < e.len() {
+                        if e[i] == 0x20 && i + 1 < e.len() && b"GXYZfnrsz".contains(&e[i + 1]) {
+                            match e[i + 1] {
+                                b'r' if e.get(i + 4) == Some(&b'X') => {
+                                    *kinds.entry("r.call".into()).or_default() += 1;
+                                    i += 9 + u16_at(e, i + 7).unwrap_or(0);
+                                }
+                                b'r' if matches!(e.get(i + 4), Some(b's' | b'f')) && i + 7 <= e.len() => {
+                                    *kinds.entry("r.var".into()).or_default() += 1;
+                                    i += 7;
+                                }
+                                b'r' => { *kinds.entry("r".into()).or_default() += 1; i += 4; }
+                                b's' | b'f' => { *kinds.entry("local".into()).or_default() += 1; i += 4; }
+                                b'G' => { *kinds.entry("global".into()).or_default() += 1; i += 4; }
+                                b'n' => { *kinds.entry("int".into()).or_default() += 1; i += 6; }
+                                b'X' => { *kinds.entry("call".into()).or_default() += 1; i += 6 + u16_at(e, i + 4).unwrap_or(0); }
+                                other => {
+                                    let n = unknown.entry(format!("' {}'", other as char)).or_default();
+                                    *n += 1;
+                                    if *n <= 6 {
+                                        let from = i.saturating_sub(6);
+                                        let to = (i + 12).min(e.len());
+                                        println!("  {:08X} {}: ...{}", s.form_id, s.editor_id, e[from..to].iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "));
+                                    }
+                                    i += 2;
+                                }
+                            }
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+                at = end;
+            }
+        }
+        println!("{exprs} expressions");
+        println!("escapes: {kinds:?}");
+        println!("unknown escapes: {unknown:?}");
         Ok(())
     }
 }

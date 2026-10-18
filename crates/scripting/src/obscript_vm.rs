@@ -487,6 +487,16 @@ impl<'a> Vm<'a> {
                 0x15 => self.exec_set(start, end),
                 CMD_MESSAGE | CMD_MESSAGE_BOX => match self.decode_message(start, end, op) {
                     Some(message) => self.host.message(message),
+                    // Fallout's `ShowMessage <MESG> [values]` shares `0x1059` with Oblivion's
+                    // text `Message` but names a message record: the form, then its values.
+                    None if op == CMD_MESSAGE => match self.decode_show_message(start, end) {
+                        Some(args) => {
+                            self.host.call(op, &args, None);
+                        }
+                        None => {
+                            self.host.call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(op))], None);
+                        }
+                    },
                     None => {
                         self.host
                             .call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(op))], None);
@@ -748,6 +758,38 @@ impl<'a> Vm<'a> {
             if bytes[i] == 0x20 && i + 1 < bytes.len() && is_escape_tag(bytes[i + 1]) {
                 let tag = bytes[i + 1];
                 let consumed = match tag {
+                    // `' r<ref>'` + `'X'` + `<cmd u16> <len u16> <args>`: a call on a
+                    // reference inside an expression (`Actor.GetDead`, `player.GetItemCount x`).
+                    // The `X` has no space before it; an implicit-caller call is `' X'`.
+                    b'r' if i + 9 <= bytes.len() && bytes[i + 4] == b'X' => {
+                        let idx = byroredux_core::bytes::le_u16_at(bytes, i + 2).unwrap_or(0);
+                        let cmd = byroredux_core::bytes::le_u16_at(bytes, i + 5).unwrap_or(0);
+                        let arg_len = byroredux_core::bytes::le_u16_at(bytes, i + 7).unwrap_or(0) as usize;
+                        let arg_start = i + 9;
+                        let Some(arg_end) = arg_start.checked_add(arg_len) else {
+                            break;
+                        };
+                        if arg_end > bytes.len() {
+                            break;
+                        }
+                        let Some(args) = self.decode_args(start + arg_start, start + arg_end) else {
+                            self.host.call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(cmd))], None);
+                            i += 9 + arg_len;
+                            stack.push(ObScriptValue::Num(0.0));
+                            continue;
+                        };
+                        // A caller that is not a reference (an unassigned variable) must not
+                        // run as an implicit-caller call: `None` means the script's owner.
+                        let result = match self.resolve_ref_var(idx) {
+                            Some(caller) => self.host.call(cmd, &args, Some(caller)),
+                            None => {
+                                self.host.call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(cmd))], None);
+                                None
+                            }
+                        };
+                        stack.push(result.unwrap_or(ObScriptValue::Num(0.0)));
+                        Some(9 + arg_len)
+                    }
                     // `' r<ref>'` + `'s'|'f'` + `<ordinal>`: a remote variable read
                     // (`Quest.var`), seven bytes. A reference on its own is the four.
                     b'r' if i + 7 <= bytes.len() && matches!(bytes[i + 4], b's' | b'f') => {
@@ -770,7 +812,10 @@ impl<'a> Vm<'a> {
                         stack.push(ObScriptValue::Num(value));
                         Some(7)
                     }
-                    b'r' if i + 4 <= bytes.len() => {
+                    // `' r<ref>'` and `' Z<ref>'` on their own are a reference as a value
+                    // (`Set rActor to SomeREF` is the `Z` form on the vanilla masters:
+                    // `20 5a 16 00`; `GetActionRef == SomeREF` compares one).
+                    b'r' | b'Z' if i + 4 <= bytes.len() => {
                         let idx = byroredux_core::bytes::le_u16_at(bytes, i + 2).unwrap_or(0);
                         let resolved = self.resolve_ref_var(idx).unwrap_or(0);
                         stack.push(ObScriptValue::Ref(resolved));
@@ -818,7 +863,11 @@ impl<'a> Vm<'a> {
                         // whole script buffer, so translate to absolute.
                         let Some(args) = self.decode_args(start + arg_start, start + arg_end)
                         else {
-                            break;
+                            // Arguments this VM cannot frame: counted, never run on guesses.
+                            self.host.call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(cmd))], None);
+                            i += 6 + arg_len;
+                            stack.push(ObScriptValue::Num(0.0));
+                            continue;
                         };
                         let result = self.host.call(cmd, &args, None);
                         stack.push(result.unwrap_or(ObScriptValue::Num(0.0)));
@@ -890,6 +939,30 @@ impl<'a> Vm<'a> {
             let (value, next) = self.decode_arg_item(o, end, depth)?;
             args.extend(value);
             o = next;
+        }
+        Some(args)
+    }
+
+    /// Fallout's `ShowMessage <message> [value ...]`: `[u16 1][the message form][u16 n][n values]`
+    /// then a display-time word the engine does not use (`59 10 0b 00 | 01 00 72 01 00 | 00 00 00 00
+    /// 00 00` on the masters). The form and the values, or `None` when the payload is not that shape.
+    fn decode_show_message(&mut self, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {
+        if byroredux_core::bytes::le_u16_at(self.bytes, start)? != 1 {
+            return None;
+        }
+        let (message, mut o) = self.decode_arg_item(start + 2, end, 0)?;
+        let Some(ObScriptValue::Ref(form)) = message else {
+            return None;
+        };
+        let mut args = vec![ObScriptValue::Ref(form)];
+        if o + 2 <= end {
+            let count = byroredux_core::bytes::le_u16_at(self.bytes, o)?;
+            o += 2;
+            for _ in 0..count {
+                let (value, next) = self.decode_arg_item(o, end, 0)?;
+                args.push(value.unwrap_or(ObScriptValue::Num(0.0)));
+                o = next;
+            }
         }
         Some(args)
     }
@@ -1091,13 +1164,18 @@ fn apply_operator(stack: &mut Vec<ObScriptValue>, token: &str) {
             let (rhs, lhs) = (pop(stack), pop(stack));
             flag(lhs <= rhs)
         }
-        "==" => {
-            let (rhs, lhs) = (pop(stack), pop(stack));
-            flag((lhs - rhs).abs() < f32::EPSILON)
-        }
-        "!=" => {
-            let (rhs, lhs) = (pop(stack), pop(stack));
-            flag((lhs - rhs).abs() >= f32::EPSILON)
+        // Two references compare by their form ids, exactly: as `f32`s the ids past `2^24`
+        // (every DLC form) would round into one another.
+        "==" | "!=" => {
+            let (rhs, lhs) = (stack.pop(), stack.pop());
+            let equal = match (lhs, rhs) {
+                (Some(ObScriptValue::Ref(a)), Some(ObScriptValue::Ref(b))) => a == b,
+                _ => {
+                    let num = |v: Option<ObScriptValue>| v.map_or(0.0, |v| v.as_num());
+                    (num(lhs) - num(rhs)).abs() < f32::EPSILON
+                }
+            };
+            flag(equal == (token == "=="))
         }
         ">" => {
             let (rhs, lhs) = (pop(stack), pop(stack));
@@ -1736,6 +1814,105 @@ mod tests {
         assert_eq!(host.calls[1], (CMD_GET_REMOTE_VARIABLE, vec![ObScriptValue::Ref(0xC), ObScriptValue::Num(6.0)], None));
         // The Recorder answers an unknown command with 0, so the local is 0 + 5.
         assert_eq!(state.locals.get(&3), Some(&5.0));
+    }
+
+    /// `if player.IsCurrentFurnitureRef DocMitchellCouchREF` in vanilla New Vegas
+    /// (`VCG01DocMitchellCouchTriggerSCRIPT`): inside an expression a call on a reference is
+    /// `' r<ref>'` immediately followed by `'X' <cmd> <len> <args>` — no space before the `X`,
+    /// which is how an implicit-caller call (`' X'`) differs. The call went unseen before:
+    /// the reference was read as a value and the rest of the escape skipped as text, so every
+    /// `if Actor.GetDead` compared a form id.
+    #[test]
+    fn an_expression_call_on_a_reference_reaches_the_host_with_that_caller() {
+        const IS_CURRENT_FURNITURE_REF: u16 = 0x10a2;
+        let expr = [
+            &[0x20, b'r', 1, 0, b'X', 0xa2, 0x10, 5, 0, 1, 0, b'r', 2, 0][..],
+            b" 1 ==",
+        ]
+        .concat();
+        let mut script = script(wrap_body(set_stmt(b'f', 3, &expr, 0)), vec![local(3, "result", 0)], vec![]);
+        script.refs = vec![ScriptRef::Object(0x14), ScriptRef::Object(0xB)];
+        let mut host = Recorder::default();
+        let mut state = VmState::default();
+        let outcome = ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut state, &mut host);
+        assert_eq!(outcome, BlockOutcome::Completed);
+        assert_eq!(
+            host.calls,
+            vec![(IS_CURRENT_FURNITURE_REF, vec![ObScriptValue::Ref(0xB)], Some(0x14))],
+            "the call is on the player, with the furniture as its argument"
+        );
+        // The Recorder answers an unknown command with 0, so `0 == 1` is false: the local is the comparison, not a form id.
+        assert_eq!(state.locals.get(&3), Some(&0.0));
+    }
+
+    /// A call on a reference variable nobody assigned has no caller to act on: it is declined and
+    /// counted, and reads 0 — never run as an implicit-caller call on the script's owner.
+    #[test]
+    fn an_expression_call_on_an_unassigned_reference_variable_is_declined() {
+        let expr = [&[0x20, b'r', 1, 0, b'X', 0xa2, 0x10, 2, 0, 0, 0][..], b" 1 +"].concat();
+        let mut script = script(wrap_body(set_stmt(b'f', 3, &expr, 0)), vec![local(3, "result", 0), local(2, "who", 0)], vec![]);
+        script.refs = vec![ScriptRef::Variable(2)];
+        let mut host = Recorder::default();
+        let mut state = VmState::default();
+        ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut state, &mut host);
+        assert_eq!(host.calls, vec![(CMD_DECLINED, vec![ObScriptValue::Num(f32::from(0x10a2u16))], None)]);
+        assert_eq!(state.locals.get(&3), Some(&1.0), "0 + 1");
+    }
+
+    /// A host that answers `GetActionRef` (`0x10cd`) with a fixed reference.
+    struct ActionRefHost(u32);
+
+    impl ObScriptHost for ActionRefHost {
+        fn call(&mut self, cmd: u16, _args: &[ObScriptValue], _caller: Option<u32>) -> Option<ObScriptValue> {
+            (cmd == 0x10cd).then_some(ObScriptValue::Ref(self.0))
+        }
+    }
+
+    /// `if GetActionRef == vHDNCRActivator` in vanilla New Vegas
+    /// (`vHDGeneratorTriggerSCRIPT`): `20 58 cd 10 00 00 | 20 5a 01 00 | 20 3d 3d` — the
+    /// `' Z<ref>'` escape is a reference as a value, which the VM used to skip as text. Two
+    /// references are equal when their form ids are, exactly: `0x01000004` and `0x01000005` are
+    /// one `f32`.
+    #[test]
+    fn a_reference_literal_compares_exactly() {
+        let expr = [0x20, b'X', 0xcd, 0x10, 0, 0, 0x20, b'Z', 1, 0, 0x20, b'=', b'='].to_vec();
+        for (answer, equal) in [(0x0100_0005u32, 1.0f32), (0x0100_0004, 0.0)] {
+            let mut script = script(wrap_body(set_stmt(b's', 3, &expr, 0)), vec![local(3, "same", 1)], vec![]);
+            script.refs = vec![ScriptRef::Object(0x0100_0005)];
+            let mut state = VmState::default();
+            ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut state, &mut ActionRefHost(answer));
+            assert_eq!(state.locals.get(&3), Some(&equal), "answer {answer:08x}");
+        }
+    }
+
+    /// `Set Actor1 to SomeREF` assigns the reference (`20 5a 16 00`), which a reference variable
+    /// then holds exactly.
+    #[test]
+    fn a_reference_variable_is_assigned_a_reference_literal() {
+        let expr = [0x20, b'Z', 1, 0].to_vec();
+        let mut script = script(wrap_body(set_stmt(b'f', 2, &expr, 0)), vec![local(2, "rActor", 0)], vec![]);
+        script.refs = vec![ScriptRef::Object(0x0100_0005), ScriptRef::Variable(2)];
+        let mut state = VmState::default();
+        ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut state, &mut Recorder::default());
+        assert_eq!(state.ref_locals.get(&2), Some(&0x0100_0005));
+    }
+
+    /// `ShowMessage AbilityWellRestedStartMsg` in New Vegas
+    /// (`DeathclawStunWeaponSCRIPT`): `59 10 0b 00 | 01 00 72 01 00 | 00 00 00 00 00 00`. The id
+    /// `0x1059` is Oblivion's text `Message`, whose decoder cannot read a form: the call used to
+    /// be declined, with every `ShowMessage` of the game. It reaches the host as the message
+    /// form and its values.
+    #[test]
+    fn a_fallout_show_message_reaches_the_host_with_its_message_form() {
+        let payload = [1u8, 0, b'r', 1, 0, 0, 0, 0, 0, 0, 0];
+        let mut statement = vec![0x59, 0x10, payload.len() as u8, 0];
+        statement.extend_from_slice(&payload);
+        let mut script = script(wrap_body(statement), vec![], vec![]);
+        script.refs = vec![ScriptRef::Object(0x0010_2030)];
+        let mut host = Recorder::default();
+        ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut VmState::default(), &mut host);
+        assert_eq!(host.calls, vec![(CMD_MESSAGE, vec![ObScriptValue::Ref(0x0010_2030)], None)]);
+        assert!(host.messages.is_empty(), "not a text message");
     }
 
     #[test]

@@ -101,6 +101,7 @@ const CMD_REMOVE_ALL_ITEMS: u16 = 0x10ad;
 const CMD_PLACE_AT_ME: u16 = 0x1025;
 const CMD_RESET_AI: u16 = 0x11fa;
 const CMD_SAY: u16 = 0x1033;
+const CMD_SHOW_MESSAGE: u16 = 0x1059;
 const CMD_SAY_TO: u16 = 0x1034;
 const CMD_SET_OWNERSHIP: u16 = 0x1117;
 const CMD_CLEAR_OWNERSHIP: u16 = 0x118c;
@@ -155,6 +156,7 @@ pub(crate) fn handles(cmd: u16) -> bool {
             | CMD_CLEAR_OWNERSHIP
             | CMD_SAY
             | CMD_SAY_TO
+            | CMD_SHOW_MESSAGE
     )
 }
 
@@ -223,6 +225,7 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             | CMD_DISABLE_PLAYER_CONTROLS
             | CMD_REWARD_XP
             | CMD_REWARD_KARMA
+            | CMD_SHOW_MESSAGE
     );
     let caller = context.caller.filter(|&form| form != 0);
     if needs_caller && caller.is_none() {
@@ -233,6 +236,11 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
     let caller_entity = if needs_caller { live(world, caller) } else { None };
     if needs_caller && caller_entity.is_none() {
         return Action::Declined;
+    }
+    // `0x1059` is Oblivion's text `Message` (which the VM decodes itself): a message form is
+    // `ShowMessage` on the Fallout pair.
+    if cmd == CMD_SHOW_MESSAGE && !crate::ScriptGame::is_fallout3_nv(world) {
+        return Action::Unhandled;
     }
     let mut bind = Binder::default();
     let me = bind.actor(caller);
@@ -554,6 +562,13 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
                 value: Some(ObScriptValue::Num(seconds)),
                 effect: format!("{} {caller:08X} topic {topic:08X}", if cmd == CMD_SAY { "Say" } else { "SayTo" }),
             };
+        }
+        // `ShowMessage <message> [value ...]`: the message record's notification or box, its
+        // `%` spots filled from the values (the Papyrus `Message.Show` effect).
+        CMD_SHOW_MESSAGE => {
+            let Some(message) = form_arg(args, 0) else { return Action::Declined };
+            let values: Vec<f32> = args.iter().skip(1).map(ObScriptValue::as_num).collect();
+            vec![Effect::ShowMessage { message: bind.object(message), args: values }]
         }
         CMD_RESET_HEALTH => {
             let Some(actor) = caller_entity else { return Action::Declined };
@@ -1124,6 +1139,18 @@ mod tests {
         crate::fragment::report_package_transition(&world, actor, None, Some(WALK));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK]), &ctx), Getter::Value(1.0));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK + 1]), &ctx), Getter::Value(0.0));
+    }
+
+    #[test]
+    fn show_message_is_a_fallout_command_that_queues_the_message_record() {
+        const MESSAGE: u32 = 0x0010_2030;
+        let (world, _, _) = world();
+        assert!(done(&run(&world, CMD_SHOW_MESSAGE, &[ObScriptValue::Ref(MESSAGE), ObScriptValue::Num(3.0)], &context(None))));
+        // A null form names no message; and in Oblivion the id is the text `Message`, not this.
+        assert_eq!(run(&world, CMD_SHOW_MESSAGE, &[ObScriptValue::Ref(0)], &context(None)), Action::Declined);
+        let mut oblivion = World::new();
+        oblivion.insert_resource(crate::ScriptGame(GameKind::Oblivion));
+        assert_eq!(run(&oblivion, CMD_SHOW_MESSAGE, &[ObScriptValue::Ref(MESSAGE)], &context(None)), Action::Unhandled);
     }
 
     #[test]

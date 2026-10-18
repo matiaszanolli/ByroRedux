@@ -504,6 +504,18 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
             }
             // Message / MessageBox arrive through `message` once decoded; a
             // payload the VM could not decode lands here and is logged.
+            // `ShowMessage <message form>` (Fallout): the effect runtime shows the record.
+            0x1059 if matches!(args.first(), Some(ObScriptValue::Ref(form)) if *form != 0) && crate::ScriptGame::is_fallout3_nv(self.world) => {
+                match crate::obscript_effects::run(
+                    self.world,
+                    cmd,
+                    args,
+                    &crate::obscript_actions::Context { caller, known: None, action_ref: None, owner: self.owner },
+                ) {
+                    Action::Done { .. } => None,
+                    _ => self.decline(cmd),
+                }
+            }
             0x1059 | 0x1000 => {
                 effect(
                     self,
