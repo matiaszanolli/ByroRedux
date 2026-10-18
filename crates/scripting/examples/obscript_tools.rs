@@ -30,6 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "walk" => walk::run(args),
         "avif" => avif::run(args),
         "avcodes" => avcodes::run(args),
+        "find" => find::run(args),
         _ => {
             eprintln!("usage: obscript_tools <census|names|live|dump|walk> <ESM> ...");
             std::process::exit(2);
@@ -460,6 +461,8 @@ mod names {
             }
         }
         println!("scripts {total}, aligned {aligned}");
+        let fallout = !esm.to_ascii_lowercase().contains("oblivion");
+        let (mut total_lines, mut modeled_lines) = (0usize, 0usize);
         let mut rows: Vec<_> = votes.into_iter().filter(|(_, v)| v.scripts.len() >= min).collect();
         rows.sort_by_key(|(id, v)| (std::cmp::Reverse(v.scripts.len()), *id));
         for (id, Votes { scripts, lines, words }) in rows {
@@ -471,8 +474,15 @@ mod names {
                 None => String::new(),
             };
             let catalog = if catalog.starts_with("Unknown") { String::new() } else { format!("  [ctda {catalog}]") };
-            println!("{id:#06x}  scripts {:>3} lines {:>3}  {}{catalog}", scripts.len(), lines, top.join(", "));
+            let modeled = byroredux_scripting::obscript_quests::command_is_modeled(id, fallout);
+            let mark = if modeled { "+" } else { " " };
+            total_lines += lines;
+            if modeled {
+                modeled_lines += lines;
+            }
+            println!("{mark}{id:#06x}  scripts {:>3} lines {:>3}  {}{catalog}", scripts.len(), lines, top.join(", "));
         }
+        println!("call-site lines modeled: {modeled_lines} of {total_lines} ({}%)", modeled_lines * 100 / total_lines.max(1));
         Ok(())
     }
 
@@ -729,6 +739,28 @@ mod avcodes {
             w.sort_by_key(|(n, c)| (std::cmp::Reverse(*c), n.clone()));
             let top: Vec<String> = w.iter().take(4).map(|(n, c)| format!("{n} {c}")).collect();
             println!("{cmd:#06x} code {code:>3}: {}", top.join(", "));
+        }
+        Ok(())
+    }
+}
+
+/// `find <ESM> <needle> [limit]` — the scripts whose source contains `needle`.
+mod find {
+    use byroredux_plugin::esm::parse_esm;
+    pub fn run(mut a: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error::Error>> {
+        let esm = a.next().expect("esm");
+        let needle = a.next().expect("needle").to_ascii_lowercase();
+        let limit: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(10);
+        let index = parse_esm(&std::fs::read(&esm)?)?;
+        let mut found: Vec<_> = index
+            .scripts
+            .values()
+            .filter(|s| s.source.as_deref().is_some_and(|src| src.to_ascii_lowercase().contains(&needle)))
+            .collect();
+        found.sort_by_key(|s| (s.compiled.len(), s.form_id));
+        println!("{} scripts match", found.len());
+        for s in found.into_iter().take(limit) {
+            println!("{:08X} {} ({:?}, {} bytes)", s.form_id, s.editor_id, s.script_type, s.compiled.len());
         }
         Ok(())
     }

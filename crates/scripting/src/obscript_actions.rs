@@ -53,6 +53,9 @@ const CMD_DISABLE: u16 = 0x1022;
 const CMD_GET_DISABLED: u16 = 0x1023;
 const CMD_EVALUATE_PACKAGE: u16 = 0x105e;
 const CMD_MOVE_TO: u16 = 0x109e;
+/// `MoveToMarkerWithFade` / `MoveToFade` (New Vegas): `MoveTo` that fades the object out
+/// and back in, which is cosmetic here.
+const CMD_MOVE_TO_FADE: u16 = 0x124f;
 const CMD_PLAY_SOUND: u16 = 0x1026;
 const CMD_ACTIVATE: u16 = 0x100d;
 const CMD_ADD_SCRIPT_PACKAGE: u16 = 0x1097;
@@ -86,21 +89,28 @@ pub(crate) struct Context {
     pub owner: u32,
 }
 
-/// Run `cmd` if it is a reference-bound action.
-pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let Context { caller, known, action_ref, .. } = *context;
-    if !matches!(
+/// Every command [`run`] answers itself.
+pub(crate) fn handles(cmd: u16) -> bool {
+    matches!(
         cmd,
         CMD_ENABLE
             | CMD_DISABLE
             | CMD_GET_DISABLED
             | CMD_EVALUATE_PACKAGE
             | CMD_MOVE_TO
+            | CMD_MOVE_TO_FADE
             | CMD_ADD_SCRIPT_PACKAGE
             | CMD_REMOVE_SCRIPT_PACKAGE
             | CMD_PLAY_SOUND
             | CMD_ACTIVATE
-    ) {
+    )
+}
+
+/// Run `cmd` if it is a reference-bound action.
+pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let Context { caller, known, action_ref, .. } = *context;
+    // `0x124f` is a New Vegas command only.
+    if !handles(cmd) || (cmd == CMD_MOVE_TO_FADE && !ScriptGame::is_fallout3_nv(world)) {
         return crate::obscript_effects::run(world, cmd, args, context);
     }
     if cmd == CMD_PLAY_SOUND {
@@ -335,7 +345,7 @@ mod tests {
     #[test]
     fn get_disabled_honours_the_authored_flag() {
         let (mut world, _, _) = world(GameKind::Fallout3NV);
-        world.insert_resource(crate::AuthoredDisabledReferences([MOVED].into()));
+        world.insert_resource(crate::AuthoredDisabledReferences([MOVED].into(), Default::default()));
         assert_eq!(
             run(&world, CMD_GET_DISABLED, &[], Some(MOVED)),
             Action::Done { value: Some(ObScriptValue::Num(1.0)), effect: String::new() }

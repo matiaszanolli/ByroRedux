@@ -165,6 +165,32 @@ pub struct VmState {
     /// Local variable storage keyed by the 1-based `SLSD` index — compiled
     /// references are 1-based over that table.
     pub locals: std::collections::HashMap<u16, f32>,
+    /// The reference each *reference variable* slot holds, exactly: a form id
+    /// does not fit an `f32` past `2^24` (every DLC form), so a slot the script
+    /// uses as a `ref` ([`ScriptRef::Variable`]) keeps its value here, with the
+    /// nearest `f32` in [`Self::locals`] for the readers that only know numbers.
+    /// A slot absent here holds no reference.
+    pub ref_locals: std::collections::HashMap<u16, u32>,
+}
+
+/// The local slots `script` uses as reference variables: its `SCRV` entries.
+pub fn ref_slots(script: &ScriptRecord) -> impl Iterator<Item = u16> + '_ {
+    script.refs.iter().filter_map(|entry| match entry {
+        ScriptRef::Variable(slot) => u16::try_from(*slot).ok(),
+        ScriptRef::Object(_) => None,
+    })
+}
+
+/// A form id as two `f32` halves that are each exactly representable, for the
+/// stores that keep script variables as numbers (the saved `ScriptVariables`,
+/// the quest locals). `0` is no reference.
+pub fn form_halves(form: u32) -> (f32, f32) {
+    ((form & 0xFFFF) as f32, (form >> 16) as f32)
+}
+
+/// The inverse of [`form_halves`].
+pub fn form_from_halves(low: f32, high: f32) -> u32 {
+    ((high as u32) << 16) | (low as u32 & 0xFFFF)
 }
 
 /// One compiled script prepared for execution. Borrows the parsed SCPT;
@@ -598,7 +624,20 @@ impl<'a> Vm<'a> {
         if expr_end > end {
             return;
         }
-        let value = self.eval_expr(expr_start, expr_end);
+        let result = self.eval_expr_value(expr_start, expr_end);
+        let value = result.as_num();
+        // A reference variable keeps the exact reference: the number alone would
+        // lose the low bits of a DLC form id.
+        if matches!(tag, b's' | b'f') && self.is_ref_slot(idx) {
+            let form = match result {
+                ObScriptValue::Ref(form) => form,
+                ObScriptValue::Num(n) if n >= 1.0 => n as u32,
+                ObScriptValue::Num(_) => 0,
+            };
+            self.state.ref_locals.insert(idx, form);
+            self.state.locals.insert(idx, form as f32);
+            return;
+        }
         match tag {
             b's' => {
                 // short/long locals narrow; float locals keep the f32.
@@ -620,6 +659,12 @@ impl<'a> Vm<'a> {
     /// Evaluate an RPN expression token stream `[start, end)` to a numeric
     /// result (nonzero = true for conditions).
     fn eval_expr(&mut self, start: usize, end: usize) -> f32 {
+        self.eval_expr_value(start, end).as_num()
+    }
+
+    /// [`Self::eval_expr`] keeping what the expression produced: a reference
+    /// stays a reference (`set rTarget to GetLinkedRef`).
+    fn eval_expr_value(&mut self, start: usize, end: usize) -> ObScriptValue {
         let mut stack: Vec<ObScriptValue> = Vec::with_capacity(8);
         let bytes = &self.bytes[start..end];
         let mut i = 0usize;
@@ -711,7 +756,7 @@ impl<'a> Vm<'a> {
                 }
             }
         }
-        stack.last().map(|v| v.as_num()).unwrap_or(0.0)
+        stack.last().copied().unwrap_or(ObScriptValue::Num(0.0))
     }
 
     /// Decode `[u16 count][count typed args]` call arguments.
@@ -915,11 +960,23 @@ impl<'a> Vm<'a> {
     /// no ref-valued command, so a ref local is never assigned a real
     /// reference and resolving it to anything would be a guess. So does an
     /// out-of-range index. Callers decline or read the null reference.
+    ///
+    /// A reference variable resolves to the reference its slot was last assigned
+    /// ([`VmState::ref_locals`]); one never assigned (or assigned none) is `None`,
+    /// as is one a host seeded only as a number that is not a form id.
     fn resolve_ref_var(&self, index: u16) -> Option<u32> {
         match self.refs.get(usize::from(index).checked_sub(1)?)? {
             ScriptRef::Object(form) => Some(*form),
-            ScriptRef::Variable(_) => None,
+            ScriptRef::Variable(slot) => {
+                let slot = u16::try_from(*slot).ok()?;
+                self.state.ref_locals.get(&slot).copied().filter(|&form| form != 0)
+            }
         }
+    }
+
+    /// Whether local `slot` is one the script uses as a reference variable.
+    fn is_ref_slot(&self, slot: u16) -> bool {
+        self.refs.iter().any(|entry| matches!(entry, ScriptRef::Variable(s) if *s == u32::from(slot)))
     }
 }
 
@@ -1271,6 +1328,7 @@ mod tests {
             let program = ObScriptProgram::new(&script);
             let mut state = VmState {
                 locals: [(1u16, local_value)].into_iter().collect(),
+                ..Default::default()
             };
             let mut host = Recorder::default();
             program.run_block(BLOCK_GAME_MODE, &mut state, &mut host);
@@ -1316,6 +1374,7 @@ mod tests {
             let program = ObScriptProgram::new(&script);
             let mut state = VmState {
                 locals: [(1u16, local_value)].into_iter().collect(),
+                ..Default::default()
             };
             let mut host = Recorder::default();
             program.run_block(BLOCK_GAME_MODE, &mut state, &mut host);

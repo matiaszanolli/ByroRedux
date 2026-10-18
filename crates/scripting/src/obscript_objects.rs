@@ -301,13 +301,15 @@ struct Ran {
 /// reported once and not run again. `action_ref` is the activator (or the one
 /// crossing a trigger volume) while such a block runs.
 fn run_block(world: &World, entity: EntityId, form: u32, script: &ScriptRecord, block: BlockInfo, dt: f32, action_ref: Option<u32>) -> Ran {
-    let mut state = VmState { locals: seed_locals(world, entity, script) };
+    let mut state = VmState { locals: seed_locals(world, entity, script), ref_locals: seed_refs(world, entity, script) };
     let before = state.locals.clone();
+    let before_refs = state.ref_locals.clone();
     let mut host = ObScriptCommandHost::new(world, form, Some(entity), dt, script);
     host.action_ref = action_ref;
     let outcome = ObScriptProgram::new(script).run_at(&block, &mut state, &mut host);
     let declined = host.declined.get();
     store_locals(world, entity, script, &before, &state.locals);
+    store_refs(world, entity, script, &before_refs, &state.ref_locals);
     if let BlockOutcome::Malformed(at) = outcome {
         log::warn!("ObScript object script {:08X}: malformed bytecode at {at:#06x} (block {:#04x})", script.form_id, block.block_type);
         if let Some(mut table) = world.try_resource_mut::<ObScriptObjectTable>() {
@@ -410,6 +412,64 @@ fn seed_locals(world: &World, entity: EntityId, script: &ScriptRecord) -> HashMa
             Some((slot, variables.get(ConditionStringId::from_text(&local.name))?))
         })
         .collect()
+}
+
+/// The name a reference variable's exact form id is kept under on the
+/// reference's `ScriptVariables`: its low and high 16 bits, each exact as an
+/// `f32`. The variable itself holds the nearest `f32`, as every local does.
+fn ref_variable_halves(name: &str) -> (String, String) {
+    (format!("{name}#lo"), format!("{name}#hi"))
+}
+
+/// The references the script's reference variables hold, from the reference's
+/// `ScriptVariables`: the exact halves when stored, else the variable's number
+/// (a value that predates them) when it is a plausible form id.
+fn seed_refs(world: &World, entity: EntityId, script: &ScriptRecord) -> HashMap<u16, u32> {
+    let Some(variables) = world.get::<ScriptVariables>(entity) else {
+        return HashMap::new();
+    };
+    let mut refs = HashMap::new();
+    for slot in crate::obscript_vm::ref_slots(script) {
+        let Some(local) = script.locals.iter().find(|local| local.index == u32::from(slot)) else {
+            continue;
+        };
+        let (low, high) = ref_variable_halves(&local.name);
+        let halves = variables
+            .get(ConditionStringId::from_text(&low))
+            .zip(variables.get(ConditionStringId::from_text(&high)));
+        let form = match halves {
+            Some((low, high)) => crate::obscript_vm::form_from_halves(low, high),
+            None => variables.get(ConditionStringId::from_text(&local.name)).filter(|n| *n >= 1.0).map_or(0, |n| n as u32),
+        };
+        if form != 0 {
+            refs.insert(slot, form);
+        }
+    }
+    refs
+}
+
+/// Write back the reference variables a run changed.
+fn store_refs(world: &World, entity: EntityId, script: &ScriptRecord, before: &HashMap<u16, u32>, after: &HashMap<u16, u32>) {
+    let changed: Vec<(String, u32)> = crate::obscript_vm::ref_slots(script)
+        .filter(|slot| before.get(slot).copied().unwrap_or(0) != after.get(slot).copied().unwrap_or(0))
+        .filter_map(|slot| {
+            let local = script.locals.iter().find(|local| local.index == u32::from(slot))?;
+            Some((local.name.clone(), after.get(&slot).copied().unwrap_or(0)))
+        })
+        .collect();
+    if changed.is_empty() {
+        return;
+    }
+    if let Some(mut variables) = world.query_mut::<ScriptVariables>() {
+        if let Some(variables) = variables.get_mut(entity) {
+            for (name, form) in changed {
+                let (low_name, high_name) = ref_variable_halves(&name);
+                let (low, high) = crate::obscript_vm::form_halves(form);
+                variables.set_by_name(&low_name, low);
+                variables.set_by_name(&high_name, high);
+            }
+        }
+    }
 }
 
 fn store_locals(world: &World, entity: EntityId, script: &ScriptRecord, before: &HashMap<u16, f32>, after: &HashMap<u16, f32>) {
@@ -589,6 +649,52 @@ mod tests {
         world.remove::<FormIdComponent>(entity);
         obscript_object_system(&world, 0.016);
         assert_eq!(counter(&world, entity), 0.0);
+    }
+
+    /// `OnDeathEnableLinkedRef` from FalloutNV.esm, byte for byte: `ref linkedRef`,
+    /// `Begin OnDeath`, `set linkedRef to getLinkedRef`, `linkedRef.enable`. The
+    /// reference variable is slot 2 and its `SCRV` entry makes it a reference, so the
+    /// command written on it acts on what `GetLinkedRef` answered.
+    #[test]
+    fn a_reference_variable_holds_a_reference_and_is_the_caller_of_a_later_command() {
+        const LINKED: u32 = 0x0100_0007;
+        let compiled: Vec<u8> = [
+            &[0x1d, 0, 0, 0][..],
+            &[0x10, 0, 0x08, 0, 0x0a, 0, 0x1d, 0, 0, 0, 0, 0],
+            &[0x15, 0, 0x0b, 0, 0x66, 2, 0, 0x06, 0, 0x20, 0x58, 0x6b, 0x11, 0, 0],
+            &[0x1c, 0, 0x01, 0, 0x21, 0x10, 0x02, 0, 0, 0],
+            &[0x11, 0, 0, 0],
+        ]
+        .concat();
+        let record = ScriptRecord {
+            form_id: SCRIPT,
+            editor_id: "OnDeathEnableLinkedRef".into(),
+            script_type: ScriptType::Object,
+            compiled_size: compiled.len() as u32,
+            compiled,
+            locals: vec![ScriptLocalVar { index: 2, var_type: 0, name: "linkedRef".into() }],
+            refs: vec![ScriptRef::Variable(2)],
+            ..Default::default()
+        };
+        let (mut world, entity) = world_for(record);
+        world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Fallout3NV));
+        world.insert_resource(crate::ReferenceEnableState::default());
+        let mut links = crate::LinkedRefOverrides::default();
+        links.set(REF, 0, LINKED);
+        world.insert_resource(links);
+        world.try_resource_mut::<crate::ReferenceEnableState>().unwrap().set_enabled(LINKED, false);
+        assert!(!crate::reference_enabled(&world, LINKED));
+        world.insert(entity, OnDeathEvent { killer: None });
+        obscript_object_system(&world, 0.016);
+        assert!(crate::reference_enabled(&world, LINKED), "linkedRef.enable ran on the linked reference");
+        // The variable keeps the exact form (0x01000007 is past 2^24, which an f32 would round) on the reference.
+        let variables = world.get::<ScriptVariables>(entity).unwrap();
+        assert_eq!(variables.get_by_name("linkedRef#lo"), Some(7.0));
+        assert_eq!(variables.get_by_name("linkedRef#hi"), Some(256.0));
+        drop(variables);
+        let stored = Arc::clone(&world.try_resource::<ObScriptObjectTable>().unwrap().scripts[&SCRIPT].record);
+        let refs = seed_refs(&world, entity, &stored);
+        assert_eq!(refs.get(&2), Some(&LINKED));
     }
 
     const ACTIVATOR: u32 = 0x0002_0002;

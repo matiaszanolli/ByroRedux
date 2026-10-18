@@ -5330,6 +5330,7 @@ fn reference_enabled_guard_reads_scripts_then_the_authored_state() {
     world.insert_resource(QuestScriptVariables::default());
     world.insert_resource(super::AuthoredDisabledReferences(
         [STARTS_DISABLED].into_iter().collect(),
+        Default::default(),
     ));
     let enabled = |name: &str, expected| FragmentGuard::ReferenceEnabled {
         object: ObjectRef::Property(name.into()),

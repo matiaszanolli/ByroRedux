@@ -65,8 +65,11 @@ pub fn install_quest_script_instances(
 /// (`EnableParent::default_disabled`, #471). `IsDisabled` / `IsEnabled`
 /// guards read it where no script has touched the reference.
 /// `NOT_SAVED_BY_DESIGN`: rebuilt from the REFRs every boot.
+///
+/// It also holds each enable-parent child's parent (`XESP`), which is what ObScript's
+/// `GetParentRef` answers ("the reference set in the Enable Parent tab").
 #[derive(Debug, Default, Clone)]
-pub struct AuthoredDisabledReferences(pub HashSet<u32>);
+pub struct AuthoredDisabledReferences(pub HashSet<u32>, pub std::collections::HashMap<u32, u32>);
 
 impl Resource for AuthoredDisabledReferences {}
 
@@ -91,7 +94,17 @@ pub fn install_authored_disabled_references(
         .map(|placed| placed.form_id)
         .collect();
     let count = disabled.len();
-    world.insert_resource(AuthoredDisabledReferences(disabled));
+    let cells = index
+        .cells
+        .cells
+        .values()
+        .chain(index.cells.exterior_cells.values().flat_map(|grid| grid.values()))
+        .chain(index.cells.worldspace_persistent_cells.values());
+    let parents: std::collections::HashMap<u32, u32> = cells
+        .flat_map(|cell| cell.references.iter())
+        .filter_map(|placed| placed.enable_parent.map(|parent| (placed.form_id, parent.form_id)))
+        .collect();
+    world.insert_resource(AuthoredDisabledReferences(disabled, parents));
     count
 }
 

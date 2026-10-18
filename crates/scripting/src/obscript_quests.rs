@@ -32,7 +32,7 @@ use byroredux_plugin::esm::records::{QustRecord, ScriptRecord};
 use crate::condition::{evaluate_script_getter, resolve_entity_by_global_form_id, ConditionFunction};
 use crate::globals::Globals;
 use crate::obscript_actions::Action;
-use crate::obscript_vm::{BlockOutcome, ObScriptHost, ObScriptProgram, ObScriptValue, VmState};
+use crate::obscript_vm::{form_from_halves, form_halves, BlockOutcome, ObScriptHost, ObScriptProgram, ObScriptValue, VmState};
 use crate::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageState, QuestStatus};
 
 /// Vanilla quest-script cadence: the original engine re-runs each running
@@ -74,7 +74,42 @@ const SCRIPT_GETTERS: &[ConditionFunction] = &[
     ConditionFunction::GetEquipped,       // 0x10b6
     ConditionFunction::GetReputation,     // 0x123d (FNV)
     ConditionFunction::GetReputationThreshold, // 0x123f (FNV)
+    ConditionFunction::HasPerk,           // 0x11c1 (FO3 / FNV)
+    ConditionFunction::IsHardcore,        // 0x124a (FNV)
 ];
+
+/// Whether the host models command `cmd` in the loaded game family — answers it
+/// or lowers it rather than declining it. What `obscript_tools names` marks
+/// open. `fallout` is Fallout 3 / New Vegas (their objective and reputation
+/// commands are in no other table).
+pub fn command_is_modeled(cmd: u16, fallout: bool) -> bool {
+    // The quest and message commands `call` matches by id, and the synthetic ones.
+    const VM_LEVEL: &[u16] = &[
+        0x1039, 0x1036, 0x1037, 0x103a, 0x103b, 0x1038, 0x1059, 0x1000, 0x100c, 0x101f, 0x10ce,
+        0x10cd, 0x1069, CMD_COMPLETE_QUEST,
+    ];
+    const FALLOUT_ONLY: &[u16] = &[
+        CMD_SET_OBJECTIVE_COMPLETED, CMD_SET_OBJECTIVE_DISPLAYED, CMD_GET_OBJECTIVE_COMPLETED,
+        CMD_GET_OBJECTIVE_DISPLAYED, CMD_SET_QUEST_DELAY, CMD_GET_QUEST_COMPLETED,
+    ];
+    if VM_LEVEL.contains(&cmd) || (fallout && FALLOUT_ONLY.contains(&cmd)) {
+        return true;
+    }
+    // `MoveToMarkerWithFade` and `GetLinkedRef` are Fallout commands; the numbers are
+    // other commands in Oblivion (`PurgeCellBuffers` for `0x116b`).
+    if !fallout && matches!(cmd, 0x124f | 0x116b) {
+        return false;
+    }
+    if crate::obscript_actions::handles(cmd)
+        || crate::obscript_effects::handles(cmd)
+        || crate::obscript_effects::is_getter(cmd)
+    {
+        return true;
+    }
+    cmd.checked_sub(0x1000)
+        .map(|index| ConditionFunction::from_index(u32::from(index)))
+        .is_some_and(|function| SCRIPT_GETTERS.contains(&function) && function != ConditionFunction::GetActorValue)
+}
 
 /// One quest's compiled script, plus the SCRO reference table needed to
 /// resolve its `' r<n>'`/argument references at execution time.
@@ -130,6 +165,12 @@ impl ObScriptEffectLog {
     }
 }
 
+/// Where a reference variable's exact form id is kept among a quest's variables:
+/// the low and high 16 bits of variable `n` are slots `REF_LOW_BASE + n` and
+/// `REF_HIGH_BASE + n`. A script has far fewer than `0x4000` variables.
+const REF_LOW_BASE: u16 = 0x4000;
+const REF_HIGH_BASE: u16 = 0x8000;
+
 /// The local variables quest scripts hold between GameMode runs: quest FormID to
 /// the 1-based `SLSD` slot and its value. A variable no run assigned is absent and
 /// reads `0`, the value every ObScript local starts at. `GetQuestVariable`
@@ -150,15 +191,47 @@ impl Resource for ObScriptQuestLocals {}
 impl ObScriptQuestLocals {
     /// A quest's variables, to seed a run's [`VmState`].
     pub fn of(&self, quest: u32) -> HashMap<u16, f32> {
-        self.values.get(&quest).map(|slots| slots.iter().map(|(&slot, &value)| (slot, value)).collect()).unwrap_or_default()
+        self.values
+            .get(&quest)
+            .map(|slots| slots.iter().filter(|(&slot, _)| slot < REF_LOW_BASE).map(|(&slot, &value)| (slot, value)).collect())
+            .unwrap_or_default()
+    }
+
+    /// The references a quest's reference variables hold, exactly.
+    pub fn refs_of(&self, quest: u32) -> HashMap<u16, u32> {
+        let Some(slots) = self.values.get(&quest) else {
+            return HashMap::new();
+        };
+        slots
+            .iter()
+            .filter(|(&slot, _)| (REF_LOW_BASE..REF_HIGH_BASE).contains(&slot))
+            .map(|(&slot, &low)| {
+                let variable = slot - REF_LOW_BASE;
+                (variable, form_from_halves(low, slots.get(&(REF_HIGH_BASE + variable)).copied().unwrap_or(0.0)))
+            })
+            .filter(|&(_, form)| form != 0)
+            .collect()
     }
 
     /// Keep a run's variables for the next run.
     pub fn store(&mut self, quest: u32, locals: &HashMap<u16, f32>) {
-        if locals.is_empty() {
+        self.store_state(quest, locals, &HashMap::new());
+    }
+
+    /// [`Self::store`] with the references the reference variables hold: each is
+    /// kept as two exact `f32` halves under slots no variable uses, so the saved
+    /// shape is the one it always was.
+    pub fn store_state(&mut self, quest: u32, locals: &HashMap<u16, f32>, refs: &HashMap<u16, u32>) {
+        let mut slots: std::collections::BTreeMap<u16, f32> = locals.iter().map(|(&slot, &value)| (slot, value)).collect();
+        for (&variable, &form) in refs.iter().filter(|&(&variable, &form)| form != 0 && variable < REF_LOW_BASE) {
+            let (low, high) = form_halves(form);
+            slots.insert(REF_LOW_BASE + variable, low);
+            slots.insert(REF_HIGH_BASE + variable, high);
+        }
+        if slots.is_empty() {
             self.values.remove(&quest);
         } else {
-            self.values.insert(quest, locals.iter().map(|(&slot, &value)| (slot, value)).collect());
+            self.values.insert(quest, slots);
         }
     }
 
@@ -248,18 +321,16 @@ pub fn run_quest_game_mode(
     drop(table);
 
     let program = ObScriptProgram::new(&script);
-    let mut state = VmState {
-        locals: world
-            .try_resource::<ObScriptQuestLocals>()
-            .map(|locals| locals.of(quest_form_id))
-            .unwrap_or_default(),
-    };
+    let mut state = world
+        .try_resource::<ObScriptQuestLocals>()
+        .map(|locals| VmState { locals: locals.of(quest_form_id), ref_locals: locals.refs_of(quest_form_id) })
+        .unwrap_or_default();
     let mut host = ObScriptCommandHost::new(world, quest_form_id, None, elapsed, &script);
     let outcome = program.run_block(0, &mut state, &mut host);
     // `host` holds no guard (Drop is not implemented) — the borrow ends
     // here by scope, which is what the old `drop(host)` extended.
     if let Some(mut locals) = world.try_resource_mut::<ObScriptQuestLocals>() {
-        locals.store(quest_form_id, &state.locals);
+        locals.store_state(quest_form_id, &state.locals, &state.ref_locals);
     }
     Some(outcome)
 }
