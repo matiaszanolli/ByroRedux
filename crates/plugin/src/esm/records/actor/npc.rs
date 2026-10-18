@@ -298,6 +298,12 @@ pub struct NpcRecord {
     /// index order): what a Skyrim NPC without the auto-calc flag stores (UESP *NPC_*).
     /// `None` outside Skyrim and when the record carries no `DNAM`.
     pub skill_values: Option<[u8; 18]>,
+    /// Skyrim `DNAM` baked pools - Health, Magicka, Stamina as `u16` at bytes 36, 38 and 40
+    /// (UESP *NPC_*): the values the Creation Kit calculated for the record at save time. The
+    /// derivation does not read them (it recomputes from race, class and level); they are the
+    /// ground truth the auto-calc formula is pinned against. `None` outside Skyrim and on a
+    /// `DNAM` too short to carry them.
+    pub skyrim_calculated_pools: Option<[u16; 3]>,
     /// True when the NPC record carries a `VMAD` sub-record (Skyrim+
     /// Papyrus VM attached-script blob). Presence flag only; full
     /// decoding deferred to scripting-as-ECS work. See #369.
@@ -484,6 +490,7 @@ pub fn parse_npc(
         disposition_base: 50,
         acbs_flags: 0,
         skill_values: None,
+        skyrim_calculated_pools: None,
         has_script: common.has_script,
         script_form_id: 0,
         script_instance: common.script_instance,
@@ -806,6 +813,10 @@ fn parse_npc_core(
             let mut values = [0u8; 18];
             values.copy_from_slice(&sub.data[..18]);
             record.skill_values = Some(values);
+            if sub.data.len() >= 42 {
+                let pool = |at: usize| u16::from_le_bytes([sub.data[at], sub.data[at + 1]]);
+                record.skyrim_calculated_pools = Some([pool(36), pool(38), pool(40)]);
+            }
         }
         b"ACBS" if matches!(game, GameKind::Skyrim) && sub.data.len() >= 24 => {
             let mut r = SubReader::new(&sub.data);

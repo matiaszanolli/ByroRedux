@@ -26,6 +26,11 @@ pub struct ClassRecord {
     /// from One-handed (6) to Enchanting (23)): the weights that distribute an NPC's 8 skill
     /// points per level (UESP *CLAS*, Weight Calculations). `None` outside Skyrim.
     pub skyrim_skill_weights: Option<[u8; 18]>,
+    /// Skyrim `DATA` attribute weights (bytes 0x20..0x22: Health, Magicka, Stamina): the
+    /// weights that distribute an NPC's 10 pool points per level (UESP *CLAS*, Weight
+    /// Calculations / Attributes). `None` outside Skyrim and on a `DATA` too short to carry
+    /// them.
+    pub skyrim_pool_weights: Option<[u8; 3]>,
     /// Tag skill form IDs from FNV DATA. Empty on Oblivion (see
     /// [`Self::major_skills`] for the analogous field).
     pub tag_skills: Vec<u32>,
@@ -71,6 +76,7 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
         description: String::new(),
         base_attributes: [0u8; 7],
         skyrim_skill_weights: None,
+        skyrim_pool_weights: None,
         tag_skills: Vec::new(),
         primary_attributes: None,
         specialization: None,
@@ -141,6 +147,9 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
                 let mut weights = [0u8; 18];
                 weights.copy_from_slice(&sub.data[6..24]);
                 record.skyrim_skill_weights = Some(weights);
+                if sub.data.len() >= 35 {
+                    record.skyrim_pool_weights = Some([sub.data[32], sub.data[33], sub.data[34]]);
+                }
             }
             b"DATA" if !is_oblivion && sub.data.len() >= 16 => {
                 let mut r = SubReader::new(&sub.data);

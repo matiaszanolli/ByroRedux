@@ -609,7 +609,7 @@ perk-stepped (like Overdraw) — genuinely unknown until that page is read.
 
 **NPC Magicka is a 3-part composition, a new shape**: `race base (0-200,
 players start 50) + per-NPC fixed adjustment (-50 to 20000, mostly 0) +
-0-10/level from class` — structurally closer to the FO4 companion
+0-10/level from class` (**implemented, #5914**: `skyrim_class_pool_points` — `10·(L−1)` split by the `CLAS DATA` 0x20-0x22 attribute weights, Health also `+5·(L−1)`, equal weights in reverse AV order; reproduces the baked `DNAM` pools of all 935 vanilla auto-calc NPCs) — structurally closer to the FO4 companion
 level-list HP snapshots (`charal.md` §7.1, a per-entity table) than to any
 clean formula; not pursued further as a build target, just recorded so an
 eventual NPC Magicka deriver doesn't get modelled as a clean attribute

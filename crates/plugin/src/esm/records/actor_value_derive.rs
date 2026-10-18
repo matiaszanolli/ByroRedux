@@ -304,18 +304,17 @@ fn derive_creature_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, 
     out
 }
 
-/// TES5 NPC resource pools are authored as race starting values plus signed
-/// actor offsets. Each resolves independently through its authored AVIF.
+/// TES5 NPC resource pools: race starting values plus signed actor offsets, and — for an
+/// auto-calc NPC — the class term (UESP *CLAS*, Weight Calculations / Attributes):
+/// `10·(level−1)` points distributed over Health / Magicka / Stamina by the class's attribute
+/// weights ([`skyrim_class_pool_points`]) and, for Health alone, `5·(level−1)` regardless of
+/// weight. Each resolves independently through its authored AVIF. A non-auto-calc NPC is
+/// `racial + offset` only (same page).
 ///
-/// **Documented gap (#4454)**: the capture's Magicka composition is
-/// three-part — race base + per-NPC fixed adjustment + **0–10/level from
-/// class** (`charal-skyrim-ruleset.md`'s derived table) — and this fn
-/// implements only the first two. A level-40 NPC therefore derives the same
-/// pools as a level-1 NPC with the same race and offsets. The per-class
-/// pool-growth numbers are captured nowhere, so coding a guess here would
-/// violate no-guessing; before any leveled-NPC gameplay lands, capture the
-/// CK class data (the `Skill Weight`-adjacent pool-growth fields) and add
-/// the third term. Same documented-gap style as regen.rs's blocked wiring.
+/// #5914 — this closed the #4454 documented gap ("captured nowhere"): the page documents the
+/// term two paragraphs below the skills formula the sibling [`derive_skyrim_skills`] already
+/// implements, and it reproduces the baked `DNAM` pools of every vanilla auto-calc NPC checked
+/// (`skyrim_autocalc_pools_match_the_baked_dnam_pools`).
 ///
 /// #3480 — the two inputs come off **different** `TPLT` chains and the
 /// caller resolves both: `stats` (the "Use Stats" record) carries the signed
@@ -334,15 +333,33 @@ fn derive_skyrim_actor_values(
         return Vec::new();
     };
     let mut out = Vec::with_capacity(3 + SKYRIM_SKILLS.len());
-    for (name, starting, offset) in [
+    // ACBS "Auto-calc stats": only such an NPC levels its pools by class.
+    let class_points = if stats.acbs_flags & SKYRIM_AUTO_CALC != 0 {
+        let weights = index
+            .classes
+            .get(&stats.class_form_id)
+            .and_then(|class| class.skyrim_pool_weights)
+            .unwrap_or([0; 3]);
+        skyrim_class_pool_points(&weights, i32::from(effective_actor_level(stats)))
+    } else {
+        [0; 3]
+    };
+    for (slot, (name, starting, offset)) in [
         ("Health", race.starting_health, stats.health_offset),
         ("Magicka", race.starting_magicka, stats.magicka_offset),
         ("Stamina", race.starting_stamina, stats.stamina_offset),
-    ] {
-        let Some((key, starting)) = index.actor_value_form_id(name).zip(starting) else {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let Some(key) = index.actor_value_form_id(name) else {
             continue;
         };
-        let value = starting + f32::from(offset);
+        // The race parser keeps a starting value only when it is positive, so `None` is a race
+        // that starts the pool at zero (a Magicka-less race): the NPC's offset and class term
+        // still apply, and the `> 0` check below drops a pool that nets out empty. Seven
+        // vanilla NPCs (race `0xD53`, ...) carry baked Magicka that only this reproduces.
+        let value = starting.unwrap_or(0.0) + f32::from(offset) + class_points[slot] as f32;
         if value.is_finite() && value > 0.0 {
             out.push((key, value));
         }
@@ -434,15 +451,64 @@ pub fn skyrim_class_skill_points(weights: &[u8; 18], level: i32) -> [i32; 18] {
     points
 }
 
+/// ACBS "Auto-calc stats" - the NPC's skills and pools derive from race, class and level.
+const SKYRIM_AUTO_CALC: u32 = 0x10;
+/// The pool points a Skyrim NPC gains per level above the first, distributed by the class's
+/// attribute weights (UESP *CLAS*: "the fixed 10 attribute points per level").
+const SKYRIM_POOL_POINTS_PER_LEVEL: i32 = 10;
+/// The Health a Skyrim NPC gains per level above the first regardless of weight (UESP
+/// *CLAS*: "health always receives an additional 5 points per level").
+const SKYRIM_HEALTH_PER_LEVEL: i32 = 5;
+
+/// The points a class's attribute `weights` (Health, Magicka, Stamina) add to an NPC of
+/// `level` (UESP *CLAS*, Weight Calculations / Attributes): `5·(level−1)` Health on top, then
+/// `10·(level−1)` points distributed exactly like the skills — first every complete set,
+/// `floor(10·(level−1) / sum of weights)·weight`, then the leftovers one at a time over the
+/// pools ordered by weight (higher first) and, for equal weights, in **reverse** actor-value
+/// order (Stamina, Magicka, Health), a pool taking no more leftovers than its weight.
+pub fn skyrim_class_pool_points(weights: &[u8; 3], level: i32) -> [i32; 3] {
+    let levels = (level - 1).max(0);
+    let mut points = [SKYRIM_HEALTH_PER_LEVEL * levels, 0, 0];
+    let total = SKYRIM_POOL_POINTS_PER_LEVEL * levels;
+    let sum: i32 = weights.iter().map(|&w| i32::from(w)).sum();
+    if total == 0 || sum == 0 {
+        return points;
+    }
+    let sets = total / sum;
+    for (slot, &weight) in points.iter_mut().zip(weights) {
+        *slot += sets * i32::from(weight);
+    }
+    let mut leftover = total - sets * sum;
+    let mut order: Vec<usize> = (0..3).filter(|&i| weights[i] > 0).collect();
+    order.sort_by_key(|&i| (std::cmp::Reverse(weights[i]), std::cmp::Reverse(i)));
+    let mut taken = [0i32; 3];
+    while leftover > 0 {
+        let mut progressed = false;
+        for &i in &order {
+            if leftover == 0 {
+                break;
+            }
+            if taken[i] < i32::from(weights[i]) {
+                points[i] += 1;
+                taken[i] += 1;
+                leftover -= 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    points
+}
+
 /// An NPC's 18 skills. Auto-calc NPCs follow the UESP formula: 15, plus the race's skill
 /// bonus, plus the class's weighted share of 8 points per level
 /// ([`skyrim_class_skill_points`]). An NPC without the auto-calc flag stores its skills in
 /// `DNAM`, used as written; how its race bonus and its `DNAM` skill offsets combine with
 /// them is not documented, so they are not added. Empty when neither source exists.
 fn derive_skyrim_skills(stats: &NpcRecord, race: &RaceRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
-    /// ACBS "Auto-calc stats".
-    const AUTO_CALC: u32 = 0x10;
-    let values: [i32; 18] = if stats.acbs_flags & AUTO_CALC != 0 {
+    let values: [i32; 18] = if stats.acbs_flags & SKYRIM_AUTO_CALC != 0 {
         // An NPC with no class weights no skill: it keeps 15 plus its race's bonus.
         let weights = index
             .classes
@@ -1379,6 +1445,127 @@ mod tests {
             derive_npc_actor_values(&npc, &index),
             vec![(0x3E8, 35.0), (0x3E9, 85.0), (0x3EA, 80.0)]
         );
+    }
+
+    /// #5914 - UESP *CLAS*, Weight Calculations / Attributes: Health always gains 5 per
+    /// level; the 10 points per level split by weight in complete sets, then the leftovers
+    /// one at a time by weight with equal weights in reverse actor-value order (Stamina,
+    /// Magicka, Health), each pool taking no more leftovers than its weight.
+    #[test]
+    fn skyrim_class_pool_points_follow_the_documented_assignment() {
+        // Level 4 = 30 points over weights 5/3/2 (sum 10): three complete sets.
+        assert_eq!(skyrim_class_pool_points(&[5, 3, 2], 4), [15 + 15, 9, 6]);
+        // Level 2 = 10 points over weights 1/1/1: three sets of 3, one leftover that
+        // goes to Stamina (the reverse-order tie), plus Health's flat 5.
+        assert_eq!(skyrim_class_pool_points(&[1, 1, 1], 2), [5 + 3, 3, 4]);
+        // Weights 2/2/2: one complete set of 6, four leftovers dealt Stamina, Magicka,
+        // Health, then Stamina again (each may take up to its weight of 2).
+        assert_eq!(skyrim_class_pool_points(&[2, 2, 2], 2), [5 + 3, 3, 4]);
+        // A heavier pool takes its leftover first, whatever its index.
+        assert_eq!(skyrim_class_pool_points(&[1, 3, 0], 2), [5 + 3, 7, 0]);
+        // Level 1 gains nothing; a class with no weights still grants Health's flat 5.
+        assert_eq!(skyrim_class_pool_points(&[5, 3, 2], 1), [0, 0, 0]);
+        assert_eq!(skyrim_class_pool_points(&[0, 0, 0], 7), [30, 0, 0]);
+        // Every level distributes exactly 10 points, plus Health's 5.
+        for level in 1..40 {
+            let points = skyrim_class_pool_points(&[3, 1, 2], level);
+            assert_eq!(points.iter().sum::<i32>(), 15 * (level - 1), "level {level}");
+        }
+    }
+
+    /// #5914 - an auto-calc Skyrim NPC's pools are race start + offset + the class term; a
+    /// non-auto-calc one is race start + offset only (UESP *CLAS*).
+    #[test]
+    fn skyrim_pools_gain_the_class_term_only_when_auto_calc() {
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::SKYRIM,
+            ..Default::default()
+        };
+        index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
+        index.actor_values.insert(0x3E9, avif(0x3E9, "AVMagicka"));
+        index.actor_values.insert(0x3EA, avif(0x3EA, "AVStamina"));
+        index.races.insert(
+            0x13746,
+            RaceRecord {
+                form_id: 0x13746,
+                starting_health: Some(50.0),
+                starting_magicka: Some(75.0),
+                starting_stamina: Some(100.0),
+                ..Default::default()
+            },
+        );
+        index.classes.insert(
+            0x2000,
+            ClassRecord {
+                form_id: 0x2000,
+                skyrim_pool_weights: Some([5, 3, 2]),
+                ..Default::default()
+            },
+        );
+        let npc = |acbs_flags| NpcRecord {
+            race_form_id: 0x13746,
+            class_form_id: 0x2000,
+            level: 4,
+            acbs_flags,
+            health_offset: -15,
+            magicka_offset: 10,
+            stamina_offset: -20,
+            ..Default::default()
+        };
+
+        // Level 4: Health +30 (15 flat + 15 weighted), Magicka +9, Stamina +6.
+        assert_eq!(
+            derive_npc_actor_values(&npc(SKYRIM_AUTO_CALC), &index),
+            vec![(0x3E8, 35.0 + 30.0), (0x3E9, 85.0 + 9.0), (0x3EA, 80.0 + 6.0)]
+        );
+        assert_eq!(
+            derive_npc_actor_values(&npc(0), &index),
+            vec![(0x3E8, 35.0), (0x3E9, 85.0), (0x3EA, 80.0)],
+            "without auto-calc the pools are racial + offset only"
+        );
+    }
+
+    /// #5914 - the pool formula against the ground truth: every non-templated, auto-calc,
+    /// fixed-level `Skyrim.esm` NPC carries the pools the Creation Kit baked into its `DNAM`
+    /// (bytes 36-41), and the derivation must reproduce them exactly.
+    #[test]
+    #[ignore = "needs Skyrim SE game data on disk"]
+    fn skyrim_autocalc_pools_match_the_baked_dnam_pools() {
+        use crate::esm::records::actor::ACBS_PC_LEVEL_MULT;
+        let path = crate::esm::test_paths::skyrim_se_esm();
+        if !path.exists() {
+            eprintln!("Skipping skyrim_autocalc_pools_match_the_baked_dnam_pools: {} not found", path.display());
+            return;
+        }
+        let index = crate::esm::parse_esm(&std::fs::read(&path).unwrap()).unwrap();
+        let keys = ["Health", "Magicka", "Stamina"].map(|name| index.actor_value_form_id(name).expect("AVIF"));
+        let (mut checked, mut mismatched) = (0usize, Vec::new());
+        for npc in index.npcs.values() {
+            let Some(baked) = npc.skyrim_calculated_pools else { continue };
+            if npc.acbs_flags & SKYRIM_AUTO_CALC == 0
+                || npc.acbs_flags & ACBS_PC_LEVEL_MULT != 0
+                || npc.template_flags != 0
+                || !index.races.contains_key(&npc.race_form_id)
+            {
+                continue;
+            }
+            let derived = derive_npc_actor_values(npc, &index);
+            let pool = |key| derived.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+            checked += 1;
+            // The derivation drops a pool that is not positive (a race with no Magicka, a
+            // negative offset past the start), and the baked word is a signed i16 there.
+            let got = keys.map(|key| Some(pool(key).unwrap_or(0.0)));
+            let want = baked.map(|b| Some(f32::from((b as i16).max(0))));
+            if got != want {
+                mismatched.push((npc.form_id, npc.level, got, want));
+            }
+        }
+        eprintln!("{checked} auto-calc NPCs checked, {} mismatched", mismatched.len());
+        for m in mismatched.iter().take(12) {
+            eprintln!("  {m:?}");
+        }
+        assert!(checked > 500, "the census should cover the vanilla auto-calc NPCs, got {checked}");
+        assert!(mismatched.is_empty(), "{} pools differ from the baked DNAM", mismatched.len());
     }
 
     #[test]
