@@ -5063,6 +5063,16 @@ fn vm_array_remove_huge_count_clamps() {
     );
 }
 
+/// A Float operand sends `%` down the truncating branch; `i32::MIN % -1`
+/// there must wrap like the Int branch, not abort the process (#5982).
+#[test]
+fn vm_float_modulo_overflow_wraps() {
+    let got = arithmetic(BinaryOp::Mod, &Value::Float(-2147483648.0), &Value::Float(-1.0)).unwrap();
+    assert!(matches!(got, Value::Int(0)), "i32::MIN % -1 wraps to 0");
+    let ok = arithmetic(BinaryOp::Mod, &Value::Float(7.0), &Value::Float(3.0)).unwrap();
+    assert!(matches!(ok, Value::Int(1)), "ordinary truncating modulo is unchanged");
+}
+
 /// `Array.Insert` past the ceiling is refused like `Add` (#5791).
 #[test]
 fn vm_array_insert_is_capped() {

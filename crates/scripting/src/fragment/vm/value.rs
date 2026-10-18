@@ -368,7 +368,7 @@ pub(super) fn arithmetic(op: BinaryOp, l: &Value, r: &Value) -> Run<Value> {
             if b as i32 == 0 {
                 return stop("modulo by zero");
             }
-            Value::Int((a as i32) % (b as i32))
+            Value::Int((a as i32).wrapping_rem(b as i32))
         }
         _ => return stop("not an arithmetic operator"),
     })
