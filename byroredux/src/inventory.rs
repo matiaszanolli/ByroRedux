@@ -189,6 +189,12 @@ pub(crate) struct PlayerCharacterTemplate {
     /// feeds; without it both were silent no-ops on the player (the only
     /// actor the #4415 lowering ever targets).
     racial_spells: Vec<u32>,
+    /// #5920 — the Player record's own perks (Skyrim's `PRKR`: 12 innate perks
+    /// on the Player `NPC_`), the same `(perk FormID, rank)` source and "ride
+    /// no template flag" rule as
+    /// [`stamp_character_components`](crate::npc_spawn::stamp_character_components).
+    /// Empty on games that author none (FO3 / FNV / Oblivion).
+    perks: Vec<(u32, u8)>,
 }
 
 impl Resource for PlayerCharacterTemplate {}
@@ -387,6 +393,7 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
             byroredux_scripting::magic::canonical_spell(index, spell).constant_modifiers
         })
         .collect();
+    let perks = resolved.shell.perks.clone();
     let pairs = byroredux_plugin::esm::records::derive_resolved_actor_values(&resolved, index);
     if pairs.is_empty() {
         return PlayerCharacterTemplate {
@@ -394,6 +401,7 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
             spells,
             spell_modifiers,
             racial_spells,
+            perks,
             ..Default::default()
         };
     }
@@ -441,6 +449,7 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 spells,
                 spell_modifiers,
                 racial_spells,
+                perks,
             }
         }
         None => {
@@ -460,6 +469,7 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 spells,
                 spell_modifiers,
                 racial_spells,
+                perks,
             }
         }
     }
@@ -792,6 +802,21 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
     // `GetFactionRank`/`GetInFaction` on the player read real data.
     if let Some(factions) = character.factions {
         world.insert(player, factions);
+    }
+    // #5920 — the Player record's own perks (Skyrim authors 12), stamped like
+    // the NPC path does: the component only exists when there is something to
+    // own, and `levelup perk` / script `AddPerk` create it on demand.
+    if !character.perks.is_empty() {
+        world.insert(
+            player,
+            byroredux_core::character::Perks {
+                entries: character
+                    .perks
+                    .iter()
+                    .map(|&(perk_form_id, rank)| byroredux_core::character::PerkRank { perk_form_id, rank })
+                    .collect(),
+            },
+        );
     }
 }
 
@@ -3653,6 +3678,8 @@ mod tests {
                     faction_form_id: 0x1B2A4,
                     rank: 0,
                 }],
+                // #5920 — the Player record's PRKR perks.
+                perks: vec![(0x000F_11A9, 1), (0x000C_F788, 1)],
                 ..Default::default()
             },
         );
@@ -3691,6 +3718,21 @@ mod tests {
                 .map(|ranks| ranks.rank(0x1B2A4)),
             Some(Some(0))
         );
+        // #5920 — the Player record's perks reach the player through the
+        // production attach (the unit tests used to hand-insert `Perks`, which
+        // hid that nothing stamped it), so `HasPerk` and the perk entry
+        // points can see them.
+        let perks = world
+            .get::<byroredux_core::character::Perks>(player)
+            .expect("attach_to_player must stamp the Player record's perks");
+        assert_eq!(
+            perks.entries,
+            vec![
+                byroredux_core::character::PerkRank { perk_form_id: 0x000F_11A9, rank: 1 },
+                byroredux_core::character::PerkRank { perk_form_id: 0x000C_F788, rank: 1 },
+            ]
+        );
+        drop(perks);
         // #5413 — the racial SPLO subset rides the attach too, in the same
         // pair `stamp_spell_list` stamps on NPC roots. Pre-fix the player
         // (the only actor the #4415 lowering targets) never carried

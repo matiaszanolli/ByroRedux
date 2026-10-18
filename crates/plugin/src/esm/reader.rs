@@ -409,8 +409,8 @@ impl GameKind {
     /// | `Oblivion.esm` | 2482 | 0 | 0 | — |
     ///
     /// FO3/FNV/Oblivion ship none, so their `HasPerk` zero is data-correct
-    /// for NPCs — the remaining gap there is the player, who has no perk
-    /// source of any kind yet.
+    /// for NPCs. The player's own innate perks (Skyrim's Player `NPC_` authors
+    /// 12 `PRKR`) are stamped by `attach_to_player` from the same field (#5920).
     ///
     /// The two payload widths need no separate decode: both start with the
     /// PERK FormID `u32` and carry the rank at byte 4 (Skyrim's extra three
