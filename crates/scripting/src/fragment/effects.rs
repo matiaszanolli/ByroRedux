@@ -26,6 +26,7 @@ pub(crate) use resolve::*;
 pub use deferred::*;
 pub use inventory::*;
 use placement::*;
+pub(crate) use placement::apply_move_to_effect;
 use scene::*;
 use lock::*;
 use player_control::*;
@@ -68,7 +69,7 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     `EquipItemCatalog` (read), `SceneRegistry` (read),
 ///     `PapyrusPlayerEntity` (read), and the component storages
 ///     `Inventory`, `Transform` (read and write), `GlobalTransform`,
-///     `ActorControlState`, `EvaluatePackageRequest`, `HorseTetherState`,
+///     `ActorControlState`, `HorseTetherState`,
 ///     `MotionTypeChangeRequest` (×2), `SceneStartRequest`,
 ///     `SceneStopRequest`, `Locked` (write ×2, the `SetLocked` /
 ///     `SetLockLevel` pair — #3159), `AiCombatState` (write,
@@ -84,6 +85,8 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     `Effect::MoveToEditorLocation` — M47.2; copied out and released
 ///     before the `Transform` write)
 ///   - **via [`resolve_actor`]** — `PapyrusPlayerEntity` (read)
+///   - **via [`crate::package::request_package_evaluation`]** — `EvaluatePackageRequest`
+///     (write, `Effect::EvaluatePackage`; the ObScript `EVP` command shares it)
 ///   - **via [`crate::condition::entity_global_form_id`]** — `FormIdPool` (read)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
 ///   - **via `crate::magic::{add_spell, remove_spell}`** (the

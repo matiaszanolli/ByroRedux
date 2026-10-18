@@ -165,11 +165,9 @@ impl Vm<'_> {
             // CK *EvaluateAll - RefCollectionAlias*: "Calls EvaluatePackage on
             // all the actors in the collection."
             "evaluateall" => {
-                if let Some(mut requests) = self.world.query_mut::<crate::EvaluatePackageRequest>() {
-                    for form in members.iter() {
-                        if let Some(entity) = crate::condition::resolve_entity_by_global_form_id(self.world, *form) {
-                            requests.insert(entity, crate::EvaluatePackageRequest);
-                        }
+                for form in members.iter() {
+                    if let Some(entity) = crate::condition::resolve_entity_by_global_form_id(self.world, *form) {
+                        crate::package::request_package_evaluation(self.world, entity);
                     }
                 }
                 Value::None

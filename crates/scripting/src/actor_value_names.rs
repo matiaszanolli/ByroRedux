@@ -46,6 +46,16 @@ pub struct ScriptGame(pub byroredux_plugin::esm::reader::GameKind);
 
 impl Resource for ScriptGame {}
 
+impl ScriptGame {
+    /// Whether the loaded game is Fallout 3 / New Vegas. False when no load
+    /// order has been installed: an unknown game is never assumed to be one.
+    pub fn is_fallout3_nv(world: &World) -> bool {
+        world.try_resource::<ScriptGame>().is_some_and(|game| {
+            matches!(game.0, byroredux_plugin::esm::reader::GameKind::Fallout3NV)
+        })
+    }
+}
+
 /// Install the load order's [`ActorValueNames`]. Returns how many names map.
 pub fn install_actor_value_names(world: &mut World, index: &EsmIndex) -> usize {
     let names = ActorValueNames::from_index(index);

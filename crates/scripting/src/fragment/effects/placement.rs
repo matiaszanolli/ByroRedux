@@ -31,34 +31,14 @@ pub(super) fn apply_placement_effect(
                 destination,
                 &deferred.scene_actor_bindings,
             )?;
-            let Some((translation, rotation)) = world
-                .get::<GlobalTransform>(destination_entity)
-                .map(|gt| (gt.translation, gt.rotation))
-            else {
-                log::debug!("fragment MoveTo skipped: destination entity has no GlobalTransform");
-                return None;
-            };
-            // The offset is in Gamebryo's Z-up world axes.
-            let translation = translation + byroredux_core::math::Vec3::from(byroredux_core::math::coord::zup_to_yup_pos(*offset));
-            let Some(mut transforms) = world.query_mut::<Transform>() else {
-                log::debug!("fragment MoveTo skipped: Transform component never registered");
-                return None;
-            };
-            // Unlike AddItem, a "moved" entity with no Transform isn't a
-            // container the effect can adopt — it isn't a placed spatial
-            // entity at all, so this declines rather than fabricating one.
-            let Some(transform) = transforms.get_mut(moved_entity) else {
-                log::debug!("fragment MoveTo skipped: moved entity has no Transform");
-                return None;
-            };
-            log::debug!(
-                "fragment MoveTo (quest {:08X}): {moved_entity:?} -> {destination_entity:?} at {translation:?}",
-                context.0
+            apply_move_to_effect(
+                world,
+                moved_entity,
+                destination_entity,
+                *offset,
+                *match_rotation,
+                context.0,
             );
-            transform.translation = translation;
-            if *match_rotation {
-                transform.rotation = rotation;
-            }
             None
         }
         Effect::MoveToEditorLocation { moved } => {
@@ -122,4 +102,49 @@ pub(super) fn apply_placement_effect(
         }
         _ => unreachable!("apply_placement_effect received a non-placement effect"),
     }
+}
+
+/// Place `moved` at `destination`'s position plus `offset` (Gamebryo Z-up
+/// world axes), and at its rotation too when `match_rotation`. Shared by the
+/// Papyrus `MoveTo` effect and the ObScript `MoveTo` command
+/// ([`crate::obscript_actions`]); named `apply_*_effect` so the #3949
+/// nested-lock scan reads its acquisitions with its siblings'. Returns
+/// whether the entity moved. `origin` is the quest or script FormID, for the
+/// log only.
+pub(crate) fn apply_move_to_effect(
+    world: &World,
+    moved_entity: EntityId,
+    destination_entity: EntityId,
+    offset: [f32; 3],
+    match_rotation: bool,
+    origin: u32,
+) -> bool {
+    let Some((translation, rotation)) = world
+        .get::<GlobalTransform>(destination_entity)
+        .map(|gt| (gt.translation, gt.rotation))
+    else {
+        log::debug!("MoveTo skipped: destination entity has no GlobalTransform");
+        return false;
+    };
+    // The offset is in Gamebryo's Z-up world axes.
+    let translation = translation + byroredux_core::math::Vec3::from(byroredux_core::math::coord::zup_to_yup_pos(offset));
+    let Some(mut transforms) = world.query_mut::<Transform>() else {
+        log::debug!("MoveTo skipped: Transform component never registered");
+        return false;
+    };
+    // Unlike AddItem, a "moved" entity with no Transform isn't a
+    // container the effect can adopt — it isn't a placed spatial
+    // entity at all, so this declines rather than fabricating one.
+    let Some(transform) = transforms.get_mut(moved_entity) else {
+        log::debug!("MoveTo skipped: moved entity has no Transform");
+        return false;
+    };
+    log::debug!(
+        "MoveTo ({origin:08X}): {moved_entity:?} -> {destination_entity:?} at {translation:?}"
+    );
+    transform.translation = translation;
+    if match_rotation {
+        transform.rotation = rotation;
+    }
+    true
 }

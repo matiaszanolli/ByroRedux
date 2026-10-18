@@ -2291,10 +2291,31 @@ The FO3/FNV-only quest commands (`SetObjectiveDisplayed` `0x11a3`,
 `0x1222`) are gated on the loaded game, follow the GECK pages (displaying an
 objective starts a stopped quest; an index the quest does not author is
 ignored), and write the same `QuestObjectiveState` the Papyrus fragment path
-does. What is still declined is mostly *actions* — `Enable`, `Disable`,
-`MoveTo`, `EVP`, `Say`, `AddScriptPackage` are about two thirds of the call
-sites left — which need a reference-bound effect host rather than more
-getters; see the ROADMAP M47.3 row.
+does. What was still declined was mostly *actions* — about two thirds of the
+call sites left — which need a reference-bound effect host rather than more
+getters.
+
+**Actions (`obscript_actions.rs`).** `Enable` `0x1021`, `Disable` `0x1022`,
+`GetDisabled` `0x1023`, `MoveTo` `0x109e` and `EVP` `0x105e` (the same ids in
+Oblivion, FO3 and FNV) act on the *explicit calling reference* the VM resolved,
+and lower onto the sink the Papyrus effect of the same name already uses:
+`ReferenceEnableState::set_enabled` (the FormID-keyed ledger, so it works on a
+reference in an unloaded cell and `reference_enabled` reads it back over the
+authored "Initially Disabled" flag), `fragment::apply_move_to_effect` (the
+Papyrus `MoveTo` body, extracted so the two share it) and
+`package::request_package_evaluation`. Semantics are the GECK/CS pages': the
+fade argument is cosmetic; `MoveTo` places the caller at the target plus the
+Z-up offset and leaves its rotation alone (neither wiki says the facing
+follows); the player's `MoveTo` is queued through `PlayerMoveRequest` on
+FO3/FNV only — on Oblivion it also ends the script, which the host cannot do,
+and the request carries no offset, so both are declined instead of
+approximated. The documented "Enable/Disable has no effect on a reference with
+an Enable Parent" rule is not applied (the Papyrus path does not either; the
+runtime has no enable-parent ledger). A reference that is not resolved, or a
+missing ledger, is a counted decline. `EnablePlayerControls` /
+`DisablePlayerControls` were left out on purpose: the GECK flags
+(Movement/Pipboy/Fighting/POV/Looking/Rollover/Sneaking) do not map one-to-one
+onto `PlayerControlSelection`'s domains, and the mapping is not documented.
 
 ### The R5 demo translations (`papyrus_demo/`)
 

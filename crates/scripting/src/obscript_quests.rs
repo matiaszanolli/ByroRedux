@@ -31,6 +31,7 @@ use byroredux_plugin::esm::records::{QustRecord, ScriptRecord};
 
 use crate::condition::{evaluate_script_getter, resolve_entity_by_global_form_id, ConditionFunction};
 use crate::globals::Globals;
+use crate::obscript_actions::Action;
 use crate::obscript_vm::{BlockOutcome, ObScriptHost, ObScriptProgram, ObScriptValue, VmState};
 use crate::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageState, QuestStatus};
 
@@ -451,7 +452,7 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
             CMD_SET_OBJECTIVE_DISPLAYED | CMD_SET_OBJECTIVE_COMPLETED
             | CMD_GET_OBJECTIVE_DISPLAYED | CMD_GET_OBJECTIVE_COMPLETED
             | CMD_SET_QUEST_DELAY | CMD_GET_QUEST_COMPLETED
-                if self.is_fallout3_nv() =>
+                if crate::ScriptGame::is_fallout3_nv(self.world) =>
             {
                 let Some(target) = quest_target(0) else {
                     return self.decline(cmd);
@@ -494,28 +495,30 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
                     None => self.decline(cmd),
                 }
             }
-            _ => {
-                // Traced no-op. The census counter keeps phase-1 honest about
-                // coverage instead of silently faking behavior.
-                log::trace!(
-                    "ObScript {:08X}: unknown command {cmd:#06x} ({} args) — no-op",
-                    self.quest,
-                    args.len(),
-                );
-                self.decline(cmd)
-            }
+            _ => match crate::obscript_actions::run(self.world, cmd, args, caller) {
+                Action::Done { value, effect: text } => {
+                    if !text.is_empty() {
+                        effect(self, text);
+                    }
+                    value
+                }
+                Action::Declined => self.decline(cmd),
+                Action::Unhandled => {
+                    // Traced no-op. The census counter keeps phase-1 honest about
+                    // coverage instead of silently faking behavior.
+                    log::trace!(
+                        "ObScript {:08X}: unknown command {cmd:#06x} ({} args) — no-op",
+                        self.quest,
+                        args.len(),
+                    );
+                    self.decline(cmd)
+                }
+            },
         }
     }
 }
 
 impl QuestCommandHost<'_> {
-    /// Whether the loaded game is Fallout 3 / New Vegas.
-    fn is_fallout3_nv(&self) -> bool {
-        self.world.try_resource::<crate::ScriptGame>().is_some_and(|game| {
-            matches!(game.0, byroredux_plugin::esm::reader::GameKind::Fallout3NV)
-        })
-    }
-
     /// `SetObjectiveDisplayed/Completed`, `GetObjectiveDisplayed/Completed`,
     /// `SetQuestDelay` and `GetQuestCompleted` against `quest`, with the GECK
     /// semantics (*SetObjectiveDisplayed*, *SetObjectiveCompleted*,
@@ -547,12 +550,16 @@ impl QuestCommandHost<'_> {
                     if on {
                         // "If the quest is not currently running,
                         // SetObjectiveDisplayed ... 1 will automatically start it."
+                        // The definitions are read first and released: the quest
+                        // systems take `QuestDefinitionRegistry` before
+                        // `QuestStageState`, so nesting it under the stage lock
+                        // would add the opposite edge to the lock-order graph.
+                        let start_up = self
+                            .world
+                            .try_resource::<crate::quest_stages::QuestDefinitionRegistry>()
+                            .and_then(|definitions| definitions.start_up_stage(quest));
                         if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
                             if !stages.is_running(quest) {
-                                let start_up = self
-                                    .world
-                                    .try_resource::<crate::quest_stages::QuestDefinitionRegistry>()
-                                    .and_then(|definitions| definitions.start_up_stage(quest));
                                 stages.start_quest(quest, start_up);
                             }
                         }
@@ -813,6 +820,26 @@ mod host_tests {
         world.insert(actor, byroredux_core::ecs::components::Dead);
         assert_eq!(call_on(&world, GET_DEAD, &[], ACHR), Some(ObScriptValue::Num(1.0)));
         assert_eq!(declined(&world, GET_DEAD), 0, "answered, not declined");
+    }
+
+    /// M47.3 phase 2 actions go through the host: a done action is logged and
+    /// answers its value, one that cannot be carried out is a counted decline.
+    #[test]
+    fn a_reference_bound_action_runs_or_is_declined_and_counted() {
+        const DISABLE: u16 = 0x1022;
+        let (mut world, _) = world_with_actor();
+        world.insert_resource(ObScriptEffectLog::default());
+        world.insert_resource(crate::ReferenceEnableState::default());
+        assert_eq!(call_on(&world, DISABLE, &[], ACHR), None);
+        assert!(!crate::reference_enabled(&world, ACHR));
+        assert_eq!(declined(&world, DISABLE), 0);
+        assert_eq!(
+            world.try_resource::<ObScriptEffectLog>().unwrap().entries.back().map(|(_, text)| text.as_str()),
+            Some("Disable 00014D8A"),
+        );
+        // Written on the quest itself there is no reference to disable.
+        assert_eq!(call(&world, DISABLE, &[]), Some(ObScriptValue::Num(0.0)));
+        assert_eq!(declined(&world, DISABLE), 1);
     }
 
     /// A caller that is not a live reference cannot be asked: it is a counted

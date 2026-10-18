@@ -225,6 +225,20 @@ impl Component for EvaluatePackageRequest {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Queue an [`EvaluatePackageRequest`] for `actor` — Papyrus
+/// `Actor.EvaluatePackage` and ObScript `EvaluatePackage` / `EVP` ("forces the
+/// actor to reevaluate its package list", GECK) share this one ingress.
+/// Returns whether the request could be queued (the component storage exists).
+pub fn request_package_evaluation(world: &World, actor: EntityId) -> bool {
+    match world.query_mut::<EvaluatePackageRequest>() {
+        Some(mut requests) => {
+            requests.insert(actor, EvaluatePackageRequest);
+            true
+        }
+        None => false,
+    }
+}
+
 pub fn register(world: &mut World) {
     world.register::<ScenePackagePlayback>();
     world.register::<ScenePackageEventBatch>();

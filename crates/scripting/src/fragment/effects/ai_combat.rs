@@ -180,9 +180,7 @@ pub(super) fn apply_ai_combat_effect(
         Effect::EvaluatePackage { actor } => {
             let bindings = &deferred.scene_actor_bindings;
             let actor = resolve_actor(vmad, world, context, actor, bindings, deferred.speaker)?;
-            if let Some(mut requests) = world.query_mut::<crate::EvaluatePackageRequest>() {
-                requests.insert(actor, crate::EvaluatePackageRequest);
-            }
+            crate::package::request_package_evaluation(world, actor);
             None
         }
         _ => unreachable!("apply_ai_combat_effect received a non-ai/combat effect"),
