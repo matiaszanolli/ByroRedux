@@ -342,7 +342,7 @@ impl ConsoleCommand for ObScriptObjectsCommand {
                 .get::<byroredux_scripting::trigger::TriggerVolume>(entity)
                 .map(|v| format!(" volume half={:.0},{:.0},{:.0} inside={:?}", v.half_extents.x, v.half_extents.y, v.half_extents.z, v.occupant_inside))
                 .unwrap_or_default();
-            rows.push((entity as u32, form, instance.script, format!("{}{volume}", object.record.editor_id), blocks, runs, declined));
+            rows.push((entity, form, instance.script, format!("{}{volume}", object.record.editor_id), blocks, runs, declined));
         }
         rows.sort_unstable_by_key(|row| (std::cmp::Reverse(row.5), row.1));
         let mut lines = vec![format!("{} placed reference(s) run an object script:", rows.len())];

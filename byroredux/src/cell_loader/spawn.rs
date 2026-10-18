@@ -891,6 +891,13 @@ pub(super) fn spawn_placed_instances(
         world.insert(player_entity, player);
     }
 
+    // M47.3 — the model's named animation sequences, for an object script's `PlayGroup`.
+    if let Some(key) = mesh_cache_key {
+        if let Some(sequences) = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences) {
+            world.insert(placement_root, sequences);
+        }
+    }
+
     // M47.0 Phase 3b — return the placement_root alongside the
     // entity count so the caller (cell_loader/references.rs) can
     // attach script-state components keyed on the REFR's base

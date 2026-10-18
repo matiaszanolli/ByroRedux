@@ -334,7 +334,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**119**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**120**) grouped by
 purpose:
 
 ```
@@ -501,6 +501,7 @@ quest.setstage              → advance a quest through the canonical stage path
 perk.run                    → run a perk entry's fragment on the player (perk, entry id, optional target)
 terminal.select             → pick a terminal menu item by reference + item id, running its fragment
 quest.effects               → inspect the quest effect log
+obscript.objects [limit]    → ObScript object scripts attached to placed references: blocks, run counts, declines (M47.3)
 
 # Legacy HUD + focused diagnostics
 hud.on / hud.off            → show or hide the active legacy HUD

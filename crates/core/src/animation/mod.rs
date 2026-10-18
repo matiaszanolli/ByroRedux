@@ -4,6 +4,7 @@
 //! (Kochanek-Bartels) interpolation for position, rotation, and scale channels.
 
 pub mod interpolation;
+pub mod named_sequences;
 pub mod player;
 pub mod registry;
 pub mod root_motion;
@@ -26,6 +27,7 @@ pub use interpolation::{
     sample_bool_channel, sample_color_channel, sample_float_channel, sample_rotation, sample_scale,
     sample_texture_flip_index, sample_translation,
 };
+pub use named_sequences::NamedSequences;
 pub use player::{advance_time, AnimationPlayer};
 pub use registry::AnimationClipRegistry;
 pub use root_motion::{split_root_motion, RootMotionDelta};

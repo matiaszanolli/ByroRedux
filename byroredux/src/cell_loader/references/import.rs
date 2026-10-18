@@ -483,6 +483,7 @@ pub(super) fn parse_and_import_spt(
         particle_emitters: Vec::new(),
         embedded_clip: None,
         graph_sequences: Vec::new(),
+        object_sequences: Vec::new(),
         placement_root_billboard,
         speedtree_wind: wind,
         // SpeedTree `.spt` files carry no BSXFlags — they're a

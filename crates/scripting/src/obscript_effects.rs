@@ -116,7 +116,8 @@ const KARMA_CODE: f32 = 23.0;
 pub(crate) fn handles(cmd: u16) -> bool {
     matches!(
         cmd,
-        CMD_ADD_ITEM
+        CMD_PLAY_GROUP
+            | CMD_ADD_ITEM
             | CMD_REMOVE_ITEM
             | CMD_EQUIP_ITEM
             | CMD_KILL_ACTOR
@@ -630,7 +631,7 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
                 return Action::Declined;
             }
             let released = {
-                let Some((inventories, mut equipment)) = world.query_2_mut::<Inventory, EquipmentSlots>().map(|(i, e)| (i, e)) else {
+                let Some((inventories, mut equipment)) = world.query_2_mut::<Inventory, EquipmentSlots>() else {
                     return Action::Declined;
                 };
                 let Some(index) = inventories
@@ -725,6 +726,16 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             transform.rotation = byroredux_core::math::coord::euler_zup_to_quat_yup(euler[0], euler[1], euler[2]);
             return Action::Done { value: None, effect: format!("{} {caller:08X} axis {axis} {}", if cmd == CMD_SET_ANGLE { "SetAngle" } else { "Rotate" }, num(args, 1)) };
         }
+        // `PlayGroup <group> <flag>`: play the object's animation group (see `obscript_anim`); an
+        // object with no sequence of that name, or an actor's combat group, declines.
+        CMD_PLAY_GROUP => {
+            let Some(entity) = caller_entity else { return Action::Declined };
+            let Some(group) = crate::obscript_anim::group_name(world, num(args, 0)) else { return Action::Declined };
+            if !crate::obscript_anim::play_group(world, entity, group) {
+                return Action::Declined;
+            }
+            return Action::Done { value: None, effect: format!("PlayGroup {caller:08X} {group}") };
+        }
         // `SetScale <factor>`: "sets the scale of the calling object ... 1.0 being normal size".
         CMD_SET_SCALE => {
             let Some(entity) = caller_entity else { return Action::Declined };
@@ -816,12 +827,15 @@ const CMD_SET_POS: u16 = 0x1007;
 const CMD_GET_STARTING_POS: u16 = 0x100a;
 const CMD_GET_SCALE: u16 = 0x1018;
 const CMD_SET_SCALE: u16 = 0x113c;
+const CMD_PLAY_GROUP: u16 = 0x1013;
+const CMD_IS_ANIM_PLAYING: u16 = 0x1128;
 
 /// Every getter this module answers.
 pub(crate) fn is_getter(cmd: u16) -> bool {
     matches!(
         cmd,
-        CMD_GET_ITEM_COUNT
+        CMD_IS_ANIM_PLAYING
+            | CMD_GET_ITEM_COUNT
             | CMD_IS_IN_COMBAT
             | CMD_GET_IS_REFERENCE
             | CMD_GET_PLAYER_TEAMMATE
@@ -1013,6 +1027,17 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
                 }
                 _ => Getter::Declined,
             }
+        }
+        CMD_IS_ANIM_PLAYING => {
+            let group = match args.first() {
+                None => None,
+                Some(_) => match crate::obscript_anim::group_name(world, num(args, 0)) {
+                    Some(name) => Some(name),
+                    None => return Getter::Declined,
+                },
+            };
+            crate::obscript_anim::is_anim_playing(world, subject, group)
+                .map_or(Getter::Declined, |playing| Getter::Value(f32::from(u8::from(playing))))
         }
         CMD_GET_SCALE => world
             .get::<byroredux_core::ecs::components::Transform>(subject)
@@ -1423,6 +1448,46 @@ mod tests {
         assert_eq!(getter(&world, CMD_GET_SCALE, &[], &ctx), Getter::Value(1.0));
         assert!(done(&run(&world, CMD_SET_SCALE, &[ObScriptValue::Num(0.5)], &ctx)));
         assert_eq!(getter(&world, CMD_GET_SCALE, &[], &ctx), Getter::Value(0.5));
+    }
+
+    #[test]
+    fn play_group_starts_the_objects_sequence_and_is_anim_playing_reads_it_back() {
+        use byroredux_core::animation::{AnimationClip, AnimationClipRegistry, AnimationPlayer, CycleType, NamedSequences};
+        let (mut world, actor, _) = world();
+        let clip = |name: &str| AnimationClip {
+            name: name.to_owned(),
+            duration: 2.0,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: Default::default(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        };
+        let mut registry = AnimationClipRegistry::new();
+        let forward = registry.add(clip("Forward"));
+        world.insert_resource(registry);
+        world.register::<NamedSequences>();
+        world.insert(actor, NamedSequences(std::sync::Arc::from(vec![("forward".into(), forward)])));
+        let player = world.spawn();
+        let mut idle = AnimationPlayer::new(forward);
+        idle.root_entity = Some(actor);
+        idle.playing = false;
+        world.insert(player, idle);
+        let ctx = context(Some(ACTOR));
+        let group = |index: f32| [ObScriptValue::Num(index), ObScriptValue::Num(0.0)];
+        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[], &ctx), Getter::Value(0.0));
+        // `PlayGroup Forward 0`; `Backward` is a group the object has no sequence of.
+        assert!(done(&run(&world, CMD_PLAY_GROUP, &group(3.0), &ctx)));
+        assert!(matches!(run(&world, CMD_PLAY_GROUP, &group(4.0), &ctx), Action::Declined));
+        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[], &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[ObScriptValue::Num(3.0)], &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[ObScriptValue::Num(4.0)], &ctx), Getter::Value(0.0));
     }
 
     #[test]

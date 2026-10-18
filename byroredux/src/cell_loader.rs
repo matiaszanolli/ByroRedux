@@ -71,6 +71,7 @@ mod lod_coverage;
 mod lod_support;
 mod nif_import_registry;
 mod object_lod;
+mod object_sequences;
 mod partial;
 mod placement_lod;
 pub(crate) mod precombined;

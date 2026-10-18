@@ -16,6 +16,9 @@
 #      `SetStage VMS16 110` run, nothing is declined.
 #   5. Item OnAdd — `WeapTrapBaseballSCRIPT`: adding TrapBaseball to the player runs
 #      `player.additem Baseball01 1 1; removeme` from the item's script.
+#   6. PlayGroup — a second boot into Lucky38BasementFloorB2: `OnLoadPlayForwardSCRIPT`
+#      (`Begin OnLoad / Playgroup Forward 0`) on the force-field glow statics starts the
+#      mesh's own `Forward` NiControllerSequence; nothing is declined.
 set -euo pipefail
 
 PORT="${BYRO_DEBUG_PORT:-19879}"
@@ -136,5 +139,26 @@ effects 0x00033D84
 grep -Fq "ObScript command 0x1002 on 00000014" "$LOG_DIR/effects.log" \
     || fail "the item's OnAdd did not run player.additem: $(cat "$LOG_DIR/effects.log")"
 echo "smoke[m47-3-obscript]: item OnAdd PASS — player.additem + removeme"
+
+# ── 6. PlayGroup on placed objects (second boot, another cell) ────
+stop_engine
+env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
+    BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
+    RUST_LOG="warn,byroredux_scripting=info" \
+    target/release/byroredux \
+    --game fnv --cell Lucky38BasementFloorB2 \
+    --player --bench-frames 30 --bench-hold \
+    >"$LOG_DIR/pg.stdout" 2>"$LOG_DIR/pg.stderr" &
+engine_pid=$!
+wait_log "$LOG_DIR/pg.stderr" 'bench-hold:'
+sleep 3
+objects
+row_for 00175D91 | grep -Fq "OnLoadPlayForwardSCRIPT" || fail "the force-field glow runs no object script: $(sed -n '1,4p' "$LOG_DIR/objects.log")"
+row_for 00175D91 | grep -Fq "1 run(s), 0 declined" \
+    || fail "PlayGroup was declined on the force-field glow: $(row_for 00175D91)"
+effects 0x00175D91
+grep -Fq "PlayGroup 00175D91 Forward" "$LOG_DIR/effects.log" \
+    || fail "PlayGroup left no effect row: $(cat "$LOG_DIR/effects.log")"
+echo "smoke[m47-3-obscript]: PlayGroup PASS — OnLoad started the Forward sequence, nothing declined"
 
 echo "smoke[m47-3-obscript]: PASS"

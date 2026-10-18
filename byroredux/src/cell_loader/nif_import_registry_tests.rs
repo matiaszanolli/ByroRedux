@@ -27,6 +27,7 @@ pub(crate) fn dummy_cached() -> Arc<CachedNifImport> {
         particle_emitters: Vec::new(),
         embedded_clip: None,
         graph_sequences: Vec::new(),
+        object_sequences: Vec::new(),
         placement_root_billboard: None,
         speedtree_wind: None,
         bsx_flags: 0,

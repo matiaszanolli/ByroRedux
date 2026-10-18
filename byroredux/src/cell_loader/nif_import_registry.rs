@@ -247,6 +247,10 @@ pub(crate) struct CachedNifImport {
     /// Every `NiControllerSequence` of a NIF that names a behavior graph: the
     /// clips the graph's Gamebryo sequence generators play, by sequence name.
     pub(super) graph_sequences: Vec<byroredux_nif::anim::AnimationClip>,
+    /// Every `NiControllerSequence` of the NIF, by name: the animation groups an object's script
+    /// can start (`PlayGroup Forward`, M47.3). The first is also the embedded clip played at
+    /// spawn; the registry keeps these one level apart so playing one by name never disturbs it.
+    pub(super) object_sequences: Vec<byroredux_nif::anim::AnimationClip>,
     /// Billboard mode to attach to the spawned placement root entity —
     /// a seam for a future `NiBillboardNode`-rooted NIF producer, not a
     /// live path today. #3076 moved the SpeedTree billboard from the
@@ -375,6 +379,9 @@ pub(super) struct SceneSatellites {
     pub(super) behavior_graph_file: Option<Arc<str>>,
     pub(super) graph_nodes: Option<Arc<super::graph_nodes::GraphNodes>>,
     pub(super) graph_sequences: Vec<byroredux_nif::anim::AnimationClip>,
+    /// Every `NiControllerSequence` of the NIF, by name — what an ObScript `PlayGroup` chooses
+    /// among (M47.3). Empty for a mesh with none.
+    pub(super) object_sequences: Vec<byroredux_nif::anim::AnimationClip>,
     pub(super) phantom_bounds: Option<([f32; 3], [f32; 3])>,
 }
 
@@ -397,11 +404,8 @@ pub(super) fn scene_satellites(
             &mut byroredux_core::string::StringPool::new(),
         )
     });
-    let graph_sequences = if behavior_graph_file.is_some() {
-        byroredux_nif::anim::import_kf(scene)
-    } else {
-        Vec::new()
-    };
+    let object_sequences = byroredux_nif::anim::import_kf(scene);
+    let graph_sequences = if behavior_graph_file.is_some() { object_sequences.clone() } else { Vec::new() };
     // M41.5 Phase B — lift `BSFurnitureMarker` sit/sleep/lean positions
     // to the `Furniture` ECS component. `None` for the dominant
     // non-furniture case.
@@ -422,6 +426,7 @@ pub(super) fn scene_satellites(
         behavior_graph_file,
         graph_nodes,
         graph_sequences,
+        object_sequences,
         phantom_bounds: byroredux_nif::import::collision::extract_phantom_bounds(scene),
     }
 }
@@ -457,6 +462,7 @@ impl CachedNifImport {
             particle_emitters,
             embedded_clip,
             graph_sequences: satellites.graph_sequences,
+            object_sequences: satellites.object_sequences,
             // Both NIF routes leave root billboard / SpeedTree wind to
             // their own producers (see the field docs: #994, #3190).
             placement_root_billboard: None,
