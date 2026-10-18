@@ -12,9 +12,12 @@
 //! layout, gated by NIF version not bsver). Field order + sizes are from
 //! nif.xml, cross-checked against the FNV prefix sizes the sibling
 //! `BhkBreakableConstraint` already encodes (Ragdoll 152, LimitedHinge
-//! 140). The FO3+ typed decode reads exactly the fixed prefix and leaves
-//! the trailing motor to `block_size` recovery — so those tests assert the
-//! stream advanced by `16 + prefix`, with no motor bytes in the buffer.
+//! 140). The prefix tests below put no motor bytes in the buffer and assert
+//! the stream advanced by `16 + prefix`: the trailing motor is consumed
+//! leniently (#5960), so a buffer that ends at the prefix is still accepted.
+//! The `*_motor_*` tests at the end pin what the motor consumption itself
+//! does, per `hkMotorType` (nif.xml: NONE 0 B, POSITION 25 B, VELOCITY 18 B,
+//! SPRING 17 B, after a 1-byte type).
 use super::*;
 use crate::header::NifHeader;
 use crate::version::NifVersion;
@@ -794,4 +797,188 @@ fn fo3_malleable_wrapped_stiffspring_consumes_inner_body() {
     assert_eq!(s.pivot_a, [1.0, 0.0, 0.0, 0.0]);
     assert_eq!(s.length, 0.5);
     assert_eq!(stream.position() as usize, 16 + 4 + 16 + 36);
+}
+
+// ── #5960 — the trailing bhkConstraintMotorCInfo ─────────────────────────
+//
+// 100% of Skyrim's 1,575 Ragdoll/LimitedHinge blocks parsed exactly one byte
+// short (every authored motor is MOTOR_NONE) and FO3/FNV's real position
+// motors parsed 26 short, each logged as a realignment WARN. The motor is
+// the last field of all three CInfos (`since 20.2.0.7`), so it is consumed
+// after the typed prefix.
+
+/// 8 × Vec4 + 6 × f32 = 152 B Ragdoll prefix.
+fn ragdoll_body() -> Vec<u8> {
+    let mut d = Vec::new();
+    for i in 0..8 {
+        d.extend(vec4(i as f32, 0.0, 0.0, 0.0));
+    }
+    for v in [0.5f32, -0.25, 0.75, -1.5, 1.5, 100.0] {
+        d.extend_from_slice(&v.to_le_bytes());
+    }
+    d
+}
+
+/// 8 × Vec4 + 3 × f32 = 140 B LimitedHinge (and Prismatic) prefix.
+fn limited_hinge_body() -> Vec<u8> {
+    let mut d = Vec::new();
+    for i in 0..8 {
+        d.extend(vec4(i as f32, 0.0, 0.0, 0.0));
+    }
+    for v in [-0.5f32, 0.5, 10.0] {
+        d.extend_from_slice(&v.to_le_bytes());
+    }
+    d
+}
+
+fn parse_fo3(bytes: &[u8], type_name: &'static str) -> (std::io::Result<BhkConstraint>, usize) {
+    let header = NifHeader::test_fo3_fnv();
+    let mut stream = NifStream::new(bytes, &header);
+    let result = BhkConstraint::parse(&mut stream, type_name);
+    (result, stream.position() as usize)
+}
+
+/// Skyrim's whole constraint corpus: MOTOR_NONE, a single type byte.
+#[test]
+fn fo3_ragdoll_consumes_a_none_motor_type_byte() {
+    let mut bytes = base();
+    bytes.extend(ragdoll_body());
+    bytes.push(0); // MOTOR_NONE
+    let (result, position) = parse_fo3(&bytes, "bhkRagdollConstraint");
+    assert!(matches!(
+        result.unwrap().data,
+        BhkConstraintData::Ragdoll(_)
+    ));
+    assert_eq!(position, 16 + 152 + 1, "the 1-byte motor type is consumed");
+    assert_eq!(
+        position,
+        bytes.len(),
+        "nothing left for block_size to realign"
+    );
+}
+
+/// FO3/FNV's real position motors: 1 type byte + 25 payload = the +26 drift.
+#[test]
+fn fo3_limited_hinge_consumes_a_position_motor() {
+    let mut bytes = base();
+    bytes.extend(limited_hinge_body());
+    bytes.push(1); // MOTOR_POSITION
+    bytes.extend([0u8; 25]);
+    let (result, position) = parse_fo3(&bytes, "bhkLimitedHingeConstraint");
+    assert!(matches!(
+        result.unwrap().data,
+        BhkConstraintData::LimitedHinge(_)
+    ));
+    assert_eq!(position, bytes.len());
+    assert_eq!(position, 16 + 140 + 26);
+}
+
+/// Velocity (18 B) and spring-damper (17 B) payloads, on the third
+/// motor-bearing kind (Prismatic).
+#[test]
+fn fo3_prismatic_consumes_velocity_and_spring_motors() {
+    for (motor_type, payload) in [(2u8, 18usize), (3u8, 17usize)] {
+        let mut bytes = base();
+        bytes.extend(limited_hinge_body());
+        bytes.push(motor_type);
+        bytes.extend(vec![0u8; payload]);
+        let (result, position) = parse_fo3(&bytes, "bhkPrismaticConstraint");
+        assert!(matches!(
+            result.unwrap().data,
+            BhkConstraintData::Prismatic(_)
+        ));
+        assert_eq!(position, 16 + 140 + 1 + payload, "motor type {motor_type}");
+        assert_eq!(position, bytes.len());
+    }
+}
+
+/// An unrecognised motor type must not turn a decoded joint into a hard
+/// parse error (the reason the motor used to be skipped): the joint decodes,
+/// and the unread remainder is left to the outer walker's `block_size` seek.
+#[test]
+fn an_unknown_motor_type_does_not_fail_the_decoded_joint() {
+    let mut bytes = base();
+    bytes.extend(ragdoll_body());
+    bytes.push(9); // not an hkMotorType
+    bytes.extend([0xAB; 7]);
+    let (result, position) = parse_fo3(&bytes, "bhkRagdollConstraint");
+    let c = result.expect("an unknown motor must stay a recoverable block");
+    assert!(matches!(c.data, BhkConstraintData::Ragdoll(_)));
+    assert_eq!(position, 16 + 152 + 1, "only the type byte is consumed");
+}
+
+/// A payload cut short mid-motor is likewise recoverable.
+#[test]
+fn a_truncated_motor_payload_does_not_fail_the_decoded_joint() {
+    let mut bytes = base();
+    bytes.extend(ragdoll_body());
+    bytes.push(1); // MOTOR_POSITION, but only 5 of 25 payload bytes follow
+    bytes.extend([0u8; 5]);
+    let (result, _) = parse_fo3(&bytes, "bhkRagdollConstraint");
+    assert!(matches!(
+        result.unwrap().data,
+        BhkConstraintData::Ragdoll(_)
+    ));
+}
+
+/// Malleable wrapper: Type, inner base, typed CInfo WITH its motor, then the
+/// `Strength` f32 (nif.xml `bhkMalleableConstraintCInfo`). FNV's +5 drift was
+/// the motor type byte plus Strength.
+#[test]
+fn fo3_malleable_ragdoll_consumes_its_motor_and_strength() {
+    let mut bytes = base();
+    bytes.extend_from_slice(&7u32.to_le_bytes()); // wrapped Ragdoll
+    bytes.extend_from_slice(&base()); // inner bhkConstraintCInfo
+    bytes.extend(ragdoll_body());
+    bytes.push(0); // MOTOR_NONE
+    bytes.extend_from_slice(&2.5f32.to_le_bytes()); // Strength
+    let (result, position) = parse_fo3(&bytes, "bhkMalleableConstraint");
+    assert!(matches!(
+        result.unwrap().data,
+        BhkConstraintData::Ragdoll(_)
+    ));
+    assert_eq!(position, 16 + 4 + 16 + 152 + 1 + 4);
+    assert_eq!(position, bytes.len());
+}
+
+/// A malleable-wrapped plain Hinge has NO motor (nif.xml: "no angular limits
+/// or motor"), only the Strength float: FO3's lone +4 malleable drift.
+#[test]
+fn fo3_malleable_hinge_has_strength_but_no_motor() {
+    let mut bytes = base();
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // wrapped Hinge
+    bytes.extend_from_slice(&base());
+    for i in 0..8 {
+        bytes.extend(vec4(i as f32, 0.0, 0.0, 1.0));
+    }
+    bytes.extend_from_slice(&2.5f32.to_le_bytes()); // Strength
+    let (result, position) = parse_fo3(&bytes, "bhkMalleableConstraint");
+    assert!(matches!(
+        result.unwrap().data,
+        BhkConstraintData::LimitedHinge(_)
+    ));
+    assert_eq!(position, 16 + 4 + 16 + 128 + 4);
+    assert_eq!(position, bytes.len());
+}
+
+/// The breakable wrapper already consumes the motor itself after
+/// `parse_fo3`; the typed parsers must NOT consume it too (that would eat
+/// the threshold / remove-when-broken trailer). Pin that the breakable path's
+/// accounting did not move.
+#[test]
+fn the_motor_is_consumed_exactly_once_on_the_breakable_path() {
+    let mut bytes = base();
+    bytes.extend_from_slice(&7u32.to_le_bytes()); // wrapped_type = Ragdoll
+    bytes.extend_from_slice(&base()); // inner bhkConstraintCInfo
+    bytes.extend(ragdoll_body());
+    bytes.push(0); // MOTOR_NONE
+    bytes.extend_from_slice(&75.0f32.to_le_bytes()); // threshold
+    bytes.push(1); // remove_when_broken
+    let header = NifHeader::test_fo3_fnv();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkBreakableConstraint::parse(&mut stream).unwrap();
+    assert!(matches!(c.data, BhkConstraintData::Ragdoll(_)));
+    assert_eq!(c.threshold, 75.0, "the trailer must still be reachable");
+    assert!(c.remove_when_broken);
+    assert_eq!(stream.position() as usize, bytes.len());
 }

@@ -1,41 +1,37 @@
-//! #3713 (NIF-2026-08-30-D5-01) — real-corpus regression pin for the
-//! decoded `bhk*Constraint` motor-tail drift assertion
-//! (`byroredux_nif::corpus::is_known_constraint_motor_tail_drift`).
+//! #3713 / #5960 — real-corpus regression pin: every decoded `bhk*Constraint`
+//! must consume exactly its declared `block_size`. Zero stream drift, on every
+//! game that ships constraints.
 //!
-//! `is_havok_constraint_stub` (formerly in `crates/nif/src/lib.rs`, removed
-//! by #4626 once no reachable type was left on it) used to suppress
-//! stream-drift telemetry for nine constraint type names, including four
-//! (`bhkRagdollConstraint`, `bhkLimitedHingeConstraint`,
-//! `bhkHingeConstraint`, `bhkMalleableConstraint`) that had since grown
-//! typed CInfo decoders — routing their by-design motor-tail residual into
-//! `stubbed_drift_histogram`, invisible to every drift-based audit. That
-//! suppression is exactly what hid the historic `bhkHingeConstraint` +128
-//! under-read (a whole missing parser, not a motor tail) until #3330 found
-//! it by hand.
+//! History. `is_havok_constraint_stub` (since removed, #4626) once suppressed
+//! drift telemetry for nine constraint type names, hiding the historic
+//! `bhkHingeConstraint` +128 under-read (a whole missing parser, not a motor
+//! tail) until #3330 found it by hand. #3713 replaced the suppression with an
+//! assertable allowlist of by-design "motor left for `block_size` recovery"
+//! residuals (+1 `MOTOR_NONE`, +18 / +19 / +26 for the spring / velocity /
+//! position motors, and Malleable's +4 `Strength` stacked on those). That
+//! allowlist was the *measured* shape of the gap, and it was a gap: 100% of
+//! Skyrim's 1,575 Ragdoll / LimitedHinge blocks parsed one byte short, and
+//! every one logged a realignment WARN.
 //!
-//! The fix narrowed the stub list to the genuinely name-only types and
-//! replaced the suppression with an assertable known-good residual set.
-//! This test is what keeps that measurement honest going forward: it
-//! re-parses a real corpus across every game with `bhk*Constraint`
-//! content (Oblivion, Fallout 3, Fallout NV, Skyrim SE — FO4/FO76/Starfield
-//! ship none) and asserts every observed drift for a decoded type is a
-//! known motor-tail value.
+//! #5960 consumes the trailing `bhkConstraintMotorCInfo` (and Malleable's
+//! `Strength`), so the allowlist is gone and the assertion is the strict one:
+//! any residual on a decoded constraint is a parser regression.
+//!
+//! Covers Oblivion, Fallout 3, Fallout NV, Skyrim LE and Skyrim SE (FO4 /
+//! FO76 / Starfield ship none).
 //!
 //! `#[ignore]` — needs real game data on disk; run with:
 //! `cargo test -p byroredux-nif --test constraint_drift_corpus -- --ignored --nocapture`
 
 mod common;
 
-use byroredux_nif::corpus::is_known_constraint_motor_tail_drift;
 use common::{open_all_mesh_archives, Game};
 
 /// The `bhk*Constraint` types with typed CInfo decoders (#3713, #4212).
 ///
-/// #4212 added the last three. They differ from the five above in having
-/// no motor field at all, so their expected residual is 0 rather than a
-/// motor tail — `is_known_constraint_motor_tail_drift` enforces that
-/// distinction, and it is the reason they were removed from the stub list
-/// rather than added to the motor-tail set.
+/// The first five carry a trailing `bhkConstraintMotorCInfo` (consumed since
+/// #5960); the last three have no motor field at all. Every one must now
+/// drift by exactly 0.
 const DECODED_CONSTRAINT_TYPES: &[&str] = &[
     "bhkRagdollConstraint",
     "bhkLimitedHingeConstraint",
@@ -49,7 +45,7 @@ const DECODED_CONSTRAINT_TYPES: &[&str] = &[
 
 #[test]
 #[ignore = "needs real game data on disk"]
-fn decoded_constraint_drift_is_always_a_known_motor_tail_value() {
+fn decoded_constraints_consume_their_whole_block() {
     let mut any_game_ran = false;
     let mut total_events = 0u64;
     let mut unexpected: Vec<String> = Vec::new();
@@ -58,6 +54,7 @@ fn decoded_constraint_drift_is_always_a_known_motor_tail_value() {
         Game::Oblivion,
         Game::Fallout3,
         Game::FalloutNV,
+        Game::SkyrimLE,
         Game::SkyrimSE,
     ] {
         let Some(archives) = open_all_mesh_archives(game) else {
@@ -84,10 +81,9 @@ fn decoded_constraint_drift_is_always_a_known_motor_tail_value() {
                     };
                     for (&drift, &count) in buckets {
                         total_events += count as u64;
-                        if !is_known_constraint_motor_tail_drift(ty, drift) {
+                        if drift != 0 {
                             unexpected.push(format!(
-                                "[{}] {archive_name}/{f}: {ty} drift={drift:+} \
-                                 (x{count}) is not a known motor-tail value",
+                                "[{}] {archive_name}/{f}: {ty} drift={drift:+} (x{count})",
                                 game.label(),
                             ));
                         }
@@ -100,7 +96,7 @@ fn decoded_constraint_drift_is_always_a_known_motor_tail_value() {
     if !any_game_ran {
         eprintln!(
             "skipping: no game data found for Oblivion / Fallout 3 / Fallout NV / \
-             Skyrim SE"
+             Skyrim LE / Skyrim SE"
         );
         return;
     }
@@ -112,9 +108,9 @@ fn decoded_constraint_drift_is_always_a_known_motor_tail_value() {
     );
     assert!(
         unexpected.is_empty(),
-        "{} decoded-constraint drift value(s) fell outside the known motor-tail \
-         set — this is what a real parser regression (like the historic \
-         bhkHingeConstraint +128, a whole undecoded CInfo) looks like:\n{:#?}",
+        "{} decoded-constraint block(s) drifted from their declared size — the \
+         trailing motor / Strength is no longer consumed (#5960), or a CInfo is \
+         under-read (like the historic bhkHingeConstraint +128):\n{:#?}",
         unexpected.len(),
         unexpected,
     );

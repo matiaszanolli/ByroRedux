@@ -583,21 +583,36 @@ impl BhkConstraint {
     /// Layout (nif.xml `bhkMalleableConstraintCInfo`, `since 20.2.0.7`):
     /// a `Type u32`, then an inner `bhkConstraintCInfo` (16 B, whose
     /// entities are −1/−1 — the real bodies are the OUTER base the caller
-    /// already read), then the typed inner CInfo. The trailing `Strength`
-    /// f32 (and the inner CInfo's motor) are left for `block_size`
-    /// recovery. FNV humanoid ragdolls wrap 14 of their 17 joints this way,
-    /// so a malleable-wrapped Ragdoll surfaces identically to a bare one.
+    /// already read), then the typed inner CInfo (whose own trailing
+    /// motor is consumed for the three motor-bearing kinds — Ragdoll,
+    /// LimitedHinge, Prismatic — #5960), then the `Strength` f32, skipped
+    /// for every decoded kind. FNV humanoid ragdolls wrap 14 of their 17
+    /// joints this way, so a malleable-wrapped Ragdoll surfaces
+    /// identically to a bare one.
     fn parse_fo3_malleable_inner(stream: &mut NifStream) -> io::Result<BhkConstraintData> {
         let wrapped_type = stream.read_u32_le()?;
         // Inner bhkConstraintCInfo — discard (entities are −1/−1).
         let _inner = Self::parse_base(stream)?;
-        Ok(match wrapped_type {
-            7 => BhkConstraintData::Ragdoll(RagdollCInfo::parse_fo3(stream)?),
-            2 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_fo3(stream)?),
-            // 1 Hinge — #3330, decoded into the same canonical joint.
+        let data = match wrapped_type {
+            7 => {
+                let data = BhkConstraintData::Ragdoll(RagdollCInfo::parse_fo3(stream)?);
+                Self::consume_trailing_motor(stream);
+                data
+            }
+            2 => {
+                let data = BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_fo3(stream)?);
+                Self::consume_trailing_motor(stream);
+                data
+            }
+            // 1 Hinge — #3330, decoded into the same canonical joint (no
+            // motor: nif.xml "A basic hinge with no angular limits or motor").
             1 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_hinge_fo3(stream)?),
             // 6 Prismatic — #3792.
-            6 => BhkConstraintData::Prismatic(PrismaticCInfo::parse_fo3(stream)?),
+            6 => {
+                let data = BhkConstraintData::Prismatic(PrismaticCInfo::parse_fo3(stream)?);
+                Self::consume_trailing_motor(stream);
+                data
+            }
             // #4212 — the two non-motor types, previously byte-skipped
             // through the tables below. Same body on every era.
             0 => BhkConstraintData::BallAndSocket(BallAndSocketCInfo::parse(stream)?),
@@ -623,7 +638,33 @@ impl BhkConstraint {
                 }
                 BhkConstraintData::Other
             }
-        })
+        };
+        // nif.xml `Strength` (`since 20.2.0.7`): the last field of every
+        // decoded kind, after the motor where there is one. The undecoded
+        // fallback above keeps its `block_size` recovery.
+        if !matches!(data, BhkConstraintData::Other) {
+            let _ = stream.skip(4);
+        }
+        Ok(data)
+    }
+
+    /// Consume the trailing `bhkConstraintMotorCInfo` of a bare or
+    /// malleable-wrapped FO3+ Ragdoll / LimitedHinge / Prismatic (#5960).
+    ///
+    /// nif.xml puts a motor last in all three CInfos (`since 20.2.0.7`,
+    /// `!#NI_BS_LTE_16#`): a type byte, then 0 / 25 / 18 / 17 payload bytes.
+    /// Leaving it for `block_size` recovery made every such block parse short
+    /// and log a realignment WARN — 100% of Skyrim's 1,575 constraint blocks
+    /// by exactly one byte (`MOTOR_NONE`), and FO3/FNV's real position motors
+    /// by 26. Reuses [`BhkBreakableConstraint::consume_motor`], the same
+    /// table the breakable wrapper already walks.
+    ///
+    /// Lenient on purpose: a truncated or unrecognised motor must not turn an
+    /// already-decoded joint into a hard parse error (the reason this used to
+    /// be skipped), so the result is dropped and the outer walker's
+    /// `block_size` seek realigns whatever is left.
+    fn consume_trailing_motor(stream: &mut NifStream) {
+        let _ = BhkBreakableConstraint::consume_motor(stream);
     }
 
     /// Parse a constraint block by type name. For the four decoded types
@@ -772,29 +813,33 @@ impl BhkConstraint {
         // FO3+ (FNV/FO3, `!#NI_BS_LTE_16#`). For each of the four decoded
         // types, read the typed CInfo prefix (field order + sizes from
         // nif.xml, cross-checked against the breakable-constraint byte
-        // tables below). The trailing
-        // `bhkConstraintMotorCInfo` is deliberately NOT consumed here:
-        // it's the last field of the struct, carries nothing slice 1
-        // needs, and the outer parse_nif loop absolute-seeks to the next
-        // block via the header's block_sizes table (always present on
-        // v >= 20.2.0.7) — so skipping the motor-type dispatch keeps a
-        // recoverable block from ever becoming a hard parse error on
-        // unexpected motor data. Every other type stays a name-only stub.
+        // tables below). The trailing `bhkConstraintMotorCInfo` of the
+        // three motor-bearing kinds is consumed leniently (#5960, see
+        // [`Self::consume_trailing_motor`]): the decoded joint never depends
+        // on it, but leaving it unread made every such block parse short and
+        // WARN. Every other type stays a name-only stub.
         let data = match type_name {
-            "bhkRagdollConstraint" => BhkConstraintData::Ragdoll(RagdollCInfo::parse_fo3(stream)?),
+            "bhkRagdollConstraint" => {
+                let data = BhkConstraintData::Ragdoll(RagdollCInfo::parse_fo3(stream)?);
+                Self::consume_trailing_motor(stream);
+                data
+            }
             "bhkLimitedHingeConstraint" => {
-                BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_fo3(stream)?)
+                let data = BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_fo3(stream)?);
+                Self::consume_trailing_motor(stream);
+                data
             }
             // #3330 — a limitless hinge is a limited hinge minus the three
             // trailing scalars; same `LimitedHinge` canonical joint.
             "bhkHingeConstraint" => {
                 BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_hinge_fo3(stream)?)
             }
-            // #3792 — 1-DOF sliding rail. Same "fixed prefix only, motor
-            // left for block_size recovery" posture as Ragdoll/LimitedHinge
-            // above.
+            // #3792 — 1-DOF sliding rail; trailing motor consumed like
+            // Ragdoll/LimitedHinge above (#5960).
             "bhkPrismaticConstraint" => {
-                BhkConstraintData::Prismatic(PrismaticCInfo::parse_fo3(stream)?)
+                let data = BhkConstraintData::Prismatic(PrismaticCInfo::parse_fo3(stream)?);
+                Self::consume_trailing_motor(stream);
+                data
             }
             // #4212 — version-independent bodies (nif.xml `size` attrs, no
             // `since`/`until` branch and no motor field), so the same
