@@ -773,7 +773,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 107;
+    const BASELINE_MAJOR: u16 = 108;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1106,7 +1106,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `VmFrame`, `VmStep`, `VmStored` to `translate/effects/vm_bridge.rs`.
     // Path-stripped dumps of both sides are identical, so a save's JSON is
     // byte-identical.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xeea0_6710_f318_474d;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x4baa_cb38_4440_f78d;
     // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
     // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
     // keys each shape by its file, so the move alone shifted it; a dump of
@@ -1212,6 +1212,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // #5916 — v107 is a genuine bump: `LevelUpPoints::pool_picks` is a new
     // required field on a registered column, so a pre-v107 snapshot has no
     // record of the Health / Magicka / Stamina picks its levels earned.
+    // #5913 — v108 is a genuine bump: `Effect::AddItem::silent` and
+    // `Effect::PlayerCaps::silent` are new required fields on the effects a
+    // saved fragment continuation serializes.
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

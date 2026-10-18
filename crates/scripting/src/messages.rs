@@ -361,6 +361,21 @@ pub fn show_message(world: &World, form_id: u32, args: &[f32]) -> bool {
     }
 }
 
+/// The pickup notice for a scripted add to the player (#5913), worded like the
+/// engine's own pickup notice: `Added <name>` or `Added <name> (<count>)`, the
+/// name from the load order's `FULL` (`Item <FormID>` when it has none).
+pub fn item_added_text(world: &World, item_form_id: u32, count: u32) -> String {
+    let name = world
+        .try_resource::<MessageCatalog>()
+        .and_then(|catalog| catalog.display_name(item_form_id).map(str::to_owned))
+        .unwrap_or_else(|| format!("Item {item_form_id:08X}"));
+    if count > 1 {
+        format!("Added {name} ({count})")
+    } else {
+        format!("Added {name}")
+    }
+}
+
 /// Queue a plain notification (`Debug.Notification`).
 pub fn notify(world: &World, text: String) {
     if let Some(mut pending) = world.try_resource_mut::<PendingScriptMessages>() {

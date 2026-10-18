@@ -531,7 +531,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v106 -> v107 (#5916): `LevelUpPoints` gained the required `pool_picks`
 /// field (Skyrim's banked Health / Magicka / Stamina picks), so a level rolled
 /// by a scripted skill advance no longer loses its pool pick.
-pub const FORMAT_MAJOR: u16 = 107;
+///
+/// v107 -> v108 (#5913): `Effect::AddItem` and `Effect::PlayerCaps` gained the
+/// required `silent` field (`abSilent`), so a queued fragment tail keeps
+/// whether its scripted add to the player raises a pickup notice.
+pub const FORMAT_MAJOR: u16 = 108;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

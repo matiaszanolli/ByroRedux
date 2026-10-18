@@ -16,6 +16,9 @@ use super::*;
 pub(super) enum PendingMessage {
     Show(u32, Vec<f32>),
     Notify(String),
+    /// A non-silent scripted add to the player: `(item base FormID, count)`,
+    /// named and worded when it is shown (#5913).
+    ItemAdded(u32, u32),
 }
 
 /// M47.2 — a [`ValueExpr`]'s run-time number; `None` when something it reads

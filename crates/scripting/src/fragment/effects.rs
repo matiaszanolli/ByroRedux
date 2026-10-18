@@ -363,12 +363,17 @@ pub(crate) fn apply_effect(
             deferred.misc_stats.push((stat.clone(), *amount));
             None
         }
-        Effect::PlayerCaps { delta } => {
+        Effect::PlayerCaps { delta, silent } => {
             // `Game.GetCaps()` is `Game.GetForm(15)` in FO4's `Game.psc`.
             const CAPS: u32 = 0x0000_000F;
             let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world)?;
             match delta.cmp(&0) {
-                std::cmp::Ordering::Greater => add_items(world, player, CAPS, *delta as u32),
+                std::cmp::Ordering::Greater => {
+                    add_items(world, player, CAPS, *delta as u32);
+                    if !*silent {
+                        deferred.messages.push(PendingMessage::ItemAdded(CAPS, *delta as u32));
+                    }
+                }
                 std::cmp::Ordering::Less => {
                     remove_items(world, player, CAPS, delta.unsigned_abs(), None);
                 }

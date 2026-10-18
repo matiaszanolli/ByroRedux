@@ -158,6 +158,7 @@ pub(super) fn apply_inventory_effect(
             container,
             item,
             count,
+            silent,
         } => {
             let container_entity = resolve_actor(
                 vmad,
@@ -170,6 +171,11 @@ pub(super) fn apply_inventory_effect(
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
             let count = &resolve_item_count(count, context, vmad, world, stages, deferred)?;
             add_items(world, container_entity, item_form_id, *count);
+            // #5913 — `abSilent = false` on an add to the player is a pickup:
+            // the notice is raised once the quest guards drop.
+            if !*silent && crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(container_entity) {
+                deferred.messages.push(super::evaluate::PendingMessage::ItemAdded(item_form_id, *count));
+            }
             None
         }
         Effect::RemoveItem {

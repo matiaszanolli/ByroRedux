@@ -381,11 +381,12 @@ pub enum Effect {
     CompleteAllObjectives { quest: QuestRef },
     /// `<quest>.FailAllObjectives()`.
     FailAllObjectives { quest: QuestRef },
-    /// `<container>.AddItem(<item>, <count = 1>)`. The optional 3rd
-    /// (`abSilent`) argument is accepted (parsed, not applied — no pickup
-    /// notification UI exists to suppress) but only as a literal; a
-    /// non-literal 3rd arg, or a 4th, declines the whole fragment (the
-    /// `bool_arg` discipline `SetObjectiveDisplayed` already uses).
+    /// `<container>.AddItem(<item>, <count = 1>[, abSilent = false])`. The
+    /// optional 3rd (`abSilent`) argument is accepted only as a literal and
+    /// carried as `silent`: unless it is set, an add to the player raises the
+    /// pickup notice (#5913). A non-literal 3rd arg, or a 4th, declines the
+    /// whole fragment (the `bool_arg` discipline `SetObjectiveDisplayed`
+    /// already uses).
     /// `item` resolves only to a FormID at dispatch, never to an entity —
     /// it names a *base record* (the item type), not a placed reference.
     /// The container is an [`ActorRef`] so `Game.GetPlayer().AddItem(..)` —
@@ -394,6 +395,7 @@ pub enum Effect {
         container: ActorRef,
         item: ObjectRef,
         count: ItemCount,
+        silent: bool,
     },
     /// `<actor>.EquipItem(<item>, false, <silent>)`. The supported shape
     /// deliberately declines `abPreventUnequip=true` until locked equipment
@@ -650,8 +652,11 @@ pub enum Effect {
     SetDoingFavor { actor: ActorRef, doing: bool },
     /// M47.2 — `Game.GivePlayerCaps(n)` / `RemovePlayerCaps(n)` (FO4): the
     /// script bodies add / remove `n` of `Game.GetCaps()` (form `0xF`) on the
-    /// player when `n > 0`. Negative `delta` removes.
-    PlayerCaps { delta: i32 },
+    /// player when `n > 0`. Negative `delta` removes. `silent` is the add's
+    /// `abSilent` (`AddItem(GetCaps(), n, abSilent)` carries it; the `Game`
+    /// calls have no such parameter and are not silent): a non-silent add
+    /// raises the pickup notice (#5913).
+    PlayerCaps { delta: i32, silent: bool },
     /// M47.2 — `<actor>.SetRelationshipRank(akOther, aiRank)` (+4 Lover …
     /// −4 Archnemesis), on the two actors' bases.
     SetRelationshipRank {
@@ -759,7 +764,7 @@ pub enum Effect {
     /// <other container = None>)` (M47.2). Removes up to `count` of the base
     /// item (Papyrus removes what is there when there is less); with an
     /// other container the removed items move there instead of vanishing.
-    /// `abSilent` is accepted as a literal and not applied, as for `AddItem`.
+    /// `abSilent` is accepted as a literal and not applied (nothing is announced on a remove).
     RemoveItem {
         container: ActorRef,
         item: ObjectRef,

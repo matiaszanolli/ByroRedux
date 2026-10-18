@@ -519,6 +519,9 @@ impl DeferredFragmentEffects {
                     }
                 }
                 PendingMessage::Notify(text) => crate::messages::notify(world, text),
+                PendingMessage::ItemAdded(item_form_id, count) => {
+                    crate::messages::notify(world, crate::messages::item_added_text(world, item_form_id, count));
+                }
             }
         }
     }

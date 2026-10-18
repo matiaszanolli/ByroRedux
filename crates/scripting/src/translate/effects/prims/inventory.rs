@@ -68,6 +68,7 @@ fn player_caps_transfer(
     item: &Expr,
     count: &ItemCount,
     sign: i32,
+    silent: bool,
 ) -> Option<Effect> {
     if !matches!(container, ActorRef::Player) || !is_get_caps(item) {
         return None;
@@ -77,6 +78,7 @@ fn player_caps_transfer(
     };
     Some(Effect::PlayerCaps {
         delta: sign * i32::try_from(*count).ok()?,
+        silent,
     })
 }
 
@@ -86,19 +88,18 @@ pub(super) fn prim_add_item(e: &Expr, scope: &Scope) -> Option<Effect> {
         return None;
     }
     let container = receiver_actor(object, scope)?;
+    // Optional 3rd arg (`abSilent`) — accepted only as a literal and carried
+    // (#5913; see the `Effect::AddItem` doc). A present-but-non-literal 3rd
+    // arg declines via `bool_arg`'s `None`; a 4th arg entirely is outside
+    // this primitive's understood shape.
+    let silent = bool_arg(args, 2)?.unwrap_or(false);
     if let Some(caps) = item_count_arg(args, 1, 1, scope).and_then(|count| {
-        player_caps_transfer(&container, &args[0].value.node, &count, 1)
+        player_caps_transfer(&container, &args[0].value.node, &count, 1, silent)
     }) {
-        bool_arg(args, 2)?;
         return Some(caps);
     }
     let item = receiver_object(&args.first()?.value.node, scope)?;
     let count = item_count_arg(args, 1, 1, scope)?;
-    // Optional 3rd arg (`abSilent`) — accepted only as a literal (parsed,
-    // not applied; see the `Effect::AddItem` doc). A present-but-
-    // non-literal 3rd arg declines via `bool_arg`'s `None`; a 4th arg
-    // entirely is outside this primitive's understood shape.
-    bool_arg(args, 2)?;
     if args.len() > 3 {
         return None;
     }
@@ -106,6 +107,7 @@ pub(super) fn prim_add_item(e: &Expr, scope: &Scope) -> Option<Effect> {
         container,
         item,
         count,
+        silent,
     })
 }
 
@@ -121,7 +123,7 @@ pub(super) fn prim_remove_item(e: &Expr, scope: &Scope) -> Option<Effect> {
     let no_destination = matches!(args.get(3).map(|arg| &arg.value.node), None | Some(Expr::NoneLit));
     if let Some(caps) = item_count_arg(args, 1, 1, scope)
         .filter(|_| no_destination)
-        .and_then(|count| player_caps_transfer(&container, &args[0].value.node, &count, -1))
+        .and_then(|count| player_caps_transfer(&container, &args[0].value.node, &count, -1, false))
     {
         bool_arg(args, 2)?;
         return Some(caps);
@@ -154,6 +156,7 @@ pub(super) fn prim_player_caps(e: &Expr, _scope: &Scope) -> Option<Effect> {
     let count = i32::try_from(int_arg(args, 0)?).ok()?;
     Some(Effect::PlayerCaps {
         delta: sign * count.max(0),
+        silent: false,
     })
 }
 

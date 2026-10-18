@@ -1965,6 +1965,7 @@ fn dispatch_add_item_via_registered_vmad() {
             Q,
             10,
             vec![Effect::AddItem {
+                silent: false,
                 container: crate::translate::effects::ActorRef::Object(crate::translate::compose::ObjectRef::Property("SomeContainer".into())),
                 item: crate::translate::compose::ObjectRef::Property("SomeItem".into()),
                 count: crate::translate::effects::ItemCount::Literal(3),
@@ -2038,6 +2039,7 @@ fn dispatch_add_item_pushes_onto_an_existing_inventory() {
             Q,
             10,
             vec![Effect::AddItem {
+                silent: false,
                 container: crate::translate::effects::ActorRef::Object(crate::translate::compose::ObjectRef::Property("SomeContainer".into())),
                 item: crate::translate::compose::ObjectRef::Property("SomeItem".into()),
                 count: crate::translate::effects::ItemCount::Literal(3),
@@ -2192,6 +2194,7 @@ fn item_count_from_a_global_reads_it_when_applied() {
             Q,
             10,
             vec![Effect::AddItem {
+                silent: false,
                 container: ActorRef::Object(crate::translate::compose::ObjectRef::Property(
                     "Chest".into(),
                 )),
@@ -4638,6 +4641,7 @@ fn dispatch_add_item_on_the_player() {
         &world,
         object_property_vmad(&[("Gold001", GOLD)]),
         vec![Effect::AddItem {
+            silent: false,
             container: ActorRef::Player,
             item: ObjectRef::Property("Gold001".into()),
             count: crate::translate::effects::ItemCount::Literal(25),
@@ -4809,6 +4813,7 @@ fn spoken_fragment_resolves_the_speaker() {
     let npc = world.spawn();
     let vmad = object_property_vmad(&[("Gold001", GOLD)]);
     let effects = vec![Effect::AddItem {
+        silent: false,
         container: ActorRef::Speaker,
         item: ObjectRef::Property("Gold001".into()),
         count: crate::translate::effects::ItemCount::Literal(10),
@@ -5086,6 +5091,53 @@ fn a_backing_variable_quest_property_resolves_through_its_authored_name() {
     );
 }
 
+/// #5913 — a scripted add to the player raises the pickup notice unless the
+/// script passed `abSilent = true`; the notice is worded like the engine's own
+/// pickup ("Added <name> (<count>)") and names the item from the load order.
+#[test]
+fn scripted_adds_to_the_player_raise_a_pickup_notice_unless_silent() {
+    use crate::translate::compose::ObjectRef;
+    use crate::translate::effects::{ActorRef, ItemCount};
+    const SWORD: u32 = 0x0001_2EB7;
+    const POTION: u32 = 0x0003_3A00;
+    let mut world = fixture();
+    crate::messages::register(&mut world);
+    let add = |item: &str, count, silent| Effect::AddItem {
+        container: ActorRef::Player,
+        item: ObjectRef::Property(item.into()),
+        count: ItemCount::Literal(count),
+        silent,
+    };
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Sword", SWORD), ("Potion", POTION)]),
+        vec![
+            add("Sword", 1, false),
+            add("Potion", 3, false),
+            add("Potion", 9, true),
+            Effect::PlayerCaps { delta: 100, silent: false },
+            Effect::PlayerCaps { delta: 7, silent: true },
+            // Removing never notifies.
+            Effect::PlayerCaps { delta: -5, silent: false },
+        ],
+    );
+    let texts: Vec<String> = world
+        .resource::<crate::PendingScriptMessages>()
+        .0
+        .iter()
+        .map(|message| message.text.clone())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "Added Item 00012EB7",
+            "Added Item 00033A00 (3)",
+            "Added Item 0000000F (100)",
+        ],
+        "silent adds and removals raise nothing"
+    );
+}
+
 /// M47.2 — `PlayerCaps` adds / removes caps (form `0xF`) on the player and
 /// `RewardPlayerXp` queues the grant.
 #[test]
@@ -5097,8 +5149,8 @@ fn player_caps_and_reward_xp_reach_the_player() {
         &world,
         object_property_vmad(&[]),
         vec![
-            Effect::PlayerCaps { delta: 100 },
-            Effect::PlayerCaps { delta: -30 },
+            Effect::PlayerCaps { delta: 100, silent: false },
+            Effect::PlayerCaps { delta: -30, silent: false },
             Effect::RewardPlayerXp {
                 amount: crate::translate::effects::ItemCount::Literal(50),
                 direct: false,
@@ -5888,6 +5940,7 @@ fn item_counts_evaluate_run_time_values() {
         &world,
         object_property_vmad(&[("Gold001", 0xF)]),
         vec![Effect::AddItem {
+            silent: false,
             container: ActorRef::Player,
             item: ObjectRef::Property("Gold001".into()),
             count: ItemCount::Value(ValueExpr::Arith(
@@ -5934,7 +5987,7 @@ fn keyword_changes_reach_has_keyword() {
                     keyword: ObjectRef::Property("::Injured_var".into()),
                     expected: true,
                 }],
-                then_effects: vec![Effect::PlayerCaps { delta: 1 }],
+                then_effects: vec![Effect::PlayerCaps { delta: 1, silent: false }],
                 else_effects: vec![],
             },
         ],
@@ -5969,7 +6022,7 @@ fn same_reference_guards_compare_form_ids() {
                     right,
                     expected,
                 }],
-                then_effects: vec![Effect::PlayerCaps { delta: 1 }],
+                then_effects: vec![Effect::PlayerCaps { delta: 1, silent: false }],
                 else_effects: vec![],
             }],
         );
@@ -6184,7 +6237,7 @@ fn a_quest_started_without_a_start_up_stage_runs_no_stage_fragment() {
     {
         let mut frags = world.resource_mut::<QuestStageFragments>();
         for quest in [STARTED, FLAGGED] {
-            frags.insert(quest, 0, vec![Effect::PlayerCaps { delta: 1 }]);
+            frags.insert(quest, 0, vec![Effect::PlayerCaps { delta: 1, silent: false }]);
         }
     }
     let caps = |world: &World| {
@@ -6221,7 +6274,7 @@ fn wait_while_polls_until_its_condition_fails() {
                 }],
                 poll_seconds: 1.0,
             },
-            Effect::PlayerCaps { delta: 1 },
+            Effect::PlayerCaps { delta: 1, silent: false },
         ],
     );
     let caps = |world: &World| {
@@ -6258,10 +6311,10 @@ fn a_wait_inside_a_branch_resumes_into_the_branch_then_the_program() {
                     stage: 1,
                     done: true,
                 }],
-                then_effects: vec![Effect::Wait { seconds: 1.0 }, Effect::PlayerCaps { delta: 1 }],
+                then_effects: vec![Effect::Wait { seconds: 1.0 }, Effect::PlayerCaps { delta: 1, silent: false }],
                 else_effects: vec![],
             },
-            Effect::PlayerCaps { delta: 10 },
+            Effect::PlayerCaps { delta: 10, silent: false },
         ],
     );
     let caps = |world: &World| {

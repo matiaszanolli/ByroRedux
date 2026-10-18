@@ -483,6 +483,7 @@ fn lowers_add_item_on_bare_properties() {
     assert_eq!(
         lower_fragment(&body),
         Some(vec![Effect::AddItem {
+            silent: false,
             container: ActorRef::Object(ObjectRef::Property("SomeContainer".into())),
             item: ObjectRef::Property("SomeItem".into()),
             count: ItemCount::Literal(5),
@@ -500,6 +501,8 @@ fn lowers_add_item_with_literal_silent_arg() {
     assert_eq!(
         lower_fragment(&body),
         Some(vec![Effect::AddItem {
+            // #5913 — the literal `abSilent` is carried, not dropped.
+            silent: true,
             container: ActorRef::Object(ObjectRef::Property("SomeContainer".into())),
             item: ObjectRef::Property("SomeItem".into()),
             count: ItemCount::Literal(5),
@@ -521,11 +524,13 @@ fn lowers_add_item_on_the_player_with_a_default_count() {
         lower_fragment(&body),
         Some(vec![
             Effect::AddItem {
+                silent: false,
                 container: ActorRef::Player,
                 item: ObjectRef::Property("Reward".into()),
                 count: ItemCount::Literal(1),
             },
             Effect::AddItem {
+                silent: false,
                 container: ActorRef::Player,
                 item: ObjectRef::Property("Gold001".into()),
                 count: ItemCount::Literal(1),
@@ -742,8 +747,8 @@ fn fallout4_game_rewards_and_skipped_objectives_lower() {
                 amount: ItemCount::Literal(25),
                 direct: true
             },
-            Effect::PlayerCaps { delta: 100 },
-            Effect::PlayerCaps { delta: -20 },
+            Effect::PlayerCaps { delta: 100, silent: false },
+            Effect::PlayerCaps { delta: -20, silent: false },
             Effect::Conditional {
                 guards: vec![FragmentGuard::ObjectiveCompleted {
                     quest: QuestRef::SelfRef,
@@ -1245,8 +1250,8 @@ fn get_caps_transfers_are_player_caps() {
     assert_eq!(
         lower_fragment(&body),
         Some(vec![
-            Effect::PlayerCaps { delta: -75 },
-            Effect::PlayerCaps { delta: 20 },
+            Effect::PlayerCaps { delta: -75, silent: false },
+            Effect::PlayerCaps { delta: 20, silent: false },
         ])
     );
 }
@@ -1340,6 +1345,7 @@ fn info_fragments_lower_the_speaker() {
         effects,
         Some(vec![
             Effect::AddItem {
+                silent: false,
                 container: ActorRef::Speaker,
                 item: ObjectRef::Property("Gold001".into()),
                 count: ItemCount::Literal(10),
