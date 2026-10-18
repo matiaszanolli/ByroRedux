@@ -2417,10 +2417,9 @@ whether and where a parameter is written.
 Phase 2 put quests, a handful of actions and the object-script blocks on the one host. Phase 3
 closes what the roadmap row listed as open, and in doing so found three grammar gaps that had
 made whole classes of vanilla expressions wrong. `obscript_tools names <ESM> all` now marks each
-command the host models and prints the share of call-site lines it covers: **89 % of New Vegas's
-25 532, 89 % of Fallout 3's 11 892 and 86 % of Oblivion's 21 431** (after the position / angle / scale,
-image-space-modifier and `PlayGroup` slices below). The rest is each blocked by a subsystem the engine
-does not have, listed at the end.
+command the host models and prints the share of call-site lines it covers: **96 % of New Vegas's
+25 532, 93 % of Fallout 3's 11 892 and 94 % of Oblivion's 21 431** (after the slices below). What is left
+is a long tail of single commands and the few subsystems listed at the end.
 
 **Expression grammar (`obscript_tools exprcheck`).** Measured over the three masters (24 275 / 13 021
 / 24 564 expressions), the VM understood `' X'` implicit calls, locals, globals and ASCII, and nothing
@@ -2551,17 +2550,66 @@ now installs it ahead of the spawn), `OnLoad` (`GoodspringsRadioScript`: remote 
 `SetEnemy` via the bridge + `SetStage`, nothing declined), item `OnAdd` + `RemoveMe` (`inv.add` now emits the item
 transfer), and `PlayGroup` (`OnLoadPlayForwardSCRIPT` on Lucky38BasementFloorB2's force-field glows).
 
+**The caster runtime (`magic_effects.rs`).** A spell, an ingestible or an ability puts *effects* on an actor and
+they keep running: a *script effect* runs `ScriptEffectStart` once, `ScriptEffectUpdate` every frame it is active and
+`ScriptEffectFinish` at its end (Fallout authors the script on the `MGEF`, archetype *Script*, whose "Assoc. Script"
+is the `SCPT`; Oblivion on the spell's effect item, `SCIT`); a value-modifier effect changes its actor value once
+(instant), once at the start and back at the end (*Recover*) or every second (neither). The effect carries its own
+script locals (an actor can have an object script and several effect scripts that reuse a name) and is saved
+(`ActiveMagicEffects`, `FORMAT_MAJOR` 111). `Cast <spell> [target]`, `CastImmediateOnSelf`, `Dispel`,
+`HasMagicEffect`, `ScriptEffectElapsedSeconds`, the `OnMagicEffectHit` block, and an ability's scripted effects
+(`AddSpell`) use it; so does using a chem — the menu's `Consume` now starts a scripted ingestible's effects (23
+FNV consumables carry one), and `inv.use` / `magic.cast` / `magic.effects` drive and show it from the console. Live:
+using a NukaCola on FNV runs `NukaColaAddCapEffectScript` (`additem caps001 1`) on the player. Not modelled: effect
+archetypes beyond script and value modifier (summons, light, paralysis ...), area and touch/target delivery,
+resistance.
+
+**Idle, look, shaders, weather.** `PlayIdle <idle>` writes the Papyrus `PlayIdle` request (the compiled argument is
+the idle's *editor ID string*, which the VM resolves through `text_argument`); the app installs the IDLE's `.kf` for
+the KF-era games (`populate_kf_idle_clips`, resolved when an actor asks) and the existing idle runtime plays it —
+a one-shot hands the actor back the animation it was in (`IdleResume`). Live: Sunny Smiles' trigger makes
+Cheyenne play `specialidle_aroo.kf`. `PickIdle` restarts the actor's generic idle (the engine's idle choice *is* that
+generic idle, the pool `pick_idle_handle` draws from); `Reset3DState` rewinds the object's animation. `Look` /
+`StopLook` hold a `HeadLook` on the actor and `head_look_system` turns its head bone toward the target within
+±70° / ±40° at a steady rate, as a world-space delta on the animated pose (no bone-axis knowledge needed).
+`PlayMagicShaderVisuals` / `PlayMagicEffectVisuals` / `StopMagicShaderVisuals` play an `EFSH`: its Fill layer's
+colour and alpha timeline (fade in, full, fade out to the persistent ratio, pulse) glow the reference's materials and
+are put back when it ends — the fill *texture*, the edge layer and the particles are not drawn. `TriggerHitShader`
+is a screen blur (2 px per unit of strength, capped at 5, fading over a second: the engine's policy, the GECK
+gives none). `ForceWeather` / `SetWeather` / `ReleaseWeatherOverride` set a saved `ForcedWeather`; the exterior's
+streaming step re-installs the sky (live on FNV: `NVWastelandClear` -> `NVWastelandHazy` and back), and the engine,
+which never changes weather by itself, keeps the override flag for when it does. `GetIsCurrentWeather` reads the sky.
+
+**World, crime and bookkeeping.** `IsInInterior` / `GetInWorldspace` read the cell the reference is in
+(`cell_kind.rs`: an exterior root carries the worldspace's form id, the player's is published each frame);
+`GetOpenState` reads the two-state activator, and `SetOpenState` now gives a door one so the call is not lost;
+`OnReset` runs for a cell the player re-entered after `iHoursToRespawnCell` (72 h by default) — the entry times are a
+saved `CellVisits`; `OnDestructionStageChange` follows `DamageObject`; `GetDestructionStage`. `AddNote` /
+`RemoveNote` / `GetHasNote` keep the player's notes (saved); `GetDeadCount` / `IsKiller` read a saved kill ledger
+the one death funnel fills (a resurrection does not lower it); `IgnoreCrime` is honoured by the hostility pass (the
+actor does not start combat with the player), `SetAlert` / `IsWeaponOut` keep a drawn-weapon flag, `GetDetected` /
+`GetDetectionLevel` ask the same sight test the hostility pass uses (range from `fSneakMaxDistance`, line of sight
+through physics; the level is 3 or 0), `SendAssaultAlarm` turns the named actor — or the faction's loaded member
+nearest the player — on the player. `Resurrect` revives in place (`revive.rs`: `Dead` and bleedout cleared, health
+back, the ragdoll freed and the bones' collision bodies restored, the idle and the AI package stack re-armed; live:
+Sunny Smiles killed, brought back, standing, the count kept); the get-up animation is not modelled. `DropMe`,
+`RemoveAllTypedItems` (the FOSE type codes), `GetGS` (and `ShowWarning`), `IsSwimming`, `AutoSave`, `GetSitting`
+round out the tail. `obscript.cmd` runs any of these through the real host from the console, which is how the
+smoke gate drives them.
+
 **What stays declined, and what it waits for.** Every one is a counted decline (`obscript_tools live`,
 `ObScriptQuestTimers`, `obscript.objects`), never a made-up value:
 
 | Commands | Blocked on |
 |----------|-----------|
-| `PlayIdle`, `PickIdle`, `Reset3DState` (90 `PlayIdle` lines in FNV) | an actor idle player for the KF-era games: the `PlayIdle` effect (`ActorCinematicState::request_idle`) and `idle_clip_playback_system` exist, but `populate_idle_clip_runtime` installs only Skyrim's HKX IDLE clips into the `IdleClipCatalog` (it returns early for every other game), so a KF-era IDLE form has no clip to play |
-| `ScriptEffectStart` / `Update` / `Finish`, `OnMagicEffectHit`, `Cast`, `CastImmediateOnSelf`, `Dispel`, `HasMagicEffect` | a caster runtime: cast spells "only sit on the list" ([`magic.rs`](../../crates/scripting/src/magic.rs)) |
-| `Look` / `StopLook`, `PMS` / `SMS` / `PME`, `TriggerHitShader`, `ForceWeather` / `SetWeather` | presentation state with no sink (head tracking, magic shaders, a weather override) |
-| `IgnoreCrime`, `SendAssaultAlarm`, `GetDetected`, `GetDetectionLevel`, `GetPCFame`, `SetAlert`, `IsKiller`, `GetDeadCount` | a crime/detection runtime and a kill ledger |
-| `AddNote` / `RemoveNote` / `GetHasNote`, `UnlockChallenge`, `SetReputation` | a Pip-Boy note list and challenge state (a saved shape), and the GECK has no page for `SetReputation` |
-| `Resurrect`, `RemoveAllTypedItems`, `DropMe`, `GetOpenState`, `GetInWorldspace` / `IsInInterior` (CTDA functions the M47.1 evaluator does not catalogue), `GetGS`, `OnReset` (no cell-reset event), `OnGrab` / `OnRelease` / `OnFire`, `OnDestructionStageChange`, linked path points, `ModDisposition`, the player's angles | each its own missing state; none is an ObScript-layer gap |
+| `PickIdle`'s idle *tree*, `GetKillingBlowLimb` ... | the IDLE tree's conditions and parents are not parsed (PickIdle restarts the generic idle instead) |
+| `EnableLinkedPathPoints` / `DisableLinkedPathPoints` (Oblivion, 71 / 69 scripts) | Oblivion path grids: the engine paths on navmeshes |
+| `GetPCFame` / `GetPCInfamy` / `ModPCFame` / `GetCrimeGold` / `ModCrimeGold` / `SetPCExpelled` / `SetPCEnemyOfFaction` / `SetFactionReaction` | a bounty / fame ledger and faction expulsion (only per-faction crime gold exists) |
+| `GetDisposition` / `ModDisposition`, `AddTopic` | a per-NPC disposition value and a topic-known ledger |
+| `GetDayOfWeek` | the game calendar's epoch: the weekday of day 0 is in no record |
+| `EnableFastTravel`, `UnlockChallenge`, `SetReputation` (no GECK page) | no fast-travel or challenge UI exists to honour them |
+| `PushActorAway`, `UseWeapon` / `FireWeapon`, `OnGrab` / `OnRelease` / `OnFire` | a knockdown cycle (the ragdoll teardown above is the first half), a scripted attack, and a player grab |
+| `SetCombatStyle`, `SetTalkingActivatorActor`, `PlayMusic`, `SetVATSTarget`, `ShowMap` ... | each its own missing state; none is an ObScript-layer gap |
 
 ### The R5 demo translations (`papyrus_demo/`)
 

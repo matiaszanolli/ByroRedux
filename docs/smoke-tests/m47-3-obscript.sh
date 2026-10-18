@@ -81,7 +81,7 @@ wait_log() {
 
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
-    RUST_LOG="warn,byroredux_scripting=info" \
+    RUST_LOG="warn,byroredux_scripting=info,byroredux::npc_spawn=info" \
     target/release/byroredux \
     --game fnv --cell GSProspectorSaloonInterior \
     --player --bench-frames 30 --bench-hold \
@@ -179,7 +179,7 @@ echo "smoke[m47-3-obscript]: script effect PASS — NukaCola's ScriptEffectStart
 stop_engine
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
-    RUST_LOG="warn,byroredux_scripting=info" \
+    RUST_LOG="warn,byroredux_scripting=info,byroredux::npc_spawn=info" \
     target/release/byroredux \
     --game fnv --cell Lucky38BasementFloorB2 \
     --player --bench-frames 30 --bench-hold \
