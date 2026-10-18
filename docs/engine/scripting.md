@@ -2386,6 +2386,31 @@ replace default processing outright, which is the case the withholding is for.
 The GECK's bug note (flag `0` on an unscripted object stops it being activated
 normally ever again) is not modelled.
 
+**Trigger blocks.** `OnTriggerEnter` (`0x1a`; `OnTriggerActor` in Oblivion, "run
+once when an actor triggers"), `OnTriggerLeave` (`0x1b`, Fallout 3 / New Vegas
+only: it is `OnTriggerMob` in Oblivion, so it is only read as a leave there) and
+`OnTrigger` (`0x18`) run on the volume reference. Enter and leave run once per
+reference crossing, with `GetActionRef` that reference (the GECK sets the action
+ref on the trigger for both); `OnTrigger` "will be run every frame when something
+triggers the scripted object" and its action ref is NOT set, so it runs each
+frame while `trigger::trigger_occupants` is non-empty. The leave half is new:
+`trigger_detection_system` raises `OnTriggerLeaveEvent` (Pattern A, beside the
+enter marker) when the player or a tracked actor goes from inside to outside, and
+a despawned actor is not a leave. Only the player and the tracked quest/scene
+actors are detected today, so a trigger some other NPC would set off stays quiet,
+and a visible scripted activator with a primitive still takes the ordinary spawn
+path and has no volume.
+
+A block can be **written for one reference** (`Begin OnTrigger player`), and a
+script can have several blocks of one type, each for a different one (FO3's
+`Begin OnTriggerEnter player` / `... StickyRef` / `... RedRef`). The `Begin`
+payload after the block type and length is the same `[u16 count][args]` blob a
+command's arguments use (`01 00 72 01 00`: one argument, reference variable 1), so
+blocks are addressed individually (`ObScriptProgram::blocks`, `BlockInfo`) and a
+parameterised one runs only for its reference. Checked against the masters: all
+187 Oblivion, 349 FO3 and 922 FNV `Begin OnTrigger*` lines agree with the bytes on
+whether and where a parameter is written.
+
 ### The R5 demo translations (`papyrus_demo/`)
 
 The proof-of-concept hand-translations that closed R5. Each is a faithful

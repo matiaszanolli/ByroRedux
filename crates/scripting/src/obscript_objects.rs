@@ -8,7 +8,7 @@
 //! with no calling reference (`Disable`, `GetDead`, `MoveTo player`) acts on the
 //! script's own reference.
 //!
-//! Four blocks run, on the events the engine already raises:
+//! Blocks run on the events the engine already raises:
 //!
 //! | block | runs |
 //! |-------|------|
@@ -16,6 +16,20 @@
 //! | `OnLoad` | the frame the reference's cell loads ([`OnCellLoadEvent`]) |
 //! | `OnDeath` | the frame an actor dies ([`OnDeathEvent`]) |
 //! | `OnActivate` | the frame the reference is activated ([`ActivateEvent`]), with `GetActionRef` the activator |
+//! | `OnTriggerEnter` | once per reference entering the volume ([`OnTriggerEnterEvent`]), `GetActionRef` the one entering |
+//! | `OnTriggerLeave` | once per reference leaving it ([`OnTriggerLeaveEvent`]), `GetActionRef` the one leaving — Fallout 3 / New Vegas only (`0x1b` is `OnTriggerMob` in Oblivion) |
+//! | `OnTrigger` | every frame while anything is inside; the action ref is NOT set (GECK) |
+//!
+//! `0x1a` is `OnTriggerEnter` on the Fallout pair and `OnTriggerActor` in Oblivion
+//! ("run once when an actor triggers"), which the enter event is too. Only the
+//! player and the tracked quest/scene actors are detected entering a volume
+//! today, so a trigger another NPC would set off stays quiet.
+//!
+//! **A block can be written for one reference** (`Begin OnTrigger player`), and a
+//! script can have several blocks of one type, each for a different reference
+//! (FO3's `Begin OnTriggerEnter player` / `... StickyRef` / `... RedRef`). Blocks
+//! are therefore addressed individually ([`BlockInfo`]), and one written for a
+//! reference runs only for it.
 //!
 //! **`OnActivate` replaces default processing.** The GECK *Activate* page: a
 //! reference's `OnActivate` block runs "instead of the default activation", and
@@ -47,22 +61,32 @@ use std::sync::Arc;
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Component, Resource, SparseSetStorage, World};
+use byroredux_plugin::esm::records::condition::ConditionStringId;
 use byroredux_plugin::esm::records::{ScriptRecord, ScriptType};
 
 use crate::condition::entity_global_form_id;
-use crate::events::{ActivateEvent, NativeActivation, OnCellLoadEvent, OnDeathEvent};
+use crate::events::{
+    ActivateEvent, NativeActivation, OnCellLoadEvent, OnDeathEvent, OnTriggerEnterEvent,
+    OnTriggerLeaveEvent,
+};
 use crate::obscript_quests::ObScriptCommandHost;
 use crate::obscript_vm::{
-    BlockOutcome, ObScriptProgram, VmState, BLOCK_GAME_MODE, BLOCK_ON_ACTIVATE, BLOCK_ON_DEATH,
-    BLOCK_ON_LOAD,
+    BlockInfo, BlockOutcome, ObScriptProgram, VmState, BLOCK_GAME_MODE, BLOCK_ON_ACTIVATE,
+    BLOCK_ON_DEATH, BLOCK_ON_LOAD, BLOCK_ON_TRIGGER, BLOCK_ON_TRIGGER_ENTER, BLOCK_ON_TRIGGER_LEAVE,
 };
 use crate::vm_state::ScriptVariables;
-use byroredux_plugin::esm::records::condition::ConditionStringId;
 
 /// One object script, with the blocks it can be asked to run.
 pub struct ObjectScript {
     pub record: Arc<ScriptRecord>,
-    pub blocks: Vec<u16>,
+    pub blocks: Vec<BlockInfo>,
+}
+
+impl ObjectScript {
+    /// The blocks of `block_type`, in order.
+    fn of_type(&self, block_type: u16) -> impl Iterator<Item = &BlockInfo> {
+        self.blocks.iter().filter(move |info| info.block_type == block_type)
+    }
 }
 
 /// The load order's object scripts by SCPT FormID. `NOT_SAVED_BY_DESIGN`: rebuilt
@@ -72,7 +96,7 @@ pub struct ObScriptObjectTable {
     pub scripts: HashMap<u32, ObjectScript>,
     /// `(script, block)` pairs that came back malformed: reported once, then
     /// skipped — a `GameMode` block would otherwise log every frame.
-    malformed: HashSet<(u32, u16)>,
+    malformed: HashSet<(u32, BlockInfo)>,
 }
 
 impl Resource for ObScriptObjectTable {}
@@ -101,7 +125,7 @@ pub fn install_object_scripts(world: &mut World, scripts: &HashMap<u32, ScriptRe
             continue;
         }
         // A script that cannot be walked would only ever come back malformed.
-        let Some(blocks) = ObScriptProgram::new(script).block_types() else {
+        let Some(blocks) = ObScriptProgram::new(script).blocks() else {
             log::debug!("ObScript object script {:08X}: malformed bytecode, not installed", script.form_id);
             continue;
         };
@@ -133,35 +157,48 @@ pub fn attach_object_script(world: &mut World, entity: EntityId, script: u32) ->
     true
 }
 
+/// One block to run, and the reference that caused it: the activator for
+/// `OnActivate`, the one entering or leaving for the trigger blocks, `None` for
+/// the blocks no reference causes.
+struct Run {
+    block: BlockInfo,
+    who: Option<EntityId>,
+}
+
 /// A reference to run blocks of this frame.
 struct Due {
     entity: EntityId,
     form: u32,
     script: Arc<ScriptRecord>,
-    blocks: Vec<u16>,
-    /// Who activated the reference this frame, when it was activated.
-    activator: Option<EntityId>,
+    runs: Vec<Run>,
 }
 
 /// Run this frame's object-script blocks. Exclusive: scripts write the quest,
 /// enable and package state the other Update systems read, and the lock order
 /// is the quest tick's (nothing is held across a run).
 pub fn obscript_object_system(world: &World, dt: f32) {
-    for Due { entity, form, script, blocks, activator } in collect_due(world) {
-        for block in blocks {
-            if block == BLOCK_ON_ACTIVATE {
-                if let Some(activator) = activator {
-                    deliver_activation(world, entity, activator, dt);
+    for Due { entity, form, script, runs } in collect_due(world) {
+        for Run { block, who } in runs {
+            match (block.block_type, who) {
+                (BLOCK_ON_ACTIVATE, Some(activator)) => {
+                    deliver_activation(world, entity, activator, dt, Some(block));
                 }
-            } else {
-                run_block(world, entity, form, &script, block, dt, None);
+                // The enter and leave blocks set the action ref to the reference
+                // crossing the volume; `OnTrigger` does not ("The action ref is
+                // NOT set").
+                (BLOCK_ON_TRIGGER_ENTER | BLOCK_ON_TRIGGER_LEAVE, Some(who)) => {
+                    run_block(world, entity, form, &script, block, dt, form_of(world, who));
+                }
+                _ => {
+                    run_block(world, entity, form, &script, block, dt, None);
+                }
             }
         }
     }
 }
 
-/// The references with something to run, and which blocks (`OnLoad`, `OnDeath`,
-/// then `GameMode`), snapshotted before any runs.
+/// The references with something to run, and which blocks, snapshotted before any
+/// runs.
 fn collect_due(world: &World) -> Vec<Due> {
     let instances: Vec<(EntityId, u32)> = match world.query::<ObScriptInstance>() {
         Some(query) => query.iter().map(|(entity, instance)| (entity, instance.script)).collect(),
@@ -170,22 +207,14 @@ fn collect_due(world: &World) -> Vec<Due> {
     if instances.is_empty() {
         return Vec::new();
     }
-    let loaded: HashSet<EntityId> = world
-        .query::<OnCellLoadEvent>()
-        .map(|events| events.iter().map(|(entity, _)| entity).collect())
-        .unwrap_or_default();
+    let entities_with = |events: Option<Vec<EntityId>>| -> HashSet<EntityId> { events.unwrap_or_default().into_iter().collect() };
+    let loaded = entities_with(world.query::<OnCellLoadEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
     // Read, not drained: `reference_script_event_system` owns the marker.
-    let died: HashSet<EntityId> = world
-        .query::<OnDeathEvent>()
-        .map(|events| events.iter().map(|(entity, _)| entity).collect())
-        .unwrap_or_default();
+    let died = entities_with(world.query::<OnDeathEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
     // Activations, minus the native-only ones: "no OnActivate event will be sent
     // to any scripts" for the default processing a script asked for.
     let activated: HashMap<EntityId, EntityId> = {
-        let native: HashSet<EntityId> = world
-            .query::<NativeActivation>()
-            .map(|marks| marks.iter().map(|(entity, _)| entity).collect())
-            .unwrap_or_default();
+        let native = entities_with(world.query::<NativeActivation>().map(|m| m.iter().map(|(entity, _)| entity).collect()));
         world
             .query::<ActivateEvent>()
             .map(|events| {
@@ -197,30 +226,65 @@ fn collect_due(world: &World) -> Vec<Due> {
             })
             .unwrap_or_default()
     };
+    let entering: HashMap<EntityId, Vec<EntityId>> = world
+        .query::<OnTriggerEnterEvent>()
+        .map(|events| events.iter().map(|(entity, event)| (entity, event.triggerers.clone())).collect())
+        .unwrap_or_default();
+    // `0x1b` is `OnTriggerLeave` on Fallout 3 / New Vegas and `OnTriggerMob` on
+    // Oblivion: only the former is the leave event.
+    let leaving: HashMap<EntityId, Vec<EntityId>> = if crate::ScriptGame::is_fallout3_nv(world) {
+        world
+            .query::<OnTriggerLeaveEvent>()
+            .map(|events| events.iter().map(|(entity, event)| (entity, event.triggerers.clone())).collect())
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
     let Some(table) = world.try_resource::<ObScriptObjectTable>() else {
         return Vec::new();
     };
     let mut due = Vec::new();
     for (entity, script_id) in instances {
         let Some(object) = table.scripts.get(&script_id) else { continue };
-        let wanted = [
-            (BLOCK_ON_LOAD, loaded.contains(&entity)),
-            (BLOCK_ON_ACTIVATE, activated.contains_key(&entity)),
-            (BLOCK_ON_DEATH, died.contains(&entity)),
-            (BLOCK_GAME_MODE, true),
-        ];
-        let blocks: Vec<u16> = wanted
-            .into_iter()
-            .filter(|&(block, now)| {
-                now && object.blocks.contains(&block) && !table.malformed.contains(&(script_id, block))
-            })
-            .map(|(block, _)| block)
-            .collect();
-        if blocks.is_empty() {
+        let mut runs = Vec::new();
+        // Occupants are read once, and only for a volume that has an `OnTrigger`.
+        let mut occupants: Option<Vec<EntityId>> = None;
+        for &block in &object.blocks {
+            if table.malformed.contains(&(script_id, block)) {
+                continue;
+            }
+            // A block written for one reference (`Begin OnTrigger player`) runs
+            // for that reference only.
+            let wanted = |who: EntityId| block.filter.is_none_or(|filter| form_of(world, who) == Some(filter));
+            let events_of = |events: &HashMap<EntityId, Vec<EntityId>>| -> Vec<EntityId> {
+                events.get(&entity).into_iter().flatten().copied().filter(|&who| wanted(who)).collect()
+            };
+            match block.block_type {
+                BLOCK_ON_LOAD if loaded.contains(&entity) => runs.push(Run { block, who: None }),
+                BLOCK_ON_ACTIVATE => {
+                    if let Some(&activator) = activated.get(&entity).filter(|&&a| wanted(a)) {
+                        runs.push(Run { block, who: Some(activator) });
+                    }
+                }
+                BLOCK_ON_TRIGGER_ENTER => runs.extend(events_of(&entering).into_iter().map(|who| Run { block, who: Some(who) })),
+                BLOCK_ON_TRIGGER_LEAVE => runs.extend(events_of(&leaving).into_iter().map(|who| Run { block, who: Some(who) })),
+                // Every frame while something (the written reference, if one is) is in it.
+                BLOCK_ON_TRIGGER => {
+                    let inside = occupants.get_or_insert_with(|| crate::trigger::trigger_occupants(world, entity));
+                    if inside.iter().any(|&who| wanted(who)) {
+                        runs.push(Run { block, who: None });
+                    }
+                }
+                BLOCK_ON_DEATH if died.contains(&entity) => runs.push(Run { block, who: None }),
+                BLOCK_GAME_MODE => runs.push(Run { block, who: None }),
+                _ => {}
+            }
+        }
+        if runs.is_empty() {
             continue;
         }
         let Some(form) = entity_global_form_id(world, entity) else { continue };
-        due.push(Due { entity, form, script: Arc::clone(&object.record), blocks, activator: activated.get(&entity).copied() });
+        due.push(Due { entity, form, script: Arc::clone(&object.record), runs });
     }
     due
 }
@@ -234,18 +298,18 @@ struct Ran {
 
 /// Run one block against `entity`, seeding the script's locals from its
 /// [`ScriptVariables`] and writing back the ones it changed. A malformed block is
-/// reported once and not run again. `action_ref` is the activator while an
-/// activation block runs.
-fn run_block(world: &World, entity: EntityId, form: u32, script: &ScriptRecord, block: u16, dt: f32, action_ref: Option<u32>) -> Ran {
+/// reported once and not run again. `action_ref` is the activator (or the one
+/// crossing a trigger volume) while such a block runs.
+fn run_block(world: &World, entity: EntityId, form: u32, script: &ScriptRecord, block: BlockInfo, dt: f32, action_ref: Option<u32>) -> Ran {
     let mut state = VmState { locals: seed_locals(world, entity, script) };
     let before = state.locals.clone();
     let mut host = ObScriptCommandHost::new(world, form, Some(entity), dt, script);
     host.action_ref = action_ref;
-    let outcome = ObScriptProgram::new(script).run_block(block, &mut state, &mut host);
+    let outcome = ObScriptProgram::new(script).run_at(&block, &mut state, &mut host);
     let declined = host.declined.get();
     store_locals(world, entity, script, &before, &state.locals);
     if let BlockOutcome::Malformed(at) = outcome {
-        log::warn!("ObScript object script {:08X}: malformed bytecode at {at:#06x} (block {block:#04x})", script.form_id);
+        log::warn!("ObScript object script {:08X}: malformed bytecode at {at:#06x} (block {:#04x})", script.form_id, block.block_type);
         if let Some(mut table) = world.try_resource_mut::<ObScriptObjectTable>() {
             table.malformed.insert((script.form_id, block));
         }
@@ -253,7 +317,7 @@ fn run_block(world: &World, entity: EntityId, form: u32, script: &ScriptRecord, 
     Ran { outcome, declined }
 }
 
-/// Whether `entity` runs a script that has an `OnActivate` block (and one that
+/// Whether `entity` runs a script that has a usable `OnActivate` block (one that
 /// has not come back malformed): the reference whose default activation that
 /// block replaces.
 pub fn has_activate_block(world: &World, entity: EntityId) -> bool {
@@ -261,17 +325,18 @@ pub fn has_activate_block(world: &World, entity: EntityId) -> bool {
         return false;
     };
     world.try_resource::<ObScriptObjectTable>().is_some_and(|table| {
-        table.scripts.get(&script).is_some_and(|object| object.blocks.contains(&BLOCK_ON_ACTIVATE))
-            && !table.malformed.contains(&(script, BLOCK_ON_ACTIVATE))
+        table.scripts.get(&script).is_some_and(|object| {
+            object.of_type(BLOCK_ON_ACTIVATE).any(|&block| !table.malformed.contains(&(script, block)))
+        })
     })
 }
 
-/// The reference's activator as a FormID: the player is `0x14`.
-fn activator_form(world: &World, activator: EntityId) -> Option<u32> {
-    if crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(activator) {
+/// A reference's FormID: the player is `0x14`.
+fn form_of(world: &World, entity: EntityId) -> Option<u32> {
+    if crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(entity) {
         return Some(crate::PLAYER_REFERENCE);
     }
-    entity_global_form_id(world, activator)
+    entity_global_form_id(world, entity)
 }
 
 /// How deep activations may nest (`A.Activate B 1` from inside `B`'s block
@@ -283,35 +348,46 @@ thread_local! {
     static ACTIVATION_DEPTH: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
-/// Run `entity`'s `OnActivate` block for `activator`; when the block cannot be
-/// trusted to have decided (it declined a command, or is malformed), perform the
-/// default activation, which is what the reference did before scripts ran.
-/// Returns whether a block ran. `dt` is the frame's, `0` for a nested run.
-fn deliver_activation(world: &World, entity: EntityId, activator: EntityId, dt: f32) -> bool {
+/// Run `entity`'s `OnActivate` block for `activator` — the one named, or each one
+/// written for this activator (or for nobody in particular) — and, when a run
+/// cannot be trusted to have decided (it declined a command, or is malformed),
+/// perform the default activation, which is what the reference did before scripts
+/// ran. Returns whether a block ran. `dt` is the frame's, `0` for a nested run.
+fn deliver_activation(world: &World, entity: EntityId, activator: EntityId, dt: f32, only: Option<BlockInfo>) -> bool {
     let Some(script_id) = world.get::<ObScriptInstance>(entity).map(|instance| instance.script) else {
         return false;
     };
-    let Some(object) = world
-        .try_resource::<ObScriptObjectTable>()
-        .and_then(|table| table.scripts.get(&script_id).map(|o| (Arc::clone(&o.record), o.blocks.contains(&BLOCK_ON_ACTIVATE))))
-    else {
+    let Some((script, blocks)) = world.try_resource::<ObScriptObjectTable>().and_then(|table| {
+        let object = table.scripts.get(&script_id)?;
+        let blocks: Vec<BlockInfo> = object
+            .of_type(BLOCK_ON_ACTIVATE)
+            .copied()
+            .filter(|block| !table.malformed.contains(&(script_id, *block)))
+            .collect();
+        Some((Arc::clone(&object.record), blocks))
+    }) else {
         return false;
     };
-    let (script, has_block) = object;
-    let (Some(form), Some(activator_form)) = (entity_global_form_id(world, entity), activator_form(world, activator)) else {
+    let (Some(form), Some(activator_form)) = (entity_global_form_id(world, entity), form_of(world, activator)) else {
         return false;
     };
-    if !has_block || ACTIVATION_DEPTH.get() >= MAX_ACTIVATION_DEPTH {
+    let blocks: Vec<BlockInfo> = match only {
+        Some(only) => vec![only],
+        None => blocks.into_iter().filter(|block| block.filter.is_none_or(|filter| filter == activator_form)).collect(),
+    };
+    if blocks.is_empty() || ACTIVATION_DEPTH.get() >= MAX_ACTIVATION_DEPTH {
         return false;
     }
     ACTIVATION_DEPTH.set(ACTIVATION_DEPTH.get() + 1);
-    let ran = run_block(world, entity, form, &script, BLOCK_ON_ACTIVATE, dt, Some(activator_form));
+    let (mut declined, mut malformed) = (0u32, false);
+    for block in blocks {
+        let ran = run_block(world, entity, form, &script, block, dt, Some(activator_form));
+        declined += ran.declined;
+        malformed |= matches!(ran.outcome, BlockOutcome::Malformed(_));
+    }
     ACTIVATION_DEPTH.set(ACTIVATION_DEPTH.get() - 1);
-    if ran.declined > 0 || matches!(ran.outcome, BlockOutcome::Malformed(_)) {
-        log::debug!(
-            "ObScript {form:08X} OnActivate: {} declined command(s): default activation goes ahead",
-            ran.declined
-        );
+    if declined > 0 || malformed {
+        log::debug!("ObScript {form:08X} OnActivate: {declined} declined command(s): default activation goes ahead");
         crate::PendingFragmentActivations::queue_native(world, entity, activator);
     }
     true
@@ -319,7 +395,7 @@ fn deliver_activation(world: &World, entity: EntityId, activator: EntityId, dt: 
 
 /// `target.Activate <actor> 1`: run the target's `OnActivate` block now.
 pub(crate) fn run_activate_block(world: &World, target: EntityId, activator: EntityId) -> bool {
-    deliver_activation(world, target, activator, 0.0)
+    deliver_activation(world, target, activator, 0.0, None)
 }
 
 fn seed_locals(world: &World, entity: EntityId, script: &ScriptRecord) -> HashMap<u16, f32> {
@@ -392,8 +468,18 @@ mod tests {
 
     /// `Begin <block>` .. body .. `End`.
     fn block_with(block: u16, body: Vec<u8>) -> Vec<u8> {
+        block_with_param(block, body, None)
+    }
+
+    /// `Begin <block> <ref>` .. body .. `End`: the parameter is the same
+    /// `[u16 count]['r' idx]` blob a command's arguments use (`01 00 72 01 00`).
+    fn block_with_param(block: u16, body: Vec<u8>, reference: Option<u16>) -> Vec<u8> {
         let mut begin = block.to_le_bytes().to_vec();
         begin.extend_from_slice(&0u32.to_le_bytes());
+        if let Some(index) = reference {
+            begin.extend_from_slice(&[1, 0, b'r']);
+            begin.extend_from_slice(&index.to_le_bytes());
+        }
         let mut bytes = statement(0x10, &begin);
         bytes.extend(body);
         bytes.extend(statement(0x11, &[]));
@@ -592,6 +678,123 @@ mod tests {
         assert_eq!(counter(&world, entity), 0.0);
     }
 
+    /// A script with one block, optionally written for the reference at SCRO 1.
+    fn trigger_script(block: u16, written_for: Option<u32>) -> ScriptRecord {
+        let mut record = script_with(&[]);
+        record.compiled.extend(block_with_param(block, counting_body(), written_for.map(|_| 1)));
+        record.compiled_size = record.compiled.len() as u32;
+        record.refs = written_for.into_iter().map(ScriptRef::Object).collect();
+        record
+    }
+
+    fn entering(world: &mut World, trigger: EntityId, who: &[EntityId]) {
+        world.insert(trigger, OnTriggerEnterEvent { triggerers: who.to_vec() });
+    }
+
+    /// `OnTriggerEnter` runs once per reference that entered, and the begin's
+    /// parameter is read back from the bytes.
+    #[test]
+    fn on_trigger_enter_runs_once_per_entering_reference() {
+        let (mut world, trigger, a) = world_with_activator(trigger_script(BLOCK_ON_TRIGGER_ENTER, None));
+        let b = world.spawn();
+        entering(&mut world, trigger, &[a, b]);
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, trigger), 2.0);
+    }
+
+    /// `Begin OnTriggerEnter <ref>` runs for that reference only.
+    #[test]
+    fn a_trigger_block_written_for_a_reference_ignores_the_others() {
+        let script = trigger_script(BLOCK_ON_TRIGGER_ENTER, Some(ACTIVATOR));
+        assert_eq!(ObScriptProgram::new(&script).blocks().unwrap()[0].filter, Some(ACTIVATOR));
+        assert_eq!(ObScriptProgram::new(&script_with(&[(BLOCK_ON_TRIGGER_ENTER, counting_body())])).blocks().unwrap()[0].filter, None);
+        let (mut world, trigger, a) = world_with_activator(script);
+        let stranger = world.spawn();
+        let mut pool = world.resource_mut::<FormIdPool>();
+        let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("FalloutNV.esm"), local: LocalFormId(0x0002_0003) });
+        drop(pool);
+        world.insert(stranger, FormIdComponent(id));
+        entering(&mut world, trigger, &[stranger, a]);
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, trigger), 1.0, "only the written-for reference ran it");
+    }
+
+    /// FO3 scripts carry several blocks of one type, each written for a
+    /// different reference (`Begin OnTriggerEnter player` / `... StickyRef`): each
+    /// is its own block, and a reference runs only the ones written for it (or for
+    /// nobody).
+    #[test]
+    fn several_blocks_of_one_type_each_run_for_their_own_reference() {
+        const STRANGER: u32 = 0x0002_0003;
+        let mut record = script_with(&[]);
+        record.compiled.extend(block_with_param(BLOCK_ON_TRIGGER_ENTER, counting_body(), Some(1)));
+        record.compiled.extend(block_with_param(BLOCK_ON_TRIGGER_ENTER, counting_body(), Some(2)));
+        record.compiled.extend(block_with(BLOCK_ON_TRIGGER_ENTER, counting_body()));
+        record.refs = vec![ScriptRef::Object(ACTIVATOR), ScriptRef::Object(STRANGER)];
+        let blocks = ObScriptProgram::new(&record).blocks().unwrap();
+        assert_eq!(blocks.iter().map(|b| b.filter).collect::<Vec<_>>(), vec![Some(ACTIVATOR), Some(STRANGER), None]);
+        let (mut world, trigger, activator) = world_with_activator(record);
+        entering(&mut world, trigger, &[activator]);
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, trigger), 2.0, "the one for the activator and the unwritten one; not the stranger's");
+    }
+
+    /// `0x1b` is `OnTriggerLeave` on Fallout 3 / New Vegas and `OnTriggerMob` on
+    /// Oblivion (or with no game known): only the former is run on a leave.
+    #[test]
+    fn the_leave_block_runs_on_the_fallout_pair_only() {
+        for (game, runs) in [
+            (None, 0.0),
+            (Some(byroredux_plugin::esm::reader::GameKind::Oblivion), 0.0),
+            (Some(byroredux_plugin::esm::reader::GameKind::Fallout3NV), 1.0),
+        ] {
+            let (mut world, trigger, a) = world_with_activator(trigger_script(BLOCK_ON_TRIGGER_LEAVE, None));
+            if let Some(game) = game {
+                world.insert_resource(crate::ScriptGame(game));
+            }
+            world.insert(trigger, OnTriggerLeaveEvent { triggerers: vec![a] });
+            obscript_object_system(&world, 0.016);
+            assert_eq!(counter(&world, trigger), runs, "{game:?}");
+        }
+    }
+
+    /// `OnTrigger` runs every frame while something is inside, and stops when it
+    /// leaves; written for a reference, it waits for that one.
+    #[test]
+    fn on_trigger_runs_every_frame_while_an_occupant_is_inside() {
+        use crate::trigger::{TriggerShape, TriggerVolume};
+        let volume = |inside| TriggerVolume {
+            center: byroredux_core::math::Vec3::ZERO,
+            half_extents: byroredux_core::math::Vec3::ONE,
+            rotation: byroredux_core::math::Quat::IDENTITY,
+            shape: TriggerShape::Box,
+            occupant_inside: Some(inside),
+        };
+        let (mut world, trigger, player) = world_with_activator(trigger_script(BLOCK_ON_TRIGGER, None));
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        world.insert(trigger, volume(false));
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, trigger), 0.0, "nobody inside");
+        world.insert(trigger, volume(true));
+        for _ in 0..3 {
+            obscript_object_system(&world, 0.016);
+        }
+        assert_eq!(counter(&world, trigger), 3.0);
+        world.insert(trigger, volume(false));
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, trigger), 3.0);
+
+        // Written for the player (`Begin OnTrigger player`): runs, being the occupant;
+        // written for someone else it does not.
+        for (written_for, expected) in [(crate::PLAYER_REFERENCE, 1.0), (0x00AA_BBCC, 0.0)] {
+            let (mut world, trigger, player) = world_with_activator(trigger_script(BLOCK_ON_TRIGGER, Some(written_for)));
+            world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+            world.insert(trigger, volume(true));
+            obscript_object_system(&world, 0.016);
+            assert_eq!(counter(&world, trigger), expected, "written for {written_for:08X}");
+        }
+    }
+
     /// Every object script of the three legacy masters walks cleanly, and the
     /// four blocks this runtime runs decode to their `End` with every command
     /// answering 0 and with every command answering 1 (both arms of each gate).
@@ -623,6 +826,7 @@ mod tests {
             let (mut scripts, mut unwalkable, mut malformed) = (0usize, Vec::new(), Vec::new());
             // OnActivate blocks with every gate true: do they ever reach `Activate`?
             let (mut activate_blocks, mut calls_activate) = (0usize, 0usize);
+            let (mut trigger_begins, mut filter_mismatches) = (0usize, Vec::new());
             for script in index.scripts.values().filter(|s| s.script_type == ScriptType::Object && !s.compiled.is_empty()) {
                 scripts += 1;
                 let program = ObScriptProgram::new(script);
@@ -630,7 +834,36 @@ mod tests {
                     unwalkable.push(script.form_id);
                     continue;
                 }
-                for block in [BLOCK_GAME_MODE, BLOCK_ON_LOAD, BLOCK_ON_DEATH, BLOCK_ON_ACTIVATE] {
+                // `Begin OnTrigger* <ref>`: the parameter in the source is the filter in
+                // the bytes, block for block (a script can have several of a type).
+                if let Some(source) = &script.source {
+                    let written: Vec<(u16, bool)> = source
+                        .lines()
+                        .filter_map(|line| {
+                            let mut words = line.split(';').next().unwrap_or("").split_whitespace().map(str::to_ascii_lowercase);
+                            let (begin, name) = (words.next()?, words.next()?);
+                            let block = match (begin.as_str(), name.as_str()) {
+                                ("begin", "ontrigger") => BLOCK_ON_TRIGGER,
+                                ("begin", "ontriggerenter" | "ontriggeractor") => BLOCK_ON_TRIGGER_ENTER,
+                                ("begin", "ontriggerleave" | "ontriggermob") => BLOCK_ON_TRIGGER_LEAVE,
+                                _ => return None,
+                            };
+                            Some((block, words.next().is_some()))
+                        })
+                        .collect();
+                    let compiled: Vec<(u16, bool)> = program
+                        .blocks()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|b| [BLOCK_ON_TRIGGER, BLOCK_ON_TRIGGER_ENTER, BLOCK_ON_TRIGGER_LEAVE].contains(&b.block_type))
+                        .map(|b| (b.block_type, b.filter.is_some()))
+                        .collect();
+                    trigger_begins += written.len();
+                    if written != compiled {
+                        filter_mismatches.push((script.form_id, written, compiled));
+                    }
+                }
+                for block in [BLOCK_GAME_MODE, BLOCK_ON_LOAD, BLOCK_ON_DEATH, BLOCK_ON_ACTIVATE, BLOCK_ON_TRIGGER, BLOCK_ON_TRIGGER_ENTER, BLOCK_ON_TRIGGER_LEAVE] {
                     for answer in [0.0f32, 1.0] {
                         let mut state = VmState::default();
                         let mut host = Fixed(answer, Default::default());
@@ -648,6 +881,8 @@ mod tests {
             assert!(scripts > 1000, "{name}: only {scripts} object scripts");
             assert!(unwalkable.is_empty(), "{name}: unwalkable object scripts {unwalkable:x?}");
             assert!(malformed.is_empty(), "{name}: malformed bytecode in {malformed:x?}");
+            eprintln!("{name}: {trigger_begins} OnTrigger* begins, {} whose parameter disagrees with the bytes", filter_mismatches.len());
+            assert!(filter_mismatches.is_empty(), "{name}: trigger parameter mismatches {filter_mismatches:?}");
         }
     }
 }

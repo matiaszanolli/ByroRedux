@@ -59,7 +59,8 @@
 
 use crate::events::{
     ActivateEvent, AnimationTextKeyEvents, EquipmentEventBatch, HitEvent, ItemEventBatch,
-    OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
+    OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent, OnTriggerLeaveEvent, RippleEvent, SplashEvent,
+    TimerExpired,
 };
 use crate::papyrus_demo::mg07_door::UiMessageCommand;
 use crate::papyrus_demo::{CameraShakeCommand, ControllerRumbleCommand};
@@ -106,12 +107,13 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
     drain_component::<SceneEventBatch>(world);
     drain_component::<SceneFragmentInvocationBatch>(world);
     // Canonical markers — all one-frame transients. Each has an engine emit
-    // site: OnInitEvent from provider-program attachment, OnTriggerEnterEvent
-    // from `trigger_detection_system` (M47.2), OnCellLoadEvent from the cell
+    // site: OnInitEvent from provider-program attachment, OnTriggerEnterEvent and
+    // OnTriggerLeaveEvent from `trigger_detection_system` (M47.2), OnCellLoadEvent from the cell
     // loader's `attach_script_for_refr`, EquipmentEventBatch from the equip
     // pipeline. Without draining, a re-evaluating consumer (e.g.
     // `quest_advance_system`) re-fires every frame.
     drain_component::<OnTriggerEnterEvent>(world);
+    drain_component::<OnTriggerLeaveEvent>(world);
     drain_component::<OnCellLoadEvent>(world);
     drain_component::<OnInitEvent>(world);
     drain_component::<EquipmentEventBatch>(world);

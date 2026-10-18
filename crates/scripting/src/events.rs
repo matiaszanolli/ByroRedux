@@ -177,6 +177,25 @@ impl Component for OnTriggerEnterEvent {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Fired when something leaves a trigger volume: the exit half of
+/// [`OnTriggerEnterEvent`], for the legacy `OnTriggerLeave` block (GECK: "reported
+/// when a ref is removed from the list because it is no longer colliding with the
+/// trigger. The removed ref is set as the action ref on the trigger"). Lands on the
+/// VOLUME entity, with the same `triggerers` shape. Raised by
+/// `trigger_detection_system` on an inside to outside transition of the player or
+/// of a tracked actor still present; a despawn is not a leave.
+///
+/// Pattern A: drained by `event_cleanup_system`, so it is visible to every system
+/// in the frame it was raised.
+#[derive(Debug, Clone)]
+pub struct OnTriggerLeaveEvent {
+    pub triggerers: Vec<EntityId>,
+}
+
+impl Component for OnTriggerLeaveEvent {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// M47.0 Phase 5 — fired when an entity is spawned into a cell that
 /// just loaded. Replaces Papyrus `OnCellLoad` (the script-attached
 /// entity's first-tick initialization hook).

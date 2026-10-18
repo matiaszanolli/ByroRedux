@@ -118,6 +118,7 @@ pub fn register(world: &mut World) {
     world.register::<OnCellLoadEvent>();
     world.register::<OnInitEvent>();
     world.register::<OnTriggerEnterEvent>();
+    world.register::<crate::OnTriggerLeaveEvent>();
     world.register::<OnDeathEvent>();
     world.register::<EquipmentEventBatch>();
     // P3 — item add/remove channel (future `OnItemAdded`/`OnItemRemoved`).

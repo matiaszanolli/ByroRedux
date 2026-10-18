@@ -20,7 +20,7 @@
 //! the player's world position — no per-frame transform composition, and
 //! correct for the static volumes that triggers always are.
 
-use crate::events::OnTriggerEnterEvent;
+use crate::events::{OnTriggerEnterEvent, OnTriggerLeaveEvent};
 use byroredux_core::ecs::components::GlobalTransform;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
@@ -135,6 +135,7 @@ struct TriggerOccupancyState {
     actors: Vec<(EntityId, Vec3, bool, u32)>,
     volumes: Vec<(EntityId, TriggerVolume)>,
     entered: Vec<(EntityId, EntityId)>,
+    left: Vec<(EntityId, EntityId)>,
 }
 
 impl byroredux_core::ecs::resource::Resource for TriggerOccupancyState {}
@@ -146,6 +147,21 @@ pub fn trigger_object_count(world: &World, volume: EntityId) -> usize {
     world
         .try_resource::<TriggerOccupancyState>()
         .map_or(0, |state| state.inside.iter().filter(|(trigger, _)| *trigger == volume).count())
+}
+
+/// Everything the occupancy pass has seen inside `volume`: the player when the
+/// volume's own edge state says so, and the tracked actors. The legacy `OnTrigger`
+/// block runs every frame while this is non-empty.
+pub fn trigger_occupants(world: &World, volume: EntityId) -> Vec<EntityId> {
+    let mut inside: Vec<EntityId> = world
+        .try_resource::<TriggerOccupancyState>()
+        .map(|state| state.inside.iter().filter(|(trigger, _)| *trigger == volume).map(|(_, actor)| *actor).collect())
+        .unwrap_or_default();
+    let player_inside = world.get::<TriggerVolume>(volume).is_some_and(|vol| vol.occupant_inside == Some(true));
+    if let (true, Some(player)) = (player_inside, crate::papyrus_demo::PapyrusPlayerEntity::get(world)) {
+        inside.push(player);
+    }
+    inside
 }
 
 /// Per-frame detection: for every [`TriggerVolume`], test the player's
@@ -180,8 +196,10 @@ pub fn trigger_detection_system(world: &World) {
         actors,
         volumes,
         entered,
+        left,
     } = &mut *occupancy;
     entered.clear();
+    left.clear();
     volumes.clear();
 
     // Phase 1 (read+update): flip each volume's occupancy and record the
@@ -202,6 +220,8 @@ pub fn trigger_detection_system(world: &World) {
             if let Some(was_inside) = vol.occupant_inside {
                 if inside && !was_inside {
                     entered.push((entity, player));
+                } else if was_inside && !inside {
+                    left.push((entity, player));
                 }
             }
             vol.occupant_inside = Some(inside);
@@ -349,6 +369,14 @@ pub fn trigger_detection_system(world: &World) {
                 }
             }
         }
+        // A pair that was inside and is not now, with both still tracked, left. An
+        // actor that despawned (or a volume that unloaded) is not in the lists, so
+        // it is not reported leaving.
+        left.extend(previous_inside.iter().filter(|key| {
+            !next_inside.contains(*key)
+                && actors.iter().any(|(actor, ..)| *actor == key.1)
+                && volumes.iter().any(|(trigger, _)| *trigger == key.0)
+        }));
         std::mem::swap(previous_inside, next_inside);
         observed_actors.clear();
         observed_actors.extend(actors.iter().map(|(entity, ..)| *entity));
@@ -356,8 +384,23 @@ pub fn trigger_detection_system(world: &World) {
         observed_volumes.extend(volumes.iter().map(|(entity, _)| *entity));
     }
 
-    // Phase 2 (write): emit the enter markers. Separate borrow so the
-    // TriggerVolume write lock is released first.
+    // Phase 2 (write): emit the leave and enter markers. Separate borrow so the
+    // TriggerVolume write lock is released first. Leaves go first: the early
+    // return below is for a frame with no enter.
+    if !left.is_empty() {
+        if let Some(mut events) = world.query_mut::<OnTriggerLeaveEvent>() {
+            for &(entity, triggerer) in left.iter() {
+                log::debug!("trigger {entity} emitted OnTriggerLeave for actor {triggerer}");
+                match events.get_mut(entity) {
+                    Some(event) if !event.triggerers.contains(&triggerer) => event.triggerers.push(triggerer),
+                    Some(_) => {}
+                    None => {
+                        events.insert(entity, OnTriggerLeaveEvent { triggerers: vec![triggerer] });
+                    }
+                }
+            }
+        }
+    }
     if entered.is_empty() {
         return;
     }
@@ -886,6 +929,62 @@ mod tests {
             world.has::<OnTriggerEnterEvent>(trigger),
             "a later genuine crossing must still fire after the seed tick"
         );
+    }
+
+    /// The exit half: a player known to be inside a volume who steps out raises
+    /// `OnTriggerLeaveEvent` on it, and `trigger_occupants` follows the state.
+    #[test]
+    fn the_player_stepping_out_emits_a_leave_and_stops_being_an_occupant() {
+        let mut vol = axis_box(Vec3::ZERO, Vec3::splat(1.0));
+        vol.occupant_inside = Some(true);
+        let (world, trigger, fired) = run_once(Vec3::new(10.0, 0.0, 0.0), vol);
+        let player = world.resource::<PapyrusPlayerEntity>().0;
+        assert!(!fired, "leaving is not an enter");
+        assert_eq!(world.get::<crate::OnTriggerLeaveEvent>(trigger).unwrap().triggerers, vec![player]);
+        assert!(trigger_occupants(&world, trigger).is_empty());
+
+        // Still inside: no leave, and the player is an occupant.
+        let mut vol = axis_box(Vec3::ZERO, Vec3::splat(1.0));
+        vol.occupant_inside = Some(true);
+        let (world, trigger, _) = run_once(Vec3::ZERO, vol);
+        assert!(!world.has::<crate::OnTriggerLeaveEvent>(trigger));
+        assert_eq!(trigger_occupants(&world, trigger), vec![world.resource::<PapyrusPlayerEntity>().0]);
+    }
+
+    /// A tracked actor that walks out of a volume it was inside leaves; one that
+    /// is despawned (no longer tracked) does not.
+    #[test]
+    fn a_tracked_actor_leaving_emits_a_leave_but_a_despawn_does_not() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let player = world.spawn();
+        let far = Vec3::new(50.0, 0.0, 0.0);
+        world.insert(player, GlobalTransform::new(far, Quat::IDENTITY, 1.0));
+        world.insert_resource(PapyrusPlayerEntity(player));
+        let candidate = || crate::scene::SceneAliasCandidate {
+            reference_form_id: 0x100,
+            base_form_id: 0x1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        };
+        let (walker, vanisher) = (world.spawn(), world.spawn());
+        for actor in [walker, vanisher] {
+            world.insert(actor, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+            world.insert(actor, candidate());
+        }
+        let trigger = world.spawn();
+        world.insert(trigger, axis_box(Vec3::ZERO, Vec3::splat(1.0)));
+
+        trigger_detection_system(&world); // observed inside
+        assert_eq!(trigger_occupants(&world, trigger).len(), 2);
+        {
+            let mut transforms = world.query_mut::<GlobalTransform>().unwrap();
+            transforms.get_mut(walker).unwrap().translation = Vec3::new(10.0, 0.0, 0.0);
+        }
+        world.remove::<crate::scene::SceneAliasCandidate>(vanisher);
+        trigger_detection_system(&world);
+        assert_eq!(world.get::<crate::OnTriggerLeaveEvent>(trigger).unwrap().triggerers, vec![walker]);
+        assert!(trigger_occupants(&world, trigger).is_empty());
     }
 
     #[test]

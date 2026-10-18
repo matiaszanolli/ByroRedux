@@ -129,7 +129,7 @@ pub use equipment::{
 pub use events::{
     ActivateEvent, NativeActivation, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
     EquipmentEventBatch, HitEvent, ItemEventBatch, ItemTransfer, OnCellLoadEvent, OnDeathEvent, OnInitEvent,
-    OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
+    OnTriggerEnterEvent, OnTriggerLeaveEvent, RippleEvent, SplashEvent, TimerExpired,
 };
 pub use fragment::{
     add_items, remove_items, apply_effects, apply_spoken_info_fragment, fragment_activation_flush_system, fragment_idle_forms,

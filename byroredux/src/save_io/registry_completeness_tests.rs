@@ -683,6 +683,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("OnInitEvent", "one-shot script-attachment marker drained every frame by event_cleanup_system"),
         ("EquipmentEventBatch", "one-shot equipment transition batch drained every frame by event_cleanup_system"),
         ("OnTriggerEnterEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("OnTriggerLeaveEvent", "one-shot event marker drained every frame by event_cleanup_system"),
         ("OnUpdateEvent", "one-shot event marker drained every frame by event_cleanup_system"),
         ("PapyrusProviderProgram", "write-once source/PEX translation attached from static script content on load; only suspended mutable tails live in the saved PapyrusProviderContinuationQueue"),
         ("PapyrusModEventRuntime", "transient per-instance extender-compatible registrations and same-frame delivery queue; scripts refresh registrations from OnInit/OnLoad after world replacement, and raw EntityIds must not cross saves"),

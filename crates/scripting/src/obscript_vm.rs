@@ -68,6 +68,14 @@ pub const BLOCK_GAME_MODE: u16 = 0;
 pub const BLOCK_ON_ACTIVATE: u16 = 0x02;
 pub const BLOCK_ON_DEATH: u16 = 0x0a;
 pub const BLOCK_ON_LOAD: u16 = 0x15;
+/// `Begin OnTrigger`, `OnTriggerEnter` and `OnTriggerLeave`. `0x1a` is
+/// `OnTriggerEnter` on Fallout 3 / New Vegas and `OnTriggerActor` on Oblivion
+/// ("run once when an actor triggers", which the enter event also is); `0x1b` is
+/// `OnTriggerLeave` on the Fallout pair and `OnTriggerMob` on Oblivion, so it is
+/// only read as a leave there.
+pub const BLOCK_ON_TRIGGER: u16 = 0x18;
+pub const BLOCK_ON_TRIGGER_ENTER: u16 = 0x1a;
+pub const BLOCK_ON_TRIGGER_LEAVE: u16 = 0x1b;
 
 /// Maximum recursive nesting accepted from untrusted compiled ObScript.
 const MAX_OBSCRIPT_VM_NESTING: usize = 32;
@@ -139,6 +147,18 @@ pub struct ObScriptMessage {
     pub message_box: bool,
 }
 
+/// One `Begin` .. `End` block of a compiled script.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockInfo {
+    /// The compiled block type (`0` GameMode, `2` OnActivate, ...).
+    pub block_type: u16,
+    /// The one reference the block was written for (`Begin OnTrigger player`
+    /// -> `0x14`), if its `Begin` names one.
+    pub filter: Option<u32>,
+    /// Offset of the block's first body statement.
+    body: usize,
+}
+
 /// Mutable per-script state that outlives one block execution.
 #[derive(Default)]
 pub struct VmState {
@@ -159,11 +179,13 @@ impl<'a> ObScriptProgram<'a> {
         Self { script }
     }
 
-    /// The block types the script has, in order (`0` GameMode, `2` OnActivate,
-    /// ...): what it can be asked to run, without running any of it. `None` if
-    /// the stream is malformed, so a caller never schedules a script it cannot
-    /// walk.
-    pub fn block_types(&self) -> Option<Vec<u16>> {
+    /// The script's blocks, in order, without running any of it. `None` if the
+    /// stream is malformed, so a caller never schedules a script it cannot walk.
+    ///
+    /// A script can have several blocks of one type (FO3's `Begin OnTriggerEnter
+    /// player` / `... StickyRef` / `... RedRef`), each written for a different
+    /// reference, so blocks are addressed by their entry here, not by type.
+    pub fn blocks(&self) -> Option<Vec<BlockInfo>> {
         struct NoHost;
         impl ObScriptHost for NoHost {
             fn call(&mut self, _: u16, _: &[ObScriptValue], _: Option<u32>) -> Option<ObScriptValue> {
@@ -185,13 +207,51 @@ impl<'a> ObScriptProgram<'a> {
         while let Some(op) = byroredux_core::bytes::le_u16_at(bytes, offset) {
             if op == 0x10 {
                 let (payload_start, payload_end) = payload_span(bytes, offset)?;
-                blocks.push(byroredux_core::bytes::le_u16_at(bytes, payload_start)?);
+                let block_type = byroredux_core::bytes::le_u16_at(bytes, payload_start)?;
+                // `[block_type u16][body_len u32]`, then — for a block written
+                // for one reference — the same `[u16 count][args]` blob a
+                // command's arguments use: `Begin OnTrigger player` compiles to
+                // `01 00 72 01 00` (one argument, reference variable 1).
+                // GameMode and the like have none; an unparameterised
+                // `OnActivate` a count of `0`.
+                let params = payload_start + 6;
+                let filter = if params < payload_end {
+                    match vm.decode_args(params, payload_end)?.first() {
+                        Some(ObScriptValue::Ref(form)) if *form != 0 => Some(*form),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                blocks.push(BlockInfo { block_type, filter, body: payload_end });
                 offset = vm.skip_to_block_end(payload_end)?;
             } else {
                 offset = next_statement(bytes, offset, op)?;
             }
         }
         Some(blocks)
+    }
+
+    /// The block types the script has, in order.
+    pub fn block_types(&self) -> Option<Vec<u16>> {
+        Some(self.blocks()?.iter().map(|block| block.block_type).collect())
+    }
+
+    /// Run the block `info` (from [`Self::blocks`]) of this script.
+    pub fn run_at(&self, info: &BlockInfo, state: &mut VmState, host: &mut dyn ObScriptHost) -> BlockOutcome {
+        let mut vm = Vm {
+            bytes: &self.script.compiled,
+            refs: &self.script.refs,
+            state,
+            host,
+            returned: false,
+        };
+        let outcome = vm.exec_block_body(info.body);
+        if vm.returned {
+            BlockOutcome::Returned
+        } else {
+            outcome
+        }
     }
 
     /// Run one named block; blocks of any other type are skipped whole.
