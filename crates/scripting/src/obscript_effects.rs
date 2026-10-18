@@ -167,7 +167,21 @@ pub(crate) fn handles(cmd: u16) -> bool {
             | CMD_ADD_REPUTATION
             | CMD_SET_POS
             | CMD_SET_SCALE
+            | CMD_SET_ANGLE
+            | CMD_ROTATE
     )
+}
+
+/// An angle as the scripts read it: degrees, a heading (`Z`) in `[0, 360)` — "measured with the
+/// positive y-axis as 0 and increasing clockwise" (GECK *GetAngle*) — and the other two in
+/// `(-180, 180]`.
+fn script_angle_degrees(axis: usize, radians: f32) -> f32 {
+    let degrees = radians.to_degrees();
+    if axis == 2 {
+        degrees.rem_euclid(360.0)
+    } else {
+        degrees
+    }
 }
 
 /// Binds resolved references as the properties of a throwaway VMAD, so the
@@ -678,6 +692,31 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             transform.translation = byroredux_core::math::Vec3::from(byroredux_core::math::coord::zup_to_yup_pos(zup));
             return Action::Done { value: None, effect: format!("SetPos {caller:08X} axis {axis} {}", num(args, 1)) };
         }
+        // `SetAngle <axis> <degrees>` / `Rotate <axis> <degrees per second>`: the object's rotation
+        // is the Euler triple a placement stores (`Rx(-rx) · Rz(ry) · Ry(-rz)`, Z-up); `SetAngle`
+        // sets one component and keeps the other two, `Rotate` turns one by the speed over this
+        // frame ("a reference can only be rotated around one axis per frame", GECK). Only a root
+        // entity, and not the player — whose pitch and heading belong to the camera.
+        CMD_SET_ANGLE | CMD_ROTATE => {
+            let Some(entity) = caller_entity else { return Action::Declined };
+            let axis = num(args, 0) as usize;
+            if axis > 2
+                || world.has::<byroredux_core::ecs::components::Parent>(entity)
+                || crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(entity)
+            {
+                return Action::Declined;
+            }
+            let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::components::Transform>() else {
+                return Action::Declined;
+            };
+            let Some(transform) = transforms.get_mut(entity) else { return Action::Declined };
+            let (rx, ry, rz) = byroredux_core::math::coord::quat_yup_to_euler_zup(transform.rotation);
+            let mut euler = [rx, ry, rz];
+            let value = num(args, 1).to_radians();
+            euler[axis] = if cmd == CMD_SET_ANGLE { value } else { euler[axis] + value * context.elapsed };
+            transform.rotation = byroredux_core::math::coord::euler_zup_to_quat_yup(euler[0], euler[1], euler[2]);
+            return Action::Done { value: None, effect: format!("{} {caller:08X} axis {axis} {}", if cmd == CMD_SET_ANGLE { "SetAngle" } else { "Rotate" }, num(args, 1)) };
+        }
         // `SetScale <factor>`: "sets the scale of the calling object ... 1.0 being normal size".
         CMD_SET_SCALE => {
             let Some(entity) = caller_entity else { return Action::Declined };
@@ -741,6 +780,10 @@ const CMD_GET_IS_CURRENT_PACKAGE: u16 = 0x10a1;
 const CMD_GET_HEALTH_PERCENTAGE: u16 = 0x11af;
 const CMD_GET_CURRENT_TIME: u16 = 0x1012;
 const CMD_GET_POS: u16 = 0x1006;
+const CMD_ROTATE: u16 = 0x1004;
+const CMD_GET_ANGLE: u16 = 0x1008;
+const CMD_SET_ANGLE: u16 = 0x1009;
+const CMD_GET_STARTING_ANGLE: u16 = 0x100b;
 const CMD_SET_POS: u16 = 0x1007;
 const CMD_GET_STARTING_POS: u16 = 0x100a;
 const CMD_GET_SCALE: u16 = 0x1018;
@@ -771,6 +814,8 @@ pub(crate) fn is_getter(cmd: u16) -> bool {
             | CMD_GET_POS
             | CMD_GET_STARTING_POS
             | CMD_GET_SCALE
+            | CMD_GET_ANGLE
+            | CMD_GET_STARTING_ANGLE
     )
 }
 
@@ -914,6 +959,23 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
                 _ => Getter::Declined,
             }
         }
+        // GECK *GetAngle* / *GetStartingAngle*, in degrees. The player's pitch and heading are the
+        // camera's, which is not on its body: only a non-player reference answers.
+        CMD_GET_ANGLE | CMD_GET_STARTING_ANGLE => {
+            let axis = num(args, 0) as usize;
+            let rotation = if cmd == CMD_GET_ANGLE {
+                world.get::<byroredux_core::ecs::components::GlobalTransform>(subject).map(|t| t.rotation)
+            } else {
+                world.get::<crate::EditorLocation>(subject).map(|placed| placed.rotation)
+            };
+            match rotation {
+                Some(rotation) if axis <= 2 && crate::papyrus_demo::PapyrusPlayerEntity::get(world) != Some(subject) => {
+                    let (rx, ry, rz) = byroredux_core::math::coord::quat_yup_to_euler_zup(rotation);
+                    Getter::Value(script_angle_degrees(axis, [rx, ry, rz][axis]))
+                }
+                _ => Getter::Declined,
+            }
+        }
         CMD_GET_SCALE => world
             .get::<byroredux_core::ecs::components::Transform>(subject)
             .map_or(Getter::Declined, |transform| Getter::Value(transform.scale)),
@@ -986,7 +1048,7 @@ mod tests {
     }
 
     fn context(caller: Option<u32>) -> Context {
-        Context { caller, known: None, action_ref: None, owner: 0x00AA_0001 }
+        Context { caller, known: None, action_ref: None, owner: 0x00AA_0001, elapsed: 0.5 }
     }
 
     fn done(action: &Action) -> bool {
@@ -1323,6 +1385,46 @@ mod tests {
         assert_eq!(getter(&world, CMD_GET_SCALE, &[], &ctx), Getter::Value(1.0));
         assert!(done(&run(&world, CMD_SET_SCALE, &[ObScriptValue::Num(0.5)], &ctx)));
         assert_eq!(getter(&world, CMD_GET_SCALE, &[], &ctx), Getter::Value(0.5));
+    }
+
+    #[test]
+    fn angles_are_the_euler_triple_a_placement_stores_in_degrees() {
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+        let (mut world, actor, _) = world();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<crate::EditorLocation>();
+        let at = |rotation| Transform { translation: Default::default(), rotation, scale: 1.0 };
+        world.insert(actor, at(Default::default()));
+        world.insert(actor, GlobalTransform::default());
+        let ctx = context(Some(ACTOR));
+        let sync = |world: &World| {
+            let rotation = world.get::<Transform>(actor).unwrap().rotation;
+            world.query_mut::<GlobalTransform>().unwrap().get_mut(actor).unwrap().rotation = rotation;
+        };
+        let angle = |world: &World, axis: f32| match getter(world, CMD_GET_ANGLE, &[ObScriptValue::Num(axis)], &ctx) {
+            Getter::Value(v) => v,
+            other => panic!("{other:?}"),
+        };
+        // `SetAngle z 270`, then `SetAngle x 28.8`: each keeps the other component.
+        assert!(done(&run(&world, CMD_SET_ANGLE, &[ObScriptValue::Num(2.0), ObScriptValue::Num(270.0)], &ctx)));
+        sync(&world);
+        assert!((angle(&world, 2.0) - 270.0).abs() < 1e-2, "a heading, in [0, 360)");
+        assert!(done(&run(&world, CMD_SET_ANGLE, &[ObScriptValue::Num(0.0), ObScriptValue::Num(28.8)], &ctx)));
+        sync(&world);
+        assert!((angle(&world, 0.0) - 28.8).abs() < 1e-2 && (angle(&world, 2.0) - 270.0).abs() < 1e-2);
+        // `Rotate z 90` over a 0.5 s frame turns the heading 45 degrees.
+        assert!(done(&run(&world, CMD_ROTATE, &[ObScriptValue::Num(2.0), ObScriptValue::Num(90.0)], &ctx)));
+        sync(&world);
+        assert!((angle(&world, 2.0) - 315.0).abs() < 1e-1, "{}", angle(&world, 2.0));
+        // A negative heading reads in [0, 360).
+        run(&world, CMD_SET_ANGLE, &[ObScriptValue::Num(2.0), ObScriptValue::Num(-90.0)], &ctx);
+        sync(&world);
+        assert!((angle(&world, 2.0) - 270.0).abs() < 1e-2);
+        // The player's pitch and heading are the camera's: not asked of the body.
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(actor));
+        assert_eq!(getter(&world, CMD_GET_ANGLE, &[ObScriptValue::Num(2.0)], &ctx), Getter::Declined);
+        assert_eq!(run(&world, CMD_SET_ANGLE, &[ObScriptValue::Num(2.0), ObScriptValue::Num(1.0)], &ctx), Action::Declined);
     }
 
     #[test]

@@ -87,6 +87,9 @@ pub(crate) struct Context {
     /// The FormID of the script's owner (its quest, or its reference): the
     /// context the effect runtime applies an effect under.
     pub owner: u32,
+    /// The seconds this run stands for: the frame's `dt` for a frame block, `0` for a nested run
+    /// (what `Rotate`'s degrees per second are multiplied by).
+    pub elapsed: f32,
 }
 
 /// Every command [`run`] answers itself.

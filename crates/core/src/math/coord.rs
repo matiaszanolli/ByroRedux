@@ -185,6 +185,30 @@ pub fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
     euler_zup_to_quat_yup_mode(REFR_ROTATION_MODE_SHIP, rx, ry, rz)
 }
 
+/// The inverse of [`euler_zup_to_quat_yup`]: the Z-up Euler triple `(rx, ry, rz)` in radians —
+/// the one a REFR's `DATA` rotation holds, and the one an ObScript `GetAngle` reads — of a Y-up
+/// quaternion under the shipping convention `Rx(-rx) · Rz(ry) · Ry(-rz)`.
+///
+/// From the product's matrix (`a = -rx`, `b = ry`, `c = -rz`): `R[0][1] = -sin b`,
+/// `R[1][1] = cos a cos b`, `R[2][1] = sin a cos b`, `R[0][0] = cos b cos c`,
+/// `R[0][2] = cos b sin c`. So `ry` is the middle angle, in `[-pi/2, pi/2]`; `rx` and `rz`
+/// come back in `(-pi, pi]`. At `ry = ±pi/2` (gimbal lock) `rz` is taken as zero and `rx` carries
+/// the rest.
+pub fn quat_yup_to_euler_zup(q: Quat) -> (f32, f32, f32) {
+    let m = glam::Mat3::from_quat(q.normalize());
+    // glam is column-major: `m.col(j)[i]` is R[i][j].
+    let r = |i: usize, j: usize| m.col(j)[i];
+    let sin_b = (-r(0, 1)).clamp(-1.0, 1.0);
+    let b = sin_b.asin();
+    let (a, c) = if sin_b.abs() > 0.999_999 {
+        // cos b = 0: the first and third axes coincide.
+        ((-r(1, 2)).atan2(r(2, 2)), 0.0)
+    } else {
+        (r(2, 1).atan2(r(1, 1)), r(0, 2).atan2(r(0, 0)))
+    };
+    (-a, b, -c)
+}
+
 /// The shipping REFR rotation mode — CW angle convention, XYZ product
 /// (Gamebryo `FromEulerAnglesXYZ`). [`euler_zup_to_quat_yup`] is exactly
 /// this mode; the other three are diagnostic-only. See
@@ -251,6 +275,32 @@ pub fn normalize_quat(q: [f32; 4]) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The inverse recovers what the REFR formula was given: every triple with the middle angle
+    /// inside `(-pi/2, pi/2)` round-trips through the quaternion, and a gimbal-locked one lands on
+    /// the same rotation.
+    #[test]
+    fn the_euler_extraction_inverts_the_refr_convention() {
+        let angles = [-2.9f32, -1.2, -0.3, 0.0, 0.4, 1.1, 2.5, 3.0];
+        for &rx in &angles {
+            for &rz in &angles {
+                for &ry in &[-1.4f32, -0.7, 0.0, 0.5, 1.3] {
+                    let q = euler_zup_to_quat_yup(rx, ry, rz);
+                    let (ex, ey, ez) = quat_yup_to_euler_zup(q);
+                    let again = euler_zup_to_quat_yup(ex, ey, ez);
+                    assert!(q.dot(again).abs() > 0.9999, "({rx}, {ry}, {rz}) -> ({ex}, {ey}, {ez})");
+                    assert!((ey - ry).abs() < 1e-3, "middle angle {ry} came back {ey}");
+                }
+            }
+        }
+        // Gimbal lock still reproduces the rotation.
+        let q = euler_zup_to_quat_yup(0.8, std::f32::consts::FRAC_PI_2, 0.3);
+        let (ex, ey, ez) = quat_yup_to_euler_zup(q);
+        assert!(q.dot(euler_zup_to_quat_yup(ex, ey, ez)).abs() > 0.9999);
+        // A pure Z turn is a pure `rz`.
+        let (ex, ey, ez) = quat_yup_to_euler_zup(euler_zup_to_quat_yup(0.0, 0.0, 1.0));
+        assert!(ex.abs() < 1e-5 && ey.abs() < 1e-5 && (ez - 1.0).abs() < 1e-5);
+    }
 
     #[test]
     fn pos_flips_z_into_y_and_negates_y_into_z() {

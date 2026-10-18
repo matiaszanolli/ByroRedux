@@ -510,7 +510,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     self.world,
                     cmd,
                     args,
-                    &crate::obscript_actions::Context { caller, known: None, action_ref: None, owner: self.owner },
+                    &crate::obscript_actions::Context { caller, known: None, action_ref: None, owner: self.owner, elapsed: self.elapsed },
                 ) {
                     Action::Done { .. } => None,
                     _ => self.decline(cmd),
@@ -635,6 +635,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                         known: self.reference.map(|entity| (self.owner, entity)),
                         action_ref: self.action_ref,
                         owner: self.owner,
+                        elapsed: self.elapsed,
                     },
                 ) {
                     crate::obscript_effects::Getter::Value(value) => Some(ObScriptValue::Num(value)),
@@ -687,6 +688,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     known: self.reference.map(|entity| (self.owner, entity)),
                     action_ref: self.action_ref,
                     owner: self.owner,
+                    elapsed: self.elapsed,
                 },
             ) {
                 Action::Done { value, effect: text } => {
