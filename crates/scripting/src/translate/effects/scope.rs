@@ -55,6 +55,12 @@ pub(super) struct Scope<'lib> {
     /// entry point can refuse a speaker fragment with a latent tail. Shared
     /// (not copied) by the clones an `If` branch lowers against.
     pub(super) uses_speaker: std::rc::Rc<std::cell::Cell<bool>>,
+    /// #5970 — statements lowered so far for the fragment being lowered, shared
+    /// (not copied) by every clone and every inlined callee scope. Inlining
+    /// re-lowers a callee body at each call site, so a chain of distinct
+    /// functions each calling the next N times expands to N^depth effects; the
+    /// budget ([`MAX_LOWERED_STATEMENTS`]) declines the whole fragment instead.
+    pub(super) lowered_statements: std::rc::Rc<std::cell::Cell<usize>>,
     /// #2538 / SCR-D5-NEW10-01 — lowercased names of the containing
     /// script's `Quest Property` declarations (from VMAD-equivalent
     /// property-type metadata, threaded in from `&Script` at
@@ -93,7 +99,21 @@ enum LocalBinding {
     Plain,
 }
 
+/// Most statements one fragment may lower, counting every inlined callee body
+/// (#5970). Population runs this at cell load on mod-supplied `.pex` data; a
+/// real fragment is tens of statements, so this is a backstop against
+/// multiplicative inlining, not a tuned limit.
+pub(super) const MAX_LOWERED_STATEMENTS: usize = 10_000;
+
 impl Scope<'_> {
+    /// Charge `count` statements against the fragment's lowering budget;
+    /// `None` once it is spent (the caller declines the fragment).
+    pub(super) fn spend_statements(&self, count: usize) -> Option<()> {
+        let spent = self.lowered_statements.get().saturating_add(count);
+        self.lowered_statements.set(spent);
+        (spent <= MAX_LOWERED_STATEMENTS).then_some(())
+    }
+
     /// The binding of a name declared in this function, or `None` when no
     /// `VarDecl`/`Assign` has bound it.
     fn binding_of(&self, name: &str) -> Option<LocalBinding> {

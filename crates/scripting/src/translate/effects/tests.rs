@@ -1644,6 +1644,53 @@ fn inlined_quest_script_calls_bind_their_arguments() {
     ), "{guards:?}");
 }
 
+/// #5970 — inlining re-lowers a callee at every call site, so F1 calling F2
+/// N times, F2 calling F3 N times, … expanded to N^depth effects with no cap
+/// (a mod `.pex` exhausts memory at cell load). The shared statement budget
+/// declines such a fragment; an ordinary fan-out still lowers.
+#[test]
+fn multiplicative_inlining_declines_past_the_statement_budget() {
+    fn chain(fan_out: usize) -> PscLibrary {
+        let calls = |next: &str| format!("Self.{next}()\n").repeat(fan_out);
+        let source = format!(
+            "ScriptName ChainScript extends Quest\n\
+             Function F1()\n{}EndFunction\n\
+             Function F2()\n{}EndFunction\n\
+             Function F3()\n{}EndFunction\n\
+             Function F4()\n Self.SetStage(10)\nEndFunction\n",
+            calls("F2"),
+            calls("F3"),
+            calls("F4"),
+        );
+        PscLibrary::new(&[source.as_str()])
+    }
+    fn lower_with(library: &PscLibrary) -> Option<Vec<Effect>> {
+        let source = "ScriptName TIF_Chain extends TopicInfo\n\
+             Function Fragment_0(ObjectReference akSpeakerRef)\n\
+             (Self.GetOwningQuest() as ChainScript).F1()\nEndFunction\n";
+        let (script, errs) = parse_script(source).expect("parses");
+        assert!(errs.is_empty(), "{errs:?}");
+        let function = script
+            .body
+            .iter()
+            .find_map(|item| match &item.node {
+                ScriptItem::Function(f) => Some(f.clone()),
+                _ => None,
+            })
+            .expect("a function");
+        lower_info_fragment(
+            &function.params,
+            &function.body,
+            &HashSet::new(),
+            &HashSet::new(),
+            None,
+            Some(library),
+        )
+    }
+    assert!(lower_with(&chain(2)).is_some(), "a small fan-out still lowers");
+    assert_eq!(lower_with(&chain(30)), None, "30^3 leaf effects blow the budget and decline");
+}
+
 /// M47.2 — an INFO fragment's call into its quest's script inlines as a
 /// `QuestScope` (the callee's properties live on the quest's VMAD), and so
 /// does a statement reading a quest-script property (`kmyQuest.CW`); a

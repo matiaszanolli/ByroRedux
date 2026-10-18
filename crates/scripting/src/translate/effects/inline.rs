@@ -105,6 +105,7 @@ pub(super) fn inline_quest_script_call(
         ),
         own_argless_functions: crate::fragment::argless_function_names(&script),
         inline_stack: scope.inline_stack.iter().cloned().chain([frame]).collect(),
+        lowered_statements: scope.lowered_statements.clone(),
         script_variables: script
             .body
             .iter()

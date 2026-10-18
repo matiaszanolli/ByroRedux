@@ -381,6 +381,7 @@ pub(super) fn lower_statements(
     if depth >= MAX_CONDITIONAL_DEPTH {
         return None;
     }
+    scope.spend_statements(body.len())?;
     let mut effects = Vec::new();
     for (position, stmt) in body.iter().enumerate() {
         match &stmt.node {
