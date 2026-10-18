@@ -103,6 +103,7 @@ const CMD_RESET_AI: u16 = 0x11fa;
 const CMD_SAY: u16 = 0x1033;
 const CMD_SHOW_MESSAGE: u16 = 0x1059;
 const CMD_START_CONVERSATION: u16 = 0x1056;
+const CMD_UNEQUIP_ITEM: u16 = 0x10ef;
 const CMD_PLAY_SOUND_3D: u16 = 0x10b2;
 const CMD_ADD_REPUTATION: u16 = 0x1239;
 const CMD_SAY_TO: u16 = 0x1034;
@@ -161,6 +162,7 @@ pub(crate) fn handles(cmd: u16) -> bool {
             | CMD_SAY_TO
             | CMD_SHOW_MESSAGE
             | CMD_START_CONVERSATION
+            | CMD_UNEQUIP_ITEM
             | CMD_PLAY_SOUND_3D
             | CMD_ADD_REPUTATION
     )
@@ -592,6 +594,36 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             lines.conversations.push((speaker, form_arg(args, 1)));
             return Action::Done { value: None, effect: format!("StartConversation {caller:08X}") };
         }
+        // `UnequipItem <item> [no-equip flag] [hide message]`: the actor takes the item off. The
+        // no-equip flag ("unable to equip the item until EquipItem is called") has no state to
+        // carry it, so a set flag declines, as `EquipItem`'s no-unequip flag does.
+        CMD_UNEQUIP_ITEM => {
+            use byroredux_core::ecs::components::{EquipmentSlots, Inventory, InventoryIndex};
+            let (Some(item), Some(actor)) = (form_arg(args, 0), caller_entity) else {
+                return Action::Declined;
+            };
+            if num(args, 1) != 0.0 {
+                return Action::Declined;
+            }
+            let released = {
+                let Some((inventories, mut equipment)) = world.query_2_mut::<Inventory, EquipmentSlots>().map(|(i, e)| (i, e)) else {
+                    return Action::Declined;
+                };
+                let Some(index) = inventories
+                    .get(actor)
+                    .and_then(|inventory| inventory.items.iter().position(|stack| stack.base_form_id == item && stack.count > 0))
+                    .and_then(|index| u32::try_from(index).ok())
+                    .map(InventoryIndex)
+                else {
+                    return Action::Declined;
+                };
+                equipment.get_mut(actor).is_some_and(|slots| slots.release(index))
+            };
+            if released {
+                crate::emit_equipment_changes(world, actor, [crate::EquipmentChange { item_form_id: item, equipped: false }]);
+            }
+            return Action::Done { value: None, effect: format!("UnequipItem {caller:08X} {item:08X}") };
+        }
         // `PlaySound3D <sound>`: "plays the specified sound, at the location of the calling reference".
         CMD_PLAY_SOUND_3D => {
             let Some(sound) = form_arg(args, 0) else { return Action::Declined };
@@ -676,6 +708,7 @@ const CMD_GET_DESTROYED: u16 = 0x10cb;
 const CMD_GET_RESTRAINED: u16 = 0x10f4;
 const CMD_GET_IN_SAME_CELL: u16 = 0x1020;
 const CMD_GET_IS_CURRENT_PACKAGE: u16 = 0x10a1;
+const CMD_GET_HEALTH_PERCENTAGE: u16 = 0x11af;
 const CMD_GET_CURRENT_TIME: u16 = 0x1012;
 
 /// Every getter this module answers.
@@ -699,6 +732,7 @@ pub(crate) fn is_getter(cmd: u16) -> bool {
             | CMD_GET_LINKED_REF
             | CMD_GET_IS_CURRENT_PACKAGE
             | CMD_GET_CURRENT_TIME
+            | CMD_GET_HEALTH_PERCENTAGE
     )
 }
 
@@ -816,6 +850,17 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
             let current = world.try_resource::<crate::fragment::ActivePackages>().and_then(|active| active.0.get(&subject).copied());
             Getter::Value(f32::from(u8::from(current == Some(package))))
         }
+        // GECK *GetHealthPercentage*: "how injured an actor is ... a value from 0 to 1.0" — the
+        // current Health over the undamaged ceiling. Fallout only: `0x11af` is another command in Oblivion.
+        CMD_GET_HEALTH_PERCENTAGE if crate::ScriptGame::is_fallout3_nv(world) => {
+            let Some(health) = world.get::<byroredux_core::ecs::components::ActorVitals>(subject).map(|vitals| vitals.health) else {
+                return Getter::Declined;
+            };
+            let current = actor_value_view(world, subject, health, ActorValueView::Current);
+            let ceiling = actor_value_view(world, subject, health, ActorValueView::Undamaged);
+            Getter::Value(if ceiling > 0.0 { (current / ceiling).clamp(0.0, 1.0) } else { 0.0 })
+        }
+        CMD_GET_HEALTH_PERCENTAGE => Getter::Unhandled,
         CMD_GET_DESTROYED => Getter::Value(f32::from(u8::from(crate::destruction::is_destroyed(world, caller)))),
         CMD_GET_RESTRAINED => {
             Getter::Value(f32::from(u8::from(world.get::<crate::ActorControlState>(subject).is_some_and(|state| state.restrained))))
@@ -1195,6 +1240,41 @@ mod tests {
         crate::fragment::report_package_transition(&world, actor, None, Some(WALK));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK]), &ctx), Getter::Value(1.0));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK + 1]), &ctx), Getter::Value(0.0));
+    }
+
+    #[test]
+    fn get_health_percentage_is_current_over_the_undamaged_ceiling() {
+        use byroredux_core::ecs::components::ActorVitals;
+        let (mut world, actor, _) = world();
+        world.register::<ActorVitals>();
+        world.insert(actor, ActorVitals { health: HEALTH });
+        let ctx = context(Some(ACTOR));
+        run(&world, CMD_SET_AV, &[ObScriptValue::Num(16.0), ObScriptValue::Num(80.0)], &ctx);
+        assert_eq!(getter(&world, CMD_GET_HEALTH_PERCENTAGE, &[], &ctx), Getter::Value(1.0));
+        run(&world, CMD_DAMAGE_AV, &[ObScriptValue::Num(16.0), ObScriptValue::Num(20.0)], &ctx);
+        assert_eq!(getter(&world, CMD_GET_HEALTH_PERCENTAGE, &[], &ctx), Getter::Value(0.75));
+    }
+
+    #[test]
+    fn unequip_item_releases_the_slot_and_announces_it() {
+        use byroredux_core::ecs::components::{EquipmentSlots, InventoryIndex};
+        let (mut world, actor, _) = world();
+        world.register::<EquipmentSlots>();
+        world.register::<crate::EquipmentEventBatch>();
+        let ctx = context(Some(ACTOR));
+        run(&world, CMD_ADD_ITEM, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(1.0)], &ctx);
+        let mut slots = EquipmentSlots::new();
+        slots.equip(0b1, InventoryIndex(0));
+        world.insert(actor, slots);
+        assert!(done(&run(&world, CMD_UNEQUIP_ITEM, &refs(&[ITEM]), &ctx)));
+        assert!(!world.get::<EquipmentSlots>(actor).unwrap().is_equipped(InventoryIndex(0)));
+        assert_eq!(
+            world.get::<crate::EquipmentEventBatch>(actor).map(|batch| batch.0.clone()),
+            Some(vec![crate::EquipmentChange { item_form_id: ITEM, equipped: false }])
+        );
+        // An item the actor does not carry, and the no-equip flag, are declined.
+        assert_eq!(run(&world, CMD_UNEQUIP_ITEM, &refs(&[ITEM + 1]), &ctx), Action::Declined);
+        assert_eq!(run(&world, CMD_UNEQUIP_ITEM, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(1.0)], &ctx), Action::Declined);
     }
 
     #[test]

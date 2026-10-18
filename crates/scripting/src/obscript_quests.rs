@@ -97,7 +97,7 @@ pub fn command_is_modeled(cmd: u16, fallout: bool) -> bool {
     }
     // `MoveToMarkerWithFade` and `GetLinkedRef` are Fallout commands; the numbers are
     // other commands in Oblivion (`PurgeCellBuffers` for `0x116b`).
-    if !fallout && matches!(cmd, 0x124f | 0x116b) {
+    if !fallout && matches!(cmd, 0x124f | 0x116b | 0x11af) {
         return false;
     }
     if crate::obscript_actions::handles(cmd)
