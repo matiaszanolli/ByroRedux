@@ -46,7 +46,17 @@ pub fn locate_engine_beside_self() -> Option<PathBuf> {
 pub struct EngineProcess {
     child: Child,
     log: Arc<Mutex<VecDeque<String>>>,
+    /// The thread draining the engine's stderr into `log`; taken once the
+    /// process has exited and the thread has been given time to finish.
+    reader: Option<std::thread::JoinHandle<()>>,
 }
+
+/// How long, after the engine has exited, to wait for the stderr reader to reach
+/// end-of-file before reporting what it has. The exit is routinely seen before
+/// the reader thread has taken the last lines out of the pipe; a descendant that
+/// inherited stderr and outlives the engine keeps the pipe open, so the wait has
+/// to be bounded.
+const READER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// What happened to a launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +102,7 @@ impl EngineProcess {
             .spawn()?;
 
         let log = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_TAIL_LINES)));
-        if let Some(stderr) = child.stderr.take() {
+        let reader = child.stderr.take().map(|stderr| {
             let log = Arc::clone(&log);
             std::thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -102,9 +112,27 @@ impl EngineProcess {
                     }
                     log.push_back(line);
                 }
-            });
+            })
+        });
+        Ok(Self { child, log, reader })
+    }
+
+    /// Give the stderr reader the chance to finish after the process has
+    /// exited, so a crash report is not missing the lines the engine wrote last
+    /// (the reason it died). Waits at most [`READER_DRAIN_TIMEOUT`], once.
+    fn drain_reader(&mut self) {
+        let Some(reader) = self.reader.take() else {
+            return;
+        };
+        let deadline = std::time::Instant::now() + READER_DRAIN_TIMEOUT;
+        while !reader.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        Ok(Self { child, log })
+        if reader.is_finished() {
+            let _ = reader.join();
+        }
+        // Otherwise a descendant still holds the pipe: leave the thread to
+        // append whatever else arrives.
     }
 
     /// Poll without blocking. Call once per frame.
@@ -112,10 +140,13 @@ impl EngineProcess {
         match self.child.try_wait() {
             Ok(None) => EngineStatus::Running,
             Ok(Some(status)) if status.success() => EngineStatus::Finished,
-            Ok(Some(status)) => EngineStatus::Failed {
-                code: status.code(),
-                tail: self.tail(),
-            },
+            Ok(Some(status)) => {
+                self.drain_reader();
+                EngineStatus::Failed {
+                    code: status.code(),
+                    tail: self.tail(),
+                }
+            }
             // A process we cannot wait on is not one we can claim is running.
             Err(error) => EngineStatus::Failed {
                 code: None,
@@ -289,6 +320,47 @@ mod tests {
                 }
                 other => panic!("expected Failed, got {other:?}"),
             }
+        }
+
+        /// The exit can be observed before the stderr reader thread has taken
+        /// the last bytes out of the pipe, so a crash's reason used to come
+        /// back empty now and then (CI's lock-order lane saw `tail == []`).
+        /// `poll` must let the reader reach end-of-file before it reports
+        /// `Failed`. A helper that inherited stderr and writes after the engine
+        /// is gone makes the ordering deterministic: the exit is visible at once
+        /// and the last line is still in flight.
+        #[test]
+        fn a_crash_tail_waits_for_the_stderr_reader_to_drain() {
+            let _serialised = serialised();
+            let dir = tempfile::tempdir().unwrap();
+            let engine = stub(
+                dir.path(),
+                "echo 'early' >&2\n(sleep 0.05; echo 'late' >&2) &\nexit 3",
+            );
+            let mut process =
+                EngineProcess::spawn(&engine, &dir.path().join("boot.toml"), dir.path()).unwrap();
+            let EngineStatus::Failed { code, tail } = wait_for(&mut process) else {
+                panic!("expected Failed");
+            };
+            assert_eq!(code, Some(3));
+            assert_eq!(tail, ["early", "late"], "the report lost the engine's last lines");
+        }
+
+        /// The wait for the reader is bounded: a descendant that keeps stderr
+        /// open for good must not hang the crash screen.
+        #[test]
+        fn a_crash_report_is_not_held_hostage_by_a_lingering_descendant() {
+            let _serialised = serialised();
+            let dir = tempfile::tempdir().unwrap();
+            let engine = stub(dir.path(), "echo 'died' >&2\n(sleep 5) &\nexit 3");
+            let mut process =
+                EngineProcess::spawn(&engine, &dir.path().join("boot.toml"), dir.path()).unwrap();
+            let started = std::time::Instant::now();
+            let EngineStatus::Failed { tail, .. } = wait_for(&mut process) else {
+                panic!("expected Failed");
+            };
+            assert!(started.elapsed() < std::time::Duration::from_secs(3), "poll hung on the pipe");
+            assert_eq!(tail, ["died"]);
         }
 
         /// The tail is bounded, so a chatty engine cannot grow the buffer
