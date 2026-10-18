@@ -50,6 +50,9 @@ pub struct PendingScriptedLines {
     pub pending: Vec<ScriptedLine>,
     /// Lines in progress, ticked by [`obscript_speech_system`].
     pub speaking: Vec<Speaking>,
+    /// `StartConversation player <topic>`: the actor and the topic its force-greet opens with
+    /// (`None` for the generic greeting), waiting for the dialogue runtime to install it.
+    pub conversations: Vec<(EntityId, Option<u32>)>,
 }
 
 impl Resource for PendingScriptedLines {}

@@ -53,6 +53,22 @@ impl Component for ForceGreetDirective {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// M47.3 — `StartConversation player <topic>` from an ObScript: stamp each requested actor with
+/// the force-greet directive the dialogue runtime already runs (it walks up and opens the topic, or
+/// the generic greeting). Registered ahead of [`make_forcegreet_system`].
+pub(crate) fn scripted_conversation_system(world: &World, _dt: f32) {
+    let requests = match world.try_resource_mut::<byroredux_scripting::obscript_speech::PendingScriptedLines>() {
+        Some(mut lines) if !lines.conversations.is_empty() => std::mem::take(&mut lines.conversations),
+        _ => return,
+    };
+    let Some(mut directives) = world.query_mut::<ForceGreetDirective>() else {
+        return;
+    };
+    for (npc, topic) in requests {
+        directives.insert(npc, ForceGreetDirective { topic, radius: FORCE_GREET_RADIUS });
+    }
+}
+
 /// System: walk directive carriers toward the player; on arrival open
 /// the conversation through the same selection the activation path
 /// uses. Registered in `Stage::Update` after the ambient package

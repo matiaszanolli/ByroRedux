@@ -102,6 +102,9 @@ const CMD_PLACE_AT_ME: u16 = 0x1025;
 const CMD_RESET_AI: u16 = 0x11fa;
 const CMD_SAY: u16 = 0x1033;
 const CMD_SHOW_MESSAGE: u16 = 0x1059;
+const CMD_START_CONVERSATION: u16 = 0x1056;
+const CMD_PLAY_SOUND_3D: u16 = 0x10b2;
+const CMD_ADD_REPUTATION: u16 = 0x1239;
 const CMD_SAY_TO: u16 = 0x1034;
 const CMD_SET_OWNERSHIP: u16 = 0x1117;
 const CMD_CLEAR_OWNERSHIP: u16 = 0x118c;
@@ -157,6 +160,9 @@ pub(crate) fn handles(cmd: u16) -> bool {
             | CMD_SAY
             | CMD_SAY_TO
             | CMD_SHOW_MESSAGE
+            | CMD_START_CONVERSATION
+            | CMD_PLAY_SOUND_3D
+            | CMD_ADD_REPUTATION
     )
 }
 
@@ -226,6 +232,7 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             | CMD_REWARD_XP
             | CMD_REWARD_KARMA
             | CMD_SHOW_MESSAGE
+            | CMD_ADD_REPUTATION
     );
     let caller = context.caller.filter(|&form| form != 0);
     if needs_caller && caller.is_none() {
@@ -569,6 +576,55 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             let Some(message) = form_arg(args, 0) else { return Action::Declined };
             let values: Vec<f32> = args.iter().skip(1).map(ObScriptValue::as_num).collect();
             vec![Effect::ShowMessage { message: bind.object(message), args: values }]
+        }
+        // `StartConversation <target> [topic]` ("force a conversation ... starting with a specified
+        // topic", and "set the player as the TargetActor" to force-greet): the actor walks up to the
+        // player and opens the topic, through the force-greet the dialogue runtime already has. A
+        // conversation between two NPCs has no runtime, so another target is declined.
+        CMD_START_CONVERSATION => {
+            let Some(speaker) = caller_entity else { return Action::Declined };
+            if form_arg(args, 0) != Some(crate::PLAYER_REFERENCE) {
+                return Action::Declined;
+            }
+            let Some(mut lines) = world.try_resource_mut::<crate::obscript_speech::PendingScriptedLines>() else {
+                return Action::Declined;
+            };
+            lines.conversations.push((speaker, form_arg(args, 1)));
+            return Action::Done { value: None, effect: format!("StartConversation {caller:08X}") };
+        }
+        // `PlaySound3D <sound>`: "plays the specified sound, at the location of the calling reference".
+        CMD_PLAY_SOUND_3D => {
+            let Some(sound) = form_arg(args, 0) else { return Action::Declined };
+            let Some(mut pending) = world.try_resource_mut::<crate::PendingSoundPlays>() else {
+                return Action::Declined;
+            };
+            pending.0.push(crate::SoundPlay { sound, source: caller });
+            return Action::Done { value: None, effect: format!("PlaySound3D {sound:08X} at {caller:08X}") };
+        }
+        // `AddReputation <REPU> <fame 1 | infamy 0> <amount 1-5>`: the player's reputation with the
+        // faction rises by the points the amount names (1, 2, 4, 7, 12 by default).
+        CMD_ADD_REPUTATION => {
+            let (Some(repu), Some(player)) = (form_arg(args, 0), crate::papyrus_demo::PapyrusPlayerEntity::get(world)) else {
+                return Action::Declined;
+            };
+            let amount = num(args, 2);
+            if !(1.0..=5.0).contains(&amount) || !matches!(num(args, 1) as i32, 0 | 1) {
+                return Action::Declined;
+            }
+            let points = u16::from(byroredux_core::character::reputation_bump_points(amount as u8));
+            let Some(mut standings) = world.query_mut::<byroredux_core::character::FactionReputation>() else {
+                return Action::Declined;
+            };
+            if standings.get_mut(player).is_none() {
+                standings.insert(player, Default::default());
+            }
+            let standing = standings.get_mut(player).expect("present or inserted");
+            if num(args, 1) as i32 == 1 {
+                standing.add_fame(repu, points);
+            } else {
+                standing.add_infamy(repu, points);
+            }
+            return Action::Done { value: None, effect: format!("AddReputation {repu:08X} +{points}") };
         }
         CMD_RESET_HEALTH => {
             let Some(actor) = caller_entity else { return Action::Declined };
@@ -1139,6 +1195,50 @@ mod tests {
         crate::fragment::report_package_transition(&world, actor, None, Some(WALK));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK]), &ctx), Getter::Value(1.0));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK + 1]), &ctx), Getter::Value(0.0));
+    }
+
+    #[test]
+    fn add_reputation_adds_the_points_the_amount_names_to_the_players_standing() {
+        use byroredux_core::character::FactionReputation;
+        const REPU: u32 = 0x0009_0001;
+        let (mut world, _, player) = av_world_with_player();
+        world.register::<FactionReputation>();
+        let ctx = context(None);
+        let add = |axis: f32, amount: f32| [ObScriptValue::Ref(REPU), ObScriptValue::Num(axis), ObScriptValue::Num(amount)];
+        // "AddReputation RepNVGoodsprings 0 5": infamy, the very major bump (12 by default).
+        assert!(done(&run(&world, CMD_ADD_REPUTATION, &add(0.0, 5.0), &ctx)));
+        assert!(done(&run(&world, CMD_ADD_REPUTATION, &add(1.0, 3.0), &ctx)));
+        let standing = world.get::<FactionReputation>(player).unwrap();
+        assert_eq!((standing.infamy(REPU), standing.fame(REPU)), (12, 4));
+        drop(standing);
+        // "it only allows 1-5", and the axis is 0 or 1.
+        assert_eq!(run(&world, CMD_ADD_REPUTATION, &add(1.0, 6.0), &ctx), Action::Declined);
+        assert_eq!(run(&world, CMD_ADD_REPUTATION, &add(2.0, 3.0), &ctx), Action::Declined);
+    }
+
+    #[test]
+    fn play_sound_3d_plays_at_the_calling_reference() {
+        const SOUND: u32 = 0x0009_0002;
+        let (mut world, _, _) = world();
+        world.insert_resource(crate::PendingSoundPlays::default());
+        assert!(done(&run(&world, CMD_PLAY_SOUND_3D, &[ObScriptValue::Ref(SOUND)], &context(Some(ACTOR)))));
+        assert_eq!(world.try_resource::<crate::PendingSoundPlays>().unwrap().0, vec![crate::SoundPlay { sound: SOUND, source: ACTOR }]);
+        // It plays "at the location of the calling reference": with none, there is no place.
+        assert_eq!(run(&world, CMD_PLAY_SOUND_3D, &[ObScriptValue::Ref(SOUND)], &context(None)), Action::Declined);
+    }
+
+    #[test]
+    fn start_conversation_with_the_player_asks_for_a_force_greet() {
+        const TOPIC: u32 = 0x0009_0003;
+        let (world, actor, _) = world();
+        let ctx = context(Some(ACTOR));
+        assert!(done(&run(&world, CMD_START_CONVERSATION, &refs(&[crate::PLAYER_REFERENCE, TOPIC]), &ctx)));
+        assert!(done(&run(&world, CMD_START_CONVERSATION, &refs(&[crate::PLAYER_REFERENCE]), &ctx)));
+        let lines = world.try_resource::<crate::obscript_speech::PendingScriptedLines>().unwrap();
+        assert_eq!(lines.conversations, vec![(actor, Some(TOPIC)), (actor, None)], "a topic, then the generic greeting");
+        drop(lines);
+        // A conversation between two NPCs has no runtime.
+        assert_eq!(run(&world, CMD_START_CONVERSATION, &refs(&[OTHER, TOPIC]), &ctx), Action::Declined);
     }
 
     #[test]

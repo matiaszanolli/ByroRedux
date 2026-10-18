@@ -475,6 +475,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     //
     // #5430 — the approach step is AI motion, so it honours the
     // `BYRO_NO_AI_LOCOMOTION` kill switch; the in-radius open does not.
+    // M47.3 — `StartConversation player <topic>` requests become directives first.
+    scheduler.add_exclusive(Stage::Update, crate::systems::forcegreet::scripted_conversation_system);
     scheduler.add_exclusive(
         Stage::Update,
         crate::systems::forcegreet::make_forcegreet_system(super::ai_locomotion_enabled()),
