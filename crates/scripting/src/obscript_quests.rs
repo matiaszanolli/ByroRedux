@@ -254,13 +254,7 @@ pub fn run_quest_game_mode(
             .map(|locals| locals.of(quest_form_id))
             .unwrap_or_default(),
     };
-    let mut host = ObScriptCommandHost {
-        world,
-        owner: quest_form_id,
-        reference: None,
-        elapsed,
-        script: &script,
-    };
+    let mut host = ObScriptCommandHost::new(world, quest_form_id, None, elapsed, &script);
     let outcome = program.run_block(0, &mut state, &mut host);
     // `host` holds no guard (Drop is not implemented) — the borrow ends
     // here by scope, which is what the old `drop(host)` extended.
@@ -284,6 +278,21 @@ pub struct ObScriptCommandHost<'a> {
     pub reference: Option<byroredux_core::ecs::storage::EntityId>,
     pub elapsed: f32,
     pub script: &'a ScriptRecord,
+    /// The reference that activated or entered the owner, while an event block
+    /// that has one (`OnActivate`) runs: what `GetActionRef` / `IsActionRef`
+    /// answer and what an `Activate` with no actor argument activates by. `None`
+    /// everywhere else — the GECK says `GetActionRef` "will only return a value"
+    /// inside such a block.
+    pub action_ref: Option<u32>,
+    /// How many commands this host has declined so far: a run that declined any
+    /// is one whose outcome is not fully known.
+    pub declined: std::cell::Cell<u32>,
+}
+
+impl<'a> ObScriptCommandHost<'a> {
+    pub fn new(world: &'a World, owner: u32, reference: Option<byroredux_core::ecs::storage::EntityId>, elapsed: f32, script: &'a ScriptRecord) -> Self {
+        Self { world, owner, reference, elapsed, script, action_ref: None, declined: std::cell::Cell::new(0) }
+    }
 }
 
 impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
@@ -415,8 +424,16 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
             0x100c => Some(ObScriptValue::Num(self.elapsed)),
             // GetButtonPressed — the last answered box, once (M47.3).
             0x101f => Some(ObScriptValue::Num(crate::messages::take_button(self.world) as f32)),
-            // GetSelf — the owning quest's form id (quest scripts).
+            // GetSelf — the script owner's form id.
             0x10ce => Some(ObScriptValue::Ref(self.owner)),
+            // GetActionRef / IsActionRef — the reference that activated the
+            // owner, inside the event block that has one; a null reference
+            // (and false) everywhere else.
+            0x10cd => Some(ObScriptValue::Ref(self.action_ref.unwrap_or(0))),
+            0x1069 => {
+                let asked = ref_arg(0).unwrap_or(0);
+                Some(ObScriptValue::Num((asked != 0 && Some(asked) == self.action_ref) as i32 as f32))
+            }
             // GetGlobalValue-style global reads arrive via the ' G<n>' escape
             // as CMD_GET_GLOBAL; direct numeric global reads by form id:
             crate::obscript_vm::CMD_GET_GLOBAL => {
@@ -505,7 +522,16 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     None => self.decline(cmd),
                 }
             }
-            _ => match crate::obscript_actions::run(self.world, cmd, args, caller, self.reference.map(|entity| (self.owner, entity))) {
+            _ => match crate::obscript_actions::run(
+                self.world,
+                cmd,
+                args,
+                &crate::obscript_actions::Context {
+                    caller,
+                    known: self.reference.map(|entity| (self.owner, entity)),
+                    action_ref: self.action_ref,
+                },
+            ) {
                 Action::Done { value, effect: text } => {
                     if !text.is_empty() {
                         effect(self, text);
@@ -643,6 +669,7 @@ impl ObScriptCommandHost<'_> {
     /// whose reference could not be resolved — under the per-quest census,
     /// and answer like an unknown command (value 0). Never faked.
     fn decline(&self, cmd: u16) -> Option<ObScriptValue> {
+        self.declined.set(self.declined.get() + 1);
         if let Some(mut timers) = self.world.try_resource_mut::<ObScriptQuestTimers>() {
             *timers
                 .unknown_commands
@@ -743,13 +770,7 @@ mod host_tests {
         args: &[ObScriptValue],
     ) -> Option<ObScriptValue> {
         let script = ScriptRecord::default();
-        let mut host = ObScriptCommandHost {
-            world,
-            owner: OWN,
-            reference: None,
-            elapsed: 0.0,
-            script: &script,
-        };
+        let mut host = ObScriptCommandHost::new(world, OWN, None, 0.0, &script);
         host.call(cmd, args, None)
     }
 
@@ -805,7 +826,7 @@ mod host_tests {
     /// `<ref>.Cmd` — the explicit-caller form, which carries the caller's form id.
     fn call_on(world: &World, cmd: u16, args: &[ObScriptValue], caller: u32) -> Option<ObScriptValue> {
         let script = ScriptRecord::default();
-        let mut host = ObScriptCommandHost { world, owner: OWN, reference: None, elapsed: 0.0, script: &script };
+        let mut host = ObScriptCommandHost::new(world, OWN, None, 0.0, &script);
         host.call(cmd, args, Some(caller))
     }
 
@@ -840,6 +861,26 @@ mod host_tests {
         world.insert(actor, byroredux_core::ecs::components::Dead);
         assert_eq!(call_on(&world, GET_DEAD, &[], ACHR), Some(ObScriptValue::Num(1.0)));
         assert_eq!(declined(&world, GET_DEAD), 0, "answered, not declined");
+    }
+
+    /// `GetActionRef` / `IsActionRef` answer only inside the event block that has
+    /// an actor ("It will only return a value during the frame after the object
+    /// has been interacted with").
+    #[test]
+    fn the_action_ref_commands_answer_only_while_a_block_has_an_activator() {
+        const GET_ACTION_REF: u16 = 0x10cd;
+        const IS_ACTION_REF: u16 = 0x1069;
+        let world = world();
+        let script = ScriptRecord::default();
+        let mut host = ObScriptCommandHost::new(&world, OWN, None, 0.0, &script);
+        assert_eq!(host.call(GET_ACTION_REF, &[], None), Some(ObScriptValue::Ref(0)));
+        assert_eq!(host.call(IS_ACTION_REF, &[ObScriptValue::Ref(0x14)], None), Some(ObScriptValue::Num(0.0)));
+        host.action_ref = Some(0x14);
+        assert_eq!(host.call(GET_ACTION_REF, &[], None), Some(ObScriptValue::Ref(0x14)));
+        assert_eq!(host.call(IS_ACTION_REF, &[ObScriptValue::Ref(0x14)], None), Some(ObScriptValue::Num(1.0)));
+        assert_eq!(host.call(IS_ACTION_REF, &[ObScriptValue::Ref(0x15)], None), Some(ObScriptValue::Num(0.0)));
+        assert_eq!(host.call(IS_ACTION_REF, &[ObScriptValue::Ref(0)], None), Some(ObScriptValue::Num(0.0)), "a null ref is nobody");
+        assert_eq!(host.declined.get(), 0);
     }
 
     /// M47.3 phase 2 actions go through the host: a done action is logged and

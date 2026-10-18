@@ -144,6 +144,12 @@ pub fn default_activation_blocked(world: &World, entity: EntityId) -> bool {
     if world.has::<crate::NativeActivation>(entity) {
         return false;
     }
+    // A legacy reference whose script has an `OnActivate` block: the block runs
+    // *instead of* default processing, which only its `Activate` command (a
+    // native-only activation, above) performs.
+    if crate::obscript_objects::has_activate_block(world, entity) {
+        return true;
+    }
     let Some(reference) = crate::condition::entity_global_form_id(world, entity) else {
         return false;
     };
@@ -726,6 +732,21 @@ pub struct PendingFragmentActivations(
     /// with [`crate::NativeActivation`] when delivered.
     pub(crate) Vec<(EntityId, EntityId)>,
 );
+
+impl PendingFragmentActivations {
+    /// Queue a default-processing-only activation of `target` by `activator`
+    /// (delivered next frame with [`crate::NativeActivation`]). `false` when the
+    /// queue was never installed.
+    pub(crate) fn queue_native(world: &World, target: EntityId, activator: EntityId) -> bool {
+        match world.try_resource_mut::<Self>() {
+            Some(mut pending) => {
+                pending.1.push((target, activator));
+                true
+            }
+            None => false,
+        }
+    }
+}
 
 impl Resource for PendingFragmentActivations {}
 

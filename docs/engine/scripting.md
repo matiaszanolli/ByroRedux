@@ -2351,25 +2351,40 @@ lines with its compiled blocks (`obscript_tools census`): `GameMode` `0`,
 `MenuMode` `1`, `OnActivate` `2`, `OnAdd` `3`, `OnHit` `8`, `OnDeath` `0xa`,
 `OnLoad` `0x15`, `OnTrigger` `0x18`, `OnStartCombat` `0x19`, `OnReset` `0x1e`;
 `0x1a` is `OnTriggerEnter` on FO3/FNV and `OnTriggerActor` on Oblivion, so the
-numbering is not one table across the three. Three blocks run: `GameMode` every
-frame for every loaded scripted reference, `OnLoad` on the cell-load marker and
+numbering is not one table across the three. Four blocks run: `GameMode` every
+frame for every loaded scripted reference, `OnLoad` on the cell-load marker,
 `OnDeath` on the death marker (read, not drained: the Papyrus reference system
-owns it). Locals live in the reference's saved `ScriptVariables` by name, so they
+owns it) and `OnActivate` (below). Locals live in the reference's saved `ScriptVariables` by name, so they
 survive a cell unload and a save with no second ledger. All object scripts of
-Oblivion, Fallout 3 and New Vegas walk cleanly and their three blocks run to
+Oblivion, Fallout 3 and New Vegas walk cleanly and those four blocks run to
 `End` under both gate answers (`legacy_object_scripts_walk_and_run_without_
 malformed_bytecode`, ignored: needs the masters). `BYRO_NO_OBSCRIPT_OBJECTS`
 leaves the table uninstalled.
 
-`OnActivate` is deliberately not run. In the original engine a reference with an
-`OnActivate` block skips default processing unless the block calls `Activate`
-(GECK *Activate*: the optional *RunOnActivateBlockFlag*), whereas here the native
-consumers — doors, containers, pickups — run on every `ActivateEvent`. Running
-the block alone would open a script-locked door anyway, so it waits for the
-`Activate` command and the default-processing gate (the existing
-`ReferenceActivationBlocks` is the nearest state) to be designed together. The
-same goes for `IsActionRef` / `GetActionRef` (`0x1069` / `0x10cd`), which only
-mean something inside an activation or trigger block.
+**`OnActivate`.** The GECK *Activate* page: a reference's `OnActivate` block runs
+"instead of the default activation", `Activate` (flag `0` or unwritten) performs
+the default one "bypassing any OnActivate Block", and `Activate <actor> 1` runs
+the block immediately. The engine already had the gate for this — every native
+consumer (doors, containers, pickups, dialogue, the carried-key spend) asks
+`default_activation_blocked`, Papyrus's `BlockActivation` — so a reference whose
+script has an `OnActivate` block now counts as blocked, the block runs with
+`GetActionRef` / `IsActionRef` (`0x10cd` / `0x1069`) answering for the activator
+(and null/false anywhere else), and `Activate` queues the native-only activation
+(`Activate(…, true)`'s path, delivered next frame with `NativeActivation`, which
+the object system does not run the block for again). `Activate <actor> 1` nests
+at most four deep, as the GECK runs the target "immediately" and a cycle would
+not return.
+
+One deliberate deviation from the original: if an `OnActivate` run **declined a
+command** (one the host does not model) or came back malformed, it is unknown
+whether the script meant to call `Activate`, and withholding would leave a door
+nothing can open, so the default activation goes ahead — what the reference did
+before scripts ran. Only a block the host ran in full can withhold it. On the
+masters (every gate answered true) 239 of FNV's 524 `OnActivate` blocks, 139 of
+FO3's 373 and 189 of Oblivion's 888 reach an `Activate`; the rest are objects that
+replace default processing outright, which is the case the withholding is for.
+The GECK's bug note (flag `0` on an unscripted object stops it being activated
+normally ever again) is not modelled.
 
 ### The R5 demo translations (`papyrus_demo/`)
 

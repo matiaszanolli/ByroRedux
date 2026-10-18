@@ -8,20 +8,31 @@
 //! with no calling reference (`Disable`, `GetDead`, `MoveTo player`) acts on the
 //! script's own reference.
 //!
-//! Three blocks run, on the events the engine already raises:
+//! Four blocks run, on the events the engine already raises:
 //!
 //! | block | runs |
 //! |-------|------|
 //! | `GameMode` | every frame, for every loaded scripted reference |
 //! | `OnLoad` | the frame the reference's cell loads ([`OnCellLoadEvent`]) |
 //! | `OnDeath` | the frame an actor dies ([`OnDeathEvent`]) |
+//! | `OnActivate` | the frame the reference is activated ([`ActivateEvent`]), with `GetActionRef` the activator |
 //!
-//! The rest are not run yet. **`OnActivate` is deliberately left out**: in the
-//! original engine a reference that has an `OnActivate` block skips default
-//! processing unless the block calls `Activate`, while here the native consumers
-//! (doors, containers, pickups) run on every [`ActivateEvent`]. Running the block
-//! without modelling that would open a script-locked door anyway — it needs the
-//! `Activate` command and the default-processing gate designed together.
+//! **`OnActivate` replaces default processing.** The GECK *Activate* page: a
+//! reference's `OnActivate` block runs "instead of the default activation", and
+//! the script's own `Activate` command performs the default one. So a reference
+//! whose script has the block counts as default-activation-blocked
+//! ([`has_activate_block`], read by [`crate::default_activation_blocked`], the
+//! gate every native consumer — doors, containers, pickups, dialogue — already
+//! uses for Papyrus's `BlockActivation`), and `Activate` queues the native-only
+//! activation those consumers then honour. An activation that already carries
+//! [`NativeActivation`] is the default one: the block does not run again.
+//!
+//! **A block that cannot be trusted does not lock the reference.** If an
+//! `OnActivate` run declined any command (one the host does not model) or came
+//! back malformed, whether the script meant to call `Activate` is unknown, and
+//! staying silent would leave a door nothing can open. The default activation
+//! goes ahead then — what the reference did before scripts ran — so only a block
+//! the host ran in full can withhold it.
 //!
 //! **Variables.** A script's locals live in the reference's [`ScriptVariables`],
 //! by name — the saved, delta-restored component the Papyrus path and the
@@ -39,10 +50,11 @@ use byroredux_core::ecs::{Component, Resource, SparseSetStorage, World};
 use byroredux_plugin::esm::records::{ScriptRecord, ScriptType};
 
 use crate::condition::entity_global_form_id;
-use crate::events::{OnCellLoadEvent, OnDeathEvent};
+use crate::events::{ActivateEvent, NativeActivation, OnCellLoadEvent, OnDeathEvent};
 use crate::obscript_quests::ObScriptCommandHost;
 use crate::obscript_vm::{
-    BlockOutcome, ObScriptProgram, VmState, BLOCK_GAME_MODE, BLOCK_ON_DEATH, BLOCK_ON_LOAD,
+    BlockOutcome, ObScriptProgram, VmState, BLOCK_GAME_MODE, BLOCK_ON_ACTIVATE, BLOCK_ON_DEATH,
+    BLOCK_ON_LOAD,
 };
 use crate::vm_state::ScriptVariables;
 use byroredux_plugin::esm::records::condition::ConditionStringId;
@@ -127,21 +139,22 @@ struct Due {
     form: u32,
     script: Arc<ScriptRecord>,
     blocks: Vec<u16>,
+    /// Who activated the reference this frame, when it was activated.
+    activator: Option<EntityId>,
 }
 
 /// Run this frame's object-script blocks. Exclusive: scripts write the quest,
 /// enable and package state the other Update systems read, and the lock order
 /// is the quest tick's (nothing is held across a run).
 pub fn obscript_object_system(world: &World, dt: f32) {
-    let due = collect_due(world);
-    for Due { entity, form, script, blocks } in due {
+    for Due { entity, form, script, blocks, activator } in collect_due(world) {
         for block in blocks {
-            let outcome = run_block(world, entity, form, &script, block, dt);
-            if let BlockOutcome::Malformed(at) = outcome {
-                log::warn!("ObScript object script {:08X}: malformed bytecode at {at:#06x} (block {block:#04x})", script.form_id);
-                if let Some(mut table) = world.try_resource_mut::<ObScriptObjectTable>() {
-                    table.malformed.insert((script.form_id, block));
+            if block == BLOCK_ON_ACTIVATE {
+                if let Some(activator) = activator {
+                    deliver_activation(world, entity, activator, dt);
                 }
+            } else {
+                run_block(world, entity, form, &script, block, dt, None);
             }
         }
     }
@@ -166,6 +179,24 @@ fn collect_due(world: &World) -> Vec<Due> {
         .query::<OnDeathEvent>()
         .map(|events| events.iter().map(|(entity, _)| entity).collect())
         .unwrap_or_default();
+    // Activations, minus the native-only ones: "no OnActivate event will be sent
+    // to any scripts" for the default processing a script asked for.
+    let activated: HashMap<EntityId, EntityId> = {
+        let native: HashSet<EntityId> = world
+            .query::<NativeActivation>()
+            .map(|marks| marks.iter().map(|(entity, _)| entity).collect())
+            .unwrap_or_default();
+        world
+            .query::<ActivateEvent>()
+            .map(|events| {
+                events
+                    .iter()
+                    .filter(|(entity, _)| !native.contains(entity))
+                    .map(|(entity, event)| (entity, event.activator))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     let Some(table) = world.try_resource::<ObScriptObjectTable>() else {
         return Vec::new();
     };
@@ -174,6 +205,7 @@ fn collect_due(world: &World) -> Vec<Due> {
         let Some(object) = table.scripts.get(&script_id) else { continue };
         let wanted = [
             (BLOCK_ON_LOAD, loaded.contains(&entity)),
+            (BLOCK_ON_ACTIVATE, activated.contains_key(&entity)),
             (BLOCK_ON_DEATH, died.contains(&entity)),
             (BLOCK_GAME_MODE, true),
         ];
@@ -188,20 +220,106 @@ fn collect_due(world: &World) -> Vec<Due> {
             continue;
         }
         let Some(form) = entity_global_form_id(world, entity) else { continue };
-        due.push(Due { entity, form, script: Arc::clone(&object.record), blocks });
+        due.push(Due { entity, form, script: Arc::clone(&object.record), blocks, activator: activated.get(&entity).copied() });
     }
     due
 }
 
+/// What one block run came to.
+struct Ran {
+    outcome: BlockOutcome,
+    /// Commands the host declined during the run.
+    declined: u32,
+}
+
 /// Run one block against `entity`, seeding the script's locals from its
-/// [`ScriptVariables`] and writing back the ones it changed.
-fn run_block(world: &World, entity: EntityId, form: u32, script: &ScriptRecord, block: u16, dt: f32) -> BlockOutcome {
+/// [`ScriptVariables`] and writing back the ones it changed. A malformed block is
+/// reported once and not run again. `action_ref` is the activator while an
+/// activation block runs.
+fn run_block(world: &World, entity: EntityId, form: u32, script: &ScriptRecord, block: u16, dt: f32, action_ref: Option<u32>) -> Ran {
     let mut state = VmState { locals: seed_locals(world, entity, script) };
     let before = state.locals.clone();
-    let mut host = ObScriptCommandHost { world, owner: form, reference: Some(entity), elapsed: dt, script };
+    let mut host = ObScriptCommandHost::new(world, form, Some(entity), dt, script);
+    host.action_ref = action_ref;
     let outcome = ObScriptProgram::new(script).run_block(block, &mut state, &mut host);
+    let declined = host.declined.get();
     store_locals(world, entity, script, &before, &state.locals);
-    outcome
+    if let BlockOutcome::Malformed(at) = outcome {
+        log::warn!("ObScript object script {:08X}: malformed bytecode at {at:#06x} (block {block:#04x})", script.form_id);
+        if let Some(mut table) = world.try_resource_mut::<ObScriptObjectTable>() {
+            table.malformed.insert((script.form_id, block));
+        }
+    }
+    Ran { outcome, declined }
+}
+
+/// Whether `entity` runs a script that has an `OnActivate` block (and one that
+/// has not come back malformed): the reference whose default activation that
+/// block replaces.
+pub fn has_activate_block(world: &World, entity: EntityId) -> bool {
+    let Some(script) = world.get::<ObScriptInstance>(entity).map(|instance| instance.script) else {
+        return false;
+    };
+    world.try_resource::<ObScriptObjectTable>().is_some_and(|table| {
+        table.scripts.get(&script).is_some_and(|object| object.blocks.contains(&BLOCK_ON_ACTIVATE))
+            && !table.malformed.contains(&(script, BLOCK_ON_ACTIVATE))
+    })
+}
+
+/// The reference's activator as a FormID: the player is `0x14`.
+fn activator_form(world: &World, activator: EntityId) -> Option<u32> {
+    if crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(activator) {
+        return Some(crate::PLAYER_REFERENCE);
+    }
+    entity_global_form_id(world, activator)
+}
+
+/// How deep activations may nest (`A.Activate B 1` from inside `B`'s block
+/// activating `A` ...): the GECK runs the target's script "immediately", so
+/// a cycle would not return.
+const MAX_ACTIVATION_DEPTH: u8 = 4;
+
+thread_local! {
+    static ACTIVATION_DEPTH: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `entity`'s `OnActivate` block for `activator`; when the block cannot be
+/// trusted to have decided (it declined a command, or is malformed), perform the
+/// default activation, which is what the reference did before scripts ran.
+/// Returns whether a block ran. `dt` is the frame's, `0` for a nested run.
+fn deliver_activation(world: &World, entity: EntityId, activator: EntityId, dt: f32) -> bool {
+    let Some(script_id) = world.get::<ObScriptInstance>(entity).map(|instance| instance.script) else {
+        return false;
+    };
+    let Some(object) = world
+        .try_resource::<ObScriptObjectTable>()
+        .and_then(|table| table.scripts.get(&script_id).map(|o| (Arc::clone(&o.record), o.blocks.contains(&BLOCK_ON_ACTIVATE))))
+    else {
+        return false;
+    };
+    let (script, has_block) = object;
+    let (Some(form), Some(activator_form)) = (entity_global_form_id(world, entity), activator_form(world, activator)) else {
+        return false;
+    };
+    if !has_block || ACTIVATION_DEPTH.get() >= MAX_ACTIVATION_DEPTH {
+        return false;
+    }
+    ACTIVATION_DEPTH.set(ACTIVATION_DEPTH.get() + 1);
+    let ran = run_block(world, entity, form, &script, BLOCK_ON_ACTIVATE, dt, Some(activator_form));
+    ACTIVATION_DEPTH.set(ACTIVATION_DEPTH.get() - 1);
+    if ran.declined > 0 || matches!(ran.outcome, BlockOutcome::Malformed(_)) {
+        log::debug!(
+            "ObScript {form:08X} OnActivate: {} declined command(s): default activation goes ahead",
+            ran.declined
+        );
+        crate::PendingFragmentActivations::queue_native(world, entity, activator);
+    }
+    true
+}
+
+/// `target.Activate <actor> 1`: run the target's `OnActivate` block now.
+pub(crate) fn run_activate_block(world: &World, target: EntityId, activator: EntityId) -> bool {
+    deliver_activation(world, target, activator, 0.0)
 }
 
 fn seed_locals(world: &World, entity: EntityId, script: &ScriptRecord) -> HashMap<u16, f32> {
@@ -245,6 +363,7 @@ fn store_locals(world: &World, entity: EntityId, script: &ScriptRecord, before: 
 mod tests {
     use super::*;
     use byroredux_core::ecs::components::FormIdComponent;
+    use crate::obscript_vm::BLOCK_ON_ACTIVATE;
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
     use byroredux_plugin::esm::records::{ScriptLocalVar, ScriptRef};
 
@@ -258,28 +377,33 @@ mod tests {
         out
     }
 
-    /// `[block] set counter to counter + 1 [End]` — a local `counter` (slot 1)
-    /// incremented, the smallest block whose effect survives between runs.
-    fn counting_block(block: u16) -> Vec<u8> {
-        // `' s1'  [expr len] ' s1' 'n' 1 +` : reverse-polish `counter 1 +`.
+    /// `set counter to counter + 1` — a local `counter` (slot 1) incremented, the
+    /// smallest body whose effect survives between runs.
+    fn counting_body() -> Vec<u8> {
+        // `' s1'  ' n1'  +` : reverse-polish `counter 1 +`.
         let mut expr = vec![b' ', b's', 1, 0];
         expr.extend_from_slice(&[b' ', b'n', 1, 0, 0, 0]);
         expr.extend_from_slice(b"+ ");
         let mut set = vec![b's', 1, 0];
         set.extend_from_slice(&(expr.len() as u16).to_le_bytes());
         set.extend_from_slice(&expr);
+        statement(0x15, &set)
+    }
+
+    /// `Begin <block>` .. body .. `End`.
+    fn block_with(block: u16, body: Vec<u8>) -> Vec<u8> {
         let mut begin = block.to_le_bytes().to_vec();
         begin.extend_from_slice(&0u32.to_le_bytes());
         let mut bytes = statement(0x10, &begin);
-        bytes.extend(statement(0x15, &set));
+        bytes.extend(body);
         bytes.extend(statement(0x11, &[]));
         bytes
     }
 
-    fn script(blocks: &[u16]) -> ScriptRecord {
+    fn script_with(blocks: &[(u16, Vec<u8>)]) -> ScriptRecord {
         let mut compiled = statement(0x1d, &[]);
-        for &block in blocks {
-            compiled.extend(counting_block(block));
+        for (block, body) in blocks {
+            compiled.extend(block_with(*block, body.clone()));
         }
         ScriptRecord {
             form_id: SCRIPT,
@@ -293,13 +417,21 @@ mod tests {
         }
     }
 
+    fn script(blocks: &[u16]) -> ScriptRecord {
+        script_with(&blocks.iter().map(|&block| (block, counting_body())).collect::<Vec<_>>())
+    }
+
     fn world_with(blocks: &[u16]) -> (World, EntityId) {
+        world_for(script(blocks))
+    }
+
+    fn world_for(script: ScriptRecord) -> (World, EntityId) {
         let mut world = World::new();
         crate::register(&mut world);
         let mut pool = FormIdPool::new();
         let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("FalloutNV.esm"), local: LocalFormId(REF) });
         world.insert_resource(pool);
-        let script = script(blocks);
+        world.insert_resource(crate::PendingFragmentActivations::default());
         assert_eq!(install_object_scripts(&mut world, &HashMap::from([(SCRIPT, script)])), 1);
         let entity = world.spawn();
         world.insert(entity, FormIdComponent(id));
@@ -373,16 +505,105 @@ mod tests {
         assert_eq!(counter(&world, entity), 0.0);
     }
 
+    const ACTIVATOR: u32 = 0x0002_0002;
+
+    /// A world with the scripted reference plus an activator entity.
+    fn world_with_activator(script: ScriptRecord) -> (World, EntityId, EntityId) {
+        let (mut world, entity) = world_for(script);
+        let mut pool = world.resource_mut::<FormIdPool>();
+        let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("FalloutNV.esm"), local: LocalFormId(ACTIVATOR) });
+        drop(pool);
+        let activator = world.spawn();
+        world.insert(activator, FormIdComponent(id));
+        (world, entity, activator)
+    }
+
+    fn native_queue(world: &World) -> Vec<(EntityId, EntityId)> {
+        world.resource::<crate::PendingFragmentActivations>().1.clone()
+    }
+
+    /// `Activate` (no arguments) inside the block performs the default activation
+    /// with the block's own activator; the block itself withholds it until then.
+    #[test]
+    fn on_activate_replaces_default_processing_until_the_script_activates() {
+        let body = [counting_body(), statement(0x100d, &[0, 0])].concat();
+        let (mut world, entity, activator) = world_with_activator(script_with(&[(BLOCK_ON_ACTIVATE, body)]));
+        assert!(has_activate_block(&world, entity));
+        assert!(crate::default_activation_blocked(&world, entity), "the block replaces native processing");
+
+        world.insert_resource(crate::obscript_quests::ObScriptEffectLog::default());
+        world.insert_resource(crate::obscript_quests::ObScriptQuestTimers::default());
+        world.insert(entity, ActivateEvent { activator });
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, entity), 1.0, "the block ran");
+        assert_eq!(native_queue(&world), vec![(entity, activator)], "its Activate asked for the default");
+        // The queue entry is the script's own `Activate`, not the declined-command
+        // fallback: nothing was declined.
+        assert!(world.resource::<crate::obscript_quests::ObScriptQuestTimers>().unknown_commands.is_empty());
+        assert_eq!(
+            world.resource::<crate::obscript_quests::ObScriptEffectLog>().entries.back().map(|(_, text)| text.as_str()),
+            Some("Activate 00020001 by 00020002"),
+        );
+    }
+
+    /// A block the host ran in full that never calls `Activate` leaves the
+    /// reference un-activated: the scripted lock.
+    #[test]
+    fn a_fully_modelled_block_without_activate_withholds_default_processing() {
+        let (mut world, entity, activator) = world_with_activator(script_with(&[(BLOCK_ON_ACTIVATE, counting_body())]));
+        world.insert(entity, ActivateEvent { activator });
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, entity), 1.0);
+        assert!(native_queue(&world).is_empty());
+    }
+
+    /// A block that declined a command cannot be trusted to have decided, so the
+    /// default activation goes ahead instead of leaving the reference stuck.
+    #[test]
+    fn a_block_that_declined_a_command_falls_back_to_default_processing() {
+        let body = [counting_body(), statement(0x2fff, &[0, 0])].concat();
+        let (mut world, entity, activator) = world_with_activator(script_with(&[(BLOCK_ON_ACTIVATE, body)]));
+        world.insert(entity, ActivateEvent { activator });
+        obscript_object_system(&world, 0.016);
+        assert_eq!(native_queue(&world), vec![(entity, activator)]);
+    }
+
+    /// The default activation a script asked for is not an `OnActivate` event: the
+    /// block does not run for it, and the native consumers are no longer blocked.
+    #[test]
+    fn the_native_activation_a_script_asked_for_does_not_rerun_the_block() {
+        let (mut world, entity, activator) = world_with_activator(script_with(&[(BLOCK_ON_ACTIVATE, counting_body())]));
+        world.insert(entity, ActivateEvent { activator });
+        world.insert(entity, NativeActivation);
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, entity), 0.0);
+        assert!(!crate::default_activation_blocked(&world, entity), "default processing goes ahead");
+    }
+
+    /// `target.Activate <actor> 1` runs the target's block now, as `GetActionRef`
+    /// for that actor; a target with no block runs nothing.
+    #[test]
+    fn activate_with_the_run_block_flag_runs_the_targets_block_immediately() {
+        let (world, entity, activator) = world_with_activator(script_with(&[(BLOCK_ON_ACTIVATE, counting_body())]));
+        assert!(run_activate_block(&world, entity, activator));
+        assert_eq!(counter(&world, entity), 1.0);
+        let (world, entity, activator) = world_with_activator(script(&[BLOCK_GAME_MODE]));
+        assert!(!run_activate_block(&world, entity, activator), "no OnActivate block");
+        assert_eq!(counter(&world, entity), 0.0);
+    }
+
     /// Every object script of the three legacy masters walks cleanly, and the
-    /// three blocks this runtime runs decode to their `End` with every command
+    /// four blocks this runtime runs decode to their `End` with every command
     /// answering 0 and with every command answering 1 (both arms of each gate).
     #[test]
     #[ignore = "needs Oblivion.esm, Fallout3.esm and FalloutNV.esm on disk"]
     fn legacy_object_scripts_walk_and_run_without_malformed_bytecode() {
         use crate::obscript_vm::{ObScriptHost, ObScriptValue};
-        struct Fixed(f32);
+        /// Answers every command with a fixed value and notes which ids it was asked.
+        struct Fixed(f32, std::collections::BTreeSet<u16>);
         impl ObScriptHost for Fixed {
-            fn call(&mut self, _: u16, _: &[ObScriptValue], _: Option<u32>) -> Option<ObScriptValue> {
+            fn call(&mut self, cmd: u16, _: &[ObScriptValue], _: Option<u32>) -> Option<ObScriptValue> {
+                self.1.insert(cmd);
                 Some(ObScriptValue::Num(self.0))
             }
         }
@@ -400,6 +621,8 @@ mod tests {
             }
             let index = byroredux_plugin::esm::parse_esm(&std::fs::read(&path).unwrap()).unwrap();
             let (mut scripts, mut unwalkable, mut malformed) = (0usize, Vec::new(), Vec::new());
+            // OnActivate blocks with every gate true: do they ever reach `Activate`?
+            let (mut activate_blocks, mut calls_activate) = (0usize, 0usize);
             for script in index.scripts.values().filter(|s| s.script_type == ScriptType::Object && !s.compiled.is_empty()) {
                 scripts += 1;
                 let program = ObScriptProgram::new(script);
@@ -407,15 +630,21 @@ mod tests {
                     unwalkable.push(script.form_id);
                     continue;
                 }
-                for block in [BLOCK_GAME_MODE, BLOCK_ON_LOAD, BLOCK_ON_DEATH] {
+                for block in [BLOCK_GAME_MODE, BLOCK_ON_LOAD, BLOCK_ON_DEATH, BLOCK_ON_ACTIVATE] {
                     for answer in [0.0f32, 1.0] {
                         let mut state = VmState::default();
-                        if let BlockOutcome::Malformed(at) = program.run_block(block, &mut state, &mut Fixed(answer)) {
+                        let mut host = Fixed(answer, Default::default());
+                        if let BlockOutcome::Malformed(at) = program.run_block(block, &mut state, &mut host) {
                             malformed.push((script.form_id, block, at));
+                        }
+                        if block == BLOCK_ON_ACTIVATE && answer == 1.0 && program.block_types().is_some_and(|b| b.contains(&block)) {
+                            activate_blocks += 1;
+                            calls_activate += usize::from(host.1.contains(&0x100d));
                         }
                     }
                 }
             }
+            eprintln!("{name}: {scripts} object scripts; {activate_blocks} OnActivate blocks, {calls_activate} reach Activate with every gate true");
             assert!(scripts > 1000, "{name}: only {scripts} object scripts");
             assert!(unwalkable.is_empty(), "{name}: unwalkable object scripts {unwalkable:x?}");
             assert!(malformed.is_empty(), "{name}: malformed bytecode in {malformed:x?}");

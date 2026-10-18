@@ -11,6 +11,7 @@
 //! | `0x1023` | GetDisabled | [`reference_enabled`] (scripted state, else the authored flag) |
 //! | `0x109e` | MoveTo | [`apply_move_to_effect`] (`Effect::MoveTo`); the player goes through [`PlayerMoveRequest`] (`Effect::MovePlayerTo`) |
 //! | `0x105e` | EvaluatePackage / EVP | [`request_package_evaluation`] (`Effect::EvaluatePackage`) |
+//! | `0x100d` | Activate | default activation as a native-only [`ActivateEvent`] (the Papyrus `Activate(…, true)` path), or with the run-block flag the target's `OnActivate` block ([`crate::obscript_objects`]) |
 //! | `0x1026` | PlaySound | [`PendingSoundPlays`] (the `Sound.Play` ingress), from the player |
 //! | `0x1097` / `0x1098` | AddScriptPackage / RemoveScriptPackage | [`crate::script_packages`] (the actor's one script-package slot, read by the ambient AI system) |
 //!
@@ -53,6 +54,7 @@ const CMD_GET_DISABLED: u16 = 0x1023;
 const CMD_EVALUATE_PACKAGE: u16 = 0x105e;
 const CMD_MOVE_TO: u16 = 0x109e;
 const CMD_PLAY_SOUND: u16 = 0x1026;
+const CMD_ACTIVATE: u16 = 0x100d;
 const CMD_ADD_SCRIPT_PACKAGE: u16 = 0x1097;
 const CMD_REMOVE_SCRIPT_PACKAGE: u16 = 0x1098;
 
@@ -67,17 +69,23 @@ pub(crate) enum Action {
     Declined,
 }
 
-/// Run `cmd` if it is a reference-bound action. `caller` is the explicit
-/// calling reference's FormID; every action here needs one. `known` is a
-/// reference whose entity the caller already holds (an object script's own),
-/// which saves a scan of the placed references.
-pub(crate) fn run(
-    world: &World,
-    cmd: u16,
-    args: &[ObScriptValue],
-    caller: Option<u32>,
-    known: Option<(u32, EntityId)>,
-) -> Action {
+/// What the host knows about the call besides its command and arguments.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Context {
+    /// The explicit (or defaulted) calling reference's FormID; every action
+    /// but `PlaySound` needs one.
+    pub caller: Option<u32>,
+    /// A reference whose entity the host already holds (an object script's
+    /// own), which saves a scan of the placed references.
+    pub known: Option<(u32, EntityId)>,
+    /// The reference that activated the owner, inside the event block that has
+    /// one: what an `Activate` with no actor argument activates by.
+    pub action_ref: Option<u32>,
+}
+
+/// Run `cmd` if it is a reference-bound action.
+pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let Context { caller, known, action_ref } = *context;
     if !matches!(
         cmd,
         CMD_ENABLE
@@ -88,6 +96,7 @@ pub(crate) fn run(
             | CMD_ADD_SCRIPT_PACKAGE
             | CMD_REMOVE_SCRIPT_PACKAGE
             | CMD_PLAY_SOUND
+            | CMD_ACTIVATE
     ) {
         return Action::Unhandled;
     }
@@ -138,6 +147,7 @@ pub(crate) fn run(
                 Action::Declined
             }
         }
+        CMD_ACTIVATE => activate(world, args, caller, known, action_ref),
         _ => move_to(world, args, caller, known),
     }
 }
@@ -148,6 +158,46 @@ fn entity_of(world: &World, form: u32, known: Option<(u32, EntityId)>) -> Option
     match known {
         Some((known_form, entity)) if known_form == form => Some(entity),
         _ => resolve_entity_by_global_form_id(world, form),
+    }
+}
+
+/// `target.Activate [ActionRef] [RunOnActivateBlockFlag]` (GECK *Activate*):
+/// "Executes the activation event associated with the calling object". With the
+/// flag `0` or unwritten the target performs its **default** activation, "bypassing
+/// any OnActivate Block in its script": that is the native-only activation the
+/// Papyrus `Activate(…, true)` queues (its door / container / pickup consumers
+/// run, the script delivery and the script's activation block stand aside). With
+/// `1` "the OnActivate block of the object will be run *instead* of the default
+/// activation", immediately. `ActionRef` is the activator; unwritten, it is the
+/// one the running event block has ("If the calling reference doesn't have an
+/// ActionRef, the object won't be activated").
+///
+/// Not modelled: the GECK's bug note that flag `0` on an unscripted object stops it
+/// being activated normally ever again.
+fn activate(world: &World, args: &[ObScriptValue], target: u32, known: Option<(u32, EntityId)>, action_ref: Option<u32>) -> Action {
+    let activator_form = match args.first().copied() {
+        Some(ObScriptValue::Ref(0)) => None,
+        Some(ObScriptValue::Ref(form)) => Some(form),
+        _ => action_ref,
+    };
+    let (Some(target_entity), Some(activator_form)) = (entity_of(world, target, known), activator_form) else {
+        return Action::Declined;
+    };
+    let Some(activator) = entity_of(world, activator_form, known) else {
+        return Action::Declined;
+    };
+    let run_block = args.get(1).is_some_and(|flag| flag.as_num() != 0.0);
+    let effect = format!("Activate {target:08X} by {activator_form:08X}{}", if run_block { " (OnActivate block)" } else { "" });
+    let done = if run_block {
+        crate::obscript_objects::run_activate_block(world, target_entity, activator);
+        true
+    } else {
+        crate::PendingFragmentActivations::queue_native(world, target_entity, activator)
+    };
+    if done {
+        Action::Done { value: None, effect }
+    } else {
+        Action::Declined
     }
 }
 
@@ -220,7 +270,7 @@ mod tests {
 
     /// [`super::run`] with no known caller entity: the callers are found by form id.
     fn run(world: &World, cmd: u16, args: &[ObScriptValue], caller: Option<u32>) -> Action {
-        super::run(world, cmd, args, caller, None)
+        super::run(world, cmd, args, &Context { caller, ..Context::default() })
     }
 
     fn done(effect: &str) -> Action {
@@ -402,6 +452,28 @@ mod tests {
         assert_eq!(remove(&world), done("RemoveScriptPackage 00010001"));
         assert_eq!(script_package_of(&world, moved), None);
         assert_eq!(remove(&world), done("RemoveScriptPackage 00010001"));
+    }
+
+    /// `Activate` with the flag unwritten or `0` is the native-only default
+    /// activation, by the written actor or else the running block's.
+    #[test]
+    fn activate_queues_the_default_activation_by_the_named_or_the_current_actor() {
+        let (mut world, moved, marker) = world(GameKind::Fallout3NV);
+        world.insert_resource(crate::PendingFragmentActivations::default());
+        let queued = |world: &World| world.resource::<crate::PendingFragmentActivations>().1.clone();
+        let activate = |world: &World, args: &[ObScriptValue], action_ref: Option<u32>| {
+            super::run(world, CMD_ACTIVATE, args, &Context { caller: Some(MOVED), action_ref, ..Context::default() })
+        };
+        assert_eq!(activate(&world, &[ObScriptValue::Ref(MARKER)], None), done("Activate 00010001 by 00010002"));
+        assert_eq!(queued(&world), vec![(moved, marker)]);
+        // Unwritten: the block's own activator.
+        assert_eq!(activate(&world, &[], Some(MARKER)), done("Activate 00010001 by 00010002"));
+        assert_eq!(queued(&world).len(), 2);
+        // "If the calling reference doesn't have an ActionRef, the object won't be activated."
+        assert_eq!(activate(&world, &[], None), Action::Declined);
+        assert_eq!(activate(&world, &[ObScriptValue::Ref(0)], Some(MARKER)), Action::Declined);
+        assert_eq!(activate(&world, &[ObScriptValue::Ref(0x00FF_FFFF)], None), Action::Declined, "an actor that is not loaded");
+        assert_eq!(queued(&world).len(), 2);
     }
 
     /// `PlaySound` is non-locational: it needs no calling reference and rides
