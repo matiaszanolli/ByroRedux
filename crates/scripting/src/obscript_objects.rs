@@ -1384,6 +1384,53 @@ mod tests {
         assert_eq!((stack(&world, holder), declined_of(&world, ITEM, 0x1022)), (3, 1));
     }
 
+    /// `OnReset` runs for a cell that expired: the cell was entered, left alone for the respawn
+    /// interval (72 hours by default), and entered again.
+    #[test]
+    fn on_reset_runs_when_the_cell_expired_between_visits() {
+        use crate::obscript_state::{mark_cell_reset, note_cell_entered};
+        const CELL: u32 = 0x0004_0001;
+        let (mut world, entity) = world_with(&[BLOCK_ON_RESET]);
+        world.insert(entity, byroredux_core::ecs::components::CellFormId(CELL));
+        // The first entry, and a return within the interval: no reset.
+        assert!(!note_cell_entered(&world, CELL, 100.0, None));
+        assert!(!note_cell_entered(&world, CELL, 150.0, None), "50 h later: not yet");
+        mark_cell_reset(&world, 0.016);
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, entity), 0.0);
+        // 80 h after the last entry: the cell has reset, once.
+        assert!(note_cell_entered(&world, CELL, 230.0, None));
+        mark_cell_reset(&world, 0.016);
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, entity), 1.0);
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, entity), 1.0, "the marker is spent");
+        // A load order that authors a longer interval keeps the cell as it was.
+        assert!(!note_cell_entered(&world, CELL, 400.0, Some(500.0)));
+    }
+
+    /// `OnMagicEffectHit` runs on the target's script when an effect lands: the block written for that
+    /// effect, and the one with no parameter for any.
+    #[test]
+    fn on_magic_effect_hit_runs_for_the_effect_that_landed() {
+        use crate::magic_effects::{magic_hit_system, start_effects, CastEffect, PendingMagicHits};
+        const MGEF_A: u32 = 0x0006_0001;
+        const MGEF_B: u32 = 0x0006_0002;
+        let mut record = script_with(&[]);
+        record.compiled.extend(block_with_param(crate::obscript_vm::BLOCK_ON_MAGIC_EFFECT_HIT, counting_body(), Some(1)));
+        record.compiled.extend(block_with(crate::obscript_vm::BLOCK_ON_MAGIC_EFFECT_HIT, counting_body()));
+        record.refs = vec![ScriptRef::Object(MGEF_A)];
+        let (mut world, target) = world_for(record);
+        world.insert_resource(PendingMagicHits::default());
+        let effect = |mgef| CastEffect { mgef, script: 0x99, duration: 1.0, magnitude: 1.0, value: None };
+        start_effects(&world, target, None, 0x500, &[effect(MGEF_A)], false);
+        magic_hit_system(&world, 0.016);
+        assert_eq!(counter(&world, target), 2.0, "the block for MGEF_A and the unparameterised one");
+        start_effects(&world, target, None, 0x500, &[effect(MGEF_B)], false);
+        magic_hit_system(&world, 0.016);
+        assert_eq!(counter(&world, target), 3.0, "only the unparameterised block answers another effect");
+    }
+
     /// `DropMe` takes the item out of the holder, places one in the world at the holder and ends the
     /// block, as `RemoveMe` does; the statement after it never runs.
     #[test]

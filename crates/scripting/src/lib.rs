@@ -78,7 +78,7 @@ pub mod obscript_speech;
 pub mod obscript_objects;
 pub mod obscript_quests;
 pub mod obscript_state;
-pub use obscript_state::SightQuery;
+pub use obscript_state::{SightQuery, SwimQuery};
 pub mod obscript_runtime;
 pub mod obscript_vm;
 pub mod package;

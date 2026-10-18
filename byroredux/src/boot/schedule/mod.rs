@@ -292,7 +292,12 @@ mod fragment_activation_order_tests {
         while let Some(rel) = setup[scan..].find("add_exclusive") {
             let at = scan + rel;
             scan = at + "add_exclusive".len();
-            let window = &setup[at..setup.len().min(at + 200)];
+            // A byte window, cut back to a character boundary (comments carry non-ASCII).
+            let mut window_end = setup.len().min(at + 200);
+            while !setup.is_char_boundary(window_end) {
+                window_end -= 1;
+            }
+            let window = &setup[at..window_end];
             let Some(stage_rel) = window.find("Stage::") else {
                 continue;
             };

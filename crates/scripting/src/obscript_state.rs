@@ -296,6 +296,48 @@ impl ItemTypeCodes {
     }
 }
 
+/// The load order's numeric game settings by editor ID (lowercased): `GetGS <setting>` — "returns the
+/// value of a game setting". `NOT_SAVED_BY_DESIGN`: rebuilt from the records (a `SetGS` is not modelled).
+#[derive(Debug, Default, Clone)]
+pub struct GameSettings(std::collections::HashMap<String, f32>);
+
+impl Resource for GameSettings {}
+
+impl GameSettings {
+    pub fn from_index(index: &byroredux_plugin::esm::records::EsmIndex) -> Self {
+        Self(
+            index
+                .game_settings
+                .values()
+                .filter_map(|setting| index.game_setting_float(&setting.editor_id).map(|value| (setting.editor_id.to_ascii_lowercase(), value)))
+                .collect(),
+        )
+    }
+}
+
+/// A game setting's value by editor ID (case-insensitive); a string setting has none.
+pub fn game_setting(world: &World, name: &str) -> Option<f32> {
+    world.try_resource::<GameSettings>()?.0.get(&name.to_ascii_lowercase()).copied()
+}
+
+/// `ShowWarning "text"`: "display/write a warning ... a message box on the screen" (GECK): shown as a
+/// message, written to the log by the caller.
+pub fn show_warning(world: &World, text: &str) {
+    crate::messages::show_obscript_message(
+        world,
+        crate::quest_stages::QuestFormId(0),
+        crate::obscript_vm::ObScriptMessage { text: text.to_owned(), values: Vec::new(), buttons: Vec::new(), message_box: false },
+    );
+}
+
+/// Whether an actor is swimming: the walk/swim verdict the character system decides on needs the
+/// physics controller and the water contact, so the engine installs it as a plain function. Without
+/// one `IsSwimming` is declined. `NOT_SAVED_BY_DESIGN`.
+#[derive(Clone, Copy)]
+pub struct SwimQuery(pub fn(&World, EntityId) -> bool);
+
+impl Resource for SwimQuery {}
+
 /// The reference FormID scripts name `entity` by: `0x14` for the player (`PlayerRef`), else its
 /// placed reference's FormID.
 pub fn reference_form(world: &World, entity: EntityId) -> Option<u32> {

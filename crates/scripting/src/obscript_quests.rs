@@ -392,8 +392,20 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
         self.ends.replace(false)
     }
 
-    fn named_form(&mut self, name: &str) -> Option<u32> {
-        crate::idle_names::idle_by_editor_id(self.world, name)
+    fn text_argument(&mut self, cmd: u16, text: &str) -> Option<ObScriptValue> {
+        match cmd {
+            // `PlayIdle <idle>`: the IDLE the editor ID names.
+            0x1190 => crate::idle_names::idle_by_editor_id(self.world, text).map(ObScriptValue::Ref),
+            // `GetGS <setting>`: the game setting's value.
+            0x1100 => crate::obscript_state::game_setting(self.world, text).map(ObScriptValue::Num),
+            // `ShowWarning "text"`: the warning is written to the log and shown as a notification.
+            0x11b9 => {
+                log::warn!("ObScript ShowWarning: {text}");
+                crate::obscript_state::show_warning(self.world, text);
+                Some(ObScriptValue::Num(0.0))
+            }
+            _ => None,
+        }
     }
 
     fn message(&mut self, message: crate::obscript_vm::ObScriptMessage) {
@@ -905,6 +917,18 @@ impl ObScriptCommandHost<'_> {
         }
         Some(ObScriptValue::Num(0.0))
     }
+}
+
+/// Run one ObScript command through the real host, as a script statement would — `caller` the reference
+/// it is called on (an object script's implicit one), `args` its decoded arguments. For the console
+/// (`obscript.cmd`): the answer the command gave (`None` for a command with no answer or one the host
+/// declined) and how many commands the host declined.
+pub fn run_console_command(world: &World, caller: Option<u32>, cmd: u16, args: &[ObScriptValue]) -> (Option<ObScriptValue>, u32) {
+    let script = ScriptRecord::default();
+    let reference = caller.and_then(|form| resolve_entity_by_global_form_id(world, form));
+    let mut host = ObScriptCommandHost::new(world, caller.unwrap_or(0), reference, 0.0, &script);
+    let answer = host.call(cmd, args, caller);
+    (answer, host.declined.get())
 }
 
 /// Advance every running quest's script on the vanilla cadence. Exclusive

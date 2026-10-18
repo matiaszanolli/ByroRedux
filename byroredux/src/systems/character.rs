@@ -1419,6 +1419,16 @@ pub(crate) fn depth_reaches_swimlevel(depth: f32, half_span: f32) -> bool {
     depth > half_span * SWIM_HEIGHT_SCALE
 }
 
+/// ObScript `IsSwimming`: the actor's water contact reaches swimlevel — the same predicate the
+/// character system decides walking or swimming on. Only an actor with a `WaterContact` and a
+/// `CharacterController` (the player) can swim.
+pub(crate) fn actor_is_swimming(world: &World, actor: EntityId) -> bool {
+    match (world.get::<byroredux_physics::CharacterController>(actor), world.get::<WaterContact>(actor)) {
+        (Some(controller), Some(contact)) => depth_reaches_swimlevel(contact.depth, controller.half_height + controller.radius),
+        _ => false,
+    }
+}
+
 /// Full 3D swim movement — the pitched-forward half of WATAL W1.
 ///
 /// Reference (WATAL §9 Q3, OpenMW `movementsolver.cpp:161-165`): below

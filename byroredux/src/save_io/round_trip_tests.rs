@@ -76,6 +76,10 @@ fn delta_columns_carry_only_session_stable_fields() {
         "Bleedout",
         // M47.3 — ScriptPackage: u32 + bool + Option<f32>. Delta-safe.
         "ScriptPackage",
+        // M47.3 — unit markers and an effect list of FormIDs, seconds and script locals. Delta-safe.
+        "WeaponDrawn",
+        "IgnoreCrime",
+        "ActiveMagicEffects",
         // #3165 — CharacterController is f32/bool-only. Breath and drowning
         // carry are gameplay state; pose restore clears its three transient
         // movement fields after the overlay.
@@ -671,6 +675,69 @@ fn bleedout_with_and_without_a_recovery_time_survives_save_load_round_trip() {
         dst.get::<Bleedout>(untimed).map(|state| state.remaining_secs),
         Some(None)
     );
+}
+
+/// M47.3 — the ObScript runtime's saved state survives a save and a load: the effects running on an
+/// actor (with a script's locals), its drawn-weapon and ignore-crime flags, the player's notes, who
+/// killed whom, a forced weather and when each cell was last entered.
+#[test]
+fn the_obscript_runtime_state_survives_save_load_round_trip() {
+    use byroredux_scripting::magic_effects::{ActiveEffect, ActiveMagicEffects, ValueEffect};
+    use byroredux_scripting::obscript_state::{CellVisits, ForcedWeather, IgnoreCrime, KillRecords, PipBoyNotes, WeaponDrawn};
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    let actor = src.spawn();
+    let effects = ActiveMagicEffects(vec![ActiveEffect {
+        source: 0x500,
+        mgef: 0x77,
+        caster: 0x14,
+        script: 0x900,
+        duration: 30.0,
+        indefinite: false,
+        elapsed: 4.5,
+        started: true,
+        ending: false,
+        value: Some(ValueEffect { actor_value: 0x450, amount: -5.0, recover: false }),
+        ticks: 4,
+        locals: vec![(1, 3.0)],
+        ref_locals: vec![(2, 0x0100_0004)],
+    }]);
+    src.insert(actor, effects.clone());
+    src.insert(actor, WeaponDrawn);
+    src.insert(actor, IgnoreCrime);
+    let mut notes = PipBoyNotes::default();
+    notes.add(0x10);
+    notes.add(0x11);
+    src.insert_resource(notes.clone());
+    let mut kills = KillRecords::default();
+    kills.record(0x100, 0x7, Some(0x14));
+    src.insert_resource(kills.clone());
+    let forced = ForcedWeather { weather: Some(0xE0001), locked: true };
+    src.insert_resource(forced);
+    let mut visits = CellVisits::default();
+    visits.enter(0x40001, 120.5, 72.0);
+    src.insert_resource(visits.clone());
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    dst.insert_resource(PipBoyNotes::default());
+    dst.insert_resource(KillRecords::default());
+    dst.insert_resource(ForcedWeather::default());
+    dst.insert_resource(CellVisits::default());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    assert_eq!(dst.get::<ActiveMagicEffects>(actor).map(|e| e.clone()), Some(effects));
+    assert!(dst.has::<WeaponDrawn>(actor) && dst.has::<IgnoreCrime>(actor));
+    assert_eq!(*dst.resource::<PipBoyNotes>(), notes);
+    assert_eq!(*dst.resource::<KillRecords>(), kills);
+    assert_eq!(*dst.resource::<ForcedWeather>(), forced);
+    assert_eq!(*dst.resource::<CellVisits>(), visits);
 }
 
 /// M47.3 — an actor a quest script sent on a package (`AddScriptPackage`)

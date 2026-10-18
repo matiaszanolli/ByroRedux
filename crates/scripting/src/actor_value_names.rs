@@ -65,6 +65,7 @@ pub fn install_actor_value_names(world: &mut World, index: &EsmIndex) -> usize {
     world.init_resource::<crate::cell_kind::PlayerCellKind>();
     world.insert_resource(crate::idle_names::IdleNames::from_index(index));
     world.insert_resource(crate::obscript_state::ItemTypeCodes::from_index(index));
+    world.insert_resource(crate::obscript_state::GameSettings::from_index(index));
     world.insert_resource(crate::magic_shaders::ShaderCatalog::from_index(index));
     world.insert_resource(crate::skills::SkillScaling::from_index(index));
     count

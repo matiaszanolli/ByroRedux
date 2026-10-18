@@ -1153,6 +1153,7 @@ pub(crate) fn begin_worldspace_persistent_cell(
     register_cell_root(world, cell_root);
     world.insert(cell_root, CellFormId(cell.form_id));
     stamp_exterior_cell(world, cell_root, wctx);
+    super::note_player_entered_cell(world, cell.form_id, &wctx.record_index);
     // Placeholder only — `advance` reseeds the cursor at its top (#5483),
     // so the constructor value never reaches a stamp. Kept as
     // `next_entity_id()` rather than `cell_root` purely so an accidental
@@ -2019,6 +2020,7 @@ impl ExteriorCellApplyJob {
         register_cell_root(world, cell_root);
         world.insert(cell_root, CellFormId(cell.form_id));
         stamp_exterior_cell(world, cell_root, wctx);
+        super::note_player_entered_cell(world, cell.form_id, &wctx.record_index);
         let first_entity = world.next_entity_id();
         let has_land = cell.landscape.is_some();
         log::info!(

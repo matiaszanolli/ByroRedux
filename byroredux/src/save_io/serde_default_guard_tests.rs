@@ -773,7 +773,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 110;
+    const BASELINE_MAJOR: u16 = 111;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1107,7 +1107,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // Path-stripped dumps of both sides are identical, so a save's JSON is
     // byte-identical.
     // M47.3 — v110 added the `ScriptPackage` column (an ObScript `AddScriptPackage`).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xc35a_abd6_1cb1_f37c;
+    // M47.3 — v111 added the `PipBoyNotes`, `KillRecords`, `ForcedWeather`, `CellVisits`, `WeaponDrawn`,
+    // `IgnoreCrime` and `ActiveMagicEffects` columns (the ObScript runtime's saved state).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x244d_dcf0_0b26_0495;
     // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
     // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
     // keys each shape by its file, so the move alone shifted it; a dump of

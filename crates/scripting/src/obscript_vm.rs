@@ -173,8 +173,11 @@ pub trait ObScriptHost {
     /// buttons (M47.3 phase 2). A host without a message surface ignores it.
     fn message(&mut self, _message: ObScriptMessage) {}
 
-    /// The form an editor ID names, for the commands that write it as a string (`PlayIdle`).
-    fn named_form(&mut self, _name: &str) -> Option<u32> {
+    /// The value of the one text argument of a command that writes it as a string (`PlayIdle <idle
+    /// editor ID>`, `GetGS <setting name>`, `ShowWarning "text"`): the form the name stands for, the
+    /// setting's value, ... — whatever the command then receives as its argument. `None` when the host
+    /// cannot say; the command is then declined.
+    fn text_argument(&mut self, _cmd: u16, _text: &str) -> Option<ObScriptValue> {
         None
     }
 
@@ -187,9 +190,9 @@ pub trait ObScriptHost {
     }
 }
 
-/// Commands whose one argument is an editor ID string, not a form index: `PlayIdle` (GECK: "takes the
-/// actual editorID string of the idle as parameter").
-const STRING_FORM_COMMANDS: [u16; 1] = [0x1190];
+/// Commands whose one argument is a string, not a form index or a number: `PlayIdle` (GECK: "takes the
+/// actual editorID string of the idle as parameter"), `GetGS <setting>` and `ShowWarning "text"`.
+const STRING_FORM_COMMANDS: [u16; 3] = [0x1190, 0x1100, 0x11b9];
 
 /// `MessageBox` (`0x1000`).
 pub const CMD_MESSAGE_BOX: u16 = 0x1000;
@@ -937,7 +940,7 @@ impl<'a> Vm<'a> {
     /// letter is the axis, answered as `0`, `1`, `2`.
     fn decode_args_for(&mut self, cmd: u16, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {
         if STRING_FORM_COMMANDS.contains(&cmd) {
-            return self.decode_string_form(start, end);
+            return self.decode_string_form(cmd, start, end);
         }
         if !AXIS_COMMANDS.contains(&cmd) || start + 3 > end {
             return self.decode_args(start, end);
@@ -962,7 +965,7 @@ impl<'a> Vm<'a> {
     /// A command whose one argument is an editor ID written as `[u16 1][u16 length][bytes]`
     /// (`PlayIdle LooseDogGrowl`: `01 00 0d 00 "LooseDogGrowl"`), answered as the form the host says it
     /// names — `Ref(0)` when it names none, so the host declines the call.
-    fn decode_string_form(&mut self, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {
+    fn decode_string_form(&mut self, cmd: u16, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {
         if start == end {
             return Some(Vec::new());
         }
@@ -973,9 +976,9 @@ impl<'a> Vm<'a> {
         if count != 1 || text_end > end {
             return self.decode_args_at_depth(start, end, 0);
         }
-        let name = String::from_utf8_lossy(&self.bytes[text_start..text_end]).into_owned();
-        let form = self.host.named_form(&name).unwrap_or(0);
-        Some(vec![ObScriptValue::Ref(form)])
+        let text = String::from_utf8_lossy(&self.bytes[text_start..text_end]).into_owned();
+        let value = self.host.text_argument(cmd, &text).unwrap_or(ObScriptValue::Ref(0));
+        Some(vec![value])
     }
 
     fn decode_args(&mut self, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {

@@ -118,6 +118,12 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // Option<f32> }`, the package an ObScript `AddScriptPackage` gave an actor.
     // No session-local identity. Replacing: a saved absence drops a live one.
     "ScriptPackage",
+    // M47.3 — `WeaponDrawn` / `IgnoreCrime`: unit markers, presence is the flag (ObScript `SetAlert` /
+    // `IgnoreCrime`). `ActiveMagicEffects`: the effects running on an actor — FormIDs, seconds, a script's
+    // locals by slot; no session-local identity. Replacing: a saved absence clears a live one.
+    "WeaponDrawn",
+    "IgnoreCrime",
+    "ActiveMagicEffects",
     // #3165 — the player entity outlives cell reload, so its mutable breath
     // and fractional drowning state must be overlaid explicitly. The pose
     // restore below still clears velocity/grounded/jump after this column.

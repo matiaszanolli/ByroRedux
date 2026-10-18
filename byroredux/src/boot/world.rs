@@ -431,6 +431,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.init_resource::<crate::systems::magic_shader::ShaderTintRestore>();
     // ObScript `GetDetected`: the sight test the hostility pass uses.
     world.insert_resource(byroredux_scripting::SightQuery(crate::systems::actor_detects));
+    world.insert_resource(byroredux_scripting::SwimQuery(crate::systems::actor_is_swimming));
     // #4816 — `faction_hostility_system` inserts it through a `query_mut`
     // guard, which cannot create a storage.
     world.register::<crate::systems::AmbientEngagement>();

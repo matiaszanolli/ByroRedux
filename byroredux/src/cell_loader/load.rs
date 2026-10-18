@@ -568,6 +568,7 @@ impl InteriorCellApplyJob {
         let cell_root = world.spawn();
         register_cell_root(world, cell_root);
         world.insert(cell_root, CellFormId(cell.form_id));
+        super::note_player_entered_cell(world, cell.form_id, &index);
         let prefix_first = world.next_entity_id();
 
         let phase_started = Instant::now();

@@ -416,6 +416,42 @@ pub fn install_image_space_modifiers(
     count
 }
 
+/// ObScript `TriggerHitShader <strength>`: "the 'hit shader' effect of blurring the screen (normally
+/// used when the player is staggered). Commonly used in traps, other 'earth shaking' activators, and
+/// inebriation effects. The strength parameter can go up as high as you want, but anything higher than 4
+/// or 5 starts to lose the desired effect" (GECK). The engine's policy for the look: a blur of
+/// [`HIT_SHADER_BLUR_PIXELS`] per unit of strength that fades out linearly over
+/// [`HIT_SHADER_SECONDS`], capped at strength 5 where the effect stops improving. `NOT_SAVED_BY_DESIGN`:
+/// a one-second screen effect.
+#[derive(Debug, Default)]
+pub struct HitShaderKicks(pub Vec<(f32, f32)>);
+
+impl Resource for HitShaderKicks {}
+
+pub const HIT_SHADER_BLUR_PIXELS: f32 = 2.0;
+pub const HIT_SHADER_SECONDS: f32 = 1.0;
+pub const HIT_SHADER_MAX_STRENGTH: f32 = 5.0;
+
+/// Kick the hit shader at `strength`.
+pub fn trigger_hit_shader(world: &World, strength: f32) -> bool {
+    if !strength.is_finite() || strength <= 0.0 {
+        return false;
+    }
+    let Some(mut kicks) = world.try_resource_mut::<HitShaderKicks>() else { return false };
+    kicks.0.push((strength.min(HIT_SHADER_MAX_STRENGTH), 0.0));
+    true
+}
+
+/// The blur the live hit-shader kicks add this frame, in pixels; advances and drops spent ones.
+fn hit_shader_blur(world: &World, dt: f32) -> f32 {
+    let Some(mut kicks) = world.try_resource_mut::<HitShaderKicks>() else { return 0.0 };
+    for kick in &mut kicks.0 {
+        kick.1 += dt;
+    }
+    kicks.0.retain(|(_, elapsed)| *elapsed < HIT_SHADER_SECONDS);
+    kicks.0.iter().map(|(strength, elapsed)| strength * HIT_SHADER_BLUR_PIXELS * (1.0 - elapsed / HIT_SHADER_SECONDS)).sum()
+}
+
 /// Sample every active IMAD and advance its authored lifetime. Schedule after
 /// animation-event delivery so a callback is visible in the same frame.
 pub fn image_space_modifier_system(world: &World, dt: f32) {
@@ -425,10 +461,12 @@ pub fn image_space_modifier_system(world: &World, dt: f32) {
         .try_resource::<ImageSpaceBase>()
         .map(|base| base.0)
         .unwrap_or_default();
+    let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
+    // Before the state's write guard opens, for the same reason as `base`.
+    let hit_blur = hit_shader_blur(world, dt);
     let Some(mut state) = world.try_resource_mut::<CinematicPresentationState>() else {
         return;
     };
-    let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
     for active in &mut state.active_image_space_modifiers {
         active.elapsed_seconds += dt;
     }
@@ -437,6 +475,7 @@ pub fn image_space_modifier_system(world: &World, dt: f32) {
         &state.active_image_space_modifiers,
         &base,
     );
+    state.image_space_modifier_frame.blur_radius_pixels += hit_blur;
 
     let CinematicPresentationState {
         image_space_modifier_catalog: catalog,
@@ -708,6 +747,7 @@ pub fn register(world: &mut World) {
     world.register::<crate::GraphSequences>();
     world.register::<crate::ObjectAnimationGraph>();
     world.init_resource::<CinematicPresentationState>();
+    world.init_resource::<HitShaderKicks>();
 }
 
 #[cfg(test)]

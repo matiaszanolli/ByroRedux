@@ -334,7 +334,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**126**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**127**) grouped by
 purpose:
 
 ```
@@ -507,6 +507,7 @@ actor.look <entity|.> <target|none> → force an actor's head to track a referen
 actor.revive <entity|.>      → bring a dead or unconscious actor back like ObScript Resurrect (M47.3)
 magic.effects [entity]       → list the magic effects running on a reference (script effects, timed value changes)
 weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
+obscript.cmd <caller|none> <id> [args] → run one ObScript command through the real host and print its answer (M47.3)
 obscript.objects [limit]    → ObScript object scripts attached to placed references: blocks, run counts, declines (M47.3)
 
 # Legacy HUD + focused diagnostics

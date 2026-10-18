@@ -297,11 +297,8 @@ pub fn magic_effect_system(world: &World, dt: f32) {
     let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
     for target in targets {
         let mut index = 0;
-        loop {
-            // One effect at a time, re-reading the list: a script may `Dispel` or cast.
-            let Some(mut effect) = world.get::<ActiveMagicEffects>(target).and_then(|active| active.0.get(index).cloned()) else {
-                break;
-            };
+        // One effect at a time, re-reading the list: a script may `Dispel` or cast.
+        while let Some(mut effect) = world.get::<ActiveMagicEffects>(target).and_then(|active| active.0.get(index).cloned()) {
             let original = effect.clone();
             let script = world
                 .try_resource::<EffectScriptTable>()

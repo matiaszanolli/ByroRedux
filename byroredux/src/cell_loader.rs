@@ -629,3 +629,15 @@ mod terrain_splat_tests;
 mod unload_greyscale_lut_tests;
 #[cfg(test)]
 mod unload_skin_cleanup_tests;
+
+/// The player's cell is being entered (a cell loads): record the visit on the game clock so a cell that
+/// has sat unvisited for `iHoursToRespawnCell` (72 hours by default) is found to have reset, and its
+/// scripts' `OnReset` blocks run (M47.3). Exterior tiles load around the player as well as under them;
+/// one that expired resets like any other.
+pub(crate) fn note_player_entered_cell(world: &byroredux_core::ecs::World, cell_form: u32, index: &byroredux_plugin::esm::records::EsmIndex) {
+    let Some(now) = world.try_resource::<crate::components::GameTimeRes>().map(|time| time.day as f64 * 24.0 + f64::from(time.hour)) else {
+        return;
+    };
+    let respawn = index.game_setting_float("iHoursToRespawnCell").map(f64::from);
+    byroredux_scripting::obscript_state::note_cell_entered(world, cell_form, now, respawn);
+}

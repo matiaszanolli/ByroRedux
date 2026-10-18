@@ -543,7 +543,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v109 -> v110 (M47.3 phase 2): a new component column, `ScriptPackage` (the
 /// package an ObScript `AddScriptPackage` gave an actor), so an actor sent on a
 /// script package reloads still on it.
-pub const FORMAT_MAJOR: u16 = 110;
+///
+/// v110 -> v111 (M47.3 ObScript runtime close-out): new saved columns — `PipBoyNotes`, `KillRecords`,
+/// `ForcedWeather` and `CellVisits` (resources), `WeaponDrawn`, `IgnoreCrime` and `ActiveMagicEffects`
+/// (components) — so notes, who killed whom, a forced weather, when each cell was last entered, an
+/// actor's drawn weapon and ignore-crime flag, and the effects running on an actor survive a load.
+pub const FORMAT_MAJOR: u16 = 111;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

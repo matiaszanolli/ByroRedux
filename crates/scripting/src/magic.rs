@@ -78,6 +78,11 @@ impl SpellCatalog {
     pub fn get(&self, form_id: u32) -> Option<&CanonicalSpell> {
         self.spells.get(&form_id)
     }
+
+    /// A catalog of already-translated spells (tests and tools).
+    pub fn from_canonical(spells: HashMap<u32, CanonicalSpell>) -> Self {
+        Self { spells }
+    }
 }
 
 /// Translate one spell (see the module doc for what is kept).

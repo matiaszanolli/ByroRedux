@@ -17,6 +17,8 @@
 #      `SetStage VMS16 110` run, nothing is declined.
 #   5. Item OnAdd — `WeapTrapBaseballSCRIPT`: adding TrapBaseball to the player runs
 #      `player.additem Baseball01 1 1; removeme` from the item's script.
+#   4b. Resurrect + GetDeadCount, 4c. IsInInterior / GetInWorldspace / notes through `obscript.cmd`,
+#   5b. a chem's script effect (NukaCola's ScriptEffectStart) through `inv.use`.
 #   6. PlayGroup — a second boot into Lucky38BasementFloorB2: `OnLoadPlayForwardSCRIPT`
 #      (`Begin OnLoad / Playgroup Forward 0`) on the force-field glow statics starts the
 #      mesh's own `Forward` NiControllerSequence; nothing is declined.
@@ -137,6 +139,25 @@ grep -Fq "SetStage 00104EAE 110" "$LOG_DIR/effects.log" || fail "OnDeath did not
 grep -Fq "ObScript command 0x1078" "$LOG_DIR/effects.log" || fail "OnDeath did not SetEnemy"
 echo "smoke[m47-3-obscript]: OnDeath PASS — SetEnemy (bridge) + SetStage, nothing declined"
 
+# ── 4b. GetDeadCount counts the death; Resurrect brings Sunny back in place and keeps the count ──
+cmd_answer() { debug_command "obscript.cmd $1" "$LOG_DIR/cmd.log" || fail "obscript.cmd unavailable"; grep -oE -- '-> [^"]*' "$LOG_DIR/cmd.log" | head -1; }
+[[ "$(cmd_answer 'none 1054 r:104e84')" == "-> 1" ]] || fail "GetDeadCount GSSunnySmiles is not 1 after her death: $(cat "$LOG_DIR/cmd.log")"
+cmd_answer "$sunny 108c 1" >/dev/null
+sleep 2
+debug_command "cond $sunny GetDead" "$LOG_DIR/dead.log" || fail "cond unavailable"
+grep -Fq "= 0" "$LOG_DIR/dead.log" || fail "Resurrect did not bring Sunny back: $(cat "$LOG_DIR/dead.log")"
+[[ "$(cmd_answer 'none 1054 r:104e84')" == "-> 1" ]] || fail "Resurrect lowered the death count"
+debug_command "ragdoll.status $sunny" "$LOG_DIR/ragdoll.log" || fail "ragdoll.status unavailable"
+grep -Fq "no active ragdoll" "$LOG_DIR/ragdoll.log" || fail "Sunny's ragdoll was not freed: $(cat "$LOG_DIR/ragdoll.log")"
+echo "smoke[m47-3-obscript]: Resurrect PASS — alive in place, ragdoll freed, death count kept"
+
+# ── 4c. Getters through the real host: interior, worldspace, notes ──
+[[ "$(cmd_answer "$sunny 112c")" == "-> 1" ]] || fail "IsInInterior is not 1 in the saloon"
+[[ "$(cmd_answer "$sunny 1136 r:3d43b")" == "-> 0" ]] || fail "GetInWorldspace is not 0 in an interior"
+cmd_answer "none 117c r:101" >/dev/null
+[[ "$(cmd_answer 'none 117e r:101')" == "-> 1" ]] || fail "AddNote / GetHasNote did not round-trip"
+echo "smoke[m47-3-obscript]: getters PASS — IsInInterior, GetInWorldspace, AddNote/GetHasNote"
+
 # ── 5. Item OnAdd + RemoveMe ──────────────────────────────────────
 debug_command "inv.add 0x00033D84 1" "$LOG_DIR/inv.log" || fail "inv.add unavailable"
 sleep 2
@@ -144,6 +165,15 @@ effects 0x00033D84
 grep -Fq "ObScript command 0x1002 on 00000014" "$LOG_DIR/effects.log" \
     || fail "the item's OnAdd did not run player.additem: $(cat "$LOG_DIR/effects.log")"
 echo "smoke[m47-3-obscript]: item OnAdd PASS — player.additem + removeme"
+
+# ── 5b. A script effect: the NukaCola chem's ScriptEffectStart (`additem caps001 1`) runs on its user ──
+debug_command "inv.add 0x0001519E 1" "$LOG_DIR/inv2.log" || fail "inv.add unavailable"
+debug_command "inv.use 0x0001519E" "$LOG_DIR/use.log" || fail "inv.use unavailable"
+sleep 2
+effects 0x00000014
+grep -Fq "ObScript command 0x1002 on 00000014" "$LOG_DIR/effects.log" \
+    || fail "the chem's script effect did not run its additem: $(cat "$LOG_DIR/effects.log")"
+echo "smoke[m47-3-obscript]: script effect PASS — NukaCola's ScriptEffectStart ran on the player"
 
 # ── 6. PlayGroup on placed objects (second boot, another cell) ────
 stop_engine

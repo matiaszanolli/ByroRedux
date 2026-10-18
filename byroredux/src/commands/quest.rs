@@ -1403,3 +1403,64 @@ impl ConsoleCommand for WeatherForceCommand {
         CommandOutput::line(format!("forcing weather {form:08X} (locked: {locked})"))
     }
 }
+
+/// `obscript.cmd <entity|.|none> <command id hex> [arg ...]` — run one ObScript command through the real
+/// host, as a script statement would, and print what it answered. The caller is the reference the command
+/// is called on (`none` for a command with no calling reference); an argument is a number, or `r:<hex>` for
+/// a form / reference (`player` is `r:14`). The ids are the ones `obscript_tools names <ESM>` prints
+/// (`0x1000` + the condition function index for getters). A debugging door onto the whole command surface.
+pub(crate) struct ObScriptCmdCommand;
+
+impl ConsoleCommand for ObScriptCmdCommand {
+    fn name(&self) -> &str {
+        "obscript.cmd"
+    }
+
+    fn description(&self) -> &str {
+        "Run an ObScript command: obscript.cmd <caller entity|.|none> <command id hex> [number | r:<hex form> ...]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use byroredux_scripting::obscript_vm::ObScriptValue;
+        const USAGE: &str = "usage: obscript.cmd <caller entity|.|none> <command id hex> [number | r:<hex form> ...]";
+        let mut parts = args.split_whitespace();
+        let (Some(caller_token), Some(cmd_token)) = (parts.next(), parts.next()) else {
+            return CommandOutput::error(USAGE);
+        };
+        let Some(cmd) = u16::from_str_radix(cmd_token.trim_start_matches("0x"), 16).ok() else {
+            return CommandOutput::error(format!("bad command id `{cmd_token}`\n{USAGE}"));
+        };
+        let caller = if caller_token.eq_ignore_ascii_case("none") {
+            None
+        } else {
+            match super::shared::resolve_console_entity(world, caller_token) {
+                Ok(entity) => match byroredux_scripting::obscript_state::reference_form(world, entity) {
+                    Some(form) => Some(form),
+                    None => return CommandOutput::error(format!("entity {entity} is not a placed reference")),
+                },
+                Err(message) => return CommandOutput::error(format!("obscript.cmd: {message}")),
+            }
+        };
+        let mut values = Vec::new();
+        for token in parts {
+            let value = match token.strip_prefix("r:") {
+                Some(hex) => match u32::from_str_radix(hex.trim_start_matches("0x"), 16) {
+                    Ok(form) => ObScriptValue::Ref(form),
+                    Err(_) => return CommandOutput::error(format!("bad form `{token}`")),
+                },
+                None => match token.parse::<f32>() {
+                    Ok(number) => ObScriptValue::Num(number),
+                    Err(_) => return CommandOutput::error(format!("bad argument `{token}`\n{USAGE}")),
+                },
+            };
+            values.push(value);
+        }
+        let (answer, declined) = byroredux_scripting::obscript_quests::run_console_command(world, caller, cmd, &values);
+        let answer = match answer {
+            Some(ObScriptValue::Num(n)) => format!("{n}"),
+            Some(ObScriptValue::Ref(form)) => format!("ref {form:08X}"),
+            None => "(no answer)".to_owned(),
+        };
+        CommandOutput::line(format!("{cmd:#06x} -> {answer}{}", if declined > 0 { format!("  [declined: {declined}]") } else { String::new() }))
+    }
+}

@@ -516,6 +516,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // markers. Before `reference_script_event_system` below, which drains
     // `OnDeathEvent` at its head; after the package, activation and dialogue
     // systems whose state the commands read.
+    // M47.3 — a cell that reset as the player entered it owes its scripted references an `OnReset`.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::obscript_state::mark_cell_reset);
     scheduler.add_exclusive(
         Stage::Update,
         byroredux_scripting::obscript_objects::obscript_object_system,

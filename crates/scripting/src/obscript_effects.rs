@@ -130,6 +130,17 @@ pub(crate) fn handles(cmd: u16) -> bool {
             | CMD_FORCE_WEATHER
             | CMD_SET_WEATHER
             | CMD_RELEASE_WEATHER_OVERRIDE
+            | CMD_CAST
+            | CMD_CAST_IMMEDIATE_ON_SELF
+            | CMD_DISPEL
+            | CMD_PLAY_MAGIC_SHADER
+            | CMD_PLAY_MAGIC_EFFECT
+            | CMD_STOP_MAGIC_SHADER
+            | CMD_LOOK
+            | CMD_STOP_LOOK
+            | CMD_RESURRECT
+            | CMD_TRIGGER_HIT_SHADER
+            | CMD_SHOW_WARNING
             | CMD_AUTO_SAVE
             | CMD_ADD_ITEM
             | CMD_REMOVE_ITEM
@@ -306,6 +317,8 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             | CMD_RIMOD
             | CMD_ADD_NOTE
             | CMD_REMOVE_NOTE
+            | CMD_TRIGGER_HIT_SHADER
+            | CMD_SHOW_WARNING
             | CMD_SEND_ASSAULT_ALARM
             | CMD_FORCE_WEATHER
             | CMD_SET_WEATHER
@@ -570,6 +583,16 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             requests.insert(actor, crate::obscript_state::ReviveRequest);
             return Action::Done { value: None, effect: format!("Resurrect {caller:08X}") };
         }
+        // `TriggerHitShader <strength>`: the screen blur of a hit (see `cinematic::trigger_hit_shader`).
+        CMD_TRIGGER_HIT_SHADER => {
+            if !crate::cinematic::trigger_hit_shader(world, num(args, 0)) {
+                return Action::Declined;
+            }
+            return Action::Done { value: None, effect: format!("TriggerHitShader {}", num(args, 0)) };
+        }
+        // `ShowWarning "text"`: the VM has already shown and logged the text (it is the command's
+        // string argument); nothing is left to do.
+        CMD_SHOW_WARNING => return Action::Done { value: None, effect: "ShowWarning".into() },
         // `Dispel <spell>`: the spell's effects on the calling reference end.
         CMD_DISPEL => {
             let Some(target) = caller_entity else { return Action::Declined };
@@ -757,7 +780,7 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
         CMD_REMOVE_ALL_TYPED_ITEMS => {
             let Some(source) = caller_entity else { return Action::Declined };
             let code = num(args, 3);
-            if code < 1.0 || code > 255.0 {
+            if !(1.0..=255.0).contains(&code) {
                 return Action::Declined;
             }
             let destination = match form_arg(args, 0) {
@@ -1092,6 +1115,11 @@ const CMD_ADD_NOTE: u16 = 0x117c;
 const CMD_REMOVE_NOTE: u16 = 0x117d;
 const CMD_GET_HAS_NOTE: u16 = 0x117e;
 const CMD_GET_DEAD_COUNT: u16 = 0x1054;
+const CMD_GET_GS: u16 = 0x1100;
+const CMD_SHOW_WARNING: u16 = 0x11b9;
+const CMD_GET_DETECTION_LEVEL: u16 = 0x10b4;
+const CMD_IS_SNEAKING: u16 = 0x111e;
+const CMD_IS_SWIMMING: u16 = 0x10b9;
 const CMD_IS_KILLER: u16 = 0x1199;
 const CMD_SET_ALERT: u16 = 0x105a;
 const CMD_IS_WEAPON_OUT: u16 = 0x1065;
@@ -1104,6 +1132,7 @@ const CMD_SET_WEATHER: u16 = 0x1104;
 const CMD_RELEASE_WEATHER_OVERRIDE: u16 = 0x1158;
 const CMD_GET_IS_CURRENT_WEATHER: u16 = 0x1095;
 const CMD_CAST: u16 = 0x101e;
+const CMD_TRIGGER_HIT_SHADER: u16 = 0x1144;
 const CMD_RESURRECT: u16 = 0x108c;
 const CMD_LOOK: u16 = 0x105c;
 const CMD_STOP_LOOK: u16 = 0x105d;
@@ -1125,6 +1154,10 @@ pub(crate) fn is_getter(cmd: u16) -> bool {
     matches!(
         cmd,
         CMD_IS_ANIM_PLAYING
+            | CMD_GET_GS
+            | CMD_GET_DETECTION_LEVEL
+            | CMD_IS_SNEAKING
+            | CMD_IS_SWIMMING
             | CMD_HAS_MAGIC_EFFECT
             | CMD_SCRIPT_EFFECT_ELAPSED_SECONDS
             | CMD_GET_IS_CURRENT_WEATHER
@@ -1193,6 +1226,14 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
         return world
             .try_resource::<crate::cinematic::CinematicPresentationState>()
             .map_or(Getter::Declined, |state| Getter::Value(f32::from(u8::from(state.is_image_space_modifier_active(imad)))));
+    }
+    // GECK *GetGS*: the game setting's value; the VM has already looked the name up, an unknown one is
+    // the null argument. No reference is involved.
+    if cmd == CMD_GET_GS {
+        return match args.first() {
+            Some(ObScriptValue::Num(value)) => Getter::Value(*value),
+            _ => Getter::Declined,
+        };
     }
     // GECK *ScriptEffectElapsedSeconds*: the seconds the running effect script has been active.
     if cmd == CMD_SCRIPT_EFFECT_ELAPSED_SECONDS {
@@ -1374,6 +1415,24 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
         // GECK *HasMagicEffect*: 1 when an effect of that magic effect is running on the calling actor.
         CMD_HAS_MAGIC_EFFECT => match form_arg(args, 0) {
             Some(mgef) => Getter::Value(f32::from(u8::from(crate::magic_effects::has_effect(world, subject, mgef)))),
+            None => Getter::Declined,
+        },
+        // GECK *GetDetectionLevel*: 0 Lost, 1 Unseen, 2 Noticed, 3 Seen. The engine's sight test is yes or
+        // no — an actor either sees the target or does not — so the level is 3 or 0 (the GECK notes
+        // the original too answers only 0 or 3 for every target but the player).
+        CMD_GET_DETECTION_LEVEL => {
+            let Some(target) = form_arg(args, 0).and_then(|form| live(world, form)) else { return Getter::Declined };
+            match world.try_resource::<crate::SightQuery>() {
+                Some(sight) => Getter::Value(if (sight.0)(world, subject, target) { 3.0 } else { 0.0 }),
+                None => Getter::Declined,
+            }
+        }
+        // GECK *IsSneaking*: "1 if the actor is sneaking (crouched)". The engine has no sneak stance —
+        // no actor, the player included, can crouch — so nobody is.
+        CMD_IS_SNEAKING => Getter::Value(0.0),
+        // GECK *IsSwimming*: the walk/swim verdict of the character system, through the installed query.
+        CMD_IS_SWIMMING => match world.try_resource::<crate::SwimQuery>() {
+            Some(swim) => Getter::Value(f32::from(u8::from((swim.0)(world, subject)))),
             None => Getter::Declined,
         },
         // GECK *GetDetected*: 1 when the calling actor currently detects the target — the sight test the
@@ -2051,6 +2110,129 @@ mod tests {
         world.insert_resource(crate::weather_state::CurrentWeather(Some(WTHR)));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_WEATHER, &refs(&[WTHR]), &none), Getter::Value(1.0));
         assert_eq!(getter(&world, CMD_GET_IS_CURRENT_WEATHER, &refs(&[WTHR + 1]), &none), Getter::Value(0.0));
+    }
+
+    #[test]
+    fn trigger_hit_shader_blurs_the_screen_and_fades_out_within_a_second() {
+        use crate::cinematic::{image_space_modifier_system, CinematicPresentationState, HitShaderKicks, HIT_SHADER_BLUR_PIXELS};
+        let (mut world, _, _) = world();
+        world.init_resource::<CinematicPresentationState>();
+        world.init_resource::<HitShaderKicks>();
+        let none = context(None);
+        assert!(done(&run(&world, CMD_TRIGGER_HIT_SHADER, &[ObScriptValue::Num(3.0)], &none)));
+        image_space_modifier_system(&world, 0.0);
+        let blur = |world: &World| world.resource::<CinematicPresentationState>().image_space_modifier_frame.blur_radius_pixels;
+        assert!((blur(&world) - 3.0 * HIT_SHADER_BLUR_PIXELS).abs() < 1e-5, "full strength the frame it is kicked");
+        image_space_modifier_system(&world, 0.5);
+        assert!((blur(&world) - 1.5 * HIT_SHADER_BLUR_PIXELS).abs() < 1e-5, "half way through");
+        image_space_modifier_system(&world, 0.6);
+        assert_eq!(blur(&world), 0.0, "gone after a second");
+        // A strength past 5 loses the effect rather than blurring ever harder.
+        run(&world, CMD_TRIGGER_HIT_SHADER, &[ObScriptValue::Num(50.0)], &none);
+        image_space_modifier_system(&world, 0.0);
+        assert!((blur(&world) - 5.0 * HIT_SHADER_BLUR_PIXELS).abs() < 1e-5);
+        assert!(matches!(run(&world, CMD_TRIGGER_HIT_SHADER, &[ObScriptValue::Num(0.0)], &none), Action::Declined));
+    }
+
+    #[test]
+    fn cast_dispel_shader_look_and_resurrect_commands_reach_their_runtimes() {
+        use crate::magic_effects::{ActiveMagicEffects, CastEffect, ValueEffect};
+        use byroredux_core::ecs::components::{ActorValues, Dead};
+        use byroredux_plugin::esm::records::{EfshFill, EfshRecord, EsmIndex};
+        const SPELL: u32 = 0x0005_0001;
+        const MGEF: u32 = 0x0005_0002;
+        const SHADER: u32 = 0x0005_0003;
+        const HEALTH: u32 = 0x450;
+        let (mut world, actor, other) = world();
+        crate::register(&mut world);
+        world.insert(actor, ActorValues::from_pairs([(HEALTH, 100.0)]));
+        // The spell: a 60 s Recover fortify of Health, +25.
+        let mut spells = std::collections::HashMap::new();
+        spells.insert(
+            SPELL,
+            crate::magic::CanonicalSpell {
+                effects: vec![CastEffect {
+                    mgef: MGEF,
+                    script: 0,
+                    duration: 60.0,
+                    magnitude: 25.0,
+                    value: Some(ValueEffect { actor_value: HEALTH, amount: 25.0, recover: true }),
+                }],
+                ..Default::default()
+            },
+        );
+        world.insert_resource(crate::magic::SpellCatalog::from_canonical(spells));
+        let ctx = context(Some(ACTOR));
+        // `CastImmediateOnSelf` puts the effect on the caster; `HasMagicEffect` sees it; `Dispel` ends it.
+        assert!(done(&run(&world, CMD_CAST_IMMEDIATE_ON_SELF, &refs(&[SPELL]), &ctx)));
+        crate::magic_effects::magic_effect_system(&world, 0.0);
+        assert_eq!(getter(&world, CMD_HAS_MAGIC_EFFECT, &refs(&[MGEF]), &ctx), Getter::Value(1.0));
+        assert_eq!(world.get::<ActorValues>(actor).unwrap().current(HEALTH), 125.0);
+        assert!(done(&run(&world, CMD_DISPEL, &refs(&[SPELL]), &ctx)));
+        crate::magic_effects::magic_effect_system(&world, 0.0);
+        assert_eq!(world.get::<ActorValues>(actor).unwrap().current(HEALTH), 100.0);
+        assert!(world.get::<ActiveMagicEffects>(actor).is_none());
+        // `Cast <spell> <target>`: the caster casts on another reference.
+        assert!(done(&run(&world, CMD_CAST, &refs(&[SPELL, OTHER]), &ctx)));
+        assert!(world.get::<ActiveMagicEffects>(other).is_some());
+        // An unknown spell is declined, not invented.
+        assert!(matches!(run(&world, CMD_CAST, &refs(&[SPELL + 9]), &ctx), Action::Declined));
+        // `ScriptEffectElapsedSeconds` answers only while an effect script runs.
+        assert_eq!(getter(&world, CMD_SCRIPT_EFFECT_ELAPSED_SECONDS, &[], &none_ctx()), Getter::Declined);
+        world.resource_mut::<crate::magic_effects::ScriptEffectRun>().elapsed = Some(1.25);
+        assert_eq!(getter(&world, CMD_SCRIPT_EFFECT_ELAPSED_SECONDS, &[], &none_ctx()), Getter::Value(1.25));
+
+        // Shaders: `PlayMagicShaderVisuals` plays a known shader, `StopMagicShaderVisuals` stops it.
+        let mut index = EsmIndex::default();
+        index.effect_shaders.insert(
+            SHADER,
+            EfshRecord { form_id: SHADER, fill: Some(EfshFill { color: [1, 2, 3], full_alpha_time: 1.0, ..Default::default() }), ..Default::default() },
+        );
+        world.insert_resource(crate::magic_shaders::ShaderCatalog::from_index(&index));
+        assert!(done(&run(&world, CMD_PLAY_MAGIC_SHADER, &[ObScriptValue::Ref(SHADER), ObScriptValue::Num(5.0)], &ctx)));
+        assert!(world.get::<crate::magic_shaders::PlayingShaders>(actor).is_some());
+        assert!(done(&run(&world, CMD_STOP_MAGIC_SHADER, &refs(&[SHADER]), &ctx)));
+        assert!(world.get::<crate::magic_shaders::PlayingShaders>(actor).is_none());
+        assert!(matches!(run(&world, CMD_PLAY_MAGIC_SHADER, &refs(&[SHADER + 1]), &ctx), Action::Declined));
+
+        // `Look` / `StopLook`.
+        assert!(done(&run(&world, CMD_LOOK, &refs(&[OTHER]), &ctx)));
+        assert_eq!(world.get::<crate::obscript_anim::HeadLook>(actor).map(|look| look.target), Some(other));
+        assert!(done(&run(&world, CMD_STOP_LOOK, &[], &ctx)));
+        assert!(world.get::<crate::obscript_anim::HeadLook>(actor).is_none());
+
+        // `Resurrect` queues the revival of a dead actor and leaves a living one alone.
+        assert!(done(&run(&world, CMD_RESURRECT, &[ObScriptValue::Num(0.0)], &ctx)));
+        assert!(!world.has::<crate::obscript_state::ReviveRequest>(actor));
+        world.register::<Dead>();
+        world.insert(actor, Dead);
+        assert!(done(&run(&world, CMD_RESURRECT, &[ObScriptValue::Num(1.0)], &ctx)));
+        assert!(world.has::<crate::obscript_state::ReviveRequest>(actor));
+    }
+
+    fn none_ctx() -> Context {
+        context(None)
+    }
+
+    #[test]
+    fn game_settings_sneaking_swimming_and_detection_level_answer_from_their_sources() {
+        let (mut world, _, _) = world();
+        let ctx = context(Some(ACTOR));
+        // `GetGS`: the VM looks the name up and hands the value (or the null argument).
+        assert_eq!(getter(&world, CMD_GET_GS, &[ObScriptValue::Num(2.5)], &context(None)), Getter::Value(2.5));
+        assert_eq!(getter(&world, CMD_GET_GS, &[ObScriptValue::Ref(0)], &context(None)), Getter::Declined);
+        // The engine has no sneak stance.
+        assert_eq!(getter(&world, CMD_IS_SNEAKING, &[], &ctx), Getter::Value(0.0));
+        // Swimming and sight come from the queries the engine installs.
+        assert_eq!(getter(&world, CMD_IS_SWIMMING, &[], &ctx), Getter::Declined);
+        world.insert_resource(crate::SwimQuery(|_, _| true));
+        assert_eq!(getter(&world, CMD_IS_SWIMMING, &[], &ctx), Getter::Value(1.0));
+        world.insert_resource(crate::SightQuery(|_, _, _| true));
+        assert_eq!(getter(&world, CMD_GET_DETECTION_LEVEL, &refs(&[OTHER]), &ctx), Getter::Value(3.0));
+        world.insert_resource(crate::SightQuery(|_, _, _| false));
+        assert_eq!(getter(&world, CMD_GET_DETECTION_LEVEL, &refs(&[OTHER]), &ctx), Getter::Value(0.0));
+        // `ShowWarning` has already been shown by the VM when the command arrives.
+        assert!(done(&run(&world, CMD_SHOW_WARNING, &[ObScriptValue::Num(0.0)], &context(None))));
     }
 
     #[test]
