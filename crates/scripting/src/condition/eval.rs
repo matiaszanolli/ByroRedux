@@ -15,7 +15,9 @@ mod actor;
 mod global;
 mod reference;
 
-use super::catalog::ConditionFunction;
+use super::catalog::{
+    authored_actor_value_is_enum_code, index_is_foreign_in, ConditionFunction,
+};
 use super::context::ConditionContext;
 
 /// Evaluate a single [`Condition`] against world state + the
@@ -37,6 +39,11 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
         // pre-Papyrus games: pass it, as every uncatalogued function does.
         return true;
     }
+    if index_is_foreign_in_loaded_game(world, condition.function_index) {
+        // The index names another function in this game (#5990): not the
+        // catalog row's — pass it, as every uncatalogued function does.
+        return true;
+    }
     let function_result = if function.reads_context() {
         let subject = match (condition.run_on, ctx.location_subject) {
             (RunOn::Subject, Some(location)) => LocationSubject::Location(location),
@@ -52,6 +59,16 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
         .apply(function_result, comparand_value(condition, world))
 }
 
+fn loaded_game(world: &World) -> Option<byroredux_plugin::esm::reader::GameKind> {
+    world.try_resource::<crate::ScriptGame>().map(|game| game.0)
+}
+
+/// Whether CTDA function `index` is another function in the loaded game than
+/// the catalog's row for it (#5990). `false` when no game is installed.
+fn index_is_foreign_in_loaded_game(world: &World, index: u32) -> bool {
+    loaded_game(world).is_some_and(|game| index_is_foreign_in(index, game))
+}
+
 /// Whether the load order's game is one whose index-79 `GetQuestVariable` reads an
 /// ObScript quest script's local (Oblivion, Fallout 3 and New Vegas).
 pub fn uses_obscript_quest_variables(world: &World) -> bool {
@@ -62,14 +79,22 @@ pub fn uses_obscript_quest_variables(world: &World) -> bool {
 }
 
 /// Whether the evaluator can really evaluate `condition` in this world: its
-/// function is catalogued, and an index that is a different function in another
-/// game (79) is catalogued for the loaded one. The fail-closed gates (dialogue
+/// function is catalogued, an index that is a different function in another
+/// game (79, and the [`index_is_foreign_in`] set) is catalogued for the loaded
+/// one, and an authored `GetActorValue` is not an enum code the evaluator would
+/// misread as a FormID (#5989). The fail-closed gates (dialogue
 /// quest gates, Story Manager nodes, perk entries, intrusive packages) decline a
 /// condition for which this is `false`.
 pub fn is_modeled(world: &World, condition: &Condition) -> bool {
+    if index_is_foreign_in_loaded_game(world, condition.function_index) {
+        return false;
+    }
     match ConditionFunction::from_index(condition.function_index) {
         ConditionFunction::Unknown(_) => false,
         ConditionFunction::GetQuestVariable => uses_obscript_quest_variables(world),
+        ConditionFunction::GetActorValue => {
+            !loaded_game(world).is_some_and(authored_actor_value_is_enum_code)
+        }
         _ => true,
     }
 }

@@ -88,6 +88,68 @@ fn cond(
     }
 }
 
+/// #5990 — an index another game reuses for a different function must not run
+/// the catalog row's function there: it is unmodeled (so the fail-closed
+/// consumers decline it) and the fail-open evaluation passes it, exactly like
+/// an uncatalogued function. The same index stays modeled on its own games.
+#[test]
+fn colliding_indices_are_unmodeled_on_the_games_that_reuse_them() {
+    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Skyrim};
+
+    // (index, a game that reuses it, a game the catalog row is right for)
+    let cases = [
+        (403, Fallout3NV, Skyrim),
+        (449, Skyrim, Fallout3NV),
+        (449, Fallout4, Fallout3NV),
+        (533, Skyrim, Fallout3NV),
+        (533, Fallout4, Fallout3NV),
+        (550, Fallout3NV, Skyrim),
+        (555, Fallout3NV, Fallout4),
+        (630, Fallout4, Skyrim),
+    ];
+    let mut world = World::new();
+    crate::register(&mut world);
+    let subject = world.spawn();
+    for (index, foreign, native) in cases {
+        // 12345 is never what the row's function reads for a bare subject.
+        let condition = cond(index, ComparisonOp::Eq, 12345.0, false);
+
+        world.insert_resource(crate::ScriptGame(foreign));
+        assert!(!is_modeled(&world, &condition), "{index} is another function on {foreign:?}");
+        assert!(
+            evaluate_condition(&condition, &world, &ctx(subject)),
+            "{index} passes through on {foreign:?} instead of running the wrong function"
+        );
+
+        world.insert_resource(crate::ScriptGame(native));
+        assert!(is_modeled(&world, &condition), "{index} is modeled on {native:?}");
+        assert!(
+            !evaluate_condition(&condition, &world, &ctx(subject)),
+            "{index} still evaluates its own function on {native:?}"
+        );
+    }
+}
+
+/// #5989 — an authored `GetActorValue` carries an enum code on Oblivion,
+/// FO3/FNV and Skyrim, which the FormID-keyed evaluator would read as an absent
+/// value (0.0); the fail-closed consumers must see it as unmodeled there.
+#[test]
+fn authored_get_actor_value_is_unmodeled_where_it_stores_an_enum_code() {
+    use byroredux_plugin::esm::reader::GameKind;
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    let condition = cond(14, ComparisonOp::Ge, 25.0, false).with_param_1(0x2b);
+    for game in [GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Skyrim] {
+        world.insert_resource(crate::ScriptGame(game));
+        assert!(!is_modeled(&world, &condition), "{game:?} stores an actor-value enum code");
+    }
+    for game in [GameKind::Fallout4, GameKind::Starfield] {
+        world.insert_resource(crate::ScriptGame(game));
+        assert!(is_modeled(&world, &condition), "{game:?} stores an AVIF FormID");
+    }
+}
+
 #[test]
 fn get_quest_variable_uses_obscript_locals_only_for_legacy_game_paths() {
     use byroredux_plugin::esm::reader::GameKind;

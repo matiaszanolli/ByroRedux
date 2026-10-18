@@ -10,6 +10,7 @@
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
+use byroredux_plugin::esm::reader::GameKind;
 
 /// Identifier for a condition function. Wraps the raw u32 function
 /// index from `Condition.function_index` with a typed constructor so
@@ -24,7 +25,11 @@ pub enum ConditionFunction {
     /// for the `param_1` actor value from its `ActorValues` component
     /// (`ActorValue::current`), or 0.0 when the actor carries
     /// no such value (#1663). `param_1` is the global-space AVIF FormID.
-    /// FO3 / FNV / Skyrim function index **14**.
+    /// FO3 / FNV / Skyrim function index **14**. Only the engine-built
+    /// conditions and FO4+ authoring carry an AVIF FormID: an *authored*
+    /// condition on Oblivion / FO3 / FNV / Skyrim stores an actor-value enum
+    /// code, so [`is_modeled`](super::is_modeled) reports it unmodeled there
+    /// (#5989) until the code is translated at the parser boundary.
     GetActorValue,
     /// `GetQuestRunning(quest_form_id) → f32`. 1.0 while the quest is
     /// running or started in `QuestStageState`. FO3/FNV/Skyrim index
@@ -341,6 +346,50 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::HasKeyword, indices: &[560], name: "HasKeyword", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetIsGhost, indices: &[237], name: "GetIsGhost", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
 ];
+
+/// CTDA function indices that are a *different* function in some games than
+/// the catalog row that owns the index, with the games where that holds
+/// (#5990). xEdit's per-game definitions (`wbDefinitionsFO3.pas` /
+/// `FNV.pas` / `TES5.pas` / `FO4.pas`) give:
+///
+/// | idx | catalogued as | is another function in |
+/// |---|---|---|
+/// | 403 | `GetRelationshipRank` (Skyrim/FO4) | FO3/FNV: `HasFriendDisposition` |
+/// | 449 | `HasPerk` (FO3/FNV) | Skyrim, FO4: `GetFactionRelation` |
+/// | 533 | `GetXPForNextLevel` (FNV) | Skyrim, FO4: `GetInfamy` |
+/// | 550 | `IsSceneActionComplete` (Skyrim/FO4) | FO3/FNV: `IsGoreDisabled` |
+/// | 555 | `HasLoaded3D` (Skyrim/FO4) | FO3/FNV: `GetSpellUsageNum` |
+/// | 630 | `GetVMScriptVariable` (Skyrim) | FO4: `GetCombatAudioDetection` |
+///
+/// Index 79 (`GetQuestVariable`) is the opposite shape — valid only on the
+/// pre-Papyrus games — and keeps its own check in the evaluator. A game not
+/// named here (Oblivion, FO76, Starfield) is left as it was: no definition
+/// has been read for it, so nothing claims the index is foreign.
+const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
+    (403, &[GameKind::Fallout3NV]),
+    (449, &[GameKind::Skyrim, GameKind::Fallout4]),
+    (533, &[GameKind::Skyrim, GameKind::Fallout4]),
+    (550, &[GameKind::Fallout3NV]),
+    (555, &[GameKind::Fallout3NV]),
+    (630, &[GameKind::Fallout4]),
+];
+
+/// Whether CTDA function `index` is a different function in `game` than the
+/// catalog's row for it — the evaluator must not run the row's function there.
+pub fn index_is_foreign_in(index: u32, game: GameKind) -> bool {
+    FOREIGN_INDICES
+        .iter()
+        .any(|(foreign, games)| *foreign == index && games.contains(&game))
+}
+
+/// Whether an authored `GetActorValue` (14) stores its `param_1` as an
+/// actor-value *enum code* in `game` (#5989). Oblivion, FO3/FNV and Skyrim do
+/// (xEdit `ptActorValue` = `wbActorValue` enum); only FO4 onward stores an
+/// AVIF FormID, which is what the evaluator and `ActorValues` key on. Until the
+/// code is translated at the parser boundary, such a condition cannot be read.
+pub fn authored_actor_value_is_enum_code(game: GameKind) -> bool {
+    matches!(game, GameKind::Oblivion | GameKind::Fallout3NV | GameKind::Skyrim)
+}
 
 impl ConditionFunction {
     /// Map a raw u32 function index to a typed variant. Indices
