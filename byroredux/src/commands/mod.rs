@@ -164,6 +164,12 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(WaterDumpCommand);
     registry.register(WaterContactsCommand);
     registry.register(DoorTeleportCommand);
+    registry.register(quest::WeatherForceCommand);
+    registry.register(gameplay::InvUseCommand);
+    registry.register(gameplay::MagicCastCommand);
+    registry.register(gameplay::MagicEffectsCommand);
+    registry.register(gameplay::ActorReviveCommand);
+    registry.register(gameplay::ActorLookCommand);
     registry.register(SysAccessesCommand);
     registry.register(EngineQuitCommand);
     registry.register(SkinListCommand);

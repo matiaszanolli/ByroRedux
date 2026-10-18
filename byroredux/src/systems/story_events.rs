@@ -23,12 +23,35 @@ use byroredux_core::ecs::world::World;
 use byroredux_scripting::SmTree;
 use std::hash::{Hash, Hasher};
 
+/// Publish the kind of cell the player occupies (`IsInInterior` / `GetInWorldspace`): interior while
+/// an interior context is installed, exterior (with the worldspace's form id) while an exterior one
+/// is, none in loose-NIF mode or mid-transition. Only written when it changes.
+fn publish_player_cell_kind(world: &World) {
+    use byroredux_scripting::cell_kind::{CellKind, PlayerCellKind};
+    let kind = if world.try_resource::<CurrentCellContext>().is_some() {
+        Some(CellKind::Interior)
+    } else if let Some(exterior) = world.try_resource::<CurrentExteriorContext>() {
+        world
+            .try_resource::<LoadedCellIndex>()
+            .and_then(|index| index.0.cells.worldspaces.get(&exterior.worldspace_key).map(|record| record.form_id))
+            .map(|worldspace| CellKind::Exterior { worldspace })
+    } else {
+        None
+    };
+    if let Some(mut published) = world.try_resource_mut::<PlayerCellKind>() {
+        if published.0 != kind {
+            published.0 = kind;
+        }
+    }
+}
+
 /// System: raise a `CLOC` story event when the session's location
 /// identity changes.
 ///
 /// No player entity (loose-NIF demo, spawn ladders): no event — a
 /// location change nobody occupies is not a story event.
 pub fn story_change_location_system(world: &World) {
+    publish_player_cell_kind(world);
     // M47.2 — publish the player's current location for the location
     // conditions (the player is not cell-owned, so it has no `CellRoot` to
     // follow). Only where the load order authors locations: FO3/FNV/Oblivion
@@ -160,6 +183,7 @@ pub(crate) fn raise_hello_story_event(world: &World, greeter: EntityId, greeted:
 
 /// M47.2 — the victim's Papyrus `OnDeath(akKiller)`.
 pub(crate) fn raise_death_event(world: &World, victim: EntityId, killer: Option<EntityId>) {
+    byroredux_scripting::obscript_state::note_death(world, victim, killer);
     if let Some(mut deaths) = world.query_mut::<byroredux_scripting::OnDeathEvent>() {
         deaths.insert(victim, byroredux_scripting::OnDeathEvent { killer });
     }

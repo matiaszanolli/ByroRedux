@@ -233,6 +233,25 @@ pub struct EfshRecord {
     pub fill_texture: String,
     /// `ICO2` — particle / addon texture path. Optional.
     pub particle_texture: String,
+    /// `DATA` @16 — the Fill/Texture effect's colour (Oblivion, Fallout 3, New Vegas share this
+    /// leading layout, xEdit `wbDefinitions{TES4,FNV}.pas`). `None` when `DATA` is too short.
+    pub fill: Option<EfshFill>,
+}
+
+/// The Fill/Texture ("membrane") effect of an effect shader: its colour and the alpha timeline it
+/// plays over (`DATA` @16..48). Times are seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct EfshFill {
+    pub color: [u8; 3],
+    pub fade_in: f32,
+    pub full_alpha_time: f32,
+    pub fade_out: f32,
+    /// The alpha the shader settles at once its timeline has run, while it keeps playing.
+    pub persistent_alpha_ratio: f32,
+    pub pulse_amplitude: f32,
+    pub pulse_frequency: f32,
+    /// `DATA` flag bit 0, "No Membrane Shader": there is no fill at all.
+    pub no_membrane: bool,
 }
 
 pub fn parse_efsh(form_id: u32, subs: &[SubRecord]) -> EfshRecord {
@@ -250,6 +269,19 @@ pub fn parse_efsh(form_id: u32, subs: &[SubRecord]) -> EfshRecord {
         match &sub.sub_type {
             b"ICON" => out.fill_texture = read_zstring(&sub.data),
             b"ICO2" => out.particle_texture = read_zstring(&sub.data),
+            b"DATA" if sub.data.len() >= 44 => {
+                let f = |at: usize| f32::from_le_bytes(sub.data[at..at + 4].try_into().unwrap());
+                out.fill = Some(EfshFill {
+                    color: [sub.data[16], sub.data[17], sub.data[18]],
+                    fade_in: f(20),
+                    full_alpha_time: f(24),
+                    fade_out: f(28),
+                    persistent_alpha_ratio: f(32),
+                    pulse_amplitude: f(36),
+                    pulse_frequency: f(40),
+                    no_membrane: sub.data[0] & 1 != 0,
+                });
+            }
             _ => {}
         }
     }
@@ -560,6 +592,27 @@ mod tests {
         assert_eq!(e.editor_id, "EFFShockBeamCloud01");
         assert_eq!(e.fill_texture, "effects\\shockbeam_cloud.dds");
         assert_eq!(e.particle_texture, "effects\\shockbeam_particles.dds");
+    }
+
+    #[test]
+    fn parse_efsh_reads_the_fill_colour_and_its_alpha_timeline() {
+        // DATA: flags u8 + 3 unused, three u32 blend/test words, then the Fill colour (RGB + unused)
+        // at 16 and the timings (fade in, full, fade out, persistent ratio, pulse amp, pulse freq).
+        let mut data = vec![0u8; 48];
+        data[16..19].copy_from_slice(&[255, 128, 0]);
+        for (i, value) in [0.5f32, 1.0, 2.0, 0.25, 0.1, 3.0].iter().enumerate() {
+            data[20 + 4 * i..24 + 4 * i].copy_from_slice(&value.to_le_bytes());
+        }
+        let e = parse_efsh(0x77, &[sub(b"EDID", b"EFFTest\0"), sub(b"DATA", &data)]);
+        assert_eq!(
+            e.fill,
+            Some(EfshFill { color: [255, 128, 0], fade_in: 0.5, full_alpha_time: 1.0, fade_out: 2.0, persistent_alpha_ratio: 0.25, pulse_amplitude: 0.1, pulse_frequency: 3.0, no_membrane: false })
+        );
+        // A DATA too short for the layout is no fill, not a made-up one.
+        assert_eq!(parse_efsh(0x78, &[sub(b"DATA", [0u8; 20])]).fill, None);
+        // Flag bit 0 is "No Membrane Shader".
+        data[0] = 1;
+        assert!(parse_efsh(0x79, &[sub(b"DATA", &data)]).fill.unwrap().no_membrane);
     }
 
     #[test]

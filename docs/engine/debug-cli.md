@@ -334,7 +334,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**120**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**126**) grouped by
 purpose:
 
 ```
@@ -501,6 +501,12 @@ quest.setstage              → advance a quest through the canonical stage path
 perk.run                    → run a perk entry's fragment on the player (perk, entry id, optional target)
 terminal.select             → pick a terminal menu item by reference + item id, running its fragment
 quest.effects               → inspect the quest effect log
+inv.use <form_id>            → use (consume) a player inventory item through the menu's Consume action
+magic.cast <spell> [target]  → cast a spell through the caster runtime ObScript Cast uses (M47.3)
+actor.look <entity|.> <target|none> → force an actor's head to track a reference like ObScript Look (M47.3)
+actor.revive <entity|.>      → bring a dead or unconscious actor back like ObScript Resurrect (M47.3)
+magic.effects [entity]       → list the magic effects running on a reference (script effects, timed value changes)
+weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
 obscript.objects [limit]    → ObScript object scripts attached to placed references: blocks, run counts, declines (M47.3)
 
 # Legacy HUD + focused diagnostics

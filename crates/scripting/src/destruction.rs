@@ -185,7 +185,28 @@ pub fn damage_object(world: &World, entity: EntityId, form: u32, amount: f32) ->
     let data = world.try_resource::<DestructionTable>()?.get(base)?.clone();
     let mut states = world.try_resource_mut::<DestructionStates>()?;
     let state = states.0.entry(form).or_default();
-    Some(apply_damage(&data, state, amount))
+    let outcome = apply_damage(&data, state, amount);
+    drop(states);
+    if outcome.old_stage != outcome.new_stage {
+        if let Some(mut changed) = world.try_resource_mut::<PendingStageChanges>() {
+            changed.0.push(entity);
+        }
+    }
+    Some(outcome)
+}
+
+/// The references whose destruction stage changed since the ObScript `OnDestructionStageChange` blocks
+/// last ran: "run once whenever the scripted object changes its current Damage Stage" (GECK).
+/// `NOT_SAVED_BY_DESIGN`: drained the frame it is filled.
+#[derive(Debug, Default)]
+pub struct PendingStageChanges(pub Vec<EntityId>);
+
+impl Resource for PendingStageChanges {}
+
+/// Whether `entity`'s base object carries destruction data.
+pub fn is_destructible(world: &World, entity: EntityId) -> bool {
+    let Some(base) = base_of(world, entity) else { return false };
+    world.try_resource::<DestructionTable>().is_some_and(|table| table.get(base).is_some())
 }
 
 /// `reference.GetCurrentDestructionStage()`.

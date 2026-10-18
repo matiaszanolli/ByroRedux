@@ -249,14 +249,51 @@ fn apply_environment(
         image_spaces: &wctx.record_index.image_spaces,
         modifiers: &wctx.record_index.imagespace_modifiers,
     };
+    // A weather a script forced (ObScript `ForceWeather` / `SetWeather`) replaces the climate's own.
+    let forced = world
+        .try_resource::<byroredux_scripting::obscript_state::ForcedWeather>()
+        .and_then(|forced| forced.weather)
+        .and_then(|form| wctx.record_index.weathers.get(&form));
     apply_environment_with_sources(
         world,
         ctx,
         tex_provider,
         climate,
-        default_weather,
+        forced.or(default_weather),
         &image_spaces,
     );
+}
+
+/// Switch the exterior to the weather a script forced, or back to the climate's own when the override
+/// is released: ObScript `ForceWeather` / `SetWeather` ("switch to the specified weather at once"),
+/// `ReleaseWeatherOverride`. `applied` is what the last call saw (`None` before the first, which only
+/// records it — the bootstrap already applied whatever was forced); the sky is re-installed only when
+/// the forced weather changed. `true` when it was.
+pub(crate) fn apply_forced_weather(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    wctx: &cell_loader::ExteriorWorldContext,
+    applied_climate: Option<u32>,
+    applied: &mut Option<Option<u32>>,
+) -> bool {
+    let forced = world
+        .try_resource::<byroredux_scripting::obscript_state::ForcedWeather>()
+        .and_then(|forced| forced.weather);
+    let previous = applied.replace(forced);
+    if previous.is_none() || previous == Some(forced) {
+        return false;
+    }
+    let climate = applied_climate
+        .and_then(|form| wctx.record_index.climates.get(&form))
+        .or(wctx.climate.as_ref());
+    let default = climate
+        .and_then(|c| crate::env_translate::resolve_default_weather(c, &wctx.record_index.weathers))
+        .map(|(wthr, _)| wthr)
+        .or(wctx.default_weather.as_ref());
+    log::info!("Forced weather {previous:08X?} -> {forced:08X?}: re-applying the exterior sky");
+    apply_environment(world, ctx, tex_provider, wctx, climate, default);
+    true
 }
 
 fn apply_environment_with_sources(

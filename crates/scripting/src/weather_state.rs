@@ -28,6 +28,11 @@ pub struct WeatherClassifications(HashMap<u32, i32>);
 impl Resource for WeatherClassifications {}
 
 impl WeatherClassifications {
+    /// Whether the load order has this weather.
+    pub fn knows(&self, weather: u32) -> bool {
+        self.0.contains_key(&weather)
+    }
+
     /// The weather's classification; -1 for none or an unknown weather.
     pub fn of(&self, weather: u32) -> i32 {
         self.0.get(&weather).copied().unwrap_or(-1)

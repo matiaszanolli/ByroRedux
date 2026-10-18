@@ -507,6 +507,10 @@ pub fn build_save_registry() -> SaveRegistry {
     byroredux_scripting::ownership::register_saved(&mut r);
     byroredux_scripting::crime_gold::register_saved(&mut r);
     byroredux_scripting::crime_faction::register_saved(&mut r);
+    // M47.3 — Pip-Boy notes, kill records, a forced weather, and the weapon-out / ignore-crime flags.
+    byroredux_scripting::obscript_state::register_saved(&mut r);
+    // M47.3 — the magic effects running on an actor (script effects, timed value changes).
+    byroredux_scripting::magic_effects::register_saved(&mut r);
     r
         // M47.2 — Actor.SetBribed / SetIntimidated flags.
         .register_resource::<byroredux_scripting::SpeechcraftOutcomes>("SpeechcraftOutcomes")

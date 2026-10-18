@@ -778,7 +778,7 @@ pub fn sandbox_sit_enter_kf_path(game: GameKind) -> Option<&'static str> {
 /// clip, and register it path-keyed (#790). Returns the clip handle, or
 /// `None` when the KF is absent / unparseable / empty. Backs both
 /// [`load_idle_clip`] and [`load_sit_clip`].
-fn load_kf_clip_by_path(
+pub(crate) fn load_kf_clip_by_path(
     world: &mut World,
     tex_provider: &TextureProvider,
     kf_path: &str,

@@ -200,7 +200,7 @@ mod world_setup;
 // reuse them on Interior→Exterior swaps — same boot-path code, no
 // duplication. See cell_loader::transition.
 pub(crate) use world_setup::{
-    apply_cell_climate_override, apply_cell_region_ambient, assemble_exterior_streaming,
+    apply_cell_climate_override, apply_cell_region_ambient, apply_forced_weather, assemble_exterior_streaming,
     apply_show_sky_interior_climate, begin_exterior_streaming, ExteriorBootstrapMode,
 };
 // The four `scene/*_tests.rs` child modules reach for these helpers

@@ -59,17 +59,56 @@ pub(crate) fn idle_clip_playback_system(world: &World, _dt: f32) {
         return;
     }
 
+    // The idle the actor was in, for the one-shots that hand it back (see `idle_resume_system`).
+    let mut resumes: Vec<(EntityId, crate::components::IdleResume)> = Vec::new();
+    let one_shot = |handle: u32| {
+        world
+            .try_resource::<byroredux_core::animation::AnimationClipRegistry>()
+            .and_then(|clips| clips.get(handle).map(|clip| clip.cycle_type == byroredux_core::animation::CycleType::Clamp))
+            .unwrap_or(false)
+    };
     if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
         for (actor, _, skeleton_root, handle) in &requests {
             let replacement = AnimationPlayer::new(*handle).with_root(*skeleton_root);
             if let Some(player) = players.get_mut(*actor) {
+                if player.clip_handle != *handle && one_shot(*handle) {
+                    resumes.push((
+                        *actor,
+                        crate::components::IdleResume {
+                            idle_clip: *handle,
+                            clip: Some(player.clip_handle),
+                            speed: player.speed,
+                            local_time: player.local_time,
+                        },
+                    ));
+                }
                 *player = replacement;
             } else {
+                // It was playing nothing: when the one-shot ends the player goes again.
+                if one_shot(*handle) {
+                    resumes.push((
+                        *actor,
+                        crate::components::IdleResume { idle_clip: *handle, clip: None, speed: 1.0, local_time: 0.0 },
+                    ));
+                }
                 players.insert(*actor, replacement);
             }
         }
     } else {
         return;
+    }
+    if !resumes.is_empty() {
+        if let Some(mut store) = world.query_mut::<crate::components::IdleResume>() {
+            for (actor, resume) in resumes {
+                // A second one-shot over the first keeps the idle from before the first.
+                match store.get_mut(actor) {
+                    Some(existing) => existing.idle_clip = resume.idle_clip,
+                    None => {
+                        store.insert(actor, resume);
+                    }
+                }
+            }
+        }
     }
     if let Some(mut root_motion) = world.query_mut::<RootMotionDelta>() {
         for (actor, _, _, _) in &requests {
@@ -81,6 +120,95 @@ pub(crate) fn idle_clip_playback_system(world: &World, _dt: f32) {
             if let Some(target) = targets.get_mut(actor) {
                 target.consumed_idle_serial = serial;
             }
+        }
+    }
+}
+
+/// ObScript `PickIdle`: the actor picks a new idle. The engine's actor idle choice is the per-game
+/// generic standing idle (`humanoid_default_idle_kf_path`, the pool `pick_idle_handle` draws from); the
+/// actor starts it again from the first key, unless a scripted one-shot idle is running (which hands
+/// the idle back itself when it ends). An actor with no animation to restart is left alone.
+pub(crate) fn pick_idle_system(world: &World, _dt: f32) {
+    let requested: Vec<EntityId> = match world.query::<byroredux_scripting::PickIdleRequest>() {
+        Some(requests) if !requests.is_empty() => requests.iter().map(|(actor, _)| actor).collect(),
+        _ => return,
+    };
+    if let Some(mut requests) = world.query_mut::<byroredux_scripting::PickIdleRequest>() {
+        for actor in &requested {
+            requests.remove(*actor);
+        }
+    }
+    let Some(game) = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|index| index.0.game) else {
+        return;
+    };
+    let Some(handle) = crate::npc_spawn::humanoid_default_idle_kf_path(game).and_then(|path| {
+        world.try_resource::<byroredux_core::animation::AnimationClipRegistry>().and_then(|clips| clips.get_by_path(path))
+    }) else {
+        return;
+    };
+    let resting: Vec<EntityId> = match world.query::<crate::components::IdleResume>() {
+        Some(running) => requested.into_iter().filter(|actor| running.get(*actor).is_none()).collect(),
+        None => requested,
+    };
+    let Some(mut players) = world.query_mut::<AnimationPlayer>() else { return };
+    for actor in resting {
+        if let Some(player) = players.get_mut(actor) {
+            player.clip_handle = handle;
+            player.local_time = 0.0;
+            player.prev_time = 0.0;
+            player.playing = true;
+            player.reverse_direction = false;
+        }
+    }
+}
+
+/// Hand an actor back the animation it was in when a scripted one-shot IDLE (`PlayIdle`) has finished:
+/// the `Clamp` clip ran to its duration. A player given something else in the meantime forgets the
+/// resume.
+pub(crate) fn idle_resume_system(world: &World, _dt: f32) {
+    let resumable: Vec<(EntityId, crate::components::IdleResume)> = match world.query::<crate::components::IdleResume>() {
+        Some(resumes) if !resumes.is_empty() => resumes.iter().map(|(actor, resume)| (actor, *resume)).collect(),
+        _ => return,
+    };
+    let finished = |handle: u32, time: f32| {
+        world
+            .try_resource::<byroredux_core::animation::AnimationClipRegistry>()
+            .and_then(|clips| clips.get(handle).map(|clip| time >= clip.duration))
+            .unwrap_or(true)
+    };
+    let mut done: Vec<EntityId> = Vec::new();
+    let mut finished_idle: Vec<EntityId> = Vec::new();
+    if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
+        for (actor, resume) in &resumable {
+            let Some(player) = players.get_mut(*actor) else {
+                done.push(*actor);
+                continue;
+            };
+            if player.clip_handle != resume.idle_clip {
+                done.push(*actor);
+            } else if finished(player.clip_handle, player.local_time) {
+                match resume.clip {
+                    Some(clip) => {
+                        let root = player.root_entity;
+                        let mut back = AnimationPlayer::new(clip);
+                        back.root_entity = root;
+                        back.speed = resume.speed;
+                        back.local_time = resume.local_time;
+                        back.prev_time = resume.local_time;
+                        *player = back;
+                    }
+                    None => finished_idle.push(*actor),
+                }
+                done.push(*actor);
+            }
+        }
+        for actor in finished_idle {
+            players.remove(actor);
+        }
+    }
+    if let Some(mut store) = world.query_mut::<crate::components::IdleResume>() {
+        for actor in done {
+            store.remove(actor);
         }
     }
 }

@@ -86,7 +86,7 @@ pub fn command_is_modeled(cmd: u16, fallout: bool) -> bool {
     // The quest and message commands `call` matches by id, and the synthetic ones.
     const VM_LEVEL: &[u16] = &[
         0x1039, 0x1036, 0x1037, 0x103a, 0x103b, 0x1038, 0x1059, 0x1000, 0x100c, 0x101f, 0x10ce,
-        0x10cd, 0x1069, CMD_COMPLETE_QUEST, 0x10cf, 0x10a5,
+        0x10cd, 0x1069, CMD_COMPLETE_QUEST, 0x10cf, 0x10a5, 0x10a6,
     ];
     const FALLOUT_ONLY: &[u16] = &[
         CMD_SET_OBJECTIVE_COMPLETED, CMD_SET_OBJECTIVE_DISPLAYED, CMD_GET_OBJECTIVE_COMPLETED,
@@ -392,6 +392,10 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
         self.ends.replace(false)
     }
 
+    fn named_form(&mut self, name: &str) -> Option<u32> {
+        crate::idle_names::idle_by_editor_id(self.world, name)
+    }
+
     fn message(&mut self, message: crate::obscript_vm::ObScriptMessage) {
         let kind = if message.message_box { "MessageBox" } else { "Message" };
         log::debug!("quest {:08X} {kind}: {:?}", self.owner, message.text);
@@ -548,6 +552,25 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     return self.decline(cmd);
                 };
                 crate::fragment::remove_items(self.world, holder, item.item, 1, destination);
+                self.ends.set(true);
+                None
+            }
+            // `DropMe`: "drops the calling item from its container ... The dropped item will appear
+            // next to the container or the owner" (GECK) — taken out of the holder, placed in the world
+            // at the holder, and, like `RemoveMe`, it ends the script (the item is gone from the
+            // inventory it ran in). Without a holder it does nothing.
+            0x10a6 if self.item.is_some() => {
+                let item = self.item.expect("checked above");
+                let Some(holder) = resolve_entity_by_global_form_id(self.world, item.container) else {
+                    return self.decline(cmd);
+                };
+                crate::fragment::remove_items(self.world, holder, item.item, 1, None);
+                let ids = self.world.try_resource::<crate::CreatedReferences>().map(|created| created.scripted_ids());
+                if let Some(form) = ids.and_then(|ids| ids.next()) {
+                    if let Some(mut created) = self.world.try_resource_mut::<crate::CreatedReferences>() {
+                        created.create_scripted(form, item.item, item.container, false);
+                    }
+                }
                 self.ends.set(true);
                 None
             }

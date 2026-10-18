@@ -39,6 +39,9 @@ pub(crate) fn populate_idle_clip_runtime(
     index: &EsmIndex,
     provider: &TextureProvider,
 ) -> usize {
+    if index.game.has_kf_animations() {
+        return populate_kf_idle_clips(world, index, provider);
+    }
     if index.game != GameKind::Skyrim {
         return 0;
     }
@@ -154,6 +157,72 @@ pub(crate) fn populate_idle_clip_runtime(
         log::info!("Installed {installed} Skyrim IDLE HKX clips");
     }
     installed
+}
+
+/// Install the `.kf` clips of the IDLE records an actor is waiting on (Oblivion, FO3, FNV): an ObScript
+/// `PlayIdle <idle>` writes the request, and an IDLE's `MODL` is the animation file under `meshes\`
+/// (`Creatures\Dog\IdleAnims\specialidle_aroo.kf`). Bounded by what the content asks for, like the Skyrim
+/// path; a request whose file is not archived stays pending and is retried on the next cell load.
+pub(crate) fn populate_kf_idle_clips(world: &mut World, index: &EsmIndex, provider: &TextureProvider) -> usize {
+    world.init_resource::<IdleClipCatalog>();
+    let wanted: HashSet<u32> = match world.query::<byroredux_scripting::ActorCinematicState>() {
+        Some(states) => states.iter().filter_map(|(_, state)| state.requested_idle_form_id).collect(),
+        None => return 0,
+    };
+    let mut installed = 0;
+    for form_id in wanted {
+        {
+            let catalog = world.resource::<IdleClipCatalog>();
+            if catalog.handles.contains_key(&form_id) || catalog.unresolved.contains(&form_id) {
+                continue;
+            }
+        }
+        let resolved = index
+            .idle_animations
+            .get(&form_id)
+            .filter(|idle| !idle.animation_path.is_empty())
+            .and_then(|idle| {
+                let path = kf_mesh_path(&idle.animation_path);
+                let handle = crate::npc_spawn::load_kf_clip_by_path(world, provider, &path);
+                if handle.is_none() {
+                    log::debug!("IDLE {form_id:08X} ({}): '{path}' is not an archived .kf", idle.editor_id);
+                }
+                handle
+            });
+        let mut catalog = world.resource_mut::<IdleClipCatalog>();
+        match resolved {
+            Some(handle) => {
+                catalog.handles.insert(form_id, handle);
+                installed += 1;
+            }
+            None => {
+                catalog.unresolved.insert(form_id);
+            }
+        }
+    }
+    installed
+}
+
+/// An IDLE's animation path (relative to `meshes\`) as the archive lookup spells it.
+fn kf_mesh_path(animation_path: &str) -> String {
+    let lower = animation_path.replace('/', "\\").to_ascii_lowercase();
+    if lower.starts_with("meshes\\") { lower } else { format!("meshes\\{lower}") }
+}
+
+/// Whether an actor waits on a `.kf` IDLE no clip is installed for yet — the cue for the app to resolve it
+/// with an archive provider (`populate_kf_idle_clips`).
+pub(crate) fn kf_idle_work_pending(world: &World, game: GameKind) -> bool {
+    if !game.has_kf_animations() {
+        return false;
+    }
+    let Some(states) = world.query::<byroredux_scripting::ActorCinematicState>() else { return false };
+    let catalog = world.try_resource::<IdleClipCatalog>();
+    let pending = states.iter().any(|(_, state)| {
+        state
+            .requested_idle_form_id
+            .is_some_and(|form| catalog.as_ref().is_none_or(|catalog| !catalog.handles.contains_key(&form) && !catalog.unresolved.contains(&form)))
+    });
+    pending
 }
 
 /// M42.10 — decode the humanoid walk cycle into the `SkyrimWalkClip`

@@ -108,6 +108,16 @@ pub const BLOCK_ON_PACKAGE_CHANGE: u16 = 0x14;
 pub const BLOCK_ON_TRIGGER: u16 = 0x18;
 pub const BLOCK_ON_TRIGGER_ENTER: u16 = 0x1a;
 pub const BLOCK_ON_TRIGGER_LEAVE: u16 = 0x1b;
+/// The scripted-magic-effect blocks (`ScriptEffectStart` 0x11, `Finish` 0x12, `Update` 0x13) and
+/// `OnMagicEffectHit` (0x16): ids from the masters' `Begin` lines, as the other block ids above.
+pub const BLOCK_SCRIPT_EFFECT_START: u16 = 0x11;
+pub const BLOCK_SCRIPT_EFFECT_FINISH: u16 = 0x12;
+pub const BLOCK_SCRIPT_EFFECT_UPDATE: u16 = 0x13;
+pub const BLOCK_ON_MAGIC_EFFECT_HIT: u16 = 0x16;
+/// `OnDestructionStageChange` (0x23).
+pub const BLOCK_ON_DESTRUCTION_STAGE_CHANGE: u16 = 0x23;
+/// `OnReset` (0x1e).
+pub const BLOCK_ON_RESET: u16 = 0x1e;
 
 /// The commands whose first parameter is an axis letter: `Rotate`, `GetPos`, `SetPos`, `GetAngle`,
 /// `SetAngle`, `GetStartingPos`, `GetStartingAngle` (`0x1004`, `0x1006`..`0x100b`, the same on all
@@ -163,6 +173,11 @@ pub trait ObScriptHost {
     /// buttons (M47.3 phase 2). A host without a message surface ignores it.
     fn message(&mut self, _message: ObScriptMessage) {}
 
+    /// The form an editor ID names, for the commands that write it as a string (`PlayIdle`).
+    fn named_form(&mut self, _name: &str) -> Option<u32> {
+        None
+    }
+
     /// Whether the command just run ends the script, as a `Return` does: `RemoveMe`
     /// and `DropMe` "act as a return when called -- the lines of script following it will
     /// NOT be executed" (GECK), the script having just removed the object it runs on.
@@ -171,6 +186,10 @@ pub trait ObScriptHost {
         false
     }
 }
+
+/// Commands whose one argument is an editor ID string, not a form index: `PlayIdle` (GECK: "takes the
+/// actual editorID string of the idle as parameter").
+const STRING_FORM_COMMANDS: [u16; 1] = [0x1190];
 
 /// `MessageBox` (`0x1000`).
 pub const CMD_MESSAGE_BOX: u16 = 0x1000;
@@ -917,6 +936,9 @@ impl<'a> Vm<'a> {
     /// generic decoder would take for the nested-call tag and the two zero-payload tags. Here the
     /// letter is the axis, answered as `0`, `1`, `2`.
     fn decode_args_for(&mut self, cmd: u16, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {
+        if STRING_FORM_COMMANDS.contains(&cmd) {
+            return self.decode_string_form(start, end);
+        }
         if !AXIS_COMMANDS.contains(&cmd) || start + 3 > end {
             return self.decode_args(start, end);
         }
@@ -935,6 +957,25 @@ impl<'a> Vm<'a> {
             o = next;
         }
         Some(args)
+    }
+
+    /// A command whose one argument is an editor ID written as `[u16 1][u16 length][bytes]`
+    /// (`PlayIdle LooseDogGrowl`: `01 00 0d 00 "LooseDogGrowl"`), answered as the form the host says it
+    /// names — `Ref(0)` when it names none, so the host declines the call.
+    fn decode_string_form(&mut self, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {
+        if start == end {
+            return Some(Vec::new());
+        }
+        let count = byroredux_core::bytes::le_u16_at(self.bytes, start)?;
+        let length = usize::from(byroredux_core::bytes::le_u16_at(self.bytes, start + 2)?);
+        let text_start = start + 4;
+        let text_end = text_start.checked_add(length)?;
+        if count != 1 || text_end > end {
+            return self.decode_args_at_depth(start, end, 0);
+        }
+        let name = String::from_utf8_lossy(&self.bytes[text_start..text_end]).into_owned();
+        let form = self.host.named_form(&name).unwrap_or(0);
+        Some(vec![ObScriptValue::Ref(form)])
     }
 
     fn decode_args(&mut self, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {

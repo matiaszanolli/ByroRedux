@@ -216,6 +216,13 @@ pub struct OneCellLoadInfo {
     pub center: Vec3,
 }
 
+/// Mark `cell_root` as an exterior cell of the active worldspace (`IsInInterior` / `GetInWorldspace`).
+fn stamp_exterior_cell(world: &mut World, cell_root: EntityId, wctx: &ExteriorWorldContext) {
+    if let Some(record) = wctx.record_index.cells.worldspaces.get(&wctx.worldspace_key) {
+        world.insert(cell_root, byroredux_scripting::cell_kind::ExteriorCell(record.form_id));
+    }
+}
+
 /// Resumable main-thread apply for the active worldspace's persistent CELL.
 pub(crate) struct PersistentCellApplyJob {
     cell_root: EntityId,
@@ -1145,6 +1152,7 @@ pub(crate) fn begin_worldspace_persistent_cell(
     let cell_root = world.spawn();
     register_cell_root(world, cell_root);
     world.insert(cell_root, CellFormId(cell.form_id));
+    stamp_exterior_cell(world, cell_root, wctx);
     // Placeholder only — `advance` reseeds the cursor at its top (#5483),
     // so the constructor value never reaches a stamp. Kept as
     // `next_entity_id()` rather than `cell_root` purely so an accidental
@@ -2010,6 +2018,7 @@ impl ExteriorCellApplyJob {
         let cell_root = world.spawn();
         register_cell_root(world, cell_root);
         world.insert(cell_root, CellFormId(cell.form_id));
+        stamp_exterior_cell(world, cell_root, wctx);
         let first_entity = world.next_entity_id();
         let has_land = cell.landscape.is_some();
         log::info!(

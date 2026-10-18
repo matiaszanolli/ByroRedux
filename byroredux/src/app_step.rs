@@ -109,6 +109,16 @@ impl App {
             &mut state.applied_climate_form,
             &mut state.climate_override_grid,
         );
+        // ObScript `ForceWeather` / `SetWeather` / `ReleaseWeatherOverride`: re-install the sky when the
+        // forced weather changed.
+        crate::scene::apply_forced_weather(
+            &mut self.world,
+            ctx,
+            &state.tex_provider,
+            &state.wctx,
+            state.applied_climate_form,
+            &mut state.applied_forced_weather,
+        );
         // EX-16 item 1 (#2372) — same "outside the grid_changed guard"
         // placement as the climate override immediately above, and for
         // the same reason: a session that starts inside a region-tagged
@@ -1045,6 +1055,32 @@ impl App {
         self.world.insert_resource(provider);
     }
 
+    /// ObScript `PlayIdle` on the `.kf` games: resolve the `.kf` of an IDLE an actor is waiting on with
+    /// the streaming session's archive provider or the one kept for actor clips. The idle playback
+    /// system plays it once the catalog has the clip.
+    fn step_kf_idles(&mut self) {
+        let Some(index) = self.world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|index| index.0.clone()) else {
+            return;
+        };
+        if !crate::asset_provider::kf_idle_work_pending(&self.world, index.game) {
+            return;
+        }
+        if let Some(state) = self.streaming.as_ref() {
+            crate::asset_provider::populate_kf_idle_clips(&mut self.world, &index, &state.tex_provider);
+            return;
+        }
+        if self.world.try_resource::<crate::asset_provider::ActorClipProvider>().is_none() {
+            let args: Vec<String> = crate::cli_args::effective_args();
+            let provider = crate::asset_provider::build_texture_provider(&args);
+            self.world.insert_resource(crate::asset_provider::ActorClipProvider(provider));
+        }
+        let Some(provider) = self.world.remove_resource::<crate::asset_provider::ActorClipProvider>() else {
+            return;
+        };
+        crate::asset_provider::populate_kf_idle_clips(&mut self.world, &index, &provider.0);
+        self.world.insert_resource(provider);
+    }
+
     /// Drain any queued [`cell_loader::PendingCellTransition`] and
     /// dispatch the orchestrator. Runs once per frame after
     /// `step_streaming`. No-op on frames with no pending transition.
@@ -1097,6 +1133,7 @@ impl App {
         self.step_player_move_request();
         self.step_created_references();
         self.step_actor_graphs();
+        self.step_kf_idles();
         if self.loading_screen.waiting_for_presentation() || self.loading_screen.owns_save() {
             return;
         }

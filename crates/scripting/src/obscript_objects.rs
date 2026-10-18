@@ -74,7 +74,7 @@ use crate::obscript_vm::{
     BlockInfo, BlockOutcome, ObScriptProgram, VmState, BLOCK_GAME_MODE, BLOCK_ON_ACTIVATE, BLOCK_ON_ADD,
     BLOCK_ON_DROP, BLOCK_ON_EQUIP, BLOCK_ON_UNEQUIP, BLOCK_SAY_TO_DONE,
     BLOCK_ON_COMBAT_END, BLOCK_ON_DEATH, BLOCK_ON_HIT, BLOCK_ON_HIT_WITH, BLOCK_ON_LOAD,
-    BLOCK_ON_PACKAGE_CHANGE, BLOCK_ON_PACKAGE_DONE, BLOCK_ON_PACKAGE_START, BLOCK_ON_START_COMBAT,
+    BLOCK_ON_PACKAGE_CHANGE, BLOCK_ON_PACKAGE_DONE, BLOCK_ON_PACKAGE_START, BLOCK_ON_RESET, BLOCK_ON_START_COMBAT,
     BLOCK_ON_TRIGGER, BLOCK_ON_TRIGGER_ENTER, BLOCK_ON_TRIGGER_LEAVE,
 };
 use crate::vm_state::ScriptVariables;
@@ -261,6 +261,20 @@ fn collect_due(world: &World) -> Vec<Due> {
     }
     let entities_with = |events: Option<Vec<EntityId>>| -> HashSet<EntityId> { events.unwrap_or_default().into_iter().collect() };
     let loaded = entities_with(world.query::<OnCellLoadEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
+    // The cell expired and reset as the player entered it (`CellVisits`): the marker is this system's
+    // alone, so it is taken here.
+    let reset = {
+        let owed: Vec<EntityId> = world
+            .query::<crate::obscript_state::OnResetEvent>()
+            .map(|events| events.iter().map(|(entity, _)| entity).collect())
+            .unwrap_or_default();
+        if let Some(mut events) = world.query_mut::<crate::obscript_state::OnResetEvent>() {
+            for entity in &owed {
+                events.remove(*entity);
+            }
+        }
+        owed.into_iter().collect::<HashSet<EntityId>>()
+    };
     // Read, not drained: `reference_script_event_system` owns the marker.
     let died = entities_with(world.query::<OnDeathEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
     // Activations, minus the native-only ones: "no OnActivate event will be sent
@@ -313,6 +327,7 @@ fn collect_due(world: &World) -> Vec<Due> {
             };
             match block.block_type {
                 BLOCK_ON_LOAD if loaded.contains(&entity) => runs.push(Run { block, who: None }),
+                BLOCK_ON_RESET if reset.contains(&entity) => runs.push(Run { block, who: None }),
                 BLOCK_ON_ACTIVATE => {
                     if let Some(&activator) = activated.get(&entity).filter(|&&a| wanted(a)) {
                         runs.push(Run { block, who: Some(activator) });
@@ -376,6 +391,32 @@ fn run_event_blocks(
     for block in blocks {
         run_block(world, entity, form, &script, block, dt, action_ref);
     }
+}
+
+/// `OnDestructionStageChange`: the references whose destruction stage changed run the block of their
+/// script, once for each change.
+pub fn obscript_destruction_system(world: &World, dt: f32) {
+    let changed = match world.try_resource_mut::<crate::destruction::PendingStageChanges>() {
+        Some(mut pending) if !pending.0.is_empty() => std::mem::take(&mut pending.0),
+        _ => return,
+    };
+    for entity in changed {
+        run_event_blocks(world, entity, &[crate::obscript_vm::BLOCK_ON_DESTRUCTION_STAGE_CHANGE], |_| true, None, dt);
+    }
+}
+
+/// `OnMagicEffectHit`: a magic effect landed on `target`, cast by `caster` (a reference FormID, 0 for
+/// none). The target's script runs the block written for that effect — `Begin OnMagicEffectHit
+/// SomeEffect` — or one with no parameter, which answers any; the caster is the action reference.
+pub(crate) fn deliver_magic_effect_hit(world: &World, target: EntityId, mgef: u32, caster: u32, dt: f32) {
+    run_event_blocks(
+        world,
+        target,
+        &[crate::obscript_vm::BLOCK_ON_MAGIC_EFFECT_HIT],
+        |block| block.filter.is_none_or(|wanted| wanted == mgef),
+        (caster != 0).then_some(caster),
+        dt,
+    );
 }
 
 /// `OnHit` and `OnHitWith`: the frame an actor is struck, for the actor's own script.
@@ -1341,6 +1382,21 @@ mod tests {
         world.insert(holder, ItemEventBatch(vec![crate::ItemTransfer { item_form_id: ITEM, count: 1, added: true, stolen: false }]));
         obscript_item_system(&world, 0.016);
         assert_eq!((stack(&world, holder), declined_of(&world, ITEM, 0x1022)), (3, 1));
+    }
+
+    /// `DropMe` takes the item out of the holder, places one in the world at the holder and ends the
+    /// block, as `RemoveMe` does; the statement after it never runs.
+    #[test]
+    fn drop_me_removes_the_item_places_it_in_the_world_and_returns() {
+        let probe = statement(0x1022, &[0, 0]);
+        let (mut world, holder) = item_world(&[(BLOCK_ON_ADD, [statement(0x10a6, &[0, 0]), probe].concat())]);
+        world.insert_resource(crate::CreatedReferences::default());
+        world.insert(holder, ItemEventBatch(vec![crate::ItemTransfer { item_form_id: ITEM, count: 1, added: true, stolen: false }]));
+        obscript_item_system(&world, 0.016);
+        assert_eq!(stack(&world, holder), 2, "DropMe took one from the holder");
+        assert_eq!(declined_of(&world, ITEM, 0x1022), 0, "and returned");
+        let created = world.resource::<crate::CreatedReferences>();
+        assert_eq!(created.iter().filter(|reference| reference.base == ITEM && reference.at_reference == REF).count(), 1, "one reference now lies in the world");
     }
 
     /// `OnDrop` runs for a removal, `OnEquip` / `OnUnequip` for the equipment batch; a transfer in

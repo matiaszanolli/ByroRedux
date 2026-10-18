@@ -50,6 +50,11 @@ pub fn register(world: &mut World) {
     ownership::install(world);
     crime_gold::install(world);
     crime_faction::install(world);
+    crate::obscript_state::install(world);
+    crate::magic_effects::install(world);
+    crate::magic_shaders::install(world);
+    world.register::<crate::obscript_anim::HeadLook>();
+    world.init_resource::<crate::destruction::PendingStageChanges>();
     // M47.2 — form lists scripts read (derived).
     world.init_resource::<FormLists>();
     // M47.2 — the weather scripts can ask about (derived).

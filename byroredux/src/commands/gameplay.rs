@@ -105,6 +105,175 @@ impl ConsoleCommand for InvEquipCommand {
     }
 }
 
+/// `inv.use <form_id>` — use (consume) one of the player's items by the menu's own `Consume` action: a
+/// stimpak restores, a chem with a script effect starts it.
+pub(crate) struct InvUseCommand;
+
+impl ConsoleCommand for InvUseCommand {
+    fn name(&self) -> &str {
+        "inv.use"
+    }
+
+    fn description(&self) -> &str {
+        "Use (consume) a player inventory item (usage: inv.use <form_id_hex>)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(form_id) = parse_console_form_id(args.trim()) else {
+            return CommandOutput::error("usage: inv.use <form_id_hex>");
+        };
+        match crate::inventory::queue_consume_by_form_id(world, form_id) {
+            Ok(message) => CommandOutput::line(message),
+            Err(error) => CommandOutput::error(format!("inv.use: {error}")),
+        }
+    }
+}
+
+/// `magic.cast <spell> [target|.]` — cast a spell on a reference (the player when none) through the
+/// caster runtime ObScript `Cast` uses; `magic.effects [entity|.]` lists the effects running on one.
+pub(crate) struct MagicCastCommand;
+
+impl ConsoleCommand for MagicCastCommand {
+    fn name(&self) -> &str {
+        "magic.cast"
+    }
+
+    fn description(&self) -> &str {
+        "Cast a spell like ObScript Cast: magic.cast <spell formid> [target entity|.] (the player when omitted)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut parts = args.split_whitespace();
+        let Some(spell) = parts.next().and_then(parse_console_form_id) else {
+            return CommandOutput::error("usage: magic.cast <spell formid> [target entity|.]");
+        };
+        let target = match parts.next() {
+            Some(token) => match super::shared::resolve_console_entity(world, token) {
+                Ok(entity) => entity,
+                Err(message) => return CommandOutput::error(format!("magic.cast: {message}")),
+            },
+            None => match world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) {
+                Some(player) => player,
+                None => return CommandOutput::error("magic.cast: no player"),
+            },
+        };
+        if byroredux_scripting::magic_effects::cast_spell(world, None, target, spell) {
+            CommandOutput::line(format!("cast {spell:08X} on entity {target}"))
+        } else {
+            CommandOutput::error(format!("magic.cast: {spell:08X} is unknown or has no effect the runtime models"))
+        }
+    }
+}
+
+/// `actor.revive <entity|.>` — what ObScript `Resurrect` does, from the console: raise the request the
+/// revive system acts on at the head of the next frame.
+pub(crate) struct ActorReviveCommand;
+
+impl ConsoleCommand for ActorReviveCommand {
+    fn name(&self) -> &str {
+        "actor.revive"
+    }
+
+    fn description(&self) -> &str {
+        "Bring a dead or unconscious actor back like ObScript Resurrect: actor.revive <entity|.>"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(token) = args.split_whitespace().next() else {
+            return CommandOutput::error("usage: actor.revive <entity|.>");
+        };
+        let actor = match super::shared::resolve_console_entity(world, token) {
+            Ok(entity) => entity,
+            Err(message) => return CommandOutput::error(format!("actor.revive: {message}")),
+        };
+        let Some(mut requests) = world.query_mut::<byroredux_scripting::obscript_state::ReviveRequest>() else {
+            return CommandOutput::error("actor.revive: no scripting state installed");
+        };
+        requests.insert(actor, byroredux_scripting::obscript_state::ReviveRequest);
+        CommandOutput::line(format!("actor {actor}: revive queued"))
+    }
+}
+
+/// `actor.look <entity> <target|none>` — what ObScript `Look` / `StopLook` do, from the console.
+pub(crate) struct ActorLookCommand;
+
+impl ConsoleCommand for ActorLookCommand {
+    fn name(&self) -> &str {
+        "actor.look"
+    }
+
+    fn description(&self) -> &str {
+        "Force an actor's head to track a reference like ObScript Look: actor.look <entity|.> <target entity|none>"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut parts = args.split_whitespace();
+        let (Some(actor_token), Some(target_token)) = (parts.next(), parts.next()) else {
+            return CommandOutput::error("usage: actor.look <entity|.> <target entity|none>");
+        };
+        let actor = match super::shared::resolve_console_entity(world, actor_token) {
+            Ok(entity) => entity,
+            Err(message) => return CommandOutput::error(format!("actor.look: {message}")),
+        };
+        if target_token.eq_ignore_ascii_case("none") {
+            let stopped = byroredux_scripting::obscript_anim::stop_look(world, actor);
+            return CommandOutput::line(format!("actor {actor}: look {}", if stopped { "stopped" } else { "was not set" }));
+        }
+        let target = match super::shared::resolve_console_entity(world, target_token) {
+            Ok(entity) => entity,
+            Err(message) => return CommandOutput::error(format!("actor.look: {message}")),
+        };
+        if byroredux_scripting::obscript_anim::start_look(world, actor, target) {
+            CommandOutput::line(format!("actor {actor}: head tracks entity {target}"))
+        } else {
+            CommandOutput::error("actor.look: no scripting state installed")
+        }
+    }
+}
+
+pub(crate) struct MagicEffectsCommand;
+
+impl ConsoleCommand for MagicEffectsCommand {
+    fn name(&self) -> &str {
+        "magic.effects"
+    }
+
+    fn description(&self) -> &str {
+        "List the magic effects running on a reference: magic.effects [entity|.] (the player when omitted)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let target = match args.split_whitespace().next() {
+            Some(token) => match super::shared::resolve_console_entity(world, token) {
+                Ok(entity) => entity,
+                Err(message) => return CommandOutput::error(format!("magic.effects: {message}")),
+            },
+            None => match world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) {
+                Some(player) => player,
+                None => return CommandOutput::error("magic.effects: no player"),
+            },
+        };
+        let Some(active) = world.get::<byroredux_scripting::magic_effects::ActiveMagicEffects>(target) else {
+            return CommandOutput::line(format!("entity {target}: no magic effects"));
+        };
+        let mut lines = vec![format!("entity {target}: {} magic effect(s)", active.0.len())];
+        for effect in &active.0 {
+            lines.push(format!(
+                "  source {:08X} effect {:08X} script {:08X} elapsed {:.2}/{}{}{} locals {:?}",
+                effect.source,
+                effect.mgef,
+                effect.script,
+                effect.elapsed,
+                if effect.indefinite { "constant".to_owned() } else { format!("{:.0}s", effect.duration) },
+                if effect.started { "" } else { " (not started)" },
+                if effect.ending { " (ending)" } else { "" },
+                effect.locals
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
 /// `inventory.status` — expose the live player loadout used by combat.
 pub(crate) struct InventoryStatusCommand;
 

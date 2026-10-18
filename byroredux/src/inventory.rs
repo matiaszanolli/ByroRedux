@@ -75,6 +75,10 @@ pub(crate) struct InventoryItemDefinition {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InventoryCatalog {
     restorations: FxHashMap<u32, Vec<byroredux_plugin::consumables::ConditionalRestoration>>,
+    /// M47.3 — the magic effects an ingestible starts on its user through the caster runtime: its
+    /// scripted effects (a chem's `ScriptEffectStart` / `Update` / `Finish`), and — for an item the
+    /// restoration plan does not cover — its value effects too.
+    script_effects: FxHashMap<u32, Vec<byroredux_scripting::magic_effects::CastEffect>>,
     entries: FxHashMap<u32, InventoryItemDefinition>,
     containers: rustc_hash::FxHashSet<u32>,
     /// #4699 — the Player `NPC_` base (`player_npc_form_id`): the identity
@@ -263,6 +267,21 @@ pub(crate) fn queue_equip_by_form_id(world: &World, form_id: u32) -> Result<Stri
     Ok(format!(
         "queued equip toggle for row {index} (form {form_id:08X})"
     ))
+}
+
+/// Queue the menu's own `Consume` of the player's row carrying `form_id` (`inv.use`): the same door a
+/// click on "use" takes, drained by [`drain_pending_inventory_actions`].
+pub(crate) fn queue_consume_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
+    let player = world.try_resource::<PlayerEntity>().and_then(|p| p.0).ok_or_else(|| "no player".to_string())?;
+    let index = world
+        .get::<Inventory>(player)
+        .and_then(|inventory| inventory.items.iter().position(|stack| stack.base_form_id == form_id && stack.count > 0))
+        .ok_or_else(|| format!("no inventory row with form {form_id:08X}"))?;
+    let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
+        return Err("inventory action queue unavailable".to_string());
+    };
+    pending.0.push(byroredux_debug_ui::InventoryAction::Consume { index: index as u32, form_id });
+    Ok(format!("queued use of row {index} (form {form_id:08X})"))
 }
 
 /// Drain the queued inventory actions through the canonical menu door.
@@ -495,6 +514,18 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
             byroredux_plugin::consumables::restoration_plan(index, id).map(|effects| (id, effects))
         })
         .collect();
+    let script_effects: FxHashMap<_, _> = index
+        .items
+        .keys()
+        .filter_map(|&id| {
+            let planned = restorations.contains_key(&id);
+            let effects: Vec<_> = byroredux_scripting::magic_effects::consumable_cast_effects(index, id)
+                .into_iter()
+                .filter(|effect| effect.is_modelled() && (!planned || effect.script != 0))
+                .collect();
+            (!effects.is_empty()).then_some((id, effects))
+        })
+        .collect();
     let entries = index
         .items
         .iter()
@@ -549,6 +580,7 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
         .collect();
     world.insert_resource(InventoryCatalog {
         restorations,
+        script_effects,
         entries,
         containers: index.containers.keys().copied().collect(),
         player_base_form_id: player_npc_form_id(index.game),
@@ -1396,9 +1428,9 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
                 .as_ref()
                 .is_some_and(|slots| slots.is_equipped(InventoryIndex(index))),
             equippable: definition.is_some_and(|definition| definition.equip_target.is_some()),
-            consumable: catalog
-                .as_ref()
-                .is_some_and(|catalog| catalog.restorations.contains_key(&stack.base_form_id)),
+            consumable: catalog.as_ref().is_some_and(|catalog| {
+                catalog.restorations.contains_key(&stack.base_form_id) || catalog.script_effects.contains_key(&stack.base_form_id)
+            }),
         });
     }
     items.sort_by(|left, right| {
@@ -1450,11 +1482,13 @@ fn consume_item(world: &mut World, index: u32, form_id: u32) -> MutationResult {
     {
         return MutationResult::Unavailable;
     }
-    let Some((effects, name)) = world.try_resource::<InventoryCatalog>().and_then(|r| {
-        Some((
-            r.restorations.get(&form_id)?.clone(),
-            r.entries.get(&form_id)?.name.clone(),
-        ))
+    let Some((effects, scripted, name)) = world.try_resource::<InventoryCatalog>().and_then(|r| {
+        let effects = r.restorations.get(&form_id).cloned();
+        let scripted = r.script_effects.get(&form_id).cloned().unwrap_or_default();
+        if effects.is_none() && scripted.is_empty() {
+            return None;
+        }
+        Some((effects.unwrap_or_default(), scripted, r.entries.get(&form_id)?.name.clone()))
     }) else {
         return MutationResult::Unavailable;
     };
@@ -1488,7 +1522,7 @@ fn consume_item(world: &mut World, index: u32, form_id: u32) -> MutationResult {
     }
     if !values.current(health).is_finite()
         || values.current(health) <= 0.0
-        || effects.is_empty()
+        || (effects.is_empty() && scripted.is_empty())
         || effects.iter().any(|effect| {
             !effect.magnitude.is_finite()
                 || effect.magnitude <= 0.0
@@ -1532,6 +1566,10 @@ fn consume_item(world: &mut World, index: u32, form_id: u32) -> MutationResult {
         } else {
             world.insert(player, TimedRestorations { effects: timed });
         }
+    }
+    // The scripted (and, where no plan covers it, value) effects the caster runtime keeps running.
+    if !scripted.is_empty() {
+        byroredux_scripting::magic_effects::start_effects(world, player, Some(player), form_id, &scripted, false);
     }
     let released = {
         let inventory = world.get_mut::<Inventory>(player).unwrap();
@@ -2521,6 +2559,7 @@ mod tests {
         world.insert_resource(PlayerEntity(Some(player)));
         world.insert_resource(InventoryCatalog {
             restorations: Default::default(),
+            script_effects: Default::default(),
             containers: Default::default(),
             player_base_form_id: PLAYER_NPC_FORM_ID,
             entries: FxHashMap::from_iter([
@@ -4223,6 +4262,7 @@ mod tests {
         );
         world.insert_resource(InventoryCatalog {
             restorations: rustc_hash::FxHashMap::default(),
+            script_effects: rustc_hash::FxHashMap::default(),
             entries,
             containers: rustc_hash::FxHashSet::default(),
             player_base_form_id: 0x14,

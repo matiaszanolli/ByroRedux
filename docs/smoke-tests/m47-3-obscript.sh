@@ -9,8 +9,9 @@
 #      && (GetDestroyed == 0)` reads a remote quest variable and a getter, then
 #      `SetDestroyed 1`. Gate: the effect log records it.
 #   3. OnTriggerEnter — `SunnySmilesTriggerSCRIPT`: teleport the player into its
-#      volume; the block runs once and `PlaySound` reaches the sound ingress. Its
-#      `PlayIdle` is the one declined command (the animation trigger system, #3602).
+#      volume; the block runs once, `PlaySound` reaches the sound ingress and
+#      `CheyenneRef.PlayIdle LooseDogGrowl` (an editor-ID string argument) resolves
+#      the dog's `.kf` and plays it.
 #   4. OnDeath — `GSSunnySmilesScript`: drive Sunny's Health below zero through the
 #      shared SDK death commit; the block's `SetEnemy` (the effect bridge) and
 #      `SetStage VMS16 110` run, nothing is declined.
@@ -117,7 +118,11 @@ row_for 0016AD06 | grep -Fq "1 run(s)" \
     || fail "OnTriggerEnter did not run once: $(row_for 0016AD06)"
 effects 0x0016AD06
 grep -Fq "PlaySound" "$LOG_DIR/effects.log" || fail "OnTriggerEnter queued no PlaySound"
-echo "smoke[m47-3-obscript]: OnTriggerEnter PASS — one run, PlaySound queued"
+row_for 0016AD06 | grep -Fq "0 declined" || fail "OnTriggerEnter declined a command: $(row_for 0016AD06)"
+grep -Fq "ObScript command 0x1190 on 0010588E" "$LOG_DIR/effects.log" \
+    || fail "CheyenneRef.PlayIdle LooseDogGrowl was not run: $(cat "$LOG_DIR/effects.log")"
+wait_log "$LOG_DIR/session.stderr" "SpecialIdle_Aroo"
+echo "smoke[m47-3-obscript]: OnTriggerEnter PASS — one run, PlaySound queued, PlayIdle resolved its .kf"
 
 # ── 4. OnDeath through the effect bridge ──────────────────────────
 sunny="$(entity_of 00104E85)"

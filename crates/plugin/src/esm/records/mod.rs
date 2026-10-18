@@ -88,7 +88,7 @@ pub use misc::{
     parse_pack, parse_perk, parse_proj, parse_qust, parse_regn, parse_repu, parse_scen, parse_slgm,
     parse_sm_node, parse_spel, parse_term, parse_watr, select_active_region_sound, ActiRecord, AliasFillType,
     AliasFlags, AliasInjectedData, AliasLinkedAlias, ArmaRecord, AvifRecord, BptdRecord,
-    CobjRecord, CstyRecord, DialRecord, DialogueCategory, DlbrRecord, CndfRecord, KywdRecord, EcznRecord, EfshRecord, EnchRecord, ExplRecord, EyesRecord,
+    CobjRecord, CstyRecord, DialRecord, DialogueCategory, DlbrRecord, CndfRecord, KywdRecord, EcznRecord, EfshFill, EfshRecord, EnchRecord, ExplRecord, EyesRecord,
     HairRecord, HdptRecord, IdleRecord, ImadColorKey, ImadRecord, ImadScalarKey, ImgsRecord,
     ImodRecord, InfoDataHeader, InfoRecord, IpctRecord, IpdsRecord, LctnRecord, RelaRecord, LgtmRecord, MagicEffectItem, MesgRecord,
     MgefRecord, MinimalEsmRecord, NaviRecord, NavmExternalConnection, NavmRecord, NavmTriangle,

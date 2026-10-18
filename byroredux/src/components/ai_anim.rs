@@ -28,6 +28,22 @@ impl Component for AmbientPackageRuntime {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// What an actor was playing before a scripted one-shot IDLE (`PlayIdle`) took its animation player,
+/// so the idle it was in resumes when the one-shot ends. `idle_clip` is the one-shot, to tell that the
+/// player has since been given something else.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct IdleResume {
+    pub(crate) idle_clip: u32,
+    /// The clip it was playing; `None` when it was playing nothing (the player is then removed).
+    pub(crate) clip: Option<u32>,
+    pub(crate) speed: f32,
+    pub(crate) local_time: f32,
+}
+
+impl Component for IdleResume {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// M42.1 — the per-cell sit-**enter** clip `(handle, hold_time)`
 /// (`meshes\characters\_male\idleanims\chairskirt_leftenter.kf`), resolved once
 /// at cell load where the archive provider is available and read by
@@ -241,6 +257,9 @@ impl Component for DraugrCombatAnim {
 #[derive(Default)]
 pub(crate) struct IdleClipCatalog {
     pub(crate) handles: HashMap<u32, u32>,
+    /// `.kf` IDLEs whose file could not be resolved (no such record, no path, not archived): asked
+    /// for once, not every frame.
+    pub(crate) unresolved: std::collections::HashSet<u32>,
 }
 
 impl Resource for IdleClipCatalog {}

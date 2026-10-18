@@ -49,6 +49,9 @@ pub struct CanonicalSpell {
     /// For a constant spell, the value changes applied while it is on the
     /// actor; empty otherwise.
     pub constant_modifiers: Vec<ConstantModifier>,
+    /// Every effect of the spell the caster runtime models, for `Cast` / `CastImmediateOnSelf` and
+    /// an ability's scripted effects (see `magic_effects`).
+    pub effects: Vec<crate::magic_effects::CastEffect>,
 }
 
 /// Every spell of the loaded plugin set, canonical. Installed at ESM load;
@@ -129,9 +132,16 @@ pub fn canonical_spell(index: &EsmIndex, form_id: u32) -> CanonicalSpell {
             }
         }
     }
+    let effects = spell
+        .effects
+        .iter()
+        .map(|item| crate::magic_effects::cast_effect(index, item))
+        .filter(|effect| effect.is_modelled())
+        .collect();
     CanonicalSpell {
         constant,
         constant_modifiers,
+        effects,
     }
 }
 
@@ -178,8 +188,22 @@ pub fn add_spell(world: &World, actor: EntityId, spell: u32) -> bool {
     }
     if added {
         apply_constant_modifiers(world, actor, spell, 1.0);
+        start_constant_script_effects(world, actor, spell);
     }
     added
+}
+
+/// An ability's scripted effects run for as long as the spell is on the actor ("their effect duration
+/// is ignored ... lasts until removed"). Its value changes are the constant modifiers above, so only the
+/// script effects start here.
+fn start_constant_script_effects(world: &World, actor: EntityId, spell: u32) {
+    let scripted: Vec<crate::magic_effects::CastEffect> = world
+        .try_resource::<SpellCatalog>()
+        .and_then(|catalog| catalog.get(spell).filter(|s| s.constant).map(|s| s.effects.iter().filter(|e| e.script != 0).copied().collect()))
+        .unwrap_or_default();
+    if !scripted.is_empty() {
+        crate::magic_effects::start_effects(world, actor, None, spell, &scripted, true);
+    }
 }
 
 /// Take `spell` off `actor` (Papyrus `Actor.RemoveSpell`), undoing its value
@@ -202,6 +226,7 @@ pub fn remove_spell(world: &World, actor: EntityId, spell: u32) -> bool {
     }
     if removed {
         apply_constant_modifiers(world, actor, spell, -1.0);
+        crate::magic_effects::dispel(world, actor, Some(spell));
     }
     removed
 }
@@ -300,6 +325,7 @@ mod tests {
                     magnitude,
                     area: 0,
                     duration: 0,
+                    script_form_id: 0,
                 })
                 .collect(),
             ..Default::default()

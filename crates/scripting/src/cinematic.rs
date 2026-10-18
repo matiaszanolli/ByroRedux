@@ -688,7 +688,18 @@ fn composite_color(target: &mut [f32; 4], source: [f32; 4], strength: f32) {
     target[3] = combined_alpha;
 }
 
+/// ObScript `PickIdle`: "forces the calling actor to pick a new idle" (CS). The engine's actor idle
+/// choice lives with the animation systems; this marker carries the request there and is consumed by
+/// the app's `pick_idle_system`. `NOT_SAVED_BY_DESIGN`: a one-frame request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PickIdleRequest;
+
+impl Component for PickIdleRequest {
+    type Storage = SparseSetStorage<Self>;
+}
+
 pub fn register(world: &mut World) {
+    world.register::<PickIdleRequest>();
     world.register::<ActorCinematicState>();
     world.register::<HorseTetherState>();
     world.register::<MotionTypeChangeRequest>();

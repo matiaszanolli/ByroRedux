@@ -573,6 +573,10 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // HKX AnimationPlayers. The parallel animation batch observes a request
     // no later than the following frame, preserving deterministic restarts.
     scheduler.add_exclusive(Stage::Update, crate::systems::idle_clip_playback_system);
+    // A one-shot `PlayIdle` that has run its length gives the actor its earlier animation back.
+    scheduler.add_exclusive(Stage::Update, crate::systems::idle_resume_system);
+    // `PickIdle`: the actor starts its generic idle again.
+    scheduler.add_exclusive(Stage::Update, crate::systems::pick_idle_system);
     // Apply Papyrus SetMotionType requests after both immediate and resumed
     // fragment effects, before the Physics stage consumes body state.
     scheduler.add_exclusive(Stage::Update, crate::systems::scripted_motion_type_system);
@@ -604,6 +608,18 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // above are produced after that one runs.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::obscript_objects::obscript_hit_system);
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::obscript_objects::obscript_combat_system);
+    // M47.3 — the magic effects running on actors: `ScriptEffectStart` / `Update` / `Finish`, value
+    // changes over time, and the `OnMagicEffectHit` they raised when they landed. After the ObScript
+    // systems whose `Cast` / `CastImmediateOnSelf` start them.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::magic_effects::magic_effect_system);
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::magic_effects::magic_hit_system);
+    // M47.3 — magic shaders: advance their clocks, then glow (or restore) the surfaces they are on.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::magic_shaders::magic_shader_clock_system);
+    scheduler.add_exclusive(Stage::Update, crate::systems::magic_shader::magic_shader_tint_system);
+    // M47.3 — `OnDestructionStageChange` for the objects a `DamageObject` moved to another stage.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::obscript_objects::obscript_destruction_system);
+    // M47.3 — `Resurrect`: bring the actors back that scripts named this frame.
+    scheduler.add_exclusive(Stage::Update, crate::systems::revive::revive_system);
     scheduler.add_exclusive_with_access(
         Stage::Update,
         crate::combat::combat_damage_system,
@@ -802,6 +818,9 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // with animation_system / spin_system) but BEFORE
     // PostUpdate's transform propagation reads the result.
     scheduler.add_exclusive(Stage::Update, animate_lights_system);
+    // M47.3 — ObScript `Look`: turn the head bones of actors told to head-track, on top of the pose the
+    // animation batch just wrote and before propagation reads it.
+    scheduler.add_exclusive(Stage::Update, crate::systems::head_look::head_look_system);
     // P3 player body — third-person facing. Writes the body root's Transform
     // rotation from `InputState.yaw`, the same look accumulator
     // `camera_follow_system` reads. #4995 — registered in **Update**, not

@@ -416,6 +416,8 @@ pub struct WorldStreamingState {
     /// default weather) is not retried, and does not re-warn, every frame
     /// the player stands in it.
     pub(crate) climate_override_grid: Option<(i32, i32)>,
+    /// The script-forced weather `apply_forced_weather` last saw (`None` before its first look).
+    pub(crate) applied_forced_weather: Option<Option<u32>>,
     /// `(player_grid, resolved RegionAmbientRes)` the region ambient
     /// directive was last resolved for (#3679). `wctx` — and therefore the
     /// REGN/XCLR data `RegionAmbientRes::resolve` reads — never changes
@@ -553,6 +555,7 @@ impl WorldStreamingState {
             last_player_grid: None,
             applied_climate_form: wctx_climate_form,
             climate_override_grid: None,
+            applied_forced_weather: None,
             applied_region_ambient: None,
             lod_reconcile_pending: false,
             loaded_residency_changed: false,

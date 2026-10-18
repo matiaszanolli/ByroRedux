@@ -143,6 +143,41 @@ pub(crate) fn install_detection_config(world: &mut World, index: &EsmIndex) {
     }
 }
 
+/// Whether `observer` currently detects `target` by sight — the test the hostility pass uses to start
+/// a fight, asked for one pair (ObScript `GetDetected`): both alive and placed, within the detection
+/// range (`fSneakMaxDistance`, scaled outdoors), and nothing in the way. `false` without a detection
+/// config (the game authors none), and for an observer that is not placed.
+pub(crate) fn actor_detects(world: &World, observer: EntityId, target: EntityId) -> bool {
+    let Some(config) = world.try_resource::<DetectionConfig>().map(|c| *c) else {
+        return false;
+    };
+    let exterior = world
+        .try_resource::<crate::components::CellLightingRes>()
+        .is_some_and(|cell| !cell.is_interior);
+    let player = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0);
+    let centre = Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT;
+    let sight_point = |entity: EntityId| -> Option<Vec3> {
+        if world.get::<Dead>(entity).is_some() {
+            return None;
+        }
+        let position = world.get::<GlobalTransform>(entity)?.translation;
+        // The player body's transform is already its capsule centre; an NPC placement root stands at its feet.
+        Some(if Some(entity) == player { position } else { position + centre })
+    };
+    let (Some(from), Some(to)) = (sight_point(observer), sight_point(target)) else {
+        return false;
+    };
+    if from.distance(to) > config.range(exterior) {
+        return false;
+    }
+    let player_body = player.and_then(|player| {
+        world.query::<byroredux_physics::RapierHandles>().and_then(|handles| handles.get(player).map(|h| h.body))
+    });
+    !world
+        .try_resource::<byroredux_physics::PhysicsWorld>()
+        .is_some_and(|physics| physics.line_of_sight_blocked(from, to, player_body))
+}
+
 /// How a perceiver's factions, taken together, treat a target's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Standing {
@@ -357,8 +392,10 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
             continue;
         }
         candidates.clear();
+        // `IgnoreCrime 1`: "prevents an NPC from attacking ... a player for crime" (GECK).
+        let ignores_crime = world.has::<byroredux_scripting::obscript_state::IgnoreCrime>(perceiver.entity);
         for (target_index, target) in actors.iter().enumerate() {
-            if target_index == perceiver_index {
+            if target_index == perceiver_index || (ignores_crime && Some(target.entity) == player) {
                 continue;
             }
             let distance = perceiver.sight_point.distance(target.sight_point);
@@ -689,6 +726,37 @@ mod tests {
         }
         assert!(world.get::<AiCombatState>(far).is_none());
         assert!(world.get::<AiCombatState>(player).is_none());
+    }
+
+    /// `IgnoreCrime 1` — the actor does not start combat with the player, though a plain neighbour does.
+    #[test]
+    fn an_actor_that_ignores_crime_does_not_attack_the_player() {
+        let mut world = fixture();
+        world.register::<byroredux_scripting::obscript_state::IgnoreCrime>();
+        let very = disposition(Aggression::VeryAggressive);
+        let calm = spawn_actor(&mut world, Vec3::ZERO, BANDITS, Some(very));
+        let other = spawn_actor(&mut world, Vec3::new(40.0, 0.0, 0.0), BANDITS, Some(very));
+        let player = spawn_actor(&mut world, Vec3::new(0.0, 0.0, 800.0), PLAYER_FACTION, None);
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(calm, byroredux_scripting::obscript_state::IgnoreCrime);
+        world.resource_mut::<FactionRelations>().set_reaction(form(BANDITS), form(BANDITS), CombatReaction::Ally);
+        run_once(&world);
+        assert!(world.get::<AiCombatState>(calm).is_none(), "ignores the player");
+        assert_eq!(world.get::<AiCombatState>(other).map(|s| s.target), Some(player));
+    }
+
+    /// `GetDetected`: in range and in the open is detected; out of range, or a dead observer, is not.
+    #[test]
+    fn detection_follows_range_and_life() {
+        let mut world = fixture();
+        world.register::<Dead>();
+        let watcher = spawn_actor(&mut world, Vec3::ZERO, GUARDS, Some(disposition(Aggression::Unaggressive)));
+        let near = spawn_actor(&mut world, Vec3::new(0.0, 0.0, 500.0), PLAYER_FACTION, None);
+        let far = spawn_actor(&mut world, Vec3::new(0.0, 0.0, 9000.0), PLAYER_FACTION, None);
+        assert!(actor_detects(&world, watcher, near));
+        assert!(!actor_detects(&world, watcher, far), "past fSneakMaxDistance");
+        world.insert(near, Dead);
+        assert!(!actor_detects(&world, watcher, near), "a corpse is not detected");
     }
 
     fn run_once(world: &World) {

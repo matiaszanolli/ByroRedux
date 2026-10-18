@@ -638,6 +638,9 @@ pub struct MagicEffectItem {
     pub area: u32,
     /// Duration in game seconds from EFIT offset 8 (u32).
     pub duration: u32,
+    /// `SCIT` — the `SCPT` an ObScript *script effect* runs (its `ScriptEffectStart` / `Update` /
+    /// `Finish` blocks); `0` for an effect with no script. Fallout 3 / New Vegas and Oblivion.
+    pub script_form_id: u32,
 }
 
 /// Accumulator for the EFID → EFIT pair chain shared by `parse_spel` and
@@ -708,8 +711,16 @@ impl MagicEffectAccumulator {
                     magnitude,
                     area,
                     duration,
+                    script_form_id: 0,
                 });
                 self.pending_efid = 0;
+            }
+            // Script Effect Data, written after its EFIT: `[script FormID][magic school][visual
+            // effect][flags + 3 unused]` (xEdit `wbSCIT`); only the script matters here.
+            b"SCIT" if sub.data.len() >= 4 => {
+                if let Some(item) = self.items.last_mut() {
+                    item.script_form_id = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+                }
             }
             _ => {}
         }
@@ -765,7 +776,7 @@ pub fn parse_spel(
                     out.spell_flags = flags;
                 }
             }
-            b"EFID" | b"EFIT" => effects.feed(sub, remap),
+            b"EFID" | b"EFIT" | b"SCIT" => effects.feed(sub, remap),
             _ => {}
         }
     }
@@ -818,6 +829,9 @@ pub struct MgefRecord {
     /// scaled by [`Self::second_actor_value_weight`] (@60).
     pub secondary_actor_value: Option<ActorValueRef>,
     pub second_actor_value_weight: f32,
+    /// `SCRI` — the `SCPT` whose `ScriptEffectStart` / `Update` / `Finish` blocks this effect runs on
+    /// its target (Oblivion, Fallout 3, New Vegas); `0` for an effect with no script.
+    pub script_form_id: u32,
 }
 
 /// #4415 — a magic effect's archetype, the canonical subset the runtime
@@ -878,6 +892,7 @@ impl Default for MgefRecord {
             primary_actor_value: None,
             secondary_actor_value: None,
             second_actor_value_weight: 0.0,
+            script_form_id: 0,
         }
     }
 }
@@ -1129,6 +1144,9 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     for sub in subs {
         match &sub.sub_type {
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
+            b"SCRI" if sub.data.len() >= 4 => {
+                out.script_form_id = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+            }
             b"DATA" => {
                 if let Ok(header) = read_sub::<MagicEffectHeader>(sub) {
                     out.effect_flags = header.effect_flags;
@@ -1220,7 +1238,7 @@ pub fn parse_ench(
                     out.enchant_flags = header.enchant_flags;
                 }
             }
-            b"EFID" | b"EFIT" => effects.feed(sub, remap),
+            b"EFID" | b"EFIT" | b"SCIT" => effects.feed(sub, remap),
             _ => {}
         }
     }

@@ -98,6 +98,7 @@ const CMD_SET_RESTRAINED: u16 = 0x10f3;
 const CMD_REWARD_XP: u16 = 0x1177;
 const CMD_REWARD_KARMA: u16 = 0x1204;
 const CMD_REMOVE_ALL_ITEMS: u16 = 0x10ad;
+const CMD_REMOVE_ALL_TYPED_ITEMS: u16 = 0x1249;
 const CMD_PLACE_AT_ME: u16 = 0x1025;
 const CMD_RESET_AI: u16 = 0x11fa;
 const CMD_SAY: u16 = 0x1033;
@@ -117,6 +118,18 @@ pub(crate) fn handles(cmd: u16) -> bool {
     matches!(
         cmd,
         CMD_PLAY_GROUP
+            | CMD_REMOVE_ALL_TYPED_ITEMS
+            | CMD_PLAY_IDLE
+            | CMD_PICK_IDLE
+            | CMD_RESET_3D_STATE
+            | CMD_ADD_NOTE
+            | CMD_REMOVE_NOTE
+            | CMD_SET_ALERT
+            | CMD_IGNORE_CRIME
+            | CMD_SEND_ASSAULT_ALARM
+            | CMD_FORCE_WEATHER
+            | CMD_SET_WEATHER
+            | CMD_RELEASE_WEATHER_OVERRIDE
             | CMD_AUTO_SAVE
             | CMD_ADD_ITEM
             | CMD_REMOVE_ITEM
@@ -227,6 +240,40 @@ fn form_arg(args: &[ObScriptValue], i: usize) -> Option<u32> {
     }
 }
 
+/// The actor an assault alarm is about: `actor` when it is a live non-player actor, else the loaded,
+/// living member of `faction` standing nearest the player.
+fn assault_victim(world: &World, actor: Option<u32>, faction: Option<u32>) -> Option<EntityId> {
+    use byroredux_core::ecs::components::{Dead, FactionRanks, GlobalTransform};
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
+    let usable = |entity: EntityId| Some(entity) != player && !world.has::<Dead>(entity);
+    if let Some(named) = actor.and_then(|form| live(world, form)).filter(|&entity| usable(entity)) {
+        return Some(named);
+    }
+    let faction = faction?;
+    let origin = player.and_then(|player| world.get::<GlobalTransform>(player)).map(|t| t.translation);
+    let members = world.query::<FactionRanks>()?;
+    members
+        .iter()
+        .filter(|(entity, ranks)| usable(*entity) && ranks.0.iter().any(|(id, rank)| *id == faction && *rank >= 0))
+        .filter_map(|(entity, _)| {
+            let at = world.get::<GlobalTransform>(entity)?.translation;
+            Some((entity, origin.map_or(0.0, |origin| origin.distance(at))))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(entity, _)| entity)
+}
+
+/// Insert or remove a marker component by presence.
+fn set_flag<T: byroredux_core::ecs::storage::Component>(world: &World, entity: EntityId, on: bool, marker: T) {
+    if let Some(mut flags) = world.query_mut::<T>() {
+        if on {
+            flags.insert(entity, marker);
+        } else {
+            flags.remove(entity);
+        }
+    }
+}
+
 fn num(args: &[ObScriptValue], i: usize) -> f32 {
     args.get(i).map_or(0.0, ObScriptValue::as_num)
 }
@@ -257,6 +304,12 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             | CMD_ADD_REPUTATION
             | CMD_IMOD
             | CMD_RIMOD
+            | CMD_ADD_NOTE
+            | CMD_REMOVE_NOTE
+            | CMD_SEND_ASSAULT_ALARM
+            | CMD_FORCE_WEATHER
+            | CMD_SET_WEATHER
+            | CMD_RELEASE_WEATHER_OVERRIDE
             | CMD_AUTO_SAVE
     );
     let caller = context.caller.filter(|&form| form != 0);
@@ -365,7 +418,16 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
         }
         // `AutoSave`: "saves the game ... as an autosave" — the same request `Game.RequestAutoSave` raises.
         CMD_AUTO_SAVE => vec![Effect::RequestSave { auto: true }],
-        CMD_SET_OPEN_STATE => vec![Effect::SetOpen { target: bind.object(caller), open: num(args, 0) != 0.0 }],
+        // `SetOpenState <0|1>`: a door the engine tracks no open/closed state for yet gets one (the
+        // two-state activator, which is saved) so the call is not lost and `GetOpenState` reads it back.
+        CMD_SET_OPEN_STATE => {
+            if let (Some(entity), Some(mut states)) = (caller_entity, world.query_mut::<crate::vm_state::TwoStateActivator>()) {
+                if states.get(entity).is_none() {
+                    states.insert(entity, crate::vm_state::TwoStateActivator::default());
+                }
+            }
+            vec![Effect::SetOpen { target: bind.object(caller), open: num(args, 0) != 0.0 }]
+        }
         CMD_ADD_TO_FACTION | CMD_REMOVE_FROM_FACTION => {
             let Some(faction) = form_arg(args, 0) else { return Action::Declined };
             let change = match cmd {
@@ -374,6 +436,161 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
                 _ => FactionChange::SetRank(num(args, 1).clamp(f32::from(i8::MIN), f32::from(i8::MAX)) as i8),
             };
             vec![Effect::ChangeFaction { actor: me, faction: bind.object(faction), change }]
+        }
+        // `PlayIdle <idle>`: the calling actor plays that IDLE record's animation — the request the
+        // Papyrus `PlayIdle` writes (`ActorCinematicState::request_idle`), which the binary's idle
+        // runtime resolves to a clip and plays.
+        CMD_PLAY_IDLE => {
+            let Some(idle) = form_arg(args, 0) else { return Action::Declined };
+            vec![Effect::PlayIdle { actor: me, idle: bind.object(idle) }]
+        }
+        // `AddNote <note>` / `RemoveNote <note>`: the player's note list (see `obscript_state`).
+        CMD_ADD_NOTE | CMD_REMOVE_NOTE => {
+            let Some(note) = form_arg(args, 0) else { return Action::Declined };
+            let Some(mut notes) = world.try_resource_mut::<crate::obscript_state::PipBoyNotes>() else { return Action::Declined };
+            if cmd == CMD_ADD_NOTE {
+                notes.add(note);
+            } else {
+                notes.remove(note);
+            }
+            return Action::Done { value: None, effect: format!("{} {note:08X}", if cmd == CMD_ADD_NOTE { "AddNote" } else { "RemoveNote" }) };
+        }
+        // `SetAlert <flag>`: the actor draws (or lowers) its weapon; `IgnoreCrime <flag>`: it neither
+        // attacks the player for crime nor reports it.
+        CMD_SET_ALERT | CMD_IGNORE_CRIME => {
+            let Some(entity) = caller_entity else { return Action::Declined };
+            let on = num(args, 0) != 0.0;
+            if cmd == CMD_SET_ALERT {
+                set_flag::<crate::obscript_state::WeaponDrawn>(world, entity, on, crate::obscript_state::WeaponDrawn)
+            } else {
+                set_flag::<crate::obscript_state::IgnoreCrime>(world, entity, on, crate::obscript_state::IgnoreCrime)
+            }
+            return Action::Done { value: None, effect: format!("{} {caller:08X} {on}", if cmd == CMD_SET_ALERT { "SetAlert" } else { "IgnoreCrime" }) };
+        }
+        // `SendAssaultAlarm [actor] [faction]`: "manually creates an assault crime ... Flash will react
+        // as if he is a victim of an assault crime. If Flash is not there, an NPC in the faction will be
+        // used instead; `SendAssaultAlarm Player BigTown` ignores the ActorRef parameter and searches
+        // for an NPC in the faction". The victim (the named actor, else the faction's loaded member
+        // nearest the player) turns on the player. There is no witness / bounty runtime, so the crime
+        // itself is not recorded.
+        CMD_SEND_ASSAULT_ALARM => {
+            let Some(victim) = assault_victim(world, form_arg(args, 0), form_arg(args, 1)) else {
+                return Action::Declined;
+            };
+            let Some(victim_form) = crate::obscript_state::reference_form(world, victim) else { return Action::Declined };
+            let victim_ref = bind.actor(victim_form);
+            let player = bind.actor(0x14);
+            vec![Effect::StartCombat { actor: victim_ref, target: player }]
+        }
+        // `ForceWeather <weather> [flag]` / `SetWeather <weather> [flag]`: "forces the weather to
+        // immediately switch to the specified weather. If OverrideWeatherFlag is 1, the weather will not
+        // change again until ReleaseWeatherOverride is called" (GECK). The engine runs one weather per
+        // worldspace and never changes it on its own, so the flag is kept (and saved) for the day it
+        // does; the exterior's sky is re-installed by the app (`apply_forced_weather`).
+        CMD_FORCE_WEATHER | CMD_SET_WEATHER => {
+            let Some(weather) = form_arg(args, 0) else { return Action::Declined };
+            if !world.try_resource::<crate::weather_state::WeatherClassifications>().is_some_and(|known| known.knows(weather)) {
+                return Action::Declined;
+            }
+            let Some(mut forced) = world.try_resource_mut::<crate::obscript_state::ForcedWeather>() else { return Action::Declined };
+            *forced = crate::obscript_state::ForcedWeather { weather: Some(weather), locked: num(args, 1) != 0.0 };
+            return Action::Done { value: None, effect: format!("{} {weather:08X}", if cmd == CMD_FORCE_WEATHER { "ForceWeather" } else { "SetWeather" }) };
+        }
+        CMD_RELEASE_WEATHER_OVERRIDE => {
+            let Some(mut forced) = world.try_resource_mut::<crate::obscript_state::ForcedWeather>() else { return Action::Declined };
+            *forced = crate::obscript_state::ForcedWeather::default();
+            return Action::Done { value: None, effect: "ReleaseWeatherOverride".into() };
+        }
+        // `Cast <spell> [target]` (Oblivion; "Cast WellRestedSpell Player") / `CastImmediateOnSelf <spell>`
+        // (Fallout): the calling reference casts the spell — on the target, or on itself. Every modelled
+        // effect of the spell lands at once (see `magic_effects`); a spell with none is declined.
+        CMD_CAST | CMD_CAST_IMMEDIATE_ON_SELF => {
+            let Some(caster) = caller_entity else { return Action::Declined };
+            let Some(spell) = form_arg(args, 0) else { return Action::Declined };
+            let target = if cmd == CMD_CAST { form_arg(args, 1).and_then(|form| live(world, form)).unwrap_or(caster) } else { caster };
+            if !crate::magic_effects::cast_spell(world, Some(caster), target, spell) {
+                return Action::Declined;
+            }
+            return Action::Done { value: None, effect: format!("Cast {spell:08X} by {caller:08X}") };
+        }
+        // `PlayMagicShaderVisuals <shader> [seconds]` / `PlayMagicEffectVisuals <effect> [seconds]` /
+        // `StopMagicShaderVisuals <shader>`: an effect shader on the calling reference (see
+        // `magic_shaders`: the fill layer's glow is what is drawn). A zero or absent duration plays until
+        // stopped.
+        CMD_PLAY_MAGIC_SHADER | CMD_PLAY_MAGIC_EFFECT => {
+            let Some(entity) = caller_entity else { return Action::Declined };
+            let Some(named) = form_arg(args, 0) else { return Action::Declined };
+            let shader = if cmd == CMD_PLAY_MAGIC_EFFECT {
+                match world.try_resource::<crate::magic_shaders::ShaderCatalog>().and_then(|catalog| catalog.of_effect(named)) {
+                    Some(shader) => shader,
+                    None => return Action::Declined,
+                }
+            } else {
+                named
+            };
+            let seconds = num(args, 1);
+            let duration = (seconds > 0.0).then_some(seconds);
+            if !crate::magic_shaders::play_shader(world, entity, shader, duration) {
+                return Action::Declined;
+            }
+            return Action::Done { value: None, effect: format!("PlayMagicShader {shader:08X} on {caller:08X}") };
+        }
+        CMD_STOP_MAGIC_SHADER => {
+            let Some(entity) = caller_entity else { return Action::Declined };
+            let Some(shader) = form_arg(args, 0) else { return Action::Declined };
+            crate::magic_shaders::stop_shader(world, entity, shader);
+            return Action::Done { value: None, effect: format!("StopMagicShader {shader:08X} on {caller:08X}") };
+        }
+        // `Look <target>` / `StopLook`: forced head-tracking (see `obscript_anim::HeadLook`).
+        CMD_LOOK => {
+            let Some(actor) = caller_entity else { return Action::Declined };
+            let Some(target) = form_arg(args, 0).and_then(|form| live(world, form)) else { return Action::Declined };
+            if !crate::obscript_anim::start_look(world, actor, target) {
+                return Action::Declined;
+            }
+            return Action::Done { value: None, effect: format!("Look {caller:08X}") };
+        }
+        CMD_STOP_LOOK => {
+            let Some(actor) = caller_entity else { return Action::Declined };
+            crate::obscript_anim::stop_look(world, actor);
+            return Action::Done { value: None, effect: format!("StopLook {caller:08X}") };
+        }
+        // `Resurrect <animate>`: "resurrects the calling actor" (CS) from the dead or unconscious state
+        // (GECK). The revival itself — the ragdoll torn down, health back, the idle and the AI resumed —
+        // belongs to the app (`ReviveRequest`); an actor that is neither dead nor unconscious has nothing
+        // to resurrect.
+        CMD_RESURRECT => {
+            let Some(actor) = caller_entity else { return Action::Declined };
+            let down = world.has::<byroredux_core::ecs::components::Dead>(actor)
+                || world.get::<crate::ActorControlState>(actor).is_some_and(|state| state.unconscious);
+            if !down {
+                return Action::Done { value: None, effect: format!("Resurrect {caller:08X} (not down)") };
+            }
+            let Some(mut requests) = world.query_mut::<crate::obscript_state::ReviveRequest>() else { return Action::Declined };
+            requests.insert(actor, crate::obscript_state::ReviveRequest);
+            return Action::Done { value: None, effect: format!("Resurrect {caller:08X}") };
+        }
+        // `Dispel <spell>`: the spell's effects on the calling reference end.
+        CMD_DISPEL => {
+            let Some(target) = caller_entity else { return Action::Declined };
+            let Some(spell) = form_arg(args, 0) else { return Action::Declined };
+            crate::magic_effects::dispel(world, target, Some(spell));
+            return Action::Done { value: None, effect: format!("Dispel {spell:08X} on {caller:08X}") };
+        }
+        // `Reset3DState`: the reference's animation starts over (see `obscript_anim::reset_animation`).
+        CMD_RESET_3D_STATE => {
+            let Some(entity) = caller_entity else { return Action::Declined };
+            if !crate::obscript_anim::reset_animation(world, entity) {
+                return Action::Declined;
+            }
+            return Action::Done { value: None, effect: name("Reset3DState") };
+        }
+        // `PickIdle`: the calling actor picks a new idle — the request the app's idle runtime answers.
+        CMD_PICK_IDLE => {
+            let Some(entity) = caller_entity else { return Action::Declined };
+            let Some(mut requests) = world.query_mut::<crate::PickIdleRequest>() else { return Action::Declined };
+            requests.insert(entity, crate::PickIdleRequest);
+            return Action::Done { value: None, effect: name("PickIdle") };
         }
         CMD_ADD_SPELL | CMD_REMOVE_SPELL => {
             let Some(spell) = form_arg(args, 0) else { return Action::Declined };
@@ -530,6 +747,45 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
                 crate::fragment::remove_items(world, source, item, count, destination);
             }
             return Action::Done { value: None, effect: format!("RemoveAllItems {caller:08X}") };
+        }
+        // `RemoveAllTypedItems [target] [retain ownership] [suppress messages] <type code> [exempt list]`:
+        // every item of that type (the GECK's FOSE type codes: 24 Armor, 40 Weapon, 47 AlchemyItem ...) leaves
+        // the calling container, for the target if one is named (else it is destroyed), except the base
+        // forms of the exemption form list. "Failing to specify a type code ... may" remove everything or
+        // nothing, so a call with none is declined. Ownership is not tracked per stack here, so the retain
+        // flag and the message flag have nothing to act on.
+        CMD_REMOVE_ALL_TYPED_ITEMS => {
+            let Some(source) = caller_entity else { return Action::Declined };
+            let code = num(args, 3);
+            if code < 1.0 || code > 255.0 {
+                return Action::Declined;
+            }
+            let destination = match form_arg(args, 0) {
+                Some(form) => match live(world, form) {
+                    Some(entity) => Some(entity),
+                    None => return Action::Declined,
+                },
+                None => None,
+            };
+            let exempt = form_arg(args, 4).and_then(|list| crate::form_lists::forms_of(world, list, &[])).unwrap_or_default();
+            let Some(codes) = world.try_resource::<crate::obscript_state::ItemTypeCodes>().map(|codes| codes.clone()) else {
+                return Action::Declined;
+            };
+            let stacks: Vec<(u32, u32)> = world
+                .get::<byroredux_core::ecs::components::Inventory>(source)
+                .map(|inventory| {
+                    inventory
+                        .items
+                        .iter()
+                        .filter(|stack| stack.count > 0 && codes.code_of(stack.base_form_id) == Some(code as u8) && !exempt.contains(&stack.base_form_id))
+                        .map(|stack| (stack.base_form_id, stack.count))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (item, count) in stacks {
+                crate::fragment::remove_items(world, source, item, count, destination);
+            }
+            return Action::Done { value: None, effect: format!("RemoveAllTypedItems {caller:08X} type {code}") };
         }
         // `PlaceAtMe <base> [count] [distance] [direction]` at the calling
         // reference: the created references are the ones `CreatedReferences` spawns
@@ -769,14 +1025,9 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
         }
         CMD_RESET_HEALTH => {
             let Some(actor) = caller_entity else { return Action::Declined };
-            let vitals: Vec<u32> = crate::obscript_actor_values::RESET_HEALTH_CODES
-                .iter()
-                .filter_map(|&code| crate::obscript_actor_values::actor_value_form(world, code as f32))
-                .collect();
-            if vitals.is_empty() {
+            if !crate::obscript_actor_values::reset_health(world, actor) {
                 return Action::Declined;
             }
-            crate::fragment::clear_actor_value_damage(world, actor, &vitals);
             return Action::Done { value: None, effect: name("ResetHealth") };
         }
         _ => return Action::Unhandled,
@@ -813,6 +1064,7 @@ const CMD_GET_UNCONSCIOUS: u16 = 0x10f2;
 const CMD_GET_COMBAT_TARGET: u16 = 0x10e8;
 const CMD_GET_LINKED_REF: u16 = 0x116b;
 const CMD_GET_PARENT_REF: u16 = 0x1113;
+const CMD_GET_DESTRUCTION_STAGE: u16 = 0x11d7;
 const CMD_GET_DESTROYED: u16 = 0x10cb;
 const CMD_GET_RESTRAINED: u16 = 0x10f4;
 const CMD_GET_IN_SAME_CELL: u16 = 0x1020;
@@ -833,7 +1085,39 @@ const CMD_GET_SCALE: u16 = 0x1018;
 const CMD_SET_SCALE: u16 = 0x113c;
 const CMD_PLAY_GROUP: u16 = 0x1013;
 const CMD_AUTO_SAVE: u16 = 0x115e;
+const CMD_PLAY_IDLE: u16 = 0x1190;
+const CMD_PICK_IDLE: u16 = 0x1064;
+const CMD_RESET_3D_STATE: u16 = 0x1146;
+const CMD_ADD_NOTE: u16 = 0x117c;
+const CMD_REMOVE_NOTE: u16 = 0x117d;
+const CMD_GET_HAS_NOTE: u16 = 0x117e;
+const CMD_GET_DEAD_COUNT: u16 = 0x1054;
+const CMD_IS_KILLER: u16 = 0x1199;
+const CMD_SET_ALERT: u16 = 0x105a;
+const CMD_IS_WEAPON_OUT: u16 = 0x1065;
+const CMD_IGNORE_CRIME: u16 = 0x10ab;
+const CMD_GET_IGNORE_CRIME: u16 = 0x10c0;
+const CMD_SEND_ASSAULT_ALARM: u16 = 0x105f;
+const CMD_GET_DETECTED: u16 = 0x102d;
+const CMD_FORCE_WEATHER: u16 = 0x112d;
+const CMD_SET_WEATHER: u16 = 0x1104;
+const CMD_RELEASE_WEATHER_OVERRIDE: u16 = 0x1158;
+const CMD_GET_IS_CURRENT_WEATHER: u16 = 0x1095;
+const CMD_CAST: u16 = 0x101e;
+const CMD_RESURRECT: u16 = 0x108c;
+const CMD_LOOK: u16 = 0x105c;
+const CMD_STOP_LOOK: u16 = 0x105d;
+const CMD_PLAY_MAGIC_SHADER: u16 = 0x1123;
+const CMD_PLAY_MAGIC_EFFECT: u16 = 0x1124;
+const CMD_STOP_MAGIC_SHADER: u16 = 0x1125;
+const CMD_CAST_IMMEDIATE_ON_SELF: u16 = 0x11d9;
+const CMD_DISPEL: u16 = 0x1142;
+const CMD_HAS_MAGIC_EFFECT: u16 = 0x10d6;
+const CMD_SCRIPT_EFFECT_ELAPSED_SECONDS: u16 = 0x10ba;
 const CMD_GET_SITTING: u16 = 0x109f;
+const CMD_IS_IN_INTERIOR: u16 = 0x112c;
+const CMD_GET_OPEN_STATE: u16 = 0x109d;
+const CMD_GET_IN_WORLDSPACE: u16 = 0x1136;
 const CMD_IS_ANIM_PLAYING: u16 = 0x1128;
 
 /// Every getter this module answers.
@@ -841,6 +1125,18 @@ pub(crate) fn is_getter(cmd: u16) -> bool {
     matches!(
         cmd,
         CMD_IS_ANIM_PLAYING
+            | CMD_HAS_MAGIC_EFFECT
+            | CMD_SCRIPT_EFFECT_ELAPSED_SECONDS
+            | CMD_GET_IS_CURRENT_WEATHER
+            | CMD_GET_DETECTED
+            | CMD_GET_HAS_NOTE
+            | CMD_GET_DEAD_COUNT
+            | CMD_IS_KILLER
+            | CMD_IS_WEAPON_OUT
+            | CMD_GET_IGNORE_CRIME
+            | CMD_GET_OPEN_STATE
+            | CMD_IS_IN_INTERIOR
+            | CMD_GET_IN_WORLDSPACE
             | CMD_GET_SITTING
             | CMD_GET_ITEM_COUNT
             | CMD_IS_IN_COMBAT
@@ -854,6 +1150,7 @@ pub(crate) fn is_getter(cmd: u16) -> bool {
             | CMD_GET_COMBAT_TARGET
             | CMD_GET_PARENT_REF
             | CMD_GET_DESTROYED
+            | CMD_GET_DESTRUCTION_STAGE
             | CMD_GET_RESTRAINED
             | CMD_GET_IN_SAME_CELL
             | CMD_GET_LINKED_REF
@@ -896,6 +1193,34 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
         return world
             .try_resource::<crate::cinematic::CinematicPresentationState>()
             .map_or(Getter::Declined, |state| Getter::Value(f32::from(u8::from(state.is_image_space_modifier_active(imad)))));
+    }
+    // GECK *ScriptEffectElapsedSeconds*: the seconds the running effect script has been active.
+    if cmd == CMD_SCRIPT_EFFECT_ELAPSED_SECONDS {
+        return world
+            .try_resource::<crate::magic_effects::ScriptEffectRun>()
+            .and_then(|run| run.elapsed)
+            .map_or(Getter::Declined, Getter::Value);
+    }
+    // GECK *GetIsCurrentWeather*: 1 when the sky runs that weather. No reference is involved.
+    if cmd == CMD_GET_IS_CURRENT_WEATHER {
+        let Some(weather) = form_arg(args, 0) else { return Getter::Declined };
+        return world
+            .try_resource::<crate::weather_state::CurrentWeather>()
+            .and_then(|current| current.0)
+            .map_or(Getter::Declined, |current| Getter::Value(f32::from(u8::from(current == weather))));
+    }
+    // No reference is involved in these two: the player's notes, and a count by actor base.
+    if cmd == CMD_GET_HAS_NOTE {
+        let Some(note) = form_arg(args, 0) else { return Getter::Declined };
+        return world
+            .try_resource::<crate::obscript_state::PipBoyNotes>()
+            .map_or(Getter::Declined, |notes| Getter::Value(f32::from(u8::from(notes.has(note)))));
+    }
+    if cmd == CMD_GET_DEAD_COUNT {
+        let Some(base) = form_arg(args, 0) else { return Getter::Declined };
+        return world
+            .try_resource::<crate::obscript_state::KillRecords>()
+            .map_or(Getter::Declined, |kills| Getter::Value(kills.dead_count(base) as f32));
     }
     let Some(caller) = context.caller.filter(|&form| form != 0) else {
         return Getter::Declined;
@@ -1035,6 +1360,53 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
                 _ => Getter::Declined,
             }
         }
+        // GECK *IsInInterior*: 1 in an interior cell. *GetInWorldspace <worldspace>*: 1 in one of that
+        // worldspace's exterior cells, "always 0 if the actor is in an interior cell".
+        CMD_IS_IN_INTERIOR => match crate::cell_kind::cell_kind_of(world, subject) {
+            Some(kind) => Getter::Value(f32::from(u8::from(kind == crate::cell_kind::CellKind::Interior))),
+            None => Getter::Declined,
+        },
+        CMD_GET_IN_WORLDSPACE => match (crate::cell_kind::cell_kind_of(world, subject), form_arg(args, 0)) {
+            (Some(crate::cell_kind::CellKind::Exterior { worldspace }), Some(asked)) => Getter::Value(f32::from(u8::from(worldspace == asked))),
+            (Some(crate::cell_kind::CellKind::Interior), Some(_)) => Getter::Value(0.0),
+            _ => Getter::Declined,
+        },
+        // GECK *HasMagicEffect*: 1 when an effect of that magic effect is running on the calling actor.
+        CMD_HAS_MAGIC_EFFECT => match form_arg(args, 0) {
+            Some(mgef) => Getter::Value(f32::from(u8::from(crate::magic_effects::has_effect(world, subject, mgef)))),
+            None => Getter::Declined,
+        },
+        // GECK *GetDetected*: 1 when the calling actor currently detects the target — the sight test the
+        // engine's own hostility uses (range from the detection GMSTs, line of sight through physics),
+        // asked through the query the binary installs.
+        CMD_GET_DETECTED => {
+            let Some(target) = form_arg(args, 0).and_then(|form| live(world, form)) else { return Getter::Declined };
+            match world.try_resource::<crate::SightQuery>() {
+                Some(sight) => Getter::Value(f32::from(u8::from((sight.0)(world, subject, target)))),
+                None => Getter::Declined,
+            }
+        }
+        // GECK *IsKiller*: 1 when the calling (dead) actor was killed by the named actor.
+        CMD_IS_KILLER => match form_arg(args, 0) {
+            Some(killer) => Getter::Value(f32::from(u8::from(
+                world.try_resource::<crate::obscript_state::KillRecords>().is_some_and(|kills| kills.killer_of(caller) == Some(killer)),
+            ))),
+            None => Getter::Declined,
+        },
+        CMD_IS_WEAPON_OUT => Getter::Value(f32::from(u8::from(crate::obscript_state::is_weapon_out(world, subject)))),
+        CMD_GET_IGNORE_CRIME => Getter::Value(f32::from(u8::from(world.has::<crate::obscript_state::IgnoreCrime>(subject)))),
+        // GECK *GetOpenState*: 0 none (no open/closed states), 1 open, 2 opening, 3 closed, 4 closing —
+        // read from the two-state activator, the only open/closed state the runtime keeps; a reference
+        // without one has none.
+        CMD_GET_OPEN_STATE => Getter::Value(match world.get::<crate::vm_state::TwoStateActivator>(subject) {
+            None => 0.0,
+            Some(state) => match (state.is_open, state.is_animating) {
+                (true, false) => 1.0,
+                (true, true) => 2.0,
+                (false, false) => 3.0,
+                (false, true) => 4.0,
+            },
+        }),
         // GECK *GetSitting*: 0 not sitting, 3 is sitting (the "getting ready to sit / stand" states 2
         // and 4 have no runtime here: an actor is either seated on its furniture or not).
         CMD_GET_SITTING => Getter::Value(if world.has::<byroredux_core::ecs::components::Seated>(subject) { 3.0 } else { 0.0 }),
@@ -1052,6 +1424,16 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
         CMD_GET_SCALE => world
             .get::<byroredux_core::ecs::components::Transform>(subject)
             .map_or(Getter::Declined, |transform| Getter::Value(transform.scale)),
+        // GECK *GetDestructionStage*: the object's current Damage Stage. An object with no destruction
+        // data has none to answer.
+        CMD_GET_DESTRUCTION_STAGE => {
+            if crate::destruction::is_destructible(world, subject) {
+                // An undamaged destructible is at stage 0 (the engine's -1 is "no damage yet").
+                Getter::Value(crate::destruction::destruction_stage(world, subject, caller).max(0) as f32)
+            } else {
+                Getter::Declined
+            }
+        }
         CMD_GET_DESTROYED => Getter::Value(f32::from(u8::from(crate::destruction::is_destroyed(world, caller)))),
         CMD_GET_RESTRAINED => {
             Getter::Value(f32::from(u8::from(world.get::<crate::ActorControlState>(subject).is_some_and(|state| state.restrained))))
@@ -1310,6 +1692,28 @@ mod tests {
     }
 
     #[test]
+    fn remove_all_typed_items_takes_only_the_type_and_spares_the_exempt_list() {
+        use byroredux_plugin::esm::records::{EsmIndex, ItemKind, ItemRecord};
+        const OTHER_ITEM: u32 = ITEM + 1;
+        let (mut world, actor, other) = world();
+        let mut index = EsmIndex::default();
+        for (form_id, kind) in [(ITEM, ItemKind::Misc), (OTHER_ITEM, ItemKind::Key)] {
+            index.items.insert(form_id, ItemRecord { form_id, common: Default::default(), kind });
+        }
+        world.insert_resource(crate::obscript_state::ItemTypeCodes::from_index(&index));
+        let ctx = context(Some(ACTOR));
+        run(&world, CMD_ADD_ITEM, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(4.0)], &ctx);
+        run(&world, CMD_ADD_ITEM, &[ObScriptValue::Ref(OTHER_ITEM), ObScriptValue::Num(2.0)], &ctx);
+        // `RemoveAllTypedItems <other> 0 0 31`: Misc goes to the target, the Key stays.
+        let args = [ObScriptValue::Ref(OTHER), ObScriptValue::Num(0.0), ObScriptValue::Num(0.0), ObScriptValue::Num(31.0)];
+        assert!(done(&run(&world, CMD_REMOVE_ALL_TYPED_ITEMS, &args, &ctx)));
+        assert_eq!((count(&world, actor, ITEM), count(&world, other, ITEM)), (0, 4));
+        assert_eq!(count(&world, actor, OTHER_ITEM), 2);
+        // No type code: declined, as the GECK says the result is undefined.
+        assert!(matches!(run(&world, CMD_REMOVE_ALL_TYPED_ITEMS, &refs(&[OTHER]), &ctx), Action::Declined));
+    }
+
+    #[test]
     fn remove_all_items_empties_the_inventory_or_moves_it() {
         let (world, actor, other) = world();
         let ctx = context(Some(ACTOR));
@@ -1498,6 +1902,155 @@ mod tests {
         assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[], &ctx), Getter::Value(1.0));
         assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[ObScriptValue::Num(3.0)], &ctx), Getter::Value(1.0));
         assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[ObScriptValue::Num(4.0)], &ctx), Getter::Value(0.0));
+    }
+
+    #[test]
+    fn interior_and_worldspace_getters_follow_the_cell_kind() {
+        use crate::cell_kind::{CellKind, ExteriorCell, PlayerCellKind};
+        use byroredux_core::ecs::components::{CellFormId, CellRoot};
+        const WRLD: u32 = 0x000A_0001;
+        let (mut world, actor, other) = world();
+        world.register::<ExteriorCell>();
+        world.register::<CellRoot>();
+        world.register::<CellFormId>();
+        world.insert_resource(PlayerCellKind(Some(CellKind::Interior)));
+        let interior = world.spawn();
+        world.insert(interior, CellFormId(1));
+        let exterior = world.spawn();
+        world.insert(exterior, CellFormId(2));
+        world.insert(exterior, ExteriorCell(WRLD));
+        world.insert(actor, CellRoot(interior));
+        world.insert(other, CellRoot(exterior));
+        let indoors = context(Some(ACTOR));
+        let outdoors = context(Some(OTHER));
+        assert_eq!(getter(&world, CMD_IS_IN_INTERIOR, &[], &indoors), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_IS_IN_INTERIOR, &[], &outdoors), Getter::Value(0.0));
+        let wrld = refs(&[WRLD]);
+        assert_eq!(getter(&world, CMD_GET_IN_WORLDSPACE, &wrld, &outdoors), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_IN_WORLDSPACE, &refs(&[WRLD + 1]), &outdoors), Getter::Value(0.0));
+        // Always 0 in an interior.
+        assert_eq!(getter(&world, CMD_GET_IN_WORLDSPACE, &wrld, &indoors), Getter::Value(0.0));
+    }
+
+    #[test]
+    fn set_open_state_gives_a_door_a_state_get_open_state_reads_back() {
+        use crate::vm_state::TwoStateActivator;
+        let (mut world, _, _) = world();
+        world.register::<TwoStateActivator>();
+        let ctx = context(Some(ACTOR));
+        assert_eq!(getter(&world, CMD_GET_OPEN_STATE, &[], &ctx), Getter::Value(0.0), "no state, no open/closed");
+        assert!(done(&run(&world, CMD_SET_OPEN_STATE, &[ObScriptValue::Num(1.0)], &ctx)));
+        assert_eq!(getter(&world, CMD_GET_OPEN_STATE, &[], &ctx), Getter::Value(1.0));
+        assert!(done(&run(&world, CMD_SET_OPEN_STATE, &[ObScriptValue::Num(0.0)], &ctx)));
+        assert_eq!(getter(&world, CMD_GET_OPEN_STATE, &[], &ctx), Getter::Value(3.0));
+    }
+
+    #[test]
+    fn play_idle_requests_the_idle_on_the_calling_actor() {
+        let (mut world, actor, _) = world();
+        world.register::<crate::ActorCinematicState>();
+        let ctx = context(Some(ACTOR));
+        const IDLE: u32 = 0x000C_1991;
+        assert!(done(&run(&world, CMD_PLAY_IDLE, &refs(&[IDLE]), &ctx)));
+        let state = world.get::<crate::ActorCinematicState>(actor).unwrap();
+        assert_eq!((state.requested_idle_form_id, state.idle_request_serial), (Some(IDLE), 1));
+        drop(state);
+        // No idle named: declined, not guessed.
+        assert!(matches!(run(&world, CMD_PLAY_IDLE, &[], &ctx), Action::Declined));
+    }
+
+    #[test]
+    fn pick_idle_queues_the_request_for_the_idle_runtime() {
+        let (mut world, actor, _) = world();
+        world.register::<crate::PickIdleRequest>();
+        assert!(done(&run(&world, CMD_PICK_IDLE, &[], &context(Some(ACTOR)))));
+        assert!(world.has::<crate::PickIdleRequest>(actor));
+    }
+
+    #[test]
+    fn notes_deaths_and_actor_flags_read_back_what_the_commands_wrote() {
+        use crate::obscript_state::{install, KillRecords};
+        const NOTE: u32 = 0x0010_0001;
+        const BASE: u32 = 0x0007_7777;
+        let (mut world, actor, _) = world();
+        install(&mut world);
+        let ctx = context(Some(ACTOR));
+        // Notes: no reference needed.
+        let none = context(None);
+        assert_eq!(getter(&world, CMD_GET_HAS_NOTE, &refs(&[NOTE]), &none), Getter::Value(0.0));
+        assert!(done(&run(&world, CMD_ADD_NOTE, &refs(&[NOTE]), &none)));
+        assert_eq!(getter(&world, CMD_GET_HAS_NOTE, &refs(&[NOTE]), &none), Getter::Value(1.0));
+        assert!(done(&run(&world, CMD_REMOVE_NOTE, &refs(&[NOTE]), &none)));
+        assert_eq!(getter(&world, CMD_GET_HAS_NOTE, &refs(&[NOTE]), &none), Getter::Value(0.0));
+        // Deaths: the count is per base, the killer per victim reference.
+        world.resource_mut::<KillRecords>().record(ACTOR, BASE, Some(0x14));
+        assert_eq!(getter(&world, CMD_GET_DEAD_COUNT, &refs(&[BASE]), &none), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_IS_KILLER, &refs(&[0x14]), &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_IS_KILLER, &refs(&[OTHER]), &ctx), Getter::Value(0.0));
+        // The flags.
+        assert_eq!(getter(&world, CMD_IS_WEAPON_OUT, &[], &ctx), Getter::Value(0.0));
+        assert!(done(&run(&world, CMD_SET_ALERT, &[ObScriptValue::Num(1.0)], &ctx)));
+        assert_eq!(getter(&world, CMD_IS_WEAPON_OUT, &[], &ctx), Getter::Value(1.0));
+        assert!(done(&run(&world, CMD_SET_ALERT, &[ObScriptValue::Num(0.0)], &ctx)));
+        assert_eq!(getter(&world, CMD_IS_WEAPON_OUT, &[], &ctx), Getter::Value(0.0));
+        assert!(done(&run(&world, CMD_IGNORE_CRIME, &[ObScriptValue::Num(1.0)], &ctx)));
+        assert!(world.has::<crate::obscript_state::IgnoreCrime>(actor));
+        assert_eq!(getter(&world, CMD_GET_IGNORE_CRIME, &[], &ctx), Getter::Value(1.0));
+    }
+
+    #[test]
+    fn an_assault_alarm_turns_the_victim_on_the_player_and_get_detected_asks_the_sight_query() {
+        use byroredux_core::ecs::components::{FactionRanks, GlobalTransform};
+        const FACTION: u32 = 0x000F_0001;
+        let (mut world, victim, bystander) = world();
+        let player = world.spawn();
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        world.register::<crate::AiCombatState>();
+        world.register::<FactionRanks>();
+        world.register::<GlobalTransform>();
+        world.insert(victim, FactionRanks::from_pairs([(FACTION, 0)]));
+        world.insert(bystander, FactionRanks::from_pairs([(FACTION, 0)]));
+        let at = |x: f32| GlobalTransform { translation: byroredux_core::math::Vec3::new(x, 0.0, 0.0), ..Default::default() };
+        world.insert(player, at(0.0));
+        world.insert(victim, at(900.0));
+        world.insert(bystander, at(100.0));
+        let none = context(None);
+        // `SendAssaultAlarm player <faction>`: the faction's member nearest the player fights him.
+        assert!(done(&run(&world, CMD_SEND_ASSAULT_ALARM, &[ObScriptValue::Ref(0x14), ObScriptValue::Ref(FACTION)], &none)));
+        assert_eq!(world.get::<crate::AiCombatState>(bystander).map(|state| state.target), Some(player));
+        assert!(world.get::<crate::AiCombatState>(victim).is_none());
+        // Nobody named and no faction: nothing to react.
+        assert!(matches!(run(&world, CMD_SEND_ASSAULT_ALARM, &[], &none), Action::Declined));
+        // `GetDetected`: the installed sight test decides; with none installed it is declined.
+        let ctx = context(Some(ACTOR));
+        assert_eq!(getter(&world, CMD_GET_DETECTED, &refs(&[OTHER]), &ctx), Getter::Declined);
+        world.insert_resource(crate::SightQuery(|_, _, _| true));
+        assert_eq!(getter(&world, CMD_GET_DETECTED, &refs(&[OTHER]), &ctx), Getter::Value(1.0));
+        world.insert_resource(crate::SightQuery(|_, _, _| false));
+        assert_eq!(getter(&world, CMD_GET_DETECTED, &refs(&[OTHER]), &ctx), Getter::Value(0.0));
+    }
+
+    #[test]
+    fn force_weather_records_the_override_and_release_clears_it() {
+        use crate::obscript_state::{install, ForcedWeather};
+        const WTHR: u32 = 0x000E_0001;
+        let (mut world, _, _) = world();
+        install(&mut world);
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.weathers.insert(WTHR, Default::default());
+        crate::install_weather_classifications(&mut world, &index);
+        let none = context(None);
+        // An unknown weather is declined, not invented.
+        assert!(matches!(run(&world, CMD_FORCE_WEATHER, &refs(&[WTHR + 1]), &none), Action::Declined));
+        let args = [ObScriptValue::Ref(WTHR), ObScriptValue::Num(1.0)];
+        assert!(done(&run(&world, CMD_SET_WEATHER, &args, &none)));
+        assert_eq!(*world.resource::<ForcedWeather>(), ForcedWeather { weather: Some(WTHR), locked: true });
+        assert!(done(&run(&world, CMD_RELEASE_WEATHER_OVERRIDE, &[], &none)));
+        assert_eq!(*world.resource::<ForcedWeather>(), ForcedWeather::default());
+        // `GetIsCurrentWeather` reads the sky's weather.
+        world.insert_resource(crate::weather_state::CurrentWeather(Some(WTHR)));
+        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_WEATHER, &refs(&[WTHR]), &none), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_WEATHER, &refs(&[WTHR + 1]), &none), Getter::Value(0.0));
     }
 
     #[test]

@@ -56,7 +56,7 @@ pub use dialogue::{
 };
 pub use effects::{
     parse_avif, parse_efsh, parse_expl, parse_imod, parse_ipct, parse_ipds, parse_proj, parse_repu,
-    AvifRecord, EfshRecord, ExplRecord, ImodRecord, IpctRecord, IpdsRecord, ProjRecord, RepuRecord,
+    AvifRecord, EfshFill, EfshRecord, ExplRecord, ImodRecord, IpctRecord, IpdsRecord, ProjRecord, RepuRecord,
 };
 pub use equipment::{
     parse_arma, parse_bptd, parse_cobj, parse_minimal_esm_record, parse_slgm, ArmaRecord,

@@ -66,6 +66,7 @@ pub(super) fn parse_effects(
                         magnitude,
                         area,
                         duration,
+                        script_form_id: 0,
                     },
                     delivery: fallout.then(|| r.u32_or_default()),
                     actor_value_cache: fallout.then(|| r.u32_or_default()),
@@ -99,6 +100,14 @@ pub(super) fn parse_effects(
                     return None;
                 }
                 push_ctda(sub, remap, &mut effect.conditions);
+            }
+            // Script Effect Data of the effect just read (`[script FormID]...`).
+            b"SCIT" if sub.data.len() >= 4 => {
+                if pending.is_some() {
+                    return None;
+                }
+                let effect = effects.last_mut()?;
+                effect.effect.script_form_id = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             // Not a valid condition encoding for the supported ALCH layouts.
             b"CTDT" => return None,

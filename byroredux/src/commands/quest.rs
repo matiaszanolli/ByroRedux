@@ -328,27 +328,28 @@ impl ConsoleCommand for ObScriptObjectsCommand {
         let Some(instances) = world.query::<ObScriptInstance>() else {
             return CommandOutput::line("no placed reference runs an object script");
         };
-        let mut rows: Vec<(u32, u32, u32, String, String, u32, u32)> = Vec::new();
+        let mut rows: Vec<(u32, u32, u32, String, String, u32, String)> = Vec::new();
         for (entity, instance) in instances.iter() {
             let Some(object) = table.scripts.get(&instance.script) else { continue };
             let form = byroredux_scripting::condition::entity_global_form_id(world, entity).unwrap_or(0);
             let blocks = object.blocks.iter().map(|b| format!("{:#x}", b.block_type)).collect::<Vec<_>>().join(",");
             let runs = table.runs.get(&form).copied().unwrap_or(0);
-            let declined: u32 = timers
-                .as_ref()
-                .and_then(|t| t.unknown_commands.get(&form))
-                .map_or(0, |m| m.values().sum());
+            let declined_by = timers.as_ref().and_then(|t| t.unknown_commands.get(&form));
+            let declined: u32 = declined_by.map_or(0, |m| m.values().sum());
+            let mut ids: Vec<String> = declined_by.map_or_else(Vec::new, |m| m.iter().map(|(cmd, n)| format!("{cmd:#06x}x{n}")).collect());
+            ids.sort();
+            let declined_ids = if ids.is_empty() { String::new() } else { format!(" [{}]", ids.join(" ")) };
             let volume = world
                 .get::<byroredux_scripting::trigger::TriggerVolume>(entity)
                 .map(|v| format!(" volume half={:.0},{:.0},{:.0} inside={:?}", v.half_extents.x, v.half_extents.y, v.half_extents.z, v.occupant_inside))
                 .unwrap_or_default();
-            rows.push((entity, form, instance.script, format!("{}{volume}", object.record.editor_id), blocks, runs, declined));
+            rows.push((entity, form, instance.script, format!("{}{volume}", object.record.editor_id), blocks, runs, format!("{declined} declined command(s){declined_ids}")));
         }
         rows.sort_unstable_by_key(|row| (std::cmp::Reverse(row.5), row.1));
         let mut lines = vec![format!("{} placed reference(s) run an object script:", rows.len())];
         for (entity, form, script, name, blocks, runs, declined) in rows.into_iter().take(limit) {
             lines.push(format!(
-                "  entity {entity} ref {form:08X} script {script:08X} {name} blocks [{blocks}]: {runs} run(s), {declined} declined command(s)"
+                "  entity {entity} ref {form:08X} script {script:08X} {name} blocks [{blocks}]: {runs} run(s), {declined}"
             ));
         }
         CommandOutput { lines }
@@ -1358,5 +1359,47 @@ mod tests {
         assert!(output.contains("quest: 0x00001234"));
         assert!(output.contains("playback: Dormant phase=0"));
         assert!(output.contains("package-actions: 0"));
+    }
+}
+
+/// `weather.force <WTHR formid | none> [lock]` — what ObScript `ForceWeather` / `SetWeather` /
+/// `ReleaseWeatherOverride` do, from the console: record the forced weather (saved), which the exterior
+/// streaming step then installs as the sky; `none` releases it. `weather.force` alone reports it.
+pub(crate) struct WeatherForceCommand;
+
+impl ConsoleCommand for WeatherForceCommand {
+    fn name(&self) -> &str {
+        "weather.force"
+    }
+
+    fn description(&self) -> &str {
+        "Force the exterior weather like ObScript ForceWeather: weather.force <WTHR formid|none> [lock]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use byroredux_scripting::obscript_state::ForcedWeather;
+        let mut tokens = args.split_whitespace();
+        let Some(mut forced) = world.try_resource_mut::<ForcedWeather>() else {
+            return CommandOutput::error("weather.force: no scripting state installed");
+        };
+        let Some(which) = tokens.next() else {
+            return CommandOutput::line(format!("forced weather: {:?}", *forced));
+        };
+        if which.eq_ignore_ascii_case("none") {
+            *forced = ForcedWeather::default();
+            return CommandOutput::line("weather override released");
+        }
+        let Some(form) = parse_console_u32(which) else {
+            return CommandOutput::error(format!("weather.force: bad WTHR FormID `{which}`"));
+        };
+        let known = world
+            .try_resource::<byroredux_scripting::weather_state::WeatherClassifications>()
+            .is_some_and(|known| known.knows(form));
+        if !known {
+            return CommandOutput::error(format!("weather.force: {form:08X} is not a WTHR in the load order"));
+        }
+        let locked = tokens.next().is_some_and(|flag| flag != "0");
+        *forced = ForcedWeather { weather: Some(form), locked };
+        CommandOutput::line(format!("forcing weather {form:08X} (locked: {locked})"))
     }
 }

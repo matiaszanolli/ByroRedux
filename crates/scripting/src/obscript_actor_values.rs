@@ -121,6 +121,17 @@ pub fn actor_value_form(world: &World, code: f32) -> Option<u32> {
     world.try_resource::<ActorValueNames>()?.resolve(name)
 }
 
+/// Clear Health and the limb-condition values' damage on `actor` (`ResetHealth`, and the health a
+/// resurrected actor gets back). `false` when the load order names none of them.
+pub fn reset_health(world: &World, actor: byroredux_core::ecs::storage::EntityId) -> bool {
+    let vitals: Vec<u32> = RESET_HEALTH_CODES.iter().filter_map(|&code| actor_value_form(world, code as f32)).collect();
+    if vitals.is_empty() {
+        return false;
+    }
+    crate::fragment::clear_actor_value_damage(world, actor, &vitals);
+    true
+}
+
 /// The vitals that crippling damage and `ResetHealth` clear: Health and the six
 /// limb-condition values (`PerceptionCondition` is the head ... `BrainCondition`).
 pub const RESET_HEALTH_CODES: [usize; 8] = [16, 25, 26, 27, 28, 29, 30, 31];

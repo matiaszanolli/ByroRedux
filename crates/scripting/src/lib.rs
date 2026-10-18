@@ -12,6 +12,7 @@
 pub mod actor_value_names;
 pub mod alias_overrides;
 pub mod bleedout;
+pub mod cell_kind;
 pub mod cinematic;
 pub mod cleanup;
 pub mod combat;
@@ -34,6 +35,7 @@ pub mod events;
 pub mod faction_changes;
 pub mod fragment;
 pub mod globals;
+pub mod idle_names;
 pub mod load_order;
 pub mod map_markers;
 pub mod activate_parents;
@@ -65,6 +67,8 @@ pub mod speechcraft;
 pub mod misc_stats;
 pub mod location;
 pub mod magic;
+pub mod magic_effects;
+pub mod magic_shaders;
 pub mod obscript;
 mod obscript_actions;
 pub mod obscript_actor_values;
@@ -73,6 +77,8 @@ pub mod obscript_anim;
 pub mod obscript_speech;
 pub mod obscript_objects;
 pub mod obscript_quests;
+pub mod obscript_state;
+pub use obscript_state::SightQuery;
 pub mod obscript_runtime;
 pub mod obscript_vm;
 pub mod package;
@@ -95,7 +101,7 @@ pub mod vm_state;
 
 pub use cinematic::{
     dispatch_player_cinematic_animation_event, image_space_modifier_system,
-    install_image_space_modifiers, ActorCinematicState, CinematicAnimationEvent,
+    install_image_space_modifiers, ActorCinematicState, CinematicAnimationEvent, PickIdleRequest,
     CinematicPresentationState, HorseTetherState, ImageSpace, ImageSpaceBase, ImageSpaceModifier,
     ImageSpaceModifierApplication, MotionTypeChangeRequest,
 };
