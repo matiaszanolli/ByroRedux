@@ -2336,6 +2336,41 @@ until removed, replaced, evaluated away, or — Travel only — the actor arrive
 (`Traveled`). Completion of the other procedures (Follow, Escort, Dialogue, ...)
 is not modelled, so those stay until one of the other exits.
 
+**`PlaySound` and object scripts.** `PlaySound` `0x1026` needs no calling
+reference ("plays the specified sound, non-locational"); it queues the sound on
+the `Sound.Play` ingress from the player, the listener, which is where a
+non-locational sound is heard. The *SystemSound* flag is moot, as only `GameMode`
+blocks run.
+
+`obscript_objects.rs` runs the `SCRI` scripts on placed references on the same
+host (`ObScriptCommandHost`, now generic over its owner: a quest, or a reference
+whose entity it holds, so a command written with no calling reference acts on the
+script's own reference and a quest command with no quest declines). The block
+numbering was read off the vanilla masters by aligning each script's `Begin`
+lines with its compiled blocks (`obscript_tools census`): `GameMode` `0`,
+`MenuMode` `1`, `OnActivate` `2`, `OnAdd` `3`, `OnHit` `8`, `OnDeath` `0xa`,
+`OnLoad` `0x15`, `OnTrigger` `0x18`, `OnStartCombat` `0x19`, `OnReset` `0x1e`;
+`0x1a` is `OnTriggerEnter` on FO3/FNV and `OnTriggerActor` on Oblivion, so the
+numbering is not one table across the three. Three blocks run: `GameMode` every
+frame for every loaded scripted reference, `OnLoad` on the cell-load marker and
+`OnDeath` on the death marker (read, not drained: the Papyrus reference system
+owns it). Locals live in the reference's saved `ScriptVariables` by name, so they
+survive a cell unload and a save with no second ledger. All object scripts of
+Oblivion, Fallout 3 and New Vegas walk cleanly and their three blocks run to
+`End` under both gate answers (`legacy_object_scripts_walk_and_run_without_
+malformed_bytecode`, ignored: needs the masters). `BYRO_NO_OBSCRIPT_OBJECTS`
+leaves the table uninstalled.
+
+`OnActivate` is deliberately not run. In the original engine a reference with an
+`OnActivate` block skips default processing unless the block calls `Activate`
+(GECK *Activate*: the optional *RunOnActivateBlockFlag*), whereas here the native
+consumers — doors, containers, pickups — run on every `ActivateEvent`. Running
+the block alone would open a script-locked door anyway, so it waits for the
+`Activate` command and the default-processing gate (the existing
+`ReferenceActivationBlocks` is the nearest state) to be designed together. The
+same goes for `IsActionRef` / `GetActionRef` (`0x1069` / `0x10cd`), which only
+mean something inside an activation or trigger block.
+
 ### The R5 demo translations (`papyrus_demo/`)
 
 The proof-of-concept hand-translations that closed R5. Each is a faithful

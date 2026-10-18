@@ -60,6 +60,14 @@ const OP_SET: u16 = 0x15;
 /// Block type of `Begin GameMode` in the compiled block enum (empirical:
 /// every quest-script GameMode block carries `0x0000`).
 pub const BLOCK_GAME_MODE: u16 = 0;
+/// `Begin OnActivate`, `OnDeath` and `OnLoad`. The numbering was read off the
+/// vanilla masters by aligning each script's `Begin <name>` lines with its
+/// compiled blocks (`obscript_tools census`, "block names"): Oblivion, Fallout 3
+/// and New Vegas agree on these (the Fallout pair on every block they share —
+/// `OnTriggerEnter` is `0x1a` there and `OnTriggerActor` in Oblivion).
+pub const BLOCK_ON_ACTIVATE: u16 = 0x02;
+pub const BLOCK_ON_DEATH: u16 = 0x0a;
+pub const BLOCK_ON_LOAD: u16 = 0x15;
 
 /// Maximum recursive nesting accepted from untrusted compiled ObScript.
 const MAX_OBSCRIPT_VM_NESTING: usize = 32;
@@ -149,6 +157,41 @@ pub struct ObScriptProgram<'a> {
 impl<'a> ObScriptProgram<'a> {
     pub fn new(script: &'a ScriptRecord) -> Self {
         Self { script }
+    }
+
+    /// The block types the script has, in order (`0` GameMode, `2` OnActivate,
+    /// ...): what it can be asked to run, without running any of it. `None` if
+    /// the stream is malformed, so a caller never schedules a script it cannot
+    /// walk.
+    pub fn block_types(&self) -> Option<Vec<u16>> {
+        struct NoHost;
+        impl ObScriptHost for NoHost {
+            fn call(&mut self, _: u16, _: &[ObScriptValue], _: Option<u32>) -> Option<ObScriptValue> {
+                None
+            }
+        }
+        let mut state = VmState::default();
+        let mut host = NoHost;
+        let mut vm = Vm {
+            bytes: &self.script.compiled,
+            refs: &self.script.refs,
+            state: &mut state,
+            host: &mut host,
+            returned: false,
+        };
+        let bytes = vm.bytes;
+        let mut blocks = Vec::new();
+        let mut offset = 0usize;
+        while let Some(op) = byroredux_core::bytes::le_u16_at(bytes, offset) {
+            if op == 0x10 {
+                let (payload_start, payload_end) = payload_span(bytes, offset)?;
+                blocks.push(byroredux_core::bytes::le_u16_at(bytes, payload_start)?);
+                offset = vm.skip_to_block_end(payload_end)?;
+            } else {
+                offset = next_statement(bytes, offset, op)?;
+            }
+        }
+        Some(blocks)
     }
 
     /// Run one named block; blocks of any other type are skipped whole.
@@ -994,6 +1037,27 @@ mod tests {
         stmt.extend_from_slice(&(payload.len() as u16).to_le_bytes());
         stmt.extend_from_slice(&payload);
         stmt
+    }
+
+    /// The block types a script has, in order, without running it — including
+    /// a call statement and an `If` inside the first block, which the walk must
+    /// frame past — and `None` for a truncated stream.
+    #[test]
+    fn block_types_lists_the_blocks_in_order_and_refuses_a_malformed_stream() {
+        let mut bytes = (0x1du16).to_le_bytes().to_vec();
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        for (block, body) in [(0x15u16, vec![]), (BLOCK_GAME_MODE, simple_stmt(0x1000)), (0x02, vec![])] {
+            bytes.extend(begin(block, body.len() as u32));
+            bytes.extend(body);
+            bytes.extend(simple_stmt(0x11));
+        }
+        let record = script(bytes.clone(), Vec::new(), Vec::new());
+        assert_eq!(ObScriptProgram::new(&record).block_types(), Some(vec![0x15, 0x00, 0x02]));
+        bytes.truncate(bytes.len() - 3);
+        let record = script(bytes, Vec::new(), Vec::new());
+        assert_eq!(ObScriptProgram::new(&record).block_types(), None);
+        let none = script(Vec::new(), Vec::new(), Vec::new());
+        assert_eq!(ObScriptProgram::new(&none).block_types(), Some(Vec::new()));
     }
 
     fn wrap_body(body: Vec<u8>) -> Vec<u8> {

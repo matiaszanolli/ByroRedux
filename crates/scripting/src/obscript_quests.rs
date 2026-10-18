@@ -254,9 +254,10 @@ pub fn run_quest_game_mode(
             .map(|locals| locals.of(quest_form_id))
             .unwrap_or_default(),
     };
-    let mut host = QuestCommandHost {
+    let mut host = ObScriptCommandHost {
         world,
-        quest: quest_form_id,
+        owner: quest_form_id,
+        reference: None,
         elapsed,
         script: &script,
     };
@@ -272,18 +273,24 @@ pub fn run_quest_game_mode(
 /// ECS host: lowers the phase-1 command set onto [`QuestStageState`],
 /// [`Globals`], and the effect log. Unknown commands are traced no-ops
 /// returning 0 and counted per quest.
-pub struct QuestCommandHost<'a> {
+pub struct ObScriptCommandHost<'a> {
     pub world: &'a World,
-    pub quest: u32,
+    /// The FormID of the script's owner: its quest, or the reference it is
+    /// attached to. Keys the effect log and the decline census.
+    pub owner: u32,
+    /// The entity of an object script's reference; `None` for a quest script.
+    /// A command written with no calling reference acts on it, and a quest
+    /// command written with no quest has no quest to default to.
+    pub reference: Option<byroredux_core::ecs::storage::EntityId>,
     pub elapsed: f32,
     pub script: &'a ScriptRecord,
 }
 
-impl<'a> ObScriptHost for QuestCommandHost<'a> {
+impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
     fn message(&mut self, message: crate::obscript_vm::ObScriptMessage) {
         let kind = if message.message_box { "MessageBox" } else { "Message" };
-        log::debug!("quest {:08X} {kind}: {:?}", self.quest, message.text);
-        crate::messages::show_obscript_message(self.world, QuestFormId(self.quest), message);
+        log::debug!("quest {:08X} {kind}: {:?}", self.owner, message.text);
+        crate::messages::show_obscript_message(self.world, QuestFormId(self.owner), message);
     }
 
     fn call(
@@ -292,6 +299,9 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
         args: &[ObScriptValue],
         caller: Option<u32>,
     ) -> Option<ObScriptValue> {
+        // A command written with no calling reference acts on the reference an
+        // object script is attached to; a quest script has none.
+        let caller = caller.or_else(|| self.reference.map(|_| self.owner));
         let num = |i: usize| args.get(i).map(|v| v.as_num()).unwrap_or(0.0);
         let ref_arg = |i: usize| match args.get(i) {
             Some(ObScriptValue::Ref(r)) => Some(*r),
@@ -304,14 +314,14 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
         // unresolved slot or the `Z` null tag — has no quest to act on, so
         // the command is declined: defaulting it to the own quest, or acting
         // on form 0, would stage a quest the script never named (#5629).
-        let own_quest = self.quest;
+        let own_quest = self.reference.is_none().then_some(self.owner);
         let quest_target = |i: usize| match args.get(i) {
             Some(ObScriptValue::Ref(0)) => None,
-            _ => Some(ref_arg(i).unwrap_or(own_quest)),
+            _ => ref_arg(i).or(own_quest),
         };
         let effect = |host: &mut Self, text: String| {
             if let Some(mut log) = host.world.try_resource_mut::<ObScriptEffectLog>() {
-                log.push(format!("{:08X}", host.quest), text);
+                log.push(format!("{:08X}", host.owner), text);
             }
         };
         match cmd {
@@ -406,7 +416,7 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
             // GetButtonPressed — the last answered box, once (M47.3).
             0x101f => Some(ObScriptValue::Num(crate::messages::take_button(self.world) as f32)),
             // GetSelf — the owning quest's form id (quest scripts).
-            0x10ce => Some(ObScriptValue::Ref(self.quest)),
+            0x10ce => Some(ObScriptValue::Ref(self.owner)),
             // GetGlobalValue-style global reads arrive via the ' G<n>' escape
             // as CMD_GET_GLOBAL; direct numeric global reads by form id:
             crate::obscript_vm::CMD_GET_GLOBAL => {
@@ -471,7 +481,7 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
                     None => 0,
                 };
                 let subject = caller
-                    .and_then(|form| resolve_entity_by_global_form_id(self.world, form))
+                    .and_then(|form| self.entity_of(form))
                     .or_else(|| {
                         // The reputation getters are about the player (GECK
                         // *GetReputationThreshold*: "Returns 1 if the player is
@@ -495,7 +505,7 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
                     None => self.decline(cmd),
                 }
             }
-            _ => match crate::obscript_actions::run(self.world, cmd, args, caller) {
+            _ => match crate::obscript_actions::run(self.world, cmd, args, caller, self.reference.map(|entity| (self.owner, entity))) {
                 Action::Done { value, effect: text } => {
                     if !text.is_empty() {
                         effect(self, text);
@@ -508,7 +518,7 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
                     // coverage instead of silently faking behavior.
                     log::trace!(
                         "ObScript {:08X}: unknown command {cmd:#06x} ({} args) — no-op",
-                        self.quest,
+                        self.owner,
                         args.len(),
                     );
                     self.decline(cmd)
@@ -518,7 +528,16 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
     }
 }
 
-impl QuestCommandHost<'_> {
+impl ObScriptCommandHost<'_> {
+    /// The entity of reference `form`: the script's own when it is that one,
+    /// else a scan of the placed references.
+    fn entity_of(&self, form: u32) -> Option<byroredux_core::ecs::storage::EntityId> {
+        match self.reference {
+            Some(entity) if form == self.owner => Some(entity),
+            _ => resolve_entity_by_global_form_id(self.world, form),
+        }
+    }
+
     /// `SetObjectiveDisplayed/Completed`, `GetObjectiveDisplayed/Completed`,
     /// `SetQuestDelay` and `GetQuestCompleted` against `quest`, with the GECK
     /// semantics (*SetObjectiveDisplayed*, *SetObjectiveCompleted*,
@@ -534,7 +553,7 @@ impl QuestCommandHost<'_> {
         let objective = num(1) as i32;
         let log = |text: String| {
             if let Some(mut log) = self.world.try_resource_mut::<ObScriptEffectLog>() {
-                log.push(format!("{:08X}", self.quest), text);
+                log.push(format!("{:08X}", self.owner), text);
             }
         };
         match cmd {
@@ -542,7 +561,7 @@ impl QuestCommandHost<'_> {
                 if !self.objective_is_defined(quest, objective) {
                     // "only accepts indices that are defined in the quest's
                     // Quest Objectives tab ... nothing will happen."
-                    log::debug!("quest {:08X}: objective {objective} of {:08X} is not authored", self.quest, quest.0);
+                    log::debug!("quest {:08X}: objective {objective} of {:08X} is not authored", self.owner, quest.0);
                     return None;
                 }
                 let on = num(2) != 0.0;
@@ -627,7 +646,7 @@ impl QuestCommandHost<'_> {
         if let Some(mut timers) = self.world.try_resource_mut::<ObScriptQuestTimers>() {
             *timers
                 .unknown_commands
-                .entry(self.quest)
+                .entry(self.owner)
                 .or_default()
                 .entry(cmd)
                 .or_insert(0) += 1;
@@ -700,7 +719,7 @@ pub fn obscript_quest_tick_system(world: &World, dt: f32) {
     }
 }
 
-/// Host-level behaviour of [`QuestCommandHost`] on synthetic calls.
+/// Host-level behaviour of [`ObScriptCommandHost`] on synthetic calls.
 #[cfg(test)]
 mod host_tests {
     use super::*;
@@ -724,9 +743,10 @@ mod host_tests {
         args: &[ObScriptValue],
     ) -> Option<ObScriptValue> {
         let script = ScriptRecord::default();
-        let mut host = QuestCommandHost {
+        let mut host = ObScriptCommandHost {
             world,
-            quest: OWN,
+            owner: OWN,
+            reference: None,
             elapsed: 0.0,
             script: &script,
         };
@@ -785,7 +805,7 @@ mod host_tests {
     /// `<ref>.Cmd` — the explicit-caller form, which carries the caller's form id.
     fn call_on(world: &World, cmd: u16, args: &[ObScriptValue], caller: u32) -> Option<ObScriptValue> {
         let script = ScriptRecord::default();
-        let mut host = QuestCommandHost { world, quest: OWN, elapsed: 0.0, script: &script };
+        let mut host = ObScriptCommandHost { world, owner: OWN, reference: None, elapsed: 0.0, script: &script };
         host.call(cmd, args, Some(caller))
     }
 

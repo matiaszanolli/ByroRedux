@@ -505,6 +505,15 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // exposes authored INFO subtitle/presentation state for the rest of the
     // frame, and queues completions for scene playback's next tick.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::scene_dialogue_system);
+    // M47.3 — legacy ObScript object scripts (the `SCRI` scripts on placed
+    // references): `GameMode` every frame, `OnLoad` and `OnDeath` on their
+    // markers. Before `reference_script_event_system` below, which drains
+    // `OnDeathEvent` at its head; after the package, activation and dialogue
+    // systems whose state the commands read.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::obscript_objects::obscript_object_system,
+    );
     // M47.2 — reference scripts the Papyrus VM runs receive this frame's
     // cell-load, activation and trigger events (all produced above). Ahead
     // of quest fragment dispatch, so a stage they set runs its fragment

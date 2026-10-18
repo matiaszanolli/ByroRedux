@@ -11,6 +11,7 @@
 //! | `0x1023` | GetDisabled | [`reference_enabled`] (scripted state, else the authored flag) |
 //! | `0x109e` | MoveTo | [`apply_move_to_effect`] (`Effect::MoveTo`); the player goes through [`PlayerMoveRequest`] (`Effect::MovePlayerTo`) |
 //! | `0x105e` | EvaluatePackage / EVP | [`request_package_evaluation`] (`Effect::EvaluatePackage`) |
+//! | `0x1026` | PlaySound | [`PendingSoundPlays`] (the `Sound.Play` ingress), from the player |
 //! | `0x1097` / `0x1098` | AddScriptPackage / RemoveScriptPackage | [`crate::script_packages`] (the actor's one script-package slot, read by the ambient AI system) |
 //!
 //! The ids are `names`-verified (`examples/obscript_tools`) to name the same
@@ -33,6 +34,7 @@
 //! loaded, no `ReferenceEnableState`) is [`Action::Declined`] — counted by the
 //! host, never faked as done.
 
+use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 
 use crate::actor_value_names::ScriptGame;
@@ -42,12 +44,15 @@ use crate::obscript_vm::ObScriptValue;
 use crate::package::request_package_evaluation;
 use crate::script_packages::{add_script_package, remove_script_package};
 use crate::papyrus_demo::PapyrusPlayerEntity;
+use crate::sound_requests::{PendingSoundPlays, SoundPlay};
+use crate::PLAYER_REFERENCE;
 
 const CMD_ENABLE: u16 = 0x1021;
 const CMD_DISABLE: u16 = 0x1022;
 const CMD_GET_DISABLED: u16 = 0x1023;
 const CMD_EVALUATE_PACKAGE: u16 = 0x105e;
 const CMD_MOVE_TO: u16 = 0x109e;
+const CMD_PLAY_SOUND: u16 = 0x1026;
 const CMD_ADD_SCRIPT_PACKAGE: u16 = 0x1097;
 const CMD_REMOVE_SCRIPT_PACKAGE: u16 = 0x1098;
 
@@ -63,8 +68,16 @@ pub(crate) enum Action {
 }
 
 /// Run `cmd` if it is a reference-bound action. `caller` is the explicit
-/// calling reference's FormID; every action here needs one.
-pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], caller: Option<u32>) -> Action {
+/// calling reference's FormID; every action here needs one. `known` is a
+/// reference whose entity the caller already holds (an object script's own),
+/// which saves a scan of the placed references.
+pub(crate) fn run(
+    world: &World,
+    cmd: u16,
+    args: &[ObScriptValue],
+    caller: Option<u32>,
+    known: Option<(u32, EntityId)>,
+) -> Action {
     if !matches!(
         cmd,
         CMD_ENABLE
@@ -74,8 +87,12 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], caller: Optio
             | CMD_MOVE_TO
             | CMD_ADD_SCRIPT_PACKAGE
             | CMD_REMOVE_SCRIPT_PACKAGE
+            | CMD_PLAY_SOUND
     ) {
         return Action::Unhandled;
+    }
+    if cmd == CMD_PLAY_SOUND {
+        return play_sound(world, args);
     }
     let Some(caller) = caller.filter(|&form| form != 0) else {
         return Action::Declined;
@@ -95,7 +112,7 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], caller: Optio
             done(Some(ObScriptValue::Num(disabled as i32 as f32)), String::new())
         }
         CMD_EVALUATE_PACKAGE => {
-            match resolve_entity_by_global_form_id(world, caller) {
+            match entity_of(world, caller, known) {
                 Some(actor) if request_package_evaluation(world, actor) => {
                     done(None, format!("EvaluatePackage {caller:08X}"))
                 }
@@ -103,7 +120,7 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], caller: Optio
             }
         }
         CMD_ADD_SCRIPT_PACKAGE | CMD_REMOVE_SCRIPT_PACKAGE => {
-            let Some(actor) = resolve_entity_by_global_form_id(world, caller) else {
+            let Some(actor) = entity_of(world, caller, known) else {
                 return Action::Declined;
             };
             if cmd == CMD_REMOVE_SCRIPT_PACKAGE {
@@ -121,18 +138,45 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], caller: Optio
                 Action::Declined
             }
         }
-        _ => move_to(world, args, caller),
+        _ => move_to(world, args, caller, known),
+    }
+}
+
+/// The entity of reference `form`: `known`'s when it is that reference, else a
+/// scan of the placed references.
+fn entity_of(world: &World, form: u32, known: Option<(u32, EntityId)>) -> Option<EntityId> {
+    match known {
+        Some((known_form, entity)) if known_form == form => Some(entity),
+        _ => resolve_entity_by_global_form_id(world, form),
+    }
+}
+
+/// `PlaySound <sound> [system]`: GECK, "plays the specified sound,
+/// non-locational". It needs no calling reference. The host plays a descriptor
+/// from a reference's position, so it is played from the player — the listener,
+/// where a non-locational sound is heard. The *SystemSound* flag (play in
+/// `MenuMode`) is moot: only `GameMode` blocks run.
+fn play_sound(world: &World, args: &[ObScriptValue]) -> Action {
+    let Some(ObScriptValue::Ref(sound)) = args.first().copied().filter(|v| *v != ObScriptValue::Ref(0)) else {
+        return Action::Declined;
+    };
+    match world.try_resource_mut::<PendingSoundPlays>() {
+        Some(mut pending) => {
+            pending.0.push(SoundPlay { sound, source: PLAYER_REFERENCE });
+            Action::Done { value: None, effect: format!("PlaySound {sound:08X}") }
+        }
+        None => Action::Declined,
     }
 }
 
 /// `caller.MoveTo <target> [x y z]`.
-fn move_to(world: &World, args: &[ObScriptValue], caller: u32) -> Action {
+fn move_to(world: &World, args: &[ObScriptValue], caller: u32, known: Option<(u32, EntityId)>) -> Action {
     // A null target (`Ref(0)`, the unresolved-slot or `Z` null tag) names no place.
     let Some(ObScriptValue::Ref(target)) = args.first().copied().filter(|v| *v != ObScriptValue::Ref(0)) else {
         return Action::Declined;
     };
     let offset = [1, 2, 3].map(|i| args.get(i).map_or(0.0, |v| v.as_num()));
-    let Some(moved) = resolve_entity_by_global_form_id(world, caller) else {
+    let Some(moved) = entity_of(world, caller, known) else {
         return Action::Declined;
     };
     let effect = format!("MoveTo {caller:08X} -> {target:08X}");
@@ -173,6 +217,11 @@ mod tests {
     const MOVED: u32 = 0x0001_0001;
     const MARKER: u32 = 0x0001_0002;
     const PLAYER_REF: u32 = 0x14;
+
+    /// [`super::run`] with no known caller entity: the callers are found by form id.
+    fn run(world: &World, cmd: u16, args: &[ObScriptValue], caller: Option<u32>) -> Action {
+        super::run(world, cmd, args, caller, None)
+    }
 
     fn done(effect: &str) -> Action {
         Action::Done { value: None, effect: effect.to_owned() }
@@ -353,6 +402,22 @@ mod tests {
         assert_eq!(remove(&world), done("RemoveScriptPackage 00010001"));
         assert_eq!(script_package_of(&world, moved), None);
         assert_eq!(remove(&world), done("RemoveScriptPackage 00010001"));
+    }
+
+    /// `PlaySound` is non-locational: it needs no calling reference and rides
+    /// the `Sound.Play` ingress from the player. A null sound is declined.
+    #[test]
+    fn play_sound_queues_the_sound_from_the_player_with_no_caller() {
+        let (mut world, _, _) = world(GameKind::Fallout3NV);
+        world.insert_resource(PendingSoundPlays::default());
+        assert_eq!(run(&world, CMD_PLAY_SOUND, &[ObScriptValue::Ref(0x55), ObScriptValue::Num(1.0)], None), done("PlaySound 00000055"));
+        assert_eq!(world.resource::<PendingSoundPlays>().0, vec![SoundPlay { sound: 0x55, source: PLAYER_REFERENCE }]);
+        for args in [vec![], vec![ObScriptValue::Ref(0)]] {
+            assert_eq!(run(&world, CMD_PLAY_SOUND, &args, None), Action::Declined);
+        }
+        assert_eq!(world.resource::<PendingSoundPlays>().0.len(), 1);
+        world.remove_resource::<PendingSoundPlays>();
+        assert_eq!(run(&world, CMD_PLAY_SOUND, &[ObScriptValue::Ref(0x55)], None), Action::Declined);
     }
 
     /// `EVP` queues the Papyrus `EvaluatePackage` request for the actor.

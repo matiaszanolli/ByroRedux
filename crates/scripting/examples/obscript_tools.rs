@@ -9,7 +9,7 @@
 //! |-----|------|---------|
 //! | `census` | `<ESM>` | which `Begin <block>` types the quest / object / effect scripts use, the authored `QUST` quest-delay spread, and the ids the VM declines |
 //! | `names` | `<ESM> [quest\|object\|all] [min-scripts]` | a *name* for each command id, by aligning each script's `SCTX` source with its compiled statements (no opcode table exists locally; this is how the VM's ids were recovered) |
-//! | `live` | `<ESM> [rounds]` | what the real `QuestCommandHost` does with every scripted quest over a bare world: still-declined ids, objectives reached |
+//! | `live` | `<ESM> [rounds]` | what the real `ObScriptCommandHost` does with every scripted quest over a bare world: still-declined ids, objectives reached |
 //! | `dump` | `<ESM> <formid\|grep:text\|grepq:text>` | one SCPT: locals, source, compiled bytes |
 //! | `walk` | `<ESM> <formid>` | the statement framing of one SCPT, stopping at the first break |
 //!
@@ -45,6 +45,19 @@ mod census {
         BlockOutcome, ObScriptHost, ObScriptMessage, ObScriptProgram, ObScriptValue, VmState,
         BLOCK_GAME_MODE, CMD_DECLINED,
     };
+
+    /// `str::strip_prefix` ignoring ASCII case; the rest must start a new word.
+    trait StripPrefixCi {
+        fn strip_prefix_ci(&self, prefix: &str) -> Option<&str>;
+    }
+
+    impl StripPrefixCi for str {
+        fn strip_prefix_ci(&self, prefix: &str) -> Option<&str> {
+            let head = self.get(..prefix.len())?;
+            let rest = &self[prefix.len()..];
+            (head.eq_ignore_ascii_case(prefix) && rest.starts_with(char::is_whitespace)).then_some(rest)
+        }
+    }
 
     /// Answers every command with a fixed value and records what was asked.
     struct Recorder {
@@ -125,6 +138,32 @@ mod census {
         println!("== block types (scripts containing at least one) ==");
         for ((kind, block), n) in &blocks {
             println!("  {kind:<7} block {block:#06x}: {n}");
+        }
+
+        // 1b. A name for each block type: the `Begin <word>` lines of a script's
+        // source, in order, against its compiled blocks, in order.
+        let mut named: BTreeMap<u16, BTreeMap<String, usize>> = BTreeMap::new();
+        for script in index.scripts.values() {
+            let Some(source) = &script.source else { continue };
+            let words: Vec<String> = source
+                .lines()
+                .filter_map(|line| line.trim_start().strip_prefix_ci("begin"))
+                .filter_map(|rest| rest.split_whitespace().next().map(str::to_ascii_lowercase))
+                .collect();
+            let compiled = block_types(&script.compiled);
+            if words.len() != compiled.len() {
+                continue;
+            }
+            for (word, block) in words.into_iter().zip(compiled) {
+                *named.entry(block).or_default().entry(word).or_insert(0) += 1;
+            }
+        }
+        println!("== block names (source `Begin` word per compiled block type) ==");
+        for (block, words) in &named {
+            let mut words: Vec<_> = words.iter().collect();
+            words.sort_by(|a, b| b.1.cmp(a.1));
+            let top: Vec<String> = words.iter().take(3).map(|(w, n)| format!("{w} {n}")).collect();
+            println!("  block {block:#06x}: {}", top.join(", "));
         }
 
         // 2. Declined ids on the quest GameMode path, plus 3. source names.

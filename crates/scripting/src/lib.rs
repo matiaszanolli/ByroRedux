@@ -67,6 +67,7 @@ pub mod location;
 pub mod magic;
 pub mod obscript;
 mod obscript_actions;
+pub mod obscript_objects;
 pub mod obscript_quests;
 pub mod obscript_runtime;
 pub mod obscript_vm;

@@ -333,8 +333,15 @@ fn attach_scpt_script(
             Some(report),
         );
     }
+    // The static load-order translation and the M47.3 bytecode runtime are
+    // independent attachments; both are always tried (`|`, not `||`).
     let translated =
-        byroredux_scripting::attach_legacy_obscript_program(world, entity, script, dialect);
+        byroredux_scripting::attach_legacy_obscript_program(world, entity, script, dialect)
+            | byroredux_scripting::obscript_objects::attach_object_script(
+                world,
+                entity,
+                script_form_id,
+            );
     // Scope the registry borrow tightly — the spawn fn that comes back
     // is a function pointer (Copy), so we can drop the borrow before
     // invoking the spawner with `&mut World`.
@@ -500,6 +507,52 @@ mod scpt_compatibility_tests {
         let entity = world.spawn();
         assert!(attach_scpt_script(&mut world, entity, BASE_FORM_ID, &index));
         assert!(world.has::<byroredux_scripting::LegacyObscriptProgram>(entity));
+        assert!(world.has::<byroredux_scripting::ScriptVariables>(entity));
+    }
+
+    /// M47.3 — an `SCRI` object script with bytecode attaches as an executable
+    /// instance (the runtime that runs its `GameMode` / `OnLoad` / `OnDeath`
+    /// blocks), counts as attached so the reference gets its `OnCellLoadEvent`, and
+    /// leaves a script the table does not hold alone.
+    #[test]
+    fn an_object_script_with_bytecode_attaches_as_an_executable_instance() {
+        use byroredux_plugin::esm::records::ScriptType;
+        const BASE_FORM_ID: u32 = 0x0100_0021;
+        const SCRIPT_FORM_ID: u32 = 0x0100_0022;
+
+        let mut index = EsmIndex::default();
+        index.activators.insert(
+            BASE_FORM_ID,
+            ActiRecord { form_id: BASE_FORM_ID, script_form_id: SCRIPT_FORM_ID, ..Default::default() },
+        );
+        // `ScriptName`, then `Begin GameMode` .. `End`.
+        let compiled = vec![
+            0x1d, 0x00, 0x00, 0x00, //
+            0x10, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //
+            0x11, 0x00, 0x00, 0x00,
+        ];
+        index.scripts.insert(
+            SCRIPT_FORM_ID,
+            ScriptRecord {
+                form_id: SCRIPT_FORM_ID,
+                editor_id: "ObjectGameMode".to_owned(),
+                script_type: ScriptType::Object,
+                compiled,
+                ..Default::default()
+            },
+        );
+
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(byroredux_scripting::ScriptRegistry::new());
+        let entity = world.spawn();
+        assert!(!attach_scpt_script(&mut world, entity, BASE_FORM_ID, &index), "no table yet");
+        byroredux_scripting::obscript_objects::install_object_scripts(&mut world, &index.scripts);
+        assert!(attach_scpt_script(&mut world, entity, BASE_FORM_ID, &index));
+        assert_eq!(
+            world.get::<byroredux_scripting::obscript_objects::ObScriptInstance>(entity).map(|i| i.script),
+            Some(SCRIPT_FORM_ID)
+        );
         assert!(world.has::<byroredux_scripting::ScriptVariables>(entity));
     }
 
