@@ -18,7 +18,12 @@ use byroredux_scripting::obscript_more::{PendingMusic, PendingSleep, ReloadReque
 pub(crate) struct UseWeaponRun {
     request: UseWeaponRequest,
     cooldown: f32,
+    /// Seconds spent unable to use the weapon (the target out of reach or out of sight).
+    waited: f32,
 }
+
+/// How long a volley waits for a shot it cannot take before the actor gives up.
+const PATIENCE_SECS: f32 = 10.0;
 
 impl Component for UseWeaponRun {
     type Storage = SparseSetStorage<Self>;
@@ -47,8 +52,11 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
         }
         if let Some(mut runs) = world.query_mut::<UseWeaponRun>() {
             for (actor, request) in asked {
-                runs.insert(actor, UseWeaponRun { request, cooldown: 0.0 });
+                log::info!("UseWeapon: actor {actor} uses {:08X} on {:08X} x{}", request.weapon, request.target, request.shots);
+                runs.insert(actor, UseWeaponRun { request, cooldown: 0.0, waited: 0.0 });
             }
+        } else {
+            log::warn!("UseWeapon: the volley storage is not registered");
         }
     }
     let runs: Vec<(EntityId, UseWeaponRun)> = match world.query::<UseWeaponRun>() {
@@ -63,6 +71,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
         let actor_form = byroredux_scripting::obscript_state::reference_form(world, actor);
         let alive = |entity: EntityId| world.get::<ActorVitals>(entity).is_none() || !world.has::<Dead>(entity);
         let (Some(target), Some(actor_form)) = (target, actor_form) else {
+            log::warn!("UseWeapon: actor {actor} stops: target {:08X} resolved {target:?}, actor reference {actor_form:?}", run.request.target);
             end_run(world, actor);
             continue;
         };
@@ -88,10 +97,25 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
         let weapon = index.items.get(&run.request.weapon).map(|item| &item.kind);
         let fired = match weapon {
             Some(ItemKind::Weapon { ammo_form, .. }) if *ammo_form != 0 => {
-                if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingProjectileLaunches>() {
-                    pending.0.push(byroredux_scripting::projectile_requests::ProjectileLaunch { source: actor_form, weapon: run.request.weapon, ammo: 0, aim_at: run.request.target });
+                if crate::systems::projectiles::resolve_shot(&index, run.request.weapon, 0).is_ok() {
+                    if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingProjectileLaunches>() {
+                        pending.0.push(byroredux_scripting::projectile_requests::ProjectileLaunch { source: actor_form, weapon: run.request.weapon, ammo: 0, aim_at: run.request.target });
+                    }
+                    true
+                } else if let Ok((weapon_damage, ammo_damage, ..)) = crate::systems::projectiles::resolve_ammunition(&index, run.request.weapon, 0) {
+                    // A gun whose records name no projectile (Fallout's WEAP carries the PROJ, which is not
+                    // decoded yet): the shot lands, for the weapon's and the ammunition's damage, when the
+                    // target is in sight.
+                    let clear = crate::systems::actor_has_line_of_sight(world, actor, target);
+                    if clear {
+                        if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
+                            pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: weapon_damage + ammo_damage.max(0.0) });
+                        }
+                    }
+                    clear
+                } else {
+                    false
                 }
-                true
             }
             // A melee weapon strikes only what is within its reach.
             Some(ItemKind::Weapon { damage, .. }) => {
@@ -110,9 +134,18 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
                 continue;
             }
         };
+        if fired {
+            log::debug!("UseWeapon: actor {actor} fires {:08X} at {:08X} ({} left)", run.request.weapon, run.request.target, run.request.shots - 1);
+        }
+        let waited = if fired { 0.0 } else { run.waited + dt };
+        if waited >= PATIENCE_SECS {
+            log::info!("UseWeapon: actor {actor} cannot reach {:08X} and gives up", run.request.target);
+            end_run(world, actor);
+            continue;
+        }
         let remaining = if fired { run.request.shots - 1 } else { run.request.shots };
         let interval = crate::combat::attack_cooldown_seconds(world, actor).max(0.1);
-        store_run(world, actor, UseWeaponRun { request: UseWeaponRequest { shots: remaining, ..run.request }, cooldown: interval });
+        store_run(world, actor, UseWeaponRun { request: UseWeaponRequest { shots: remaining, ..run.request }, cooldown: interval, waited });
         if remaining == 0 {
             end_run(world, actor);
         }
@@ -201,11 +234,15 @@ pub(crate) fn music_system(world: &World, _dt: f32) {
         .unwrap_or(Vec3::ZERO);
     for track in tracks {
         let key = format!("music\\{}", track.file.replace('/', "\\").to_ascii_lowercase());
-        let bytes = world
-            .try_resource::<crate::asset_provider::SoundArchiveProvider>()
-            .and_then(|provider| provider.extract(&key));
+        // The music is loose in `Data\Music` on Fallout 3 / New Vegas; an archive is tried first.
+        let from_archive = world.try_resource::<crate::asset_provider::SoundArchiveProvider>().and_then(|provider| provider.extract(&key));
+        let bytes = from_archive.or_else(|| {
+            let (_, data) = crate::cli_args::esm_discovery_root(&crate::cli_args::effective_args()).ok()?;
+            let path = find_case_insensitive(&data, &format!("Music\\{}", track.file))?;
+            std::fs::read(path).ok()
+        });
         let Some(bytes) = bytes else {
-            log::warn!("PlayMusic: '{key}' is not in any --sounds-bsa archive");
+            log::warn!("PlayMusic: '{key}' is in no sound archive and not under the data folder's Music");
             continue;
         };
         let sound = match byroredux_audio::load_sound_from_bytes(bytes) {
@@ -222,6 +259,21 @@ pub(crate) fn music_system(world: &World, _dt: f32) {
             log::info!("PlayMusic: playing '{key}' at {volume:.2}");
         }
     }
+}
+
+/// `relative` (`\\`- or `/`-separated) under `root`, matching each component without regard to case
+/// (the games' files are Windows-cased; this filesystem is not).
+fn find_case_insensitive(root: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
+    let mut path = root.to_path_buf();
+    for component in relative.split(['\\', '/']).filter(|part| !part.is_empty()) {
+        let exact = path.join(component);
+        path = if exact.exists() {
+            exact
+        } else {
+            std::fs::read_dir(&path).ok()?.filter_map(Result::ok).find(|entry| entry.file_name().to_string_lossy().eq_ignore_ascii_case(component))?.path()
+        };
+    }
+    Some(path)
 }
 
 // ── SetActorAlpha ──────────────────────────────────────────────────────────────────────────────────

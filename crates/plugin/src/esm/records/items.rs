@@ -458,6 +458,12 @@ pub fn parse_weap(
                 // #3714 SIBLING — see the FO4 `DNAM` arm above.
                 ammo_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
+            // FO3 / FNV `NAM0` "Ammo" (xEdit `wbFormIDCkNoReach(NAM0, 'Ammo', [AMMO, FLST])`): an AMMO, or a
+            // form list of the ammo the weapon takes (`AmmoList10mm`). Skyrim and Fallout 4 author other
+            // things under that tag.
+            b"NAM0" if matches!(game, GameKind::Fallout3NV) && sub.data.len() >= 4 => {
+                ammo_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+            }
             b"DESC" => {} // description string (we don't store it yet)
             // #3715 — embedded equip-type FormID (an EQUP record).
             b"ETYP" => {
@@ -1583,6 +1589,20 @@ mod tests {
             }
             _ => panic!("expected Weapon kind"),
         }
+    }
+
+    /// FO3 / FNV author a weapon's ammunition under `NAM0` (an AMMO, or the form list of the ammo it takes —
+    /// `Weap10mmPistol` names `AmmoList10mm`), not under the `AMMO` tag the first decoder looked for.
+    #[test]
+    fn a_fallout_weapons_nam0_is_its_ammo_form() {
+        let subs = vec![sub(b"EDID", b"Weap10mmPistol\0"), sub(b"DATA", build_data_weap(250, 1.5, 12, 8)), sub(b"NAM0", 0x0015_37E6u32.to_le_bytes())];
+        let item = parse_weap(0x434F, &subs, GameKind::Fallout3NV, &None);
+        let ItemKind::Weapon { ammo_form, .. } = item.kind else { panic!("expected Weapon kind") };
+        assert_eq!(ammo_form, 0x0015_37E6);
+        // Another game's NAM0 is not an ammunition reference.
+        let skyrim = parse_weap(0x434F, &subs, GameKind::Skyrim, &None);
+        let ItemKind::Weapon { ammo_form, .. } = skyrim.kind else { panic!("expected Weapon kind") };
+        assert_eq!(ammo_form, 0);
     }
 
     /// #3724 (ESM-2026-08-30-D2-03) — the issue's own worked case: a

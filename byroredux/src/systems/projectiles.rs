@@ -70,28 +70,14 @@ fn body_centre_offset(world: &World, entity: EntityId) -> Vec3 {
     Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT
 }
 
-/// Why a launch did not start (logged at debug).
-fn launch_of(
-    world: &World,
-    index: &byroredux_plugin::esm::records::EsmIndex,
-    launch: byroredux_scripting::ProjectileLaunch,
-) -> Result<Projectile, String> {
-    let weapon_damage = match index.items.get(&launch.weapon).map(|item| &item.kind) {
-        Some(ItemKind::Weapon { damage, .. }) => *damage as f32,
-        _ => return Err(format!("{:08X} is not a weapon", launch.weapon)),
-    };
-    let weapon_ammo = match index.items.get(&launch.weapon).map(|item| &item.kind) {
-        Some(ItemKind::Weapon { ammo_form, .. }) => *ammo_form,
-        _ => 0,
-    };
-    let ammo_form = if launch.ammo != 0 { launch.ammo } else { weapon_ammo };
-    if ammo_form == 0 {
-        return Err("no ammo named and the weapon carries none".into());
-    }
-    let (ammo_damage, projectile_form) = match index.items.get(&ammo_form).map(|item| &item.kind) {
-        Some(ItemKind::Ammo { damage, projectile_form, .. }) => (*damage, *projectile_form),
-        _ => return Err(format!("{ammo_form:08X} is not ammunition")),
-    };
+/// What a shot with `weapon` (and `ammo`, 0 for the weapon's own) is made of: the weapon's damage, the
+/// ammunition's, and the projectile record the ammunition names.
+pub(crate) fn resolve_shot<'a>(
+    index: &'a byroredux_plugin::esm::records::EsmIndex,
+    weapon: u32,
+    ammo: u32,
+) -> Result<(f32, f32, &'a byroredux_plugin::esm::records::ProjRecord), String> {
+    let (weapon_damage, ammo_damage, ammo_form, projectile_form) = resolve_ammunition(index, weapon, ammo)?;
     let proj = index
         .projectiles
         .get(&projectile_form)
@@ -105,6 +91,39 @@ fn launch_of(
     if !(proj.muzzle_speed.is_finite() && proj.muzzle_speed > 0.0) {
         return Err(format!("{} has no speed", proj.editor_id));
     }
+    Ok((weapon_damage, ammo_damage, proj))
+}
+
+/// The weapon's damage, the ammunition's, the ammunition's form and its projectile form. Fallout's
+/// weapons name a form list of the ammo they take (`AmmoList10mm`): the first entry is the ammunition
+/// used when none is named (the GECK says only that the list is what the weapon accepts).
+pub(crate) fn resolve_ammunition(
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    weapon: u32,
+    ammo: u32,
+) -> Result<(f32, f32, u32, u32), String> {
+    let (weapon_damage, weapon_ammo) = match index.items.get(&weapon).map(|item| &item.kind) {
+        Some(ItemKind::Weapon { damage, ammo_form, .. }) => (*damage as f32, *ammo_form),
+        _ => return Err(format!("{weapon:08X} is not a weapon")),
+    };
+    let ammo_form = if ammo != 0 { ammo } else { weapon_ammo };
+    let ammo_form = index.form_lists.get(&ammo_form).and_then(|list| list.entries.first().copied()).unwrap_or(ammo_form);
+    if ammo_form == 0 {
+        return Err("no ammo named and the weapon carries none".into());
+    }
+    match index.items.get(&ammo_form).map(|item| &item.kind) {
+        Some(ItemKind::Ammo { damage, projectile_form, .. }) => Ok((weapon_damage, *damage, ammo_form, *projectile_form)),
+        _ => Err(format!("{ammo_form:08X} is not ammunition")),
+    }
+}
+
+/// Why a launch did not start (logged at debug).
+fn launch_of(
+    world: &World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    launch: byroredux_scripting::ProjectileLaunch,
+) -> Result<Projectile, String> {
+    let (weapon_damage, ammo_damage, proj) = resolve_shot(index, launch.weapon, launch.ammo)?;
     // (`resolve_entity_by_global_form_id` maps PlayerRef `0x14` to the player.)
     let source = byroredux_scripting::condition::resolve_entity_by_global_form_id(world, launch.source)
         .ok_or_else(|| format!("source {:08X} is not loaded", launch.source))?;
