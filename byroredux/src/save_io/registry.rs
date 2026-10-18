@@ -114,6 +114,10 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // M47.2 — `Bleedout { remaining_secs: Option<f32> }` (#5858). No session-local identity.
     // Replacing: a saved absence gets a live bleeding actor back up.
     "Bleedout",
+    // M47.3 — `ScriptPackage { package: u32, constrained: bool, running_secs:
+    // Option<f32> }`, the package an ObScript `AddScriptPackage` gave an actor.
+    // No session-local identity. Replacing: a saved absence drops a live one.
+    "ScriptPackage",
     // #3165 — the player entity outlives cell reload, so its mutable breath
     // and fractional drowning state must be overlaid explicitly. The pose
     // restore below still clears velocity/grounded/jump after this column.
@@ -370,6 +374,8 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_replacing_component::<ActorControlState>("ActorControlState")
         // M47.2 — an essential actor saved mid-bleedout reloads still down.
         .register_replacing_component::<byroredux_scripting::Bleedout>("Bleedout")
+        // M47.3 — a package a quest script gave an actor reloads still its package.
+        .register_replacing_component::<byroredux_scripting::script_packages::ScriptPackage>("ScriptPackage")
         .register_component::<byroredux_physics::CharacterController>("CharacterController")
         // #2379 / SAVE-D1-14 — `motion_type` (+ mass/friction/restitution/
         // damping) is mutated at runtime by Papyrus `.SetMotionType()`

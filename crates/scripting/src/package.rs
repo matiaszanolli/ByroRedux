@@ -225,11 +225,22 @@ impl Component for EvaluatePackageRequest {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Queue an [`EvaluatePackageRequest`] for `actor` — Papyrus
-/// `Actor.EvaluatePackage` and ObScript `EvaluatePackage` / `EVP` ("forces the
-/// actor to reevaluate its package list", GECK) share this one ingress.
-/// Returns whether the request could be queued (the component storage exists).
+/// `Actor.EvaluatePackage` / ObScript `EvaluatePackage` (`EVP`): "forces the
+/// actor to reevaluate its package list" (GECK) — a request the ambient AI and
+/// scene systems drain. It also ends a script package that is already running,
+/// constrained or not (GECK *EvaluatePackage*: "If the actor is on a package
+/// flagged as must complete or must reach location, EVP will still drop that
+/// package"); one not yet installed survives, so `AddScriptPackage` followed by
+/// `EVP` starts it. Returns whether the request could be queued.
 pub fn request_package_evaluation(world: &World, actor: EntityId) -> bool {
+    crate::script_packages::drop_script_package(world, actor, true);
+    queue_package_evaluation(world, actor)
+}
+
+/// Queue the [`EvaluatePackageRequest`] alone — for changes to the actor's own
+/// package state (a script package added, removed or lapsed), which must be
+/// re-evaluated without ending the package they just set up.
+pub(crate) fn queue_package_evaluation(world: &World, actor: EntityId) -> bool {
     match world.query_mut::<EvaluatePackageRequest>() {
         Some(mut requests) => {
             requests.insert(actor, EvaluatePackageRequest);
@@ -244,6 +255,7 @@ pub fn register(world: &mut World) {
     world.register::<ScenePackageEventBatch>();
     world.register::<ScenePackageCompletionBatch>();
     world.register::<EvaluatePackageRequest>();
+    world.register::<crate::script_packages::ScriptPackage>();
     world.init_resource::<PackageRegistry>();
     world.init_resource::<PackageTargetRegistry>();
 }

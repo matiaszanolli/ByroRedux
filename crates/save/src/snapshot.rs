@@ -539,7 +539,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v108 -> v109 (M47.3 phase 2): `ObScriptQuestLocals` gained the required
 /// `delays` map (a quest script's `SetQuestDelay` interval), so a quest that
 /// slowed or sped its own script no longer snaps back to the default on a load.
-pub const FORMAT_MAJOR: u16 = 109;
+///
+/// v109 -> v110 (M47.3 phase 2): a new component column, `ScriptPackage` (the
+/// package an ObScript `AddScriptPackage` gave an actor), so an actor sent on a
+/// script package reloads still on it.
+pub const FORMAT_MAJOR: u16 = 110;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

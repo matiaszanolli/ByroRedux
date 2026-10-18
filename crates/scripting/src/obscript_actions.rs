@@ -1,7 +1,7 @@
 //! Reference-bound ObScript action commands (M47.3 phase 2).
 //!
-//! `ref.Enable`, `ref.Disable`, `ref.GetDisabled`, `ref.MoveTo <target> [x y z]`
-//! and `ref.EVP` act on the *calling reference*, so they take the explicit
+//! `ref.Enable`, `ref.Disable`, `ref.GetDisabled`, `ref.MoveTo <target> [x y z]`,
+//! `ref.EVP` and `ref.AddScriptPackage`/`RemoveScriptPackage` act on the *calling reference*, so they take the explicit
 //! caller the VM resolved (`SEHaskillRef.MoveTo player`) and lower onto the sink
 //! the Papyrus effects already use — never a second copy of the behaviour:
 //!
@@ -11,6 +11,7 @@
 //! | `0x1023` | GetDisabled | [`reference_enabled`] (scripted state, else the authored flag) |
 //! | `0x109e` | MoveTo | [`apply_move_to_effect`] (`Effect::MoveTo`); the player goes through [`PlayerMoveRequest`] (`Effect::MovePlayerTo`) |
 //! | `0x105e` | EvaluatePackage / EVP | [`request_package_evaluation`] (`Effect::EvaluatePackage`) |
+//! | `0x1097` / `0x1098` | AddScriptPackage / RemoveScriptPackage | [`crate::script_packages`] (the actor's one script-package slot, read by the ambient AI system) |
 //!
 //! The ids are `names`-verified (`examples/obscript_tools`) to name the same
 //! command in Oblivion, Fallout 3 and New Vegas. The semantics are the GECK /
@@ -39,6 +40,7 @@ use crate::condition::resolve_entity_by_global_form_id;
 use crate::fragment::{apply_move_to_effect, reference_enabled, PlayerMoveRequest, ReferenceEnableState};
 use crate::obscript_vm::ObScriptValue;
 use crate::package::request_package_evaluation;
+use crate::script_packages::{add_script_package, remove_script_package};
 use crate::papyrus_demo::PapyrusPlayerEntity;
 
 const CMD_ENABLE: u16 = 0x1021;
@@ -46,6 +48,8 @@ const CMD_DISABLE: u16 = 0x1022;
 const CMD_GET_DISABLED: u16 = 0x1023;
 const CMD_EVALUATE_PACKAGE: u16 = 0x105e;
 const CMD_MOVE_TO: u16 = 0x109e;
+const CMD_ADD_SCRIPT_PACKAGE: u16 = 0x1097;
+const CMD_REMOVE_SCRIPT_PACKAGE: u16 = 0x1098;
 
 /// What the action layer made of a command.
 #[derive(Debug, PartialEq)]
@@ -61,7 +65,16 @@ pub(crate) enum Action {
 /// Run `cmd` if it is a reference-bound action. `caller` is the explicit
 /// calling reference's FormID; every action here needs one.
 pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], caller: Option<u32>) -> Action {
-    if !matches!(cmd, CMD_ENABLE | CMD_DISABLE | CMD_GET_DISABLED | CMD_EVALUATE_PACKAGE | CMD_MOVE_TO) {
+    if !matches!(
+        cmd,
+        CMD_ENABLE
+            | CMD_DISABLE
+            | CMD_GET_DISABLED
+            | CMD_EVALUATE_PACKAGE
+            | CMD_MOVE_TO
+            | CMD_ADD_SCRIPT_PACKAGE
+            | CMD_REMOVE_SCRIPT_PACKAGE
+    ) {
         return Action::Unhandled;
     }
     let Some(caller) = caller.filter(|&form| form != 0) else {
@@ -87,6 +100,25 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], caller: Optio
                     done(None, format!("EvaluatePackage {caller:08X}"))
                 }
                 _ => Action::Declined,
+            }
+        }
+        CMD_ADD_SCRIPT_PACKAGE | CMD_REMOVE_SCRIPT_PACKAGE => {
+            let Some(actor) = resolve_entity_by_global_form_id(world, caller) else {
+                return Action::Declined;
+            };
+            if cmd == CMD_REMOVE_SCRIPT_PACKAGE {
+                // "Removes any currently running script package": none is not an error.
+                remove_script_package(world, actor);
+                return done(None, format!("RemoveScriptPackage {caller:08X}"));
+            }
+            // A null package (`Ref(0)`, the unresolved-slot or `Z` null tag) names none.
+            let Some(ObScriptValue::Ref(package)) = args.first().copied().filter(|v| *v != ObScriptValue::Ref(0)) else {
+                return Action::Declined;
+            };
+            if add_script_package(world, actor, package) {
+                done(None, format!("AddScriptPackage {caller:08X} {package:08X}"))
+            } else {
+                Action::Declined
             }
         }
         _ => move_to(world, args, caller),
@@ -214,7 +246,15 @@ mod tests {
     #[test]
     fn an_action_without_a_calling_reference_is_declined() {
         let (world, _, _) = world(GameKind::Fallout3NV);
-        for cmd in [CMD_ENABLE, CMD_DISABLE, CMD_GET_DISABLED, CMD_EVALUATE_PACKAGE, CMD_MOVE_TO] {
+        for cmd in [
+            CMD_ENABLE,
+            CMD_DISABLE,
+            CMD_GET_DISABLED,
+            CMD_EVALUATE_PACKAGE,
+            CMD_MOVE_TO,
+            CMD_ADD_SCRIPT_PACKAGE,
+            CMD_REMOVE_SCRIPT_PACKAGE,
+        ] {
             let args = [ObScriptValue::Ref(MARKER)];
             assert_eq!(run(&world, cmd, &args, None), Action::Declined, "{cmd:#06x}");
             assert_eq!(run(&world, cmd, &args, Some(0)), Action::Declined, "{cmd:#06x}");
@@ -289,6 +329,30 @@ mod tests {
         let world = with_player(world, moved);
         assert_eq!(run(&world, CMD_MOVE_TO, &[ObScriptValue::Ref(MARKER)], Some(PLAYER_REF)), Action::Declined);
         assert_eq!(world.resource::<PlayerMoveRequest>().0, None);
+    }
+
+    /// `AddScriptPackage` fills the actor's one script-package slot and queues a
+    /// re-evaluation; an undefined or null package is declined, and
+    /// `RemoveScriptPackage` empties the slot (and is not an error with none).
+    #[test]
+    fn script_packages_are_added_and_removed_on_the_caller() {
+        use crate::script_packages::script_package_of;
+        use byroredux_plugin::esm::records::misc::pack::PackRecord;
+        let (mut world, moved, _) = world(GameKind::Fallout3NV);
+        crate::package::register(&mut world);
+        world.insert_resource(crate::PackageRegistry::from_records([PackRecord { form_id: 0x77, ..Default::default() }]));
+        let add = |world: &World, args: &[ObScriptValue]| run(world, CMD_ADD_SCRIPT_PACKAGE, args, Some(MOVED));
+        assert_eq!(add(&world, &[ObScriptValue::Ref(0x77)]), done("AddScriptPackage 00010001 00000077"));
+        assert_eq!(script_package_of(&world, moved).map(|slot| slot.package), Some(0x77));
+        assert!(world.has::<EvaluatePackageRequest>(moved));
+        for args in [vec![], vec![ObScriptValue::Ref(0)], vec![ObScriptValue::Ref(0x88)]] {
+            assert_eq!(add(&world, &args), Action::Declined);
+        }
+        assert_eq!(run(&world, CMD_ADD_SCRIPT_PACKAGE, &[ObScriptValue::Ref(0x77)], Some(0x00FF_FFFF)), Action::Declined);
+        let remove = |world: &World| run(world, CMD_REMOVE_SCRIPT_PACKAGE, &[], Some(MOVED));
+        assert_eq!(remove(&world), done("RemoveScriptPackage 00010001"));
+        assert_eq!(script_package_of(&world, moved), None);
+        assert_eq!(remove(&world), done("RemoveScriptPackage 00010001"));
     }
 
     /// `EVP` queues the Papyrus `EvaluatePackage` request for the actor.

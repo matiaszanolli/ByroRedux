@@ -2317,6 +2317,25 @@ missing ledger, is a counted decline. `EnablePlayerControls` /
 (Movement/Pipboy/Fighting/POV/Looking/Rollover/Sneaking) do not map one-to-one
 onto `PlayerControlSelection`'s domains, and the mapping is not documented.
 
+**Script packages (`script_packages.rs`).** `AddScriptPackage` `0x1097` /
+`RemoveScriptPackage` `0x1098` fill an actor's one `ScriptPackage` slot (saved,
+`FORMAT_MAJOR` 110): the GECK says the package "takes precedence over all other
+packages until it is done", that a second add replaces the first, and that
+"unless the added package has some constraint on it ('must complete' and/or
+'must reach location'), it will be removed the next time the actor
+reevaluates". `ambient_ai_package_system` reads the slot ahead of the actor's
+own stack and skips the schedule and condition scan for it. The re-evaluation
+cadence is the one place the docs only hedge ("Packages seem to be re-evaluated
+every 10 seconds", *How Are Packages Evaluated*), and the ambient system's
+once-per-game-minute pass is not that cadence, so an unconstrained package
+lapses once it has been *running* for 10 s on its own clock. A package not yet
+installed is never dropped, so the common `AddScriptPackage X` then `EVP` idiom
+starts it; `EVP` only ends one that is already running (the GECK says it drops
+even a must-complete package). A constrained package (PKDT `0x2` / `0x4`) stays
+until removed, replaced, evaluated away, or — Travel only — the actor arrives
+(`Traveled`). Completion of the other procedures (Follow, Escort, Dialogue, ...)
+is not modelled, so those stay until one of the other exits.
+
 ### The R5 demo translations (`papyrus_demo/`)
 
 The proof-of-concept hand-translations that closed R5. Each is a faithful

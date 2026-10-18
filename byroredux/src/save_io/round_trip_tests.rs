@@ -74,6 +74,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         "ActorControlState",
         // M47.2 — Bleedout: a single Option<f32>. Delta-safe.
         "Bleedout",
+        // M47.3 — ScriptPackage: u32 + bool + Option<f32>. Delta-safe.
+        "ScriptPackage",
         // #3165 — CharacterController is f32/bool-only. Breath and drowning
         // carry are gameplay state; pose restore clears its three transient
         // movement fields after the overlay.
@@ -669,6 +671,30 @@ fn bleedout_with_and_without_a_recovery_time_survives_save_load_round_trip() {
         dst.get::<Bleedout>(untimed).map(|state| state.remaining_secs),
         Some(None)
     );
+}
+
+/// M47.3 — an actor a quest script sent on a package (`AddScriptPackage`)
+/// reloads still on it, with the running clock it had.
+#[test]
+fn a_script_package_survives_save_load_round_trip() {
+    use byroredux_scripting::script_packages::ScriptPackage;
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    let sent = src.spawn();
+    let package = ScriptPackage { package: 0x77, constrained: true, running_secs: Some(3.5) };
+    src.insert(sent, package);
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    assert_eq!(dst.get::<ScriptPackage>(sent).map(|slot| *slot), Some(package));
 }
 
 /// Regression: #2379 (SAVE-D1-14) — a scripted `.SetMotionType()` call

@@ -891,7 +891,16 @@ pub(crate) fn reseat_ambient_packages_after_restore(world: &World) {
 /// `EvaluatePackageRequest` but deliberately does not remove it, allowing the
 /// SCEN runtime to consume the same request afterward. Schedule-only checks are
 /// bounded to one evaluation per in-game minute per actor.
-pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
+pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
+    // M47.3 — script packages (`AddScriptPackage`) lapse on their own clock and
+    // end when a Travel completes. Both queue a re-evaluation for the actor, so
+    // they reach `requested` below. Nearly always a no-op: the component is rare.
+    byroredux_scripting::script_packages::tick_script_packages(world, dt);
+    for actor in byroredux_scripting::script_packages::running_script_package_actors(world) {
+        if world.has::<Traveled>(actor) {
+            byroredux_scripting::script_packages::finish_script_package(world, actor);
+        }
+    }
     // #5017 — an unconscious actor cannot move or pick packages. Tear down an
     // installed procedure (a no-op once suspended; the list is nearly always
     // empty) before the minute gate, so a knock-out takes effect this frame.
@@ -1010,7 +1019,14 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
         if packages.is_empty() && !package_candidates.is_empty() {
             continue;
         }
-        let active = select_active_package(world, actor, game_hour, packages.iter().copied());
+        // A script package "takes precedence over all other packages until it
+        // is done" (GECK *AddScriptPackage*), so it skips the schedule and
+        // condition scan. One the registry no longer holds falls back to the
+        // actor's own stack.
+        let scripted = byroredux_scripting::script_packages::script_package_of(world, actor)
+            .and_then(|slot| registry.package(slot.package));
+        let active =
+            scripted.or_else(|| select_active_package(world, actor, game_hour, packages.iter().copied()));
         let active_package_form_id = active.map(|package| package.form_id);
         let behavior = active.and_then(|package| {
             let template = package
@@ -1047,6 +1063,12 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
         let previous = byroredux_scripting::reported_package(world, actor).unwrap_or(runtime_active);
         byroredux_scripting::report_package_transition(world, actor, previous, active_id);
         if !changed {
+            // Already the running package: start the script package's clock.
+            if byroredux_scripting::script_packages::script_package_of(world, actor)
+                .is_some_and(|slot| Some(slot.package) == active_id)
+            {
+                byroredux_scripting::script_packages::mark_running(world, actor);
+            }
             continue;
         }
         log::info!(
@@ -1056,6 +1078,13 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
         clear_ambient_behavior(world, actor);
         if let Some(behavior) = behavior {
             behavior.insert_at_runtime(world, actor);
+        }
+        // Installed after the handover cleared the old procedure's markers, so a
+        // stale `Traveled` cannot read as this package completing.
+        if byroredux_scripting::script_packages::script_package_of(world, actor)
+            .is_some_and(|slot| Some(slot.package) == active_id)
+        {
+            byroredux_scripting::script_packages::mark_running(world, actor);
         }
     }
 
@@ -1827,6 +1856,109 @@ mod tests {
             "a templated shell with Use AI Packages set must run the \
              template's package instead of standing idle"
         );
+    }
+
+    /// An actor on a scheduled Sandbox with two script-package candidates in the
+    /// catalog: `0x300` unconstrained and `0x400` flagged *Must complete*.
+    fn script_package_actor() -> (World, EntityId) {
+        let sandbox = pack(
+            0x100,
+            PROCEDURE_SANDBOX,
+            Some(PackSchedule {
+                start_hour: Some(8),
+                duration_hours: 12,
+            }),
+        );
+        let unconstrained = pack(0x300, PROCEDURE_TRAVEL, None);
+        let mut must_complete = pack(0x400, PROCEDURE_TRAVEL, None);
+        must_complete.package_flags = 0x4;
+        let (world, actor) = setup_actor_with_catalog(10.0, vec![sandbox], vec![unconstrained, must_complete]);
+        assert!(world.has::<SandboxBehavior>(actor));
+        (world, actor)
+    }
+
+    fn active_package(world: &World, actor: EntityId) -> Option<u32> {
+        world.get::<AmbientPackageRuntime>(actor).unwrap().active_package_form_id
+    }
+
+    /// M47.3 — `AddScriptPackage` "takes precedence over all other packages":
+    /// the scheduled Sandbox gives way at once (the add queues its own
+    /// re-evaluation), and the package's clock starts when it is installed.
+    #[test]
+    fn a_script_package_preempts_the_scheduled_package() {
+        use byroredux_scripting::script_packages::{add_script_package, script_package_of};
+        let (world, actor) = script_package_actor();
+        assert!(add_script_package(&world, actor, 0x300));
+        assert_eq!(script_package_of(&world, actor).unwrap().running_secs, None, "pending until installed");
+        ambient_ai_package_system(&world, 0.0);
+        assert!(world.has::<TravelBehavior>(actor));
+        assert!(!world.has::<SandboxBehavior>(actor));
+        assert_eq!(active_package(&world, actor), Some(0x300));
+        assert_eq!(script_package_of(&world, actor).unwrap().running_secs, Some(0.0));
+    }
+
+    /// An unconstrained script package lapses at the next re-evaluation after
+    /// it has run (10 s), and the actor goes back to its own stack.
+    #[test]
+    fn an_unconstrained_script_package_lapses_back_to_the_scheduled_package() {
+        use byroredux_scripting::script_packages::{add_script_package, script_package_of};
+        let (world, actor) = script_package_actor();
+        add_script_package(&world, actor, 0x300);
+        ambient_ai_package_system(&world, 0.0);
+        ambient_ai_package_system(&world, 5.0);
+        assert_eq!(active_package(&world, actor), Some(0x300), "still inside the interval");
+        ambient_ai_package_system(&world, 5.0);
+        assert_eq!(script_package_of(&world, actor), None);
+        assert_eq!(active_package(&world, actor), Some(0x100));
+        assert!(world.has::<SandboxBehavior>(actor));
+        assert!(!world.has::<TravelBehavior>(actor));
+    }
+
+    /// A *Must complete* package stays until removed.
+    #[test]
+    fn a_constrained_script_package_stays_until_removed() {
+        use byroredux_scripting::script_packages::{add_script_package, remove_script_package};
+        let (world, actor) = script_package_actor();
+        add_script_package(&world, actor, 0x400);
+        ambient_ai_package_system(&world, 0.0);
+        ambient_ai_package_system(&world, 600.0);
+        assert_eq!(active_package(&world, actor), Some(0x400));
+        assert!(remove_script_package(&world, actor));
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(active_package(&world, actor), Some(0x100));
+        assert!(world.has::<SandboxBehavior>(actor));
+    }
+
+    /// A finished Travel ends its script package; the arrival marker the travel
+    /// system stamps is what the ambient system reads.
+    #[test]
+    fn a_script_travel_package_ends_when_the_actor_arrives() {
+        use byroredux_scripting::script_packages::{add_script_package, script_package_of};
+        let (mut world, actor) = script_package_actor();
+        add_script_package(&world, actor, 0x400);
+        ambient_ai_package_system(&world, 0.0);
+        assert!(script_package_of(&world, actor).is_some(), "the install itself is not a completion");
+        world.insert(actor, Traveled);
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(script_package_of(&world, actor), None);
+        assert_eq!(active_package(&world, actor), Some(0x100));
+        assert!(!world.has::<Traveled>(actor), "the handover clears the arrival marker");
+    }
+
+    /// `EVP` after `AddScriptPackage` starts the package; a later `EVP` ends it,
+    /// even a *Must complete* one (GECK *EvaluatePackage*).
+    #[test]
+    fn evaluate_package_starts_a_pending_script_package_and_ends_a_running_one() {
+        use byroredux_scripting::script_packages::{add_script_package, script_package_of};
+        let (world, actor) = script_package_actor();
+        add_script_package(&world, actor, 0x400);
+        byroredux_scripting::package::request_package_evaluation(&world, actor);
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(active_package(&world, actor), Some(0x400), "the first EVP selects it");
+        byroredux_scripting::package::request_package_evaluation(&world, actor);
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(script_package_of(&world, actor), None);
+        assert_eq!(active_package(&world, actor), Some(0x100));
     }
 
     #[test]
