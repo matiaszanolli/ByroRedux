@@ -967,6 +967,9 @@ pub(crate) fn populate_scene_runtime(
     // M47.3 — ObScript object scripts (the `SCRI` scripts on placed references).
     // Empty on Skyrim+, whose records carry VMAD instead.
     byroredux_scripting::obscript_objects::install_object_scripts(world, &index.scripts);
+    // M47.3 — the scripts of items carried in inventories (OnAdd / OnDrop / OnEquip /
+    // OnUnequip), found by the item's base form.
+    byroredux_scripting::obscript_objects::install_item_scripts(world, index);
     // #5366 — the Story Manager tree (Skyrim+): fold the parsed
     // SMBN/SMEN/SMQN node map into the dispatchable resource. Empty and
     // a no-op on Oblivion/FO3/FNV, which author no SM records — their

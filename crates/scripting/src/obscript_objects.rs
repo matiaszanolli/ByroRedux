@@ -66,12 +66,13 @@ use byroredux_plugin::esm::records::{ScriptRecord, ScriptType};
 
 use crate::condition::entity_global_form_id;
 use crate::events::{
-    ActivateEvent, HitEvent, NativeActivation, OnCellLoadEvent, OnDeathEvent, OnTriggerEnterEvent,
+    ActivateEvent, EquipmentEventBatch, HitEvent, ItemEventBatch, NativeActivation, OnCellLoadEvent, OnDeathEvent, OnTriggerEnterEvent,
     OnTriggerLeaveEvent,
 };
 use crate::obscript_quests::ObScriptCommandHost;
 use crate::obscript_vm::{
-    BlockInfo, BlockOutcome, ObScriptProgram, VmState, BLOCK_GAME_MODE, BLOCK_ON_ACTIVATE,
+    BlockInfo, BlockOutcome, ObScriptProgram, VmState, BLOCK_GAME_MODE, BLOCK_ON_ACTIVATE, BLOCK_ON_ADD,
+    BLOCK_ON_DROP, BLOCK_ON_EQUIP, BLOCK_ON_UNEQUIP,
     BLOCK_ON_COMBAT_END, BLOCK_ON_DEATH, BLOCK_ON_HIT, BLOCK_ON_HIT_WITH, BLOCK_ON_LOAD,
     BLOCK_ON_PACKAGE_CHANGE, BLOCK_ON_PACKAGE_DONE, BLOCK_ON_PACKAGE_START, BLOCK_ON_START_COMBAT,
     BLOCK_ON_TRIGGER, BLOCK_ON_TRIGGER_ENTER, BLOCK_ON_TRIGGER_LEAVE,
@@ -122,6 +123,37 @@ pub struct ObScriptInCombat;
 
 impl Component for ObScriptInCombat {
     type Storage = SparseSetStorage<Self>;
+}
+
+/// The script each item base record carries (`SCRI`), for the items that have an
+/// installed object script. An item in an inventory is no placed reference, so its
+/// script is found by its base form. `NOT_SAVED_BY_DESIGN`: rebuilt from the records at
+/// every content load.
+#[derive(Debug, Default, Clone)]
+pub struct ObScriptItemScripts(pub HashMap<u32, u32>);
+
+impl Resource for ObScriptItemScripts {}
+
+/// Index the scripts of the load order's items. `0` when none of them has an installed
+/// object script (or `BYRO_NO_OBSCRIPT_OBJECTS` kept the table out). Call after
+/// [`install_object_scripts`].
+pub fn install_item_scripts(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) -> usize {
+    let Some(table) = world.try_resource::<ObScriptObjectTable>() else {
+        return 0;
+    };
+    let items: HashMap<u32, u32> = index
+        .items
+        .values()
+        .filter(|item| item.common.script_form_id != 0 && table.scripts.contains_key(&item.common.script_form_id))
+        .map(|item| (item.form_id, item.common.script_form_id))
+        .collect();
+    drop(table);
+    let count = items.len();
+    if count > 0 {
+        world.insert_resource(ObScriptItemScripts(items));
+        log::info!("Indexed {count} ObScript item scripts");
+    }
+    count
 }
 
 /// Index the object scripts that have bytecode and walk cleanly. Returns how many
@@ -377,6 +409,81 @@ pub fn obscript_hit_system(world: &World, dt: f32) {
             None,
             dt,
         );
+    }
+}
+
+/// Run the `block_types` blocks of the script of item `item`, held by `holder`, that
+/// `wanted` accepts. The blocks of an item's script run when something happens to the
+/// item (the event systems below), with the item and its holder on the host: a command
+/// written with no caller has nothing to act on, `GetContainer` is the holder, `RemoveMe`
+/// takes the item out of it and ends the block. Locals do not outlive a run — an item in
+/// an inventory has no reference to keep them on.
+fn run_item_blocks(world: &World, item: u32, holder: u32, block_types: &[u16], dt: f32) {
+    let Some(script_id) = world.try_resource::<ObScriptItemScripts>().and_then(|items| items.0.get(&item).copied()) else {
+        return;
+    };
+    let Some((script, blocks)) = world.try_resource::<ObScriptObjectTable>().and_then(|table| {
+        let object = table.scripts.get(&script_id)?;
+        let blocks: Vec<BlockInfo> = object
+            .blocks
+            .iter()
+            .filter(|block| block_types.contains(&block.block_type) && !table.malformed.contains(&(script_id, **block)))
+            // A block written for one container or actor (`Begin OnAdd player`).
+            .filter(|block| block.filter.is_none_or(|filter| filter == holder))
+            .copied()
+            .collect();
+        Some((Arc::clone(&object.record), blocks))
+    }) else {
+        return;
+    };
+    for block in blocks {
+        let mut state = VmState::default();
+        let mut host = ObScriptCommandHost::new(world, item, None, dt, &script);
+        host.item = Some(crate::obscript_quests::ItemScriptContext { item, container: holder });
+        if let BlockOutcome::Malformed(at) = ObScriptProgram::new(&script).run_at(&block, &mut state, &mut host) {
+            log::warn!("ObScript item script {:08X}: malformed bytecode at {at:#06x} (block {:#04x})", script.form_id, block.block_type);
+            if let Some(mut table) = world.try_resource_mut::<ObScriptObjectTable>() {
+                table.malformed.insert((script.form_id, block));
+            }
+        }
+    }
+}
+
+/// `OnAdd`, `OnDrop`, `OnEquip` and `OnUnequip` of an item's script, from the item and
+/// equipment batches the frame's wearers carry.
+///
+/// The GECK / CS pages: `OnAdd` runs "once when the scripted object is added to the
+/// container's inventory", `OnDrop` when it "is removed from the container's inventory"
+/// (any removal, not only a drop on the ground), `OnEquip` / `OnUnequip` when "equipped /
+/// unequipped by the specified actor"; a parameter names the container or actor, and none
+/// means any. The batches are the engine's own transfer and equipment events, so a looted,
+/// picked-up, scripted or equipped item reaches its script the frame it happens. Run in
+/// `Late`, ahead of `event_cleanup_system`, so the batches of the whole frame are there.
+pub fn obscript_item_system(world: &World, dt: f32) {
+    if world.try_resource::<ObScriptItemScripts>().is_none() {
+        return;
+    }
+    let transfers: Vec<(EntityId, Vec<crate::ItemTransfer>)> = world
+        .query::<ItemEventBatch>()
+        .map(|batches| batches.iter().map(|(wearer, batch)| (wearer, batch.0.clone())).collect())
+        .unwrap_or_default();
+    for (wearer, batch) in transfers {
+        let Some(holder) = form_of(world, wearer) else { continue };
+        for transfer in batch {
+            let block = if transfer.added { BLOCK_ON_ADD } else { BLOCK_ON_DROP };
+            run_item_blocks(world, transfer.item_form_id, holder, &[block], dt);
+        }
+    }
+    let changes: Vec<(EntityId, Vec<crate::EquipmentChange>)> = world
+        .query::<EquipmentEventBatch>()
+        .map(|batches| batches.iter().map(|(wearer, batch)| (wearer, batch.0.clone())).collect())
+        .unwrap_or_default();
+    for (wearer, batch) in changes {
+        let Some(holder) = form_of(world, wearer) else { continue };
+        for change in batch {
+            let block = if change.equipped { BLOCK_ON_EQUIP } else { BLOCK_ON_UNEQUIP };
+            run_item_blocks(world, change.item_form_id, holder, &[block], dt);
+        }
     }
 }
 
@@ -1116,6 +1223,62 @@ mod tests {
         assert_eq!(counter(&world, actor), 2.0, "Change for Sleep (left) and Start for Walk (begun)");
         deliver_package_events(&world, &[], &[crate::fragment::PackageEnd { actor, package: WALK }], 0.016);
         assert_eq!(counter(&world, actor), 3.0, "Done for Walk only");
+    }
+
+    fn item_world(blocks: &[(u16, Vec<u8>)]) -> (World, EntityId) {
+        use byroredux_core::ecs::components::{Inventory, ItemStack};
+        let (mut world, holder) = world_for(script_with(blocks));
+        world.insert_resource(ObScriptItemScripts([(ITEM, SCRIPT)].into()));
+        world.insert_resource(crate::obscript_quests::ObScriptQuestTimers::default());
+        world.register::<Inventory>();
+        world.register::<ItemEventBatch>();
+        world.register::<EquipmentEventBatch>();
+        let mut inventory = Inventory::new();
+        inventory.add(ItemStack::new(ITEM, 3));
+        world.insert(holder, inventory);
+        (world, holder)
+    }
+
+    const ITEM: u32 = 0x0007_0001;
+
+    fn stack(world: &World, holder: EntityId) -> u32 {
+        world.get::<byroredux_core::ecs::components::Inventory>(holder).map_or(0, |inv| inv.items.iter().filter(|s| s.base_form_id == ITEM).map(|s| s.count).sum())
+    }
+
+    fn declined_of(world: &World, owner: u32, cmd: u16) -> u32 {
+        world.try_resource::<crate::obscript_quests::ObScriptQuestTimers>().unwrap().unknown_commands.get(&owner).and_then(|m| m.get(&cmd)).copied().unwrap_or(0)
+    }
+
+    /// An item's `OnAdd` block runs the frame the item is added, `RemoveMe` takes one from the
+    /// holder and ends the block ("acts as a return"): the statement after it never runs.
+    #[test]
+    fn an_items_on_add_block_runs_and_remove_me_takes_it_out_and_returns() {
+        // A command with no caller has nothing to act on in an item's script: `Disable` is
+        // declined, which is how the test sees whether the statement ran.
+        let probe = statement(0x1022, &[0, 0]);
+        let (mut world, holder) = item_world(&[(BLOCK_ON_ADD, [statement(0x10a5, &[0, 0]), probe.clone()].concat())]);
+        world.insert(holder, ItemEventBatch(vec![crate::ItemTransfer { item_form_id: ITEM, count: 1, added: true, stolen: false }]));
+        obscript_item_system(&world, 0.016);
+        assert_eq!(stack(&world, holder), 2, "RemoveMe removed one");
+        assert_eq!(declined_of(&world, ITEM, 0x1022), 0, "and returned before the next statement");
+        // Without RemoveMe the next statement runs (and is declined: no caller).
+        let (mut world, holder) = item_world(&[(BLOCK_ON_ADD, probe)]);
+        world.insert(holder, ItemEventBatch(vec![crate::ItemTransfer { item_form_id: ITEM, count: 1, added: true, stolen: false }]));
+        obscript_item_system(&world, 0.016);
+        assert_eq!((stack(&world, holder), declined_of(&world, ITEM, 0x1022)), (3, 1));
+    }
+
+    /// `OnDrop` runs for a removal, `OnEquip` / `OnUnequip` for the equipment batch; a transfer in
+    /// the other direction does not run the block.
+    #[test]
+    fn item_blocks_follow_the_item_and_equipment_batches() {
+        let probe = |cmd: u16| statement(cmd, &[0, 0]);
+        let (mut world, holder) = item_world(&[(BLOCK_ON_ADD, probe(0x1021)), (BLOCK_ON_DROP, probe(0x1022)), (BLOCK_ON_EQUIP, probe(0x1023)), (BLOCK_ON_UNEQUIP, probe(0x1024))]);
+        world.insert(holder, ItemEventBatch(vec![crate::ItemTransfer { item_form_id: ITEM, count: 1, added: false, stolen: false }]));
+        world.insert(holder, EquipmentEventBatch(vec![crate::EquipmentChange { item_form_id: ITEM, equipped: true }]));
+        obscript_item_system(&world, 0.016);
+        let ran = |cmd| declined_of(&world, ITEM, cmd);
+        assert_eq!((ran(0x1021), ran(0x1022), ran(0x1023), ran(0x1024)), (0, 1, 1, 0), "OnDrop and OnEquip only");
     }
 
     /// `0x1b` is `OnTriggerLeave` on Fallout 3 / New Vegas and `OnTriggerMob` on

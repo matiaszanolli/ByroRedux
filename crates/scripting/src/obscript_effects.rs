@@ -100,6 +100,8 @@ const CMD_REWARD_KARMA: u16 = 0x1204;
 const CMD_REMOVE_ALL_ITEMS: u16 = 0x10ad;
 const CMD_PLACE_AT_ME: u16 = 0x1025;
 const CMD_RESET_AI: u16 = 0x11fa;
+const CMD_SET_OWNERSHIP: u16 = 0x1117;
+const CMD_CLEAR_OWNERSHIP: u16 = 0x118c;
 /// `Karma` in the Fallout actor-value table.
 const KARMA_CODE: f32 = 23.0;
 
@@ -147,6 +149,8 @@ pub(crate) fn handles(cmd: u16) -> bool {
             | CMD_REMOVE_ALL_ITEMS
             | CMD_PLACE_AT_ME
             | CMD_RESET_AI
+            | CMD_SET_OWNERSHIP
+            | CMD_CLEAR_OWNERSHIP
     )
 }
 
@@ -514,6 +518,18 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             crate::package::request_package_evaluation(world, actor);
             return Action::Done { value: None, effect: format!("ResetAI {caller:08X}") };
         }
+        // `SetOwnership [owner]`: the calling reference is owned by the NPC or faction
+        // named, or — "if the parameter is omitted" — by the player, whose things anyone
+        // may take: no owner, which is how a cleared one is read. `ClearOwnership` is the
+        // second spelling of that.
+        CMD_SET_OWNERSHIP | CMD_CLEAR_OWNERSHIP => {
+            let owner = if cmd == CMD_SET_OWNERSHIP { form_arg(args, 0).unwrap_or(0) } else { 0 };
+            let Some(mut overrides) = world.try_resource_mut::<crate::OwnerOverrides>() else {
+                return Action::Declined;
+            };
+            overrides.set(caller, owner);
+            return Action::Done { value: None, effect: format!("SetOwnership {caller:08X} {owner:08X}") };
+        }
         CMD_RESET_HEALTH => {
             let Some(actor) = caller_entity else { return Action::Declined };
             let vitals: Vec<u32> = crate::obscript_actor_values::RESET_HEALTH_CODES
@@ -563,6 +579,7 @@ const CMD_GET_PARENT_REF: u16 = 0x1113;
 const CMD_GET_DESTROYED: u16 = 0x10cb;
 const CMD_GET_RESTRAINED: u16 = 0x10f4;
 const CMD_GET_IN_SAME_CELL: u16 = 0x1020;
+const CMD_GET_IS_CURRENT_PACKAGE: u16 = 0x10a1;
 
 /// Every getter this module answers.
 pub(crate) fn is_getter(cmd: u16) -> bool {
@@ -583,6 +600,7 @@ pub(crate) fn is_getter(cmd: u16) -> bool {
             | CMD_GET_RESTRAINED
             | CMD_GET_IN_SAME_CELL
             | CMD_GET_LINKED_REF
+            | CMD_GET_IS_CURRENT_PACKAGE
     )
 }
 
@@ -684,6 +702,13 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
                 .and_then(|authored| authored.1.get(&caller).copied())
                 .unwrap_or(0),
         ),
+        // "Returns 1 if the actor is currently running the specified package": the package
+        // the AI last reported for the actor.
+        CMD_GET_IS_CURRENT_PACKAGE => {
+            let Some(package) = form_arg(args, 0) else { return Getter::Declined };
+            let current = world.try_resource::<crate::fragment::ActivePackages>().and_then(|active| active.0.get(&subject).copied());
+            Getter::Value(f32::from(u8::from(current == Some(package))))
+        }
         CMD_GET_DESTROYED => Getter::Value(f32::from(u8::from(crate::destruction::is_destroyed(world, caller)))),
         CMD_GET_RESTRAINED => {
             Getter::Value(f32::from(u8::from(world.get::<crate::ActorControlState>(subject).is_some_and(|state| state.restrained))))
@@ -1039,6 +1064,30 @@ mod tests {
         assert_eq!(getter(&world, CMD_GET_PARENT_REF, &[], &ctx), Getter::Ref(0), "no enable parent");
         world.insert_resource(crate::AuthoredDisabledReferences(Default::default(), [(ACTOR, ITEM)].into()));
         assert_eq!(getter(&world, CMD_GET_PARENT_REF, &[], &ctx), Getter::Ref(ITEM));
+    }
+
+    #[test]
+    fn set_ownership_names_the_owner_and_no_argument_is_the_player() {
+        const FACTION: u32 = 0x0006_0001;
+        let (mut world, _, _) = world();
+        world.insert_resource(crate::OwnerOverrides::default());
+        let ctx = context(Some(ACTOR));
+        assert!(done(&run(&world, CMD_SET_OWNERSHIP, &refs(&[FACTION]), &ctx)));
+        assert_eq!(world.try_resource::<crate::OwnerOverrides>().unwrap().get(ACTOR), Some(FACTION));
+        // "If the parameter is omitted, the reference will be set to be owned by the player."
+        assert!(done(&run(&world, CMD_SET_OWNERSHIP, &[], &ctx)));
+        assert_eq!(world.try_resource::<crate::OwnerOverrides>().unwrap().get(ACTOR), Some(0));
+    }
+
+    #[test]
+    fn get_is_current_package_reads_the_package_the_ai_reported() {
+        const WALK: u32 = 0x0005_0001;
+        let (world, actor, _) = world();
+        let ctx = context(Some(ACTOR));
+        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK]), &ctx), Getter::Value(0.0));
+        crate::fragment::report_package_transition(&world, actor, None, Some(WALK));
+        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK]), &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK + 1]), &ctx), Getter::Value(0.0));
     }
 
     #[test]

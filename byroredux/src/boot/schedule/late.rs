@@ -828,5 +828,8 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<crate::settings_io::SettingsPersistence>()
             .writes_resource::<crate::extensions::ExtensionHostSlot>(),
     );
+    // M47.3 — the scripts of items in inventories hear this frame's item and equipment
+    // batches (OnAdd / OnDrop / OnEquip / OnUnequip) before the cleanup drains them.
+    scheduler.add_exclusive(Stage::Late, byroredux_scripting::obscript_objects::obscript_item_system);
     scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);
 }

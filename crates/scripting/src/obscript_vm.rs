@@ -66,6 +66,12 @@ pub const BLOCK_GAME_MODE: u16 = 0;
 /// and New Vegas agree on these (the Fallout pair on every block they share —
 /// `OnTriggerEnter` is `0x1a` there and `OnTriggerActor` in Oblivion).
 pub const BLOCK_ON_ACTIVATE: u16 = 0x02;
+/// `Begin OnAdd`, `OnEquip`, `OnUnequip` and `OnDrop` — the blocks of an item's script:
+/// `0x03` to `0x06` on all three games.
+pub const BLOCK_ON_ADD: u16 = 0x03;
+pub const BLOCK_ON_EQUIP: u16 = 0x04;
+pub const BLOCK_ON_UNEQUIP: u16 = 0x05;
+pub const BLOCK_ON_DROP: u16 = 0x06;
 pub const BLOCK_ON_DEATH: u16 = 0x0a;
 pub const BLOCK_ON_LOAD: u16 = 0x15;
 /// `Begin OnHit`, `OnHitWith`, `OnStartCombat` and `OnCombatEnd`, numbered by the same
@@ -138,6 +144,14 @@ pub trait ObScriptHost {
     /// `Message` / `MessageBox` with their decoded text, variables and
     /// buttons (M47.3 phase 2). A host without a message surface ignores it.
     fn message(&mut self, _message: ObScriptMessage) {}
+
+    /// Whether the command just run ends the script, as a `Return` does: `RemoveMe`
+    /// and `DropMe` "act as a return when called -- the lines of script following it will
+    /// NOT be executed" (GECK), the script having just removed the object it runs on.
+    /// Asked after every command statement; the answer is one-shot.
+    fn ends_script(&mut self) -> bool {
+        false
+    }
 }
 
 /// `MessageBox` (`0x1000`).
@@ -448,6 +462,9 @@ impl<'a> Vm<'a> {
                 };
                 let args = self.decode_args(args_start, args_end)?;
                 self.host.call(cmd, &args, Some(caller));
+                if self.host.ends_script() {
+                    self.returned = true;
+                }
             }
             return Some(args_end);
         }
@@ -467,6 +484,9 @@ impl<'a> Vm<'a> {
                     // the command id.
                     let args = self.decode_args(start, end)?;
                     self.host.call(op, &args, None);
+                    if self.host.ends_script() {
+                        self.returned = true;
+                    }
                 }
                 _ => {}
             }

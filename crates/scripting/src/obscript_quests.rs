@@ -86,7 +86,7 @@ pub fn command_is_modeled(cmd: u16, fallout: bool) -> bool {
     // The quest and message commands `call` matches by id, and the synthetic ones.
     const VM_LEVEL: &[u16] = &[
         0x1039, 0x1036, 0x1037, 0x103a, 0x103b, 0x1038, 0x1059, 0x1000, 0x100c, 0x101f, 0x10ce,
-        0x10cd, 0x1069, CMD_COMPLETE_QUEST,
+        0x10cd, 0x1069, CMD_COMPLETE_QUEST, 0x10cf, 0x10a5,
     ];
     const FALLOUT_ONLY: &[u16] = &[
         CMD_SET_OBJECTIVE_COMPLETED, CMD_SET_OBJECTIVE_DISPLAYED, CMD_GET_OBJECTIVE_COMPLETED,
@@ -358,15 +358,35 @@ pub struct ObScriptCommandHost<'a> {
     /// How many commands this host has declined so far: a run that declined any
     /// is one whose outcome is not fully known.
     pub declined: std::cell::Cell<u32>,
+    /// Set while an item's script runs: the item and the container that holds it. An
+    /// item in an inventory is no reference, so a command written with no caller has
+    /// nothing to act on, `GetContainer` answers the holder and `RemoveMe` removes the
+    /// item from it.
+    pub item: Option<ItemScriptContext>,
+    /// Set by a command that ends the script (`RemoveMe`), read once by the VM.
+    ends: std::cell::Cell<bool>,
+}
+
+/// What an item's script knows about where it is (see [`ObScriptCommandHost::item`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemScriptContext {
+    /// The item's base FormID.
+    pub item: u32,
+    /// The holder's FormID (`0x14` for the player).
+    pub container: u32,
 }
 
 impl<'a> ObScriptCommandHost<'a> {
     pub fn new(world: &'a World, owner: u32, reference: Option<byroredux_core::ecs::storage::EntityId>, elapsed: f32, script: &'a ScriptRecord) -> Self {
-        Self { world, owner, reference, elapsed, script, action_ref: None, declined: std::cell::Cell::new(0) }
+        Self { world, owner, reference, elapsed, script, action_ref: None, declined: std::cell::Cell::new(0), item: None, ends: std::cell::Cell::new(false) }
     }
 }
 
 impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
+    fn ends_script(&mut self) -> bool {
+        self.ends.replace(false)
+    }
+
     fn message(&mut self, message: crate::obscript_vm::ObScriptMessage) {
         let kind = if message.message_box { "MessageBox" } else { "Message" };
         log::debug!("quest {:08X} {kind}: {:?}", self.owner, message.text);
@@ -394,7 +414,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
         // unresolved slot or the `Z` null tag — has no quest to act on, so
         // the command is declined: defaulting it to the own quest, or acting
         // on form 0, would stage a quest the script never named (#5629).
-        let own_quest = self.reference.is_none().then_some(self.owner);
+        let own_quest = (self.reference.is_none() && self.item.is_none()).then_some(self.owner);
         let quest_target = |i: usize| match args.get(i) {
             Some(ObScriptValue::Ref(0)) => None,
             _ => ref_arg(i).or(own_quest),
@@ -496,6 +516,24 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
             // GetButtonPressed — the last answered box, once (M47.3).
             0x101f => Some(ObScriptValue::Num(crate::messages::take_button(self.world) as f32)),
             // GetSelf — the script owner's form id.
+            // `GetContainer`: "the container the object is in" — the holder while an item's
+            // script runs, nothing for a reference lying in the world.
+            0x10cf => Some(ObScriptValue::Ref(self.item.map_or(0, |item| item.container))),
+            // `RemoveMe [target container]`: take the item out of the container it is in
+            // (to the target, if one is named) and end the script.
+            0x10a5 if self.item.is_some() => {
+                let item = self.item.expect("checked above");
+                let destination = match args.first() {
+                    Some(ObScriptValue::Ref(form)) if *form != 0 => resolve_entity_by_global_form_id(self.world, *form),
+                    _ => None,
+                };
+                let Some(holder) = resolve_entity_by_global_form_id(self.world, item.container) else {
+                    return self.decline(cmd);
+                };
+                crate::fragment::remove_items(self.world, holder, item.item, 1, destination);
+                self.ends.set(true);
+                None
+            }
             0x10ce => Some(ObScriptValue::Ref(self.owner)),
             // GetActionRef / IsActionRef — the reference that activated the
             // owner, inside the event block that has one; a null reference
