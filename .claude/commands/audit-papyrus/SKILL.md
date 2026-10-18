@@ -191,7 +191,7 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   `depth_resets_between_top_level_calls`). All recursive expression entry funnels through `parse_expr_bp`.
 - **Newline is a terminator in the Pratt loop**: the loop uses `peek_raw()`, not the newline-skipping
   `peek()` (#4321 — a line opening with `(` was glued to the previous statement, a silent wrong AST). Explicit
-  `\` continuations are joined by `lexer::preprocess`; an operator ending a line still continues. Verify
+  `\` continuations are a logos skip rule in `lexer.rs` (#5881 — no pre-pass; the `;` comment callback owns a trailing `\`); an operator ending a line still continues. Verify
   every other `peek()` on a statement boundary: #4472 (six sites, via `check_raw`) and #4763 (seven more —
   `Extends`, variable/function/group flags, property and local initializers) moved construct-continuation
   decisions to the raw stream, each pinned by an `*_on_the_next_line_*` test in `script.rs` plus
@@ -227,8 +227,9 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   Mul/Div/Mod=5, unary=6, cast=7/postfix=8 (`PREC_*` in `expr.rs`); left-assoc hinges on `op_prec <= min_bp →
   break`. (Bethesda's inverted CTDA OR/AND precedence is a *condition-evaluation* concern in
   `/audit-scripting` Dim 3 — `.psc` operators are standard.)
-- **`preprocess`**: `\`+`\n`/`\r\n`/lone `\r` elided (2/3/2 bytes) with exact `OffsetMap` counts (a wrong count
-  drifts every later span); a trailing `\` at EOF is emitted, not swallowed. Keywords are
+- **Line continuation** (#5881): a `\` followed by blanks / a `;` comment / `\n`, `\r\n` or lone `\r` is one skip rule, so
+  spans index the caller's own text with no offset map (#5884 `spans_after_a_continuation_are_original_offsets`);
+  a trailing `\` at EOF is emitted, not swallowed. Keywords are
   `ignore(case)` (logos 0.16 dropped *ascii_case*, `15a6b1d2d` — Unicode folding, which differs only for the few
   non-ASCII letters that fold onto ASCII, e.g. U+017F, U+212A, invalid Papyrus either way) and win over the
   `Ident` regex. CK flags matched **contextually** stay out of the lexer: `Default` (script header) and

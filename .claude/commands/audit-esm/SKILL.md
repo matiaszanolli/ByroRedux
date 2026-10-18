@@ -343,7 +343,7 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
 - CELL `XCCM` is per-game (`3b28dca71`, #5463): TES4/FO3/FNV = Climate (CLMT) →
   `CellData.climate_override`; TES5/FO4 = "Sky/Weather from Region" (REGN) → `sky_region`
   (`xccm_targets_region`, `cell/helpers.rs`; decoded, no consumer yet; FO76/Starfield keep the
-  CLMT reading, no verified xEdit definition). Guards `parse_cell_fo3nv_xccm_populates_climate_override`,
+  CLMT reading, no verified xEdit definition). Guards `parse_cell_oblivion_fo3nv_xccm_populates_climate_override`,
   `parse_cell_tes5_fo4_xccm_is_a_region_not_a_climate`. Regression = a REGN id reaching `climate_override`.
 - **XCLL** is size- and game-validated: `xcll_canonical_sizes(game)`; the ≥92-byte
   ambient-cube arm fires only for Skyrim/FO4/FO76 (Starfield has its own ≥108 arm) — a non-canonical 92+ XCLL on

@@ -20,17 +20,17 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 100, 2026-10-15, HEAD `d7c47d741` + closeout fixes. Workspace
+**Last session close:** Session 101, 2026-10-18, HEAD `ac0d19f35`. Workspace
 numbers (tests, LOC, files, issue dirs) live in [Project Stats](#project-stats)
 only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
 bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
---workspace -- -D warnings` is **clean** (re-run 2026-10-15; `--all-targets`
-is not, Known Issues). All 10 321 tests pass — after the Session 100 close
-repaired four test-target compile breaks the 10-15 split commits left. The
-ABBA lane was not re-run. The bench-of-record below (`a3a7a43b0`) is 233
-commits stale (R6a-stale-29). Its one open regression, **R6a-regress-22**, turned out to be
+--workspace -- -D warnings` was **clean** at the last run (2026-10-15, not
+re-run this close; `--all-targets` is not, Known Issues). All 10 521 tests
+pass (2026-10-18). The ABBA lane was not re-run; `ac0d19f35` fixed the one
+inversion the scripting crate's detector caught this session. The
+bench-of-record below (`a3a7a43b0`) is 405 commits stale (R6a-stale-29). Its one open regression, **R6a-regress-22**, turned out to be
 the bench camera moving with `b9e961eeb`'s interior spawn ladder, not
 renderer code (#5128, 2026-09-30); a small residual stays open — the
 top-of-frame all-slots fence wait that dominates GPU-bound frames
@@ -573,10 +573,11 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
 
 ### Performance and measurement
 
-- [ ] **R6a-stale-29 — bench-of-record 233 commits stale** (`a3a7a43b0`). The
-  window rewrote ReSTIR reservoir ownership (`c2647d468`), GI hemisphere
-  sampling (`0b56f1133`) and ground cover (which no default scene runs,
-  R6a-groundcover-1). Re-run with a same-machine control of `a3a7a43b0`.
+- [ ] **R6a-stale-29 — bench-of-record 405 commits stale** (`a3a7a43b0`). The
+  window rewrote ReSTIR reservoir ownership (`c2647d468`) and its temporal
+  gate (`17e0b7464`, `6110b6078`), GI hemisphere sampling (`0b56f1133`), SVGF
+  history aging and invalidation (`1092b5b9e`, `24eb7dba8`) and ground cover
+  (which no default scene runs, R6a-groundcover-1). Re-run with a same-machine control of `a3a7a43b0`.
 - [ ] **Papyrus interpreter: what the frame budget does not bound** (#5764).
   #5763 gave the four exclusive `Update` systems a shared 10 000-statement
   frame allowance (runaway frame 13.6 → 1.4 ms; a never-ending handler dies at
@@ -705,17 +706,17 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-15 (Session 100 close, HEAD `d7c47d741` + closeout fixes). Every
+Ground-truth as of 2026-10-18 (Session 101 close, HEAD `ac0d19f35`). Every
 figure in this table was measured at that tree, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~789 470                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~842 970                 |
-| Source files (`.rs`, excl. `target/`)   | 1415 total · 1320 outside `tests/` dirs (+126 / +124 since the 2026-10-13 close; mostly module splits) |
+| Rust source lines (`src/` dirs)         | ~802 470                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~856 620                 |
+| Source files (`.rs`, excl. `target/`)   | 1466 total · 1371 outside `tests/` dirs (+51 / +51 since the 2026-10-15 close) |
 | Workspace members                       | 34 (count the `[workspace] members` block only; 29 crates + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **10 321 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-15; 322 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 5818 (`.claude/issues/`)     |
+| Tests                                   | **10 521 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-18; 334 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 5984 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-09-29). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
