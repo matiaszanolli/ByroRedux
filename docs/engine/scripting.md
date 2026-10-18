@@ -2417,9 +2417,10 @@ whether and where a parameter is written.
 Phase 2 put quests, a handful of actions and the object-script blocks on the one host. Phase 3
 closes what the roadmap row listed as open, and in doing so found three grammar gaps that had
 made whole classes of vanilla expressions wrong. `obscript_tools names <ESM> all` now marks each
-command the host models and prints the share of call-site lines it covers: **84 % of New Vegas's
-25 727, 83 % of Fallout 3's 12 057 and 81 % of Oblivion's 21 507**. The rest is each blocked by
-a subsystem the engine does not have, listed at the end.
+command the host models and prints the share of call-site lines it covers: **89 % of New Vegas's
+25 532, 89 % of Fallout 3's 11 892 and 86 % of Oblivion's 21 431** (after the position / angle / scale,
+image-space-modifier and `PlayGroup` slices below). The rest is each blocked by a subsystem the engine
+does not have, listed at the end.
 
 **Expression grammar (`obscript_tools exprcheck`).** Measured over the three masters (24 275 / 13 021
 / 24 564 expressions), the VM understood `' X'` implicit calls, locals, globals and ASCII, and nothing
@@ -2520,17 +2521,47 @@ recording and replaces it with its real duration; when that has elapsed the spea
 topic or any. Not modelled: the optional speaker form (a creature speaking with an NPC's voice), the voice-position
 flag, `SayTo`'s head tracking, and subtitles — an ambient line has no presenter, only the conversation page.
 
+**Placement and presentation commands.** `GetPos` / `SetPos` / `GetStartingPos` (the axis is one bare letter
+`X`/`Y`/`Z` in the bytecode, `AXIS_COMMANDS` decodes it to 0/1/2), `GetScale` / `SetScale`, `GetAngle` /
+`SetAngle` / `Rotate` / `GetStartingAngle` act on the placement's Z-up Euler triple (`Rx(-rx)·Rz(ry)·Ry(-rz)`, and
+its inverse `quat_yup_to_euler_zup`), a reference's heading in degrees `[0, 360)`; `Rotate` turns by the speed over
+the frame (`Context::elapsed`); the player's angles and a parented entity decline. `ApplyImageSpaceModifier` /
+`RemoveImageSpaceModifier` / `IsImageSpaceActive` (`IMod`/`RIMod`, Fallout only) play, remove and report an `IMAD`
+on the cinematic presentation state's modifier runtime. `AutoSave` raises the `RequestSave { auto }` effect
+`Game.RequestAutoSave` raises; `GetSitting` answers 3 for an actor with a `Seated` component and 0 otherwise (the
+GECK's "getting ready to sit/stand" states 2 and 4 have no runtime here).
+
+**`PlayGroup` / `IsAnimPlaying` (`obscript_anim.rs`).** An object's `NiControllerSequence`s are named for the GECK
+*AnimGroups* (FalloutNV.esm's object meshes: 217 `forward`, 156 `specialidle`, 145 `backward`, 136 `idle`,
+126 `left`, 107 `right` — `crates/nif/tests/sequence_names_census.rs`). The NIF import now keeps those clips
+(`SceneSatellites::object_sequences`, converted once per model into the `AnimationClipRegistry` by
+`ObjectSequenceStore`) and the spawn stamps a `NamedSequences` component (name → clip handle) on the placement root.
+`PlayGroup <index> <flag>` maps the index through the AnimGroups list (`3` Forward, `4` Backward … `16` TurnRight;
+Oblivion's documented depth is the first five) to a name and starts that clip from the first key on the object's
+`AnimationPlayer`; every init flag starts at once (the GECK's `0`, "let the current cycle finish", begins a cycle
+early). `IsAnimPlaying [group]` is whether that player runs a clip that has not ended (a `Clamp` clip ends at
+its duration), optionally for that group. An object with no sequence of the name — an actor's `AttackPower`/`Recoil`
+groups come from its animation set, not its mesh — declines.
+
+**Live verification (`docs/smoke-tests/m47-3-obscript.sh`).** The gate boots FNV and checks, through `byro-dbg`
+(`obscript.objects`, `quest.effects`, `anim.pose`): object scripts attach (found live: an interior's references
+spawn *before* `populate_scene_runtime`, so the first interior load had no object-script table — `ensure_obscript_tables`
+now installs it ahead of the spawn), `OnLoad` (`GoodspringsRadioScript`: remote quest variable + `GetDestroyed` +
+`SetDestroyed`), `OnTriggerEnter` (`SunnySmilesTriggerSCRIPT`: one run, `PlaySound` queued), `OnDeath` (Sunny:
+`SetEnemy` via the bridge + `SetStage`, nothing declined), item `OnAdd` + `RemoveMe` (`inv.add` now emits the item
+transfer), and `PlayGroup` (`OnLoadPlayForwardSCRIPT` on Lucky38BasementFloorB2's force-field glows).
+
 **What stays declined, and what it waits for.** Every one is a counted decline (`obscript_tools live`,
-`ObScriptQuestTimers`), never a made-up value:
+`ObScriptQuestTimers`, `obscript.objects`), never a made-up value:
 
 | Commands | Blocked on |
 |----------|-----------|
-| `PlayGroup`, `IsAnimPlaying`, `PlayIdle`, `PickIdle`, `Reset3DState` — the single largest tail (506 / 286 / 824 lines in FNV / FO3 / Oblivion) | the NIF `NiControllerSequence` selection ("needs a trigger system", #3602): the cell loader plays an object's first sequence and keeps no names |
+| `PlayIdle`, `PickIdle`, `Reset3DState` (90 `PlayIdle` lines in FNV) | an actor idle player for the KF-era games: the `PlayIdle` effect (`ActorCinematicState::request_idle`) and `idle_clip_playback_system` exist, but `populate_idle_clip_runtime` installs only Skyrim's HKX IDLE clips into the `IdleClipCatalog` (it returns early for every other game), so a KF-era IDLE form has no clip to play |
 | `ScriptEffectStart` / `Update` / `Finish`, `OnMagicEffectHit`, `Cast`, `CastImmediateOnSelf`, `Dispel`, `HasMagicEffect` | a caster runtime: cast spells "only sit on the list" ([`magic.rs`](../../crates/scripting/src/magic.rs)) |
-| `Look` / `StopLook`, `PMS` / `SMS` / `PME`, `IMod` / `RIMod`, `IsImageSpaceActive`, `TriggerHitShader`, `ForceWeather` / `SetWeather` | presentation state with no sink (head tracking, magic shaders, image-space modifiers, a weather override) |
+| `Look` / `StopLook`, `PMS` / `SMS` / `PME`, `TriggerHitShader`, `ForceWeather` / `SetWeather` | presentation state with no sink (head tracking, magic shaders, a weather override) |
 | `IgnoreCrime`, `SendAssaultAlarm`, `GetDetected`, `GetDetectionLevel`, `GetPCFame`, `SetAlert`, `IsKiller`, `GetDeadCount` | a crime/detection runtime and a kill ledger |
 | `AddNote` / `RemoveNote` / `GetHasNote`, `UnlockChallenge`, `SetReputation` | a Pip-Boy note list and challenge state (a saved shape), and the GECK has no page for `SetReputation` |
-| `Resurrect`, `RemoveAllTypedItems`, `DropMe`, `GetOpenState`, `GetSitting`, `GetInWorldspace` / `IsInInterior`, `GetPos` family (axis arguments), `GetGS`, `OnReset` (no cell-reset event), `OnGrab` / `OnRelease` / `OnFire`, `OnDestructionStageChange`, linked path points, `ModDisposition` | each its own missing state; none is an ObScript-layer gap |
+| `Resurrect`, `RemoveAllTypedItems`, `DropMe`, `GetOpenState`, `GetInWorldspace` / `IsInInterior` (CTDA functions the M47.1 evaluator does not catalogue), `GetGS`, `OnReset` (no cell-reset event), `OnGrab` / `OnRelease` / `OnFire`, `OnDestructionStageChange`, linked path points, `ModDisposition`, the player's angles | each its own missing state; none is an ObScript-layer gap |
 
 ### The R5 demo translations (`papyrus_demo/`)
 

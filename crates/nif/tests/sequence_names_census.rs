@@ -19,7 +19,7 @@ fn census(game: Game) -> BTreeMap<String, usize> {
     };
     let mut names: BTreeMap<String, usize> = BTreeMap::new();
     for path in archive.list_files() {
-        if !path.ends_with(".nif") || path.contains("characters") || path.contains("creatures") {
+        if !byroredux_nif::corpus::is_nif_entry(&path) || path.contains("characters") || path.contains("creatures") {
             continue;
         }
         let Ok(bytes) = archive.extract(&path) else { continue };

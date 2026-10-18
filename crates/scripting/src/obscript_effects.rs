@@ -117,6 +117,7 @@ pub(crate) fn handles(cmd: u16) -> bool {
     matches!(
         cmd,
         CMD_PLAY_GROUP
+            | CMD_AUTO_SAVE
             | CMD_ADD_ITEM
             | CMD_REMOVE_ITEM
             | CMD_EQUIP_ITEM
@@ -256,6 +257,7 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             | CMD_ADD_REPUTATION
             | CMD_IMOD
             | CMD_RIMOD
+            | CMD_AUTO_SAVE
     );
     let caller = context.caller.filter(|&form| form != 0);
     if needs_caller && caller.is_none() {
@@ -361,6 +363,8 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             }
             effects
         }
+        // `AutoSave`: "saves the game ... as an autosave" — the same request `Game.RequestAutoSave` raises.
+        CMD_AUTO_SAVE => vec![Effect::RequestSave { auto: true }],
         CMD_SET_OPEN_STATE => vec![Effect::SetOpen { target: bind.object(caller), open: num(args, 0) != 0.0 }],
         CMD_ADD_TO_FACTION | CMD_REMOVE_FROM_FACTION => {
             let Some(faction) = form_arg(args, 0) else { return Action::Declined };
@@ -828,6 +832,8 @@ const CMD_GET_STARTING_POS: u16 = 0x100a;
 const CMD_GET_SCALE: u16 = 0x1018;
 const CMD_SET_SCALE: u16 = 0x113c;
 const CMD_PLAY_GROUP: u16 = 0x1013;
+const CMD_AUTO_SAVE: u16 = 0x115e;
+const CMD_GET_SITTING: u16 = 0x109f;
 const CMD_IS_ANIM_PLAYING: u16 = 0x1128;
 
 /// Every getter this module answers.
@@ -835,6 +841,7 @@ pub(crate) fn is_getter(cmd: u16) -> bool {
     matches!(
         cmd,
         CMD_IS_ANIM_PLAYING
+            | CMD_GET_SITTING
             | CMD_GET_ITEM_COUNT
             | CMD_IS_IN_COMBAT
             | CMD_GET_IS_REFERENCE
@@ -1028,6 +1035,9 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
                 _ => Getter::Declined,
             }
         }
+        // GECK *GetSitting*: 0 not sitting, 3 is sitting (the "getting ready to sit / stand" states 2
+        // and 4 have no runtime here: an actor is either seated on its furniture or not).
+        CMD_GET_SITTING => Getter::Value(if world.has::<byroredux_core::ecs::components::Seated>(subject) { 3.0 } else { 0.0 }),
         CMD_IS_ANIM_PLAYING => {
             let group = match args.first() {
                 None => None,
@@ -1488,6 +1498,20 @@ mod tests {
         assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[], &ctx), Getter::Value(1.0));
         assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[ObScriptValue::Num(3.0)], &ctx), Getter::Value(1.0));
         assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[ObScriptValue::Num(4.0)], &ctx), Getter::Value(0.0));
+    }
+
+    #[test]
+    fn get_sitting_answers_three_for_a_seated_actor_and_autosave_needs_no_caller() {
+        use byroredux_core::ecs::components::{Seated, SeatedAnimationRestore};
+        let (mut world, actor, other) = world();
+        world.register::<Seated>();
+        let ctx = context(Some(ACTOR));
+        assert_eq!(getter(&world, CMD_GET_SITTING, &[], &ctx), Getter::Value(0.0));
+        let restore = SeatedAnimationRestore { clip_handle: 0, local_time: 0.0, prev_time: 0.0, playing: true, speed: 1.0 };
+        world.insert(actor, Seated { furniture: other, animation_restore: restore });
+        assert_eq!(getter(&world, CMD_GET_SITTING, &[], &ctx), Getter::Value(3.0));
+        // `AutoSave` names no reference.
+        assert!(done(&run(&world, CMD_AUTO_SAVE, &[], &context(None))));
     }
 
     #[test]
