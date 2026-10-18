@@ -173,6 +173,16 @@ impl Component for ActorControlState {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// An actor the engine has taken out of the AI for now: down after a `PushActorAway`, or running from
+/// a `ForceFlee`. Like an unconscious one it neither walks a package nor starts a fight. Present only
+/// while the system that put it there owns the actor. `NOT_SAVED_BY_DESIGN`: transient.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AiSuspended;
+
+impl Component for AiSuspended {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Whether `entity` is unconscious (#5017). No `ActorControlState` means
 /// conscious. An actor in bleedout counts (M47.2): the CK *Kill* page calls
 /// bleedout an essential actor's "temporary 'bleedout' state" of being
@@ -218,6 +228,15 @@ pub fn collect_unconscious(world: &World, out: &mut Vec<EntityId>) {
                 .filter(|(_, state)| state.unconscious)
                 .map(|(entity, _)| entity),
         );
+    }
+    if let Some(held) = world.query::<AiSuspended>() {
+        out.extend(held.iter().map(|(entity, _)| entity).filter(|entity| !out.contains(entity)));
+    }
+    // `SetActorsAI 0`: "turns off and on the processing of an actor" (GECK).
+    for entity in crate::obscript_more::ai_disabled_actors(world) {
+        if !out.contains(&entity) {
+            out.push(entity);
+        }
     }
     if let Some(bleedouts) = world.query::<crate::bleedout::Bleedout>() {
         out.extend(

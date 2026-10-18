@@ -154,6 +154,17 @@ pub(crate) fn actor_detects(world: &World, observer: EntityId, target: EntityId)
     let exterior = world
         .try_resource::<crate::components::CellLightingRes>()
         .is_some_and(|cell| !cell.is_interior);
+    let Some((from, to)) = sight_points(world, observer, target) else {
+        return false;
+    };
+    if from.distance(to) > config.range(exterior) {
+        return false;
+    }
+    sight_is_clear(world, from, to)
+}
+
+/// The points sight rays between two actors start and end at; `None` when either is dead or unplaced.
+fn sight_points(world: &World, observer: EntityId, target: EntityId) -> Option<(Vec3, Vec3)> {
     let player = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0);
     let centre = Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT;
     let sight_point = |entity: EntityId| -> Option<Vec3> {
@@ -164,18 +175,56 @@ pub(crate) fn actor_detects(world: &World, observer: EntityId, target: EntityId)
         // The player body's transform is already its capsule centre; an NPC placement root stands at its feet.
         Some(if Some(entity) == player { position } else { position + centre })
     };
-    let (Some(from), Some(to)) = (sight_point(observer), sight_point(target)) else {
-        return false;
-    };
-    if from.distance(to) > config.range(exterior) {
-        return false;
-    }
+    Some((sight_point(observer)?, sight_point(target)?))
+}
+
+/// Whether nothing solid stands between two points (the player's own body excepted); true without a
+/// physics world.
+fn sight_is_clear(world: &World, from: Vec3, to: Vec3) -> bool {
+    let player = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0);
     let player_body = player.and_then(|player| {
         world.query::<byroredux_physics::RapierHandles>().and_then(|handles| handles.get(player).map(|h| h.body))
     });
     !world
         .try_resource::<byroredux_physics::PhysicsWorld>()
         .is_some_and(|physics| physics.line_of_sight_blocked(from, to, player_body))
+}
+
+/// Whether `observer` has an unobstructed line of sight to `target`, at any range (ObScript `GetLOS`);
+/// `false` for a dead or unplaced actor.
+pub(crate) fn actor_has_line_of_sight(world: &World, observer: EntityId, target: EntityId) -> bool {
+    sight_points(world, observer, target).is_some_and(|(from, to)| sight_is_clear(world, from, to))
+}
+
+/// Whether `perceiver` would attack `target` as the ambient hostility pass judges it (ObScript
+/// `GetShouldAttack`): the perceiver's disposition against how their factions regard each other. `false`
+/// for an actor with no combat disposition (the player, a creature without AI data).
+pub(crate) fn actor_would_attack(world: &World, perceiver: EntityId, target: EntityId) -> bool {
+    let Some(disposition) = world.get::<CombatDisposition>(perceiver).map(|d| d.0) else {
+        return false;
+    };
+    let Some(identity) = world.try_resource::<LoadOrderIdentity>() else {
+        return false;
+    };
+    let factions = |entity: EntityId| -> Vec<FormRef> {
+        world
+            .get::<FactionRanks>(entity)
+            .map(|ranks| ranks.0.iter().filter(|(_, rank)| *rank >= 0).filter_map(|(faction, _)| identity.form_ref(*faction)).collect())
+            .unwrap_or_default()
+    };
+    let overrides = world.try_resource::<FactionRelations>().map(|relations| relations.clone()).unwrap_or_default();
+    let catalog = world
+        .try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+        .map(|resolver| resolver.faction_relationships())
+        .unwrap_or_default();
+    let (Some(from), Some(to)) = (
+        world.get::<GlobalTransform>(perceiver).map(|t| t.translation),
+        world.get::<GlobalTransform>(target).map(|t| t.translation),
+    ) else {
+        return false;
+    };
+    let standing = standing(&factions(perceiver), &factions(target), &overrides, &catalog);
+    attacks(&disposition, standing, from.distance(to))
 }
 
 /// How a perceiver's factions, taken together, treat a target's.

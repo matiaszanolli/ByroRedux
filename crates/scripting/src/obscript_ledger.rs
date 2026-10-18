@@ -64,6 +64,8 @@ pub struct ObScriptLedger {
     /// Per `(holder reference, weapon base)` condition percent (`ModWeaponHealthPerc`,
     /// `AddItemHealthPercent`).
     weapon_condition: BTreeMap<(u32, u32), f32>,
+    /// The last actor each actor hit (`GetOwnerLastTarget`), by reference.
+    last_targets: BTreeMap<u32, u32>,
 }
 
 impl Resource for ObScriptLedger {}
@@ -126,6 +128,11 @@ impl ObScriptLedger {
         self.values.get(&(key, subject)).copied()
     }
 
+    /// Every subject a `Set...` command stored a value for under `key`, with the value.
+    pub fn values_of(&self, key: u16) -> Vec<(u32, f32)> {
+        self.values.range((key, 0)..=(key, u32::MAX)).map(|(&(_, subject), &value)| (subject, value)).collect()
+    }
+
     pub fn set_value(&mut self, key: u16, subject: u32, value: f32) {
         self.values.insert((key, subject), value);
     }
@@ -149,6 +156,16 @@ impl ObScriptLedger {
     /// The condition percent of `weapon` held by `holder`; 100 when no script changed it.
     pub fn weapon_condition(&self, holder: u32, weapon: u32) -> f32 {
         self.weapon_condition.get(&(holder, weapon)).copied().unwrap_or(100.0)
+    }
+
+    /// Note that `attacker` struck `victim`.
+    pub fn note_hit(&mut self, attacker: u32, victim: u32) {
+        self.last_targets.insert(attacker, victim);
+    }
+
+    /// The last actor `attacker` struck.
+    pub fn last_target(&self, attacker: u32) -> Option<u32> {
+        self.last_targets.get(&attacker).copied()
     }
 
     pub fn set_weapon_condition(&mut self, holder: u32, weapon: u32, percent: f32) {

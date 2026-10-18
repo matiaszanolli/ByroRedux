@@ -229,6 +229,13 @@ pub(crate) struct ActiveBarter(Option<BarterSession>);
 
 impl Resource for ActiveBarter {}
 
+impl ActiveBarter {
+    /// Whether a barter session is in progress.
+    pub(crate) fn is_open(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
 fn player(world: &World) -> Option<EntityId> {
     world
         .try_resource::<crate::systems::PlayerEntity>()

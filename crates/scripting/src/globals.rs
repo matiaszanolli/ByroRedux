@@ -65,14 +65,21 @@ impl Globals {
 
 impl Resource for Globals {}
 
-/// The `GameHour` GLOB: the CS documents `GetCurrentTime` ("the same value can be
-/// accessed by referring to the special global variable Gamehour"), so a script that
-/// reads the global must see the game clock, not the value the record authors.
+/// The game clock's globals: the CS documents `GetCurrentTime` ("the same value can be accessed by
+/// referring to the special global variable Gamehour"), so a script that reads `GameHour` must see the
+/// game clock, not the value the record authors — and `GameDaysPassed`, "the amount of days passed in
+/// game" (GECK *List of Global Variables*), counts the days the clock has run.
 /// `NOT_SAVED_BY_DESIGN`: found in the records when the globals are installed.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct GameClockGlobals {
     /// The FormID of the `GameHour` GLOB, if the load order has one.
     pub hour: Option<u32>,
+    /// The FormID of the `GameDaysPassed` GLOB, and the value the record authors (the days that had
+    /// passed when the game began).
+    pub days_passed: Option<u32>,
+    pub base_days: f32,
+    /// The record-authored date `(GameYear, GameMonth, GameDay)`: the day a new game starts on.
+    pub start_date: Option<(f32, f32, f32)>,
 }
 
 impl Resource for GameClockGlobals {}
@@ -80,23 +87,55 @@ impl Resource for GameClockGlobals {}
 impl GameClockGlobals {
     /// Find the clock globals among the parsed records, by editor ID.
     pub fn from_records(records: &HashMap<u32, GlobalRecord>) -> Self {
+        let find = |name: &str| records.values().find(|record| record.editor_id.eq_ignore_ascii_case(name));
+        let value = |name: &str| find(name).map(|record| record.value.as_f32());
         Self {
-            hour: records
-                .values()
-                .find(|record| record.editor_id.eq_ignore_ascii_case("GameHour"))
-                .map(|record| record.form_id),
+            hour: find("GameHour").map(|record| record.form_id),
+            days_passed: find("GameDaysPassed").map(|record| record.form_id),
+            base_days: value("GameDaysPassed").unwrap_or(0.0),
+            start_date: value("GameYear").zip(value("GameMonth")).zip(value("GameDay")).map(|((year, month), day)| (year, month, day)),
         }
     }
 }
 
-/// Write the game clock's hour of day into the `GameHour` global, so scripts and
-/// conditions that read it see the live time. A no-op without the global.
-pub fn sync_game_clock_globals(world: &byroredux_core::ecs::World, hour_of_day: f32) {
-    let Some(form) = world.try_resource::<GameClockGlobals>().and_then(|clock| clock.hour) else {
+/// The whole game days the clock has run since the game began, kept beside the clock globals for
+/// `GetDayOfWeek`. `NOT_SAVED_BY_DESIGN`: republished every frame from the saved game clock.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GameCalendar {
+    pub days_elapsed: u64,
+}
+
+impl Resource for GameCalendar {}
+
+/// The weekday (0 Sunday .. 6 Saturday) of the proleptic Gregorian date `year-month-day`
+/// (`month` 1..=12), by days-from-civil.
+pub fn gregorian_weekday(year: i64, month: i64, day: i64) -> u32 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468; // days since 1970-01-01, a Thursday (4)
+    (days + 4).rem_euclid(7) as u32
+}
+
+/// Write the game clock into the globals: the hour of day into `GameHour`, and `GameDaysPassed` as the
+/// authored starting count plus the days run (the fraction of the day in progress included — the GECK
+/// notes the two "may disagree for a few frames" across midnight). A no-op without the globals.
+pub fn sync_game_clock_globals(world: &byroredux_core::ecs::World, day: u64, hour_of_day: f32) {
+    if let Some(mut calendar) = world.try_resource_mut::<GameCalendar>() {
+        calendar.days_elapsed = day;
+    }
+    let Some(clock) = world.try_resource::<GameClockGlobals>().map(|clock| *clock) else {
         return;
     };
     if let Some(mut globals) = world.try_resource_mut::<Globals>() {
-        globals.set(form, hour_of_day);
+        if let Some(form) = clock.hour {
+            globals.set(form, hour_of_day);
+        }
+        if let Some(form) = clock.days_passed {
+            globals.set(form, clock.base_days + day as f32 + hour_of_day / 24.0);
+        }
     }
 }
 
@@ -104,22 +143,31 @@ pub fn sync_game_clock_globals(world: &byroredux_core::ecs::World, hour_of_day: 
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_gregorian_weekday_matches_known_dates() {
+        assert_eq!(gregorian_weekday(1970, 1, 1), 4, "a Thursday");
+        assert_eq!(gregorian_weekday(2000, 2, 29), 2, "a Tuesday");
+        assert_eq!(gregorian_weekday(2024, 7, 4), 4, "a Thursday");
+        assert_eq!(gregorian_weekday(2281, 10, 18), 2, "a Tuesday");
+    }
+
     /// `GameHour` is the game clock: the sync writes it, and a world without the global (or
     /// without globals at all) is left alone.
     #[test]
     fn the_game_hour_global_follows_the_clock() {
         use byroredux_plugin::esm::records::SettingValue;
         let mut world = byroredux_core::ecs::World::new();
-        sync_game_clock_globals(&world, 5.0); // no resources: nothing to do
+        sync_game_clock_globals(&world, 0, 5.0); // no resources: nothing to do
         let mut records = HashMap::new();
         records.insert(0x38, GlobalRecord { form_id: 0x38, editor_id: "GameHour".into(), value: SettingValue::Float(8.0) });
         records.insert(0x39, GlobalRecord { form_id: 0x39, editor_id: "GameDaysPassed".into(), value: SettingValue::Float(1.0) });
         world.insert_resource(Globals::from_records(&records));
         world.insert_resource(GameClockGlobals::from_records(&records));
         assert_eq!(world.resource::<GameClockGlobals>().hour, Some(0x38));
-        sync_game_clock_globals(&world, 21.5);
+        sync_game_clock_globals(&world, 3, 21.0);
         let globals = world.resource::<Globals>();
-        assert_eq!((globals.get(0x38), globals.get(0x39)), (Some(21.5), Some(1.0)), "only GameHour moves");
+        assert_eq!(globals.get(0x38), Some(21.0));
+        assert_eq!(globals.get(0x39), Some(1.0 + 3.0 + 21.0 / 24.0), "the authored count plus the days run");
     }
 
     use byroredux_plugin::esm::records::SettingValue;

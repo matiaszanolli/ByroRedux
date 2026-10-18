@@ -59,7 +59,7 @@ fn script_form(world: &World, entity: EntityId) -> Option<u32> {
 /// Map only live actors' physics bodies to their owning actor. Trap contacts
 /// need this small set; scanning every world body and resolving each one is
 /// unnecessary.
-fn live_actor_bodies(
+pub(crate) fn live_actor_bodies(
     world: &World,
 ) -> HashMap<byroredux_physics::RigidBodyHandle, EntityId> {
     let mut owners = HashMap::new();

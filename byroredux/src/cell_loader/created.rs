@@ -41,14 +41,8 @@ fn created_cell(cell: CellRef<'_>) -> CreatedCell {
     }
 }
 
-/// The player's cell and position, for a reference created at the player.
-fn player_placement(world: &World) -> Option<CreatedPlacement> {
-    let player = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)?;
-    let position_zup = byroredux_core::math::coord::yup_to_zup_pos(
-        world.get::<GlobalTransform>(player)?.translation.to_array(),
-    );
+/// A point in the player's current cell (Z-up world units), as a created reference's placement.
+pub(crate) fn placement_at_position(world: &World, position_zup: [f32; 3]) -> Option<CreatedPlacement> {
     let cell = if let Some(cell) = world.try_resource::<super::CurrentCellContext>() {
         CreatedCell::Interior {
             editor_id: cell.cell_editor_id.clone(),
@@ -69,6 +63,17 @@ fn player_placement(world: &World) -> Option<CreatedPlacement> {
         position_zup,
         rotation_zup: [0.0; 3],
     })
+}
+
+/// The player's cell and position, for a reference created at the player.
+fn player_placement(world: &World) -> Option<CreatedPlacement> {
+    let player = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .and_then(|player| player.0)?;
+    let position_zup = byroredux_core::math::coord::yup_to_zup_pos(
+        world.get::<GlobalTransform>(player)?.translation.to_array(),
+    );
+    placement_at_position(world, position_zup)
 }
 
 /// Place every record that has no placement yet, at its target reference's

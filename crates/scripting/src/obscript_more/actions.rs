@@ -265,6 +265,6 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
             _ => Action::Declined,
         },
         0x1137 => done("ModPCMiscStat"),
-        _ => Action::Unhandled,
+        _ => super::extras::run(world, fallout, cmd, args, ctx),
     }
 }

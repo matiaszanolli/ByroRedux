@@ -22,7 +22,9 @@ use crate::obscript_ledger::ObScriptLedger;
 use crate::obscript_vm::ObScriptValue;
 
 mod actions;
+mod extras;
 mod state;
+pub use extras::{AshPiles, MusicTrack, MusicTracks, PendingMusic, PendingTextureSwaps, ReloadRequest, TextArguments, TextureSwap, UseWeaponRequest};
 
 /// Fallout 3 / New Vegas command ids this module runs.
 pub(crate) const FALLOUT: &[u16] = &[
@@ -33,7 +35,8 @@ pub(crate) const FALLOUT: &[u16] = &[
     0x118f, 0x1196, 0x11ad, 0x11b6, 0x11b7, 0x11ba, 0x11c2, 0x11c4, 0x11c8, 0x11c9, 0x11cc, 0x11d0, 0x11d5, 0x11d6,
     0x11db, 0x11e2, 0x11e4, 0x11e6, 0x11e7, 0x11eb, 0x11ec, 0x11ef, 0x11f0, 0x11f4, 0x11f6, 0x1200, 0x1203, 0x120b,
     0x1212, 0x1213, 0x1224, 0x1225, 0x1226, 0x122e, 0x1230, 0x1248, 0x1270, 0x127a, 0x11d1, 0x11bc,
-    0x11ed, 0x1238, 0x1250, 0x1260,
+    0x11ed, 0x1238, 0x1250, 0x1260, 0x10aa, 0x119c, 0x11ff, 0x124e, 0x1254, 0x1256, 0x1252, 0x125c, 0x125e, 0x1266,
+    0x126c, 0x1211, 0x1263, 0x1269, 0x122f,
 ];
 
 /// Oblivion command ids this module runs.
@@ -42,7 +45,7 @@ pub(crate) const OBLIVION: &[u16] = &[
     0x1075, 0x1076, 0x1077, 0x1082, 0x108f, 0x10a8, 0x10ae, 0x10af, 0x10b1, 0x10b5, 0x10bb, 0x10be, 0x10c1, 0x10c2,
     0x10c3, 0x10c4, 0x10c5, 0x10c6, 0x10c7, 0x10d1, 0x10d8, 0x10df, 0x10f8, 0x10f9, 0x10fb, 0x1109, 0x110d, 0x1116,
     0x111c, 0x1122, 0x1132, 0x1134, 0x1137, 0x1145, 0x1147, 0x114e, 0x1151, 0x1156, 0x1159, 0x115a, 0x115b, 0x115c,
-    0x115d, 0x1161, 0x1162, 0x1164, 0x1165, 0x116b, 0x116c, 0x116d, 0x116e, 0x116f, 0x1170,
+    0x115d, 0x1161, 0x1162, 0x1164, 0x1165, 0x116b, 0x116c, 0x116d, 0x116e, 0x116f, 0x1170, 0x10aa, 0x112a, 0x112b, 0x1129, 0x10db, 0x114d, 0x105b, 0x1167, 0x110c,
 ];
 
 /// Whether this module runs command `cmd` of the Fallout (`fallout`) or Oblivion family.
@@ -62,9 +65,33 @@ pub struct EngineQueries {
     pub first_person: Option<fn(&World) -> bool>,
     /// Whether a menu of the given type or code is open (`MenuMode`); `0` asks about any menu.
     pub menu_open: Option<fn(&World, u32) -> bool>,
+    /// The point the crosshair is aimed at, within `distance` (`0` for the default reach), in Z-up world
+    /// units (`PlaceAtReticle`).
+    pub reticle_point: Option<fn(&World, f32) -> Option<[f32; 3]>>,
+    /// The actors in contact with a trap right now and how fast the trap moves relative to each
+    /// (`TrapUpdate`), in world units per second.
+    pub trap_contacts: Option<fn(&World, EntityId) -> Vec<TrapContact>>,
+    /// The placement of a point in the player's cell, for a reference created there.
+    pub placement_at: Option<fn(&World, [f32; 3]) -> Option<crate::created_references::CreatedPlacement>>,
 }
 
 impl Resource for EngineQueries {}
+
+/// An actor touching a trap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrapContact {
+    pub actor: EntityId,
+    /// The speed of the trap relative to the actor (CS *TrapUpdate*: "a combination of actor and traps
+    /// respective velocities"), in Bethesda units per second.
+    pub relative_speed: f32,
+}
+
+/// Who touched each trap at its last `TrapUpdate`, by trap reference: a trap that is not *continuous*
+/// "only deal[s] damage on first contact". `NOT_SAVED_BY_DESIGN`: contact is re-derived every frame.
+#[derive(Debug, Default)]
+pub struct ObTrapContacts(pub std::collections::BTreeMap<u32, std::collections::BTreeSet<EntityId>>);
+
+impl Resource for ObTrapContacts {}
 
 /// Hours the player was told to sleep (`SetPCSleepHours`), for the app to run the clock through.
 /// `NOT_SAVED_BY_DESIGN`: consumed within a frame.
@@ -120,9 +147,11 @@ pub fn install(world: &mut World) {
     world.init_resource::<EngineQueries>();
     world.init_resource::<PendingSleep>();
     world.init_resource::<PendingMenus>();
+    world.init_resource::<ObTrapContacts>();
     world.register::<PushActorRequest>();
     world.register::<FleeRequest>();
     world.register::<ResetInventoryRequest>();
+    extras::install(world);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -479,6 +508,12 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], ctx: &Context
         0x10a0 => Action::Declined,
         _ => state::run(world, fallout, cmd, args, ctx),
     }
+}
+
+/// The actors a script turned the AI off for (`SetActorsAI 0`, stored under the key `0x118b`).
+pub fn ai_disabled_actors(world: &World) -> Vec<EntityId> {
+    let forms: Vec<u32> = ledger(world, |l| l.values_of(0x118b)).unwrap_or_default().into_iter().filter(|&(_, value)| value == 0.0).map(|(form, _)| form).collect();
+    forms.into_iter().filter_map(|form| live(world, form)).collect()
 }
 
 /// The query functions the app installed (a default one, with none, when it installed none).

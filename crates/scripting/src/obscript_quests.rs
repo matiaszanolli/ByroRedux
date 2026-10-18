@@ -84,8 +84,9 @@ const SCRIPT_GETTERS: &[ConditionFunction] = &[
 /// commands are in no other table).
 pub fn command_is_modeled(cmd: u16, fallout: bool) -> bool {
     // The quest and message commands `call` matches by id, and the synthetic ones.
+    // `0x15` is the `Set` statement the VM itself runs (the census attributes a script's `Set` lines to it).
     const VM_LEVEL: &[u16] = &[
-        0x1039, 0x1036, 0x1037, 0x103a, 0x103b, 0x1038, 0x1059, 0x1000, 0x100c, 0x101f, 0x10ce,
+        0x0015, 0x1039, 0x1036, 0x1037, 0x103a, 0x103b, 0x1038, 0x1059, 0x1000, 0x100c, 0x101f, 0x10ce,
         0x10cd, 0x1069, CMD_COMPLETE_QUEST, 0x10cf, 0x10a5, 0x10a6,
     ];
     const FALLOUT_ONLY: &[u16] = &[
@@ -390,6 +391,11 @@ impl<'a> ObScriptCommandHost<'a> {
     }
 }
 
+/// The music type the editor ID `name` names.
+fn world_music(world: &World, name: &str) -> Option<u32> {
+    world.try_resource::<crate::obscript_more::MusicTracks>()?.by_editor_id(name).map(|track| track.form_id)
+}
+
 impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
     fn ends_script(&mut self) -> bool {
         self.ends.replace(false)
@@ -408,6 +414,13 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                 crate::obscript_more::mod_misc_stat(self.world, text, rest.first().map_or(0.0, |v| v.as_num()) as i32);
                 Some(ObScriptValue::Num(0.0))
             }
+            // `PlayMusic <music>`: the music type (MUSC) the editor ID names.
+            0x11ff => world_music(self.world, text).map(ObScriptValue::Ref),
+            // `EssentialDeathReload "message"`: the message is the command's own argument.
+            0x114d => {
+                self.world.try_resource_mut::<crate::obscript_more::TextArguments>().map(|mut texts| texts.0 = vec![text.to_owned()]);
+                Some(ObScriptValue::Num(0.0))
+            }
             // `ShowWarning "text"`: the warning is written to the log and shown as a notification.
             0x11b9 => {
                 log::warn!("ObScript ShowWarning: {text}");
@@ -415,6 +428,12 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                 Some(ObScriptValue::Num(0.0))
             }
             _ => None,
+        }
+    }
+
+    fn text_arguments(&mut self, _cmd: u16, texts: &[String]) {
+        if let Some(mut stored) = self.world.try_resource_mut::<crate::obscript_more::TextArguments>() {
+            stored.0 = texts.to_vec();
         }
     }
 

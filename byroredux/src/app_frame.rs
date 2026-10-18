@@ -147,6 +147,7 @@ impl App {
             }
         }
         self.present_modal_pages();
+        crate::systems::script_queries::publish_ui_menus(&self.world, self.debug_ui.as_ref(), self.loading_screen.active());
         let mut snapshot = if self
             .debug_ui
             .as_ref()

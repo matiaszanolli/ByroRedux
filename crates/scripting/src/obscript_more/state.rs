@@ -266,8 +266,30 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
             Some((form, _)) => store(world, 0x112a, form, if cmd == 0x112a { 1.0 } else { 0.0 }),
             None => Action::Declined,
         },
-        // CS *CreateFullActorCopy*: copies an actor and its base — the base records are the load order's.
-        0x1167 => Action::Declined,
+        // CS *CreateFullActorCopy*: "creates a copy of the specified actor and its base ... and returns the
+        // ID of the new copy". A base record cannot be created at run time, so the copy is a fresh
+        // reference of the same base, placed at the original — its inventory and values are the base's, not
+        // what the original carried.
+        0x1167 => match caller_or_player(world, ctx) {
+            Some((at, _)) => {
+                let Some(base) = live(world, at).and_then(|entity| world.get::<crate::scene::SceneAliasCandidate>(entity).map(|c| c.base_form_id)).filter(|&b| b != 0).or_else(|| {
+                    // The player has no placed-reference candidate: its base is the player NPC record.
+                    (at == crate::PLAYER_REFERENCE).then_some(crate::relationships::PLAYER_BASE)
+                }) else {
+                    return Action::Declined;
+                };
+                let Some(mut created) = world.try_resource_mut::<crate::CreatedReferences>() else { return Action::Declined };
+                let Some(form) = created.scripted_ids().next() else { return Action::Declined };
+                created.create_scripted(form, base, at, false);
+                Action::Done { value: Some(ObScriptValue::Ref(form)), effect: format!("CreateFullActorCopy {at:08X} as {form:08X}") }
+            }
+            None => Action::Declined,
+        },
+        // CS *GetIsAlerted*: "1 if the actor is in an alerted state" — a drawn weapon (`SetAlert`) or combat.
+        0x105b => match caller(world, ctx) {
+            Some((_, actor)) => flag(crate::obscript_state::is_weapon_out(world, actor)),
+            None => Action::Declined,
+        },
 
         // ── engine state reads ─────────────────────────────────────────────────────────────────────
         // GECK *IsSpellTarget <magic item>*: 1 when an effect of that spell, enchantment or ingestible is on
@@ -331,7 +353,6 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
             Some((_, actor)) => answer(if crate::is_in_combat(world, actor) && world.has::<byroredux_core::ecs::components::EquippedWeapon>(actor) { 2.0 } else { -1.0 }),
             None => Action::Declined,
         },
-        // GECK *GetIsAlerted* (CS): 1 when the actor is in an alerted (weapon-drawn) state.
         // GECK *IsPlayerMovingIntoNewSpace*: 1 while the player loads into a new cell — no cell is resident
         // for the frames the transition takes.
         0x1166 => flag(world.try_resource::<crate::cell_kind::PlayerCellKind>().is_some_and(|kind| kind.0.is_none())),

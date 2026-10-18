@@ -16,6 +16,8 @@ pub(crate) mod dialogue_voice;
 pub(crate) mod projectiles;
 pub(crate) mod scripted_sound;
 pub(crate) mod trap_hits;
+pub(crate) mod script_queries;
+pub(crate) mod knockdown;
 pub(crate) mod archetype_idle;
 pub(crate) mod eat_sleep;
 mod cinematic;

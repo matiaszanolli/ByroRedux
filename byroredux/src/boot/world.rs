@@ -432,6 +432,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // ObScript `GetDetected`: the sight test the hostility pass uses.
     world.insert_resource(byroredux_scripting::SightQuery(crate::systems::actor_detects));
     world.insert_resource(byroredux_scripting::SwimQuery(crate::systems::actor_is_swimming));
+    // M47.3 — the other state ObScript commands ask the engine about (sight, camera, menus, the reticle, traps).
+    crate::systems::script_queries::install(&mut world);
     // #4816 — `faction_hostility_system` inserts it through a `query_mut`
     // guard, which cannot create a storage.
     world.register::<crate::systems::AmbientEngagement>();

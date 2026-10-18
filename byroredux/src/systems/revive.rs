@@ -57,9 +57,18 @@ pub(crate) fn revive_actor(world: &World, actor: EntityId) -> String {
     }
     byroredux_scripting::obscript_actor_values::reset_health(world, actor);
 
+    let mut notes = vec!["revived".to_owned()];
+    notes.extend(stand_up(world, actor));
+    notes.join("; ")
+}
+
+/// Put an actor whose ragdoll is down back on its feet, in place: the simulated ragdoll is freed, the bones'
+/// keyframed collision bodies are put back, its generic idle drives the skeleton again, and its AI package
+/// stack is re-armed. What revive and the end of a knockdown share; the notes say what was done.
+pub(crate) fn stand_up(world: &World, actor: EntityId) -> Vec<String> {
     // The ragdoll lives on the skeleton root, as does the template it was built from.
     let root = world.get::<AnimationTarget>(actor).map_or(actor, |target| target.skeleton_root);
-    let mut notes = vec!["revived".to_owned()];
+    let mut notes = Vec::new();
     if let Some(ragdoll) = world.get::<Ragdoll>(root).map(|ragdoll| ragdoll.clone()) {
         world.resource_mut::<PhysicsWorld>().remove_ragdoll(&ragdoll);
         notes.push(format!("ragdoll freed ({} bodies)", ragdoll.bodies.len()));
@@ -96,7 +105,7 @@ pub(crate) fn revive_actor(world: &World, actor: EntityId) -> String {
     if rearm_ai(world, actor) {
         notes.push("AI re-armed".to_owned());
     }
-    notes.join("; ")
+    notes
 }
 
 /// Give `actor` back its [`AmbientPackageRuntime`] (death removes it): its resolved PKID stack, no winner

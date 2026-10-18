@@ -202,6 +202,12 @@ const STRING_FORM_COMMANDS: [u16; 7] = [0x1190, 0x1100, 0x11b9, 0x1137, 0x1138, 
 /// strings handed to the host through [`ObScriptHost::text_arguments`].
 const REF_STRINGS_COMMANDS: [u16; 1] = [0x1269];
 
+/// `TrapUpdate` (Oblivion).
+pub const CMD_TRAP_UPDATE: u16 = 0x110c;
+
+/// The variables a trap's script declares for `TrapUpdate`, in the order the command receives them.
+const TRAP_VARIABLES: [&str; 6] = ["fTrapDamage", "fTrapPushBack", "fTrapDeathPushBack", "fTrapMinVelocity", "bTrapContinuous", "fLevelledDamage"];
+
 /// `MessageBox` (`0x1000`).
 pub const CMD_MESSAGE_BOX: u16 = 0x1000;
 /// `Message` (`0x1059`).
@@ -298,6 +304,7 @@ impl<'a> ObScriptProgram<'a> {
         let mut vm = Vm {
             bytes: &self.script.compiled,
             refs: &self.script.refs,
+            locals: &self.script.locals,
             state: &mut state,
             host: &mut host,
             returned: false,
@@ -343,6 +350,7 @@ impl<'a> ObScriptProgram<'a> {
         let mut vm = Vm {
             bytes: &self.script.compiled,
             refs: &self.script.refs,
+            locals: &self.script.locals,
             state,
             host,
             returned: false,
@@ -365,6 +373,7 @@ impl<'a> ObScriptProgram<'a> {
         let mut vm = Vm {
             bytes: &self.script.compiled,
             refs: &self.script.refs,
+            locals: &self.script.locals,
             state,
             host,
             returned: false,
@@ -411,6 +420,8 @@ struct Vm<'a> {
     /// The script's reference list: `SCRO` and `SCRV` interleaved in
     /// subrecord order, which is what compiled reference indices address.
     refs: &'a [ScriptRef],
+    /// The script's declared locals, for the commands that read variables by name (`TrapUpdate`).
+    locals: &'a [byroredux_plugin::esm::records::ScriptLocalVar],
     state: &'a mut VmState,
     host: &'a mut dyn ObScriptHost,
     /// Set by a `Return` hit anywhere in the block (including inside
@@ -953,6 +964,9 @@ impl<'a> Vm<'a> {
         if REF_STRINGS_COMMANDS.contains(&cmd) {
             return self.decode_ref_strings(cmd, start, end);
         }
+        if cmd == CMD_TRAP_UPDATE {
+            return Some(self.trap_variables());
+        }
         if !AXIS_COMMANDS.contains(&cmd) || start + 3 > end {
             return self.decode_args(start, end);
         }
@@ -1025,6 +1039,26 @@ impl<'a> Vm<'a> {
         }
         self.host.text_arguments(cmd, &texts);
         Some(args)
+    }
+
+    /// `TrapUpdate` takes no argument: the trap is described by variables its own script declares by
+    /// name (CS *TrapUpdate*): `fTrapDamage`, `fTrapPushBack`, `fTrapDeathPushBack`, `fTrapMinVelocity`,
+    /// `bTrapContinuous`, `fLevelledDamage`. Their current values, in that order (0 for one the script
+    /// does not declare).
+    fn trap_variables(&self) -> Vec<ObScriptValue> {
+        TRAP_VARIABLES
+            .iter()
+            .map(|name| {
+                let value = self
+                    .locals
+                    .iter()
+                    .find(|local| local.name.eq_ignore_ascii_case(name))
+                    .and_then(|local| u16::try_from(local.index).ok())
+                    .and_then(|slot| self.state.locals.get(&slot).copied())
+                    .unwrap_or(0.0);
+                ObScriptValue::Num(value)
+            })
+            .collect()
     }
 
     fn decode_args(&mut self, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {
@@ -2049,6 +2083,55 @@ mod tests {
             ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut VmState::default(), &mut host);
             assert_eq!(host.calls, vec![(0x1006, vec![ObScriptValue::Num(axis)], Some(0xB))], "axis {letter:#x}");
         }
+    }
+
+    /// `SwapTexture OnScreenSlideRef "##GS01:0" "interface\\endgame\\endscrn_PF05"` in `NarratorScript`:
+    /// `69 12 | len | 03 00 | 72 05 00 | 08 00 "##GS01:0" | 1e 00 "interface\\endgame\\..."` — a reference then two bare
+    /// strings, which the host receives through `text_arguments`.
+    #[test]
+    fn a_reference_and_two_strings_are_decoded_with_the_strings_handed_to_the_host() {
+        #[derive(Default)]
+        struct Texts {
+            calls: Vec<(u16, Vec<ObScriptValue>)>,
+            texts: Vec<(u16, Vec<String>)>,
+        }
+        impl ObScriptHost for Texts {
+            fn call(&mut self, cmd: u16, args: &[ObScriptValue], _: Option<u32>) -> Option<ObScriptValue> {
+                self.calls.push((cmd, args.to_vec()));
+                None
+            }
+            fn text_arguments(&mut self, cmd: u16, texts: &[String]) {
+                self.texts.push((cmd, texts.to_vec()));
+            }
+        }
+        let slot = "##GS01:0";
+        let texture = "interface\\endgame\\endscrn_PF05";
+        let mut args = vec![3u8, 0, b'r', 1, 0];
+        for text in [slot, texture] {
+            args.extend((text.len() as u16).to_le_bytes());
+            args.extend(text.as_bytes());
+        }
+        let script = script(wrap_body(stmt_call(0x1269, &args)), vec![], vec![0x77]);
+        let mut host = Texts::default();
+        ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut VmState::default(), &mut host);
+        assert_eq!(host.texts, vec![(0x1269, vec![slot.to_owned(), texture.to_owned()])]);
+        assert_eq!(host.calls, vec![(0x1269, vec![ObScriptValue::Ref(0x77)])]);
+    }
+
+    /// `TrapUpdate` takes no argument: the VM hands the host the trap variables the script declares, by
+    /// name, in the documented order (and 0 for a missing one).
+    #[test]
+    fn trap_update_receives_the_scripts_trap_variables_by_name() {
+        let locals = vec![local(1, "fTrapDamage", 0), local(2, "bTrapContinuous", 0), local(3, "fTrapMinVelocity", 0)];
+        let script = script(wrap_body(stmt_call(CMD_TRAP_UPDATE, &args_blob(&[]))), locals, vec![]);
+        let mut state = VmState::default();
+        state.locals.extend([(1, 3.0), (2, 1.0), (3, 20.0)]);
+        let mut host = Recorder::default();
+        ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut state, &mut host);
+        assert_eq!(
+            host.calls,
+            vec![(CMD_TRAP_UPDATE, [3.0, 0.0, 0.0, 20.0, 1.0, 0.0].map(ObScriptValue::Num).to_vec(), None)]
+        );
     }
 
     #[test]

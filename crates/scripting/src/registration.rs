@@ -26,6 +26,7 @@ pub fn register(world: &mut World) {
     world.init_resource::<MapMarkers>();
     // M47.2 — scripted IncrementStat misc stats (saved).
     world.init_resource::<MiscStats>();
+    world.init_resource::<crate::globals::GameCalendar>();
     // M47.2 — alias scripts: the authored ones (derived) and their owner ids
     // and started quests (saved).
     world.init_resource::<QuestAliasScripts>();

@@ -753,6 +753,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ObScriptObjectTable", "M47.3 — the load order's object scripts by SCPT FormID, with their block lists; rebuilt from the records at every content load"),
         ("NamedSequences", "M47.3 — a placed object's NiControllerSequence names → clip handles, captured from its NIF at spawn; rebuilt when the cell loads"),
         ("ObjectSequenceStore", "M47.3 — per-NIF converted sequence clips registered in the AnimationClipRegistry; a load-time cache"),
+        ("GameCalendar", "M47.3 — whole game days run, republished every frame from the saved game clock for GetDayOfWeek"),
         ("EngineQueries", "M47.3 — function pointers (line of sight, should-attack, camera mode, open menu) the binary installs at boot; not serializable and rebuilt every launch"),
         ("PendingSleep", "M47.3 — hours a script told the player to sleep, consumed by the clock within the frame"),
         ("PendingMenus", "M47.3 — menus scripts asked for, drained by the UI the frame they are raised"),
