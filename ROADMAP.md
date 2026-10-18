@@ -20,21 +20,21 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 101, 2026-10-18, HEAD `ac0d19f35`. Workspace
+**Last session close:** Session 101, 2026-10-18; the M47.3 row was brought to HEAD `e4e0308bd` after it. Workspace
 numbers (tests, LOC, files, issue dirs) live in [Project Stats](#project-stats)
 only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
 bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
 --workspace -- -D warnings` was **clean** at the last run (2026-10-15, not
-re-run this close; `--all-targets` is not, Known Issues). All 10 521 tests
-pass (2026-10-18). The ABBA lane was not re-run; `ac0d19f35` fixed the one
-inversion the scripting crate's detector caught this session. The
-bench-of-record below (`a3a7a43b0`) is 405 commits stale (R6a-stale-29). Its one open regression, **R6a-regress-22**, turned out to be
-the bench camera moving with `b9e961eeb`'s interior spawn ladder, not
-renderer code (#5128, 2026-09-30); a small residual stays open — the
-top-of-frame all-slots fence wait that dominates GPU-bound frames
-(#5365, the tracked throughput half of closed #4606/#5117).
+re-run this close; `--all-targets` is not, Known Issues). All 10 558 tests
+pass (2026-10-18, `e4e0308bd`). The lock-order detector is clean locally on
+`-p byroredux-scripting` and `-p byroredux` there (it caught one scripting
+inversion earlier, fixed in `ac0d19f35`); the CI ABBA lane was not read. The bench-of-record below (`a3a7a43b0`) is 411 commits stale (R6a-stale-29). Its one open
+regression, **R6a-regress-22**, was the bench camera moving with `b9e961eeb`'s
+interior spawn ladder, not renderer code (#5128, 2026-09-30); a small residual
+stays open — the top-of-frame all-slots fence wait that dominates GPU-bound
+frames (#5365, the tracked throughput half of closed #4606/#5117).
 
 **What works today.**
 - **Content loading.** Interior cells load and render from unmodified game
@@ -73,8 +73,8 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   (M47.0/M47.1). Compiled `.pex` is decompiled and lowered through a
   recognizer chain (QUST fragments, aliases, SCEN/PACK scenes; MQ101 plays
   end-to-end), with a bounded Papyrus interpreter for the fragments,
-  reference scripts and quest-alias scripts it declines (M47.2). An SCDA interpreter runs Oblivion
-  quest scripts (M47.3). A first magic-runtime slice covers spell lists and
+  reference scripts and quest-alias scripts it declines (M47.2). An SCDA interpreter runs Oblivion/FO3/FNV quest
+  scripts and the object scripts on placed references (M47.3). A first magic-runtime slice covers spell lists and
   the RACE `SPLO` racial pair (#4415).
   Dialogue: NPC activation selects a topic, a native response surface
   presents the INFO, and its `TIF_` fragments dispatch (P4).
@@ -265,7 +265,7 @@ design doc.
 
 | #     | Milestone | State | Depends on |
 |-------|-----------|-------|------------|
-| M47.3 | ObScript quest VM | **Phase 1 shipped 2026-09-18:** an SCDA bytecode interpreter runs every running quest's `Begin GameMode` block on the vanilla 5 s cadence and lowers onto `QuestStageState`/`Globals`. Its opcode table was recovered by aligning source against bytecode over vanilla `Oblivion.esm` (2 349 of 2 393 scripts decode clean), and it was verified live (MS23 self-advances to stage 90). The interpreter, the load-order install and the 5 s tick are game-agnostic: command ids are shared across the three pre-Papyrus games, and FO3/FNV quest scripts execute today too (2026-10-11 agent census: 322 FNV and 101 FO3 quest scripts installed ungated; recorded in [`scripting.md`](docs/engine/scripting.md)). **Phase 2:** `Message`/`MessageBox` shipped 2026-10-13 (decoded payloads → notifications / the native message-box page, `GetButtonPressed`). **Shipped 2026-10-18:** the `z` argument is a 64-bit float literal, not a string (five FNV quest scripts were `Malformed` and never ran); getter commands are answered by the M47.1 condition evaluator, since an ObScript getter's id is `0x1000` + its CTDA function index (GetDead, GetDistance, GetInCell, GetInFaction, GetFactionRank, GetIsID, GetLevel, GetEquipped, GetReputation*, GetGlobalValue, GetRandomPercent); the FO3/FNV quest commands (Set/GetObjectiveDisplayed/Completed, GetQuestCompleted, SetQuestDelay) and CompleteQuest; the authored `QUST` quest delay (~80 FNV quests ship one) and `SetQuestDelay` set each script's cadence (saved, `FORMAT_MAJOR` 109). The host now models ~33% of FNV quest-script call sites (12% before) and 44% of Oblivion's (32%); `obscript_tools` (`names`/`live`) measures it. **Actions started 2026-10-18** (`obscript_actions.rs`): `Enable`/`Disable`/`GetDisabled`, `MoveTo` and `EVP` lower onto the sinks the Papyrus effects use (`ReferenceEnableState`, `apply_move_to_effect`, `PlayerMoveRequest`, `request_package_evaluation`), bound to the explicit calling reference; an unloaded reference is a counted decline. `AddScriptPackage`/`RemoveScriptPackage` fill an actor's one saved script-package slot (`ScriptPackage`, `FORMAT_MAJOR` 110) that the ambient AI system installs ahead of the actor's own stack. `PlaySound` rides the `Sound.Play` ingress. **Object scripts run** (`obscript_objects.rs`, `BYRO_NO_OBSCRIPT_OBJECTS` to disable): the `SCRI` scripts on placed references run `GameMode` every frame and `OnLoad`/`OnDeath` on their events, on the same VM host with the reference as owner (locals in the saved `ScriptVariables`); every object script in the three masters (2 106 in FNV alone) walks and runs clean. `OnActivate` runs too: a reference with the block counts as default-activation-blocked (the gate Papyrus's `BlockActivation` already uses), `Activate` queues the native-only activation, and `GetActionRef`/`IsActionRef` answer for the activator; a run that declined a command falls back to the default activation so no door is left stuck. The trigger blocks run too (`OnTriggerEnter`/`OnTriggerLeave`/`OnTrigger`, with per-reference `Begin OnTrigger player` parameters decoded; 922 FNV `Begin` lines checked against the bytes); only the player and tracked quest/scene actors set a volume off. Still open: `OnHit`/`OnAdd` and the other blocks, the other actions (`Say`/`SayTo`, `Enable`/`DisablePlayerControls`, remote-variable `Set`), `GetCurrentTime`, `GetAV` (#5989), and the ~40-command tail. | M47.2, M42.10 |
+| M47.3 | ObScript VM (quests + object scripts) | **Shipped, not yet live-verified in the engine beyond phase 1.** An SCDA bytecode interpreter (opcode ids recovered by aligning each script's `SCTX` source with its bytecode over the three masters; `obscript_tools` measures it) runs on one host, `ObScriptCommandHost`, owned by a quest or by a reference. **Quests (phase 1, 2026-09-18; verified live: MS23 self-advances to stage 90):** each running quest's `GameMode` block ticks on the authored `QUST` delay (~80 FNV quests ship one; `SetQuestDelay` overrides, saved) and lowers onto `QuestStageState`/`Globals`; `Message`/`MessageBox` reach the native message UI; FO3/FNV objective commands and `CompleteQuest`. Getters are answered by the M47.1 condition evaluator (a getter's id is `0x1000` + its CTDA function index in all three games), so the host models ~33% of FNV quest-script call sites (12% before) and 44% of Oblivion's. **Actions (2026-10-18, `obscript_actions.rs`)** lower onto the sinks the Papyrus effects use: `Enable`/`Disable`/`GetDisabled`, `MoveTo`, `EVP`, `PlaySound`, `Activate`, and `AddScriptPackage`/`RemoveScriptPackage` (an actor's one saved `ScriptPackage` slot that the ambient AI system installs ahead of its own stack; `FORMAT_MAJOR` 110); an unresolved reference is a counted decline. **Object scripts (`obscript_objects.rs`; `BYRO_NO_OBSCRIPT_OBJECTS` disables them):** the `SCRI` scripts on placed references run `GameMode` every frame and `OnLoad`, `OnDeath`, `OnActivate`, `OnTriggerEnter`/`OnTriggerLeave`/`OnTrigger` on their events, locals in the saved `ScriptVariables`; every object script in the three masters walks and runs clean. `OnActivate` replaces default processing as in the original (a scripted reference counts as default-activation-blocked, `Activate` performs the default), except that a run which declined a command falls back to the default so no door is left stuck. Trigger blocks written for one reference (`Begin OnTrigger player`) run only for it; only the player and tracked quest/scene actors set a volume off. **Open:** `OnHit`/`OnAdd`/`OnEquip` and the other blocks, `Say`/`SayTo`, `Enable`/`DisablePlayerControls`, remote-variable `Set`, `GetCurrentTime`, `GetAV` (#5989), `MarkForDelete`/`GetLinkedRef`/`SetDestroyed`, and the ~40-command tail. Detail: [`scripting.md`](docs/engine/scripting.md). | M47.2, M42.10 |
 
 #### Tier 5 — Renderer polish (quality, not capability)
 
@@ -706,16 +706,16 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-18 (Session 101 close, HEAD `ac0d19f35`). Every
-figure in this table was measured at that tree, not carried forward.
+Ground-truth as of 2026-10-18, HEAD `e4e0308bd`: tests measured there; line and
+file counts are the Session 101 close's plus the `git diff` since, not a re-count.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~802 470                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~856 620                 |
-| Source files (`.rs`, excl. `target/`)   | 1466 total · 1371 outside `tests/` dirs (+51 / +51 since the 2026-10-15 close) |
+| Rust source lines (`src/` dirs)         | ~804 440                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~858 630                 |
+| Source files (`.rs`, excl. `target/`)   | 1468 total · 1373 outside `tests/` dirs (+53 / +53 since the 2026-10-15 close) |
 | Workspace members                       | 34 (count the `[workspace] members` block only; 29 crates + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **10 521 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-18; 334 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Tests                                   | **10 558 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-18; 335 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
 | Open issue directories                  | 5984 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-09-29). |
