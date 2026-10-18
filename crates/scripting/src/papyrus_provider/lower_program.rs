@@ -1185,6 +1185,9 @@ pub fn attach_papyrus_provider_program(
         world.insert(entity, program);
     }
     world.insert(entity, OnInitEvent);
+    // The once-only `OnInit` flag lives here (#6017); the reference-script
+    // attach path makes the same guarantee for its own `OnInit` gate.
+    world.init_resource::<crate::QuestScriptVariables>();
 }
 
 /// Attach a translated program with the stable package principal that supplied

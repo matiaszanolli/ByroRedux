@@ -248,6 +248,54 @@ fn attached_program_dispatches_on_init_exactly_once() {
     );
 }
 
+/// #6017 — the program is re-attached every time its reference spawns (cell
+/// re-entry, save load), but `OnInit` runs once per reference: a second entity
+/// for the same FormID must not replay a non-idempotent body.
+#[test]
+fn provider_on_init_runs_once_per_reference_across_respawns() {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+    let source = r#"
+        ScriptName Fixture
+        Event OnInit()
+            WeatherNative.WeatherAt(4, "initialized")
+        EndEvent
+    "#;
+    let (script, errors) = parse_script(source).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let program = lower_provider_program(&script, &catalog()).unwrap().unwrap();
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.register::<FormIdComponent>();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let calls_for_callback = Arc::clone(&calls);
+    let callback = Arc::new(
+        move |_principal: Option<&PrincipalId>, route: &str, _arguments: &[ScriptValue]| {
+            calls_for_callback.lock().unwrap().push(route.to_owned());
+            Ok(ScriptValue::String("clear".to_owned()))
+        },
+    ) as Arc<PapyrusProviderCallback>;
+    set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(0x0001_2345),
+    });
+    world.insert_resource(pool);
+
+    // First spawn of the reference, then it unloads and spawns again.
+    for _ in 0..2 {
+        let entity = world.spawn();
+        world.insert(entity, FormIdComponent(id));
+        attach_papyrus_provider_program(&mut world, entity, program.clone());
+        papyrus_provider_system(&world, 0.0);
+        crate::event_cleanup_system(&world, 0.0);
+    }
+    assert_eq!(calls.lock().unwrap().len(), 1, "the second spawn must not replay OnInit");
+}
+
 #[test]
 fn dynamic_mod_event_registration_delivers_typed_callback_and_unregisters() {
     let source = r#"

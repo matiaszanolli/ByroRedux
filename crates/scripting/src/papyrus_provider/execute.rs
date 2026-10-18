@@ -6,6 +6,51 @@
 //! front half, and this is the half it was not describing.
 
 use super::*;
+use crate::{QuestFormId, QuestScriptVariables};
+use byroredux_plugin::esm::records::condition::ConditionStringId;
+
+/// Where a reference's provider `OnInit` having run is kept, among its saved
+/// script variables — the provider twin of the Papyrus VM's per-script
+/// `::init::<script>` flag.
+fn provider_initialized_key() -> ConditionStringId {
+    ConditionStringId::from_text("::init::papyrus_provider")
+}
+
+/// Keep only the `OnInit` markers that are a reference's *first*: `OnInit`
+/// "will run once, when the script is initialized" (CK), but the program is
+/// re-attached every time the reference spawns — each stream-in, cell
+/// re-entry and save load — so a non-idempotent body (a StorageUtil list add,
+/// a counter) would otherwise replay into saved state each time (#6017). The
+/// flag is keyed by the reference's FormID in the saved
+/// [`QuestScriptVariables`], so it outlives the entity. An entity with no
+/// FormID has nothing to key on and keeps its marker.
+fn first_initializations(
+    world: &World,
+    initialized: BTreeSet<EntityId>,
+    owner_form_ids: &BTreeMap<EntityId, u32>,
+) -> BTreeSet<EntityId> {
+    if initialized.is_empty() {
+        return initialized;
+    }
+    let Some(mut variables) = world.try_resource_mut::<QuestScriptVariables>() else {
+        return initialized;
+    };
+    let key = provider_initialized_key();
+    initialized
+        .into_iter()
+        .filter(|entity| {
+            let Some(owner) = owner_form_ids.get(entity) else {
+                return true;
+            };
+            let owner = QuestFormId(*owner);
+            if variables.get(owner, key).is_some() {
+                return false;
+            }
+            variables.set(owner, key, 1.0);
+            true
+        })
+        .collect()
+}
 
 /// Execute provider handlers only after snapshotting programs and event
 /// markers. No ECS query or resource guard survives the host callback.
@@ -177,6 +222,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
             _ => BTreeMap::new(),
         }
     };
+    let initialized = first_initializations(world, initialized, &owner_form_ids);
     let Some(programs) = world.query::<PapyrusProviderProgram>() else {
         return;
     };

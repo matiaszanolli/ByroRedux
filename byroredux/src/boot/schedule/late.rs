@@ -444,6 +444,8 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // declarations do not currently affect scheduling.
             .writes_resource::<byroredux_scripting::PapyrusProviderContinuationQueue>()
             .writes_resource::<byroredux_scripting::PapyrusModEventRuntime>()
+            // #6017 — the once-only `OnInit` flag, keyed by reference FormID.
+            .writes_resource::<byroredux_scripting::QuestScriptVariables>()
             .reads_resource::<byroredux_core::form_id::FormIdPool>()
             .reads::<byroredux_scripting::PapyrusProviderProgram>()
             .reads::<byroredux_scripting::OnCellLoadEvent>()
