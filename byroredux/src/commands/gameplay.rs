@@ -586,8 +586,18 @@ mod level_up_tests {
 
         // 200 XP reaches level 2 (150·1 + 50); 350 more reaches level 3.
         world.insert_resource(crate::notifications::PlayerNotifications::default());
+        // #5917 — a chem's +3 INT at the moment of the roll must not change the
+        // banked points: Skill Rate reads the base INT (9), not the current 12.
+        world
+            .get_mut::<ActorValues>(player)
+            .unwrap()
+            .mod_temporary(INTELLIGENCE, 3.0);
         crate::combat::grant_experience(&world, player, 200);
         crate::combat::grant_experience(&world, player, 350);
+        world
+            .get_mut::<ActorValues>(player)
+            .unwrap()
+            .mod_temporary(INTELLIGENCE, -3.0);
         // #5874 — XP, each level reached and the banked rewards are announced.
         let notices = crate::notifications::drain(&world);
         assert!(notices.iter().any(|n| n == "+200 XP"), "{notices:?}");

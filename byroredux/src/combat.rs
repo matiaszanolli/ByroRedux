@@ -649,7 +649,12 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
     if reached.is_empty() {
         return;
     }
-    let intelligence = player_intelligence(world, player);
+    // #5917 — Skill Rate reads only the *base* INT at level-up: temporary INT
+    // (apparel, chems) and damage do not change it (`charal-fnv-fo3-ruleset.md`
+    // :78). `Base` is the AV's own base plus its set-override layer; the
+    // permanent-modifier layer is left out because it also carries equipped
+    // gear and cannot be told apart from implant-style bonuses.
+    let intelligence = player_intelligence(world, player, byroredux_scripting::condition::ActorValueView::Base);
     let mut granted = (0.0f32, 0u32);
     for level in reached {
         let Some((points, perk)) = leveling.skill_point_reward(level, intelligence) else {
@@ -1120,21 +1125,17 @@ pub(crate) fn install_xp_modifier_rules(
     }
 }
 
-/// The player's Intelligence, through the ruleset's composition.
-fn player_intelligence(world: &World, player: EntityId) -> f32 {
+/// The player's Intelligence in `view`, through the ruleset's composition.
+fn player_intelligence(
+    world: &World,
+    player: EntityId,
+    view: byroredux_scripting::condition::ActorValueView,
+) -> f32 {
     world
         .try_resource::<byroredux_scripting::ActorValueNames>()
         .and_then(|names| names.resolve("Intelligence"))
         .map_or(0.0, |intelligence| {
-            byroredux_scripting::condition::evaluate_function(
-                byroredux_scripting::condition::ConditionFunction::GetActorValue,
-                &byroredux_plugin::esm::records::condition::Condition {
-                    param_1: intelligence,
-                    ..Default::default()
-                },
-                player,
-                world,
-            )
+            byroredux_scripting::condition::actor_value_view(world, player, intelligence, view)
         })
 }
 
@@ -1158,7 +1159,9 @@ pub(crate) fn scripted_experience_system(world: &World, _dt: f32) {
     for (amount, direct) in grants {
         let xp = match modifier {
             Some(rules) if !direct => {
-                let mult = rules.base + rules.per_intelligence * player_intelligence(world, player);
+                let mult = rules.base
+                    + rules.per_intelligence
+                        * player_intelligence(world, player, byroredux_scripting::condition::ActorValueView::Current);
                 (amount as f32 * mult).round().max(0.0) as u32
             }
             _ => amount,
