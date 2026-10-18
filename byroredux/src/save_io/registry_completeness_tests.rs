@@ -751,6 +751,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SceneStopRequest", "one-shot request drained every tick"),
         ("LegacyObscriptContentCatalog", "immutable load-order snapshot republished from GlobalFormIdResolver before every legacy-script tick"),
         ("ObScriptObjectTable", "M47.3 — the load order's object scripts by SCPT FormID, with their block lists; rebuilt from the records at every content load"),
+        ("ObScriptInCombat", "M47.3 — marks an actor whose ObScript OnStartCombat has run for its current fight; after a load an actor still in combat is told again"),
         ("ObScriptInstance", "M47.3 — which object script a placed reference runs; stamped from the base record's SCRI on every spawn (the script's locals live in the saved ScriptVariables)"),
         ("LegacyObscriptProgram", "write-once source translation attached from static SCPT/SCTX data on every content load; mutable numeric locals live in the separately saved ScriptVariables component"),
         ("ScriptRegistry", "static editor_id-to-function-pointer map populated only by explicit .register() calls at boot; function pointers aren't meaningfully serializable"),

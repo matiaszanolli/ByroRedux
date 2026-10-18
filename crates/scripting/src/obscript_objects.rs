@@ -66,13 +66,15 @@ use byroredux_plugin::esm::records::{ScriptRecord, ScriptType};
 
 use crate::condition::entity_global_form_id;
 use crate::events::{
-    ActivateEvent, NativeActivation, OnCellLoadEvent, OnDeathEvent, OnTriggerEnterEvent,
+    ActivateEvent, HitEvent, NativeActivation, OnCellLoadEvent, OnDeathEvent, OnTriggerEnterEvent,
     OnTriggerLeaveEvent,
 };
 use crate::obscript_quests::ObScriptCommandHost;
 use crate::obscript_vm::{
     BlockInfo, BlockOutcome, ObScriptProgram, VmState, BLOCK_GAME_MODE, BLOCK_ON_ACTIVATE,
-    BLOCK_ON_DEATH, BLOCK_ON_LOAD, BLOCK_ON_TRIGGER, BLOCK_ON_TRIGGER_ENTER, BLOCK_ON_TRIGGER_LEAVE,
+    BLOCK_ON_COMBAT_END, BLOCK_ON_DEATH, BLOCK_ON_HIT, BLOCK_ON_HIT_WITH, BLOCK_ON_LOAD,
+    BLOCK_ON_PACKAGE_CHANGE, BLOCK_ON_PACKAGE_DONE, BLOCK_ON_PACKAGE_START, BLOCK_ON_START_COMBAT,
+    BLOCK_ON_TRIGGER, BLOCK_ON_TRIGGER_ENTER, BLOCK_ON_TRIGGER_LEAVE,
 };
 use crate::vm_state::ScriptVariables;
 
@@ -112,6 +114,16 @@ impl Component for ObScriptInstance {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Marks an actor whose combat the script has been told about: it has run
+/// `OnStartCombat` for the fight it is in. `NOT_SAVED_BY_DESIGN`: after a load an
+/// actor that is still in combat is told again, as the original does on a load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObScriptInCombat;
+
+impl Component for ObScriptInCombat {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Index the object scripts that have bytecode and walk cleanly. Returns how many
 /// there are; `0` (and no table) when `BYRO_NO_OBSCRIPT_OBJECTS` is set.
 pub fn install_object_scripts(world: &mut World, scripts: &HashMap<u32, ScriptRecord>) -> usize {
@@ -136,6 +148,7 @@ pub fn install_object_scripts(world: &mut World, scripts: &HashMap<u32, ScriptRe
         return 0;
     }
     world.register::<ObScriptInstance>();
+    world.register::<ObScriptInCombat>();
     world.insert_resource(table);
     log::info!("Installed {count} ObScript object scripts");
     count
@@ -287,6 +300,174 @@ fn collect_due(world: &World) -> Vec<Due> {
         due.push(Due { entity, form, script: Arc::clone(&object.record), runs });
     }
     due
+}
+
+/// Run `entity`'s blocks of `block_types` that `wanted` accepts — in the order the
+/// script wrote them, skipping any that came back malformed — with `action_ref` as
+/// the reference `GetActionRef` answers. The one tail of the event systems below.
+fn run_event_blocks(
+    world: &World,
+    entity: EntityId,
+    block_types: &[u16],
+    wanted: impl Fn(&BlockInfo) -> bool,
+    action_ref: Option<u32>,
+    dt: f32,
+) {
+    let Some(script_id) = world.get::<ObScriptInstance>(entity).map(|instance| instance.script) else {
+        return;
+    };
+    let Some((script, blocks)) = world.try_resource::<ObScriptObjectTable>().and_then(|table| {
+        let object = table.scripts.get(&script_id)?;
+        let blocks: Vec<BlockInfo> = object
+            .blocks
+            .iter()
+            .filter(|block| block_types.contains(&block.block_type) && !table.malformed.contains(&(script_id, **block)) && wanted(block))
+            .copied()
+            .collect();
+        Some((Arc::clone(&object.record), blocks))
+    }) else {
+        return;
+    };
+    if blocks.is_empty() {
+        return;
+    }
+    let Some(form) = entity_global_form_id(world, entity) else {
+        return;
+    };
+    for block in blocks {
+        run_block(world, entity, form, &script, block, dt, action_ref);
+    }
+}
+
+/// `OnHit` and `OnHitWith`: the frame an actor is struck, for the actor's own script.
+///
+/// The CS *OnHit* page: "run once when the scripted actor is hit by the specified
+/// ActorID. If no parameter is used, the block will run when the scripted actor is
+/// hit by anyone" and "only works on NPCs and Creatures". (The GECK page adds that
+/// New Vegas changed the block "to run when a weapon hits a target" — a weapon's own
+/// script, which is an inventory item's, not a placed reference's.) *OnHitWith* is the
+/// same for "a weapon": its parameter is the weapon, here the attacker's equipped one.
+/// `GetActionRef` is not documented for either, so it stays unset.
+///
+/// A separate system from [`obscript_object_system`] because the `HitEvent` markers
+/// are produced late in the stage (projectiles and traps after the object system) and
+/// stand until end-of-frame cleanup: this one runs beside `hit_event_system`, once
+/// every producer has run.
+pub fn obscript_hit_system(world: &World, dt: f32) {
+    let hits: Vec<(EntityId, HitEvent)> = match world.query::<HitEvent>() {
+        Some(events) => events.iter().map(|(victim, event)| (victim, *event)).collect(),
+        None => return,
+    };
+    for (victim, hit) in hits {
+        let attacker = form_of(world, hit.aggressor);
+        let weapon = world
+            .get::<byroredux_core::ecs::components::EquippedWeapon>(hit.aggressor)
+            .map(|weapon| weapon.base_form_id)
+            // A projectile's own weapon is not recorded on the event: only an equipped one is known.
+            .filter(|_| hit.projectile == 0);
+        run_event_blocks(
+            world,
+            victim,
+            &[BLOCK_ON_HIT, BLOCK_ON_HIT_WITH],
+            |block| match (block.block_type, block.filter) {
+                (_, None) => true,
+                (BLOCK_ON_HIT, Some(filter)) => attacker == Some(filter),
+                (_, Some(filter)) => weapon == Some(filter),
+            },
+            None,
+            dt,
+        );
+    }
+}
+
+/// `OnPackageStart`, `OnPackageDone` and `OnPackageChange`, from the package reports the
+/// AI raised this frame. Called by [`crate::package_fragment_system`] with what it just
+/// took off the queues, so the one consumer of those queues keeps its place.
+///
+/// The CS pages: *OnPackageStart* "will be run once when the scripted actor starts
+/// running the specified package"; *OnPackageDone* (spelled `OnPackageEnd` too) "when the
+/// scripted actor completes the specified package" — a package that cannot complete
+/// (wander, sleep, eat) never raises it, as the AI reports only real completions;
+/// *OnPackageChange* "when the scripted actor changes from the specified package to some
+/// other package", not for a package that completes and is chosen again. A block with no
+/// package written runs for every package.
+pub(crate) fn deliver_package_events(
+    world: &World,
+    transitions: &[crate::PackageTransition],
+    ends: &[crate::fragment::PackageEnd],
+    dt: f32,
+) {
+    for end in ends {
+        run_event_blocks(
+            world,
+            end.actor,
+            &[BLOCK_ON_PACKAGE_DONE],
+            |block| block.filter.is_none_or(|package| package == end.package),
+            None,
+            dt,
+        );
+    }
+    for transition in transitions {
+        if let Some(from) = transition.from {
+            run_event_blocks(
+                world,
+                transition.actor,
+                &[BLOCK_ON_PACKAGE_CHANGE],
+                |block| block.filter.is_none_or(|package| package == from),
+                None,
+                dt,
+            );
+        }
+        if let Some(to) = transition.to {
+            run_event_blocks(
+                world,
+                transition.actor,
+                &[BLOCK_ON_PACKAGE_START],
+                |block| block.filter.is_none_or(|package| package == to),
+                None,
+                dt,
+            );
+        }
+    }
+}
+
+/// `OnStartCombat` and `OnCombatEnd`: an actor whose script has the block is told
+/// when it enters a fight and when it drops out of one "for any reason" (GECK
+/// *OnCombatEnd*). The engine raises no event for either, so the actor's combat
+/// state ([`crate::is_in_combat`]) is compared with the [`ObScriptInCombat`] mark the
+/// last transition left.
+pub fn obscript_combat_system(world: &World, dt: f32) {
+    let instances: Vec<(EntityId, u32)> = match world.query::<ObScriptInstance>() {
+        Some(query) => query.iter().map(|(entity, instance)| (entity, instance.script)).collect(),
+        None => return,
+    };
+    for (entity, script_id) in instances {
+        let listens = world.try_resource::<ObScriptObjectTable>().is_some_and(|table| {
+            table.scripts.get(&script_id).is_some_and(|object| {
+                object.blocks.iter().any(|block| matches!(block.block_type, BLOCK_ON_START_COMBAT | BLOCK_ON_COMBAT_END))
+            })
+        });
+        if !listens {
+            continue;
+        }
+        let fighting = crate::is_in_combat(world, entity);
+        let told = world.has::<ObScriptInCombat>(entity);
+        match (fighting, told) {
+            (true, false) => {
+                if let Some(mut marks) = world.query_mut::<ObScriptInCombat>() {
+                    marks.insert(entity, ObScriptInCombat);
+                }
+                run_event_blocks(world, entity, &[BLOCK_ON_START_COMBAT], |_| true, None, dt);
+            }
+            (false, true) => {
+                if let Some(mut marks) = world.query_mut::<ObScriptInCombat>() {
+                    marks.remove(entity);
+                }
+                run_event_blocks(world, entity, &[BLOCK_ON_COMBAT_END], |_| true, None, dt);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// What one block run came to.
@@ -843,6 +1024,98 @@ mod tests {
         entering(&mut world, trigger, &[activator]);
         obscript_object_system(&world, 0.016);
         assert_eq!(counter(&world, trigger), 2.0, "the one for the activator and the unwritten one; not the stranger's");
+    }
+
+    fn hit(world: &mut World, victim: EntityId, aggressor: EntityId) {
+        world.register::<crate::HitEvent>();
+        world.insert(
+            victim,
+            crate::HitEvent {
+                aggressor,
+                source: aggressor,
+                projectile: 0,
+                damage: 5.0,
+                power_attack: false,
+                sneak_attack: false,
+                bash_attack: false,
+                blocked: false,
+            },
+        );
+    }
+
+    /// CS *OnHit*: "run once when the scripted actor is hit by the specified ActorID.
+    /// If no parameter is used, the block will run when the scripted actor is hit by
+    /// anyone": a block written for one attacker waits for that one.
+    #[test]
+    fn on_hit_runs_for_the_struck_actor_and_a_written_attacker_filters_it() {
+        const STRANGER: u32 = 0x0002_0003;
+        let mut record = script_with(&[]);
+        record.compiled.extend(block_with_param(BLOCK_ON_HIT, counting_body(), Some(1)));
+        record.compiled.extend(block_with_param(BLOCK_ON_HIT, counting_body(), Some(2)));
+        record.compiled.extend(block_with(BLOCK_ON_HIT, counting_body()));
+        record.refs = vec![ScriptRef::Object(ACTIVATOR), ScriptRef::Object(STRANGER)];
+        let (mut world, victim, attacker) = world_with_activator(record);
+        obscript_hit_system(&world, 0.016);
+        assert_eq!(counter(&world, victim), 0.0, "no hit, no run");
+        hit(&mut world, victim, attacker);
+        obscript_hit_system(&world, 0.016);
+        assert_eq!(counter(&world, victim), 2.0, "the block written for this attacker and the unwritten one, not the stranger's");
+    }
+
+    /// `OnHitWith` runs for the attacker's equipped weapon, `GetActionRef` stays unset.
+    #[test]
+    fn on_hit_with_waits_for_the_attackers_equipped_weapon() {
+        use byroredux_core::ecs::components::{EquippedWeapon, InventoryIndex};
+        const SWORD: u32 = 0x0004_0001;
+        let mut record = script_with(&[]);
+        record.compiled.extend(block_with_param(BLOCK_ON_HIT_WITH, counting_body(), Some(1)));
+        record.refs = vec![ScriptRef::Object(SWORD)];
+        let (mut world, victim, attacker) = world_with_activator(record);
+        world.register::<EquippedWeapon>();
+        hit(&mut world, victim, attacker);
+        obscript_hit_system(&world, 0.016);
+        assert_eq!(counter(&world, victim), 0.0, "an unarmed attacker is not hitting with the sword");
+        world.insert(attacker, EquippedWeapon { inventory_index: InventoryIndex(0), base_form_id: SWORD, damage: 5.0, reach: 0.0, speed: 0.0 });
+        obscript_hit_system(&world, 0.016);
+        assert_eq!(counter(&world, victim), 1.0);
+    }
+
+    /// `OnStartCombat` once when the actor enters a fight, `OnCombatEnd` once when it
+    /// leaves it ("drops out of combat for any reason").
+    #[test]
+    fn combat_transitions_run_their_blocks_once_each() {
+        let (mut world, actor, enemy) = world_with_activator(script_with(&[(BLOCK_ON_START_COMBAT, counting_body()), (BLOCK_ON_COMBAT_END, counting_body())]));
+        obscript_combat_system(&world, 0.016);
+        assert_eq!(counter(&world, actor), 0.0, "not fighting");
+        world.insert(actor, crate::AiCombatState { target: enemy, attack_cooldown_remaining: 0.0 });
+        obscript_combat_system(&world, 0.016);
+        obscript_combat_system(&world, 0.016);
+        assert_eq!(counter(&world, actor), 1.0, "OnStartCombat ran once for the fight");
+        world.query_mut::<crate::AiCombatState>().unwrap().remove(actor);
+        obscript_combat_system(&world, 0.016);
+        obscript_combat_system(&world, 0.016);
+        assert_eq!(counter(&world, actor), 2.0, "OnCombatEnd ran once when it ended");
+    }
+
+    /// CS *OnPackageStart* / *OnPackageDone* / *OnPackageChange*: Start for the package
+    /// the actor begins, Change for the one it leaves, Done for the one it completes; a
+    /// block written for another package stays quiet.
+    #[test]
+    fn package_blocks_run_for_the_package_they_name() {
+        const WALK: u32 = 0x0005_0001;
+        const SLEEP: u32 = 0x0005_0002;
+        let mut record = script_with(&[]);
+        for block in [BLOCK_ON_PACKAGE_START, BLOCK_ON_PACKAGE_CHANGE, BLOCK_ON_PACKAGE_DONE] {
+            record.compiled.extend(block_with_param(block, counting_body(), Some(1)));
+            record.compiled.extend(block_with_param(block, counting_body(), Some(2)));
+        }
+        record.refs = vec![ScriptRef::Object(WALK), ScriptRef::Object(SLEEP)];
+        let (world, actor, _) = world_with_activator(record);
+        let to_walk = crate::PackageTransition { actor, from: Some(SLEEP), to: Some(WALK) };
+        deliver_package_events(&world, &[to_walk], &[], 0.016);
+        assert_eq!(counter(&world, actor), 2.0, "Change for Sleep (left) and Start for Walk (begun)");
+        deliver_package_events(&world, &[], &[crate::fragment::PackageEnd { actor, package: WALK }], 0.016);
+        assert_eq!(counter(&world, actor), 3.0, "Done for Walk only");
     }
 
     /// `0x1b` is `OnTriggerLeave` on Fallout 3 / New Vegas and `OnTriggerMob` on

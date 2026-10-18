@@ -68,6 +68,19 @@ pub const BLOCK_GAME_MODE: u16 = 0;
 pub const BLOCK_ON_ACTIVATE: u16 = 0x02;
 pub const BLOCK_ON_DEATH: u16 = 0x0a;
 pub const BLOCK_ON_LOAD: u16 = 0x15;
+/// `Begin OnHit`, `OnHitWith`, `OnStartCombat` and `OnCombatEnd`, numbered by the same
+/// alignment over the masters (`obscript_tools census`: `onhit` 154 on `0x08`,
+/// `onhitwith` 17 on `0x09`, `oncombatend` 26 on `0x0c`, `onstartcombat` 108 on
+/// `0x19`).
+pub const BLOCK_ON_HIT: u16 = 0x08;
+pub const BLOCK_ON_HIT_WITH: u16 = 0x09;
+pub const BLOCK_ON_COMBAT_END: u16 = 0x0c;
+pub const BLOCK_ON_START_COMBAT: u16 = 0x19;
+/// `Begin OnPackageStart`, `OnPackageDone` (also spelled `OnPackageEnd`) and
+/// `OnPackageChange`: `0x0f`, `0x10` and `0x14` on all three games.
+pub const BLOCK_ON_PACKAGE_START: u16 = 0x0f;
+pub const BLOCK_ON_PACKAGE_DONE: u16 = 0x10;
+pub const BLOCK_ON_PACKAGE_CHANGE: u16 = 0x14;
 /// `Begin OnTrigger`, `OnTriggerEnter` and `OnTriggerLeave`. `0x1a` is
 /// `OnTriggerEnter` on Fallout 3 / New Vegas and `OnTriggerActor` on Oblivion
 /// ("run once when an actor triggers", which the enter event also is); `0x1b` is

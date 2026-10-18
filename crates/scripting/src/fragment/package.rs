@@ -239,7 +239,7 @@ pub fn discard_package_reports(world: &World) {
 }
 
 /// Run the package fragments of this frame's transitions.
-pub fn package_fragment_system(world: &World, _dt: f32) {
+pub fn package_fragment_system(world: &World, dt: f32) {
     let transitions = match world.try_resource_mut::<PendingPackageTransitions>() {
         Some(mut pending) if !pending.0.is_empty() => std::mem::take(&mut pending.0),
         _ => Vec::new(),
@@ -251,6 +251,8 @@ pub fn package_fragment_system(world: &World, _dt: f32) {
     if transitions.is_empty() && ends.is_empty() {
         return;
     }
+    // M47.3 — the ObScript `OnPackage*` blocks of the actors that changed package.
+    crate::obscript_objects::deliver_package_events(world, &transitions, &ends, dt);
     let fragments = world.resource::<PackageFragments>().clone();
     log::debug!(
         "{} package transition(s), {} completion(s), {} package(s) with fragments",
