@@ -33,6 +33,11 @@ targets = sorted(
     + [repo / ".claude" / "commands" / "audit-runtime" / "capture.sh"]
 )
 
+# Packagers copy the `byro-dbg` binary into an archive; they never launch an
+# engine, so rule 2 does not apply. The opt-in is documented for the people who
+# do run it, in packaging/linux/README.txt.
+PACKAGERS = {Path("scripts") / "package-release.sh"}
+
 violations = []
 for path in targets:
     rel = path.relative_to(repo)
@@ -57,7 +62,12 @@ for path in targets:
     # Rule 2 — a harness that drives a RELEASE binary through byro-dbg
     # must set the opt-in somewhere in the script.
     is_release = ("--release" in text) or ("target/release" in text)
-    if is_release and "byro-dbg" in text and "BYRO_DEBUG_SERVER" not in text:
+    if (
+        is_release
+        and rel not in PACKAGERS
+        and "byro-dbg" in text
+        and "BYRO_DEBUG_SERVER" not in text
+    ):
         violations.append(
             f"{rel}: release byro-dbg harness without BYRO_DEBUG_SERVER=1 "
             f"(the release engine never binds the debug port)"
