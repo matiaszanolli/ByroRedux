@@ -203,7 +203,7 @@ separate integration gap. See the gaps table below.
 | Conditional per-log transitions (complete / fail / next-quest) | ✓ |
 | Papyrus quest effects — `Start`/`Stop`/`Complete`/`Reset`/`SetActive`/`FailAllObjectives` | ✓ |
 | QUST VMAD stage→fragment dispatch from vanilla `.pex` | ✓ M47.2 |
-| **Legacy ObScript quest scripts (Oblivion/FO3/FNV) — compiled SCDA execution** | ✓ M47.3 (2026-09-18): each running quest's `GameMode` bytecode executes on the vanilla 5 s cadence, encodings/command ids derived from vanilla `Oblivion.esm`; verified live — 120 auto-started quests ticked and script-driven `SetStage`s advanced them (MS23 → stage 90). Object-script blocks + actor-state functions pending |
+| **Legacy ObScript quest scripts (Oblivion/FO3/FNV) — compiled SCDA execution** | ✓ M47.3 (2026-09-18): each running quest's `GameMode` bytecode executes on the vanilla 5 s cadence, encodings/command ids derived from vanilla `Oblivion.esm`; 120 auto-started quests ticked live (the 2026-09-18 note that script-driven `SetStage`s advanced MS23 to stage 90 is withdrawn: it predates the 2026-10-18 fix to calls on references inside expressions). Object scripts, item scripts, reference/remote variables, ~60 effect-bridge commands and the actor-value codes shipped 2026-10-18 (84 % / 83 % / 81 % of FNV / FO3 / Oblivion call-site lines modelled); animation (`PlayGroup`), caster-runtime (`ScriptEffect*`, `Cast`), crime/detection and presentation commands stay declined — see `docs/engine/scripting.md` |
 | Save-persistent quest progress | ✓ M45 |
 | Alias fill — direct / unique / condition / XLRT / external / near / closest / force-into (loaded refs) | ✓ |
 | Alias reservations + quest-lifetime semantics | ✓ |

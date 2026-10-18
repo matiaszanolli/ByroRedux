@@ -2271,8 +2271,9 @@ function index (`GetDead` 46 = `0x102e`, `GetInCell` 67 = `0x1043`,
 in Oblivion, FO3 and FNV. So `QuestCommandHost` answers an allow-listed set of
 getters through `condition::evaluate_script_getter` rather than carrying a
 second copy of each; a reference that is not loaded, a null form argument, or a
-function the evaluator cannot read in this game (`GetActorValue`, whose
-authored argument is an enum code, #5989) is a counted decline, never an
+function the evaluator cannot read in this game (`GetActorValue` in a *CTDA*, whose
+authored argument is an enum code, #5989 — the ObScript `GetAV` takes the same code through
+[`obscript_actor_values`](../../crates/scripting/src/obscript_actor_values.rs), below) is a counted decline, never an
 invented `0`. The allow-list is deliberate: a catalogued CTDA index is not
 proof that the same number is a getter in a legacy game.
 
@@ -2410,6 +2411,126 @@ blocks are addressed individually (`ObScriptProgram::blocks`, `BlockInfo`) and a
 parameterised one runs only for its reference. Checked against the masters: all
 187 Oblivion, 349 FO3 and 922 FNV `Begin OnTrigger*` lines agree with the bytes on
 whether and where a parameter is written.
+
+### M47.3 phase 3 — the rest of the VM (2026-10-18)
+
+Phase 2 put quests, a handful of actions and the object-script blocks on the one host. Phase 3
+closes what the roadmap row listed as open, and in doing so found three grammar gaps that had
+made whole classes of vanilla expressions wrong. `obscript_tools names <ESM> all` now marks each
+command the host models and prints the share of call-site lines it covers: **84 % of New Vegas's
+25 727, 83 % of Fallout 3's 12 057 and 81 % of Oblivion's 21 507**. The rest is each blocked by
+a subsystem the engine does not have, listed at the end.
+
+**Expression grammar (`obscript_tools exprcheck`).** Measured over the three masters (24 275 / 13 021
+/ 24 564 expressions), the VM understood `' X'` implicit calls, locals, globals and ASCII, and nothing
+else of the binary escapes — which silently mis-evaluated three shapes, every one of them common:
+
+- **A call on a reference** inside an expression is `' r<ref>'` immediately followed by `'X' <cmd u16>
+  <len u16> <args>` — no space before the `X`; an implicit-caller call is `' X'`. It was read as the
+  reference alone and the rest skipped as text: 3 342 of FNV's expressions (14 %), so `if Actor.GetDead`
+  and `if player.GetItemCount x > 3` compared a *form id*. They now reach the host with that caller; a
+  caller that is a reference variable nobody assigned is declined, never run on the script's owner.
+- **A remote variable** (`Quest.var`, `SomeRef.var`) is `' r<ref>'` followed by `'s'|'f'` and the
+  variable's **ordinal** in that reference's script (`20 72 04 00 73 06 00` is `VCG01.bBeganTest`); the
+  statement form `set Quest.var to x` is the target `r<ref> <s|f><ordinal>`. Reads were the form id
+  (4 170 in FNV); writes were declined (#5630). The host now reads and writes them: a quest's variables
+  are its saved locals by slot, a loaded reference's are the saved variables of its object script, found
+  through the name of its local at that ordinal. The script that is running is not read this way — its
+  variables are mid-run in the VM.
+- **`' Z<ref>'`** is a reference literal as a value (`Set rActor to SomeREF`, `GetActionRef ==
+  SomeREF`; 1 355 in FNV). Two references compare by form id, exactly: as `f32`s the DLC forms
+  (`0x01000004` and `0x01000005` are one float) would compare equal.
+
+The vanilla Oblivion check of `MS23Script` had been passing on the first of these: its first gate is
+`( GetStage MS23 == 40 ) && ( Player.GetDistance MS23RolandsHouseMarker <= 300 )`, which the old
+evaluator turned true under an all-zero world. It now stays shut at stage 0 and opens, once, for stage 40 with
+the player 100 units away (`real_data_tests`). The phase-1 note that MS23 "self-advances to stage 90"
+live predates this fix and is withdrawn: its gates are distance-gated and want the player near the markers.
+
+**Reference variables.** A local the script uses as a `ref` is one whose slot has an `SCRV` entry
+(`ScriptRef::Variable`). `set linkedRef to getLinkedRef` stores the reference in `VmState::ref_locals`
+exactly (an `f32` local rounds a form id past `2^24`, which is every DLC form), the nearest `f32` stays in
+`locals`, and `linkedRef.enable` then acts on it. The hosts keep the exact id without changing a saved
+shape: the reference's `ScriptVariables` hold it as `<name>#lo` / `<name>#hi` (two 16-bit halves, each exact as
+an `f32`), the quest locals as slots `0x4000 + n` / `0x8000 + n`. `OnDeathEnableLinkedRef` runs byte for byte in
+`obscript_objects` tests.
+
+**The effect bridge (`obscript_effects.rs`).** Most of what a legacy script *does* the Papyrus effect runtime
+already does, with the engine's sinks behind it. An ObScript command is lowered to the `Effect` its Papyrus
+namesake builds and applied through `apply_fragment_guard_free`, the resolved references bound as the
+properties of a throwaway VMAD (the device the Papyrus VM uses for a native call), so nothing is
+implemented twice: `AddItem` / `RemoveItem` (a form list stands for each member) / `EquipItem`, `KillActor`,
+`SetEnemy` / `SetAlly`, `StartCombat` / `StopCombat` (with a target, only that fight) /
+`StopCombatAlarmOnActor`, `SetUnconscious` / `SetGhost`, `Lock` (the level argument as the GECK and the CS
+define it) / `Unlock` / `SetOpenState`, `AddToFaction` / `RemoveFromFaction` / `SetFactionRank` (applies to the
+reference; the GECK also writes the base, so actors spawned from it later are not updated), `AddSpell` /
+`RemoveSpell`, `AddPerk` / `RemovePerk`, `AddAchievement`, `SetPlayerTeammate`, `SetEssential <base> <flag>`,
+`RewardXP`, `ShowMessage <message> [values]` (Fallout's form-based message shares `0x1059` with Oblivion's
+text `Message`, and was declined whole until the VM read it as the form and its values),
+`Enable` / `DisablePlayerControls` (the GECK's flag definitions give the domain mapping: Movement also takes
+world activation, PipBoy the pip-boy and wait menus, POV camera switching; RolloverText has no domain here)
+and the actions that already had sinks of their own: `MarkForDelete` (only on a *disabled* reference, as the GECK
+says; a created reference is deleted when its cell goes, an authored one loses its script), `SetDestroyed`,
+`SetRestrained`, `RemoveAllItems`, `PlaceAtMe` (answers the created reference; an offset is declined, not
+dropped), `ResetAI`, `SetOwnership` / `ClearOwnership`, `UnequipItem`, `PlaySound3D`, `AddReputation` (the
+points its 1-5 amount names), `StartConversation player <topic>` (the force-greet the dialogue runtime
+already has; NPC-to-NPC has no runtime), `MoveToMarkerWithFade`.
+
+**Actor-value commands.** `GetAV`, `GetBaseAV`, `SetAV`, `ModAV`, `ForceAV`, `DamageAV`, `RestoreAV`,
+`ResetHealth` and `RewardKarma` name the value by the GECK's *Actor Value Codes* integer (0 `Aggression` .. 76
+`DamageThreshold`). `obscript_actor_values` translates a code to the AVIF whose editor ID names it; the table
+was checked against the vanilla masters rather than taken from the page — `obscript_tools avcodes <ESM>` pairs
+every compiled call's argument with the word in its `SCTX` source, and all of FNV's 120-odd (command, code) pairs agree (`Guns` 41 is
+`AVSmallGuns`, `Survival` 44 is `AVThrowing`, `Turbo` 51 is `AVDetectLifeRange`; `SpeedMult`, `ElectricResist`,
+`FrostResist`, `EmpResist` and `Variable02`..`Variable10` have no AVIF in the master and decline). Oblivion
+has no `AVIF` records, so its actor-value commands stay declined. This is what #5989 asked for on the ObScript
+side; the CTDA `GetActorValue` (fn 14) still waits for a translation at its own boundary.
+
+**Getters.** The host answers from the engine's own reads: the effect model's guards and values where it has
+one (`GetItemCount`, `IsInCombat`, `GetIsReference`, `GetPlayerTeammate`, `GetAV`), the components the runtime
+keeps otherwise (`GetLocked`, `GetLockLevel`, `GetUnconscious`, `GetRestrained`, `GetCombatTarget`,
+`GetDestroyed`, `GetHealthPercentage`, `GetInSameCell`), the link and enable-parent tables (`GetLinkedRef`;
+`GetParentRef`, the reference in the Enable Parent tab — Oblivion's 345 scripts), `GetIsCurrentPackage` (the
+package the AI reported), `HasPerk` / `IsHardcore` through the condition evaluator, and `GetCurrentTime`.
+`GetCurrentTime` reads the game clock the update system reports, and the `GameHour` global is now written from
+that clock every frame (the CS: "the same value can be accessed by referring to the special global variable
+Gamehour") — scripts and conditions that read the global used to see the authored default.
+
+**More blocks.** `obscript_objects.rs` now also runs `OnHit` / `OnHitWith` (a struck actor's script, filtered by
+attacker or by the attacker's equipped weapon; the CS: "only works on NPCs and Creatures" — the GECK's New
+Vegas note about a weapon's own script is an inventory item's, below), `OnStartCombat` / `OnCombatEnd` (an
+actor's combat state against the mark its last transition left), `OnPackageStart` / `OnPackageDone` /
+`OnPackageChange` (delivered by `package_fragment_system` from the queues it already drains) and
+`SayToDone`. The hit and combat systems are scheduled beside `hit_event_system`, after every `HitEvent`
+producer.
+
+**Items in inventories.** An item's script runs for an item that has no reference. `ObScriptItemScripts` finds the
+script by the item's base form, and `obscript_item_system` (in `Late`, ahead of the event cleanup) runs `OnAdd`,
+`OnDrop`, `OnEquip` and `OnUnequip` from the item and equipment batches the frame's wearers carry, a block
+written for a container or actor (`Begin OnAdd player`) only for it. The host knows the item and its holder:
+`GetContainer` answers the holder, `RemoveMe` takes the item out of it and **ends the block** (a new
+`ObScriptHost::ends_script` hook, as `Return` does — "the lines of script following it will NOT be executed"), and a
+command with no caller has nothing to act on. Locals do not outlive a run, and an item's `GameMode` block does not
+run in the inventory: an item has no reference to keep either on.
+
+**`Say` / `SayTo`.** The calling actor speaks the first eligible INFO of the topic (`select_first_info`, the pick an
+activation greeting makes, the target the player by default). The call answers the line's length in seconds
+(CS: "useful for timing followups"): the subtitle estimate, until the conversation voice player resolves a
+recording and replaces it with its real duration; when that has elapsed the speaker's `SayToDone` blocks run, each for its
+topic or any. Not modelled: the optional speaker form (a creature speaking with an NPC's voice), the voice-position
+flag, `SayTo`'s head tracking, and subtitles — an ambient line has no presenter, only the conversation page.
+
+**What stays declined, and what it waits for.** Every one is a counted decline (`obscript_tools live`,
+`ObScriptQuestTimers`), never a made-up value:
+
+| Commands | Blocked on |
+|----------|-----------|
+| `PlayGroup`, `IsAnimPlaying`, `PlayIdle`, `PickIdle`, `Reset3DState` — the single largest tail (506 / 286 / 824 lines in FNV / FO3 / Oblivion) | the NIF `NiControllerSequence` selection ("needs a trigger system", #3602): the cell loader plays an object's first sequence and keeps no names |
+| `ScriptEffectStart` / `Update` / `Finish`, `OnMagicEffectHit`, `Cast`, `CastImmediateOnSelf`, `Dispel`, `HasMagicEffect` | a caster runtime: cast spells "only sit on the list" ([`magic.rs`](../../crates/scripting/src/magic.rs)) |
+| `Look` / `StopLook`, `PMS` / `SMS` / `PME`, `IMod` / `RIMod`, `IsImageSpaceActive`, `TriggerHitShader`, `ForceWeather` / `SetWeather` | presentation state with no sink (head tracking, magic shaders, image-space modifiers, a weather override) |
+| `IgnoreCrime`, `SendAssaultAlarm`, `GetDetected`, `GetDetectionLevel`, `GetPCFame`, `SetAlert`, `IsKiller`, `GetDeadCount` | a crime/detection runtime and a kill ledger |
+| `AddNote` / `RemoveNote` / `GetHasNote`, `UnlockChallenge`, `SetReputation` | a Pip-Boy note list and challenge state (a saved shape), and the GECK has no page for `SetReputation` |
+| `Resurrect`, `RemoveAllTypedItems`, `DropMe`, `GetOpenState`, `GetSitting`, `GetInWorldspace` / `IsInInterior`, `GetPos` family (axis arguments), `GetGS`, `OnReset` (no cell-reset event), `OnGrab` / `OnRelease` / `OnFire`, `OnDestructionStageChange`, linked path points, `ModDisposition` | each its own missing state; none is an ObScript-layer gap |
 
 ### The R5 demo translations (`papyrus_demo/`)
 
