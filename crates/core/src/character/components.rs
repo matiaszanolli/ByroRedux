@@ -28,7 +28,8 @@ impl Component for CharacterLevel {
 }
 
 /// M47.2 — what the player's level-ups granted and has not spent yet:
-/// Fallout 3 / New Vegas skill points (`LevelReward::SkillPoints`) and perks.
+/// Fallout 3 / New Vegas skill points (`LevelReward::SkillPoints`), perks, and
+/// Skyrim's Health / Magicka / Stamina pool picks.
 /// `skill_point_fraction` holds the half point an odd Intelligence leaves on
 /// New Vegas ("decimal values on odd Intelligence level gains are saved for
 /// the next level" — Fallout wiki *Skill point*).
@@ -38,6 +39,11 @@ pub struct LevelUpPoints {
     pub skill_points: u32,
     pub skill_point_fraction: f32,
     pub perk_points: u32,
+    /// Skyrim — banked Health / Magicka / Stamina picks: each level grants one
+    /// (`LevelingModel::pool_pick_gain` points into the pool the player
+    /// chooses). Spent by the `levelup pool` command until a menu exists
+    /// (#5916).
+    pub pool_picks: u32,
 }
 
 impl Component for LevelUpPoints {

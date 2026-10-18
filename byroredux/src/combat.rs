@@ -656,9 +656,16 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
     // gear and cannot be told apart from implant-style bonuses.
     let intelligence = player_intelligence(world, player, byroredux_scripting::condition::ActorValueView::Base);
     let mut granted = (0.0f32, 0u32);
+    let mut pool_picks = 0u32;
     for level in reached {
         let Some((points, perk)) = leveling.skill_point_reward(level, intelligence) else {
-            return;
+            // Skyrim's `SkillXp` model has no skill points (#5916): each level
+            // grants a perk and one Health / Magicka / Stamina pick instead.
+            // Dropping them here lost them for good — the level is saved, so
+            // a later spend UI could not recover them.
+            granted.1 += u32::from(leveling.grants_perk_at(level));
+            pool_picks += u32::from(leveling.pool_pick_gain().is_some());
+            continue;
         };
         // Hook 10 is Adjust Gained Skill Points on FO3 / FNV only; FO4's
         // level grants no skill points to adjust.
@@ -683,21 +690,31 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
     let rewards = rewards.get_mut(player).expect("present or inserted");
     rewards.grant_skill_points(granted.0);
     rewards.perk_points = rewards.perk_points.saturating_add(granted.1);
+    rewards.pool_picks = rewards.pool_picks.saturating_add(pool_picks);
     log::info!(
-        "Level-up rewards: +{:.1} skill points, +{} perks (unspent {} / {})",
+        "Level-up rewards: +{:.1} skill points, +{} perks, +{} pool picks (unspent {} / {} / {})",
         granted.0,
         granted.1,
+        pool_picks,
         rewards.skill_points,
-        rewards.perk_points
+        rewards.perk_points,
+        rewards.pool_picks
     );
     // Banked points can only be spent from the `levelup` console command
     // today, so say what is waiting.
-    let (skill_points, perk_points) = (rewards.skill_points, rewards.perk_points);
+    let (skill_points, perk_points, pool_total) =
+        (rewards.skill_points, rewards.perk_points, rewards.pool_picks);
     if granted.0 > 0.0 {
         crate::notifications::push(world, format!("+{:.0} skill points ({skill_points} unspent)", granted.0));
     }
     if granted.1 > 0 {
         crate::notifications::push(world, format!("+{} perk point(s) ({perk_points} unspent)", granted.1));
+    }
+    if pool_picks > 0 {
+        crate::notifications::push(
+            world,
+            format!("+{pool_picks} Health/Magicka/Stamina pick(s) ({pool_total} unspent)"),
+        );
     }
 }
 

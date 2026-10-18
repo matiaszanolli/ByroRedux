@@ -527,7 +527,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v105 -> v106 (#5859): `ReferenceState` gained the required `bleedout`
 /// field, so an actor evicted mid-bleedout comes back still down.
-pub const FORMAT_MAJOR: u16 = 106;
+///
+/// v106 -> v107 (#5916): `LevelUpPoints` gained the required `pool_picks`
+/// field (Skyrim's banked Health / Magicka / Stamina picks), so a level rolled
+/// by a scripted skill advance no longer loses its pool pick.
+pub const FORMAT_MAJOR: u16 = 107;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

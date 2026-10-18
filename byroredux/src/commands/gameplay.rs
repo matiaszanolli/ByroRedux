@@ -345,7 +345,7 @@ impl ConsoleCommand for LevelUpCommand {
     }
 
     fn description(&self) -> &str {
-        "Spend level-up rewards (usage: levelup | levelup skill <Skill> <points> | levelup perk <perk_hex> | levelup xp <n>)"
+        "Spend level-up rewards (usage: levelup | levelup skill <Skill> <points> | levelup perk <perk_hex> | levelup pool <health|magicka|stamina> | levelup xp <n>)"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
@@ -368,12 +368,13 @@ impl ConsoleCommand for LevelUpCommand {
                     .map(|level| *level)
                     .unwrap_or_default();
                 CommandOutput::line(format!(
-                    "levelup: level={} xp={} skill_points={} (+{:.1}) perk_points={}",
+                    "levelup: level={} xp={} skill_points={} (+{:.1}) perk_points={} pool_picks={}",
                     level.level,
                     level.xp,
                     rewards.skill_points,
                     rewards.skill_point_fraction,
-                    rewards.perk_points
+                    rewards.perk_points,
+                    rewards.pool_picks
                 ))
             }
             Some("skill") => {
@@ -482,6 +483,53 @@ impl ConsoleCommand for LevelUpCommand {
                     }
                 }
                 CommandOutput::line(format!("levelup: perk {perk:08X} now rank {rank}"))
+            }
+            // Skyrim's level-up pool pick (#5916): `pool_pick_gain` points into
+            // the chosen Health / Magicka / Stamina base, one pick per level.
+            Some("pool") => {
+                let Some(pool) = parts.next().and_then(|raw| {
+                    ["Health", "Magicka", "Stamina"]
+                        .into_iter()
+                        .find(|name| name.eq_ignore_ascii_case(raw))
+                }) else {
+                    return CommandOutput::error("usage: levelup pool <health|magicka|stamina>");
+                };
+                let Some(gain) = world
+                    .try_resource::<CharacterRuleset>()
+                    .and_then(|ruleset| ruleset.leveling.pool_pick_gain())
+                else {
+                    return CommandOutput::error("levelup: this game has no pool picks");
+                };
+                if rewards.pool_picks == 0 {
+                    return CommandOutput::error("levelup: no pool picks");
+                }
+                let Some(avif) = world
+                    .try_resource::<byroredux_scripting::ActorValueNames>()
+                    .and_then(|names| names.resolve(pool))
+                else {
+                    return CommandOutput::error(format!("levelup: {pool} has no actor value"));
+                };
+                let Some(mut value_query) =
+                    world.query_mut::<byroredux_core::ecs::components::ActorValues>()
+                else {
+                    return CommandOutput::error("levelup: no actor-value storage");
+                };
+                let Some(values) = value_query.get_mut(player) else {
+                    return CommandOutput::error("levelup: player has no actor values");
+                };
+                let base = values.get(avif).map_or(0.0, |value| value.base);
+                values.set_base(avif, base + gain);
+                drop(value_query);
+                if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
+                    if let Some(stored) = stored.get_mut(player) {
+                        stored.pool_picks -= 1;
+                    }
+                }
+                CommandOutput::line(format!(
+                    "levelup: {pool} {base} -> {} ({} pool picks left)",
+                    base + gain,
+                    rewards.pool_picks - 1
+                ))
             }
             // The vanilla console's `rewardxp`: experience through the same
             // level roll a kill takes.
@@ -666,5 +714,70 @@ mod level_up_tests {
             .extend([(100, false), (100, true)]);
         crate::combat::scripted_experience_system(&world, 0.0);
         assert_eq!(world.get::<CharacterLevel>(player).unwrap().xp, before + 227);
+    }
+
+    /// #5916 — a Skyrim level rolled through the shared XP path banks its
+    /// perk and its Health / Magicka / Stamina pick (it used to `return`
+    /// before either), and `levelup pool` spends the pick as +10 on the base.
+    #[test]
+    fn skyrim_levels_bank_a_perk_and_a_pool_pick() {
+        use byroredux_core::character::{skyrim_ruleset, CharacterLevel, LevelUpPoints};
+        use byroredux_core::ecs::components::ActorValues;
+        use byroredux_plugin::esm::records::{AvifRecord, EsmIndex};
+        const HEALTH: u32 = 0x3E8;
+        const STAMINA: u32 = 0x3EA;
+
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<ActorValues>();
+        world.register::<CharacterLevel>();
+        world.register::<LevelUpPoints>();
+        let mut index = EsmIndex::default();
+        for (form_id, editor_id) in [(HEALTH, "AVHealth"), (STAMINA, "AVStamina")] {
+            index.actor_values.insert(
+                form_id,
+                AvifRecord {
+                    form_id,
+                    editor_id: editor_id.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        byroredux_scripting::install_actor_value_names(&mut world, &index);
+        world.insert_resource(skyrim_ruleset(|name| match name {
+            "Health" => Some(HEALTH),
+            "Stamina" => Some(STAMINA),
+            _ => None,
+        }));
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(player, ActorValues::from_pairs([(HEALTH, 100.0), (STAMINA, 100.0)]));
+        world.insert(player, CharacterLevel { level: 1, xp: 0 });
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
+
+        // 25·1 + 75 = 100 XP per level at level 1, 125 at level 2: two levels.
+        crate::combat::grant_experience(&world, player, 225);
+        assert_eq!(world.get::<CharacterLevel>(player).unwrap().level, 3);
+        let banked = *world.get::<LevelUpPoints>(player).unwrap();
+        assert_eq!(
+            (banked.perk_points, banked.pool_picks, banked.skill_points),
+            (2, 2, 0),
+            "each Skyrim level banks a perk and a pool pick, no skill points"
+        );
+        let notices = crate::notifications::drain(&world);
+        assert!(notices.iter().any(|n| n.contains("pick")), "{notices:?}");
+
+        let status = LevelUpCommand.execute(&world, "status").lines.join("\n");
+        assert!(status.contains("pool_picks=2"), "{status}");
+        let _ = LevelUpCommand.execute(&world, "pool stamina");
+        assert_eq!(world.get::<ActorValues>(player).unwrap().current(STAMINA), 110.0);
+        assert_eq!(world.get::<ActorValues>(player).unwrap().current(HEALTH), 100.0);
+        assert_eq!(world.get::<LevelUpPoints>(player).unwrap().pool_picks, 1);
+        let _ = LevelUpCommand.execute(&world, "pool health");
+        let empty = LevelUpCommand.execute(&world, "pool health").lines.join("\n");
+        assert!(empty.contains("no pool picks"), "{empty}");
+        assert_eq!(world.get::<ActorValues>(player).unwrap().current(HEALTH), 110.0);
+        let bad = LevelUpCommand.execute(&world, "pool carryweight").lines.join("\n");
+        assert!(bad.contains("usage"), "{bad}");
     }
 }
