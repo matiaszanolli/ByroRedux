@@ -1407,7 +1407,7 @@ impl ConsoleCommand for WeatherForceCommand {
 /// `obscript.cmd <entity|.|none> <command id hex> [arg ...]` — run one ObScript command through the real
 /// host, as a script statement would, and print what it answered. The caller is the reference the command
 /// is called on (`none` for a command with no calling reference); an argument is a number, or `r:<hex>` for
-/// a form / reference (`player` is `r:14`). The ids are the ones `obscript_tools names <ESM>` prints
+/// a form / reference (`player` is `r:14`), or `t:<text>` for a string. The ids are the ones `obscript_tools names <ESM>` prints
 /// (`0x1000` + the condition function index for getters). A debugging door onto the whole command surface.
 pub(crate) struct ObScriptCmdCommand;
 
@@ -1442,7 +1442,14 @@ impl ConsoleCommand for ObScriptCmdCommand {
             }
         };
         let mut values = Vec::new();
+        let mut texts = Vec::new();
         for token in parts {
+            // `t:<text>` is a string argument (`%20` stands for a space): the strings of `SwapTexture`,
+            // `EssentialDeathReload`.
+            if let Some(text) = token.strip_prefix("t:") {
+                texts.push(text.replace("%20", " "));
+                continue;
+            }
             let value = match token.strip_prefix("r:") {
                 Some(hex) => match u32::from_str_radix(hex.trim_start_matches("0x"), 16) {
                     Ok(form) => ObScriptValue::Ref(form),
@@ -1455,6 +1462,11 @@ impl ConsoleCommand for ObScriptCmdCommand {
             };
             values.push(value);
         }
+        if !texts.is_empty() {
+            if let Some(mut stored) = world.try_resource_mut::<byroredux_scripting::obscript_more::TextArguments>() {
+                stored.0 = texts;
+            }
+        }
         let (answer, declined) = byroredux_scripting::obscript_quests::run_console_command(world, caller, cmd, &values);
         let answer = match answer {
             Some(ObScriptValue::Num(n)) => format!("{n}"),
@@ -1462,5 +1474,77 @@ impl ConsoleCommand for ObScriptCmdCommand {
             None => "(no answer)".to_owned(),
         };
         CommandOutput::line(format!("{cmd:#06x} -> {answer}{}", if declined > 0 { format!("  [declined: {declined}]") } else { String::new() }))
+    }
+}
+
+/// `misc.stat <name> [delta]` — read a misc stat the ObScript commands keep (`GetPCMiscStat`), or add to it
+/// (`ModPCMiscStat`). `_` or `%20` stands for a space in the name (`Caravan_Games_Won`).
+pub(crate) struct MiscStatCommand;
+
+impl ConsoleCommand for MiscStatCommand {
+    fn name(&self) -> &str {
+        "misc.stat"
+    }
+
+    fn description(&self) -> &str {
+        "Read or change a misc stat: misc.stat <name with _ for spaces> [delta]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut parts = args.split_whitespace();
+        let Some(name) = parts.next() else {
+            return CommandOutput::error("usage: misc.stat <name with _ for spaces> [delta]");
+        };
+        let name = name.replace("%20", " ").replace('_', " ");
+        if let Some(delta) = parts.next() {
+            let Ok(delta) = delta.parse::<i32>() else {
+                return CommandOutput::error(format!("bad delta `{delta}`"));
+            };
+            byroredux_scripting::obscript_more::mod_misc_stat(world, &name, delta);
+        }
+        CommandOutput::line(format!("{name} = {}", byroredux_scripting::obscript_more::misc_stat(world, &name)))
+    }
+}
+
+/// `challenge.status [form]` — the New Vegas challenges the engine tracks: enabled, progress and
+/// completions of one (by CHAL form id) or of every one that has progress or has completed.
+pub(crate) struct ChallengeStatusCommand;
+
+impl ConsoleCommand for ChallengeStatusCommand {
+    fn name(&self) -> &str {
+        "challenge.status"
+    }
+
+    fn description(&self) -> &str {
+        "Show challenge progress: challenge.status [CHAL form id hex]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let wanted = args.split_whitespace().next().and_then(|token| u32::from_str_radix(token.trim_start_matches("0x"), 16).ok());
+        CommandOutput::lines(byroredux_scripting::challenges::status_lines(world, wanted))
+    }
+}
+
+/// `script.requests` — the screens and videos ObScript commands asked for that the engine has no UI to
+/// show, most recent last.
+pub(crate) struct ScriptRequestsCommand;
+
+impl ConsoleCommand for ScriptRequestsCommand {
+    fn name(&self) -> &str {
+        "script.requests"
+    }
+
+    fn description(&self) -> &str {
+        "List the menus and videos ObScript commands asked for (no UI shows them yet)"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(log) = world.try_resource::<crate::systems::script_requests::ScriptRequestLog>() else {
+            return CommandOutput::error("script.requests: the request log is not installed");
+        };
+        if log.0.is_empty() {
+            return CommandOutput::line("no menu or video requests");
+        }
+        CommandOutput::lines(log.0.iter().cloned().collect())
     }
 }

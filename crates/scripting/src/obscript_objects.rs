@@ -441,9 +441,14 @@ pub fn obscript_hit_system(world: &World, dt: f32) {
     for (victim, hit) in hits {
         let attacker = form_of(world, hit.aggressor);
         // `GetOwnerLastTarget`: the last actor the attacker struck.
-        if let (Some(attacker), Some(victim)) = (attacker, form_of(world, victim)) {
+        if let (Some(attacker_form), Some(victim_form)) = (attacker, form_of(world, victim)) {
+            // A hit by an actor the victim counts as an ally or friend is a friendly hit (`GetFriendHit`).
+            let friendly = matches!(crate::combat::faction_reaction(world, victim, hit.aggressor), Some(2 | 3));
             if let Some(mut ledger) = world.try_resource_mut::<crate::obscript_ledger::ObScriptLedger>() {
-                ledger.note_hit(attacker, victim);
+                ledger.note_hit(attacker_form, victim_form);
+                if friendly {
+                    ledger.note_friend_hit(victim_form, attacker_form);
+                }
             }
         }
         let weapon = world

@@ -11,7 +11,7 @@ use crate::obscript_ledger::FactionFlag;
 use crate::obscript_vm::ObScriptValue;
 
 /// The player's entity or, when a command names a calling reference, that reference's.
-fn caller_or_player(world: &World, ctx: &Context) -> Option<(u32, EntityId)> {
+pub(super) fn caller_or_player(world: &World, ctx: &Context) -> Option<(u32, EntityId)> {
     caller(world, ctx).or_else(|| player(world).map(|entity| (0x14, entity)))
 }
 
@@ -164,6 +164,11 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
             Some((form, _)) => store(world, cmd, form, num(args, 0)),
             None => Action::Declined,
         },
+        // GECK *GetIgnoreFriendlyHits* (`GIFH`): the flag `SetIgnoreFriendlyHits` stored for the actor.
+        0x1152 => match caller(world, ctx) {
+            Some((form, _)) => answer(ledger(world, |l| l.value(0x1151, form)).flatten().unwrap_or(0.0)),
+            None => Action::Declined,
+        },
         // GECK *SetCellPublicFlag <cell> <flag>*: "cells which are public cannot have trespassing".
         0x10bb => match form_arg(args, 0) {
             Some(cell) => store(world, cmd, cell, num(args, 1)),
@@ -242,7 +247,7 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         // CS *SetPlayerInSEWorld <flag>* / *GetPlayerInSEWorld* (Oblivion; `0x116c` is DamageObject in
         // Fallout): "a game engine flag indicating whether the player is in the Shivering Isles".
         0x116c if !fallout => store(world, cmd, 0, num(args, 0)),
-        0x116d => answer(ledger(world, |l| l.value(0x116c, 0)).flatten().unwrap_or(0.0)),
+        0x116d if !fallout => answer(ledger(world, |l| l.value(0x116c, 0)).flatten().unwrap_or(0.0)),
         // CS *IsActorUsingATorch*: "1 if the calling actor is currently using a torch (i.e. has it out)". The
         // equipment model carries armor and a weapon, not a light, so no actor can have a torch out.
         0x1132 => match caller(world, ctx) {
@@ -251,7 +256,7 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         },
         // CS *ClearOwnership*: "clears the ownership from the reference it is called on" — Fallout's id for
         // the same command is lowered by the effects table.
-        0x1170 => crate::obscript_effects::run(world, 0x118c, args, ctx),
+        0x1170 if !fallout => crate::obscript_effects::run(world, 0x118c, args, ctx),
         // CS *ResetFallDamageTimer*: the controller's fall is measured from where it left the ground; the
         // timer is the airborne time, which the character system owns.
         0x1134 => done("ResetFallDamageTimer"),

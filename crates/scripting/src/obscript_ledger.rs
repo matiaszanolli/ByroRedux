@@ -66,6 +66,13 @@ pub struct ObScriptLedger {
     weapon_condition: BTreeMap<(u32, u32), f32>,
     /// The last actor each actor hit (`GetOwnerLastTarget`), by reference.
     last_targets: BTreeMap<u32, u32>,
+    /// The numeric faction reactions scripts set (`SetFactionReaction`, `ModFactionReaction`), by
+    /// `(faction, other faction)`.
+    reactions: BTreeMap<(u32, u32), f32>,
+    /// The player's tagged skills: slot (0..=2) to the skill's actor-value code.
+    tag_skills: BTreeMap<u8, u8>,
+    /// Friendly hits taken, by `(victim, attacker)` reference (`GetFriendHit`).
+    friend_hits: BTreeMap<(u32, u32), u32>,
 }
 
 impl Resource for ObScriptLedger {}
@@ -166,6 +173,41 @@ impl ObScriptLedger {
     /// The last actor `attacker` struck.
     pub fn last_target(&self, attacker: u32) -> Option<u32> {
         self.last_targets.get(&attacker).copied()
+    }
+
+    /// The numeric reaction `faction` has toward `other` that scripts set; 0 when none did.
+    pub fn reaction(&self, faction: u32, other: u32) -> f32 {
+        self.reactions.get(&(faction, other)).copied().unwrap_or(0.0)
+    }
+
+    pub fn set_reaction(&mut self, faction: u32, other: u32, value: f32) {
+        self.reactions.insert((faction, other), value);
+    }
+
+    /// The skill (actor-value code) tagged in `slot`.
+    pub fn tag_skill(&self, slot: u8) -> Option<u8> {
+        self.tag_skills.get(&slot).copied()
+    }
+
+    pub fn set_tag_skill(&mut self, slot: u8, skill: u8) -> Option<u8> {
+        self.tag_skills.insert(slot, skill)
+    }
+
+    pub fn is_tag_skill(&self, skill: u8) -> bool {
+        self.tag_skills.values().any(|&tagged| tagged == skill)
+    }
+
+    pub fn note_friend_hit(&mut self, victim: u32, attacker: u32) {
+        *self.friend_hits.entry((victim, attacker)).or_default() += 1;
+    }
+
+    pub fn friend_hits(&self, victim: u32, attacker: u32) -> u32 {
+        self.friend_hits.get(&(victim, attacker)).copied().unwrap_or(0)
+    }
+
+    /// Whether any faction carries `flag`.
+    pub fn any_flag(&self, flag: FactionFlag) -> bool {
+        self.faction_flags.iter().any(|&(kind, _)| kind == flag)
     }
 
     pub fn set_weapon_condition(&mut self, holder: u32, weapon: u32, percent: f32) {

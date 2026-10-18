@@ -416,8 +416,8 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
             }
             // `PlayMusic <music>`: the music type (MUSC) the editor ID names.
             0x11ff => world_music(self.world, text).map(ObScriptValue::Ref),
-            // `EssentialDeathReload "message"`: the message is the command's own argument.
-            0x114d => {
+            // `EssentialDeathReload "message"` / `PlayBink "file"`: the string is the command's own argument.
+            0x114d | 0x1114 => {
                 self.world.try_resource_mut::<crate::obscript_more::TextArguments>().map(|mut texts| texts.0 = vec![text.to_owned()]);
                 Some(ObScriptValue::Num(0.0))
             }

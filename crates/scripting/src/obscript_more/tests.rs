@@ -182,6 +182,16 @@ fn world_oblivion_sleeping(hours: f32) -> (World, EntityId, EntityId, EntityId) 
 }
 
 #[test]
+fn ignore_friendly_hits_is_read_back_by_its_getter() {
+    let (world, ..) = world(GameKind::Fallout3NV);
+    let c = ctx(Some(ACTOR));
+    assert_eq!(value(run(&world, 0x1152, &[], &c)), 0.0);
+    run(&world, 0x1151, &nums(&[1.0]), &c);
+    assert_eq!(value(run(&world, 0x1152, &[], &c)), 1.0);
+    assert_eq!(value(run(&world, 0x1152, &[], &ctx(Some(OTHER)))), 0.0, "per actor");
+}
+
+#[test]
 fn force_sneak_is_stored_and_read_back_for_the_actor() {
     let (world, ..) = world(GameKind::Fallout3NV);
     let c = ctx(Some(ACTOR));
@@ -501,4 +511,173 @@ fn trap_update_hurts_an_actor_on_first_contact_or_every_call_when_continuous() {
     run(&world, 0x110c, &continuous, &c);
     run(&world, 0x110c, &continuous, &c);
     assert_eq!(hits(&world).len(), 3, "a continuous trap hurts on every call");
+}
+
+// ── the long tail ───────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn the_platform_and_math_commands_answer_from_what_they_name() {
+    let (world, ..) = world(GameKind::Fallout3NV);
+    let c = ctx(None);
+    assert_eq!(value(run(&world, 0x1135, &[], &c)), 0.0, "IsXbox: this is a PC");
+    assert_eq!(value(run(&world, 0x120c, &[], &c)), 1.0, "IsWin32");
+    assert_eq!(value(run(&world, 0x121f, &nums(&[9.0]), &c)), 3.0, "Sqrt");
+    assert_eq!(value(run(&world, 0x121f, &nums(&[-4.0]), &c)), 0.0, "Sqrt of a negative is not a NaN");
+    assert_eq!(value(run(&world, 0x1221, &nums(&[-7.5]), &c)), 7.5, "Abs");
+    assert!((value(run(&world, 0x121e, &nums(&[std::f32::consts::FRAC_PI_4]), &c)) - 1.0).abs() < 1e-5, "Tan");
+}
+
+#[test]
+fn is_dlc_installed_reads_the_load_order() {
+    use byroredux_core::form_id::PluginId;
+    let (mut world, ..) = world(GameKind::Fallout3NV);
+    assert_eq!(run(&world, 0x126f, &nums(&[0.0]), &ctx(None)), Action::Declined, "no load order installed");
+    world.insert_resource(crate::LoadOrderIdentity::new(vec![(byroredux_plugin::esm::reader::GlobalSlot::Regular(0), PluginId::from_filename("FalloutNV.esm")), (byroredux_plugin::esm::reader::GlobalSlot::Regular(1), PluginId::from_filename("HonestHearts.esm"))]));
+    assert_eq!(value(run(&world, 0x126f, &nums(&[0.0]), &ctx(None))), 0.0, "Dead Money is not loaded");
+    assert_eq!(value(run(&world, 0x126f, &nums(&[1.0]), &ctx(None))), 1.0, "Honest Hearts is");
+    assert_eq!(run(&world, 0x126f, &nums(&[9.0]), &ctx(None)), Action::Declined, "no such DLC");
+}
+
+#[test]
+fn the_character_creation_commands_queue_their_screens_with_their_points() {
+    let (world, ..) = world(GameKind::Fallout3NV);
+    let c = ctx(None);
+    for (cmd, menu, points) in [(0x1218u16, "special points", 40u32), (0x121a, "tag skills", 3), (0x1245, "vigor tester", 25), (0x11ee, "special book", 40)] {
+        assert!(is_done(&run(&world, cmd, &nums(&[points as f32]), &c)));
+        let last = world.try_resource::<PendingMenus>().unwrap().0.last().cloned().unwrap();
+        assert_eq!((last.menu, last.form), (menu, points), "{cmd:#06x}");
+    }
+    for (cmd, menu) in [(0x1268u16, "traits"), (0x11e1, "name entry"), (0x10da, "race")] {
+        run(&world, cmd, &[], &c);
+        assert_eq!(world.try_resource::<PendingMenus>().unwrap().0.last().map(|m| m.menu), Some(menu));
+    }
+}
+
+#[test]
+fn level_and_xp_commands_change_the_players_progress() {
+    use byroredux_core::character::CharacterLevel;
+    let (mut world, _, _, player) = world(GameKind::Fallout3NV);
+    world.register::<CharacterLevel>();
+    world.insert(player, CharacterLevel { level: 12, xp: 340 });
+    let c = ctx(None);
+    run(&world, 0x1133, &nums(&[1.0, 0.0]), &c);
+    assert_eq!(world.get::<CharacterLevel>(player).map(|l| l.level), Some(1), "SetLevel 1 on the player (no caller: the player)");
+    assert!(is_done(&run(&world, 0x126d, &[], &c)));
+    assert_eq!(world.get::<CharacterLevel>(player).map(|l| l.xp), Some(0), "ResetXP");
+    // On an NPC: relative to the player's level, clamped to [min, max].
+    world.insert(player, CharacterLevel { level: 10, xp: 0 });
+    run(&world, 0x1133, &nums(&[3.0, 1.0, 1.0, 12.0]), &ctx(Some(ACTOR)));
+    let actor = live(&world, ACTOR).unwrap();
+    assert_eq!(world.get::<CharacterLevel>(actor).map(|l| l.level), Some(12), "10 + 3, capped at 12");
+}
+
+#[test]
+fn tag_skills_are_kept_and_asked_back() {
+    let (world, ..) = world(GameKind::Fallout3NV);
+    let c = ctx(None);
+    assert_eq!(value(run(&world, 0x11ce, &nums(&[38.0]), &c)), 0.0);
+    assert!(is_done(&run(&world, 0x11cd, &nums(&[38.0, 0.0]), &c)));
+    assert_eq!(value(run(&world, 0x11ce, &nums(&[38.0]), &c)), 1.0);
+    run(&world, 0x11cd, &nums(&[41.0, 0.0]), &c);
+    assert_eq!(value(run(&world, 0x11ce, &nums(&[38.0]), &c)), 0.0, "replaced in its slot");
+    assert_eq!(run(&world, 0x11cd, &nums(&[38.0, 5.0]), &c), Action::Declined, "only slots 0-2");
+}
+
+#[test]
+fn faction_commands_change_the_reputation_and_the_actors_factions() {
+    use byroredux_core::character::FactionReputation;
+    let (mut world, actor, _, player) = world(GameKind::Fallout3NV);
+    world.register::<FactionReputation>();
+    world.register::<FactionRanks>();
+    world.insert(actor, FactionRanks(vec![(FACTION, 1), (FACTION + 1, 0)]));
+    assert!(is_done(&run(&world, 0x1214, &[], &ctx(Some(ACTOR)))));
+    assert!(world.get::<FactionRanks>(actor).unwrap().0.is_empty(), "RemoveFromAllFactions");
+    // AddReputationExact <repu> <fame 1> <amount>
+    run(&world, 0x123b, &[ObScriptValue::Ref(0x77), ObScriptValue::Num(1.0), ObScriptValue::Num(10.0)], &ctx(None));
+    run(&world, 0x123b, &[ObScriptValue::Ref(0x77), ObScriptValue::Num(0.0), ObScriptValue::Num(4.0)], &ctx(None));
+    let standing = world.get::<FactionReputation>(player).unwrap();
+    assert_eq!((standing.fame(0x77), standing.infamy(0x77)), (10, 4));
+}
+
+#[test]
+fn oblivion_stat_commands_read_and_set_the_players_standing() {
+    let (world, ..) = world(GameKind::Oblivion);
+    let c = ctx(None);
+    run(&world, 0x10fc, &nums(&[52.0]), &c);
+    run(&world, 0x10fd, &nums(&[9.0]), &c);
+    assert_eq!((value(run(&world, 0x10f9, &[], &c)), value(run(&world, 0x10fb, &[], &c))), (52.0, 9.0));
+    // GetPCMiscStat 7 is "Places Discovered".
+    mod_misc_stat(&world, "Places Discovered", 4);
+    assert_eq!(value(run(&world, 0x1138, &nums(&[7.0]), &c)), 4.0);
+    assert_eq!(run(&world, 0x1138, &nums(&[99.0]), &c), Action::Declined, "out of the page's list");
+    // IsPCAMurderer only after a murder flag.
+    assert_eq!(value(run(&world, 0x10b0, &[], &c)), 0.0);
+    run(&world, 0x10c4, &[ObScriptValue::Ref(FACTION), ObScriptValue::Num(1.0)], &c);
+    assert_eq!(value(run(&world, 0x10b0, &[], &c)), 1.0);
+    // SetPCFactionAttack / GetPCFactionAttack pair (0x10c8 / 0x10c7).
+    run(&world, 0x10c8, &[ObScriptValue::Ref(FACTION), ObScriptValue::Num(1.0)], &c);
+    assert_eq!(value(run(&world, 0x10c7, &refs(&[FACTION]), &c)), 1.0);
+}
+
+#[test]
+fn mod_faction_reaction_builds_on_what_scripts_set() {
+    let (mut world, ..) = world(GameKind::Oblivion);
+    world.insert_resource(crate::LoadOrderIdentity::new(Vec::new()));
+    // Without the faction identity the engine cannot hold a reaction: declined, nothing recorded as done.
+    assert_eq!(run(&world, 0x10a9, &[ObScriptValue::Ref(FACTION), ObScriptValue::Ref(FACTION + 1), ObScriptValue::Num(-20.0)], &ctx(None)), Action::Declined);
+}
+
+#[test]
+fn get_gold_counts_gold001_in_the_players_inventory() {
+    use byroredux_core::ecs::components::ItemStack;
+    let (mut world, _, _, player) = world(GameKind::Oblivion);
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(0x0F, 120));
+    inventory.push(ItemStack::new(0x1234, 3));
+    world.insert(player, inventory);
+    assert_eq!(value(run(&world, 0x1030, &[], &ctx(None))), 120.0);
+}
+
+#[test]
+fn a_knocked_out_actor_reports_state_one_and_one_pushed_away_reports_zero() {
+    let (world, actor, ..) = world(GameKind::Fallout3NV);
+    let c = ctx(Some(ACTOR));
+    assert_eq!(value(run(&world, 0x106b, &[], &c)), 0.0);
+    crate::update_actor_control(&world, actor, |state| state.set_unconscious(true));
+    assert_eq!(value(run(&world, 0x106b, &[], &c)), 1.0);
+    assert_eq!(value(run(&world, 0x1187, &[], &c)), -1.0, "no hit location is recorded");
+}
+
+#[test]
+fn the_cell_commands_keep_what_they_are_told_and_reset_interior_expires_the_visit() {
+    let (world, ..) = world(GameKind::Fallout3NV);
+    let c = ctx(None);
+    run(&world, 0x1119, &refs(&[0xAA]), &c);
+    assert_eq!(world.try_resource::<ObScriptLedger>().unwrap().form(0x1119, 0xAA), Some(crate::PLAYER_REFERENCE), "no owner argument: the player");
+    assert!(is_done(&run(&world, 0x1127, &refs(&[0xAA]), &c)));
+    let mut visits = world.try_resource_mut::<crate::obscript_state::CellVisits>().unwrap();
+    assert!(visits.enter(0xAA, 1.0, 72.0), "the next entry finds the expired cell reset");
+}
+
+#[test]
+fn video_and_exit_requests_are_raised_for_the_app() {
+    let (world, ..) = world(GameKind::Fallout3NV);
+    world.try_resource_mut::<TextArguments>().unwrap().0 = vec!["credits.bik".into()];
+    run(&world, 0x1114, &[], &ctx(None));
+    assert_eq!(world.try_resource::<PendingVideos>().unwrap().0, vec!["credits.bik".to_owned()]);
+    run(&world, 0x11b5, &[], &ctx(None));
+    assert!(world.try_resource::<ExitGameRequest>().unwrap().0);
+}
+
+#[test]
+fn drop_removes_the_item_and_leaves_a_reference_at_the_actors_feet() {
+    let (mut world, actor, ..) = world(GameKind::Oblivion);
+    world.insert_resource(crate::quest_stages::QuestStageState::default());
+    let c = ctx(Some(ACTOR));
+    crate::obscript_effects::run(&world, 0x1002, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(5.0)], &c);
+    assert!(is_done(&run(&world, 0x1057, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(2.0)], &c)));
+    let held = world.get::<Inventory>(actor).map_or(0, |i| i.items.iter().filter(|s| s.base_form_id == ITEM).map(|s| s.count).sum::<u32>());
+    assert_eq!(held, 3, "two dropped of five");
+    let created = world.try_resource::<crate::CreatedReferences>().unwrap();
+    assert!(created.iter().any(|r| r.base == ITEM && r.at_reference == ACTOR));
 }

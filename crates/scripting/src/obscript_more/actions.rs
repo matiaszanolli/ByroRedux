@@ -260,11 +260,11 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         },
 
         // ── `Get/ModPCMiscStat`: the VM resolved the stat name and handed the value (see `text_argument`) ─
-        0x1138 => match args.first() {
+        0x1138 if fallout => match args.first() {
             Some(ObScriptValue::Num(count)) => answer(*count),
             _ => Action::Declined,
         },
-        0x1137 => done("ModPCMiscStat"),
+        0x1137 if fallout => done("ModPCMiscStat"),
         _ => super::extras::run(world, fallout, cmd, args, ctx),
     }
 }

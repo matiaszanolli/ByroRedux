@@ -613,6 +613,28 @@ fn award_kill_experience(world: &World, victim: EntityId, health_avif: u32) {
 
 /// Add `xp` to `player`'s progress, rolling levels by the ruleset's
 /// `LevelingModel` up to its cap, and bank what each level grants (M47.2):
+/// Whether the character-generation state was on at the last pass, so its end awards the levels the XP
+/// earned meanwhile. `NOT_SAVED_BY_DESIGN`: derived from the saved ledger flag.
+#[derive(Debug, Default)]
+pub(crate) struct ChargenWatch(bool);
+
+impl Resource for ChargenWatch {}
+
+/// When `SetInChargen 0` ends the state, award the levels the accumulated XP is worth ("when the player
+/// leaves this state, the appropriate number of levels will be immediately awarded" — GECK).
+pub(crate) fn chargen_catch_up_system(world: &World, _dt: f32) {
+    let now = byroredux_scripting::obscript_more::in_chargen(world);
+    let was = match world.try_resource_mut::<ChargenWatch>() {
+        Some(mut watch) => std::mem::replace(&mut watch.0, now),
+        None => return,
+    };
+    if was && !now {
+        if let Some(player) = world.try_resource::<PlayerEntity>().and_then(|player| player.0) {
+            grant_experience(world, player, 0);
+        }
+    }
+}
+
 /// FO3 / FNV skill points (`base + int_mult·INT`, composed by the Adjust
 /// Gained Skill Points hook 10 — `Educated`) and a perk on the cadence.
 /// Callers hold no storage guard.
@@ -634,7 +656,9 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
             return;
         };
         progress.xp = progress.xp.saturating_add(xp);
-        if let Some(leveling) = leveling {
+        // `SetInChargen 1`: XP accumulates and the levels wait for the state to end
+        // ([`chargen_catch_up_system`] awards them then).
+        if let Some(leveling) = leveling.filter(|_| !byroredux_scripting::obscript_more::in_chargen(world)) {
             // #5918 — the bounded roll lives on the model.
             reached = leveling.roll_levels(progress);
         }

@@ -24,6 +24,8 @@ use crate::obscript_vm::ObScriptValue;
 mod actions;
 mod extras;
 mod state;
+mod tail;
+pub use tail::{ChildRaces, CellZones, ExitGameRequest, PendingVideos};
 pub use extras::{AshPiles, MusicTrack, MusicTracks, PendingMusic, PendingTextureSwaps, ReloadRequest, TextArguments, TextureSwap, UseWeaponRequest};
 
 /// Fallout 3 / New Vegas command ids this module runs.
@@ -36,7 +38,8 @@ pub(crate) const FALLOUT: &[u16] = &[
     0x11db, 0x11e2, 0x11e4, 0x11e6, 0x11e7, 0x11eb, 0x11ec, 0x11ef, 0x11f0, 0x11f4, 0x11f6, 0x1200, 0x1203, 0x120b,
     0x1212, 0x1213, 0x1224, 0x1225, 0x1226, 0x122e, 0x1230, 0x1248, 0x1270, 0x127a, 0x11d1, 0x11bc,
     0x11ed, 0x1238, 0x1250, 0x1260, 0x10aa, 0x119c, 0x11ff, 0x124e, 0x1254, 0x1256, 0x1252, 0x125c, 0x125e, 0x1266,
-    0x126c, 0x1211, 0x1263, 0x1269, 0x122f,
+    0x126c, 0x1211, 0x1263, 0x1269, 0x122f, 0x1152,
+    0x1135, 0x120c, 0x126f, 0x11fb, 0x11b5, 0x1114, 0x11a7, 0x1201, 0x124b, 0x124d, 0x1163, 0x1186, 0x121f, 0x1221, 0x121e, 0x1218, 0x121a, 0x1245, 0x11ee, 0x10da, 0x10e7, 0x126d, 0x11cd, 0x11ce, 0x106b, 0x1187, 0x116d, 0x1120, 0x1133, 0x1148, 0x1184, 0x1214, 0x11f5, 0x11e5, 0x11df, 0x1228, 0x11fc, 0x11d8, 0x125b, 0x123b, 0x11e1, 0x1268, 0x120a, 0x1119, 0x111b, 0x1127, 0x11ea, 0x11be, 0x11bf, 0x11dd, 0x1227, 0x1170, 0x10bc, 0x10ae, 0x10af, 0x110c, 0x1122, 0x1082,
 ];
 
 /// Oblivion command ids this module runs.
@@ -46,6 +49,7 @@ pub(crate) const OBLIVION: &[u16] = &[
     0x10c3, 0x10c4, 0x10c5, 0x10c6, 0x10c7, 0x10d1, 0x10d8, 0x10df, 0x10f8, 0x10f9, 0x10fb, 0x1109, 0x110d, 0x1116,
     0x111c, 0x1122, 0x1132, 0x1134, 0x1137, 0x1145, 0x1147, 0x114e, 0x1151, 0x1156, 0x1159, 0x115a, 0x115b, 0x115c,
     0x115d, 0x1161, 0x1162, 0x1164, 0x1165, 0x116b, 0x116c, 0x116d, 0x116e, 0x116f, 0x1170, 0x10aa, 0x112a, 0x112b, 0x1129, 0x10db, 0x114d, 0x105b, 0x1167, 0x110c,
+    0x1030, 0x1057, 0x1062, 0x106b, 0x107d, 0x1083, 0x108d, 0x10a9, 0x10b0, 0x10b7, 0x10c8, 0x10d2, 0x10d3, 0x10d9, 0x10da, 0x10e0, 0x10ea, 0x10eb, 0x10f0, 0x10fc, 0x10fd, 0x1111, 0x1135, 0x1138, 0x114c, 0x1154, 0x1155, 0x1168, 0x1141,
 ];
 
 /// Whether this module runs command `cmd` of the Fallout (`fallout`) or Oblivion family.
@@ -71,6 +75,10 @@ pub struct EngineQueries {
     /// The actors in contact with a trap right now and how fast the trap moves relative to each
     /// (`TrapUpdate`), in world units per second.
     pub trap_contacts: Option<fn(&World, EntityId) -> Vec<TrapContact>>,
+    /// Whether an actor stands in water that hurts (lava) (`IsInDangerousWater`).
+    pub in_dangerous_water: Option<fn(&World, EntityId) -> bool>,
+    /// Whether the player is in the air (`IsPlayerActionActive 6`, jumping).
+    pub player_airborne: Option<fn(&World) -> bool>,
     /// The placement of a point in the player's cell, for a reference created there.
     pub placement_at: Option<fn(&World, [f32; 3]) -> Option<crate::created_references::CreatedPlacement>>,
 }
@@ -152,6 +160,10 @@ pub fn install(world: &mut World) {
     world.register::<FleeRequest>();
     world.register::<ResetInventoryRequest>();
     extras::install(world);
+    world.init_resource::<PendingVideos>();
+    world.init_resource::<ExitGameRequest>();
+    world.init_resource::<CellZones>();
+    world.init_resource::<ChildRaces>();
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -516,6 +528,12 @@ pub fn ai_disabled_actors(world: &World) -> Vec<EntityId> {
     forms.into_iter().filter_map(|form| live(world, form)).collect()
 }
 
+/// Whether a script put the player into the character-generation state (`SetInChargen 1`): "while in this
+/// state, the player will not level up (although XP will accumulate as usual)".
+pub fn in_chargen(world: &World) -> bool {
+    ledger(world, |l| l.value(0x10e7, 0)).flatten().is_some_and(|flag| flag != 0.0)
+}
+
 /// The opacity scripts gave actors (`SetActorAlpha`, stored under `0x1129`), by reference.
 pub fn actor_alphas(world: &World) -> Vec<(u32, f32)> {
     ledger(world, |l| l.values_of(0x1129)).unwrap_or_default()
@@ -527,12 +545,12 @@ fn engine_queries(world: &World) -> EngineQueries {
 }
 
 /// The player's count of misc stat `name` (`GetPCMiscStat "Locks Picked"`).
-pub(crate) fn misc_stat(world: &World, name: &str) -> i32 {
+pub fn misc_stat(world: &World, name: &str) -> i32 {
     world.try_resource::<crate::misc_stats::MiscStats>().map_or(0, |stats| stats.get(name))
 }
 
 /// Add `amount` to misc stat `name` (`ModPCMiscStat "Locks Picked" 1`).
-pub(crate) fn mod_misc_stat(world: &World, name: &str, amount: i32) {
+pub fn mod_misc_stat(world: &World, name: &str, amount: i32) {
     if let Some(mut stats) = world.try_resource_mut::<crate::misc_stats::MiscStats>() {
         stats.increment(name, amount);
     }

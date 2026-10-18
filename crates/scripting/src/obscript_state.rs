@@ -140,6 +140,11 @@ impl Resource for CellVisits {}
 pub const DEFAULT_HOURS_TO_RESPAWN_CELL: f64 = 72.0;
 
 impl CellVisits {
+    /// `ResetInterior`: mark `cell` expired, so the player's next entry finds it reset.
+    pub fn expire(&mut self, cell: u32) {
+        self.entered.insert(cell, f64::NEG_INFINITY);
+    }
+
     /// The player enters `cell` at game hour `now`. `true` when they had been there before and it has
     /// been `respawn_hours` or more since — the cell has reset.
     pub fn enter(&mut self, cell: u32, now: f64, respawn_hours: f64) -> bool {
@@ -492,5 +497,42 @@ mod tests {
         kills.record(0x102, 0x8, Some(0x14));
         assert_eq!((kills.dead_count(0x7), kills.dead_count(0x8), kills.dead_count(0x9)), (2, 1, 0));
         assert_eq!((kills.killer_of(0x100), kills.killer_of(0x101)), (Some(0x14), None));
+    }
+
+    /// What the player kills is counted: People / Creatures / Total Things Killed and the challenges that
+    /// name a kill; what anyone else kills is not.
+    #[test]
+    fn the_players_kills_are_counted_as_misc_stats_and_for_kill_challenges() {
+        use byroredux_core::ecs::components::{CreatureActor, FormIdComponent};
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        use byroredux_plugin::esm::records::{challenge_kind, ChalRecord, EsmIndex};
+        let mut world = World::new();
+        crate::register(&mut world);
+        let player = world.spawn();
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        let mut pool = FormIdPool::new();
+        let mut spawn = |world: &mut World, local: u32| {
+            let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("FalloutNV.esm"), local: LocalFormId(local) });
+            let entity = world.spawn();
+            world.insert(entity, FormIdComponent(id));
+            entity
+        };
+        let person = spawn(&mut world, 0x100);
+        let beast = spawn(&mut world, 0x101);
+        world.insert(beast, CreatureActor);
+        world.insert_resource(pool);
+        let mut index = EsmIndex::default();
+        index.challenges.insert(0x77, ChalRecord { form_id: 0x77, editor_id: "KillBeast".into(), challenge_type: challenge_kind::KILL_SPECIFIC, threshold: 1, form1: 0x555, ..Default::default() });
+        world.insert_resource(crate::challenges::ChallengeDefs::from_index(&index));
+        world.insert(beast, crate::scene::SceneAliasCandidate { reference_form_id: 0x101, base_form_id: 0x555, linked_refs: Vec::new(), location_ref_types: Vec::new() });
+        let stat = |world: &World, name: &str| crate::obscript_more::misc_stat(world, name);
+        note_death(&world, person, Some(player));
+        assert_eq!((stat(&world, "People Killed"), stat(&world, "Creatures Killed"), stat(&world, "Total Things Killed")), (1, 0, 1));
+        note_death(&world, beast, Some(person));
+        assert_eq!(stat(&world, "Total Things Killed"), 1, "an NPC's kill is not the player's");
+        assert_eq!(crate::challenges::completed(&world, 0x77), Some(false));
+        note_death(&world, beast, Some(player));
+        assert_eq!((stat(&world, "Creatures Killed"), stat(&world, "Total Things Killed")), (1, 2));
+        assert_eq!(crate::challenges::completed(&world, 0x77), Some(true), "the kill of the named form completed it");
     }
 }

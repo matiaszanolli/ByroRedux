@@ -308,7 +308,7 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         // relative to the actor, `bTrapContinuous` (0 only on first contact, 1 every call while in contact),
         // `fLevelledDamage` extra per level of the actor.
         0x110c => trap_update(world, args, ctx),
-        _ => Action::Unhandled,
+        _ => super::tail::run(world, fallout, cmd, args, ctx),
     }
 }
 

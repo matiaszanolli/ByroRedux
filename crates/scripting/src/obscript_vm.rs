@@ -196,7 +196,7 @@ pub trait ObScriptHost {
 
 /// Commands whose one argument is a string, not a form index or a number: `PlayIdle` (GECK: "takes the
 /// actual editorID string of the idle as parameter"), `GetGS <setting>` and `ShowWarning "text"`.
-const STRING_FORM_COMMANDS: [u16; 7] = [0x1190, 0x1100, 0x11b9, 0x1137, 0x1138, 0x11ff, 0x114d];
+const STRING_FORM_COMMANDS: [u16; 8] = [0x1190, 0x1100, 0x11b9, 0x1137, 0x1138, 0x11ff, 0x114d, 0x1114];
 
 /// Commands that take a reference and then strings (`SwapTexture <ref> "<slot>" "<texture>"`), the
 /// strings handed to the host through [`ObScriptHost::text_arguments`].

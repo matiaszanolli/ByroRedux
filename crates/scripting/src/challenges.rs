@@ -290,6 +290,45 @@ pub fn challenge_system(world: &World, _dt: f32) {
     }
 }
 
+/// What `challenge.status` prints: one line per challenge asked for (every one that has progressed,
+/// completed or been unlocked when none is named).
+pub fn status_lines(world: &World, wanted: Option<u32>) -> Vec<String> {
+    let (Some(defs), Some(state)) = (world.try_resource::<ChallengeDefs>().map(|defs| defs.clone()), world.try_resource::<ChallengeState>().map(|state| state.clone())) else {
+        return vec!["no challenges (this load order has none)".to_owned()];
+    };
+    let mut forms: Vec<u32> = match wanted {
+        Some(form) => vec![form],
+        None => {
+            let mut touched: Vec<u32> = state.entries.keys().copied().collect();
+            touched.extend(defs.0.values().filter(|def| def.challenge_type == kind::MISC_STAT && progress(world, def.form_id).unwrap_or(0) > 0).map(|def| def.form_id));
+            touched.sort_unstable();
+            touched.dedup();
+            touched
+        }
+    };
+    forms.retain(|form| defs.get(*form).is_some());
+    if forms.is_empty() {
+        return vec!["no challenge with progress".to_owned()];
+    }
+    forms
+        .into_iter()
+        .map(|form| {
+            let def = defs.get(form).expect("retained above");
+            let entry = state.entries.get(&form).cloned().unwrap_or_default();
+            format!(
+                "{form:08X} {} type {} {}/{} enabled={} completions={} recurring={}",
+                def.editor_id,
+                def.challenge_type,
+                progress(world, form).unwrap_or(0),
+                def.threshold,
+                is_enabled(&state, def),
+                entry.completions,
+                is_recurring(&state, def),
+            )
+        })
+        .collect()
+}
+
 /// This subsystem's resources.
 pub fn install(world: &mut World) {
     world.init_resource::<ChallengeDefs>();

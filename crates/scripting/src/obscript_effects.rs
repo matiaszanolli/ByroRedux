@@ -136,6 +136,7 @@ pub(crate) fn handles(cmd: u16) -> bool {
             | CMD_PLAY_MAGIC_SHADER
             | CMD_PLAY_MAGIC_EFFECT
             | CMD_STOP_MAGIC_SHADER
+            | CMD_STOP_MAGIC_EFFECT
             | CMD_LOOK
             | CMD_STOP_LOOK
             | CMD_RESURRECT
@@ -555,9 +556,18 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             }
             return Action::Done { value: None, effect: format!("PlayMagicShader {shader:08X} on {caller:08X}") };
         }
-        CMD_STOP_MAGIC_SHADER => {
+        // `StopMagicEffectVisuals <effect>` (Oblivion's `SME`): the shader the effect plays, stopped.
+        CMD_STOP_MAGIC_SHADER | CMD_STOP_MAGIC_EFFECT => {
             let Some(entity) = caller_entity else { return Action::Declined };
-            let Some(shader) = form_arg(args, 0) else { return Action::Declined };
+            let Some(named) = form_arg(args, 0) else { return Action::Declined };
+            let shader = if cmd == CMD_STOP_MAGIC_EFFECT {
+                match world.try_resource::<crate::magic_shaders::ShaderCatalog>().and_then(|catalog| catalog.of_effect(named)) {
+                    Some(shader) => shader,
+                    None => return Action::Declined,
+                }
+            } else {
+                named
+            };
             crate::magic_shaders::stop_shader(world, entity, shader);
             return Action::Done { value: None, effect: format!("StopMagicShader {shader:08X} on {caller:08X}") };
         }
@@ -1148,6 +1158,7 @@ const CMD_STOP_LOOK: u16 = 0x105d;
 const CMD_PLAY_MAGIC_SHADER: u16 = 0x1123;
 const CMD_PLAY_MAGIC_EFFECT: u16 = 0x1124;
 const CMD_STOP_MAGIC_SHADER: u16 = 0x1125;
+const CMD_STOP_MAGIC_EFFECT: u16 = 0x1126;
 const CMD_CAST_IMMEDIATE_ON_SELF: u16 = 0x11d9;
 const CMD_DISPEL: u16 = 0x1142;
 const CMD_HAS_MAGIC_EFFECT: u16 = 0x10d6;

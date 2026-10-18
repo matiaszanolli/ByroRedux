@@ -633,6 +633,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::sleep_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::music_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::reload_system);
+    scheduler.add_exclusive(Stage::Update, crate::combat::chargen_catch_up_system);
+    scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::script_ui_request_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::actor_alpha_system);
     // M47.3 — the New Vegas challenges whose stat has risen far enough complete (reward script and all).
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::challenges::challenge_system);

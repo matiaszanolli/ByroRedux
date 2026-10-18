@@ -166,6 +166,9 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(DoorTeleportCommand);
     registry.register(quest::WeatherForceCommand);
     registry.register(quest::ObScriptCmdCommand);
+    registry.register(quest::MiscStatCommand);
+    registry.register(quest::ScriptRequestsCommand);
+    registry.register(quest::ChallengeStatusCommand);
     registry.register(gameplay::InvUseCommand);
     registry.register(gameplay::MagicCastCommand);
     registry.register(gameplay::MagicEffectsCommand);

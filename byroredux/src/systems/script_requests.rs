@@ -269,6 +269,50 @@ pub(crate) fn actor_alpha_system(world: &World, _dt: f32) {
     }
 }
 
+// ── menus, videos, ExitGame ────────────────────────────────────────────────────────────────────────
+
+/// The screens and videos scripts asked for that the engine has no UI to show, most recent last: a
+/// bounded log (`script.requests` prints it) so a request is neither dropped unseen nor queued for ever.
+/// `NOT_SAVED_BY_DESIGN`: presentation.
+#[derive(Debug, Default)]
+pub(crate) struct ScriptRequestLog(pub(crate) std::collections::VecDeque<String>);
+
+impl byroredux_core::ecs::Resource for ScriptRequestLog {}
+
+const REQUEST_LOG_CAP: usize = 64;
+
+/// Move the menus (`ShowMap`, the chargen screens, the casino games ...) and videos (`PlayBink`) scripts
+/// asked for into the log, and carry out `ExitGame` — "plays credits and returns the game to the main
+/// menu"; there is no main menu, so the game ends through the orderly shutdown.
+pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
+    use byroredux_scripting::obscript_more::{ExitGameRequest, PendingMenus, PendingVideos};
+    let mut lines = Vec::new();
+    if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
+        lines.extend(menus.0.drain(..).map(|menu| format!("menu {} form {:08X}", menu.menu, menu.form)));
+    }
+    if let Some(mut videos) = world.try_resource_mut::<PendingVideos>() {
+        lines.extend(videos.0.drain(..).map(|file| format!("video {file} (no Bink decoder)")));
+    }
+    if !lines.is_empty() {
+        if let Some(mut log) = world.try_resource_mut::<ScriptRequestLog>() {
+            for line in lines {
+                log::info!("script request: {line}");
+                if log.0.len() >= REQUEST_LOG_CAP {
+                    log.0.pop_front();
+                }
+                log.0.push_back(line);
+            }
+        }
+    }
+    let exit = world.try_resource_mut::<ExitGameRequest>().is_some_and(|mut request| std::mem::take(&mut request.0));
+    if exit {
+        log::info!("ExitGame: ending the game through the orderly shutdown");
+        if let Some(mut quit) = world.try_resource_mut::<crate::app_events::GracefulExitRequested>() {
+            quit.0 = true;
+        }
+    }
+}
+
 // ── EssentialDeathReload ───────────────────────────────────────────────────────────────────────────
 
 /// `EssentialDeathReload`: the death-reload — the message was shown when the command ran; the game goes

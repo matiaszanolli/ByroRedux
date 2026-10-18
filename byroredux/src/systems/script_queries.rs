@@ -136,6 +136,21 @@ fn trap_contacts(world: &World, trap: EntityId) -> Vec<TrapContact> {
         .collect()
 }
 
+/// Whether the actor stands in water that hurts (an authored damage per second — lava).
+fn in_dangerous_water(world: &World, actor: EntityId) -> bool {
+    world
+        .get::<byroredux_core::ecs::components::WaterContact>(actor)
+        .is_some_and(|contact| contact.submerged_fraction > 0.0 && contact.damage_per_second > 0.0)
+}
+
+/// Whether the player's character controller is off the ground.
+fn player_airborne(world: &World) -> bool {
+    let Some(player) = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) else {
+        return false;
+    };
+    world.get::<byroredux_physics::CharacterController>(player).is_some_and(|controller| !controller.is_grounded)
+}
+
 /// Install the queries and their state.
 pub(crate) fn install(world: &mut World) {
     world.init_resource::<UiMenuState>();
@@ -148,6 +163,8 @@ pub(crate) fn install(world: &mut World) {
         reticle_point: Some(reticle_point),
         placement_at: Some(crate::cell_loader::created::placement_at_position),
         trap_contacts: Some(trap_contacts),
+        in_dangerous_water: Some(in_dangerous_water),
+        player_airborne: Some(player_airborne),
     });
 }
 

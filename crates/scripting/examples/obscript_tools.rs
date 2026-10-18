@@ -8,6 +8,7 @@
 //! | cmd | args | answers |
 //! |-----|------|---------|
 //! | `census` | `<ESM>` | which `Begin <block>` types the quest / object / effect scripts use, the authored `QUST` quest-delay spread, and the ids the VM declines |
+//! | `ids` | `<ESM>` | every command id the compiled bytecode itself uses (statements and calls inside expressions, whatever the source calls them) that the host does not model, with how many scripts and statements use it — the census `names` cannot give, since it aligns by source name (`Gifh` for `GetIgnoreFriendlyHits`) |
 //! | `names` | `<ESM> [quest\|object\|all] [min-scripts]` | a *name* for each command id, by aligning each script's `SCTX` source with its compiled statements (no opcode table exists locally; this is how the VM's ids were recovered) |
 //! | `live` | `<ESM> [rounds]` | what the real `ObScriptCommandHost` does with every scripted quest over a bare world: still-declined ids, objectives reached |
 //! | `dump` | `<ESM> <formid\|grep:text\|grepq:text>` | one SCPT: locals, source, compiled bytes |
@@ -33,6 +34,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "find" => find::run(args),
         "items" => items::run(args),
         "exprcheck" => exprcheck::run(args),
+        "ids" => ids::run(args),
         _ => {
             eprintln!("usage: obscript_tools <census|names|live|dump|walk> <ESM> ...");
             std::process::exit(2);
@@ -897,5 +899,78 @@ mod items {
             println!("{:08X} {} -> script {:08X} {} blocks {:x?}", item.form_id, item.common.editor_id, script.form_id, script.editor_id, blocks);
         }
         Ok(())
+    }
+}
+
+/// `ids <ESM>` — the command ids the *bytecode* uses, read by framing every compiled script (no source
+/// alignment): top-level statements (`op >= 0x1000`, and `0x1c` reference calls) and the calls written inside
+/// expressions (` X <id> <len> <args>`). Prints the ones `command_is_modeled` says the host does not run.
+mod ids {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use byroredux_plugin::esm::parse_esm;
+
+    fn u16_at(b: &[u8], at: usize) -> Option<usize> {
+        Some(usize::from(u16::from_le_bytes([*b.get(at)?, *b.get(at + 1)?])))
+    }
+
+    pub fn run(mut a: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error::Error>> {
+        let esm = a.next().expect("esm");
+        let index = parse_esm(&std::fs::read(&esm)?)?;
+        let fallout = !esm.to_ascii_lowercase().contains("oblivion");
+        let mut uses: BTreeMap<u16, (BTreeSet<u32>, usize)> = BTreeMap::new();
+        for script in index.scripts.values() {
+            let bytes = &script.compiled;
+            let mut offset = 0usize;
+            while let Some(op) = u16_at(bytes, offset) {
+                let (payload, next) = if op == 0x1c {
+                    let Some(len) = u16_at(bytes, offset + 6) else { break };
+                    let cmd = u16_at(bytes, offset + 4).unwrap_or(0) as u16;
+                    note(&mut uses, cmd, script.form_id);
+                    (offset + 8..offset + 8 + len, offset + 8 + len)
+                } else {
+                    let Some(len) = u16_at(bytes, offset + 2) else { break };
+                    if op >= 0x1000 {
+                        note(&mut uses, op as u16, script.form_id);
+                    }
+                    (offset + 4..offset + 4 + len, offset + 4 + len)
+                };
+                if next > bytes.len() {
+                    break;
+                }
+                // Calls inside expressions: ` X <id> <len>` — a space, `X`, the command, its argument length.
+                let body = &bytes[payload.start.min(bytes.len())..payload.end.min(bytes.len())];
+                for at in 0..body.len().saturating_sub(5) {
+                    if body[at] == 0x20 && body[at + 1] == b'X' {
+                        let cmd = u16::from_le_bytes([body[at + 2], body[at + 3]]);
+                        let len = usize::from(u16::from_le_bytes([body[at + 4], body[at + 5]]));
+                        if (0x1000..0x1400).contains(&cmd) && at + 6 + len <= body.len() {
+                            note(&mut uses, cmd, script.form_id);
+                        }
+                    }
+                }
+                offset = next;
+            }
+        }
+        let (mut total, mut unmodeled) = (0usize, 0usize);
+        let mut rows = Vec::new();
+        for (&id, (scripts, statements)) in &uses {
+            total += statements;
+            if !byroredux_scripting::obscript_quests::command_is_modeled(id, fallout) {
+                unmodeled += statements;
+                rows.push(format!("{id:#06x}  scripts {:>4} uses {:>5}", scripts.len(), statements));
+            }
+        }
+        for row in rows {
+            println!("{row}");
+        }
+        println!("bytecode command uses not modeled: {unmodeled} of {total}");
+        Ok(())
+    }
+
+    fn note(uses: &mut BTreeMap<u16, (BTreeSet<u32>, usize)>, cmd: u16, script: u32) {
+        let entry = uses.entry(cmd).or_default();
+        entry.0.insert(script);
+        entry.1 += 1;
     }
 }

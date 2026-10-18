@@ -17,10 +17,13 @@ use byroredux_core::math::Vec3;
 use byroredux_scripting::obscript_more::FleeRequest;
 use byroredux_scripting::{AiCombatState, AiSuspended};
 
-use super::locomotion::step_toward;
+use super::locomotion::step_toward_detailed;
 
 /// How far ahead (world units) the point an actor runs toward is placed along the flight line.
 const FLEE_LEG: f32 = 1024.0;
+/// How long a flight may stay held up against a wall before the actor gives up: it is cornered, with
+/// no path-aware retreat to find another way.
+const CORNERED_SECS: f32 = 1.0;
 /// The detection range where the game authors none (no `fSneakMaxDistance`): how far away a threat
 /// stops being one. An engine choice, as the hostility system's range is absent without that setting.
 const FALLBACK_RANGE: f32 = 2048.0;
@@ -30,6 +33,8 @@ const FALLBACK_RANGE: f32 = 2048.0;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FleeState {
     pub(crate) threat: EntityId,
+    /// Seconds the flight has been held up against geometry.
+    pub(crate) blocked: f32,
 }
 
 impl Component for FleeState {
@@ -89,7 +94,7 @@ fn start_flights(world: &World) {
         }
         crate::npc_spawn::ai_package::clear_ambient_behavior(world, actor);
         if let Some(mut flights) = world.query_mut::<FleeState>() {
-            flights.insert(actor, FleeState { threat });
+            flights.insert(actor, FleeState { threat, blocked: 0.0 });
         }
         if let Some(mut held) = world.query_mut::<AiSuspended>() {
             held.insert(actor, AiSuspended);
@@ -119,30 +124,40 @@ fn run_flights(world: &World, dt: f32) {
         match (me, threat_at) {
             (Some((at, rotation)), Some(threat_at)) if !world.has::<Dead>(actor) && !world.has::<Dead>(state.threat) && at.distance(threat_at) <= reach => {
                 let speed = crate::components::WalkSpeed::or_default(world.query::<crate::components::WalkSpeed>().as_ref().and_then(|q| q.get(actor)));
-                moves.push((actor, at, rotation, flight_target(at, threat_at), speed));
+                moves.push((actor, state, at, rotation, flight_target(at, threat_at), speed));
             }
             // Out of range, or either of them gone: the flight is over.
             _ => done.push(actor),
         }
     }
     if !moves.is_empty() {
-        let stepped: Vec<(EntityId, Vec3, Option<byroredux_core::math::Quat>)> = {
+        let stepped: Vec<(EntityId, FleeState, Vec3, Option<byroredux_core::math::Quat>, bool)> = {
             let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
             moves
                 .iter()
-                .map(|&(actor, at, rotation, target, speed)| {
-                    let (position, turned) = step_toward(at, rotation, target, dt, speed, physics.as_deref());
-                    (actor, position, turned)
+                .map(|&(actor, state, at, rotation, target, speed)| {
+                    let (position, turned, blocked) = step_toward_detailed(at, rotation, target, dt, speed, physics.as_deref());
+                    (actor, state, position, turned, blocked)
                 })
                 .collect()
         };
         if let Some(mut transforms) = world.query_mut::<Transform>() {
-            for (actor, position, turned) in stepped {
+            for &(actor, _, position, turned, _) in &stepped {
                 if let Some(transform) = transforms.get_mut(actor) {
                     transform.translation = position;
                     if let Some(rotation) = turned {
                         transform.rotation = rotation;
                     }
+                }
+            }
+        }
+        if let Some(mut flights) = world.query_mut::<FleeState>() {
+            for (actor, state, _, _, blocked) in stepped {
+                let held = if blocked { state.blocked + dt } else { 0.0 };
+                if held >= CORNERED_SECS {
+                    done.push(actor);
+                } else {
+                    flights.insert(actor, FleeState { blocked: held, ..state });
                 }
             }
         }
