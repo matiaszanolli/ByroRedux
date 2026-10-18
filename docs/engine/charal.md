@@ -141,7 +141,7 @@ is parsed from its own data**, not engine-hardcoded:
 | Which AVs exist (SPECIAL, skills, resources) | **AUTHORED** — `AVIF` records → `EsmIndex::actor_values` | parsed (#1663) |
 | Base SPECIAL of an auto-calc NPC | **AUTHORED** — `CLAS` base attributes (+ `RACE` bonus) | `CLAS` parsed; `RACE` bonus pending |
 | Derived-skill constants (`fAVDSkillBase`, `…PrimaryBonusMult`, `…LuckBonusMult`) | **AUTHORED** — `GMST` game settings | values known; read as **hardcoded constants today**, should read from parsed `GMST` (§8.4) |
-| XP / level curve (`iXPBase`, `iXPLevelUpBase`, …) | **AUTHORED** — `GMST` | pending |
+| XP / level curve + cap (`iXPBase`, `iXPBumpBase`, `iMaxCharacterLevel`; Skyrim `fXPLevelUpBase`/`Mult`) | **AUTHORED** — `GMST` | wired — `LevelingModel::with_gmst` overlays all of them on the sourced constants (#5915), so a DLC master that raises the cap is honoured through the merged load order |
 | Perk gates (required SPECIAL / level / rank) | **AUTHORED** — `PERK` conditions | pending |
 | **Skill → governing attribute** map | **ENGINE-SUPPLIED** — not in any single record; per-game engine knowledge | canonical `SkillSet` rosters shipped (OBLIVION / SKYRIM / FALLOUT3 / FALLOUT_NV); FNV/FO3 population consumes it |
 | **Procedural leveling strategy** (OB attribute-multiplier from skill-ups; Skyrim skill-XP curve) | **ENGINE-SUPPLIED** — irreducibly procedural | shipped: `oblivion_attribute_bonus` (+1…+5), `skyrim_skill_xp_to_next` / `_between` (`fSkillUseCurve` 1.95); Morrowind out of scope |

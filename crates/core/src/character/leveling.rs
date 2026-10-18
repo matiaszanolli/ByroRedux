@@ -51,9 +51,11 @@ pub enum LevelReward {
 /// [`super::CharacterRuleset`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LevelingModel {
-    /// Fallout — an XP-to-next curve `xp_a·L + xp_b`, a base-game `level_cap`
-    /// (`0` = uncapped), and a per-level [`LevelReward`]. DLC cap raises are
-    /// a loader concern and are not wired yet.
+    /// Fallout — an XP-to-next curve `xp_a·L + xp_b`, a `level_cap` (`0` =
+    /// uncapped), and a per-level [`LevelReward`]. The curve and cap overlay
+    /// the authored `iXPBumpBase` / `iXPBase` / `iMaxCharacterLevel` GMSTs
+    /// ([`LevelingModel::with_gmst`]), so a DLC master that raises the cap
+    /// (`BrokenSteel.esm`) is honoured through the merged load order.
     XpCurve {
         xp_a: f32,
         xp_b: f32,
@@ -104,6 +106,33 @@ impl LevelingModel {
                 pool_pick_gain,
                 level_cap,
             },
+            // #5915 — Fallout's curve and cap are authored too. GECK
+            // *Experience Settings*: XP needed for level n is
+            // `(n−1)·((n−2)/2·iXPBumpBase + iXPBase)`, and differencing gives
+            // `xp_to_next(L) = iXPBumpBase·L + (iXPBase − iXPBumpBase)`. A
+            // setting the load order does not author keeps the sourced
+            // constant (all three games' constants satisfy
+            // `xp_a + xp_b = iXPBase`, so the implied base is `xp_a + xp_b`),
+            // and `iMaxCharacterLevel` replaces the cap only when authored —
+            // `BrokenSteel.esm` raises FO3's 20 to 30.
+            Self::XpCurve {
+                xp_a,
+                xp_b,
+                level_cap,
+                reward,
+            } => {
+                let bump = gmst("iXPBumpBase").unwrap_or(xp_a);
+                let base = gmst("iXPBase").unwrap_or(xp_a + xp_b);
+                let authored_cap = gmst("iMaxCharacterLevel")
+                    .filter(|cap| cap.is_finite() && *cap >= 1.0)
+                    .map(|cap| cap.min(f32::from(u16::MAX)) as u16);
+                Self::XpCurve {
+                    xp_a: bump,
+                    xp_b: base - bump,
+                    level_cap: authored_cap.unwrap_or(level_cap),
+                    reward,
+                }
+            }
             other => other,
         }
     }
@@ -276,9 +305,9 @@ impl LevelingModel {
             .unwrap_or(matches!(self, Self::SkillXp { .. }))
     }
 
-    /// The base-game hard level cap (`0` = uncapped). DLC-specific raises are
-    /// not applied by the current loader; callers must treat this as the
-    /// authored base cap until that integration lands.
+    /// The hard level cap (`0` = uncapped): the sourced base-game constant,
+    /// or the load order's authored `iMaxCharacterLevel` where
+    /// [`Self::with_gmst`] overlaid one.
     #[inline]
     pub fn level_cap(&self) -> u16 {
         match self {
@@ -444,6 +473,63 @@ mod tests {
         assert_eq!(model.xp_from_skill_rank(20), Some(20.0));
         assert_eq!(model.pool_pick_gain(), Some(10.0));
         assert_eq!(requested.into_inner(), ["fXPLevelUpBase", "fXPLevelUpMult"]);
+    }
+
+    /// #5915 — the Fallout curve and cap overlay their authored GMSTs, and a
+    /// setting the load order does not author leaves the sourced constants.
+    #[test]
+    fn fallout_gmst_overlay_reads_curve_and_cap() {
+        let requested = std::cell::RefCell::new(Vec::new());
+        // `FalloutNV.esm`: iMaxCharacterLevel 30, iXPBumpBase 150, no iXPBase.
+        let fnv = LevelingModel::FNV.with_gmst(|name| {
+            requested.borrow_mut().push(name.to_owned());
+            match name {
+                "iMaxCharacterLevel" => Some(30.0),
+                "iXPBumpBase" => Some(150.0),
+                _ => None,
+            }
+        });
+        assert_eq!(fnv, LevelingModel::FNV, "authored defaults reproduce the sourced model");
+        assert_eq!(
+            requested.into_inner(),
+            ["iXPBumpBase", "iXPBase", "iMaxCharacterLevel"],
+            "only the three curve/cap settings are read"
+        );
+
+        // `Fallout3.esm` authors the bump and no cap (exe default 20) ...
+        let fo3 = LevelingModel::FO3.with_gmst(|name| (name == "iXPBumpBase").then_some(150.0));
+        assert_eq!(fo3, LevelingModel::FO3);
+        assert_eq!(fo3.level_cap(), 20);
+        // ... and `BrokenSteel.esm` raises it to 30.
+        let broken_steel =
+            LevelingModel::FO3.with_gmst(|name| (name == "iMaxCharacterLevel").then_some(30.0));
+        assert_eq!(broken_steel.level_cap(), 30);
+        assert_eq!(broken_steel.xp_to_next(1), 200.0, "the curve is untouched");
+
+        // `Fallout4.esm` authors iXPBase 200 only: 75·L + (200 − 75) = 75·L + 125.
+        let fo4 = LevelingModel::FO4.with_gmst(|name| (name == "iXPBase").then_some(200.0));
+        assert_eq!(fo4, LevelingModel::FO4);
+
+        // A retuned curve: bump 100, base 300 → 100·L + 200.
+        let tuned = LevelingModel::FNV.with_gmst(|name| match name {
+            "iXPBumpBase" => Some(100.0),
+            "iXPBase" => Some(300.0),
+            _ => None,
+        });
+        assert_eq!(tuned.xp_to_next(1), 300.0);
+        assert_eq!(tuned.xp_to_next(5), 700.0);
+        // Only the bump retuned: base stays the sourced 200, so 120·L + 80.
+        let bump_only = LevelingModel::FNV.with_gmst(|name| (name == "iXPBumpBase").then_some(120.0));
+        assert_eq!(bump_only.xp_to_next(1), 200.0);
+        assert_eq!(bump_only.xp_to_next(2), 320.0);
+
+        // A nonsense cap never replaces the sourced one.
+        for bad in [0.0, -5.0, f32::NAN] {
+            let kept = LevelingModel::FNV.with_gmst(|name| (name == "iMaxCharacterLevel").then_some(bad));
+            assert_eq!(kept.level_cap(), 30, "{bad}");
+        }
+        // The Fallout reward is carried through.
+        assert_eq!(fnv.skill_point_reward(2, 9.0), LevelingModel::FNV.skill_point_reward(2, 9.0));
     }
 
     #[test]
