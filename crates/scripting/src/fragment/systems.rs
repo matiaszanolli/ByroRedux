@@ -118,18 +118,10 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
     }
     if !still_pending.is_empty() {
         // #5681 — the queue is saved with the world, so an unbounded
-        // backlog would persist across sessions. Drop the *newest* tails
-        // (same overflow policy as the provider continuation queue).
-        if still_pending.len() > MAX_FRAGMENT_CONTINUATIONS {
-            let dropped = still_pending.len() - MAX_FRAGMENT_CONTINUATIONS;
-            log::warn!(
-                "fragment continuation queue exceeded {MAX_FRAGMENT_CONTINUATIONS}; \
-                 dropping {dropped} newest tails"
-            );
-            still_pending.truncate(MAX_FRAGMENT_CONTINUATIONS);
-        }
+        // backlog would persist across sessions; `extend_capped` drops the
+        // *newest* tails (same overflow policy as the provider queue).
         if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
-            queue.pending.extend(still_pending);
+            queue.extend_capped(still_pending);
         }
     }
     if ready.is_empty() {
@@ -152,7 +144,7 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
                     remaining_seconds: 0.0,
                     ..rest
                 }));
-                queue.pending.extend(waiting);
+                queue.extend_capped(waiting);
                 break;
             }
         }

@@ -635,7 +635,7 @@ pub(crate) enum FragmentResumeCondition {
 /// still guaranteeing every entry eventually leaves the queue.
 pub(crate) const MAX_ACTORS_3D_LOADED_WAIT_SECONDS: f32 = 30.0;
 pub(crate) const MAX_PROVIDER_FRAGMENT_BARRIERS: usize = 64;
-/// #5681 — bound on `FragmentExecutionQueue` entries, the fragment-path
+/// #5681/#5984 — bound on `FragmentExecutionQueue` entries, the fragment-path
 /// sibling of the provider queue's `MAX_PROVIDER_CONTINUATIONS`. Overflow
 /// drops the *newest* tails (the entries pushed latest), so a mod that
 /// re-fires an INFO or scene fragment per player action cannot grow the
@@ -666,6 +666,42 @@ impl FragmentExecutionQueue {
 
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+
+    /// Queue one continuation unless the queue is at
+    /// [`MAX_FRAGMENT_CONTINUATIONS`]; the *newest* entry is the one dropped
+    /// (#5984). Every producer goes through here (or [`Self::extend_capped`]):
+    /// a zero-delay budget deferral, a custom-event delivery or an
+    /// `Interpret` yield is just as able to flood the saved queue as a timed
+    /// wait. Returns whether the entry was kept.
+    pub(crate) fn push(&mut self, entry: PendingFragmentExecution) -> bool {
+        if self.pending.len() >= MAX_FRAGMENT_CONTINUATIONS {
+            log::warn!(
+                "fragment continuation queue is full ({MAX_FRAGMENT_CONTINUATIONS}); \
+                 dropping the newest tail"
+            );
+            return false;
+        }
+        self.pending.push(entry);
+        true
+    }
+
+    /// [`Self::push`] for a batch, dropping whatever does not fit.
+    pub(crate) fn extend_capped(&mut self, entries: impl IntoIterator<Item = PendingFragmentExecution>) {
+        let mut dropped = 0usize;
+        for entry in entries {
+            if self.pending.len() < MAX_FRAGMENT_CONTINUATIONS {
+                self.pending.push(entry);
+            } else {
+                dropped += 1;
+            }
+        }
+        if dropped > 0 {
+            log::warn!(
+                "fragment continuation queue exceeded {MAX_FRAGMENT_CONTINUATIONS}; \
+                 dropping {dropped} newest tails"
+            );
+        }
     }
 }
 

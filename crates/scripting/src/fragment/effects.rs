@@ -790,7 +790,7 @@ pub fn apply_effects(
                     }];
                     tail.extend(remaining_program(current, index, &pending));
                     if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
-                        queue.pending.push(PendingFragmentExecution {
+                        queue.push(PendingFragmentExecution {
                             context,
                             vmad: vmad.cloned(),
                             effects: tail,
@@ -935,7 +935,7 @@ pub fn apply_effects(
                     let mut tail = vec![effect.clone()];
                     tail.extend(remaining_program(current, index, &pending));
                     if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
-                        queue.pending.push(PendingFragmentExecution {
+                        queue.push(PendingFragmentExecution {
                             context,
                             vmad: vmad.cloned(),
                             effects: tail,
@@ -981,7 +981,7 @@ pub fn apply_effects(
                 let tail = remaining_program(current, index, &pending);
                 if !tail.is_empty() {
                     if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
-                        queue.pending.push(PendingFragmentExecution {
+                        queue.push(PendingFragmentExecution {
                             context,
                             vmad: vmad.cloned(),
                             effects: tail,

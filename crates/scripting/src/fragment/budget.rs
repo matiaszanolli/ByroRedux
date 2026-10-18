@@ -170,7 +170,9 @@ pub(crate) fn defer(
     let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() else {
         return Err(effects);
     };
-    queue.pending.push(PendingFragmentExecution {
+    // A full queue drops the newest tail (#5984): the work is shed, not run
+    // unbudgeted, so this still reports success.
+    queue.push(PendingFragmentExecution {
         context,
         vmad: vmad.cloned(),
         effects,

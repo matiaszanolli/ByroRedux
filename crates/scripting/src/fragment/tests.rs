@@ -3758,6 +3758,32 @@ fn continuation_queue_drops_newest_past_the_cap() {
     );
 }
 
+/// Regression: #5984 — the #5681 cap used to apply only when timed entries
+/// were re-partitioned. Zero-delay entries (budget deferrals, custom-event
+/// deliveries, `Interpret` yields) never counted, so a self-re-sending
+/// script grew the saved queue without bound. The cap now lives on the push.
+#[test]
+fn zero_delay_deferrals_are_capped_at_the_push() {
+    let world = fixture();
+    for _ in 0..MAX_FRAGMENT_CONTINUATIONS + 50 {
+        // Ok(()) either way: a full queue sheds the newest tail rather than
+        // handing it back to run unbudgeted.
+        assert!(super::budget::defer(&world, Q, None, Vec::new()).is_ok());
+    }
+    assert_eq!(world.resource::<FragmentExecutionQueue>().len(), MAX_FRAGMENT_CONTINUATIONS);
+
+    // The ready tail the exhausted-budget path re-queues is capped too.
+    let mut queue = world.resource_mut::<FragmentExecutionQueue>();
+    queue.extend_capped((0..10).map(|_| PendingFragmentExecution {
+        context: Q,
+        vmad: None,
+        effects: Vec::new(),
+        remaining_seconds: 0.0,
+        resume_when: FragmentResumeCondition::DelayElapsed,
+    }));
+    assert_eq!(queue.len(), MAX_FRAGMENT_CONTINUATIONS);
+}
+
 #[test]
 fn dispatch_tethers_cart_and_equips_carried_armor() {
     use crate::translate::effects::ActorRef;
