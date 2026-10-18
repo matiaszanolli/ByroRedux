@@ -13,6 +13,8 @@ use byroredux_core::ecs::World;
 /// before any entity has triggered an event.
 pub fn register(world: &mut World) {
     world.insert_resource(CompatibilityRegistry::default());
+    // M47.3 — the lines scripts made actors say (`Say` / `SayTo`; not saved).
+    world.init_resource::<crate::obscript_speech::PendingScriptedLines>();
     // M47.2 — the scripted faction-membership ledger (saved; a restore
     // replaces this default).
     world.init_resource::<ScriptedFactionChanges>();

@@ -250,6 +250,27 @@ fn resolve_voice_segments(
     Some(sounds)
 }
 
+/// M47.3 — play the lines ObScript `Say` / `SayTo` made actors say. Each is voiced like a
+/// conversation line (the topic's and owning quest's EDIDs name the file); a recording that
+/// resolves replaces the subtitle estimate the call answered with as the line's length, which
+/// is what times its `SayToDone`. A line with no recording stays silent and keeps the estimate.
+pub(crate) fn scripted_line_voice_system(world: &World, _dt: f32) {
+    let lines = match world.try_resource_mut::<byroredux_scripting::obscript_speech::PendingScriptedLines>() {
+        Some(mut lines) if !lines.pending.is_empty() => std::mem::take(&mut lines.pending),
+        _ => return,
+    };
+    for line in lines {
+        // A new line cuts the speaker's previous one.
+        stop_line_voice(world, line.speaker);
+        let Some(seconds) = play_line_voice(world, line.speaker, &line.info, &line.topic_editor_id, line.owning_quest) else {
+            continue;
+        };
+        if let Some(mut lines) = world.try_resource_mut::<byroredux_scripting::obscript_speech::PendingScriptedLines>() {
+            lines.set_duration(line.speaker, line.topic_form_id, seconds as f32);
+        }
+    }
+}
+
 /// Resolve, decode, and schedule the INFO's voice segments at the NPC.
 /// Returns the total voice seconds when at least one segment resolved;
 /// `None` keeps the caller's subtitle estimate. `topic_edid` /

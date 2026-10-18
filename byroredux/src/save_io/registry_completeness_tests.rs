@@ -751,6 +751,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SceneStopRequest", "one-shot request drained every tick"),
         ("LegacyObscriptContentCatalog", "immutable load-order snapshot republished from GlobalFormIdResolver before every legacy-script tick"),
         ("ObScriptObjectTable", "M47.3 — the load order's object scripts by SCPT FormID, with their block lists; rebuilt from the records at every content load"),
+        ("PendingScriptedLines", "M47.3 — the lines ObScript Say/SayTo made actors say, waiting for the voice player and timing their SayToDone; a moment of speech, not gameplay state"),
         ("GameClockGlobals", "M47.3 — the FormID of the GameHour GLOB, found in the records when the globals are installed; the hour itself is written into the saved Globals every frame"),
         ("ObScriptItemScripts", "M47.3 — each item base record's installed object script, by item FormID; rebuilt from the records at every content load"),
         ("ObScriptInCombat", "M47.3 — marks an actor whose ObScript OnStartCombat has run for its current fight; after a load an actor still in combat is told again"),

@@ -518,6 +518,10 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         byroredux_scripting::obscript_objects::obscript_object_system,
     );
+    // M47.3 — the lines `Say` / `SayTo` made actors say: the voice player picks up this
+    // frame's, then the timers tick and finished lines run their `SayToDone` blocks.
+    scheduler.add_exclusive(Stage::Update, crate::systems::dialogue_voice::scripted_line_voice_system);
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::obscript_speech::obscript_speech_system);
     // M47.2 — reference scripts the Papyrus VM runs receive this frame's
     // cell-load, activation and trigger events (all produced above). Ahead
     // of quest fragment dispatch, so a stage they set runs its fragment

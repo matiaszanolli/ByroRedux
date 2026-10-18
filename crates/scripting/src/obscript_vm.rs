@@ -83,6 +83,8 @@ pub const BLOCK_ON_ADD: u16 = 0x03;
 pub const BLOCK_ON_EQUIP: u16 = 0x04;
 pub const BLOCK_ON_UNEQUIP: u16 = 0x05;
 pub const BLOCK_ON_DROP: u16 = 0x06;
+/// `Begin SayToDone [topic]`: `0x07` on all three games (GECK *SayToDone*).
+pub const BLOCK_SAY_TO_DONE: u16 = 0x07;
 pub const BLOCK_ON_DEATH: u16 = 0x0a;
 pub const BLOCK_ON_LOAD: u16 = 0x15;
 /// `Begin OnHit`, `OnHitWith`, `OnStartCombat` and `OnCombatEnd`, numbered by the same

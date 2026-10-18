@@ -100,6 +100,8 @@ const CMD_REWARD_KARMA: u16 = 0x1204;
 const CMD_REMOVE_ALL_ITEMS: u16 = 0x10ad;
 const CMD_PLACE_AT_ME: u16 = 0x1025;
 const CMD_RESET_AI: u16 = 0x11fa;
+const CMD_SAY: u16 = 0x1033;
+const CMD_SAY_TO: u16 = 0x1034;
 const CMD_SET_OWNERSHIP: u16 = 0x1117;
 const CMD_CLEAR_OWNERSHIP: u16 = 0x118c;
 /// `Karma` in the Fallout actor-value table.
@@ -151,6 +153,8 @@ pub(crate) fn handles(cmd: u16) -> bool {
             | CMD_RESET_AI
             | CMD_SET_OWNERSHIP
             | CMD_CLEAR_OWNERSHIP
+            | CMD_SAY
+            | CMD_SAY_TO
     )
 }
 
@@ -529,6 +533,27 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             };
             overrides.set(caller, owner);
             return Action::Done { value: None, effect: format!("SetOwnership {caller:08X} {owner:08X}") };
+        }
+        // `Say <topic> [force subtitle] [speaker] [position flag]` and `SayTo <target> <topic>
+        // [force subtitle] [no target look]`: the calling actor speaks one line of the topic,
+        // and the call answers how many seconds it takes (CS: "useful for timing followups").
+        // A topic with nothing eligible to say answers 0 and speaks nothing.
+        CMD_SAY | CMD_SAY_TO => {
+            let Some(speaker) = caller_entity else { return Action::Declined };
+            let (target, topic) = if cmd == CMD_SAY {
+                (None, form_arg(args, 0))
+            } else {
+                match form_arg(args, 0).map(|form| live(world, form)) {
+                    Some(Some(target)) => (Some(target), form_arg(args, 1)),
+                    _ => return Action::Declined,
+                }
+            };
+            let Some(topic) = topic else { return Action::Declined };
+            let seconds = crate::obscript_speech::say(world, speaker, topic, target).unwrap_or(0.0);
+            return Action::Done {
+                value: Some(ObScriptValue::Num(seconds)),
+                effect: format!("{} {caller:08X} topic {topic:08X}", if cmd == CMD_SAY { "Say" } else { "SayTo" }),
+            };
         }
         CMD_RESET_HEALTH => {
             let Some(actor) = caller_entity else { return Action::Declined };

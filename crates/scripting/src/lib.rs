@@ -69,6 +69,7 @@ pub mod obscript;
 mod obscript_actions;
 pub mod obscript_actor_values;
 mod obscript_effects;
+pub mod obscript_speech;
 pub mod obscript_objects;
 pub mod obscript_quests;
 pub mod obscript_runtime;

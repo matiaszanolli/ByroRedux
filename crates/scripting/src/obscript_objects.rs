@@ -72,7 +72,7 @@ use crate::events::{
 use crate::obscript_quests::ObScriptCommandHost;
 use crate::obscript_vm::{
     BlockInfo, BlockOutcome, ObScriptProgram, VmState, BLOCK_GAME_MODE, BLOCK_ON_ACTIVATE, BLOCK_ON_ADD,
-    BLOCK_ON_DROP, BLOCK_ON_EQUIP, BLOCK_ON_UNEQUIP,
+    BLOCK_ON_DROP, BLOCK_ON_EQUIP, BLOCK_ON_UNEQUIP, BLOCK_SAY_TO_DONE,
     BLOCK_ON_COMBAT_END, BLOCK_ON_DEATH, BLOCK_ON_HIT, BLOCK_ON_HIT_WITH, BLOCK_ON_LOAD,
     BLOCK_ON_PACKAGE_CHANGE, BLOCK_ON_PACKAGE_DONE, BLOCK_ON_PACKAGE_START, BLOCK_ON_START_COMBAT,
     BLOCK_ON_TRIGGER, BLOCK_ON_TRIGGER_ENTER, BLOCK_ON_TRIGGER_LEAVE,
@@ -536,6 +536,12 @@ pub(crate) fn deliver_package_events(
             );
         }
     }
+}
+
+/// `SayToDone`: the actor finished a line a script made it say. GECK: "triggered when a Say
+/// or SayTo is complete", with an optional topic: a block written for one topic waits for it.
+pub(crate) fn deliver_say_to_done(world: &World, speaker: EntityId, topic: u32, dt: f32) {
+    run_event_blocks(world, speaker, &[BLOCK_SAY_TO_DONE], |block| block.filter.is_none_or(|filter| filter == topic), None, dt);
 }
 
 /// `OnStartCombat` and `OnCombatEnd`: an actor whose script has the block is told
@@ -1274,6 +1280,38 @@ mod tests {
         let mut own = ObScriptCommandHost::new(&world, REF, Some(target), 0.0, &script);
         own.call(CMD_GET_REMOTE_VARIABLE, &[target_ref, counter_slot], None);
         assert_eq!(own.declined.get(), 1);
+    }
+
+    /// `Say` makes the actor speak one line of the topic and answers how long it takes; when
+    /// that has passed the actor's `SayToDone` blocks run, each for the topic it names or any.
+    #[test]
+    fn a_line_an_actor_is_made_to_say_ends_with_its_say_to_done_block() {
+        use byroredux_plugin::esm::records::misc::dialogue::{DialRecord, InfoRecord};
+        use crate::obscript_speech::{obscript_speech_system, say, PendingScriptedLines};
+        const TOPIC: u32 = 0x0008_0001;
+        const OTHER_TOPIC: u32 = 0x0008_0002;
+        let mut record = script_with(&[]);
+        record.compiled.extend(block_with_param(BLOCK_SAY_TO_DONE, counting_body(), Some(1)));
+        record.compiled.extend(block_with_param(BLOCK_SAY_TO_DONE, counting_body(), Some(2)));
+        record.compiled.extend(block_with(BLOCK_SAY_TO_DONE, counting_body()));
+        record.refs = vec![ScriptRef::Object(TOPIC), ScriptRef::Object(OTHER_TOPIC)];
+        let (mut world, speaker) = world_for(record);
+        let player = world.spawn();
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        let info = InfoRecord { form_id: 0x401, response_text: "Welcome, traveller, to my humble home.".into(), ..Default::default() };
+        crate::install_dialogue_records(&mut world, vec![DialRecord { form_id: TOPIC, infos: vec![info], ..Default::default() }]);
+
+        let seconds = say(&world, speaker, TOPIC, None).expect("the topic has a line to say");
+        assert!(seconds > 0.5, "a spoken line takes time: {seconds}");
+        assert_eq!(world.try_resource::<PendingScriptedLines>().unwrap().pending.len(), 1, "waiting for the voice player");
+        obscript_speech_system(&world, seconds - 0.1);
+        assert_eq!(counter(&world, speaker), 0.0, "still speaking");
+        obscript_speech_system(&world, 0.2);
+        assert_eq!(counter(&world, speaker), 2.0, "the block for this topic and the unwritten one, not the other topic's");
+        obscript_speech_system(&world, 5.0);
+        assert_eq!(counter(&world, speaker), 2.0, "once");
+        // A topic that is not there says nothing, and nothing is pending.
+        assert_eq!(say(&world, speaker, 0x00FF_0001, None), None);
     }
 
     /// An item's `OnAdd` block runs the frame the item is added, `RemoveMe` takes one from the
