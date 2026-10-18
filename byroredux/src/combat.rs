@@ -635,19 +635,13 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
         };
         progress.xp = progress.xp.saturating_add(xp);
         if let Some(leveling) = leveling {
-            loop {
-                let to_next = leveling.xp_to_next(progress.level);
-                let capped = leveling.level_cap() > 0 && progress.level >= leveling.level_cap();
-                if capped || to_next <= 0.0 || (progress.xp as f32) < to_next {
-                    break;
-                }
-                progress.xp -= to_next as u32;
-                progress.level = progress.level.saturating_add(1);
-                reached.push(progress.level);
-                log::info!("Player reached level {}", progress.level);
-                crate::notifications::push(world, format!("Level up! You reached level {}", progress.level));
-            }
+            // #5918 — the bounded roll lives on the model.
+            reached = leveling.roll_levels(progress);
         }
+    }
+    for level in &reached {
+        log::info!("Player reached level {level}");
+        crate::notifications::push(world, format!("Level up! You reached level {level}"));
     }
     let Some(leveling) = leveling else {
         return;

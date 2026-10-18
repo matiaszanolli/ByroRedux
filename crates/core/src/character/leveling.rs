@@ -201,6 +201,37 @@ impl LevelingModel {
         }
     }
 
+    /// Roll `progress` through every level its accumulated XP pays for, up to
+    /// the cap, and return the levels reached in order (#5918).
+    ///
+    /// A level costs [`Self::xp_to_next`] rounded **up** to whole XP (progress
+    /// is integral) and at least 1: a mod-authored curve with `0 < cost < 1`
+    /// used to truncate to a zero-XP level that never drained `xp`, spinning
+    /// forever, and a fractional cost silently dropped its remainder every
+    /// level. The roll also stops at `u16::MAX`, where `level` saturates, so no
+    /// curve can loop unboundedly. Models without an XP-to-next (classic TES
+    /// skill-use) roll nothing.
+    pub fn roll_levels(&self, progress: &mut super::CharacterLevel) -> Vec<u16> {
+        let mut reached = Vec::new();
+        loop {
+            let to_next = self.xp_to_next(progress.level);
+            let capped = self.level_cap() > 0 && progress.level >= self.level_cap();
+            if capped || progress.level == u16::MAX || to_next.is_nan() || to_next <= 0.0 {
+                break;
+            }
+            // `ceil` of a huge/infinite curve saturates in the cast: such a
+            // level is simply never reached.
+            let cost = (to_next.ceil() as u32).max(1);
+            if progress.xp < cost {
+                break;
+            }
+            progress.xp -= cost;
+            progress.level += 1;
+            reached.push(progress.level);
+        }
+        reached
+    }
+
     /// Character XP awarded for raising a skill to rank `skill_level`
     /// (`skill_level · xp_per_skill_rank`). `Some` only for the Skyrim
     /// skill-XP model; `None` for Fallout (XP comes from kills/quests) and
@@ -279,6 +310,45 @@ mod tests {
         assert_eq!(banked.skill_points, 14);
         banked.grant_skill_points(14.5);
         assert_eq!(banked.skill_points, 29, "14 then 15");
+    }
+
+    /// #5918 — a fractional or sub-1 authored cost must neither spin nor
+    /// leak XP; the roll is bounded for any curve.
+    #[test]
+    fn roll_levels_is_bounded_and_exact_for_odd_curves() {
+        use crate::character::CharacterLevel;
+        let curve = |xp_base: f32, xp_mult: f32| LevelingModel::SkillXp {
+            xp_base,
+            xp_mult,
+            xp_per_skill_rank: 1.0,
+            pool_pick_gain: 10.0,
+            level_cap: 0,
+        };
+
+        // 0 < cost < 1 used to truncate to 0 and loop forever. Each level now
+        // costs 1 XP, so 5 XP is exactly 5 levels.
+        let mut progress = CharacterLevel { level: 1, xp: 5 };
+        assert_eq!(curve(0.5, 0.0).roll_levels(&mut progress), [2, 3, 4, 5, 6]);
+        assert_eq!(progress, CharacterLevel { level: 6, xp: 0 });
+
+        // A fractional cost rounds up and charges the whole XP it needs.
+        let mut progress = CharacterLevel { level: 1, xp: 205 };
+        assert_eq!(curve(100.5, 0.0).roll_levels(&mut progress), [2, 3]);
+        assert_eq!(progress.xp, 205 - 2 * 101);
+
+        // Even a free curve stops where the level saturates.
+        let mut progress = CharacterLevel { level: u16::MAX - 2, xp: u32::MAX };
+        assert_eq!(curve(0.5, 0.0).roll_levels(&mut progress), [u16::MAX - 1, u16::MAX]);
+
+        // Vanilla Skyrim (25·L + 75) and a Fallout cap are unchanged.
+        let mut progress = CharacterLevel { level: 1, xp: 100 };
+        assert_eq!(LevelingModel::SKYRIM.roll_levels(&mut progress), [2]);
+        assert_eq!(progress.xp, 0);
+        let mut progress = CharacterLevel { level: 20, xp: 100_000 };
+        assert!(LevelingModel::FO3.roll_levels(&mut progress).is_empty(), "FO3 caps at 20");
+        // A model with no XP-to-next rolls nothing.
+        let mut progress = CharacterLevel { level: 3, xp: 999 };
+        assert!(LevelingModel::OBLIVION.roll_levels(&mut progress).is_empty());
     }
 
     #[test]
