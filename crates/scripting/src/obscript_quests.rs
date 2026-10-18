@@ -1524,18 +1524,24 @@ mod real_data_tests {
         );
         // Under an all-zero world (every actor state, item count, and
         // stage reads 0), only scripts whose gates are `GetStage X == 0` /
-        // `GetStageDone X == n == 0` open their SetStage — measured 13 on
-        // the 2026-09-18 corpus (MS12 ×7, MS23 ×3, SQ07 ×2, …). Assert the
+        // `GetStageDone X == n == 0` open their SetStage. 13 were measured on
+        // the 2026-09-18 corpus (MS12 ×7, MS23 ×3, SQ07 ×2, …) — but that count
+        // included gates that were open by accident: a call on a reference inside
+        // an expression (`player.GetDead`, `Actor.GetStage Q`) was read as the
+        // reference's form id, which is nonzero. They now read what the host
+        // answers (0 here), so those gates stay shut: 7 on 2026-10-18. Assert the
         // measured floor, not a guess.
         assert!(
-            setstage_scripts >= 10,
+            setstage_scripts >= 5,
             "only {setstage_scripts} quest scripts issued SetStage — conditions never open"
         );
 
-        // Targeted: MS23Script gates on `GetStageDone MS23 N == 0`, which
-        // the zero-stub satisfies — its GameMode must complete and fire
-        // SetStage on the first tick, exactly as it does in-game on a
-        // fresh save.
+        // Targeted: MS23Script's first gate is `( GetStage MS23 == 40 ) &&
+        // ( Player.GetDistance MS23RolandsHouseMarker <= 300 )` -> `SetStage MS23 45`. Under
+        // an all-zero world it stays shut (the stage reads 0); when the stage is 40 and the
+        // player is 100 units from the marker it opens, once, naming MS23 and stage 45.
+        // (This gate used to look open under zeros only because `Player.GetDistance` inside the
+        // expression was read as a form id.)
         let ms23 = index
             .scripts
             .values()
@@ -1544,14 +1550,25 @@ mod real_data_tests {
         let program = ObScriptProgram::new(ms23);
         let mut state = crate::obscript_vm::VmState::default();
         let mut host = Recorder::default();
-        assert_eq!(
-            program.run_block(BLOCK_GAME_MODE, &mut state, &mut host),
-            BlockOutcome::Completed
-        );
-        assert!(
-            host.calls.iter().any(|(cmd, ..)| *cmd == 0x1039),
-            "MS23 must issue SetStage under a zeroed world"
-        );
+        assert_eq!(program.run_block(BLOCK_GAME_MODE, &mut state, &mut host), BlockOutcome::Completed);
+        assert!(!host.calls.iter().any(|(cmd, ..)| *cmd == 0x1039), "MS23 stays shut under a zeroed world");
+
+        struct Answers(Vec<(u16, Vec<ObScriptValue>)>);
+        impl ObScriptHost for Answers {
+            fn call(&mut self, cmd: u16, args: &[ObScriptValue], _caller: Option<u32>) -> Option<ObScriptValue> {
+                self.0.push((cmd, args.to_vec()));
+                Some(ObScriptValue::Num(match cmd {
+                    0x103a => 40.0, // GetStage
+                    0x1001 => 100.0, // GetDistance
+                    _ => 0.0,
+                }))
+            }
+        }
+        let mut answers = Answers(Vec::new());
+        assert_eq!(program.run_block(BLOCK_GAME_MODE, &mut crate::obscript_vm::VmState::default(), &mut answers), BlockOutcome::Completed);
+        let set_stages: Vec<_> = answers.0.iter().filter(|(cmd, _)| *cmd == 0x1039).collect();
+        assert_eq!(set_stages.len(), 1, "only the stage-40 gate opens: {set_stages:?}");
+        assert_eq!(set_stages[0].1.get(1), Some(&ObScriptValue::Num(45.0)));
     }
 
     /// #5629 — the gate above only checks that a `SetStage` was *issued*,
