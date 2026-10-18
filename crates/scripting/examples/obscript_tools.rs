@@ -31,6 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "avif" => avif::run(args),
         "avcodes" => avcodes::run(args),
         "find" => find::run(args),
+        "items" => items::run(args),
         "exprcheck" => exprcheck::run(args),
         _ => {
             eprintln!("usage: obscript_tools <census|names|live|dump|walk> <ESM> ...");
@@ -606,6 +607,7 @@ mod dump {
         };
         println!("script {:08X} {} type {:?} refs {:?}", script.form_id, script.editor_id, script.script_type, script.refs.len());
         for l in &script.locals { println!("  local {} type {} {}", l.index, l.var_type, l.name); }
+        for (i, r) in script.refs.iter().enumerate() { println!("  ref {} {:?}", i + 1, r); }
         println!("{}", script.source.as_deref().unwrap_or("<no source>"));
         for (i, c) in script.compiled.chunks(16).enumerate() {
             println!("{:04x}: {}", i * 16, c.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "));
@@ -874,6 +876,26 @@ mod exprcheck {
         println!("{exprs} expressions");
         println!("escapes: {kinds:?}");
         println!("unknown escapes: {unknown:?}");
+        Ok(())
+    }
+}
+
+/// `items <ESM> [limit]` — the item records that carry an object script, with its blocks.
+mod items {
+    use byroredux_plugin::esm::parse_esm;
+    use byroredux_scripting::obscript_vm::ObScriptProgram;
+    pub fn run(mut a: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error::Error>> {
+        let esm = a.next().expect("esm");
+        let limit: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(30);
+        let index = parse_esm(&std::fs::read(&esm)?)?;
+        let mut rows: Vec<_> = index.items.values().filter(|i| i.common.script_form_id != 0).collect();
+        rows.sort_by_key(|i| i.form_id);
+        println!("{} items carry a script", rows.len());
+        for item in rows.into_iter().take(limit) {
+            let Some(script) = index.scripts.get(&item.common.script_form_id) else { continue };
+            let blocks = ObScriptProgram::new(script).block_types().unwrap_or_default();
+            println!("{:08X} {} -> script {:08X} {} blocks {:x?}", item.form_id, item.common.editor_id, script.form_id, script.editor_id, blocks);
+        }
         Ok(())
     }
 }

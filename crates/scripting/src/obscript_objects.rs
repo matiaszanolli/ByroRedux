@@ -100,6 +100,8 @@ pub struct ObScriptObjectTable {
     /// `(script, block)` pairs that came back malformed: reported once, then
     /// skipped — a `GameMode` block would otherwise log every frame.
     malformed: HashSet<(u32, BlockInfo)>,
+    /// Block runs per reference FormID, for `obscript.objects` (diagnostics only).
+    pub runs: HashMap<u32, u32>,
 }
 
 impl Resource for ObScriptObjectTable {}
@@ -192,6 +194,11 @@ pub fn attach_object_script(world: &mut World, entity: EntityId, script: u32) ->
     let known = world
         .try_resource::<ObScriptObjectTable>()
         .is_some_and(|table| table.scripts.contains_key(&script));
+    log::trace!(
+        "ObScript object script {script:08X} on {entity:?}: {} (table: {:?} scripts)",
+        if known { "attached" } else { "not in the table" },
+        world.try_resource::<ObScriptObjectTable>().map(|table| table.scripts.len())
+    );
     if !known {
         return false;
     }
@@ -602,6 +609,9 @@ fn run_block(world: &World, entity: EntityId, form: u32, script: &ScriptRecord, 
     host.action_ref = action_ref;
     let outcome = ObScriptProgram::new(script).run_at(&block, &mut state, &mut host);
     let declined = host.declined.get();
+    if let Some(mut table) = world.try_resource_mut::<ObScriptObjectTable>() {
+        *table.runs.entry(form).or_insert(0) += 1;
+    }
     store_locals(world, entity, script, &before, &state.locals);
     store_refs(world, entity, script, &before_refs, &state.ref_locals);
     if let BlockOutcome::Malformed(at) = outcome {

@@ -551,6 +551,9 @@ impl InteriorCellApplyJob {
         phases.esm_parse = phase_started.elapsed();
 
         let cell = find_interior_cell(&index, cell_editor_id)?;
+        // M47.3 — the references below attach their ObScript object scripts as they
+        // spawn, so the tables must exist first (`populate_scene_runtime` is too late).
+        crate::asset_provider::ensure_obscript_tables(world, &index);
 
         log::info!(
             "Loading cell '{}' (form {:08X}): {} placed references",

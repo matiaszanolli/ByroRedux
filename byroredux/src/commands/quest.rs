@@ -303,6 +303,58 @@ impl ConsoleCommand for QuestEffectsCommand {
     }
 }
 
+/// `obscript.objects [limit]` — the placed references running a legacy ObScript object script:
+/// the reference, the script, the blocks it can run, how many times they have run and how many
+/// commands the host declined for that reference. The object-script counterpart of
+/// `quest.effects`, so a live session can see the `SCRI` scripts driving state.
+pub(crate) struct ObScriptObjectsCommand;
+
+impl ConsoleCommand for ObScriptObjectsCommand {
+    fn name(&self) -> &str {
+        "obscript.objects"
+    }
+
+    fn description(&self) -> &str {
+        "List placed references running ObScript object scripts, with block runs and declined commands (usage: obscript.objects [limit])"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use byroredux_scripting::obscript_objects::{ObScriptInstance, ObScriptObjectTable};
+        let limit: usize = args.trim().parse().unwrap_or(40);
+        let Some(table) = world.try_resource::<ObScriptObjectTable>() else {
+            return CommandOutput::line("no ObScript object scripts installed");
+        };
+        let timers = world.try_resource::<byroredux_scripting::obscript_quests::ObScriptQuestTimers>();
+        let Some(instances) = world.query::<ObScriptInstance>() else {
+            return CommandOutput::line("no placed reference runs an object script");
+        };
+        let mut rows: Vec<(u32, u32, u32, String, String, u32, u32)> = Vec::new();
+        for (entity, instance) in instances.iter() {
+            let Some(object) = table.scripts.get(&instance.script) else { continue };
+            let form = byroredux_scripting::condition::entity_global_form_id(world, entity).unwrap_or(0);
+            let blocks = object.blocks.iter().map(|b| format!("{:#x}", b.block_type)).collect::<Vec<_>>().join(",");
+            let runs = table.runs.get(&form).copied().unwrap_or(0);
+            let declined: u32 = timers
+                .as_ref()
+                .and_then(|t| t.unknown_commands.get(&form))
+                .map_or(0, |m| m.values().sum());
+            let volume = world
+                .get::<byroredux_scripting::trigger::TriggerVolume>(entity)
+                .map(|v| format!(" volume half={:.0},{:.0},{:.0} inside={:?}", v.half_extents.x, v.half_extents.y, v.half_extents.z, v.occupant_inside))
+                .unwrap_or_default();
+            rows.push((entity as u32, form, instance.script, format!("{}{volume}", object.record.editor_id), blocks, runs, declined));
+        }
+        rows.sort_unstable_by_key(|row| (std::cmp::Reverse(row.5), row.1));
+        let mut lines = vec![format!("{} placed reference(s) run an object script:", rows.len())];
+        for (entity, form, script, name, blocks, runs, declined) in rows.into_iter().take(limit) {
+            lines.push(format!(
+                "  entity {entity} ref {form:08X} script {script:08X} {name} blocks [{blocks}]: {runs} run(s), {declined} declined command(s)"
+            ));
+        }
+        CommandOutput { lines }
+    }
+}
+
 pub(crate) struct QuestShowCommand;
 
 impl ConsoleCommand for QuestShowCommand {

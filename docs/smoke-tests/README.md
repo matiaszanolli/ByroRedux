@@ -57,6 +57,7 @@ docs/smoke-tests/dt1-dialogue-layers.sh          # FNV: greeting on quest-less a
 docs/smoke-tests/m42-eat-sleep.sh              # FNV: Eat/Sleep schedule procedures — window selection, idle-not-seat for a non-resident In-Cell package (#M42)
 docs/smoke-tests/m47-2-bleedout.sh             # Skyrim: an essential NPC bleeds out and gets back up; a plain one dies (M47.2)
 docs/smoke-tests/dt2-skyrim-forcegreet.sh        # Skyrim SE: ForceGreet-tree PACK dialect resolves its PDTO topic / greets generically (#5367)
+docs/smoke-tests/m47-3-obscript.sh               # FNV: ObScript object scripts (OnLoad / OnTriggerEnter / OnDeath) and an item's OnAdd+RemoveMe run live (M47.3)
 ```
 
 Every game-specific value — data dir, archives, cell, camera pose, destination

@@ -912,6 +912,28 @@ fn populate_quest_trigger_approaches(
     installed
 }
 
+/// M47.3 — install the ObScript object and item script tables if this world has none yet.
+///
+/// An interior load spawns its references *before* [`populate_scene_runtime`] runs (that
+/// happens in the job's `finish`), and a reference's script attaches as it spawns — so on the
+/// first interior load of a session the table the attach asks for did not exist, and no object
+/// script ran in that cell (found live: `obscript.objects` listed none in a cell full of them,
+/// the trace saying "table: None"). The interior job calls this once its records are parsed;
+/// [`populate_scene_runtime`] still refreshes the tables on every load.
+pub(crate) fn ensure_obscript_tables(
+    world: &mut byroredux_core::ecs::world::World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) {
+    if world
+        .try_resource::<byroredux_scripting::obscript_objects::ObScriptObjectTable>()
+        .is_some()
+    {
+        return;
+    }
+    byroredux_scripting::obscript_objects::install_object_scripts(world, &index.scripts);
+    byroredux_scripting::obscript_objects::install_item_scripts(world, index);
+}
+
 pub(crate) fn populate_scene_runtime(
     world: &mut byroredux_core::ecs::world::World,
     index: &byroredux_plugin::esm::records::EsmIndex,

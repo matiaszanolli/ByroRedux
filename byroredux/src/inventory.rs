@@ -220,9 +220,19 @@ pub(crate) fn add_item(
     count: u32,
 ) -> Option<InventoryIndex> {
     let player = world.try_resource::<PlayerEntity>().and_then(|p| p.0)?;
-    let mut inventories = world.query_mut::<Inventory>()?;
-    let inventory = inventories.get_mut(player)?;
-    Some(add_stack(inventory, form_id, count))
+    let index = {
+        let mut inventories = world.query_mut::<Inventory>()?;
+        let inventory = inventories.get_mut(player)?;
+        add_stack(inventory, form_id, count)
+    };
+    // The loot-transfer path this mirrors announces what it moves; an item added from the
+    // console reaches scripts the same way (an item's `OnAdd` block runs).
+    byroredux_scripting::emit_item_transfers(
+        world,
+        player,
+        [byroredux_scripting::ItemTransfer { item_form_id: form_id, count, added: true, stolen: false }],
+    );
+    Some(index)
 }
 
 /// Queue one [`InventoryAction::ToggleEquip`] for the row whose base form is

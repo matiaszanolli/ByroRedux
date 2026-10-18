@@ -109,6 +109,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(ModAvCommand);
     registry.register(QuestShowCommand);
     registry.register(QuestEffectsCommand);
+    registry.register(ObScriptObjectsCommand);
     registry.register(QuestAliasesCommand);
     registry.register(DialogueStatusCommand);
     registry.register(DialogueForceGreetCommand);
