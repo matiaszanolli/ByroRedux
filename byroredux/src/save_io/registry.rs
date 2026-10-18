@@ -515,6 +515,8 @@ pub fn build_save_registry() -> SaveRegistry {
     byroredux_scripting::crime_faction::register_saved(&mut r);
     // M47.3 — Pip-Boy notes, kill records, a forced weather, and the weapon-out / ignore-crime flags.
     byroredux_scripting::obscript_state::register_saved(&mut r);
+    // M47.3 — fame, bounty, faction crime flags, known topics, dispositions and the `Set...` values.
+    byroredux_scripting::obscript_ledger::register_saved(&mut r);
     // M47.3 — the magic effects running on an actor (script effects, timed value changes).
     byroredux_scripting::magic_effects::register_saved(&mut r);
     r

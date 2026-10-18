@@ -10,13 +10,13 @@
 use super::super::cell::EsmCellIndex;
 use super::super::reader::GameKind;
 use super::{
-    ActiRecord, ArmaRecord, AvifRecord, BptdRecord, ClassRecord, ClimateRecord, CobjRecord,
+    ActiRecord, ArmaRecord, AvifRecord, BptdRecord, ChalRecord, ClassRecord, ClimateRecord, CobjRecord,
     ContainerRecord, CstyRecord, DialRecord, DlbrRecord, CndfRecord, KywdRecord, EcznRecord, EfshRecord, EnchRecord,
     ExplRecord, EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, GrasRecord, HairRecord,
     HdptRecord,
     IdleRecord, ImadRecord, LctnRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
     LeveledList, LgtmRecord, LoadScreenRecord, LoadScreenTransform, MesgRecord, MgefRecord,
-    MinimalEsmRecord, ResolvedLoadScreenModel,
+    MinimalEsmRecord, MuscRecord, ResolvedLoadScreenModel,
     NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
     RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SmNodeRecord, SounRecord, SpelRecord,
@@ -568,7 +568,7 @@ pub struct EsmIndex {
     /// `MSET` media set.
     pub media_sets: HashMap<u32, MinimalEsmRecord>,
     /// `MUSC` music type.
-    pub music_types: HashMap<u32, MinimalEsmRecord>,
+    pub music_types: HashMap<u32, MuscRecord>,
     /// `SOUN` sound. Upgraded from the `MinimalEsmRecord` long-tail stub
     /// (#810) to a real decode of `FNAM` (file path) — EX-16 item 1's
     /// stated prerequisite for resolving a REGN `RegionDataKind::Sound`
@@ -625,7 +625,7 @@ pub struct EsmIndex {
     /// `CDCK` caravan deck.
     pub caravan_decks: HashMap<u32, MinimalEsmRecord>,
     /// `CHAL` challenge.
-    pub challenges: HashMap<u32, MinimalEsmRecord>,
+    pub challenges: HashMap<u32, ChalRecord>,
     /// `CHIP` poker chip.
     pub poker_chips: HashMap<u32, MinimalEsmRecord>,
     /// `CMNY` caravan money.

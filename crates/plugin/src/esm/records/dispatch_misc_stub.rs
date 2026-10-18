@@ -93,9 +93,7 @@ pub(super) fn dispatch_misc_stub_group(
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
         b"MUSC" => extract_records(reader, end, b"MUSC", &mut |fid, subs| {
-            index
-                .music_types
-                .insert(fid, parse_minimal_esm_record(fid, subs));
+            index.music_types.insert(fid, parse_musc(fid, subs, game));
         })?,
         // SOUN gets a real decode (FNAM sound path) rather than the
         // minimal-stub treatment its 30 long-tail siblings still use —
@@ -224,9 +222,7 @@ pub(super) fn dispatch_misc_stub_group(
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
         b"CHAL" => extract_records(reader, end, b"CHAL", &mut |fid, subs| {
-            index
-                .challenges
-                .insert(fid, parse_minimal_esm_record(fid, subs));
+            index.challenges.insert(fid, parse_chal(fid, subs, &remap));
         })?,
         b"CHIP" => extract_records(reader, end, b"CHIP", &mut |fid, subs| {
             index

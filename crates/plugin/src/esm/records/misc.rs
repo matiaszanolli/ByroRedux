@@ -10,6 +10,7 @@
 //! records + their regression tests):
 //!
 //! - [`water`] — `WATR`
+//! - [`challenge`] — `CHAL`
 //! - [`character`] — `HDPT` / `EYES` / `HAIR` / `CSTY` / `IDLE`
 //! - [`world`] — `NAVI` / `NAVM` / `REGN` / `ECZN` / `LGTM` / `IMGS`
 //!   / `ACTI` / `TERM`
@@ -31,12 +32,14 @@
 //! gracefully return defaults on short buffers — Skyrim+ re-parsing
 //! lands alongside the consuming system.
 
+mod challenge;
 mod character;
 pub mod dialogue;
 mod effects;
 mod equipment;
 mod imagespace;
 mod location;
+mod music;
 mod relationship;
 mod magic;
 pub mod pack;
@@ -46,6 +49,7 @@ mod story_manager;
 mod water;
 mod world;
 
+pub use challenge::{kind as challenge_kind, parse_chal, ChalRecord, FLAG_RECURRING, FLAG_SHOW_ZERO_PROGRESS, FLAG_START_DISABLED};
 pub use character::{
     parse_csty, parse_eyes, parse_hair, parse_hdpt, parse_idle, CstyRecord, EyesRecord, HairRecord,
     HdptRecord, IdleRecord,
@@ -64,6 +68,7 @@ pub use equipment::{
 };
 pub use imagespace::{parse_imad, ImadColorKey, ImadRecord, ImadScalarKey};
 pub use location::{parse_lctn, LctnRecord};
+pub use music::{parse_musc, MuscRecord};
 pub use relationship::{parse_rela, RelaRecord};
 pub use magic::{
     parse_ench, parse_mgef, parse_mgef_for_game, parse_perk, parse_spel, ActorValueRef, EnchRecord,

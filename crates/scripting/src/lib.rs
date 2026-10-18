@@ -73,6 +73,7 @@ pub mod obscript;
 mod obscript_actions;
 pub mod obscript_actor_values;
 mod obscript_effects;
+pub mod challenges;
 pub mod obscript_ledger;
 pub mod obscript_more;
 pub mod obscript_anim;

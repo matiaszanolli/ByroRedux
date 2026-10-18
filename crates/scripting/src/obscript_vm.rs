@@ -181,6 +181,10 @@ pub trait ObScriptHost {
         None
     }
 
+    /// The strings written after the reference of a command that takes several (`SwapTexture <ref>
+    /// "<slot>" "<texture>"`), handed over just before the command is called.
+    fn text_arguments(&mut self, _cmd: u16, _texts: &[String]) {}
+
     /// Whether the command just run ends the script, as a `Return` does: `RemoveMe`
     /// and `DropMe` "act as a return when called -- the lines of script following it will
     /// NOT be executed" (GECK), the script having just removed the object it runs on.
@@ -192,7 +196,11 @@ pub trait ObScriptHost {
 
 /// Commands whose one argument is a string, not a form index or a number: `PlayIdle` (GECK: "takes the
 /// actual editorID string of the idle as parameter"), `GetGS <setting>` and `ShowWarning "text"`.
-const STRING_FORM_COMMANDS: [u16; 5] = [0x1190, 0x1100, 0x11b9, 0x1137, 0x1138];
+const STRING_FORM_COMMANDS: [u16; 7] = [0x1190, 0x1100, 0x11b9, 0x1137, 0x1138, 0x11ff, 0x114d];
+
+/// Commands that take a reference and then strings (`SwapTexture <ref> "<slot>" "<texture>"`), the
+/// strings handed to the host through [`ObScriptHost::text_arguments`].
+const REF_STRINGS_COMMANDS: [u16; 1] = [0x1269];
 
 /// `MessageBox` (`0x1000`).
 pub const CMD_MESSAGE_BOX: u16 = 0x1000;
@@ -942,6 +950,9 @@ impl<'a> Vm<'a> {
         if STRING_FORM_COMMANDS.contains(&cmd) {
             return self.decode_string_form(cmd, start, end);
         }
+        if REF_STRINGS_COMMANDS.contains(&cmd) {
+            return self.decode_ref_strings(cmd, start, end);
+        }
         if !AXIS_COMMANDS.contains(&cmd) || start + 3 > end {
             return self.decode_args(start, end);
         }
@@ -988,6 +999,31 @@ impl<'a> Vm<'a> {
         let value = self.host.text_argument(cmd, &text, &rest).unwrap_or(ObScriptValue::Ref(0));
         let mut args = vec![value];
         args.extend(rest);
+        Some(args)
+    }
+
+    /// A command of references and bare strings (`72 05 00 | 08 00 "##GS01:0" | 1e 00 "interface\..."`): the
+    /// references are the arguments, the strings go to [`ObScriptHost::text_arguments`].
+    fn decode_ref_strings(&mut self, cmd: u16, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {
+        if start == end {
+            return Some(Vec::new());
+        }
+        let count = byroredux_core::bytes::le_u16_at(self.bytes, start)?;
+        let mut offset = start + 2;
+        let (mut args, mut texts) = (Vec::new(), Vec::new());
+        // The reference first, then the strings.
+        if count > 0 {
+            let (value, next) = self.decode_arg_item(offset, end, 0)?;
+            args.extend(value);
+            offset = next;
+        }
+        for _ in 1..count {
+            let length = usize::from(byroredux_core::bytes::le_u16_at(self.bytes, offset)?);
+            let text_end = (offset + 2).checked_add(length).filter(|&text_end| text_end <= end)?;
+            texts.push(String::from_utf8_lossy(&self.bytes[offset + 2..text_end]).into_owned());
+            offset = text_end;
+        }
+        self.host.text_arguments(cmd, &texts);
         Some(args)
     }
 
