@@ -352,6 +352,11 @@ pub struct QustRecord {
     pub quest_flags: u16,
     /// Priority from DATA byte 1. Higher = displayed first in pip-boy.
     pub priority: u8,
+    /// FO3/FNV DATA bytes 4..8: the quest script's processing interval in
+    /// seconds (`SetQuestDelay` changes it at runtime; 0 means the engine
+    /// default, `fQuestProcessInterval`). `None` where DATA has no such field
+    /// (Oblivion's 2-byte DATA, and every DNAM-layout game).
+    pub quest_delay: Option<f32>,
     /// DNAM byte 3. Skyrim calls this the QUST form version; FO4 leaves it
     /// unused. Preserved without guessing the game-specific interpretation.
     pub general_version: u8,
@@ -525,6 +530,14 @@ fn parse_qust_header(
         b"DATA" if sub.data.len() >= 2 => {
             out.quest_flags = u16::from(sub.data[0]);
             out.priority = sub.data[1];
+            // FO3/FNV: `flags u8, priority u8, 2 unused, quest delay f32`
+            // (8 bytes; OpenMW `esm4::Quest::QuestData`). Oblivion's DATA is
+            // the 2-byte head alone and authors no delay.
+            if sub.data.len() >= 8 {
+                out.quest_delay = Some(f32::from_le_bytes([
+                    sub.data[4], sub.data[5], sub.data[6], sub.data[7],
+                ]));
+            }
         }
         // Skyrim+ widened flags to u16 and moved the quest header to
         // DNAM: flags, priority, form version, four unknown bytes, type.

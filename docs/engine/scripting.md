@@ -2262,6 +2262,40 @@ tick ungated, with the wrong-target reference-slot defects of that audit's
 SCR-D6-01/02 affecting 3–6 % of vanilla quest scripts — tracked separately
 from this execution fact.
 
+**M47.3 phase 2 (2026-10-18) — measured, not guessed.** Command ids were
+named by aligning each script's `SCTX` source with its compiled statements
+(`obscript_tools names`; 321 of 322 FNV quest scripts align). That showed the
+rule the getters follow: an ObScript getter's id is `0x1000` plus its CTDA
+function index (`GetDead` 46 = `0x102e`, `GetInCell` 67 = `0x1043`,
+`GetFactionRank` 73 = `0x1049`, `GetQuestCompleted` 546 = `0x1222`), the same
+in Oblivion, FO3 and FNV. So `QuestCommandHost` answers an allow-listed set of
+getters through `condition::evaluate_script_getter` rather than carrying a
+second copy of each; a reference that is not loaded, a null form argument, or a
+function the evaluator cannot read in this game (`GetActorValue`, whose
+authored argument is an enum code, #5989) is a counted decline, never an
+invented `0`. The allow-list is deliberate: a catalogued CTDA index is not
+proof that the same number is a getter in a legacy game.
+
+Two defects fell out of the same census. The `z` argument tag is a 64-bit
+double (UESP *Mod File Format/SCPT* `[FloatFuncParam]`), not a NUL-terminated
+string, so any script with a float literal argument (`SetQuestDelay Q 0.1`)
+misframed or came back `Malformed`; and the quest tick ignored the `QUST`
+record's authored script interval (FO3/FNV `DATA` bytes 4..8: most scripted FNV
+quests author 0, but 81 author a delay — 21 of them 0.1 s, 11 of them 0.5 s). The cadence is
+now `quest_script_interval(authored, SetQuestDelay override)` with `0` meaning
+the INI default (GECK *SetQuestDelay*), and the override is saved state.
+
+The FO3/FNV-only quest commands (`SetObjectiveDisplayed` `0x11a3`,
+`SetObjectiveCompleted` `0x11a2`, `GetObjectiveDisplayed` `0x11a5`,
+`GetObjectiveCompleted` `0x11a4`, `SetQuestDelay` `0x11dc`, `GetQuestCompleted`
+`0x1222`) are gated on the loaded game, follow the GECK pages (displaying an
+objective starts a stopped quest; an index the quest does not author is
+ignored), and write the same `QuestObjectiveState` the Papyrus fragment path
+does. What is still declined is mostly *actions* — `Enable`, `Disable`,
+`MoveTo`, `EVP`, `Say`, `AddScriptPackage` are about two thirds of the call
+sites left — which need a reference-bound effect host rather than more
+getters; see the ROADMAP M47.3 row.
+
 ### The R5 demo translations (`papyrus_demo/`)
 
 The proof-of-concept hand-translations that closed R5. Each is a faithful

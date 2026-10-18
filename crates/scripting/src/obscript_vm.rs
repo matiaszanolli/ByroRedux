@@ -23,7 +23,8 @@
 //!   `'X'+cmd+u16 len+args` for command calls.
 //! - **Call arguments**: `[u16 count]` then per-arg a u16 integer literal
 //!   (first byte outside the escape set) or a tagged value from the escape
-//!   set `'G' 'f' 'n' 'r' 's' 'z' 'Y' 'Z'`. Literals whose bytes would
+//!   set `'G' 'f' 'n' 'r' 's' 'z' 'Y' 'Z'` (`'z'` = a 64-bit double
+//!   float literal, `'n'` = an i32). Literals whose bytes would
 //!   collide with an escape tag are emitted by the compiler as `'n'` i32
 //!   constants — which is why `'n'` dominates the corpus census.
 //! - **Command ids** (SetStage `0x1039`, GetStage `0x103a`, GetStageDone
@@ -702,7 +703,7 @@ impl<'a> Vm<'a> {
         depth: usize,
     ) -> Option<(Option<ObScriptValue>, usize)> {
         let mut o = o;
-        let mut value = None;
+        let value;
         if o >= end {
             return None;
         }
@@ -755,12 +756,20 @@ impl<'a> Vm<'a> {
                 o += 5;
             }
             b'z' => {
-                // String literal, NUL-terminated. Phase-1 hosts receive
-                // no string value; text-aware commands decode the raw
-                // bytes themselves, so the VM just steps over it.
-                let text_start = o + 1;
-                let rel = self.bytes[text_start..end].iter().position(|&c| c == 0)?;
-                o = text_start + rel + 1;
+                // Float literal: `7A` + a 64-bit double (UESP *Oblivion Mod:
+                // Mod File Format/SCPT* §SCDA `[FloatFuncParam]`; the sibling
+                // decoder in `obscript.rs` reads it the same way). FNV
+                // `SetQuestDelay VERStalkersSouth01 0.1` compiles to
+                // `7a 9a 99 99 99 99 99 b9 3f`. This arm used to read a
+                // NUL-terminated string, so any script with a float literal
+                // argument either misframed or came back `Malformed`.
+                if o + 9 > end {
+                    return None;
+                }
+                let mut raw = [0u8; 8];
+                raw.copy_from_slice(&self.bytes[o + 1..o + 9]);
+                value = Some(ObScriptValue::Num(f64::from_le_bytes(raw) as f32));
+                o += 9;
             }
             b'Y' | b'Z' => {
                 // Zero-payload tags ('Y' = the calling reference, 'Z' =
@@ -998,6 +1007,46 @@ mod tests {
 
     const SETSTAGE: u16 = 0x1039;
     const GETSTAGE: u16 = 0x103a;
+
+    /// Float-literal argument: `'z'` + a little-endian f64.
+    fn za(v: f64) -> Vec<u8> {
+        let mut bytes = vec![b'z'];
+        bytes.extend_from_slice(&v.to_le_bytes());
+        bytes
+    }
+
+    /// A `z` float literal is an 8-byte double and the statement after it
+    /// still runs (FNV `SetQuestDelay <quest> 0.1`, command `0x11dc`).
+    #[test]
+    fn float_literal_argument_is_a_double_and_keeps_framing() {
+        const SET_QUEST_DELAY: u16 = 0x11dc;
+        let args = args_blob(&[ra(1), za(0.1)]);
+        let mut body = Vec::new();
+        // Implicit-caller statement: the line opcode is the command id.
+        body.extend((SET_QUEST_DELAY).to_le_bytes());
+        body.extend((args.len() as u16).to_le_bytes());
+        body.extend(args);
+        // A statement after it proves the framing survived.
+        let after = args_blob(&[ra(1), vec![b'n', 7, 0, 0, 0]]);
+        body.extend(SETSTAGE.to_le_bytes());
+        body.extend((after.len() as u16).to_le_bytes());
+        body.extend(after);
+
+        let record = script(wrap_body(body), Vec::new(), vec![0x00AA_0001]);
+        let mut host = Recorder::default();
+        let outcome = ObScriptProgram::new(&record).run_block(
+            BLOCK_GAME_MODE,
+            &mut VmState::default(),
+            &mut host,
+        );
+        assert_eq!(outcome, BlockOutcome::Completed);
+        assert_eq!(host.calls.len(), 2);
+        assert_eq!(host.calls[0].0, SET_QUEST_DELAY);
+        let delay = host.calls[0].1[1].as_num();
+        assert!((delay - 0.1).abs() < 1e-6, "delay decoded as {delay}");
+        assert_eq!(host.calls[1].0, SETSTAGE);
+        assert_eq!(host.calls[1].1[1].as_num(), 7.0);
+    }
 
     /// Local escape bytes: `' s<n>'`.
     fn s(n: u16) -> Vec<u8> {

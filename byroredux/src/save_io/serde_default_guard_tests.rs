@@ -773,7 +773,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 108;
+    const BASELINE_MAJOR: u16 = 109;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1106,7 +1106,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `VmFrame`, `VmStep`, `VmStored` to `translate/effects/vm_bridge.rs`.
     // Path-stripped dumps of both sides are identical, so a save's JSON is
     // byte-identical.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x4baa_cb38_4440_f78d;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xe4dd_3497_1399_e6da;
     // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
     // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
     // keys each shape by its file, so the move alone shifted it; a dump of
@@ -1209,6 +1209,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // resource (the once-only-script ledger) — its absence in pre-v26
     // snapshots is what keeps an `onlyOnce` trigger re-armed across a
     // load from being possible.
+    // M47.3 phase 2 — v109 is a genuine bump: `ObScriptQuestLocals::delays` is a
+    // new required field on a registered resource, so a pre-v109 snapshot has no
+    // record of the interval a quest script chose with `SetQuestDelay`.
     // #5916 — v107 is a genuine bump: `LevelUpPoints::pool_picks` is a new
     // required field on a registered column, so a pre-v107 snapshot has no
     // record of the Health / Magicka / Stamina picks its levels earned.

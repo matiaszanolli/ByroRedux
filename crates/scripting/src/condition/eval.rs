@@ -99,6 +99,44 @@ pub fn is_modeled(world: &World, condition: &Condition) -> bool {
     }
 }
 
+/// The raw result of CTDA function `function_index`, for a legacy script
+/// *getter command* (M47.3 phase 2): an ObScript `<ref>.GetDead` /
+/// `GetDistance <ref>` is the same function a CTDA names, and its command id
+/// is `0x1000 + function index` (checked by source alignment over vanilla
+/// Oblivion, FO3 and FNV: `GetDead` 46 = `0x102e`, `GetInCell` 67 = `0x1043`,
+/// `GetFactionRank` 73 = `0x1049`, `GetReputationThreshold` 575 = `0x123f`).
+///
+/// `None` when the evaluator cannot honestly answer in this world — the
+/// function is uncatalogued, is another function in the loaded game
+/// ([`is_modeled`]), or needs a subject reference and none was resolved — so
+/// the caller declines the command instead of reading a made-up `0.0`.
+/// `subject` is the object the command was invoked on; a function that does
+/// not read its subject (`GetStage`, `GetRandomPercent`, …) ignores it.
+pub fn evaluate_script_getter(
+    world: &World,
+    function_index: u32,
+    param_1: u32,
+    param_2: u32,
+    subject: Option<EntityId>,
+) -> Option<f32> {
+    let condition = Condition {
+        function_index,
+        param_1,
+        param_2,
+        ..Condition::default()
+    };
+    if !is_modeled(world, &condition) {
+        return None;
+    }
+    let function = ConditionFunction::from_index(function_index);
+    let entity = if function.reads_run_on_entity() {
+        subject?
+    } else {
+        subject.unwrap_or(0)
+    };
+    Some(evaluate_function(function, &condition, entity, world))
+}
+
 /// The value a condition's function result is compared against.
 ///
 /// Globals route through the `Globals` resource (mirrored from

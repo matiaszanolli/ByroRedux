@@ -29,13 +29,51 @@ use std::sync::Arc;
 use byroredux_core::ecs::{Resource, World};
 use byroredux_plugin::esm::records::{QustRecord, ScriptRecord};
 
+use crate::condition::{evaluate_script_getter, resolve_entity_by_global_form_id, ConditionFunction};
 use crate::globals::Globals;
 use crate::obscript_vm::{BlockOutcome, ObScriptHost, ObScriptProgram, ObScriptValue, VmState};
-use crate::quest_stages::{QuestFormId, QuestStageState, QuestStatus};
+use crate::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageState, QuestStatus};
 
 /// Vanilla quest-script cadence: the original engine re-runs each running
 /// quest's GameMode block every 5 seconds (`fQuestProcessInterval`).
 pub const QUEST_SCRIPT_INTERVAL_SECS: f32 = 5.0;
+
+/// `CompleteQuest` (all three legacy games).
+const CMD_COMPLETE_QUEST: u16 = 0x1071;
+/// Fallout 3 / New Vegas quest commands, ids recovered by aligning vanilla
+/// `SCTX` with the compiled stream: `SetObjectiveCompleted`,
+/// `SetObjectiveDisplayed`, `GetObjectiveCompleted`, `GetObjectiveDisplayed`,
+/// `SetQuestDelay`, `GetQuestCompleted` (= `0x1000` + CTDA 546).
+const CMD_SET_OBJECTIVE_COMPLETED: u16 = 0x11a2;
+const CMD_SET_OBJECTIVE_DISPLAYED: u16 = 0x11a3;
+const CMD_GET_OBJECTIVE_COMPLETED: u16 = 0x11a4;
+const CMD_GET_OBJECTIVE_DISPLAYED: u16 = 0x11a5;
+const CMD_SET_QUEST_DELAY: u16 = 0x11dc;
+const CMD_GET_QUEST_COMPLETED: u16 = 0x1222;
+
+/// Getter commands that are condition functions: the command id is `0x1000 +
+/// the CTDA function index`, so the engine's one condition evaluator answers
+/// them (`evaluate_script_getter`) instead of this host growing a second copy
+/// of `GetDead`, `GetDistance`, ... Each was confirmed by aligning vanilla
+/// `SCTX` source with the compiled stream on Oblivion, FO3 and FNV (every id
+/// names the same command in all three). A function outside this list stays a
+/// counted decline even when the catalog knows its index: a catalog index is
+/// not proof that the same number is a *getter* command in a legacy game.
+const SCRIPT_GETTERS: &[ConditionFunction] = &[
+    ConditionFunction::GetDistance,       // 0x1001
+    ConditionFunction::GetActorValue,     // 0x100e (declined until #5989 maps the enum code)
+    ConditionFunction::GetDead,           // 0x102e
+    ConditionFunction::GetInCell,         // 0x1043
+    ConditionFunction::GetInFaction,      // 0x1047
+    ConditionFunction::GetIsID,           // 0x1048
+    ConditionFunction::GetFactionRank,    // 0x1049
+    ConditionFunction::GetGlobalValue,    // 0x104a
+    ConditionFunction::GetRandomPercent,  // 0x104d
+    ConditionFunction::GetLevel,          // 0x1050
+    ConditionFunction::GetEquipped,       // 0x10b6
+    ConditionFunction::GetReputation,     // 0x123d (FNV)
+    ConditionFunction::GetReputationThreshold, // 0x123f (FNV)
+];
 
 /// One quest's compiled script, plus the SCRO reference table needed to
 /// resolve its `' r<n>'`/argument references at execution time.
@@ -43,6 +81,23 @@ pub struct QuestScript {
     pub script: Arc<ScriptRecord>,
     /// Quest FormID owning the script (the implicit caller).
     pub quest: QuestFormId,
+    /// The `QUST` record's authored script interval in seconds (FO3/FNV
+    /// `DATA` quest delay; `0` when unauthored or on Oblivion).
+    pub authored_delay: f32,
+}
+
+/// The seconds between a quest script's runs. A runtime `SetQuestDelay`
+/// overrides the authored `QUST` delay, and either one being `0` (or
+/// negative) means the engine default: the GECK *SetQuestDelay* page says
+/// "Setting delay to 0 tells the quest to process at the INI setting default
+/// (5 seconds)" — the INI default, not the authored delay.
+pub fn quest_script_interval(authored: f32, runtime_override: Option<f32>) -> f32 {
+    let chosen = runtime_override.unwrap_or(authored);
+    if chosen.is_finite() && chosen > 0.0 {
+        chosen
+    } else {
+        QUEST_SCRIPT_INTERVAL_SECS
+    }
 }
 
 /// Quest FormID → compiled script. Built once per load order; quests whose
@@ -83,6 +138,10 @@ impl ObScriptEffectLog {
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ObScriptQuestLocals {
     values: std::collections::BTreeMap<u32, std::collections::BTreeMap<u16, f32>>,
+    /// Quest FormID → the interval a script's `SetQuestDelay` chose. Gameplay
+    /// state like the locals: a quest that slowed itself down must not speed
+    /// back up on a reload.
+    delays: std::collections::BTreeMap<u32, f32>,
 }
 
 impl Resource for ObScriptQuestLocals {}
@@ -100,6 +159,16 @@ impl ObScriptQuestLocals {
         } else {
             self.values.insert(quest, locals.iter().map(|(&slot, &value)| (slot, value)).collect());
         }
+    }
+
+    /// The interval a script chose for `quest` with `SetQuestDelay`, if any.
+    pub fn delay_override(&self, quest: u32) -> Option<f32> {
+        self.delays.get(&quest).copied()
+    }
+
+    /// Record a script's `SetQuestDelay` for `quest`.
+    pub fn set_delay(&mut self, quest: u32, seconds: f32) {
+        self.delays.insert(quest, seconds);
     }
 
     /// The value of `quest`'s variable `slot` (0 when never assigned).
@@ -149,6 +218,7 @@ pub fn install_quest_scripts(
             QuestScript {
                 script: Arc::new(script.clone()),
                 quest: form,
+                authored_delay: quest.quest_delay.unwrap_or(0.0),
             },
         );
         installed += 1;
@@ -363,6 +433,67 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
                 }
                 None
             }
+            // CompleteQuest <quest> — `QuestStageState::complete`, as Papyrus's
+            // `Quest.CompleteQuest()` does (a command in all three games).
+            CMD_COMPLETE_QUEST => {
+                let Some(target) = quest_target(0) else {
+                    return self.decline(cmd);
+                };
+                if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
+                    stages.complete(QuestFormId(target));
+                }
+                effect(self, format!("CompleteQuest {:08X}", target));
+                None
+            }
+            // The FO3/FNV quest commands. Their ids exist only in that opcode
+            // table (found by source alignment on FalloutNV.esm and
+            // Fallout3.esm), so another game's number is never read as one.
+            CMD_SET_OBJECTIVE_DISPLAYED | CMD_SET_OBJECTIVE_COMPLETED
+            | CMD_GET_OBJECTIVE_DISPLAYED | CMD_GET_OBJECTIVE_COMPLETED
+            | CMD_SET_QUEST_DELAY | CMD_GET_QUEST_COMPLETED
+                if self.is_fallout3_nv() =>
+            {
+                let Some(target) = quest_target(0) else {
+                    return self.decline(cmd);
+                };
+                self.fallout_quest_command(cmd, QuestFormId(target), args)
+            }
+            _ if self.script_getter(cmd).is_some() => {
+                let function_index = u32::from(cmd) - 0x1000;
+                // A form-id first parameter that did not resolve (`Ref(0)`) is
+                // not a question the evaluator can answer.
+                let unresolved = ConditionFunction::from_index(function_index).first_param_is_form_id()
+                    && matches!(args.first(), Some(ObScriptValue::Ref(0)));
+                let param = |i: usize| match args.get(i) {
+                    Some(ObScriptValue::Ref(form)) => *form,
+                    Some(ObScriptValue::Num(n)) => *n as u32,
+                    None => 0,
+                };
+                let subject = caller
+                    .and_then(|form| resolve_entity_by_global_form_id(self.world, form))
+                    .or_else(|| {
+                        // The reputation getters are about the player (GECK
+                        // *GetReputationThreshold*: "Returns 1 if the player is
+                        // currently on the good axis with the ... faction"), so
+                        // written with no reference they ask about the player.
+                        // Every other getter has no such default.
+                        matches!(
+                            ConditionFunction::from_index(function_index),
+                            ConditionFunction::GetReputation | ConditionFunction::GetReputationThreshold
+                        )
+                        .then(|| crate::papyrus_demo::PapyrusPlayerEntity::get(self.world))
+                        .flatten()
+                    });
+                let answered = if unresolved {
+                    None
+                } else {
+                    evaluate_script_getter(self.world, function_index, param(0), param(1), subject)
+                };
+                match answered {
+                    Some(value) => Some(ObScriptValue::Num(value)),
+                    None => self.decline(cmd),
+                }
+            }
             _ => {
                 // Traced no-op. The census counter keeps phase-1 honest about
                 // coverage instead of silently faking behavior.
@@ -378,6 +509,110 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
 }
 
 impl QuestCommandHost<'_> {
+    /// Whether the loaded game is Fallout 3 / New Vegas.
+    fn is_fallout3_nv(&self) -> bool {
+        self.world.try_resource::<crate::ScriptGame>().is_some_and(|game| {
+            matches!(game.0, byroredux_plugin::esm::reader::GameKind::Fallout3NV)
+        })
+    }
+
+    /// `SetObjectiveDisplayed/Completed`, `GetObjectiveDisplayed/Completed`,
+    /// `SetQuestDelay` and `GetQuestCompleted` against `quest`, with the GECK
+    /// semantics (*SetObjectiveDisplayed*, *SetObjectiveCompleted*,
+    /// *SetQuestDelay*, *GetQuestCompleted* pages). Arguments follow the quest
+    /// reference: `<index> <flag>`, `<index>`, or `<seconds>`.
+    fn fallout_quest_command(
+        &self,
+        cmd: u16,
+        quest: QuestFormId,
+        args: &[ObScriptValue],
+    ) -> Option<ObScriptValue> {
+        let num = |i: usize| args.get(i).map(|v| v.as_num()).unwrap_or(0.0);
+        let objective = num(1) as i32;
+        let log = |text: String| {
+            if let Some(mut log) = self.world.try_resource_mut::<ObScriptEffectLog>() {
+                log.push(format!("{:08X}", self.quest), text);
+            }
+        };
+        match cmd {
+            CMD_SET_OBJECTIVE_DISPLAYED | CMD_SET_OBJECTIVE_COMPLETED => {
+                if !self.objective_is_defined(quest, objective) {
+                    // "only accepts indices that are defined in the quest's
+                    // Quest Objectives tab ... nothing will happen."
+                    log::debug!("quest {:08X}: objective {objective} of {:08X} is not authored", self.quest, quest.0);
+                    return None;
+                }
+                let on = num(2) != 0.0;
+                if cmd == CMD_SET_OBJECTIVE_DISPLAYED {
+                    if on {
+                        // "If the quest is not currently running,
+                        // SetObjectiveDisplayed ... 1 will automatically start it."
+                        if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
+                            if !stages.is_running(quest) {
+                                let start_up = self
+                                    .world
+                                    .try_resource::<crate::quest_stages::QuestDefinitionRegistry>()
+                                    .and_then(|definitions| definitions.start_up_stage(quest));
+                                stages.start_quest(quest, start_up);
+                            }
+                        }
+                    }
+                    if let Some(mut objectives) = self.world.try_resource_mut::<QuestObjectiveState>() {
+                        objectives.set_displayed(quest, objective, on);
+                    }
+                    log(format!("SetObjectiveDisplayed {:08X} {objective} {}", quest.0, on as u8));
+                } else {
+                    if let Some(mut objectives) = self.world.try_resource_mut::<QuestObjectiveState>() {
+                        objectives.set_completed(quest, objective, on);
+                    }
+                    log(format!("SetObjectiveCompleted {:08X} {objective} {}", quest.0, on as u8));
+                }
+                None
+            }
+            CMD_GET_OBJECTIVE_DISPLAYED | CMD_GET_OBJECTIVE_COMPLETED => {
+                let status = self
+                    .world
+                    .try_resource::<QuestObjectiveState>()
+                    .map(|objectives| objectives.get(quest, objective))
+                    .unwrap_or_default();
+                let flag = if cmd == CMD_GET_OBJECTIVE_DISPLAYED { status.displayed } else { status.completed };
+                Some(ObScriptValue::Num(flag as i32 as f32))
+            }
+            CMD_SET_QUEST_DELAY => {
+                let seconds = num(1);
+                if let Some(mut locals) = self.world.try_resource_mut::<ObScriptQuestLocals>() {
+                    locals.set_delay(quest.0, seconds);
+                }
+                log(format!("SetQuestDelay {:08X} {seconds}", quest.0));
+                None
+            }
+            // "does not require the quest to be running"
+            _ => Some(ObScriptValue::Num(
+                self.world
+                    .try_resource::<QuestStageState>()
+                    .is_some_and(|stages| stages.is_completed(quest)) as i32 as f32,
+            )),
+        }
+    }
+
+    /// Whether `objective` is one `quest` authors. A quest the definitions do
+    /// not list, or one with no listed objectives, is given the benefit of the
+    /// doubt: the registry being empty is not evidence the index is undefined.
+    fn objective_is_defined(&self, quest: QuestFormId, objective: i32) -> bool {
+        let Some(definitions) = self.world.try_resource::<crate::quest_stages::QuestDefinitionRegistry>() else {
+            return true;
+        };
+        let authored = definitions.objectives(quest);
+        authored.is_empty() || authored.contains(&objective)
+    }
+
+    /// The condition function `cmd` names when it is one of [`SCRIPT_GETTERS`].
+    fn script_getter(&self, cmd: u16) -> Option<ConditionFunction> {
+        let index = u32::from(cmd).checked_sub(0x1000)?;
+        let function = ConditionFunction::from_index(index);
+        SCRIPT_GETTERS.contains(&function).then_some(function)
+    }
+
     /// Record `cmd` as not executed — an unknown command, or a known one
     /// whose reference could not be resolved — under the per-quest census,
     /// and answer like an unknown command (value 0). Never faked.
@@ -412,6 +647,20 @@ pub fn obscript_quest_tick_system(world: &World, dt: f32) {
     }
     let table = world.try_resource::<QuestScriptTable>();
     let Some(table) = table else { return };
+    // Each running script's interval, read before the timers lock is taken
+    // (`SetQuestDelay` lives in the locals resource; holding both at once
+    // would add a lock-order edge for nothing).
+    let intervals: HashMap<u32, f32> = {
+        let locals = world.try_resource::<ObScriptQuestLocals>();
+        running
+            .iter()
+            .filter_map(|id| {
+                let authored = table.scripts.get(id)?.authored_delay;
+                let runtime = locals.as_ref().and_then(|l| l.delay_override(*id));
+                Some((*id, quest_script_interval(authored, runtime)))
+            })
+            .collect()
+    };
     let due: Vec<(u32, f32)> = {
         let Some(mut timers) = world.try_resource_mut::<ObScriptQuestTimers>() else {
             return;
@@ -419,12 +668,10 @@ pub fn obscript_quest_tick_system(world: &World, dt: f32) {
         running
             .iter()
             .filter_map(|id| {
-                if !table.scripts.contains_key(id) {
-                    return None;
-                }
+                let interval = *intervals.get(id)?;
                 let slot = timers.elapsed.entry(*id).or_insert(0.0);
                 *slot += dt;
-                if *slot >= QUEST_SCRIPT_INTERVAL_SECS {
+                if *slot >= interval {
                     let elapsed = *slot;
                     *slot = 0.0;
                     Some((*id, elapsed))
@@ -528,6 +775,222 @@ mod host_tests {
         assert_eq!(declined(&world, START_QUEST), 0);
     }
 
+    /// `<ref>.Cmd` — the explicit-caller form, which carries the caller's form id.
+    fn call_on(world: &World, cmd: u16, args: &[ObScriptValue], caller: u32) -> Option<ObScriptValue> {
+        let script = ScriptRecord::default();
+        let mut host = QuestCommandHost { world, quest: OWN, elapsed: 0.0, script: &script };
+        host.call(cmd, args, Some(caller))
+    }
+
+    const GET_DEAD: u16 = 0x102e;
+    const GET_IN_CELL: u16 = 0x1043;
+    const GET_ACTOR_VALUE: u16 = 0x100e;
+    const ACHR: u32 = 0x0001_4D8A;
+
+    /// A world with one placed actor, `ACHR`, resolvable by its form id.
+    fn world_with_actor() -> (World, byroredux_core::ecs::storage::EntityId) {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        let mut world = world();
+        let mut pool = FormIdPool::new();
+        let id = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(ACHR),
+        });
+        world.insert_resource(pool);
+        let actor = world.spawn();
+        world.insert(actor, FormIdComponent(id));
+        (world, actor)
+    }
+
+    /// M47.3 phase 2: a getter command is the CTDA function of the same index
+    /// (`0x1000 + 46` = `GetDead`), so the host answers it from the engine's one
+    /// condition evaluator instead of declining it.
+    #[test]
+    fn a_getter_command_is_answered_by_the_condition_evaluator() {
+        let (mut world, actor) = world_with_actor();
+        assert_eq!(call_on(&world, GET_DEAD, &[], ACHR), Some(ObScriptValue::Num(0.0)));
+        world.insert(actor, byroredux_core::ecs::components::Dead);
+        assert_eq!(call_on(&world, GET_DEAD, &[], ACHR), Some(ObScriptValue::Num(1.0)));
+        assert_eq!(declined(&world, GET_DEAD), 0, "answered, not declined");
+    }
+
+    /// A caller that is not a live reference cannot be asked: it is a counted
+    /// decline, never an invented "alive".
+    #[test]
+    fn a_getter_on_an_unloaded_reference_is_declined_and_counted() {
+        let (world, _) = world_with_actor();
+        assert_eq!(call_on(&world, GET_DEAD, &[], 0x00FF_FFFF), Some(ObScriptValue::Num(0.0)));
+        assert_eq!(declined(&world, GET_DEAD), 1);
+        // No caller at all: the owning quest is not an actor.
+        assert_eq!(call(&world, GET_DEAD, &[]), Some(ObScriptValue::Num(0.0)));
+        assert_eq!(declined(&world, GET_DEAD), 2);
+    }
+
+    /// An unresolved form-id argument (`Ref(0)`) is declined, not evaluated as form 0.
+    #[test]
+    fn a_getter_with_a_null_form_argument_is_declined() {
+        let (world, _) = world_with_actor();
+        call_on(&world, GET_IN_CELL, &[ObScriptValue::Ref(0)], ACHR);
+        assert_eq!(declined(&world, GET_IN_CELL), 1);
+    }
+
+    /// A function the evaluator cannot read in this world stays declined:
+    /// `GetActorValue`'s authored argument is an enum code on the legacy games
+    /// (#5989), which would be misread as a FormID.
+    #[test]
+    fn get_actor_value_stays_declined_while_its_argument_is_an_enum_code() {
+        let (mut world, _) = world_with_actor();
+        world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Fallout3NV));
+        call_on(&world, GET_ACTOR_VALUE, &[ObScriptValue::Num(16.0)], ACHR);
+        assert_eq!(declined(&world, GET_ACTOR_VALUE), 1);
+    }
+
+    /// A reputation getter written with no reference asks about the player.
+    #[test]
+    fn a_reputation_getter_with_no_caller_asks_about_the_player() {
+        let mut world = world_with_actor().0;
+        // No player entity yet: nothing to ask, so it is declined.
+        call(&world, 0x123f, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(1.0)]);
+        assert_eq!(declined(&world, 0x123f), 1);
+        let player = world.spawn();
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Fallout3NV));
+        call(&world, 0x123f, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(1.0)]);
+        assert_eq!(declined(&world, 0x123f), 1, "answered for the player, no new decline");
+        // A getter with no such default still needs its reference.
+        call(&world, GET_DEAD, &[]);
+        assert_eq!(declined(&world, GET_DEAD), 1);
+    }
+
+    /// A command that is not on the getter list is never read as a CTDA
+    /// function, even when its number is a catalogued index: `0x1021` (Enable,
+    /// index 33) must not become a getter.
+    #[test]
+    fn a_statement_command_is_not_mistaken_for_a_getter() {
+        let (world, _) = world_with_actor();
+        call_on(&world, 0x1021, &[], ACHR);
+        assert_eq!(declined(&world, 0x1021), 1);
+    }
+
+    fn fnv_world() -> World {
+        let mut world = world();
+        world.insert_resource(QuestObjectiveState::default());
+        world.insert_resource(ObScriptQuestLocals::default());
+        world.insert_resource(ObScriptEffectLog::default());
+        world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Fallout3NV));
+        world
+    }
+
+    fn objective(world: &World, quest: u32, index: i32) -> crate::quest_stages::ObjectiveStatus {
+        world.try_resource::<QuestObjectiveState>().unwrap().get(QuestFormId(quest), index)
+    }
+
+    /// GECK *SetObjectiveDisplayed*: turns an objective on or off, and "if the
+    /// quest is not currently running ... 1 will automatically start it".
+    #[test]
+    fn set_objective_displayed_flips_the_flag_and_starts_a_stopped_quest() {
+        let world = fnv_world();
+        let args = |flag: f32| [ObScriptValue::Ref(OTHER), ObScriptValue::Num(10.0), ObScriptValue::Num(flag)];
+        assert_eq!(call(&world, CMD_SET_OBJECTIVE_DISPLAYED, &args(1.0)), None);
+        assert!(objective(&world, OTHER, 10).displayed);
+        assert!(world.try_resource::<QuestStageState>().unwrap().is_running(QuestFormId(OTHER)));
+        call(&world, CMD_SET_OBJECTIVE_DISPLAYED, &args(0.0));
+        assert!(!objective(&world, OTHER, 10).displayed);
+        assert_eq!(declined(&world, CMD_SET_OBJECTIVE_DISPLAYED), 0);
+    }
+
+    /// Hiding an objective must not start a quest.
+    #[test]
+    fn hiding_an_objective_does_not_start_the_quest() {
+        let world = fnv_world();
+        call(&world, CMD_SET_OBJECTIVE_DISPLAYED, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(10.0), ObScriptValue::Num(0.0)]);
+        assert!(!world.try_resource::<QuestStageState>().unwrap().is_started(QuestFormId(OTHER)));
+    }
+
+    /// GECK *GetObjectiveDisplayed* / *GetObjectiveCompleted* read the two flags
+    /// independently ("regardless of whether the objective ... has been marked as
+    /// completed").
+    #[test]
+    fn objective_getters_read_the_two_flags_independently() {
+        let world = fnv_world();
+        let at = |cmd| call(&world, cmd, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(20.0)]);
+        assert_eq!(at(CMD_GET_OBJECTIVE_DISPLAYED), Some(ObScriptValue::Num(0.0)));
+        call(&world, CMD_SET_OBJECTIVE_DISPLAYED, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(20.0), ObScriptValue::Num(1.0)]);
+        call(&world, CMD_SET_OBJECTIVE_COMPLETED, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(20.0), ObScriptValue::Num(1.0)]);
+        assert_eq!(at(CMD_GET_OBJECTIVE_DISPLAYED), Some(ObScriptValue::Num(1.0)));
+        assert_eq!(at(CMD_GET_OBJECTIVE_COMPLETED), Some(ObScriptValue::Num(1.0)));
+        call(&world, CMD_SET_OBJECTIVE_COMPLETED, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(20.0), ObScriptValue::Num(0.0)]);
+        assert_eq!(at(CMD_GET_OBJECTIVE_COMPLETED), Some(ObScriptValue::Num(0.0)));
+        assert_eq!(at(CMD_GET_OBJECTIVE_DISPLAYED), Some(ObScriptValue::Num(1.0)));
+    }
+
+    /// An objective the quest does not author is ignored ("nothing will happen").
+    #[test]
+    fn an_unauthored_objective_index_is_ignored() {
+        use byroredux_plugin::esm::records::QustRecord;
+        let mut world = fnv_world();
+        let mut quest = QustRecord { form_id: OTHER, ..Default::default() };
+        quest.objectives.push(byroredux_plugin::esm::records::QuestObjective { index: 10, ..Default::default() });
+        crate::quest_stages::register(&mut world);
+        crate::quest_stages::install_start_game_quests(&mut world, [quest]);
+        call(&world, CMD_SET_OBJECTIVE_DISPLAYED, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(99.0), ObScriptValue::Num(1.0)]);
+        assert!(!objective(&world, OTHER, 99).displayed);
+        assert!(!world.try_resource::<QuestStageState>().unwrap().is_started(QuestFormId(OTHER)), "an ignored call starts nothing");
+        call(&world, CMD_SET_OBJECTIVE_DISPLAYED, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(10.0), ObScriptValue::Num(1.0)]);
+        assert!(objective(&world, OTHER, 10).displayed);
+    }
+
+    /// The FO3/FNV ids are not read in another game's opcode table.
+    #[test]
+    fn fallout_quest_commands_are_declined_outside_fallout() {
+        let mut world = fnv_world();
+        world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Oblivion));
+        call(&world, CMD_SET_OBJECTIVE_DISPLAYED, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(10.0), ObScriptValue::Num(1.0)]);
+        assert!(!objective(&world, OTHER, 10).displayed);
+        assert_eq!(declined(&world, CMD_SET_OBJECTIVE_DISPLAYED), 1);
+    }
+
+    /// GECK *GetQuestCompleted*: does not need the quest to be running.
+    #[test]
+    fn get_quest_completed_follows_the_completed_status() {
+        let world = fnv_world();
+        let at = || call(&world, CMD_GET_QUEST_COMPLETED, &[ObScriptValue::Ref(OTHER)]);
+        assert_eq!(at(), Some(ObScriptValue::Num(0.0)));
+        call(&world, START_QUEST, &[ObScriptValue::Ref(OTHER)]);
+        call(&world, CMD_COMPLETE_QUEST, &[ObScriptValue::Ref(OTHER)]);
+        assert_eq!(at(), Some(ObScriptValue::Num(1.0)));
+        call(&world, 0x1037, &[ObScriptValue::Ref(OTHER)]);
+        assert_eq!(at(), Some(ObScriptValue::Num(1.0)), "stopping does not undo completion");
+    }
+
+    /// GECK *SetQuestDelay*: "Setting delay to 0 tells the quest to process at
+    /// the INI setting default (5 seconds)" — not the authored delay.
+    #[test]
+    fn set_quest_delay_overrides_the_authored_interval_and_zero_means_the_ini_default() {
+        let world = fnv_world();
+        let delay = || world.try_resource::<ObScriptQuestLocals>().unwrap().delay_override(OTHER);
+        assert_eq!(delay(), None);
+        call(&world, CMD_SET_QUEST_DELAY, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(0.1)]);
+        assert!((delay().unwrap() - 0.1).abs() < 1e-6);
+        assert!((quest_script_interval(7.0, delay()) - 0.1).abs() < 1e-6, "runtime beats authored");
+        call(&world, CMD_SET_QUEST_DELAY, &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(0.0)]);
+        assert_eq!(quest_script_interval(7.0, delay()), QUEST_SCRIPT_INTERVAL_SECS);
+        assert_eq!(quest_script_interval(0.5, None), 0.5, "no override: the authored delay");
+        assert_eq!(quest_script_interval(0.0, None), QUEST_SCRIPT_INTERVAL_SECS, "unauthored: the default");
+        assert_eq!(quest_script_interval(f32::NAN, None), QUEST_SCRIPT_INTERVAL_SECS);
+    }
+
+    /// `CompleteQuest` is a command in every legacy game, and goes through the
+    /// same `QuestStageState::complete` Papyrus uses.
+    #[test]
+    fn complete_quest_completes_the_quest() {
+        let world = world();
+        call(&world, START_QUEST, &[ObScriptValue::Ref(OTHER)]);
+        call(&world, CMD_COMPLETE_QUEST, &[ObScriptValue::Ref(OTHER)]);
+        assert!(world.try_resource::<QuestStageState>().unwrap().is_completed(QuestFormId(OTHER)));
+    }
+
     /// The VM's `CMD_DECLINED` is counted under the id it carries.
     #[test]
     fn the_vm_decline_command_is_counted_under_the_declined_id() {
@@ -599,6 +1062,7 @@ mod persisted_locals_tests {
             QuestScript {
                 script: Arc::new(script),
                 quest: QuestFormId(QUEST),
+                authored_delay: 0.0,
             },
         );
         world.insert_resource(table);
@@ -832,5 +1296,125 @@ mod real_data_tests {
                 && args.first() == Some(&ObScriptValue::Num(f32::from(0x1021u16)))),
             "`rCountryRadio.Enable` (caller = the SCRV slot) is declined, not run on the owner"
         );
+    }
+
+    /// M47.3 phase 2: every FO3 and FNV quest script's `GameMode` block decodes
+    /// to its `End`. Before the `z` float-literal fix (a 64-bit double, not a
+    /// NUL-terminated string) five FNV quest scripts came back `Malformed` at
+    /// their first `SetQuestDelay <quest> 0.1`, so they never ran at all.
+    #[test]
+    #[ignore = "needs FalloutNV.esm and Fallout3.esm on disk"]
+    fn fallout_quest_scripts_decode_without_malformed_bytecode() {
+        for (name, path) in [
+            ("FalloutNV.esm", byroredux_plugin::esm::test_paths::fnv_esm()),
+            ("Fallout3.esm", byroredux_plugin::esm::test_paths::fo3_esm()),
+        ] {
+            if !path.is_file() {
+                if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+                    panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {name} was not found at {path:?}");
+                }
+                continue;
+            }
+            let index =
+                byroredux_plugin::esm::parse_esm(&std::fs::read(&path).unwrap()).unwrap();
+            let (mut ran, mut malformed) = (0usize, Vec::new());
+            for quest in index.quests.values().filter(|q| q.script_ref != 0) {
+                let Some(script) = index.scripts.get(&quest.script_ref) else { continue };
+                if script.compiled.is_empty() {
+                    continue;
+                }
+                // Both arms of every gate are walked: all-0 and all-1 answers.
+                for answer in [0.0f32, 1.0] {
+                    struct Fixed(f32);
+                    impl ObScriptHost for Fixed {
+                        fn call(&mut self, _: u16, _: &[ObScriptValue], _: Option<u32>) -> Option<ObScriptValue> {
+                            Some(ObScriptValue::Num(self.0))
+                        }
+                    }
+                    let outcome = ObScriptProgram::new(script).run_block(
+                        BLOCK_GAME_MODE,
+                        &mut crate::obscript_vm::VmState::default(),
+                        &mut Fixed(answer),
+                    );
+                    if let BlockOutcome::Malformed(at) = outcome {
+                        malformed.push((script.form_id, at));
+                    }
+                }
+                ran += 1;
+            }
+            assert!(ran > 90, "{name}: only {ran} quest scripts ran");
+            assert!(malformed.is_empty(), "{name}: malformed GameMode bytecode in {malformed:x?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tick_interval_tests {
+    use super::*;
+    use byroredux_plugin::esm::records::ScriptType;
+
+    const QUEST: u32 = 0x0001_2345;
+
+    /// A running quest whose script is an empty `GameMode` block.
+    fn world_with_quest(authored_delay: f32) -> World {
+        let mut world = World::new();
+        let mut script = ScriptRecord { form_id: 1, script_type: ScriptType::Quest, ..Default::default() };
+        // `Begin GameMode` / `End`.
+        script.compiled = [0x10u16.to_le_bytes(), 6u16.to_le_bytes(), 0u16.to_le_bytes(), 0u16.to_le_bytes(), 0u16.to_le_bytes(), 0x11u16.to_le_bytes(), 0u16.to_le_bytes()]
+            .concat();
+        let mut table = QuestScriptTable::default();
+        table.scripts.insert(QUEST, QuestScript { script: Arc::new(script), quest: QuestFormId(QUEST), authored_delay });
+        world.insert_resource(table);
+        world.insert_resource(ObScriptQuestTimers::default());
+        world.insert_resource(ObScriptQuestLocals::default());
+        let mut stages = QuestStageState::default();
+        stages.start_quest(QuestFormId(QUEST), None);
+        world.insert_resource(stages);
+        world
+    }
+
+    fn runs(world: &World) -> u32 {
+        world.try_resource::<ObScriptQuestTimers>().unwrap().runs.get(&QUEST).copied().unwrap_or(0)
+    }
+
+    /// The vanilla cadence still applies when nothing is authored.
+    #[test]
+    fn an_unauthored_quest_runs_every_five_seconds() {
+        let world = world_with_quest(0.0);
+        for _ in 0..4 {
+            obscript_quest_tick_system(&world, 1.0);
+        }
+        assert_eq!(runs(&world), 0, "4 s is not due");
+        obscript_quest_tick_system(&world, 1.0);
+        assert_eq!(runs(&world), 1);
+    }
+
+    /// FNV ships ~80 scripted quests with a `QUST` delay (21 at 0.1 s); the
+    /// tick must honour it instead of running them at the default.
+    #[test]
+    fn an_authored_quest_delay_sets_the_cadence() {
+        let world = world_with_quest(0.5);
+        for _ in 0..10 {
+            obscript_quest_tick_system(&world, 0.25);
+        }
+        assert_eq!(runs(&world), 5, "10 x 0.25 s at a 0.5 s interval");
+    }
+
+    /// `SetQuestDelay` beats the authored delay, and 0 returns to the INI default.
+    #[test]
+    fn set_quest_delay_changes_the_cadence_at_runtime() {
+        let world = world_with_quest(5.0);
+        world.try_resource_mut::<ObScriptQuestLocals>().unwrap().set_delay(QUEST, 1.0);
+        for _ in 0..3 {
+            obscript_quest_tick_system(&world, 1.0);
+        }
+        assert_eq!(runs(&world), 3);
+        world.try_resource_mut::<ObScriptQuestLocals>().unwrap().set_delay(QUEST, 0.0);
+        for _ in 0..4 {
+            obscript_quest_tick_system(&world, 1.0);
+        }
+        assert_eq!(runs(&world), 3, "back on the 5 s default");
+        obscript_quest_tick_system(&world, 1.0);
+        assert_eq!(runs(&world), 4);
     }
 }

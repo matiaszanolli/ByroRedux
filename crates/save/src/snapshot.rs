@@ -535,7 +535,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v107 -> v108 (#5913): `Effect::AddItem` and `Effect::PlayerCaps` gained the
 /// required `silent` field (`abSilent`), so a queued fragment tail keeps
 /// whether its scripted add to the player raises a pickup notice.
-pub const FORMAT_MAJOR: u16 = 108;
+///
+/// v108 -> v109 (M47.3 phase 2): `ObScriptQuestLocals` gained the required
+/// `delays` map (a quest script's `SetQuestDelay` interval), so a quest that
+/// slowed or sped its own script no longer snaps back to the default on a load.
+pub const FORMAT_MAJOR: u16 = 109;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
