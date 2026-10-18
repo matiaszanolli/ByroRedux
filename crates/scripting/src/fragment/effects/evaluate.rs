@@ -586,6 +586,64 @@ pub(super) fn set_actor_value_base(world: &World, actor: EntityId, avif: u32, va
     }
 }
 
+/// Read `value` with no quest guard held by the caller (M47.3: an ObScript
+/// getter lowered onto the Papyrus read model): the stage and objective
+/// resources are read-locked for the call, in the order the effect applier takes
+/// them. `None` when the value cannot be read.
+pub(crate) fn evaluate_value_guard_free(
+    world: &World,
+    value: &ValueExpr,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+) -> Option<f32> {
+    let deferred = DeferredFragmentEffects::new(world);
+    let stages = world.try_resource::<QuestStageState>()?;
+    evaluate_value(value, context, vmad, world, &stages, &deferred)
+}
+
+/// [`evaluate_value_guard_free`] for a guard.
+pub(crate) fn evaluate_guard_guard_free(
+    world: &World,
+    guard: &FragmentGuard,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+) -> Option<bool> {
+    let deferred = DeferredFragmentEffects::new(world);
+    let stages = world.try_resource::<QuestStageState>()?;
+    let objectives = world.try_resource::<QuestObjectiveState>()?;
+    evaluate_guard(guard, context, vmad, world, &stages, &objectives, &deferred)
+}
+
+/// ObScript `ModAV` / `ForceAV` (M47.3): shift `actor`'s `avif` by `delta` in the
+/// permanent layer ("permanently alters the actor value"), creating `ActorValues`
+/// if it has none, and queue the death a Health write to zero or below owes.
+pub(crate) fn mod_actor_value_permanent(world: &World, actor: EntityId, avif: u32, delta: f32) {
+    {
+        let Some(mut values) = world.query_mut::<byroredux_core::ecs::components::ActorValues>() else {
+            return;
+        };
+        if values.get_mut(actor).is_none() {
+            values.insert(actor, byroredux_core::ecs::components::ActorValues::new());
+        }
+        values.get_mut(actor).expect("present or inserted").mod_permanent(avif, delta);
+    }
+    queue_health_death(world, actor);
+}
+
+/// ObScript `ResetHealth` (M47.3): take every damage point off `avifs` ("restores
+/// the actor's health and cures crippling damage").
+pub(crate) fn clear_actor_value_damage(world: &World, actor: EntityId, avifs: &[u32]) {
+    let Some(mut values) = world.query_mut::<byroredux_core::ecs::components::ActorValues>() else {
+        return;
+    };
+    let Some(values) = values.get_mut(actor) else {
+        return;
+    };
+    for &avif in avifs {
+        values.restore(avif, f32::MAX);
+    }
+}
+
 /// #5862 — a script's actor-value write may have taken `actor`'s Health to
 /// zero or below. Nothing else sweeps actors at Health <= 0, so queue the
 /// same death a scripted `Kill` does: `scripted_kill_system` spares an

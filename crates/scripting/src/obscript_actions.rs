@@ -81,11 +81,14 @@ pub(crate) struct Context {
     /// The reference that activated the owner, inside the event block that has
     /// one: what an `Activate` with no actor argument activates by.
     pub action_ref: Option<u32>,
+    /// The FormID of the script's owner (its quest, or its reference): the
+    /// context the effect runtime applies an effect under.
+    pub owner: u32,
 }
 
 /// Run `cmd` if it is a reference-bound action.
 pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let Context { caller, known, action_ref } = *context;
+    let Context { caller, known, action_ref, .. } = *context;
     if !matches!(
         cmd,
         CMD_ENABLE
@@ -98,7 +101,7 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             | CMD_PLAY_SOUND
             | CMD_ACTIVATE
     ) {
-        return Action::Unhandled;
+        return crate::obscript_effects::run(world, cmd, args, context);
     }
     if cmd == CMD_PLAY_SOUND {
         return play_sound(world, args);

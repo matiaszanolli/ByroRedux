@@ -486,6 +486,23 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                 };
                 self.fallout_quest_command(cmd, QuestFormId(target), args)
             }
+            _ if crate::obscript_effects::is_getter(cmd) => {
+                match crate::obscript_effects::getter(
+                    self.world,
+                    cmd,
+                    args,
+                    &crate::obscript_actions::Context {
+                        caller,
+                        known: self.reference.map(|entity| (self.owner, entity)),
+                        action_ref: self.action_ref,
+                        owner: self.owner,
+                    },
+                ) {
+                    crate::obscript_effects::Getter::Value(value) => Some(ObScriptValue::Num(value)),
+                    crate::obscript_effects::Getter::Ref(form) => Some(ObScriptValue::Ref(form)),
+                    _ => self.decline(cmd),
+                }
+            }
             _ if self.script_getter(cmd).is_some() => {
                 let function_index = u32::from(cmd) - 0x1000;
                 // A form-id first parameter that did not resolve (`Ref(0)`) is
@@ -530,6 +547,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     caller,
                     known: self.reference.map(|entity| (self.owner, entity)),
                     action_ref: self.action_ref,
+                    owner: self.owner,
                 },
             ) {
                 Action::Done { value, effect: text } => {

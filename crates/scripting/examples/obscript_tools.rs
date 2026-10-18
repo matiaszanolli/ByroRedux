@@ -28,6 +28,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         "live" => live::run(args),
         "dump" => dump::run(args),
         "walk" => walk::run(args),
+        "avif" => avif::run(args),
+        "avcodes" => avcodes::run(args),
         _ => {
             eprintln!("usage: obscript_tools <census|names|live|dump|walk> <ESM> ...");
             std::process::exit(2);
@@ -464,7 +466,12 @@ mod names {
             let mut w: Vec<_> = words.into_iter().collect();
             w.sort_by_key(|(n, c)| (std::cmp::Reverse(*c), n.clone()));
             let top: Vec<String> = w.iter().take(3).map(|(n, c)| format!("{n} {}%", c * 100 / lines)).collect();
-            println!("{id:#06x}  scripts {:>3} lines {:>3}  {}", scripts.len(), lines, top.join(", "));
+            let catalog = match id.checked_sub(0x1000) {
+                Some(index) => format!("{:?}", byroredux_scripting::condition::ConditionFunction::from_index(u32::from(index))),
+                None => String::new(),
+            };
+            let catalog = if catalog.starts_with("Unknown") { String::new() } else { format!("  [ctda {catalog}]") };
+            println!("{id:#06x}  scripts {:>3} lines {:>3}  {}{catalog}", scripts.len(), lines, top.join(", "));
         }
         Ok(())
     }
@@ -594,4 +601,135 @@ mod walk {
         Ok(())
     }
 
+}
+
+mod avif {
+    use byroredux_plugin::esm::parse_esm;
+    pub fn run(mut a: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error::Error>> {
+        let esm = a.next().expect("esm");
+        let index = parse_esm(&std::fs::read(&esm)?)?;
+        let mut rows: Vec<_> = index.actor_values.values().collect();
+        rows.sort_by_key(|r| r.form_id);
+        for r in rows {
+            println!("{:08X} {:<28} {}", r.form_id, r.editor_id, r.full_name);
+        }
+        Ok(())
+    }
+}
+
+/// Which actor value each compiled argument code names: every call of an
+/// actor-value command in a script whose source lines align with its compiled
+/// statements, as (code, the word after the command in the source line).
+mod avcodes {
+    use std::collections::{BTreeMap, HashSet};
+
+    use byroredux_plugin::esm::parse_esm;
+
+    /// `GetAV`, `SetAV`, `ModAV`, `ForceAV`, `DamageAV`, `RestoreAV`, `GetBaseAV`,
+    /// `GetPermanentActorValue`, `ForceActorValue`, ... by the `names` census.
+    const COMMANDS: &[(u16, &str)] = &[
+        (0x100e, "getav"), (0x100f, "setav"), (0x1010, "modav"), (0x110e, "forceav"),
+        (0x1181, "damageav"), (0x1182, "restoreav"), (0x11ef, "getpermanentactorvalue"),
+        (0x1100, "getgs"),
+    ];
+
+    fn u16_at(b: &[u8], at: usize) -> Option<u16> {
+        Some(u16::from_le_bytes([*b.get(at)?, *b.get(at + 1)?]))
+    }
+
+    /// `(code literal)` of the first argument of the blob at `at`: `[count u16]`
+    /// then a u16 integer, or an `'n'` i32.
+    fn first_code(b: &[u8], at: usize, end: usize) -> Option<u32> {
+        let count = u16_at(b, at)?;
+        if count == 0 || at + 3 > end {
+            return None;
+        }
+        match *b.get(at + 2)? {
+            b'n' => Some(i32::from_le_bytes([*b.get(at + 3)?, *b.get(at + 4)?, *b.get(at + 5)?, *b.get(at + 6)?]) as u32),
+            b'r' | b's' | b'f' | b'G' | b'z' | b'X' | b'Y' | b'Z' => None,
+            _ => u16_at(b, at + 2).map(u32::from),
+        }
+    }
+
+    pub fn run(mut a: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error::Error>> {
+        let esm = a.next().expect("esm");
+        let index = parse_esm(&std::fs::read(&esm)?)?;
+        let ids: HashSet<u16> = COMMANDS.iter().map(|c| c.0).collect();
+        let mut table: BTreeMap<(u16, u32), BTreeMap<String, usize>> = BTreeMap::new();
+        let mut unaligned = 0usize;
+        for s in index.scripts.values() {
+            let Some(src) = &s.source else { continue };
+            let b = &s.compiled;
+            // Statement ranges.
+            let mut stmts: Vec<(usize, usize)> = Vec::new();
+            let mut at = 0usize;
+            let mut ok = true;
+            while at + 4 <= b.len() {
+                let op = u16_at(b, at).unwrap();
+                let end = if op == 0x1c { at + 8 + u16_at(b, at + 6).unwrap() as usize } else { at + 4 + u16_at(b, at + 2).unwrap() as usize };
+                if end > b.len() { ok = false; break; }
+                stmts.push((at, end));
+                at = end;
+            }
+            if !ok { continue; }
+            let locals: HashSet<String> = s.locals.iter().map(|l| l.name.to_ascii_lowercase()).collect();
+            let lines: Vec<String> = src
+                .lines()
+                .map(|r| r.split(';').next().unwrap_or("").trim().to_owned())
+                .filter(|l| !l.is_empty())
+                .filter(|l| !matches!(l.split_whitespace().next().unwrap_or("").to_ascii_lowercase().as_str(), "short" | "long" | "float" | "int" | "ref" | "reference"))
+                .collect();
+            let _ = &locals;
+            if lines.len() != stmts.len() { unaligned += 1; continue; }
+            for (line, &(st, en)) in lines.iter().zip(&stmts) {
+                let words: Vec<String> = line
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .filter(|w| !w.is_empty())
+                    .map(|w| w.to_ascii_lowercase())
+                    .collect();
+                // Occurrences in the statement: implicit op, explicit caller, expression escapes.
+                let op = u16_at(b, st).unwrap();
+                let mut found: Vec<(u16, u32)> = Vec::new();
+                if op == 0x1c {
+                    let cmd = u16_at(b, st + 4).unwrap();
+                    if ids.contains(&cmd) { if let Some(c) = first_code(b, st + 8, en) { found.push((cmd, c)); } }
+                } else if ids.contains(&op) {
+                    if let Some(c) = first_code(b, st + 4, en) { found.push((op, c)); }
+                } else if matches!(op, 0x15 | 0x16 | 0x18) {
+                    let mut i = st + 4;
+                    while i + 5 < en {
+                        if b[i] == b'X' {
+                            let cmd = u16_at(b, i + 1).unwrap();
+                            let len = u16_at(b, i + 3).unwrap() as usize;
+                            if ids.contains(&cmd) && i + 5 + len <= en {
+                                if let Some(c) = first_code(b, i + 5, i + 5 + len) { found.push((cmd, c)); }
+                            }
+                        }
+                        i += 1;
+                    }
+                }
+                // Source order of the command words pairs with byte order of the calls.
+                let mut occ: Vec<(usize, &str)> = Vec::new();
+                for (i, w) in words.iter().enumerate() {
+                    for &(_, name) in COMMANDS {
+                        if w == name { occ.push((i, name)); }
+                    }
+                }
+                for (k, (cmd, code)) in found.iter().enumerate() {
+                    let Some(&(i, name)) = occ.get(k) else { continue };
+                    if COMMANDS.iter().find(|c| c.0 == *cmd).map(|c| c.1) != Some(name) { continue; }
+                    let word = words.get(i + 1).cloned().unwrap_or_default();
+                    *table.entry((*cmd, *code)).or_default().entry(word).or_insert(0) += 1;
+                }
+            }
+        }
+        println!("unaligned scripts skipped: {unaligned}");
+        for ((cmd, code), words) in table {
+            let mut w: Vec<_> = words.into_iter().collect();
+            w.sort_by_key(|(n, c)| (std::cmp::Reverse(*c), n.clone()));
+            let top: Vec<String> = w.iter().take(4).map(|(n, c)| format!("{n} {c}")).collect();
+            println!("{cmd:#06x} code {code:>3}: {}", top.join(", "));
+        }
+        Ok(())
+    }
 }

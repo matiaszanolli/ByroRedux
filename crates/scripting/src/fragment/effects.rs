@@ -34,6 +34,10 @@ use vehicle_cinematic::*;
 use ai_combat::*;
 use quest_scoped::*;
 pub(in crate::fragment) use evaluate::*;
+pub(crate) use evaluate::{
+    clear_actor_value_damage, evaluate_guard_guard_free, evaluate_value_guard_free,
+    mod_actor_value_permanent,
+};
 
 /// Read one entity's [`Transform`] as an owned copy, holding no guard on
 /// return (#3250).
