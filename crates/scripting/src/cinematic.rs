@@ -277,6 +277,35 @@ impl CinematicPresentationState {
         true
     }
 
+    /// ObScript `ApplyImageSpaceModifier <IMAD>`: start the modifier at full strength ("will play
+    /// the specified ImageSpace Modifier"). `false` when the load order has no such `IMAD`, so a
+    /// script naming one that did not load does nothing rather than hold a dead entry. Playing
+    /// one that is already active restarts it.
+    pub fn play_image_space_modifier(&mut self, form_id: u32) -> bool {
+        if !self.image_space_modifier_catalog.contains_key(&form_id) {
+            return false;
+        }
+        self.active_image_space_modifiers.retain(|active| active.application.form_id != form_id);
+        self.active_image_space_modifiers.push(ActiveImageSpaceModifier {
+            application: ImageSpaceModifierApplication { form_id, strength: 1.0 },
+            elapsed_seconds: 0.0,
+        });
+        true
+    }
+
+    /// ObScript `RemoveImageSpaceModifier <IMAD>`: "will remove the specified ImageSpace Modifier"
+    /// from the screen. `true` when it was active.
+    pub fn remove_image_space_modifier(&mut self, form_id: u32) -> bool {
+        let before = self.active_image_space_modifiers.len();
+        self.active_image_space_modifiers.retain(|active| active.application.form_id != form_id);
+        self.active_image_space_modifiers.len() != before
+    }
+
+    /// ObScript `IsImageSpaceActive <IMAD>`: whether the modifier is playing.
+    pub fn is_image_space_modifier_active(&self, form_id: u32) -> bool {
+        self.active_image_space_modifiers.iter().any(|active| active.application.form_id == form_id)
+    }
+
     pub fn is_player_animation_event_registered(&self, event: CinematicAnimationEvent) -> bool {
         match event {
             CinematicAnimationEvent::PlayImod => self.player_imod_event.is_some(),

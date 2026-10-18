@@ -169,6 +169,8 @@ pub(crate) fn handles(cmd: u16) -> bool {
             | CMD_SET_SCALE
             | CMD_SET_ANGLE
             | CMD_ROTATE
+            | CMD_IMOD
+            | CMD_RIMOD
     )
 }
 
@@ -251,6 +253,8 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             | CMD_REWARD_KARMA
             | CMD_SHOW_MESSAGE
             | CMD_ADD_REPUTATION
+            | CMD_IMOD
+            | CMD_RIMOD
     );
     let caller = context.caller.filter(|&form| form != 0);
     if needs_caller && caller.is_none() {
@@ -265,6 +269,10 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
     // `0x1059` is Oblivion's text `Message` (which the VM decodes itself): a message form is
     // `ShowMessage` on the Fallout pair.
     if cmd == CMD_SHOW_MESSAGE && !crate::ScriptGame::is_fallout3_nv(world) {
+        return Action::Unhandled;
+    }
+    // `ApplyImageSpaceModifier` / `RemoveImageSpaceModifier` are Fallout commands (new in the GECK).
+    if matches!(cmd, CMD_IMOD | CMD_RIMOD) && !crate::ScriptGame::is_fallout3_nv(world) {
         return Action::Unhandled;
     }
     let mut bind = Binder::default();
@@ -727,6 +735,23 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
             transform.scale = num(args, 0).max(0.0);
             return Action::Done { value: None, effect: format!("SetScale {caller:08X} {}", num(args, 0)) };
         }
+        // `ApplyImageSpaceModifier <IMAD>` / `RemoveImageSpaceModifier <IMAD>`: play or take off a
+        // screen effect; the modifier runtime the cinematic presentation owns samples it into the
+        // frame's grade. An `IMAD` the load order lacks does nothing and is declined.
+        CMD_IMOD | CMD_RIMOD => {
+            let Some(imad) = form_arg(args, 0) else { return Action::Declined };
+            let Some(mut state) = world.try_resource_mut::<crate::cinematic::CinematicPresentationState>() else {
+                return Action::Declined;
+            };
+            if cmd == CMD_IMOD {
+                if !state.play_image_space_modifier(imad) {
+                    return Action::Declined;
+                }
+            } else {
+                state.remove_image_space_modifier(imad);
+            }
+            return Action::Done { value: None, effect: format!("{} {imad:08X}", if cmd == CMD_IMOD { "ApplyImageSpaceModifier" } else { "RemoveImageSpaceModifier" }) };
+        }
         CMD_RESET_HEALTH => {
             let Some(actor) = caller_entity else { return Action::Declined };
             let vitals: Vec<u32> = crate::obscript_actor_values::RESET_HEALTH_CODES
@@ -780,6 +805,9 @@ const CMD_GET_IS_CURRENT_PACKAGE: u16 = 0x10a1;
 const CMD_GET_HEALTH_PERCENTAGE: u16 = 0x11af;
 const CMD_GET_CURRENT_TIME: u16 = 0x1012;
 const CMD_GET_POS: u16 = 0x1006;
+const CMD_IMOD: u16 = 0x1191;
+const CMD_RIMOD: u16 = 0x1192;
+const CMD_IS_IMAGE_SPACE_ACTIVE: u16 = 0x1232;
 const CMD_ROTATE: u16 = 0x1004;
 const CMD_GET_ANGLE: u16 = 0x1008;
 const CMD_SET_ANGLE: u16 = 0x1009;
@@ -816,6 +844,7 @@ pub(crate) fn is_getter(cmd: u16) -> bool {
             | CMD_GET_SCALE
             | CMD_GET_ANGLE
             | CMD_GET_STARTING_ANGLE
+            | CMD_IS_IMAGE_SPACE_ACTIVE
     )
 }
 
@@ -837,6 +866,15 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
             .try_resource::<crate::fragment::ScriptUpdates>()
             .and_then(|updates| updates.game_hours())
             .map_or(Getter::Declined, |hours| Getter::Value(hours.rem_euclid(24.0) as f32));
+    }
+    // CS/GECK *IsImageSpaceActive*: whether the modifier is playing. Fallout only; no reference.
+    if cmd == CMD_IS_IMAGE_SPACE_ACTIVE {
+        let (true, Some(imad)) = (crate::ScriptGame::is_fallout3_nv(world), form_arg(args, 0)) else {
+            return Getter::Declined;
+        };
+        return world
+            .try_resource::<crate::cinematic::CinematicPresentationState>()
+            .map_or(Getter::Declined, |state| Getter::Value(f32::from(u8::from(state.is_image_space_modifier_active(imad)))));
     }
     let Some(caller) = context.caller.filter(|&form| form != 0) else {
         return Getter::Declined;
@@ -1425,6 +1463,28 @@ mod tests {
         world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(actor));
         assert_eq!(getter(&world, CMD_GET_ANGLE, &[ObScriptValue::Num(2.0)], &ctx), Getter::Declined);
         assert_eq!(run(&world, CMD_SET_ANGLE, &[ObScriptValue::Num(2.0), ObScriptValue::Num(1.0)], &ctx), Action::Declined);
+    }
+
+    #[test]
+    fn image_space_modifiers_play_stop_and_report_through_the_cinematic_runtime() {
+        use byroredux_plugin::esm::records::ImadRecord;
+        const IMAD: u32 = 0x000A_0001;
+        let (mut world, _, _) = world();
+        let record = ImadRecord { form_id: IMAD, duration_seconds: 2.0, ..Default::default() };
+        crate::cinematic::install_image_space_modifiers(&mut world, vec![record]);
+        let ctx = context(None);
+        let active = |world: &World| getter(world, CMD_IS_IMAGE_SPACE_ACTIVE, &refs(&[IMAD]), &ctx);
+        assert_eq!(active(&world), Getter::Value(0.0));
+        assert!(done(&run(&world, CMD_IMOD, &refs(&[IMAD]), &ctx)));
+        assert_eq!(active(&world), Getter::Value(1.0));
+        assert!(done(&run(&world, CMD_RIMOD, &refs(&[IMAD]), &ctx)));
+        assert_eq!(active(&world), Getter::Value(0.0));
+        // An IMAD the load order lacks is declined, not held.
+        assert_eq!(run(&world, CMD_IMOD, &refs(&[IMAD + 1]), &ctx), Action::Declined);
+        // The modifier plays out: its duration ends it.
+        run(&world, CMD_IMOD, &refs(&[IMAD]), &ctx);
+        crate::cinematic::image_space_modifier_system(&world, 3.0);
+        assert_eq!(active(&world), Getter::Value(0.0));
     }
 
     #[test]
