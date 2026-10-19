@@ -2081,9 +2081,10 @@ fn location_aliases_fill_by_each_authored_mechanism_and_hold_until_stop() {
         Some(WHITERUN_HOLD),
         "keyword-selected parent"
     );
-    // The source quest (0x300) fills after this one (FormID order), so the
-    // external alias binds on the next refresh.
-    assert_eq!(bound(&world, 4), None);
+    // The source quest (0x300) fills after this one (FormID order); the
+    // external alias is retried in the pass's fixed point (#6002), so it
+    // binds in this very refresh rather than lagging one behind.
+    assert_eq!(bound(&world, 4), Some(TAMRIEL), "external alias, same refresh");
     assert_eq!(
         bound(&world, 5),
         Some(WHITERUN),
@@ -2111,6 +2112,88 @@ fn location_aliases_fill_by_each_authored_mechanism_and_hold_until_stop() {
         bound(&world, 1),
         None,
         "a stopped quest's location aliases clear"
+    );
+}
+
+/// #6002 — a reference alias whose match conditions read a location alias of
+/// its own quest (`GetInCurrentLocAlias`) sees the location bound earlier in the
+/// SAME refresh. Before the fix the candidate scan evaluated against the
+/// committed (on the quest-start refresh: empty) `LocationAliasBindings`, so the
+/// alias stayed unbound until something unrelated re-dirtied the bindings.
+#[test]
+fn reference_alias_gated_on_a_location_alias_fills_in_the_same_refresh() {
+    use crate::location::tests::{
+        whiterun_index, DRAGONSREACH_CELL, WHITERUN_HOLD,
+    };
+    use crate::location::{install_location_table, LocationAliasBindings};
+    use byroredux_core::ecs::components::{CellFormId, CellRoot};
+    use byroredux_plugin::esm::records::condition::{
+        ComparisonOp, Condition, ConditionValue, RunOn,
+    };
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    install_location_table(&mut world, &whiterun_index());
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+    let cell_root = world.spawn();
+    world.insert(cell_root, CellFormId(DRAGONSREACH_CELL));
+    let jarl = world.spawn();
+    world.insert(jarl, CellRoot(cell_root));
+    world.insert(
+        jarl,
+        SceneAliasCandidate {
+            reference_form_id: 0xA1,
+            base_form_id: 0xB1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    world.insert(jarl, GlobalTransform::IDENTITY);
+    // "In the current location of alias 1" (condition 360).
+    let in_loc_alias_1 = Condition {
+        function_index: 360,
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(1.0),
+        param_1: 1,
+        run_on: RunOn::Subject,
+        ..Default::default()
+    };
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![
+                QuestAlias {
+                    alias_id: 1,
+                    is_location: true,
+                    fill_type: Some(AliasFillType::ForcedLocation(WHITERUN_HOLD)),
+                    ..Default::default()
+                },
+                QuestAlias {
+                    alias_id: 2,
+                    match_conditions: vec![in_loc_alias_1],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    );
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(
+        world
+            .resource::<LocationAliasBindings>()
+            .resolve(QuestFormId(QUEST), 1),
+        Some(WHITERUN_HOLD)
+    );
+    assert_eq!(
+        world
+            .resource::<SceneActorBindings>()
+            .resolve(QuestFormId(QUEST), 2),
+        Some(jarl),
+        "the reference alias must see the location alias filled earlier in this pass"
     );
 }
 

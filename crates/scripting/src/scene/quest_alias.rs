@@ -859,6 +859,11 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
     // #5394 — the player for PlayerRef-recorded event slots.
     let story_player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     let mut external_aliases = Vec::new();
+    // #6002 — external *location* aliases whose source had not filled when the
+    // alias was visited (a source quest with a higher FormID, filled later in
+    // this pass); retried in the fixed point below with the reference externals.
+    let mut external_locations: Vec<(QuestFormId, QuestAlias, u32, i32)> = Vec::new();
+    let no_locations: HashMap<(QuestFormId, i32), u32> = HashMap::new();
     let mut reserved = HashSet::new();
     // M47.2 — location aliases hold from quest start until the quest stops:
     // the running quests' committed bindings carry over and only unbound
@@ -944,6 +949,15 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                         &location_reservers,
                         &story_fills,
                     );
+                    if let Some(AliasFillType::ExternalAlias {
+                        quest: source_quest,
+                        alias_id: source_alias,
+                    }) = alias.fill_type
+                    {
+                        if !locations.contains_key(&(*quest, alias.alias_id)) {
+                            external_locations.push((*quest, alias.clone(), source_quest, source_alias));
+                        }
+                    }
                 }
                 continue;
             }
@@ -1112,6 +1126,14 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
 
             let allow_reuse = alias.flags.has(ALIAS_FLAG_ALLOW_REUSE);
             let allow_reserved = alias.flags.has(ALIAS_FLAG_ALLOW_RESERVED);
+            // #6002 — location aliases above this one in list order are in
+            // `locations` but not yet committed to `LocationAliasBindings`
+            // (replaced after the loop); the conditions that read them
+            // (`GetInCurrentLocAlias` & co) must see this pass's table, or a
+            // reference alias gated on a location alias of its own quest
+            // evaluates against last refresh's (on the starting refresh,
+            // empty) bindings and never fills until something re-dirties.
+            let pending_locations = locations.as_ref().unwrap_or(&no_locations);
             let eligible = |(entity, candidate): &(EntityId, SceneAliasCandidate)| {
                 if !alias.flags.has(ALIAS_FLAG_ALLOW_DEAD) && world.has::<Dead>(*entity) {
                     return None;
@@ -1156,7 +1178,8 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                         world,
                         &ConditionContext::for_subject(*entity)
                             .with_quest(*quest)
-                            .with_pending_alias_bindings(&resolved),
+                            .with_pending_alias_bindings(&resolved)
+                            .with_pending_location_bindings(pending_locations),
                     )
                 {
                     return None;
@@ -1192,7 +1215,8 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                     world,
                     &ConditionContext::for_subject(EntityId::MAX)
                         .with_quest(*quest)
-                        .with_pending_alias_bindings(&resolved),
+                        .with_pending_alias_bindings(&resolved)
+                        .with_pending_location_bindings(pending_locations),
                 ) {
                     SubjectRequirement::Unsatisfiable => Cow::Borrowed(&[][..]),
                     SubjectRequirement::IdentityBlocks(blocks) => identities
@@ -1230,8 +1254,24 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
 
     // External aliases can chain. Iterate to a fixed point bounded by the
     // number of external definitions; a cycle makes no progress and exits.
-    for _ in 0..external_aliases.len() {
+    for _ in 0..external_aliases.len() + external_locations.len() {
         let mut changed = false;
+        if let Some(locations) = locations.as_mut() {
+            for (quest, alias, source_quest, source_alias) in &external_locations {
+                let Some(location) = locations
+                    .get(&(QuestFormId(*source_quest), *source_alias))
+                    .copied()
+                else {
+                    continue;
+                };
+                changed |=
+                    locations.insert((*quest, alias.alias_id), location) != Some(location);
+                if let Some(target_alias) = alias.force_into_alias {
+                    changed |=
+                        locations.insert((*quest, target_alias), location) != Some(location);
+                }
+            }
+        }
         for (quest, alias, source_quest, source_alias) in &external_aliases {
             let Some(entity) = resolved
                 .get(&(QuestFormId(*source_quest), *source_alias))
