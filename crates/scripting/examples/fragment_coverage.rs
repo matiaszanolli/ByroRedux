@@ -61,13 +61,13 @@ fn lower_as_production(
         .iter()
         .any(|p| p.name.node.0.eq_ignore_ascii_case(INFO_SPEAKER_PARAMETER))
     {
-        lower_info_fragment(params, body, quest_properties, &HashSet::new(), None, library)
+        lower_info_fragment(params, body, quest_properties, &HashSet::new(), &HashSet::new(), None, library)
     } else if quest_library.quest {
         // A quest fragment (`QF_…`): production inlines calls into the
         // quest's own script.
-        lower_quest_fragment(body, quest_properties, &HashSet::new(), None, library)
+        lower_quest_fragment(body, quest_properties, &HashSet::new(), &HashSet::new(), None, library)
     } else if quest_library.scene {
-        lower_scene_fragment(body, quest_properties, &HashSet::new(), None, library)
+        lower_scene_fragment(body, quest_properties, &HashSet::new(), &HashSet::new(), None, library)
     } else {
         lower_fragment_with_quest_properties(body, quest_properties)
     }
@@ -386,6 +386,7 @@ fn main() {
                     let lowered = lower_quest_fragment(
                         &event.body,
                         &quest_properties,
+                        &HashSet::new(),
                         &HashSet::new(),
                         None,
                         Some(&library),

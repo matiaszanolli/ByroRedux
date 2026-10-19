@@ -83,6 +83,15 @@ pub(super) struct Scope<'lib> {
     /// every call site that doesn't have script-level property metadata
     /// available — matches the pre-fix behavior for those.
     pub(super) known_quest_properties: HashSet<String>,
+    /// #5972 — lowercased names of the containing script's properties declared
+    /// with a PER-INSTANCE actor type (`Actor`, `ReferenceAlias`,
+    /// `RefCollectionAlias`). Fallout 4 / Starfield declare `SetEssential` /
+    /// `SetProtected` on those with per-instance semantics ("an individual
+    /// actor, not the Actor Base"), while Skyrim's live on `ActorBase`; nothing
+    /// in the call's AST tells the two apart, so a bare property in this set is
+    /// not an `ActorBase` receiver and declines to the VM. Empty where the
+    /// caller has no script metadata (bare harnesses) — the pre-fix behaviour.
+    pub(super) per_instance_actor_properties: HashSet<String>,
     /// #5407 — lowercased names of the containing script's own ARGLESS
     /// functions, threaded from `&Script` the way
     /// [`Self::known_quest_properties`] is. `AddRaceSpells` /

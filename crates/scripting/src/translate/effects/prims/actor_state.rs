@@ -160,7 +160,25 @@ pub(super) fn prim_set_base_protection(e: &Expr, scope: &Scope) -> Option<Effect
             ActorBaseRef::OfActor(receiver_actor(actor, scope)?)
         }
         Some(_) => return None,
-        None => ActorBaseRef::Form(receiver_object(object, scope)?),
+        None => {
+            // #5972 — only an `ActorBase` has a base to write. A reference
+            // getter's result (`Alias.GetActorRef()`) is an `Actor`, and a bare
+            // property declared `Actor` / `ReferenceAlias` / `RefCollectionAlias`
+            // is the per-instance Fallout 4 / Starfield form: decline both so
+            // the call is not lowered into a write nothing reads.
+            if alias_reference_getter(object).is_some() {
+                return None;
+            }
+            if let Expr::Ident(name) = object {
+                if scope
+                    .per_instance_actor_properties
+                    .contains(&name.0.to_ascii_lowercase())
+                {
+                    return None;
+                }
+            }
+            ActorBaseRef::Form(receiver_object(object, scope)?)
+        }
     };
     Some(Effect::SetBaseProtection {
         base,

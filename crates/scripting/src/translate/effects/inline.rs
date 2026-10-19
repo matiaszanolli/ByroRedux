@@ -104,6 +104,7 @@ pub(super) fn inline_quest_script_call(
             Some(library),
         ),
         own_argless_functions: crate::fragment::argless_function_names(&script),
+        per_instance_actor_properties: crate::fragment::per_instance_actor_property_names(&script),
         inline_stack: scope.inline_stack.iter().cloned().chain([frame]).collect(),
         lowered_statements: scope.lowered_statements.clone(),
         script_variables: script_declarations_by_number_type(&script, true),

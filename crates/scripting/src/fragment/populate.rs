@@ -91,6 +91,30 @@ pub fn quest_property_names_with_library(
         .collect()
 }
 
+/// #5972 — lowercased names of `script`'s properties declared with a
+/// per-instance actor type: `Actor`, `ReferenceAlias`, `RefCollectionAlias`.
+/// Fallout 4 / Starfield put `SetEssential` / `SetProtected` on these with
+/// per-instance semantics; an `ActorBase` property (Skyrim) is not listed.
+pub fn per_instance_actor_property_names(script: &Script) -> std::collections::HashSet<String> {
+    script
+        .body
+        .iter()
+        .filter_map(|item| match &item.node {
+            ScriptItem::Property(p) => match &p.ty.node {
+                Type::Object(ty_name)
+                    if ["actor", "referencealias", "refcollectionalias"]
+                        .iter()
+                        .any(|kind| ty_name.0.eq_ignore_ascii_case(kind)) =>
+                {
+                    Some(p.name.node.0.to_ascii_lowercase())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
 /// #5407 — lowercased names of `script`'s own ARGLESS functions
 /// (top-level and state, matching [`function_body`]'s lookup). Feeds
 /// `lower_fragment_with_script_metadata` so script-defined-helper
@@ -420,6 +444,7 @@ fn populate_quest_fragments_from_script_internal(
     // #5407 — the script's own argless helpers, for the race-spells
     // primitives' script-defined check.
     let argless_functions = argless_function_names(script);
+    let actor_properties = per_instance_actor_property_names(script);
     for (stage, fragment_name) in bindings {
         let Some(body) = function_body(script, fragment_name) else {
             log::debug!(
@@ -438,6 +463,7 @@ fn populate_quest_fragments_from_script_internal(
             body,
             &quest_properties,
             &argless_functions,
+            &actor_properties,
             providers.map(|scope| scope.catalog),
             providers.and_then(|scope| scope.library),
         );
@@ -659,6 +685,7 @@ fn populate_scene_fragments_from_script_internal(
     // #5407 — the script's own argless helpers, for the race-spells
     // primitives' script-defined check.
     let argless_functions = argless_function_names(script);
+    let actor_properties = per_instance_actor_property_names(script);
     let mut inserted = 0;
     for (event, fragment_name) in bindings {
         let Some(body) = function_body(script, fragment_name) else {
@@ -671,6 +698,7 @@ fn populate_scene_fragments_from_script_internal(
             body,
             &quest_properties,
             &argless_functions,
+            &actor_properties,
             providers.map(|scope| scope.catalog),
             providers.and_then(|scope| scope.library),
         );
@@ -764,6 +792,7 @@ fn populate_info_fragments_from_script_internal(
     // #5407 — the script's own argless helpers, for the race-spells
     // primitives' script-defined check.
     let argless_functions = argless_function_names(script);
+    let actor_properties = per_instance_actor_property_names(script);
     let mut begin: Option<Vec<Effect>> = None;
     let mut end: Option<Vec<Effect>> = None;
     for (on_begin, fragment_name) in bindings {
@@ -779,6 +808,7 @@ fn populate_info_fragments_from_script_internal(
             &function.body,
             &quest_properties,
             &argless_functions,
+            &actor_properties,
             providers.map(|scope| scope.catalog),
             providers.and_then(|scope| scope.library),
         );

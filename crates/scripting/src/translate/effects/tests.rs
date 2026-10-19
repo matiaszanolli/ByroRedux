@@ -886,6 +886,50 @@ fn base_protection_and_preferred_target_combat_lower() {
     );
 }
 
+/// #5972 — Fallout 4 / Starfield declare `SetEssential` / `SetProtected` on
+/// `Actor` (per instance) and on the alias types; Skyrim's live on `ActorBase`.
+/// With the script's declared property types, only an ActorBase receiver lowers
+/// into a base write; an `Actor` / alias property, and an alias getter's result
+/// (always an actor), decline to the VM instead of lowering into a
+/// wrong-keyed write nothing reads.
+#[test]
+fn per_instance_actor_receivers_decline_base_protection() {
+    const SOURCE: &str = "ScriptName QF extends Quest\n\
+         Actor Property Companion Auto\n\
+         ReferenceAlias Property Ally Auto\n\
+         RefCollectionAlias Property Squad Auto\n\
+         ActorBase Property EmperorBase Auto\n\
+         Function Fragment_0()\n\
+         EmperorBase.SetProtected()\n\
+         EndFunction\n";
+    let (script, errs) = parse_script(SOURCE).expect("parses");
+    assert!(errs.is_empty(), "{errs:?}");
+    let declared = crate::fragment::per_instance_actor_property_names(&script);
+    assert_eq!(
+        declared,
+        ["companion", "ally", "squad"].map(String::from).into_iter().collect(),
+        "ActorBase is not a per-instance type"
+    );
+    let lower = |statement: &str, declared: &HashSet<String>| {
+        let body = first_fn_body(&format!(
+            "ScriptName QF extends Quest\nFunction Fragment_0()\n{statement}\nEndFunction\n"
+        ));
+        lower_fragment_with_script_metadata(&body, &HashSet::new(), &HashSet::new(), declared, None)
+    };
+    // The ActorBase shapes lower, with or without metadata.
+    for statement in ["EmperorBase.SetProtected()", "Companion.GetActorBase().SetEssential(true)"] {
+        assert!(lower(statement, &declared).is_some(), "{statement}");
+        assert!(lower(statement, &HashSet::new()).is_some(), "{statement} (no metadata)");
+    }
+    // A property declared Actor / alias is the per-instance form: declines.
+    for statement in ["Companion.SetEssential(true)", "Ally.SetProtected()", "Squad.SetEssential(false)"] {
+        assert_eq!(lower(statement, &declared), None, "{statement}");
+    }
+    // An alias getter returns an Actor, never an ActorBase: declines on its own.
+    assert_eq!(lower("Ally.GetActorRef().SetEssential(true)", &declared), None);
+    assert_eq!(lower("Ally.GetActorRef().SetEssential(true)", &HashSet::new()), None);
+}
+
 /// M47.2 — `SendStoryEvent` with nothing, and with a location, the
 /// speaker and a value.
 #[test]
@@ -1325,6 +1369,7 @@ fn lower_first_info_fragment(src: &str) -> Option<Vec<Effect>> {
         &function.body,
         &HashSet::new(),
         &HashSet::new(),
+        &HashSet::new(),
         None,
         None,
     )
@@ -1564,7 +1609,7 @@ fn quest_script_typed_properties_resolve_through_the_library() {
     assert_eq!(with, ["ptg04pqs".to_owned()].into_iter().collect());
     let body = first_fn_body(SOURCE);
     assert_eq!(
-        lower_fragment_with_script_metadata(&body, &with, &HashSet::new(), None),
+        lower_fragment_with_script_metadata(&body, &with, &HashSet::new(), &HashSet::new(), None),
         Some(vec![Effect::SetQuestVariable {
             quest: QuestRef::Property("pTG04PQS".into()),
             variable: "pTG04PostChoice".into(),
@@ -1572,7 +1617,7 @@ fn quest_script_typed_properties_resolve_through_the_library() {
         }])
     );
     assert_eq!(
-        lower_fragment_with_script_metadata(&body, &without, &HashSet::new(), None),
+        lower_fragment_with_script_metadata(&body, &without, &HashSet::new(), &HashSet::new(), None),
         None
     );
 }
@@ -1614,6 +1659,7 @@ fn non_numeric_quest_script_variables_do_not_classify_as_numeric_reads() {
         lower_info_fragment(
             &function.params,
             &function.body,
+            &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
             None,
@@ -1665,6 +1711,7 @@ fn inlined_quest_script_calls_bind_their_arguments() {
     let lowered = lower_info_fragment(
         &function.params,
         &function.body,
+        &HashSet::new(),
         &HashSet::new(),
         &HashSet::new(),
         None,
@@ -1747,6 +1794,7 @@ fn multiplicative_inlining_declines_past_the_statement_budget() {
             &function.body,
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(),
             None,
             Some(library),
         )
@@ -1791,6 +1839,7 @@ fn info_fragment_calls_into_the_quest_script_lower_as_quest_scopes() {
         lower_info_fragment(
             &function.params,
             &function.body,
+            &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
             None,
@@ -1898,7 +1947,7 @@ fn quest_fragment_script_variable_writes_lower() {
     ];
     let library = PscLibrary::new(&[]);
     assert_eq!(
-        lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), None, Some(&library)),
+        lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), &HashSet::new(), None, Some(&library)),
         Some(vec![
             Effect::SetQuestVariable {
                 quest: QuestRef::SelfRef,
@@ -1929,7 +1978,7 @@ fn reference_script_variable_writes_lower_through_a_typed_cast() {
         let body = first_fn_body(&format!(
             "ScriptName QF_Test extends Quest\nFunction Fragment_1()\n{statement}\nEndFunction\n"
         ));
-        lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), None, Some(&library))
+        lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), &HashSet::new(), None, Some(&library))
     };
     assert_eq!(
         lowered("(Alias_Miraak.GetReference() as MiraakBattleScript).fireMiraakKill = True"),
@@ -1968,6 +2017,7 @@ fn owner_quest_properties_and_quest_script_casts_lower_with_the_library() {
         lower_quest_fragment(
             &body,
             &["ms13".to_owned()].into_iter().collect(),
+            &HashSet::new(),
             &HashSet::new(),
             None,
             Some(&library),
@@ -2038,7 +2088,7 @@ fn quest_fragments_inline_calls_into_the_quest_script() {
          Self.SetObjectiveCompleted(41)\n\
          kmyQuest.StartUp()\n EndFunction\n",
     );
-    let lowered = lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), None, Some(&library));
+    let lowered = lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), &HashSet::new(), None, Some(&library));
     assert_eq!(
         lowered,
         Some(vec![
@@ -2055,7 +2105,7 @@ fn quest_fragments_inline_calls_into_the_quest_script() {
         ])
     );
     // Without a library (and on every non-quest path) the call declines.
-    assert_eq!(lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), None, None), None);
+    assert_eq!(lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), &HashSet::new(), None, None), None);
 }
 
 /// Recursion, a callee with parameters, an unknown function and a
@@ -2071,7 +2121,7 @@ fn quest_script_inlining_declines_what_it_cannot_bound() {
              {call}\n EndFunction\n"
         ));
         assert_eq!(
-            lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), None, Some(&library)),
+            lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), &HashSet::new(), None, Some(&library)),
             None,
             "{call}"
         );
@@ -3155,7 +3205,7 @@ fn race_spells_lower_only_when_the_script_defines_the_helper() {
         "removeracespells".to_string(),
     ]);
     assert_eq!(
-        lower_fragment_with_script_metadata(&unqualified, &HashSet::new(), &own, None),
+        lower_fragment_with_script_metadata(&unqualified, &HashSet::new(), &own, &HashSet::new(), None),
         Some(vec![
             Effect::AddRaceSpells {
                 actor: ActorRef::Player
@@ -3170,7 +3220,7 @@ fn race_spells_lower_only_when_the_script_defines_the_helper() {
     // No function table: the same call declines — a script that does
     // not define the helper has no contract to lower by.
     assert_eq!(
-        lower_fragment_with_script_metadata(&unqualified, &HashSet::new(), &HashSet::new(), None),
+        lower_fragment_with_script_metadata(&unqualified, &HashSet::new(), &HashSet::new(), &HashSet::new(), None),
         None,
         "an undefined helper name declines"
     );
@@ -3187,7 +3237,7 @@ fn race_spells_lower_only_when_the_script_defines_the_helper() {
          EndFunction\n",
     );
     assert_eq!(
-        lower_fragment_with_script_metadata(&member, &HashSet::new(), &own, None),
+        lower_fragment_with_script_metadata(&member, &HashSet::new(), &own, &HashSet::new(), None),
         None,
         "a member-call receiver is never accepted"
     );
@@ -3205,6 +3255,7 @@ fn race_spells_lower_only_when_the_script_defines_the_helper() {
     assert_eq!(
         lower_fragment_with_script_metadata(
             &parameterized,
+            &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
             None

@@ -52,7 +52,7 @@ pub fn lower_fragment_with_quest_properties_and_providers(
     quest_property_names: &HashSet<String>,
     providers: Option<&PapyrusProviderCatalog>,
 ) -> Option<Vec<Effect>> {
-    lower_fragment_with_script_metadata(body, quest_property_names, &HashSet::new(), providers)
+    lower_fragment_with_script_metadata(body, quest_property_names, &HashSet::new(), &HashSet::new(), providers)
 }
 
 /// [`lower_fragment_with_quest_properties_and_providers`] with the
@@ -65,11 +65,13 @@ pub fn lower_fragment_with_script_metadata(
     body: &[Spanned<Stmt>],
     quest_property_names: &HashSet<String>,
     own_argless_function_names: &HashSet<String>,
+    per_instance_actor_property_names: &HashSet<String>,
     providers: Option<&PapyrusProviderCatalog>,
 ) -> Option<Vec<Effect>> {
     let mut scope = Scope {
         known_quest_properties: quest_property_names.clone(),
         own_argless_functions: own_argless_function_names.clone(),
+        per_instance_actor_properties: per_instance_actor_property_names.clone(),
         ..Scope::default()
     };
     lower_statements(body, &mut scope, providers, 0)
@@ -83,6 +85,7 @@ pub fn lower_quest_fragment(
     body: &[Spanned<Stmt>],
     quest_property_names: &HashSet<String>,
     own_argless_function_names: &HashSet<String>,
+    per_instance_actor_property_names: &HashSet<String>,
     providers: Option<&PapyrusProviderCatalog>,
     library: Option<&dyn ScriptLibrary>,
 ) -> Option<Vec<Effect>> {
@@ -91,6 +94,7 @@ pub fn lower_quest_fragment(
         vmad_is_quest: true,
         known_quest_properties: quest_property_names.clone(),
         own_argless_functions: own_argless_function_names.clone(),
+        per_instance_actor_properties: per_instance_actor_property_names.clone(),
         ..Scope::default()
     };
     lower_statements(body, &mut scope, providers, 0)
@@ -105,6 +109,7 @@ pub fn lower_scene_fragment(
     body: &[Spanned<Stmt>],
     quest_property_names: &HashSet<String>,
     own_argless_function_names: &HashSet<String>,
+    per_instance_actor_property_names: &HashSet<String>,
     providers: Option<&PapyrusProviderCatalog>,
     library: Option<&dyn ScriptLibrary>,
 ) -> Option<Vec<Effect>> {
@@ -112,6 +117,7 @@ pub fn lower_scene_fragment(
         library,
         known_quest_properties: quest_property_names.clone(),
         own_argless_functions: own_argless_function_names.clone(),
+        per_instance_actor_properties: per_instance_actor_property_names.clone(),
         ..Scope::default()
     };
     lower_statements(body, &mut scope, providers, 0)
@@ -209,6 +215,7 @@ pub fn lower_info_fragment(
     body: &[Spanned<Stmt>],
     quest_property_names: &HashSet<String>,
     own_argless_function_names: &HashSet<String>,
+    per_instance_actor_property_names: &HashSet<String>,
     providers: Option<&PapyrusProviderCatalog>,
     library: Option<&dyn ScriptLibrary>,
 ) -> Option<Vec<Effect>> {
@@ -216,6 +223,7 @@ pub fn lower_info_fragment(
         library,
         known_quest_properties: quest_property_names.clone(),
         own_argless_functions: own_argless_function_names.clone(),
+        per_instance_actor_properties: per_instance_actor_property_names.clone(),
         ..Scope::default()
     };
     for param in params {
