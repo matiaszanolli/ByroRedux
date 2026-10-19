@@ -709,6 +709,39 @@ mod tests {
         assert!(combat_anim_state(&world, actor).death_played);
     }
 
+    /// #4743 (a) — impact audio follows the `HitEvent`, not animation-slot
+    /// availability: a hit landing while the actor is already mid-stagger
+    /// (the player's 0.45 s unarmed cadence sits well inside the 2 s take)
+    /// still sounds, and the running take is left alone.
+    #[test]
+    fn a_hit_during_an_active_take_still_sounds() {
+        let Fixture { world, actor, .. } = spawn_actor(true);
+        let mut world = world;
+        install_clips(&mut world);
+
+        hit_event(&mut world, actor, 7);
+        combat_feedback_system(&world, 1.0 / 60.0);
+        assert_eq!(combat_anim_state(&world, actor).take, Some(CombatTake::Hit));
+        let remaining = combat_anim_state(&world, actor).take_remaining;
+
+        // A second hit 0.45 s later, mid-take.
+        hit_event(&mut world, actor, 7);
+        let mut scratch = FeedbackScratch::default();
+        combat_feedback_system_inner(&world, 0.45, &mut scratch);
+        assert!(
+            scratch
+                .sound_events
+                .contains(&(actor, FeedbackSound::Impact)),
+            "the mid-take hit must still play its impact"
+        );
+        let state = combat_anim_state(&world, actor);
+        assert_eq!(state.take, Some(CombatTake::Hit), "the stagger take keeps running");
+        assert!(
+            (state.take_remaining - (remaining - 0.45)).abs() < 1e-4,
+            "the take ticks down, it is not restarted by the second hit"
+        );
+    }
+
     /// A killing blow produces the DEATH take, not a hit take — the Dead
     /// check outranks the HitEvent check on the same frame.
     #[test]
