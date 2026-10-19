@@ -715,21 +715,43 @@ impl VulkanContext {
             // failed recreate drops the pass (composite then reads no
             // correction) rather than failing the resize.
             if let Some(ref mut filter) = self.post.shadow_filter {
-                if let Err(e) = filter.recreate_on_resize(
-                    super::super::GpuUploadCtx {
-                        device: &self.device,
-                        allocator,
-                        queue: &self.graphics_queue,
-                        command_pool: self.transfer_pool,
-                    },
-                    &self.reservoir_buffers,
-                    self.frame_extents.render.width,
-                    self.frame_extents.render.height,
-                ) {
+                let upload = super::super::GpuUploadCtx {
+                    device: &self.device,
+                    allocator,
+                    queue: &self.graphics_queue,
+                    command_pool: self.transfer_pool,
+                };
+                // Two stages so the failure class is known: recreating the
+                // images submits nothing, the layout walk does (#6063).
+                let outcome = filter
+                    .recreate_on_resize(
+                        upload,
+                        &self.reservoir_buffers,
+                        self.frame_extents.render.width,
+                        self.frame_extents.render.height,
+                    )
+                    .map_err(|e| (e, false))
+                    .and_then(|()| {
+                        filter.initialize_layouts(upload).map_err(|e| {
+                            let pending =
+                                crate::vulkan::texture::OneTimeCommandError::may_be_in_flight(&e);
+                            (e, pending)
+                        })
+                    });
+                if let Err((e, may_be_in_flight)) = outcome {
                     log::warn!("shadow filter resize failed: {e} — direct shadows unfiltered");
                     if let Some(mut filter) = self.post.shadow_filter.take() {
-                        // SAFETY: the resize path waited both frames in flight.
-                        unsafe { filter.destroy(&self.device, allocator) };
+                        if may_be_in_flight {
+                            // #6063 — the layout submit may still be executing
+                            // against the recreated images, which the both-
+                            // frames wait does not cover; leak rather than
+                            // race a host-side destroy (#4891, #5947).
+                            std::mem::forget(filter);
+                        } else {
+                            // SAFETY: the resize path waited both frames in
+                            // flight and no layout submit reached the queue.
+                            unsafe { filter.destroy(&self.device, allocator) };
+                        }
                     }
                 }
             }

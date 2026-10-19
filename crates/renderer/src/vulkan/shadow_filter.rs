@@ -93,6 +93,19 @@ impl ShadowFilterPipeline {
             unsafe { partial.destroy(device, ctx.allocator) };
             return Err(e);
         }
+        if let Err(e) = partial.initialize_layouts(ctx) {
+            if super::texture::OneTimeCommandError::may_be_in_flight(&e) {
+                // #6063 — the layout submit may still be executing against
+                // the pass's images, so a host-side destroy could race it.
+                // Leak them, as the #4891 upload paths and #5947 do.
+                std::mem::forget(partial);
+            } else {
+                // SAFETY: the layout submit never reached the queue and no
+                // frame has used the pass, so nothing references its handles.
+                unsafe { partial.destroy(device, ctx.allocator) };
+            }
+            return Err(e);
+        }
         Ok(partial)
     }
 
@@ -176,7 +189,6 @@ impl ShadowFilterPipeline {
 
         self.create_images(ctx)?;
         self.write_descriptor_sets(device, reservoirs);
-        self.initialize_layouts(ctx)?;
         Ok(())
     }
 
@@ -258,7 +270,13 @@ impl ShadowFilterPipeline {
         }
     }
 
-    fn initialize_layouts(&self, ctx: GpuUploadCtx) -> Result<()> {
+    /// Walk every image UNDEFINED → GENERAL in one submit.
+    ///
+    /// A failure here is the only one that can leave GPU work pending against
+    /// the pass's images: callers must consult
+    /// `OneTimeCommandError::may_be_in_flight` (`texture.rs`)
+    /// before freeing them (#6063).
+    pub(crate) fn initialize_layouts(&self, ctx: GpuUploadCtx) -> Result<()> {
         super::texture::with_one_time_commands(ctx.device, ctx.queue, ctx.command_pool, |cmd| {
             let barriers: Vec<_> = self
                 .frames
@@ -395,6 +413,10 @@ impl ShadowFilterPipeline {
     /// Recreate the screen-sized images at a new extent and rebind the
     /// (also recreated) reservoir buffers. Called after
     /// `ReservoirBuffers::recreate_on_resize` from the fenced resize path.
+    ///
+    /// Submits nothing: the caller follows with `initialize_layouts`
+    /// so it can tell a failure that left GPU work pending from one that did
+    /// not (#6063). An `Err` here is safe to `destroy`.
     pub fn recreate_on_resize(
         &mut self,
         ctx: GpuUploadCtx,
@@ -411,7 +433,7 @@ impl ShadowFilterPipeline {
         self.height = height;
         self.create_images(ctx)?;
         self.write_descriptor_sets(ctx.device, reservoirs);
-        self.initialize_layouts(ctx)
+        Ok(())
     }
 
     /// Destroy every owned handle; safe to call twice.
@@ -445,5 +467,39 @@ impl ShadowFilterPipeline {
                 self.descriptor_set_layout = vk::DescriptorSetLayout::null();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// #6063 — a failed layout submit may still be executing against the
+    /// pass's images, so both the construction and the resize arm must branch
+    /// on the in-flight class instead of destroying unconditionally.
+    #[test]
+    fn a_failed_layout_submit_leaks_instead_of_destroying() {
+        let own = crate::source_scan::production_text_or_whole(include_str!("shadow_filter.rs"));
+        let new_start = own.find("pub fn new(").expect("ShadowFilterPipeline::new");
+        let new_end = new_start + own[new_start..].find("fn new_inner").expect("new_inner follows new");
+        let new_body = &own[new_start..new_end];
+        assert!(
+            new_body.contains("OneTimeCommandError::may_be_in_flight(&e)")
+                && new_body.contains("std::mem::forget(partial)"),
+            "ShadowFilterPipeline::new must leak the pass when the layout submit may be in flight"
+        );
+        let after_inner = &own[new_end..];
+        let inner_end = after_inner.find("fn create_images").expect("create_images follows new_inner");
+        assert!(
+            !after_inner[..inner_end].contains("initialize_layouts"),
+            "new_inner must not submit: its failure arm destroys unconditionally"
+        );
+        let resize = include_str!("context/resize.rs");
+        let arm = resize
+            .find("shadow filter resize failed")
+            .expect("the shadow filter resize arm");
+        let window = &resize[arm.saturating_sub(1500)..arm + 1500];
+        assert!(
+            window.contains("may_be_in_flight") && window.contains("std::mem::forget(filter)"),
+            "the shadow filter resize arm must leak the pass when the layout submit may be in flight (#6063)"
+        );
     }
 }
