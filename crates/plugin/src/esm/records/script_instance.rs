@@ -134,9 +134,15 @@ impl ScriptInstance {
     /// `QuestAdvanceOnActivate` component stamped with the wrong
     /// `owning_quest`. The strict check now lives here, at the single
     /// shared accessor, so a future caller cannot reintroduce the lax path.
+    ///
+    /// #5971 — the null object (`form_id == 0`, how an unset `Quest` /
+    /// `Form` / `Actor` property is stored) is `None`, not `Some(0)`: a call
+    /// on or with `None` is a logged no-op in Papyrus, and every consumer here
+    /// treats `Some` as a form to act on, so a `Some(0)` wrote a phantom
+    /// quest-0 stage entry or a form-0 inventory row that was then saved.
     pub fn object_form_id(&self, name: &str) -> Option<u32> {
         match self.property(name)?.value {
-            PropertyValue::Object { form_id, alias: -1 } => Some(form_id),
+            PropertyValue::Object { form_id, alias: -1 } if form_id != 0 => Some(form_id),
             _ => None,
         }
     }
@@ -1149,6 +1155,26 @@ mod tests {
             }
             other => panic!("expected Object, got {other:?}"),
         }
+    }
+
+    /// #5971 — an unset object property is stored as form 0 (the null
+    /// object). It must read as absent, so a consumer skips the effect
+    /// instead of acting on form 0.
+    #[test]
+    fn a_null_object_property_reads_as_absent() {
+        let d = ScriptInstanceData::parse(&synthetic_vmad_with_form_id(0));
+        let script = &d.scripts[0];
+        assert!(
+            matches!(
+                script.property("MyQuest").unwrap().value,
+                PropertyValue::Object { form_id: 0, alias: -1 }
+            ),
+            "the property itself still decodes as the null object"
+        );
+        assert_eq!(script.object_form_id("MyQuest"), None);
+        // A set property is unaffected.
+        let set = ScriptInstanceData::parse(&synthetic_vmad_with_form_id(0x0002_42AF));
+        assert_eq!(set.scripts[0].object_form_id("MyQuest"), Some(0x0002_42AF));
     }
 
     #[test]

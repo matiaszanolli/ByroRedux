@@ -4658,6 +4658,51 @@ fn dispatch_add_item_on_the_player() {
     assert_eq!((events.0[0].item_form_id, events.0[0].count), (GOLD, 25));
 }
 
+/// #5971 — an object property left unset in the VMAD is the null object
+/// (form 0). The effect that names it must skip: it used to write a form-0
+/// inventory row and an `OnItemAdded` for form 0, and a stage on a phantom
+/// quest 0, all saved with the world.
+#[test]
+fn dispatch_skips_an_unset_object_property() {
+    use crate::translate::compose::ObjectRef;
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::Inventory;
+
+    let mut world = fixture();
+    world.register::<Inventory>();
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Gold001", 0), ("OtherQuest", 0)]),
+        vec![
+            Effect::AddItem {
+                silent: false,
+                container: ActorRef::Player,
+                item: ObjectRef::Property("Gold001".into()),
+                count: crate::translate::effects::ItemCount::Literal(25),
+            },
+            Effect::SetStage {
+                quest: QuestRef::Property("OtherQuest".into()),
+                stage: 40,
+            },
+        ],
+    );
+    let stacks = world
+        .get::<Inventory>(player)
+        .map(|inventory| inventory.items.len())
+        .unwrap_or(0);
+    assert_eq!(stacks, 0, "AddItem of the null object adds nothing");
+    assert!(
+        world.get::<crate::ItemEventBatch>(player).is_none(),
+        "and raises no OnItemAdded for form 0"
+    );
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(QuestFormId(0)),
+        0,
+        "SetStage on an unset Quest property creates no quest-0 entry"
+    );
+}
+
 /// M47.2 — `RemoveItem` takes across stacks first-authored first, zeroes
 /// drained rows in place (equipment indices stay valid), releases a drained
 /// row's equipment and instance, moves items to an other container when one
