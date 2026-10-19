@@ -177,12 +177,17 @@ pub fn bfecc_error_correction_multiplier() -> f32 {
 unsafe impl crate::vulkan::buffer::NoUninit for VolumetricsParams {}
 
 
-/// #5208 — exact resident bytes of the six per-slot host-visible buffers
+/// Shrink floor for `fog_cluster_refs_scratch`: a typical interior admits a
+/// few thousand refs, so a smaller floor would reallocate on ordinary scenes.
+const FOG_CLUSTER_REFS_SCRATCH_FLOOR: usize = 4096;
+
+/// #5208 — exact resident bytes of the seven per-slot host-visible buffers
 /// `VolumetricsPipeline::new` creates (the sub-table in `memory-budget.md`
 /// §Volumetrics). These are **fixed-size**, unlike the section's main
 /// froxel-volume table: they key on the 16³ fog-cluster grid, the
 /// `MAX_GPU_FOG_VOLUMES`/`COMBUSTION_LIGHT_GRID_COUNT` caps and
-/// `VolumetricsParams`' layout, never on render resolution. Mostly
+/// `VolumetricsParams`' layout, never on render resolution (#5953: the 16 B
+/// `IntegrationParams` UBO is the seventh). Mostly
 /// CpuToGpu (BAR-eligible) memory — the index lists alone are 3 MiB per
 /// slot — which is the pressure class #4889 had to degrade around, so the
 /// ledger states it. `MAX_FRAMES_IN_FLIGHT` multiplied in.
@@ -193,7 +198,8 @@ pub fn volumetrics_host_buffer_bytes() -> u64 {
         + FOG_VOLUME_INDEX_COUNT * std::mem::size_of::<u32>()
         + GLSL_COMBUSTION_LIGHT_GRID_COUNT as usize
             * std::mem::size_of::<GpuCombustionLightMoment>()
-        + std::mem::size_of::<[u32; FOG_VOLUME_CLUSTER_COUNT]>()) as u64
+        + std::mem::size_of::<[u32; FOG_VOLUME_CLUSTER_COUNT]>()
+        + std::mem::size_of::<IntegrationParams>()) as u64
         * MAX_FRAMES_IN_FLIGHT as u64
 }
 
@@ -507,10 +513,11 @@ pub fn fit_froxel_divisor_to_device(
 /// transmittance channel entirely.
 const FROXEL_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 /// Transported thermochemical and velocity fields share RGBA16F with the
-/// V-buffer. Chemistry stores `(fuel, temperature K, absorption sigma_a,
-/// visible-radiance calibration)`; velocity stores world-units/second in xyz
-/// plus scattering sigma_s in w. Half precision covers the bounded canonical
-/// ranges while keeping the two history fields affordable.
+/// V-buffer. Chemistry stores `(fuel, temperature K, total extinction
+/// sigma_t, visible-radiance calibration)`; velocity stores world-units/second
+/// in xyz plus specific overpressure (m²/s²) in w. Spectral scattering sigma_s
+/// lives in the separate optical volume. Half precision covers the bounded
+/// canonical ranges while keeping the history fields affordable.
 const COMBUSTION_FIELD_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 /// One scalar per froxel recording what fraction of the current source term
 /// came from deterministic thermal emission. R32 is a core storage-image
@@ -614,7 +621,7 @@ pub struct VolumetricsPipeline {
     /// the never-initialised allocation exactly as before. The reset paths
     /// deliberately do NOT clear it: after a reset the buffer is still dirty.
     combustion_moment_dirty: [bool; MAX_FRAMES_IN_FLIGHT],
-    combustion_light_candidates: Vec<(f32, GpuLight)>,
+    combustion_light_candidates_scratch: Vec<(f32, GpuLight)>,
     /// Last reduction counters emitted at debug level. Logging only changes
     /// keeps the GPU-readback diagnostic useful without producing one line
     /// per frame during a steady flame.
@@ -627,7 +634,7 @@ pub struct VolumetricsPipeline {
     fog_cluster_entries: Box<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]>,
     fog_cluster_indices: Box<[u32]>,
     /// Admission-order scratch for the dense index packing (#4792).
-    fog_cluster_refs: Vec<FogClusterRef>,
+    fog_cluster_refs_scratch: Vec<FogClusterRef>,
     /// Last possibly nonzero entry range for each frame slot. The next
     /// upload covers its union with the new range to clear stale counts.
     /// Initially full because host-visible allocations are not zeroed.
@@ -842,7 +849,7 @@ impl VolumetricsPipeline {
                 &mut self.fog_volume_upload,
                 &mut self.fog_cluster_entries,
                 &mut self.fog_cluster_indices,
-                &mut self.fog_cluster_refs,
+                &mut self.fog_cluster_refs_scratch,
                 &mut self.fog_cluster_occupancy,
             );
             cluster_hi = build.cluster_hi;
@@ -1200,7 +1207,7 @@ impl VolumetricsPipeline {
             nuclear_source_reaches_grid(source_volumes, camera_world, self.far_distance_world());
         let mut decoded_candidates = 0;
         let mut suppressed_candidates = 0;
-        self.combustion_light_candidates.clear();
+        self.combustion_light_candidates_scratch.clear();
         for (bin_index, moment) in moments.into_iter().enumerate() {
             let Some(mut light) = combustion_light_from_moment(bin_index, moment, camera_world)
             else {
@@ -1225,22 +1232,22 @@ impl VolumetricsPipeline {
                 suppressed_candidates += 1;
                 continue;
             }
-            self.combustion_light_candidates
+            self.combustion_light_candidates_scratch
                 .push((light.gi_priority_score(), light));
         }
-        self.combustion_light_candidates
+        self.combustion_light_candidates_scratch
             .sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
         let available = MAX_LIGHTS.saturating_sub(lights.len());
         let append_count = available
             .min(MAX_COMBUSTION_SURFACE_LIGHTS)
-            .min(self.combustion_light_candidates.len());
+            .min(self.combustion_light_candidates_scratch.len());
         lights.extend(
-            self.combustion_light_candidates[..append_count]
+            self.combustion_light_candidates_scratch[..append_count]
                 .iter()
                 .map(|(_, light)| *light),
         );
         let strongest_centroid_metres = self
-            .combustion_light_candidates
+            .combustion_light_candidates_scratch
             .first()
             .map(|(_, light)| {
                 [
@@ -1255,7 +1262,7 @@ impl VolumetricsPipeline {
         // reaches the scene). Folded into the topology tuple so a
         // transition to/from oversized re-logs, and surfaced at WARN while
         // oversized: this line is what the device A/B greps.
-        let max_appended_cull_radius_bu = self.combustion_light_candidates
+        let max_appended_cull_radius_bu = self.combustion_light_candidates_scratch
             [..append_count]
             .iter()
             .map(|(_, light)| light.position_radius[3])
@@ -1300,6 +1307,48 @@ impl VolumetricsPipeline {
             self.last_combustion_light_topology = Some(topology);
         }
         Ok(append_count)
+    }
+
+    /// `(len, capacity)` of the persistent CPU scratches this pipeline owns,
+    /// in `fill_scratch_telemetry` row order (#5952). The names must end with
+    /// the field names so `scratch_telemetry_coverage_tests` finds them.
+    pub(crate) fn scratch_telemetry(&self) -> [(&'static str, usize, usize, usize); 2] {
+        [
+            (
+                "fog_cluster_refs_scratch",
+                self.fog_cluster_refs_scratch.len(),
+                self.fog_cluster_refs_scratch.capacity(),
+                std::mem::size_of::<FogClusterRef>(),
+            ),
+            (
+                "combustion_light_candidates_scratch",
+                self.combustion_light_candidates_scratch.len(),
+                self.combustion_light_candidates_scratch.capacity(),
+                std::mem::size_of::<(f32, GpuLight)>(),
+            ),
+        ]
+    }
+
+    /// Shrink the persistent CPU scratches back toward the last frame's
+    /// working set once a pathological scene has grown them (#5952). Same
+    /// "grow fast, shrink on pressure" policy as the context's per-frame
+    /// scratches (`shrink_frame_scratch`). `fog_cluster_refs_scratch` is
+    /// cleared and refilled by every cluster build, so its `len()` is the
+    /// working set; the candidate list is refilled only on frames that drain
+    /// the moment buffer, and is bounded by the 256 light-grid bins.
+    pub(crate) fn shrink_scratch(&mut self) {
+        let working_refs = self.fog_cluster_refs_scratch.len();
+        let working_candidates = self.combustion_light_candidates_scratch.len();
+        super::acceleration::shrink_scratch_if_oversized(
+            &mut self.fog_cluster_refs_scratch,
+            working_refs,
+            FOG_CLUSTER_REFS_SCRATCH_FLOOR,
+        );
+        super::acceleration::shrink_scratch_if_oversized(
+            &mut self.combustion_light_candidates_scratch,
+            working_candidates,
+            GLSL_COMBUSTION_LIGHT_GRID_COUNT as usize,
+        );
     }
 
     /// Decide whether the two volumetric passes need to run this frame.
@@ -4221,6 +4270,7 @@ mod memory_budget_ledger_tests {
             "combustion_occupancy_buffers",
             "combustion_light_moment_buffers",
             "param_buffers",
+            "integration_param_buffers",
         ] {
             assert!(
                 section.contains(&format!("`{buffer}`")),

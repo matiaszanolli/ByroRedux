@@ -12,6 +12,7 @@
 
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
+use super::super::texture::OneTimeCommandError;
 use anyhow::Result;
 use ash::vk;
 use std::sync::OnceLock;
@@ -228,13 +229,51 @@ pub(crate) fn create_density_noise_staging(
     device: &ash::Device,
     allocator: &SharedAllocator,
 ) -> Result<[GpuBuffer; 2]> {
-    let mut base = create_staging(device, allocator, cached_base_density_noise())?;
+    // #5947 — a failure here precedes any submission, so it is tagged
+    // `NotSubmitted`: the callers' `may_be_in_flight` check treats an untyped
+    // error as "state unknown" and would otherwise leak a pipeline whose
+    // images the GPU never saw.
+    let not_submitted = |error: anyhow::Error| {
+        anyhow::Error::from(OneTimeCommandError::not_submitted(
+            error,
+            "create density-noise staging",
+        ))
+    };
+    let mut base =
+        create_staging(device, allocator, cached_base_density_noise()).map_err(not_submitted)?;
     match create_staging(device, allocator, cached_detail_density_noise()) {
         Ok(detail) => Ok([base, detail]),
         Err(error) => {
             base.destroy(device, allocator);
-            Err(error)
+            Err(not_submitted(error))
         }
+    }
+}
+
+/// Dispose of the staging buffers once the consumer's one-time submit has
+/// returned `upload`.
+///
+/// #5947 — "the submit waited, so nothing can reference them" only holds for
+/// a success or a [`OneTimeCommandError::NotSubmitted`] failure. A failed
+/// `vkQueueSubmit`, or a fence-wait failure other than device loss, leaves
+/// the copies possibly pending (`MaybeInFlight`), so a host-side destroy
+/// could race them: leak instead, as the #4891 sites in `buffer.rs`,
+/// `blas_static.rs` and `texture_registry/upload.rs` do. Both consumers go
+/// through here so the policy cannot drift between them.
+pub(crate) fn release_density_noise_staging(
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+    staging: [GpuBuffer; 2],
+    upload: &Result<()>,
+) {
+    if let Err(error) = upload {
+        if OneTimeCommandError::may_be_in_flight(error) {
+            std::mem::forget(staging);
+            return;
+        }
+    }
+    for mut buffer in staging {
+        buffer.destroy(device, allocator);
     }
 }
 
@@ -318,6 +357,49 @@ mod tests {
             assert!(
                 (55.0..200.0).contains(&mean),
                 "noise mean is unusable: {mean}"
+            );
+        }
+    }
+
+    /// #5947 — the staging buffers are freed only through the shared
+    /// disposal, which leaks them when the one-time submit may still be in
+    /// flight. A consumer that goes back to destroying them unconditionally
+    /// after its submit would race a pending copy on a failed
+    /// `vkQueueSubmit` / non-DEVICE_LOST fence wait; and a consumer that
+    /// destroys its images on that class of failure would race the same copy.
+    #[test]
+    fn density_noise_staging_disposal_honours_the_in_flight_policy() {
+        for (name, src) in [
+            (
+                "cloud_noise.rs",
+                crate::source_scan::production_text_or_whole(include_str!("../cloud_noise.rs")),
+            ),
+            (
+                "volumetrics/init.rs",
+                crate::source_scan::production_text_or_whole(include_str!("init.rs")),
+            ),
+        ] {
+            assert!(
+                src.contains("release_density_noise_staging("),
+                "{name} must dispose of the density-noise staging through the shared policy"
+            );
+            assert!(
+                !src.contains("staging.iter_mut()"),
+                "{name} still destroys the density-noise staging unconditionally"
+            );
+        }
+        let cloud = crate::source_scan::production_text_or_whole(include_str!("../cloud_noise.rs"));
+        assert!(
+            cloud.contains("OneTimeCommandError::may_be_in_flight(&error)"),
+            "cloud_noise.rs must leak its images when the upload may be in flight"
+        );
+        for (name, src) in [
+            ("context/init.rs", include_str!("../context/init.rs")),
+            ("context/resize.rs", include_str!("../context/resize.rs")),
+        ] {
+            assert!(
+                src.contains("#5947"),
+                "{name} must branch the failed volumetrics init on the in-flight class (#5947)"
             );
         }
     }

@@ -56,7 +56,7 @@ Command-buffer order (`draw_frame` phases, `vulkan/context/`). Timer = `GpuTimer
 | Depth-history copy | `copy_depth_to_history` | only if `scene_has_effect_soft_material` (cached, `SceneEffectSoftCache`) | pixels | `depth_history_copy_ms` |
 | SVGF | temporal + 3 à-trous dispatches | every frame | pixels | `svgf_ms` (one bracket) |
 | Caustic splat | `caustic_splat.comp` | caustic sources present | refractive pixels | `caustic_splat_ms` |
-| Volumetrics | inject + integrate, combustion-moment readback (one frame behind); host `fog_cluster` prep | `VOLUMETRIC_OUTPUT_CONSUMED` | froxels (resolution-derived) × rays per froxel (`fogRayQualityTier`) | `volumetrics_ms` (+ inject/integrate) |
+| Volumetrics | inject + integrate, combustion-moment readback (one frame behind); host `fog_cluster` prep | `requires_dispatch` (fog / emitters / combustion live) **and** TLAS, cluster-light and boundary-geometry inputs present (`post_passes.rs`); `VOLUMETRIC_OUTPUT_CONSUMED` is permanently `true` | froxels (resolution-derived) × rays per froxel (`fogRayQualityTier`) | `volumetrics_ms` (+ inject/integrate) |
 | SSAO, composite | `ssao.comp`; `composite.frag` (linear HDR) | every frame | render pixels | `ssao_ms`, `composite_ms` |
 | Bloom | down/up chain + `bloom_apply.comp` | skipped under raw debug views | pixels | `bloom_ms` |
 | TAA | `taa.comp` | only `--upscaler taa` | pixels | `taa_ms` |

@@ -959,10 +959,18 @@ impl VulkanContext {
                 self.transfer_pool,
             )
         } {
-            // SAFETY: initialization failed before the pipeline was published
-            // to `self` or submitted by a frame, so its owned handles have no
-            // in-flight users and can be destroyed immediately.
-            unsafe { new_volumetrics.destroy(&self.device, allocator) };
+            if crate::vulkan::texture::OneTimeCommandError::may_be_in_flight(&error) {
+                // #5947 — the layout/noise submit may still be executing
+                // against the froxel and noise images; leak rather than race
+                // a host-side destroy (#4891).
+                std::mem::forget(new_volumetrics);
+            } else {
+                // SAFETY: initialization failed before the layout submit
+                // reached the queue and the pipeline was never published to
+                // `self` or used by a frame, so its owned handles have no
+                // in-flight users and can be destroyed immediately.
+                unsafe { new_volumetrics.destroy(&self.device, allocator) };
+            }
             return Err(error).context("initialize recreated froxel layouts");
         }
         self.post.volumetrics = Some(new_volumetrics);

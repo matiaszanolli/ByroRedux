@@ -2972,13 +2972,19 @@ void main() {
             fieldBackT,
             transported_combustion
         );
-        float flame_source_sample_ratio = flameSourceSampleRatio(
-            field_world_pos,
-            world_pos
-        );
-        transported_combustion.extinction *= flame_source_sample_ratio;
-        transported_combustion.scattering *= flame_source_sample_ratio;
-        transported_combustion.emission *= flame_source_sample_ratio;
+        // The ratio only scales the transported medium. With no medium
+        // (`combustionMedium` returned the all-zero LocalMedium) the product
+        // is zero whatever the ratio is, and the function loops every
+        // volume in the froxel's 16 m cluster — so skip it (#5951).
+        if (transportedMediumActive) {
+            float flame_source_sample_ratio = flameSourceSampleRatio(
+                field_world_pos,
+                world_pos
+            );
+            transported_combustion.extinction *= flame_source_sample_ratio;
+            transported_combustion.scattering *= flame_source_sample_ratio;
+            transported_combustion.emission *= flame_source_sample_ratio;
+        }
     }
     local_medium.extinction += transported_combustion.extinction;
     local_medium.scattering += transported_combustion.scattering;

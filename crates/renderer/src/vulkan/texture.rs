@@ -676,7 +676,7 @@ pub(crate) enum OneTimeCommandError {
 }
 
 impl OneTimeCommandError {
-    fn not_submitted(error: impl Into<anyhow::Error>, context: &'static str) -> Self {
+    pub(crate) fn not_submitted(error: impl Into<anyhow::Error>, context: &'static str) -> Self {
         Self::NotSubmitted(error.into().context(context))
     }
 

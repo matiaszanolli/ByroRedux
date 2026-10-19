@@ -31,6 +31,22 @@ fn run_view(world: &World) -> RenderFrameView {
     )
 }
 
+/// #5949 — the authored fog colour is decoded to radiance exactly once, at
+/// the `build_render_data` boundary (#5773). Pinning the call site (not just
+/// `fog_colour_radiance` itself) catches both a dropped decode and a second
+/// decode added downstream; either would shift every fog-lit interior ~2.7x.
+fn assert_fog_colour_decoded_once(view: &RenderFrameView, authored: [f32; 3]) {
+    let once = crate::fog::fog_colour_radiance(authored);
+    assert_eq!(
+        view.fog_color, once,
+        "RenderFrameView.fog_color must be fog_colour_radiance(authored), decoded once"
+    );
+    assert_ne!(
+        view.fog_color, authored,
+        "the authored display-space fog colour reached the renderer undecoded"
+    );
+}
+
 fn world_with_camera() -> World {
     let mut world = World::new();
     let cam = world.spawn();
@@ -68,6 +84,7 @@ fn fnv_authored_curve_propagates_to_frame_view() {
         inheritance_flags: None,
     });
     let view = run_view(&world);
+    assert_fog_colour_decoded_once(&view, [0.5, 0.4, 0.3]);
     assert_eq!(view.fog_clip, 4096.0);
     assert_eq!(view.fog_power, 2.0);
     assert_eq!(
@@ -102,6 +119,7 @@ fn missing_curve_yields_zero_so_shader_falls_back_to_linear() {
         inheritance_flags: None,
     });
     let view = run_view(&world);
+    assert_fog_colour_decoded_once(&view, [0.5, 0.4, 0.3]);
     assert_eq!(
         view.fog_clip, 0.0,
         "no curve authored → shader pickup must be 0"

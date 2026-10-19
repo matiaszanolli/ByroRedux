@@ -95,6 +95,25 @@ impl VulkanContext {
             capacity: self.volumetric_fog_scratch.capacity(),
             elem_size_bytes: size_of::<super::super::volumetrics::GpuFogVolume>(),
         });
+        // #5952 — the froxel pipeline's own persistent CPU scratches. They
+        // live on `VolumetricsPipeline`, not `ctx.scratch`, so they need an
+        // explicit row (zeroed while the pipeline is absent, like the TLAS
+        // rows below, so the row set stays stable).
+        let volumetrics_rows = self.post.volumetrics.as_ref().map_or(
+            [
+                ("fog_cluster_refs_scratch", 0, 0, 0),
+                ("combustion_light_candidates_scratch", 0, 0, 0),
+            ],
+            |volumetrics| volumetrics.scratch_telemetry(),
+        );
+        for (name, len, capacity, elem_size_bytes) in volumetrics_rows {
+            rows.push(ScratchRow {
+                name,
+                len,
+                capacity,
+                elem_size_bytes,
+            });
+        }
         rows.push(ScratchRow {
             name: "gpu_instances_scratch",
             len: self.scratch.gpu_instances_scratch.len(),

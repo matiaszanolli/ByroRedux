@@ -2203,6 +2203,14 @@ mod scratch_telemetry_coverage_tests {
             ("instance_map_scratch", "vulkan/context/mod.rs"),
             ("tlas_missing_samples_scratch", "vulkan/acceleration/mod.rs"),
             ("param_scratch", "vulkan/water.rs"),
+            // #5952 — the froxel pipeline's scratches live on
+            // `VolumetricsPipeline`, not `ctx.scratch`; they must stay visible
+            // to the scan (and so to the row requirement below).
+            ("fog_cluster_refs_scratch", "vulkan/volumetrics.rs"),
+            (
+                "combustion_light_candidates_scratch",
+                "vulkan/volumetrics.rs",
+            ),
         ] {
             assert!(
                 fields.iter().any(|(f, p)| f == sentinel && p == file),

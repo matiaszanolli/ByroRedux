@@ -21,8 +21,10 @@
 
 use super::allocator::SharedAllocator;
 use super::image::{GpuImage, GpuImageDesc};
+use super::texture::OneTimeCommandError;
 use super::volumetrics::noise::{
-    create_density_noise_staging, record_density_noise_upload, BASE_NOISE_SIZE, DETAIL_NOISE_SIZE,
+    create_density_noise_staging, record_density_noise_upload, release_density_noise_staging,
+    BASE_NOISE_SIZE, DETAIL_NOISE_SIZE,
 };
 use anyhow::{Context, Result};
 use ash::vk;
@@ -74,26 +76,34 @@ impl CloudNoiseVolumes {
             detail: None,
             sampler: vk::Sampler::null(),
         };
-        let result = partial.create_and_upload(device, allocator, queue, pool);
+        if let Err(error) = partial.create_volumes(device, allocator) {
+            // SAFETY: every handle in `partial` was created by this device
+            // above and nothing has been submitted against any of them.
+            unsafe { partial.destroy(device, allocator) };
+            return Err(error);
+        }
+        let result = partial.upload(device, allocator, queue, pool);
         match result {
             Ok(()) => Ok(partial),
             Err(error) => {
-                // SAFETY: every handle in `partial` was created by this device
-                // in `create_and_upload`, and the one-time submit (if it ran)
-                // waited on the queue before returning.
-                unsafe { partial.destroy(device, allocator) };
+                if OneTimeCommandError::may_be_in_flight(&error) {
+                    // #5947 — the upload may still be writing these images;
+                    // leak them rather than race a host-side destroy (#4891).
+                    std::mem::forget(partial);
+                } else {
+                    // SAFETY: every handle in `partial` was created by this
+                    // device in `create_and_upload`, and the one-time submit
+                    // either never ran or was never handed to the queue.
+                    unsafe { partial.destroy(device, allocator) };
+                }
                 Err(error)
             }
         }
     }
 
-    fn create_and_upload(
-        &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        pool: vk::CommandPool,
-    ) -> Result<()> {
+    /// Create the images and sampler. Nothing is submitted, so a failure here
+    /// leaves `self` safe to [`Self::destroy`] immediately.
+    fn create_volumes(&mut self, device: &ash::Device, allocator: &SharedAllocator) -> Result<()> {
         for (is_base, size) in [(true, BASE_NOISE_SIZE), (false, DETAIL_NOISE_SIZE)] {
             let image = GpuImage::create(
                 device,
@@ -132,11 +142,23 @@ impl CloudNoiseVolumes {
                 )
                 .context("sky cloud noise sampler")?
         };
+        Ok(())
+    }
 
+    /// Upload the memoized texels. A failure that
+    /// [`OneTimeCommandError::may_be_in_flight`] reports leaves the images
+    /// possibly still being written.
+    fn upload(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        pool: vk::CommandPool,
+    ) -> Result<()> {
         // Memoized in `volumetrics::noise`, which also owns the staging and
         // copy sequence (#4344) — regenerating ~10^7 hashes here would repeat
         // work the froxel pipeline has already paid for.
-        let mut staging = create_density_noise_staging(device, allocator)?;
+        let staging = create_density_noise_staging(device, allocator)?;
 
         let images = [
             self.base.as_ref().expect("base noise").image,
@@ -188,11 +210,8 @@ impl CloudNoiseVolumes {
             Ok(())
         });
 
-        // The one-time submit waits on the queue before returning, so no
-        // staging buffer can still be referenced here.
-        for buffer in staging.iter_mut() {
-            buffer.destroy(device, allocator);
-        }
+        // #5947 — leak the staging when the submit may still be in flight.
+        release_density_noise_staging(device, allocator, staging, &result);
         result
     }
 

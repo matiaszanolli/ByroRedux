@@ -82,6 +82,12 @@ impl VulkanContext {
             working_batches,
             512,
         );
+        // #5952 — the froxel pipeline's own persistent scratches
+        // (`fog_cluster_refs_scratch` can reach ~4.7 MB) are not in
+        // `ScratchBuffers`, so shrink them through the pipeline.
+        if let Some(volumetrics) = self.post.volumetrics.as_mut() {
+            volumetrics.shrink_scratch();
+        }
         working_instances
     }
 }
@@ -138,6 +144,29 @@ mod tests {
                 "`{field}`: every ScratchBuffers Vec is either shrunk in \
                  shrink_frame_scratch or exempted with its bound — shrunk={shrunk}, \
                  exempt={exempt} (#4897)"
+            );
+        }
+    }
+
+    /// #5952 — `VolumetricsPipeline` owns CPU scratches outside
+    /// `ScratchBuffers`, so the scan above cannot see them. Pin that the
+    /// end-of-frame shrink still reaches the pipeline and that the pipeline
+    /// shrinks both.
+    #[test]
+    fn the_volumetrics_scratches_are_shrunk_through_the_pipeline() {
+        let shrink = crate::source_scan::production_text(include_str!("shrink_frame_scratch.rs"));
+        assert!(
+            shrink.contains("volumetrics.shrink_scratch()"),
+            "shrink_frame_scratch must shrink the volumetrics pipeline's scratches (#5952)"
+        );
+        let volumetrics = crate::source_scan::production_text(include_str!("../volumetrics.rs"));
+        for field in [
+            "fog_cluster_refs_scratch",
+            "combustion_light_candidates_scratch",
+        ] {
+            assert!(
+                volumetrics.contains(&format!("&mut self.{field},")),
+                "VolumetricsPipeline::shrink_scratch must shrink `{field}` (#5952)"
             );
         }
     }

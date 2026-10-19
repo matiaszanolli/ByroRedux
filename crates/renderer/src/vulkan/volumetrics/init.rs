@@ -183,12 +183,12 @@ impl VolumetricsPipeline {
             // `true`: the allocation is not zeroed, so the first drain must
             // still run its `fill(0)` to prime it for the first `atomicAdd`.
             combustion_moment_dirty: [true; MAX_FRAMES_IN_FLIGHT],
-            combustion_light_candidates: Vec::new(),
+            combustion_light_candidates_scratch: Vec::new(),
             last_combustion_light_topology: None,
             fog_volume_upload: Box::new(GpuFogVolumeUpload::default()),
             fog_cluster_entries: fog_cluster_entries(),
             fog_cluster_indices: vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice(),
-            fog_cluster_refs: Vec::new(),
+            fog_cluster_refs_scratch: Vec::new(),
             // Full extent: forces the first write to each buffer to cover the
             // whole range, since the allocation is not zero-initialised.
             fog_cluster_dirty_range: [(0, FOG_VOLUME_CLUSTER_COUNT); MAX_FRAMES_IN_FLIGHT],
@@ -927,7 +927,7 @@ impl VolumetricsPipeline {
         let detail_texels = cached_detail_density_noise();
         // Staging creation lives with the generator (#4344) — SKYAL's cloud
         // volumes upload the same texels and shared this sequence.
-        let mut staging = noise::create_density_noise_staging(device, allocator)?;
+        let staging = noise::create_density_noise_staging(device, allocator)?;
 
         let upload_result = texture::with_one_time_commands(device, queue, pool, |cmd| {
             let full_range = descriptors::color_subresource_single_mip();
@@ -1067,11 +1067,9 @@ impl VolumetricsPipeline {
             Ok(())
         });
 
-        // The one-time submit waits for the queue before returning, so neither
-        // staging buffer can still be referenced here.
-        for buffer in staging.iter_mut() {
-            buffer.destroy(device, allocator);
-        }
+        // #5947 — a submit/wait failure may leave the copies pending; the
+        // helper leaks the staging in that case and destroys it otherwise.
+        noise::release_density_noise_staging(device, allocator, staging, &upload_result);
         upload_result?;
         log::info!(
             "Volumetric density noise uploaded: {}^3 base + {}^3 detail ({} KiB R8)",

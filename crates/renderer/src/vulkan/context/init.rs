@@ -1098,12 +1098,21 @@ impl VulkanContext {
             } {
                 log::warn!("Volumetrics froxel layout init failed: {e} — disabling volumetrics");
                 if let Some(mut pipe) = volumetrics.take() {
-                    unsafe {
-                        // SAFETY: `pipe` was just created by `device`; on this
-                        // init-failure path no frame command buffer has yet
-                        // referenced its images, so destroying it is sound.
-                        pipe.destroy(&device, &gpu_allocator)
-                    };
+                    if crate::vulkan::texture::OneTimeCommandError::may_be_in_flight(&e) {
+                        // #5947 — the layout/noise submit may still be
+                        // executing against the froxel and noise images, so a
+                        // host-side destroy could race it. Leak them, as the
+                        // #4891 upload paths do.
+                        std::mem::forget(pipe);
+                    } else {
+                        unsafe {
+                            // SAFETY: `pipe` was just created by `device`; the
+                            // layout submit never reached the queue and no
+                            // frame command buffer has referenced its images,
+                            // so destroying it is sound.
+                            pipe.destroy(&device, &gpu_allocator)
+                        };
+                    }
                 }
             }
         }

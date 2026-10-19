@@ -500,9 +500,9 @@ which the boot log and a regression test both read):
 |---|---|---:|---|
 | `lighting_volumes` | RGBA16F | 8 | scattering + transmittance (V-buffer) |
 | `integrated_volumes` | RGBA16F | 8 | ray-marched integral |
-| `combustion_state_volumes` | RGBA16F | 8 | fuel, temperature K, σ_a, radiance calibration |
-| `combustion_dynamics_volumes` | RGBA16F | 8 | velocity xyz + σ_s |
-| `combustion_optical_volumes` | RGBA16F | 8 | transported optical properties |
+| `combustion_state_volumes` | RGBA16F | 8 | fuel, temperature K, σ_t (total extinction), radiance calibration |
+| `combustion_dynamics_volumes` | RGBA16F | 8 | velocity xyz + specific overpressure (m²/s²) |
+| `combustion_optical_volumes` | RGBA16F | 8 | spectral scattering σ_s.rgb + reserved |
 | `emission_history_volumes` | R32F | 4 | deterministic-emission fraction (#2809) |
 | **Total** | | **44** | × `MAX_FRAMES_IN_FLIGHT` (2) = **88 B/froxel** |
 
@@ -528,7 +528,8 @@ resolution:
 | `combustion_occupancy_buffers` (#4784) — 4096 × u32 | 16,384 B | 32,768 B | CpuToGpu |
 | `combustion_light_moment_buffers` — 256 × `GpuCombustionLightMoment` (8 × u32) | 8,192 B | 16,384 B | GpuToCpu readback |
 | `param_buffers` — `VolumetricsParams` UBO (2 × mat4 + 13 × vec4) | 336 B | 672 B | CpuToGpu |
-| **Total** (`volumetrics_host_buffer_bytes`) | **3,285,344 B** | **6,570,688 B** (~6.27 MiB) | |
+| `integration_param_buffers` (#5953) — `IntegrationParams` UBO (1 × vec4) | 16 B | 32 B | CpuToGpu |
+| **Total** (`volumetrics_host_buffer_bytes`) | **3,285,360 B** | **6,570,720 B** (~6.27 MiB) | |
 
 All but the moment readback are BAR-eligible CpuToGpu, and the index lists
 alone are the bulk — the exact pressure class #4889 had to degrade around.
@@ -621,10 +622,13 @@ The real understatement was ~18×.
 The grid then grew along **two independent axes** without either reaching
 this ledger (#3117): `froxel_xy_divisor` went 8 → 4 in `0ff7b537`
 (2026-08-17), quadrupling the froxel count, and the per-slot volume set went
-2 → 6 across `0ff7b537`→`4a35819e`. The `/4` quality default is denser so
-compact fire and smoke do not collapse to one blocky ray column; **note that
-it is a 4× VRAM and 4× inject-dispatch change that has not been through a
-bench-of-record refresh.**
+2 → 6 across `0ff7b537`→`4a35819e`. That `/4` default was denser so compact
+fire and smoke did not collapse to one blocky ray column, at the price of 4×
+the VRAM and 4× the inject dispatch. It no longer ships: the default has been
+**8** since the #3611-era retreat (`VolumetricsConfig::default` in
+`upscaling.rs`, with a comment on why), and every figure in this section is
+stated at `/8`. `/4` remains reachable as an explicit `--froxel-xy-divisor 4`
+and costs what the paragraph above measured.
 
 ---
 
