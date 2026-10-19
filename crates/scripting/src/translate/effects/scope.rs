@@ -39,6 +39,13 @@ pub(super) struct Scope<'lib> {
     /// M47.2 — inside an inlined quest-script body, the lowercased names of
     /// that script's own variables and properties (its quest variables).
     pub(super) script_variables: HashSet<String>,
+    /// #5978 — inside an inlined quest-script body, the lowercased names of
+    /// that script's variables and properties that do NOT hold a number
+    /// (`ObjectReference`, `Quest`, `String`, an array, …), with each
+    /// property's `::<name>_var` backing name. A quest-variable read is a
+    /// number (an unknown one reads 0.0), so such a name must decline instead
+    /// of classifying as a numeric read.
+    pub(super) non_numeric_script_variables: HashSet<String>,
     pub(super) quest_locals: HashMap<String, QuestRef>,
     pub(super) object_locals: HashMap<String, ObjectRef>,
     pub(super) player_locals: HashSet<String>,

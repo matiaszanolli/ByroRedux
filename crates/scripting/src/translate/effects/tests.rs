@@ -1577,6 +1577,64 @@ fn quest_script_typed_properties_resolve_through_the_library() {
     );
 }
 
+/// #5978 — inside an inlined quest script, a variable or property that holds
+/// a reference (not a number) must not classify as a numeric quest-variable
+/// read: an unknown variable reads 0.0, so `If A == B` over two
+/// `ObjectReference` properties compared `0.0 == 0.0` and was always true.
+/// The same comparison over `Int` properties still lowers.
+#[test]
+fn non_numeric_quest_script_variables_do_not_classify_as_numeric_reads() {
+    let library = PscLibrary::new(&[
+        "ScriptName CheckScript extends Quest\n\
+         ObjectReference Property A Auto\n\
+         ObjectReference Property B Auto\n\
+         Int Property N Auto\n\
+         Int Property M Auto\n\
+         Function SameRef()\n\
+         If A == B\n Self.SetStage(30)\n EndIf\n EndFunction\n\
+         Function SameNumber()\n\
+         If N == M\n Self.SetStage(30)\n EndIf\n EndFunction\n",
+    ]);
+    let lowered = |function: &str| {
+        let source = format!(
+            "ScriptName TIF_Test extends TopicInfo\n\
+             Function Fragment_0(ObjectReference akSpeakerRef)\n\
+             (Self.GetOwningQuest() as CheckScript).{function}()\n EndFunction\n"
+        );
+        let (script, errs) = parse_script(&source).expect("parses");
+        assert!(errs.is_empty(), "{errs:?}");
+        let function = script
+            .body
+            .iter()
+            .find_map(|item| match &item.node {
+                ScriptItem::Function(f) => Some(f.clone()),
+                _ => None,
+            })
+            .expect("a function");
+        lower_info_fragment(
+            &function.params,
+            &function.body,
+            &HashSet::new(),
+            &HashSet::new(),
+            None,
+            Some(&library),
+        )
+    };
+    assert_eq!(lowered("SameRef"), None, "two ObjectReference properties are not numbers");
+    assert!(lowered("SameNumber").is_some(), "the control: the Int comparison lowers");
+
+    // A decompiled `.pex` reads a property through its `::Name_var` backing
+    // variable; a non-numeric property's backing name declines the same way.
+    let ident = |name: &str| Expr::Ident(byroredux_papyrus::ast::Identifier(name.into()));
+    let mut scope = Scope { vmad_is_quest: true, ..Scope::default() };
+    assert!(
+        classify_value(&ident("::A_var"), &scope).is_some(),
+        "an unclassified backing name reads as a quest variable"
+    );
+    scope.non_numeric_script_variables.insert("::a_var".into());
+    assert_eq!(classify_value(&ident("::A_var"), &scope), None);
+}
+
 /// M47.2 — arguments to an inlined quest-script function: the speaker
 /// binds the parameter to the speaker, a fragment property rides the
 /// quest scope's bindings, and a number becomes a run-time local set in

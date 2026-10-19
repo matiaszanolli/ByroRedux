@@ -84,6 +84,11 @@ pub(super) fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
     }
     if let Expr::Ident(name) = e {
         let key = name.0.to_ascii_lowercase();
+        // #5978 — a script variable that holds a reference, string or array
+        // is not a number: declining beats a read that defaults to 0.0.
+        if scope.non_numeric_script_variables.contains(&key) {
+            return None;
+        }
         if scope.runtime_locals.contains(&key) {
             return Some(ValueExpr::Local(local_slot(scope, &key)));
         }

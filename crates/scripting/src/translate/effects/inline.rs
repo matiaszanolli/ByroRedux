@@ -106,19 +106,8 @@ pub(super) fn inline_quest_script_call(
         own_argless_functions: crate::fragment::argless_function_names(&script),
         inline_stack: scope.inline_stack.iter().cloned().chain([frame]).collect(),
         lowered_statements: scope.lowered_statements.clone(),
-        script_variables: script
-            .body
-            .iter()
-            .filter_map(|item| match &item.node {
-                byroredux_papyrus::ast::ScriptItem::Variable(v) => {
-                    Some(v.name.node.0.to_ascii_lowercase())
-                }
-                byroredux_papyrus::ast::ScriptItem::Property(p) => {
-                    Some(p.name.node.0.to_ascii_lowercase())
-                }
-                _ => None,
-            })
-            .collect(),
+        script_variables: script_declarations_by_number_type(&script, true),
+        non_numeric_script_variables: script_declarations_by_number_type(&script, false),
         ..Scope::default()
     };
     // Inside the callee, `Self` is the quest; bind it so `Self.Foo()` (a
@@ -237,4 +226,33 @@ pub(super) fn quest_vmad_scope<'lib>(scope: &Scope<'lib>) -> Option<Scope<'lib>>
         known_quest_properties: HashSet::new(),
         ..scope.clone()
     })
+}
+
+/// The lowercased names of `script`'s own variables and properties whose
+/// declared type is (`numeric == true`) or is not (`false`) a number the
+/// quest-variable store holds: `Bool` / `Int` / `Float` (#5978). A
+/// non-numeric property also lists its decompiled `::<name>_var` backing name.
+fn script_declarations_by_number_type(
+    script: &byroredux_papyrus::ast::Script,
+    numeric: bool,
+) -> HashSet<String> {
+    use byroredux_papyrus::ast::{ScriptItem, Type};
+    let holds_number = |ty: &Type| matches!(ty, Type::Bool | Type::Int | Type::Float);
+    let mut names = HashSet::new();
+    for item in &script.body {
+        match &item.node {
+            ScriptItem::Variable(v) if holds_number(&v.ty.node) == numeric => {
+                names.insert(v.name.node.0.to_ascii_lowercase());
+            }
+            ScriptItem::Property(p) if holds_number(&p.ty.node) == numeric => {
+                let name = p.name.node.0.to_ascii_lowercase();
+                if !numeric {
+                    names.insert(format!("::{name}_var"));
+                }
+                names.insert(name);
+            }
+            _ => {}
+        }
+    }
+    names
 }
