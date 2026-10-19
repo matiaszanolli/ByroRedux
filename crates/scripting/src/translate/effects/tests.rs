@@ -145,6 +145,48 @@ fn lowers_global_set_value_before_stage_handoff() {
     );
 }
 
+/// #6022 — a fragment whose longest path needs as many provider barriers as the
+/// runtime will cross is declined whole at lowering; one barrier fewer lowers.
+/// A conditional counts its deeper branch only (the branches never both run).
+#[test]
+fn a_fragment_past_the_provider_barrier_cap_declines_whole() {
+    let providers = PapyrusProviderCatalog::engine_compatibility();
+    let lower = |body: String| {
+        let body = first_fn_body(&format!(
+            "ScriptName QF extends Quest\nFunction Fragment_0()\n{body}EndFunction\n"
+        ));
+        lower_fragment_with_quest_properties_and_providers(&body, &HashSet::new(), Some(&providers))
+    };
+    let cap = crate::fragment::MAX_PROVIDER_FRAGMENT_BARRIERS;
+    let calls = |count: usize| "Game.GetModCount()\n".repeat(count);
+
+    let fits = lower(format!("{}Self.SetStage(10)\n", calls(cap - 1)))
+        .expect("one barrier under the cap lowers");
+    assert_eq!(fits.len(), cap);
+    assert_eq!(
+        lower(format!("{}Self.SetStage(10)\n", calls(cap))),
+        None,
+        "a tail past barrier {cap} would be dropped after the prefix applied"
+    );
+
+    // Branches are alternatives: {cap - 1} + {cap - 1} across them is fine…
+    let branched = format!(
+        "{}If Self.GetStageDone(2) == false\n{}Else\n{}EndIf\nSelf.SetStage(20)\n",
+        calls(0),
+        calls(cap - 1),
+        calls(cap - 1)
+    );
+    assert!(lower(branched).is_some());
+    // …but the path through the deeper branch plus a call before it is not.
+    let too_deep = format!(
+        "{}If Self.GetStageDone(2) == false\n{}Else\n{}EndIf\n",
+        calls(2),
+        calls(cap - 1),
+        calls(1)
+    );
+    assert_eq!(lower(too_deep), None);
+}
+
 #[test]
 fn provider_calls_preserve_top_level_fragment_order() {
     let providers = PapyrusProviderCatalog::engine_compatibility();

@@ -76,7 +76,7 @@ pub fn lower_fragment_with_script_metadata(
     };
     lower_statements(body, &mut scope, providers, 0)
         .map(prune_unread_locals)
-        .filter(|effects| locals_never_suspend(effects))
+        .filter(|effects| locals_never_suspend(effects) && provider_barriers_fit(effects))
 }
 
 /// [`lower_fragment_with_script_metadata`] for a quest-stage fragment, with a
@@ -99,7 +99,7 @@ pub fn lower_quest_fragment(
     };
     lower_statements(body, &mut scope, providers, 0)
         .map(prune_unread_locals)
-        .filter(|effects| locals_never_suspend(effects))
+        .filter(|effects| locals_never_suspend(effects) && provider_barriers_fit(effects))
 }
 
 /// M47.2 — [`lower_fragment_with_script_metadata`] for a scene (`SF_…`)
@@ -122,7 +122,7 @@ pub fn lower_scene_fragment(
     };
     lower_statements(body, &mut scope, providers, 0)
         .map(prune_unread_locals)
-        .filter(|effects| locals_never_suspend(effects))
+        .filter(|effects| locals_never_suspend(effects) && provider_barriers_fit(effects))
 }
 
 /// M47.2 — `(<reference> as Script).<Variable> = literal`, a variable of a
@@ -233,7 +233,7 @@ pub fn lower_info_fragment(
     }
     let effects = lower_statements(body, &mut scope, providers, 0)
         .map(prune_unread_locals)
-        .filter(|effects| locals_never_suspend(effects))?;
+        .filter(|effects| locals_never_suspend(effects) && provider_barriers_fit(effects))?;
     if scope.uses_speaker.get() && effects.iter().any(has_latent_tail) {
         return None;
     }
@@ -316,6 +316,36 @@ fn prune_unread_locals(effects: Vec<Effect>) -> Vec<Effect> {
     let mut read = HashSet::new();
     reads(&effects, &mut read);
     prune(effects, &read)
+}
+
+/// The most provider barriers any one execution path of `effects` crosses: every
+/// [`Effect::ProviderCall`] is a suspension point, a conditional contributes its
+/// deeper branch, and a quest scope its body.
+fn provider_barrier_depth(effects: &[Effect]) -> usize {
+    effects
+        .iter()
+        .map(|effect| match effect {
+            Effect::ProviderCall(_) => 1,
+            Effect::Conditional {
+                then_effects,
+                else_effects,
+                ..
+            } => provider_barrier_depth(then_effects).max(provider_barrier_depth(else_effects)),
+            Effect::QuestScope { effects, .. } => provider_barrier_depth(effects),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// #6022 — a fragment is "check ahead of time, run whole or not at all". The
+/// runtime crosses at most [`crate::fragment::MAX_PROVIDER_FRAGMENT_BARRIERS`]
+/// provider barriers and drops everything after the last one with a warning
+/// (#3946), *after* the prefix has already applied — a quest stuck mid-fragment.
+/// So a fragment whose longest path reaches the cap declines here, whole,
+/// like every other unmodeled shape, instead of lowering into a program the
+/// runtime cannot finish.
+fn provider_barriers_fit(effects: &[Effect]) -> bool {
+    provider_barrier_depth(effects) < crate::fragment::MAX_PROVIDER_FRAGMENT_BARRIERS
 }
 
 /// M47.2 — a fragment's run-time locals ([`Effect::SetLocal`]) live for one
