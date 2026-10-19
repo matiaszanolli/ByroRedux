@@ -110,8 +110,19 @@ entity="$(grep -oE 'Entity [0-9]+' "$LOG_DIR/find.log" | head -1 | cut -d' ' -f2
 [[ -n "$entity" ]] || fail "Doc Mitchell entity not found in the loaded cell"
 echo "smoke[dt1-dialogue-layers]: DocMitchell entity=$entity"
 
-debug_command "script.activate $entity
-dialogue.status" "$LOG_DIR/greet.log" || fail 'activation unavailable'
+debug_command "script.activate $entity" "$LOG_DIR/activate.log" || fail 'activation unavailable'
+# Doc Mitchell's authored `onActivate` ObScript consumes the activation
+# and re-queues a native one for the dialogue consumer, so the greeting
+# lands a few frames after `script.activate` returns (#6055). A
+# `dialogue.status` read in the same debug drain races it; poll instead.
+deadline=$((SECONDS + TIMEOUT))
+: > "$LOG_DIR/greet.log"
+until grep -Fq "topic 0x0000C8" "$LOG_DIR/greet.log" 2>/dev/null; do
+    (( SECONDS < deadline )) || break
+    kill -0 "$engine_pid" 2>/dev/null || fail "engine exited during activation"
+    sleep 0.5
+    debug_command 'dialogue.status' "$LOG_DIR/greet.log" >/dev/null 2>&1 || true
+done
 grep -Fq "topic 0x0000C8" "$LOG_DIR/greet.log" \
     || fail "Phase G: activation did not open the generic GREETING topic: $(sed -n '1,8p' "$LOG_DIR/greet.log")"
 grep -Fq 'npc '"$entity" "$LOG_DIR/greet.log" \
