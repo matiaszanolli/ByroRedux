@@ -4442,50 +4442,185 @@ fn named_call_arguments_decline_instead_of_binding_positionally() {
     );
 }
 
+/// Every module-level `fn` in the concatenated primitive sources, as
+/// `(name, code)` with `//` comment lines removed: a doc line or comment that
+/// mentions `args.len()` or another function must not satisfy the arity gate.
+fn primitive_source_fns(src: &str) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let mut current: Option<(String, Vec<&str>)> = None;
+    let mut flush = |current: &mut Option<(String, Vec<&str>)>| {
+        if let Some((name, lines)) = current.take() {
+            out.insert(name, lines.join("\n"));
+        }
+    };
+    for line in src.lines() {
+        let decl = ["pub(super) fn ", "pub(crate) fn ", "pub fn ", "fn "]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix));
+        if let Some(rest) = decl {
+            flush(&mut current);
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            current = Some((name, vec![line]));
+        } else if let Some((_, lines)) = current.as_mut() {
+            if !line.trim_start().starts_with("//") {
+                lines.push(line);
+            }
+        }
+    }
+    flush(&mut current);
+    out
+}
+
+/// Whether `code` compares the call's argument count against a bound that an
+/// OVER-arity call fails: an exact or capped count, a `1..=N` range, a
+/// zero-argument native (`!args.is_empty()` declines, or `args.is_empty()`
+/// is the accept condition), or a fixed-arity slice pattern. A lone
+/// `args.is_empty()` decline or `args.len() < N` is a lower bound only.
+fn bounds_arity_from_above(code: &str) -> bool {
+    [
+        "args.len() !=",
+        "args.len() >",
+        "args.len() <=",
+        "args.len() ==",
+        "matches!(args.len()",
+        ".contains(&args.len())",
+        "!args.is_empty()",
+        "args.is_empty().then",
+        "args.is_empty() &&",
+        "] = args else",
+        "] = args.as_slice() else",
+    ]
+    .iter()
+    .any(|pattern| code.contains(pattern))
+}
+
+/// Whether `name`'s body bounds its arguments from above, directly or through
+/// a function it calls (to `depth` levels): the delegating primitives
+/// (`prim_add_race_spells` -> `lower_race_spells` -> `prim_race_spells_arity_ok`)
+/// inherit the helper's bound, but only through a real call.
+fn bounds_arity(
+    name: &str,
+    fns: &std::collections::HashMap<String, String>,
+    depth: usize,
+) -> bool {
+    let Some(code) = fns.get(name) else {
+        return false;
+    };
+    if bounds_arity_from_above(code) {
+        return true;
+    }
+    if depth == 0 {
+        return false;
+    }
+    let mut callees = Vec::new();
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'(' {
+            let end = i;
+            let mut start = end;
+            while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+                start -= 1;
+            }
+            if start < end {
+                callees.push(&code[start..end]);
+            }
+        }
+        i += 1;
+    }
+    callees
+        .into_iter()
+        .filter(|callee| *callee != name && fns.contains_key(*callee))
+        .any(|callee| bounds_arity(callee, fns, depth - 1))
+}
+
 /// #3496's completeness check, mechanized: every effect primitive must
-/// bound its argument count, directly or through the primitive it
-/// delegates to. The finding came out of a hand sweep of all 31
-/// `prim_*` bodies that found exactly four unguarded; a hand sweep
-/// does not survive the next primitive being added, so it becomes a
-/// gate here.
+/// bound its argument count from above, directly or through a function it
+/// really calls. The finding came out of a hand sweep of all 31 `prim_*`
+/// bodies that found exactly four unguarded; a hand sweep does not survive the
+/// next primitive being added, so it becomes a gate here.
+///
+/// #5977 — the gate used to pass a body that merely contained `args.len()` or
+/// `args.is_empty()` anywhere (a lower-bound-only check qualifies) or the text
+/// `prim_` (a comment mention counts as "delegates"), and its completeness
+/// margin was slack by the three helper bodies. Now: comments are stripped, a
+/// bound must be an upper bound, delegation must be a call that resolves to a
+/// bounded function, and the helpers are excluded by name so the scan must
+/// match the table row for row.
 #[test]
 fn every_effect_primitive_bounds_its_argument_count() {
     // #5801 — the primitives live in `effects/prims/*.rs` now: scan the
     // module's concatenation, which leaves this file out, so the scan
-    // cannot pick up its own body. A family file's primitive is
-    // `pub(super)` for the table in `prims/mod.rs`; fold that back to the
-    // column-0 `fn prim_` the split keys on.
-    let src = super::SOURCES.replace("\npub(super) fn prim_", "\nfn prim_");
-    let mut unguarded = Vec::new();
-    let mut seen = 0usize;
-    for chunk in src.split("\nfn prim_").skip(1) {
-        let name = chunk.split('(').next().unwrap_or_default();
-        let body = chunk.split("\n}\n").next().unwrap_or_default();
-        seen += 1;
-        let bounded = body.contains("args.len()") || body.contains("args.is_empty()");
-        // A primitive that forwards to another primitive inherits its
-        // bound (the `PlayerImodAnimation`/`PlayerFurnitureAnimation`
-        // and player-controls pairs).
-        let delegates = body.contains("prim_");
-        if !bounded && !delegates {
-            unguarded.push(name.to_owned());
-        }
-    }
-    assert!(seen > 30, "the primitive scan matched only {seen} bodies");
-    // Every table row is a `prim_*` body, so a scan that sees fewer bodies
-    // than the table has rows has lost a file.
-    assert!(
-        seen >= EFFECT_PRIMITIVES.len(),
-        "the primitive scan matched {seen} bodies for {} table rows",
+    // cannot pick up its own body.
+    let fns = primitive_source_fns(super::SOURCES);
+    // `prim_*` helpers that are not rows of `EFFECT_PRIMITIVES`.
+    const NON_TABLE_HELPERS: &[&str] = &[
+        "prim_player_controls",
+        "prim_player_animation_event",
+        "prim_race_spells_arity_ok",
+    ];
+    let mut names: Vec<&String> = fns
+        .keys()
+        .filter(|name| name.starts_with("prim_") && !NON_TABLE_HELPERS.contains(&name.as_str()))
+        .collect();
+    names.sort();
+    let unguarded: Vec<&String> = names
+        .iter()
+        .copied()
+        .filter(|name| !bounds_arity(name, &fns, 3))
+        .collect();
+    assert!(names.len() > 30, "the primitive scan matched only {} bodies", names.len());
+    // Every table row is a `prim_*` body: with the helpers excluded by name the
+    // counts must be equal, so a scan that lost (or gained) a file fails.
+    assert_eq!(
+        names.len(),
+        EFFECT_PRIMITIVES.len(),
+        "the primitive scan matched {} bodies for {} table rows",
+        names.len(),
         EFFECT_PRIMITIVES.len()
     );
     assert!(
         unguarded.is_empty(),
-        "every effect primitive must bound its argument count against its \
-         real Papyrus signature — an unbounded one silently lowers an \
-         over-arity call from a modded .pex instead of declining \
-         (#3496). Unguarded: {unguarded:?}"
+        "every effect primitive must bound its argument count from above \
+         against its real Papyrus signature — an unbounded one silently lowers \
+         an over-arity call from a modded .pex instead of declining \
+         (#3496, #5977). Unguarded: {unguarded:?}"
     );
+}
+
+/// #5977 — the gate's own predicates reject the shapes it used to accept.
+#[test]
+fn the_arity_gate_rejects_lower_bounds_and_comment_mentions() {
+    let fns = primitive_source_fns(
+        "fn prim_lower_only(e: &Expr) -> Option<Effect> {\n\
+         \x20   if args.len() < 1 { return None; }\n\
+         \x20   if args.is_empty() { return None; }\n\
+         }\n\
+         fn prim_comment_only(e: &Expr) -> Option<Effect> {\n\
+         \x20   // bounded by args.len() != 2 inside prim_other_arity_ok\n\
+         \x20   lower(e)\n\
+         }\n\
+         fn prim_exact(e: &Expr) -> Option<Effect> {\n\
+         \x20   if args.len() != 2 { return None; }\n\
+         }\n\
+         fn prim_zero(e: &Expr) -> Option<Effect> {\n\
+         \x20   if !args.is_empty() { return None; }\n\
+         }\n\
+         fn prim_delegates(e: &Expr) -> Option<Effect> {\n\
+         \x20   helper(e)\n\
+         }\n\
+         fn helper(e: &Expr) -> Option<Effect> {\n\
+         \x20   if args.len() > 3 { return None; }\n\
+         }\n",
+    );
+    assert!(!bounds_arity("prim_lower_only", &fns, 3), "a lower bound is not a bound");
+    assert!(!bounds_arity("prim_comment_only", &fns, 3), "a comment is not a bound");
+    assert!(bounds_arity("prim_exact", &fns, 3));
+    assert!(bounds_arity("prim_zero", &fns, 3));
+    assert!(bounds_arity("prim_delegates", &fns, 3), "a real call to a bounded helper is");
 }
 
 #[test]
