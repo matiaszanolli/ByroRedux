@@ -334,7 +334,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**127**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**130**) grouped by
 purpose:
 
 ```
@@ -509,6 +509,9 @@ magic.effects [entity]       → list the magic effects running on a reference (
 weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
 obscript.cmd <caller|none> <id> [args] → run one ObScript command through the real host and print its answer (M47.3)
 obscript.objects [limit]    → ObScript object scripts attached to placed references: blocks, run counts, declines (M47.3)
+script.requests             → the menus and videos ObScript commands asked for (no UI shows them yet)
+misc.stat <name> [delta]    → read or change a misc stat (`_` for spaces in the name)
+challenge.status [CHAL id]  → New Vegas challenge progress (hex CHAL form id optional)
 
 # Legacy HUD + focused diagnostics
 hud.on / hud.off            → show or hide the active legacy HUD
