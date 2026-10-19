@@ -16,12 +16,7 @@ pub(super) fn get_relationship_rank(condition: &Condition, entity: EntityId, wor
 }
 
 pub(super) fn get_player_teammate(entity: EntityId, world: &World) -> f32 {
-    let form = if crate::papyrus_demo::PapyrusPlayerEntity::get(world).is_some_and(|player| player == entity)
-    {
-        Some(crate::PLAYER_REFERENCE)
-    } else {
-        entity_global_form_id(world, entity)
-    };
+    let form = entity_global_form_id(world, entity);
     truth(form.is_some_and(|form| {
         world
             .try_resource::<crate::FollowerState>()

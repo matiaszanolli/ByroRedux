@@ -263,7 +263,6 @@ pub fn package_fragment_system(world: &World, dt: f32) {
     if fragments.is_empty() {
         return;
     }
-    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     // (actor, package, event) in report order: completions first (they
     // happened during the frame the transitions were decided after).
     let mut runs: Vec<(EntityId, u32, PackageFragmentEvent)> = Vec::new();
@@ -280,11 +279,7 @@ pub fn package_fragment_system(world: &World, dt: f32) {
     }
     let mut advances = Vec::new();
     for (entity, package, event) in runs {
-        let actor = if Some(entity) == player {
-            Some(0x14)
-        } else {
-            crate::condition::entity_global_form_id(world, entity)
-        };
+        let actor = crate::condition::entity_global_form_id(world, entity);
         let Some(actor) = actor else {
             continue;
         };

@@ -592,12 +592,7 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
     let changes = actor_changes(world);
     let attached = world.query::<PapyrusReferenceScripts>();
     let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
-    let form_of = |entity: EntityId| -> Option<u32> {
-        if Some(entity) == player {
-            return Some(0x14);
-        }
-        crate::condition::entity_global_form_id(world, entity)
-    };
+    let form_of = |entity: EntityId| crate::condition::entity_global_form_id(world, entity);
     let cell_loads = world.query::<crate::OnCellLoadEvent>();
     let activations = world.query::<crate::ActivateEvent>();
     let native = world.query::<crate::NativeActivation>();
@@ -818,13 +813,7 @@ fn relay_engine_events(world: &World) {
     if !any {
         return;
     }
-    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
-    let form_of = |entity: EntityId| -> Option<u32> {
-        if Some(entity) == player {
-            return Some(0x14);
-        }
-        crate::condition::entity_global_form_id(world, entity)
-    };
+    let form_of = |entity: EntityId| crate::condition::entity_global_form_id(world, entity);
     let reference = |entity: EntityId| VmStored::Form(form_of(entity).unwrap_or(0));
     let mut relays: Vec<(u32, &'static str, Vec<VmStored>)> = Vec::new();
     if let Some(events) = world.query::<crate::ActivateEvent>() {

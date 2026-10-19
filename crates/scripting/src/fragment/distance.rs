@@ -164,12 +164,7 @@ impl DistanceWatches {
 /// The entity a target stands for right now.
 pub(super) fn target_entity(world: &World, target: DistanceTarget) -> Option<EntityId> {
     match target {
-        DistanceTarget::Reference(form) => {
-            if form == 0x14 {
-                return crate::papyrus_demo::PapyrusPlayerEntity::get(world);
-            }
-            crate::condition::resolve_entity_by_global_form_id(world, form)
-        }
+        DistanceTarget::Reference(form) => crate::condition::resolve_entity_by_global_form_id(world, form),
         DistanceTarget::Alias { quest, alias } => world
             .try_resource::<crate::SceneActorBindings>()
             .and_then(|bindings| bindings.resolve(QuestFormId(quest), i32::from(alias))),
@@ -178,10 +173,6 @@ pub(super) fn target_entity(world: &World, target: DistanceTarget) -> Option<Ent
 
 /// The form a delivered event names an object by.
 pub(super) fn entity_form(world: &World, entity: EntityId) -> Option<u32> {
-    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
-    if Some(entity) == player {
-        return Some(0x14);
-    }
     crate::condition::entity_global_form_id(world, entity)
 }
 

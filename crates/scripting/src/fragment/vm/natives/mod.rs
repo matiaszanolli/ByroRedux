@@ -224,10 +224,6 @@ impl Vm<'_> {
     }
 
     pub(in crate::fragment::vm) fn entity_form(&self, entity: EntityId) -> Option<u32> {
-        let player = crate::papyrus_demo::PapyrusPlayerEntity::get(self.world);
-        if Some(entity) == player {
-            return Some(PLAYER_REF);
-        }
         crate::condition::entity_global_form_id(self.world, entity)
     }
 

@@ -18,6 +18,43 @@ fn hardcore_condition_reads_the_live_mode_flag() {
     assert!(!evaluate_condition(&condition, &world, &ctx(actor)));
 }
 
+/// #5979 — `entity_global_form_id` is the inverse of
+/// `resolve_entity_by_global_form_id` for the player too: the player body's
+/// pool pair is local 1, but the id scripts, ledgers and saved keys use is
+/// `PlayerRef` (`0x14`). A placed reference still round-trips through its pair.
+#[test]
+fn entity_global_form_id_round_trips_the_player_as_player_ref() {
+    use crate::papyrus_demo::PapyrusPlayerEntity;
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let player_pair = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(1),
+    });
+    let placed_pair = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(0x0001_0F90),
+    });
+    world.insert_resource(pool);
+    let player = world.spawn();
+    world.insert(player, FormIdComponent(player_pair));
+    world.insert_resource(PapyrusPlayerEntity(player));
+    let placed = world.spawn();
+    world.insert(placed, FormIdComponent(placed_pair));
+
+    assert_eq!(entity_global_form_id(&world, player), Some(crate::PLAYER_REFERENCE));
+    assert_eq!(
+        resolve_entity_by_global_form_id(&world, crate::PLAYER_REFERENCE),
+        Some(player)
+    );
+    assert_eq!(entity_global_form_id(&world, placed), Some(0x0001_0F90));
+    assert_eq!(resolve_entity_by_global_form_id(&world, 0x0001_0F90), Some(placed));
+}
+
 /// CK *GetPlayerTeammate*: "Returns 1 if an actor is currently set as a player
 /// teammate via the Papyrus SetPlayerTeammate() function, 0 if not."
 #[test]

@@ -691,9 +691,6 @@ pub fn has_activate_block(world: &World, entity: EntityId) -> bool {
 
 /// A reference's FormID: the player is `0x14`.
 fn form_of(world: &World, entity: EntityId) -> Option<u32> {
-    if crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(entity) {
-        return Some(crate::PLAYER_REFERENCE);
-    }
     entity_global_form_id(world, entity)
 }
 

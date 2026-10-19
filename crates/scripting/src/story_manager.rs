@@ -846,7 +846,7 @@ pub fn story_manager_dispatch_system(world: &World) {
 
 /// Bethesda's PlayerRef sentinel (never a placed record) — the portable
 /// identity a player-valued event slot persists as (#5394).
-pub(crate) const PLAYER_REF_FORM_ID: u32 = 0x14;
+pub(crate) const PLAYER_REF_FORM_ID: u32 = crate::PLAYER_REFERENCE;
 
 /// #5394 — an event reference's portable identity: `0x14` for the player
 /// (PlayerRef), else the placed reference FormId its alias candidate

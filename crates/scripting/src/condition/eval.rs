@@ -180,9 +180,7 @@ pub fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<E
     // targeting, `GetDistance`, `RunOn::Reference`, fragment object
     // properties, quest stages — so the special case lives here (the same
     // identity `package.rs` used to special-case locally at two sites).
-    // Bethesda's conventional PlayerRef sentinel (never a placed record).
-    const PLAYER_REF_SENTINEL: u32 = 0x14;
-    if form_id == PLAYER_REF_SENTINEL {
+    if form_id == crate::PLAYER_REFERENCE {
         return crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     }
     let q = world.query::<FormIdComponent>()?;
@@ -198,6 +196,13 @@ pub fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<E
 /// [`resolve_entity_by_global_form_id`], and keyed the same way
 /// (`FormIdPool::resolve(..).local.0`) so the two agree.
 ///
+/// #5979 — including for the player: its body's pool pair is
+/// `PLAYER_FORM_ID_PAIR` (local 1), but a script, a ledger or a saved key
+/// names the player `PlayerRef` (`0x14`), the identity
+/// [`resolve_entity_by_global_form_id`] maps back. The player used to be
+/// special-cased by every FormID-keyed writer; a new one that forgot keyed the
+/// player under the wrong id.
+///
 /// #3278 — needed by `Effect::Disable`, whose sink (`ReferenceEnableState`)
 /// is deliberately FormID-keyed rather than entity-keyed so a disable
 /// survives its reference's cell being unloaded; the location runtime keys
@@ -205,6 +210,9 @@ pub fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<E
 pub fn entity_global_form_id(world: &World, entity: EntityId) -> Option<u32> {
     use byroredux_core::ecs::components::FormIdComponent;
     use byroredux_core::form_id::FormIdPool;
+    if crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(entity) {
+        return Some(crate::PLAYER_REFERENCE);
+    }
     let component = world.get::<FormIdComponent>(entity)?;
     let pool = world.try_resource::<FormIdPool>()?;
     pool.resolve(component.0).map(|pair| pair.local.0)

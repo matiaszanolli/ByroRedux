@@ -429,10 +429,6 @@ fn point_in_polygon(polygon: &[(f32, f32)], x: f32, y: f32) -> bool {
 /// The reference FormID scripts name `entity` by: `0x14` for the player (`PlayerRef`), else its
 /// placed reference's FormID.
 pub fn reference_form(world: &World, entity: EntityId) -> Option<u32> {
-    const PLAYER_REF: u32 = 0x14;
-    if crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(entity) {
-        return Some(PLAYER_REF);
-    }
     crate::condition::entity_global_form_id(world, entity)
 }
 
