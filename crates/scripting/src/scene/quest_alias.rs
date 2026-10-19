@@ -1068,6 +1068,22 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                             );
                             continue;
                         }
+                        // #6006 — a reference held by a "Reserves Reference" alias
+                        // is not filled into another alias unless that alias is
+                        // Allow Reserved or a From External fill; From Event is
+                        // not an exception (CK Quest Alias Tab). The candidate
+                        // path enforces it through the same set.
+                        if !alias.flags.has(ALIAS_FLAG_ALLOW_RESERVED) && reserved.contains(&entity)
+                        {
+                            log::debug!(
+                                "#6006: quest {:08X} alias {} FromEvent slot entity {} is \
+                                 reserved by another alias — leaving the alias unbound",
+                                quest.0,
+                                alias.alias_id,
+                                entity,
+                            );
+                            continue;
+                        }
                         let allow_reuse = alias.flags.has(ALIAS_FLAG_ALLOW_REUSE);
                         if allow_reuse || !used.contains(&entity) {
                             resolved.insert((*quest, alias.alias_id), entity);

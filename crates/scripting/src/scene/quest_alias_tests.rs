@@ -1734,6 +1734,87 @@ fn from_event_alias_skips_stale_and_dead_slot_entities() {
     );
 }
 
+/// #6006 — a `FromEvent` alias obeys the Reserves / Allow Reserved rule like a
+/// candidate fill: an event slot naming a reference another quest's alias
+/// reserved stays unbound, unless the alias is Allow Reserved.
+#[test]
+fn from_event_alias_honours_reserved_references() {
+    use byroredux_plugin::esm::records::{AliasFlags, ALIAS_FLAG_ALLOW_RESERVED};
+    let mut world = World::new();
+    crate::register(&mut world);
+    let actor = world.spawn();
+    world.insert(actor, GlobalTransform::default());
+    world.insert(
+        actor,
+        SceneAliasCandidate {
+            reference_form_id: 0xA1,
+            base_form_id: 0xB1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    let from_event = |flags: u32| QuestAlias {
+        alias_id: 1,
+        flags: AliasFlags(flags),
+        fill_type: Some(AliasFillType::FromEvent {
+            event_type: *b"KILL",
+            data: 0x3152, // "R1"
+        }),
+        ..Default::default()
+    };
+    install_scene_quest_aliases(
+        &mut world,
+        [
+            QustRecord {
+                form_id: 0x100,
+                aliases: vec![QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                    flags: AliasFlags(ALIAS_FLAG_RESERVES),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            QustRecord {
+                form_id: 0x200,
+                aliases: vec![from_event(0)],
+                ..Default::default()
+            },
+            QustRecord {
+                form_id: 0x300,
+                aliases: vec![from_event(ALIAS_FLAG_ALLOW_RESERVED)],
+                ..Default::default()
+            },
+        ],
+    );
+    let fill = || crate::story_manager::StoryEventFill {
+        slots: crate::condition::EventDataSlots {
+            reference_1: Some(actor),
+            ..Default::default()
+        },
+        reference_forms: [None, None],
+    };
+    world.insert_resource(crate::story_manager::StoryEventAliasFill(
+        [(QuestFormId(0x200), fill()), (QuestFormId(0x300), fill())]
+            .into_iter()
+            .collect(),
+    ));
+
+    refresh_scene_actor_bindings(&world);
+    let bindings = world.resource::<SceneActorBindings>();
+    assert_eq!(bindings.resolve(QuestFormId(0x100), 1), Some(actor));
+    assert_eq!(
+        bindings.resolve(QuestFormId(0x200), 1),
+        None,
+        "an event slot naming a reserved reference must not double-book it"
+    );
+    assert_eq!(
+        bindings.resolve(QuestFormId(0x300), 1),
+        Some(actor),
+        "Allow Reserved still binds it"
+    );
+}
+
 /// Without a recorded event (the quest started by script/console, or no
 /// Story Manager at all), a `FromEvent` alias simply stays unbound —
 /// never a crash, never a world-candidate fill.
