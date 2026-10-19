@@ -810,6 +810,59 @@ fn byte_level_pex_static_call_lowers_to_the_same_provider_route() {
     );
 }
 
+/// #6021 — a script with provider handlers *and* handlers the program cannot
+/// run is declined whole at the translation seam (no recognizer claims it),
+/// rather than attached to execute half-way. The program itself still records
+/// which handlers it left unlowered.
+#[test]
+fn a_script_with_unlowered_non_provider_handlers_is_declined_whole() {
+    let translation = crate::translate_pex_detailed_with_providers(
+        &mixed_provider_pex_bytes(),
+        byroredux_plugin::esm::reader::GameKind::Skyrim,
+        None,
+        None,
+        &catalog(),
+    );
+    assert!(translation.recognized.is_none(), "fixture must not be recognized");
+    assert!(
+        translation.provider_program.is_none(),
+        "the provider handlers must not run without the OnUpdate handler"
+    );
+    assert_eq!(
+        translation.provider_error,
+        Some(PapyrusProviderProgramError::MixedScript(vec!["OnUpdate".to_owned()]))
+    );
+
+    // The same script without the extra handler is untouched.
+    let pure = crate::translate_pex_detailed_with_providers(
+        &provider_call_pex_bytes(),
+        byroredux_plugin::esm::reader::GameKind::Skyrim,
+        None,
+        None,
+        &catalog(),
+    );
+    assert_eq!(pure.provider_error, None);
+    assert!(pure.provider_program.unwrap().unlowered_handlers().is_empty());
+
+    // Source form: the lowering reports the handler it did not lower, and an
+    // empty non-provider handler is not "behaviour left behind".
+    let source = r#"
+        ScriptName Fixture
+        Event OnInit()
+            WeatherNative.WeatherAt(1, "x")
+        EndEvent
+        Event OnUpdate()
+            Utility.RandomInt(0, 1)
+        EndEvent
+        Event OnHit(ObjectReference akAggressor)
+        EndEvent
+    "#;
+    let (script, errors) = parse_script(source).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let program = lower_provider_program(&script, &catalog()).unwrap().unwrap();
+    assert_eq!(program.unlowered_handlers(), ["OnUpdate".to_owned()]);
+}
+
 #[test]
 fn byte_level_pex_instance_send_mod_event_lowers_with_defaults() {
     let translation = crate::translate_pex_detailed_with_providers(

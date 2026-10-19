@@ -219,6 +219,17 @@ fn object_catalog() -> PapyrusProviderCatalog {
 }
 
 fn provider_call_pex_bytes() -> Vec<u8> {
+    provider_call_pex(false)
+}
+
+/// [`provider_call_pex_bytes`] plus a second `OnUpdate` handler whose only
+/// statement is a non-provider call (`Utility.RandomInt(0, 1)`) — a script no
+/// provider program can run in full (#6021).
+fn mixed_provider_pex_bytes() -> Vec<u8> {
+    provider_call_pex(true)
+}
+
+fn provider_call_pex(extra_non_provider_handler: bool) -> Vec<u8> {
     use byroredux_pex::OpCode;
 
     let mut writer = PexBytes::new();
@@ -232,6 +243,9 @@ fn provider_call_pex_bytes() -> Vec<u8> {
         "WeatherAt",
         "::nonevar",
         "clear",
+        "OnUpdate",
+        "Utility",
+        "RandomInt",
     ] {
         writer.intern(value);
     }
@@ -268,7 +282,7 @@ fn provider_call_pex_bytes() -> Vec<u8> {
     writer.u16(0); // properties
     writer.u16(1); // states
     writer.string_index("");
-    writer.u16(1); // functions
+    writer.u16(if extra_non_provider_handler { 2 } else { 1 }); // functions
     writer.string_index("OnLoad");
     writer.string_index("None");
     writer.string_index("");
@@ -291,6 +305,31 @@ fn provider_call_pex_bytes() -> Vec<u8> {
     writer.string_index("clear");
     writer.u8(OpCode::Return as u8);
     writer.u8(0); // None
+
+    if extra_non_provider_handler {
+        writer.string_index("OnUpdate");
+        writer.string_index("None");
+        writer.string_index("");
+        writer.u32(0);
+        writer.u8(0);
+        writer.u16(0); // parameters
+        writer.u16(0); // locals
+        writer.u16(2); // instructions
+
+        writer.u8(OpCode::CallStatic as u8);
+        for value in ["Utility", "RandomInt", "::nonevar"] {
+            writer.u8(1); // identifier
+            writer.string_index(value);
+        }
+        writer.u8(3); // integer vararg count
+        writer.u32(2);
+        writer.u8(3); // integer literal
+        writer.u32(0);
+        writer.u8(3); // integer literal
+        writer.u32(1);
+        writer.u8(OpCode::Return as u8);
+        writer.u8(0); // None
+    }
 
     writer.bytes
 }

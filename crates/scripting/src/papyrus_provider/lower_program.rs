@@ -9,6 +9,10 @@ pub enum PapyrusProviderProgramError {
     DuplicateHandler(PapyrusProviderEvent),
     DuplicateCustomHandler(String),
     NestingTooDeep,
+    /// #6021 — the script also has non-provider handlers that nothing else
+    /// understands, so running only its provider handlers would execute it
+    /// half-way. Carries those handlers' names.
+    MixedScript(Vec<String>),
     UnsupportedStatement,
     UnsupportedLocal(String),
     UnknownLocal(String),
@@ -17,7 +21,10 @@ pub enum PapyrusProviderProgramError {
 }
 
 /// Lower supported provider-bearing handlers from source or decompiled PEX.
-/// Handlers without a known provider remain available to existing recognizers.
+/// Handlers without a known provider remain available to existing recognizers:
+/// they are listed in [`PapyrusProviderProgram::unlowered_handlers`], and the
+/// caller must not attach the program unless a whole-script recognizer runs them
+/// (see [`crate::translate::translate_pex_detailed_with_providers`], #6021).
 pub fn lower_provider_program(
     script: &Script,
     catalog: &PapyrusProviderCatalog,
@@ -93,6 +100,11 @@ pub(crate) fn lower_event_into(
         .iter()
         .any(|statement| statement_mentions_provider(&statement.node, catalog, &locals, 0))
     {
+        // Left to the recognizers — but only if one claims the whole script
+        // (#6021); recorded so the translation seam can tell.
+        if !event.body.is_empty() {
+            program.unlowered_handlers.push(event.name.node.0.clone());
+        }
         return Ok(());
     }
     let statements = lower_statements(&event.body, catalog, &mut locals, mod_event_sender, 0)?;

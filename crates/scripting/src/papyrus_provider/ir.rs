@@ -268,6 +268,10 @@ pub enum PapyrusProviderComparison {
 pub struct PapyrusProviderProgram {
     pub(crate) handlers: BTreeMap<PapyrusProviderEvent, Vec<PapyrusProviderHandler>>,
     pub(crate) custom_handlers: BTreeMap<String, Vec<PapyrusProviderHandler>>,
+    /// Non-empty event handlers of the source script that mention no provider
+    /// and so were *not* lowered (#6021). Something else — a whole-script
+    /// recognizer — must run them, or the script is only half executed.
+    pub(crate) unlowered_handlers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -343,6 +347,12 @@ impl PapyrusProviderProgram {
     /// Whether no supported handler was present in the source unit.
     pub fn is_empty(&self) -> bool {
         self.handlers.is_empty() && self.custom_handlers.is_empty()
+    }
+
+    /// Names of the script's non-empty handlers this program does not run
+    /// (#6021). Empty for a script whose every handler was lowered.
+    pub fn unlowered_handlers(&self) -> &[String] {
+        &self.unlowered_handlers
     }
 
     pub(crate) fn handlers_for(

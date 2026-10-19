@@ -168,6 +168,24 @@ pub fn translate_pex_detailed_with_providers(
                     let source = ScriptSource::PapyrusSource(&script);
                     translate_script(&source, game, script_instance, owning_quest)
                 });
+        // #6021 — a provider program runs only the script's provider handlers.
+        // If the script also has handlers it left unlowered, only a recognizer
+        // that claims the whole script can run them; with none, attaching the
+        // program would execute the script half-way (and the Papyrus VM
+        // attach is suppressed once a provider program is attached). Decline
+        // the whole script instead, per the decline-on-unmodeled contract.
+        if recognized.is_none() {
+            if let Some(unlowered) = provider_program
+                .as_ref()
+                .map(|program| program.unlowered_handlers())
+                .filter(|unlowered| !unlowered.is_empty())
+            {
+                provider_error = Some(crate::PapyrusProviderProgramError::MixedScript(
+                    unlowered.to_vec(),
+                ));
+                provider_program = None;
+            }
+        }
         PexTranslation {
             recognized,
             provider_program,
