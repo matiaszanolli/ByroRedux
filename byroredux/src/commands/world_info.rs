@@ -1312,6 +1312,7 @@ impl ConsoleCommand for WorldOwnersCommand {
                         ReclaimPolicy::Exact => "exact",
                         ReclaimPolicy::Bounded => "bounded",
                         ReclaimPolicy::Monotonic => "monotonic",
+                        ReclaimPolicy::Occupancy => "occupancy",
                     };
                     lines.push(format!(
                         "{:<26} {:>10}  {}",

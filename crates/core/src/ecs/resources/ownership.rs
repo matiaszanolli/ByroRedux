@@ -61,7 +61,23 @@ pub enum ReclaimPolicy {
     /// they answer is answered instead by `meshes_live_slots` /
     /// `texture_live_slots`, which are `Exact` and do fall on unload.
     Monotonic,
+    /// A per-frame occupancy *sample* (ground-cover chunks / blades accepted),
+    /// not a count of owned resources: it rides the camera pose and the frame's
+    /// visible set, so an out-and-back cycle that ends a few units off the
+    /// baseline pose reads a slightly different population every time.
+    /// Like [`Bounded`](Self::Bounded) it only faces the monotonic-growth
+    /// check, but a rise must clear [`OCCUPANCY_GROWTH_TOLERANCE_PERMILLE`]
+    /// of the first sample to count: a population that actually grows without
+    /// bound moves by far more than sampling jitter, while a 0.04 % creep over
+    /// five cycles (FNV WastelandNV soak, #6058) is the pose, not a leak.
+    Occupancy,
 }
+
+/// How far (parts per thousand of the first sample) an [`ReclaimPolicy::Occupancy`]
+/// class must rise across the run before a strictly-increasing series is
+/// called growth. 1 %: the measured creep is 0.04 %, an unbounded visible-set
+/// or blade population moves by tens of percent.
+pub const OCCUPANCY_GROWTH_TOLERANCE_PERMILLE: u64 = 10;
 
 /// A live count of every owner class EX-08 names, sampled at one instant.
 ///
@@ -123,7 +139,7 @@ pub struct OwnershipSnapshot {
     /// cannot leak through this path at all. What they catch is the other
     /// shape this design can fail in — the visible chunk set, or the blade
     /// population inside it, growing without bound as the camera moves. That
-    /// is why both are `Bounded` rather than `Exact`: an out-and-back cycle
+    /// is why both are `Occupancy` (a `Bounded` that tolerates sampling jitter, #6058) rather than `Exact`: an out-and-back cycle
     /// legitimately ends on a different camera pose with a different visible
     /// set, so returning to the baseline is not the contract; not growing
     /// monotonically is.
@@ -185,7 +201,7 @@ impl OwnershipSnapshot {
     /// silently drop it from the gate; `ownership_classes_cover_every_field`
     /// pins the count.
     pub fn classes(&self) -> Vec<OwnerClass> {
-        use ReclaimPolicy::{Bounded, Exact, Monotonic};
+        use ReclaimPolicy::{Bounded, Exact, Monotonic, Occupancy};
         vec![
             OwnerClass {
                 name: "entities_spawned",
@@ -281,12 +297,12 @@ impl OwnershipSnapshot {
             OwnerClass {
                 name: "groundcover_chunks",
                 value: self.groundcover_chunks,
-                policy: Bounded,
+                policy: Occupancy,
             },
             OwnerClass {
                 name: "groundcover_blades",
                 value: self.groundcover_blades,
-                policy: Bounded,
+                policy: Occupancy,
             },
             OwnerClass {
                 name: "physics_bodies",
@@ -454,6 +470,18 @@ pub struct OwnershipTracker {
 /// unit tests and the live gate cannot disagree.
 pub const MIN_CYCLES_FOR_GROWTH: usize = 4;
 
+/// Whether an [`ReclaimPolicy::Occupancy`] series rose by more than
+/// [`OCCUPANCY_GROWTH_TOLERANCE_PERMILLE`] of its first sample.
+fn occupancy_rise_exceeds_jitter(values: &[u64]) -> bool {
+    let (Some(&first), Some(&last)) = (values.first(), values.last()) else {
+        return false;
+    };
+    // Integer permille: `(last - first) * 1000 > first * tolerance`, widened so
+    // a large blade count cannot overflow the product.
+    let rise = u128::from(last.saturating_sub(first));
+    rise * 1000 > u128::from(first) * u128::from(OCCUPANCY_GROWTH_TOLERANCE_PERMILLE)
+}
+
 impl OwnershipTracker {
     pub fn new() -> Self {
         Self::default()
@@ -532,7 +560,9 @@ impl OwnershipTracker {
                     continue;
                 }
                 let values: Vec<u64> = series.iter().map(|c| c[idx].value).collect();
-                if values.windows(2).all(|w| w[1] > w[0]) {
+                let rose_enough = series[0][idx].policy != ReclaimPolicy::Occupancy
+                    || occupancy_rise_exceeds_jitter(&values);
+                if rose_enough && values.windows(2).all(|w| w[1] > w[0]) {
                     findings.push(OwnershipFinding {
                         class: series[0][idx].name,
                         kind: FindingKind::MonotonicGrowth,
@@ -577,6 +607,7 @@ impl OwnershipTracker {
                 ReclaimPolicy::Exact => "exact",
                 ReclaimPolicy::Bounded => "bounded",
                 ReclaimPolicy::Monotonic => "monotonic",
+                ReclaimPolicy::Occupancy => "occupancy",
             };
             let flag = if l.policy == ReclaimPolicy::Exact && l.value > b.value {
                 " LEAK"

@@ -270,6 +270,66 @@ fn bounded_classes_are_still_subject_to_growth() {
 }
 
 #[test]
+fn occupancy_creep_inside_the_jitter_tolerance_is_not_growth() {
+    // #6058 — the FNV WastelandNV soak's `groundcover_blades` series
+    // [245811, 245851, 245862, 245873, 245904] rose every cycle by 0.04 % in
+    // total: the sample rides the camera pose, it is not an owned resource.
+    let base = OwnershipSnapshot::default();
+    let mut t = OwnershipTracker::new();
+    t.set_baseline(base);
+    for blades in [245_811u64, 245_851, 245_862, 245_873, 245_904] {
+        let mut s = base;
+        s.groundcover_blades = blades;
+        t.record_cycle(s);
+    }
+    assert!(
+        t.evaluate()
+            .iter()
+            .all(|f| f.kind != FindingKind::MonotonicGrowth),
+        "a 0.04 % creep in an occupancy sample is jitter"
+    );
+}
+
+#[test]
+fn occupancy_growth_past_the_tolerance_is_still_caught() {
+    // The check this class exists for: a visible set / blade population that
+    // really grows without bound moves by far more than the jitter band.
+    let base = OwnershipSnapshot::default();
+    let mut t = OwnershipTracker::new();
+    t.set_baseline(base);
+    for blades in [100_000u64, 110_000, 121_000, 133_100, 146_410] {
+        let mut s = base;
+        s.groundcover_blades = blades;
+        t.record_cycle(s);
+    }
+    let growth: Vec<_> = t
+        .evaluate()
+        .into_iter()
+        .filter(|f| f.kind == FindingKind::MonotonicGrowth)
+        .collect();
+    assert_eq!(growth.len(), 1);
+    assert_eq!(growth[0].class, "groundcover_blades");
+}
+
+#[test]
+fn the_tolerance_applies_only_to_occupancy_classes() {
+    // The same 0.04 % creep on a retained-cache class stays a finding: a
+    // cache that creeps every cycle is exactly what EX-08 asks the soak to fail on.
+    let base = OwnershipSnapshot::default();
+    let mut t = OwnershipTracker::new();
+    t.set_baseline(base);
+    for entries in [245_811u64, 245_851, 245_862, 245_873, 245_904] {
+        let mut s = base;
+        s.sound_cache_entries = entries;
+        t.record_cycle(s);
+    }
+    assert!(t
+        .evaluate()
+        .iter()
+        .any(|f| f.kind == FindingKind::MonotonicGrowth && f.class == "sound_cache_entries"));
+}
+
+#[test]
 fn bouncing_values_are_not_growth() {
     // Steady-state churn — a cache filling and evicting — must not read as a
     // leak, or the gate gets silenced within a week of landing.
