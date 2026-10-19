@@ -172,10 +172,30 @@ impl Component for RaceSpells {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// A dropped spell op is a *dropped effect* worth one line, not one per call:
+/// an authored per-frame `GameMode` block (`VNovacChupacabraNightkinSCRIPT`'s
+/// `addspell` on a persistent-cell actor with no `SpellList`) otherwise writes
+/// 50-300 WARN lines a second (#6059). True only the first time an
+/// `(op, actor, spell)` triple is seen; entity ids are never reused, so the key
+/// stays valid for the process. Capped so a pathological script cannot grow it
+/// without bound — past the cap further drops are silent.
+fn first_dropped_spell_op(op: &'static str, actor: EntityId, spell: u32) -> bool {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    const CAP: usize = 4096;
+    static SEEN: OnceLock<Mutex<HashSet<(&'static str, EntityId, u32)>>> = OnceLock::new();
+    let mut seen = SEEN
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    seen.len() < CAP && seen.insert((op, actor, spell))
+}
+
 /// Put `spell` on `actor` (Papyrus `Actor.AddSpell`) and, if it is a
 /// constant spell, apply its value changes. `false` — and no change — when
 /// the actor already carries it or has no `SpellList`. The second is a
-/// dropped effect, not Papyrus' own no-op, so it is logged (#4822).
+/// dropped effect, not Papyrus' own no-op, so it is logged once per
+/// `(actor, spell)` (#4822, #6059).
 pub fn add_spell(world: &World, actor: EntityId, spell: u32) -> bool {
     let mut has_list = false;
     let added = world.query_mut::<SpellList>().is_some_and(|mut lists| {
@@ -188,7 +208,7 @@ pub fn add_spell(world: &World, actor: EntityId, spell: u32) -> bool {
             fresh
         })
     });
-    if !has_list {
+    if !has_list && first_dropped_spell_op("AddSpell", actor, spell) {
         log::warn!("AddSpell({spell:08X}) on entity {actor} dropped — the actor has no SpellList");
     }
     if added {
@@ -224,7 +244,7 @@ pub fn remove_spell(world: &World, actor: EntityId, spell: u32) -> bool {
             list.0.len() != before
         })
     });
-    if !has_list {
+    if !has_list && first_dropped_spell_op("RemoveSpell", actor, spell) {
         log::warn!(
             "RemoveSpell({spell:08X}) on entity {actor} dropped — the actor has no SpellList"
         );
@@ -306,6 +326,30 @@ mod tests {
 
     const HEALTH: u32 = 0x100;
     const STAMINA: u32 = 0x101;
+
+    /// #6059 — a per-frame authored `addspell` on an actor with no `SpellList`
+    /// logs its dropped effect once per `(op, actor, spell)`, not per call.
+    #[test]
+    fn a_dropped_spell_op_is_reported_once_per_actor_and_spell() {
+        // Ids no other test uses; the seen-set is process-wide.
+        let (actor, other_actor, spell) = (0x6059_0001, 0x6059_0002, 0x6059_00A0);
+        assert!(first_dropped_spell_op("AddSpell", actor, spell));
+        for _ in 0..1000 {
+            assert!(!first_dropped_spell_op("AddSpell", actor, spell));
+        }
+        // A different actor, spell or op is a different dropped effect.
+        assert!(first_dropped_spell_op("AddSpell", other_actor, spell));
+        assert!(first_dropped_spell_op("AddSpell", actor, spell + 1));
+        assert!(first_dropped_spell_op("RemoveSpell", actor, spell));
+    }
+
+    #[test]
+    fn add_spell_without_a_spell_list_still_returns_false_every_time() {
+        let world = World::new();
+        for _ in 0..3 {
+            assert!(!add_spell(&world, 0x6059_0100, 0x6059_00B0));
+        }
+    }
 
     fn mgef(form_id: u32, flags: u32, archetype: MagicArchetype) -> MgefRecord {
         MgefRecord {
