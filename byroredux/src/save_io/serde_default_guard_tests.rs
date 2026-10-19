@@ -1112,7 +1112,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // #6050 — v112 added the ObScript ledger columns (`obscript_ledger::register_saved`) and the
     // New Vegas `ChallengeState` resource (`challenges::register_saved`), registered after the v111
     // refresh without touching this baseline.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x6195_e313_18a8_7d92;
+    // 2026-10-18 (#5973) — refreshed WITHOUT a major bump: `ValueExpr::Abs` was
+    // appended to the saved `ValueExpr` enum (the magnitude of Skyrim's
+    // sign-discarding `DamageActorValue` / `RestoreActorValue` amount). Saves
+    // serialize enums tagged by variant name, so every v112 document still
+    // decodes; no existing variant or field changed shape.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0124_3814_3d86_c3f4;
     // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
     // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
     // keys each shape by its file, so the move alone shifted it; a dump of

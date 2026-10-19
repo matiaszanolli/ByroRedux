@@ -3750,6 +3750,56 @@ fn assignment_to_a_script_variable_declines() {
     );
 }
 
+/// #5973 — Skyrim's `DamageActorValue` / `RestoreActorValue` discard the
+/// amount's sign (CK: "Negative numbers will be converted to positive"), so
+/// `DamageActorValue("Health", -10.0)` is 10 points of damage, not a heal; a
+/// run-time amount lowers through `ValueExpr::Abs`. The Fallout 4 spellings
+/// keep the amount as written (their CK pages are silent on sign).
+#[test]
+fn skyrim_damage_and_restore_discard_the_amount_sign() {
+    let damage_of = |statement: &str| {
+        let body = first_fn_body(&format!(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             {statement}\n\
+             EndFunction\n"
+        ));
+        match lower_fragment(&body).expect("lowers").remove(0) {
+            Effect::DamageActorValue { amount, restore, .. } => (amount, restore),
+            other => panic!("expected DamageActorValue, got {other:?}"),
+        }
+    };
+    // Skyrim, negative literal: folded to the magnitude, still damage.
+    assert_eq!(
+        damage_of("Game.GetPlayer().DamageActorValue(\"Health\", -10.0)"),
+        (ValueExpr::Literal(10.0), false)
+    );
+    assert_eq!(
+        damage_of("Game.GetPlayer().RestoreActorValue(\"Health\", -10.0)"),
+        (ValueExpr::Literal(10.0), true)
+    );
+    assert_eq!(
+        damage_of("Game.GetPlayer().DamageAV(\"Health\", 4.0)"),
+        (ValueExpr::Literal(4.0), false)
+    );
+    // Skyrim, run-time amount: its magnitude.
+    let (amount, restore) = damage_of("Game.GetPlayer().DamageActorValue(\"Health\", Self.GetStage())");
+    assert!(!restore);
+    assert!(
+        matches!(amount, ValueExpr::Abs(ref inner) if matches!(**inner, ValueExpr::Stage(_))),
+        "{amount:?}"
+    );
+    // Fallout 4 / Starfield spellings: the amount as written.
+    assert_eq!(
+        damage_of("Game.GetPlayer().DamageValue(HealthAV, -10.0)"),
+        (ValueExpr::Literal(-10.0), false)
+    );
+    assert_eq!(
+        damage_of("Game.GetPlayer().RestoreValue(HealthAV, 10.0)"),
+        (ValueExpr::Literal(10.0), true)
+    );
+}
+
 /// #5976: a compound assignment to a declared local is not a re-bind to the
 /// right-hand side (`n += 2` would have lowered as `n = 2`). Every operator
 /// but plain `=` declines; plain `=` still lowers.

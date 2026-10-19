@@ -210,20 +210,41 @@ pub(super) fn prim_set_actor_value(e: &Expr, scope: &Scope) -> Option<Effect> {
 
 /// `DamageValue` / `DamageActorValue` / `DamageAV` and `RestoreValue` /
 /// `RestoreActorValue` / `RestoreAV` with an actor value and an amount.
+///
+/// #5973 — Skyrim's spellings (`DamageActorValue`, `DamageAV`,
+/// `RestoreActorValue`, `RestoreAV`) discard the amount's sign (CK wiki:
+/// "Negative numbers will be converted to positive so -100 and 100 will have
+/// the same effect"), so a script's `DamageActorValue("Health", -N)` is damage,
+/// not a heal. Those lower the amount's magnitude. The Fallout 4 / Starfield
+/// `DamageValue` / `RestoreValue` pages are silent on sign, so they keep the
+/// amount as written until measured.
 pub(super) fn prim_damage_actor_value(e: &Expr, scope: &Scope) -> Option<Effect> {
-    let (object, args, restore) = method_call_any(e, &["DamageValue", "DamageActorValue", "DamageAV"])
-        .map(|(object, args)| (object, args, false))
-        .or_else(|| {
-            method_call_any(e, &["RestoreValue", "RestoreActorValue", "RestoreAV"])
-                .map(|(object, args)| (object, args, true))
-        })?;
+    let (object, args, restore, sign_discarded) =
+        method_call_any(e, &["DamageActorValue", "DamageAV"])
+            .map(|(object, args)| (object, args, false, true))
+            .or_else(|| {
+                method_call_any(e, &["RestoreActorValue", "RestoreAV"])
+                    .map(|(object, args)| (object, args, true, true))
+            })
+            .or_else(|| {
+                method_call_any(e, &["DamageValue"]).map(|(object, args)| (object, args, false, false))
+            })
+            .or_else(|| {
+                method_call_any(e, &["RestoreValue"]).map(|(object, args)| (object, args, true, false))
+            })?;
     if args.len() != 2 {
         return None;
     }
+    let amount = classify_value(&args[1].value.node, scope)?;
+    let amount = match amount {
+        ValueExpr::Literal(value) if sign_discarded => ValueExpr::Literal(value.abs()),
+        other if sign_discarded => ValueExpr::Abs(Box::new(other)),
+        other => other,
+    };
     Some(Effect::DamageActorValue {
         actor: receiver_actor(object, scope)?,
         actor_value: actor_value_arg(&args[0].value.node, scope)?,
-        amount: classify_value(&args[1].value.node, scope)?,
+        amount,
         restore,
     })
 }

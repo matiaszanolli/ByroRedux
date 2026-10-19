@@ -219,6 +219,9 @@ pub(in crate::fragment) fn evaluate_value(
             evaluate_value(left, context, vmad, world, stages, deferred)?,
             evaluate_value(right, context, vmad, world, stages, deferred)?,
         )?,
+        ValueExpr::Abs(inner) => {
+            evaluate_value(inner, context, vmad, world, stages, deferred)?.abs()
+        }
     })
 }
 

@@ -263,6 +263,12 @@ pub enum ValueExpr {
     /// M47.2 — `<location>.GetKeywordData(keyword)`
     /// ([`crate::LocationKeywordData`]).
     LocationKeywordData(ObjectRef, ObjectRef),
+    /// #5973 — the magnitude of a value. Skyrim's `DamageActorValue` /
+    /// `RestoreActorValue` discard the sign of the amount (CK: "Negative
+    /// numbers will be converted to positive"), so a negative or run-time
+    /// amount lowers through this. Appended last: the saved `Effect` enum is
+    /// tagged by variant name, so older documents still decode.
+    Abs(Box<ValueExpr>),
 }
 
 /// The arithmetic a [`ValueExpr::Arith`] applies.

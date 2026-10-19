@@ -477,6 +477,10 @@ write skips. `DamageValue` / `RestoreValue` (Skyrim `DamageActorValue` / `Damage
 `RestoreAV`) lower to `Effect::DamageActorValue`: the amount (a literal or a run-time number) grows
 the actor value's damage layer, or takes up to that much of it back (CK *DamageValue* /
 *RestoreValue - ObjectReference*: "Applies damage to"; "Restores (or heals) damage done to").
+Skyrim's spellings discard the amount's sign (CK *DamageActorValue* / *RestoreActorValue - Actor*:
+"Negative numbers will be converted to positive"), so those lower the magnitude, `ValueExpr::Abs`
+(#5973); the Fallout 4 / Starfield pages are silent on sign, so `DamageValue` / `RestoreValue`
+keep the amount as written — unverified.
 `ModValue` is not modelled: the CK says only "Modifies the specified Actor Value", without
 which modifier layer. The reads beyond the current value are `ValueExpr::ActorValueReading`:
 `GetBaseValue(av)` / `GetBaseActorValue("Name")` is the base with the

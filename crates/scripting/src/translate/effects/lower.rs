@@ -244,6 +244,7 @@ fn prune_unread_locals(effects: Vec<Effect>) -> Vec<Effect> {
                 read_value(left, out);
                 read_value(right, out);
             }
+            ValueExpr::Abs(inner) => read_value(inner, out),
             _ => {}
         }
     }

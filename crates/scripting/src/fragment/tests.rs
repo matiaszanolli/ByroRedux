@@ -4703,6 +4703,44 @@ fn dispatch_skips_an_unset_object_property() {
     );
 }
 
+/// #5973 — `ValueExpr::Abs` is the magnitude: a damage amount lowered from
+/// Skyrim's sign-discarding `DamageActorValue` damages by `|n|` even when the
+/// run-time value is negative, and a restore takes back `|n|`.
+#[test]
+fn abs_amount_damages_and_restores_by_magnitude() {
+    use crate::translate::compose::ObjectRef;
+    use crate::translate::effects::{ActorRef, ActorValueArg, ValueExpr};
+    use byroredux_core::ecs::components::ActorValues;
+
+    const AV: u32 = 0x0000_05F0;
+    let mut world = fixture();
+    world.register::<ActorValues>();
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let mut values = ActorValues::new();
+    values.set_base(AV, 10.0);
+    world.insert(player, values);
+    let damage = |amount: f32, restore: bool| Effect::DamageActorValue {
+        actor: ActorRef::Player,
+        actor_value: ActorValueArg::Form(ObjectRef::Property("Stat".into())),
+        amount: ValueExpr::Abs(Box::new(ValueExpr::Literal(amount))),
+        restore,
+    };
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Stat", AV)]),
+        vec![damage(-4.0, false)],
+    );
+    let current = |world: &World| world.get::<ActorValues>(player).unwrap().current(AV);
+    assert_eq!(current(&world), 6.0, "a negative amount still damages, by its magnitude");
+    world.resource_mut::<QuestStageState>().set_stage(Q, 0);
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Stat", AV)]),
+        vec![damage(-3.0, true)],
+    );
+    assert_eq!(current(&world), 9.0, "a negative restore still restores, by its magnitude");
+}
+
 /// M47.2 — `RemoveItem` takes across stacks first-authored first, zeroes
 /// drained rows in place (equipment indices stay valid), releases a drained
 /// row's equipment and instance, moves items to an other container when one
