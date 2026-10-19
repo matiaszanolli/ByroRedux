@@ -16,6 +16,20 @@ fn provider_initialized_key() -> ConditionStringId {
     ConditionStringId::from_text("::init::papyrus_provider")
 }
 
+/// The stable (plugin-local) FormID of the reference `entity` stands for, if it
+/// has one. Looked up per entity on demand (#6020): the callers need it for a
+/// handful of entities per frame at most, never for every placed reference.
+/// Takes and releases its component / pool guards before returning, so it is
+/// safe to call before a resource guard is taken but not while one is held.
+fn owner_form_id(world: &World, entity: EntityId) -> Option<u32> {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::FormIdPool;
+
+    let form = world.get::<FormIdComponent>(entity)?.0;
+    let pool = world.try_resource::<FormIdPool>()?;
+    pool.resolve(form).map(|pair| pair.local.0)
+}
+
 /// Keep only the `OnInit` markers that are a reference's *first*: `OnInit`
 /// "will run once, when the script is initialized" (CK), but the program is
 /// re-attached every time the reference spawns — each stream-in, cell
@@ -24,22 +38,24 @@ fn provider_initialized_key() -> ConditionStringId {
 /// flag is keyed by the reference's FormID in the saved
 /// [`QuestScriptVariables`], so it outlives the entity. An entity with no
 /// FormID has nothing to key on and keeps its marker.
-fn first_initializations(
-    world: &World,
-    initialized: BTreeSet<EntityId>,
-    owner_form_ids: &BTreeMap<EntityId, u32>,
-) -> BTreeSet<EntityId> {
+fn first_initializations(world: &World, initialized: BTreeSet<EntityId>) -> BTreeSet<EntityId> {
     if initialized.is_empty() {
         return initialized;
     }
+    // Resolve the owners before the variables guard is taken, so no
+    // component / pool lock is acquired underneath it.
+    let owners: Vec<(EntityId, Option<u32>)> = initialized
+        .into_iter()
+        .map(|entity| (entity, owner_form_id(world, entity)))
+        .collect();
     let Some(mut variables) = world.try_resource_mut::<QuestScriptVariables>() else {
-        return initialized;
+        return owners.into_iter().map(|(entity, _)| entity).collect();
     };
     let key = provider_initialized_key();
-    initialized
+    owners
         .into_iter()
-        .filter(|entity| {
-            let Some(owner) = owner_form_ids.get(entity) else {
+        .filter(|(_, owner)| {
+            let Some(owner) = owner else {
                 return true;
             };
             let owner = QuestFormId(*owner);
@@ -49,6 +65,7 @@ fn first_initializations(
             variables.set(owner, key, 1.0);
             true
         })
+        .map(|(entity, _)| entity)
         .collect()
 }
 
@@ -76,6 +93,14 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         let mut queue = world.resource_mut::<PapyrusProviderContinuationQueue>();
         std::mem::take(&mut queue.pending)
     };
+    // #6018 — rows whose registrant is gone (cell unloaded, save reloaded)
+    // can never match again; drop them before they are walked below.
+    if world
+        .try_resource::<PapyrusModEventRuntime>()
+        .is_some_and(|runtime| !runtime.pending.is_empty())
+    {
+        prune_stale_mod_event_registrations(world);
+    }
     // #5640 — the registration map is only read to deliver pending events,
     // so it is neither cloned wholesale nor walked per program entity: the
     // relevant registrations (those naming a pending event) are grouped by
@@ -84,10 +109,14 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
     // registrations a mod has filled the map with.
     let (registrations_by_entity, pending_mod_events) = {
         let mut runtime = world.resource_mut::<PapyrusModEventRuntime>();
-        let pending = std::mem::take(&mut runtime.pending);
+        let mut pending = std::mem::take(&mut runtime.pending);
         let mut by_entity: BTreeMap<EntityId, Vec<(PrincipalId, byroredux_sdk::identity::EventId, String)>> =
             BTreeMap::new();
         if !pending.is_empty() {
+            // #6019 — deliver only as many events as the per-frame budget
+            // covers; the rest wait, in order, ahead of anything queued later.
+            let take = mod_event_batch_len(&pending, &runtime.registrations);
+            runtime.pending = pending.split_off(take);
             let pending_events: BTreeSet<&byroredux_sdk::identity::EventId> =
                 pending.iter().map(|event| &event.event).collect();
             // BTreeMap order (entity, principal, event) is kept within each
@@ -114,7 +143,10 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
     let mut still_pending = Vec::new();
     let mut handlers = Vec::new();
     for mut continuation in pending {
-        if !continuation.remaining_seconds.is_finite() || continuation.remaining_seconds < 0.0 {
+        if !continuation.remaining_seconds.is_finite()
+            || continuation.remaining_seconds < 0.0
+            || continuation.remaining_seconds > MAX_PROVIDER_WAIT_SECONDS
+        {
             log::warn!("Papyrus provider continuation dropped: invalid remaining wait");
             continue;
         }
@@ -205,24 +237,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
-    let owner_form_ids = {
-        use byroredux_core::ecs::components::FormIdComponent;
-        use byroredux_core::form_id::FormIdPool;
-
-        match (
-            world.query::<FormIdComponent>(),
-            world.try_resource::<FormIdPool>(),
-        ) {
-            (Some(forms), Some(pool)) => forms
-                .iter()
-                .filter_map(|(entity, form)| {
-                    pool.resolve(form.0).map(|pair| (entity, pair.local.0))
-                })
-                .collect::<BTreeMap<_, _>>(),
-            _ => BTreeMap::new(),
-        }
-    };
-    let initialized = first_initializations(world, initialized, &owner_form_ids);
+    let initialized = first_initializations(world, initialized);
     let Some(programs) = world.query::<PapyrusProviderProgram>() else {
         return;
     };
@@ -341,8 +356,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
             }
         }
         if statements_need_owner_sender(&statements) {
-            let Some(owner_form_id) = owner.and_then(|owner| owner_form_ids.get(&owner).copied())
-            else {
+            let Some(owner_form_id) = owner.and_then(|owner| owner_form_id(world, owner)) else {
                 log::warn!("Papyrus SendModEvent aborted: script owner has no stable FormID");
                 continue;
             };
@@ -425,7 +439,15 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
             Ok(None) => {
                 apply_mod_event_registrations(world, owner, principal.as_ref(), registrations)
             }
-            Err(error) => log::warn!("Papyrus provider handler aborted: {error}"),
+            Err(error) => {
+                log::warn!("Papyrus provider handler aborted: {error}");
+                // #6023 — the statements before the failing one already ran
+                // (their provider calls had effect), and so did any
+                // `RegisterForModEvent` among them; Papyrus keeps what ran
+                // before a failed statement, so the collected registrations
+                // are applied rather than discarded with the error.
+                apply_mod_event_registrations(world, owner, principal.as_ref(), registrations);
+            }
         }
     }
     if still_pending.len() > MAX_PROVIDER_CONTINUATIONS {
@@ -452,6 +474,20 @@ pub(crate) fn apply_mod_event_registrations(
         log::warn!("Papyrus ModEvent registration ignored without an owned script instance");
         return;
     };
+    // #6018 — a full table is mostly dead rows after enough streaming; free
+    // them before the cap starts refusing live registrations. Done before the
+    // resource guard below: the prune takes its own.
+    if actions
+        .iter()
+        .any(|action| matches!(action, PapyrusModEventRegistrationAction::Register { .. }))
+        && world
+            .try_resource::<PapyrusModEventRuntime>()
+            .is_some_and(|runtime| {
+                runtime.registrations.len() >= MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS
+            })
+    {
+        prune_stale_mod_event_registrations(world);
+    }
     let mut runtime = world.resource_mut::<PapyrusModEventRuntime>();
     for action in actions {
         match action {
@@ -494,6 +530,72 @@ pub(crate) fn apply_mod_event_registrations(
             }
         }
     }
+}
+
+/// How many of the leading `pending` events fit the per-frame delivery budget
+/// (#6019). An event costs one delivery per registration naming it; events no
+/// one registered for are free. At least one event is always taken, so a
+/// single event with more registrations than the budget still goes out whole
+/// rather than wedging the queue.
+pub(crate) fn mod_event_batch_len(
+    pending: &[CustomEvent],
+    registrations: &BTreeMap<(EntityId, PrincipalId, byroredux_sdk::identity::EventId), String>,
+) -> usize {
+    let mut cost: BTreeMap<&byroredux_sdk::identity::EventId, usize> =
+        pending.iter().map(|event| (&event.event, 0)).collect();
+    for (_, _, event) in registrations.keys() {
+        if let Some(count) = cost.get_mut(event) {
+            *count += 1;
+        }
+    }
+    let mut spent = 0usize;
+    let mut take = 0usize;
+    for event in pending {
+        let event_cost = cost.get(&event.event).copied().unwrap_or(0);
+        if take > 0 && spent + event_cost > MAX_PAPYRUS_MOD_EVENT_DELIVERIES_PER_FRAME {
+            break;
+        }
+        spent += event_cost;
+        take += 1;
+    }
+    take
+}
+
+/// Drop ModEvent registrations whose registrant entity no longer carries a
+/// Papyrus provider program (#6018). Entity ids are never reclaimed, so such
+/// a row (a despawned / cell-unloaded reference, or a registrant from before a
+/// save load) can never match again — yet it counts against
+/// [`MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS`] and is walked on every delivery.
+/// Returns how many rows were dropped.
+pub(crate) fn prune_stale_mod_event_registrations(world: &World) -> usize {
+    // Snapshot the registrants, test liveness with no registration guard held
+    // (the program query is a different lock), then retain under a fresh one.
+    let registrants: BTreeSet<EntityId> = match world.try_resource::<PapyrusModEventRuntime>() {
+        Some(runtime) => runtime
+            .registrations
+            .keys()
+            .map(|(entity, _, _)| *entity)
+            .collect(),
+        None => return 0,
+    };
+    if registrants.is_empty() {
+        return 0;
+    }
+    let live: BTreeSet<EntityId> = match world.query::<PapyrusProviderProgram>() {
+        Some(programs) => registrants
+            .into_iter()
+            .filter(|entity| programs.get(*entity).is_some())
+            .collect(),
+        None => BTreeSet::new(),
+    };
+    let Some(mut runtime) = world.try_resource_mut::<PapyrusModEventRuntime>() else {
+        return 0;
+    };
+    let before = runtime.registrations.len();
+    runtime
+        .registrations
+        .retain(|(entity, _, _), _| live.contains(entity));
+    before - runtime.registrations.len()
 }
 
 pub(crate) fn validate_provider_statements(
@@ -545,9 +647,13 @@ pub(crate) fn validate_provider_statements(
             }
             PapyrusProviderStatement::AssignCall { call, .. }
             | PapyrusProviderStatement::ArrayWritebackCall { call, .. }
-            | PapyrusProviderStatement::Call(call) => validate_provider_call(call, catalog)?,
+            | PapyrusProviderStatement::Call(call) => validate_provider_call(call, catalog, depth)?,
             PapyrusProviderStatement::Wait { seconds } => {
-                if !seconds.is_finite() || *seconds < 0.0 {
+                // #6025 — the lowering bound (#5657) is re-checked here: a
+                // continuation saved before it, or hand-edited, could carry
+                // an effectively-infinite wait that holds a queue slot for
+                // the rest of the session.
+                if !seconds.is_finite() || *seconds < 0.0 || *seconds > MAX_PROVIDER_WAIT_SECONDS {
                     return Err("saved provider continuation contains an invalid wait".to_owned());
                 }
             }
@@ -582,10 +688,18 @@ pub(crate) fn validate_mod_event_send_argument(
     }
 }
 
+/// `depth` counts value / receiver nesting from the handler body, so a
+/// `a.f().f().f()…` receiver chain is bounded by
+/// [`MAX_PROVIDER_HANDLER_NESTING`] here rather than only by the front-ends'
+/// expression-depth caps (#6025).
 pub(crate) fn validate_provider_call(
     call: &PapyrusProviderInvocation,
     catalog: &PapyrusProviderCatalog,
+    depth: usize,
 ) -> Result<(), String> {
+    if depth > MAX_PROVIDER_HANDLER_NESTING {
+        return Err("saved provider call nesting exceeds the runtime bound".to_owned());
+    }
     let alias = call
         .route
         .declaration
@@ -627,7 +741,7 @@ pub(crate) fn validate_provider_call(
             PapyrusProviderArgument::Value { value, value_type }
                 if *value_type == parameter.value_type =>
             {
-                validate_provider_value(value, catalog)?;
+                validate_provider_value_at_depth(value, catalog, depth + 1)?;
             }
             _ => return Err("saved provider receiver is invalid".to_owned()),
         }
@@ -663,7 +777,7 @@ pub(crate) fn validate_provider_call(
                     if *value_type != parameter.value_type {
                         return Err("saved provider computed argument changed type".to_owned());
                     }
-                    validate_provider_value(value, catalog)
+                    validate_provider_value_at_depth(value, catalog, depth + 1)
                         .map_err(|_| "saved provider computed argument is invalid".to_owned())
                 }
             }
@@ -786,7 +900,7 @@ pub(crate) fn validate_provider_condition(
     }
     match condition {
         PapyrusProviderCondition::Literal(_) | PapyrusProviderCondition::Local(_) => Ok(()),
-        PapyrusProviderCondition::Call(call) => validate_provider_call(call, catalog),
+        PapyrusProviderCondition::Call(call) => validate_provider_call(call, catalog, depth),
         PapyrusProviderCondition::Not(condition) => {
             validate_provider_condition(condition, catalog, depth + 1)
         }
@@ -795,8 +909,8 @@ pub(crate) fn validate_provider_condition(
             validate_provider_condition(right, catalog, depth + 1)
         }
         PapyrusProviderCondition::Compare { left, right, .. } => {
-            validate_provider_value(left, catalog)?;
-            validate_provider_value(right, catalog)
+            validate_provider_value_at_depth(left, catalog, depth + 1)?;
+            validate_provider_value_at_depth(right, catalog, depth + 1)
         }
     }
 }
@@ -817,7 +931,7 @@ pub(crate) fn validate_provider_value_at_depth(
         return Err("saved provider value nesting exceeds the runtime bound".to_owned());
     }
     match value {
-        PapyrusProviderValue::Call(call) => validate_provider_call(call, catalog),
+        PapyrusProviderValue::Call(call) => validate_provider_call(call, catalog, depth),
         PapyrusProviderValue::Binary { left, right, .. } => {
             validate_provider_value_at_depth(left, catalog, depth + 1)?;
             validate_provider_value_at_depth(right, catalog, depth + 1)
@@ -1080,7 +1194,8 @@ pub(crate) fn evaluate_provider_value(
             .cloned()
             .ok_or_else(|| format!("translated local {name} was not initialized")),
         PapyrusProviderValue::Call(call) => {
-            let arguments = materialize_provider_arguments(call, callback, principal, locals, 0)?;
+            let arguments =
+                materialize_provider_arguments(call, callback, principal, locals, depth)?;
             callback(principal, call.route.qualified_name(), &arguments)
         }
         PapyrusProviderValue::Binary {

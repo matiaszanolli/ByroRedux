@@ -1577,3 +1577,226 @@ fn if_takes_the_selected_branch_and_falls_through_when_it_is_empty() {
     assert_eq!(outcome, Ok(None));
     assert_eq!(registrations, vec![registered("else"), registered("after")]);
 }
+
+fn mod_event(name: &str) -> CustomEvent {
+    let mut builders = byroredux_sdk::event::LegacySkseModEventBuilders::new();
+    let handle = builders.create(name);
+    builders.push(handle, LegacySkseModEventValue::String("s".to_owned()));
+    builders.push(handle, LegacySkseModEventValue::Int(1));
+    let command = builders.send(handle).unwrap();
+    CustomEvent {
+        event: command.event,
+        sender: PrincipalId::new("legacy.scripts.sender").unwrap(),
+        payload: command.payload,
+    }
+}
+
+fn registration_key(
+    entity: EntityId,
+    principal: &PrincipalId,
+    event: &CustomEvent,
+) -> (EntityId, PrincipalId, byroredux_sdk::identity::EventId) {
+    (entity, principal.clone(), event.event.clone())
+}
+
+fn registering_program(event: &str) -> PapyrusProviderProgram {
+    let source = format!(
+        r#"
+        ScriptName Fixture
+        Event OnInit()
+            RegisterForModEvent("{event}", "OnReady")
+        EndEvent
+        Event OnReady(String status, Int count)
+            WeatherNative.WeatherAt(count, status)
+        EndEvent
+    "#
+    );
+    let (script, errors) = parse_script(&source).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    lower_provider_program(&script, &catalog())
+        .unwrap()
+        .unwrap()
+}
+
+/// #6023: a handler's `RegisterForModEvent` runs before a later statement
+/// fails; the earlier provider calls already had effect, so the registration
+/// is kept rather than discarded with the error.
+#[test]
+fn a_failing_provider_call_keeps_the_registrations_collected_before_it() {
+    let source = r#"
+        ScriptName Fixture
+        Event OnInit()
+            RegisterForModEvent("ByroReady", "OnByroReady")
+            WeatherNative.WeatherAt(1, "x")
+        EndEvent
+        Event OnByroReady(String status, Int count)
+            WeatherNative.WeatherAt(count, status)
+        EndEvent
+    "#;
+    let (script, errors) = parse_script(source).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let program = lower_provider_program(&script, &catalog())
+        .unwrap()
+        .unwrap();
+    let mut world = World::new();
+    crate::register(&mut world);
+    let callback = Arc::new(
+        |_principal: Option<&PrincipalId>, _route: &str, _arguments: &[ScriptValue]| {
+            Err("transient host failure".to_owned())
+        },
+    ) as Arc<PapyrusProviderCallback>;
+    set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+    let entity = world.spawn();
+    attach_owned_papyrus_provider_program(
+        &mut world,
+        entity,
+        program,
+        PrincipalId::new("legacy.scripts.receiver").unwrap(),
+    );
+    papyrus_provider_system(&world, 0.0);
+
+    let runtime = world.resource::<PapyrusModEventRuntime>();
+    assert_eq!(
+        runtime.registrations.len(),
+        1,
+        "the registration made before the failing call must survive"
+    );
+}
+
+/// #6018: a despawned registrant can never match again, yet its row used to
+/// stay forever. Pending delivery drops it, and a full table frees dead rows
+/// for a live registration instead of refusing it for the rest of the session.
+#[test]
+fn registrations_of_despawned_registrants_are_pruned() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    set_papyrus_provider_runtime(
+        &world,
+        Arc::new(catalog()),
+        Some(Arc::new(|_: Option<&PrincipalId>, _: &str, _: &[ScriptValue]| Ok(ScriptValue::None))
+            as Arc<PapyrusProviderCallback>),
+    );
+    let principal = PrincipalId::new("legacy.scripts.receiver").unwrap();
+    let ready = mod_event("ByroReady");
+
+    // Delivery path: register, despawn the registrant, then deliver.
+    let doomed = world.spawn();
+    attach_owned_papyrus_provider_program(
+        &mut world,
+        doomed,
+        registering_program("ByroReady"),
+        principal.clone(),
+    );
+    papyrus_provider_system(&world, 0.0);
+    crate::event_cleanup_system(&world, 0.0);
+    assert_eq!(world.resource::<PapyrusModEventRuntime>().registrations.len(), 1);
+    world.despawn(doomed);
+    queue_papyrus_mod_event(&world, ready.clone());
+    papyrus_provider_system(&world, 0.0);
+    assert!(
+        world.resource::<PapyrusModEventRuntime>().registrations.is_empty(),
+        "the despawned registrant's row is dropped when an event is delivered"
+    );
+
+    // Cap path: a table full of dead rows must not refuse a live registration.
+    let dead: Vec<EntityId> = (0..MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS)
+        .map(|_| world.spawn())
+        .collect();
+    {
+        let mut runtime = world.resource_mut::<PapyrusModEventRuntime>();
+        for dead in dead {
+            runtime
+                .registrations
+                .insert(registration_key(dead, &principal, &ready), "OnReady".to_owned());
+        }
+        assert_eq!(runtime.registrations.len(), MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS);
+    }
+    let live = world.spawn();
+    attach_owned_papyrus_provider_program(
+        &mut world,
+        live,
+        registering_program("ByroReady"),
+        principal.clone(),
+    );
+    papyrus_provider_system(&world, 0.0);
+    let runtime = world.resource::<PapyrusModEventRuntime>();
+    assert_eq!(runtime.registrations.len(), 1, "dead rows freed, live one kept");
+    assert!(runtime
+        .registrations
+        .contains_key(&registration_key(live, &principal, &ready)));
+}
+
+/// #6019: pending events are delivered up to a per-frame registration budget;
+/// the rest stay queued in order rather than all being materialised at once.
+#[test]
+fn mod_event_delivery_is_budgeted_per_frame_and_carries_the_rest() {
+    let principal = PrincipalId::new("legacy.scripts.receiver").unwrap();
+    let big = mod_event("Big");
+    let small = mod_event("Small");
+    let ignored = mod_event("Nobody");
+    let mut registrations = BTreeMap::new();
+    for entity in 0..(MAX_PAPYRUS_MOD_EVENT_DELIVERIES_PER_FRAME as u32 + 10) {
+        registrations.insert(registration_key(entity, &principal, &big), "OnBig".to_owned());
+    }
+    registrations.insert(registration_key(0, &principal, &small), "OnSmall".to_owned());
+
+    // One event is always taken whole, even over budget; the next waits.
+    let pending = [big.clone(), small.clone()];
+    assert_eq!(mod_event_batch_len(&pending, &registrations), 1);
+    // Events nobody registered for are free and ride along; an over-budget
+    // event behind them waits for a frame of its own.
+    let pending = [ignored.clone(), big.clone(), ignored.clone(), small.clone()];
+    assert_eq!(mod_event_batch_len(&pending, &registrations), 1);
+    let pending = [small.clone(), ignored.clone(), small.clone(), big.clone()];
+    assert_eq!(mod_event_batch_len(&pending, &registrations), 3);
+    // Cheap events share a frame.
+    let pending = [small.clone(), small.clone(), ignored.clone()];
+    assert_eq!(mod_event_batch_len(&pending, &registrations), 3);
+
+    // Through the system: the deferred event is still queued after one frame
+    // and is taken on the next. Real registrants (the prune keeps live rows).
+    let mut world = World::new();
+    crate::register(&mut world);
+    set_papyrus_provider_runtime(
+        &world,
+        Arc::new(catalog()),
+        Some(Arc::new(|_: Option<&PrincipalId>, _: &str, _: &[ScriptValue]| Ok(ScriptValue::None))
+            as Arc<PapyrusProviderCallback>),
+    );
+    let big_program = registering_program("Big");
+    for _ in 0..(MAX_PAPYRUS_MOD_EVENT_DELIVERIES_PER_FRAME + 10) {
+        let entity = world.spawn();
+        attach_owned_papyrus_provider_program(&mut world, entity, big_program.clone(), principal.clone());
+    }
+    let small_entity = world.spawn();
+    attach_owned_papyrus_provider_program(
+        &mut world,
+        small_entity,
+        registering_program("Small"),
+        principal.clone(),
+    );
+    papyrus_provider_system(&world, 0.0); // OnInit registers everyone
+    crate::event_cleanup_system(&world, 0.0);
+    queue_papyrus_mod_event(&world, big);
+    queue_papyrus_mod_event(&world, small.clone());
+    papyrus_provider_system(&world, 0.0);
+    assert_eq!(
+        world.resource::<PapyrusModEventRuntime>().pending,
+        vec![small],
+        "the event past the budget stays queued"
+    );
+    papyrus_provider_system(&world, 0.0);
+    assert!(world.resource::<PapyrusModEventRuntime>().pending.is_empty());
+}
+
+/// #6025: a saved `Wait` above the lowering bound is refused on validation,
+/// not just a non-finite or negative one.
+#[test]
+fn saved_wait_above_the_lowering_bound_is_rejected() {
+    let wait = |seconds: f32| vec![PapyrusProviderStatement::Wait { seconds }];
+    let catalog = catalog();
+    assert!(validate_provider_statements(&wait(MAX_PROVIDER_WAIT_SECONDS), &catalog, 0).is_ok());
+    assert!(validate_provider_statements(&wait(3.0e38), &catalog, 0).is_err());
+    assert!(validate_provider_statements(&wait(-1.0), &catalog, 0).is_err());
+    assert!(validate_provider_statements(&wait(f32::NAN), &catalog, 0).is_err());
+}

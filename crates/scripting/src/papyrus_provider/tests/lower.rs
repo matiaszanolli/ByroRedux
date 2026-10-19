@@ -938,3 +938,59 @@ fn unbounded_utility_waits_decline_at_lowering() {
         );
     }
 }
+
+/// #6025 — a `Game.GetPlayer().Next().Next()…` receiver chain used to restart
+/// the nesting counter at each call boundary, so the advertised
+/// `MAX_PROVIDER_HANDLER_NESTING` did not bound it. Lowering now counts each
+/// receiver link, and the dispatch-time validator agrees on what is in bounds.
+#[test]
+fn receiver_chain_depth_is_bounded_by_the_handler_nesting_cap() {
+    let next = ScriptFunctionDeclaration {
+        id: ScriptFunctionId::new("next-object").unwrap(),
+        component: ComponentId::new("runtime").unwrap(),
+        parameters: vec![ScriptParameterDeclaration {
+            id: ScriptParameterId::new("receiver").unwrap(),
+            value_type: ScriptValueType::Entity,
+            optional: false,
+        }],
+        result: Some(ScriptResultDeclaration {
+            value_type: ScriptValueType::Entity,
+            optional: true,
+        }),
+        papyrus: Some(PapyrusFunctionAlias {
+            provider: "ObjectReference".to_owned(),
+            function: "Next".to_owned(),
+        }),
+        description: "A chainable object receiver".to_owned(),
+    };
+    let mut catalog = object_catalog();
+    catalog
+        .insert(&ExtensionId::new("org.example.object").unwrap(), &next)
+        .unwrap();
+    let lower = |links: usize| {
+        let source = format!(
+            "ScriptName Fixture\nEvent OnLoad()\n  Game.GetPlayer(){}.Touch(7)\nEndEvent\n",
+            ".Next()".repeat(links)
+        );
+        let (script, errors) = parse_script(&source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        lower_provider_program(&script, &catalog)
+    };
+
+    let within = lower(MAX_PROVIDER_HANDLER_NESTING - 4)
+        .unwrap_or_else(|error| panic!("a chain inside the bound must lower: {error:?}"))
+        .expect("a provider-bearing handler");
+    assert!(
+        super::super::execute::validate_provider_statements(
+            within.handler(PapyrusProviderEvent::OnLoad),
+            &catalog,
+            0
+        )
+        .is_ok(),
+        "a chain that lowers within the bound must also pass the dispatch-time validator"
+    );
+    assert!(
+        lower(MAX_PROVIDER_HANDLER_NESTING + 8).is_err(),
+        "a chain past the cap must be refused at lowering, not left to the expression-depth caps"
+    );
+}

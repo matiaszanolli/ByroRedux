@@ -64,6 +64,14 @@ const MAX_PROVIDER_HANDLER_NESTING: usize = 32;
 const MAX_PROVIDER_CONTINUATIONS: usize = 4_096;
 const MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS: usize = 4_096;
 const MAX_PENDING_PAPYRUS_MOD_EVENTS: usize = 256;
+/// #6019 — registration deliveries one frame may fan out. Every pending event
+/// is delivered to every matching registration, and a handler instance is
+/// materialised (statement clone + one host callback per call) for each, so
+/// the unbudgeted worst case was `MAX_PENDING_PAPYRUS_MOD_EVENTS` x
+/// `MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS` ~ 1M instances in one `Late` system.
+/// Events past the budget stay queued for the next frame, in order; one event
+/// is always taken whole (<= `MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS`).
+const MAX_PAPYRUS_MOD_EVENT_DELIVERIES_PER_FRAME: usize = 1_024;
 /// #5657 — the largest `Utility.Wait` a handler may lower. Continuations
 /// park in the bounded [`MAX_PROVIDER_CONTINUATIONS`] queue whose overflow
 /// drops the *newest* entry, so an effectively-infinite literal wait

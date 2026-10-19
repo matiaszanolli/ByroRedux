@@ -396,6 +396,7 @@ pub(crate) fn lower_provider_invocation(
     expression: &Expr,
     catalog: &PapyrusProviderCatalog,
     locals: &BTreeMap<String, PapyrusProviderLocalType>,
+    depth: usize,
 ) -> Result<Option<PapyrusProviderInvocation>, PapyrusProviderLowerError> {
     let Expr::Call { callee, args } = expression else {
         return Ok(None);
@@ -478,9 +479,22 @@ pub(crate) fn lower_provider_invocation(
                 return Ok(None);
             }
         } else {
-            let (value, value_type) = lower_provider_value(&object.node, catalog, locals, 1)
-                .map_err(|error| PapyrusProviderLowerError::UnsupportedArgument {
-                    parameter: format!("receiver expression: {error:?}"),
+            let (value, value_type) = lower_provider_value(&object.node, catalog, locals, depth + 1)
+                .map_err(|error| match error {
+                    // A receiver chain nests one lowering per link; an error
+                    // wrapped with its own `{:?}` at every link doubles the
+                    // message's escaped quotes each time (exponential in the
+                    // chain length), so the inner call error passes through
+                    // and anything else gets a fixed-size label.
+                    PapyrusProviderProgramError::Call(inner) => inner,
+                    PapyrusProviderProgramError::NestingTooDeep => {
+                        PapyrusProviderLowerError::UnsupportedArgument {
+                            parameter: "receiver expression nesting".to_owned(),
+                        }
+                    }
+                    _ => PapyrusProviderLowerError::UnsupportedArgument {
+                        parameter: "receiver expression".to_owned(),
+                    },
                 })?;
             if value_type != ScriptValueType::Entity {
                 return Err(PapyrusProviderLowerError::UnsupportedArgument {

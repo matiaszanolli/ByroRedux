@@ -400,7 +400,7 @@ pub(crate) fn lower_statements(
                     .get(&key)
                     .map(|local| local.value_type)
                     .ok_or_else(|| PapyrusProviderProgramError::UnknownLocal(target.0.clone()))?;
-                if let Some(call) = lower_provider_invocation(&value.node, catalog, locals)
+                if let Some(call) = lower_provider_invocation(&value.node, catalog, locals, 0)
                     .map_err(PapyrusProviderProgramError::Call)?
                 {
                     require_result(&call, expected, &target.0)?;
@@ -435,7 +435,7 @@ pub(crate) fn lower_statements(
                     lowered.push(send);
                     continue;
                 }
-                let call = lower_provider_invocation(&expression.node, catalog, locals)
+                let call = lower_provider_invocation(&expression.node, catalog, locals, 0)
                     .map_err(PapyrusProviderProgramError::Call)?
                     .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
                 if parse_storage_util_list_route(call.route.qualified_name())
@@ -798,7 +798,7 @@ pub(crate) fn lower_condition_at_depth(
             })
         }
         _ => {
-            let call = lower_provider_invocation(expression, catalog, locals)
+            let call = lower_provider_invocation(expression, catalog, locals, 0)
                 .map_err(PapyrusProviderProgramError::Call)?
                 .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
             require_result(&call, ScriptValueType::Boolean, "if condition")?;
@@ -893,7 +893,7 @@ pub(crate) fn lower_provider_value(
             value_type,
         ));
     }
-    let call = lower_provider_invocation(expression, catalog, locals)
+    let call = lower_provider_invocation(expression, catalog, locals, depth)
         .map_err(PapyrusProviderProgramError::Call)?
         .ok_or(PapyrusProviderProgramError::UnsupportedStatement)?;
     let result = call
