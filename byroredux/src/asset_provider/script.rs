@@ -182,6 +182,30 @@ impl byroredux_core::ecs::resource::Resource for VmAliasScriptChecks {}
 /// The most quests whose alias scripts one frame decompiles and checks.
 const ALIAS_CHECKS_PER_FRAME: usize = 4;
 
+/// #6001 — the most *distinct, uncached* alias scripts one frame decompiles and
+/// checks. [`ALIAS_CHECKS_PER_FRAME`] bounds quests, but a quest's VMAD alias
+/// section can list dozens of distinct scripts, each an archive extraction plus
+/// a decompile; the verdict cache only helps repeated names. A quest the budget
+/// stops is left unchecked (its finished scripts are cached) and resumes next
+/// frame, so it always makes progress.
+const ALIAS_SCRIPT_CHECKS_PER_FRAME: usize = 8;
+
+/// A per-frame allowance of expensive checks.
+struct ScriptCheckBudget(usize);
+
+impl ScriptCheckBudget {
+    /// Spend one check; `false` when the frame's allowance is gone.
+    fn try_spend(&mut self) -> bool {
+        match self.0.checked_sub(1) {
+            Some(left) => {
+                self.0 = left;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 /// Check the alias scripts of the quests that run and have not been checked
 /// ([`byroredux_scripting::QuestAliasScripts`]), a few per frame: the scripts
 /// of the whole load order would cost a second of load for the quests nothing
@@ -225,7 +249,11 @@ pub(crate) fn check_running_quest_alias_scripts(world: &byroredux_core::ecs::wor
     let library = ProviderScriptLibrary::new(&provider);
     use byroredux_scripting::translate::effects::ScriptLibrary as _;
     let mut results = Vec::new();
-    for (quest, raw) in pending {
+    let mut budget = ScriptCheckBudget(ALIAS_SCRIPT_CHECKS_PER_FRAME);
+    // Without the verdict cache a deferred quest would redo its finished
+    // scripts forever, so the budget only applies when the cache exists.
+    let budgeted = world.try_resource::<VmAliasScriptChecks>().is_some();
+    'quests: for (quest, raw) in pending {
         let mut checked = Vec::new();
         let mut installed = Vec::new();
         for (alias, instance) in raw.iter() {
@@ -236,6 +264,11 @@ pub(crate) fn check_running_quest_alias_scripts(world: &byroredux_core::ecs::wor
             let outcome = match cached {
                 Some(outcome) => outcome,
                 None => {
+                    if budgeted && !budget.try_spend() {
+                        // #6001 — out of allowance: leave this quest (and the
+                        // rest) unchecked; what was checked is cached.
+                        break 'quests;
+                    }
                     let outcome = library.script(&instance.name).and_then(|script| {
                         byroredux_scripting::check_alias_script(
                             script,
@@ -1520,6 +1553,27 @@ pub(crate) fn build_script_provider(args: &[String]) -> ScriptProvider {
 
 #[cfg(test)]
 mod tests {
+    /// #6001 — the allowance is spent per uncached script, runs out after
+    /// `ALIAS_SCRIPT_CHECKS_PER_FRAME`, and the check loop spends it before
+    /// every decompile + check (the quest loop stops, the quest resumes next frame).
+    #[test]
+    fn alias_script_checks_are_budgeted_per_script_not_per_quest() {
+        let mut budget = super::ScriptCheckBudget(super::ALIAS_SCRIPT_CHECKS_PER_FRAME);
+        for spent in 0..super::ALIAS_SCRIPT_CHECKS_PER_FRAME {
+            assert!(budget.try_spend(), "check {spent} is inside the allowance");
+        }
+        assert!(!budget.try_spend(), "the allowance is exhausted");
+        assert!(!budget.try_spend(), "and stays exhausted");
+
+        let production = byroredux_core::source_scan::production_text(include_str!("script.rs"));
+        let system = &production[production
+            .find("pub(crate) fn check_running_quest_alias_scripts")
+            .expect("alias checker present")..];
+        let spend = system.find("budget.try_spend()").expect("the loop spends the budget");
+        let check = system.find("check_alias_script(").expect("the loop checks the script");
+        assert!(spend < check, "the budget must be spent before the decompile + check");
+    }
+
     use super::*;
 
     /// #4331 (SCR-D7-2026-09-14-03) — `materialize_scene_actor_alias_stubs`
