@@ -74,6 +74,19 @@ pub fn check_reference_script(
     events: &[&str],
     library: Option<&dyn CheckLibrary>,
 ) -> Result<(Vec<String>, Vec<Arc<Script>>), String> {
+    // #6000 — the checker walks the decompiler's AST of a mod-supplied `.pex`
+    // and runs on the cell-load attach path and a per-frame system, so it sits
+    // inside the same panic net as the rest of the `.pex` path (#3948/#1816): a
+    // panic declines the script instead of aborting the load or the frame loop.
+    crate::translate::catching_panics("check_reference_script", || check_reference_script_unguarded(script, events, library))
+        .unwrap_or_else(|| Err("the checker panicked".to_owned()))
+}
+
+fn check_reference_script_unguarded(
+    script: Arc<Script>,
+    events: &[&str],
+    library: Option<&dyn CheckLibrary>,
+) -> Result<(Vec<String>, Vec<Arc<Script>>), String> {
     let mut checker = Checker::new(library, &script);
     let mut handled = Vec::new();
     for event in events {
@@ -95,6 +108,19 @@ pub fn check_reference_script(
 /// Whether an alias script runs on this VM: [`check_reference_script`] with
 /// `Self` a `ReferenceAlias`, over the events an alias script receives.
 pub fn check_alias_script(
+    script: Arc<Script>,
+    events: &[&str],
+    library: Option<&dyn CheckLibrary>,
+) -> Result<(Vec<String>, Vec<Arc<Script>>), String> {
+    // #6000 — the checker walks the decompiler's AST of a mod-supplied `.pex`
+    // and runs on the cell-load attach path and a per-frame system, so it sits
+    // inside the same panic net as the rest of the `.pex` path (#3948/#1816): a
+    // panic declines the script instead of aborting the load or the frame loop.
+    crate::translate::catching_panics("check_alias_script", || check_alias_script_unguarded(script, events, library))
+        .unwrap_or_else(|| Err("the checker panicked".to_owned()))
+}
+
+fn check_alias_script_unguarded(
     script: Arc<Script>,
     events: &[&str],
     library: Option<&dyn CheckLibrary>,

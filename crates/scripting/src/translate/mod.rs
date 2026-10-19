@@ -394,6 +394,29 @@ mod tests {
         }
     }
 
+    /// #6000 — the M47.2 checkers consume the decompiler's AST of mod-supplied
+    /// bytes from the cell-load attach path and a per-frame system. Pin the net
+    /// at the source like the `.pex` entry points above: each public checker
+    /// delegates to its body through `catching_panics`.
+    #[test]
+    fn the_vm_script_checkers_run_inside_the_panic_net() {
+        let source = include_str!("../fragment/vm/checker.rs");
+        let needle = format!("{}{}", "catching_", "panics(");
+        for name in ["check_reference_script", "check_alias_script"] {
+            let start = source
+                .find(&format!("pub fn {name}("))
+                .unwrap_or_else(|| panic!("{name}: entry point not found"));
+            let body = &source[start..];
+            let end = body.find("\n}\n").expect("end of the entry point");
+            let body = &body[..end];
+            assert!(body.contains(&needle), "{name}: the panic net is gone (#6000)");
+            assert!(
+                body.contains(&format!("{name}_unguarded(")),
+                "{name}: the net must wrap the checking body"
+            );
+        }
+    }
+
     #[test]
     fn translate_pex_on_empty_bytes_is_a_clean_none() {
         // The attach path hands arbitrary archive bytes to translate_pex;
