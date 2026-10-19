@@ -747,11 +747,12 @@ pub fn story_manager_dispatch_system(world: &World) {
     let mut started_event_fills: Vec<(QuestFormId, EventDataSlots)> = Vec::new();
     // #5406 — phase B consults the definitions for the `Run Once` flag
     // (read guard, taken before `stages` to mirror phase A's
-    // registry → stages → node_state acquisition order).
+    // registry → stages acquisition order).
     let registry = world.try_resource::<QuestDefinitionRegistry>();
     let Some(mut stages) = world.try_resource_mut::<QuestStageState>() else {
         return;
     };
+    let mut started = Vec::new();
     for candidate in &outcome.0 {
         if stages.is_running(candidate.quest) {
             continue;
@@ -778,30 +779,7 @@ pub fn story_manager_dispatch_system(world: &World) {
         {
             continue;
         }
-        // Phase 3 — the pool mark (do-all `fired`, `RNAM`
-        // `last_fire_hours`) lands only for quests that actually
-        // started, with any do-all wrap applied first.
-        if let Some(mut node_state) = world.try_resource_mut::<StoryManagerNodeState>() {
-            // A wrap clears the fired set only when its node actually
-            // started something this dispatch — otherwise the wrap is
-            // re-derived on the next fire.
-            if outcome.1.contains(&candidate.node) {
-                if let Some(runtime) = node_state.nodes.get_mut(&candidate.node) {
-                    for fired in &mut runtime.fired {
-                        *fired = false;
-                    }
-                }
-            }
-            let runtime = node_state.nodes.entry(candidate.node).or_default();
-            if runtime.fired.len() <= candidate.pool_index {
-                runtime.fired.resize(candidate.pool_index + 1, false);
-                runtime
-                    .last_fire_hours
-                    .resize(candidate.pool_index + 1, 0.0);
-            }
-            runtime.fired[candidate.pool_index] = true;
-            runtime.last_fire_hours[candidate.pool_index] = hours as f32;
-        }
+        started.push(candidate);
         started_event_fills.push((candidate.quest, candidate.slots));
         log::info!(
             "#5366 story manager: started quest {:#010X} ('{}') via node '{}' \
@@ -813,6 +791,37 @@ pub fn story_manager_dispatch_system(world: &World) {
         );
     }
     drop(stages);
+    // Phase 3 — the pool mark (do-all `fired`, `RNAM` `last_fire_hours`)
+    // lands only for quests that actually started, with any do-all wrap
+    // applied first. Written after the stages guard is released (#6003):
+    // phase A holds `StoryManagerNodeState` while its conditions read
+    // `QuestStageState`, so taking the node state under the stages WRITE
+    // here would record the opposite edge and close a lock-order cycle.
+    if !started.is_empty() {
+        if let Some(mut node_state) = world.try_resource_mut::<StoryManagerNodeState>() {
+            for candidate in started {
+                // A wrap clears the fired set only when its node actually
+                // started something this dispatch — otherwise the wrap is
+                // re-derived on the next fire.
+                if outcome.1.contains(&candidate.node) {
+                    if let Some(runtime) = node_state.nodes.get_mut(&candidate.node) {
+                        for fired in &mut runtime.fired {
+                            *fired = false;
+                        }
+                    }
+                }
+                let runtime = node_state.nodes.entry(candidate.node).or_default();
+                if runtime.fired.len() <= candidate.pool_index {
+                    runtime.fired.resize(candidate.pool_index + 1, false);
+                    runtime
+                        .last_fire_hours
+                        .resize(candidate.pool_index + 1, 0.0);
+                }
+                runtime.fired[candidate.pool_index] = true;
+                runtime.last_fire_hours[candidate.pool_index] = hours as f32;
+            }
+        }
+    }
     // Phase 2 — record the event's slots for this quest's `FromEvent`
     // aliases and mark the binding table dirty so the alias refresh
     // (scheduled right after this system) re-fills with them. One
@@ -1258,6 +1267,32 @@ fn hours_gate_open(window: f32, last_fire: Option<f32>, now: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// #6003 — phase A holds `StoryManagerNodeState` while its conditions read
+    /// `QuestStageState`, so phase B must not take the node state while it holds
+    /// the stages write guard (the opposite edge closed a lock-order cycle that
+    /// no unit run can observe — the CI lane never installs the node state).
+    /// Pin the shape: nothing between the stages acquisition and its drop in
+    /// the dispatch system names the node-state resource.
+    #[test]
+    fn phase_b_never_takes_the_node_state_under_the_stages_guard() {
+        let production = byroredux_core::source_scan::production_text(include_str!("story_manager.rs"));
+        let system = &production[production
+            .find("pub fn story_manager_dispatch_system")
+            .expect("dispatch system present")..];
+        let held_from = system
+            .find("try_resource_mut::<QuestStageState>()")
+            .expect("phase B takes the stages write guard");
+        let held_to = held_from
+            + system[held_from..]
+                .find("drop(stages);")
+                .expect("phase B drops the stages guard");
+        let held = &system[held_from..held_to];
+        assert!(
+            !held.contains("StoryManagerNodeState"),
+            "the node state is taken while the stages write guard is held"
+        );
+    }
+
     /// #5394 — the portable identity a recorded event slot persists as:
     /// PlayerRef for the player, the candidate's reference FormId for a
     /// placed actor, nothing for an entity with neither.
