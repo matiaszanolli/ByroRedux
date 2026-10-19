@@ -477,7 +477,7 @@ mod tests {
     /// on the in-flight class instead of destroying unconditionally.
     #[test]
     fn a_failed_layout_submit_leaks_instead_of_destroying() {
-        let own = crate::source_scan::production_text_or_whole(include_str!("shadow_filter.rs"));
+        let own = crate::source_scan::production_text(include_str!("shadow_filter.rs"));
         let new_start = own.find("pub fn new(").expect("ShadowFilterPipeline::new");
         let new_end = new_start + own[new_start..].find("fn new_inner").expect("new_inner follows new");
         let new_body = &own[new_start..new_end];

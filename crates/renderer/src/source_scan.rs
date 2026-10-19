@@ -53,6 +53,10 @@ mod tests {
         ("vulkan/context/resources.rs", 5),
         ("vulkan/context/skinned_blas_refit.rs", 1),
         ("vulkan/context/teardown.rs", 1),
+        // #6064: `no_item_is_spliced_into_another_items_doc_block` is a
+        // whole-file doc audit — the splice it guards also hit a test
+        // module's docs, so the cut would blind it.
+        ("vulkan/descriptors.rs", 1),
         ("vulkan/device.rs", 2),
         ("vulkan/egui_pass.rs", 1),
         // frame_upscaler.rs dropped off this list entirely (#5100): all four
