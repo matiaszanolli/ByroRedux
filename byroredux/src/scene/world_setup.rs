@@ -502,6 +502,16 @@ fn apply_environment_with_sources(
     // scheduler's own `weather_system(world, dt)` runs moments later and
     // simply resamples again from the (by-then-ticked) clock.
     crate::systems::weather_system(world, 0.0);
+    // #6026 — `resolve_cloud_layer` / `resolve_sun_sprite` only *queue* their
+    // DDS (`resolve_texture` reserves a bindless slot pointing at the fallback
+    // checkerboard); the engine has no per-frame flush, so the owner of the
+    // batch must drain it. The exterior callers are followed by a cell load that
+    // flushes, but a Show-Sky interior's `finish` runs after `load_references`'
+    // flush and a mid-session `ForceWeather` re-apply is followed by nothing —
+    // there the clouds would sample the checkerboard for the life of the cell
+    // (and `finish`'s #3320 `debug_assert` trips). Flushing here, once, covers
+    // every caller; with nothing queued (a cache hit) it is one integer read.
+    super::flush_pending_loose_textures(ctx);
 }
 
 fn show_sky_interior_climate<'a>(
@@ -1362,6 +1372,39 @@ pub(crate) fn begin_exterior_streaming(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6026 — the sky installer queues cloud / sun-sprite DDS uploads that
+    /// nothing else drains for a Show-Sky interior or a mid-session
+    /// `ForceWeather`. Needs a `VulkanContext` to run, so pin the source: the
+    /// flush follows the last queueing call inside `apply_environment_with_sources`
+    /// (the one owner), and nothing else in the file queues sky textures.
+    #[test]
+    fn the_environment_installer_flushes_the_sky_textures_it_queues() {
+        let source = include_str!("world_setup.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        let start = production
+            .find("\nfn apply_environment_with_sources(")
+            .expect("installer present");
+        let end = start
+            + production[start..]
+                .find("\nfn show_sky_interior_climate")
+                .expect("installer end marker present");
+        let body = &production[start..end];
+        let last_queue = body.rfind("resolve_sun_sprite(").expect("sun sprite queued");
+        let flush = body
+            .rfind("flush_pending_loose_textures(ctx)")
+            .expect("installer must flush the textures it queues (#6026)");
+        assert!(flush > last_queue, "the flush must come after the last queued texture");
+
+        let outside = [&production[..start], &production[end..]].concat();
+        for call in ["resolve_cloud_layer(", "resolve_sun_sprite("] {
+            let calls = outside.replace(&format!("fn {call}"), "");
+            assert!(
+                !calls.contains(call),
+                "{call} queues a DDS upload outside the flushing installer"
+            );
+        }
+    }
 
     /// #5529 — a grid cell is evaluated once: the repeat frames of a failed
     /// override (no `applied_climate` change to short-circuit on) are
