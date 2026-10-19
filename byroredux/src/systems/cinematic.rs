@@ -1104,6 +1104,43 @@ fn scene_trigger_actor_approach_system_inner(
         return;
     }
 
+    // #6008 — the advance conditions are evaluated HERE, before the
+    // `QuestStageState` guard below is taken. `evaluate_condition_list`
+    // re-acquires that resource for the `GetStage` family, so evaluating
+    // inside the filter that holds `stages` was a recursive read (the shape
+    // 35f1cf051 removed from the Story Manager, #2386: a second read guard on
+    // one thread can deadlock behind a queued writer). Only the BaseForm-gated,
+    // conditioned advances of a quest the router is routing for are asked, so
+    // the pre-pass costs no more than the filter chain it replaces.
+    let passing_triggers: std::collections::HashSet<EntityId> = {
+        let conditioned: Vec<_> = world
+            .query::<QuestAdvanceOnActivate>()
+            .map(|advances| {
+                advances
+                    .iter()
+                    .filter(|(_, advance)| {
+                        matches!(advance.activator_gate, ActivatorGate::BaseForm(_))
+                            && !advance.conditions.is_empty()
+                            && (between_scenes.contains(&advance.owning_quest.0)
+                                || awaited.iter().any(|(quest, _)| *quest == advance.owning_quest.0))
+                    })
+                    .map(|(trigger, advance)| (trigger, advance.conditions.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        conditioned
+            .into_iter()
+            .filter(|(trigger, conditions)| {
+                byroredux_scripting::evaluate_condition_list(
+                    conditions,
+                    world,
+                    &byroredux_scripting::ConditionContext::for_subject(*trigger),
+                )
+            })
+            .map(|(trigger, _)| trigger)
+            .collect()
+    };
+
     let targets: Vec<_> = match (
         world.query::<QuestAdvanceOnActivate>(),
         world.query::<byroredux_scripting::TriggerVolume>(),
@@ -1173,11 +1210,7 @@ fn scene_trigger_actor_approach_system_inner(
                             }
                         })
                         .filter(|(trigger, advance)| {
-                            byroredux_scripting::evaluate_condition_list(
-                                &advance.conditions,
-                                world,
-                                &byroredux_scripting::ConditionContext::for_subject(*trigger),
-                            )
+                            advance.conditions.is_empty() || passing_triggers.contains(trigger)
                         })
                         // #3954 — pick the stage FIRST, exactly as the gate's
                         // `next_ready` does, and only then demand a center.
@@ -1445,6 +1478,28 @@ mod tests {
     use super::*;
     use byroredux_core::ecs::components::{Children, MotionType};
     use byroredux_scripting::AnimationTextKeyEvent;
+
+    /// #6008 — the scene-trigger router holds `QuestStageState` for the whole
+    /// `targets` match; `evaluate_condition_list` re-reads it for the `GetStage`
+    /// family, a recursive read. The conditions are evaluated in a pre-pass
+    /// instead, so the guarded region must not call the evaluator.
+    #[test]
+    fn scene_trigger_router_evaluates_no_conditions_under_the_stages_guard() {
+        let production = byroredux_core::source_scan::production_text(include_str!("cinematic.rs"));
+        let start = production
+            .find("let targets: Vec<_> = match (")
+            .expect("router targets match present");
+        let end = start
+            + production[start..]
+                .find("if targets.is_empty()")
+                .expect("router targets match end present");
+        let guarded = &production[start..end];
+        assert!(guarded.contains("try_resource::<byroredux_scripting::quest_stages::QuestStageState>"));
+        assert!(
+            !guarded.contains("evaluate_condition_list"),
+            "a condition list is evaluated while the router holds QuestStageState"
+        );
+    }
 
     #[test]
     fn idle_request_starts_scoped_animation_player_once_per_serial() {
