@@ -143,9 +143,13 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         b"IMGS" => extract_records(reader, end, b"IMGS", &mut |fid, subs| {
             index.image_spaces.insert(fid, parse_imgs(fid, subs, game));
         })?,
-        b"HDPT" => extract_records(reader, end, b"HDPT", &mut |fid, subs| {
-            index.head_parts.insert(fid, parse_hdpt(fid, subs));
-        })?,
+        b"HDPT" => {
+            // #5408 — `HNAM` extra-part FormIDs are plugin-local.
+            let hdpt_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"HDPT", &mut |fid, subs| {
+                index.head_parts.insert(fid, parse_hdpt(fid, subs, &hdpt_remap));
+            })?
+        }
         b"EYES" => extract_records(reader, end, b"EYES", &mut |fid, subs| {
             index.eyes.insert(fid, parse_eyes(fid, subs));
         })?,

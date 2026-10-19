@@ -618,16 +618,26 @@ pub(crate) fn status_line(world: &World) -> String {
         .try_resource::<PlayerCameraView>()
         .map(|view| format!("{:?}", *view))
         .unwrap_or_else(|| "unset".to_string());
-    // #5095 — the pre-baked PNAM head-part fallback's loaded roots (the
-    // head a facegeom-less NPC — vanilla Skyrim's player — gets). The P3
-    // smoke gates on `head_parts>0` so a headless player body fails the
-    // gate again.
-    let head_parts = world
+    // #5095 / #5408 — the pre-baked head-part fallback's loaded roots under
+    // THIS body (the head a facegeom-less NPC — vanilla Skyrim's player —
+    // gets), and how many of them are the Face type. The P3 smoke gates on
+    // `face_parts>0`: `head_parts` alone is satisfied by a hair shell over
+    // an empty neck, and the count used to span every NPC in the world.
+    let (head_parts, face_parts) = world
         .query::<crate::npc_spawn::PrebakedHeadPart>()
-        .map(|heads| heads.iter().count())
-        .unwrap_or(0);
+        .map(|heads| {
+            heads
+                .iter()
+                .filter(|(entity, _)| {
+                    world.get::<Parent>(*entity).map(|p| p.0) == Some(root)
+                })
+                .fold((0usize, 0usize), |(all, faces), (_, part)| {
+                    (all + 1, faces + usize::from(part.is_face))
+                })
+        })
+        .unwrap_or((0, 0));
     format!(
-        "player.body: root={root} meshes={} hidden_first_person={} head_parts={head_parts} \
+        "player.body: root={root} meshes={} hidden_first_person={} head_parts={head_parts} face_parts={face_parts} \
          view={} {} {} parts=[{}]",
         meshes.len(),
         hidden,

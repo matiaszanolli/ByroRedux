@@ -1,7 +1,7 @@
 //! Character appearance records — head parts, eyes, hair.
 
-use super::super::common::{read_zstring, CommonNamedFields};
-use crate::esm::reader::SubRecord;
+use super::super::common::{read_zstring, remap_fid, CommonNamedFields};
+use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// Head part record (`HDPT`). Used by FaceGen to assemble NPC faces —
@@ -14,13 +14,20 @@ pub struct HdptRecord {
     pub editor_id: String,
     pub full_name: String,
     pub model_path: String,
-    /// Flags byte — bit layout differs per-game; stored raw. Skyrim
-    /// repurposes this as a u8 with bits 0-2 encoding the head-part
-    /// type slot (face/eyes/hair/beard/brow/scar).
+    /// `DATA` flags byte, stored raw. Skyrim+ (xEdit `wbHDPT`): bit 0
+    /// Playable, 1 Male, 2 Female, 3 Is Extra Part, 4 Use Solid Tint. The
+    /// part's type is NOT in here — it is [`Self::part_type`].
     pub flags: u8,
+    /// #5408 — Skyrim+ `PNAM` part type: 0 Misc, 1 Face, 2 Eyes, 3 Hair,
+    /// 4 Facial Hair, 5 Scar, 6 Eyebrows. `None` when the record has no
+    /// `PNAM` (pre-Skyrim games).
+    pub part_type: Option<u32>,
+    /// #5408 — Skyrim+ `HNAM` "Extra Parts": other `HDPT`s that load with
+    /// this one (hair → hairline, …), FormIDs in authored order.
+    pub extra_parts: Vec<u32>,
 }
 
-pub fn parse_hdpt(form_id: u32, subs: &[SubRecord]) -> HdptRecord {
+pub fn parse_hdpt(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> HdptRecord {
     let mut out = HdptRecord {
         form_id,
         ..Default::default()
@@ -29,7 +36,7 @@ pub fn parse_hdpt(form_id: u32, subs: &[SubRecord]) -> HdptRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     out.model_path = common.model_path;
@@ -37,6 +44,13 @@ pub fn parse_hdpt(form_id: u32, subs: &[SubRecord]) -> HdptRecord {
         match &sub.sub_type {
             b"DATA" if !sub.data.is_empty() => {
                 out.flags = sub.data[0];
+            }
+            b"PNAM" if sub.data.len() >= 4 => {
+                out.part_type = Some(SubReader::new(&sub.data).u32_or_default());
+            }
+            b"HNAM" if sub.data.len() >= 4 => {
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                out.extra_parts.push(remap_fid(raw, remap));
             }
             _ => {}
         }
@@ -215,10 +229,28 @@ mod tests {
             sub(b"MODL", b"meshes\\characters\\head.nif\0"),
             sub(b"DATA", [0x01]),
         ];
-        let h = parse_hdpt(0x1111, &subs);
+        let h = parse_hdpt(0x1111, &subs, &None);
         assert_eq!(h.editor_id, "HumanHead01");
         assert_eq!(h.model_path, "meshes\\characters\\head.nif");
         assert_eq!(h.flags, 0x01);
+        assert_eq!(h.part_type, None);
+        assert!(h.extra_parts.is_empty());
+    }
+
+    /// #5408 — Skyrim+ `PNAM` is the part type (not a `DATA` bit field) and
+    /// each `HNAM` is an extra part that loads with this one.
+    #[test]
+    fn parse_hdpt_decodes_the_part_type_and_extra_parts() {
+        let subs = vec![
+            sub(b"EDID", b"HairMaleNord01\0"),
+            sub(b"DATA", [0x03]),
+            sub(b"PNAM", 3u32.to_le_bytes()),
+            sub(b"HNAM", 0x0001_2345u32.to_le_bytes()),
+            sub(b"HNAM", 0x0001_2346u32.to_le_bytes()),
+        ];
+        let h = parse_hdpt(0x1111, &subs, &None);
+        assert_eq!(h.part_type, Some(3), "Hair");
+        assert_eq!(h.extra_parts, vec![0x0001_2345, 0x0001_2346]);
     }
 
     #[test]

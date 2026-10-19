@@ -56,7 +56,7 @@ pub struct RaceRecord {
     /// applies to. Pre-fix every NPC rendered with just the head NIF —
     /// no eyes, mouth, teeth, tongue. Populated on Oblivion and
     /// FO3 / FNV; empty on Skyrim+, which moved head parts out to
-    /// standalone `HDPT` records.
+    /// standalone `HDPT` records — see [`Self::base_head_parts`].
     ///
     /// The body section past `NAM1` restarts `INDX` at 0 for a
     /// different vocabulary and is deliberately **not** collected here
@@ -64,6 +64,14 @@ pub struct RaceRecord {
     /// stays a flat append-ordered list of every `MODL` in the record
     /// and therefore also carries `.egt` texture paths.
     pub head_parts: Vec<(u32, String, Option<u8>)>,
+    /// #5408 — Skyrim+ RACE "Base Head Parts": per-gender `HEAD` → `HDPT`
+    /// references from the Head Data section (xEdit `wbRACE`: `NAM0` marker,
+    /// `MNAM` / `FNAM` gender marker, then `wbHeadParts` = `INDX` + `HEAD`),
+    /// as `(gender section, HDPT FormID)` in authored order. The gender
+    /// section is `Some(0)` male / `Some(1)` female, the same convention as
+    /// [`Self::head_parts`]. Empty on Oblivion / FO3 / FNV, whose head parts
+    /// are inline `MODL`s.
+    pub base_head_parts: Vec<(Option<u8>, u32)>,
     /// Head-section `ICON` texture per head part: `(INDX, path, gender
     /// section)`, the same shape as [`Self::head_parts`]. Each part's `ICON`
     /// follows its `MODL` under the same `INDX` (measured on FO3
@@ -351,6 +359,7 @@ pub fn parse_race(
         body_models: Vec::new(),
         skeleton_models: Default::default(),
         head_parts: Vec::new(),
+        base_head_parts: Vec::new(),
         head_part_textures: Vec::new(),
         body_part_textures: Vec::new(),
         base_height: (1.0, 1.0),
@@ -628,6 +637,13 @@ pub fn parse_race(
                 gender_section = None;
                 pending_indx = None;
                 icon_indx = None;
+            }
+            // Skyrim+ head-part reference (`wbHeadPart`: `INDX` then `HEAD`).
+            b"HEAD" if in_head_section && sub.data.len() >= 4 => {
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record
+                    .base_head_parts
+                    .push((gender_section, remap_fid(raw, remap)));
             }
             b"MODL" => {
                 let path = read_zstring(&sub.data);

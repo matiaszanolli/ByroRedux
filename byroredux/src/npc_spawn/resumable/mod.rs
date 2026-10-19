@@ -1473,8 +1473,14 @@ mod tests {
             combat_anim_draugr: false,
             player_body: true,
             head_fallback: vec![
-                "actors\\character\\character assets\\malehead.nif".into(),
-                "actors\\character\\character assets\\eyes.nif".into(),
+                HeadFallbackPart {
+                    path: "actors\\character\\character assets\\malehead.nif".into(),
+                    is_face: true,
+                },
+                HeadFallbackPart {
+                    path: "actors\\character\\character assets\\eyes.nif".into(),
+                    is_face: false,
+                },
             ],
             phase: PrebakedPhase::Facegen,
         };
@@ -1499,7 +1505,7 @@ mod tests {
             editor_id: String::new(),
             full_name: String::new(),
             model_path: model.to_owned(),
-            flags: 0,
+            ..Default::default()
         };
         let mut index = EsmIndex::default();
         index.head_parts.insert(0xAA00_0001, hdpt(0xAA00_0001, "malehead.nif"));
@@ -1515,13 +1521,90 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            prebaked_head_fallback_paths(&npc_with_parts, &index),
-            vec!["malehead.nif".to_owned()],
+            prebaked_head_fallback_paths(&npc_with_parts, 0, Gender::Male, &index),
+            vec![HeadFallbackPart { path: "malehead.nif".to_owned(), is_face: false }],
             "authored order, dangling refs and path-less HDPTs skipped"
         );
 
         let npc_without = NpcRecord::default();
-        assert!(prebaked_head_fallback_paths(&npc_without, &index).is_empty());
+        assert!(prebaked_head_fallback_paths(&npc_without, 0, Gender::Male, &index).is_empty());
+    }
+
+    /// #5408 — the fallback is the race's per-gender base head parts with
+    /// each type the NPC authors replaced by the NPC's own part, then the
+    /// loaded parts' `HNAM` extras (cycle-safe). Shaped after the vanilla
+    /// player: `NordRace` carries a face, mouth and hair; the player's PNAM
+    /// authors only a hair (whose extra is a hairline).
+    #[test]
+    fn prebaked_head_fallback_merges_race_base_parts_with_the_npcs_own() {
+        use byroredux_plugin::esm::records::{HdptRecord, RaceRecord};
+
+        const RACE: u32 = 0x13746;
+        const HAIR_TYPE: u32 = 3;
+        let paths = |parts: Vec<HeadFallbackPart>| -> Vec<String> {
+            parts.into_iter().map(|part| part.path).collect()
+        };
+        let hdpt = |model: &str, part_type: u32, extras: &[u32]| HdptRecord {
+            model_path: model.to_owned(),
+            part_type: Some(part_type),
+            extra_parts: extras.to_vec(),
+            ..Default::default()
+        };
+        let mut index = EsmIndex::default();
+        index.head_parts.insert(0x10, hdpt("malehead.nif", 1, &[]));
+        index.head_parts.insert(0x11, hdpt("malemouth.nif", 0, &[]));
+        index.head_parts.insert(0x12, hdpt("racehair.nif", HAIR_TYPE, &[0x20]));
+        index.head_parts.insert(0x13, hdpt("femalehead.nif", 1, &[]));
+        // The NPC's own hair, with a hairline extra that loops back to it.
+        index.head_parts.insert(0x30, hdpt("npchair.nif", HAIR_TYPE, &[0x31]));
+        index.head_parts.insert(0x31, hdpt("hairline.nif", 0, &[0x30]));
+        index.head_parts.insert(0x20, hdpt("racehairline.nif", 0, &[]));
+        index.races.insert(
+            RACE,
+            RaceRecord {
+                form_id: RACE,
+                base_head_parts: vec![
+                    (Some(0), 0x10),
+                    (Some(0), 0x11),
+                    (Some(0), 0x12),
+                    (Some(1), 0x13),
+                ],
+                ..Default::default()
+            },
+        );
+        let player = NpcRecord {
+            form_id: 7,
+            face_morphs: Some(byroredux_plugin::esm::records::NpcFaceMorphs {
+                head_parts: vec![0x30],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            paths(prebaked_head_fallback_paths(&player, RACE, Gender::Male, &index)),
+            vec![
+                "malehead.nif".to_owned(),
+                "malemouth.nif".to_owned(),
+                "npchair.nif".to_owned(),
+                "hairline.nif".to_owned(),
+            ],
+            "face + mouth from the race, the NPC's hair replaces the race's \
+             (and its extra with it), the extra loads once despite the cycle"
+        );
+        assert_eq!(
+            paths(prebaked_head_fallback_paths(&NpcRecord::default(), RACE, Gender::Male, &index)),
+            vec![
+                "malehead.nif".to_owned(),
+                "malemouth.nif".to_owned(),
+                "racehair.nif".to_owned(),
+                "racehairline.nif".to_owned(),
+            ],
+            "an NPC with no PNAM gets the whole race base set, extras expanded"
+        );
+        let female = prebaked_head_fallback_paths(&NpcRecord::default(), RACE, Gender::Female, &index);
+        assert_eq!(paths(female.clone()), vec!["femalehead.nif".to_owned()], "the female section only");
+        assert!(female[0].is_face, "a Face-type (PNAM 1) part is flagged for the P3 gate");
     }
 
     /// Regression for #2276 (PERF-D7-02): `parent_part` used to re-walk

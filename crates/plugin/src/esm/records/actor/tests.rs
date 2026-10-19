@@ -1772,6 +1772,36 @@ fn race_head_part_textures_follow_their_part_per_gender() {
     );
 }
 
+/// #5408 — Skyrim+ RACE Head Data: `NAM0`, a gender marker, then
+/// `INDX` + `HEAD` (→ HDPT) pairs per gender (xEdit `wbRACE` /
+/// `wbHeadPart`). Layout shaped after `NordRace` in `Update.esm`.
+#[test]
+fn skyrim_race_base_head_parts_decode_per_gender() {
+    let form = |n: u32| n.to_le_bytes();
+    let subs = vec![
+        sub(b"EDID", b"NordRace\0"),
+        sub(b"NAM0", b""),
+        sub(b"MNAM", b""),
+        sub(b"INDX", 0u32.to_le_bytes()),
+        sub(b"HEAD", form(0x0001_0001)),
+        sub(b"INDX", 1u32.to_le_bytes()),
+        sub(b"HEAD", form(0x0001_0002)),
+        sub(b"NAM0", b""),
+        sub(b"FNAM", b""),
+        sub(b"INDX", 0u32.to_le_bytes()),
+        sub(b"HEAD", form(0x0001_0003)),
+    ];
+    let race = parse_race(0x13746, &subs, GameKind::Skyrim, &None);
+    assert_eq!(
+        race.base_head_parts,
+        vec![
+            (Some(0), 0x0001_0001),
+            (Some(0), 0x0001_0002),
+            (Some(1), 0x0001_0003),
+        ],
+    );
+}
+
 /// Oblivion authors one ungendered head run (`NAM0` with no MNAM /
 /// FNAM at all) and a body section whose `INDX` entries carry only
 /// `ICON`. The section gate must leave that arm's entries untagged —

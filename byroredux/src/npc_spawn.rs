@@ -1168,11 +1168,14 @@ impl byroredux_core::ecs::Component for NpcSkeletonBones {
 
 /// #5095 — a mesh root the pre-baked spawn's PNAM head-part fallback
 /// loaded (`PrebakedPhase::HeadParts`): the head a facegeom-less NPC gets
-/// instead of none. Carried so `player.body` can report `head_parts=N` and
-/// the P3 smoke can gate that the third-person player has a head.
-/// Spawn-derived, never serialized.
+/// instead of none. Carried so `player.body` can report `head_parts=N` /
+/// `face_parts=N` and the P3 smoke can gate that the third-person player has
+/// a face (#5408), not just a hair shell. Spawn-derived, never serialized.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct PrebakedHeadPart;
+pub(crate) struct PrebakedHeadPart {
+    /// The part is the `Face` head-part type (`HDPT.PNAM` 1).
+    pub(crate) is_face: bool,
+}
 
 impl byroredux_core::ecs::Component for PrebakedHeadPart {
     type Storage = byroredux_core::ecs::SparseSetStorage<Self>;

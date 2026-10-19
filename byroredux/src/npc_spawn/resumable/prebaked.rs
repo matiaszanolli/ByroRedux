@@ -29,7 +29,7 @@ pub(super) struct PrebakedNpcState {
     /// headless — no head, eyes, hair or brows — through exactly this
     /// miss; the player's authored PNAM list (ManHead / eyes / hair /
     /// brows) is the data a head needs.
-    pub(super) head_fallback: Vec<String>,
+    pub(super) head_fallback: Vec<HeadFallbackPart>,
     pub(super) phase: PrebakedPhase,
 }
 
@@ -55,6 +55,18 @@ impl PrebakedNpcState {
         UnitOutcome::Continue
     }
 }
+
+/// One mesh of the [`PrebakedNpcState::head_fallback`] list (#5408): its
+/// `HDPT.MODL` path, and whether the part is the `Face` type (`PNAM` 1) so
+/// the P3 gate can require an actual face, not just any head part.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HeadFallbackPart {
+    pub(super) path: String,
+    pub(super) is_face: bool,
+}
+
+/// `HDPT.PNAM` part type 1.
+const HEAD_PART_TYPE_FACE: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PrebakedPhase {
@@ -139,28 +151,96 @@ pub(super) fn prepare_prebaked_state(
         equipped_armor_count: 0,
         combat_anim_draugr: is_draugr_race(index.races.get(&traits.race_form_id)),
         player_body,
-        head_fallback: prebaked_head_fallback_paths(npc, index),
+        head_fallback: prebaked_head_fallback_paths(npc, traits.race_form_id, gender, index),
         phase: PrebakedPhase::Skeleton,
     }
 }
 
-/// #5095 — the NPC's own `PNAM` head-part meshes (`HDPT.MODL` paths, in
-/// authored order), for a missing per-NPC FaceGen mesh. Unresolvable
-/// FormIDs and path-less records are skipped: a half list beats none, and
-/// the alternative (a wrong-form collision) is exactly what the load
-/// order's remap already prevents. Pure so a unit test can pin the
+/// #5095 / #5408 — the head-part meshes (`HDPT.MODL` paths) a facegeom-less
+/// NPC's head is assembled from, for a missing per-NPC FaceGen mesh.
+///
+/// The set is the race's per-gender base head parts (`RACE` Head Data →
+/// `HEAD`, the CK "Base Head Parts": Face, Eyes, Hair, Facial Hair,
+/// Eyebrows, plus the Misc mouth), with each type the NPC's own `PNAM` list
+/// authors replacing the race's part of that type (the CK Character Gen
+/// Parts tab edits the base parts per type; the vanilla player authors one
+/// hair while `NordRace` carries a hair too, so both cannot load). The NPC's
+/// parts follow the race's, then each loaded part's `HNAM` extra parts
+/// (hair → hairline) are appended depth-first, deduplicated — which also
+/// breaks any extra-part cycle.
+///
+/// The per-type rule is read from those two sources, not from engine code
+/// (SKSE `TESNPC::GetCurrentHeadPartByType` is not available here): for a
+/// type the NPC does not author it is the race's part under either reading,
+/// and a Misc/Scar part the NPC authors replaces the race's Misc part under
+/// this reading only.
+///
+/// Unresolvable FormIDs and path-less records are skipped: a half list beats
+/// none, and the alternative (a wrong-form collision) is exactly what the
+/// load order's remap already prevents. Pure so a unit test can pin the
 /// ordering and the skip rules without a GPU.
-pub(super) fn prebaked_head_fallback_paths(npc: &NpcRecord, index: &EsmIndex) -> Vec<String> {
-    npc.face_morphs
+pub(super) fn prebaked_head_fallback_paths(
+    npc: &NpcRecord,
+    race_form_id: u32,
+    gender: Gender,
+    index: &EsmIndex,
+) -> Vec<HeadFallbackPart> {
+    let npc_parts: &[u32] = npc
+        .face_morphs
         .as_ref()
-        .map_or(Vec::new(), |face| {
-            face.head_parts
+        .map_or(&[], |face| face.head_parts.as_slice());
+    let authored_types: Vec<u32> = npc_parts
+        .iter()
+        .filter_map(|form| index.head_parts.get(form)?.part_type)
+        .collect();
+    let section = match gender {
+        Gender::Male => 0u8,
+        Gender::Female => 1u8,
+    };
+    let race_parts = index
+        .races
+        .get(&race_form_id)
+        .into_iter()
+        .flat_map(|race| {
+            race.base_head_parts
                 .iter()
-                .filter_map(|form| index.head_parts.get(form))
-                .map(|hdpt| hdpt.model_path.clone())
-                .filter(|path| !path.is_empty())
-                .collect()
+                .filter(move |(gender_section, _)| gender_section.is_none_or(|g| g == section))
+                .map(|&(_, form)| form)
         })
+        .filter(|form| {
+            // A race part the NPC overrides by type is dropped; an
+            // unresolvable one is skipped below with every other dangling
+            // reference.
+            index
+                .head_parts
+                .get(form)
+                .and_then(|hdpt| hdpt.part_type)
+                .is_none_or(|part_type| !authored_types.contains(&part_type))
+        });
+
+    let mut seen = std::collections::HashSet::new();
+    let mut paths = Vec::new();
+    let mut stack: Vec<u32> = Vec::new();
+    for root in race_parts.chain(npc_parts.iter().copied()) {
+        stack.push(root);
+        while let Some(form) = stack.pop() {
+            if !seen.insert(form) {
+                continue;
+            }
+            let Some(hdpt) = index.head_parts.get(&form) else {
+                continue;
+            };
+            if !hdpt.model_path.is_empty() {
+                paths.push(HeadFallbackPart {
+                    path: hdpt.model_path.clone(),
+                    is_face: hdpt.part_type == Some(HEAD_PART_TYPE_FACE),
+                });
+            }
+            // Reversed so the first authored extra pops first.
+            stack.extend(hdpt.extra_parts.iter().rev().copied());
+        }
+    }
+    paths
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -260,10 +340,12 @@ pub(super) fn advance_prebaked_unit(
             // handling for a helmet that displaces the head), parented to
             // the placement root, and registered as a restorable part so
             // re-equip swaps restore it the way they restore the facegen.
-            let Some(part_path) = state.head_fallback.get(index) else {
+            let Some(fallback_part) = state.head_fallback.get(index) else {
                 state.phase = PrebakedPhase::Armor(0);
                 return UnitOutcome::Continue;
             };
+            let part_path = fallback_part.path.as_str();
+            let is_face = fallback_part.is_face;
             match tex_provider.extract_mesh(part_path) {
                 Some(data) => {
                     let hidden_biped_mask = state.facegen_hidden_mask;
@@ -289,7 +371,7 @@ pub(super) fn advance_prebaked_unit(
                         parent_part(world, state.placement_root, root);
                         // #5095 — mark the fallback head so player.body can
                         // count it (the P3 head gate).
-                        world.insert(root, crate::npc_spawn::PrebakedHeadPart);
+                        world.insert(root, crate::npc_spawn::PrebakedHeadPart { is_face });
                         if hidden_biped_mask != 0 {
                             state.appearance.original_roots.push(root);
                             state.appearance.parts.push(RestorePart {

@@ -130,12 +130,19 @@ grep -Eq "parts=\[.+[0-9A-F]{8}" <<<"$body" \
 grep -Fq "hidden_first_person=$mesh_count" <<<"$body" \
     || fail "the body must start hidden in first person (got: $body)"
 # #5095 — vanilla ships no player facegeom, so the head comes from the
-# pre-baked PNAM head-part fallback. A headless third-person body must
-# fail the gate, not pass it.
+# pre-baked head-part fallback. A headless third-person body must fail the
+# gate, not pass it. #5408 — and a hair shell over an empty neck is still
+# headless: the player's own PNAM authors only a hair, so the face, eyes and
+# mouth come from the race's base head parts. Require a Face-type part
+# parented to the player root.
 head_count="$(grep -oP 'head_parts=\K[0-9]+' <<<"$body" | head -1)"
 [[ -n "$head_count" && "$head_count" -gt 0 ]] \
     || fail "player.body reports no head-part meshes — the pre-baked FaceGen \
 miss left the player headless (got: $body)"
+face_count="$(grep -oP 'face_parts=\K[0-9]+' <<<"$body" | head -1)"
+[[ -n "$face_count" && "$face_count" -gt 0 ]] \
+    || fail "player.body reports no Face-type head part — the player has a \
+hair shell but no face (got: $body)"
 # Third-person locomotion: the capsule must carry the walk clip (idle too on
 # KF games — Skyrim's standing shape is walk-only), or the body moves rigid.
 grep -Fq "anim=walk(" <<<"$body" \
