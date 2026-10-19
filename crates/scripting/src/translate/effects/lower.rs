@@ -836,10 +836,6 @@ fn is_side_effect_free(e: &Expr) -> bool {
     }
 }
 
-/// Recognize MQ101's actor-load gate without opening the general-purpose
-/// control-flow surface. The condition must be an OR tree whose leaves are
-/// exactly `!<actor>.Is3DLoaded()`, and the loop body must be one positive
-/// `Utility.Wait` call.
 /// M47.2 — `While <condition>` whose body is only `Utility.Wait(<literal>)`:
 /// a poll on any condition the guards model (`While !Quest.IsRunning()`,
 /// `While Alias.GetReference() == None`).
@@ -867,6 +863,10 @@ fn lower_wait_while(condition: &Expr, body: &[Spanned<Stmt>], scope: &Scope) -> 
     })
 }
 
+/// Recognize MQ101's actor-load gate without opening the general-purpose
+/// control-flow surface. The condition must be an OR tree whose leaves are
+/// exactly `!<actor>.Is3DLoaded()`, and the loop body must be one positive
+/// `Utility.Wait` call.
 fn lower_3d_loaded_wait(condition: &Expr, body: &[Spanned<Stmt>], scope: &Scope) -> Option<Effect> {
     let [statement] = body else {
         return None;

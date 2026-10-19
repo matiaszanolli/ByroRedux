@@ -5,9 +5,6 @@
 
 use super::*;
 
-/// `<actor>.SetValue(akAV, afValue)` — the two-argument form is the actor
-/// value setter (`GlobalVariable.SetValue` takes one argument and is
-/// [`prim_set_global_value`]'s). The value must be a numeric literal.
 /// `ObjectReference.AddToMap(bool abFastTravel = False)`.
 pub(super) fn prim_add_to_map(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "AddToMap")?;

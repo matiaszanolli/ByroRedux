@@ -16,10 +16,10 @@
 //! statement no primitive claims, so a partially-understood fragment is
 //! never partially applied.
 //!
-//! ## Scope (this increment)
+//! ## Scope
 //!
-//! Quest-scoped stage/objective operations and a conservative set of
-//! VMAD-resolved object effects are modelled. Object receivers can be direct
+//! Quest-scoped stage/objective operations and the VMAD-resolved object
+//! effects the primitive table names are modelled. Object receivers can be direct
 //! FormID properties, quest-alias `GetRef()`/`GetActorRef()` results, or locals
 //! proven to hold those results; every other shape still declines as a whole.
 //! The table covers quest/object state, scene control, player controls, and the

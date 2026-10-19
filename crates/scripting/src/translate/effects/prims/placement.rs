@@ -35,8 +35,6 @@ const MOVE_TO_MAX_ARGS: usize = 6;
 pub(super) fn prim_move_to(e: &Expr, scope: &Scope) -> Option<Effect> {
     // `ReferenceAlias.TryToMoveTo(ref)` is `MoveTo(ref)` on whatever the alias
     // holds, a no-op when it holds nothing (CK *TryToMoveTo - ReferenceAlias*).
-    // `ReferenceAlias.TryToMoveTo(ref)` is `MoveTo(ref)` on whatever the alias
-    // holds, a no-op when it holds nothing (CK *TryToMoveTo - ReferenceAlias*).
     let (object, args) = method_call_any(e, &["MoveTo", "TryToMoveTo"])?;
     if args.is_empty() || args.len() > MOVE_TO_MAX_ARGS {
         return None;
