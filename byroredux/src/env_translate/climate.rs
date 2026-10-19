@@ -240,28 +240,31 @@ pub(crate) fn resolve_cell_climate(
     worldspace_climate
 }
 
-/// The default weather for `climate`: its highest-chance WTHR entry that
-/// resolves to a parsed record, or — when the climate authors no
-/// decodable WTHR at all — the #5363 WTHS stand-in below.
+/// The default weather for `climate`, by decreasing authoring
+/// preference: its highest-chance WTHR (`WLST`) entry that resolves,
+/// then its highest-chance WSLT row that resolves to a (synthesized)
+/// weather, and only when NOTHING resolves — the #5363 stand-in.
 ///
 /// Negative chances are mod sentinels / subtractive weights and are
 /// filtered before the max (#476). Shared by the once-per-worldspace
 /// resolve in `build_exterior_world_context` and the per-cell XCCM
-/// re-resolve (#2451), so a cell override picks its weather by exactly the
-/// same rule the worldspace default did — #5424 moved the stand-in here
-/// from the worldspace path so BOTH callers share the whole rule: an
-/// XCCM pocket on a WTHS-only climate applies the stand-in's weather
-/// (and its TNAM clock), and leaving the pocket restores it.
+/// re-resolve (#2451), so a cell override picks its weather by exactly
+/// the same rule the worldspace default did — #5424 moved the stand-in
+/// here from the worldspace path so BOTH callers share the whole rule:
+/// an XCCM pocket on a WTHS-only climate applies the same pick (and its
+/// TNAM clock), and leaving the pocket restores it.
 ///
 /// #5363 — 26 of vanilla Starfield's 47 climates author only the WSLT
 /// seasonal table, whose rows reference WTHS records (SF's replacement
 /// weather type — an EDID + REFL parameter blob, not the WTHR schema;
-/// see `ClimateRecord::seasonal_weathers`). Until WTHS decodes, no WTHR
-/// resolves for those climates and the exterior would fall to the
-/// generic procedural palette. The authored `DefaultWeather` WTHR — the
-/// game's canonical default, a full NAM0 palette — stands in instead:
-/// still authored Starfield data, and the climate's own TNAM clock
-/// applies either way. The chance slot carries `i32::MAX` (the
+/// see `ClimateRecord::seasonal_weathers`). #5627 closed the gap: those
+/// records now synthesize WTHR-shaped entries into the same map
+/// (`EsmIndex::synthesize_wths_weathers`), so a WSLT row resolves like
+/// any other weather. The authored `DefaultWeather` WTHR — the game's
+/// canonical default, a full NAM0 palette — is DEMOTED to the fallback:
+/// it fires only when a climate's seasonal rows exist but none of them
+/// synthesized (a dangling chain or a declined instance decode), which
+/// vanilla never trips. Its chance slot still carries `i32::MAX` (the
 /// canonical-default sentinel, not a lottery weight).
 pub(crate) fn resolve_default_weather<'a>(
     climate: &ClimateRecord,
@@ -277,14 +280,30 @@ pub(crate) fn resolve_default_weather<'a>(
             return Some((wthr, best.chance));
         }
     }
+    if let Some((wthr, chance)) = climate
+        .seasonal_weathers
+        .iter()
+        .filter(|w| w.chance >= 0)
+        .max_by_key(|w| w.chance)
+        .and_then(|row| weathers.get(&row.weather_form_id).map(|w| (w, row.chance)))
+    {
+        log::debug!(
+            "Default weather: climate '{}' resolves its highest-chance WSLT row to \
+             '{} ({:08X})' (synthesized WTHS, chance {chance}) (#5627)",
+            climate.editor_id,
+            wthr.editor_id,
+            wthr.form_id,
+        );
+        return Some((wthr, chance));
+    }
     if !climate.seasonal_weathers.is_empty() {
         if let Some(wthr) =
             byroredux_plugin::esm::records::weather::default_weather_by_edid(weathers)
         {
             log::info!(
-                "Default weather: climate '{}' carries only WTHS-referencing WSLT rows \
-                 ({} entries, no decodable WTHR) — using the authored DefaultWeather \
-                 '{} ({:08X})' until WTHS decodes (#5363)",
+                "Default weather: climate '{}' carries {} WSLT rows but none resolved \
+                 (no synthesized WTHS for them) — falling back to the authored \
+                 DefaultWeather '{} ({:08X})' (#5363, demoted to fallback by #5627)",
                 climate.editor_id,
                 climate.seasonal_weathers.len(),
                 wthr.editor_id,
@@ -734,6 +753,55 @@ mod default_weather_rule_tests {
                 "{name} re-inlines the DefaultWeather stand-in pick — the #5424 regression"
             );
         }
+    }
+
+    /// #5627 — the demotion: a WSLT row that RESOLVES (its synthesized
+    /// WTHS weather landed in the map under the row's FormID) beats the
+    /// stand-in and carries its own authored chance, not the
+    /// canonical-default sentinel. The stand-in now fires only when no
+    /// seasonal row resolves — the test above's shape.
+    #[test]
+    fn resolvable_wslt_row_beats_the_demoted_stand_in() {
+        let mut weathers = HashMap::new();
+        weathers.insert(
+            0x0001_0000,
+            WeatherRecord {
+                form_id: 0x0001_0000,
+                editor_id: "DefaultWeather".to_owned(),
+                ..Default::default()
+            },
+        );
+        // The synthesized WTHS weather, keyed by the WTHS's own FormID —
+        // exactly what `EsmIndex::synthesize_wths_weathers` inserts.
+        weathers.insert(
+            0x0003_0000,
+            WeatherRecord {
+                form_id: 0x0003_0000,
+                editor_id: "Weather_Clear_Template_Synth".to_owned(),
+                ..Default::default()
+            },
+        );
+        let climate = ClimateRecord {
+            form_id: 0x0002_0000,
+            editor_id: "AkilaClimate".to_owned(),
+            weathers: Vec::new(),
+            seasonal_weathers: vec![ClimateWeather {
+                weather_form_id: 0x0003_0000,
+                chance: 100,
+            }],
+            ..Default::default()
+        };
+        let resolved = resolve_default_weather(&climate, &weathers);
+        assert_eq!(
+            resolved.map(|(wthr, _)| wthr.form_id),
+            Some(0x0003_0000),
+            "the synthesized WTHS weather wins over the stand-in"
+        );
+        assert_eq!(
+            resolved.map(|(_, chance)| chance),
+            Some(100),
+            "the WSLT row's authored chance, not the stand-in sentinel"
+        );
     }
 
     /// The normal path is unchanged beside the stand-in: the

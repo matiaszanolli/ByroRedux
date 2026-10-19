@@ -41,6 +41,7 @@ pub(crate) mod test_support;
 pub mod tree;
 pub mod weather;
 pub mod weather_settings;
+pub mod weather_settings_instance;
 
 pub use list_record::{parse_flst, FlstRecord};
 pub use load_screen::{
@@ -124,6 +125,7 @@ pub use weather_settings::{
     parse_bgs_reflection, parse_wths, BgsReflection, ReflectionClass, ReflectionField,
     WeatherSettingsRecord,
 };
+pub use weather_settings_instance::{DiffOverride, ReflectionObject, ReflectionValue};
 
 use super::cell::StaticObject;
 use super::reader::{EsmReader, GameKind};

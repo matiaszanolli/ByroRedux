@@ -1318,7 +1318,7 @@ fn starfield_wths_reflection_decodes_schema_and_resolves_wslt() {
         return;
     };
     let bytes = std::fs::read(data.join("Starfield.esm")).expect("read Starfield.esm");
-    let index = parse_esm(&bytes).expect("parse Starfield.esm");
+    let mut index = parse_esm(&bytes).expect("parse Starfield.esm");
 
     assert_eq!(index.weather_settings.len(), 181, "the #5364 census count");
     let roots: Vec<_> = index
@@ -1388,17 +1388,40 @@ fn starfield_wths_reflection_decodes_schema_and_resolves_wslt() {
     assert_eq!(grandparent.editor_id, "WeatherClearTemplate");
     assert!(grandparent.reflection.is_some(), "chains terminate at a root");
     assert!(
-        akila.reflection_diff.as_ref().expect("RDIF decoded").diff_field_indices.is_some(),
+        akila.reflection_diff.as_ref().expect("RDIF decoded").diff_values.is_some(),
         "the RDIF's DIFF chunk names the overridden fields"
     );
 
-    // #5514 — the DIFF object-diff walk, censused across every child:
-    // each decoded index is a real field of the diff's own class (the
-    // pre-fix flat-u16 read filed value bytes and the 0xFFFF terminator
-    // as indices — every chunk had at least one index past its class's
-    // field count), and USRD/MAPC land in the instance census instead
-    // of `unknown_chunks` (47 USRD chunks across 23 vanilla records).
-    let mut children_with_diff = 0usize;
+    // #5627 — the instance-value half decodes across the whole corpus:
+    // every root template's `OBJT` binds to a value tree, every child's
+    // DIFF decodes to named+valued overrides, and no record leaves side
+    // chunks unconsumed (0 = the walk and the schema account for every
+    // byte of every chunk; the grammar module's decline path would show
+    // up here as `None`/nonzero instead).
+    let mut roots_decoded = 0usize;
+    for w in &roots {
+        let refl = w.reflection.as_ref().expect("root carries REFL");
+        assert!(
+            refl.root_instance.is_some(),
+            "{}: root OBJT did not decode to a value tree",
+            w.editor_id
+        );
+        assert_eq!(
+            refl.unconsumed_instance_chunks, 0,
+            "{}: root left instance chunks unconsumed",
+            w.editor_id
+        );
+        let root_obj = refl.root_instance.as_ref().expect("checked above");
+        assert_eq!(
+            root_obj.class, "BGSWeatherSettingsForm",
+            "{}: the root instance binds to the weather root class",
+            w.editor_id
+        );
+        roots_decoded += 1;
+    }
+    assert_eq!(roots_decoded, 18, "every root template decodes");
+
+    let mut children_with_diff_values = 0usize;
     let mut usrd_chunks = 0usize;
     for w in index.weather_settings.values() {
         let Some(diff) = w.reflection_diff.as_ref() else {
@@ -1410,31 +1433,43 @@ fn starfield_wths_reflection_decodes_schema_and_resolves_wslt() {
             w.editor_id,
             diff.unknown_chunks
         );
+        assert_eq!(
+            diff.unconsumed_instance_chunks, 0,
+            "{}: child left instance chunks unconsumed",
+            w.editor_id
+        );
         usrd_chunks += diff
             .instance_chunks
             .iter()
             .filter(|(sig, _)| sig == b"USRD")
             .count();
-        let Some(indices) = diff.diff_field_indices.as_ref() else {
+        let Some(overrides) = diff.diff_values.as_ref() else {
             continue;
         };
-        children_with_diff += 1;
+        children_with_diff_values += 1;
         // Every vanilla WTHS diff names the weather root's own fields,
-        // so the root class's field count bounds the indices.
+        // so the root class's field count bounds the indices, and every
+        // override binds the field name the index points at.
         let root = diff.weather_root_class().expect("schema decodes in RDIF too");
-        for &idx in indices {
+        for o in overrides {
             assert!(
-                (idx as usize) < root.fields.len(),
-                "{}: DIFF index {idx} past the class's {} fields",
+                (o.field_index as usize) < root.fields.len(),
+                "{}: DIFF index {} past the class's {} fields",
                 w.editor_id,
+                o.field_index,
                 root.fields.len()
+            );
+            assert_eq!(
+                root.fields[o.field_index as usize].name, o.field_name,
+                "{}: DIFF override {} binds the wrong field name",
+                w.editor_id, o.field_index
             );
         }
     }
     assert!(
-        children_with_diff >= 160,
-        "children whose DIFF decodes to clean field indices (census 163): \
-         {children_with_diff}"
+        children_with_diff_values >= 160,
+        "children whose DIFF decodes to named+valued overrides (census 163): \
+         {children_with_diff_values}"
     );
     assert!(
         usrd_chunks >= 47,
@@ -1455,6 +1490,47 @@ fn starfield_wths_reflection_decodes_schema_and_resolves_wslt() {
         }
     }
     assert!(wslt_rows > 100, "expected the vanilla WSLT table, got {wslt_rows}");
+
+    // #5627 — synthesis: every chain resolves into the weather map
+    // under the WTHS's own FormID (181 records, no declines on
+    // vanilla), the Akila child's image-space override lands in the
+    // day slots, and the clear template's authored Sun color lifts to
+    // the SKY_SUN group uniformly across the TOD slots.
+    let akila_id = akila.form_id;
+    let clear_id = clear.form_id;
+    let akila_imgs = akila
+        .reflection_diff
+        .as_ref()
+        .and_then(|d| d.diff_values.as_ref())
+        .and_then(|ov| ov.iter().find(|o| o.field_name == "pImageSpace"))
+        .and_then(|o| o.value.as_form_id());
+    index.synthesize_wths_weathers();
+    let synthesized = index
+        .weather_settings
+        .keys()
+        .filter(|id| index.weathers.contains_key(id))
+        .count();
+    assert_eq!(
+        synthesized, 181,
+        "every vanilla WTHS synthesizes into the weather map"
+    );
+    use byroredux_plugin::esm::records::weather::{SKY_SUN, TOD_DAY};
+    let synth_akila = index.weathers.get(&akila_id).expect("Akila synthesized");
+    assert_eq!(synth_akila.editor_id, "WeatherUniqueAkila_Clear_C0_Clear");
+    assert_eq!(
+        synth_akila.image_spaces[TOD_DAY], akila_imgs,
+        "the child's pImageSpace override drives the day slots"
+    );
+    let synth_clear = index
+        .weathers
+        .get(&clear_id)
+        .expect("WeatherClearTemplate synthesized");
+    let sun = synth_clear.sky_colors[SKY_SUN];
+    assert!(
+        sun.iter()
+            .all(|c| (c.r, c.g, c.b, c.a) == (240, 241, 205, 0)),
+        "the corpus Sun color (0.941, 0.945, 0.804, 0) lifts to SKY_SUN, got {sun:?}"
+    );
 }
 
 #[test]

@@ -61,12 +61,19 @@ fn print_wths(h: &RecordHeader, edid: &str, subs: &[SubRecord]) {
     };
     let refl = parse_bgs_reflection(&blob.data);
     println!(
-        "  reflection: version={} chunks={} classes={} strings={} diff={:?} instance={:?} unknown={:?}",
+        "  reflection: version={} chunks={} classes={} strings={} \
+         diff_values={} root={} unconsumed={} instance={:?} unknown={:?}",
         refl.version,
         refl.chunk_count,
         refl.classes.len(),
         refl.strings.len(),
-        refl.diff_field_indices.as_ref().map(Vec::len),
+        refl.diff_values.as_ref().map(Vec::len).map(|n| n.to_string()).as_deref().unwrap_or("-"),
+        refl.root_instance
+            .as_ref()
+            .map(|o| format!("{} ({} fields)", o.class, o.fields.len()))
+            .as_deref()
+            .unwrap_or("-"),
+        refl.unconsumed_instance_chunks,
         refl.instance_chunks,
         refl.unknown_chunks
     );
@@ -84,23 +91,88 @@ fn print_wths(h: &RecordHeader, edid: &str, subs: &[SubRecord]) {
             );
         }
     }
-    // The instance half, raw — the follow-up decoder's input.
+    // The instance half, decoded (#5627) — the value tree the
+    // synthesis walks; printed compactly for grounding the field
+    // mapping, with the raw hex of any chunk kept for reference.
+    if let Some(root) = &refl.root_instance {
+        print_value(&byroredux_plugin::esm::records::ReflectionValue::Object(
+            root.clone(),
+        ), 1);
+    }
+    if let Some(overrides) = &refl.diff_values {
+        for o in overrides {
+            println!(
+                "  diff {} (idx {}):",
+                o.field_name, o.field_index
+            );
+            print_value(&o.value, 2);
+        }
+    }
     let mut off = 0usize;
     while off + 8 <= blob.data.len() {
         let sig: [u8; 4] = blob.data[off..off + 4].try_into().unwrap();
         let size = u32::from_le_bytes(blob.data[off + 4..off + 8].try_into().unwrap()) as usize;
-        if matches!(&sig, b"OBJT" | b"LIST" | b"USER") {
+        if matches!(&sig, b"OBJT" | b"LIST" | b"USER" | b"USRD" | b"MAPC") {
             println!(
                 "  instance chunk {} ({} B):",
                 String::from_utf8_lossy(&sig),
                 size
             );
             let payload = &blob.data[off + 8..(off + 8 + size).min(blob.data.len())];
-            for row in payload.chunks(16).take(8) {
+            for row in payload.chunks(16) {
                 let hex: Vec<String> = row.iter().map(|b| format!("{b:02x}")).collect();
                 println!("    {}", hex.join(" "));
             }
         }
         off += 8 + size;
+    }
+}
+
+fn print_value(v: &byroredux_plugin::esm::records::ReflectionValue, depth: usize) {
+    let indent = "  ".repeat(depth + 1);
+    match v {
+        byroredux_plugin::esm::records::ReflectionValue::Object(o) => {
+            for (name, field) in &o.fields {
+                match field {
+                    byroredux_plugin::esm::records::ReflectionValue::Object(_)
+                    | byroredux_plugin::esm::records::ReflectionValue::List(_) => {
+                        println!("{indent}{name}:");
+                        print_value(field, depth + 1);
+                    }
+                    _ => println!("{indent}{name} = {}", summarize(field)),
+                }
+            }
+        }
+        byroredux_plugin::esm::records::ReflectionValue::List(items) => {
+            for (i, item) in items.iter().enumerate() {
+                println!("{indent}[{i}] {}", summarize(item));
+            }
+        }
+        _ => println!("{indent}{}", summarize(v)),
+    }
+}
+
+fn summarize(v: &byroredux_plugin::esm::records::ReflectionValue) -> String {
+    use byroredux_plugin::esm::records::ReflectionValue as V;
+    match v {
+        V::Null => "null".into(),
+        V::Bool(b) => format!("{b}"),
+        V::I8(x) => format!("{x} i8"),
+        V::U8(x) => format!("{x} u8"),
+        V::I16(x) => format!("{x} i16"),
+        V::U16(x) => format!("{x} u16"),
+        V::I32(x) => format!("{x:#x} i32"),
+        V::U32(x) => format!("{x:#010x} u32"),
+        V::I64(x) => format!("{x:#x} i64"),
+        V::U64(x) => format!("{x:#018x} u64"),
+        V::F32(x) => format!("{x} f32"),
+        V::F64(x) => format!("{x} f64"),
+        V::String(s) => format!("{s:?}"),
+        V::Ref { target_type, value } => {
+            format!("ref({target_type}) = {}", summarize(value))
+        }
+        V::List(items) => format!("[{} items]", items.len()),
+        V::Map(pairs) => format!("{{{} pairs}}", pairs.len()),
+        V::Object(o) => format!("{} {{ {} fields }}", o.class, o.fields.len()),
     }
 }

@@ -740,6 +740,10 @@ where
         script_winners.extend(plugin_records.scripts.keys().map(|id| (*id, position)));
         merged.merge_from(plugin_records);
     }
+    // #5627 — a WTHS child in a plugin diffs its template in a master
+    // (Akila's weathers → Starfield.esm's roots), so the RFDP-chain
+    // synthesis only resolves once every plugin is folded in.
+    merged.synthesize_wths_weathers();
     let mut order = LoadOrder::with_dependencies(load_order, slots, dependencies);
     order.script_winners = script_winners;
     Ok((merged, order))

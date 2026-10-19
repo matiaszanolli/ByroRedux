@@ -1326,6 +1326,41 @@ impl EsmIndex {
         self.deleted_record_metadata = deleted;
     }
 
+    /// Synthesize a [`WeatherRecord`] for every WTHS whose `RFDP` chain
+    /// resolves (#5627), inserting it into [`Self::weathers`] under the
+    /// WTHS's own (load-order remapped) FormID — remapped FormIDs are
+    /// unique across the load order, so the synthesized entries can
+    /// never collide with a real WTHR. Runs on the MERGED index, after
+    /// every plugin is folded in: children in a plugin diff templates
+    /// in their masters (`resolve_wths_chain` needs the whole map).
+    ///
+    /// A record whose chain dangles or whose root instance decode
+    /// declined keeps no synthesized weather; climate resolution then
+    /// falls back the way it did pre-#5627 (see `resolve_default_weather`).
+    pub fn synthesize_wths_weathers(&mut self) {
+        if self.weather_settings.is_empty() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        let mut synthesized = 0usize;
+        for (id, record) in &self.weather_settings {
+            if let Some(wthr) =
+                super::weather_settings::synthesize_weather_record(record, &self.weather_settings)
+            {
+                self.weathers.insert(*id, wthr);
+                synthesized += 1;
+            }
+        }
+        if synthesized > 0 {
+            log::info!(
+                "Synthesized {} of {} WTHS weathers into the weather map in {:.2} s (#5627)",
+                synthesized,
+                self.weather_settings.len(),
+                started.elapsed().as_secs_f64()
+            );
+        }
+    }
+
     pub fn merge_from(&mut self, mut other: EsmIndex) {
         // M41.0 Phase 1b — preserve the latest plugin's game variant on the
         // merged index. Multi-plugin loads always share a single game in
