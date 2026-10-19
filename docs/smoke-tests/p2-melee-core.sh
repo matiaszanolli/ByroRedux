@@ -480,6 +480,15 @@ for sample in $(seq 1 20); do
         grep -Fq "bodies=$P2_RAGDOLL_BODIES live=$P2_RAGDOLL_BODIES " "$corpse_log" \
             || fail "restored ragdoll body count changed"
     fi
+    # #4772 — the restore's first solve must not explode: with the fixture's
+    # authored joint count declared, the articulation stays whole and the
+    # invalid-solve recovery never fires (it used to mask a ~1e12 BU jump).
+    if [[ -n "${P2_RAGDOLL_JOINTS:-}" ]]; then
+        grep -Fq " joints=$P2_RAGDOLL_JOINTS live_joints=$P2_RAGDOLL_JOINTS " "$corpse_log" \
+            || fail "restored ragdoll lost joints (want $P2_RAGDOLL_JOINTS live)"
+        grep -Fq 'recoveries_total=0 ' "$corpse_log" \
+            || fail "restored ragdoll needed an invalid-solve recovery (#4772)"
+    fi
     distance="$(sed -nE 's/.*max_distance=([0-9]+[.][0-9]+).*/\1/p' "$corpse_log")"
     [[ -n "$distance" ]] || fail "corpse distance metric absent"
     awk -v distance="$distance" -v bound="$P2_RAGDOLL_MAX_DISTANCE" \
@@ -488,5 +497,14 @@ for sample in $(seq 1 20); do
     sleep 0.5
 done
 echo "smoke[p2-melee-core]: PASS -- restored corpse bodies stayed finite and within $P2_RAGDOLL_MAX_DISTANCE units over 20 samples"
+if [[ -n "${P2_RAGDOLL_JOINTS:-}" ]]; then
+    debug_commands "phys.stats" "$LOG_DIR/physics.restored.final" \
+        || fail "final restored physics diagnostics unavailable"
+    grep -Fq 'recoveries: total=0 ' "$LOG_DIR/physics.restored.final" \
+        || fail "the restore's first solve fired an invalid-solve recovery (#4772)"
+    grep -Fq 'explosive detaches: total=0' "$LOG_DIR/physics.restored.final" \
+        || fail "the restore's first solve detached an exploding articulation (#4772)"
+    echo "smoke[p2-melee-core]: PASS -- restore solved clean: 0 recoveries, 0 explosive detaches, $P2_RAGDOLL_JOINTS/$P2_RAGDOLL_JOINTS joints live"
+fi
 
 echo "smoke[p2-melee-core]: PASS"
