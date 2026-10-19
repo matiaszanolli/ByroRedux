@@ -1,0 +1,29 @@
+# FO4-SD-01: Pre-baked FaceGen path is built from the load-order-global FormID; DLC facegeom files are named by the plugin-local id
+
+Labels: medium,import-pipeline,bug,game:fo4,game:skyrim,game:starfield,legacy-compat
+
+Canonical issue for the whole family: FO4-SD-01 (FO4 report), SKY-SD-01 (Skyrim report) and SF-SD-04 (Starfield report) are the same defect with the same fix, so they are merged here. Affected: Fallout 4, Skyrim (SE/LE, DLC + Creation Club), Starfield (DLC).
+
+## Description
+`prebaked_facegen_nif_path` and `prebaked_facegen_tint_path` (`byroredux/src/npc_spawn.rs`) build `...\facegendata\facegeom\<plugin>\<formid:08x>.nif` (and the facetint DDS). `<plugin>` is correctly the owner of the NPC's slot (`plugin_for_form_id`, supplied by `byroredux/src/cell_loader/references/mod.rs`), but `<formid>` is `npc.form_id`, which the ESM reader has already remapped to the load-order-global space (`crates/plugin/src/esm/reader.rs` `read_record_header` -> `remap_form_id`), so its top byte is the plugin's load-order slot. The shipped DLC archives name the file by the plugin-local id with a zero top byte, so for any NPC whose owner is not slot 0 the probe asks for e.g. `...\dlccoast.esm\03002162.nif` while the archive holds `...\DLCCoast.esm\00002162.NIF`, and `extract_mesh` always misses. The path docblock says "load-order-global FormID rendered as 8 lowercase hex digits"; it was verified only against slot-0 masters. The unit test (`byroredux/src/npc_spawn/tests.rs`, `prebaked_facegen_nif_path` case) pins `Dawnguard.esm` with `0x0001684C`, a top-byte-zero value that no global Dawnguard FormID has. Callers: `byroredux/src/npc_spawn/resumable/prebaked.rs:146-147`.
+
+## Evidence (static, per game)
+- **FO4**: `Fallout4 - Meshes.ba2` holds 1,094 facegeom NIFs under `FaceGeom\Fallout4.esm\`. DLC archives: `DLCCoast - Main.ba2` 153, `DLCNukaWorld - Main.ba2` 224, `DLCRobot - Main.ba2` 12, `DLCworkshop02` 2, `DLCworkshop03` 5, all `FaceGeom\<plugin>\00xxxxxx.NIF` (0 names with a non-zero top byte in any archive; e.g. `DLCCoast.esm\00002162.NIF`). 396 files in total. Matching textures are named the same way (`FaceCustomization\DLCCoast.esm\00002162_d.DDS`). DLCRobot, DLCworkshop01, DLCCoast, ... are load-order slots 1.., so the global id is never `00xxxxxx` for them. ESL plugins (FO4 Creation Club) hit the same shape (`FE` slot + sub-index in the top 12 bits).
+- **Skyrim SE**: `Skyrim - Meshes0.bsa` holds 3,158 facegeom NIFs: `skyrim.esm` 2,549, `dragonborn.esm` 366, `dawnguard.esm` 225, `hearthfires.esm` 17, `update.esm` 1; **all 3,158 have top byte `00`**; `Skyrim - Textures0.bsa` facetint has the identical distribution. By local id, 225 of Dawnguard's 509 own NPCs, 366 of Dragonborn's 703 and 17 of HearthFires' 30 match a shipped file; in the standard order their global ids start `02`, `04`, `03`. Concrete case: Serana (`DLC1Serana`, file-local `0x02002B6C`) ships as `facegeom\dawnguard.esm\00002b6c.nif`; the engine asks for `dawnguard.esm\02002b6c.nif`. Creation Club: `ccBGSSSE001-Fish.bsa` 34 and `ccBGSSSE025-AdvDSGS.bsa` 47 facegeom files, all `000008f6`-shaped; those plugins are light masters (global `FExxxyyy`), so they miss for the same reason. (Skyrim LE DLC `.bsa` files are not installed locally; the mechanism is the same code path.)
+- **Starfield**: files are `meshes/actors/character/facegendata/facegeom/<plugin>.esm/<local 8-hex>.nif`. `Starfield - FaceMeshes.ba2` has 1,282 for the base plugin (slot 0, resolves). DLC files: `shatteredspace.esm` 135, `sfbgs00d.esm` 62, `sfbgs003.esm` 41 (medium; local `00000e90`, global `0xFD000E90`), `sfbgs050.esm` 32, `sfbgs00c.esm` 5 (small; local `00000027`): **275 vanilla DLC files** plus `kgcdoom.esm` 6. A regular DLC NPC is probed as `<slot byte><local 6 hex>.nif` (e.g. `0b00421f.nif`), a medium one as `fd000e90.nif`, a small one as `fe00....nif`: none exist. Note that Starfield small/medium global ids are additionally wrong today (see the Starfield FormID-decode finding SF-SD-01).
+- Totals: 396 FO4 + 608 Skyrim (+81 CC) + 275 Starfield vanilla DLC faces, plus their Skyrim facetints.
+
+## Impact
+Every DLC- or CC-owned authored NPC (Far Harbor, Nuka-World, Automatron, workshop NPCs; Serana, Miraak, Neloth, Hearthfire children, Fishing / Saints and Seducers NPCs; Starfield Shattered Space and Neon/other DLC NPCs) misses its baked head and tint. Since `2a8663f39` (#5408) they fall into the race-base-parts head fallback (a generic race head; thin on Starfield, where only 4 of 31 races carry `HEAD` base parts); before it they were headless. Vanilla slot-0 master NPCs are unaffected, which is why control benches never show it.
+
+## Related
+SKY-SD-02 (separate issue: the same builder also takes the wrong NPC record for templated NPCs; plugin segment must come from the terminal's owner), FO4-SD-03 (tint path layout), Starfield FormID decode SF-SD-01, #5095, #5408, #2095.
+
+## Suggested Fix
+Format the file name from the plugin-local part of the id: `global_slot_of(form_id)` already classifies Regular / Medium / Light (the helper `scol_derived_cm_path` in `byroredux/src/cell_loader/refr.rs` does exactly this for `cm<local>`: `0x00FF_FFFF` / `0x0000_FFFF` / `0x0000_0FFF`). Move that masking into a shared helper and use it in both facegen path builders. Fix the test to use a real DLC global id (`0x0200_xxxx`) and add a DLC-shaped case, plus an ignored real-data gate that every shipped `FaceGeom\<plugin>\*.NIF` name round-trips through the path builder from a synthetic global id (FO4, Skyrim, Starfield).
+
+Source: docs/audits/AUDIT_FO4_2026-10-19.md (area-scoped, streaming-deep)
+
+## Completeness Checks
+- [ ] **SIBLING**: Same pattern checked in related files (other readers/builders of the same field, other games sharing the code path)
+- [ ] **TESTS**: A regression test pins this specific fix
