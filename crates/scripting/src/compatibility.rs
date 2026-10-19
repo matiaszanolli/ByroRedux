@@ -99,7 +99,8 @@ impl CompatibilityRegistry {
             // only to an operator who happens to run `sdk.compat`.
             if !self.truncated {
                 log::warn!(
-                    "compatibility registry full ({} scripts, {} findings/diagnostics);                      further extender-era scripts are no longer recorded",
+                    "compatibility registry full ({} scripts, {} findings/diagnostics); \
+                     further extender-era scripts are no longer recorded",
                     self.scripts.len(),
                     self.retained_entries
                 );

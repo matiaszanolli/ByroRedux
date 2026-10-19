@@ -1381,7 +1381,7 @@ mod tests {
     #[test]
     fn the_environment_installer_flushes_the_sky_textures_it_queues() {
         let source = include_str!("world_setup.rs");
-        let production = source.split("#[cfg(test)]").next().unwrap();
+        let production = byroredux_core::source_scan::production_text(source);
         let start = production
             .find("\nfn apply_environment_with_sources(")
             .expect("installer present");
