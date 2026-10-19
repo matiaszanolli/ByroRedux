@@ -684,7 +684,11 @@ impl<'l> Checker<'l> {
                 }
             }
             Expr::Call { callee, args } => self.check_call(frame, &callee.node, args, false)?,
-            Expr::Is { .. } | Expr::ParentAccess => return self.fail(|| "Is / Parent".into()),
+            Expr::Is { expr, .. } => {
+                self.kind(frame, &expr.node)?;
+                Kind::Bool
+            }
+            Expr::ParentAccess => return self.fail(|| "Parent".into()),
         })
     }
 

@@ -775,7 +775,11 @@ impl Vm<'_> {
                 self.read_member(&owner, name)?
             }
             Expr::Call { callee, args } => self.call_value(frame, &callee.node, args)?,
-            Expr::Is { .. } | Expr::ParentAccess => return stop("unsupported expression"),
+            // The type of a form is not tracked (see `cast`), so the type-test
+            // reduces to the truthiness an object-typed cast already gave it
+            // before #5443 lowered opcode 36 to `Expr::Is`.
+            Expr::Is { expr, .. } => Value::Bool(self.eval(frame, &expr.node)?.truthy()),
+            Expr::ParentAccess => return stop("unsupported expression"),
         })
     }
 

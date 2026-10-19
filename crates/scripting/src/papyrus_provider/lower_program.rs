@@ -1160,7 +1160,7 @@ pub(crate) fn expression_mentions_provider(
             expression_mentions_provider(&left.node, catalog, locals, depth + 1)
                 || expression_mentions_provider(&right.node, catalog, locals, depth + 1)
         }
-        Expr::Cast { expr, .. } => {
+        Expr::Cast { expr, .. } | Expr::Is { expr, .. } => {
             expression_mentions_provider(&expr.node, catalog, locals, depth + 1)
         }
         Expr::New { size, .. } => {

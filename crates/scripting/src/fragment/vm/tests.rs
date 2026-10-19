@@ -522,6 +522,28 @@ fn script_variables_read_their_declared_values_and_hold_strings() {
     assert!(crate::fragment::reference_enabled(&world, MARKER));
 }
 
+/// #5443 — the `.pex` decompiler now lowers opcode 36 to `Expr::Is`; the VM
+/// evaluates the type-test as the operand's truthiness (form types are not
+/// tracked), which is what the object-typed `Cast` it replaced gave.
+#[test]
+fn an_is_type_test_runs_as_the_operands_truthiness() {
+    let script = parsed_source(
+        "ScriptName QF_VmIs extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         ObjectReference Property Nothing Auto\n\
+         Function Fragment_1()\n\
+           If Nothing is Actor\n Self.SetStage(99)\n EndIf\n\
+           If Marker is ObjectReference\n Marker.Enable()\n EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(crate::fragment::reference_enabled(&world, MARKER), "`Marker is …` is true");
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10, "`None is Actor` is false");
+}
+
 /// Events the engine raises outside a script run reach the reference's handler
 /// with their arguments: a trap hit with its ten, a destruction stage change with
 /// both stage numbers.

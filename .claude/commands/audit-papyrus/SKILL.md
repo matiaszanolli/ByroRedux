@@ -125,8 +125,8 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
   have collapsed) **fails closed** (`ControlFlowFailed`, #1732; `conditional_predecessor_fails_closed`) —
   a fix that resumes past the block drops statements. The module doc's "advanced past" wording is stale
   (#4115 open, verified 2026-10-15).
-- **Three bookkept Champollion departures** — `boolean.rs`'s two (plus a third, newer guard below), and `lower.rs`'s `is` → object-typed `Cast`
-  (#4477, `an_is_opcode_lowers_to_an_object_typed_cast`; recognizer-irrelevant only while no consumer keys on it).
+- **Bookkept Champollion departures** — `boolean.rs`'s two (plus a third, newer guard below). `lower.rs`'s `is` → object-typed
+  `Cast` departure (#4477) is closed: opcode 36 lowers to `Expr::Is` (#5443, `an_is_opcode_lowers_to_an_is_expression`).
   For the **`boolean.rs`** two — adjudicate benign-or-bug, evidence = corpus rate +
   fidelity gate, not speculation: (1) no debug-line guard (a same-named temp on a fall-through edge could be
   falsely collapsed into a fabricated `&&`/`||`); (2) termination guard (only re-process on a real merge —
@@ -215,7 +215,7 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   `glued_struct_and_group_terminators_stay_for_their_container`); `parse_expr` (debug console, offline preflight) ends in
   `require_input_end` (`parse_expr_rejects_trailing_tokens`). FO4 `is` is a keyword with an `Expr::Is` type-test
   node at cast precedence (`test_is_type_test`); downstream exhaustive matches treat it as transparent to the operand
-  (the `.pex` side still lowers `OpCode::Is` to an object-typed `Cast`, so the two frontends do NOT yet share one shape).
+  (the `.pex` side lowers `OpCode::Is` to the same `Expr::Is`, #5443; the VM evaluates it as the operand's truthiness).
 - **Doc comments and FO4 names** (`e96d687ec`): Papyrus puts an item's `{…}` doc on the line AFTER its header, so
   `take_trailing_doc` (`parser/mod.rs`) consumes one right after each header's `expect_eol` (script header,
   property, group, struct + member, function/event; #5325 — a bodied function's doc once became its first

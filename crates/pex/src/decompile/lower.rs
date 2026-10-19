@@ -10,20 +10,14 @@
 //! are not applied; they don't affect recognizer matching, which keys on
 //! names, calls, and condition shape. `Copy` nodes are unwrapped inline.
 //!
-//! ## Deliberate Champollion departure (the third; #4477)
+//! ## Deliberate Champollion departures
 //!
-//! **`a is T` lowers to `Expr::Cast`.** The shared AST has no `is`
-//! type-test operator, so opcode 36 lowers to the structurally closest
-//! `a as T` — which is ill-typed Papyrus in a condition position (`as`
-//! does not yield Bool). Departures 1 and 2 (the boolean pass's
-//! no-debug-line guard and termination guard) live in
-//! `super::boolean`'s module doc. Like them it is recognizer-irrelevant
-//! today: recognizers key on names/calls/condition shape, and ≈0 vanilla
-//! scripts contain opcode 36 (no `.psc` construct emits it). A future
-//! consumer that RENDERS the lower-only AST to source text, or evaluates
-//! it strictly, must add an `Is`-capable expression (or a condition-only
-//! `TypeTest` variant) first — if that happens, this lowering and its pin
-//! test are the two places to change.
+//! Departures 1 and 2 (the boolean pass's no-debug-line guard and
+//! termination guard) live in `super::boolean`'s module doc. The third
+//! (#4477, `a is T` lowered to `Expr::Cast`) is closed: opcode 36 now
+//! lowers to [`Expr::Is`] (#5322 added it to the shared AST), the same
+//! shape the `.psc` parser produces for `a is T`. The FO4 / Starfield
+//! corpus carries 78 `is` instructions in 37 scripts (#5443).
 
 use std::collections::HashMap;
 
@@ -138,11 +132,8 @@ fn lower_expr(node: &Node) -> Spanned<Expr> {
             }
         }
         NodeKind::BinaryOp { left, op, right } if op == "is" => {
-            // Papyrus's `a is T` type-test has no BinaryOp counterpart in
-            // the shared AST; lower to the structurally closest `a as T`.
-            // Rare and recognizer-irrelevant. Bookkept as the third
-            // deliberate Champollion departure — see this module's doc.
-            Expr::Cast {
+            // Opcode 36: the type-test yields a Bool, unlike `a as T`.
+            Expr::Is {
                 expr: Box::new(lower_expr(left)),
                 target_type: sp(lower_type(&node_type_name(right))),
             }
@@ -966,12 +957,11 @@ mod tests {
         );
     }
 
-    /// #4477 — the opcode-36 (`Is`) lowering pin: `a is T` arrives as
-    /// `Expr::Cast { target_type: T }`, the documented third Champollion
-    /// departure (this module's doc). If the AST ever gains an `Is`-capable
-    /// expression, this is the test to flip.
+    /// #4477 / #5443 — the opcode-36 (`Is`) lowering pin: `a is T` arrives
+    /// as `Expr::Is { target_type: T }`, the same shape the `.psc` parser
+    /// produces, not as a conversion `Expr::Cast`.
     #[test]
-    fn an_is_opcode_lowers_to_an_object_typed_cast() {
+    fn an_is_opcode_lowers_to_an_is_expression() {
         // ; a is Actor
         // Is a Actor  (opcode 36, Bool result → ::NoneVar)
         let func = PexFunction {
@@ -1000,21 +990,22 @@ mod tests {
             })
             .map(|f| &f.body)
             .expect("one function");
-        // Walk the statements looking for the Cast expression.
-        let mut cast: Option<&past::Type> = None;
+        // Walk the statements looking for the Is expression.
+        let mut is: Option<&past::Type> = None;
         for stmt in body {
             if let Stmt::ExprStmt(expr) = &stmt.node {
-                if let Expr::Cast { target_type, .. } = &expr.node {
-                    cast = Some(&target_type.node);
+                match &expr.node {
+                    Expr::Is { target_type, .. } => is = Some(&target_type.node),
+                    Expr::Cast { .. } => panic!("the `is` must not lower to a Cast"),
+                    _ => {}
                 }
             }
         }
-        let cast = cast.expect("the `is` must lower to a Cast");
+        let is = is.expect("the `is` must lower to an Is");
         assert_eq!(
-            cast,
+            is,
             &past::Type::Object(past::Identifier::new("Actor".to_string())),
-            "the type-test lowers to an object-typed cast — the documented \
-             third departure (this module's doc, #4477)"
+            "the type-test lowers to an object-typed `Expr::Is` (#5443)"
         );
     }
 

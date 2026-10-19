@@ -271,8 +271,8 @@ pub enum Expr {
     },
     /// FO4 type-test operator `expr is Type` (#5322). Yields a Bool —
     /// the bytecode's `Is` opcode (36) — unlike [`Expr::Cast`], which
-    /// converts. The two frontends agree: the `.pex` decompiler lifts
-    /// `OpCode::Is` to the same binary shape (crates/pex `lift.rs`).
+    /// converts. The two frontends agree: the `.pex` decompiler lowers
+    /// `OpCode::Is` (`lift.rs` → `lower.rs`) to this same variant (#5443).
     Is {
         expr: Box<Spanned<Expr>>,
         target_type: Spanned<Type>,
