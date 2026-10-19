@@ -1436,9 +1436,33 @@ void main() {
             authoredInnerScale.x > 0.0001 ? authoredInnerScale.x : 1.0,
             authoredInnerScale.y > 0.0001 ? authoredInnerScale.y : 1.0
         );
+        // #5961 — `multiLayerRefractionScale` is the authored strength of
+        // the inner layer's view-dependent shift (the "refraction" that
+        // makes the layer read as BEHIND the surface). Offset the inner
+        // sample along the tangent-space view vector, scaled by the
+        // authored thickness so a zero-thickness layer cannot slide.
+        // Both the branch and the factor are named in
+        // shader_constants.glsl (`MLP_REFRACTION_UV_PER_UNIT`): no
+        // shipped reader pins the vanilla transfer function, so 0 keeps
+        // the unoffset sample bit-for-bit. The guard mirrors the
+        // fragTangent-degeneracy test the sparkle path uses (line ~842).
+        // The material kind is a material constant, so this branch is
+        // uniform per material — the implicit-LOD texture() below stays
+        // in uniform control flow.
+        vec2 refractUV = sampleUV;
+        if (mat.multiLayerRefractionScale > 0.0
+            && dot(fragTangent.xyz, fragTangent.xyz) > 1e-4) {
+            vec3 T = normalize(fragTangent.xyz);
+            vec3 B = cross(N, T) * sign(fragTangent.w);
+            vec2 viewTS = vec2(dot(-V, T), dot(-V, B));
+            refractUV = sampleUV + viewTS
+                * (mat.multiLayerRefractionScale
+                   * clamp(mat.multiLayerInnerThickness, 0.0, 1.0)
+                   * MLP_REFRACTION_UV_PER_UNIT);
+        }
         vec4 innerSample = texture(
             textures[nonuniformEXT(mat.innerLayerMapIndex)],
-            sampleUV * innerScale
+            refractUV * innerScale
         );
         float innerWeight = clamp(mat.multiLayerInnerThickness, 0.0, 1.0)
             * innerSample.a;
@@ -1601,21 +1625,19 @@ void main() {
         metalness *= 1.0 - weatherSnow;
         specStrength = mix(specStrength, max(specStrength, 0.42), weatherSnow * 0.65);
     }
-    // Variant stubs — data already lands in GpuMaterial; the full
-    // shading branches ship in follow-up issues. Listed explicitly so
-    // a future reader searching by `materialKind == N` finds the
-    // intended consumers.
-    //   · materialKind == 11 (MultiLayerParallax): the authored inner
-    //       texture layer is sampled above and `multiLayerEnvmapStrength`
-    //       already scales the environment reflection. The packed
-    //       `multiLayerRefractionScale` has no shader read yet — the
-    //       refraction/Fresnel coupling is the missing part (#5961).
-    //   · materialKind == 16 (EyeEnvmap): use
-    //       `eyeLeftCenter` / `eyeRightCenter` + `eyeCubemapScale` to
-    //       reflect a cubemap sample off the iris center (not the
-    //       sclera). Requires a per-instance cubemap descriptor binding
-    //       that doesn't exist yet; add alongside the FO4 env-reflect
-    //       cubemap path.
+    // Variant shading notes — data lands in GpuMaterial and every kind
+    // below now has its shading branch; kept as the search anchors for
+    // a future reader looking by `materialKind == N`.
+    //   · materialKind == 11 (MultiLayerParallax): the inner layer is
+    //       sampled above with the `multiLayerRefractionScale`
+    //       view-dependent offset (#5961), and
+    //       `multiLayerEnvmapStrength` scales the environment
+    //       reflection in the env-specular block.
+    //   · materialKind == 16 (EyeEnvmap): the iris-centred authored-
+    //       cubemap reflection (#5961) — the old "no cubemap binding"
+    //       note was stale; the material-bound cubemap array
+    //       (`envMapIndex`, the shader's EnvMap slot) already existed
+    //       for the FO4 env path and eyes ship their cube there.
 
     // F0 derivation — single format-agnostic mix, NOT a PBR-vs-legacy
     // shader branch. (Pre-`31c99bb3` the shader itself read authored
@@ -2968,10 +2990,19 @@ void main() {
     // Fresnel fallback. Do not duplicate glass reflection through this
     // general glossy-surface path.
     bool hasAuthoredCubemap = mat.envMapIndex != 0u;
+    // #5961 — EyeEnvmap (kind 16): eyes carry the full authored suite
+    // (cubemap in the EnvMap slot → `envMapIndex`, reflection centres and
+    // strength in the packed `eye*` fields). An unauthored or zeroed scale
+    // keeps the fragment on the generic path below, exactly pre-#5961.
+    bool isEyeEnvmap = mat.materialKind == MATERIAL_KIND_EYE_ENVMAP
+        && hasAuthoredCubemap && mat.eyeCubemapScale > 0.0;
     bool hasExplicitEnvironment =
         hasAuthoredCubemap || mat.materialKind == 1u;
+    // Eyes are served exclusively by the iris-centred authored-cube branch
+    // below — vanilla eye shading never scene-reflects, and letting both
+    // run would stack a surface-point RT reflection on top of it.
     bool needsEnvironmentReflection =
-        metalness > 0.3 || hasExplicitEnvironment;
+        (metalness > 0.3 || hasExplicitEnvironment) && !isEyeEnvmap;
     if (roughness < 0.6 && !isGlass
         && needsEnvironmentReflection) {
         // V-aligned normal flip (#668). The bump map at line 638 can perturb
@@ -3080,6 +3111,52 @@ void main() {
         // rises; this is the cheap energy stand-in for that.
         Lo += envColor * F * (1.0 - roughness)
             * environmentReflectionMask * environmentStrength;
+    }
+
+    // #5961 — EyeEnvmap (kind 16): the iris-centred authored-cubemap
+    // reflection. Deliberately OUTSIDE the roughness gate above: that gate
+    // exists to save the RT ray, which eyes never fire — the whole effect
+    // is one textureLod on the material's own cube. Vanilla eyes reflect
+    // their authored cubemap from the eye's REFLECTION CENTER, not the
+    // surface point: eyeball meshes are near-spheres whose sclera normal
+    // makes a surface-point reflection read flat, while measuring the view
+    // direction from the authored centre keeps the whole iris reflecting
+    // coherently — the alive-eye effect the fields exist for. The nearest
+    // centre wins (one property is shared by both eyeballs of a mesh), and
+    // `eyeCubemapScale` is the authored reflection strength.
+    //
+    // Known limit: the centres are authored in the eyeball's object space
+    // and the instance `model` places them — skinned eyes under head-bone
+    // rotation track the actor root, not the head-look delta. Rigid and
+    // static heads are exact.
+    if (isEyeEnvmap) {
+        vec3 leftWS = (instances[fragInstanceIndex].model
+            * vec4(mat.eyeLeftCenterX, mat.eyeLeftCenterY, mat.eyeLeftCenterZ, 1.0)).xyz;
+        vec3 rightWS = (instances[fragInstanceIndex].model
+            * vec4(mat.eyeRightCenterX, mat.eyeRightCenterY, mat.eyeRightCenterZ, 1.0)).xyz;
+        vec3 centerWS = distance(fragWorldPos, leftWS) <= distance(fragWorldPos, rightWS)
+            ? leftWS : rightWS;
+        vec3 eyeR = reflect(normalize(fragWorldPos - centerWS), N);
+        // Renderer world space is Y-up; authored cubemaps are Z-up — the
+        // same (x, z, -y) face selection the generic cube path uses.
+        vec3 cubeDirection = normalize(vec3(eyeR.x, -eyeR.z, eyeR.y));
+        vec3 eyeEnv = textureLod(
+            cubemaps[nonuniformEXT(mat.envMapIndex)],
+            cubeDirection,
+            roughness * 8.0
+        ).rgb * clamp(mat.eyeCubemapScale, 0.0, 4.0);
+        // Fresnel-weighted like every other env reflection (grazing
+        // stronger), modulated by the authored eye environment mask
+        // (`eyeenvironmentmask` ships in the mask slot) where present —
+        // that mask is what separates the reflective iris from the matte
+        // sclera. No roughness attenuation: the cube IS the eye's
+        // reflection, and eye smoothness values in the wild straddle the
+        // gate the RT path needs.
+        vec3 F_eye = fresnelSchlickPower(NdotV, F0, mat.fresnelPower);
+        float eyeMask = mat.envMaskIndex != 0u
+            ? texture(textures[nonuniformEXT(mat.envMaskIndex)], sampleUV).r
+            : 1.0;
+        Lo += eyeEnv * F_eye * eyeMask;
     }
 
     // Canonical Bethesda direct-light auxiliary maps. Source-specific slot

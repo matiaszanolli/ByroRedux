@@ -608,6 +608,14 @@ pub const GROUNDCOVER_BEZIER_BEND_CARRY_MIN: f32 = 0.05;
 pub const GROUNDCOVER_BEZIER_BEND_CARRY_MAX: f32 = 0.30;
 /// Numerical guards for zero-length blade/wind vectors; not artistic tuning.
 pub const GROUNDCOVER_BLADE_VECTOR_EPSILON: f32 = 1.0e-4;
+/// #5961 — `multiLayerRefractionScale` drives the view-dependent UV
+/// offset of the inner layer's sample. Vanilla authors O(1) values
+/// (0.5–1.2 across the Skyrim census), but no shipped reader pins the
+/// transfer function, so this factor is the interpretive neutral — 1.0
+/// of authored scale at a face-on-ish view offsets the inner layer by
+/// ~this fraction of a UV, scaled further by the authored thickness.
+/// 0 stays exactly the unoffset sample.
+pub const MLP_REFRACTION_UV_PER_UNIT: f32 = 0.1;
 pub const GROUNDCOVER_PROJECTED_DEPTH_EPSILON: f32 = 1.0e-3;
 /// Blades the vertex shader grows from each accepted scatter point.
 ///
@@ -980,6 +988,12 @@ pub const SKIN_WORKGROUP_SIZE: u32 = 64;
 /// #3879 lockstep class one level down).
 pub const MATERIAL_DECAL_SLOTS: u32 = 4;
 pub const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
+/// BSLightingShaderProperty type 16 — the eye environment map (#5961).
+/// The iris-centred reflection reads the material's authored cubemap
+/// (`envMapIndex`, the shader's EnvMap texture slot) with the reflection
+/// vector derived from the packed `eyeLeftCenter`/`eyeRightCenter` +
+/// `eyeCubemapScale`.
+pub const MATERIAL_KIND_EYE_ENVMAP: u32 = 16;
 pub const MATERIAL_KIND_GLASS: u32 = 100;
 pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
 pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
@@ -2519,6 +2533,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float GROUNDCOVER_BEZIER_BEND_CARRY_MIN),
     shader_define!(Float GROUNDCOVER_BEZIER_BEND_CARRY_MAX),
     shader_define!(Float GROUNDCOVER_BLADE_VECTOR_EPSILON),
+    shader_define!(Float MLP_REFRACTION_UV_PER_UNIT),
     shader_define!(Float GROUNDCOVER_PROJECTED_DEPTH_EPSILON),
     HeaderLine::Blank,
     HeaderLine::Comment("Skinning"),
@@ -2528,6 +2543,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Comment("Material kind enum (`GpuMaterial.materialKind`)."),
     HeaderLine::Comment("Authoritative values: scene_buffer/constants.rs. #1401."),
     shader_define!(Uint MATERIAL_KIND_MULTI_LAYER_PARALLAX),
+    shader_define!(Uint MATERIAL_KIND_EYE_ENVMAP),
     HeaderLine::Comment("Decal slots per material — the GpuMaterial decal quartet (#5848)"),
     shader_define!(Uint MATERIAL_DECAL_SLOTS),
     shader_define!(Uint MATERIAL_KIND_GLASS),

@@ -409,6 +409,14 @@ pub const INSTANCE_FLAG_MOVED_THIS_FRAME: u32 = 1 << 10;
 /// independent sites (three Rust, one raw `11u` in triangle.frag).
 pub const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
 
+/// BSLightingShaderProperty type 16 — EyeEnvmap (#5961). The packed
+/// `eye_left/right_center` + `eye_cubemap_scale` fields reach
+/// `triangle.frag`'s iris-centred authored-cubemap reflection, which
+/// also requires an authored cubemap (`envMapIndex != 0`) and a
+/// positive scale. No `discard` / depth-write path — under
+/// [`MATERIAL_KIND_MAX_LIGHTING_SHADER`]'s early-test review.
+pub const MATERIAL_KIND_EYE_ENVMAP: u32 = 16;
+
 /// #5057 — the inclusive ceiling of the reviewed
 /// `BSLightingShaderProperty` shader types that reach the GPU verbatim as
 /// `material_kind` and only change shading (0 default lit; 1-16 env map,

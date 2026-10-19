@@ -289,6 +289,29 @@ fn is_architecture_glass(material_kind: u32, render_layer: RenderLayer) -> bool 
         && render_layer == RenderLayer::Architecture
 }
 
+/// The kind-16 (EyeEnvmap) pack gate (#5961): the authored reflection
+/// centres and cubemap scale reach the GPU material only on an eye —
+/// every other kind packs zeros, so the shader's eye branch
+/// (`triangle.frag`'s `isEyeEnvmap`) can never fire on mis-keyed fields.
+/// The shader additionally requires an authored cubemap
+/// (`envMapIndex != 0`) and a positive scale before it diverts the
+/// fragment from the generic reflection path.
+pub(super) fn pack_eye_fields(
+    material_kind: u32,
+    stf: Option<&byroredux_core::ecs::components::material::ShaderTypeFields>,
+) -> ([f32; 3], f32, [f32; 3]) {
+    if material_kind != byroredux_renderer::MATERIAL_KIND_EYE_ENVMAP {
+        return ([0.0; 3], 0.0, [0.0; 3]);
+    }
+    (
+        stf.and_then(|f| f.eye_left_reflection_center)
+            .unwrap_or([0.0; 3]),
+        stf.and_then(|f| f.eye_cubemap_scale).unwrap_or(0.0),
+        stf.and_then(|f| f.eye_right_reflection_center)
+            .unwrap_or([0.0; 3]),
+    )
+}
+
 /// Walk every (GlobalTransform, MeshHandle) entity, apply per-entity
 /// optional-component overrides, frustum-cull, intern materials, and
 /// append the resulting `DrawCommand`s to `draw_commands`.
@@ -924,16 +947,16 @@ pub(super) fn collect_static_mesh_draws(
                 // output identical to pre-fix.
                 //
                 // Variant ↔ field mapping (must mirror the
-                // `materialKind == N` ladder in triangle.frag:769-796):
+                // `materialKind == N` ladder in triangle.frag):
                 //   5  SkinTint            → `skin_tint_*`        (live)
                 //   6  HairTint            → `hair_tint_*`        (live)
-                //   11 MultiLayerParallax  → `multi_layer_*`      (stub)
+                //   11 MultiLayerParallax  → `multi_layer_*`      (live —
+                //       the inner-layer refraction offset reads
+                //       `multiLayerRefractionScale`, #5961)
                 //   14 SparkleSnow         → `sparkle_*`          (live)
-                //   16 EyeEnvmap           → `eye_*`              (stub)
-                //
-                // Variants 11 + 16 are shader stubs today (#619); the
-                // pack still runs on those kinds so the data is already
-                // plumbed when the shader branches land.
+                //   16 EyeEnvmap           → `eye_*`              (live —
+                //       the iris-centred authored-cubemap reflection,
+                //       #5961)
                 let stf = mat.and_then(|m| m.shader_type_fields.as_deref());
                 let skin_tint_rgba = if material_kind == 5 {
                     stf.and_then(|f| {
@@ -993,18 +1016,8 @@ pub(super) fn collect_static_mesh_draws(
                 } else {
                     (env_map_scale, 0.0, 0.0, [1.0, 1.0])
                 };
-                let (eye_left_center, eye_cubemap_scale, eye_right_center) = if material_kind == 16
-                {
-                    (
-                        stf.and_then(|f| f.eye_left_reflection_center)
-                            .unwrap_or([0.0; 3]),
-                        stf.and_then(|f| f.eye_cubemap_scale).unwrap_or(0.0),
-                        stf.and_then(|f| f.eye_right_reflection_center)
-                            .unwrap_or([0.0; 3]),
-                    )
-                } else {
-                    ([0.0; 3], 0.0, [0.0; 3])
-                };
+                let (eye_left_center, eye_cubemap_scale, eye_right_center) =
+                    pack_eye_fields(material_kind, stf);
                 // #620 / SK-D4-01 — BSEffectShaderProperty falloff cone
                 // pulled from `MaterialInfo.effect_shader` (Skyrim+
                 // BSEffectShaderProperty path) or `no_lighting_falloff`

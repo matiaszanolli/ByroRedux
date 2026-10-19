@@ -1502,6 +1502,8 @@ mod draw_sort_key_tests;
 #[cfg(test)]
 mod env_var_cache_tests;
 #[cfg(test)]
+mod eye_pack_tests;
+#[cfg(test)]
 mod fog_curve_propagation_tests;
 #[cfg(test)]
 mod frustum_tests;
