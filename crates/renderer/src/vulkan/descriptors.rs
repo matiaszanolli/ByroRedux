@@ -206,23 +206,6 @@ pub fn color_subresource_mips_layers(
     }
 }
 
-// ── MemoryBarrier (global) helper ───────────────────────────────────
-
-/// Emit a single global-memory pipeline barrier on `cmd`.
-///
-/// Thin wrapper around `device.cmd_pipeline_barrier` for the pattern
-/// shared by all 13 renderer barrier sites: one `vk::MemoryBarrier`
-/// (no buffer / image specifics), `DependencyFlags::empty()`, and empty
-/// buffer- and image-barrier slices. Replaces the 8-line boilerplate at
-/// every call site without changing any access-mask semantics — all flag
-/// choices remain at the call site. See #1061 / TD3-103.
-///
-/// # Safety
-/// `cmd` must be a recording command buffer owned by the caller.
-/// Correct `src_stage` / `src_access` / `dst_stage` / `dst_access`
-/// values are the caller's responsibility — validation layers catch
-/// mismatches at runtime.
-#[inline]
 /// #5809 — the clamp-to-edge point/linear sampler every full-screen pass
 /// creates. Fifteen sites hand-built the same `SamplerCreateInfo` chain
 /// (filter pair, three CLAMP_TO_EDGE address modes, optional NEAREST mip
@@ -230,6 +213,11 @@ pub fn color_subresource_mips_layers(
 /// (anisotropy, debug names, unnormalised coordinates) is now one edit.
 /// The two genuinely different samplers (helpers.rs's shadow sampler,
 /// texture_registry's wrap/repeat sampler) stay hand-built.
+///
+/// # Safety
+/// `device` must be a live logical device. The caller owns the returned
+/// `vk::Sampler` and must destroy it (in its partial-destroy path) before the
+/// device is destroyed, and not while a submission that samples it is pending.
 pub(crate) unsafe fn clamp_sampler(
     device: &ash::Device,
     filter: vk::Filter,
@@ -254,6 +242,23 @@ pub(crate) unsafe fn clamp_sampler(
     }
 }
 
+// ── MemoryBarrier (global) helper ───────────────────────────────────
+
+/// Emit a single global-memory pipeline barrier on `cmd`.
+///
+/// Thin wrapper around `device.cmd_pipeline_barrier` for the pattern
+/// shared by all 13 renderer barrier sites: one `vk::MemoryBarrier`
+/// (no buffer / image specifics), `DependencyFlags::empty()`, and empty
+/// buffer- and image-barrier slices. Replaces the 8-line boilerplate at
+/// every call site without changing any access-mask semantics — all flag
+/// choices remain at the call site. See #1061 / TD3-103.
+///
+/// # Safety
+/// `cmd` must be a recording command buffer owned by the caller.
+/// Correct `src_stage` / `src_access` / `dst_stage` / `dst_access`
+/// values are the caller's responsibility — validation layers catch
+/// mismatches at runtime.
+#[inline]
 pub(crate) unsafe fn memory_barrier(
     device: &ash::Device,
     cmd: vk::CommandBuffer,
@@ -761,10 +766,6 @@ impl DescriptorPoolBuilder {
 mod tests {
     use super::*;
 
-    /// Pin the helper's per-type aggregation. The composite layout
-    /// post-#1030 has 7 `COMBINED_IMAGE_SAMPLER` + 1 `UNIFORM_BUFFER`
-    /// bindings; deriving from the array must produce exactly those
-    /// two entries with the right per-set count.
     /// #5845 — the ground-cover family's pool sizes must derive from the
     /// layout bindings (`from_layout_bindings`), never hand-typed frame
     /// arithmetic: a `descriptor_count(<n> * frames)` silently lags any
@@ -793,6 +794,10 @@ mod tests {
         }
     }
 
+    /// Pin the helper's per-type aggregation. The composite layout
+    /// post-#1030 has 7 `COMBINED_IMAGE_SAMPLER` + 1 `UNIFORM_BUFFER`
+    /// bindings; deriving from the array must produce exactly those
+    /// two entries with the right per-set count.
     #[test]
     fn from_layout_bindings_aggregates_per_type() {
         let bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..7u32)
@@ -1044,6 +1049,24 @@ mod hand_rolled_descriptor_code_tests {
                      reason) (#5809)"
                 );
             }
+        }
+    }
+
+    /// #6064 — an attribute directly after a doc line, with another doc line
+    /// after the attribute, means a new item was inserted into the middle of
+    /// an existing item's doc block (#5809 spliced `clamp_sampler` into
+    /// `memory_barrier`'s, leaving its `# Safety` on the wrong `unsafe fn`).
+    #[test]
+    fn no_item_is_spliced_into_another_items_doc_block() {
+        let src = include_str!("descriptors.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        for (n, window) in lines.windows(3).enumerate() {
+            let [before, attr, after] = [window[0].trim(), window[1].trim(), window[2].trim()];
+            assert!(
+                !(before.starts_with("///") && attr.starts_with("#[") && after.starts_with("///")),
+                "descriptors.rs:{}: `{attr}` sits between two doc lines — an item was spliced into another's doc block",
+                n + 2
+            );
         }
     }
 }
