@@ -84,7 +84,8 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
     );
     // M44 Phase 3.5 / #3652 — footstep dispatch. Reads `GlobalTransform` for
     // the world-space spawn position; the emitter lives on the active camera
-    // in FlyCam and on the player body in character mode (`scene.rs`), so in
+    // in FlyCam (and is skipped there while in character mode, #5348) and on
+    // the player body in character mode (`scene.rs`), so in
     // player/third-person mode this is the SAME cross-stage hazard
     // `make_billboard_system` just above was moved here to fix —
     // `camera_follow_system`'s pose, not last frame's. Pre-#848 this was in
@@ -110,6 +111,10 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
         Access::new()
             .reads_resource::<FootstepConfig>()
             .reads_resource::<crate::systems::PlayerEntity>()
+            // #5348 — the camera-emitter skip: `ActiveCamera` while
+            // `PlayerMode` is `Character`.
+            .reads_resource::<crate::systems::PlayerMode>()
+            .reads_resource::<ActiveCamera>()
             .reads_resource::<byroredux_physics::PhysicsWorld>()
             .reads::<byroredux_physics::RapierHandles>()
             .writes_resource::<crate::components::FootstepScratch>()

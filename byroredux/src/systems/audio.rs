@@ -108,16 +108,19 @@ pub(crate) fn reverb_zone_system(world: &World, _dt: f32) {
 /// crossed. Vertical movement (jumping, falling, elevators) does
 /// NOT count toward stride.
 ///
-/// # Which entity walks (#5146)
+/// # Which entity walks (#5146, #5348)
 ///
 /// In character mode the stride source is the player BODY
 /// (`PlayerEntity`), not the camera: the camera rides a 180 BU
 /// third-person boom, so a stationary mouse-look sweep moved it ~1131
 /// BU along an arc (~21 phantom footsteps), the V-toggle fired one per
 /// press, and steps positioned at the boom trailed the body by 2.6 m.
-/// While a body exists, camera-borne emitters are re-seeded instead of
-/// accumulating; FlyCam scenes (no body) keep the original
-/// camera-is-the-mover behaviour. The body emitter additionally
+/// While `PlayerMode` is `Character`, ONLY the `ActiveCamera` entity's
+/// emitter is re-seeded instead of accumulating — every other emitter
+/// (a future per-NPC or FOOT consumer) walks normally, so opting in stays
+/// component-driven. In FlyCam the camera is the mover again, including an
+/// F-toggled FlyCam whose frozen body keeps `PlayerEntity` set (flying
+/// steps, same as a `--fly` boot). The body emitter additionally
 /// accumulates only while grounded and NOT swimming — airborne arcs
 /// and swim strokes no longer play the dirt-walk footstep; re-seeding
 /// on the gated frames means the landing/exit distance never replays
@@ -148,9 +151,11 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
     let volume = config.volume;
     drop(config);
 
-    // #5146 — the walking body in character mode; `None` in FlyCam (or
-    // before the rig spawns), where the camera emitter keeps its original
-    // mover role. #5305 — the body's airborne/swim gate is resolved to an
+    // #5146 — the walking body in character mode; `None` before the rig
+    // spawns. #5348 — whether the camera emitter is the stand-in to skip is
+    // a separate verdict (`skipped_camera`): the `ActiveCamera` entity while
+    // `PlayerMode` is `Character`, resolved here from two resources so no
+    // other emitter is silenced. #5305 — the body's airborne/swim gate is resolved to an
     // owned `(body, gated)` pair HERE, before any query or resource guard
     // is taken. #5146 originally did these per-entity gets inside the
     // GlobalTransform + FootstepEmitter scope below, which recorded
@@ -177,6 +182,11 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
     // `is_grounded` (say, wading on a lake floor stays grounded), restore an
     // explicit swim operand together with a test that holds `is_grounded`
     // at true through the swim leg.
+    let skipped_camera = world
+        .try_resource::<crate::systems::PlayerMode>()
+        .is_some_and(|mode| *mode == crate::systems::PlayerMode::Character)
+        .then(|| world.try_resource::<ActiveCamera>().map(|active| active.0))
+        .flatten();
     let body_gate = world
         .try_resource::<crate::systems::PlayerEntity>()
         .and_then(|player| player.0)
@@ -228,17 +238,18 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
                 continue;
             }
             // #5146 — character-mode gating, gate pre-resolved above
-            // (#5305). A camera-borne emitter while a body exists stays
-            // re-seeded so a later FlyCam switch doesn't replay the whole
-            // boom arc as one stride burst; the body emitter re-seeds
-            // while airborne or swimming so the landing / water-exit
-            // distance never replays as a burst of steps.
-            if let Some((body, gated, _)) = body_gate {
-                if entity != body || gated {
-                    fs.last_position = pos;
-                    fs.accumulated_stride = 0.0;
-                    continue;
-                }
+            // (#5305). The camera's emitter stays re-seeded in character
+            // mode so a later FlyCam switch doesn't replay the whole boom
+            // arc as one stride burst (#5348: only it, never another
+            // walker); the body emitter re-seeds while airborne or swimming
+            // so the landing / water-exit distance never replays as a burst
+            // of steps.
+            let is_skipped_camera = skipped_camera == Some(entity);
+            let is_gated_body = matches!(body_gate, Some((body, true, _)) if body == entity);
+            if is_skipped_camera || is_gated_body {
+                fs.last_position = pos;
+                fs.accumulated_stride = 0.0;
+                continue;
             }
             // XZ-plane delta only — vertical (Y) motion isn't a step.
             let dx = pos.x - fs.last_position.x;
@@ -1233,7 +1244,70 @@ mod footstep_tests {
             ),
         );
         world.insert(cam, FootstepEmitter::new());
+        world.insert_resource(ActiveCamera(cam));
+        world.insert_resource(crate::systems::PlayerMode::Character);
         (world, body, cam)
+    }
+
+    /// Spawn a non-player walker — the shape a per-NPC or FOOT
+    /// `FootstepEmitter` consumer will have — at `pos`.
+    fn spawn_npc_walker(world: &mut World, pos: Vec3) -> EntityId {
+        let npc = world.spawn();
+        world.insert(npc, GlobalTransform::new(pos, Quat::IDENTITY, 1.0));
+        world.insert(npc, FootstepEmitter::new());
+        npc
+    }
+
+    /// #5348 — in character mode a third, non-player emitter must still
+    /// fire: only the camera stand-in is skipped, so opting in stays
+    /// component-driven. Pre-fix every emitter except the body was
+    /// re-seeded and the NPC stayed silent.
+    #[test]
+    fn a_non_player_emitter_walking_in_character_mode_fires() {
+        let (mut world, _body, _cam) = character_mode_world(0.5);
+        let npc = spawn_npc_walker(&mut world, Vec3::new(500.0, 0.0, 0.0));
+
+        footstep_system(&world, 1.0 / 60.0); // seed
+        world.resource_mut::<FootstepScratch>().triggers.clear();
+
+        let stride = world.query::<FootstepEmitter>().unwrap().get(npc).unwrap().stride_threshold;
+        world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .get_mut(npc)
+            .unwrap()
+            .translation = Vec3::new(500.0 + stride + 1.0, 0.0, 0.0);
+        footstep_system(&world, 1.0 / 60.0);
+
+        let triggers = world.resource::<FootstepScratch>().triggers.clone();
+        assert_eq!(triggers.len(), 1, "the NPC's stride must fire exactly one footstep");
+        assert_eq!(triggers[0].x, 500.0 + stride + 1.0, "at the NPC's own position");
+    }
+
+    /// #5348 — after the F toggle `PlayerEntity` stays set but `PlayerMode`
+    /// is `FlyCam`: the camera is the mover again, so flying steps, the same
+    /// as a `--fly` boot (the docs and the camera re-seed comment already
+    /// assumed this). The body is frozen and fires nothing.
+    #[test]
+    fn an_f_toggled_flycam_steps_with_the_camera() {
+        let (world, body, cam) = character_mode_world(0.5);
+        *world.resource_mut::<crate::systems::PlayerMode>() = crate::systems::PlayerMode::FlyCam;
+
+        footstep_system(&world, 1.0 / 60.0); // seed
+        world.resource_mut::<FootstepScratch>().triggers.clear();
+
+        let stride = world.query::<FootstepEmitter>().unwrap().get(cam).unwrap().stride_threshold;
+        world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .get_mut(cam)
+            .unwrap()
+            .translation += Vec3::new(stride + 1.0, 0.0, 0.0);
+        footstep_system(&world, 1.0 / 60.0);
+
+        assert_eq!(world.resource::<FootstepScratch>().triggers.len(), 1, "the flying camera steps");
+        let q = world.query::<FootstepEmitter>().unwrap();
+        assert_eq!(q.get(body).unwrap().accumulated_stride, 0.0, "the frozen body fires nothing");
     }
 
     /// #5146 — a full stationary mouse-look sweep in third person moves the
