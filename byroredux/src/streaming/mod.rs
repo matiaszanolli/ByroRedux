@@ -348,6 +348,10 @@ pub struct WorldStreamingState {
     /// every other game — whose rings keep deriving quads from the WRLD
     /// origin / descent.
     pub(crate) legacy_lod_quads: Option<crate::cell_loader::LegacyLodQuadIndex>,
+    /// #2586 — the baked-LOD lattice origin, resolved once from the
+    /// worldspace's authored `lodsettings\<ws>.lod` descriptor (WRLD `NAM0`
+    /// as the fallback). `None` until the first LOD reconcile.
+    pub(crate) lod_grid_origin: Option<(i32, i32)>,
     /// Baked-object half of [`Self::lod_terrain_available`] (#3385).
     pub lod_object_available: rustc_hash::FxHashMap<(i32, i32, i32), bool>,
     /// Real load/unload/reload churn on `lod_blocks`' keys, independent of
@@ -542,6 +546,7 @@ impl WorldStreamingState {
             lod_terrain_available: rustc_hash::FxHashMap::default(),
             lod_object_available: rustc_hash::FxHashMap::default(),
             legacy_lod_quads: None,
+            lod_grid_origin: None,
             terrain_lod_churn: crate::cell_loader::ChurnTracker::default(),
             object_lod_churn: crate::cell_loader::ChurnTracker::default(),
             placement_lod_blocks: HashMap::new(),

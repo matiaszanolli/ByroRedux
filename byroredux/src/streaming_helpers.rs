@@ -163,7 +163,14 @@ pub(crate) fn reconcile_lod_rings(
 ) -> LodReconcileProgress {
     let tex_provider = state.tex_provider.clone();
     let wctx = state.wctx.clone();
-    let lod_grid_origin = cell_loader::worldspace_lod_grid_origin(wctx.as_ref());
+    // #2586 — the authored `lodsettings\<ws>.lod` cell, read once per
+    // streaming state like the legacy index below (the archive set and the
+    // worldspace never change under it).
+    let lod_grid_origin = *state.lod_grid_origin.get_or_insert_with(|| {
+        cell_loader::resolve_lod_grid_origin(wctx.as_ref(), |path| {
+            tex_provider.extract_mesh_exact(path)
+        })
+    });
     // #5222 — scan the Fallout-legacy authored-quad index once per
     // streaming state (the opened archive set never changes under it);
     // every other game never pays the name-table walk.

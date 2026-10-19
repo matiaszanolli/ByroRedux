@@ -96,10 +96,59 @@ pub(crate) fn legacy_landscape_lod_supported(game: GameKind) -> bool {
     )
 }
 
-/// Canonical baked-LOD grid origin for the active worldspace (#2586).
+/// Archive key of a worldspace's authored LOD descriptor (#2586).
+pub(crate) fn lod_settings_path(lod_worldspace_key: &str) -> String {
+    format!("lodsettings\\{lod_worldspace_key}.lod")
+}
+
+/// The SW cell of an authored `lodsettings\<ws>.lod` descriptor — the cell
+/// every baked `.btr` / `.bto` quad of that worldspace tiles from (#2586).
+///
+/// Vanilla Skyrim SE and Fallout 4 ship it as 16 bytes: `i16 x, i16 y`, then
+/// three `u32`s (the extent in cells, the finest level, the coarsest level —
+/// `tamriel.lod` is `-96 -96 | 256 4 32`). Only the cell is read: the rest
+/// is not needed to place a quad and has no consumer. `None` when the file is
+/// too short to hold the cell.
+pub(crate) fn parse_lod_settings_origin(bytes: &[u8]) -> Option<(i32, i32)> {
+    // Signed cells: `le_u16_at` is the sanctioned checked read, reinterpreted.
+    let x = byroredux_core::bytes::le_u16_at(bytes, 0)? as i16;
+    let y = byroredux_core::bytes::le_u16_at(bytes, 2)? as i16;
+    Some((i32::from(x), i32::from(y)))
+}
+
+/// The baked-LOD grid origin the quad lattice really tiles from (#2586).
+///
+/// The authored `lodsettings\<ws>.lod` descriptor wins; `read_archive` maps an
+/// archive key to the file's bytes. WRLD `NAM0` is only a stand-in
+/// ([`worldspace_lod_grid_origin`]) and is wrong for the largest worldspace:
+/// Tamriel's `NAM0` minimum is (-57, -43) while its quads sit on the `.lod`
+/// cell (-96, -96), so every `tamriel.<L>.*.btr/.bto` probe missed. The
+/// descriptor is read from the LOD source worldspace, the same key the quad
+/// paths use ([`ExteriorWorldContext::lod_worldspace_key`]).
+pub(crate) fn resolve_lod_grid_origin(
+    wctx: &ExteriorWorldContext,
+    read_archive: impl FnOnce(&str) -> Option<Vec<u8>>,
+) -> (i32, i32) {
+    if combined_lod_supported(wctx.record_index.game) {
+        let path = lod_settings_path(wctx.lod_worldspace_key());
+        if let Some(origin) = read_archive(&path)
+            .as_deref()
+            .and_then(parse_lod_settings_origin)
+        {
+            return origin;
+        }
+    }
+    worldspace_lod_grid_origin(wctx)
+}
+
+/// Fallback baked-LOD grid origin for the active worldspace (#2586), used when
+/// no `lodsettings\<ws>.lod` descriptor is readable
+/// ([`resolve_lod_grid_origin`]).
 ///
 /// Skyrim+/FO4 align `.bto` and `.btr` quad coordinates relative to the
-/// worldspace's own minimum cell, not global `(0, 0)`. Prefer WRLD NAM0 via
+/// worldspace's own SW cell, not global `(0, 0)`. That cell equals WRLD NAM0's
+/// minimum for 11 of the 12 vanilla Skyrim worldspaces but not for Tamriel,
+/// which is why the descriptor is read first. Prefer WRLD NAM0 via
 /// `usable_cell_bounds`; derived/synthetic worldspaces that omit NAM0 fall
 /// back to the component-wise minimum of their explicit exterior cells.
 /// Older games keep their existing absolute synth/placement grids.
@@ -665,6 +714,183 @@ mod tests {
 
         assert_eq!(quad_origin(-50, -49, 4, (-52, -51)), (-52, -51));
         assert_eq!(quad_origin(-48, -47, 4, (-52, -51)), (-48, -47));
+    }
+
+    /// The vanilla descriptors, byte for byte (`lodsettings\*.lod`, Skyrim SE
+    /// `Skyrim - Meshes0.bsa`): `tamriel.lod`, `dlc2apocryphaworld.lod`,
+    /// `markarthworld.lod`.
+    const TAMRIEL_LOD: [u8; 16] = [
+        0xa0, 0xff, 0xa0, 0xff, 0x00, 0x01, 0, 0, 0x04, 0, 0, 0, 0x20, 0, 0, 0,
+    ];
+    const APOCRYPHA_LOD: [u8; 16] = [
+        0xce, 0xff, 0xce, 0xff, 0x80, 0x00, 0, 0, 0x04, 0, 0, 0, 0x20, 0, 0, 0,
+    ];
+    const MARKARTH_LOD: [u8; 16] = [
+        0xd0, 0xff, 0xfd, 0xff, 0x20, 0x00, 0, 0, 0x04, 0, 0, 0, 0x20, 0, 0, 0,
+    ];
+
+    #[test]
+    fn lod_settings_descriptor_gives_the_sw_cell() {
+        assert_eq!(parse_lod_settings_origin(&TAMRIEL_LOD), Some((-96, -96)));
+        assert_eq!(parse_lod_settings_origin(&APOCRYPHA_LOD), Some((-50, -50)));
+        assert_eq!(parse_lod_settings_origin(&MARKARTH_LOD), Some((-48, -3)));
+        assert_eq!(parse_lod_settings_origin(&TAMRIEL_LOD[..3]), None, "too short for the cell");
+        assert_eq!(parse_lod_settings_origin(&[]), None);
+        assert_eq!(lod_settings_path("tamriel"), "lodsettings\\tamriel.lod");
+    }
+
+    /// A Skyrim index whose Tamriel `NAM0` minimum is the real (-57, -43).
+    fn tamriel_nam0_index() -> EsmIndex {
+        let mut index = EsmIndex {
+            game: GameKind::Skyrim,
+            ..Default::default()
+        };
+        index.cells.worldspaces.insert(
+            "tamriel".into(),
+            WorldspaceRecord {
+                usable_min: (-57.0 * EXTERIOR_CELL_UNITS, -43.0 * EXTERIOR_CELL_UNITS),
+                usable_max: (61.0 * EXTERIOR_CELL_UNITS, 50.0 * EXTERIOR_CELL_UNITS),
+                ..Default::default()
+            },
+        );
+        index
+    }
+
+    /// #2586 (reopened) — Tamriel's quads tile from the `.lod` cell, not from
+    /// `NAM0`: with (-57, -43) the lattice requests `tamriel.32.-57.-43` and
+    /// every probe misses. Every real `tamriel.<L>.<x>.<y>` name has
+    /// `x, y == 0 (mod L)`, so the origin must too.
+    #[test]
+    fn tamriel_origin_comes_from_the_lod_descriptor_not_nam0() {
+        let context = exterior_context(tamriel_nam0_index(), "tamriel");
+        assert_eq!(worldspace_lod_grid_origin(&context), (-57, -43), "the NAM0 stand-in");
+
+        let mut asked = Vec::new();
+        let origin = resolve_lod_grid_origin(&context, |path| {
+            asked.push(path.to_owned());
+            Some(TAMRIEL_LOD.to_vec())
+        });
+        assert_eq!(origin, (-96, -96));
+        assert_eq!(asked, ["lodsettings\\tamriel.lod"]);
+        for level in [4, 8, 16, 32] {
+            assert_eq!(
+                quad_origin(0, 0, level, origin),
+                (0, 0),
+                "level {level}: tamriel.{level}.0.0 is on the lattice"
+            );
+            assert_eq!(quad_origin(-96, -96, level, origin), (-96, -96));
+        }
+    }
+
+    #[test]
+    fn missing_lod_descriptor_falls_back_to_nam0() {
+        let context = exterior_context(tamriel_nam0_index(), "tamriel");
+        assert_eq!(resolve_lod_grid_origin(&context, |_| None), (-57, -43));
+        assert_eq!(
+            resolve_lod_grid_origin(&context, |_| Some(vec![0xa0])),
+            (-57, -43),
+            "a truncated descriptor is not trusted"
+        );
+    }
+
+    /// An LOD-inheriting child reads its ancestor's descriptor (#5496): the
+    /// child ships no `lodsettings` file of its own.
+    #[test]
+    fn an_inheriting_child_reads_the_ancestors_lod_descriptor() {
+        let context = exterior_context(inheriting_child_index(), "whiterunworld");
+        let mut asked = String::new();
+        let origin = resolve_lod_grid_origin(&context, |path| {
+            asked = path.to_owned();
+            Some(TAMRIEL_LOD.to_vec())
+        });
+        assert_eq!(origin, (-96, -96));
+        assert_eq!(asked, "lodsettings\\tamriel.lod");
+    }
+
+    /// Games without the combined `.btr`/`.bto` family never touch the
+    /// archive: their grids are absolute.
+    #[test]
+    fn pre_skyrim_lod_never_reads_a_descriptor() {
+        let index = EsmIndex {
+            game: GameKind::Oblivion,
+            ..Default::default()
+        };
+        let context = exterior_context(index, "tamriel");
+        let origin = resolve_lod_grid_origin(&context, |path| panic!("read {path}"));
+        assert_eq!(origin, (0, 0));
+    }
+
+    /// #2586 (reopened) on the real corpus: the descriptor's SW cell tiles
+    /// every shipped `.btr` / `.bto` name of Tamriel (3,777 files, none of
+    /// which the `NAM0` stand-in reaches) and of the DLC worlds it was
+    /// first measured on. Markarth is left out on purpose: its name table
+    /// mixes two generations of quads (`x, y == 0 (mod L)` leftovers beside
+    /// the descriptor's lattice), so no single origin tiles all of it.
+    ///
+    ///   cargo test -p byroredux --bin byroredux lod_descriptor_tiles -- --ignored
+    #[test]
+    #[ignore = "needs Skyrim SE game data on disk"]
+    fn lod_descriptor_tiles_the_shipped_quad_names() {
+        let data = std::env::var("BYROREDUX_SKYRIMSE_DATA")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data".into()
+            });
+        let (meshes0, meshes1) = (data.join("Skyrim - Meshes0.bsa"), data.join("Skyrim - Meshes1.bsa"));
+        if !meshes0.is_file() || !meshes1.is_file() {
+            assert!(
+                std::env::var("BYROREDUX_REQUIRE_GAME_DATA").map_or(true, |v| v == "0"),
+                "BYROREDUX_REQUIRE_GAME_DATA is set, but {meshes0:?} / {meshes1:?} is missing"
+            );
+            eprintln!("skipping: Skyrim meshes archives not found under {data:?}");
+            return;
+        }
+        let descriptors = byroredux_bsa::BsaArchive::open(&meshes0).expect("open Skyrim - Meshes0.bsa");
+        let origin_of = |world: &str| -> (i32, i32) {
+            let bytes = descriptors
+                .extract(&lod_settings_path(world))
+                .unwrap_or_else(|e| panic!("{world}: {e}"));
+            parse_lod_settings_origin(&bytes).expect("a 16-byte descriptor")
+        };
+        let quads = byroredux_bsa::BsaArchive::open(&meshes1).expect("open Skyrim - Meshes1.bsa");
+        let names: Vec<String> = quads.list_files().into_iter().map(str::to_ascii_lowercase).collect();
+
+        assert_eq!(origin_of("tamriel"), (-96, -96));
+        for (world, expect_origin) in [
+            ("tamriel", (-96, -96)),
+            ("dlc2apocryphaworld", (-50, -50)),
+            ("dlc01soulcairn", (-52, -51)),
+            ("dlc2solstheimworld", (-64, -64)),
+        ] {
+            let origin = origin_of(world);
+            assert_eq!(origin, expect_origin, "{world}");
+            let prefix = format!("meshes\\terrain\\{world}\\");
+            let mut tiled = 0;
+            for name in names.iter().filter(|n| n.starts_with(&prefix)) {
+                let stem = name.rsplit('\\').next().unwrap();
+                let Some(coords) = stem
+                    .strip_suffix(".btr")
+                    .or_else(|| stem.strip_suffix(".bto"))
+                    .and_then(|s| s.strip_prefix(world))
+                else {
+                    continue;
+                };
+                let mut parts = coords.trim_start_matches('.').split('.').map(str::parse::<i32>);
+                let (Some(Ok(level)), Some(Ok(x)), Some(Ok(y))) = (parts.next(), parts.next(), parts.next())
+                else {
+                    continue;
+                };
+                assert_eq!(
+                    quad_origin(x, y, level, origin),
+                    (x, y),
+                    "{name}: off the {world} lattice rooted at {origin:?}"
+                );
+                tiled += 1;
+            }
+            assert!(tiled > 100, "{world}: only {tiled} quad names found");
+        }
     }
 
     #[test]

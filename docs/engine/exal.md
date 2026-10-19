@@ -412,8 +412,7 @@ Per-game impls (the runtime source per the Q3 finding):
     (Textures5/6/7 on the SE install). Vanilla `.bto` files carry no trees.
     `cell_loader/tree_lod.rs` consumes the family on its own level-4 ring:
     the worldspace's `.btt` quads are **selected by archive name** (scanned
-    once per streaming state, so the ring needs no lattice origin and works on
-    Tamriel despite #2586), and every one within `fTreeLoadDistance` (75000 BU
+    once per streaming state, so the ring needs no lattice origin), and every one within `fTreeLoadDistance` (75000 BU
     at Ultra, `Ultra.ini`) of the player whose footprint touches no resident
     full-detail cell becomes one mesh of **crossed alpha-tested card pairs**
     (one entity per `.btt`, `IsLodTerrain`, no BLAS). The engine's own
@@ -610,11 +609,23 @@ author LOD. Children that inherit ship bit-inheriting `NAM3`/`NAM4` silence
 for exactly this reason; treating a child's own (empty) LOD tables as
 authoritative is what #5496 removed.
 
-The authored `lodsettings\<worldspace>.lod` descriptor files are the other
-half of the distant-world story (per-ring distances and object densities the
-INI's `fLODFadeOutMult*` band ladder only approximates); they are tracked with
-the lattice-origin work in EXT-D6-2026-10-12-01 and get their paragraph here
-once that lands.
+**The baked-quad lattice origin (#2586).** Every `.btr` / `.bto` quad of a
+worldspace tiles from one SW cell, `origin + k * level`, and that cell is
+authored in `lodsettings\<lod worldspace>.lod` (Skyrim SE `Meshes0.bsa`, FO4
+`Meshes.ba2`; 16 bytes: `i16 x, i16 y`, then `u32` extent in cells, finest
+level, coarsest level — `tamriel.lod` is `-96 -96 | 256 4 32`).
+`resolve_lod_grid_origin` reads it once per streaming state, on the LOD source
+worldspace (the same key the quad paths use), and falls back to WRLD `NAM0`'s
+minimum cell only when the descriptor is absent or truncated. `NAM0` is a
+stand-in that happens to equal the descriptor for 11 of 12 vanilla Skyrim
+worldspaces but not for Tamriel (`NAM0` min (-57, -43) against the descriptor's
+(-96, -96)): with it every `tamriel.<L>.*` probe missed and the flagship
+worldspace had no baked distant terrain or objects. The descriptor's extent
+and level fields are not consumed (the per-ring distances and object densities
+it sits beside are still approximated by the INI's `fLODFadeOutMult*` ladder).
+Markarth's name table mixes two quad generations (most of its level-4 names sit
+on `x, y == 0 (mod 4)`, a minority on the descriptor's lattice), so no single
+origin tiles all of it; the descriptor's cell is what is used.
 
 ## 5.5 Ground cover (procedural grass) — see [`exal-groundcover.md`](exal-groundcover.md)
 
