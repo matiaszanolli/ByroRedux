@@ -849,6 +849,19 @@ impl ObjectAnimationGraph {
         playback
     }
 
+    /// Start the graph fresh only if the clips a pending lazy decode just provided
+    /// changed what it plays: the pose its current configuration evaluates to differs
+    /// from the one last started (a graph that was waiting on the clip had nothing, or
+    /// a partial blend, to play). A graph that shares the same [`LoadedGraph`] but was
+    /// not waiting on it keeps running — restarting it snapped a mid-swing attack back
+    /// to its first frame and re-based its completion triggers (#6005).
+    pub fn start_if_pose_changed(&mut self) -> Option<Playback> {
+        if Self::signature(&self.terms()) == self.applied {
+            return None;
+        }
+        self.start()
+    }
+
     /// The transition `event` takes in the machine at `machine`/`run`: the current
     /// state's own first, then the machine's wildcard; disabled ones never fire, and one
     /// gated on a condition fires only while the condition holds over the variables.
@@ -2531,4 +2544,61 @@ mod tests {
         run.start();
         assert!(lazy.take_wanted().is_empty());
     }
+
+    /// #6005 — a lazily-decoded clip restarts only the graphs it changes. Actors share
+    /// one `LoadedGraph` (and its `LazyClips`), so when one actor's first use of a clip
+    /// is decoded every same-graph actor used to be restarted at local time 0: a
+    /// mid-swing attack replayed, a looping idle popped. Now a graph restarts only if
+    /// the pose it evaluates to is no longer the one it last started.
+    #[test]
+    fn a_provided_clip_restarts_only_the_graphs_that_were_waiting_on_it() {
+        let graph = BehaviorGraph {
+            variables: Vec::new(),
+            events: vec!["go".into()],
+            machine: Some(StateMachine {
+                start_state: 0,
+                start_state_variable: None,
+                states: vec![
+                    State {
+                        id: 0,
+                        name: "A".into(),
+                        transitions: vec![transition(0, 1)],
+                        clip: Some(clip("Animations\\A.hkt", ClipMode::Looping, 1.0, Vec::new())),
+                        content: Default::default(),
+                    },
+                    State {
+                        id: 1,
+                        name: "B".into(),
+                        transitions: Vec::new(),
+                        clip: Some(clip("Animations\\B.hkt", ClipMode::SinglePlay, 1.0, Vec::new())),
+                        content: Default::default(),
+                    },
+                ],
+                wildcard: Vec::new(),
+            }),
+        };
+        let lazy = Arc::new(LazyClips::default());
+        let loaded = Arc::new(LoadedGraph { graph, clips: HashMap::new(), sequences: HashMap::new(), lazy: Some(Arc::clone(&lazy)) });
+        let a = ("animations\\a.hkt".to_owned(), true);
+        let b = ("animations\\b.hkt".to_owned(), false);
+
+        // `waiting` asks for A before it exists; `playing` starts once it does.
+        let mut waiting = ObjectAnimationGraph::new(Arc::clone(&loaded), 1).unwrap();
+        assert_eq!(waiting.start(), None);
+        lazy.provide(a.clone(), GraphClip { handle: 3, duration: 2.0 });
+        let mut playing = ObjectAnimationGraph::new(Arc::clone(&loaded), 2).unwrap();
+        assert_eq!(playing.start().map(|playback| playback.handle), Some(3));
+
+        // B arrives (a first use by some other actor): neither graph is in B.
+        lazy.provide(b, GraphClip { handle: 4, duration: 1.0 });
+        assert_eq!(
+            playing.start_if_pose_changed(),
+            None,
+            "a graph already playing its pose must keep running when an unrelated clip is provided"
+        );
+        // The graph that was waiting on A starts it.
+        assert_eq!(waiting.start_if_pose_changed().map(|playback| playback.handle), Some(3));
+        assert_eq!(waiting.start_if_pose_changed(), None, "and is not restarted again");
+    }
+
 }

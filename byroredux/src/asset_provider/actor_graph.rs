@@ -320,13 +320,14 @@ fn resolve_wanted(world: &mut World, provider: &TextureProvider) {
         if provided == 0 {
             continue;
         }
-        // The graphs waiting on these clips start playing them.
+        // The graphs waiting on these clips start playing them; a graph that shares
+        // the behavior but plays the same pose is left running (#6005).
         let restarts: Vec<(EntityId, EntityId, byroredux_scripting::Playback)> = {
             let Some(mut graphs) = world.query_mut::<ObjectAnimationGraph>() else { continue };
             graphs
                 .iter_mut()
                 .filter(|(_, graph)| std::ptr::eq(graph.graph(), &*job.loaded))
-                .filter_map(|(_, graph)| graph.start().map(|playback| (graph.root, graph.animated(), playback)))
+                .filter_map(|(_, graph)| graph.start_if_pose_changed().map(|playback| (graph.root, graph.animated(), playback)))
                 .collect()
         };
         for (owner, animated, playback) in restarts {
