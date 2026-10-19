@@ -49,3 +49,33 @@ permanently BLAS-less, so permanently shadowless.
    before the TLAS build — the gap is failure re-armament, not ordering).
 3. Check the first-sight failure reasons while there (#4196 admission +
    slot pool) so the fix removes the cause, not just the staleness.
+
+## 2026-10-19 — device run at HEAD `1d7e2c6bd` (FO4 Commonwealth, `grid-cross`, radius 1)
+
+Launched the `m-exteriors.sh fo4 boundary` argument set by hand (release build,
+`--bench-hold`, debug server on 9877). The window was closed at frame ~650 of
+900, before `bench-hold:` printed, so `byro-dbg` never attached and neither
+`rt.masks` nor a screenshot was taken. The stderr log still carries the TLAS
+drop census, which is the instrument the "permanently BLAS-less" hypothesis
+above predicts must show up:
+
+- Every `TLAS: N instances from M draw commands (K dropped — skinned_no_blas=…)`
+  warning in the run reads **`skinned_no_blas=0`**. The only drops are
+  `rigid_no_blas` (49 at pop-in, then 1, then none after 21:47:31).
+- 519 skinned draws were live for the rest of the run (`skin=519/1364`), and the
+  #679/#5194 refit chains were cycling normally (867 "refit chain reached N
+  frames, queueing fresh BUILD" lines, chains up to 657 frames).
+
+So in this scene, on this build, no skinned actor was BLAS-less when the TLAS
+was built, which does **not** support the no-retry hypothesis. Caveats: the run
+never confirmed that the reported `feral hound` creatures were in the loaded
+set or on screen, and the warning only prints when something was dropped, so a
+clean frame is read as "0 dropped".
+
+Remaining candidates, none checked: creature BLAS geometry (skin_compute output
+degenerate or mis-bounded for quadruped skeletons), the ground-contact term
+being lost in the shadow filter / reservoir path rather than the TLAS, or the
+symptom no longer reproducing (fixes since 2026-08-26 include #5195, #4884 and
+the shadow filter pass). Next step is unchanged and still needs a held session:
+reach `bench-hold`, find a dog entity with `byro-dbg`, run `rt.masks`, and
+screenshot the ground beneath it.
