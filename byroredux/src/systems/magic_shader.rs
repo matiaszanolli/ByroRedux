@@ -7,9 +7,9 @@
 
 use std::collections::HashMap;
 
-use byroredux_core::ecs::components::{Children, Material};
+use byroredux_core::ecs::components::Material;
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{Resource, World};
+use byroredux_core::ecs::{collect_subtree, Resource, World};
 use byroredux_scripting::magic_shaders::{current_tint, PlayingShaders};
 
 /// The emissive of every mesh a shader is tinting, as it was before: `owner -> [(mesh, color, mult)]`.
@@ -20,18 +20,15 @@ pub(crate) struct ShaderTintRestore(HashMap<EntityId, Vec<(EntityId, [f32; 3], f
 impl Resource for ShaderTintRestore {}
 
 /// The meshes under `root` (itself included) that carry a `Material`.
+///
+/// Holds no guard past its own statements, and walks `Children` before it touches `Material` —
+/// the order the rest of the tree uses. Call it *before* taking a `Material` query: reading
+/// `Material` here while the caller's guard is live is a recursive read and the inverse of
+/// `Children → Material` (#6062).
 fn mesh_entities(world: &World, root: EntityId) -> Vec<EntityId> {
-    let mut found = Vec::new();
-    let mut stack = vec![root];
-    while let Some(entity) = stack.pop() {
-        if world.has::<Material>(entity) {
-            found.push(entity);
-        }
-        if let Some(children) = world.get::<Children>(entity) {
-            stack.extend(children.0.iter().copied());
-        }
-    }
-    found
+    let mut subtree = collect_subtree(world, root);
+    subtree.retain(|&entity| world.has::<Material>(entity));
+    subtree
 }
 
 fn restore(world: &World, originals: &[(EntityId, [f32; 3], f32)]) {
@@ -62,9 +59,10 @@ pub(crate) fn magic_shader_tint_system(world: &World, _dt: f32) {
         // First frame of a play: remember what the meshes look like.
         let known = world.try_resource::<ShaderTintRestore>().is_some_and(|restore| restore.0.contains_key(&owner));
         if !known {
+            let meshes = mesh_entities(world, owner);
             let originals: Vec<(EntityId, [f32; 3], f32)> = {
                 let Some(materials) = world.query::<Material>() else { continue };
-                mesh_entities(world, owner)
+                meshes
                     .into_iter()
                     .filter_map(|mesh| materials.get(mesh).map(|m| (mesh, m.emissive_color, m.emissive_mult)))
                     .collect()
@@ -90,6 +88,7 @@ pub(crate) fn magic_shader_tint_system(world: &World, _dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::ecs::components::Children;
     use byroredux_plugin::esm::records::{EfshFill, EfshRecord, EsmIndex};
     use byroredux_scripting::magic_shaders::{magic_shader_clock_system, play_shader, ShaderCatalog};
 

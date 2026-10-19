@@ -12,7 +12,8 @@
 //! animation sets the bone's local rotation and before transform propagation, using the previous
 //! frame's parent transform (the neck does not move between frames in a way that matters).
 
-use byroredux_core::ecs::components::{Children, GlobalTransform, Name, Parent, Transform};
+use byroredux_core::ecs::collect_subtree;
+use byroredux_core::ecs::components::{GlobalTransform, Name, Parent, Transform};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
@@ -34,17 +35,12 @@ const HEAD_BONE: &str = "bip01 head";
 
 fn find_head(world: &World, root: EntityId) -> Option<EntityId> {
     let symbol = world.try_resource::<StringPool>()?.get(HEAD_BONE)?;
+    // Walk `Children` first and take the `Name` query only afterwards: the rest of the tree
+    // acquires `Children` before `Name`, and holding `Name` across the walk is the inverse
+    // order the lock-order detector rejects (#6062).
+    let subtree = collect_subtree(world, root);
     let names = world.query::<Name>()?;
-    let mut stack = vec![root];
-    while let Some(entity) = stack.pop() {
-        if names.get(entity).is_some_and(|name| name.0 == symbol) {
-            return Some(entity);
-        }
-        if let Some(children) = world.get::<Children>(entity) {
-            stack.extend(children.0.iter().copied());
-        }
-    }
-    None
+    subtree.into_iter().find(|&entity| names.get(entity).is_some_and(|name| name.0 == symbol))
 }
 
 fn signed_angle(from: f32, to: f32) -> f32 {
@@ -121,6 +117,7 @@ pub(crate) fn head_look_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::ecs::components::Children;
 
     fn bone(world: &mut World, parent: Option<EntityId>, name: &str, at: Vec3) -> EntityId {
         let entity = world.spawn();
