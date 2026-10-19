@@ -89,6 +89,15 @@ fn dialogue_installs_ambient(package: &PackRecord, world: &World) -> bool {
         && package.dialogue_type == 0
 }
 
+/// Whether selection may pick `package`: a Dialogue-procedure package must be
+/// one the installer would take (#5499 / #5722), every other procedure passes.
+/// Shared by the schedule scan and the script-package slot so a scripted
+/// Say-To / off-target Dialogue package cannot win and then install nothing
+/// (#6051).
+fn selectable_by_installer(package: &PackRecord, world: &World) -> bool {
+    package.procedure_type != PROCEDURE_DIALOGUE || dialogue_installs_ambient(package, world)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum AmbientBehavior {
     Sandbox {
@@ -777,8 +786,7 @@ fn select_active_package<'a>(
             // Say-To type. This leaves the scan free to choose the next
             // runnable package below it. The fail-open policy is unchanged
             // for every other procedure.
-            && (package.procedure_type != PROCEDURE_DIALOGUE
-                || dialogue_installs_ambient(package, world))
+            && selectable_by_installer(package, world)
     })
 }
 
@@ -1022,9 +1030,13 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         // A script package "takes precedence over all other packages until it
         // is done" (GECK *AddScriptPackage*), so it skips the schedule and
         // condition scan. One the registry no longer holds falls back to the
-        // actor's own stack.
+        // actor's own stack, and so does a Dialogue package the installer
+        // declines (Say-To, off-target, fail-open conditions): it would win,
+        // install nothing and strip the actor's behaviour, and a Must-complete
+        // one never lapses (#6051). The slot stays for the script to remove.
         let scripted = byroredux_scripting::script_packages::script_package_of(world, actor)
-            .and_then(|slot| registry.package(slot.package));
+            .and_then(|slot| registry.package(slot.package))
+            .filter(|package| selectable_by_installer(package, world));
         let active =
             scripted.or_else(|| select_active_package(world, actor, game_hour, packages.iter().copied()));
         let active_package_form_id = active.map(|package| package.form_id);
@@ -1895,6 +1907,45 @@ mod tests {
         assert!(!world.has::<SandboxBehavior>(actor));
         assert_eq!(active_package(&world, actor), Some(0x300));
         assert_eq!(script_package_of(&world, actor).unwrap().running_secs, Some(0.0));
+    }
+
+    /// #6051 — `AddScriptPackage` of a Dialogue package the installer declines
+    /// (here a Say-To, the `ArcadeHooverDamDialoguePackage` shape: Must complete)
+    /// must not win selection, or the actor loses its schedule to a package that
+    /// installs nothing and never ends. It keeps its own stack; a Conversation
+    /// the installer takes still preempts like any other script package.
+    #[test]
+    fn a_declined_dialogue_script_package_leaves_the_actor_on_its_schedule() {
+        use byroredux_scripting::script_packages::{add_script_package, script_package_of};
+        let sandbox = pack(
+            0x100,
+            PROCEDURE_SANDBOX,
+            Some(PackSchedule {
+                start_hour: Some(8),
+                duration_hours: 12,
+            }),
+        );
+        let mut say_to = pack(0x500, PROCEDURE_DIALOGUE, None);
+        say_to.dialogue_type = 1;
+        say_to.package_flags = 0x4;
+        let conversation = pack(0x501, PROCEDURE_DIALOGUE, None);
+        let (world, actor) = setup_actor_with_catalog(10.0, vec![sandbox], vec![say_to, conversation]);
+        assert!(world.has::<SandboxBehavior>(actor));
+
+        assert!(add_script_package(&world, actor, 0x500));
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(active_package(&world, actor), Some(0x100), "the Say-To must not win");
+        assert!(world.has::<SandboxBehavior>(actor), "the schedule's behavior stays installed");
+        assert_eq!(
+            script_package_of(&world, actor).unwrap().running_secs,
+            None,
+            "a package that never ran has no clock"
+        );
+
+        // A Conversation the installer takes still preempts, as before.
+        assert!(add_script_package(&world, actor, 0x501));
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(active_package(&world, actor), Some(0x501));
     }
 
     /// An unconstrained script package lapses at the next re-evaluation after
