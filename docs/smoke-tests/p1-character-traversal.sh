@@ -267,6 +267,9 @@ env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
 engine_pid=$!
 
 wait_for_engine_log "bench-hold:" "engine reached the held interactive state"
+# A boot-time force-greet (Sunny Smiles) holds the dialogue page and clears
+# injected input every frame; end it before any input.hold (#6052).
+smoke_end_boot_conversation "$command_log"
 wait_for_debug_pattern "player.status" "mode=Character" "$status_log" "Character mode is active"
 wait_for_debug_pattern "player.status" "grounded=true" "$status_log" "interior spawn settled on the floor"
 wait_for_debug_pattern "interaction.status" "$P1_PROMPT" "$interaction_log" "interior XTEL prompt is reachable"

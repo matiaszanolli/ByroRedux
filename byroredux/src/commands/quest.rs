@@ -1004,6 +1004,40 @@ impl ConsoleCommand for DialogueStatusCommand {
     }
 }
 
+/// `dialogue.end` — end the open conversation and ask the app to close the
+/// dialogue page, through the same teardown the page's Close button and a
+/// spoken Goodbye reach (`end_open_conversation`, then the page-close cue).
+/// A boot-time force-greet (Sunny Smiles in the Prospector Saloon) holds the
+/// modal page, and while it is open the frame loop releases injected gameplay
+/// input every frame, so the live gates need a drivable way to dismiss it
+/// (#6052). A no-op that says so when nothing is open.
+pub(crate) struct DialogueEndCommand;
+
+impl ConsoleCommand for DialogueEndCommand {
+    fn name(&self) -> &str {
+        "dialogue.end"
+    }
+
+    fn description(&self) -> &str {
+        "End the open conversation and close the dialogue page"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        use byroredux_scripting::DialogueSurfaceState;
+        let Some(npc) = world
+            .try_resource::<DialogueSurfaceState>()
+            .and_then(|surface| surface.npc)
+        else {
+            return CommandOutput::line("dialogue.end: no open conversation");
+        };
+        crate::systems::npc_dialogue::end_open_conversation(world);
+        if let Some(mut surface) = world.try_resource_mut::<DialogueSurfaceState>() {
+            surface.close_requested = true;
+        }
+        CommandOutput::line(format!("dialogue.end: ended the conversation with npc {npc}"))
+    }
+}
+
 /// `dialogue.forcegreet <entity|.> <pack_formid>` — #5367 Phase F's
 /// install door for a force-greet: stamps the [`ForceGreetDirective`]
 /// bridge from an authored Dialogue-procedure (`PKDT` 15) PACK. The

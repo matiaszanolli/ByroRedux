@@ -112,6 +112,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(ObScriptObjectsCommand);
     registry.register(QuestAliasesCommand);
     registry.register(DialogueStatusCommand);
+    registry.register(DialogueEndCommand);
     registry.register(DialogueForceGreetCommand);
     registry.register(SmEventCommand);
     registry.register(SceneShowCommand);

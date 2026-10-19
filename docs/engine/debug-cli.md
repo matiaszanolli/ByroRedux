@@ -334,7 +334,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**130**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**131**) grouped by
 purpose:
 
 ```
@@ -431,6 +431,7 @@ player.view [first|third]   → show or switch the player camera view (V key)
 player.body                 → report the assembled player body (root, meshes, view, equipment parts)
 inventory.status            → report the player's live inventory/equipment state
 dialogue.status             → show the activation-selected dialogue topics carried by NPCs
+dialogue.end                → end the open conversation and close the dialogue page (the way gates dismiss a boot-time force-greet)
 dialogue.forcegreet <entity|.> <pack_formid> → install a force-greet onto an NPC — FO3/FNV Dialogue-procedure PACK or Skyrim ForceGreet-tree PACK (#5367)
 sm.event <MNEMONIC> r1=<formid|player> [r2=…] [l1=…] [l2=…] → raise a Story Manager event through the real dispatcher for live gating (#5366)
 inv.add <form_id> [count]   → append items to the player inventory (same append invariants as loot transfer)

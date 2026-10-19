@@ -112,3 +112,27 @@ smoke_require_fixture_fields() {
         fi
     done
 }
+
+# End a conversation a fixture's boot opened on its own (#6052). Prospector
+# Saloon's Sunny Smiles carries an authored force-greet PACK that opens a
+# GREETING with no activation. While the dialogue page is open the frame loop
+# releases injected gameplay input every frame, so a gate's `input.hold` /
+# `input.press` would be cleared and the character would never move.
+#
+# Needs the caller's `debug_command <commands> <logfile>` (every gate defines
+# its own over byro-dbg). Call it once the engine reports `bench-hold:`; the
+# greeting opens on the first frame, so the first call normally ends it. A
+# fixture whose boot opens nothing costs ~1.5 s of retries and no failure.
+#   $1  scratch log file
+smoke_end_boot_conversation() {
+    local log="$1" attempt
+    for attempt in 1 2 3; do
+        debug_command 'dialogue.end' "$log" >/dev/null 2>&1 || true
+        if grep -Fq 'dialogue.end: ended' "$log" 2>/dev/null; then
+            echo "smoke[${SMOKE_GATE:-gate}]: ended the boot-time conversation (#6052)"
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 0
+}

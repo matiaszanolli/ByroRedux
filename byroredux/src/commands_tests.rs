@@ -1114,6 +1114,39 @@ fn rt_masks_prints_the_shared_machine_line() {
     assert!(text.contains("verdict=DIVERTED"), "{text}");
 }
 
+/// #6052 — `dialogue.end` ends the open conversation and cues the page close
+/// through the same teardown the Goodbye path reaches, so a gate can dismiss a
+/// boot-time force-greet that would otherwise hold the modal page (and release
+/// injected input) for the whole run.
+#[test]
+fn dialogue_end_closes_the_open_conversation_and_cues_the_page_close() {
+    use byroredux_scripting::DialogueSurfaceState;
+
+    // Nothing open: says so, and does not cue a close.
+    let mut world = World::new();
+    world.insert_resource(DialogueSurfaceState::default());
+    let text = DialogueEndCommand.execute(&world, "").lines.join("\n");
+    assert!(text.contains("no open conversation"), "{text}");
+    assert!(!world.resource::<DialogueSurfaceState>().close_requested);
+
+    // A conversation with npc 7 is open.
+    world.insert_resource(DialogueSurfaceState {
+        npc: Some(7),
+        close_after: Some(3.0),
+        ..Default::default()
+    });
+    let text = DialogueEndCommand.execute(&world, "").lines.join("\n");
+    assert!(text.contains("ended the conversation with npc 7"), "{text}");
+    let surface = world.resource::<DialogueSurfaceState>();
+    assert_eq!(surface.npc, None, "the conversation is over");
+    assert_eq!(surface.close_after, None, "no Goodbye close is pending");
+    assert!(surface.close_requested, "the app is asked to close the page");
+
+    // A second call is the no-op arm again.
+    let text = DialogueEndCommand.execute(&world, "").lines.join("\n");
+    assert!(text.contains("no open conversation"), "{text}");
+}
+
 /// The absent-resource arm — the command must say so rather than print a
 /// zeroed census that reads as an acquittal.
 #[test]
