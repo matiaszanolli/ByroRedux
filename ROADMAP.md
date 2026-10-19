@@ -687,7 +687,7 @@ performance finding. The measured knob table is in
   `merge_external_material` (`18fce7e43`): a hit forwards texture slots and
   flat-colour replacements as `Merged`, a miss keeps the Phase-1 PBR flip;
   per-slot replacements, scalars and flags translate honestly (#5190, #5196,
-  #5197); `ObjectInfo.Parent` inheritance resolves (`5c14ebdf8`, #5502 open), blend
+  #5197); `ObjectInfo.Parent` inheritance resolves for settings (`5c14ebdf8`) and texture sets (#5502; glass-coverage signal still undecided), blend
   state is captured (#5277), emissive is parked (#5503). Owed: definition of done + a live Cydonia render.
 
 ### Infrastructure and tooling

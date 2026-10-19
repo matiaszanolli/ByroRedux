@@ -249,3 +249,50 @@ fn material_index_dlc_cdb_resolves_the_base_corpus() {
         assert!(got.ends_with(suffix), "DLC slot {slot} should carry *{suffix}, got {got:?}");
     }
 }
+
+/// #5502 — texture-set `Parent` inheritance on real data. A derived texture
+/// set authors only the slots it changes; before the walk both materials
+/// below resolved with no texture at all (2,049 of the 10,152 NIF-referenced
+/// Meshes01 materials did; 217 still do after, 35 with no flat colour either
+/// — the rest still resolve with no texture).
+#[test]
+#[ignore = "needs Starfield game data on disk"]
+fn material_index_resolves_inherited_texture_slots() {
+    let Some(data) = data_dir() else {
+        return;
+    };
+    let ba2 = Ba2Archive::open(data.join("Starfield - Materials.ba2")).expect("open materials BA2");
+    let bytes = ba2
+        .extract("materials\\materialsbeta.cdb")
+        .expect("extract cdb");
+    let index = MaterialIndex::build(&bytes).expect("index the vanilla CDB");
+    let slot = |mat: &byroredux_sfmaterial::CdbMaterial, want: u8| {
+        mat.textures
+            .iter()
+            .find(|(s, _)| *s == want)
+            .map(|(_, p)| p.to_ascii_lowercase().replace('/', "\\"))
+            .unwrap_or_default()
+    };
+
+    let hair = index
+        .lookup("Materials\\Actors\\Human\\Hair\\Flat_Top.mat")
+        .expect("probe-verified material");
+    assert!(
+        slot(&hair, byroredux_sfmaterial::SLOT_COLOR).ends_with("afro_hair_shared_brown_color.dds"),
+        "the colour map comes from the texture set's ancestors, got {:?}",
+        slot(&hair, byroredux_sfmaterial::SLOT_COLOR)
+    );
+
+    let metal = index
+        .lookup("Materials\\Architecture\\Catwalks\\MetalPaintedScuffed01.mat")
+        .expect("probe-verified material");
+    assert!(
+        slot(&metal, byroredux_sfmaterial::SLOT_NORMAL).ends_with("paintscuffed01_normal.dds"),
+        "the normal map is inherited, got {:?}",
+        slot(&metal, byroredux_sfmaterial::SLOT_NORMAL)
+    );
+    assert!(
+        !metal.flat_color_slots.is_empty(),
+        "the authored flat-colour replacement still applies"
+    );
+}

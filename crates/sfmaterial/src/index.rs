@@ -437,22 +437,56 @@ impl MaterialIndex {
         Some(out)
     }
 
-    /// First-wins slot merge from one texture-set object.
+    /// `obj` followed by its `Parent` chain, nearest ancestor first (#5502).
+    /// Bounded at `MAX_PARENT_DEPTH` ancestors and cycle-safe: a revisit ends
+    /// the walk once every node on the cycle has been yielded. Corrupt-graph
+    /// degradations are reported once per build by
+    /// [`Self::parent_graph_defects`], not per walk (#5900).
+    fn ancestry(&self, obj: u32) -> impl Iterator<Item = u32> + '_ {
+        let mut visited = std::collections::HashSet::from([obj]);
+        let mut next = Some(obj);
+        std::iter::from_fn(move || {
+            let current = next?;
+            next = self
+                .parents
+                .get(&current)
+                .copied()
+                .filter(|parent| visited.insert(*parent));
+            Some(current)
+        })
+        .take(MAX_PARENT_DEPTH + 1)
+    }
+
+    /// First-wins slot merge from one texture-set object, inherited down its
+    /// `Parent` chain (#5502): a derived texture set authors only the slots it
+    /// changes, so each slot comes from the nearest set in the chain that
+    /// supplies it. Measured on the base CDB before this walk, 2,051 of the
+    /// 10,158 NIF-referenced materials resolved with no texture at all.
     fn collect_slots(&self, tex_set: u32, out: &mut CdbMaterial) {
-        if let Some(slots) = self.textures.get(&tex_set) {
-            for (slot, path) in slots {
-                if !out.textures.iter().any(|(s, _)| s == slot) {
-                    out.textures.push((*slot, path.clone()));
+        // Slots a nearer set explicitly switched off: an authored
+        // `Enabled = false` is a value, so it also stops the slot's flat
+        // colour from being inherited from further up this chain.
+        let mut switched_off: Vec<u8> = Vec::new();
+        for node in self.ancestry(tex_set) {
+            if let Some(slots) = self.textures.get(&node) {
+                for (slot, path) in slots {
+                    if !out.textures.iter().any(|(s, _)| s == slot) {
+                        out.textures.push((*slot, path.clone()));
+                    }
                 }
             }
-        }
-        if let Some(replacements) = self.flat_colors.get(&tex_set) {
+            let Some(replacements) = self.flat_colors.get(&node) else { continue };
+            let inherited_off = switched_off.len();
             for (slot, color, enabled) in replacements {
+                if *enabled == Some(false) {
+                    switched_off.push(*slot);
+                    continue;
+                }
                 // `Enabled` absent (4,481 corpus instances) cannot gate —
                 // treat as enabled; only an explicit false skips. First
                 // texture set to supply a slot's replacement wins, mirroring
                 // the texture-slot merge above.
-                if *enabled == Some(false) {
+                if switched_off[..inherited_off].contains(slot) {
                     continue;
                 }
                 if !out.flat_color_slots.iter().any(|(s, _)| s == slot) {
@@ -471,14 +505,8 @@ impl MaterialIndex {
     /// the cap. Both are reported once per build by
     /// [`Self::parent_graph_defects`], not per walk (#5900).
     fn collect_settings(&self, obj: u32, out: &mut CdbMaterial) {
-        let mut current = obj;
-        let mut visited = std::collections::HashSet::from([obj]);
-        for _ in 0..=MAX_PARENT_DEPTH {
-            self.collect_own_settings(current, out);
-            match self.parents.get(&current) {
-                Some(&parent) if visited.insert(parent) => current = parent,
-                _ => break,
-            }
+        for node in self.ancestry(obj) {
+            self.collect_own_settings(node, out);
         }
     }
 
@@ -1467,6 +1495,62 @@ mod tests {
         assert_eq!(m.emissive_enabled, Some(true), "inherited Enabled");
         assert_eq!(m.luminous_emittance, Some(150.0), "parent beats grandparent");
         assert_eq!(m.emissive_tint, Some([0.1, 0.2, 0.3]), "own value beats ancestors");
+    }
+
+    /// #5502 — a derived texture set authors only the slots it changes; the
+    /// rest come from its `Parent` chain, nearest set first per slot. Wiring:
+    /// root `10` -> layer material `11` -> texture set `40` (parent `41`,
+    /// parent `42`).
+    fn texture_inheritance_index() -> MaterialIndex {
+        let mut idx = MaterialIndex::default();
+        idx.objects_by_key.insert(material_key("materials\\x\\child.mat"), 10);
+        idx.child_refs.insert(10, vec![(RefKind::TextureSet, 40, 0)]);
+        idx.parents.insert(40, 41);
+        idx.parents.insert(41, 42);
+        idx
+    }
+
+    #[test]
+    fn lookup_inherits_texture_slots_from_the_texture_sets_parent_chain() {
+        let mut idx = texture_inheritance_index();
+        idx.textures.insert(42, vec![(0, "base_color.dds".into()), (1, "base_normal.dds".into())]);
+        idx.textures.insert(41, vec![(1, "mid_normal.dds".into()), (2, "mid_rough.dds".into())]);
+        idx.textures.insert(40, vec![(2, "own_rough.dds".into())]);
+
+        let m = idx.lookup("materials\\x\\child.mat").expect("keyed root");
+        let slot = |want: u8| m.textures.iter().find(|(s, _)| *s == want).map(|(_, p)| p.as_str());
+        assert_eq!(slot(0), Some("base_color.dds"), "only the root of the chain authors colour");
+        assert_eq!(slot(1), Some("mid_normal.dds"), "parent beats grandparent");
+        assert_eq!(slot(2), Some("own_rough.dds"), "the set's own slot beats its ancestors");
+        assert_eq!(m.textures.len(), 3, "each slot appears once");
+    }
+
+    /// #5502 — a flat-colour replacement inherits like a texture slot, and an
+    /// authored `Enabled = false` on a nearer set switches it off for the
+    /// chain instead of letting the ancestor's colour through.
+    #[test]
+    fn lookup_inherits_flat_colours_unless_a_nearer_set_switches_them_off() {
+        let mut idx = texture_inheritance_index();
+        idx.flat_colors.insert(
+            42,
+            vec![(0, [1.0, 0.0, 0.0, 1.0], Some(true)), (3, [0.0, 1.0, 0.0, 1.0], None)],
+        );
+        idx.flat_colors.insert(41, vec![(3, [0.0, 0.0, 0.0, 0.0], Some(false))]);
+        idx.flat_colors.insert(40, vec![(0, [0.0, 0.0, 1.0, 1.0], None)]);
+
+        let m = idx.lookup("materials\\x\\child.mat").expect("keyed root");
+        assert_eq!(m.flat_color_slots, vec![(0, [0.0, 0.0, 1.0, 1.0])], "own colour wins; slot 3 stays off");
+    }
+
+    /// #5502 — a `Parent` cycle among texture sets terminates and still
+    /// yields every member's slots.
+    #[test]
+    fn lookup_terminates_on_a_texture_set_parent_cycle() {
+        let mut idx = texture_inheritance_index();
+        idx.parents.insert(42, 41); // 40 -> 41 -> 42 -> 41 -> …
+        idx.textures.insert(42, vec![(0, "base_color.dds".into())]);
+        let m = idx.lookup("materials\\x\\child.mat").expect("keyed root");
+        assert_eq!(m.textures, vec![(0, "base_color.dds".to_string())]);
     }
 
     /// #5502 — a corrupt `Parent` cycle (including one that never returns

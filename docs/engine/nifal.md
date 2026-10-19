@@ -779,16 +779,19 @@ emissive `Enabled` read as absent. Census over the 10,152 NIF-referenced
 materials that resolve (Meshes01): `IsGlass` 4 → 217, emissive `Enabled`
 0 → 619 (337 binding an emissive map), authored `AlphaTestThreshold`
 1,847 → 7,917 (most `0.0`, which the `> 0.0` gate in `apply_cdb_material`
-ignores). Texture slots and flat-colour replacements are
-**not** inherited yet, and that is no longer unmeasured (audit 2026-10-11): the
-97.9 % "texture resolution" is the name → object key-hash hit rate
-(10,158 of 10,380), not texture coverage — **2,051 of those 10,158 materials
-resolve with no texture at all** (2,525 with neither a colour texture nor a flat
-colour), because a derived `TextureSet` authors only deltas and `collect_slots`
-reads the named set alone. A prototype walking the set's `Parent` chain
-nearest-wins per slot cuts those to 217 / 385; inheriting the
-`LayerID`/`TextureSetID`/`MaterialID` child edges instead changes nothing.
-It stays a separate step (remaining half of #5502). **Open decision (not guessed):**
+ignores). **Texture slots and flat-colour replacements inherit the same way**
+(`collect_slots` walks the `TextureSet`'s own `Parent` chain through the shared
+`ancestry` iterator, nearest set per slot; an authored `Enabled = false`
+replacement on a nearer set stops that slot's colour being inherited — a
+reading of the diff rule, not a measured one). The 2026-10-11 audit had found
+that the 97.9 % "texture resolution" was only the name → object key-hash hit
+rate (10,158 of 10,380): **2,051 of those materials resolved with no texture
+at all** (2,525 with neither a colour texture nor a flat colour), because a
+derived `TextureSet` authors only deltas. Census with the walk, over the
+10,152 Meshes01-referenced materials that resolve: no texture 2,049 → 217,
+neither texture nor flat colour 1,587 → 35 (217 still resolve no
+texture, 35 of them no flat colour either). Inheriting the `LayerID`/`TextureSetID`/
+`MaterialID` child edges instead changes nothing. **Open decision (not guessed):**
 none of the 217 inherited-glass materials authors a coverage signal
 (`BlendingMode = AlphaBlend`, `HasOpacity`, or a threshold), so
 `classify_glass_into_material`'s no-transparent-coverage early return still
