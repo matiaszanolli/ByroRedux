@@ -251,6 +251,9 @@ fn quest_alias_collection_fill_type_still_declines_not_binds() {
         None,
         "collection alias must stay unbound even though its fill_type matches a real candidate"
     );
+    // `quest_alias_diagnostics` takes `SceneQuestAliasRegistry`; holding the
+    // bindings guard across it records the reverse of a production order (#5032).
+    drop(bindings);
 
     let diagnostics = quest_alias_diagnostics(&world, QuestFormId(QUEST)).unwrap();
     assert_eq!(

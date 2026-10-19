@@ -1646,6 +1646,10 @@ fn cinematic_trio_survives_save_load_round_trip() {
     );
     assert_eq!(restored_actor.requested_idle_form_id, Some(0xDEAD_BEEF));
     assert_eq!(restored_actor.idle_request_serial, 7);
+    // Release the component guard before the next acquisition — holding it
+    // across another storage's lock records the reverse of a production
+    // order (#5032).
+    drop(restored_actor);
 
     let restored_tether = dst
         .get::<HorseTetherState>(cart)
@@ -1655,6 +1659,7 @@ fn cinematic_trio_survives_save_load_round_trip() {
         restored_tether.horse_local_translation,
         Vec3::new(4.0, 5.0, 6.0)
     );
+    drop(restored_tether);
 
     let restored_presentation = dst
         .try_resource::<CinematicPresentationState>()
