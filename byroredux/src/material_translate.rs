@@ -729,6 +729,9 @@ pub(crate) fn translate_material_with_provenance(
         alpha_threshold: source.alpha_threshold,
         alpha_test_func: source.alpha_test_func,
         material_kind: source.material_kind,
+        // #4256 — the authored discriminator, forwarded before the glass
+        // classifier below may reassign `material_kind`.
+        source_shader_type: source.shader_type,
         wireframe: source.wireframe,
         flat_shading: source.flat_shading,
         z_test: source.z_test,
@@ -2371,6 +2374,51 @@ mod tests {
             byroredux_renderer::MATERIAL_KIND_GLASS,
             "a blend-covered surface carrying the window bit stays glass (#4237)"
         );
+    }
+
+    /// Regression for #4256 — the authored `BSLightingShaderType` must cross
+    /// the boundary in its own canonical field. `material_kind` is an
+    /// engine-dispatch union: an Environment Map (1) pane with a glass keyword
+    /// is reassigned to `MATERIAL_KIND_GLASS` (#4392), after which nothing in
+    /// the canonical tier recorded that the source was shader type 1.
+    #[test]
+    fn source_shader_type_survives_the_glass_reassignment_of_material_kind() {
+        let source = ImportedMaterial {
+            material_kind: 1,
+            shader_type: 1,
+            has_alpha: true,
+            ..ImportedMaterial::default()
+        };
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet {
+                base_color: Some("textures/clutter/plainglasstile01.dds".to_owned()),
+                ..MaterialTextureSet::default()
+            },
+            material_path: None,
+            source_base_color: None,
+        };
+        let material = translate_material(&source, Some("OuterGlass02"), paths, 0);
+        assert_eq!(
+            material.material_kind,
+            byroredux_renderer::MATERIAL_KIND_GLASS,
+            "fixture must exercise the reassignment"
+        );
+        assert_eq!(
+            material.source_shader_type, 1,
+            "the authored shader type survives the reassignment (#4256)"
+        );
+
+        let plain = translate_material(
+            &ImportedMaterial::default(),
+            None,
+            ResolvedPaths {
+                textures: MaterialTextureSet::default(),
+                material_path: None,
+                source_base_color: None,
+            },
+            0,
+        );
+        assert_eq!(plain.source_shader_type, 0, "no dedicated shader reads as Default");
     }
 
     /// Regression: #2443 (MAT-D3-01) — the palette-remap strength must

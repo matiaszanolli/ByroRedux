@@ -554,7 +554,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// `ChallengeState` — so a challenge's progress and a script's reputation bookkeeping survive a
 /// load. The registry fingerprint already refused a v111 save written before these columns, so the
 /// bump changes the error a player sees (a named version skew), not what loads.
-pub const FORMAT_MAJOR: u16 = 112;
+///
+/// v112 -> v113 (#4256): `Material` gained the required `source_shader_type` field (the authored
+/// `BSLightingShaderType`, kept apart from the glass-reassignable `material_kind`), so a v112
+/// snapshot's `Material` column no longer decodes.
+pub const FORMAT_MAJOR: u16 = 113;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

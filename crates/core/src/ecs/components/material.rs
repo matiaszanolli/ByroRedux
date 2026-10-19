@@ -229,6 +229,15 @@ pub struct Material {
     /// pre-fix `as u8` cast in the importer silently masked any value
     /// ≥ 256.
     pub material_kind: u32,
+    /// The normalised `BSLightingShaderType` the importer authored for this
+    /// surface (#4256), kept apart from [`Self::material_kind`], which is an
+    /// engine-dispatch union the glass classifier may reassign (e.g. an
+    /// Environment Map kind-1 pane becomes `MATERIAL_KIND_GLASS`). Downstream
+    /// consumers that need the authored provenance read this instead of the
+    /// raw `ImportedMaterial` tier. `0` (Default) for materials with no
+    /// dedicated `BSLightingShaderProperty`. Set only at the single
+    /// `translate_material` boundary; never re-derived or mutated afterwards.
+    pub source_shader_type: u32,
     /// `NiWireframeProperty` flag (flags=1 enables wireframe rendering).
     /// When true the renderer routes the batch through the
     /// `vk::PolygonMode::LINE` pipeline variant (#869). Falls back to
@@ -782,6 +791,7 @@ impl Default for Material {
             alpha_threshold: 0.0,
             alpha_test_func: 6, // GREATEREQUAL default
             material_kind: 0,   // Default lit
+            source_shader_type: 0,
             wireframe: false,
             flat_shading: false,
             z_test: true,
