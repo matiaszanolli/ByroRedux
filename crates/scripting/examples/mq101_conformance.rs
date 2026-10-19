@@ -1741,11 +1741,11 @@ fn analyze_fragment_bindings(
             lower_fragment_with_quest_properties(&function.body, quest_properties)
         {
             coverage.lowered += 1;
-            if fragment_effects.iter().any(Effect::is_placeholder) {
+            if fragment_effects.iter().any(Effect::contains_placeholder) {
                 coverage.lowered_with_placeholder += 1;
             }
             for effect in &fragment_effects {
-                *coverage.effects.entry((effect).kind()).or_default() += 1;
+                effect.visit_nested(&mut |n| *coverage.effects.entry(n.kind()).or_default() += 1);
             }
         } else {
             let shape = function

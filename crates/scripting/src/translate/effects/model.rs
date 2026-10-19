@@ -1028,11 +1028,53 @@ impl Effect {
     /// way of one is coverage with a hole in it, so the coverage harnesses
     /// count those fragments separately rather than letting the stub pass
     /// for the real behavior.
+    ///
+    /// #5975 — `Game.AddAchievement` is one too: its arm records into
+    /// [`crate::misc_stats::Achievements`], which nothing reads (the platform
+    /// profile owns real achievements). This is the flat test on one effect;
+    /// a harness asks [`Self::contains_placeholder`] so one inside an
+    /// `If` / `QuestScope` counts.
     pub fn is_placeholder(&self) -> bool {
         matches!(
             self,
-            Effect::ShowRaceMenu | Effect::RequestSave { .. } | Effect::SetHudCartMode { .. }
+            Effect::ShowRaceMenu
+                | Effect::RequestSave { .. }
+                | Effect::SetHudCartMode { .. }
+                | Effect::AddAchievement { .. }
         )
+    }
+
+    /// Call `visit` on this effect and every effect nested under it (the
+    /// `then` / `else` arms of a [`Effect::Conditional`], the body of a
+    /// [`Effect::QuestScope`]), outermost first (#5975).
+    pub fn visit_nested(&self, visit: &mut impl FnMut(&Effect)) {
+        visit(self);
+        match self {
+            Effect::Conditional {
+                then_effects,
+                else_effects,
+                ..
+            } => {
+                for effect in then_effects.iter().chain(else_effects) {
+                    effect.visit_nested(visit);
+                }
+            }
+            Effect::QuestScope { effects, .. } => {
+                for effect in effects {
+                    effect.visit_nested(visit);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// [`Self::is_placeholder`] for this effect or anything nested under it.
+    /// The coverage harnesses use this: a `ShowRaceMenu` inside an `If` is
+    /// still a stub claimed as coverage (#5975).
+    pub fn contains_placeholder(&self) -> bool {
+        let mut found = false;
+        self.visit_nested(&mut |effect| found |= effect.is_placeholder());
+        found
     }
 }
 

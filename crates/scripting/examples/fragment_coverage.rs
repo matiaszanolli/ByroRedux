@@ -418,11 +418,11 @@ fn main() {
                     Some(effects) => {
                         claimed += 1;
                         claimed_effects += effects.len();
-                        if effects.iter().any(Effect::is_placeholder) {
+                        if effects.iter().any(Effect::contains_placeholder) {
                             claimed_with_placeholder += 1;
                         }
                         for e in &effects {
-                            *effect_hist.entry((e).kind()).or_default() += 1;
+                            e.visit_nested(&mut |n| *effect_hist.entry(n.kind()).or_default() += 1);
                         }
                     }
                     None => {

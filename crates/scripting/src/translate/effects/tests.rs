@@ -2942,6 +2942,8 @@ fn request_save_primitives_decline_with_args() {
 #[test]
 fn only_the_counter_only_primitives_are_placeholders() {
     assert!(Effect::ShowRaceMenu.is_placeholder());
+    // #5975 — `Achievements` has no production reader, so the arm only records.
+    assert!(Effect::AddAchievement { id: 7 }.is_placeholder());
     assert!(Effect::RequestSave { auto: false }.is_placeholder());
     assert!(Effect::RequestSave { auto: true }.is_placeholder());
     // #4372 — `hud_cart_mode` has no reader, so the arm only records.
@@ -2953,6 +2955,42 @@ fn only_the_counter_only_primitives_are_placeholders() {
         show_controls_disabled_message: false,
     }
     .is_placeholder());
+}
+
+/// #5975 — the harness check must see a placeholder nested under an `If` /
+/// `QuestScope`, and the kind histogram must count the nested effects, not just
+/// the wrapper.
+#[test]
+fn a_nested_placeholder_is_found_and_nested_effects_are_visited() {
+    let stage = || Effect::SetStage { quest: QuestRef::SelfRef, stage: 10 };
+    let nested_in_if = Effect::Conditional {
+        guards: vec![],
+        then_effects: vec![stage()],
+        else_effects: vec![Effect::ShowRaceMenu],
+    };
+    let nested_in_scope = Effect::QuestScope {
+        quest: QuestRef::OwningQuest,
+        effects: vec![Effect::SetHudCartMode { cart_mode: true }],
+        bindings: vec![],
+    };
+    // The flat test is about the one effect; the harness test recurses.
+    assert!(!nested_in_if.is_placeholder());
+    assert!(nested_in_if.contains_placeholder());
+    assert!(!nested_in_scope.is_placeholder());
+    assert!(nested_in_scope.contains_placeholder());
+    // Two levels down.
+    let deep = Effect::Conditional {
+        guards: vec![],
+        then_effects: vec![nested_in_scope],
+        else_effects: vec![],
+    };
+    assert!(deep.contains_placeholder());
+    assert!(!Effect::Conditional { guards: vec![], then_effects: vec![stage()], else_effects: vec![] }
+        .contains_placeholder());
+
+    let mut kinds = Vec::new();
+    nested_in_if.visit_nested(&mut |effect| kinds.push(effect.kind()));
+    assert_eq!(kinds, ["Conditional", "SetStage", "ShowRaceMenu"], "wrapper first, then contents");
 }
 
 #[test]
