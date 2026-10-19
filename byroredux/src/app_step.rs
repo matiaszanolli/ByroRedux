@@ -6,8 +6,8 @@
 use crate::cell_loader;
 use crate::streaming;
 use crate::streaming_helpers::{
-    advance_streaming_apply, lod_reconcile_budget_for_frame, reconcile_lod_rings,
-    SVGF_TAA_STREAMING_RECOVERY_FRAMES,
+    advance_streaming_apply, lod_reconcile_budget_for_frame, lod_settle_verdict,
+    reconcile_lod_rings, LodSettleVerdict, SVGF_TAA_STREAMING_RECOVERY_FRAMES,
 };
 use crate::App;
 use std::time::{Duration, Instant};
@@ -333,20 +333,37 @@ impl App {
         state
             .telemetry
             .record_lod_slice(lod_started.elapsed(), progress.attempted);
-        if progress.complete {
-            state.lod_reconcile_pending = false;
-            log::info!(
-                "Exterior LOD rings settled around ({},{}); {} attempts in final slice",
-                player_grid.0,
-                player_grid.1,
-                progress.attempted,
-            );
-            if let Some((grid, elapsed)) = state.telemetry.settle_lod(Instant::now()) {
+        match lod_settle_verdict(&progress) {
+            LodSettleVerdict::Pending => {}
+            LodSettleVerdict::Settled => {
+                state.lod_reconcile_pending = false;
                 log::info!(
-                    "Exterior LOD settled around ({}, {}) in {:.2} ms",
-                    grid.0,
-                    grid.1,
-                    elapsed.as_secs_f64() * 1000.0,
+                    "Exterior LOD rings settled around ({},{}); {} attempts in final slice",
+                    player_grid.0,
+                    player_grid.1,
+                    progress.attempted,
+                );
+                if let Some((grid, elapsed)) = state.telemetry.settle_lod(Instant::now()) {
+                    log::info!(
+                        "Exterior LOD settled around ({}, {}) in {:.2} ms",
+                        grid.0,
+                        grid.1,
+                        elapsed.as_secs_f64() * 1000.0,
+                    );
+                }
+            }
+            // #6054 — nothing is left to retry (admission stays latched closed
+            // until a cell unload compacts the pool), but part of the distant
+            // ring was turned away: say so instead of "settled".
+            LodSettleVerdict::Starved(rejected) => {
+                state.lod_reconcile_pending = false;
+                log::warn!(
+                    "Exterior LOD rings stopped around ({},{}) with the geometry pool at \
+                     capacity: {rejected} distant-LOD upload(s) refused; the horizon is \
+                     incomplete until a cell unload frees pool space. Lower the exterior \
+                     radius to leave room for the LOD rings.",
+                    player_grid.0,
+                    player_grid.1,
                 );
             }
         }

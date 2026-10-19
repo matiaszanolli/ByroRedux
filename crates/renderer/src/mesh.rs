@@ -354,6 +354,12 @@ pub struct MeshRegistry {
     /// subsequent compaction reopens admission when cell unload has reclaimed
     /// sufficient space.
     scene_geometry_admission_closed: bool,
+    /// Scene uploads refused because the global geometry pool is at its limit
+    /// (the hard cap tripped, or admission was already closed), counted for
+    /// the life of the registry. A caller that streams geometry in bulk (the
+    /// distant-LOD rings) diffs it around its work to learn whether anything
+    /// it asked for was turned away, which "settled" must not hide (#6054).
+    scene_geometry_admission_rejections: u64,
     /// Set when a *scene* mesh is dropped, leaving its span stranded inside
     /// `pending_vertices`/`pending_indices`; cleared once
     /// `compact_pending_geometry` has squeezed those spans out.
@@ -488,6 +494,7 @@ impl MeshRegistry {
             geometry_generation: 0,
             geometry_dirty: false,
             scene_geometry_admission_closed: false,
+            scene_geometry_admission_rejections: 0,
             geometry_has_holes: false,
             ssbo_vertex_count: 0,
             ssbo_index_count: 0,
@@ -694,6 +701,7 @@ impl MeshRegistry {
         indices: &[u32],
     ) -> Result<(u32, u32)> {
         if self.scene_geometry_admission_closed {
+            self.scene_geometry_admission_rejections += 1;
             bail!(
                 "scene geometry admission is closed after reaching the resident pool limit"
             );
@@ -719,6 +727,7 @@ impl MeshRegistry {
             Ok(warn) => warn,
             Err(error) => {
                 self.scene_geometry_admission_closed = true;
+                self.scene_geometry_admission_rejections += 1;
                 return Err(error);
             }
         };
@@ -732,6 +741,7 @@ impl MeshRegistry {
             Ok(warn) => warn,
             Err(error) => {
                 self.scene_geometry_admission_closed = true;
+                self.scene_geometry_admission_rejections += 1;
                 return Err(error);
             }
         };
@@ -799,6 +809,12 @@ impl MeshRegistry {
     /// cell-unload compaction can reopen the gate.
     pub fn scene_geometry_admission_open(&self) -> bool {
         !self.scene_geometry_admission_closed
+    }
+
+    /// Running count of scene uploads refused at the geometry pool limit
+    /// (#6054). Monotonic; diff it around a bulk streaming step.
+    pub fn scene_geometry_admission_rejections(&self) -> u64 {
+        self.scene_geometry_admission_rejections
     }
 
     pub fn upload_scene_mesh(

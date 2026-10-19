@@ -29,6 +29,37 @@ pub(crate) struct LodReconcileProgress {
     pub complete: bool,
     /// Archive/import/upload attempts charged across all three providers.
     pub attempted: usize,
+    /// LOD uploads this call that the global geometry pool refused at its
+    /// capacity limit (#6054). A ring can be `complete` — nothing left to try —
+    /// while part of it was turned away, so completeness alone is not
+    /// "settled": see [`lod_settle_verdict`].
+    pub rejected_for_capacity: u64,
+}
+
+/// How a finished LOD reconcile should be reported (#6054).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LodSettleVerdict {
+    /// Work remains (budget or deadline ran out first): keep reconciling.
+    Pending,
+    /// Every desired quad is resident or a known asset miss.
+    Settled,
+    /// Nothing is left to try, but `n` uploads were refused because the
+    /// geometry pool is at capacity: the distant ring is incomplete.
+    Starved(u64),
+}
+
+/// Fold completeness and capacity rejections into one verdict. A starved
+/// ring still stops reconciling (`complete`: admission is latched closed until
+/// a cell unload compacts the pool, so retrying every idle frame would only
+/// re-decode and re-reject), but it must not be announced as settled.
+pub(crate) fn lod_settle_verdict(progress: &LodReconcileProgress) -> LodSettleVerdict {
+    if !progress.complete {
+        LodSettleVerdict::Pending
+    } else if progress.rejected_for_capacity > 0 {
+        LodSettleVerdict::Starved(progress.rejected_for_capacity)
+    } else {
+        LodSettleVerdict::Settled
+    }
 }
 
 /// Decide whether and how much deferred LOD work belongs in this frame.
@@ -167,6 +198,7 @@ pub(crate) fn reconcile_lod_rings(
     // `LodWorkBudget::for_reconcile`'s doc for the bug this replaced (an
     // `(usize::MAX, _)` match arm that discarded any deadline outright).
     let make_budget = || LodWorkBudget::for_reconcile(max_attempts_per_provider, deadline);
+    let rejections_before = ctx.mesh_registry.scene_geometry_admission_rejections();
 
     let mut terrain_budget = make_budget();
     let terrain_complete = cell_loader::stream_lod_blocks(
@@ -251,6 +283,10 @@ pub(crate) fn reconcile_lod_rings(
     LodReconcileProgress {
         complete,
         attempted,
+        rejected_for_capacity: ctx
+            .mesh_registry
+            .scene_geometry_admission_rejections()
+            .saturating_sub(rejections_before),
     }
 }
 
@@ -1141,6 +1177,26 @@ pub fn consume_streaming_payload(
 
 #[cfg(test)]
 mod tests {
+    /// #6054 — a ring with nothing left to try is "settled" only if nothing it
+    /// asked for was refused at the geometry pool's capacity limit.
+    #[test]
+    fn a_capacity_starved_lod_reconcile_is_not_reported_settled() {
+        let progress = |complete, rejected_for_capacity| LodReconcileProgress {
+            complete,
+            attempted: 5,
+            rejected_for_capacity,
+        };
+        assert_eq!(lod_settle_verdict(&progress(true, 0)), LodSettleVerdict::Settled);
+        assert_eq!(
+            lod_settle_verdict(&progress(true, 352)),
+            LodSettleVerdict::Starved(352),
+            "the radius-12 door exit: 352 rejected uploads must not read as settled"
+        );
+        // Work still outstanding stays pending whether or not some uploads bounced.
+        assert_eq!(lod_settle_verdict(&progress(false, 0)), LodSettleVerdict::Pending);
+        assert_eq!(lod_settle_verdict(&progress(false, 9)), LodSettleVerdict::Pending);
+    }
+
     use super::*;
 
     /// #5518 — the legacy-index scan gate keys on either family table.

@@ -227,6 +227,31 @@ mod tests {
         assert_eq!(registry.pending_vertices.len(), 3);
     }
 
+    /// #6054 — an upload turned away at the pool limit is counted, whichever
+    /// way the gate fired (latched closed, or this upload tripping the cap),
+    /// so a bulk streaming step can tell its ring was starved.
+    #[test]
+    fn refused_scene_uploads_are_counted() {
+        let mut registry = MeshRegistry::new();
+        let vertices = triangle();
+        assert_eq!(registry.scene_geometry_admission_rejections(), 0);
+        registry
+            .upload_scene_mesh_global_only(&vertices, &[0, 1, 2])
+            .unwrap();
+        assert_eq!(
+            registry.scene_geometry_admission_rejections(),
+            0,
+            "an admitted upload is not a rejection"
+        );
+        registry.scene_geometry_admission_closed = true;
+        for expected in 1..=3u64 {
+            assert!(registry
+                .upload_scene_mesh_global_only(&vertices, &[0, 1, 2])
+                .is_err());
+            assert_eq!(registry.scene_geometry_admission_rejections(), expected);
+        }
+    }
+
     #[test]
     fn hash_collisions_do_not_share_different_vertex_attributes_or_rt_eligibility() {
         let mut registry = MeshRegistry::new();
