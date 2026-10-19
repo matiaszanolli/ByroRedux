@@ -1186,15 +1186,9 @@ fn apply_buoyancy_with_scratch(
                                     f.z -= c * mass * v.z;
                                     let c_ang = consts.angular_damping_in
                                         + b.angular_damping().max(0.0);
-                                    // Mass-scaled 1 BU lever — rapier exposes
-                                    // no world angular inertia on the body
-                                    // (see apply_multibody_link_damping).
-                                    let w = b.angvel();
-                                    pending_torque = Some(Vec3::new(
-                                        -c_ang * mass * w.x,
-                                        -c_ang * mass * w.y,
-                                        -c_ang * mass * w.z,
-                                    ));
+                                    // -c·I·ω (#5697), the same torque the
+                                    // dry pass applies.
+                                    pending_torque = Some(PhysicsWorld::angular_damping_torque(b, c_ang));
                                 }
                                 if let Some(flow) = s.flow {
                                     let velocity = b.linvel();
@@ -1340,18 +1334,13 @@ fn apply_buoyancy_with_scratch(
                             return None;
                         }
                         let v = b.linvel();
-                        let w = b.angvel();
                         Some((
                             Vec3::new(
                                 -linear * mass * v.x,
                                 -linear * mass * v.y,
                                 -linear * mass * v.z,
                             ),
-                            Vec3::new(
-                                -angular * mass * w.x,
-                                -angular * mass * w.y,
-                                -angular * mass * w.z,
-                            ),
+                            PhysicsWorld::angular_damping_torque(b, angular),
                         ))
                     });
                     if let Some((force, torque)) = damping {
@@ -3872,6 +3861,73 @@ mod ragdoll_stale_contact_tests {
         assert!(vy < -100.0, "gravity still accelerates the link (vy = {vy})");
     }
 
+    /// #5697 — the authored angular damping `c` must decay a link's spin at
+    /// rate `c`: `ω(t) = ω₀·e^(−c·t)`. The torque used to be `−c·m·ω`, which
+    /// decays at `c·m/I` (about `c/66` for a bone-sized capsule), so at
+    /// `c = 0.9` a spin lost 22 % in 4 s where the authored value removes 97 %.
+    /// Both bones spin up under a persistent torque with every damping off,
+    /// then `c` is restored and 4 s are simulated through the production step.
+    #[test]
+    fn dry_multibody_link_angular_damping_decays_at_the_authored_rate() {
+        use crate::world::PHYSICS_DT;
+        use byroredux_core::ecs::components::collision::CollisionShape;
+
+        for (c, bound) in [(0.5f32, 0.35f32), (0.9, 0.2)] {
+            let (world, handle) = two_link_ragdoll(
+                CollisionShape::Capsule { half_height: 10.0, radius: 5.0 },
+                10.0,
+                0.0,
+                0.0,
+            );
+            {
+                let mut pw = world.resource_mut::<PhysicsWorld>();
+                pw.gravity.y = 0.0;
+                pw.add_torque(handle, Vec3::new(0.0, 0.0, 13_000.0), true);
+            }
+            for _ in 0..30 {
+                world.resource_mut::<PhysicsWorld>().step(PHYSICS_DT);
+            }
+            let w0 = {
+                let mut pw = world.resource_mut::<PhysicsWorld>();
+                pw.reset_forces(handle, true);
+                for (_, body) in pw.bodies.iter_mut() {
+                    body.set_angular_damping(c);
+                }
+                pw.bodies[handle].angvel().length()
+            };
+            assert!(w0 > 3.0, "the spin-up must build a spin to decay (|w| = {w0})");
+            for _ in 0..240 {
+                world.resource_mut::<PhysicsWorld>().step(PHYSICS_DT);
+            }
+            let w1 = world.resource::<PhysicsWorld>().bodies[handle].angvel().length();
+            assert!(
+                w1 < bound * w0,
+                "c = {c}: |w| {w0:.2} -> {w1:.2} after 4 s must fall below {bound} of the \
+                 start (authored e^-{c}·4 = {:.3}); the mass-scaled stand-in left ~0.8",
+                (-c * 4.0).exp()
+            );
+        }
+    }
+
+    /// #5697 — the two wet-link angular drag sites (the surface arm and the
+    /// marker-only arm) take their torque from the shared inertia-based
+    /// helper; a hand-rolled `-c·m·ω` there would silently bring the stand-in
+    /// back for submerged links, which no dry-pass test sees.
+    #[test]
+    fn wet_link_angular_drag_uses_the_shared_inertia_torque() {
+        let src = include_str!("water.rs");
+        let production = src.split("\n#[cfg(test)]").next().unwrap();
+        assert_eq!(
+            production.matches("PhysicsWorld::angular_damping_torque(").count(),
+            2,
+            "both wet sites call the shared helper"
+        );
+        assert!(
+            !production.contains("* mass * w."),
+            "a mass-scaled angular torque is back in the wet scan"
+        );
+    }
+
     /// #5698 — `water_force_targets` is cleared at the TOP of the scan, so an
     /// early-returning scan (here: every marker and plane gone) cannot leave
     /// the last full scan's set behind to exclude ex-wet links from dry
@@ -3903,20 +3959,21 @@ mod ragdoll_stale_contact_tests {
         );
     }
 
-    /// #5540, dry half — the authored damping on a multibody link must
-    /// actually damp. Rapier never applies `RigidBody` damping to links, so
-    /// pre-fix a jointed pair's drift velocity (built up under gravity, then
-    /// released into zero gravity) stayed constant forever. The per-step
-    /// link-damping pass must decay it.
-    #[test]
-    fn dry_multibody_link_damping_decays_drift_velocity() {
+    /// Two bones (`shape`, `mass`, authored `linear_damping` and
+    /// `angular_damping`) joined by a free ragdoll joint, high above the
+    /// floor, in a world whose gravity is untouched. Returns the world and the
+    /// first bone's body.
+    fn two_link_ragdoll(
+        shape: byroredux_core::ecs::components::collision::CollisionShape,
+        mass: f32,
+        linear_damping: f32,
+        angular_damping: f32,
+    ) -> (byroredux_core::ecs::World, rapier3d::prelude::RigidBodyHandle) {
         use crate::ragdoll::{
             build_ragdoll, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec, RagdollSpec,
         };
-        use crate::world::PHYSICS_DT;
         use crate::ContactConfig;
         use byroredux_core::ecs::World;
-        use byroredux_core::ecs::components::collision::CollisionShape;
 
         let mut world = World::new();
         world.insert_resource(PhysicsWorld::new());
@@ -3929,10 +3986,10 @@ mod ragdoll_stale_contact_tests {
             translation: Vec3::new(0.0, 1000.0, 0.0),
             rotation: byroredux_core::math::Quat::IDENTITY,
             scale: 1.0,
-            shape: CollisionShape::Ball { radius: 8.0 },
-            mass: 10.0,
-            linear_damping: 1.0,
-            angular_damping: 0.05,
+            shape: shape.clone(),
+            mass,
+            linear_damping,
+            angular_damping,
             friction: 0.5,
             restitution: 0.0,
         };
@@ -3963,6 +4020,20 @@ mod ragdoll_stale_contact_tests {
         };
         let handle = rag.bodies[0].1;
         world.insert(bone_a, rag);
+        (world, handle)
+    }
+
+    /// #5540, dry half — the authored damping on a multibody link must
+    /// actually damp. Rapier never applies `RigidBody` damping to links, so
+    /// pre-fix a jointed pair's drift velocity (built up under gravity, then
+    /// released into zero gravity) stayed constant forever. The per-step
+    /// link-damping pass must decay it.
+    #[test]
+    fn dry_multibody_link_damping_decays_drift_velocity() {
+        use crate::world::PHYSICS_DT;
+        use byroredux_core::ecs::components::collision::CollisionShape;
+
+        let (world, handle) = two_link_ragdoll(CollisionShape::Ball { radius: 8.0 }, 10.0, 1.0, 0.05);
 
         // Build up drift under gravity, then release into zero gravity:
         // with the damping pass the drift decays; pre-fix it is constant.

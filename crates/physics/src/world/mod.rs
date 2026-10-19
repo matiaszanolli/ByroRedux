@@ -1063,9 +1063,31 @@ impl PhysicsWorld {
         self.water_force_targets.insert(body);
     }
 
+    /// #5697 — the torque that decays `body`'s spin exponentially at rate
+    /// `coefficient`: `-c · I_world · ω`. Angular damping on multibody links
+    /// rides the user-torque channel (rapier skips `RigidBody` damping for
+    /// articulations, #5540), and a torque of `-c · m · ω` — the stand-in
+    /// that stood here — damps at `c · m / I` instead, about 60× too weakly
+    /// for a bone-sized capsule (`I / m ≈ 66`). `effective_angular_inertia`
+    /// is the plain world-space inertia tensor (locked axes zeroed), despite
+    /// the "square root" in rapier's doc comment: it reads 665.6 / 118.8 /
+    /// 665.6 for a mass-10 half-height-10 radius-5 capsule.
+    pub(crate) fn angular_damping_torque(body: &RigidBody, coefficient: f32) -> AngVector {
+        let torque =
+            -coefficient * body.mass_properties().effective_angular_inertia().mul_vec(body.angvel());
+        // A body that has not been through a step has no world inertia yet
+        // (zero inverse inertia), whose inverse is not finite: no torque
+        // that frame rather than a NaN one.
+        if torque.is_finite() {
+            torque
+        } else {
+            AngVector::ZERO
+        }
+    }
+
     /// #5540 — apply the stored damping (authored + ragdoll lever) of
     /// every awake multibody link as an explicit force and torque,
-    /// `-c·m·v` and a mass-scaled angular torque — the only channel that reaches
+    /// `-c·m·v` and `-c·I·ω` (#5697) — the only channel that reaches
     /// articulation links, whose velocities live in the multibody's
     /// generalized solve, not the rigid-body writeback. Bodies the water
     /// pass targeted this frame are skipped: wet links carry their drag
@@ -1088,8 +1110,7 @@ impl PhysicsWorld {
     /// Commonwealth-class exterior).
     pub(crate) fn apply_multibody_link_damping(&mut self) {
         // Collect the plan first: applying needs `&mut self` per body.
-        let mut plan: Vec<(RigidBodyHandle, Vector, AngVector, f32, f32, f32)> =
-            Vec::new();
+        let mut plan: Vec<(RigidBodyHandle, Vector, AngVector, f32, f32)> = Vec::new();
         for multibody in self.multibody_joints.multibodies() {
             for link in multibody.links() {
                 let handle = link.rigid_body_handle();
@@ -1108,23 +1129,18 @@ impl PhysicsWorld {
                 if lin <= 0.0 && ang <= 0.0 {
                     continue;
                 }
-                plan.push((handle, body.linvel(), body.angvel(), lin, ang, body.mass()));
+                // Both terms are derived here, under the shared borrow.
+                let force = -lin * body.mass() * body.linvel();
+                let torque = Self::angular_damping_torque(body, ang);
+                plan.push((handle, force, torque, lin, ang));
             }
         }
-        for (handle, v, w, lin, ang, mass) in plan {
+        for (handle, force, torque, lin, ang) in plan {
             self.reset_forces(handle, false);
             if lin > 0.0 {
-                let f = -lin * mass * v;
-                self.add_force(handle, f, false);
+                self.add_force(handle, force, false);
             }
             if ang > 0.0 {
-                // Rapier 0.36 exposes no world angular inertia on a
-                // RigidBody (mprops is crate-private), so the angular
-                // drag uses a mass-scaled torque with a 1 BU lever —
-                // exponential angular damping at rate c·m/I_eff, an
-                // under-damped but nonzero stand-in where the pre-fix
-                // value was exactly zero on every link.
-                let torque = -ang * mass * w;
                 if let Some(b) = self.bodies.get_mut(handle) {
                     b.add_torque(torque, false);
                 }
@@ -3909,6 +3925,35 @@ mod tests {
              first impact and unrelated events survive"
         );
         assert!(w.spawn_sleep_pending.is_empty(), "the pending list is consumed");
+    }
+
+    /// #5697 — the angular damping torque is `-c·I·ω` with the plain
+    /// world-space inertia, not the `-c·m·ω` stand-in (about 60× too weak for
+    /// a bone). A radius-10 ball has `I = 2/5·m·r²`, so the torque on a spin
+    /// about Y is `-c · 40 m · ω`, an independent figure the accessor must
+    /// reproduce — including if rapier's "square root" wording were true.
+    #[test]
+    fn angular_damping_torque_uses_the_world_inertia_tensor() {
+        let mut w = PhysicsWorld::new();
+        let ball = spawn_ball(&mut w, 100.0);
+        w.gravity.y = 0.0;
+        w.bodies[ball].set_angvel(Vector::new(0.0, 3.0, 0.0), true);
+        // A fresh body has no world inertia yet: a finite (zero) torque, not NaN.
+        let fresh = PhysicsWorld::angular_damping_torque(&w.bodies[ball], 0.5);
+        assert!(fresh.is_finite(), "unstepped body gave {fresh:?}");
+
+        w.step(PHYSICS_DT);
+        let mass = w.body_mass(ball).expect("dynamic body has mass");
+        let w_y = w.bodies[ball].angvel().y;
+        let torque = PhysicsWorld::angular_damping_torque(&w.bodies[ball], 0.5);
+        let expected = -0.5 * (0.4 * mass * 10.0 * 10.0) * w_y;
+        assert!(
+            (torque.y - expected).abs() < 0.02 * expected.abs(),
+            "torque {} should be -c·I·ω = {expected} (the mass-scaled stand-in gave {})",
+            torque.y,
+            -0.5 * mass * w_y
+        );
+        assert!(torque.x.abs() < 1e-3 * expected.abs() && torque.z.abs() < 1e-3 * expected.abs());
     }
 
     /// #5699 — the dry-link damping pass reads the multibody LINKS, not the

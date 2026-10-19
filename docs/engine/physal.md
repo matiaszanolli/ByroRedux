@@ -265,7 +265,12 @@ Centralised in `crates/physics/src/config.rs::ContactConfig`, so the
   separation, which is most of what makes the original ragdolls read as clunky.
 - `ragdoll_extra_angular_damping` — extra per-body angular damping on top of the
   authored value (inert at the `0.0` default); the biggest "less floppy than
-  Havok" dial.
+  Havok" dial. Rapier skips `RigidBody` damping for multibody links (#5540), so
+  both damping terms ride the user force/torque channel; the angular one is
+  `-c·I_world·ω` (`PhysicsWorld::angular_damping_torque`, #5697), which decays
+  spin at exactly the authored rate `c`. It was `-c·m·ω` first — about 60× too
+  weak on a bone-sized capsule — on the mistaken premise that rapier exposes no
+  inertia.
 - **Soft joint limits** (#5538, done): `RAGDOLL_JOINT_SOFTNESS` is a 30 Hz,
   ζ = 1 spring on the locked DOF and the limits (rapier's 1e6 Hz default
   corrects a bind pose that sits a fraction of a radian outside its range in a
