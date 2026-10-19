@@ -575,10 +575,15 @@ impl<'a> Vm<'a> {
             match op {
                 0x16 | 0x18 => {
                     // Arm header: [op][len][u16][u16 expr_len][expr].
+                    // #6016 — the condition must lie inside this statement's
+                    // declared payload, like every other payload read (#5655);
+                    // `next_statement` resumes at the payload end, so a longer
+                    // `expr_len` would evaluate the following statements' bytes.
+                    let (_, payload_end) = payload_span(self.bytes, offset)?;
                     let expr_len = byroredux_core::bytes::le_u16_at(self.bytes, offset + 6)? as usize;
                     let cond_start = offset + 8;
                     let cond_end = cond_start.checked_add(expr_len)?;
-                    if cond_end > self.bytes.len() {
+                    if cond_end > payload_end {
                         return None;
                     }
                     let taken = self.eval_expr(cond_start, cond_end) != 0.0;
@@ -2222,6 +2227,38 @@ mod tests {
                 !host.calls.iter().any(|(cmd, _, _)| *cmd == SETSTAGE),
                 "{}: the command must not run with decoded next-statement bytes",
                 leg.name
+            );
+        }
+    }
+
+    /// #6016 — the same region bound for an `If`/`ElseIf` arm header: the
+    /// condition `[offset+8, +expr_len)` must lie inside the statement's
+    /// declared payload. Here the header declares a 4-byte payload (prefix +
+    /// `expr_len`) yet claims a 2-byte expression, so the only bytes the
+    /// condition could read are the *next* statement's (the EndIf). Before the
+    /// fix the VM evaluated them as the condition and ran to `Completed`.
+    #[test]
+    fn if_condition_straddling_its_payload_reports_malformed() {
+        for op in [0x16u16, 0x18] {
+            let mut header = op.to_le_bytes().to_vec();
+            header.extend_from_slice(&4u16.to_le_bytes()); // declared payload: prefix + expr_len
+            header.extend_from_slice(&[0, 0]); // [u16 prefix]
+            header.extend_from_slice(&2u16.to_le_bytes()); // expr_len reaches past the payload
+            // A chain root is always a 0x16; a stray 0x18 reaches the same
+            // header parse via the preceding arm.
+            let body = if op == 0x16 {
+                [header, simple_stmt(0x19)].concat()
+            } else {
+                [arm_stmt(0x16, b"0 "), header, simple_stmt(0x19)].concat()
+            };
+            let script = script(wrap_body(body), vec![], vec![]);
+            let program = ObScriptProgram::new(&script);
+            let mut state = VmState::default();
+            let mut host = Recorder::default();
+            let outcome = program.run_block(BLOCK_GAME_MODE, &mut state, &mut host);
+            assert!(
+                matches!(outcome, BlockOutcome::Malformed(_)),
+                "{op:#x}: an arm condition straddling its payload must be Malformed, got {outcome:?}"
             );
         }
     }
