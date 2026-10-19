@@ -96,13 +96,24 @@ impl Component for AuthoredRagdollPose {
 /// the Gamebryo XYZ product with negated angles (see the module docs).
 const XRGD_ROTATION_MODE: u8 = 0;
 
-/// The trailing marker entry some poses carry after their bodies: `(0, 17, 10)`
-/// with a zero rotation. It is on 152 of the 1,077 vanilla corpse poses
-/// (humanoid `18 + 1`, beast-race `23 + 1`), always last, and the entry counts
-/// only line up with the ragdoll's body counts once it is set aside. What it
-/// encodes is not known — it is skipped, not interpreted.
+/// The trailing marker entry some poses carry after their bodies: `bone_id`
+/// 0, a zero rotation (to float noise), `x` 0 and a nonzero `(y, z)` offset.
+/// Measured over the vanilla `Skyrim.esm` corpse poses, 262 of the 19-entry
+/// ones end in one and 260 of those list the humanoid body order in their
+/// first 18 entries; the offset is one of a handful of constants shared by
+/// hundreds of poses — `(17, 10)` ×123, `(32.45, 104.06)` ×120 (the draugr
+/// skeleton's), `(34, 10)` ×13 — so it is not pose data. The entry counts only
+/// line up with the ragdoll's body counts once it is set aside. What it encodes
+/// is not known — it is skipped, not interpreted. (An all-zero last entry is
+/// not matched: that is as likely a body at rest.)
 fn is_trailing_marker(entry: &RagdollPoseBone) -> bool {
-    entry.position == [0.0, 17.0, 10.0] && entry.rotation == [0.0, 0.0, 0.0]
+    /// The skeleton-race markers carry `3e-6` of float noise in `x` and `-0.0`
+    /// rotations.
+    const NOISE: f32 = 1.0e-4;
+    entry.bone_id == 0
+        && entry.position[0].abs() < NOISE
+        && (entry.position[1].abs() >= NOISE || entry.position[2].abs() >= NOISE)
+        && entry.rotation.iter().all(|v| v.abs() < NOISE)
 }
 
 /// The pose entries that correspond to ragdoll bodies: `entries` without a

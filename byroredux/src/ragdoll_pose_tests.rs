@@ -74,9 +74,9 @@ fn a_mismatched_entry_count_is_refused() {
     assert!(bone_poses(&[], 0).is_ok());
 }
 
-/// Some poses end with a `(0, 17, 10)` marker entry. Set aside, the counts
-/// line up (humanoid 18 + 1, beast races 23 + 1); an entry that merely has
-/// that position with a rotation is a real bone.
+/// Some poses end with a marker entry. Set aside, the counts line up
+/// (humanoid 18 + 1, beast races 23 + 1); an entry that merely has that
+/// position with a rotation is a real bone.
 #[test]
 fn a_trailing_marker_entry_is_set_aside() {
     let marker = entry([0.0, 17.0, 10.0], [0.0; 3]);
@@ -91,6 +91,28 @@ fn a_trailing_marker_entry_is_set_aside() {
     assert_eq!(body_entries(&[rotated]).len(), 1);
     assert_eq!(body_entries(&[marker, entry([0.0; 3], [0.0; 3])]).len(), 2);
     assert!(body_entries(&[]).is_empty());
+}
+
+/// #5015 — the markers are a family, not one constant: the draugr skeleton's
+/// `(32.45, 104.06)` (with the `3e-6` of `x` noise and `-0.0` rotations the
+/// vanilla data carries) and the `(34, 10)` one are set aside the same way,
+/// while a bone that merely resembles one is not.
+#[test]
+fn the_marker_family_is_set_aside_but_real_bones_are_not() {
+    let body = entry([0.0; 3], [0.1, 0.2, 0.3]);
+    let with = |last: RagdollPoseBone| {
+        let mut entries = vec![body; 18];
+        entries.push(last);
+        body_entries(&entries).len()
+    };
+    let skeleton = entry([3.2241403e-6, 32.45313, 104.06167], [-0.0, -0.0, -1.0e-8]);
+    assert_eq!(with(skeleton), 18, "draugr skeleton marker");
+    assert_eq!(with(entry([0.0, 34.0, 10.0], [0.0; 3])), 18, "(34, 10) marker");
+    assert_eq!(with(entry([0.0; 3], [0.0; 3])), 19, "an all-zero last entry may be a body at rest");
+    assert_eq!(with(entry([0.5, 17.0, 10.0], [0.0; 3])), 19, "x is not 0");
+    assert_eq!(with(entry([0.0, 17.0, 10.0], [0.0, 0.01, 0.0])), 19, "rotated");
+    let other_bone = RagdollPoseBone { bone_id: 7, ..entry([0.0, 17.0, 10.0], [0.0; 3]) };
+    assert_eq!(with(other_bone), 19, "bone_id is not 0");
 }
 
 #[test]
@@ -400,13 +422,23 @@ fn xrgd_entry_counts_match_the_humanoid_ragdoll_bodies() {
     let (all, all_matching) = tally.values().fold((0, 0), |(a, m), t| (a + t.0, m + t.1));
     eprintln!("overall: {all_matching} of {all} corpses have an entry count equal to their ragdoll's bodies");
     assert!(humanoid.0 > 250, "the humanoid corpses were found");
-    // Measured 2026-10-14: 262 of 300. The 38 that differ authored a body set
-    // other than the skeleton their race loads (23 entries on the humanoid
-    // rig); the production gate refuses those rather than guess.
+    // Measured 2026-10-19: 273 of 300 (262 before the marker family was set
+    // aside, #5015). The 27 that differ authored a body set other than the
+    // skeleton their race loads (23 entries on the humanoid rig); the
+    // production gate refuses those rather than guess.
     assert!(
-        humanoid.1 * 100 >= humanoid.0 * 85,
-        "at least 85% of humanoid corpses line up entry-for-body, got {} of {}",
+        humanoid.1 * 100 >= humanoid.0 * 90,
+        "at least 90% of humanoid corpses line up entry-for-body, got {} of {}",
         humanoid.1,
         humanoid.0
+    );
+    // The draugr rig shares the humanoid body set; 165 of its 168 corpses
+    // line up once the `(32.45, 104.06)` marker is set aside (78 before).
+    let draugr = &tally["meshes\\actors\\draugr\\character assets\\skeleton.nif"];
+    assert!(
+        draugr.1 * 100 >= draugr.0 * 95,
+        "the draugr skeleton's corpses line up entry-for-body, got {} of {}",
+        draugr.1,
+        draugr.0
     );
 }

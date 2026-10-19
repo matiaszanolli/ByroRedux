@@ -330,8 +330,9 @@ impl PlacedRef {
 ///   (`byroredux/src/ragdoll_pose.rs`, #5015): entry `k` is the skeleton NIF's
 ///   ragdoll body `k` (`bone_id` is not that order), the rotation is the
 ///   Gamebryo XYZ product with negated angles, and entry 0 is the centre of
-///   mass at the placement. A trailing `(0, 17, 10)` entry with zero rotation
-///   is not a body. Those are interpretations, not a source.
+///   mass at the placement. A trailing entry with `bone_id` 0, zero rotation and a
+///   constant `(0, y, z)` offset — `(17, 10)`, `(34, 10)`, the draugr skeleton's
+///   `(32.45, 104.06)` — is not a body. Those are interpretations, not a source.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RagdollPoseBone {
     pub bone_id: u8,
