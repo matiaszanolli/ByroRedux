@@ -21,7 +21,33 @@
 //! | `0x100c` | GetSecondsPassed | per-script elapsed since last tick |
 //! | `0x101f` | GetButtonPressed | consumes the pending answer, or −1 when none is available |
 //! | condition 79 | GetQuestVariable | reads the quest's persisted [`ObScriptQuestLocals`] slot |
+//! | `0x10ce` | GetSelf | the script owner's form id |
 //! | everything else | — | traced no-op returning 0, counted in [`ObScriptQuestTimers`] |
+//!
+//! # Evidence per game (#6015)
+//!
+//! "Shared across the three games" is measured, not assumed:
+//! `obscript_tools names <ESM> all 1` aligns each script's `SCTX` source with its
+//! compiled statements. Number of vanilla-master scripts (every script type;
+//! 2026-10-19) whose compiled id aligned to the named command:
+//!
+//! | id | command | Oblivion | Fallout 3 | New Vegas |
+//! |----|---------|---------:|----------:|----------:|
+//! | `0x1039` | SetStage | 726 | 181 | 357 |
+//! | `0x103a` | GetStage | 790 | 201 | 171 |
+//! | `0x103b` | GetStageDone | 123 | 62 | 100 |
+//! | `0x1036` | StartQuest | 10 | 5 | 47 |
+//! | `0x1037` | StopQuest | 25 | 10 | 65 |
+//! | `0x1038` | GetQuestRunning | 27 | 18 | 96 (incl. alias `GetQR`) |
+//! | `0x1059` | Message (Oblivion) / ShowMessage (Fallout) | 152 | 221 | 329 |
+//! | `0x100c` | GetSecondsPassed | 516 | 236 | 255 |
+//! | `0x101f` | GetButtonPressed | 46 | 58 | 129 |
+//! | `0x10ce` | GetSelf | 438 | 40 | 122 (87 % by name; the rest is the `this` alias) |
+//! | `0x1000` | MessageBox | 264 | **0** | **0** |
+//!
+//! Every id agrees across the three games except `0x1000`: no Fallout script
+//! compiles to it, so the host declines it there rather than run an Oblivion
+//! meaning the Fallout games never evidenced.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -438,6 +464,13 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
     }
 
     fn message(&mut self, message: crate::obscript_vm::ObScriptMessage) {
+        // #6015 — `0x1000` is Oblivion's `MessageBox`; no Fallout 3 / New Vegas script
+        // compiles to it (see the evidence table above), so a box decoded from that id
+        // there is a lookalike, not a MessageBox.
+        if message.message_box && crate::ScriptGame::is_fallout3_nv(self.world) {
+            self.decline(crate::obscript_vm::CMD_MESSAGE_BOX);
+            return;
+        }
         let kind = if message.message_box { "MessageBox" } else { "Message" };
         log::debug!("quest {:08X} {kind}: {:?}", self.owner, message.text);
         crate::messages::show_obscript_message(self.world, QuestFormId(self.owner), message);
@@ -561,6 +594,8 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     _ => self.decline(cmd),
                 }
             }
+            // #6015 — Oblivion-only id (no FO3/FNV alignment), declined there.
+            0x1000 if crate::ScriptGame::is_fallout3_nv(self.world) => self.decline(cmd),
             0x1059 | 0x1000 => {
                 effect(
                     self,
@@ -1107,6 +1142,32 @@ mod host_tests {
         let stages = world.try_resource::<QuestStageState>().unwrap();
         assert!(!stages.is_started(QuestFormId(0)), "form 0 never staged");
         assert!(!stages.is_started(QuestFormId(OWN)), "own quest never staged");
+    }
+
+    /// #6015 — `0x1000` (`MessageBox`) is an Oblivion id with no Fallout alignment: a
+    /// Fallout host declines (and counts) it, whether it arrives as a decoded box or
+    /// as a bare call, while Oblivion still answers the MessageBox "no button" value.
+    #[test]
+    fn message_box_id_is_declined_on_fallout_and_runs_on_oblivion() {
+        use byroredux_plugin::esm::reader::GameKind;
+        let boxed = || crate::obscript_vm::ObScriptMessage {
+            text: "hi".into(),
+            values: Vec::new(),
+            buttons: Vec::new(),
+            message_box: true,
+        };
+        let script = ScriptRecord::default();
+
+        let mut fallout = world();
+        fallout.insert_resource(crate::ScriptGame(GameKind::Fallout3NV));
+        assert_eq!(call(&fallout, 0x1000, &[]), Some(ObScriptValue::Num(0.0)));
+        ObScriptCommandHost::new(&fallout, OWN, None, 0.0, &script).message(boxed());
+        assert_eq!(declined(&fallout, 0x1000), 2, "call and decoded box both counted");
+
+        let mut oblivion = world();
+        oblivion.insert_resource(crate::ScriptGame(GameKind::Oblivion));
+        assert_eq!(call(&oblivion, 0x1000, &[]), Some(ObScriptValue::Num(-1.0)));
+        assert_eq!(declined(&oblivion, 0x1000), 0);
     }
 
     /// The decline must not disturb the resolved and defaulted forms.

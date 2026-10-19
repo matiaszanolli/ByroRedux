@@ -2259,8 +2259,10 @@ every pre-Papyrus game, not just Oblivion: `install_quest_scripts`
 (`asset_provider/script.rs`) resolves each quest's `script_ref` into the
 obscript runtime with no game gate, and the 5 s GameMode tick
 (`obscript_quest_tick_system`, registered in `boot/schedule/update.rs`) runs
-whatever it installed. Command ids are shared across the three games, so the
-interpreter needs no per-game table. The 2026-10-11 agent census measured the
+whatever it installed. Command ids are shared across the three games (measured
+per id and per game in `obscript_quests.rs`'s evidence table, #6015 — the one
+exception is `0x1000` `MessageBox`, which no Fallout script compiles to and the
+host therefore declines there), so the interpreter needs no per-game table. The 2026-10-11 agent census measured the
 live installed base: **322 FNV** and **101 FO3** quest scripts install and
 tick ungated, with the wrong-target reference-slot defects of that audit's
 SCR-D6-01/02 affecting 3–6 % of vanilla quest scripts — tracked separately
