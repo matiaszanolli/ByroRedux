@@ -935,7 +935,10 @@ fn count_example_targets(root: &std::path::Path) -> (usize, usize) {
 fn example_targets_hold_their_per_crate_ceilings() {
     const CEILINGS: &[(&str, usize, usize)] = &[
         ("byroredux", 3, 660),
-        ("bsa", 15, 1099),
+        // #5912 — +1: `fuz_census.rs`, the grounding probe for the .fuz
+        // payload census (40/40 SE voice files = WMAUDIO2 in an xWMA
+        // container), kept alongside the crate's other archive probes.
+        ("bsa", 16, 1207),
         ("fsr3-sys", 1, 284),
         ("hkx", 14, 863),
         ("menuxml", 1, 197),

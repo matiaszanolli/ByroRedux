@@ -2030,5 +2030,7 @@ impl VoiceSoundCache {
 
 impl Resource for VoiceSoundCache {}
 
+pub mod fuz;
+
 #[cfg(test)]
 mod tests;

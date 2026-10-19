@@ -47,10 +47,16 @@
 //! has no authored shape (the bare `<formid>_<n>.ogg` form matched zero
 //! files in either archive) and stays silent. The voice-type EDID
 //! resolves through the NPC's `VTCK` → the indexed `VTYP` records.
-//! `.fuz` (Skyrim+) is a different container (FUZE + raw lip + RIFF
-//! xWMA, #5464) — not handled here (tracked by #5912), see the design doc's Phase V notes. FNV DLC voice ships inside
+//! `.fuz` (Skyrim / FO4 / FO76) rides the same name shape with the
+//! `.fuz` extension ([`fuz_voice_path_candidates`]); the FUZE container
+//! (FUZE + raw lip + RIFF xWMA, #5464) is parsed in
+//! `byroredux_audio::fuz` and its WMA payload decoded through the
+//! host's optional `ffmpeg` (#5912 — parse, don't link: without
+//! `ffmpeg` the line stays on the subtitle estimate exactly as
+//! pre-#5912). FNV DLC voice ships inside
 //! `<DLC> - Main.bsa`, which the profile does not mount: pass it with
-//! `--sounds-bsa` for a voiced DLC session.
+//! `--sounds-bsa` for a voiced DLC session (the SE profile mounts
+//! `Skyrim - Voices_en0.bsa` the same way).
 //!
 //! Playback rides the `SoundArchiveProvider` (opened through the
 //! profile's sounds list — FNV's Voices BSA joins it with this phase)
@@ -113,6 +119,45 @@ pub(crate) fn voice_path_candidates(
     };
     vec![format!(
         "sound\\voice\\{plugin}\\{voice_type}\\{quest}_{topic}_{:08x}_{response}.ogg",
+        local_id & 0x00FF_FFFF
+    )]
+}
+
+/// Candidate archive paths for one Skyrim / FO4 / FO76 response segment
+/// (#5912): the FO3/FNV name shape with the `.fuz` extension, and one
+/// relaxation the FO3/FNV census never needed — ONE of the two EDID
+/// segments may be empty (SE census: `dialoguegenericscenedog01__
+/// 0005b1b6_1.fuz`, a generic line authored with a bare quest EDID and
+/// no topic). The truncation rule is the same length test (#5395),
+/// re-measured against the SE voice archive: `wimourning` +
+/// `wimourningadult` = 25 sits exactly at the full-shape boundary,
+/// while `DialogueWinterhold`'s pair ships cut to
+/// `dialoguewi_dialoguewinterh` (10 + 15).
+pub(crate) fn fuz_voice_path_candidates(
+    plugin: &str,
+    voice_type: &str,
+    quest_edid: &str,
+    topic_edid: &str,
+    local_id: u32,
+    response: u8,
+) -> Vec<String> {
+    if quest_edid.is_empty() && topic_edid.is_empty() {
+        return Vec::new();
+    }
+    let quest = quest_edid.to_ascii_lowercase();
+    let topic = topic_edid.to_ascii_lowercase();
+    let (quest, topic) = if quest.chars().count() + topic.chars().count() > VOICE_NAME_CHARS {
+        let quest_cut: String = quest.chars().take(VOICE_QUEST_CHARS).collect();
+        let topic_cut: String = topic
+            .chars()
+            .take(VOICE_NAME_CHARS.saturating_sub(quest_cut.len()))
+            .collect();
+        (quest_cut, topic_cut)
+    } else {
+        (quest, topic)
+    };
+    vec![format!(
+        "sound\\voice\\{plugin}\\{voice_type}\\{quest}_{topic}_{:08x}_{response}.fuz",
         local_id & 0x00FF_FFFF
     )]
 }
@@ -224,7 +269,31 @@ fn resolve_voice_segments(
                     if provider.is_empty() {
                         return None;
                     }
-                    provider.extract(path)
+                    let bytes = provider.extract(path)?;
+                    // #5912 — FUZE containers (Skyrim/FO4/FO76 .fuz) must
+                    // become WAV before the cache's kira decode sees them;
+                    // every other vanilla voice payload is already
+                    // kira-decodable. `ffmpeg` missing is the expected
+                    // degradation (debug, once per line) — a parse failure
+                    // on a FUZE-marked file is worth a warn.
+                    if bytes.starts_with(b"FUZE") {
+                        match byroredux_audio::fuz::fuz_to_wav_bytes(&bytes) {
+                            Ok(wav) => Some(wav),
+                            Err(byroredux_audio::fuz::FuzDecodeError::FfmpegMissing) => {
+                                log::debug!(
+                                    "#5912: '{path}' resolved but no host ffmpeg — \
+                                     playing silent on the subtitle estimate"
+                                );
+                                None
+                            }
+                            Err(e) => {
+                                log::warn!("#5912: .fuz decode failed for '{path}': {e}");
+                                None
+                            }
+                        }
+                    } else {
+                        Some(bytes)
+                    }
                 })
             });
             let Some(sound) = sound else {
@@ -318,6 +387,16 @@ pub(crate) fn play_line_voice(
     // VTYP. Oblivion authors neither record (#5526): its key is the voice
     // race folder plus the sex folder, through the speaker's RACE `VNAM`.
     let oblivion = index.game == byroredux_plugin::esm::reader::GameKind::Oblivion;
+    // #5912 — the .fuz games share the FO3/FNV name shape (extension and
+    // the one-empty-segment relaxation aside). Starfield ships Wwise
+    // .wem voice, not FUZE, and stays on the .ogg-shaped path that
+    // resolves nothing for it.
+    let fuz_game = matches!(
+        index.game,
+        byroredux_plugin::esm::reader::GameKind::Skyrim
+            | byroredux_plugin::esm::reader::GameKind::Fallout4
+            | byroredux_plugin::esm::reader::GameKind::Fallout76
+    );
     let voice_key = if oblivion {
         oblivion_voice_race(&index, npc_record)
     } else {
@@ -363,6 +442,10 @@ pub(crate) fn play_line_voice(
         if oblivion {
             oblivion_voice_path_candidates(
                 &plugin, &voice_type, female, quest_edid, topic_edid, local_id, response,
+            )
+        } else if fuz_game {
+            fuz_voice_path_candidates(
+                &plugin, &voice_type, quest_edid, topic_edid, local_id, response,
             )
         } else {
             voice_path_candidates(&plugin, &voice_type, quest_edid, topic_edid, local_id, response)
@@ -432,6 +515,72 @@ pub(crate) fn stop_line_voice(world: &World, npc: EntityId) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5912 — the .fuz name shape, pinned against the SE voice archive
+    /// census (`fuz_census`): full EDIDs at the 25-char boundary stay
+    /// full (`wimourning_wimourningadult`, 10+15), longer pairs cut the
+    /// same way as FO3/FNV (`DialogueWinterhold`'s pair ships as
+    /// `dialoguewi_dialoguewinterh`), and the bare-quest generic lines
+    /// the FO3/FNV census never saw compose with an empty topic (the
+    /// double underscore is authored data, not a bug).
+    #[test]
+    fn fuz_voice_path_candidates_match_the_se_census() {
+        let paths = fuz_voice_path_candidates(
+            "skyrim.esm",
+            "maleguard",
+            "DA02",
+            "DA02Steward",
+            0x000B_3E33,
+            1,
+        );
+        assert_eq!(
+            paths,
+            vec!["sound\\voice\\skyrim.esm\\maleguard\\da02_da02steward_000b3e33_1.fuz"]
+        );
+        // The boundary: 25 combined chars is the FULL shape (the rule
+        // cuts only over 25).
+        let paths = fuz_voice_path_candidates(
+            "skyrim.esm",
+            "femalenord",
+            "WIMourning",
+            "WIMourningAdult",
+            0x0002_9733,
+            1,
+        );
+        assert_eq!(
+            paths,
+            vec!["sound\\voice\\skyrim.esm\\femalenord\\wimourning_wimourningadult_00029733_1.fuz"]
+        );
+        // Over 25: quest cut to 10, topic to the remainder.
+        let paths = fuz_voice_path_candidates(
+            "skyrim.esm",
+            "maleuniqueancano",
+            "DialogueWinterhold",
+            "DialogueWinterholdCivility",
+            0x0008_7993,
+            1,
+        );
+        assert_eq!(
+            paths,
+            vec!["sound\\voice\\skyrim.esm\\maleuniqueancano\\dialoguewi_dialoguewinterh_00087993_1.fuz"]
+        );
+        // A bare-quest generic line: one empty segment composes (the
+        // authored file really carries the double underscore).
+        let paths = fuz_voice_path_candidates(
+            "skyrim.esm",
+            "malecoward",
+            "DialogueGenericSceneDog01",
+            "",
+            0x0005_B1B6,
+            1,
+        );
+        assert_eq!(
+            paths,
+            vec!["sound\\voice\\skyrim.esm\\malecoward\\dialoguegenericscenedog01__0005b1b6_1.fuz"]
+        );
+        // A line with neither EDID has no authored shape.
+        assert!(fuz_voice_path_candidates("skyrim.esm", "v", "", "", 0x1AB, 1).is_empty());
+    }
 
     /// The authored path shape: short EDIDs need no truncation, so the
     /// truncated shape is the only candidate.
