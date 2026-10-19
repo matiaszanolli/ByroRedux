@@ -28,6 +28,16 @@ pub struct CompatibilityReport {
 }
 
 pub const MAX_COMPATIBILITY_SCRIPTS: usize = 65_536;
+/// #6024 — findings one ObScript source / bytecode scan may report. Every
+/// finding owns ~6 heap strings, so without a cap a ~64 KiB script of repeated
+/// `IsModLoaded` produced ~5k of them (~2 MB) from a single hostile record.
+/// Past the cap the scan stops recording and says so in the report's
+/// `malformed_calls` rather than silently dropping evidence.
+pub const MAX_COMPATIBILITY_FINDINGS_PER_SCRIPT: usize = 256;
+/// #6024 — findings and diagnostics the registry retains across *all* scripts.
+/// [`MAX_COMPATIBILITY_SCRIPTS`] bounds how many reports are kept, not how big
+/// they are; this bounds the bytes (~300 B per entry, so ~80 MB worst case).
+pub const MAX_COMPATIBILITY_RETAINED_ENTRIES: usize = 262_144;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct CompatibilityScriptKey {
@@ -40,6 +50,8 @@ struct CompatibilityScriptKey {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompatibilityRegistry {
     scripts: BTreeMap<CompatibilityScriptKey, CompatibilityReport>,
+    /// Findings + malformed diagnostics held by `scripts` (#6024).
+    retained_entries: usize,
     truncated: bool,
 }
 
@@ -79,16 +91,30 @@ impl CompatibilityRegistry {
         if self.scripts.contains_key(&key) {
             return false;
         }
-        if self.scripts.len() == MAX_COMPATIBILITY_SCRIPTS {
+        let entries = report.findings.len() + report.malformed_calls.len();
+        if self.scripts.len() >= MAX_COMPATIBILITY_SCRIPTS
+            || self.retained_entries.saturating_add(entries) > MAX_COMPATIBILITY_RETAINED_ENTRIES
+        {
+            // #6024 — evidence past the budget is dropped; say so once, not
+            // only to an operator who happens to run `sdk.compat`.
+            if !self.truncated {
+                log::warn!(
+                    "compatibility registry full ({} scripts, {} findings/diagnostics);                      further extender-era scripts are no longer recorded",
+                    self.scripts.len(),
+                    self.retained_entries
+                );
+            }
             self.truncated = true;
             return false;
         }
+        self.retained_entries += entries;
         self.scripts.insert(key, report);
         true
     }
 
     pub fn clear(&mut self) {
         self.scripts.clear();
+        self.retained_entries = 0;
         self.truncated = false;
     }
 
@@ -181,6 +207,7 @@ pub fn record_compatibility_report(
 /// commands and express the result through the common compatibility report.
 pub fn analyze_obscript_compatibility(source_file: &str, source_text: &str) -> CompatibilityReport {
     let mut findings = Vec::new();
+    let mut dropped = 0usize;
     let mut byte_offset = 0usize;
     for (line_index, raw_line) in source_text.split_inclusive('\n').enumerate() {
         let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
@@ -207,6 +234,10 @@ pub fn analyze_obscript_compatibility(source_file: &str, source_text: &str) -> C
                     let Some(compatibility) = classify_obscript_command(command) else {
                         continue;
                     };
+                    if findings.len() >= MAX_COMPATIBILITY_FINDINGS_PER_SCRIPT {
+                        dropped += 1;
+                        continue;
+                    }
                     let provider = match compatibility.family {
                         ExtenderFamily::Xnvse => "xNVSE",
                         ExtenderFamily::Obse => "OBSE",
@@ -235,10 +266,40 @@ pub fn analyze_obscript_compatibility(source_file: &str, source_text: &str) -> C
         }
         byte_offset = byte_offset.saturating_add(raw_line.len());
     }
+    let malformed_calls = finding_budget_diagnostic(
+        source_file,
+        CallScope::StateFunction {
+            state: "ObScript".to_owned(),
+            function: "<script>".to_owned(),
+        },
+        dropped,
+    )
+    .into_iter()
+    .collect();
     CompatibilityReport {
         findings,
-        malformed_calls: Vec::new(),
+        malformed_calls,
     }
+}
+
+/// The report-level note that a scan hit [`MAX_COMPATIBILITY_FINDINGS_PER_SCRIPT`]
+/// (#6024): `dropped` further recognized commands were counted, not recorded.
+fn finding_budget_diagnostic(
+    source_file: &str,
+    scope: CallScope,
+    dropped: usize,
+) -> Option<CallSiteDiagnostic> {
+    (dropped > 0).then(|| CallSiteDiagnostic {
+        source_file: source_file.to_owned(),
+        object: "<obscript>".to_owned(),
+        scope,
+        instruction_index: 0,
+        source_line: None,
+        message: format!(
+            "finding budget of {MAX_COMPATIBILITY_FINDINGS_PER_SCRIPT} reached; \
+             {dropped} further extender command(s) not recorded"
+        ),
+    })
 }
 
 /// Analyze source-less compiled SCDA using the bounded structural decoder.
@@ -252,7 +313,7 @@ pub fn analyze_obscript_bytecode_compatibility(
         state: "ObScript".to_owned(),
         function: "<compiled>".to_owned(),
     };
-    let findings = decoded
+    let mut findings: Vec<CompatibilityFinding> = decoded
         .calls
         .into_iter()
         .filter_map(|call| {
@@ -278,9 +339,14 @@ pub fn analyze_obscript_bytecode_compatibility(
             })
         })
         .collect();
-    let malformed_calls = decoded
+    let dropped = findings
+        .len()
+        .saturating_sub(MAX_COMPATIBILITY_FINDINGS_PER_SCRIPT);
+    findings.truncate(MAX_COMPATIBILITY_FINDINGS_PER_SCRIPT);
+    let mut malformed_calls: Vec<CallSiteDiagnostic> = decoded
         .diagnostics
         .into_iter()
+        .take(MAX_COMPATIBILITY_FINDINGS_PER_SCRIPT)
         .map(|diagnostic| CallSiteDiagnostic {
             source_file: source_file.to_owned(),
             object: "<obscript>".to_owned(),
@@ -290,6 +356,11 @@ pub fn analyze_obscript_bytecode_compatibility(
             message: diagnostic.message.to_owned(),
         })
         .collect();
+    malformed_calls.extend(finding_budget_diagnostic(
+        source_file,
+        scope.clone(),
+        dropped,
+    ));
     CompatibilityReport {
         findings,
         malformed_calls,
@@ -840,6 +911,50 @@ EndEvent
             json.compatibility.disposition,
             CompatibilityDisposition::Unsupported
         );
+    }
+
+    /// #6024 — one hostile script cannot make a report with unbounded findings;
+    /// the overflow is counted in a diagnostic, not silently dropped.
+    #[test]
+    fn obscript_findings_are_budgeted_per_script_and_the_overflow_is_reported() {
+        let lines = MAX_COMPATIBILITY_FINDINGS_PER_SCRIPT + 40;
+        let source = "if GetNVSEVersion >= 6\nendif\n".repeat(lines);
+        let report = analyze_obscript_compatibility("Hostile", &source);
+        assert_eq!(report.findings.len(), MAX_COMPATIBILITY_FINDINGS_PER_SCRIPT);
+        let [note] = report.malformed_calls.as_slice() else {
+            panic!("expected one budget diagnostic, got {:?}", report.malformed_calls);
+        };
+        assert!(note.message.contains("40 further"), "{}", note.message);
+
+        let small = analyze_obscript_compatibility("Fits", "if GetNVSEVersion >= 6\nendif\n");
+        assert!(small.malformed_calls.is_empty(), "no note when nothing was dropped");
+    }
+
+    /// #6024 — the registry bounds retained entries (bytes), not just scripts,
+    /// and flags the truncation.
+    #[test]
+    fn registry_bounds_retained_entries_and_flags_truncation() {
+        let big = |n: usize| {
+            analyze_obscript_compatibility("Big", &"if GetNVSEVersion >= 6\nendif\n".repeat(n))
+        };
+        let per_script = big(MAX_COMPATIBILITY_FINDINGS_PER_SCRIPT);
+        let entries = per_script.findings.len() + per_script.malformed_calls.len();
+        let fits = MAX_COMPATIBILITY_RETAINED_ENTRIES / entries;
+
+        let mut registry = CompatibilityRegistry::default();
+        for fingerprint in 0..fits as u64 {
+            assert!(registry.record(fingerprint, per_script.clone()));
+        }
+        assert!(!registry.truncated());
+        assert!(
+            !registry.record(fits as u64, per_script.clone()),
+            "the next report would exceed the retained-entry budget"
+        );
+        assert!(registry.truncated());
+        assert_eq!(registry.script_count(), fits);
+        registry.clear();
+        assert!(!registry.truncated());
+        assert!(registry.record(0, per_script), "clear() resets the budget");
     }
 
     #[test]
