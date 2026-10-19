@@ -5,6 +5,7 @@
 //! `locate_refr`), `CellLocator`, `CellRef` / `OwnedCellRef`, and the
 //! `parse_esm_cells*` entry points.
 
+use super::worldspace::PNAM_INHERIT_LAND;
 use super::{CellData, PlacedRef, StaticObject, TextureSet, WorldspaceRecord};
 use anyhow::Result;
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -352,6 +353,75 @@ impl EsmCellIndex {
             CellLocator::Exterior(world, xy) => self.exterior_cells.get(world)?.get(xy),
             CellLocator::WorldspacePersistent(world) => self.worldspace_persistent_cells.get(world),
         }
+    }
+
+    /// Give every LAND-less exterior cell of a land-inheriting worldspace the
+    /// landscape of its `WNAM` parent at the same grid coordinate (#5505).
+    ///
+    /// The CS: "If you select NONE [as parent], the worldspace will have its
+    /// own, editable landscape. Otherwise, this worldspace will use the
+    /// landscape of its parent." An Oblivion city worldspace authors LAND only
+    /// for its own footprint (BrumaWorld 13 of 57 cells) and a ring of empty
+    /// cells around it; those cells are the parent's countryside. The grids
+    /// are co-located, not local: BrumaWorld's LAND sits at cells (4..8,
+    /// 34..38), which is where Bruma stands in Tamriel.
+    ///
+    /// Only cells the child already authors are filled — coordinates it has no
+    /// CELL for stay with the parent-keyed distant-LOD ring. A cell's own
+    /// LAND always wins, and the chain is followed only while each link
+    /// carries [`PNAM_INHERIT_LAND`]. Run once after the load order is merged
+    /// (the parent may live in a master). Returns the cells filled.
+    ///
+    /// The caller gates on the game: the co-location above was measured on
+    /// Oblivion only, and FO3+ child grids are not assumed to share the
+    /// parent's coordinates.
+    pub fn inherit_parent_landscapes(&mut self) -> usize {
+        // A WNAM chain is a few links long; the cap only stops a cycle.
+        const MAX_CHAIN: usize = 16;
+        let key_of_form: HashMap<u32, &String> = self
+            .worldspaces
+            .iter()
+            .filter(|(_, w)| w.form_id != 0)
+            .map(|(key, w)| (w.form_id, key))
+            .collect();
+
+        let mut grants = Vec::new();
+        for (key, worldspace) in &self.worldspaces {
+            if worldspace.parent_flags & PNAM_INHERIT_LAND == 0 {
+                continue;
+            }
+            let Some(cells) = self.exterior_cells.get(key) else { continue };
+            for grid in cells.iter().filter(|(_, cell)| cell.landscape.is_none()).map(|(grid, _)| grid) {
+                let mut link = worldspace;
+                let land = (0..MAX_CHAIN).find_map(|_| {
+                    if link.parent_flags & PNAM_INHERIT_LAND == 0 {
+                        return Some(None);
+                    }
+                    let parent_key = *key_of_form.get(&link.parent_worldspace?)?;
+                    if let Some(land) = self
+                        .exterior_cells
+                        .get(parent_key)
+                        .and_then(|parent_cells| parent_cells.get(grid))
+                        .and_then(|parent_cell| parent_cell.landscape.as_ref())
+                    {
+                        return Some(Some(land.clone()));
+                    }
+                    link = self.worldspaces.get(parent_key)?;
+                    None
+                });
+                if let Some(Some(land)) = land {
+                    grants.push((key.clone(), *grid, land));
+                }
+            }
+        }
+
+        let filled = grants.len();
+        for (key, grid, land) in grants {
+            if let Some(cell) = self.exterior_cells.get_mut(&key).and_then(|c| c.get_mut(&grid)) {
+                cell.landscape = Some(land);
+            }
+        }
+        filled
     }
 
     /// Merge `other` into `self` with last-write-wins semantics on

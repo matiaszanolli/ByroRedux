@@ -862,3 +862,92 @@ fn cell_by_form_id_finds_interior_exterior_and_persistent_cells() {
     assert_eq!(index.cell_by_form_id(0x0D).unwrap().editor_id, "InteriorB");
     assert_eq!(index.cell_by_form_id(0x0A).unwrap().editor_id, "InteriorA");
 }
+
+fn land_marker(height: f32) -> LandscapeData {
+    LandscapeData {
+        heights: vec![height],
+        normals: None,
+        vertex_colors: None,
+        quadrants: std::array::from_fn(|_| TerrainQuadrant::default()),
+    }
+}
+
+fn exterior_cell(form_id: u32, grid: (i32, i32), land: Option<f32>) -> CellData {
+    let mut cell = make_interior_cell(form_id, "Tile");
+    cell.is_interior = false;
+    cell.grid = Some(grid);
+    cell.landscape = land.map(land_marker);
+    cell
+}
+
+fn world(form_id: u32, parent: Option<(u32, u16)>) -> WorldspaceRecord {
+    WorldspaceRecord {
+        form_id,
+        parent_worldspace: parent.map(|(f, _)| f),
+        parent_flags: parent.map_or(0, |(_, flags)| flags),
+        ..Default::default()
+    }
+}
+
+fn heights(index: &EsmCellIndex, world: &str, grid: (i32, i32)) -> Option<f32> {
+    index.exterior_cells[world][&grid].landscape.as_ref().map(|l| l.heights[0])
+}
+
+/// #5505 — a LAND-less cell of a land-inheriting child takes the parent's
+/// LAND at the same grid coordinate; a cell's own LAND wins; a coordinate the
+/// parent has no LAND at stays empty; a child that does not set the bit is
+/// left alone.
+#[test]
+fn inherit_parent_landscapes_fills_only_land_less_cells_of_inheriting_children() {
+    let mut index = EsmCellIndex::default();
+    index.worldspaces.insert("tamriel".into(), world(0x3C, None));
+    index.worldspaces.insert("bruma".into(), world(0x100, Some((0x3C, 0x01 | 0x02))));
+    index.worldspaces.insert("loner".into(), world(0x200, Some((0x3C, 0x02))));
+    index.exterior_cells.insert(
+        "tamriel".into(),
+        HashMap::from([
+            ((4, 34), exterior_cell(1, (4, 34), Some(1.0))),
+            ((5, 34), exterior_cell(2, (5, 34), Some(2.0))),
+        ]),
+    );
+    index.exterior_cells.insert(
+        "bruma".into(),
+        HashMap::from([
+            ((4, 34), exterior_cell(10, (4, 34), None)),
+            ((5, 34), exterior_cell(11, (5, 34), Some(99.0))),
+            ((9, 40), exterior_cell(12, (9, 40), None)),
+        ]),
+    );
+    index.exterior_cells.insert(
+        "loner".into(),
+        HashMap::from([((4, 34), exterior_cell(20, (4, 34), None))]),
+    );
+
+    assert_eq!(index.inherit_parent_landscapes(), 1);
+    assert_eq!(heights(&index, "bruma", (4, 34)), Some(1.0), "filled from the parent");
+    assert_eq!(heights(&index, "bruma", (5, 34)), Some(99.0), "own LAND wins");
+    assert_eq!(heights(&index, "bruma", (9, 40)), None, "the parent has no LAND there");
+    assert_eq!(heights(&index, "loner", (4, 34)), None, "PNAM bit 0x01 not set");
+}
+
+/// #5505 — the chain is followed through intermediate worldspaces that carry
+/// no LAND of their own at the coordinate, and a WNAM cycle terminates.
+#[test]
+fn inherit_parent_landscapes_follows_the_chain_and_survives_a_cycle() {
+    let mut index = EsmCellIndex::default();
+    index.worldspaces.insert("root".into(), world(0x1, None));
+    index.worldspaces.insert("mid".into(), world(0x2, Some((0x1, 0x01))));
+    index.worldspaces.insert("leaf".into(), world(0x3, Some((0x2, 0x01))));
+    index.exterior_cells.insert("root".into(), HashMap::from([((0, 0), exterior_cell(1, (0, 0), Some(7.0)))]));
+    index.exterior_cells.insert("mid".into(), HashMap::from([((0, 0), exterior_cell(2, (0, 0), None))]));
+    index.exterior_cells.insert("leaf".into(), HashMap::from([((0, 0), exterior_cell(3, (0, 0), None))]));
+    assert_eq!(index.inherit_parent_landscapes(), 2);
+    assert_eq!(heights(&index, "leaf", (0, 0)), Some(7.0));
+
+    let mut cyclic = EsmCellIndex::default();
+    cyclic.worldspaces.insert("a".into(), world(0xA, Some((0xB, 0x01))));
+    cyclic.worldspaces.insert("b".into(), world(0xB, Some((0xA, 0x01))));
+    cyclic.exterior_cells.insert("a".into(), HashMap::from([((0, 0), exterior_cell(1, (0, 0), None))]));
+    cyclic.exterior_cells.insert("b".into(), HashMap::from([((0, 0), exterior_cell(2, (0, 0), None))]));
+    assert_eq!(cyclic.inherit_parent_landscapes(), 0);
+}

@@ -1792,7 +1792,17 @@ pub fn build_exterior_world_context(
         .map(|s| s.as_str())
         .chain(std::iter::once(esm_path))
         .collect();
-    let (record_index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
+    let (mut record_index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
+    // #5505 — Oblivion's city worldspaces author LAND only for their own
+    // footprint and sit at the city's real Tamriel grid position; the empty
+    // ring around it is the parent's countryside. Oblivion only: the
+    // co-located grid was measured there, not on the FO3+ children.
+    if record_index.game == byroredux_plugin::esm::reader::GameKind::Oblivion {
+        let filled = record_index.cells.inherit_parent_landscapes();
+        if filled > 0 {
+            log::info!("Oblivion child worldspaces: {filled} LAND-less cells take their parent's landscape");
+        }
+    }
     let index = &record_index.cells;
 
     // Best worldspace per `select_worldspace_key`'s documented priority:

@@ -232,12 +232,11 @@ pub(crate) fn parse_wrld_group(
                 // Sheoth). An authored zero PNAM on FO3+ stays a real
                 // zero — this arm only runs for Oblivion.
                 if game == GameKind::Oblivion && record.parent_worldspace.is_some() {
-                    const INHERIT_LAND: u16 = 0x01;
                     const INHERIT_LOD: u16 = 0x02;
                     const INHERIT_WATER: u16 = 0x08;
                     const INHERIT_CLIMATE: u16 = 0x10;
                     record.parent_flags |=
-                        INHERIT_LAND | INHERIT_LOD | INHERIT_WATER | INHERIT_CLIMATE;
+                        super::worldspace::PNAM_INHERIT_LAND | INHERIT_LOD | INHERIT_WATER | INHERIT_CLIMATE;
                 }
                 if !record.editor_id.is_empty() {
                     let key = record.editor_id.to_ascii_lowercase();

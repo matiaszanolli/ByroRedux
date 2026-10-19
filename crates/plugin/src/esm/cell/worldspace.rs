@@ -125,6 +125,12 @@ pub mod worldspace_flags {
     }
 }
 
+/// WRLD `PNAM` bit `0x01` — "Use Land Data": the worldspace's landscape comes
+/// from its `WNAM` parent (the GECK/CS "Parent Worldspace" rule). Oblivion
+/// authors no `PNAM`; the parse stamps this bit on every Oblivion child (see
+/// `wrld.rs`).
+pub const PNAM_INHERIT_LAND: u16 = 0x01;
+
 /// one. See exal.md §5.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorldspaceRecord {

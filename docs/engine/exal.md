@@ -141,6 +141,20 @@ table-shaped per game — the CS `"<worldspace>Climate"` naming convention
 searched along the **whole `WNAM` chain, root included** (#5388: Tamriel's
 children find `TamrielClimate` through the root; vanilla authors no Tamriel
 WRLD `CNAM` at all) or, as a logged last resort, the richest-authored climate.
+**Landscape (#5505).** The same stamped `PNAM` bit `0x01` ("Use Land Data") is
+read for terrain: an Oblivion city worldspace authors LAND only for its own
+footprint (BrumaWorld 13 of 57 cells) and an empty ring around it, and its grid
+is the city's real position in Tamriel (BrumaWorld's LAND sits at cells
+(4..8, 34..38)). `EsmCellIndex::inherit_parent_landscapes` copies the `WNAM`
+chain's LAND into each of the child's own LAND-less cells at the same
+coordinate (1,040 cells over the 30 vanilla children), once after the load
+order is merged and for Oblivion only — the co-located grid was measured there,
+not on the FO3+ children. The ring beyond the cells a child authors is the
+parent-keyed distant-LOD ring (#5496, `lod_worldspace_key`). Open, unsourced
+from the data files: whether vanilla also draws the parent's placed objects
+around a city, and whether the empty ring is full LAND or LOD in the original;
+the CS wording ("will use the landscape of its parent") is the only source.
+
 The **per-cell `XCCM` override** (`resolve_cell_climate`,
 #2451 / EXAL-03) re-resolves on each cell-boundary crossing through
 `scene::apply_cell_climate_override`, which re-applies sky + weather through the

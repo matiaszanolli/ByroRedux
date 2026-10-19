@@ -1080,3 +1080,46 @@ fn oblivion_child_gets_the_inherit_all_stamp_and_eras_stay_real() {
         "FO3+ authored-zero PNAM is genuine (no inherit-all)"
     );
 }
+
+/// #5505 on the real corpus: after the pass, every LAND-less cell of
+/// BrumaWorld / AnvilWorld / SkingradWorld that Tamriel has LAND under takes
+/// it, and no cell of Tamriel itself changes. The audit counted 1,043
+/// LAND-less child cells with the parent's LAND under 1,040 of them.
+///
+///   cargo test -p byroredux-plugin oblivion_children_inherit -- --ignored
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn oblivion_children_inherit_their_parents_land() {
+    let path = std::env::var("BYROREDUX_OBLIVION_DATA")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data".into())
+        .join("Oblivion.esm");
+    if !path.is_file() {
+        assert!(
+            std::env::var("BYROREDUX_REQUIRE_GAME_DATA").map_or(true, |v| v == "0"),
+            "BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file"
+        );
+        eprintln!("skipping: {path:?} not found");
+        return;
+    }
+    let data = std::fs::read(&path).unwrap();
+    let mut cells = crate::esm::records::parse_esm(&data).expect("Oblivion.esm parses").cells;
+    let tamriel_before: usize = cells.exterior_cells["tamriel"].values().filter(|c| c.landscape.is_some()).count();
+    let landless = |cells: &EsmCellIndex, world: &str| {
+        cells.exterior_cells[world].values().filter(|c| c.landscape.is_none()).count()
+    };
+    let bruma_before = landless(&cells, "brumaworld");
+    assert_eq!(cells.exterior_cells["brumaworld"].len() - bruma_before, 13, "Bruma authors 13 LAND cells");
+
+    let filled = cells.inherit_parent_landscapes();
+    eprintln!("filled {filled} cells; BrumaWorld LAND-less {bruma_before} -> {}", landless(&cells, "brumaworld"));
+    assert!(filled >= 1_000, "the audit counted ~1,040 fillable cells, got {filled}");
+    assert!(landless(&cells, "brumaworld") < bruma_before);
+    assert_eq!(
+        cells.exterior_cells["tamriel"].values().filter(|c| c.landscape.is_some()).count(),
+        tamriel_before,
+        "the parent itself is untouched"
+    );
+}
