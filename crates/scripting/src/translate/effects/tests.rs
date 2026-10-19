@@ -3838,6 +3838,69 @@ fn skyrim_damage_and_restore_discard_the_amount_sign() {
     );
 }
 
+/// #5974 — `ValueExpr` arithmetic is `f32`, so Papyrus `Int / Int` (which
+/// truncates) and `SetValueInt(<float>)` (which stores an `Int`) cannot be
+/// modelled. Division lowers only when an operand is provably `Float`;
+/// `SetValueInt` only when its value is integral by construction.
+#[test]
+fn integer_division_and_non_integral_int_stores_decline() {
+    let lowers = |statement: &str| {
+        let body = first_fn_body(&format!(
+            "ScriptName QF extends Quest\n\
+             GlobalVariable Property G Auto\n\
+             GlobalVariable Property H Auto\n\
+             Function Fragment_0()\n\
+             {statement}\n\
+             EndFunction\n"
+        ));
+        lower_fragment(&body).is_some()
+    };
+    // Integer division: the truncation is lost, so decline.
+    assert!(!lowers("G.SetValueInt(H.GetValueInt() / 2)"));
+    assert!(!lowers("G.SetValue((Self.GetStage() / 10) as Float)"));
+    // A float operand makes it float division, as in Papyrus: lowers.
+    assert!(lowers("G.SetValue(H.GetValue() / 2)"));
+    assert!(lowers("G.SetValue(H.GetValue() / 2.0)"));
+    assert!(lowers("G.SetValue(Self.GetStage() / 2.0)"));
+    // SetValueInt stores an Int: integral-by-construction values keep lowering.
+    assert!(lowers("G.SetValueInt(5)"));
+    assert!(lowers("G.SetValueInt(H.GetValueInt() + 1)"));
+    assert!(lowers("G.SetValueInt(Self.GetStage() * 2)"));
+    // …a float value (or a `Float as Int` truncation the lowering strips) declines.
+    assert!(!lowers("G.SetValueInt(H.GetValue() * 1.5)"));
+    assert!(!lowers("G.SetValueInt(H.GetValue() as Int)"));
+    // SetValue is untouched.
+    assert!(lowers("G.SetValue(H.GetValue() * 1.5)"));
+}
+
+/// #5974 — the same typing applies to a guard: `If Self.GetStage() / 10 == 3`
+/// must not lower as a float comparison.
+#[test]
+fn integer_division_in_a_guard_declines() {
+    let body = first_fn_body(
+        "ScriptName QF extends Quest\n\
+         Function Fragment_0()\n\
+         If Self.GetStage() / 10 == 3\n\
+         Self.SetStage(40)\n\
+         EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(lower_fragment(&body), None);
+    // The control: the same guard over `+ - *` or a float division lowers, so
+    // the decline above is the division, not the guard shape.
+    for expression in ["Self.GetStage() * 10 == 30", "Self.GetStage() / 10.0 == 3"] {
+        let control = first_fn_body(&format!(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             If {expression}\n\
+             Self.SetStage(40)\n\
+             EndIf\n\
+             EndFunction\n"
+        ));
+        assert!(lower_fragment(&control).is_some(), "{expression}");
+    }
+}
+
 /// #5976: a compound assignment to a declared local is not a re-bind to the
 /// right-hand side (`n += 2` would have lowered as `n = 2`). Every operator
 /// but plain `=` declines; plain `=` still lowers.

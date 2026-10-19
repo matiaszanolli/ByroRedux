@@ -23,8 +23,18 @@ pub(super) fn prim_set_global_value(e: &Expr, scope: &Scope) -> Option<Effect> {
             global,
         });
     }
-    let (object, args) = method_call(e, "SetValue").or_else(|| method_call(e, "SetValueInt"))?;
+    let (object, args, int_store) = match method_call(e, "SetValue") {
+        Some((object, args)) => (object, args, false),
+        None => {
+            let (object, args) = method_call(e, "SetValueInt")?;
+            (object, args, true)
+        }
+    };
     if args.len() != 1 {
+        return None;
+    }
+    // #5974 — `SetValueInt` truncates; the value expression does not.
+    if int_store && !int_store_is_exact(&args[0].value.node) {
         return None;
     }
     Some(Effect::SetGlobalValue {

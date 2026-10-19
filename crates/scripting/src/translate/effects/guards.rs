@@ -4,9 +4,76 @@
 
 use super::*;
 
+/// Papyrus calls that return a `Float` (#5974): the actor-value and global
+/// readings and `GetDistance`.
+const FLOAT_READS: &[&str] = &[
+    "GetValue",
+    "GetAV",
+    "GetActorValue",
+    "GetBaseValue",
+    "GetBaseActorValue",
+    "GetValuePercentage",
+    "GetActorValuePercentage",
+    "GetDistance",
+];
+
+/// Papyrus calls that return an `Int` (#5974).
+const INT_READS: &[&str] = &["GetValueInt", "GetStage", "GetItemCount", "GetLevel"];
+
+/// Whether `e` is a `Float` by its own syntax (#5974): a float literal, a cast
+/// to `Float`, a call that returns one, or arithmetic with such an operand
+/// (Papyrus promotes `Int op Float` to `Float`). `false` means *not provably*,
+/// not "an Int": the lowering has no type table, so an identifier is unknown.
+fn provably_float(e: &Expr) -> bool {
+    match e {
+        Expr::FloatLit(_) => true,
+        Expr::Cast { target_type, .. } => matches!(target_type.node, byroredux_papyrus::ast::Type::Float),
+        Expr::UnaryOp { operand, .. } => provably_float(&operand.node),
+        Expr::BinaryOp {
+            op: BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div,
+            left,
+            right,
+        } => provably_float(&left.node) || provably_float(&right.node),
+        _ => method_call_any(e, FLOAT_READS).is_some(),
+    }
+}
+
+/// Whether `e` is an integral `Int` by its own syntax (#5974): an int literal,
+/// a call that returns an `Int`, `Utility.RandomInt`, a cast to `Int` of such
+/// a value, or `+ - *` over those. A cast of anything else to `Int` is NOT
+/// provably integral: [`classify_value`] strips casts, so the truncation a
+/// `Float as Int` performs would be lost.
+fn provably_int_valued(e: &Expr) -> bool {
+    match e {
+        Expr::IntLit(_) => true,
+        Expr::UnaryOp { op: UnaryOp::Neg, operand } => provably_int_valued(&operand.node),
+        Expr::Cast { expr, target_type } => {
+            matches!(target_type.node, byroredux_papyrus::ast::Type::Int) && provably_int_valued(&expr.node)
+        }
+        Expr::BinaryOp {
+            op: BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul,
+            left,
+            right,
+        } => provably_int_valued(&left.node) && provably_int_valued(&right.node),
+        _ => method_call_any(e, INT_READS).is_some() || static_call(e, "Utility", "RandomInt").is_some(),
+    }
+}
+
+/// `SetValueInt(aiValue)` stores an `Int`: the value truncates. The lowering
+/// has no `Int` type, so it keeps the call only when the value is integral by
+/// construction ([`provably_int_valued`]) and otherwise declines (#5974).
+pub(super) fn int_store_is_exact(value: &Expr) -> bool {
+    provably_int_valued(value)
+}
+
 /// M47.2 — a numeric expression as a [`ValueExpr`]: a literal, one of the
 /// numeric guard readings, `GetLevel()`, `Utility.RandomInt` with literal
 /// bounds, or arithmetic over those.
+///
+/// #5974 — arithmetic here is `f32`. That is exact for `+ - *` over integral
+/// values, but Papyrus `Int / Int` truncates, so a division is lowered only
+/// when an operand is provably `Float` (then the whole expression is float
+/// arithmetic, as in Papyrus); an unknown or integer division declines.
 pub(super) fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
     let mut e = e;
     while let Expr::Cast { expr, .. } = e {
@@ -36,7 +103,12 @@ pub(super) fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
             BinaryOp::Add => ArithOp::Add,
             BinaryOp::Sub => ArithOp::Sub,
             BinaryOp::Mul => ArithOp::Mul,
-            BinaryOp::Div => ArithOp::Div,
+            BinaryOp::Div => {
+                if !provably_float(&left.node) && !provably_float(&right.node) {
+                    return None;
+                }
+                ArithOp::Div
+            }
             _ => return None,
         };
         return Some(ValueExpr::Arith(
