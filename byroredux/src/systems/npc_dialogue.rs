@@ -74,6 +74,12 @@ use crate::systems::PlayerEntity;
 pub(crate) struct DialogueTopicEntry {
     pub(crate) topic_form_id: u32,
     pub(crate) name: String,
+    /// The INFO the menu pass chose for this topic (#6007). A click speaks
+    /// this line rather than evaluating the topic's INFOs a second time: the
+    /// menu only offered the entry because that INFO passed, and a fresh
+    /// evaluation of a stochastic gate (`GetRandomPercent`) can fail the entry
+    /// the player just clicked.
+    pub(crate) info_form_id: u32,
 }
 
 /// The activation-driven topic selection on an NPC. At most one entity
@@ -213,13 +219,14 @@ fn linked_menu<'a>(
 fn topic_entries(records: &[(&DialRecord, &InfoRecord)]) -> Vec<DialogueTopicEntry> {
     records
         .iter()
-        .map(|(record, _)| DialogueTopicEntry {
+        .map(|(record, info)| DialogueTopicEntry {
             topic_form_id: record.form_id,
             name: if record.full_name.is_empty() {
                 record.editor_id.clone()
             } else {
                 record.full_name.clone()
             },
+            info_form_id: info.form_id,
         })
         .collect()
 }
@@ -835,7 +842,23 @@ pub(crate) fn select_topic_by_form_id(
         .ok_or_else(|| "no player".to_string())?;
     // After this line, its links become the list; a line that links nowhere
     // returns to the Top-Level topics (#5037).
-    let Some(info) = select_first_info(record, world, Some(npc), Some(player)) else {
+    // #6007 — the line the open menu offered for this entry, if the NPC is
+    // mid-conversation and the entry is in its list: the menu pass already
+    // evaluated (and, for a stochastic gate, drew) that INFO's conditions. Only
+    // a click on a topic the NPC's menu does not list falls back to a fresh
+    // evaluation.
+    let offered = world
+        .get::<NpcDialogueTopic>(npc)
+        .and_then(|current| {
+            current
+                .topics
+                .iter()
+                .find(|entry| entry.topic_form_id == topic_form_id)
+                .map(|entry| entry.info_form_id)
+        })
+        .and_then(|info_form_id| record.infos.iter().find(|info| info.form_id == info_form_id));
+    let Some(info) = offered.or_else(|| select_first_info(record, world, Some(npc), Some(player)))
+    else {
         return Err(format!(
             "no INFO on topic {topic_form_id:08X} passes its conditions right now"
         ));
@@ -1068,6 +1091,59 @@ mod tests {
                 .state,
             rng_after_menu,
             "selection must reuse the INFO chosen during filtering"
+        );
+    }
+
+    /// #6007 — a topic click speaks the INFO the open menu offered. The menu
+    /// pass admitted the entry because its INFO passed; the click used to
+    /// evaluate the topic's INFOs again, so a gate that no longer held (a
+    /// stochastic `GetRandomPercent` draw is the vanilla shape; a global is the
+    /// deterministic stand-in here) refused the topic the player just clicked.
+    #[test]
+    fn a_topic_click_speaks_the_info_the_menu_offered() {
+        use byroredux_plugin::esm::records::condition::{
+            ComparisonOp, Condition, ConditionValue,
+        };
+        const GLOBAL: u32 = 0x20_0099;
+        let (mut world, player, npcs) = bound_world(&[(SPEAKER_REF, SPEAKER_BASE)]);
+        let eltrys = npcs[0];
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.dialogues.insert(TOPIC, fixture_topic());
+        let mut rumors = fixture_second_topic();
+        rumors.infos[0].conditions = vec![Condition {
+            function_index: 74, // GetGlobalValue
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(1.0),
+            param_1: GLOBAL,
+            ..Default::default()
+        }];
+        index.dialogues.insert(TOPIC_RUMORS, rumors);
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(index)));
+        let mut globals = byroredux_scripting::Globals::default();
+        globals.set(GLOBAL, 1.0);
+        world.insert_resource(globals);
+
+        // The gate holds when the menu is built: Rumors is offered.
+        world.insert(eltrys, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+        let menu = selected(&world, eltrys).expect("opens").topics;
+        assert!(
+            menu.iter().any(|entry| entry.topic_form_id == TOPIC_RUMORS
+                && entry.info_form_id == INFO_RUMORS),
+            "the menu records the INFO it admitted each entry on: {menu:?}"
+        );
+
+        // Between the menu and the click the gate stops holding.
+        world.resource_mut::<byroredux_scripting::Globals>().set(GLOBAL, 0.0);
+        select_topic_by_form_id(&mut world, eltrys, TOPIC_RUMORS)
+            .expect("the entry the player clicked answers with the INFO the menu offered");
+        assert_eq!(selected(&world, eltrys).expect("selected").info_form_id, INFO_RUMORS);
+
+        // A topic the NPC's menu does not list is still evaluated fresh.
+        world.remove::<NpcDialogueTopic>(eltrys);
+        assert!(
+            select_topic_by_form_id(&mut world, eltrys, TOPIC_RUMORS).is_err(),
+            "with no open menu the gate is evaluated, and it no longer holds"
         );
     }
 
