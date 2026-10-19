@@ -548,7 +548,13 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// `ForcedWeather` and `CellVisits` (resources), `WeaponDrawn`, `IgnoreCrime` and `ActiveMagicEffects`
 /// (components) — so notes, who killed whom, a forced weather, when each cell was last entered, an
 /// actor's drawn weapon and ignore-crime flag, and the effects running on an actor survive a load.
-pub const FORMAT_MAJOR: u16 = 111;
+///
+/// v111 -> v112 (#6050): new saved resource columns — the ObScript ledger (fame, bounty, faction
+/// crime flags, known topics, dispositions and the `Set...` values) and the New Vegas
+/// `ChallengeState` — so a challenge's progress and a script's reputation bookkeeping survive a
+/// load. The registry fingerprint already refused a v111 save written before these columns, so the
+/// bump changes the error a player sees (a named version skew), not what loads.
+pub const FORMAT_MAJOR: u16 = 112;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
