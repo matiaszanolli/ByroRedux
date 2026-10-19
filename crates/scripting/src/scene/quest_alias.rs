@@ -344,6 +344,49 @@ fn candidate_matches_fill(fill: &AliasFillType, candidate: &SceneAliasCandidate)
     }
 }
 
+/// #6004 — whether `candidate` belongs to the location a *Location Alias
+/// Reference* fill names. CK *Quest Alias Tab*: "pick a Location Alias from this
+/// quest ... and a Location Ref Type. When the quest starts, the Story Manager
+/// will attempt to find a matching loc ref type from that location."
+///
+/// `alias` is the location alias (of the same quest) in the fill; its binding is
+/// read from the pass's pending table, and an unbound alias matches nothing —
+/// the fill declines rather than binding any candidate of the ref type
+/// anywhere. With `keyword`, the nearest of the bound location and its parents
+/// carrying it is used (as for a location alias filled from a reference). A
+/// candidate belongs to the location when the location lists it under the ref
+/// type ([`crate::location::LocationTable::refs_of_type`]), or when its own current location is
+/// within it.
+fn candidate_in_alias_location(
+    world: &World,
+    pending_locations: &HashMap<(QuestFormId, i32), u32>,
+    alias: (QuestFormId, i32),
+    keyword: Option<u32>,
+    ref_type: u32,
+    (entity, candidate): (EntityId, &SceneAliasCandidate),
+) -> bool {
+    use crate::location::{current_location, LocationTable};
+    let Some(&bound) = pending_locations.get(&alias) else {
+        return false;
+    };
+    // Resolved before the table guard is taken — `current_location` takes it.
+    let candidate_location = current_location(world, entity);
+    let Some(table) = world.try_resource::<LocationTable>() else {
+        return false;
+    };
+    let location = match keyword {
+        Some(keyword) => table.with_keyword(bound, keyword),
+        None => Some(bound),
+    };
+    let Some(location) = location else {
+        return false;
+    };
+    table
+        .refs_of_type(location, ref_type)
+        .any(|reference| reference == candidate.reference_form_id)
+        || candidate_location.is_some_and(|current| table.is_within(current, location))
+}
+
 /// Candidate positions (indices into one refresh's ordered candidate list)
 /// keyed by every field an alias fill matches on. Each alias then visits only
 /// the candidates its fill can accept: the full scan was aliases × candidates
@@ -1162,6 +1205,25 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                                     .iter()
                                     .any(|(_, target)| *target == source.reference_form_id)
                         }),
+                    // #6004 — a Location Alias Reference fill names a location,
+                    // not just a ref type: the candidate must be that
+                    // location's (or be tagged there), and the fill waits
+                    // while the location alias is unbound.
+                    Some(AliasFillType::LocationAliasReference {
+                        alias_id,
+                        keyword,
+                        ref_type: Some(ref_type),
+                    }) => {
+                        candidate.location_ref_types.contains(ref_type)
+                            && candidate_in_alias_location(
+                                world,
+                                pending_locations,
+                                (*quest, *alias_id),
+                                *keyword,
+                                *ref_type,
+                                (*entity, candidate),
+                            )
+                    }
                     Some(fill) => candidate_matches_fill(fill, candidate),
                     None => !alias.match_conditions.is_empty(),
                 };

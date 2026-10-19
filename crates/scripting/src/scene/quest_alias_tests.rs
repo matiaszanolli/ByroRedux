@@ -271,8 +271,17 @@ fn quest_alias_collection_fill_type_still_declines_not_binds() {
 
 #[test]
 fn quest_alias_refresh_resolves_direct_unique_and_distinct_xlrt_roles() {
+    use crate::location::install_location_table;
+    use crate::location::tests::{whiterun_index, DRAGONSREACH, DRAGONSREACH_CELL};
+    use byroredux_core::ecs::components::{CellFormId, CellRoot};
     let mut world = World::new();
     crate::register(&mut world);
+    // #6004 — the soldiers are Location Alias References: they are filled
+    // "from that location", so the location alias (0) must be bound and the
+    // soldiers must stand in it.
+    install_location_table(&mut world, &whiterun_index());
+    let cell_root = world.spawn();
+    world.insert(cell_root, CellFormId(DRAGONSREACH_CELL));
     let forced = world.spawn();
     let unique = world.spawn();
     let soldier_a = world.spawn();
@@ -317,11 +326,20 @@ fn quest_alias_refresh_resolves_direct_unique_and_distinct_xlrt_roles() {
     ] {
         world.insert(entity, candidate);
     }
+    for soldier in [soldier_a, soldier_b] {
+        world.insert(soldier, CellRoot(cell_root));
+    }
     install_scene_quest_aliases(
         &mut world,
         [QustRecord {
             form_id: QUEST,
             aliases: vec![
+                QuestAlias {
+                    alias_id: 0,
+                    is_location: true,
+                    fill_type: Some(AliasFillType::ForcedLocation(DRAGONSREACH)),
+                    ..Default::default()
+                },
                 QuestAlias {
                     alias_id: 1,
                     name: "Forced".to_owned(),
@@ -368,6 +386,76 @@ fn quest_alias_refresh_resolves_direct_unique_and_distinct_xlrt_roles() {
     assert_eq!(bindings.resolve(QuestFormId(QUEST), 3), Some(soldier_a));
     assert_eq!(bindings.resolve(QuestFormId(QUEST), 4), Some(soldier_b));
     assert_eq!(refresh_scene_actor_bindings(&world), 0, "clean fast path");
+}
+
+/// #6004 — a Location Alias Reference fill is "a loc ref type FROM that
+/// location": a candidate of the ref type outside the bound location is passed
+/// over even when it sorts first, a candidate the location lists under the ref
+/// type binds wherever it is, and an unbound location alias leaves the alias
+/// unbound instead of binding any tagged candidate.
+#[test]
+fn location_alias_reference_fill_is_scoped_to_the_bound_location() {
+    use crate::location::install_location_table;
+    use crate::location::tests::{whiterun_index, DRAGONSREACH_CELL, WHITERUN_HOLD};
+    use byroredux_core::ecs::components::{CellFormId, CellRoot};
+    const RT: u32 = 0xC1;
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    install_location_table(&mut world, &whiterun_index());
+    let cell_root = world.spawn();
+    world.insert(cell_root, CellFormId(DRAGONSREACH_CELL));
+    let tagged = |reference| SceneAliasCandidate {
+        reference_form_id: reference,
+        base_form_id: 0xB3,
+        linked_refs: Vec::new(),
+        location_ref_types: vec![RT],
+    };
+    // Sorts first, tagged, but standing nowhere near the location.
+    let far = world.spawn();
+    world.insert(far, tagged(0xA1));
+    let local = world.spawn();
+    world.insert(local, tagged(0xA2));
+    world.insert(local, CellRoot(cell_root));
+    let reference_alias = |alias_id, location_alias| QuestAlias {
+        alias_id,
+        fill_type: Some(AliasFillType::LocationAliasReference {
+            alias_id: location_alias,
+            keyword: None,
+            ref_type: Some(RT),
+        }),
+        ..Default::default()
+    };
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![
+                QuestAlias {
+                    alias_id: 0,
+                    is_location: true,
+                    fill_type: Some(AliasFillType::ForcedLocation(WHITERUN_HOLD)),
+                    ..Default::default()
+                },
+                reference_alias(1, 0),
+                // Alias 9 does not exist: nothing is bound there.
+                reference_alias(2, 9),
+            ],
+            ..Default::default()
+        }],
+    );
+    refresh_scene_actor_bindings(&world);
+    let bindings = world.resource::<SceneActorBindings>();
+    assert_eq!(
+        bindings.resolve(QuestFormId(QUEST), 1),
+        Some(local),
+        "the tagged candidate outside the location must not win"
+    );
+    assert_eq!(
+        bindings.resolve(QuestFormId(QUEST), 2),
+        None,
+        "an unbound location alias leaves the fill unbound"
+    );
 }
 
 /// Regression for #2671. Aliases are filled in order into a local map that
