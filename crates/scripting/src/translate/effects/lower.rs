@@ -445,6 +445,12 @@ pub(super) fn lower_statements(
                     }
                     return None;
                 }
+                // A compound assignment (`n += 2`) is not a re-bind to the
+                // right-hand side: `bind_local` would record `n = 2`. Every
+                // sibling variable writer declines `op != Eq` (#5976).
+                if *op != byroredux_papyrus::ast::AssignOp::Eq {
+                    return None;
+                }
                 if let Some(set) = bind_local(scope, name, &value.node)? {
                     effects.push(set);
                 }

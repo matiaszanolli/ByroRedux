@@ -3750,6 +3750,24 @@ fn assignment_to_a_script_variable_declines() {
     );
 }
 
+/// #5976: a compound assignment to a declared local is not a re-bind to the
+/// right-hand side (`n += 2` would have lowered as `n = 2`). Every operator
+/// but plain `=` declines; plain `=` still lowers.
+#[test]
+fn compound_assignment_to_a_declared_local_declines() {
+    for op in ["+=", "-=", "*=", "/=", "%="] {
+        let body = first_fn_body(&format!(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             Int n = 1\n\
+             n {op} 2\n\
+             Self.SetStage(10)\n\
+             EndFunction\n"
+        ));
+        assert_eq!(lower_fragment(&body), None, "`n {op} 2` must decline");
+    }
+}
+
 /// M47.2 — actor values as run-time numbers: by property, by name, and
 /// by FO4's `Game.Get<Name>AV()` accessor; and `SetValue` with one.
 #[test]
