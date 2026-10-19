@@ -40,7 +40,27 @@
 //! bone lengths are kept (the ragdoll skeleton's are shorter), so the
 //! skinned mesh and the constraint pivots stay in one geometry.
 //!
-//! **Scope:** only the humanoid ragdoll is posed. The entry↔body order is
+//! ## Fallout 4 (entries named by bone id)
+//!
+//! An FO4 ragdoll blob stores, per body, the ragdoll-skeleton bone it drives
+//! (a `u8`, [`RagdollTemplateBody::pose_bone_id`]), and the `XRGD` entries'
+//! `bone_id` is that same id: the id multiset of a corpse's entries equals the
+//! blob's for every human (18 of 18 entries) and feral-ghoul corpse, which
+//! pins the entry↔body mapping without assuming an order — the entries run
+//! COM, L leg, R leg, spine, L arm, neck/head, R arm on the human rig but
+//! COM, legs, spine, neck, head, arms on the ghoul's, and both resolve through
+//! the ids. Two ids repeat (the COM and the first spine body are both bone 2),
+//! so entries claim bodies in order. The entry offsets equal the body-to-body
+//! distances to three decimals (thigh 6.614 / 6.615, calf 31.592 / 31.595),
+//! the rotation convention is the Skyrim one — on the real NIF bone tree,
+//! intrinsic XYZ with negated angles has a median lying-body extent of 41 units
+//! on 656 human corpses against 56 for the runner-up (45 against 54 on 303
+//! ghouls) — and the trailing marker is any last unmatched entry with a zero
+//! rotation. Reproducible with `crates/plugin/examples/xrgd_dump.rs` and
+//! `scripts/xrgd-fo4-analysis.py`.
+//!
+//! **Scope:** only the verified ragdolls are posed — the Skyrim/draugr
+//! humanoid, and the FO4 human and feral-ghoul rigs. The entry↔body order is
 //! established for the 18-body humanoid skeleton (Skyrim's `skeleton.nif`,
 //! also the draugr's), and [`HUMANOID_RAGDOLL_BODIES`] pins it by bone name: a
 //! skeleton whose ragdoll bodies are anything else — a creature, the beast
@@ -82,6 +102,50 @@ pub(crate) const HUMANOID_RAGDOLL_BODIES: [&str; 18] = [
     "NPC L Hand [LHnd]",
 ];
 
+/// The FO4 human ragdoll's bodies in blob (body-id) order, by bone name.
+pub(crate) const FO4_HUMAN_RAGDOLL_BODIES: [&str; 18] = [
+    "COM",
+    "LLeg_Thigh",
+    "RLeg_Thigh",
+    "SPINE1",
+    "LLeg_Calf",
+    "RLeg_Calf",
+    "SPINE2",
+    "LLeg_Foot",
+    "RLeg_Foot",
+    "Chest",
+    "LArm_UpperArm",
+    "Neck",
+    "RArm_UpperArm",
+    "LArm_ForeArm1",
+    "HEAD",
+    "RArm_ForeArm1",
+    "LArm_Hand",
+    "RArm_Hand",
+];
+
+/// The FO4 feral-ghoul ragdoll's bodies in blob (body-id) order, by bone name.
+pub(crate) const FO4_GHOUL_RAGDOLL_BODIES: [&str; 18] = [
+    "COM",
+    "RTHIGH",
+    "SpineRoot",
+    "LTHIGH",
+    "RCALF",
+    "SPINE1",
+    "LCALF",
+    "RFOOT",
+    "SPINE2",
+    "LFOOT",
+    "RUPPERARM",
+    "Neck",
+    "LUPPERARM",
+    "RForeArm1",
+    "HEAD",
+    "LForeArm1",
+    "RHAND",
+    "LHAND",
+];
+
 /// An authored corpse's `XRGD` pose, parked on the actor between spawn and
 /// its death reconciliation, which consumes it. Derived from plugin data on
 /// every spawn, so it is not part of a save.
@@ -107,13 +171,17 @@ const XRGD_ROTATION_MODE: u8 = 0;
 /// is not known — it is skipped, not interpreted. (An all-zero last entry is
 /// not matched: that is as likely a body at rest.)
 fn is_trailing_marker(entry: &RagdollPoseBone) -> bool {
-    /// The skeleton-race markers carry `3e-6` of float noise in `x` and `-0.0`
-    /// rotations.
+    /// The skeleton-race markers carry `3e-6` of float noise in `x`.
     const NOISE: f32 = 1.0e-4;
     entry.bone_id == 0
         && entry.position[0].abs() < NOISE
         && (entry.position[1].abs() >= NOISE || entry.position[2].abs() >= NOISE)
-        && entry.rotation.iter().all(|v| v.abs() < NOISE)
+        && has_zero_rotation(entry)
+}
+
+/// A rotation of zero to float noise (the markers carry `-0.0`s and `1e-8`s).
+fn has_zero_rotation(entry: &RagdollPoseBone) -> bool {
+    entry.rotation.iter().all(|v| v.abs() < 1.0e-4)
 }
 
 /// The pose entries that correspond to ragdoll bodies: `entries` without a
@@ -175,6 +243,82 @@ pub(crate) fn is_humanoid_ragdoll(body_bone_names: &[Option<String>]) -> bool {
             .all(|(name, expected)| name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(expected)))
 }
 
+/// Whether a ragdoll's bodies, by bone name in template order, are exactly one
+/// of the verified FO4 sets ([`FO4_HUMAN_RAGDOLL_BODIES`],
+/// [`FO4_GHOUL_RAGDOLL_BODIES`]).
+pub(crate) fn is_fo4_posable_ragdoll(body_bone_names: &[Option<String>]) -> bool {
+    [&FO4_HUMAN_RAGDOLL_BODIES, &FO4_GHOUL_RAGDOLL_BODIES]
+        .into_iter()
+        .any(|set| {
+            body_bone_names.len() == set.len()
+                && body_bone_names
+                    .iter()
+                    .zip(set)
+                    .all(|(name, expected)| name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(expected)))
+        })
+}
+
+/// FO4: for each ragdoll body (by index), the `XRGD` entry that poses it.
+///
+/// Entries name the bone they pose by `bone_id`, and each body carries the id
+/// of the bone it drives, so an entry claims the first unclaimed body with its
+/// id (two bodies can share one: the COM and the first spine body are both bone
+/// 2). Every body must be claimed, and at most one entry may be left over: the
+/// trailing marker, which has a zero rotation (see [`is_trailing_marker`]).
+/// Anything else — a body no entry names, a stray entry — is refused.
+pub(crate) fn entries_by_bone_id(
+    entries: &[RagdollPoseBone],
+    body_ids: &[Option<u8>],
+) -> Result<Vec<usize>, String> {
+    let mut claimed: Vec<Option<usize>> = vec![None; body_ids.len()];
+    let mut leftover = Vec::new();
+    for (k, entry) in entries.iter().enumerate() {
+        match (0..body_ids.len()).find(|&b| claimed[b].is_none() && body_ids[b] == Some(entry.bone_id)) {
+            Some(b) => claimed[b] = Some(k),
+            None => leftover.push(k),
+        }
+    }
+    if let Some(b) = claimed.iter().position(Option::is_none) {
+        return Err(format!(
+            "no pose entry names ragdoll body {b} (bone id {:?}) — the entry set does not cover \
+             this skeleton",
+            body_ids[b]
+        ));
+    }
+    match leftover.as_slice() {
+        [] => {}
+        [k] if *k + 1 == entries.len() && has_zero_rotation(&entries[*k]) => {}
+        other => {
+            return Err(format!(
+                "{} pose entries name no ragdoll body — only a single trailing marker is expected",
+                other.len()
+            ))
+        }
+    }
+    Ok(claimed.into_iter().flatten().collect())
+}
+
+/// Per-body poses for FO4: `mapping[b]` is the entry that poses body `b`.
+pub(crate) fn bone_poses_mapped(
+    entries: &[RagdollPoseBone],
+    mapping: &[usize],
+) -> Result<Vec<BonePose>, String> {
+    mapping
+        .iter()
+        .map(|&k| {
+            let entry = &entries[k];
+            if !entry.position.iter().chain(&entry.rotation).all(|v| v.is_finite()) {
+                return Err(format!("pose entry {k} is not finite"));
+            }
+            let [rx, ry, rz] = entry.rotation;
+            Ok(BonePose {
+                rotation: euler_zup_to_quat_yup_mode(XRGD_ROTATION_MODE, rx, ry, rz),
+                zero_translation: k == 0,
+            })
+        })
+        .collect()
+}
+
 /// Pose `skeleton_root`'s ragdoll bones from `entries` and recompute the
 /// skeleton's world transforms, so the activation that follows seeds its
 /// bodies from the authored pose. Returns the number of bones posed.
@@ -195,13 +339,24 @@ pub(crate) fn pose_skeleton(
         .iter()
         .map(|&bone| crate::commands::shared::resolve_entity_name(world, bone))
         .collect();
-    if !is_humanoid_ragdoll(&names) {
+    let poses = if is_humanoid_ragdoll(&names) {
+        bone_poses(entries, bones.len())?
+    } else if is_fo4_posable_ragdoll(&names) {
+        let ids: Vec<Option<u8>> = world
+            .query::<crate::ragdoll::RagdollTemplate>()
+            .and_then(|templates| {
+                templates
+                    .get(skeleton_root)
+                    .map(|template| template.bodies.iter().map(|body| body.pose_bone_id).collect())
+            })
+            .ok_or("no ragdoll template to pose")?;
+        let mapping = entries_by_bone_id(entries, &ids)?;
+        bone_poses_mapped(entries, &mapping)?
+    } else {
         return Err(
-            "the ragdoll is not the humanoid body set the XRGD entry order is established for"
-                .to_owned(),
+            "the ragdoll is not a body set the XRGD entry order is established for".to_owned(),
         );
-    }
-    let poses = bone_poses(entries, bones.len())?;
+    };
 
     {
         let mut transforms = world

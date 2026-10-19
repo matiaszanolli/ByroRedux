@@ -932,7 +932,7 @@ fn finish_trimesh(vertices: Vec<Vec3>, mut indices: Vec<[u32; 3]>) -> Option<Col
 /// A segment that really is origin-centred and Y-aligned — the case the old
 /// code silently assumed for all of them — still returns the bare primitive,
 /// so nothing that was already correct changes shape.
-fn segment_shape(p1: Vec3, p2: Vec3, shape: CollisionShape) -> CollisionShape {
+pub(super) fn segment_shape(p1: Vec3, p2: Vec3, shape: CollisionShape) -> CollisionShape {
     const EPS: f32 = 1e-4;
 
     let midpoint = (p1 + p2) * 0.5;

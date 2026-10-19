@@ -127,6 +127,12 @@ fn non_finite_entries_are_refused() {
 /// local rotations, zeroes the COM's local translation, and recomposes the
 /// globals the activation will read.
 fn humanoid_chain(world: &mut World) -> (EntityId, Vec<EntityId>) {
+    bone_chain(world, &HUMANOID_RAGDOLL_BODIES, &[None; 18])
+}
+
+/// [`humanoid_chain`] for any body set: `names[i]` is body `i`'s bone and
+/// `ids[i]` its FO4 bone id.
+fn bone_chain(world: &mut World, names: &[&str], ids: &[Option<u8>]) -> (EntityId, Vec<EntityId>) {
     use crate::ragdoll::{RagdollTemplate, RagdollTemplateBody};
     use byroredux_core::ecs::Name;
     use byroredux_core::string::StringPool;
@@ -143,7 +149,7 @@ fn humanoid_chain(world: &mut World) -> (EntityId, Vec<EntityId>) {
     world.insert(root, GlobalTransform::new(Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0));
     let mut bones = Vec::new();
     let mut parent = root;
-    for (i, name) in HUMANOID_RAGDOLL_BODIES.iter().enumerate() {
+    for (i, name) in names.iter().enumerate() {
         let bone = world.spawn();
         let translation = if i == 0 { Vec3::new(0.0, 69.0, 0.0) } else { Vec3::new(0.0, 0.0, 6.0) };
         world.insert(bone, Transform::new(translation, Quat::IDENTITY, 1.0));
@@ -155,7 +161,7 @@ fn humanoid_chain(world: &mut World) -> (EntityId, Vec<EntityId>) {
         bones.push(bone);
         parent = bone;
     }
-    let body = |bone| RagdollTemplateBody {
+    let body = |(bone, pose_bone_id): (EntityId, Option<u8>)| RagdollTemplateBody {
         bone,
         local_translation: Vec3::ZERO,
         local_rotation: Quat::IDENTITY,
@@ -165,11 +171,12 @@ fn humanoid_chain(world: &mut World) -> (EntityId, Vec<EntityId>) {
         angular_damping: 0.0,
         friction: 0.5,
         restitution: 0.0,
+        pose_bone_id,
     };
     world.insert(
         root,
         RagdollTemplate {
-            bodies: bones.iter().map(|&b| body(b)).collect(),
+            bodies: bones.iter().copied().zip(ids.iter().copied()).map(body).collect(),
             constraints: Vec::new(),
         },
     );
@@ -441,4 +448,239 @@ fn xrgd_entry_counts_match_the_humanoid_ragdoll_bodies() {
         draugr.1,
         draugr.0
     );
+}
+
+// ---- Fallout 4: entries named by bone id (#5015) ---------------------------
+
+/// The human rig's per-body bone ids (blob body order) and a corpse's entry
+/// ids, both read off the vanilla data: COM and SPINE1 share bone 2.
+const FO4_HUMAN_BODY_IDS: [u8; 18] = [2, 8, 14, 2, 9, 15, 3, 10, 16, 4, 5, 0, 11, 6, 1, 12, 7, 13];
+const FO4_HUMAN_ENTRY_IDS: [u8; 18] = [2, 8, 9, 10, 14, 15, 16, 2, 3, 4, 5, 6, 7, 0, 1, 11, 12, 13];
+/// The same for the feral ghoul.
+const FO4_GHOUL_BODY_IDS: [u8; 18] = [2, 14, 2, 8, 15, 3, 9, 16, 4, 10, 11, 0, 5, 12, 1, 6, 13, 7];
+const FO4_GHOUL_ENTRY_IDS: [u8; 18] = [2, 8, 9, 10, 14, 15, 16, 2, 3, 4, 0, 1, 5, 6, 7, 11, 12, 13];
+
+fn id_entry(bone_id: u8, rotation: [f32; 3]) -> RagdollPoseBone {
+    RagdollPoseBone {
+        bone_id,
+        position: [1.0, 2.0, 3.0],
+        rotation,
+    }
+}
+
+fn some_ids(ids: &[u8]) -> Vec<Option<u8>> {
+    ids.iter().copied().map(Some).collect()
+}
+
+/// An entry claims the first unclaimed body carrying its id, so the human
+/// rig's entry order (COM, L leg, R leg, spine, L arm, neck, head, R arm)
+/// lands on the right blob bodies even though bone 2 appears twice.
+#[test]
+fn fo4_entries_map_to_bodies_by_bone_id() {
+    let entries: Vec<_> = FO4_HUMAN_ENTRY_IDS.iter().map(|&id| id_entry(id, [0.0; 3])).collect();
+    let mapping = entries_by_bone_id(&entries, &some_ids(&FO4_HUMAN_BODY_IDS)).unwrap();
+    // Body 0 COM <- entry 0, body 3 SPINE1 (also bone 2) <- entry 7, body 1
+    // L thigh <- entry 1, body 4 L calf <- entry 2, body 11 Neck <- entry 13 ...
+    assert_eq!(mapping[0], 0);
+    assert_eq!(mapping[3], 7);
+    assert_eq!(mapping[1], 1);
+    assert_eq!(mapping[4], 2);
+    assert_eq!(mapping[11], 13);
+    assert_eq!(mapping[14], 14, "head");
+    assert_eq!(mapping[17], 17, "R hand");
+    let mut seen = mapping.clone();
+    seen.sort_unstable();
+    assert_eq!(seen, (0..18).collect::<Vec<_>>(), "every entry poses exactly one body");
+
+    // The ghoul orders its entries differently and resolves through the same ids.
+    let entries: Vec<_> = FO4_GHOUL_ENTRY_IDS.iter().map(|&id| id_entry(id, [0.0; 3])).collect();
+    let mapping = entries_by_bone_id(&entries, &some_ids(&FO4_GHOUL_BODY_IDS)).unwrap();
+    assert_eq!(mapping[0], 0, "COM");
+    assert_eq!(mapping[2], 7, "SpineRoot (bone 2) takes the second bone-2 entry");
+    assert_eq!(mapping[3], 1, "LTHIGH");
+    assert_eq!(mapping[11], 10, "Neck");
+    assert_eq!(mapping[14], 11, "HEAD");
+}
+
+#[test]
+fn fo4_pose_accepts_one_trailing_marker_and_refuses_anything_else_unmatched() {
+    let ids = some_ids(&FO4_HUMAN_BODY_IDS);
+    let mut entries: Vec<_> = FO4_HUMAN_ENTRY_IDS.iter().map(|&id| id_entry(id, [0.1; 3])).collect();
+    // The FO4 marker: bone id 0, an offset, zero rotation — last, unmatched.
+    let marker = RagdollPoseBone {
+        bone_id: 0,
+        position: [-0.61, 25.3, 0.0],
+        rotation: [0.0; 3],
+    };
+    entries.push(marker);
+    assert!(entries_by_bone_id(&entries, &ids).is_ok());
+    // A rotated leftover is a stray entry, not a marker.
+    entries[18].rotation = [0.0, 0.0, 0.5];
+    assert!(entries_by_bone_id(&entries, &ids).is_err());
+    // A leftover that is not last is refused too.
+    entries[18].rotation = [0.0; 3];
+    entries.swap(17, 18);
+    assert!(entries_by_bone_id(&entries, &ids).is_err());
+    // A body no entry names.
+    let short: Vec<_> = FO4_HUMAN_ENTRY_IDS[..17].iter().map(|&id| id_entry(id, [0.0; 3])).collect();
+    assert!(entries_by_bone_id(&short, &ids).is_err());
+    // Bodies without ids cannot be matched.
+    assert!(entries_by_bone_id(&short, &[None; 18]).is_err());
+}
+
+fn fo4_pose_world(names: &[&str], body_ids: &[u8]) -> (World, EntityId, Vec<EntityId>) {
+    let mut world = World::new();
+    let (root, bones) = bone_chain(&mut world, names, &some_ids(body_ids));
+    (world, root, bones)
+}
+
+/// An FO4 human corpse is posed by id: each ragdoll bone takes the rotation of
+/// the entry that names its bone, the COM's translation is zeroed.
+#[test]
+fn an_fo4_human_corpse_is_posed_by_bone_id() {
+    let (world, root, bones) = fo4_pose_world(&FO4_HUMAN_RAGDOLL_BODIES, &FO4_HUMAN_BODY_IDS);
+    // Entry k carries rotation k*0.01 about Z-up Z, so each bone's result names
+    // the entry that posed it.
+    let mut entries: Vec<_> = FO4_HUMAN_ENTRY_IDS
+        .iter()
+        .enumerate()
+        .map(|(k, &id)| id_entry(id, [0.0, 0.0, 0.01 * (k + 1) as f32]))
+        .collect();
+    entries.push(RagdollPoseBone { bone_id: 0, position: [-0.61, 25.3, 0.0], rotation: [0.0; 3] });
+    assert_eq!(pose_skeleton(&world, root, &entries), Ok(18));
+    let rotation = |bone| world.get::<Transform>(bone).unwrap().rotation;
+    // SPINE1 is body 3, bone 2, the SECOND bone-2 entry (entry 7).
+    assert!(same_rotation(rotation(bones[3]), expected_yup(0.0, 0.0, 0.01 * 8.0)));
+    // L calf is body 4, entry 2.
+    assert!(same_rotation(rotation(bones[4]), expected_yup(0.0, 0.0, 0.01 * 3.0)));
+    // HEAD is body 14, entry 14.
+    assert!(same_rotation(rotation(bones[14]), expected_yup(0.0, 0.0, 0.01 * 15.0)));
+    assert_eq!(world.get::<Transform>(bones[0]).unwrap().translation, Vec3::ZERO, "COM at the placement");
+}
+
+#[test]
+fn an_fo4_ghoul_corpse_is_posed_by_bone_id() {
+    let (world, root, bones) = fo4_pose_world(&FO4_GHOUL_RAGDOLL_BODIES, &FO4_GHOUL_BODY_IDS);
+    let entries: Vec<_> = FO4_GHOUL_ENTRY_IDS
+        .iter()
+        .enumerate()
+        .map(|(k, &id)| id_entry(id, [0.0, 0.0, 0.01 * (k + 1) as f32]))
+        .collect();
+    assert_eq!(pose_skeleton(&world, root, &entries), Ok(18));
+    let rotation = |bone| world.get::<Transform>(bone).unwrap().rotation;
+    // The ghoul's head (body 14) is the entry named bone 1, entry 11.
+    assert!(same_rotation(rotation(bones[14]), expected_yup(0.0, 0.0, 0.01 * 12.0)));
+    // LTHIGH (body 3) is entry 1.
+    assert!(same_rotation(rotation(bones[3]), expected_yup(0.0, 0.0, 0.01 * 2.0)));
+}
+
+/// An FO4 ragdoll whose names are the verified set but whose bodies carry no
+/// ids (a classic-path template), or whose names are another skeleton's, is
+/// refused untouched.
+#[test]
+fn an_fo4_pose_without_ids_or_on_another_skeleton_is_refused() {
+    let entries: Vec<_> = FO4_HUMAN_ENTRY_IDS.iter().map(|&id| id_entry(id, [0.3; 3])).collect();
+
+    let mut world = World::new();
+    let (root, bones) = bone_chain(&mut world, &FO4_HUMAN_RAGDOLL_BODIES, &[None; 18]);
+    let before = world.get::<Transform>(bones[1]).unwrap().rotation;
+    assert!(pose_skeleton(&world, root, &entries).is_err());
+    assert_eq!(world.get::<Transform>(bones[1]).unwrap().rotation, before);
+
+    let mut other: Vec<&str> = FO4_HUMAN_RAGDOLL_BODIES.to_vec();
+    other[5] = "Brahmin_Tail01";
+    let (world, root, _) = fo4_pose_world(&other, &FO4_HUMAN_BODY_IDS);
+    assert!(pose_skeleton(&world, root, &entries).is_err());
+}
+
+#[test]
+fn the_fo4_body_sets_are_recognised_by_name_only_in_full() {
+    let names = |set: &[&str]| set.iter().map(|n| Some(n.to_string())).collect::<Vec<_>>();
+    assert!(is_fo4_posable_ragdoll(&names(&FO4_HUMAN_RAGDOLL_BODIES)));
+    assert!(is_fo4_posable_ragdoll(&names(&FO4_GHOUL_RAGDOLL_BODIES)));
+    assert!(!is_fo4_posable_ragdoll(&names(&HUMANOID_RAGDOLL_BODIES)), "the Skyrim set is not an FO4 set");
+    assert!(!is_fo4_posable_ragdoll(&names(&FO4_HUMAN_RAGDOLL_BODIES)[..17]));
+}
+
+/// #5015 — the FO4 pose claim against the real corpus: every Starts-Dead ACHR
+/// of `Fallout4.esm` that authors an `XRGD` pose on the human or feral-ghoul
+/// skeleton resolves through the bone-id mapping, and the rig the corpse's
+/// race loads is one of the two verified body sets.
+///
+///   cargo test -p byroredux --bin byroredux fo4_xrgd_poses -- --ignored --nocapture
+#[test]
+#[ignore = "needs Fallout 4 game data on disk"]
+fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
+    use std::collections::HashMap;
+    let data = std::env::var("BYROREDUX_FO4_DATA")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".into());
+    let (esm, meshes) = (data.join("Fallout4.esm"), data.join("Fallout4 - Meshes.ba2"));
+    if !esm.is_file() || !meshes.is_file() {
+        assert!(
+            std::env::var("BYROREDUX_REQUIRE_GAME_DATA").map_or(true, |v| v == "0"),
+            "BYROREDUX_REQUIRE_GAME_DATA is set, but {esm:?} / {meshes:?} are missing"
+        );
+        return;
+    }
+    let index = byroredux_plugin::esm::records::parse_esm(&std::fs::read(&esm).unwrap()).unwrap();
+    let archive = byroredux_bsa::Ba2Archive::open(&meshes).unwrap();
+    // Race → skeleton NIF for the two verified rigs.
+    let skeleton_of = |race: &str| match race {
+        "HumanRace" | "SynthGen1Race" | "SynthGen2Race" | "GhoulRace" => {
+            Some("meshes\\actors\\character\\characterassets\\skeleton.nif")
+        }
+        "FeralGhoulRace" | "FeralGhoulGlowingRace" => {
+            Some("meshes\\actors\\feralghoul\\characterassets\\skeleton.nif")
+        }
+        _ => None,
+    };
+    // Skeleton → (host bone names, bone ids) in template order.
+    /// Host bone names and bone ids of a skeleton's ragdoll bodies, in template order.
+    type Rig = (Vec<Option<String>>, Vec<Option<u8>>);
+    let mut rigs: HashMap<&str, Rig> = HashMap::new();
+    let (mut corpses, mut posable, mut mapped) = (0usize, 0usize, 0usize);
+    let mut failures: Vec<String> = Vec::new();
+    let mut visit = |r: &byroredux_plugin::esm::cell::PlacedRef| {
+        if !r.starts_dead || r.ragdoll_pose.is_empty() {
+            return;
+        }
+        let Some(npc) = index.npcs.get(&r.base_form_id) else { return };
+        let Some(race) = index.races.get(&npc.race_form_id) else { return };
+        let Some(path) = skeleton_of(&race.editor_id) else { return };
+        let (names, ids) = rigs.entry(path).or_insert_with(|| {
+            let bytes = archive.extract(path).expect("the skeleton NIF");
+            let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+            let ragdoll = byroredux_nif::import::collision::extract_ragdoll(&scene).expect("a ragdoll");
+            (
+                ragdoll.bodies.iter().map(|b| Some(b.bone_name.to_string())).collect(),
+                ragdoll.bodies.iter().map(|b| b.pose_bone_id).collect(),
+            )
+        });
+        corpses += 1;
+        posable += usize::from(is_fo4_posable_ragdoll(names));
+        match entries_by_bone_id(&r.ragdoll_pose, ids) {
+            Ok(_) => mapped += 1,
+            Err(e) => failures.push(format!("{:08x} ({}): {e}", r.form_id, race.editor_id)),
+        }
+    };
+    for cell in index.cells.cells.values() {
+        cell.references.iter().for_each(&mut visit);
+    }
+    for cells in index.cells.exterior_cells.values() {
+        for cell in cells.values() {
+            cell.references.iter().for_each(&mut visit);
+        }
+    }
+    eprintln!("[fo4] {corpses} human/ghoul-skeleton corpses, {posable} on a verified body set, {mapped} resolve by bone id");
+    for f in failures.iter().take(10) {
+        eprintln!("  refused: {f}");
+    }
+    assert!(corpses > 900, "the human and ghoul corpses were found, got {corpses}");
+    assert_eq!(posable, corpses, "both rigs are on the verified body sets");
+    // Measured 2026-10-19: 972 of 987 (98.5 %). The rest are ghouls with two
+    // unmatched trailing entries (20 in all) and a few poses that omit a body.
+    assert!(mapped * 100 >= corpses * 95, "at least 95% resolve, got {mapped} of {corpses}");
 }

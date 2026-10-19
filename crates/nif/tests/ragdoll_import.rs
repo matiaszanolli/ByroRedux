@@ -259,6 +259,7 @@ fn synthetic_ragdoll(n_bodies: usize, n_joints: usize) -> ImportedRagdoll {
             translation: Vec3::ZERO,
             rotation: Quat::IDENTITY,
             is_t: true,
+            pose_bone_id: None,
         })
         .collect();
     let constraints = (0..n_joints)

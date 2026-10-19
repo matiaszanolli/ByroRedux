@@ -1939,6 +1939,10 @@ pub struct ImportedRagdollBody {
     /// Rigid-body orientation in skeleton-root/rest space (Y-up). Only
     /// meaningful when [`Self::is_t`] is `true` — see that field.
     pub rotation: Quat,
+    /// FO4+: the ragdoll-skeleton bone id this body drives, which an `XRGD`
+    /// corpse pose names its entries by (#5015). `None` for the classic
+    /// `bhkRigidBody` path, whose pose entries follow body order.
+    pub pose_bone_id: Option<u8>,
     /// `true` only if the source block was `bhkRigidBodyT`. Mirrors
     /// `BhkRigidBody::is_t` (#2316): plain `bhkRigidBody` carries the same
     /// wire-format `translation`/`rotation` fields, but Gamebryo treats them

@@ -11,9 +11,10 @@ use crate::import::types::{
 };
 use crate::scene::NifScene;
 
-use byroredux_core::math::Vec3;
+use byroredux_core::ecs::components::collision::CollisionShape;
+use byroredux_core::math::{Mat3, Quat, Vec3};
 
-use super::shape::resolve_shape;
+use super::shape::{resolve_shape, segment_shape};
 use super::{finite, finite_vec, havok_quat_to_engine, havok_to_engine};
 
 /// Scene-level extractor: assemble the Havok ragdoll articulation (the
@@ -23,8 +24,8 @@ use super::{finite, finite_vec, havok_quat_to_engine, havok_to_engine};
 /// a lone static collider isn't a ragdoll.
 ///
 /// Bodies are reached via the classic `BhkCollisionObject → BhkRigidBody`
-/// chain (the only decodable path; FO4+ NP-blob ragdolls are out of
-/// scope — see the module table). Each body's bone name is its host
+/// chain; FO4+ NP-blob ragdolls (`bhkRagdollSystem`) take
+/// [`extract_np_ragdoll`] when the scene authors no discrete constraints. Each body's bone name is its host
 /// NiNode's name. Constraint entity refs are rigid-body *block* indices,
 /// remapped here to body-array indices. All geometry is Y-up + havok-
 /// scaled, reusing the same helpers as [`extract_from_classic`].
@@ -40,7 +41,9 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
         block.as_any().is::<BhkConstraint>() || block.as_any().is::<BhkBreakableConstraint>()
     });
     if !has_constraint_authoring {
-        return None;
+        // FO4+ keeps the whole articulation in a `bhkRagdollSystem` blob
+        // instead of discrete `bhkRigidBody` / `bhkConstraint` blocks (#5015).
+        return extract_np_ragdoll(scene);
     }
     let body_to_bone = build_body_to_bone(scene);
 
@@ -121,6 +124,7 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
             translation,
             rotation,
             is_t: body.is_t,
+            pose_bone_id: None,
         });
     }
     if bodies.len() < 2 {
@@ -326,6 +330,266 @@ fn try_breakable_joint(
         | BhkConstraintData::Other => return None,
     };
     Some((body_a, body_b, kind))
+}
+
+/// The values every FO4 ragdoll body takes for what its blob stores in rows
+/// whose fields are not identified (material and motion properties — see
+/// [`crate::blocks::collision::np_ragdoll`]): the ones the Skyrim humanoid
+/// ragdoll authors on every body but the head. Mass, shape, pose and joints
+/// are decoded; these four are not.
+const NP_LINEAR_DAMPING: f32 = 0.099_609_375;
+const NP_ANGULAR_DAMPING: f32 = 0.049_804_688;
+const NP_FRICTION: f32 = 0.3;
+const NP_RESTITUTION: f32 = 0.8;
+
+/// A body whose bind pose is within this of its host bone's rest transform
+/// (NIF units / quaternion dot) is coincident with it and needs no offset.
+const NP_COINCIDENT_DISTANCE: f32 = 0.01;
+const NP_COINCIDENT_DOT: f32 = 1.0 - 1.0e-6;
+
+/// FO4+ counterpart of [`extract_ragdoll`]: assemble the articulation from a
+/// skeleton's `bhkRagdollSystem` blob (#5015).
+///
+/// The blob lists bodies and joints in its own order; the skeleton's
+/// `bhkNPCollisionObject`s name each body's host bone by body id. A body's
+/// bind pose is stored in skeleton-root space, so it is expressed relative to
+/// its bone's rest world transform — an exact zero offset for the 59 of 75
+/// vanilla ragdoll skeletons whose bodies sit on their bones (`is_t` false,
+/// like a classic non-`T` body), a bone-local offset for the rest (turrets,
+/// the vertibird, a stray body or two on the deathclaw and mirelurk hunter).
+/// Bodies with no host bone or an undecoded shape (convex hulls, compounds)
+/// are dropped, with their joints.
+pub(super) fn extract_np_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
+    let (system_idx, blob) = scene.blocks.iter().enumerate().find_map(|(i, b)| {
+        b.as_any()
+            .downcast_ref::<BhkSystemBinary>()
+            .filter(|s| s.type_name == "bhkRagdollSystem")
+            .map(|s| (i, &s.data))
+    })?;
+    let decoded = match decode_np_ragdoll(blob) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("extract_np_ragdoll: bhkRagdollSystem block {system_idx} not decoded: {e}");
+            return None;
+        }
+    };
+    let scale = scene.havok_scale;
+
+    // Host bone block per body id.
+    let mut host: HashMap<usize, usize> = HashMap::new();
+    for block in &scene.blocks {
+        if let Some(c) = block.as_any().downcast_ref::<BhkNPCollisionObject>() {
+            if c.data_ref.index() == Some(system_idx) {
+                if let Some(target) = c.target_ref.index() {
+                    host.insert(c.body_id as usize, target);
+                }
+            }
+        }
+    }
+    let parents = node_parents(scene);
+
+    let mut bodies = Vec::new();
+    let mut blob_to_body: HashMap<usize, usize> = HashMap::new();
+    for body in &decoded.bodies {
+        let Some(&node) = host.get(&body.index) else {
+            log::warn!("extract_np_ragdoll: dropping body {} — no bone hosts it", body.index);
+            continue;
+        };
+        let Some(bone_name) = scene.blocks.get(node).and_then(|b| b.as_av_object()?.name_arc().cloned())
+        else {
+            log::warn!("extract_np_ragdoll: dropping body {} — its host bone has no name", body.index);
+            continue;
+        };
+        let Some(shape) = body.shape.and_then(|s| np_shape(s, scale)) else {
+            log::warn!(
+                "extract_np_ragdoll: dropping body {} ('{bone_name}') — shape class not decoded",
+                body.index
+            );
+            continue;
+        };
+        let Some(mass) = finite(body.mass) else { continue };
+        let (is_t, translation, rotation) = match body_offset(scene, &parents, node, body, scale) {
+            Some(offset) => offset,
+            None => {
+                log::warn!(
+                    "extract_np_ragdoll: dropping body {} ('{bone_name}') — non-finite pose",
+                    body.index
+                );
+                continue;
+            }
+        };
+        blob_to_body.insert(body.index, bodies.len());
+        bodies.push(ImportedRagdollBody {
+            bone_name,
+            mass,
+            linear_damping: NP_LINEAR_DAMPING,
+            angular_damping: NP_ANGULAR_DAMPING,
+            friction: NP_FRICTION,
+            restitution: NP_RESTITUTION,
+            shape,
+            translation,
+            rotation,
+            pose_bone_id: Some(body.bone_id),
+            is_t,
+        });
+    }
+    if bodies.len() < 2 {
+        return None;
+    }
+
+    let mut constraints = Vec::new();
+    for c in &decoded.constraints {
+        let (Some(&body_a), Some(&body_b)) =
+            (blob_to_body.get(&c.body_a), blob_to_body.get(&c.body_b))
+        else {
+            log::warn!(
+                "extract_np_ragdoll: dropping joint between blob bodies {} and {} — an endpoint \
+                 body was dropped. If it was the sole link to a limb, that limb will detach.",
+                c.body_a,
+                c.body_b,
+            );
+            continue;
+        };
+        let kind = match &c.data {
+            NpConstraintData::Ragdoll(r) => ragdoll_joint(r, scale),
+            NpConstraintData::LimitedHinge(h) => limited_hinge_joint(h, scale),
+        };
+        let Some(kind) = kind else { continue };
+        constraints.push(ImportedRagdollConstraint {
+            body_a,
+            body_b,
+            kind,
+        });
+    }
+    if decoded.skipped_constraints > 0 {
+        log::warn!(
+            "extract_np_ragdoll: {} joint(s) of block {system_idx} use a constraint class or atom \
+             layout that is not decoded and were dropped",
+            decoded.skipped_constraints
+        );
+    }
+    if constraints.is_empty() {
+        return None;
+    }
+    Some(ImportedRagdoll {
+        bodies,
+        constraints,
+    })
+}
+
+/// A blob shape in engine space (Y-up, havok-scaled), placed in the body's
+/// frame like the classic capsule (`segment_shape`).
+fn np_shape(shape: NpShape, scale: f32) -> Option<CollisionShape> {
+    match shape {
+        NpShape::Capsule { a, b, radius } => {
+            let p1 = finite_vec(havok_to_engine(a[0], a[1], a[2]) * scale)?;
+            let p2 = finite_vec(havok_to_engine(b[0], b[1], b[2]) * scale)?;
+            let half_height = (p2 - p1).length() * 0.5;
+            Some(segment_shape(
+                p1,
+                p2,
+                CollisionShape::Capsule {
+                    half_height,
+                    radius: finite(radius * scale)?,
+                },
+            ))
+        }
+        NpShape::Sphere { radius } => Some(CollisionShape::Ball {
+            radius: finite(radius * scale)?,
+        }),
+    }
+}
+
+/// Block index → parent `NiNode` block index.
+fn node_parents(scene: &NifScene) -> HashMap<usize, usize> {
+    let mut parents = HashMap::new();
+    for (i, block) in scene.blocks.iter().enumerate() {
+        if let Some(node) = block.as_any().downcast_ref::<crate::blocks::node::NiNode>() {
+            for child in &node.children {
+                if let Some(c) = child.index() {
+                    parents.insert(c, i);
+                }
+            }
+        }
+    }
+    parents
+}
+
+/// A node's rest world transform in NIF space: `(rotation, translation, scale)`.
+fn node_world(
+    scene: &NifScene,
+    parents: &HashMap<usize, usize>,
+    mut idx: usize,
+) -> (Mat3, Vec3, f32) {
+    let mut chain = Vec::new();
+    // A parent chain is a tree; the bound only stops a corrupt cycle.
+    for _ in 0..256 {
+        if let Some(node) = scene.blocks.get(idx).and_then(|b| b.as_any().downcast_ref::<crate::blocks::node::NiNode>())
+        {
+            chain.push(&node.av.transform);
+        }
+        match parents.get(&idx) {
+            Some(&p) => idx = p,
+            None => break,
+        }
+    }
+    let (mut r, mut t, mut s) = (Mat3::IDENTITY, Vec3::ZERO, 1.0f32);
+    for local in chain.into_iter().rev() {
+        let rows = &local.rotation.rows;
+        let lr = Mat3::from_cols(
+            Vec3::new(rows[0][0], rows[1][0], rows[2][0]),
+            Vec3::new(rows[0][1], rows[1][1], rows[2][1]),
+            Vec3::new(rows[0][2], rows[1][2], rows[2][2]),
+        );
+        t += r * (Vec3::new(local.translation.x, local.translation.y, local.translation.z) * s);
+        r *= lr;
+        s *= local.scale;
+    }
+    (r, t, s)
+}
+
+/// `(is_t, translation, rotation)` for a blob body hosted on `node`: the body's
+/// bind pose relative to the bone's rest world transform, in engine space.
+/// `None` for a non-finite pose.
+fn body_offset(
+    scene: &NifScene,
+    parents: &HashMap<usize, usize>,
+    node: usize,
+    body: &NpRagdollBody,
+    scale: f32,
+) -> Option<(bool, Vec3, Quat)> {
+    let body_rotation = Quat::from_xyzw(
+        body.rotation[0],
+        body.rotation[1],
+        body.rotation[2],
+        body.rotation[3],
+    );
+    let body_position = Vec3::from_array(body.position) * scale;
+    if !body_rotation.is_finite() || !body_position.is_finite() || body_rotation.length_squared() < 1e-6 {
+        return None;
+    }
+    let body_rotation = body_rotation.normalize();
+    let (bone_rotation, bone_position, bone_scale) = node_world(scene, parents, node);
+    if !bone_scale.is_finite() || bone_scale.abs() < f32::EPSILON {
+        return None;
+    }
+    let bone_inverse = bone_rotation.transpose();
+    let local_translation = bone_inverse * (body_position - bone_position) / bone_scale;
+    let local_rotation = Quat::from_mat3(&bone_inverse) * body_rotation;
+    if !local_translation.is_finite() || !local_rotation.is_finite() {
+        return None;
+    }
+    let coincident = local_translation.length() < NP_COINCIDENT_DISTANCE
+        && local_rotation.w.abs() > NP_COINCIDENT_DOT;
+    if coincident {
+        return Some((false, Vec3::ZERO, Quat::IDENTITY));
+    }
+    let q = local_rotation.normalize();
+    Some((
+        true,
+        havok_to_engine(local_translation.x, local_translation.y, local_translation.z),
+        havok_quat_to_engine([q.x, q.y, q.z, q.w]),
+    ))
 }
 
 /// Map each `BhkRigidBody` block index → the name of the bone NiNode that
@@ -914,6 +1178,7 @@ mod ragdoll_extract_tests {
             shape: CollisionShape::Ball { radius: 1.0 },
             translation: Vec3::ZERO,
             rotation: byroredux_core::math::Quat::IDENTITY,
+            pose_bone_id: None,
             is_t: true,
         }
     }
@@ -1171,6 +1436,122 @@ mod ragdoll_extract_tests {
             children[0].2.as_ref(),
             CollisionShape::Ball { .. }
         ));
+    }
+}
+
+/// FO4+ `bhkRagdollSystem` extraction (#5015) on a synthetic scene: a root
+/// node, two bone nodes, their `bhkNPCollisionObject`s and one blob.
+#[cfg(test)]
+mod np_ragdoll_extract_tests {
+    use super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::node::NiNode;
+    use crate::blocks::NiObject;
+    use crate::types::{BlockRef, NiPoint3, NiTransform};
+
+    fn node(name: &str, translation: [f32; 3], children: Vec<u32>) -> Box<dyn NiObject> {
+        Box::new(NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from(name)),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: NiTransform {
+                    translation: NiPoint3 {
+                        x: translation[0],
+                        y: translation[1],
+                        z: translation[2],
+                    },
+                    ..NiTransform::default()
+                },
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: children.into_iter().map(BlockRef).collect(),
+            effects: Vec::new(),
+        })
+    }
+
+    fn np_collision(target: u32, system: u32, body_id: u32) -> Box<dyn NiObject> {
+        Box::new(BhkNPCollisionObject {
+            target_ref: BlockRef(target),
+            flags: 0,
+            data_ref: BlockRef(system),
+            body_id,
+        })
+    }
+
+    /// `bone_b_x` is where the second bone's node sits in X; the blob's
+    /// second body sits at 0.5 m = 5 units with `havok_scale` 10.
+    fn scene(bone_b_x: f32, system_type: &'static str) -> NifScene {
+        let mut scene = NifScene {
+            havok_scale: 10.0,
+            ..NifScene::default()
+        };
+        scene.blocks.push(node("Root", [0.0, 0.0, 10.0], vec![1, 2])); // [0]
+        scene.blocks.push(node("BoneA", [0.0, 0.0, 0.0], vec![])); // [1]
+        scene.blocks.push(node("BoneB", [bone_b_x, 0.0, 0.0], vec![])); // [2]
+        scene.blocks.push(np_collision(1, 5, 0)); // [3]
+        scene.blocks.push(np_collision(2, 5, 1)); // [4]
+        scene.blocks.push(Box::new(BhkSystemBinary {
+            type_name: system_type,
+            data: crate::blocks::collision::synthetic_two_body_blob(),
+        })); // [5]
+        scene
+    }
+
+    #[test]
+    fn a_ragdoll_system_blob_becomes_an_imported_ragdoll() {
+        let r = extract_ragdoll(&scene(5.0, "bhkRagdollSystem")).expect("two bodies and a joint");
+        assert_eq!(r.bodies.len(), 2);
+        assert_eq!(&*r.bodies[0].bone_name, "BoneA");
+        assert_eq!(&*r.bodies[1].bone_name, "BoneB");
+        assert!((r.bodies[0].mass - 4.0).abs() < 1e-4 && (r.bodies[1].mass - 2.0).abs() < 1e-4);
+        // Bodies that sit on their bones need no offset (like a plain
+        // `bhkRigidBody`).
+        assert!(r.bodies.iter().all(|b| !b.is_t && b.translation == Vec3::ZERO));
+        assert_eq!(r.constraints.len(), 1);
+        let c = &r.constraints[0];
+        assert_eq!((c.body_a, c.body_b), (0, 1));
+        let ImportedJointKind::Ragdoll { pivot_a, cone_max, twist_min, twist_max, .. } = c.kind else {
+            panic!("a ragdoll joint")
+        };
+        // Pivot A is 0.5 m along Havok +X → 5 engine units along +X.
+        assert!((pivot_a - Vec3::new(5.0, 0.0, 0.0)).length() < 1e-4, "{pivot_a:?}");
+        assert_eq!((cone_max, twist_min, twist_max), (0.5, -0.25, 0.3));
+    }
+
+    /// A body whose bind pose is off its bone's rest transform is expressed
+    /// relative to the bone (`is_t`), in engine space: bone B 2 units further
+    /// along +X than the body leaves the body 2 units behind it.
+    #[test]
+    fn a_body_off_its_bone_gets_a_bone_local_offset() {
+        let r = extract_ragdoll(&scene(7.0, "bhkRagdollSystem")).expect("ragdoll");
+        assert!(!r.bodies[0].is_t, "body A still sits on its bone");
+        assert!(r.bodies[1].is_t, "body B is 2 units off its bone");
+        assert!(
+            (r.bodies[1].translation - Vec3::new(-2.0, 0.0, 0.0)).length() < 1e-4,
+            "{:?}",
+            r.bodies[1].translation
+        );
+    }
+
+    /// Only a `bhkRagdollSystem` is a skeleton's articulation; a
+    /// `bhkPhysicsSystem` (character bumper, props) is not one.
+    #[test]
+    fn a_physics_system_blob_is_not_a_ragdoll() {
+        assert!(extract_ragdoll(&scene(5.0, "bhkPhysicsSystem")).is_none());
+    }
+
+    /// A body no bone hosts is dropped with its joints, leaving too few for a
+    /// ragdoll.
+    #[test]
+    fn a_body_without_a_host_bone_drops_the_ragdoll() {
+        let mut s = scene(5.0, "bhkRagdollSystem");
+        s.blocks[4] = np_collision(2, 5, 7); // body id 7 does not exist
+        assert!(extract_ragdoll(&s).is_none());
     }
 }
 

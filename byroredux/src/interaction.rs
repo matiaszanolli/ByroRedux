@@ -2876,6 +2876,7 @@ mod tests {
                     angular_damping: 0.0,
                     friction: 0.5,
                     restitution: 0.0,
+                    pose_bone_id: None,
                 }],
                 constraints: vec![],
             },

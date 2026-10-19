@@ -186,7 +186,7 @@ therefore feeds every game:
 | **Oblivion / Morrowind** | NIF ≤ 20.0.0.5 (`#NI_BS_LTE_16#`) | Ragdoll 6×Vec4 + 6×f32 (pivots-first, **no motors**); LimitedHinge 7×Vec4 + 3×f32 (**no Perp B1**); Hinge 5×Vec4 = 80 B (**no Axis A** — derived); Prismatic 8×Vec4 + 3×f32 = 140 B, pivots-first order, **no motor** | **decoded (2026-06-14; Hinge #3330, Prismatic #3792)** |
 | **FO3 / FNV** | NIF 20.2.0.7, bsver ≤ 34 (`!#NI_BS_LTE_16#`) | Ragdoll 8×Vec4 + 6×f32 + motor; LimitedHinge 8×Vec4 + 3×f32 + motor; Hinge 8×Vec4 = 128 B + motor (no serialized limits); Prismatic 8×Vec4 + 3×f32 = 140 B + motor, `Sliding/Rotation/Plane/Pivot` A-then-B order (**not** the Oblivion order) | **decoded — slice 1 reference** |
 | **Skyrim LE/SE** | NIF 20.2.0.7, bsver 83–127 | identical FO3+ layout; gated by NIF **version**, not bsver. `havok_scale` ×69.99 applied at import via `havok_scale_for(header)` | **decoded; version-gate pinned by test, real-data validation pending** |
-| **FO4 / FO76 / Starfield** | `BhkNPCollisionObject` → `BhkSystemBinary` | Havok-serialised binary blob — the constraint graph is inside the blob, not as discrete `bhkRigidBody.constraints` | **container + object table decoded (#3809, `parse_havok_packfile`); blocked on `hknpCompressedMeshShapeData`'s field layout. Documented limitation, not a leak** |
+| **FO4 / FO76 / Starfield** | `BhkNPCollisionObject` → `BhkSystemBinary` | Havok-serialised binary blob — the constraint graph is inside the blob, not as discrete `bhkRigidBody.constraints` | **container + object table decoded (#3809, `parse_havok_packfile`); FO4 skeleton ragdolls (`bhkRagdollSystem`) decoded and threaded (#5015, `decode_np_ragdoll`); precombined geometry blocked on `hknpCompressedMeshShapeData`'s field layout. Documented limitation, not a leak** |
 
 Sources of truth (no-guessing): `/mnt/data/src/reference/nifxml/nif.xml`
 (`bhkRagdollConstraintCInfo` / `bhkLimitedHingeConstraintCInfo` /
@@ -343,9 +343,31 @@ inference. The local-fixup table does give the array-member pointers inside
 each object, so that inference now starts from known object bounds and known
 array locations rather than from an undifferentiated byte run.
 
-Until that lands, FO4/FO76/Starfield ragdolls still don't thread (runtime
-collision uses the layer-aware geometry approximations described in
-[`physics.md`](physics.md)). Documented limitation, **not** a silent leak.
+**FO4 ragdolls (`bhkRagdollSystem`) — decoded and threaded (#5015).** A
+skeleton's articulation is a different blob from the precombine one and does
+not need the compressed-mesh layout: `hknpRagdollData` (bodies, joints),
+`hknpCapsuleShape` / `hknpSphereShape` bodies, and
+`hkpRagdollConstraintData` / `hkpLimitedHingeConstraintData` joints.
+`blocks::collision::decode_np_ragdoll` reads them into the same
+`RagdollCInfo` / `LimitedHingeCInfo` records the classic `bhkConstraint` path
+produces, so the existing joint conversion serves both generations, and
+`extract_ragdoll` takes that path when a scene authors no discrete
+constraints. Every offset was recovered from the vanilla corpus (no SDK is
+consulted) and is pinned by an independent check: body mass equals capsule
+volume times the density stored beside the inverse mass (18 of 18 human
+bodies, 1e-7); a joint's pivot names the same world point from both bodies
+(783 of 847 corpus joints to 1 cm, every one of the human, supermutant,
+feral-ghoul, brahmin, mole-rat, dog, radscorpion, yaoguai, mirelurk-king and
+radstag joints; the exceptions are turrets, the vertibird, Liberty Prime's
+furniture and a few robot parts, whose joints meet at a rest pose other than
+the stored bind pose); and a body's bind pose equals its host bone's rest
+world transform for 59 of 75 skeletons (the rest get a bone-local offset).
+Bodies are named by the skeleton's `bhkNPCollisionObject.body_id`. All 75
+vanilla ragdoll blobs decode; 64 of 986 bodies (convex polytopes, dynamic
+compounds) and 3 breakable joints are not read and are dropped with their
+joints. The per-body material and motion-property rows (friction,
+restitution, damping) are present but their field identities are not
+established, so bodies take the values the Skyrim humanoid ragdoll authors.
 
 ### Active (motorised) ragdoll — **data captured, simulation deferred**
 
@@ -366,8 +388,10 @@ get-up / hit-react / partial-ragdoll. Needs the joint-limit fidelity work first.
    (the activation path is already trigger-agnostic).
 5. Active ragdoll — drive the captured motors.
 6. FO4+ `BhkSystemBinary` payload decode — the container and its object table
-   are done (#3809); what is left is `hknpCompressedMeshShapeData`'s field
-   layout. Unblocks the packed-Havok games (large, independent).
+   are done (#3809) and the skeleton ragdoll payload (`bhkRagdollSystem`,
+   #5015) is decoded and threaded; what is left is
+   `hknpCompressedMeshShapeData`'s field layout (precombined geometry), the
+   hull/compound body shapes and the undecoded material/motion rows.
 
 Each step ships independently behind `cargo test`; none touches the Vulkan
 render-pass / pipeline (writeback rides existing skinning).

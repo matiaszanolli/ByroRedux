@@ -19,6 +19,7 @@
 //! - [`constraints`] — `BhkConstraint`, `BhkBreakableConstraint`
 //! - [`phantom_action`] — phantoms + LiquidAction + OrientHingedBodyAction
 //! - [`havok_packfile`] — FO4+ `BhkSystemBinary` outer container decode (#3809)
+//! - [`np_ragdoll`] — FO4+ `bhkRagdollSystem` payload (`hknpRagdollData`, #5015)
 //!
 //! Every block type is `pub use`-d at this module's root so external
 //! callers (`crate::blocks::collision::TypeName`) keep working
@@ -28,6 +29,7 @@ mod collision_object;
 mod compressed_mesh;
 mod constraints;
 mod havok_packfile;
+mod np_ragdoll;
 mod phantom_action;
 mod ragdoll;
 mod rigid_body;
@@ -49,6 +51,11 @@ pub use constraints::{
 pub use havok_packfile::{
     parse_havok_packfile, GlobalFixup, HavokPackfile, HavokPackfileHeader, LocalFixup,
     PackfileObject, PackfileSection, VirtualFixup, HAVOK_PACKFILE_MAGIC,
+};
+#[cfg(test)]
+pub(crate) use np_ragdoll::synthetic_two_body_blob;
+pub use np_ragdoll::{
+    decode_np_ragdoll, NpConstraintData, NpRagdoll, NpRagdollBody, NpRagdollConstraint, NpShape,
 };
 pub use phantom_action::{
     BhkAabbPhantom, BhkLiquidAction, BhkOrientHingedBodyAction, BhkSimpleShapePhantom,

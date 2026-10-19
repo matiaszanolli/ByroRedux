@@ -60,6 +60,9 @@ pub struct RagdollTemplateBody {
     pub angular_damping: f32,
     pub friction: f32,
     pub restitution: f32,
+    /// FO4+: the ragdoll-skeleton bone id this body drives, which an `XRGD`
+    /// corpse pose names its entries by (#5015). `None` for classic ragdolls.
+    pub pose_bone_id: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,6 +168,7 @@ pub fn template_from_imported(
             angular_damping: b.angular_damping,
             friction: b.friction,
             restitution: b.restitution,
+            pose_bone_id: None,
         });
     }
     if !dropped_bones.is_empty() {
@@ -892,6 +896,7 @@ mod tests {
                     angular_damping: 0.05,
                     friction: 0.5,
                     restitution: 0.0,
+                    pose_bone_id: None,
                 })
                 .collect(),
             constraints: vec![
@@ -995,6 +1000,7 @@ mod tests {
                     angular_damping: 0.05,
                     friction: 0.5,
                     restitution: 0.0,
+                    pose_bone_id: None,
                 })
                 .collect(),
             constraints: vec![RagdollTemplateConstraint {
@@ -1158,6 +1164,7 @@ mod tests {
                         angular_damping: 0.05,
                         friction: 0.5,
                         restitution: 0.0,
+                        pose_bone_id: None,
                     })
                     .collect(),
                 // Authored in BIND units: ±25 → a bind separation of 50, half
@@ -1294,6 +1301,7 @@ mod tests {
                     angular_damping: 0.05,
                     friction: 0.5,
                     restitution: 0.0,
+                    pose_bone_id: None,
                 })
                 .collect(),
             constraints: vec![
@@ -1408,6 +1416,7 @@ mod tests {
                     angular_damping: 0.05,
                     friction: 0.5,
                     restitution: 0.0,
+                    pose_bone_id: None,
                 })
                 .collect(),
             constraints: vec![
@@ -1492,6 +1501,7 @@ mod tests {
                 angular_damping: 0.05,
                 friction: 0.5,
                 restitution: 0.0,
+                pose_bone_id: None,
             }],
             constraints: Vec::new(),
         };
@@ -1558,6 +1568,7 @@ mod tests {
                 angular_damping: 0.05,
                 friction: 0.5,
                 restitution: 0.0,
+                pose_bone_id: None,
             }],
             constraints: Vec::new(),
         };
@@ -1672,6 +1683,7 @@ mod tests {
             angular_damping: 0.05,
             friction: 0.5,
             restitution: 0.0,
+            pose_bone_id: None,
         };
         world.insert(
             actor,
@@ -1813,6 +1825,7 @@ mod tests {
                     angular_damping: 0.05,
                     friction: 0.5,
                     restitution: 0.0,
+                    pose_bone_id: None,
                 })
                 .collect(),
             constraints: Vec::new(),
@@ -1888,6 +1901,7 @@ mod tests {
             shape: CollisionShape::Ball { radius: 5.0 },
             translation: Vec3::ZERO,
             rotation: Quat::IDENTITY,
+            pose_bone_id: None,
             is_t: true,
         }
     }

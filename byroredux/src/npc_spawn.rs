@@ -474,6 +474,7 @@ pub(crate) fn install_fallback_ragdoll_template(
                 angular_damping: 1.0,
                 friction: 0.8,
                 restitution: 0.0,
+                pose_bone_id: None,
             }],
             constraints: Vec::new(),
         },

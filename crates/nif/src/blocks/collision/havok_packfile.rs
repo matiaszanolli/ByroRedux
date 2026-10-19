@@ -470,7 +470,7 @@ pub fn parse_havok_packfile(data: &[u8]) -> io::Result<HavokPackfile> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     /// Hand-built synthetic packfile matching the exact layout verified
@@ -502,7 +502,7 @@ mod tests {
     /// real corpus lays them out back-to-back after the object payload —
     /// local (8 B/entry), then global, then virtual (12 B/entry each) —
     /// which is what the offsets below reproduce.
-    fn build_synthetic_packfile_with_fixups(
+    pub(in crate::blocks::collision) fn build_synthetic_packfile_with_fixups(
         class_names: &[&str],
         data_payload: &[u8],
         locals: &[LocalFixup],
@@ -624,7 +624,7 @@ mod tests {
     /// Offset of a class name's *text* within the synthetic
     /// `__classnames__` blob — mirrors the builder's own record layout so
     /// a virtual fixup in a test can point at a real name.
-    fn synthetic_class_name_offset(class_names: &[&str], want: &str) -> u32 {
+    pub(in crate::blocks::collision) fn synthetic_class_name_offset(class_names: &[&str], want: &str) -> u32 {
         let mut pos = 0u32;
         for name in class_names {
             let text = pos + CLASSNAME_RECORD_PREFIX_LEN as u32;

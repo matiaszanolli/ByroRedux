@@ -19,8 +19,8 @@ fn main() {
     );
     for (i, b) in ragdoll.bodies.iter().enumerate() {
         println!(
-            "#{i} {:?} mass={} lin_damp={} ang_damp={} fric={} rest={} is_t={} t={:?} r={:?}",
-            b.bone_name,
+            "#{i} {:?} bone_id={:?} mass={} lin_damp={} ang_damp={} fric={} rest={} is_t={} t={:?} r={:?}",
+            b.bone_name, b.pose_bone_id,
             b.mass,
             b.linear_damping,
             b.angular_damping,
