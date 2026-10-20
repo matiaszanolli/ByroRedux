@@ -1332,7 +1332,9 @@ pub(super) fn spawn_terrain_mesh(
             base_diffuse_index: tex_handle,
             base_height_index,
             layer_height_index,
-            pad_to_stride: 0.0,
+            // Set from the live setting every frame
+            // (`set_terrain_height_blend_band`) before this tile is drawn.
+            height_blend_band: 0.0,
         })
     } else {
         crate::terrain_height::request_heights(world, tex_provider, game, &height_lanes);

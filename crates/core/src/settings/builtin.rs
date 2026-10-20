@@ -29,6 +29,14 @@ pub const FOV_SETTING_ID: &str = "gameplay.field_of_view";
 /// `--fsr-quality` CLI pair accept, so all three routes share one grammar and
 /// the binary parses it in exactly one place.
 pub const UPSCALER_SETTING_ID: &str = "render.upscaler";
+/// #6196 — width of the height-based terrain layer blend's transition band,
+/// in normalised height units. 0 disables height blending.
+pub const TERRAIN_HEIGHT_BLEND_BAND_SETTING_ID: &str = "render.terrain_height_blend_band";
+/// Default band: the transition depth of the height-blend formulation this
+/// implements (Mishkinis, "Advanced Terrain Texture Splatting", 2013, whose
+/// listing uses `depth = 0.2`). A starting point to tune by eye, not a
+/// measured property of any game's data.
+pub const TERRAIN_HEIGHT_BLEND_BAND_DEFAULT: f32 = 0.2;
 
 /// Register settings owned by the overlay itself. The binary calls this while
 /// assembling the universal [`SettingsRegistry`]; renderer, audio, input, and
@@ -106,5 +114,18 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
             SettingChoice::new("fsr3/balanced", "FSR 3.1 — Balanced"),
             SettingChoice::new("fsr3/performance", "FSR 3.1 — Performance"),
         ],
+    ))?;
+    registry.register(SettingEntry::slider(
+        TERRAIN_HEIGHT_BLEND_BAND_SETTING_ID,
+        "Rendering",
+        "Terrain height-blend band",
+        "Where two terrain layers overlap, the one standing higher wins inside \
+         this transition band (normalised height). Smaller is sharper; 0 turns \
+         height blending off and restores the plain weight blend.",
+        TERRAIN_HEIGHT_BLEND_BAND_DEFAULT,
+        0.0,
+        1.0,
+        0.01,
+        "",
     ))
 }

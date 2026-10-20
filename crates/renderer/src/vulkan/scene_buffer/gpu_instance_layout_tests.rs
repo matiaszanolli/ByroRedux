@@ -487,7 +487,7 @@ fn gpu_terrain_tile_field_offsets_match_shader_contract() {
     // #6195 — the height handles follow, appended so nothing above moved.
     assert_eq!(offset_of!(GpuTerrainTile, base_height_index), 168);
     assert_eq!(offset_of!(GpuTerrainTile, layer_height_index), 172);
-    assert_eq!(offset_of!(GpuTerrainTile, pad_to_stride), 204);
+    assert_eq!(offset_of!(GpuTerrainTile, height_blend_band), 204);
 }
 
 /// The shipped SPIR-V is the contract's other half. A Rust-side layout change

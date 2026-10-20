@@ -57,7 +57,7 @@ pub use panels::{
 pub use byroredux_core::settings::builtin::{
     register_builtin_settings, FOV_SETTING_ID, OVERLAY_SCALE_SETTING_ID, SHOW_CROSSHAIR_SETTING_ID,
     SHOW_OBJECTIVES_SETTING_ID, SHOW_PROMPTS_SETTING_ID, SHOW_VITALS_SETTING_ID,
-    UPSCALER_SETTING_ID,
+    TERRAIN_HEIGHT_BLEND_BAND_DEFAULT, TERRAIN_HEIGHT_BLEND_BAND_SETTING_ID, UPSCALER_SETTING_ID,
 };
 
 /// Persistent egui state shared between the App's event loop and

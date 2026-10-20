@@ -77,7 +77,7 @@ use quest::*;
 use scene::*;
 use shared::*;
 use studio::*;
-use terrain::TerrainHeightCommand;
+use terrain::{TerrainBlendCommand, TerrainHeightCommand};
 use time::*;
 use view::*;
 use water::*;
@@ -189,6 +189,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(LodCoverageCommand);
     registry.register(TerrainSeamsCommand);
     registry.register(TerrainHeightCommand);
+    registry.register(TerrainBlendCommand);
     registry.register(CellOwnersCommand);
     registry.register(RenderDebugCommand);
     registry.register(RenderDebugFlagsCommand);

@@ -196,6 +196,20 @@ impl VulkanContext {
         self.terrain_tiles_dirty |= changed;
     }
 
+    /// #6196 — publish the height-blend transition band to every live LAND
+    /// tile. Called every frame; marks the SSBO dirty only on a real change,
+    /// so the steady state costs one compare per resident tile.
+    pub fn set_terrain_height_blend_band(&mut self, band: f32) {
+        let mut changed = false;
+        for tile in self.terrain_tiles.iter_mut().flatten() {
+            if tile.height_blend_band != band {
+                tile.height_blend_band = band;
+                changed = true;
+            }
+        }
+        self.terrain_tiles_dirty |= changed;
+    }
+
     /// Release a terrain tile slot back to the free list and schedule
     /// the SSBO to be reuploaded to every frame-in-flight. Must be
     /// called from `unload_cell` before the mesh / BLAS drop so a late

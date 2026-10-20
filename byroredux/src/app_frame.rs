@@ -546,6 +546,13 @@ impl App {
                 ctx.light_atten_knee = lt.knee_frac;
                 ctx.light_atten_legacy = lt.legacy;
             }
+            // #6196 — the terrain height-blend band, from the settings
+            // slider, onto every live tile (no-op upload when unchanged).
+            ctx.set_terrain_height_blend_band(crate::setting_number(
+                &self.world,
+                byroredux_debug_ui::TERRAIN_HEIGHT_BLEND_BAND_SETTING_ID,
+                byroredux_debug_ui::TERRAIN_HEIGHT_BLEND_BAND_DEFAULT,
+            ));
             // Stage 1 — same push pattern for the color pipeline
             // (ExposureTuning, mutated by `exposure` / `tonemap`). Absent
             // resource → renderer keeps its config-seeded state.

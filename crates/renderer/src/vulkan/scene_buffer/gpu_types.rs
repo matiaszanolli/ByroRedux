@@ -73,12 +73,13 @@ pub struct GpuTerrainTile {
     /// as [`Self::base_height_index`]. Appended at the tail so every earlier
     /// offset — and every shader that reads them — is unchanged.
     pub layer_height_index: [u32; TERRAIN_SPLAT_LAYERS],
-    /// Explicit tail padding to the std430 array stride: the GLSL struct's
-    /// alignment is 16 (its vec4 rows), so its array stride rounds 204 up to
-    /// 208. A named scalar so the declaration matches the GLSL field for
-    /// field — what `gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep`
-    /// guards.
-    pub pad_to_stride: f32,
+    /// #6196 — transition band of the height-based layer blend
+    /// (`byroTerrainHeightBlend`), in normalised height units; 0 disables it.
+    /// A global setting, broadcast to every live tile by
+    /// `VulkanContext::set_terrain_height_blend_band`, riding the slot that
+    /// was the std430 tail pad (the stride stays 208) rather than growing the
+    /// camera UBO and its five mirrors.
+    pub height_blend_band: f32,
 }
 
 impl GpuTerrainTile {

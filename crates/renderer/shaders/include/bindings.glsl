@@ -536,8 +536,109 @@ struct GpuTerrainTile {
     /// Zero = no height (yet). Appended at the tail; stride 176 → 208.
     uint baseHeightIndex;
     uint layerHeightIndex[TERRAIN_SPLAT_LAYERS];
-    float padToStride;
+    /// #6196 — height-blend transition band; 0 = height blending off.
+    float heightBlendBand;
 };
+
+/// #6196 — height-based blending between terrain layers.
+///
+/// The splat lanes compose in order, `mix(prev, layer, w)` from the BTXT
+/// base up, so layer `i`'s share of the surface is `w_i · Π_{j>i}(1 − w_j)`
+/// and the base keeps the rest; the shares sum to 1. Among the layers that
+/// have a height map (base included), their combined share `S` is
+/// re-divided by height: each scores `h_i + share_i / S`, and every layer
+/// within `band` of the top score keeps a part proportional to how far into
+/// the band it reaches (Mishkinis, "Advanced Terrain Texture Splatting",
+/// Game Developer, 2013 — the same `height + weight` rule, generalised from
+/// two layers to N). Where two layers overlap, the higher one wins inside a
+/// transition band; a narrower `band` is a sharper transition.
+///
+/// The result is written back as ordered-`mix` weights, so every consumer
+/// of the splat lanes — diffuse, specular, normal, the blade ground-colour
+/// coupling — composes the same blended surface with its existing loop.
+/// Layers without a height map keep their exact share, and a fragment with
+/// fewer than two height-mapped layers in play is returned untouched, so
+/// terrain without height maps shades exactly as before. The only texture
+/// reads are the height samples themselves, one per weighted height-mapped
+/// layer, with the caller's uniform-flow gradients (#4016).
+void byroTerrainHeightBlend(
+    inout vec4 splat0,
+    inout vec4 splat1,
+    GpuTerrainTile tile,
+    vec2 uv,
+    vec2 dx,
+    vec2 dy,
+    float band
+) {
+    float w[TERRAIN_SPLAT_LAYERS];
+    for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i) {
+        w[i] = i < TERRAIN_SPLAT_LANES_PER_WORD
+            ? splat0[i]
+            : splat1[i - TERRAIN_SPLAT_LANES_PER_WORD];
+    }
+    // Shares, top lane down; `share[TERRAIN_SPLAT_LAYERS]` is the base.
+    float share[TERRAIN_SPLAT_LAYERS + 1u];
+    float rest = 1.0;
+    for (int i = int(TERRAIN_SPLAT_LAYERS) - 1; i >= 0; --i) {
+        float wi = clamp(w[i], 0.0, 1.0);
+        share[i] = wi * rest;
+        rest *= 1.0 - wi;
+    }
+    share[TERRAIN_SPLAT_LAYERS] = rest;
+
+    float h[TERRAIN_SPLAT_LAYERS + 1u];
+    bool hasHeight[TERRAIN_SPLAT_LAYERS + 1u];
+    uint count = 0u;
+    float heightShare = 0.0;
+    for (uint i = 0u; i <= TERRAIN_SPLAT_LAYERS; ++i) {
+        uint idx = i < TERRAIN_SPLAT_LAYERS ? tile.layerHeightIndex[i] : tile.baseHeightIndex;
+        hasHeight[i] = idx != 0u && share[i] > 0.0;
+        h[i] = 0.0;
+        if (hasHeight[i]) {
+            h[i] = textureGrad(textures[nonuniformEXT(idx)], uv, dx, dy).r;
+            heightShare += share[i];
+            ++count;
+        }
+    }
+    if (count < 2u || heightShare <= 1.0e-6) {
+        return;
+    }
+
+    float top = -1.0e30;
+    for (uint i = 0u; i <= TERRAIN_SPLAT_LAYERS; ++i) {
+        if (hasHeight[i]) {
+            top = max(top, h[i] + share[i] / heightShare);
+        }
+    }
+    float floorScore = top - max(band, 1.0e-4);
+    float total = 0.0;
+    for (uint i = 0u; i <= TERRAIN_SPLAT_LAYERS; ++i) {
+        if (hasHeight[i]) {
+            h[i] = max(h[i] + share[i] / heightShare - floorScore, 0.0);
+            total += h[i];
+        }
+    }
+    // `total > 0`: the top scorer is `band` above the floor by construction.
+    for (uint i = 0u; i <= TERRAIN_SPLAT_LAYERS; ++i) {
+        if (hasHeight[i]) {
+            share[i] = heightShare * h[i] / total;
+        }
+    }
+
+    // Back to ordered-`mix` weights: lane i keeps share_i of what has been
+    // composed up to and including it, so the existing loops reproduce the
+    // blended shares exactly.
+    float composed = share[TERRAIN_SPLAT_LAYERS];
+    for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i) {
+        composed += share[i];
+        float wi = composed > 1.0e-6 ? share[i] / composed : 0.0;
+        if (i < TERRAIN_SPLAT_LANES_PER_WORD) {
+            splat0[i] = wi;
+        } else {
+            splat1[i - TERRAIN_SPLAT_LANES_PER_WORD] = wi;
+        }
+    }
+}
 
 /// The terrain's splat colour composition (#4907): start from the BTXT base
 /// RGB and mix each splat layer over it by its own weight, in layer order,

@@ -1595,6 +1595,17 @@ fn surface_save_load_output(
     }
 }
 
+pub(crate) fn setting_number(world: &World, id: &str, fallback: f32) -> f32 {
+    world
+        .try_resource::<SettingsRegistry>()
+        .and_then(|registry| registry.get(id).map(|entry| entry.value.clone()))
+        .and_then(|value| match value {
+            SettingValue::Number(value) => Some(value),
+            _ => None,
+        })
+        .unwrap_or(fallback)
+}
+
 fn setting_bool(world: &World, id: &str, fallback: bool) -> bool {
     world
         .try_resource::<SettingsRegistry>()

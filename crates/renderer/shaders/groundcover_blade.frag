@@ -125,9 +125,18 @@ void main() {
             vec3 baseRGB = textureGrad(
                 textures[nonuniformEXT(groundTile.baseDiffuseIndex)],
                 vTerrainUv, terrainUvDx, terrainUvDy).rgb;
+            // #6196 — the same height-blended lanes the terrain shades with,
+            // so the colour under a blade stays the colour the ground shows.
+            vec4 groundSplat0 = vTerrainSplat0;
+            vec4 groundSplat1 = vTerrainSplat1;
+            if (groundTile.heightBlendBand > 0.0) {
+                byroTerrainHeightBlend(
+                    groundSplat0, groundSplat1, groundTile,
+                    vTerrainUv, terrainUvDx, terrainUvDy, groundTile.heightBlendBand);
+            }
             vec3 groundAlbedo = byroTerrainSplatAlbedo(
                 baseRGB, vTerrainUv, terrainUvDx, terrainUvDy,
-                vTerrainSplat0, vTerrainSplat1, groundTile);
+                groundSplat0, groundSplat1, groundTile);
             float coupling = clamp(sp.tipColour.a, 0.0, 1.0) * (1.0 - vBladeT);
             albedo = mix(albedo, groundAlbedo, coupling);
             rootGroundAlbedo = groundAlbedo;

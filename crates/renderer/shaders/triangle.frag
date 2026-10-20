@@ -337,6 +337,16 @@ void main() {
         uint terrainTileIdx =
             (inst.flags >> INSTANCE_TERRAIN_TILE_SHIFT) & INSTANCE_TERRAIN_TILE_MASK;
         terrainTile = terrainTiles[nonuniformEXT(terrainTileIdx)];
+        // #6196 — height-based layer blending. Rewrites the splat lanes in
+        // place, so the diffuse / specular / normal loops below (and the
+        // Tier-3 detail density) all compose the same blended surface.
+        // Band 0 (the setting at 0, or a tile spawned this frame before the
+        // broadcast) leaves the weights untouched.
+        if (terrainTile.heightBlendBand > 0.0) {
+            byroTerrainHeightBlend(
+                terrainSplat[0], terrainSplat[1], terrainTile,
+                sampleUV, splatUVdx, splatUVdy, terrainTile.heightBlendBand);
+        }
     }
 
     vec4 texColor = texture(textures[nonuniformEXT(fragTexIndex)], sampleUV);

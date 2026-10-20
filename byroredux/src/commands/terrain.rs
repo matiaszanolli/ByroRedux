@@ -86,6 +86,47 @@ impl ConsoleCommand for TerrainHeightCommand {
     }
 }
 
+/// `terrain.blend [band]` — read or set the height-based layer blend's
+/// transition band (#6196) for this session: the same setting the debug-UI
+/// "Terrain height-blend band" slider edits, without saving it. 0 turns
+/// height blending off, which is the one-binary A/B switch.
+pub(crate) struct TerrainBlendCommand;
+impl ConsoleCommand for TerrainBlendCommand {
+    fn name(&self) -> &str {
+        "terrain.blend"
+    }
+
+    fn description(&self) -> &str {
+        "Terrain height-blend transition band: terrain.blend [0..1] (0 = off; #6196)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use byroredux_core::settings::{SettingValue, SettingsRegistry};
+        use byroredux_debug_ui::TERRAIN_HEIGHT_BLEND_BAND_SETTING_ID as ID;
+        if world.try_resource::<SettingsRegistry>().is_none() {
+            return CommandOutput::line("terrain.blend: no settings registry in this session");
+        }
+        let arg = args.trim();
+        if !arg.is_empty() {
+            let Ok(band) = arg.parse::<f32>() else {
+                return CommandOutput::line(format!("terrain.blend: '{arg}' is not a number"));
+            };
+            let mut result = Ok(false);
+            crate::helpers::world_resource_set::<SettingsRegistry>(world, |registry| {
+                result = registry.set(ID, SettingValue::Number(band));
+            });
+            if let Err(error) = result {
+                return CommandOutput::line(format!("terrain.blend: {error}"));
+            }
+        }
+        let band = crate::setting_number(world, ID, f32::NAN);
+        CommandOutput::line(format!(
+            "terrain.blend: band={band:.3}{}",
+            if band > 0.0 { "" } else { " (height blending off)" }
+        ))
+    }
+}
+
 /// Every lane of every resident terrain cell, by generation state.
 fn census(world: &World) -> CommandOutput {
     let Some(lanes) = world.query::<TerrainLayerHeights>() else {
