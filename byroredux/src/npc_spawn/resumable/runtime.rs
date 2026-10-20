@@ -220,7 +220,10 @@ pub(super) fn prepare_runtime_state(
         return prepare_creature_state(world, npc, game, index, placement_root, &resolved);
     }
 
-    let gender = Gender::from_acbs_flags(npc.acbs_flags);
+    // #6080 (CHAR-SD-01) — the Female flag is a Use-Traits field, so a
+    // template-inheriting shell takes the gender of the terminal beside the
+    // race, as the pre-baked arm and `npc_skeleton_path` already do.
+    let gender = Gender::from_acbs_flags(resolved.r#traits.acbs_flags);
     // P3 mid-life gear import — the body class the gear-mesh resolution
     // below uses, retained so a mid-life equip resolves the same meshes.
     world.insert(
@@ -300,7 +303,7 @@ pub(super) fn prepare_runtime_state(
             "NPC {:08X} ({}): race {:08X} has no head MODL — skipping head mesh",
             npc.form_id,
             npc.editor_id,
-            npc.race_form_id,
+            resolved.r#traits.race_form_id,
         );
     }
 
@@ -481,7 +484,7 @@ pub(super) fn prepare_creature_state(
         (creature_idle_kf_paths(game, &dir), creature_walk_kf_paths(game, &dir))
     };
 
-    let gender = Gender::from_acbs_flags(npc.acbs_flags);
+    let gender = Gender::from_acbs_flags(resolved.r#traits.acbs_flags);
     // #4092 (D5-01) — the "Use Traits" terminal off the spawn boundary's
     // one resolution, handed in by `prepare_runtime_state` (#4457); a
     // no-op for creatures in practice (`CREA` references no `RACE`) but

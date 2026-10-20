@@ -1076,6 +1076,79 @@ mod tests {
         assert_eq!(state.skeleton_path.as_deref(), Some(r"meshes\female.nif"));
     }
 
+    /// #6080 (CHAR-SD-01) — the Female flag is a Use-Traits field. A female
+    /// shell over a male Use-Traits template must spawn male on both the
+    /// runtime-FaceGen arm (Oblivion / FO3 / FNV) and the pre-baked arm.
+    #[test]
+    fn female_shell_over_male_use_traits_template_spawns_male_on_both_arms() {
+        use crate::npc_spawn::{ActorBodyClass, Gender};
+
+        let mut index = EsmIndex {
+            game: GameKind::Fallout3NV,
+            ..Default::default()
+        };
+        index.npcs.insert(
+            3,
+            NpcRecord {
+                form_id: 3,
+                race_form_id: 2,
+                acbs_flags: 0, // male template
+                ..Default::default()
+            },
+        );
+        let shell = NpcRecord {
+            form_id: 4,
+            race_form_id: 99,
+            acbs_flags: 1, // female shell
+            template_form_id: 3,
+            template_flags: byroredux_plugin::equip::TEMPLATE_FLAG_USE_TRAITS,
+            ..Default::default()
+        };
+        let body_class = |world: &World, root| {
+            let q = world
+                .query::<ActorBodyClass>()
+                .expect("ActorBodyClass registered");
+            let class = *q.get(root).expect("spawn stamps ActorBodyClass");
+            (class.gender, class.race_form_id)
+        };
+
+        let mut world = World::new();
+        let runtime = prepare_runtime_state(
+            &mut world,
+            &shell,
+            None,
+            GameKind::Fallout3NV,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            &index,
+            false,
+        );
+        assert_eq!(
+            body_class(&world, runtime.placement_root),
+            (Gender::Male, 2),
+            "runtime arm must take gender and race from the Use-Traits terminal"
+        );
+
+        let mut world = World::new();
+        let prebaked = prepare_prebaked_state(
+            &mut world,
+            &shell,
+            GameKind::Skyrim,
+            "Skyrim.esm",
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            &index,
+            false,
+        );
+        assert_eq!(
+            body_class(&world, prebaked.placement_root),
+            (Gender::Male, 2),
+            "pre-baked arm must agree with the runtime arm"
+        );
+    }
+
     #[test]
     fn equipment_parts_keep_shared_item_ownership_without_tagging_body() {
         let mut world = World::new();
