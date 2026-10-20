@@ -83,9 +83,12 @@ pub struct WatrRecord {
     /// Oblivion WATR.MNAM Havok surface-material name. Vanilla authors the
     /// literal `lava` on the two unambiguous lava planes (#3223).
     pub material_name: String,
-    /// Oblivion WATR.SNAM authored surface sound name. Preserved at the ESM
-    /// boundary even though an audio consumer is not yet attached.
-    pub surface_sound: String,
+    /// `SNAM` — the water's sound FormID, load-order remapped: a `SOUN` on
+    /// Oblivion/FO3/FNV, an `SNDR` on Skyrim (xEdit `wbFormIDCk(SNAM,
+    /// 'Sound')` on every WATR schema). 0 means no `SNAM`. Pre-#6045 the
+    /// Oblivion arm read the 4 FormID bytes as a zstring and every other
+    /// game dropped it. No audio consumer is attached yet.
+    pub sound_form: u32,
     /// Decoded water shader / shading params. Fields are at their
     /// per-spec defaults when the source record omits a sub-record or
     /// when the byte layout doesn't match the parser's expectations.
@@ -1377,8 +1380,10 @@ pub fn parse_watr(
             b"MNAM" if matches!(game, GameKind::Oblivion) => {
                 out.material_name = read_zstring(&sub.data)
             }
-            b"SNAM" if matches!(game, GameKind::Oblivion) => {
-                out.surface_sound = read_zstring(&sub.data)
+            b"SNAM" if sub.data.len() >= 4 => {
+                if let Ok(fid) = SubReader::new(&sub.data).u32() {
+                    out.sound_form = remap_fid(fid, remap);
+                }
             }
             b"NAM2" => out.noise_texture_paths[0] = read_zstring(&sub.data),
             b"NAM3" => out.noise_texture_paths[1] = read_zstring(&sub.data),
@@ -1645,7 +1650,7 @@ mod tests {
             &[
                 sub(b"TNAM", b"Water\\OblivionLava06.dds\0"),
                 sub(b"MNAM", b"lava\0"),
-                sub(b"SNAM", b"AMBWaterLavaLP\0"),
+                sub(b"SNAM", 0x0001_A2B3u32.to_le_bytes()),
                 sub(b"FNAM", [0x01]),
                 sub(b"DATA", &data),
             ],
@@ -1655,7 +1660,10 @@ mod tests {
         assert_eq!(watr.texture_path, "", "TES4 TNAM is not a normal map");
         assert_eq!(watr.diffuse_texture_path, "Water\\OblivionLava06.dds");
         assert_eq!(watr.material_name, "lava");
-        assert_eq!(watr.surface_sound, "AMBWaterLavaLP");
+        assert_eq!(
+            watr.sound_form, 0x0001_A2B3,
+            "TES4 SNAM is a SOUN FormID (#6045)"
+        );
         assert_eq!(watr.legacy_damage, Some(5000));
     }
 
@@ -2439,6 +2447,24 @@ mod tests {
             w.effect_form, master_spel,
             "master-slot XNAM reference (mod_index 0) stays at slot 0's byte"
         );
+    }
+
+    /// #6045 — `SNAM` is a sound FormID on every game and goes through
+    /// the same load-order remap as `XNAM`.
+    #[test]
+    fn parse_watr_snam_is_a_remapped_sound_form() {
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        let own_sound: u32 = 0x0100_0ABC; // mod_index 1 = the plugin itself
+        let w = parse_watr(
+            0x000A_0002,
+            &[sub(b"SNAM", own_sound.to_le_bytes())],
+            GameKind::Fallout3NV,
+            &Some(remap),
+        );
+        assert_eq!(w.sound_form, 0x0200_0ABC);
+
+        let none = parse_watr(0x000A_0003, &[], GameKind::Skyrim, &None);
+        assert_eq!(none.sound_form, 0);
     }
 
     #[test]
