@@ -435,6 +435,17 @@ it grew from 18 maps in Session 12 to ~90 today. The struct opens with
 - **Oblivion-unique base records** (#966) — `birthsigns` (BSGN),
   `clothing` (CLOT), `apparatuses` (APPA), `sigil_stones` (SGST),
   `soul_gems` (SLGM).
+- **Typed but unconsumed** (#6180) — eight maps have a full typed parser and
+  are retained for the whole session, but nothing outside `records/` reads
+  them yet: `enchantments` (ENCH), `body_parts` (BPTD), `reputations` (REPU),
+  `explosions` (EXPL; only the `probe_form` example reads it),
+  `combat_styles` (CSTY), `impacts` (IPCT), `impact_data_sets` (IPDS) and
+  `recipes` (COBJ). They back cross-reference resolution and the census /
+  probe tooling, so the parsers stay; they are the next consumers to wire
+  (CHARAL for REPU, the AI layer for CSTY, impact effects for IPCT/IPDS).
+  This is the typed-parser counterpart of the minimal-stub caveat below —
+  re-check with `grep -rnE '\.(enchantments|reputations|body_parts|recipes|combat_styles|explosions|impact_data_sets|impacts)\b' crates byroredux`
+  (minus tests and `records/`) before assuming one has gained a reader.
 - **Long-tail minimal stubs** (#810) — originally 31 record types
   parsed via `parse_minimal_esm_record` (EDID + optional FULL) so
   cross-references resolve at lookup time even though no consumer

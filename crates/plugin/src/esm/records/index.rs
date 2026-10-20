@@ -409,6 +409,9 @@ pub struct EsmIndex {
     /// to the catch-all skip and every weapon enchantment dangled
     /// (Pulse Gun, This Machine, Holorifle on FNV; the full Skyrim
     /// weapon-enchant table). See FNV-D2-01.
+    ///
+    /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map. Weapon enchantments
+    /// are not resolved at runtime.
     pub enchantments: HashMap<u32, EnchRecord>,
     /// `MGEF` magic effects — universal bridge for Actor Value mods.
     ///
@@ -489,6 +492,8 @@ pub struct EsmIndex {
     pub outfits: HashMap<u32, OtftRecord>,
     /// `BPTD` body-part-data records — per-NPC dismemberment
     /// routing (head, torso, limbs) + biped slot count.
+    ///
+    /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map.
     pub body_parts: HashMap<u32, BptdRecord>,
     /// `TREE` tree base records — Oblivion / FO3 / FNV reference an
     /// external SpeedTree binary (`.spt`) here; Skyrim+ points at a
@@ -504,23 +509,34 @@ pub struct EsmIndex {
     // / faction-reputation subsystems. Pre-fix each of these top-level
     // groups fell through to the catch-all skip.
     /// `REPU` reputation records (FNV-CORE) — NCR / Legion / Powder
-    /// Gangers / Boomers / Brotherhood / Followers. Drives the
-    /// faction-reputation system and quest gating.
+    /// Gangers / Boomers / Brotherhood / Followers. Intended to feed
+    /// the faction-reputation system and quest gating.
+    ///
+    /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map.
     pub reputations: HashMap<u32, RepuRecord>,
     /// `EXPL` explosion records — frag grenades, mines, explosive
     /// ammo blast effects. Linked from PROJ via PROJ→EXPL→EFSH.
+    ///
+    /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map. (Only the
+    /// `probe_form` example reads it.)
     pub explosions: HashMap<u32, ExplRecord>,
     /// `CSTY` combat-style records — per-NPC AI behavior profile
     /// (aggression, stealth preference, ranged vs melee).
+    ///
+    /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map.
     pub combat_styles: HashMap<u32, CstyRecord>,
     /// `IDLE` idle-animation records — NPC behavior tree refs
     /// ("lean against wall", "smoke", "drink", etc.).
     pub idle_animations: HashMap<u32, IdleRecord>,
     /// `IPCT` impact records — per-material bullet-impact visual
     /// effects (puff of dust on stone, splinters on wood, etc.).
+    ///
+    /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map.
     pub impacts: HashMap<u32, IpctRecord>,
     /// `IPDS` impact data sets — 12-entry table mapping per-material
     /// surface kinds to their respective IPCT records.
+    ///
+    /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map.
     pub impact_data_sets: HashMap<u32, IpdsRecord>,
     /// `COBJ` constructible-object records — the FO4+ crafting-recipe
     /// format. **Empty on FNV/FO3** (#3040): `FalloutNV.esm` authors exactly
@@ -528,6 +544,8 @@ pub struct EsmIndex {
     /// live recipe data is `RCPE` ([`recipe_records`](Self::recipe_records)
     /// below), routed to the `MinimalEsmRecord` stub bucket since nothing
     /// consumes it yet.
+    ///
+    /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map.
     pub recipes: HashMap<u32, CobjRecord>,
     // ── #810 / FNV-D2-NEW-03 — long-tail catch-all stubs ────────────
     //
