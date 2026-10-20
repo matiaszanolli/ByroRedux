@@ -42,10 +42,7 @@ pub fn parse_musc(form_id: u32, subs: &[SubRecord], game: GameKind) -> MuscRecor
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(kind: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord { sub_type: *kind, data }
-    }
+    use crate::esm::records::test_support::sub;
 
     #[test]
     fn a_new_vegas_music_type_decodes_its_file_and_loop_flag() {

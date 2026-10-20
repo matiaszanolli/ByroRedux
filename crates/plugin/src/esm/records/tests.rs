@@ -2908,6 +2908,8 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
     // M47.2 — the PACK twin of the INFO decoder: flags and strings only.
     ("script_instance.rs", "parse_package_fragments"),
     ("misc/equipment.rs", "parse_bptd"),
+    // MUSC is EDID + a track path + one f32 level; no FormIDs.
+    ("misc/music.rs", "parse_musc"),
     // TRNS carries no FormIDs at all — EDID + a pos/rot/scale/zoom float
     // struct. The only cross-record reference in the pairing (LSCR.TNAM →
     // TRNS) lives on the LSCR side, and parse_lscr remaps it.

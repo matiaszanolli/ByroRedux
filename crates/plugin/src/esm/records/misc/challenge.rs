@@ -103,10 +103,7 @@ pub fn parse_chal(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::r
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(kind: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord { sub_type: *kind, data }
-    }
+    use crate::esm::records::test_support::sub;
 
     /// `NVChallengeCaravanWin` as it sits in FalloutNV.esm: a misc-stat challenge (stat 37, Caravan Games
     /// Won) for 3 wins, notifying every 1.
