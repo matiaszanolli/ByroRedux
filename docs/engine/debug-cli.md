@@ -334,7 +334,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**131**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**132**) grouped by
 purpose:
 
 ```
@@ -478,6 +478,7 @@ render.debug                → renderer debug-mode control
 r.dbg [0xMASK|+0xB|-0xB]    → read / set / add / clear the DBG_* bit mask at runtime
 r.shadowfilter [on|off]     → read or switch the direct-shadow spatial filter
 env.health                  → validate live lighting/sky environment state
+sky.dump                    → print the per-frame SkyParams the renderer receives (colours, sun, cloud layers)
 world.owners                → report owner-tagged world resources
 
 # Game clock / day-night cycle

@@ -1486,6 +1486,36 @@ mod tests {
         }
     }
 
+    /// FO4's 1,024-byte JNAM holds 8 alpha slots per layer. `CommonwealthClear`
+    /// authors layer 2 (`CloudsLower04_d`, the big streaked deck) at alpha 0 —
+    /// the author hides it — and layer 3 with a varying ramp. Read at the old
+    /// 4-slot stride, layer 2 inherited layer 1's 0.75 and the hidden deck
+    /// painted vivid sunset streaks the weather does not author.
+    #[test]
+    fn fo4_jnam_alphas_use_the_eight_slot_stride() {
+        let mut jnam = vec![0u8; 1024];
+        let mut put = |layer: usize, slot: usize, v: f32| {
+            let at = (layer * 8 + slot) * 4;
+            jnam[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        };
+        for slot in 0..8 {
+            put(0, slot, 0.75);
+            put(1, slot, 0.75);
+            put(2, slot, 0.0);
+        }
+        for (slot, v) in [0.5, 0.7, 0.5, 0.3].into_iter().enumerate() {
+            put(3, slot, v);
+        }
+        let mut subs = vec![sub(b"JNAM", jnam)];
+        for layer in 0..4u8 {
+            subs.push(sub(&[b'0' + layer, b'0', b'T', b'X'], b"sky\\c.dds\0"));
+        }
+        let w = parse_wthr(0x2B52A, &subs, GameKind::Fallout4, &None);
+        assert_eq!(w.cloud_layer_alphas[1], [0.75; 4]);
+        assert_eq!(w.cloud_layer_alphas[2], [0.0; 4], "an authored-hidden layer stays hidden");
+        assert_eq!(w.cloud_layer_alphas[3], [0.5, 0.7, 0.5, 0.3]);
+    }
+
     /// SKYAL — `SkyrimCloudy`'s real layer set: `NAM1 = 0xEF9EF0FF` disables
     /// layers 0–7, which name `OblivionCloudCloudyUpper01.dds` and
     /// `WastelandCloudHorizon01.dds` (not shipped with Skyrim SE), and enables

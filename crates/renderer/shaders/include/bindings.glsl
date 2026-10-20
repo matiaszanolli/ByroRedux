@@ -420,7 +420,12 @@ float exteriorCloudSunTransmittance(vec3 worldPos, vec3 toSun) {
     vec3 viewer = cameraPos.xyz / WORLD_UNITS_PER_METER;
     vec2 crossing = cloud_shadow_base_crossing(receiver.xz, receiver.y - viewer.y, toSun);
     vec2 uv = cloud_shadow_uv(crossing, cloud_shadow_map_centre(viewer.xz));
-    return textureLod(cloudShadowMap, uv, 0.0).r;
+    // The map covers CLOUD_SHADOW_MAP_EXTENT around the viewer and knows
+    // nothing beyond it, where the clamped sampler would smear the edge texel
+    // over all distant terrain. Fade to "unshadowed" across the outer tenth.
+    vec2 inside = min(uv, 1.0 - uv);
+    float edge = clamp(min(inside.x, inside.y) / 0.1, 0.0, 1.0);
+    return mix(1.0, textureLod(cloudShadowMap, uv, 0.0).r, edge);
 }
 
 // Global geometry SSBOs for RT reflection UV lookups.

@@ -1,12 +1,16 @@
 # SKYAL — Sky Abstraction Layer
 
-**Status: PARTIAL (2026-09-14).** Shared sky evaluation, volumetric clouds,
+**Status: PARTIAL (2026-10-20).** Shared sky evaluation, volumetric clouds,
 the sky cubemap, and GGX-prefiltered reflection mips are implemented.
 Clouds and local fog/combustion now share the phase-function and slab
 integration implementation. Diffuse sky irradiance now comes from the baked
 sky; weather-driven cloud morphology and a palette-preserving atmospheric
-approximation are implemented, while a full atmospheric LUT and explicit
-authored cloud taxonomy remain unfinished. See §3.
+approximation are implemented. Since 2026-10-20 the sky composites far to
+near — celestials, the games' own cloud textures on a 9 km upper shell, the
+low volumetric deck — with physical aerial perspective (§2.4), the deck
+decides coverage per column, and surfaces receive position-dependent cloud
+shadows instead of a weather-wide sun dimming (§2.5). A full atmospheric LUT
+and explicit authored cloud taxonomy remain unfinished. See §3.
 
 Sibling of [NIFAL](nifal.md), [EXAL](exal.md), [PHYSAL](physal.md),
 [WATAL](watal.md), [CHARAL](charal.md). SKYAL sits **downstream of EXAL**:
@@ -64,11 +68,11 @@ two-colour vertical lerp:
   real sky. There is no Rayleigh/Mie separation, so no sun-relative
   azimuthal variation at all: the sky is identical 180° away from the sun
   as toward it.
-* **Clouds are UV-projected planes.** Up to four WTHR cloud textures are
-  projected onto an infinite plane (`dir.xz / dir.y`). Near the horizon
-  this stretches into visible streaks and needs a `smoothstep(0, 0.12,
-  elevation)` fade to hide the singularity. Clouds have no depth, no
-  self-shadowing, and no parallax.
+* ~~**Clouds are UV-projected planes.**~~ Up to four WTHR cloud textures
+  were projected onto an infinite plane (`dir.xz / dir.y`), streaking
+  toward the horizon behind a `smoothstep(0, 0.12, elevation)` fade.
+  **Resolved:** the volumetric deck (§2.3) is the low cloud body and the
+  textures sit on a curved upper shell behind it (§2.4).
 * **Reflections and GI never see the sky.** `raytrace.glsl`'s miss
   returns `skyTint * 0.5 + sceneFlags.yzw * 0.5` — a single flat colour.
   Every sky reflection and every sky-lit indirect bounce in the engine is
@@ -293,6 +297,108 @@ Still open:
   its PNGs — no gate checks a cloud invariant in pixels, so the cloudscape
   verdict is human-only (EXT-D7-2026-09-19-06 item 3).
 
+### 2.4 Far-to-near composite, upper cloud plane, aerial perspective (2026-10-20)
+
+**Order.** `sky_radiance` composites far to near, each cloud layer by its own
+transmittance: the clear sky (gradient, Rayleigh/Mie structure, sun glow) →
+the sun disc, stars, moon and aurora → the **upper plane** → the **volumetric
+deck**. Before, the deck was drawn first and the four WTHR textures were
+painted *over* it, so the games' high layers sat nearer than 1.5 km cumulus,
+and the disc, glow and night sky were dimmed by fixed shares (0.94 / 0.82) of
+an accumulated alpha. Those factors are gone (`sun_visibility`,
+`glow_visibility`, `sky_visibility` are pinned absent by
+`cloud_layers_composite_far_to_near_over_the_celestial_sky`).
+
+**Upper plane.** The authored layers are drawn on a spherical shell at
+`CLOUD_UPPER_PLANE_ALTITUDE` = 9 km — the midpoint of the WMO high étage
+(cirrus, 5–13 km in temperate regions), above `CLOUD_LAYER_TOP`. The shell has
+no projection singularity: toward the horizon its UVs converge to
+√(2R/h) ≈ 38 tile units, and at the zenith they equal the old plane's, so
+`tile_scale` keeps its authored meaning. The analytic mip is
+`0.5·log2(distance / altitude)`, which equals the old `0.5·log2(1/elevation)`
+above ~3°.
+
+**Aerial perspective.** Air between the viewer and a layer dims it and adds
+in-scattered sky light in front of it. Extinction is Hillaire 2020's Earth
+atmosphere (Rayleigh (5.802, 13.558, 33.1)·10⁻⁶ m⁻¹, 8 km; Mie 3.996·10⁻⁶ +
+4.40·10⁻⁶ absorption, 1.2 km); the in-scattered colour stays the authored WTHR
+sky's, so palettes are kept. The column integral is the closed-form Chapman
+integral over a curved ground, `√(πRH/2)·[erfcx(x₀) − e^(x₀²−x₁²)·erfcx(x₁)]`,
+with erfcx from Abramowitz & Stegun 7.1.26 / 7.1.14. It is within 0.02% of a
+numerical integral through the true sphere at every elevation and cloud
+distance (`chapman_column_matches_numerical_integration`); two approximations
+tried first were 15–17% off at low elevations and were not adopted. The share
+of the haze in front of a layer is `(1 − T(d)) / (1 − T(∞))` (single
+scattering, uniform source).
+
+The deck gets full aerial perspective at its opacity-weighted mean depth. The
+upper plane gets only the air **beyond its zenith path**: the authored
+textures and PNAM tints were made to be composited straight onto the authored
+sky, so the air above an overhead view is already in them; applying it again
+washed the games' cloud art out. Overhead the authored look is exact; toward
+the horizon the extra air fades it into the haze — what the old 0.12 fade did.
+
+**World anchoring.** `SkyDome::cloud_origin` carries the absolute camera
+position in metres. Both marches look the noise up at camera-relative
+position + origin and the upper plane's UVs include it, so clouds parallax as
+the viewer moves and the shadows they cast stay put
+(`the_cloud_field_is_world_anchored`).
+
+**Creation-era layer selection.** Skyrim, FO4 and FO76 author 32 cloud layers
+and a `NAM1` disabled-layer mask. The four drawn slots used to be layers 0–3
+verbatim, which Skyrim disables whenever they hold legacy references:
+`SkyrimCloudy` names `OblivionCloudCloudyUpper01.dds` and
+`WastelandCloudHorizon01.dds` there (not shipped with Skyrim SE), with
+`NAM1 = 0xEF9EF0FF` disabling 0–7, and authors its live decks at 8–11, 16, 21,
+22 and 28 — so **no Skyrim sky drew any authored cloud**. The slots are now
+the first four enabled, textured layers, carrying their own PNAM colours, JNAM
+alphas and RNAM/QNAM speeds (`select_creation_cloud_layers`,
+`creation_cloud_slots_skip_layers_disabled_by_nam1`). All 71 FO4 weathers
+author `NAM1` too.
+
+FO4 sunsets are therefore *less* vivid than before, by design: `CommonwealthClear`
+authors its big streaked deck (`CloudsLower04_d`, layer 2) at alpha 0, and the
+old 4-slot read of the 1,024-byte JNAM gave that layer layer 1's 0.75. The
+muted lavender is the weather as authored (`fo4_jnam_alphas_use_the_eight_slot_stride`).
+
+### 2.5 Cloud coverage per column, and cloud shadows (2026-10-20)
+
+**Per-column coverage.** Coverage used to be subtracted from the 3D base noise
+at every height. A 3.5 km column through 3D noise crosses a dense value
+somewhere almost always, so the deck was a near-total sheet overhead at every
+coverage (Skyrim and FNV "pleasant" 0.40 skies, measured straight up). Schneider
+& Vos decide coverage per column from a 2D weather map; here that map is one
+horizontal slice of the base volume (`CLOUD_WEATHER_SLICE_W`), thresholded at
+the host-computed quantile that makes a `coverage` fraction of columns pass
+(`cloud_column_threshold`, packed in `weather_aurora.w`). Within a column the
+3D shape is remapped by the column's own coverage and scaled by it (Schneider,
+GPU Pro 7: `base_cloud_with_coverage *= cloud_coverage`). `coverage` is now a
+horizontal cloud fraction — the meteorological cloud amount.
+
+**Cloud shadows.** `cloud_shadow.comp` bakes direct-sun transmittance through
+the deck into a camera-centred, texel-snapped R16F 512² map over 64 km (scene
+set 1 / binding 24), with 16 Beer–Lambert samples per column at the sourced
+extinction. A texel is the column above the point where a sun ray crosses the
+deck base, so receivers at any altitude look up their own crossing. The
+directional upload (`compute_directional_upload`) is now the sun **above** the
+clouds; every direct-sun site multiplies by the map
+(`exteriorCloudSunTransmittance` — `lighting.glsl`'s two directional arms,
+grass, the water glint), and passes that light with one sun value — the froxel
+volumetrics, the interior portal sun, caustics — use the camera's own column,
+read back from the bake after its fence (`camera_cloud_sun_transmittance`).
+Beyond the map's edge there is no cloud data, so the lookup fades to
+unshadowed across the outer tenth rather than letting the clamped sampler
+smear the edge texel over distant terrain (found with a forced checkerboard
+map, which also proved the map, binding and world addressing reach surfaces).
+The clouds themselves are lit by the unattenuated sun, since their march
+self-shadows. `every_direct_sun_site_applies_the_cloud_shadow` pins the sites.
+
+The authored upper plane casts **no** shadow. It is sky art, not a measured
+medium: Skyrim draws one deck four times at different scrolls, and multiplying
+those opacities blacked out the ground under a clear sky. The deck's coverage
+already follows the weather classification, so overcast still shadows. The
+plane does still occlude the sun disc in the sky, as the 2D path did.
+
 ---
 
 ## 3. Sequencing
@@ -316,6 +422,11 @@ Still open:
 | Irradiance projection for ambient | **DONE** — nine-coefficient GPU SH projection at scene set 1 / binding 21 |
 | Weather-driven cloud morphology | **DONE** — precipitation/thunder form broader, denser storm decks; explicit WTHR cloud taxonomy remains TODO |
 | Palette-preserving Rayleigh/Mie sky structure | **DONE** — analytical bridge pending a full atmosphere LUT |
+| Far-to-near composite, 9 km upper plane, aerial perspective | **DONE** 2026-10-20 (§2.4) |
+| World-anchored cloud field | **DONE** 2026-10-20 (§2.4) |
+| Creation-era `NAM1` cloud-layer selection | **DONE** 2026-10-20 (§2.4) |
+| Per-column deck coverage (2D weather map) | **DONE** 2026-10-20 (§2.5) |
+| Position-dependent cloud shadows | **DONE** 2026-10-20 (§2.5) |
 
 ### Reflection filtering (2026-09-14)
 
@@ -403,20 +514,15 @@ and multiple scattering are not yet shared with that path. Next steps must
 join the optical treatment while retaining the sky shell and local explosion
 domains and their very different spatial scales.
 
-### Weather-driven direct-sun attenuation (2026-09-14)
+### ~~Weather-driven direct-sun attenuation (2026-09-14)~~ — superseded by §2.5
 
-The exterior directional upload now consumes the same `WeatherSkyState`
-`cloud_coverage` value as the cloud shell. It applies a conservative
-Beer–Lambert world-scale transmission (`exp(-2.5 * coverage)`) after the
-time-of-day sun ramp: clear weather is unchanged and a full deck retains about
-8% of the direct key. This prevents the old contradiction where the rendered
-sky was overcast but terrain remained clear-noon lit. Interior XCLL keys do
-not use weather coverage.
-
-This is intentionally a climate-scale approximation, not a cloud-shadow map:
-it cannot cast moving, position-dependent cloud shadows. The next lighting
-step must sample the same procedural density along each surface-to-sun column
-without duplicating cloud generation in the material shader.
+The exterior directional upload used to apply a weather-wide
+`exp(-2.5 * coverage)` after the time-of-day ramp. Clear weather was not
+unchanged as intended: "pleasant" maps to coverage 0.40, so every clear sky
+lost 63% of its sun (FNV noon illuminance 0.37), auto-exposure compensated for
+the dim ground, and the sky blew out to white. The clouds were also lit by the
+dimmed value although their march self-shadows. Replaced 2026-10-20 by the
+position-dependent cloud-shadow map (§2.5).
 
 ### Sun-disc luminance floor (engine constant — record)
 
@@ -581,7 +687,7 @@ lane's pieces:
 | `sky_lower.w` 1/2 modes | `weather_sky_details` (include/sky.glsl) | `night_sky_details_follow_the_outdoor_palette_not_the_weather_flag` (`sky_dome.rs`), `interior_portal_sky_preserves_room_weather_gate` (`context/frame_params.rs`) |
 | `jitter.w` is_exterior | `triangle.frag` glass/ambient branches | jitter-pin batch in `shader_constants.rs` (#1125) |
 | portal-cloud lighting | cloud shell's `sun_illuminance` | `interior_portal_sky_clouds_are_lit_by_the_exterior_sunlight` |
-| `portal_sun` direction/radiance | volumetrics light shafts | `interior_only_boot_uses_live_clock_for_portal_sun`, `overcast_dims_the_portal_sun`, `interior_portal_sun_stays_dark_below_horizon` |
+| `portal_sun` direction/radiance | volumetrics light shafts | `interior_only_boot_uses_live_clock_for_portal_sun`, `the_portal_sun_is_the_sun_above_the_clouds` (dimmed renderer-side by the camera's cloud column, `volumetric_sun_uses_portal_lane_only_inside`), `interior_portal_sun_stays_dark_below_horizon` |
 | Show Sky exposure | aperture background | `show_sky_interior_allows_open_sky_visibility_without_exterior_lighting` |
 
 EXT-D4-01 (a stale `SkyParamsRes` misreading as a lighting regression)

@@ -160,20 +160,26 @@ fn finer_cloud_decks_get_a_resolution_independent_mip_offset() {
 }
 
 /// #4230 — every cloud layer's sample goes through the per-layer LOD, and the
-/// shader's formula is the one the tests above mirror.
+/// shader's formula is the one the tests above mirror. SKYAL's upper plane
+/// samples all four layers through one helper, `sky_upper_cloud_layer`, which
+/// applies the layer's own LOD offset.
 #[test]
 fn every_cloud_layer_samples_with_its_own_lod() {
     let sky = include_str!("../../../crates/renderer/shaders/include/sky.glsl");
-    for (idx, scale) in [
-        ("cloud_idx", "tile_scale"),
-        ("cloud_idx_1", "tile_scale_1"),
-        ("cloud_idx_2", "tile_scale_2"),
-        ("cloud_idx_3", "tile_scale_3"),
+    assert!(
+        sky.contains("cloud_layer_lod(base_lod, tile_scale, texture_index)"),
+        "sky_upper_cloud_layer must sample with the layer's own LOD offset"
+    );
+    for (params, tint) in [
+        ("cloud_params", "cloud_tint_0"),
+        ("cloud_params_1", "cloud_tint_1"),
+        ("cloud_params_2", "cloud_tint_2"),
+        ("cloud_params_3", "cloud_tint_3"),
     ] {
-        let call = format!("cloud_layer_lod(cloud_lod, {scale}, {idx})");
+        let call = format!("sky_upper_cloud_layer(dome.{params}, dome.{tint}, shell_uv, base_lod)");
         assert!(
             sky.contains(&call),
-            "sky.glsl must sample layer `{idx}` via `{call}`"
+            "sky.glsl must sample `{params}` through the per-layer helper (`{call}`)"
         );
     }
     assert!(

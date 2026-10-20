@@ -1437,6 +1437,24 @@ diffuse ambient is gone; the sheen ambient stays in the direct term.
 `gpu_main_render` was unchanged (7.55–7.81 ms before and after; one 13.3 ms
 sample was run-to-run noise, confirmed by a repeat run).
 
+### 12.7.1 Blade diffuse is the canopy's mean leaf irradiance (2026-10-20)
+
+**The defect.** The blade's diffuse term was `max(N·L, 0)` with `N` the
+ribbon plane's (folded) normal. An upright blade's normal is horizontal, so a
+high sun hit every blade edge-on: at noon the meadow rendered as near-black
+spikes over sunlit ground and did not respond to the sun (reported on Skyrim
+tundra `2,-4`; grass patch 8.5/255 against rock 28.6 at fixed exposure 1.0).
+
+**The fix.** A ribbon stands for a tuft (§6), and §12.5 already models the
+canopy as a spherical leaf-angle distribution — `GROUNDCOVER_CANOPY_EXTINCTION_K
+= 0.5` is exactly that distribution's mean projection of leaf area onto the
+beam (Ross's G-function, 0.5 at every sun angle; §12.5's `K / cos θ` is
+`G(θ) / cos θ`). The blade's diffuse cosine is now that mean, `K`, while the
+sun is up. The canopy depth term, the traced shadow, sheen and transmission
+still shade each blade, so tips catch the sun and bases stay dark. Same
+capture after (with the SKYAL cloud-shadow fixes): 21.7 at noon, 6.3 at 17:30.
+Pinned by `blade_diffuse_is_the_spherical_canopy_mean`.
+
 ### 12.8 Placed geometry covers the soil (2026-09-13)
 
 **The defect.** Grass grew through roads. On Skyrim `2,-4` a dump of every
