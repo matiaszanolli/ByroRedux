@@ -209,10 +209,16 @@ pub fn climate_for_worldspace_chain(chain: &[String]) -> Climate {
 /// looking at ancestors instead of stopping on a default.
 fn classify_worldspace_name(editor_id: &str) -> Option<Climate> {
     let lowered = editor_id.to_ascii_lowercase();
+    // `commonwealth` — FO4's post-war Boston grows the same dry, yellowed
+    // ground cover as the Mojave (user visual direction, 2026-10-20). Its
+    // child worldspaces (Diamond City, Goodneighbor) inherit it through the
+    // WNAM chain; the pre-war prologue `SanctuaryHillsWorld` has no parent
+    // and stays temperate.
     const ARID: &[&str] = &[
         "wasteland",
         "mojave",
         "capital",
+        "commonwealth",
         "desert",
         "barren",
         "dunes",

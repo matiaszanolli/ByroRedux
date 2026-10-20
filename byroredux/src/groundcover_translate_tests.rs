@@ -170,6 +170,20 @@ fn worldspace_names_classify_into_climates() {
         climate_for_worldspace_chain(&["Tamriel".to_string()]),
         Climate::Temperate
     );
+    assert_eq!(
+        climate_for_worldspace_chain(&["Commonwealth".to_string()]),
+        Climate::Arid
+    );
+    assert_eq!(
+        climate_for_worldspace_chain(&["DiamondCity".to_string(), "Commonwealth".to_string()]),
+        Climate::Arid,
+        "FO4 child worldspaces inherit the Commonwealth's ground cover"
+    );
+    assert_eq!(
+        climate_for_worldspace_chain(&["SanctuaryHillsWorld".to_string()]),
+        Climate::Temperate,
+        "the pre-war prologue keeps its green lawns"
+    );
 }
 
 #[test]
@@ -446,5 +460,35 @@ fn model_slab_holds_every_vanilla_candidate_grid() {
             per_side * per_side <= GROUNDCOVER_MODEL_POINTS_PER_CHUNK,
             "{game:?}: {per_side}² candidates overflow the slab"
         );
+    }
+}
+
+/// FO4's exterior worldspaces against the climate their WNAM chain resolves
+/// to: the Commonwealth and every child of it grow the arid (yellowed) cover,
+/// the pre-war prologue the temperate one.
+#[test]
+#[ignore = "needs FO4 game data on disk; parses each master"]
+fn installed_fo4_worldspaces_resolve_their_climate() {
+    let data = std::env::var("BYROREDUX_FO4_DATA")
+        .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".to_string());
+    for esm in ["Fallout4.esm", "DLCCoast.esm", "DLCNukaWorld.esm"] {
+        let Ok(bytes) = std::fs::read(std::path::Path::new(&data).join(esm)) else {
+            eprintln!("skipping {esm}");
+            continue;
+        };
+        let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse");
+        let mut keys: Vec<_> = index.cells.exterior_cells.iter().map(|(k, v)| (k.clone(), v.len())).collect();
+        keys.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        for (key, cells) in keys {
+            let chain = crate::env_translate::worldspace_name_chain(&index.cells.worldspaces, &key);
+            let climate = climate_for_worldspace_chain(&chain);
+            eprintln!("{esm} {key:32} cells={cells:5} chain={chain:?} -> {climate:?}");
+            if chain.last().is_some_and(|root| root == "commonwealth") {
+                assert_eq!(climate, Climate::Arid, "{key}");
+            }
+            if key == "sanctuaryhillsworld" {
+                assert_eq!(climate, Climate::Temperate);
+            }
+        }
     }
 }
