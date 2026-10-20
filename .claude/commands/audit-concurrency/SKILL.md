@@ -277,7 +277,7 @@ First step: `cargo test -p byroredux-physics sync` and `BYRO_LOCK_ORDER_CHECK=1 
   call* that acquires the pair the other way. `docs/engine/ecs.md` records the canonical direction; guards to
   confirm are live: `pull_dynamic_does_not_close_transform_global_transform_lock_cycle`
   (`crates/physics/src/sync.rs`, `Transform -> GlobalTransform`) and
-  `get_actor_value_does_not_hold_actor_values_across_ruleset` (`crates/scripting/src/condition.rs`,
+  `get_actor_value_does_not_hold_actor_values_across_ruleset` (`crates/scripting/src/condition/tests.rs`,
   `CharacterRuleset -> ActorValues`), `unload_captures_do_not_invert_production_lock_orders` and
   `picked_up_restore_walks_meshes_before_taking_the_marker` (`byroredux/src/cell_loader/reference_state.rs`,
   #4982/#4983), `view_restamp_does_not_close_the_render_skip_lock_cycle` (`byroredux/src/player_body.rs`,

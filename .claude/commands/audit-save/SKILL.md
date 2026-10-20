@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --depth shallow|deep"
 
 # Save / Load Subsystem Audit (M45 + M45.1)
 
-Audit `crates/save` (full-ECS-snapshot format) and its sole live caller `byroredux/src/save_io.rs`
+Audit `crates/save` (full-ECS-snapshot format) and its sole live caller `byroredux/src/save_io/` (`save_io.rs` is an ~86-LOC hub)
 (+ `save_io/*_tests.rs`) for **data loss and save corruption**. The subsystem exists to remove Bethesda's
 slow-corruption tail by making the live ECS the single source of truth; verify the CODE delivers that.
 A silently dropped column, a stale schema guard, a torn capture, or a botched FormId remap **loses player
@@ -25,7 +25,7 @@ progress** — frame as CRITICAL/HIGH per `_audit-severity.md` (data loss is CRI
 `build_form_id_remap`, `apply_deltas`), `disk.rs` (`write_slot`, `slots_by_recency`, `SaveRing`),
 `validate.rs` (`validate_world` + 6 sub-checks). Tests: `crates/save/tests/round_trip.rs`.
 
-**Engine side** (`byroredux/src/save_io.rs`): `build_save_registry` (the curated type set),
+**Engine side** (`byroredux/src/save_io/`): `build_save_registry` (the curated type set),
 `MUTABLE_DELTA_COLUMNS` (**second** hardcoded list driving the live overlay), `PRE_RELOAD_RESOURCES`,
 `SaveCommand`/`SaveInfoCommand`/`LoadCommand`, `PendingPlayerSaveActions` (F5/F9/pause-menu ingress),
 `quickload_latest`, `execute_pending_save_loads` (+ `reload_interior_session`/`reload_exterior_session`),
@@ -97,8 +97,8 @@ must be CODE-CONFIRMED or DRIFTED; run the guard ledger. Delta-first: for each d
 ## Phase 2: Dimensions
 
 ### Dimension 1: Snapshot Completeness & the Two Lists (highest risk — silent-drop)
-Paths: `byroredux/src/save_io.rs` (`build_save_registry`, `MUTABLE_DELTA_COLUMNS`, `PRE_RELOAD_RESOURCES`), `save_io/registry_completeness_tests.rs`, `crates/save/src/{registry,driver}.rs`
-First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/save_io.rs`; then `git log --since=<last report> --format='%h %cs %s' -- 'crates/*/src' byroredux/src | grep -i 'component\|resource\|state'` to find new persistent state.
+Paths: `byroredux/src/save_io/registry.rs` (`build_save_registry`, `MUTABLE_DELTA_COLUMNS`), `byroredux/src/save_io/live_load.rs` (`PRE_RELOAD_RESOURCES`), `save_io/registry_completeness_tests.rs`, `crates/save/src/{registry,driver}.rs`
+First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/save_io`; then `git log --since=<last report> --format='%h %cs %s' -- 'crates/*/src' byroredux/src | grep -i 'component\|resource\|state'` to find new persistent state.
 - **The registry IS the completeness contract**; start from the guard's `NOT_SAVED_BY_DESIGN` list, not from a
   hand enumeration. A persistent, player-mutable component/resource that is neither registered nor
   allowlisted is a HIGH silent-drop; a *stale allowlist reason* (the guard checks a reason exists, not that
@@ -248,8 +248,8 @@ Residual checks:
 **Output**: `/tmp/audit/save/dim_3.md`
 
 ### Dimension 4: Save-Side Gates (refusal + validation)
-Paths: `byroredux/src/save_io.rs` (`SaveCommand::execute`, `validate_form_ids`, `validate_cinematic_entity_refs`), `crates/save/src/validate.rs`, `byroredux/src/app_step.rs` (`step_player_save_actions`)
-First step: `grep -n 'fn validate_\|validate_[a-z_]*(world' crates/save/src/validate.rs byroredux/src/save_io.rs`
+Paths: `byroredux/src/save_io/commands.rs` (`SaveCommand::execute`, `validate_form_ids`, `validate_cinematic_entity_refs`), `crates/save/src/validate.rs`, `byroredux/src/app_step.rs` (`step_player_save_actions`)
+First step: `grep -n 'fn validate_\|validate_[a-z_]*(world' crates/save/src/validate.rs byroredux/src/save_io/commands.rs`
 - **Order in `SaveCommand::execute`**: refusals first (`CellTransitionInFlight` — a mid-transition save would be
   written and permanently unloadable; `CinematicPresentationState.disable_saving` — `Game.SetInChargen`
   `abDisableSaving`; plus the context-invariant refusal #5253 `27562f8ae` — `LoadedCellIndex` present but neither
@@ -280,8 +280,8 @@ First step: `grep -n 'fn validate_\|validate_[a-z_]*(world' crates/save/src/vali
 **Output**: `/tmp/audit/save/dim_4.md`
 
 ### Dimension 5: Live Load-Apply & Frame Boundary
-Paths: `byroredux/src/save_io.rs` (`execute_pending_save_loads`, `reload_*_session`, `apply_player_pose`), `crates/save/src/driver.rs`, `byroredux/src/{app_events,app_step,app_frame}.rs`, `byroredux/src/cell_loader/{transition,reference_state,unload}.rs`
-First step: read `execute_pending_save_loads` top to bottom against the sequence below; `git log --since=<last report> --format='%h %cs %s' -- byroredux/src/save_io.rs`
+Paths: `byroredux/src/save_io/live_load.rs` (`execute_pending_save_loads`, `reload_*_session`), `byroredux/src/save_io/player.rs` (`apply_player_pose`), `crates/save/src/driver.rs`, `byroredux/src/{app_events,app_step,app_frame}.rs`, `byroredux/src/cell_loader/{transition,reference_state,unload}.rs`
+First step: read `execute_pending_save_loads` top to bottom against the sequence below; `git log --since=<last report> --format='%h %cs %s' -- byroredux/src/save_io`
 - **Strict apply sequence**: drain slot → `validate_snapshot_types` (abort, session kept) →
   `preflight_extension_state` (abort) → `restore_resources_subset(PRE_RELOAD_RESOURCES)` (only resources
   read by spawn-time code during the reload: `ReferenceEnableState`, `ReferenceLockState`, `ReferenceScriptState`; **never**

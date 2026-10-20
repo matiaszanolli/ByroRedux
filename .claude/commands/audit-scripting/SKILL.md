@@ -8,7 +8,7 @@ argument-hint: "--focus <dimensions> --depth shallow|deep"
 Read `.claude/commands/_audit-common.md` and `.claude/commands/_audit-severity.md` for shared protocol.
 
 Audit `crates/scripting/` and its engine-side wiring: the AST→ECS **recognizer chain** whose load-bearing
-invariant is *decline-on-any-unmodeled-term*, the **Papyrus VM** (`fragment/vm.rs`, M47.2) that interprets the
+invariant is *decline-on-any-unmodeled-term*, the **Papyrus VM** (`fragment/vm/`, M47.2) that interprets the
 fragments / reference / alias scripts the lowering declines — its own contract is *check ahead of time, run whole
 or not at all* (`check_function` / `check_reference_script`; a native that declines its actual values stops the
 run, it never guesses) — fragment / quest-stage dispatch, the ECS event runtime, the cell-loader attach path,
@@ -33,11 +33,11 @@ Dim 2's lock rules cover both.
 `recognizers/{quest_stage_gate,rumble,two_state_activator}`); `fragment.rs` + `fragment/{effects,populate,
 state,systems}.rs` with the per-family appliers in `fragment/effects/{resolve,deferred,inventory,placement,scene,lock,
 player_control,vehicle_cinematic,ai_combat,quest_scoped,evaluate}.rs` (#5468 split); the **Papyrus VM family**
-(M47.2): `fragment/vm.rs` (interpreter + `check_*` ahead-of-time checks), `fragment/budget.rs` (per-frame
+(M47.2): `fragment/vm/` (`interp.rs` the interpreter, `checker.rs` + `natives/` the `check_*` ahead-of-time checks; `vm.rs` is a ~134-LOC hub), `fragment/budget.rs` (per-frame
 statement budget, #5763), `fragment/{reference,alias_scripts,owners}.rs` (reference / alias script instances and
 event delivery), `fragment/{updates,distance,events,hits,anim_events}.rs` (registration families),
 `fragment/{package,perk,terminal}.rs` (PACK/PERK/TERM fragments); `quest_stages.rs`, `globals.rs`, `vm_state.rs`,
-`events.rs`, `cleanup.rs`, `timer.rs`, `recurring_update.rs`, `condition.rs`, `trigger.rs`, `player_control.rs`,
+`events.rs`, `cleanup.rs`, `timer.rs`, `recurring_update.rs`, `condition/`, `trigger.rs`, `player_control.rs`,
 `equipment.rs`, `registry.rs`; `scene.rs` + `scene/{playback,quest_alias}.rs`, `package.rs`, `dialogue.rs`
 (incl. `DialogueSurfaceState`, `DialogueQuestConditions`), `cinematic.rs`, `combat.rs`
 (`FactionRelations`, `AiCombatState`), `magic.rs` (`SpellCatalog`/`SpellList`/`RaceSpells`, #4415), `story_manager.rs` (#5366 SM dispatch: `SmTree`, `StoryEvent`, `story_manager_dispatch_system`), `load_order.rs`
@@ -65,7 +65,7 @@ semantics guessed"), `m47-2-recognizer-scaling.md` (corpus: handler vs fragment 
 fills, the `LCTN` runtime + location aliases, `FromEvent` fills and script-filled `RefCollectionAlias`es have
 since shipped; still real gaps — world-query search across unloaded data, condition/fill-type collection fills,
 injected packages/spells/keywords/names/voice-type/combat overlays — don't re-file as discoveries), crate docstrings
-(`translate/mod.rs`, `fragment.rs`, `fragment/vm.rs`, `fragment/budget.rs`, `cleanup.rs` marker house rules).
+(`translate/mod.rs`, `fragment.rs`, `fragment/vm/`, `fragment/budget.rs`, `cleanup.rs` marker house rules).
 
 **Known-open — cite, don't re-file** (verified 2026-10-15 with `gh issue view`): #5646 (`GetRandomPercent` rolls
 0..=100, the CK/GECK say 0-99), #5647 (`StoryEvent` is one slot per entity with CLOC/KILL/AHEL producers — two
@@ -87,7 +87,7 @@ trees: greeting/line lifetime/FO3-FNV force-greet `14cff35ae`, Skyrim force-gree
 Random-stack follow-up (`0436bea5c`), #4334 (once-only persistence, `ReferenceScriptState`), #4190, #4116.
 Not gaps: the M47.1 condition resolvers and fragment lowerer are implemented and live-verified; `MoveTo`
 default-materialized shapes lower (#3487); the QUST VMAD property table is wired; a Papyrus interpreter exists
-(`fragment/vm.rs`) — "no VM" findings are stale; structs are modelled on the VM for Fallout 4 (the VM header's "Not
+(`fragment/vm/`) — "no VM" findings are stale; structs are modelled on the VM for Fallout 4 (the VM header's "Not
 modelled: structs" line is stale, `Value::Struct` exists).
 
 **Instruments**: `crates/scripting/examples/{fragment_coverage,mq101_conformance,extender_preflight,
@@ -125,14 +125,14 @@ Run `cargo test -p byroredux-scripting` and `cargo test -p byroredux --bin byror
 
 ### Dimension 1: Recognizer Chain & Effect Lowering (decline-on-unmodeled — highest yield)
 Paths: `crates/scripting/src/translate/**`, `crates/scripting/src/papyrus_provider/{catalog,lower_call,lower_program}.rs` (seam)
-First step: `cargo test -p byroredux-scripting -- translate::`; `git log --since=<last report> -- crates/scripting/src/translate/effects.rs`
-Guard (E2): `every_effect_primitive_bounds_its_argument_count` (`effects.rs` — every `prim_*` bounds `args`,
+First step: `cargo test -p byroredux-scripting -- translate::`; `git log --since=<last report> -- crates/scripting/src/translate/` (`effects.rs` is a thin hub over `translate/effects/`; never scope to the hub file)
+Guard (E2): `every_effect_primitive_bounds_its_argument_count` (`translate/effects/tests.rs` — every `prim_*` bounds `args`,
 so an over-arity call from a modded `.pex` declines) and `unrecognized_script_is_a_silent_miss`; aim at what
 they cannot see:
 - **Decline enforcement — two guard paths.** *Handler recognizers* (`compose.rs`): `classify_guard_atom(atom, ..)?`
   propagates `None` on any atom no `GUARD_PRIMITIVES` entry claims (no `if let Some` that drops a `None`);
   `split_and` splits `&&` only, so a `||` declines rather than lowering half
-  (`split_and_flattens_conjunction_keeps_disjunction_whole`). *Fragment lowerer* (`translate/effects.rs`):
+  (`split_and_flattens_conjunction_keeps_disjunction_whole`). *Fragment lowerer* (`translate/effects/lower.rs`, guards in `translate/effects/guards.rs`):
   `classify_condition` folds an `If`/`While` condition into `FragmentGuard`s — quest/objective/global/quest-variable
   reads, actor/scene/location/map-marker atoms, run-time `Compare`, and (M47.2) `Any` for `||` (`A || (B && C)`;
   a negated `||` is a conjunction, a nested disjunction flattens). Any atom no guard claims returns `None` and the
@@ -264,7 +264,7 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
 - `Effect::SetGlobalValue` writes `Globals` (saved, `resolve_property_form_id` — a GLOB is never alias-bound).
   `QuestAliasReadinessGate`: advances only when `is_running`, `stage < only_below_stage`, and
   `!get_stage_done(target)` (idempotent); one gate per quest (upsert).
-- **Papyrus VM contract** (`fragment/vm.rs`, `docs/engine/scripting.md` "The Papyrus VM"): populate installs
+- **Papyrus VM contract** (`fragment/vm/`, `docs/engine/scripting.md` "The Papyrus VM"): populate installs
   `Effect::Interpret` only through `interpret_fallback`, i.e. when `check_function` accepts the fragment ahead of
   time — against typed placeholders, in every state's version down the `extends` chain, collecting each script the
   run needs (`the_check_takes_what_the_lowering_declines`); reference and alias scripts go through
@@ -279,7 +279,7 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
   queue holds `MAX_FRAGMENT_CONTINUATIONS` = 4 096. Verify, as of 2026-10-15 neither is length-capped (only the step
   cap bounds them, and a mod `.pex` doubles a string per statement): `Expr::New { size }` allocates `size` elements
   and string `+` concatenates without a limit. The run itself is not under `catching_panics` (populate is); the
-  production `unreachable!`/`expect` arms in `vm.rs` each rest on a "loaded/checked above" invariant — re-verify.
+  production `unreachable!`/`expect` arms in `fragment/vm/interp.rs` each rest on a "loaded/checked above" invariant — re-verify.
   Script variables live in the saved `QuestScriptVariables` (numbers) / `QuestScriptObjects` (objects, strings,
   arrays, structs) keyed by the *owner id* — a quest FormID, a reference FormID, or an `AliasScriptOwners` id in the
   `ALIAS_OWNER_BASE` (0xFC00_0000) range — so they outlive the cell unload; keying any of them by entity is the
@@ -337,7 +337,7 @@ Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`, `cl
   `TimerExpired` — #5608; FO4 `OnTimer` is `fragment/updates.rs`), `trigger_detection_system`,
   `recurring_update_tick_system` collect under one `query_mut`, `drop()`, then acquire the marker-insert
   `query_mut`; two component-mut locks at once forces the TypeId-sorted contract (deadlock vector).
-- **CTDA OR-precedence** (`condition.rs::evaluate`): consecutive `or_next` conditions form a block that binds
+- **CTDA OR-precedence** (`condition/eval.rs::evaluate`): consecutive `or_next` conditions form a block that binds
   tighter than the AND chain (`A AND B OR C AND D` = `A AND (B OR C) AND D`); empty list → `true`; guards
   `or_precedence_quirk_*`, `and_chain_short_circuits_on_first_false`. Function catalog per the module-doc
   table (indices verified against TES5Edit; `CATALOG` was 24 at #5380 `395d2d831`, which added 56 `GetQuestRunning`,
@@ -707,7 +707,7 @@ is `/audit-tooling`; audit here the runtime that consumes it.
   obey `MAX_SCRIPT_ARRAY_ELEMENTS`/`MAX_SCRIPT_CALL_BYTES`/`MAX_PENDING_PAPYRUS_MOD_EVENTS`. `execute.rs` has
   `unreachable!` arms guarded by "validated …" invariants — each must be truly established by lowering.
   The `catching_panics` net (#3948) wraps the translate/lower path; check whether runtime execution in
-  `papyrus_provider_system` has any equivalent (none found 2026-10-15: no `catch_unwind` under `papyrus_provider/`, nor around the VM's run in `fragment/vm.rs`).
+  `papyrus_provider_system` has any equivalent (none found 2026-10-15: no `catch_unwind` under `papyrus_provider/`, nor around the VM's run in `fragment/vm/interp.rs`).
 - **Decline-on-unmodeled at the seam**: a provider call that cannot be typed declines the whole fragment/
   handler (`lower_provider_call` errors → `None`), it never lowers a prefix and silently drops the tail; a
   `PapyrusProviderRuntime::default()` with a non-empty catalog but `callback: None` is not servable (Dim 1).
