@@ -559,7 +559,35 @@ impl EsmCellIndex {
             .chain(other_exterior_cells.values().flat_map(|g| g.values()))
             .flat_map(|c| c.deleted_refs.iter().copied())
             .collect();
-        if !tombstones.is_empty() {
+        // #6084 — the same identity rule for a MOVE. An override plugin that
+        // re-authors a placement under a different CELL (the CK regroups a
+        // moved object under its new cell) leaves the base copy in the old
+        // cell's list: the per-cell merge below only ever pairs a cell with
+        // its own base, so both copies spawned (22 Skyrim SE, 16 FO3, 7 FO4
+        // vanilla placements; unofficial patches move objects constantly).
+        // Every FormID `other` authors under cell X is therefore removed from
+        // every OTHER cell `self` holds; X itself is exempt so the per-cell
+        // merge still folds the override over its base copy there. Cells are
+        // identified by CELL FormID — the key shapes differ per map but the
+        // FormID is the record's identity.
+        let mut authored_ids: HashSet<u32> = HashSet::new();
+        let mut authored_in: HashSet<(u32, u32)> = HashSet::new();
+        if !(self.cells.is_empty()
+            && self.exterior_cells.is_empty()
+            && self.worldspace_persistent_cells.is_empty())
+        {
+            for cell in other_cells
+                .values()
+                .chain(other_worldspace_persistent_cells.values())
+                .chain(other_exterior_cells.values().flat_map(|g| g.values()))
+            {
+                for placed in cell.references.iter().filter(|r| r.form_id != 0) {
+                    authored_ids.insert(placed.form_id);
+                    authored_in.insert((placed.form_id, cell.form_id));
+                }
+            }
+        }
+        if !tombstones.is_empty() || !authored_ids.is_empty() {
             for cell in self
                 .cells
                 .values_mut()
@@ -570,8 +598,13 @@ impl EsmCellIndex {
                         .flat_map(|g| g.values_mut()),
                 )
             {
-                cell.references
-                    .retain(|r| r.form_id == 0 || !tombstones.contains(&r.form_id));
+                let cell_id = cell.form_id;
+                cell.references.retain(|r| {
+                    r.form_id == 0
+                        || (!tombstones.contains(&r.form_id)
+                            && !(authored_ids.contains(&r.form_id)
+                                && !authored_in.contains(&(r.form_id, cell_id))))
+                });
             }
         }
 

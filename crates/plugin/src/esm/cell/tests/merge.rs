@@ -848,6 +848,105 @@ fn a_replacement_in_the_same_or_a_later_plugin_survives_the_sweep() {
     );
 }
 
+/// #6084 — a REFR is globally unique by FormID. A child plugin that moves
+/// one into another cell (the CK files it under the new CELL) must leave ONE
+/// copy, at the new position, not the base copy beside it.
+#[test]
+fn a_refr_moved_into_another_cell_leaves_one_copy() {
+    let with_id = |form_id: u32, edid: &str, refs: Vec<PlacedRef>| {
+        let mut c = make_interior_cell(form_id, edid);
+        c.references = refs;
+        c
+    };
+    let mut master = EsmCellIndex::default();
+    master.cells.insert(
+        "cella".into(),
+        with_id(0xA1, "CellA", vec![placed(0x11, 0xBB), placed(0x12, 0xBB)]),
+    );
+    master
+        .cells
+        .insert("cellb".into(), with_id(0xB1, "CellB", vec![placed(0x13, 0xBB)]));
+
+    // The child moves 0x11 from A to B and re-emits nothing for A.
+    let mut moved = placed(0x11, 0xBB);
+    moved.position = [9.0, 9.0, 9.0];
+    let mut child = EsmCellIndex::default();
+    child.cells.insert(
+        "cellb".into(),
+        with_id(0xB1, "CellB", vec![moved]),
+    );
+
+    master.merge_from(child);
+
+    let ids = |key: &str| -> Vec<u32> {
+        master.cells[key].references.iter().map(|r| r.form_id).collect()
+    };
+    assert_eq!(ids("cella"), vec![0x12], "the stale base copy is gone from A");
+    assert_eq!(ids("cellb"), vec![0x13, 0x11], "B keeps its own and gains the moved REFR");
+    assert_eq!(
+        master.cells["cellb"]
+            .references
+            .iter()
+            .find(|r| r.form_id == 0x11)
+            .map(|r| r.position),
+        Some([9.0, 9.0, 9.0]),
+        "the surviving copy is the override's"
+    );
+}
+
+/// The move sweep must not touch a REFR the child re-emits in the cell that
+/// already held it (a plain override), and it reaches exterior and
+/// persistent cells the same way the tombstone sweep does.
+#[test]
+fn a_same_cell_override_survives_and_moves_reach_exterior_and_persistent_cells() {
+    let mut master = EsmCellIndex::default();
+    let mut ext = cell_with_refs("Tamriel", vec![placed(0x21, 0xAA), placed(0x22, 0xAA)]);
+    ext.form_id = 0xE1;
+    ext.is_interior = false;
+    master
+        .exterior_cells
+        .entry("tamriel".into())
+        .or_default()
+        .insert((1, 1), ext);
+    let mut persistent = cell_with_refs("TamrielPersistent", vec![placed(0x23, 0xAA)]);
+    persistent.form_id = 0xE2;
+    master
+        .worldspace_persistent_cells
+        .insert("tamriel".into(), persistent);
+
+    // Child: re-emits 0x21 in the exterior cell (plain override), moves 0x22
+    // into the persistent cell, and moves 0x23 out into a new interior.
+    let mut child = EsmCellIndex::default();
+    let mut ext_over = cell_with_refs("Tamriel", vec![placed(0x21, 0xCC)]);
+    ext_over.form_id = 0xE1;
+    ext_over.is_interior = false;
+    child
+        .exterior_cells
+        .entry("tamriel".into())
+        .or_default()
+        .insert((1, 1), ext_over);
+    let mut persistent_over = cell_with_refs("TamrielPersistent", vec![placed(0x22, 0xAA)]);
+    persistent_over.form_id = 0xE2;
+    child
+        .worldspace_persistent_cells
+        .insert("tamriel".into(), persistent_over);
+    let mut interior = make_interior_cell(0xD1, "NewHome");
+    interior.references = vec![placed(0x23, 0xAA)];
+    child.cells.insert("newhome".into(), interior);
+
+    master.merge_from(child);
+
+    let ids = |cell: &CellData| -> Vec<u32> { cell.references.iter().map(|r| r.form_id).collect() };
+    assert_eq!(ids(&master.exterior_cells["tamriel"][&(1, 1)]), vec![0x21]);
+    assert_eq!(
+        master.exterior_cells["tamriel"][&(1, 1)].references[0].base_form_id,
+        0xCC,
+        "the same-cell override still wins over its base copy"
+    );
+    assert_eq!(ids(&master.worldspace_persistent_cells["tamriel"]), vec![0x22]);
+    assert_eq!(ids(&master.cells["newhome"]), vec![0x23]);
+}
+
 /// #5489 — a form-ID reference to a CELL (a PKIN's `CNAM` template cell)
 /// resolves in O(1) wherever the CELL is filed, and `merge_from` invalidates
 /// the lookup so a later plugin's cells are found too.
