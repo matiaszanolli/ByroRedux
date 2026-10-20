@@ -60,11 +60,15 @@ float cloud_shadow_column(SkyDome dome, vec2 base_xz) {
     // with y = altitude, which is what the march's world-anchored lookups
     // see near the viewer.
     float coverage = clamp(dome.weather_aurora.z, 0.0, 1.0);
+    // Broad stratiform cover above the pleasant-weather baseline: uniform, so
+    // overcast-class weathers keep a dark ground under the local deck shadows.
+    transmittance *= exp(-CLOUD_OVERCAST_OPTICAL_DEPTH
+        * max(coverage - CLOUD_OVERCAST_ONSET, 0.0) / (1.0 - CLOUD_OVERCAST_ONSET));
     if (coverage > 0.001) {
         float step_length = (CLOUD_LAYER_TOP - CLOUD_LAYER_BOTTOM) / rise
             / float(CLOUD_SHADOW_STEPS);
         vec2 wind = cloud_wind_offset(dome);
-        vec3 morphology = cloud_morphology(dome);
+        vec4 morphology = cloud_morphology(dome);
         float threshold = dome.weather_aurora.w;
         float density_sum = 0.0;
         for (uint i = 0u; i < CLOUD_SHADOW_STEPS; ++i) {

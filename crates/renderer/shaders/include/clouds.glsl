@@ -141,11 +141,46 @@ float cloud_height_gradient(float height_fraction, float storm) {
 // controls, not a second WTHR classification: authored tints/layers retain
 // that role. Storm systems use lower-frequency, less-eroded density to form
 // coherent decks; clear weather keeps the original broken-cloud shape.
-vec3 cloud_morphology(SkyDome dome) {
+vec4 cloud_morphology(SkyDome dome) {
     float precipitation = max(dome.weather_params.x, dome.weather_params.y);
-    float storm = clamp(max(precipitation, dome.weather_params.z), 0.0, 1.0);
-    // x = horizontal scale, y = erosion threshold scale, z = storm amount.
-    return vec3(mix(1.0, 0.58, storm), mix(1.0, 0.62, storm), storm);
+    // Overcast-class weathers (cloudy 0.70, rain 0.80, storm 0.86 coverage)
+    // are a different regime from scattered cumulus: a continuous, deep
+    // stratiform deck. `stratiform` is zero up to `CLOUD_STRATIFORM_START`
+    // (above the pleasant weather's 0.40, so scattered skies are unchanged)
+    // and full at `CLOUD_STRATIFORM_FULL`.
+    float stratiform = smoothstep(
+        CLOUD_STRATIFORM_START, CLOUD_STRATIFORM_FULL, clamp(dome.weather_aurora.z, 0.0, 1.0));
+    float storm = clamp(max(max(precipitation, dome.weather_params.z), stratiform), 0.0, 1.0);
+    // x = horizontal scale, y = erosion threshold scale, z = storm amount
+    // (lower base, deeper deck), w = stratiform blend (continuous cover).
+    return vec4(mix(1.0, 0.58, storm), mix(1.0, 0.62, storm), storm, stratiform);
+}
+
+// The colour the weather's own cloud layers have: each layer's mean texture
+// colour (a heavily blurred mip of its authored sprite) times its tint,
+// weighted by its mean opacity, so a hidden or empty layer contributes
+// nothing. This is where a game's temperature and mood are authored — the
+// Pitt's sepia is in its cloud textures, not its tints. `fallback` (the mean
+// tint) is returned when no layer is textured.
+vec3 cloud_authored_colour(SkyDome dome, vec3 fallback) {
+    vec4 params[4] = vec4[4](
+        dome.cloud_params, dome.cloud_params_1, dome.cloud_params_2, dome.cloud_params_3);
+    vec4 tints[4] = vec4[4](
+        dome.cloud_tint_0, dome.cloud_tint_1, dome.cloud_tint_2, dome.cloud_tint_3);
+    vec3 weighted = vec3(0.0);
+    float weight = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        if (params[i].z <= 0.0) {
+            continue;
+        }
+        // LOD far past the mip chain clamps to the 1x1 tail: the mean.
+        vec4 mean_texel = textureLod(
+            textures[nonuniformEXT(floatBitsToUint(params[i].w))], vec2(0.5), 12.0);
+        float opacity = mean_texel.a * tints[i].a;
+        weighted += mean_texel.rgb * tints[i].rgb * opacity;
+        weight += opacity;
+    }
+    return weight > 1.0e-3 ? weighted / weight : fallback;
 }
 
 // Horizontal advection of the cloud field, in base-noise lookup units. One
@@ -185,12 +220,13 @@ float cloud_column_coverage(
     vec3 position,
     float threshold,
     vec2 wind_offset,
-    vec3 morphology,
+    vec4 morphology,
     sampler3D base_noise
 ) {
     vec2 weather_uv = position.xz * 0.00008 * morphology.x + wind_offset;
     float weather = texture(base_noise, vec3(weather_uv, CLOUD_WEATHER_SLICE_W)).r;
-    return cloud_remap(weather, threshold, 1.0, 0.0, 1.0);
+    // Stratiform weather fills the sky: the weather map stops gating columns.
+    return mix(cloud_remap(weather, threshold, 1.0, 0.0, 1.0), 1.0, morphology.w);
 }
 
 // Base cloud shape only: low-frequency noise, coverage and height gradient,
@@ -202,7 +238,7 @@ float cloud_base_shape(
     float height_fraction,
     float coverage,
     vec2 wind_offset,
-    vec3 morphology,
+    vec4 morphology,
     sampler3D base_noise
 ) {
     // The volume is tileable, so a plain scaled world position is a valid
@@ -229,7 +265,7 @@ float cloud_density(
     float height_fraction,
     float coverage,
     vec2 wind_offset,
-    vec3 morphology,
+    vec4 morphology,
     sampler3D base_noise,
     sampler3D detail_noise
 ) {
@@ -369,7 +405,7 @@ vec4 cloud_march(
     vec3 ambient = cloud_ambient_radiance(dome);
 
     vec2 wind = cloud_wind_offset(dome);
-    vec3 morphology = cloud_morphology(dome);
+    vec4 morphology = cloud_morphology(dome);
     vec3 field_origin = cloud_field_origin(dome);
     float column_threshold = dome.weather_aurora.w;
 
@@ -534,15 +570,21 @@ vec4 cloud_march(
         mean_distance = weighted_distance / (1.0 - transmittance);
     }
 
-    // WTHR stays the artistic colour authority, exactly as it was for the 2D
-    // body this replaced: bias the lit colour toward the mean authored layer
-    // tint (floored so a subdued tint cannot collapse the cloud into the
-    // sky), and scale opacity by the authored layer alpha. Same factors, so
-    // per-weather cloud colour does not regress with the swap.
+    // WTHR stays the artistic colour authority: the game's colour temperature
+    // and mood (the Pitt's sepia, Point Lookout's teal, Dead Money's orange)
+    // are authored in its cloud tints, and the volumetric puffs must read as
+    // that world's clouds, not as white physical ones. Physical lighting sets
+    // the puffs' brightness and shading; the mean authored layer tint sets
+    // their CHROMA (its colour at unit luminance, so a dim tint does not dim
+    // the cloud, floored so a subdued tint cannot collapse it, and capped so a
+    // saturated one cannot blow a channel out). Opacity scales by the
+    // authored layer alpha.
     vec4 tint = (dome.cloud_tint_0 + dome.cloud_tint_1
         + dome.cloud_tint_2 + dome.cloud_tint_3) * 0.25;
     float authored_alpha = clamp(tint.a, 0.0, 1.0);
-    vec3 tinted = scattered * mix(vec3(1.0), max(tint.rgb, vec3(0.08)), 0.45);
+    vec3 mood = max(cloud_authored_colour(dome, tint.rgb), vec3(0.08));
+    vec3 mood_chroma = min(mood / max(dot(mood, LUMA_REC709), 1.0e-3), vec3(2.5));
+    vec3 tinted = scattered * mix(vec3(1.0), mood_chroma, CLOUD_MOOD_CHROMA_WEIGHT);
 
     // Premultiplied throughout, so the colour must be scaled by exactly
     // what the alpha is scaled by — including the 0.96 cap the 2D body used

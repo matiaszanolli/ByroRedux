@@ -361,6 +361,34 @@ authors its big streaked deck (`CloudsLower04_d`, layer 2) at alpha 0, and the
 old 4-slot read of the 1,024-byte JNAM gave that layer layer 1's 0.75. The
 muted lavender is the weather as authored (`fo4_jnam_alphas_use_the_eight_slot_stride`).
 
+### 2.4.1 The game's temperature and mood are the base (2026-10-20)
+
+The per-world colour temperature — FO3/FNV and every DLC author their own: the
+Pitt's grey-sepia, Point Lookout's teal, Big MT's lavender, Dead Money's orange —
+comes from the worldspace `INAM` image space plus each weather's per-time-of-day
+IMAD, and from the weather's own sky and cloud colours (`environment_temperature_grading`).
+Everything SKYAL adds sits on that base and must not re-colour it:
+
+* **Aerial perspective is chromatically neutral.** The atmosphere's extinction is
+  averaged over the three channels (`sky_air_terms`). A per-channel Rayleigh share
+  (blue scatters ~6x red) tilted every distant layer toward blue — the Pitt's
+  sepia deck turned lavender at low elevations — by re-colouring a palette that is
+  authored, not simulated.
+* **Volumetric clouds take their chroma from the authored cloud colour**
+  (`cloud_authored_colour`): each layer's mean texture colour (a heavily blurred
+  mip of its sprite) times its tint, weighted by mean opacity, so a hidden layer
+  contributes nothing. The Pitt's sepia is in its cloud *textures*, not its tints,
+  which is why the tint alone was not enough. Physical lighting sets the puffs'
+  brightness and shading; the authored colour sets their chroma
+  (`CLOUD_MOOD_CHROMA_WEIGHT` 0.75, so sunset and storm lighting still read).
+* **Overcast-class coverage becomes a stratiform deck** (`cloud_morphology`'s
+  `stratiform` term, zero up to `CLOUD_STRATIFORM_START` 0.55 so scattered skies
+  are unchanged): continuous and deep, lit by the same authored sun and ambient.
+
+Verified per DLC at noon against the pre-change build (Pitt, Point Lookout, Zion,
+Big MT, Divide, Dead Money): each world's sky tint matches its baseline to a few
+8-bit levels (e.g. Dead Money 172,112,61 -> 177,119,68).
+
 ### 2.5 Cloud coverage per column, and cloud shadows (2026-10-20)
 
 **Per-column coverage.** Coverage used to be subtracted from the 3D base noise
@@ -392,6 +420,28 @@ smear the edge texel over distant terrain (found with a forced checkerboard
 map, which also proved the map, binding and world addressing reach surfaces).
 The clouds themselves are lit by the unattenuated sun, since their march
 self-shadows. `every_direct_sun_site_applies_the_cloud_shadow` pins the sites.
+
+**Overcast cover (2026-10-20).** `coverage` makes a `coverage` fraction of
+weather-map columns eligible, but a column's density ramps linearly from zero at
+the threshold, so only the densest columns are opaque: at the default 0.40 about
+3% of the shadow map is shadowed, and a forced overcast-class weather (Skyrim
+`SkyrimFog`, coverage 0.70) drew a few cumulus puffs over a mostly sunlit
+ground. Three attempts to make coverage the cloudy sky fraction all failed on
+look (a narrow value ramp gave giant flat-based slabs; a 4x finer weather map,
+vertical-walled towers; a wide quantile ramp with column-scaled height still
+read as towers from the ground) and were reverted. Instead the bake adds the
+broad stratiform cover the discrete deck does not model: a uniform extinction
+that starts at `CLOUD_OVERCAST_ONSET` (0.40, the pleasant weather's coverage, so
+clear and pleasant skies are untouched) and reaches
+`CLOUD_OVERCAST_OPTICAL_DEPTH` (2.5, the removed `exp(-2.5 * coverage)`'s full-deck
+depth, ~8% of the sun) at full coverage; the deck's local shadows ride on top.
+Measured on Skyrim at noon, direct-sun mean over the loaded terrain: pleasant
+56.0; forced overcast 34.7 (64.0 before this term; 26.7 under the baseline's
+blanket dimming). Cloud shadows themselves are confirmed on screen (FO4, and
+Skyrim under an experimental denser deck: large soft-edged patches). What is
+still missing is cloud *shape* variety at high coverage — a weather-map
+height/type channel — so a high-coverage sky is still sparse puffs over an
+authored overcast texture deck.
 
 The authored upper plane casts **no** shadow. It is sky art, not a measured
 medium: Skyrim draws one deck four times at different scrolls, and multiplying

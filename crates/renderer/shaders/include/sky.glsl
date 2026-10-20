@@ -260,12 +260,20 @@ vec3 sky_air_optical_depth(float mu, float distance) {
 // scattering with a uniform source, the share scattered in front of the point
 // is the share of the ray's extinction that lies in front of it:
 // (1 - T(d)) / (1 - T(inf)).
+//
+// Chromatically NEUTRAL: the extinction is the atmosphere's, but averaged over
+// the three channels. The in-scattered colour is the game's authored sky, which
+// already carries its own temperature and mood; a per-channel Rayleigh share
+// (blue scatters ~6x red) would tilt every world's distant clouds toward blue —
+// the Pitt's sepia deck turned lavender at low elevations — by re-colouring a
+// palette that was authored, not simulated.
 void sky_air_terms(float mu, float distance, out vec3 transmittance, out vec3 in_front) {
-    transmittance = exp(-sky_air_optical_depth(mu, distance));
-    vec3 total = sky_air_optical_depth(mu, -1.0);
-    in_front = clamp(
-        (1.0 - transmittance) / max(1.0 - exp(-total), vec3(1.0e-5)),
-        vec3(0.0), vec3(1.0));
+    float depth = dot(sky_air_optical_depth(mu, distance), vec3(1.0 / 3.0));
+    float total = dot(sky_air_optical_depth(mu, -1.0), vec3(1.0 / 3.0));
+    float neutral_transmittance = exp(-depth);
+    transmittance = vec3(neutral_transmittance);
+    in_front = vec3(clamp(
+        (1.0 - neutral_transmittance) / max(1.0 - exp(-total), 1.0e-5), 0.0, 1.0));
 }
 
 // Fade a premultiplied cloud layer at `distance` along a view ray of zenith

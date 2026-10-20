@@ -1512,6 +1512,29 @@ pub const CLOUD_SHADOW_MAP_EXTENT: f32 = 64000.0;
 /// at 219 m per sample, finer than the 125 m texel's footprint can show only
 /// near the horizon, where the sun's own light is weak.
 pub const CLOUD_SHADOW_STEPS: u32 = 16;
+/// Broad stratiform cover the discrete deck does not model. Coverage above
+/// `CLOUD_OVERCAST_ONSET` — the "pleasant" weather's 0.40
+/// (`fog_coverage_from_weather`), so clear and pleasant skies are untouched —
+/// adds a uniform extinction that reaches `CLOUD_OVERCAST_OPTICAL_DEPTH` at
+/// full coverage. 2.5 is the optical depth the removed weather-wide
+/// `exp(-2.5 * coverage)` used for a full deck (about 8% of the sun left), so
+/// overcast-class weathers (0.70 cloudy, 0.80 rain, 0.86 storm) keep a
+/// comparable dark ground while the deck's local shadows ride on top. The
+/// deck alone leaves a 0.70 sky as a few puffs over a sunlit ground
+/// (skyal.md §2.5, "Known limitation").
+pub const CLOUD_OVERCAST_ONSET: f32 = 0.4;
+/// How far a volumetric cloud's chroma follows the weather's authored cloud
+/// tint (`clouds.glsl`): 0 is physical white-ish scattering, 1 is the authored
+/// cloud colour. The games' colour temperature and mood live in those tints
+/// (FO3/FNV and each DLC author their own), so the puffs mostly follow them,
+/// keeping a little physical colour so sunset and storm lighting still read.
+pub const CLOUD_MOOD_CHROMA_WEIGHT: f32 = 0.75;
+/// Coverage range over which the deck turns from scattered cumulus into a
+/// continuous stratiform deck (`clouds.glsl` `cloud_morphology`): none at the
+/// pleasant weather's 0.40 and below, full at the rain weather's 0.80.
+pub const CLOUD_STRATIFORM_START: f32 = 0.55;
+pub const CLOUD_STRATIFORM_FULL: f32 = 0.80;
+pub const CLOUD_OVERCAST_OPTICAL_DEPTH: f32 = 2.5;
 /// Third texture coordinate of the base-noise slice the cloud shell reads as
 /// its 2D weather map: the centre of texel layer `BASE_NOISE_SIZE / 2` (64 /
 /// 2 = 32, so (32 + 0.5) / 64). Pinned against the host's threshold slice by
@@ -2751,6 +2774,11 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float CLOUD_SHADOW_MAP_SIZE as f32),
     shader_define!(Float CLOUD_SHADOW_MAP_EXTENT),
     shader_define!(UintPlain CLOUD_SHADOW_STEPS),
+    shader_define!(Float CLOUD_OVERCAST_ONSET),
+    shader_define!(Float CLOUD_MOOD_CHROMA_WEIGHT),
+    shader_define!(Float CLOUD_STRATIFORM_START),
+    shader_define!(Float CLOUD_STRATIFORM_FULL),
+    shader_define!(Float CLOUD_OVERCAST_OPTICAL_DEPTH),
     shader_define!(Float CLOUD_WEATHER_SLICE_W),
     shader_define!(Float VOLUME_FAR),
     HeaderLine::Blank,

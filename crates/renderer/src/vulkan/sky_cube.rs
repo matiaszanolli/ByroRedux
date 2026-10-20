@@ -960,14 +960,37 @@ mod tests {
         let clouds = include_str!("../../shaders/include/clouds.glsl");
         for term in [
             "float precipitation = max(dome.weather_params.x, dome.weather_params.y);",
-            "max(precipitation, dome.weather_params.z)",
-            "vec3 morphology = cloud_morphology(dome);",
+            "max(max(precipitation, dome.weather_params.z), stratiform)",
+            "vec4 morphology = cloud_morphology(dome);",
+            // Overcast-class coverage is a stratiform regime, zero up to
+            // CLOUD_STRATIFORM_START so scattered skies are unchanged.
+            "CLOUD_STRATIFORM_START, CLOUD_STRATIFORM_FULL",
+            "mix(cloud_remap(weather, threshold, 1.0, 0.0, 1.0), 1.0, morphology.w)",
         ] {
             assert!(
                 clouds.contains(term),
                 "weather-driven cloud morphology lost `{term}`"
             );
         }
+    }
+
+    /// The games' colour temperature and mood live in the weather's authored
+    /// cloud tints (FO3/FNV and each DLC author their own): the volumetric
+    /// puffs take their chroma from them, so a Pitt cloud is sepia and a Dead
+    /// Money one orange, not white physical scattering.
+    #[test]
+    fn volumetric_cloud_chroma_follows_the_authored_mood() {
+        let clouds = include_str!("../../shaders/include/clouds.glsl");
+        for term in [
+            "vec3 mood_chroma = min(mood / max(dot(mood, LUMA_REC709), 1.0e-3), vec3(2.5));",
+            "mix(vec3(1.0), mood_chroma, CLOUD_MOOD_CHROMA_WEIGHT)",
+        ] {
+            assert!(clouds.contains(term), "clouds.glsl lost `{term}`");
+        }
+        assert!(
+            crate::shader_constants::CLOUD_MOOD_CHROMA_WEIGHT > 0.5,
+            "the authored mood must dominate the puffs' chroma"
+        );
     }
 
     /// The terms the march is built from — shape from Schneider & Vos 2015,
@@ -1239,6 +1262,29 @@ mod tests {
         let post = crate::source_scan::production_text(include_str!("context/post_passes.rs"));
         assert!(post.contains("caustic.sun_transmittance = self.camera_cloud_sun_transmittance;"));
         assert!(post.contains("self.camera_cloud_sun_transmittance,\n                    );"));
+    }
+
+    /// Weather-wide cover above the pleasant baseline darkens the ground
+    /// uniformly (the deck alone leaves a 0.70 sky mostly sunlit), but never
+    /// below the onset: a 0.40 pleasant sky must keep its sun, which the removed
+    /// `exp(-2.5 * coverage)` cut by 63%.
+    #[test]
+    fn overcast_weathers_darken_the_ground_but_pleasant_skies_do_not() {
+        use crate::shader_constants::{CLOUD_OVERCAST_ONSET, CLOUD_OVERCAST_OPTICAL_DEPTH};
+        let transmittance = |c: f32| {
+            (-CLOUD_OVERCAST_OPTICAL_DEPTH * (c - CLOUD_OVERCAST_ONSET).max(0.0)
+                / (1.0 - CLOUD_OVERCAST_ONSET))
+                .exp()
+        };
+        assert_eq!(transmittance(0.40), 1.0, "pleasant weather keeps its sun");
+        assert_eq!(transmittance(0.0), 1.0);
+        assert!(transmittance(0.70) < 0.5 && transmittance(0.70) > transmittance(0.86));
+        assert!(
+            (transmittance(1.0) - (-2.5f32).exp()).abs() < 1e-6,
+            "a full deck leaves the legacy ~8% of the sun"
+        );
+        let bake = include_str!("../../shaders/cloud_shadow.comp");
+        assert!(bake.contains("max(coverage - CLOUD_OVERCAST_ONSET, 0.0) / (1.0 - CLOUD_OVERCAST_ONSET)"));
     }
 
     /// The bake and every consumer address the map through one include, and

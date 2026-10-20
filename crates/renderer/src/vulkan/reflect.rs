@@ -1022,7 +1022,9 @@ mod tests {
     /// SKYAL's far-to-near cloud composite replaced the four flat-plane layer
     /// gates with the upper-shell plane and added the deck's aerial-perspective
     /// and mean-depth gates: 97, measured by this test's own counter on the
-    /// recompiled module. Pins the
+    /// recompiled module. The stratiform regime (column coverage mix, overcast
+    /// storm blend) and the authored-cloud-colour layer loop then bring it to 100,
+    /// measured the same way. Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
@@ -1031,8 +1033,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 97,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 97 — \
+            count, 100,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 100 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \
