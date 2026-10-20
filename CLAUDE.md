@@ -115,6 +115,11 @@ essential-actor bleedout live on Skyrim (RiverwoodSleepingGiantInn):
 real swings put the essential Delphine into bleedout instead of
 killing her, she gets back up 20 s later at 30 health, and Orgnar,
 who is not essential, dies to the same blows.
+[`fo4-ragdoll.sh`](docs/smoke-tests/fo4-ragdoll.sh) gates the FO4
+ragdoll live (#6070): authored `XRGD` corpses in MedTekResearch01 (feral
+ghoul) and ShamrockTaphouse01 (human) lie posed (18 bones) on an 18-body
+ragdoll, and a feral ghoul, a raider and a molerat killed by real swings
+activate finite ragdolls, every session under `BYRO_VALIDATION=1`.
 
 ### Shader Compilation
 ```bash

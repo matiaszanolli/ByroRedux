@@ -115,7 +115,7 @@ done
 # #5366/#5367 window (and the M47.3 FNV gate, #6057) honour the same
 # SKIP != PASS contract, so a dataless runner measures nothing instead
 # of reporting them red (the reason #4724 kept gates out of CI).
-for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript; do
+for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript fo4-ragdoll; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"

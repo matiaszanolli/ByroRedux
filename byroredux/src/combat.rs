@@ -1283,7 +1283,10 @@ pub(crate) fn reconcile_pending_dead_actors_system(world: &World, _dt: f32) {
         .unwrap_or_default();
     for actor in actors {
         if world.get::<Dead>(actor).is_some() {
-            reconcile_dead_actor(world, actor);
+            // #6070 — the one record of a queued death's outcome (an authored
+            // corpse's XRGD pose, its ragdoll); a combat kill traces its own.
+            let outcome = reconcile_dead_actor(world, actor);
+            log::debug!("actor {actor}: death reconciled{outcome}");
         }
     }
 }

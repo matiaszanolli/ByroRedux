@@ -56,6 +56,7 @@ docs/smoke-tests/sm1-story-manager.sh            # Skyrim SE: Story Manager CLOC
 docs/smoke-tests/dt1-dialogue-layers.sh          # FNV: greeting on quest-less activation + PACK-driven force-greet (#5367); `fo3` arg = declared SKIP 77 (#5429)
 docs/smoke-tests/m42-eat-sleep.sh              # FNV: Eat/Sleep schedule procedures — window selection, idle-not-seat for a non-resident In-Cell package (#M42)
 docs/smoke-tests/m47-2-bleedout.sh             # Skyrim: an essential NPC bleeds out and gets back up; a plain one dies (M47.2)
+docs/smoke-tests/fo4-ragdoll.sh                  # FO4: XRGD-posed ghoul / human corpses + ghoul, raider, molerat ragdolls on death, validation-clean (#6070)
 docs/smoke-tests/dt2-skyrim-forcegreet.sh        # Skyrim SE: ForceGreet-tree PACK dialect resolves its PDTO topic / greets generically (#5367)
 docs/smoke-tests/m47-3-obscript.sh               # FNV: ObScript object scripts (OnLoad / OnTriggerEnter / OnDeath) and an item's OnAdd+RemoveMe run live (M47.3)
 ```
