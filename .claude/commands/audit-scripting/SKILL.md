@@ -33,8 +33,9 @@ Dim 2's lock rules cover both.
 `recognizers/{quest_stage_gate,rumble,two_state_activator}`); `fragment.rs` + `fragment/{effects,populate,
 state,systems}.rs` with the per-family appliers in `fragment/effects/{resolve,deferred,inventory,placement,scene,lock,
 player_control,vehicle_cinematic,ai_combat,quest_scoped,evaluate}.rs` (#5468 split); the **Papyrus VM family**
-(M47.2): `fragment/vm/` (`interp.rs` the interpreter, `checker.rs` + `natives/` the `check_*` ahead-of-time checks; `vm.rs` is a ~134-LOC hub), `fragment/budget.rs` (per-frame
-statement budget, #5763), `fragment/{reference,alias_scripts,owners}.rs` (reference / alias script instances and
+(M47.2): `fragment/vm/` (`interp.rs` the interpreter, `checker.rs` + `natives/` the `check_*` ahead-of-time checks; `vm.rs` is a ~136-LOC hub), `fragment/budget.rs` (per-frame
+statement budget, #5763), `fragment/dispatch.rs` (`run_papyrus_call` / `flush_advances`, the one budget→defer→apply
+tail every Papyrus-call system shares, #5797 `e27c93a97`), `fragment/{reference,alias_scripts,owners}.rs` (reference / alias script instances and
 event delivery), `fragment/{updates,distance,events,hits,anim_events}.rs` (registration families),
 `fragment/{package,perk,terminal}.rs` (PACK/PERK/TERM fragments); `quest_stages.rs`, `globals.rs`, `vm_state.rs`,
 `events.rs`, `cleanup.rs`, `timer.rs`, `recurring_update.rs`, `condition/`, `trigger.rs`, `player_control.rs`,
@@ -47,14 +48,20 @@ in its module doc; each is a `FORMAT_MAJOR` question for `/audit-save`): `quest_
 `bleedout.rs`, `messages.rs`, `keywords.rs`, `relationships.rs`, `faction_changes.rs`, `alias_overrides.rs`,
 `alias_collections.rs`, `created_references.rs`, `perk_entry_points.rs`, `destruction.rs` and the sibling
 `activate_parents`/`crime_*`/`followers`/`map_markers`/`menus`/`ownership`/`scanning`/`skills`/`speechcraft`/
-`*_requests` files; `obscript{,_runtime,_vm,_quests}.rs`; `papyrus_provider/`,
+`*_requests` files; the M47.3 ObScript family
+`obscript{,_runtime,_vm,_quests,_objects,_effects,_actions,_actor_values,_anim,_speech,_state,_ledger,_more}.rs`
++ `obscript_more/` with its sibling runtimes `magic_effects.rs`
+(caster runtime), `magic_shaders.rs`, `script_packages.rs`, `challenges.rs` (Dim 6); `registration.rs` (the crate's
+`register`, #5806); `papyrus_provider/`,
 `compatibility.rs`; `papyrus_demo/` (reference scripts/test fixtures; `ScriptRegistry` is the pre-Skyrim
 `SCRI`→`SCPT` extension point — boot no longer seeds it). Engine side: `byroredux/src/cell_loader/references/
-{attach,synth_child}.rs`, `cell_loader/{spawn,exterior,unload}.rs`, `asset_provider/script.rs`
-(`attach_vm_reference_script`, `check_running_quest_alias_scripts`, `ProviderScriptLibrary`),
+{attach,synth_child}.rs`, `cell_loader/{spawn,exterior,unload,created,graph_nodes}.rs` (`created.rs` places/spawns
+Created Object "At" references; `graph_nodes.rs` keeps the NiNode tree of graph-animated props), `asset_provider/script.rs`
+(`attach_vm_reference_script`, `check_running_quest_alias_scripts`, `ProviderScriptLibrary`, `DecompiledPexCache`),
 `asset_provider/{object_graph,actor_graph}.rs`,
 `systems/{cinematic,npc_dialogue,forcegreet,story_events,scripted_sound,trap_hits,projectiles,archetype_idle}.rs`
-(consumers of the VM's request markers), `commands/quest.rs` (`sm.event`, `dialogue.forcegreet`), `boot/schedule/`, plus `crates/plugin/src/esm/records/{index,
+(consumers of the VM's request markers) and the M47.3 ObScript request consumers
+`systems/{script_requests,script_queries,revive,knockdown,flee,magic_shader,head_look}.rs`, `commands/quest.rs` (`sm.event`, `dialogue.forcegreet`), `boot/schedule/`, plus `crates/plugin/src/esm/records/{index,
 script_instance}.rs` (VMAD retention; decode is `/audit-esm`).
 
 Ground truth: `docs/engine/scripting.md` (the M47.2 sections — "The Papyrus VM", "The frame budget", "Reference
@@ -67,17 +74,22 @@ since shipped; still real gaps — world-query search across unloaded data, cond
 injected packages/spells/keywords/names/voice-type/combat overlays — don't re-file as discoveries), crate docstrings
 (`translate/mod.rs`, `fragment.rs`, `fragment/vm/`, `fragment/budget.rs`, `cleanup.rs` marker house rules).
 
-**Known-open — cite, don't re-file** (verified 2026-10-15 with `gh issue view`): #5646 (`GetRandomPercent` rolls
+**Known-open — cite, don't re-file** (verified 2026-10-20 with `gh issue view`): #5646 (`GetRandomPercent` rolls
 0..=100, the CK/GECK say 0-99), #5647 (`StoryEvent` is one slot per entity with CLOC/KILL/AHEL producers — two
 same-frame events on the player overwrite; script-raised `SCPT` events use `PendingScriptStoryEvents` and are
-unaffected), #5682 (dialogue selection evaluates every INFO's conditions twice per open/click, so a fn-77 gate can
-pass the menu and fail the pick), #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
-array/struct-holding frame cannot suspend — the budget-split residual), the dialogue condition-catalog gaps
-#5752 / #5750 / #5778 (INFO CTDAs outside the catalog evaluate to a fixed `0.0`; #5734's quest-level gates fail
-closed on most Oblivion quests), the Dim 6 ObScript M47.3 follow-ups #5787–#5790 (Oblivion `f67d82b3c` flip has no
-test, `obscript_quests.rs` module doc still calls Message/MessageBox/GetButtonPressed stubs, flag-prefixed `%0.f`,
-`GetButtonPressed` keyed by raising quest), #5586 (`examples/mq101_conformance.rs::run` oversized — debt, not
-runtime). #4113/#4115 are open but live in `crates/papyrus`/`crates/pex` (`/audit-papyrus`). Closed: #5608
+unaffected), #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
+array/struct-holding frame cannot suspend — the budget-split residual), the dialogue condition-catalog reach gaps
+#5750 / #5778 (Skyrim's generic Hello can reach only its unconditioned lines because fn 426 `GetIsVoiceType` is
+uncatalogued and such INFOs now decline; #5734's quest-level gates fail closed on most Oblivion quests),
+#5586 (`examples/mq101_conformance.rs::run` oversized — debt, not
+runtime). #4113/#4115 are open but live in `crates/papyrus`/`crates/pex` (`/audit-papyrus`). Closed since the
+2026-10-15 sync: #5682 (the menu entry carries the INFO that admitted it and selection reuses it, so a fn-77 gate is
+rolled once — `8daa24105`, `selected_info_is_not_re_evaluated_after_menu_filtering`; the click half #6007
+`f7c8f02a7`, `a_topic_click_speaks_the_info_the_menu_offered`), #5752 (`select_info` declines an INFO whose CTDA
+set holds any term `condition::is_modeled` rejects instead of evaluating it against `0.0` — `bd85de5ea`,
+`uncatalogued_info_condition_is_declined_instead_of_matching_zero`), the Dim 6 ObScript follow-ups #5787 (`a5e5346d0`,
+tests below), #5788 (module doc refreshed, `fecdd043a`), #5789 (`%0.f` precision, `1502fbd3d`), #5790
+(`GetButtonPressed` answer global, `173f9e155`). Closed earlier: #5608
 (the `ScriptTimer`/`TimerExpired` pair has no production producer or consumer — docs made honest, `bef345396`;
 FO4 `OnTimer` rides `fragment/updates.rs`), #5681 (fragment `Utility.Wait` capped at `MAX_PROVIDER_WAIT_SECONDS`,
 `FragmentExecutionQueue` capped at `MAX_FRAGMENT_CONTINUATIONS` = 4 096, `ef130cd6c`), #5734 (quest-level dialogue
@@ -92,12 +104,13 @@ modelled: structs" line is stale, `Value::Struct` exists).
 
 **Instruments**: `crates/scripting/examples/{fragment_coverage,mq101_conformance,extender_preflight,
 quest_fragment_populate,dump_stage_fragment_effects,refr_script_coverage,alias_script_coverage,refr_script_props,
-terminal_fragment_census,cndf_census,sm_tree_dump,dump_pex_script}.rs` (need game data; `fragment_coverage` counts fragments through
-`Effect::is_placeholder` primitives separately; `refr_script_coverage` with `VM_REASONS=1` lists why the VM declines
-a reference script; `sm_tree_dump` prints a Story Manager event's tree in evaluation order),
+terminal_fragment_census,cndf_census,sm_tree_dump,dump_pex_script,obscript_tools}.rs` (need game data; `fragment_coverage` counts fragments through
+`Effect::contains_placeholder` primitives separately; `refr_script_coverage` with `VM_REASONS=1` lists why the VM declines
+a reference script; `sm_tree_dump` prints a Story Manager event's tree in evaluation order; `obscript_tools
+names <ESM> all` measures ObScript call-site coverage, `census`/`avcodes` re-derive block and actor-value ids),
 `cargo test -p byroredux-scripting --release --lib -- --ignored --nocapture vm_cost` (interpreter cost bench,
 `fragment/vm/tests.rs`), `docs/smoke-tests/m47-triggers.sh` (spawn+attach gate on
-Skyrim data via `--scripts-bsa`), `tests/{pex_recognize_e2e,location_aliases_real_data,perk_entry_points_real_data}.rs`
+Skyrim data via `--scripts-bsa`), `docs/smoke-tests/m47-3-obscript.sh` (ObScript object blocks live on FNV), `tests/{pex_recognize_e2e,location_aliases_real_data,perk_entry_points_real_data}.rs`
 (`#[ignore]`d, need game data).
 
 ## Parameters / Extra Fields / Severity
@@ -126,8 +139,9 @@ Run `cargo test -p byroredux-scripting` and `cargo test -p byroredux --bin byror
 ### Dimension 1: Recognizer Chain & Effect Lowering (decline-on-unmodeled — highest yield)
 Paths: `crates/scripting/src/translate/**`, `crates/scripting/src/papyrus_provider/{catalog,lower_call,lower_program}.rs` (seam)
 First step: `cargo test -p byroredux-scripting -- translate::`; `git log --since=<last report> -- crates/scripting/src/translate/` (`effects.rs` is a thin hub over `translate/effects/`; never scope to the hub file)
-Guard (E2): `every_effect_primitive_bounds_its_argument_count` (`translate/effects/tests.rs` — every `prim_*` bounds `args`,
-so an over-arity call from a modded `.pex` declines) and `unrecognized_script_is_a_silent_miss`; aim at what
+Guard (E2): `every_effect_primitive_bounds_its_argument_count` (`translate/effects/tests.rs` — every `prim_*` bounds `args`
+with a real *upper* bound or a real call to a bounded helper, comments stripped, row-for-row against the table, #5977
+`51f30c95c`; so an over-arity call from a modded `.pex` declines) and `unrecognized_script_is_a_silent_miss`; aim at what
 they cannot see:
 - **Decline enforcement — two guard paths.** *Handler recognizers* (`compose.rs`): `classify_guard_atom(atom, ..)?`
   propagates `None` on any atom no `GUARD_PRIMITIVES` entry claims (no `if let Some` that drops a `None`);
@@ -150,9 +164,13 @@ they cannot see:
   statement at depth 0 (#5631), and an assignment to a bare identifier that is no declared local declines
   (#5638, `rebinding_a_pre_branch_local_inside_a_branch_declines`, `assignment_to_a_script_variable_declines`)
   — except where the VMAD is the quest's own and the name is one of its script variables
-  (`vmad_is_quest && is_script_variable`, M47.2). Widening any of these is a decline-invariant
+  (`vmad_is_quest && is_script_variable`, M47.2; only Bool/Int/Float declarations count — a non-numeric one
+  declines rather than reading `0.0`, #5978 `e802d1705`). A compound assignment (`n += 2`) to a declared local
+  declines (#5976 `686885652`); Int `/` lowers only when an operand is provably Float and `SetValueInt` only on an
+  integral value (#5974 `4cf0e087f` — `ValueExpr` arithmetic is untyped f32). Widening any of these is a decline-invariant
   regression. `lower_statements` recursion is capped (`MAX_CONDITIONAL_DEPTH` = `MAX_STMT_DEPTH`, the smaller
-  upstream cap).
+  upstream cap), and one fragment's lowering across inlined quest-script callees shares `MAX_LOWERED_STATEMENTS`
+  = 10 000 (#5970 `07f2a6561` — `MAX_INLINE_DEPTH` alone let N^4 expansion through).
 - **Lower only what is modeled, name it from the declared signature.** For each primitive compare against the
   engine class's real Papyrus signature (decompile the vanilla `.pex` — e.g. `faction.pex`, `game.pex`):
   parameters must carry their *declared* names (#4322 `SetInChargen` flags were invented; #4318
@@ -174,19 +192,27 @@ they cannot see:
   `SetMotionType` integer literals lower only where every game agrees (just `1` = Dynamic; Skyrim/FO4 constants
   differ, the named `Motion_*` property read still lowers; #5633 `92a1782fe`,
   `literal_motion_types_lower_only_where_every_game_agrees`; the game-aware VM accepts Skyrim's raw 1/4/5/7 via
-  `ScriptGame` and stops the run on the inertia variants and other games' numbers, `2517782fc`).
+  `ScriptGame` and stops the run on the inertia variants and other games' numbers, `2517782fc`). Since 2026-10-17:
+  Skyrim's `DamageActorValue`/`RestoreActorValue` (and `*AV`) lower the amount's magnitude — a literal folded, a
+  run-time amount through `ValueExpr::Abs` (CK: negatives convert to positive; FO4/Starfield `*Value` keep the sign,
+  #5973 `3f32efc04`); `SetEssential`/`SetProtected` lower only on an ActorBase receiver, FO4/Starfield's per-instance
+  Actor/alias spellings decline to the VM (#5972 `40345ea0d`); the set-stage trigger recognizers fall back to the
+  script's declared bool initializers for omitted VMAD properties (#5969 `f417c3f64`).
 - **Receiver/hole binding never defaults to form-id 0**: `QuestRef::{OwningQuest, SelfRef, Property}` must
   fully resolve (`OwningQuest` needs `ctx.owning_quest` and lowers only from `Self.GetOwningQuest()` — an
   alias property's `GetOwningQuest()` names another quest, #5634 `221befd61`; `SelfRef` on a REFR declines); `ObjectRef` has no
   bare-receiver case (`receiver_object` rejects `self`; object locals resolve through
   `scope.object_locals`, alias-bound via `SceneActorBindings`); a receiver the runtime would *drive* must
   not be the player (`StartCombat`, #4323). `PlayerRef` (0x14) resolves inside the shared
-  `resolve_entity_by_global_form_id` (#4694) — a local 0x14 special-case elsewhere is drift. `Disable`/`Enable` classify the receiver through the same
+  `resolve_entity_by_global_form_id` (#4694) and its inverse `entity_global_form_id` returns 0x14 for the player
+  (#5979 `a6e66a08c`, which deleted the per-writer copies) — a local 0x14 special-case elsewhere is drift. A VMAD
+  `None` object property resolves to absent, never form 0 (`ScriptInstance::object_form_id`, #5971 `34cc809ae`). `Disable`/`Enable` classify the receiver through the same
   alias-aware `receiver_object` as their siblings (an alias-bound marker must not decline alone).
 - **Placeholders are coverage with a hole**: `Effect::is_placeholder` (`ShowRaceMenu`, `RequestSave`,
-  `SetHudCartMode` — state nothing reads) must be reported separately by coverage harnesses (#4328/#4372);
-  any *new* effect whose runtime arm only records a value needs listing there and a pin
-  (`only_the_counter_only_primitives_are_placeholders`).
+  `SetHudCartMode`, `AddAchievement` — state nothing reads) must be reported separately by coverage harnesses
+  (#4328/#4372), nested ones included (`Effect::contains_placeholder` / `visit_nested` walk `Conditional` arms and
+  `QuestScope` bodies, #5975 `fd70bf557`); any *new* effect whose runtime arm only records a value needs listing
+  there and a pin (`only_the_counter_only_primitives_are_placeholders`).
 - **Chain order**: `RECOGNIZERS` = per-script first (`two_state_activator`, `rumble`), generic second
   (`quest_stage_gate`); first match wins, all-`None` = silent miss; a new generic recognizer must not shadow a
   per-script one. `quest_stage_gate` declines when the condition quest and the `SetStage` target disagree, and arms only the
@@ -198,9 +224,16 @@ they cannot see:
 - **Provider catalog is consulted after the canonical table** (`classify_effect_with_providers`: primitives
   first, #3934 — an installed alias must never change how vanilla lowers); lowering must only accept
   provider barriers the dispatcher can serve (`servable_catalog()` gates on `callback.is_some()`;
-  `every_lowering_seam_reads_the_servable_catalog` in `asset_provider/script.rs`).
+  `every_lowering_seam_reads_the_servable_catalog` in `asset_provider/script.rs`), and only as many as the runtime can
+  cross — the four fragment entry points count the longest path's barriers and decline at
+  `MAX_PROVIDER_FRAGMENT_BARRIERS` (#6022 `893ad4838`). A script that mixes provider and non-provider handlers no
+  recognizer claims declines whole (`MixedScript`, #6021 `45c28ad66`) — the VM attach is suppressed once a provider
+  program attaches, so a half-lowered script left the rest inert.
 - **`translate_pex` clean-`None` on bad bytes and on panic**: `catching_panics` wraps the whole
-  parse→decompile→analyze→lower sequence (`a_decompile_panic_is_a_silent_none`); it cannot recover OOM/stack
+  parse→decompile→analyze→lower sequence (`a_decompile_panic_is_a_silent_none`), now split as `decompile_pex`
+  (reference-independent, cached per script) + `translate_decompiled_with_providers` (per reference, #5999
+  `f28930504`), and the VM's `check_reference_script`/`check_alias_script` (#6000 `586290057`,
+  `the_vm_script_checkers_run_inside_the_panic_net`); it cannot recover OOM/stack
   overflow (those need the bounds `/audit-papyrus` checks). `CanonicalEvent::from_papyrus` is
   case-insensitive; `Unknown` means "no consumer", never a wildcard.
 **Output**: `/tmp/audit/scripting/dim_1.md`
@@ -223,7 +256,11 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
   nesting). Safe only because every quest-resource system is `add_exclusive` — moving
   `quest_fragment_dispatch_system`, `scene_fragment_dispatch_system`, or any sibling to the parallel lane, or
   adding a nested component/resource lock, needs the ABBA analysis re-derived (`apply_effect`'s doc block is
-  the running inventory — re-read it, do not trust a count). Reverse-order acquirers (`Inventory`/`Transform`/
+  the running inventory — re-read it, do not trust a count; since #5986 `9712354c9` it states the real invariant —
+  *everything* under the paired guards, VM natives and the `FragmentExecutionQueue` write included, relies on
+  exclusive scheduling — and the scan follows the helper bodies, `nested_helper_bodies`: `apply_effects`, `defer`,
+  inventory transfers, evaluators, resolvers, equipment emitters, plus the `has`/`query_2_mut_mut`/`resource_2_mut`
+  forms). Reverse-order acquirers (`Inventory`/`Transform`/
   `Globals` first, quest resources second) on any path are the finding.
 - **`apply_effects` is an explicit cursor stack** (#3935) — no per-`Conditional` recursion or program clone; an
   unresolvable guard `QuestRef` declines the whole `Conditional` (neither branch; #3785,
@@ -231,7 +268,9 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
 - **Cascade**: `MAX_CASCADE = 64` bounds only fragment-emitted (`is_cascade`) `SetStage`s, not authored
   ingress; FIFO `VecDeque`; overflow warns; a no-op re-set (`previous == new`) does not cascade. A quest started
   with no Start Up Stage reports `QuestStageAdvanced::stage_set == false`, so no stage fragment runs (CK *Quest
-  Stages Tab*); `is_run_once` gates the radiant-reset on `start_quest` (#5406).
+  Stages Tab*); `is_run_once` gates the radiant-reset on `start_quest` (#5406). Stopping a quest or scene goes
+  through the one `QuestStageState::stop_with_shutdown` (a running quest advances to its shut-down stage first;
+  #5812 `32bebaa19`, `stop_with_shutdown_advances_only_a_running_quest`) — a private stop tail is drift.
 - **Objective transitions** (#5153): `QuestObjectiveState` mutators push a bounded `QuestObjectiveEvent` only on
   false→true flips (`objective_mutators_emit_transitions_only`); the queue is serde-skipped presentation
   (drained by the app frame into announcements) — a repeat/un-flip that emits is the regression.
@@ -276,32 +315,43 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
   to every VM native unchanged. Bounds: `MAX_STEPS` = 100 000 statements per *logical* run (the budget's
   `carried_steps` keeps it cumulative across yields), `MAX_DEPTH` = 16 script-function nesting, a `Utility.Wait`
   past `MAX_PROVIDER_WAIT_SECONDS` stops the run (`waits_past_the_shared_cap_stop_the_run`, #5681), the continuation
-  queue holds `MAX_FRAGMENT_CONTINUATIONS` = 4 096. Verify, as of 2026-10-15 neither is length-capped (only the step
-  cap bounds them, and a mod `.pex` doubles a string per statement): `Expr::New { size }` allocates `size` elements
-  and string `+` concatenates without a limit. The run itself is not under `catching_panics` (populate is); the
+  queue holds `MAX_FRAGMENT_CONTINUATIONS` = 4 096, enforced at every push (`FragmentExecutionQueue::push` /
+  `extend_capped` drop the newest tail — zero-delay deferrals, custom-event deliveries and yields used to bypass it,
+  #5984 `73fddb4b8`). Allocation caps (#5791 `5c3c5758d`): `MAX_ARRAY_ELEMENTS` / `MAX_STRING_BYTES` reuse the SDK's
+  `MAX_SCRIPT_ARRAY_ELEMENTS` (512) / `MAX_SCRIPT_STRING_BYTES` (4 KiB) and stop the run in `Expr::New`, array
+  literals, `Add`/`Insert` and both string-concat sites; a stored script variable follows at most `MAX_STORED_DEPTH`
+  = 8 levels (a struct cycle `s.m = s` stops instead of overflowing the stack, #5983 `9018a5523`). The *checks* run
+  under `catching_panics` (#6000), the run itself does not (populate does); the
   production `unreachable!`/`expect` arms in `fragment/vm/interp.rs` each rest on a "loaded/checked above" invariant — re-verify.
   Script variables live in the saved `QuestScriptVariables` (numbers) / `QuestScriptObjects` (objects, strings,
   arrays, structs) keyed by the *owner id* — a quest FormID, a reference FormID, or an `AliasScriptOwners` id in the
-  `ALIAS_OWNER_BASE` (0xFC00_0000) range — so they outlive the cell unload; keying any of them by entity is the
+  `ALIAS_OWNER_BASE` (0xFC00_0000) range, which no plugin can occupy since regular slot allocation stops at 0xFB
+  (#5988 `0edc61bbf`) — so they outlive the cell unload; keying any of them by entity is the
   regression (same rule as Dim 2's ledgers).
 - **Frame budget** (`fragment/budget.rs`, #5763): `VmFrameBudget` = `DEFAULT_FRAME_BUDGET` (10 000 statements) per
   frame, `RUN_START_COST` (16) per run, renewed by `event_cleanup_system` — a budget nothing renews kills the
   interpreter after one frame. A run that has not started defers onto `FragmentExecutionQueue` with zero delay; a
   run in progress yields between statements exactly as a `Utility.Wait(0)` would (`VmResume.carried_steps`); a due
-  `OnUpdate` the budget cannot start is left due, not queued; `fragment_continuation_system` only advances the
-  clocks while `budget::exhausted`. A new interpreter system must check `exhausted` *before* its per-delivery
-  snapshot. Unsplittable (documented residual, open as #5764): a statement inside a function called for its value
+  `OnUpdate` the budget cannot start is left due, not queued; a matching one-shot `RegisterForHitEvent` fires and its
+  run defers rather than being dropped (#5987 `746214f29`); `fragment_continuation_system` only advances the
+  clocks while `budget::exhausted`. Every Papyrus-call system goes through the shared tail
+  `fragment/dispatch.rs::run_papyrus_call` (budget → `defer` → `apply_fragment_guard_free`) and `flush_advances`
+  (#5797 — hits, distance, package, perk and terminal ran unbudgeted before it); a new system that hand-rolls the
+  tail is the recurrence. Unsplittable (documented residual, open as #5764): a statement inside a function called for its value
   and any frame holding an array/struct local — they finish in-frame, charged to the budget. Guards:
   `a_budget_is_spent_and_renewed`, `a_run_the_budget_cuts_short_resumes_where_it_stopped`,
   `several_runaway_handlers_stay_inside_the_frame_budget`; cost bench `vm_cost_*` (`#[ignore]`d).
   `ReferenceScriptIndex` (one hash lookup for "is this reference loaded, which scripts") is rebuilt at the first
   lookup after an attach and re-validates the entity it finds — a despawned/reused id reads as not loaded.
-- **Delivery systems** (all exclusive `Update`; order in `boot/schedule/update.rs`): `check_alias_scripts_dispatch` →
+- **Delivery systems** (all exclusive `Update`; order in `boot/schedule/update.rs`): (`obscript_object_system`, Dim 6) →
+  `check_alias_scripts_dispatch` →
   `alias_script_event_system` → `reference_script_event_system` (ahead of quest dispatch so a stage a script sets
-  runs its fragment the same frame; drains `OnDeathEvent` at its head) → `activate_parent_relay_system` →
+  runs its fragment the same frame; drains `OnDeathEvent` at its head; every marker but `HitEvent`) → `activate_parent_relay_system` →
   `animation_event_system` → `scripted_sound_system` → `quest_fragment_dispatch` → `quest_terminal_stage_system` →
   `fragment_continuation_system` → `script_update_dispatch` → `distance_event_system` → … →
-  `hit_event_system` after every `HitEvent` producer. Registration families (`fragment/{updates,distance,events,
+  `pending_trap_hit_flush_system` → `reference_script_hit_system` (reference/alias `OnHit`, split out by #5991
+  `e4810c125` because projectile and trap hits land after the frame pass) → `hit_event_system` →
+  `obscript_hit_system`/`obscript_combat_system` — every `HitEvent` consumer after every producer. Registration families (`fragment/{updates,distance,events,
   hits,anim_events}.rs`): per script *instance*, saved, delivered to the registrant only; a quest's registrations
   end when it stops, a reference's wait while it is unloaded; a registration is accepted only when its handler
   passes the VM check, so a delivery never meets an unchecked body (a registration whose handler cannot run is
@@ -322,13 +372,16 @@ Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`, `cl
   strands and re-fires forever). A marker in neither is the bug — cross-check every `world.insert` of a
   marker type against the drain lists, and check each Pattern-B owner's first statements. **Multi-producer
   markers must merge, not overwrite** (`SparseSetStorage` = one slot per entity): `QuestStageAdvancedBatch`
-  (`push_quest_stage_advances`), `HitEvent` (two producers; same-frame overwrite fixed in #4324 — re-verify
-  after any new producer), `ActivateEvent` (Update-stage consumer order pinned by the flush test, which now
+  (`push_quest_stage_advances`), `HitEvent` (one row per target: the NPC melee producer holds a strike on an
+  already-hit target, #4324; projectile hits ride the `ProcessTrapHit` queue whose flush applies the same hold,
+  #5860 `ea28a35b8` — re-verify after any new producer), `ActivateEvent` (Update-stage consumer order pinned by the flush test, which now
   lists `container_loot_system` and `mg07_on_activate_dispatch` (#4712/#4116), plus
   `reference_script_event_system`; the Late-stage `npc_dialogue` selection system is a further consumer — it must
   stay before `event_cleanup_system`); `NativeActivation` rides an `ActivateEvent` raised by `Activate(akActivator,
   true)` and makes the Papyrus `OnActivate` delivery and the `BlockActivation` gate stand aside (CK
-  *Activate - ObjectReference*); `OnDeathEvent` is Pattern B, drained at the head of
+  *Activate - ObjectReference*) — every script-side `OnActivate` consumer (lowered quest-advance, rumble, MG07,
+  provider, WASM extension, VM) reads `papyrus_activations` (`ActivateEvent` minus `NativeActivation`, #5994
+  `6f7dd2213`), so a raw `ActivateEvent` read in a script consumer is the regression; `OnDeathEvent` is Pattern B, drained at the head of
   `reference_script_event_system` (a Late-stage script kill is delivered next frame, not lost to cleanup).
   `event_cleanup_system` also renews `VmFrameBudget` (Dim 2) and drains `NativeActivation`; its module-doc table
   lists the request markers the engine-side consumers drain (e.g. `HavokImpulseRequest` →
@@ -357,12 +410,17 @@ Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`, `cl
   only as an ObScript script function in `obscript_quests`)); `GetIsID` compares the Run-On's **base** object
   (`SceneAliasCandidate::base_form_id`), not the placed ref (#5041 `1816bbc14`,
   `get_is_id_matches_run_on_base_object_not_placed_reference`); `GetActorValue` reads through
-  `CharacterRuleset::actor_value` (the shared derived+modifier composer, #5042 — `/audit-character` Dim 4); unknown functions return the documented safe default — a
+  `CharacterRuleset::actor_value` (the shared derived+modifier composer, #5042 — `/audit-character` Dim 4), its
+  authored enum index translated to the loaded AVIF by `condition_actor_value_form` (FO3/FNV GetAV table, Skyrim UESP
+  indices; unreadable on Oblivion, which has no AVIFs — #5989 `d1dd5e030`); unknown functions return the documented safe default — a
   display/selection default only: a consumer that *acts* on a pass must decline on any `Unknown` term first
   (Story Manager nodes, #5380; the ambient force-greet install's `package_conditions_fully_modeled`, #5376;
+  dialogue INFOs, #5752; scene/phase starts, quest-log entries, objective targets, base-form trigger advances and
+  consumable branches through `evaluate_modeled`, #5993 `9b6dcf872`;
   every such check goes through the one game-aware `condition::is_modeled` — fn 79 `GetQuestVariable` reads
   `ObScriptQuestLocals` on Oblivion/FO3/FNV and stays unmodeled on FO4/Starfield where 79 is another function,
-  `f67d82b3c`), and
+  `f67d82b3c`; catalogued indices another game reuses — 403, 449, 533, 550, 555, 630 — are unmodeled there, #5990
+  `9f418b4fa`; an untranslatable `GetActorValue` index is unmodeled), and
   a new intrusive consumer that trusts the fail-open pass is the finding; `RunOn`
   resolution declines (condition fails) on an unresolvable target rather than defaulting to the subject; a
   wrong sentinel flips a condition. `crates/plugin/src/consumables.rs` borrows fn-586 semantics by profile
@@ -374,12 +432,15 @@ Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`, `cl
   (`preserves_all_actors_entering_one_volume_in_the_same_frame`); actors tracked in `TriggerOccupancyState`
   keyed `(trigger, actor)` and pruned each frame (`retain(observed)`); only tethered horses use
   `intersects_sphere` (`TETHERED_HORSE_TRIGGER_RADIUS`); `became_ready_inside` is a level condition that stops
-  once the target stage is done. `actor_quest_trigger_is_in_sequence` (gate) and
+  once the target stage is done. `GetTriggerObjectCount` counts through `trigger_occupants` (player included; an
+  empty candidate list clears stale pairs, #5992 `06f6382fe`). `actor_quest_trigger_is_in_sequence` (gate) and
   `scene_trigger_actor_approach_system_inner` (router, Dim 5) answer "which BaseForm trigger stage is next"
   separately — verify they agree via the shared `base_form_advance_is_eligible`/`scene_phase_awaited_stage`
   (#4333) on cross-quest phase waits and centerless triggers.
 - `quest_advance_system` unifies `ActivateEvent` + `OnTriggerEnterEvent` on `QuestAdvanceOnActivate` with a
-  three-way `ActivatorGate` (`Any`/`PlayerOnly`/`BaseForm`), evaluated per `(entity, triggerer)` pair;
+  three-way `ActivatorGate` (`Any`/`PlayerOnly`/`BaseForm`), evaluated per `(entity, triggerer)` pair, and the first
+  passing triggerer of a source wins — one advance per volume per frame, so two actors entering together cannot run
+  the stage fragment twice past `onlyOnce` (#5995 `6a85756d6`);
   nothing may deliver both signals to one entity in one frame. `disable_reference_after_advance` (from
   `disableWhenDone`) records into `ReferenceEnableState`; both fire-once variants park in `ReferenceScriptState`
   (`fire_once_advances_park_the_reference_script_state`, #4334).
@@ -402,13 +463,19 @@ Untrusted-Input: Yes — `.pex` bytes come from possibly-modded archives.
   statics family); REFR's own VMAD is merged by `dedup_vmad_scripts` (names differing only by case collapse
   to one attach; a reference that lists a script with fewer properties than its base record's copy keeps its own
   values and inherits the rest — `a_reference_inherits_the_base_copys_properties_it_does_not_set`).
-  **Attach order**: `translate_pex_detailed_with_providers` yields a provider program and/or a recognized
+  **Attach order**: the `.pex` is extracted and decompiled once per script name (`decompiled_pex` →
+  `DecompiledPexCache`, compatibility preflight recorded on first sight; #5999 `f28930504`), then
+  `translate_decompiled_with_providers` runs per reference against the shared AST and yields a provider program and/or a recognized
   archetype (each attaches when present); only when neither claimed the script does
-  `attach_vm_reference_script` (`asset_provider/script.rs`) run, which attaches
+  `attach_vm_reference_script` (`asset_provider/script.rs`) run, which declines a reference with no FormID (a
+  non-primary SCOL/PKIN child — the VM reaches scripts by FormID, #5998 `838ce679d`) and attaches
   `PapyrusReferenceScripts` when `check_reference_script` accepts every handler of the delivered events (verdict
   cached per script name in `VmReferenceScriptChecks`; a script a recognizer models gets no VM instance, so VM
   calls into it decline). Quest alias scripts are checked lazily by `check_running_quest_alias_scripts` —
-  `ALIAS_CHECKS_PER_FRAME` = 4 per frame, only for running quests — never at cell load. Verifying coverage against only the first few accessor arms re-derives a closed gap.
+  `ALIAS_CHECKS_PER_FRAME` = 4 quests and `ALIAS_SCRIPT_CHECKS_PER_FRAME` = 8 distinct uncached scripts per frame
+  (#6001 `b7c04b44b`; a stopped quest resumes next frame), only for running quests — never at cell load. A legacy
+  `SCRI` reference attaches its ObScript object script (`attach_object_script`, Dim 6) in the same `attach.rs` arm
+  set. Verifying coverage against only the first few accessor arms re-derives a closed gap.
 - **Every identity-only actor/reference stub must attach scripts.** All `spawn_logical_quest_reference`
   callers outside `synth_child.rs` — the persistent-worldspace loop in `cell_loader/exterior.rs` and
   `materialize_scene_actor_alias_stubs` in `asset_provider/script.rs` — go through
@@ -427,7 +494,11 @@ Untrusted-Input: Yes — `.pex` bytes come from possibly-modded archives.
   invisible triggers — #4326/#4327), `placement_is_disabled` in `spawn_placed_instances` after the root but
   before mesh/collider/light, `scripted_lock_override` at the `Locked` stamp. A disabled actor/trigger keeps
   identity + scripts but no body/volume. Regression = a spawn path that never reaches a gate, or the gate
-  moved render-side (`AnimatedVisibility` is honored in static but not skinned rendering). Guard:
+  moved render-side (`AnimatedVisibility` is honored in static but not skinned rendering). An XESP child resolves
+  through `reference_enabled_from`: the chain is followed (cycle-capped) to its first parent-less reference, whose
+  scripted Enable/Disable beats its authored flag, flipping once per inverted hop; a child cannot be toggled
+  independently (CK *Reference*), and a parent-disabled child keeps a content-withheld root with identity + scripts
+  (#6077 `22ff0e12e`). Guard:
   `cell_loader/reference_enable_gate_tests.rs`.
 - **XPRM → `TriggerVolume`** (`trigger_volume_from_primitive`): bounds are z-up **half**-extents (do not
   divide by 2), permute `[x, z, y]` with `.abs()`, REFR scale baked into a world-space volume, sphere radius in
@@ -436,7 +507,10 @@ Untrusted-Input: Yes — `.pex` bytes come from possibly-modded archives.
 - **Spawn/unload hooks the VM reads** (M47.2): `spawn.rs` stamps `EditorLocation` (the spawn pose, for
   `MoveToMyEditorLocation`), `ExplicitOwner` / `ExplicitEncounterZone` from the REFR, and re-applies scripted
   faction edits (`reapply_scripted_faction_changes`) after the actor job so record-derived membership never undoes
-  them; `unload.rs` calls `raise_unload_events` on the victims *before* despawn (`OnCellDetach` / `OnUnload`). A new
+  them; `unload.rs` calls `raise_unload_events` on the victims *before* despawn (`OnCellDetach` / `OnUnload`). An
+  evicted reference's `TwoStateActivator` / `ScriptVariables` (ObScript object locals included) and its
+  `ScriptPackage` slot are parked in the eviction row (`cell_loader/reference_state.rs`, `/audit-gameplay`) and put
+  back over the defaults the re-attach stamps, before the `OnLoad` marker is consumed (#6071/#6072 `611769b16`). A new
   spawn path that skips these is the recurrence.
 - The `M47.2 scripts:` cell-load summary counters (`recognized`, `trigger volumes`) must be wired or
   `m47-triggers.sh` is vacuous; exterior stub loops report attach counts. `commands/quest.rs`
@@ -470,7 +544,11 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   `npc_refuses_dialogue` (dead / `AiCombatState` / unconscious), also applied by the interaction Talk arm
   (#5043, `1d31ced2b`) and by `default_activation_blocked` (a script `BlockActivation`, M47.2). `DialogueSurfaceState`
   lives in `crates/scripting/src/dialogue.rs` (re-exported by `npc_dialogue.rs`). UI re-selection goes through `select_topic_by_form_id` and must re-check live
-  ownership. **Spoken-line fragments** (#5152, `c59600138`): `DialogueInfoFragments` (TIF_ INFO VMAD, rebuilt
+  ownership. Each menu entry records the INFO that admitted it and a click on a listed topic speaks that INFO —
+  conditions are evaluated once per offer, never re-rolled at selection (#5682 `8daa24105`, #6007 `f7c8f02a7`); an
+  unlisted topic is evaluated fresh. The Late selection system's head ends the open conversation (OnEnd, selection,
+  voice) once `npc_refuses_dialogue` holds for the partner, and `begin_barter` applies the same refusal (#5867
+  `ca3caf411`). **Spoken-line fragments** (#5152, `c59600138`): `DialogueInfoFragments` (TIF_ INFO VMAD, rebuilt
   from plugin data, unsaved) dispatches the line's OnBegin at selection and the outgoing line's OnEnd on
   selection change / close via `apply_spoken_info_fragment` (the speaking NPC is passed as `akSpeaker`, M47.2) — the same guard-free executor + journal polling
   as the quest/scene dispatchers (`the_spoken_lines_fragments_advance_the_stage`); every native leave path
@@ -484,7 +562,8 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   *Quest Conditions* tab, #5734 `6709eb65e`) — memoised per quest per call, an uncatalogued function fails the gate
   closed (a hijacker gated only by functions we cannot read must not win on priority; #5778 is the Oblivion cost of
   that), and the list is cloned out and its guard released before `evaluate` (the `QuestStageState` ↔
-  `DialogueQuestConditions` cycle, `8e4c6e40a`); then `select_info`
+  `DialogueQuestConditions` cycle, `8e4c6e40a`); an INFO whose own CTDA set holds any term `is_modeled` rejects is
+  declined outright (#5752 `bd85de5ea`); then `select_info`
   collects every passing candidate — the first wins, and a Random first INFO rolls within its positional
   Random stack (ended by the next passing non-Random INFO or a Random End, #5397 `0436bea5c`) through the seeded
   `DialogueRandomState`; position is the merged INFO chain (override INFOs fold by FormID after their PNAM
@@ -544,9 +623,11 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   through the canonical `QuestStageState` lifecycle (never a private start path), `FromEvent` aliases fill from
   the slots via `StoryEventAliasFill` consumed by `refresh_scene_actor_bindings`, which probes slot liveness
   (despawned id, or `Dead` without ALLOW_DEAD → `StoryManagerEventUnavailable`, never a stale bind; #5419
-  `1dfdeb4f9`, `from_event_alias_skips_stale_and_dead_slot_entities`). `DNAM` policies: random parents
+  `1dfdeb4f9`, `from_event_alias_skips_stale_and_dead_slot_entities`) and honours the shared reserved set — a slot
+  entity another alias reserved stays unbound unless the alias is Allow Reserved (#6006 `e4afa2b0d`). `DNAM` policies: random parents
   shuffle (`StoryManagerRng`, whose write guard is taken for the draw alone — `GetRandomPercent` fn 77 re-enters
-  it during `evaluate`, #5628 `faa00de2a`), a non-sharing quest node consumes the event only when its own pool
+  it during `evaluate`, #5628 `faa00de2a`; the `StoryManagerNodeState` pool marks are written after the
+  `QuestStageState` guard drops, a source pin keeping them out of the stages-held region, #6003 `738fbbd5d`), a non-sharing quest node consumes the event only when its own pool
   queued a start candidate (a passing node with an exhausted pool no longer swallows the event, #5404
   `76a927f8a`), pools round-robin with
   `RNAM` reset windows (hours, decoded through xEdit's 1/24 scale, #5386) in `StoryManagerNodeState`. Saved SM
@@ -575,13 +656,17 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   no-per-frame-work contract). `ALLS` aliases fill in list order with the reference aliases inside
   `refresh_scene_actor_bindings` (Specific / Reference-Alias / External / Find Matching), the binding is saved
   (`LocationAliasBindings`), a Find Matching alias never picks a cleared location unless flagged Allow Cleared.
+  Reference-alias fills read *this pass's* location bindings, not the committed ones (#6002 `2424b119c`), and a
+  Location Alias Reference fill is scoped to its bound location (listed by it under the ref type, or standing in it;
+  declines while the location alias is unbound — #6004 `f52a048f3`).
   Cleared state is `LocationClearState`, fed by `note_actor_death` on the one death path every kill / start-dead
   actor / save load funnels through — a new death path that skips `reconcile_dead_actor` never clears a location.
 - **Placed-object animation graphs** (`animation_graph.rs`, `asset_provider/object_graph.rs`,
   `object_graph_step_system`, `docs/engine/scripting.md` "Animation graphs of placed objects" / "Behavior graph
   depth"): `PlayAnimation` sends an event to the reference's `ObjectAnimationGraph`; an event takes the state's own
   transition (else a wildcard one; `DISABLED` transitions never fire), enters the new state and starts its clip on
-  the object's `AnimationPlayer`; the clip's trigger events are scheduled in real time and raised by
+  the object's `AnimationPlayer` (a lazily decoded clip restarts only the graphs whose pose it changes,
+  `start_if_pose_changed`, #6005 `d55940d0a`); the clip's trigger events are scheduled in real time and raised by
   `object_graph_step_system`, and graph-raised events reach `OnAnimationEvent` through registrations
   (`fragment/anim_events.rs`). FO4 actors run their own graph (`asset_provider/actor_graph.rs`,
   `systems/graph_locomotion.rs`) — `/audit-gameplay`.
@@ -607,7 +692,8 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   reachable `BaseForm` trigger; the gate in `trigger.rs` decides whether it may fire. They must share one
   eligibility predicate (#4333) and agree on cross-quest phase waits and centerless triggers. Lock order:
   the `SceneRegistry` read guard is held across the scan and must not invert the canonical scene→quest order
-  (drop before quest resources). Cinematic systems take `Transform` before `ActorCinematicState`/
+  (drop before quest resources); the router's conditioned advances are evaluated in a pre-pass *before* the
+  `QuestStageState` guard (the evaluator re-reads it for the GetStage family; source-pinned, #6008 `22ba1f5fe`). Cinematic systems take `Transform` before `ActorCinematicState`/
   `HorseTetherState` (#4546, `docs/engine/ecs.md` canonical chain; `BYRO_LOCK_ORDER_CHECK=1` is the gate).
 - **Cinematic retention** (`cinematic_retained_entities` computed once per unload batch;
   `strip_retained_cell_root(world, victims, retained)` per cell, scoped to `retained ∩ victims`): walk is
@@ -632,8 +718,8 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   a placeholder (Dim 1) — `disable_saving` is read by `SaveCommand`; `hud_cart_mode` had no reader at #4372.
 **Output**: `/tmp/audit/scripting/dim_5.md`
 
-### Dimension 6: Legacy ObScript Execution (Oblivion/FO3/FNV; M47.3 quest scripts)
-Paths: `crates/scripting/src/{obscript,obscript_runtime,obscript_vm,obscript_quests}.rs`, `byroredux/src/cell_loader/references/attach.rs` (`attach_scpt_script`, `obscript_dialect_for`), `byroredux/src/asset_provider/script.rs` (`install_quest_scripts` call)
+### Dimension 6: Legacy ObScript Execution (Oblivion/FO3/FNV; M47.3 quest + object scripts)
+Paths: `crates/scripting/src/obscript{,_runtime,_vm,_quests,_objects,_effects,_actions,_actor_values,_anim,_speech,_state,_ledger,_more}.rs`, `crates/scripting/src/obscript_more/`, `crates/scripting/src/{magic_effects,magic_shaders,script_packages,challenges}.rs`, `byroredux/src/cell_loader/references/attach.rs` (`attach_scpt_script`, `obscript_dialect_for`, `attach_object_script` call), `byroredux/src/asset_provider/script.rs` (`install_quest_scripts` / `install_object_scripts` / `install_item_scripts` calls), the request consumers `byroredux/src/systems/{script_requests,script_queries,revive,knockdown,flee,magic_shader,head_look}.rs`
 First step: `cargo test -p byroredux-scripting -- obscript`; `cargo test -p byroredux --bin byroredux -- attach::tests`; `git log -p --since=<last report> -- crates/scripting/src/obscript_vm.rs`
 Untrusted-Input: Yes — `SCDA` bytecode comes from mod-supplied plugins. Distinct from the (unbuilt) `.psc`-side
 SCTX frontend (`ScriptSource::Obscript` placeholder).
@@ -641,10 +727,14 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   `0x1c` explicit-caller escapes, implicit-caller statement calls (line opcode = command id), RPN expression
   tokens, `[u16 count]` typed arguments, `If/ElseIf/Else` nesting with `Return`-inside-arm early exit,
   1-based SLSD local / SCRO+SCRV reference resolution — compiled reference indices are 1-based into the
-  *interleaved* SCRO+SCRV list (`ScriptRef`; `SCHR.num_refs` counts both; a reference-variable slot resolves to
-  nothing, an unresolved explicit caller is declined, #5629), and a tag-`r` `Set <ref>.<remote var>` is declined
-  and counted (`CMD_DECLINED`), never stored as a ref assignment (#5630, `aac6b25b3`). Argument payload reads
-  are checked against the statement's argument region, not just the script buffer (#5655 `291af4528`). Every `read_u16`/`checked_add`/span end must be bounds-checked
+  *interleaved* SCRO+SCRV list (`ScriptRef`; `SCHR.num_refs` counts both; an unresolved explicit caller is
+  declined, #5629). Remote variables (`Quest.var`, `ref.var`) are read and written by ordinal through the synthetic
+  `CMD_GET_REMOTE_VARIABLE` / `CMD_SET_REMOTE_VARIABLE` host calls (`72fd96dfe`;
+  `remote_variables_read_and_write_by_ordinal_on_the_vanilla_bytes`); `exec_remote_set` declines and counts
+  (`CMD_DECLINED`) a malformed or unresolvable target, never storing it as a ref assignment (#5630). Reference
+  variables hold exact form ids (`VmState::ref_locals`). Argument payload reads (#5655 `291af4528`) and an
+  `If`/`ElseIf` condition (#6016 `9a7298283`) are bounded by the statement's own payload, not the script buffer.
+  Every `read_u16`/`checked_add`/span end must be bounds-checked
   and malformed input must yield `BlockOutcome::Malformed`, never panic (`truncated_bytecode_reports_malformed`;
   `installed_legacy_masters_have_structurally_valid_scda` is the real-data check, `#[ignore]`d). Recursion is
   capped by `MAX_OBSCRIPT_VM_NESTING` = 32 on both `exec_if_chain` ↔ `run_arm_body` and nested `X` argument
@@ -652,46 +742,81 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   `excessive_nested_x_arguments_are_rejected` — a new recursive path that skips the depth parameter is the
   regression. The operand stack in
   `eval_expr`/`apply_operator` must not grow unbounded from a lying token count.
-- **Command IDs are empirical** (aligned SCTX↔compiled stream on vanilla `Oblivion.esm`; 2 349/2 393 scripts
-  decode): `SetStage` 0x1039, `GetStage` 0x103a, `GetStageDone` 0x103b, `StartQuest`/`StopQuest` 0x1036/0x1037,
-  `GetQuestRunning` 0x1038, `GetSecondsPassed`, `Message` 0x1059 / `MessageBox` 0x1000 and `GetButtonPressed`
-  0x101f (see the next bullet). Anything else
-  is a **traced no-op returning 0, counted per quest in `ObScriptQuestTimers.unknown_commands`, never faked**
-  — a new command that
-  returns a guessed value is a finding (*feedback_no_guessing*); dialect tables (xNVSE vs xOBSE opcode
+- **Command and block IDs are empirical** — recovered by aligning each script's `SCTX` with its compiled stream over
+  the vanilla masters (`obscript_tools`), never from a spec. The quest core (`SetStage` 0x1039, `GetStage` 0x103a,
+  `GetStageDone` 0x103b, `StartQuest`/`StopQuest` 0x1036/0x1037, `GetQuestRunning` 0x1038, `GetSecondsPassed`
+  0x100c, `Message` 0x1059, `GetButtonPressed` 0x101f, `GetSelf` 0x10ce) carries a per-game evidence table in the
+  `obscript_quests.rs` module doc (#6015 `3f78f9fe1`): all agree across the three games except `MessageBox`
+  0x1000, which no Fallout script compiles to, so FO3/FNV decline it. Getters run through the M47.1 evaluator (id =
+  `0x1000` + CTDA index); the wider surface is split by family — `obscript_effects.rs` (the effect bridge:
+  commands lowered to the Papyrus `Effect` their namesake builds and applied through `apply_fragment_guard_free`, so
+  Dim 1's per-primitive rules and Dim 2's lock inventory cover them), `obscript_actions.rs` (reference-bound
+  `Enable`/`Disable`/`MoveTo`/`EVP`/`AddScriptPackage` onto the existing sinks), `obscript_actor_values.rs` (GECK AV
+  codes → AVIF, checked by `obscript_tools avcodes`), `obscript_anim.rs`, `obscript_speech.rs`, and
+  `obscript_more.rs` (`FALLOUT` / `OBLIVION` id tables; one id that names different commands per family is told
+  apart by the loaded game). Anything unmodelled
+  is a **traced no-op returning 0, counted per owner in `ObScriptQuestTimers.unknown_commands`, never faked**
+  — a command that returns a guessed value, or answers state the engine does not keep, is a finding
+  (*feedback_no_guessing*; `obscript_more` answers only from a named page, engine state or the ledger); the
+  remaining unmodelled tail and each command's blocker are tabled in `docs/engine/scripting.md` (M47.3 phase 3) —
+  not new findings. Dialect tables (xNVSE vs xOBSE opcode
   numbering, `ObscriptDialect`) stay separate because the same number names unrelated commands.
 - **Message / MessageBox** (`5182f7817`): `decode_message` parses the `[u16 length]` text, the set/if-format variable
   list and the button strings out of the statement's own argument region (untrusted: every length is checked against
   `end`; a payload that fails to decode is declined and counted `CMD_DECLINED`, never shown half-decoded). The
-  decoded `ObScriptMessage` reaches the quest host's `message`, which substitutes the variables and queues it through
-  `messages::show_obscript_message`; `GetButtonPressed` returns the quest's answered box once
-  (`messages::take_button`), −1 otherwise — #5790 is open on the quest-keyed (CS wiki: global) answer, #5789 on
-  `%0.f`, #5788 on the module doc that still calls these phase-1 stubs.
-- **`obscript_quest_tick_system`** (exclusive `Stage::Update`, vanilla `fQuestProcessInterval` 5 s cadence):
-  runs only *running* quests' GameMode block through `ObScriptCommandHost` (generic over its owner — a quest, or a scripted reference), which lowers onto the same
+  decoded `ObScriptMessage` reaches the host's `message`, which substitutes the variables (`substitute_numbers`
+  reads width before precision, so `%0.f` / `%2.0f` give zero places, #5789 `1502fbd3d`; mod precision clamped,
+  #6011) and queues it through `messages::show_obscript_message`; `GetButtonPressed` consumes the last answered box
+  from one global slot (`messages::take_button`, any quest's first call gets it — CS wiki contract, #5790
+  `173f9e155`, `obscript_button_answer_is_consumed_globally_once`), −1 otherwise.
+- **`obscript_quest_tick_system`** (exclusive `Stage::Update`): runs only *running* quests' GameMode block, each on
+  `quest_script_interval` — the authored `QUST` delay (FO3/FNV), overridden by a runtime `SetQuestDelay` (saved in
+  `ObScriptQuestLocals`), either one ≤ 0 meaning the INI default `QUEST_SCRIPT_INTERVAL_SECS` = 5 s (GECK
+  *SetQuestDelay*). It runs through `ObScriptCommandHost` (generic over its owner — a quest, a placed reference or an
+  inventory item), which lowers onto the same
   `QuestStageState`/`Globals` and emits the same stage events as the fragment path (so Dim 2's journal and
   cascade rules apply). Timers/effect ring (`ObScriptQuestTimers`, `ObScriptEffectLog`, cap 64) are unsaved by
-  design — cadence restarts on load (documented M47.3 residual, not silent save loss). Quest-script **locals persist**
+  design — elapsed time restarts on load (documented residual, not silent save loss). Quest-script **locals persist**
   between GameMode runs in the saved `ObScriptQuestLocals` (seeded into each run's `VmState`, stored back after the
-  run; an unassigned slot reads 0) and condition fn 79 `GetQuestVariable` reads them on Oblivion/FO3/FNV
-  (`f67d82b3c`; #5787: the Oblivion half has no test); `StartQuest`/`StopQuest` attach/detach the script loop consistently.
-  Phase-2 gaps (object-script blocks, per-quest quest-delay time, actor-state functions) are
-  documented in ROADMAP M47.3 — not new findings (the Message UI landed with `5182f7817`). The 255-script corpus gate in `obscript_quests.rs`
-  (`#[ignore]`d) now resolves Oblivion.esm via `test_paths::oblivion_esm()`, panics under
-  `BYROREDUX_REQUIRE_GAME_DATA=1` instead of returning green, and runs in `.github/workflows/real-data-gates.yml`
-  (#5088 `1377d3463`).
+  run; an unassigned slot reads 0) and condition fn 79 `GetQuestVariable` reads them on Oblivion/FO3/FNV only
+  (`f67d82b3c`; the game split and the cross-tick read are pinned since #5787 `a5e5346d0` by
+  `get_quest_variable_uses_obscript_locals_only_for_legacy_game_paths` and
+  `quest_game_mode_local_is_read_on_the_next_tick_and_by_condition_79`); `StartQuest`/`StopQuest` attach/detach the
+  script loop consistently. The 255-script corpus gate in `obscript_quests.rs`
+  (`vanilla_oblivion_quest_scripts_execute_and_setstage`, `#[ignore]`d) resolves Oblivion.esm via
+  `test_paths::oblivion_esm()`, panics under `BYROREDUX_REQUIRE_GAME_DATA=1` instead of returning green, and runs in
+  `.github/workflows/real-data-gates.yml` (#5088 `1377d3463`).
+- **Object and item scripts** (`obscript_objects.rs`, M47.3 phase 2; live gate `docs/smoke-tests/m47-3-obscript.sh`
+  on FNV): a placed reference whose base carries an `SCRI` gets an `ObScriptInstance` at attach; blocks run on the
+  events the engine already raises — `GameMode` every frame per loaded scripted reference, `OnLoad`, `OnDeath`,
+  `OnActivate`, the trigger trio, `OnHit`/`OnHitWith`, `OnStartCombat`/`OnCombatEnd`, the package blocks,
+  `SayToDone`, the item blocks `OnAdd`/`OnDrop`/`OnEquip`/`OnUnequip`, `OnReset`, `OnDestructionStageChange`, and
+  the scripted-effect blocks in `magic_effects.rs`. A block written for one reference (`Begin OnTrigger player`)
+  runs only for it (`BlockInfo`). **`OnActivate` replaces default processing**: `has_activate_block` feeds
+  `default_activation_blocked` (the same gate Papyrus `BlockActivation` uses) and the script's own `Activate`
+  queues the native activation — but an `OnActivate` run that declined any command or came back malformed lets the
+  default go ahead (a door nothing can open is the failure mode). Block ids (`BLOCK_*` in `obscript_vm.rs`) differ
+  between Oblivion and the Fallout pair for 0x1a/0x1b (`OnTriggerActor`/`OnTriggerMob` vs enter/leave) — a block
+  read in the wrong game's meaning is the finding. Object locals live in the saved `ScriptVariables` and ride the
+  eviction row (#6071, Dim 4). Systems: `obscript_object_system` before `reference_script_event_system` (which drains
+  `OnDeathEvent`), `obscript_hit_system`/`obscript_combat_system` after every `HitEvent` producer,
+  `obscript_destruction_system`, the Late `obscript_item_system`; `BYRO_NO_OBSCRIPT_OBJECTS` is the kill switch. New
+  saved state (`ObScriptLedger`, the `obscript_state` stores, `magic_effects` — each `register_saved`) is a
+  `FORMAT_MAJOR` question for `/audit-save`.
 - **Legacy load-order/extender path**: `attach_scpt_script` resolves SCPT via `ScriptRegistry` (logs an error
   when the resource is absent); dialect selection is by *profile row*, pinned by
   `obscript_dialect_follows_the_profile_not_the_game_kind`; source-less FNV/FO3 bytecode is decoded
   structurally (`decode_extender_calls`, only registered xNVSE/xOBSE opcodes) and FO3 must not apply the
   xNVSE table (`source_less_fo3_scpt_does_not_apply_xnvse_opcode_table`). Arguments/bytes obey the SDK caps
-  (`MAX_SCRIPT_CALL_BYTES`, `MAX_SCRIPT_STRING_BYTES`, `MAX_LEGACY_OBSCRIPT_NESTING`).
+  (`MAX_SCRIPT_CALL_BYTES`, `MAX_SCRIPT_STRING_BYTES`, `MAX_LEGACY_OBSCRIPT_NESTING`); the compatibility analysis
+  caps findings per script (`MAX_COMPATIBILITY_FINDINGS_PER_SCRIPT`) and retained entries per registry
+  (`MAX_COMPATIBILITY_RETAINED_ENTRIES`), logging the first truncation (#6024 `fcead3b9d`).
 **Output**: `/tmp/audit/scripting/dim_6.md`
 
 ### Dimension 7: Provider / Extender-Compatibility Layer (SKSE, JContainers, StorageUtil, ModEvent seam)
 Paths: `crates/scripting/src/{papyrus_provider/**,compatibility.rs}`, `crates/scripting/tests/extender_compat_e2e.rs`, `byroredux/src/extensions/`, `crates/pex/src/call_sites.rs` (consumer)
 First step: `cargo test -p byroredux-scripting -- papyrus_provider compatibility`; `cargo test -p byroredux --bin byroredux -- boot::schedule::system_access_declaration_tests`
-This layer (~7.5k LOC scripting-side: `papyrus_provider/` + `compatibility.rs`, incl. tests) was a reported coverage gap through 2026-09-14 (only its *seams* were
+This layer (~8.7k LOC scripting-side: `papyrus_provider/` + `compatibility.rs`, incl. tests) was a reported coverage gap through 2026-09-14 (only its *seams* were
 audited). Its SDK half (`crates/sdk`: StorageUtil/JContainers verbs, typed script values, limits, manifests)
 is `/audit-tooling`; audit here the runtime that consumes it.
 - **Untrusted-input**: preflight/lowering run on `.pex`-derived data and provider manifests. `compatibility`
@@ -702,14 +827,22 @@ is `/audit-tooling`; audit here the runtime that consumes it.
   lowering so a mod cannot park immortal continuations in the bounded 4 096-slot queue, #5657 `05d8d5864` — the
   same bound is shared by the fragment lowerer, the VM and `FragmentExecutionQueue`, #5681 `ef130cd6c` (Dim 2);
   `execute_statements` runs on an explicit cursor stack, not a recursion per executed `If` (#5635 `afa5186a1`,
-  20 000 sequential `If`s on a 256 KiB stack); `papyrus_provider_system` groups ModEvent registrations by entity
-  once per frame and only when events are pending (#5640 `34a47ba81`); value sizes
-  obey `MAX_SCRIPT_ARRAY_ELEMENTS`/`MAX_SCRIPT_CALL_BYTES`/`MAX_PENDING_PAPYRUS_MOD_EVENTS`. `execute.rs` has
+  20 000 sequential `If`s on a 256 KiB stack; nesting depth is threaded through receiver chains too, and saved
+  `Wait` values obey the same cap, #6025); `papyrus_provider_system` groups ModEvent registrations by entity
+  once per frame and only when events are pending (#5640 `34a47ba81`). ModEvent runtime (#6018–#6025, `2f4b59041`):
+  registrations whose registrant no longer carries a provider program are pruned (entity ids are never
+  reclaimed), delivery runs under `MAX_PAPYRUS_MOD_EVENT_DELIVERIES_PER_FRAME` = 1 024 with the rest left queued in
+  order, owner FormIDs resolve per entity on demand, and a failing provider call keeps the registrations collected
+  before it. A reference's provider `OnInit` runs once, its first-init flag saved in `QuestScriptVariables` under
+  the reference FormID (#6017 `0b1f1545f`). Value sizes
+  obey `MAX_SCRIPT_ARRAY_ELEMENTS`/`MAX_SCRIPT_CALL_BYTES`/`MAX_PENDING_PAPYRUS_MOD_EVENTS` (256) /
+  `MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS` (4 096). `execute.rs` has
   `unreachable!` arms guarded by "validated …" invariants — each must be truly established by lowering.
   The `catching_panics` net (#3948) wraps the translate/lower path; check whether runtime execution in
-  `papyrus_provider_system` has any equivalent (none found 2026-10-15: no `catch_unwind` under `papyrus_provider/`, nor around the VM's run in `fragment/vm/interp.rs`).
+  `papyrus_provider_system` has any equivalent (none found 2026-10-20: no `catch_unwind` under `papyrus_provider/`, nor around the VM's run in `fragment/vm/interp.rs` — only the VM's ahead-of-time checks joined the net, #6000).
 - **Decline-on-unmodeled at the seam**: a provider call that cannot be typed declines the whole fragment/
-  handler (`lower_provider_call` errors → `None`), it never lowers a prefix and silently drops the tail; a
+  handler (`lower_provider_call` errors → `None`), it never lowers a prefix and silently drops the tail — nor
+  lowers a script's provider handlers while leaving its other handlers inert (`MixedScript`, #6021, Dim 1); a
   `PapyrusProviderRuntime::default()` with a non-empty catalog but `callback: None` is not servable (Dim 1).
 - **Continuation persistence**: `PapyrusProviderContinuationQueue` and `FragmentExecutionQueue` are saved
   resources; continuations must stay principal-owned and typed (no raw closures or process-local handles).

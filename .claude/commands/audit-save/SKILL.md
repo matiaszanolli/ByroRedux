@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --depth shallow|deep"
 
 # Save / Load Subsystem Audit (M45 + M45.1)
 
-Audit `crates/save` (full-ECS-snapshot format) and its sole live caller `byroredux/src/save_io/` (`save_io.rs` is an ~86-LOC hub)
+Audit `crates/save` (full-ECS-snapshot format) and its sole live caller `byroredux/src/save_io/` (`save_io.rs` is a ~107-LOC re-export hub over `registry` / `player` / `commands` / `live_load`, split in `d7c47d741`)
 (+ `save_io/*_tests.rs`) for **data loss and save corruption**. The subsystem exists to remove Bethesda's
 slow-corruption tail by making the live ECS the single source of truth; verify the CODE delivers that.
 A silently dropped column, a stale schema guard, a torn capture, or a botched FormId remap **loses player
@@ -25,7 +25,11 @@ progress** — frame as CRITICAL/HIGH per `_audit-severity.md` (data loss is CRI
 `build_form_id_remap`, `apply_deltas`), `disk.rs` (`write_slot`, `slots_by_recency`, `SaveRing`),
 `validate.rs` (`validate_world` + 6 sub-checks). Tests: `crates/save/tests/round_trip.rs`.
 
-**Engine side** (`byroredux/src/save_io/`): `build_save_registry` (the curated type set),
+**Engine side** (`byroredux/src/save_io/`): `build_save_registry` (the curated type set — since #5802
+`bde3478db` it also calls per-subsystem `register_saved(&mut registry)` delegates in `crates/scripting/src/`
+(`ownership`, `crime_gold`, `crime_faction`, `obscript_state`, `obscript_ledger`, `challenges`, `magic_effects`),
+each at its rows' former position, because `schema_fingerprint` hashes rows in registration order — moving a
+delegate call is a `SchemaMismatch` for every existing save),
 `MUTABLE_DELTA_COLUMNS` (**second** hardcoded list driving the live overlay), `PRE_RELOAD_RESOURCES`,
 `SaveCommand`/`SaveInfoCommand`/`LoadCommand`, `PendingPlayerSaveActions` (F5/F9/pause-menu ingress),
 `quickload_latest`, `execute_pending_save_loads` (+ `reload_interior_session`/`reload_exterior_session`),
@@ -56,7 +60,7 @@ finds >0 items, and it fails when the invariant is broken.
 |---|---|
 | `registry_completeness_tests::every_component_or_resource_impl_is_saved_or_explicitly_allowlisted` | every `Component`/`Resource` impl in any `crates/*/src` (roots **discovered**, not listed) + `byroredux/src` is registered XOR in `NOT_SAVED_BY_DESIGN` with a reason; `PlayerNotifications`, `PickedUp` etc. are classified there |
 | `serde_default_guard_tests::serde_default_on_saved_struct_requires_format_major_bump` | any `#[serde(default)]` on a save-participating type (skip-only fields exempt) |
-| `serde_default_guard_tests::saved_type_shape_changes_require_format_major_bump` | hash of every `#[derive(..Serialize..)]` struct/enum body in `save_type_sources()` — discovered files that carry a `cfg_attr(feature = "save"` derive or define a registered type, plus seven explicit nested-payload files (since #5059 `945be7dc6`: `lighting.rs`, `crates/sdk` `identity.rs` / `script_function.rs`) — vs `BASELINE_SHAPE_FINGERPRINT`/`BASELINE_MAJOR`; the attribute scan reads the whole contiguous attribute block, so a save derive above a plain `#[derive(..)]` is seen (#5403 `e19cb0491`) |
+| `serde_default_guard_tests::saved_type_shape_changes_require_format_major_bump` | hash of every `#[derive(..Serialize..)]` struct/enum body in `save_type_sources()` — discovered files that carry a `cfg_attr(feature = "save"` derive or define a registered type, plus seven explicit nested-payload files (since #5059 `945be7dc6`: `lighting.rs`, `crates/sdk` `identity.rs` / `script_function.rs`); registered names are read from `save_io/registry.rs` and from every scanned file that defines `fn register_saved(` (#5802) — vs `BASELINE_SHAPE_FINGERPRINT`/`BASELINE_MAJOR`; the attribute scan reads the whole contiguous attribute block, so a save derive above a plain `#[derive(..)]` is seen (#5403 `e19cb0491`) |
 | `serde_default_guard_tests::set_in_chargen_renames_still_decode_v23_keys` | `serde(alias)` rename path stays decodable |
 | `round_trip_tests::delta_columns_carry_only_session_stable_fields` | no `FixedString`/`EntityId`/session handle in a `MUTABLE_DELTA_COLUMNS` type |
 | `round_trip_tests::delta_columns_removed_at_runtime_have_a_load_reconciler` | every delta column with a production removal site has a declared reconciler or "NoReconcilerNeeded" reason |
@@ -171,13 +175,18 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 104 as of 2026-10-15, with one `vN -> vN+1`
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 114 as of 2026-10-20, with one `vN -> vN+1`
   entry per bump from v22 on; the ledger still lacks the v32→v33 entry — #5367 `14cff35ae`, new saved resource
   `DialogueSpokenInfoForms` — known-open #5459. Recent anchors: v36 Wave 4 `RigidBodyData.surface_material`, v37 #5542
   widened it `u8`→`u32`, v38 #5300 re-keyed `DialogueSpokenInfoForms` to a (speaker ref, INFO) pair, and v39–v104
   are almost entirely M47.2 scripting state — new saved resource columns, `Effect` / `FragmentGuard` / `ValueExpr`
   variants and fields reachable through queued fragment continuations (`FragmentExecutionQueue`), `CharacterLevel`
-  v46 (kill XP ended #2947's exemption), `Bleedout` v51, `LevelUpPoints` v53; do not hardcode the number elsewhere): intra-type shape changes need a bump because
+  v46 (kill XP ended #2947's exemption), `Bleedout` v51, `LevelUpPoints` v53; v105–v114 are gameplay/ObScript
+  fields and columns (`Bleedout.remaining_secs` → `Option` v105, parked `ReferenceState.bleedout` v106, M47.3 ObScript
+  columns v109–v112, `Material.source_shader_type` v113 #4256, parked `ReferenceState` script package / corpse pose +
+  `PersistentReferenceStates` script rows v114 #6071–#6073); do not hardcode the number elsewhere). Precedent: v112
+  (#6050 `5f8bbf454`) — `register_saved` columns landed after a baseline refresh with no bump and the shape guard sat
+  red on main; a new registered column's defining file joins the shape scan, so it is a bump here too. Intra-type shape changes need a bump because
   `schema_fingerprint` hashes only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
   type bumps; `#[serde(default)]` is forbidden as a compatibility mechanism (guard) — even where the default
   would be correct for every old save. Read-compatible changes move the shape baseline **without** a bump:
@@ -284,7 +293,9 @@ Paths: `byroredux/src/save_io/live_load.rs` (`execute_pending_save_loads`, `relo
 First step: read `execute_pending_save_loads` top to bottom against the sequence below; `git log --since=<last report> --format='%h %cs %s' -- byroredux/src/save_io`
 - **Strict apply sequence**: drain slot → `validate_snapshot_types` (abort, session kept) →
   `preflight_extension_state` (abort) → `restore_resources_subset(PRE_RELOAD_RESOURCES)` (only resources
-  read by spawn-time code during the reload: `ReferenceEnableState`, `ReferenceLockState`, `ReferenceScriptState`; **never**
+  read by spawn-time code during the reload: `ReferenceEnableState`, `ReferenceLockState`, `ReferenceScriptState`,
+  `ScriptedFactionChanges` — #5919 `aa14d3e89`, replayed by `stamp_quest_reference` as NPCs respawn;
+  `pre_reload_restore_installs_the_scripted_faction_ledger`; **never**
   `ItemInstancePool` — teardown's `release_victim_item_instances` needs the live pool, #4135) →
   `without_parked_state` wraps the reload (outgoing session's `PersistentReferenceStates` and
   `StreamStateSnapshots` are set aside and restored on failure) → teardown + reload (`validate_cell_loadable`
@@ -299,6 +310,8 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   despawns the player rig: `unload_cell_inner` refuses `player_owned_entities`, #5483 `5a68e983e`)
   → `reset_story_location_cursor` + `discard_pending_story_events` (the unsaved CLOC cursor and any straddling
   `StoryEvent` markers describe the outgoing session; every load behaves like a fresh boot, #5435 `557ead21d`)
+  → `discard_package_reports` (outgoing actors' package transitions must not run PF_ Begin/Change fragments in the
+  loaded session, #5864 `001de8741`)
   → `restore_extension_state` → wholesale
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is
   not redundant) → `restore_resident` (parked rows for resident placements, #4695) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local
@@ -309,7 +322,8 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   `PersistentReferenceStates`, #5054 `17e720430` — the exterior reload streams only `radius_load`, so the
   save's hysteresis-band rows were dropped and their loot duplicated; `unresolved_snapshot_rows_are_parked_for_the_next_respawn`)
   → `apply_deltas(MUTABLE_DELTA_COLUMNS)` → dead/equipped-weapon reconcilers, `reconcile_worn_gear` (called
-  once; the duplicate was dropped in `a8b3d1902` and the count pinned by #5460 `bda5a1167`), `reset_player_factions_to_record` → diagnostic `validate_world` →
+  once; the duplicate was dropped in `a8b3d1902` and the count pinned by #5460 `bda5a1167`), `reset_player_factions_to_record` → `reapply_scripted_faction_changes` (restored scripted memberships on top) →
+  diagnostic `validate_world` + `validate_form_ids` + `validate_cinematic_entity_refs` →
   `apply_player_pose` LAST (after the
   overlay of `CharacterController`, whose motion fields pose-restore then zeroes; a new field on either
   side needs an explicit decision). Any failure after the reload returns immediately, never falling through
@@ -334,7 +348,10 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   (`byroredux/src/systems/character.rs`, the one teleport helper since #5591 `946310eb9`: body `Transform` +
   `GlobalTransform` + `CharacterController::clear_momentum` — `vertical_velocity`/`is_grounded`/`wants_jump` —
   + kinematic Rapier sync, no-op without a handle); restore branches on the *live* mode (#2018), so
-  FlyCam-saved/Character-loaded relocates the body and the reverse repositions the camera.
+  FlyCam-saved/Character-loaded relocates the body and the reverse repositions the camera. `apply_player_pose`
+  returns `bool` and refuses the whole pose (non-finite or out-of-world position — `PhysicsWorld::translation_is_sane`,
+  the keyframe bound — or non-finite yaw/pitch), leaving the reloaded cell's spawn (#5530 `d28545728`,
+  `a_corrupt_saved_pose_is_refused_and_leaves_the_player_where_the_cell_spawned_them`).
 - **Context guards**: `LoadCommand` accepts interior OR exterior context and rejects only neither;
   `SaveInfoCommand` mirrors the three arms (#3500); `quickload_latest` walks `slots_by_recency` and falls back
   past a corrupt newest slot; `command_output_is_failure` scans every output line.

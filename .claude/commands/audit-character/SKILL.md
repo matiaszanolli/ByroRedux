@@ -51,12 +51,13 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
 - Regen: `PoolRegenConfig` has **zero production insertion sites** (`pool_regen_tick_system` is
   registered and early-returns on every game); `affliction_tick_system` has no scheduler registration.
   Verify still true; a change is a wiring event (Dim 5 doc sweep). Level-up is no longer absent: M47.2's
-  `grant_experience` (`byroredux/src/combat.rs`, shared by Fallout kill experience and `levelup xp`) rolls
-  levels by `LevelingModel::xp_to_next` up to `level_cap()` and banks `skill_point_reward` into the saved
-  `LevelUpPoints` (Dim 3/4) — FO3/FNV/FO4 only; the TES models have no XP-driven roll.
+  `grant_experience` (`byroredux/src/combat.rs`, shared by Fallout kill experience, `levelup xp` and Skyrim
+  `Game.AdvanceSkill` rank-ups via `xp_from_skill_rank`) rolls levels through `LevelingModel::roll_levels` up to
+  `level_cap()` and banks the rewards into the saved `LevelUpPoints` (Dim 3/4) — Fallout `skill_point_reward`,
+  Skyrim a perk point + a pool pick (#5916 `612bd179e`); only classic-TES `SkillUse` has no XP-driven roll.
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-10-15) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
+- Open (verified 2026-10-20) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
   #4232 (`effective_actor_level` returns 0 verbatim). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
@@ -145,16 +146,25 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
 Paths: `crates/core/src/character/{leveling,regen,affliction,reputation,components,skyrim,tes}.rs`
 First step: `cargo test -p byroredux-core character::leveling character::regen character::affliction character::reputation`
 - **Leveling**: three models (Fallout `XpCurve`, classic-TES `SkillUse`, Skyrim `SkillXp`) are enum *data*
-  variants with one consumer-side match; `level_cap()==0` = uncapped identically in all three; its one consumer is
-  `grant_experience` (`byroredux/src/combat.rs`: `capped = level_cap() > 0 && level >= level_cap()`, FO3 20 /
-  FNV 30 — the off-by-one duty is live, so verify a level-`cap` player does not roll to `cap + 1`). Fallout
-  rewards: `LevelingModel::skill_point_reward` (FO3 `10 + INT`, perk every level; FNV `10 + INT/2`, perk every
-  other level; FO4 `SpecialOrPerk` → no points, one perk; `None` for the TES models) banks into `LevelUpPoints`
-  (`character/components.rs`; the half point rides in `skill_point_fraction` via `grant_skill_points`; pin
-  `skill_point_rewards_follow_each_fallout`), with perk hook 10 (Adjust Gained Skill Points) composed at the
-  consumer, not in the ruleset. Skyrim `with_gmst` requests exactly
-  `["fXPLevelUpBase","fXPLevelUpMult"]`; `xp_per_skill_rank` is a fixed engine coefficient *by design*
-  (do not re-flag). Oblivion attribute-bonus banding + 10-major-skill-ups; Skyrim pool base 100, +10/level
+  variants with one consumer-side match; `level_cap()==0` = uncapped identically in all three. The roll is
+  `LevelingModel::roll_levels` (#5918 `118edb1e6`): `capped = level_cap() > 0 && level >= level_cap()`, each
+  level costs `xp_to_next` rounded UP to ≥ 1 whole XP (a `0 < cost < 1` curve once truncated to a zero-XP level
+  and spun the main thread forever), and it stops at `u16::MAX` (`roll_levels_is_bounded_and_exact_for_odd_curves`);
+  the cap off-by-one has a consumer pin, `experience_roll_stops_at_the_fallout_new_vegas_level_cap`
+  (#5925 `dc259eef9`). Fallout rewards: `LevelingModel::skill_point_reward` is the one reward query
+  (`skill_points` and `grants_perk_at` delegate to it since #5925; FO3 `10 + INT`, perk every level; FNV
+  `10 + INT/2`, perk every other level; FO4 `SpecialOrPerk` → `(0, perk)`; `None` for the TES models, Skyrim's
+  per-level perk + `pool_pick_gain` pick banked by `grant_experience` into `LevelUpPoints::pool_picks`, #5916
+  `612bd179e`) banks into `LevelUpPoints` (`character/components.rs`; the half point rides in
+  `skill_point_fraction` via `grant_skill_points`; pin `skill_point_rewards_follow_each_fallout`), with INT read
+  through the *Base* view (base + `set_override`, not current — #5917 `9c087f15e`) and perk hook 10 (Adjust
+  Gained Skill Points) composed at the consumer, not in the ruleset. `levelup` spends skill points on the AV
+  *base* and perk points only under the PERK's authored `num_ranks` (`PerkEntryTable::num_ranks`; #5924
+  `c3239fd55`). `with_gmst` requests exactly `["fXPLevelUpBase","fXPLevelUpMult"]` on Skyrim and
+  `["iXPBumpBase","iXPBase","iMaxCharacterLevel"]` on the Fallout curves (#5915 `8791be5fe` — the cap is
+  overlaid only when authored and ≥ 1, so `BrokenSteel.esm` lifts FO3's 20 to 30; pins
+  `skyrim_gmst_overlay_reads_only_authored_curve_settings`, `fallout_gmst_overlay_reads_curve_and_cap`);
+  `xp_per_skill_rank` is a fixed engine coefficient *by design* (do not re-flag). Oblivion attribute-bonus banding + 10-major-skill-ups; Skyrim pool base 100, +10/level
   (`SKYRIM_POOL_BASE`, `pool_pick_gain`); `Perks::try_set_rank` rejects out-of-range rather than clamping.
 - **Regen tick**: fixed-60 Hz (`POOL_REGEN_DT`), backlog clamped (`MAX_REGEN_SUBSTEPS`), zero-dt cannot
   spin; the scheduler access declaration matches the body (`/audit-concurrency` Dim 4 owns the rule).
@@ -243,6 +253,9 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   combination is undocumented, so absent, not guessed). `SKYRIM_SKILLS` names the AVIF editor ids; Illusion is
   `AVMysticism` (`a8dc9e8e6`) — an unresolved skill name drops silently, so the all-18 check
   `vanilla_skyrim_skill_names_all_resolve_and_a_vanilla_npc_derives_them` (`#[ignore]`d) is the guard.
+  Morality is seeded from the `AIDT` Responsibility byte (`ActorAiData::responsibility`, Skyrim-only decode) by
+  `derive_resolved_actor_values` unless the stat model already supplied it (#5927 `a1eece82a` — `GetBribeAmount`
+  once priced every NPC at Morality 0; `skyrim_spawn_seeds_morality_from_inherited_aidt_responsibility`).
 - **One ceiling composition**: `ActorValue::undamaged()` (base + set_override + permanent + temporary) is the
   single ceiling; `current()` is `undamaged() − damage`. HUD bar fractions, debug vitals and the SDK projection
   read through it (the SDK folds `set_override` into base — `ActorValueState` has no override slot); a reader that

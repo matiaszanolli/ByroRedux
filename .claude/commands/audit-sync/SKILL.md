@@ -30,7 +30,7 @@ The script writes the following into `$SCRATCH`:
 
 It also prints each group's weight: the changed files routed to it through `_audit-owners.md`, and the cited issues closed since the base. It exits non-zero if `groups.txt` misses an `audit-*` directory or lists one twice. A newly added audit skill must go into a group first.
 
-Look at the printed weights. If one group carries well over ~2× the median of either number, split it in `groups.txt` before fanning out. Ten groups was the right size for ~300 commits; the per-game audits each get their own group when their routed counts dwarf the rest (the 2026-10-12 run used fourteen for 239 commits, with `fo3` and `oblivion` split out of the old `fo3-oblivion` pair; the 2026-10-15 run used sixteen for 337 commits, splitting `scripting` (157 routed files, 22 cited-closed: the M47.2 VM wave) from `papyrus-character` and `fo4` from `starfield`). Two skills' routed counts are inflated by churn, not code: `regression` (every `.claude/issues/` note) and `tech-debt` (the `docs/audits/` reports, other `docs/` edits, `.claude/commands/`). Discount those two before splitting.
+Look at the printed weights. If one group carries well over ~2× the median of either number, split it in `groups.txt` before fanning out. Ten groups was the right size for ~300 commits; the per-game audits each get their own group when their routed counts dwarf the rest (the 2026-10-12 run used fourteen for 239 commits, with `fo3` and `oblivion` split out of the old `fo3-oblivion` pair; the 2026-10-15 run used sixteen for 337 commits, splitting `scripting` (157 routed files, 22 cited-closed: the M47.2 VM wave) from `papyrus-character` and `fo4` from `starfield`; the 2026-10-20 run used seventeen for 379 commits, giving `performance` its own group apart from `renderer`). Two skills' routed counts are inflated by churn, not code: `regression` (every `.claude/issues/` note) and `tech-debt` (the `docs/audits/` reports, other `docs/` edits, `.claude/commands/`). Discount those two before splitting.
 
 ## Phase 2: Fan out
 
@@ -43,9 +43,11 @@ Launch one background `general-purpose` agent per `groups.txt` line, all in a si
 The `meta` group also owns the following, and should check that every shim's description still matches its skill:
 - `_audit-common.md`, `_audit-owners.md`, `_audit-severity.md`, `_audit-validate.sh`, `_audit-route.sh`;
 - the `.agents/skills/source-command-*` shims, which are thin pointers to the canonical command;
-- the `.claude/agents/*.md` specialists (#5839: they rotted for five months
-  because no sync group and no validator glob reached them — their layout
-  facts must point at CLAUDE.md / docs/engine instead of hand-typed trees).
+- the `.claude/agents/*.md` specialists: they rotted for five months
+  because no sync group and no validator glob reached them; 88ea1a2f6
+  (#5839) added them to the validator corpus and this group, and their
+  layout facts must point at CLAUDE.md / docs/engine (or a live `ls` /
+  `grep`) instead of hand-typed trees or file lists.
 
 Agents must not start sub-agents. A nested agent's completion notice never reaches its parent (see `/audit-suite`, orchestration hazard).
 

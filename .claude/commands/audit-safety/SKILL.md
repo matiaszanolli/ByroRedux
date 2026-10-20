@@ -20,18 +20,23 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Re-measured 2026-10-15 at f4ae42a6f (the 337 commits since 2026-10-12 added no `unsafe`; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
+only 2 real blocks). Re-measured 2026-10-20 at ae557b935 (922 tokens / 704 blocks at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
 
-- `crates/renderer/src`: **922** word tokens (930 by the substring recipe; 935 on 2026-10-12) — 704 `unsafe {`
-  blocks (715), 96 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~145: prose and source-scan
-  strings), 35 `unsafe impl` (newest: `NoUninit for ModelPush`), ~796 `SAFETY` mentions. Net shrinks: #5593 swapped twelve local `try_or_cleanup!` macros and the per-FIF
+- `crates/renderer/src`: **941** word tokens (950 by the substring recipe) — 717 `unsafe {`
+  blocks, 100 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~145: prose and source-scan
+  strings), 35 `unsafe impl` (newest: `NoUninit for ModelPush`), ~809 `SAFETY` mentions. Growth since 10-15 is two new
+  passes — `vulkan/shadow_filter.rs` (9 blocks + `unsafe fn destroy`) and the SKYAL cloud-shadow bake
+  `vulkan/sky_cube/cloud_shadow.rs` (5 + `unsafe fn record` / `destroy`, c231f5b5f) — plus `descriptors::clamp_sampler`
+  (`unsafe fn`, #5809 31f4919d5, which first spliced it between `memory_barrier`'s doc and item, leaving the wrong fn
+  carrying the `# Safety`; restored by #6064 2a6f8be2b with a doc-splice guard); #5717 (d3225bb2f) removed the last
+  `CStr::from_ptr` block (`vulkan/instance.rs` layer check). Net shrinks: #5593 swapped twelve local `try_or_cleanup!` macros and the per-FIF
   param-UBO loops for `vulkan/mod.rs`'s shared `try_or_cleanup!` and `GpuBuffer::create_per_frame_uniforms` (one block
   fewer in each of eleven passes); the
   #4599 poison-policy extraction cut `vulkan/buffer.rs` 40 → 19 blocks; #5273 (74ed66f0a) replaced the five
   `CStr::from_ptr` device/extension-name blocks in `vulkan/device.rs` with ash's bounded `*_as_c_str()` accessors
   (pinned by `device_names_read_through_bounded_accessors`); `vulkan/groundcover.rs` split into
   `vulkan/groundcover/{construct,frame}.rs` (17 + 12). Densest files: `vulkan/gpu_timers.rs` (62),
-  `vulkan/acceleration/blas_static.rs` (29), `vulkan/groundcover_bench.rs` (28). Compare against the previous
+  `vulkan/acceleration/blas_static.rs` (29), `vulkan/groundcover_bench.rs` (27). Compare against the previous
   report, not this text.
 - Tail: `crates/fsr3-sys` 10 blocks in `src` (one is the test-only `byro_fsr3_abi_layout` probe; Dim 1) plus 20 in the
   `examples/vulkan_context_smoke.rs` harness, `crates/nif` 1
@@ -39,11 +44,12 @@ only 2 real blocks). Re-measured 2026-10-15 at f4ae42a6f (the 337 commits since 
   + 1 in `string/mod.rs` (`from_utf8_unchecked` after an ASCII-only fold) + 1 test-only, `crates/pex` 1
   transmute (Dim 2), `byroredux` 2 — `cell_loader/unload.rs` 1 and the NVML GPU-name probe's
   `get_physical_device_properties` in `app_events.rs` (both commented since b7bc84722/#5120, which also replaced the
-  `CStr::from_ptr` block with `device_name_as_c_str`), `tools/byro-launcher/src/preflight.rs` 1 block + 1 `unsafe fn` (Vulkan loader probe),
+  `CStr::from_ptr` block with `device_name_as_c_str`), `tools/byro-launcher/src/preflight.rs` 1 block + 1 `unsafe fn` (Vulkan loader probe; its two name reads
+  are bounded `*_as_c_str()` since #5717),
   `crates/plugin` test-only env-var edits, `crates/cxx-bridge` one `unsafe extern "C++"`.
 - No `unsafe` at all (the remaining hits are prose): `crates/{audio,bgsm,boot-request,bsa,debug-protocol,
   debug-server,debug-ui,facegen,game-detect,hkx,menuxml,mod-runtime,papyrus,physics,platform,save,scripting,
-  sdk,settings-io,sfmaterial,spt,ui}` and `tools/{byro-dbg,byro-detect,texture-upscale}`.
+  sdk,settings-io,sfmaterial,spt,terrain-height,ui}` (`terrain-height` is new, 5017a64c2) and `tools/{byro-dbg,byro-detect,texture-upscale}`.
   **Only `crates/sdk` carries `#![forbid(unsafe_code)]`** — for every other unsafe-free crate the absence is
   unenforced, so re-run the census on each and report any newcomer.
 
@@ -69,7 +75,9 @@ First step: `grep -nE 'unsafe|# Safety|extern "C' crates/fsr3-sys/src/lib.rs`
   contract is `/audit-ui`.
 - **`tools/byro-launcher/src/preflight.rs`** loads the Vulkan loader and creates an instance
   (`ash::Entry::load`, `enumerate_physical_devices`, `destroy_instance`): check the instance is destroyed on
-  every path and no handle escapes `probe`.
+  every path and no handle escapes `probe`. Device / extension names are read through ash's bounded accessors
+  (#5717, d3225bb2f); `device_names_read_through_bounded_accessors` (`vulkan/device.rs`) scans the preflight and
+  `vulkan/instance.rs` alongside `device.rs` — a new `CStr::from_ptr` on a fixed `[c_char; N]` is the regression.
 - **cxx bridge scope guard**: `crates/cxx-bridge/src/lib.rs` exposes one fn, `native_hello() -> String`. No
   raw pointers, borrowed slices or shared ownership cross it today, so there is no lifetime surface yet; the scope guard is that no `*const`, `&[u8]`, `Box<…>` or Rust-reference-taking `unsafe extern "C++"`
   fn appears (then it becomes a live CRITICAL surface).
@@ -137,6 +145,12 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
   (`teardown_path_recovers_poisoned_locks_beyond_the_allocator_family`). Flag a new `.expect` reachable from
   `Drop`/teardown, an allowlist bumped without a reason, or a silent recovery with no rationale comment (#2398); a
   create-path panic is a deliberate choice, not automatically a finding.
+- **Deliberate leaks are not findings.** A failed one-time submit follows the #4891 policy — destroy on
+  `NotSubmitted`, `std::mem::forget` on `OneTimeCommandError::may_be_in_flight` (`vulkan/texture.rs`), since the GPU may
+  still be executing against the handles. Pass constructors and recreate paths apply it too: volumetrics / density-noise
+  init (#5947, cf1a234d0), the shadow filter's construct and resize layout walk (#6063, 4a6128389,
+  `a_failed_layout_submit_leaks_instead_of_destroying`). Flag the reverse — an unconditional `destroy` after a submit
+  whose failure class is unknown (UAF) — or an untyped error that reaches `may_be_in_flight` (answers `true`, so it leaks).
 - **egui**: texture free is deferred one frame (`pending_free`) on `draw_frame`'s fence wait — freeing on the
   arriving frame is UAF. Partial deltas are promoted to full uploads from a CPU mirror (#4986), so replacing an
   existing id retires an image too; both retirements rest on the all-slots fence wait (#4988, a rider in
@@ -200,7 +214,7 @@ First step: `cargo test -p byroredux-renderer gpu_material gpu_instance gpu_came
 
 - **Sizes are pinned by tests named for the size** (`gpu_material_size_is_432_bytes` — `GpuMaterial` is 432 B;
   `gpu_instance_is_160_bytes_std430_compatible`, `gpu_camera_is_368_bytes`, `gpu_light_is_64_bytes`,
-  `gpu_terrain_tile_is_176_bytes` in `scene_buffer/gpu_instance_layout_tests.rs`). A test-name-vs-asserted-size
+  `gpu_terrain_tile_is_208_bytes` in `scene_buffer/gpu_instance_layout_tests.rs`). A test-name-vs-asserted-size
   mismatch or a stale number in prose means the GPU reads wrong bytes. Guards that police the prose:
   `bindings_glsl_states_the_real_struct_size`, `the_pin_test_bindings_glsl_names_actually_exists` and
   `gpu_material_size_claims` (scans `crates`, `byroredux`, `tools`, `docs/engine`, `.claude/commands`, top-level
@@ -235,7 +249,8 @@ First step: `cargo test -p byroredux-renderer shader_constants && cargo test -p 
   producer must run `resolve_pbr()` or build already-finite values. Collision translate
   (`crates/nif/src/import/collision/mod.rs`) half-extents/radii and emitter rate/lifespan/size
   (`extract_emitter_params` → `apply_emitter_params`) must be finite and bounded at the extract boundary.
-  Volumetric raw V-buffer history: non-finite guard + finite-fp16 clamp on the store since #4782 (17e17de5e).
+  Volumetric raw V-buffer history: non-finite guard + finite-fp16 clamp on the injection store since #4782 (17e17de5e)
+  and on the integrate store since #5957 (d65fd3bfd; composite / bloom carry no `isnan` guard of their own).
 - **Bone palette overflow**: `SkinSlotPool` warns once (`overflow_warned`, count in `overflow_attempt_count`) and
   excess entities fall back to bind pose rather than over-indexing; tests in
   `byroredux/src/render/bone_palette_overflow_tests.rs`.

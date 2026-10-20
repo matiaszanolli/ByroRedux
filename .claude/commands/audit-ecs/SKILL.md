@@ -34,10 +34,13 @@ several read guards into one block for speed (#4616) reddens the lane. The `-p b
 on three production inversions — a gather taking `GlobalTransform` before `Transform` (every mover takes
 `Transform` first), a hair head-mount holding `MeshHandle` + `Children` across a `Parent` walk, a seated
 restore holding `Furniture` across a `GlobalTransform` read — and was re-greened by #5535 `1cb12fb3d`; a new
-multi-storage gather is the regression shape. Known-open #5032 (LOW): two *test* bodies
-(`save_io/round_trip_tests.rs`, `crates/scripting/src/scene/quest_alias_tests.rs`) hold a guard across a second
-acquisition and supply the closing back edge of the 2026-09 cycles; the lane is green without them closing one
-today, but they are the first suspects if it reddens.
+multi-storage gather is the regression shape. It recurred within two days: #5713's `cfabdfd6a` called
+`collect_subtree` (takes `Children`) while a `MeshHandle` guard was alive in `common_shape_rotation`, re-recording
+the `MeshHandle → Children` edge #5535 removed; #5954 `7a4f6c1a2` gathers first, then filters. Test bodies feed the
+same graph: #5032 `3bc60e0be` made `cinematic_trio_survives_save_load_round_trip` (`save_io/round_trip_tests.rs`)
+and `quest_alias_collection_fill_type_still_declines_not_binds` (`crates/scripting/src/scene/quest_alias_tests.rs`)
+drop their first guard before the second acquisition — a test that holds a `ComponentRef`/`ResourceRead` across
+another acquisition records a back edge exactly like production code.
 
 A wrong lock order is HIGH. This dimension owns the *machinery*; system-level cycles, canonical-order
 adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
@@ -79,13 +82,16 @@ First step: `grep -rn 'type Storage = PackedStorage' crates byroredux --include=
 - **PackedStorage**: `binary_search` keeps the sorted-by-entity invariant on insert/remove;
   `insert_bulk` is append + one sort and the result stays sorted AND deduplicated (#467);
   `World::insert_batch` still fires the per-item `entity < next_entity` `debug_assert`.
-- **Change tracking** (`Component::TRACK_CHANGES`, default `false`): ON for NINE
+- **Change tracking** (`Component::TRACK_CHANGES`, default `false`): ON for TEN
   components — `Transform`, `GlobalTransform`, `Parent`, `Children`, plus `LocalBound`
   (since ad012f9d6), `Material` and `ParticleEmitter` (both since 1d56758ba /
-  #3836), and `CollisionShape` (`crates/core/src/ecs/components/collision.rs`) + `RapierHandles`
-  (`crates/physics`), both since 88c23887b. The sparse ones get only a `structural_generation` bump and no dirty set — #3836's `SceneEffectSoftCache`,
-  the incremental world-bound propagation, and `physics_sync_system`'s unregistered-shape absence
-  cache (`sync.rs`) consume them.
+  #3836), `CollisionShape` (`crates/core/src/ecs/components/collision.rs`) + `RapierHandles`
+  (`crates/physics`), both since 88c23887b, and `RigidBodyData` (same file, #5943 `44f3a4f35`). The sparse ones get only a `structural_generation` bump and no dirty set — #3836's `SceneEffectSoftCache`,
+  the incremental world-bound propagation, `physics_sync_system`'s unregistered-shape absence
+  cache (`sync.rs`) and `trap_contact_system`'s Trap-layer body list (`TrapLayerCache`,
+  `byroredux/src/systems/trap_hits.rs`) consume them. The generation moves on insert (overwrite included) and
+  remove, never on `get_mut` — a cache keyed on a field (the trap list on `havok_layer`) goes stale if that
+  field is ever edited in place.
   `PackedStorage` keeps a dirty set (may hold duplicates —
   consumers tolerate that); `SparseSetStorage::structural_generation` bumps on insert/remove.
   `drain_dirty_into` preserves capacity (#1371); `take_dirty` hands it away. The `GlobalTransform`
@@ -123,9 +129,13 @@ First step: `grep -n 'unsafe' crates/core/src/ecs/query.rs` (expect exactly 4 de
   The shared guarded collector `collect_subtree` (same file; visited set + `HierarchyTraversalGuard` budget,
   `collect_subtree_terminates_on_a_cycle`) landed with #5513 `9da80470d`: `retry_cinematic_readoption`,
   `loading_screen.rs`, `cinematic_retained_entities` / the unload purge (`cell_loader/unload.rs`),
-  `release_finished_tethers` and `subtree_entities_under` all route through it. Nothing mechanical forces a new
-  whole-subtree walk to use it — grep for hand-rolled `Children` stacks; known-open #5713 (LOW): five survive
-  (`cell_loader/unload.rs`, `player_body.rs` among them), one written after the collector landed.
+  `release_finished_tethers` and `subtree_entities_under` all route through it, and #5713 `cfabdfd6a` moved the
+  last five hand-rolled whole-subtree walks onto it (`player_owned_entities` in `cell_loader/unload.rs`,
+  `player_body.rs`'s descendant walk, `subtree_has_skinned_mesh` + `common_shape_rotation` in
+  `npc_spawn/resumable/runtime.rs`, the water-plane scan in `cell_loader/water.rs`). Nothing mechanical forces a
+  new whole-subtree walk to use it — grep for hand-rolled `Children` stacks; the guarded walks still outside it
+  (propagation in `systems.rs`, `systems/bounds.rs`, `ragdoll.rs`, the subtree name map in `anim_convert.rs`)
+  carry their own visited set + budget. Call the collector *before* taking any other storage guard (#5954 above).
 
 ### 4. Resources & World-Level State
 
@@ -134,7 +144,9 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
 
 - `resource()` / `resource_mut()` panic with the type name when never inserted; `try_*` return `None`.
   `ResourceRead` / `ResourceWrite` downcast per `Deref` (not cached — not the #1367 hot path);
-  `insert_resource` returns the prior value; `remove_resource` resolves poison.
+  `insert_resource` returns the prior value; `remove_resource` resolves poison; `init_resource::<R>()`
+  inserts `R::default()` only when absent, leaving an existing (e.g. save-restored) value untouched (#5806
+  `d0572ed94` — it replaced the hand-spelled `try_resource`/`insert_resource` idiom in scripting's `register`).
 - **Resource vs. component choice**: mode flags and singleton state are `Resource`s (`HardcoreMode`,
   `SelectedRef`, the `*Bridge`/`*Telemetry` structs); per-actor state is a `SparseSetStorage`
   component (`ActorVitals`, `TimedRestorations`). A new per-entity fact modelled as a global map keyed
@@ -148,7 +160,9 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
 - `OwnershipTracker` / `ReclaimPolicy` (`resources/ownership.rs`): the EX-08 soak-gate accounting.
   Check each owner class's policy is honest — `Monotonic` only for identity watermarks (entity ids,
   mesh/texture slot-vector lengths), `Exact` for anything that must return to baseline after unload,
-  `Bounded` for documented caches. A leaking class reclassified `Bounded`/`Monotonic` to turn the gate
+  `Bounded` for documented caches, `Occupancy` only for per-frame camera-pose samples (the two ground-cover
+  classes; a strictly increasing series must also rise past `OCCUPANCY_GROWTH_TOLERANCE_PERMILLE` of its first
+  sample, #6058 `adaa7a263`). A leaking class reclassified `Bounded`/`Monotonic`/`Occupancy` to turn the gate
   green is the finding.
 - `DeltaTime` is stamped once per frame by the main loop (`byroredux/src/app_events.rs`); a system that
   writes it or `TotalTime` is a finding.
@@ -248,10 +262,11 @@ First step: `cargo test -p byroredux-core ecs::systems`
   only when the `Name` count changes (#278); `events` / `seen_labels` scratch is hoisted and
   `clone`d not `mem::take`n (#828). Lock order inside channel apply is content-determined
   (#2399) — do not reintroduce a macro that hides the acquisition order.
-- **`FootstepScratch`** (`byroredux/src/components/audio.rs`; `components.rs` is now a thin re-export over per-domain files, #5467): `mem::take` + restore so `Vec` capacity
+- **`FootstepScratch`** (`byroredux/src/components/audio.rs`; `components.rs` is now a thin re-export over per-domain files, #5467 `6ef8976f2`): `mem::take` + restore so `Vec` capacity
   survives; a per-frame `Vec::new` regresses (#932). Placement (Late exclusive after
-  `camera_follow_system`) is pinned by `footstep_runs_after_camera_follow_in_late`. Known-open #5714 (LOW): `footstep_system` plays no sound when
-  `PhysicsWorld` is absent although its comments promise the default sound.
+  `camera_follow_system`) is pinned by `footstep_runs_after_camera_follow_in_late`. Without a `PhysicsWorld` the
+  surface list is one `None` per trigger, so each stride still plays the default sound (#5714 `77eea4311`; an empty
+  list used to truncate the one-shot loop), pinned by `stride_threshold_fires_one_default_footstep_without_physics_world`.
 
 ### 7. Component Lifecycles (load/unload, transient, idempotency)
 
@@ -343,7 +358,10 @@ Import is `/audit-nif`, the NIF→clip boundary is `/audit-nifal` Dim 7; this di
 blending, root-motion split and text-key dispatch, driven by an ECS system.
 
 - **Clip-handle validity**: `AnimationPlayer.clip_handle` / `AnimationLayer` index the registry; a stale
-  handle after unload is a no-op, never a panic or OOB read.
+  handle after unload is a no-op, never a panic or OOB read. Same for `NamedSequences`
+  (`animation/named_sequences.rs`, M47.3 `f3380f6c8`): a placed object's sequence-name → clip-handle table,
+  shared via `Arc` across every placement of the model and re-stamped at spawn (unsaved), read by ObScript
+  `PlayGroup` / `IsAnimPlaying`.
 - **Time advance**: `advance_time` (`player.rs`) / `advance_stack` (`stack.rs`) handle `dt == 0`,
   negative/NaN `dt` and a zero-length clip without divide-by-zero or an endless loop; `CycleType` is
   applied per clip.

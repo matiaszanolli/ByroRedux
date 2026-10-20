@@ -9,7 +9,7 @@
 # Writes into <scratch-dir>:
 #   BRIEF.md                     brief.tmpl rendered with base/head/scratch
 #   open.txt                     every OPEN issue number (snapshot)
-#   cited.txt                    every #NNN cited by an audit skill or shared file
+#   cited.txt                    every #NNN cited by an audit skill, shared file or specialist agent
 #   closed_since.tsv             number<TAB>title, closed since the base commit date
 #   cited_closed_recent_map.txt  `#N: skill …` for cited issues closed since base
 #   weights.tsv                  skill<TAB>routed-changed-files<TAB>cited-closed-since
@@ -43,14 +43,14 @@ unknown="$(comm -13 <(printf '%s\n' "${skills[@]}" | sort) <(sort -u <<<"$groupe
 }
 
 # --- issue state -------------------------------------------------------------
-grep -ohE '#[0-9]{3,5}\b' .claude/commands/audit-*/SKILL.md .claude/commands/_audit-*.md \
+grep -ohE '#[0-9]{3,5}\b' .claude/commands/audit-*/SKILL.md .claude/commands/_audit-*.md .claude/agents/*.md \
     | tr -d '#' | sort -u > "$scratch/cited.txt"
 gh issue list --state open --limit 5000 --json number --jq '.[].number' | sort -u > "$scratch/open.txt"
 gh issue list --state closed --search "closed:>=$base_date" --limit 2000 \
     --json number,title --jq '.[] | "\(.number)\t\(.title)"' > "$scratch/closed_since.tsv"
 : > "$scratch/cited_closed_recent_map.txt"
 for n in $(comm -12 "$scratch/cited.txt" <(cut -f1 "$scratch/closed_since.tsv" | sort -u)); do
-    where="$(grep -lE "#$n\b" .claude/commands/audit-*/SKILL.md .claude/commands/_audit-*.md \
+    where="$(grep -lE "#$n\b" .claude/commands/audit-*/SKILL.md .claude/commands/_audit-*.md .claude/agents/*.md \
         | sed -E 's#.claude/commands/(audit-)?##; s#/SKILL.md##' | tr '\n' ' ')"
     echo "#$n: $where" >> "$scratch/cited_closed_recent_map.txt"
 done

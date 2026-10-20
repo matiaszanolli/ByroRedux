@@ -47,14 +47,15 @@ constraint CInfo decode is a NIF seam).
 3. `cargo test -p byroredux-nif` (default lane); record the pass count.
 4. **Corpus gates are opt-in** (`#[ignore]`, need installed data): `parse_real_nifs`,
    `per_block_baselines`, `block_coverage_baselines`, `oblivion_stream_drift_corpus`,
-   `constraint_drift_corpus`, `normal_synthesis_corpus` under `crates/nif/tests/`. They run
-   nightly per title in `.github/workflows/real-data-gates.yml` (`BYROREDUX_REQUIRE_GAME_DATA=1`,
+   `constraint_drift_corpus`, `normal_synthesis_corpus`, `np_ragdoll_corpus` under `crates/nif/tests/`. They are
+   wired per title in `.github/workflows/real-data-gates.yml` (`BYROREDUX_REQUIRE_GAME_DATA=1`,
    so an absent corpus is a failed job). Locally: one title at a time,
    `BYROREDUX_<GAME>_DATA=<Data dir> cargo test -p byroredux-nif --test per_block_baselines <game> -- --ignored --nocapture`.
-   Still true 2026-10-15: the workflow parses since d98769436 (#4619, closed), but no
-   `byroredux-game-data` self-hosted runner is registered (repo runner count 0) — every scheduled
-   run queues and is cancelled at 24 h, so **no nightly result exists** (the corpus jobs now run `--no-fail-fast`, fa2af0e89, #5660, so one red test binary no longer hides the ones after it). A green default
-   `cargo test` says nothing about parse rates; run the gate locally.
+   The workflow parses since d98769436 (#4619, closed), but no `byroredux-game-data`
+   self-hosted runner is registered, so the lane is **manual-only** (*workflow_dispatch*; the
+   nightly schedule was removed in fde8feec2, #5905) — **no automated result exists** (the corpus
+   jobs run `--no-fail-fast`, fa2af0e89, #5660, so one red test binary no longer hides the ones
+   after it). A green default `cargo test` says nothing about parse rates; run the gate locally.
 
 ## Phase 2: Dimensions
 
@@ -71,7 +72,11 @@ inside the failed block's own consumed bytes is refused, #3926);
 source-shape scan of `blocks/shader/*.rs` + `blocks/node.rs`: every struct declaring a
 `starfield_tail` field overrides `opaque_tail_len`; a tail-capturing block in a file not in
 its list is invisible to it); `blocks/controller/sequence_pre_10_1_0_106_tests.rs`;
-`tests/oblivion_stream_drift_corpus.rs` (no-`block_sizes` detector has zero false positives).
+`tests/oblivion_stream_drift_corpus.rs` (no-`block_sizes` detector has zero false positives;
+every sizeless Oblivion NIF must land on its root footer via `parse_nif_with_options_and_consumed`,
+eight measured stale-tail LOD files allowlisted — 6ad0c0214, #5782; extraction / parse failures
+are counted and fail the sweep, 7869a93fd #5781; a present-but-unopenable Oblivion DLC archive
+fails, c2d3914bf #5780).
 **Checklist** (what the guards cannot see):
 - Each block consumes exactly its `block_sizes` entry. A finding is a block whose drift the
   reconciliation is *silently absorbing*, not the reconciliation itself.
@@ -209,8 +214,11 @@ This is the *parse → ECS* handoff; per-game material classification is `/audit
 - **Tangents**: FO4+ `BSTriShape` inline when `VF_TANGENTS | VF_NORMALS` set;
   Oblivion/FO3/FNV `NiBinaryExtraData` "Tangent space (binormal & tangent vectors)" — must
   honor the `[tangents…, bitangents…]` swap (the field holds ∂P/∂V, #786); Starfield UDEC3
-  `tangents_raw` with W normalized to ±1 at import (#2246); otherwise
-  `tangent::synthesize_tangents` (Mikkelsen). Distinct paths — don't cross-wire.
+  `tangents_raw` with W normalized to ±1 at import (#2246); otherwise synthesis — Lengyel
+  accumulation + Gram-Schmidt (nifly `CalcTangentSpace`, **not** MikkTSpace, d81f7501f #5963)
+  in the single producer `synthesize_tangents_yup`; the Z-up `synthesize_tangents` is a wrapper
+  that converts its inputs and calls it (89a0b6ccd, #5793 — a second accumulation copy is the
+  regression). Distinct paths — don't cross-wire.
 - **Skyrim SE skinning index spaces** (#3355/#3360, then the 2026-09-17 correction): the
   `NiSkinPartition::Triangles` are already **global** vertex indices on the `Stream() == 100`
   band (do not push them through `vertex_map`); the packed `BSTriShape` / SSE global-buffer
@@ -239,7 +247,9 @@ This is the *parse → ECS* handoff; per-game material classification is `/audit
   whole-scene first-match, and gated on a non-NULL chain head (#4467; opt-in gate
   `real_archive_torch_meshes_surface_particle_emitters`). The legacy tier follows the ctlr's own
   `NiPSysEmitterCtlr.data_ref` (until 10.1.0.103, #4560); an unlinked data block is attributed
-  to nobody. Both walkers skip APP_CULLED / editor-marker particle systems
+  to nobody. The geometry APP_CULLED + live-`NiVisController` gate lives once in
+  `shape_is_culled` (node arms: `node_is_culled`; ef78a0eec, #5792, source-count guard in
+  `import/tests/app_culled_visibility.rs` — a per-arm copy is the regression). Both walkers skip APP_CULLED / editor-marker particle systems
   (`particle_system_is_culled`, #4561) unless a `NiVisController` — found on the chain *or* by
   `target_ref` — un-hides them. Regression = a hardcoded preset replacing an authored birth
   rate, or the fallback claiming another system's ctlr.
@@ -269,7 +279,10 @@ parses then silently drops collision; *nif_shape_dispatch_resolve_parity*; the s
 from the data block's `sub_parts`, #5541);
 `import::collision::dispatch_tests::havok_motion_type_maps_full_enum`;
 `blocks/collision/hk_packed_ni_tri_strips_data_tests.rs`;
-`tests/constraint_drift_corpus.rs` (opt-in; drift must be a known motor-tail value).
+`tests/constraint_drift_corpus.rs` (opt-in; `decoded_constraints_consume_their_whole_block` —
+drift must be exactly 0 on Oblivion, FO3, FNV, Skyrim LE and SE);
+`tests/np_ragdoll_corpus.rs` (opt-in FO4: every ragdoll blob decodes with consistent joint
+pivots, every body's shape volume × density equals its mass).
 **Checklist**:
 - **`bhk*` field-for-field**: rigid-body flag width (`uses_old_rigid_body_layout`,
   `RIGID_BODY_FLAGS16 = 76`, `RIGID_BODY_EXTRA_FLOATS = 9`); MOPP offset / strips scale gated
@@ -287,9 +300,13 @@ from the data block's `sub_parts`, #5541);
   lands as `NiUnknown` with an exact `block_size` skip. There is no drift-suppression list
   any more (#4626 removed *is_havok_constraint_stub* / *stubbed_drift_histogram*); any
   constraint drift lands in the real `drift_histogram` — suppression is the mechanism that
-  hid `bhkHingeConstraint`'s +128, so do not reintroduce it. By-design
-  residuals are pinned by `corpus::is_known_constraint_motor_tail_drift` (1/18/19/26;
-  malleable +4; the three no-motor types exactly 0). *Decoded is not imported*: the ragdoll
+  hid `bhkHingeConstraint`'s +128, so do not reintroduce it. The trailing
+  `bhkConstraintMotorCInfo` (type byte + 0/25/18/17 B) of FO3+ Ragdoll / LimitedHinge /
+  Prismatic is now consumed — in the bare dispatch and the Malleable wrapper (motor, then
+  `Strength` f32), leniently, via the one `BhkBreakableConstraint::consume_motor` table; the
+  breakable wrapper consumes it exactly once (a071ed217, #5960). The old motor-tail allowlist
+  (*is_known_constraint_motor_tail_drift*) is deleted — any non-zero constraint drift is a
+  finding. *Decoded is not imported*: the ragdoll
   importer (`import/collision/ragdoll.rs`) still declines ball-and-socket / spring / chain
   until a canonical joint kind exists (`docs/engine/physal.md`).
 - **`BSLightingShaderProperty::parse`** is a thin `bsver` dispatcher → `parse_skyrim`
@@ -313,7 +330,13 @@ from the data block's `sub_parts`, #5541);
   `blocks::collision::havok_packfile::parse_havok_packfile` decodes the container (header,
   sections, three fixup tables → typed object graph); what stays opaque is
   `hknpCompressedMeshShapeData`'s bit-packed layout (`docs/engine/physal.md`). Do not report
-  it as decoded. `summarize_collision_authoring` scans every collision block and feeds
+  it as decoded. The FO4 skeleton **ragdoll** blob is decoded (`blocks/collision/np_ragdoll.rs`,
+  `decode_np_ragdoll`: `hknpRagdollData` capsule / sphere / `hknpConvexPolytopeShape` /
+  `hknpDynamicCompoundShape` bodies, ragdoll + limited-hinge joints, `hknpBreakableConstraintData`
+  unwrapped — e1bd40bcf, #5015 (closed); fc4a15104, #6067 (open: 64 joints whose bind-pose pivots disagree are only characterised)) into the classic
+  `RagdollCInfo` / `LimitedHingeCInfo` records; its offsets were recovered from the corpus (no
+  SDK) and are pinned by independent physical checks, so a layout claim needs a corpus
+  measurement, not nif.xml. `summarize_collision_authoring` scans every collision block and feeds
   `CachedNifImport.collision_authoring` (`byroredux/src/cell_loader/nif_import_registry.rs`);
   `examine_collision_kind` keeps `None / Classic / NewPhysicsStub / Phantom / Unrecognised`
   distinct (a Skyrim+ phantom must not be force-translated as a rigid body). A per-game

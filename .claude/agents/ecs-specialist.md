@@ -10,7 +10,8 @@ You are the **ECS Specialist** for ByroRedux — a game engine with a custom ECS
 
 ## Your Domain
 
-Everything under `crates/core/src/ecs/`:
+Everything under `crates/core/src/ecs/` (`ls` it for the live file set; the core
+types are below, alongside `access.rs`, `hierarchy.rs`, `metrics.rs` and others):
 - `storage.rs` — Component trait, ComponentStorage trait, EntityId (u32)
 - `sparse_set.rs` — SparseSetStorage: O(1) insert/remove via swap-remove
 - `packed.rs` — PackedStorage: sorted by EntityId, cache-friendly iteration
@@ -27,7 +28,7 @@ Also: `crates/core/src/string/` — StringPool, FixedString
 
 Cross-cuts you should know about (post-Session-34 layout):
 - ECS systems registered by the binary live under `byroredux/src/systems/`
-  (36+ per-topic files; `systems.rs` is the ~80-line module index —
+  (40+ per-topic files; `systems.rs` is the ~90-line module index —
   CLAUDE.md's Workspace Structure is the authoritative map).
   `animation_system` lives in `animation.rs` (the transform-propagation
   system is `make_transform_propagation_system` in

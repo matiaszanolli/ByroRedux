@@ -118,7 +118,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 **Output**: `/tmp/audit/concurrency/dim_1.md`
 
 ### Dimension 2: Compute → AS → Fragment Chains
-Paths: `crates/renderer/src/vulkan/{skin_compute,svgf,taa,caustic,water_caustic,volumetrics,bloom,groundcover,sky_cube,material}.rs`, `crates/renderer/src/vulkan/{groundcover,volumetrics}/`, `crates/renderer/src/vulkan/context/{post_passes,dispatch_skin_and_cluster,skinned_blas_refit}.rs`
+Paths: `crates/renderer/src/vulkan/{skin_compute,svgf,taa,caustic,water_caustic,volumetrics,bloom,groundcover,sky_cube,material,shadow_filter,restir}.rs`, `crates/renderer/src/vulkan/{groundcover,volumetrics,sky_cube}/`, `crates/renderer/src/vulkan/context/{post_passes,dispatch_skin_and_cluster,skinned_blas_refit}.rs`
 First step: `git log --since=<last-report-date> --format='%h %s' -- crates/renderer/src/vulkan/context/post_passes.rs crates/renderer/src/vulkan/*.rs`
 **Checklist**:
 - **Skin chain (M29).** Palette build (`skin_compute.rs`) → `COMPUTE_WRITE→SHADER_READ` → per-mesh skin output →
@@ -142,6 +142,12 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   #4293), scatter → publish incl. counter readback (#4181), and the interaction field's trailing barrier;
   `sky_cube.rs::record_bake` runs mid-frame (`context/build_and_upload_instances.rs`) — check its
   publish barrier before the first consumer. Evidence is a `BYRO_VALIDATION` capture, not reading.
+- **Passes new since 2026-10-15.** The direct-shadow filter (`shadow_filter.rs`, dispatched inside
+  `record_svgf_pass`) reads the current frame's ReSTIR reservoir buffer that `triangle.frag` wrote (FRAGMENT_WRITE →
+  COMPUTE_READ) and writes the correction composite samples (COMPUTE_WRITE → FRAGMENT_READ); its a-trous ping-pong
+  needs a barrier per iteration. The SKYAL cloud-shadow bake (`sky_cube/cloud_shadow.rs`, recorded from
+  `sky_cube.rs`) feeds scene set 1 binding 24 and a per-FIF host readback of the camera column, which needs its own
+  SHADER_WRITE → HOST_READ dependency and must be read only after that slot's fence.
 - **Ground-cover model tier** (`groundcover_models.rs`, #4413): its compute writes `GpuInstance`s into the
   *tail of the main instance buffer* after `build_and_upload_instances` and before the geometry pass, which
   draws them with indexed-indirect — COMPUTE_WRITE must reach both `VERTEX_SHADER` (instance read) and
@@ -151,7 +157,9 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   write must be published before both consumers, in fixed mode too.
 - **MaterialBuffer SSBO.** upload is `HOST_WRITE → VERTEX/FRAGMENT_READ`, before draw recording; flag only if it moves into a mid-frame compute path.
 - **Volumetrics skip path (#4780, fixed d213521ef).** The #3685 skip-clear latch owns only the GPU clear
-  (`record_neutral_frame`); the temporal reset is `record_skipped_frame`, run on EVERY not-dispatched frame
+  (`record_neutral_frame`), and it (with the caustic twin) is staged in `pending_*_cleared_on_skip` and promoted only
+  after `queue_submit` succeeds — a tail `Err` that discards the command buffer must not leave it set (#5956, f025a4b2d;
+  `skip_clear_latches_are_promoted_after_submit_not_at_record_time`). The temporal reset is `record_skipped_frame`, run on EVERY not-dispatched frame
   (incl. the dispatch `Err` arm). Guard: `every_skipped_frame_drops_the_temporal_history_not_just_the_first`.
   The combustion occupancy mask is host-zeroed per slot and rides the all-slots fence wait (`sync.rs` rider
   list, #5215); its device RAW rests on `record_volumetrics_pass`'s global COMPUTE barrier — narrowing that
@@ -162,7 +170,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 
 ### Dimension 3: ECS Lock Ordering & Deadlock (system level)
 Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
-First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
 Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
 `GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
 re-audit it here. This dimension owns how *systems* use it.
@@ -196,7 +204,10 @@ re-audit it here. This dimension owns how *systems* use it.
   `GlobalTransform → WalkSpeed → Transform` (every other mover takes `Transform` first), hair head-mount's
   `common_shape_rotation` held `MeshHandle` + `Children` across `bind_transform_relative_to`'s `Transform → Parent`, and the
   #5501 seated restore held `Furniture` across a `GlobalTransform` read (sandbox takes `GlobalTransform → Furniture`). The
-  other two were test bodies holding a guard across a second read (#5032 shape). Attribution recipe: a temporary edge logger
+  other two were test bodies holding a guard across a second read (#5032 shape, fixed in 3bc60e0be). A refactor can
+  re-open a closed one: #5713 routed `common_shape_rotation`'s walk through `collect_subtree` (which takes `Children`
+  internally) while the `MeshHandle` guard was alive, re-recording the edge #5535 removed (#5954, 7a4f6c1a2) — a shared
+  helper that acquires internally counts as an acquisition at the call site. Attribution recipe: a temporary edge logger
   in `record_and_check`, `--test-threads=1 --nocapture`; fix by gathering under one guard, dropping it, then composing.
 - **A fixture records only the edges its storages allow.** #5372 (1c15a2270) closed
   `LoadedCellIndex → StoryEvent → LoadedCellIndex` (the hello location resolved under the `StoryEvent` guard), which the
@@ -212,7 +223,9 @@ re-audit it here. This dimension owns how *systems* use it.
   ECS state before guest entry, drops every ECS guard, enters the guest, and commits its returned command
   batch afterwards (`extensions/dispatch.rs` module doc; `commands.rs::enter_guest`). Since #5592 (91a28a4c9) the
   eight `dispatch_*` families share one `ExtensionHost::deliver` body (grant + status gate, guest entry, log drain,
-  commit), so audit that body once and the per-family select closures for what they capture. A host `Mutex`
+  commit), so audit that body once and the per-family select closures for what they capture; on the system side the
+  same eight share `with_extension_host` (`extensions/systems.rs`, #5810 78cfa46df: acquire → lock → dispatch → apply
+  commands → drop → emit, with the SKSE mod-event queueing collected under the lock and queued only after it drops). A host `Mutex`
   guard or ECS guard held across guest entry — or a host function that re-acquires ECS storage the
   caller already holds — is a deadlock/reentrancy finding. Trust-boundary questions are `/audit-safety` Dim 8.
 **Output**: `/tmp/audit/concurrency/dim_3.md`
@@ -312,8 +325,10 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
   allocator-backed (destroy before `allocator.take()`) but not order-constrained (#4188). Flag a violation of one
   of those, an allocator-freed-early / `Arc::try_unwrap` hazard, or a resource that needs the allocator destroyed
   after it — not a "reverse-creation" mismatch.
-- **Swapchain recreate.** G-buffer, SVGF, TAA, caustic, water-caustic, volumetrics, bloom, composite and
-  egui framebuffers are rebuilt; per-FIF history/accumulator images freed for every in-flight slot (`resize.rs`).
+- **Swapchain recreate.** G-buffer, SVGF, TAA, caustic, water-caustic, volumetrics, bloom, composite, ReSTIR
+  reservoir buffers, the shadow filter and egui framebuffers are rebuilt; per-FIF history/accumulator images freed for
+  every in-flight slot (`resize.rs`). The shadow filter's recreate submits nothing and its layout walk runs as a separate
+  step, so a `may_be_in_flight` failure leaks the pass instead of destroying images the submit may still touch (#6063, 4a6128389).
 - **AS cleanup on shutdown.** All `BlasEntry` buffers, `TlasState` buffers and scratch released; per-entity skin outputs kept until the entity is destroyed.
 - **Other GPU cleanup.** `scene_buffer`, `MaterialBuffer`, texture registry (incl. the `dynamic_rgba` staging
   arena), `EguiPass::destroy()` (`Option<EguiPass>` taken in `Drop`; its texture retirements are a
@@ -324,7 +339,7 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
 **Output**: `/tmp/audit/concurrency/dim_6.md`
 
 ### Dimension 7: Worker Threads & Thread-Safety Bounds
-Paths: `byroredux/src/streaming/`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/render/mod.rs`, `crates/bsa/src/read_at.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/lib.rs`
+Paths: `byroredux/src/streaming/`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/terrain_height.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/render/mod.rs`, `crates/bsa/src/read_at.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/lib.rs`
 First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs' crates byroredux tools | grep -v test` (a new worker thread outside this list is a coverage gap)
 **Checklist**:
 - **Streaming worker shutdown.** `WorldStreamingState::shutdown` takes the `worker` handle first, then
@@ -341,7 +356,10 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   reads (`crates/bsa/src/read_at.rs`, `ReadAt`, commit 1b8b21f3f — concurrent on Unix, kernel-serialised on
   Windows, #4999). A shared-cursor seek+read reintroduced anywhere returns interleaved wrong bytes (threaded tests per archive, #5000).
   Streamed NIFs' textures are prefetched on the stream pool (`prefetch_textures`, `PrefetchStore`): a panicking
-  read must still complete its slot, and a withdrawn key must not be waited on. External-material
+  read must still complete its slot, and a withdrawn key must not be waited on. Terrain-layer height maps (#6195)
+  generate on their own 2-thread rayon pool (`TerrainHeightService`, `terrain_height.rs`) over a cloned
+  `texture_archive_snapshot()`, returning results through an `Arc<Mutex<Vec<…>>>` that only the main thread drains — a
+  job must not touch the `World` or the registry, and the on-disk cache write is the shared state to check. External-material
   resolution (`merge_external_material`, which takes `&mut ImportedMaterial` + `&mut MaterialProvider` +
   `&mut StringPool`) is main-thread-only — moving it needs a real synchronisation story. The NIF import
   cache is read-only on the worker with write-back deferred to main.
