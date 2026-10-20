@@ -50,6 +50,28 @@ fn fire_trigger_enter(world: &World, target: EntityId, triggerer: EntityId) {
     );
 }
 
+/// #5995 — two triggerers entering one volume in the same frame advance the
+/// stage once. Every passing `(entity, triggerer)` pair used to push its own
+/// advance, journalling a `QuestStageAdvanced` each and running the stage
+/// fragment twice.
+#[test]
+fn two_triggerers_on_one_volume_in_a_frame_advance_the_stage_once() {
+    let (mut world, player, door) = setup_da10_world();
+    world.resource_mut::<QuestStageState>().set_stage(DA10_QUEST_FORM_ID, 37);
+    let other = world.spawn();
+    {
+        let mut q = world.query_mut::<OnTriggerEnterEvent>().unwrap();
+        q.insert(door, OnTriggerEnterEvent { triggerers: vec![player, other] });
+    }
+    quest_advance_system(&world);
+
+    assert_eq!(world.resource::<QuestStageState>().get_stage(DA10_QUEST_FORM_ID), 40);
+    let batch = world
+        .get::<QuestStageAdvancedBatch>(player)
+        .expect("QuestStageAdvancedBatch must land on player");
+    assert_eq!(batch.0.len(), 1, "one advance for the volume, not one per triggerer");
+}
+
 // ── Stage-predicate gating ────────────────────────────────────
 
 /// Both pre-conditions wrong — `GetStageDone(37) == 0`, so the

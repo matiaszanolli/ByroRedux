@@ -386,7 +386,17 @@ pub fn quest_advance_system(world: &World) {
         start_if_stopped: bool,
     }
     let mut pending: Vec<PendingAdvance> = Vec::new();
+    // #5995 — one advance per source per frame. `triggered` holds a pair per
+    // triggerer, so two actors entering one volume in the same frame (an `Any`
+    // gate, or a `BaseForm` gate two matching actors satisfy) pushed two
+    // advances: `set_stage` journals a `QuestStageAdvanced` each time and the
+    // stage fragment would run twice, past `onlyOnce`/`disableWhenDone` (whose
+    // disarm only applies after this loop). The first passing triggerer wins.
+    let mut advanced: HashSet<EntityId> = HashSet::new();
     for (entity, triggerer) in triggered {
+        if advanced.contains(&entity) {
+            continue;
+        }
         let Some(comp) = advances.get(entity) else {
             continue;
         };
@@ -425,6 +435,7 @@ pub fn quest_advance_system(world: &World) {
             comp.activator_gate,
         );
         if conditions_pass {
+            advanced.insert(entity);
             pending.push(PendingAdvance {
                 source: entity,
                 quest: comp.owning_quest,
