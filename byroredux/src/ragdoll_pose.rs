@@ -81,15 +81,75 @@
 //! varying extras — and the rigs the id set cannot tell apart from a humanoid
 //! (Protectron, Handy and Assaultron match no skeleton's ids).
 //!
-//! **Scope:** only the verified ragdolls are posed — the Skyrim/draugr
-//! humanoid, and the FO4 human, feral-ghoul and super-mutant rigs. The entry↔body order is
-//! established for the 18-body humanoid skeleton (Skyrim's `skeleton.nif`,
-//! also the draugr's), and [`HUMANOID_RAGDOLL_BODIES`] pins it by bone name: a
-//! skeleton whose ragdoll bodies are anything else — a creature, the beast
-//! races' tailed rig — is refused rather than posed from a guess, and so is a
-//! pose whose entry count (a trailing marker entry aside, see
-//! [`body_entries`]) differs from the body count. Such a corpse keeps today's
-//! behaviour: it collapses from the spawn pose.
+//! ## Other Skyrim rigs (#6068, #6069)
+//!
+//! The order rule was derived on one skeleton, so every further Skyrim rig is
+//! gated on its own evidence: `scripts/xrgd-skyrim-rigs.py` repeats #5015's two
+//! checks per rig. **Offsets**: each entry's offset length matches its body's
+//! bone length within 3 % (median over the rig's corpses) — the NIF bone's
+//! own local offset or the ragdoll `hkaSkeleton`'s bone; the humanoid needs
+//! both (calves, forearms and head follow the ragdoll skeleton's lengths, the
+//! upper arms the NIF's), 17/17 that way. **FK**: forward kinematics on the
+//! NIF bone tree ranks intrinsic XYZ with negated angles first of the 24
+//! conventions by the lying body's median vertical extent (humanoid: 24.6
+//! against 42.1 for the runner-up, 114.3 standing). Passed:
+//!
+//! - **Draugr** (`draugr\…\skeleton.nif` and `skeletonf.nif`, DraugrRace and
+//!   RigidSkeletonRace): the humanoid order, but the left foot is
+//!   `NPC L Foot [LLft ]`, so [`HUMANOID_RAGDOLL_BODIES`] never matched it and
+//!   these corpses were refused until [`DRAUGR_RAGDOLL_BODIES`]. 200 of 203
+//!   corpses carry 18 entries; offsets 17/17 within 0.4 % of the NIF's; extent
+//!   28.8 against 45.3 (126.5 standing). The 11 whose upper-arm offset is
+//!   `skeletonf.nif`'s 8.76 rather than `skeleton.nif`'s 11.35 pass on
+//!   `skeletonf.nif` alone (17/17, extent 23.4 against 49.1).
+//! - **SkeletonS** (`draugr\…\skeletons.nif`, SkeletonRace): the draugr order
+//!   with `NPC Head [Jaw]` as body 12, [`SKELETON_S_RAGDOLL_BODIES`]. 53 of 120
+//!   corpses carry 19 entries; offsets 18/18 within 0.6 % (the jaw's 2.490
+//!   against 2.491); extent 26.0 against 41.1. The other 67 are refused by the
+//!   count gate: the 65 18-entry poses fall in two families — 36 list the
+//!   draugr order without the jaw, 29 drop the neck instead (and carry
+//!   exploded offsets, up to 15 000 units) — that only the unused `bone_id`
+//!   tells apart, and the two 20-entry poses end in a constant entry, offset
+//!   `(0, -8.26, 3.28)` and rotated `(-π/2, 0, 0)`, that no body explains.
+//! - **Falmer** (FalmerRace): the humanoid order with bracketless names,
+//!   [`FALMER_RAGDOLL_BODIES`]. 20 of 20 corpses; 17/17 within 0.4 %; extent
+//!   27.8 against 53.8.
+//! - **Skeever** (SkeeverRace, SkeeverWhiteRace), [`SKEEVER_RAGDOLL_BODIES`]:
+//!   54 of 54 corpses carry 21 entries for 21 bodies; 19/19 within 1.0 % of
+//!   the NIF's (`SpineLowerSpine` has zero length); extent 26.0 against 34.4
+//!   (39.2 standing).
+//! - **Deer** (DeerRace, ElkRace), [`DEER_RAGDOLL_BODIES`]: 30 of 31 corpses
+//!   carry 24 entries for 24 bodies; 21/22 within 2.8 % of the NIF's, and
+//!   `ElkScull` (56 % off the NIF) within 0.1 % of the ragdoll skeleton's, as
+//!   the humanoid head; extent 53.4 against 102.2 (152.7 standing).
+//!
+//! Not established, so refused: the **dwarven spider** (3 of 65 corpses carry
+//! its 30 bodies' 30 entries — 29/29, rank 1, too few — 51 carry 34 and 10
+//! carry 58, whose first 30 match 18/29 and 19/29 bones); the **frostbite
+//! spider** (all 12 carry 58 entries for 48 bodies: the first 48 match 47/47,
+//! the 10 after carry real rotations no body explains); the **goat** (8 of 16
+//! carry 22 entries, 8 carry 23; `Goat_Spine2`'s offset is 0.2 against 13.4,
+//! though FK ranks first, 23.4 against 36.7); the **horse** (8 of 14 carry 27,
+//! 6 carry 26; `SaddleBone` 70.1 against 26.8; rank 1, 40.4 against 93.4); the
+//! **wolf** (12 of 12 carry 22; both `FrontLeg1` offsets are 15.4 against 8.9
+//! in the NIF and 26.9 in the ragdoll skeleton; rank 1, 32.7 against 46.6) and
+//! the dog, whose skeleton carries the same bodies and fails the same two (3
+//! corpses, rank 3); the **dwarven sphere centurion** (20 of 20, 12/13 —
+//! `NPC Pelvis` 20 % off — but rank 13: the non-negated angles lay it flatter,
+//! 49.0 against 54.9); the **chaurus** (7 of 7, 24/25 — `Ribcage[Spn3]` 4.2 %
+//! off — rank 1 by only 63.5 against 74.4); the mudcrab and slaughterfish,
+//! whose offsets match (28/28, 5/5) but whose flat bodies the extent cannot
+//! rank (11th, 3rd); the cow (22/22, but 3 corpses and 50.3 against 50.4).
+//!
+//! **Scope:** only the verified ragdolls are posed — the Skyrim humanoid,
+//! draugr, SkeletonS, falmer, skeever and deer rigs, and the FO4 human,
+//! feral-ghoul and super-mutant rigs. A Skyrim rig is pinned by its bodies'
+//! bone names in order ([`is_skyrim_posable_ragdoll`]): a skeleton whose
+//! ragdoll bodies are anything else — another creature, the beast races'
+//! tailed rig — is refused rather than posed from a guess, and so is a pose
+//! whose entry count (a trailing marker entry aside, see [`body_entries`])
+//! differs from the body count. Such a corpse keeps today's behaviour: it
+//! collapses from the spawn pose.
 
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
@@ -102,7 +162,8 @@ use byroredux_plugin::esm::cell::RagdollPoseBone;
 
 /// The humanoid ragdoll's bodies in the order the `XRGD` entries list them
 /// (the skeleton NIF's `bhkRigidBody` order), by bone name. See the module
-/// docs: the order was established from this skeleton alone.
+/// docs: the order was established from this skeleton; each other Skyrim set
+/// below was verified on its own corpses (#6068, #6069).
 pub(crate) const HUMANOID_RAGDOLL_BODIES: [&str; 18] = [
     "NPC COM [COM ]",
     "NPC L Thigh [LThg]",
@@ -122,6 +183,139 @@ pub(crate) const HUMANOID_RAGDOLL_BODIES: [&str; 18] = [
     "NPC L UpperArm [LUar]",
     "NPC L Forearm [LLar]",
     "NPC L Hand [LHnd]",
+];
+
+/// The draugr ragdoll's bodies (`draugr\…\skeleton.nif`, `skeletonf.nif`):
+/// [`HUMANOID_RAGDOLL_BODIES`] with the left foot named `[LLft ]` (#6068).
+pub(crate) const DRAUGR_RAGDOLL_BODIES: [&str; 18] = [
+    "NPC COM [COM ]",
+    "NPC L Thigh [LThg]",
+    "NPC L Calf [LClf]",
+    "NPC L Foot [LLft ]",
+    "NPC R Thigh [RThg]",
+    "NPC R Calf [RClf]",
+    "NPC R Foot [Rft ]",
+    "NPC Spine [Spn0]",
+    "NPC Spine1 [Spn1]",
+    "NPC Spine2 [Spn2]",
+    "NPC Neck [Neck]",
+    "NPC Head [Head]",
+    "NPC R UpperArm [RUar]",
+    "NPC R Forearm [RLar]",
+    "NPC R Hand [RHnd]",
+    "NPC L UpperArm [LUar]",
+    "NPC L Forearm [LLar]",
+    "NPC L Hand [LHnd]",
+];
+
+/// The skeleton-pile ragdoll's bodies (`draugr\…\skeletons.nif`,
+/// SkeletonRace): [`DRAUGR_RAGDOLL_BODIES`] with the jaw after the head (#6068).
+pub(crate) const SKELETON_S_RAGDOLL_BODIES: [&str; 19] = [
+    "NPC COM [COM ]",
+    "NPC L Thigh [LThg]",
+    "NPC L Calf [LClf]",
+    "NPC L Foot [LLft ]",
+    "NPC R Thigh [RThg]",
+    "NPC R Calf [RClf]",
+    "NPC R Foot [Rft ]",
+    "NPC Spine [Spn0]",
+    "NPC Spine1 [Spn1]",
+    "NPC Spine2 [Spn2]",
+    "NPC Neck [Neck]",
+    "NPC Head [Head]",
+    "NPC Head [Jaw]",
+    "NPC R UpperArm [RUar]",
+    "NPC R Forearm [RLar]",
+    "NPC R Hand [RHnd]",
+    "NPC L UpperArm [LUar]",
+    "NPC L Forearm [LLar]",
+    "NPC L Hand [LHnd]",
+];
+
+/// The falmer ragdoll's bodies: the humanoid order, bracketless names (#6069).
+pub(crate) const FALMER_RAGDOLL_BODIES: [&str; 18] = [
+    "NPC COM [COM ]",
+    "NPC L Thigh",
+    "NPC L Calf",
+    "NPC L Foot",
+    "NPC R Thigh",
+    "NPC R Calf",
+    "NPC R Foot",
+    "NPC Spine",
+    "NPC Spine1",
+    "NPC Spine2",
+    "NPC Neck",
+    "NPC Head",
+    "NPC R UpperArm",
+    "NPC R Forearm",
+    "NPC R Hand",
+    "NPC L UpperArm",
+    "NPC L Forearm",
+    "NPC L Hand",
+];
+
+/// The skeever ragdoll's bodies in NIF `bhkRigidBody` order (#6069).
+pub(crate) const SKEEVER_RAGDOLL_BODIES: [&str; 21] = [
+    "COG",
+    "LLeg1",
+    "LLeg3",
+    "LLegAnkle",
+    "RLeg1",
+    "RLeg3",
+    "RLegAnkle",
+    "SpineLowerSpine",
+    "SpineUpperSpine",
+    "LArm_Upper",
+    "LArm_Forearm",
+    "LArm_Palm",
+    "Neck",
+    "HEAD",
+    "RArm_Upper",
+    "RArm_Forearm",
+    "RArm_Palm",
+    "Tail1",
+    "Tail2",
+    "Tail3",
+    "Tail4",
+];
+
+/// The deer / elk ragdoll's bodies in NIF `bhkRigidBody` order (#6069).
+pub(crate) const DEER_RAGDOLL_BODIES: [&str; 24] = [
+    "Elk_COM",
+    "ElkSpine1",
+    "ElkSpine3",
+    "ElkLHumerus",
+    "ElkLRadius",
+    "ElkLMetacarpus",
+    "ElkLFrontHoof",
+    "ElkRHumerus",
+    "ElkRRadius",
+    "ElkRMetacarpus",
+    "ElkRFrontHoof",
+    "ElkNeck1",
+    "ElkNeck3",
+    "ElkNeck4",
+    "ElkScullBase",
+    "ElkScull",
+    "ElkLFemur",
+    "ElkLTibia",
+    "ElkLLargeCannon",
+    "ElkLRearHoof",
+    "ElkRFemur",
+    "ElkRTibia",
+    "ElkRLargeCannon",
+    "ElkRRearHoof",
+];
+
+/// Every Skyrim body set whose `XRGD` entry order is verified (entry `k`
+/// poses body `k`); see the module docs for each rig's evidence.
+const SKYRIM_POSABLE_RAGDOLLS: [&[&str]; 6] = [
+    &HUMANOID_RAGDOLL_BODIES,
+    &DRAUGR_RAGDOLL_BODIES,
+    &SKELETON_S_RAGDOLL_BODIES,
+    &FALMER_RAGDOLL_BODIES,
+    &SKEEVER_RAGDOLL_BODIES,
+    &DEER_RAGDOLL_BODIES,
 ];
 
 /// The FO4 human ragdoll's bodies in blob (body-id) order, by bone name.
@@ -278,14 +472,22 @@ pub(crate) fn bone_poses(
 }
 
 /// Whether a ragdoll's bodies, by bone name in template order, are exactly
-/// [`HUMANOID_RAGDOLL_BODIES`] (case-insensitive, like the template's own
-/// name resolution).
-pub(crate) fn is_humanoid_ragdoll(body_bone_names: &[Option<String>]) -> bool {
-    body_bone_names.len() == HUMANOID_RAGDOLL_BODIES.len()
+/// `set` (case-insensitive, like the template's own name resolution).
+fn is_body_set(body_bone_names: &[Option<String>], set: &[&str]) -> bool {
+    body_bone_names.len() == set.len()
         && body_bone_names
             .iter()
-            .zip(HUMANOID_RAGDOLL_BODIES)
+            .zip(set)
             .all(|(name, expected)| name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(expected)))
+}
+
+/// Whether a ragdoll's bodies, by bone name in template order, are exactly one
+/// of the verified Skyrim sets (humanoid, draugr, SkeletonS, falmer, skeever,
+/// deer), whose `XRGD` entries pose them by order.
+pub(crate) fn is_skyrim_posable_ragdoll(body_bone_names: &[Option<String>]) -> bool {
+    SKYRIM_POSABLE_RAGDOLLS
+        .into_iter()
+        .any(|set| is_body_set(body_bone_names, set))
 }
 
 /// Whether a ragdoll's bodies, by bone name in template order, are exactly one
@@ -297,14 +499,7 @@ pub(crate) fn is_fo4_posable_ragdoll(body_bone_names: &[Option<String>]) -> bool
         &FO4_GHOUL_RAGDOLL_BODIES,
         &FO4_SUPERMUTANT_RAGDOLL_BODIES,
     ];
-    sets.into_iter()
-        .any(|set| {
-            body_bone_names.len() == set.len()
-                && body_bone_names
-                    .iter()
-                    .zip(set)
-                    .all(|(name, expected)| name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(expected)))
-        })
+    sets.into_iter().any(|set| is_body_set(body_bone_names, set))
 }
 
 /// FO4: for each ragdoll body (by index), the `XRGD` entry that poses it.
@@ -388,7 +583,7 @@ pub(crate) fn pose_skeleton(
         .iter()
         .map(|&bone| crate::commands::shared::resolve_entity_name(world, bone))
         .collect();
-    let poses = if is_humanoid_ragdoll(&names) {
+    let poses = if is_skyrim_posable_ragdoll(&names) {
         bone_poses(entries, bones.len())?
     } else if is_fo4_posable_ragdoll(&names) {
         let ids: Vec<Option<u8>> = world

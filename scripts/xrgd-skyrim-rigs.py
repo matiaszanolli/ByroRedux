@@ -8,12 +8,16 @@ the gate only on its own evidence:
 
   offsets  Each entry's offset length equals its body's bone length. Reported
            as the median relative error per body (bones >= 1 unit long)
-           against three references: the NIF bone's own local offset
-           (`nif`), the ragdoll hkaSkeleton's bone (`hkx`, the second skeleton
-           in skeleton.hkx, bones named `Ragdoll_<bone>`), and the rest
-           distance from the parent body's bone (`rest`). Also per entry: which
-           body's bone length the entry's offset matches best (`argmin`) — an
-           order check that does not assume the order.
+           against four references: the NIF bone's own local offset (`nif`),
+           the ragdoll hkaSkeleton's bone (`hkx`, the second skeleton in
+           skeleton.hkx, `Ragdoll_<bone>`, some rigs with an `01` suffix), the
+           animation hkaSkeleton's bone of the same name (`anim`, the first),
+           and the rest distance from the parent body's bone (`rest`); `any`
+           counts the bones that match at least one — the verified humanoid
+           matches 17/17 that way (its calves, forearms and head follow `hkx`,
+           its upper arms `nif`). Also per entry: which body's NIF bone length
+           the entry's offset matches best (`argmin`), an order check that does
+           not assume the order.
   FK       Forward kinematics of the corpse on the real NIF bone tree under all
            24 Euler conventions, ranked by the median vertical extent of the
            ragdoll bones (how flat the lying body is); the verified humanoid
@@ -34,6 +38,13 @@ Inputs (tools in this repo; one file per rig name):
 Usage: xrgd-skyrim-rigs.py <poses.jsonl> <rigs-dir> <rig>=<Race>[,<Race>..] [..]
        (append `:<n>` to a rig to analyse only poses with n body entries; default:
         the body count)
+
+The #6068 / #6069 run (rig names are whatever the dumps were saved as):
+  skeletons=SkeletonRace  draugr=DraugrRace,RigidSkeletonRace  falmer=FalmerRace
+  skeever=SkeeverRace,SkeeverWhiteRace  deer=DeerRace,ElkRace  goat=GoatRace
+  horse=HorseRace  wolf=WolfRace  dwarvenspider=DwarvenSpiderRace
+  frostbitespider:58=FrostbiteSpiderRace,FrostbiteSpiderRaceLarge
+  dwarvenspherecenturion=DwarvenSphereRace  chaurus=ChaurusRace,ChaurusReaperRace
 """
 import collections
 import itertools
@@ -78,14 +89,22 @@ def load_rig(rig):
         if d['name'] not in tree:
             tree[d['name']] = d
             order.append(d['name'])
-    hkx = {}
+    hkx, anim = {}, {}
     path = f'{RIGS_DIR}/hkx/{rig}.txt'
     if os.path.exists(path):
         for line in open(path):
-            m = re.match(r'1\s+\d+\s+"Ragdoll_(.*?)".*translation: \[(.*?)\]', line)
-            if m:
-                hkx[m.group(1).lower()] = np.array([float(x) for x in m.group(2).split(',')])
-    return bodies, parent_body, tree, order, hkx
+            m = re.match(r'([01])\s+\d+\s+"(.*?)".*translation: \[(.*?)\]', line)
+            if not m:
+                continue
+            t = np.array([float(x) for x in m.group(3).split(',')])
+            if m.group(1) == '1':
+                # `Ragdoll_<bone>`, some rigs with an `01` suffix.
+                name = m.group(2).lower().removeprefix('ragdoll_')
+                hkx[name] = t
+                hkx.setdefault(name.removesuffix('01'), t)
+            else:
+                anim[m.group(2).lower()] = t
+    return bodies, parent_body, tree, order, hkx, anim
 
 
 def rest_world(tree, order):
@@ -133,7 +152,7 @@ for spec in SPECS:
         rig, want = rig.split(':')
         want = int(want)
     races = set(races.split(','))
-    bodies, parent_body, tree, order, hkx = load_rig(rig)
+    bodies, parent_body, tree, order, hkx, anim = load_rig(rig)
     want = want or len(bodies)
     corpses = [r for r in dead if r['race'] in races]
     counts = collections.Counter(len(strip_marker(r['entries'])) for r in corpses)
@@ -151,17 +170,19 @@ for spec in SPECS:
         b: {
             'nif': float(np.linalg.norm(tree[b]['t'])),
             'hkx': float(np.linalg.norm(hkx[b.lower()])) if b.lower() in hkx else None,
+            'anim': float(np.linalg.norm(anim[b.lower()])) if b.lower() in anim else None,
             'rest': float(np.linalg.norm(rest[b] - rest[bodies[parent_body[k]]])) if k in parent_body else None,
         }
         for k, b in enumerate(bodies)
     }
-    print(f'  {"k":>2} {"body":28} {"entry |off|":>11} {"nif":>8} {"err":>6} {"hkx":>8} {"err":>6} {"rest":>8} {"err":>6}  argmin(nif)')
-    passed = {'nif': [0, 0], 'hkx': [0, 0], 'rest': [0, 0]}
+    print(f'  {"k":>2} {"body":28} {"entry |off|":>11} {"nif":>8} {"err":>6} {"hkx":>8} {"err":>6} {"anim":>8} {"err":>6} {"rest":>8} {"err":>6}  argmin(nif)')
+    passed = {'nif': [0, 0], 'hkx': [0, 0], 'anim': [0, 0], 'rest': [0, 0], 'any': [0, 0]}
     for k in range(min(want, len(bodies))):
         off = float(np.median([np.linalg.norm(strip_marker(r['entries'])[k][1:4]) for r in use]))
         name = bodies[k]
         cells = []
-        for ref in ('nif', 'hkx', 'rest'):
+        any_ok = None
+        for ref in ('nif', 'hkx', 'anim', 'rest'):
             L = lengths[name][ref]
             if L is None:
                 cells.append(f'{"-":>8} {"-":>6}')
@@ -172,16 +193,22 @@ for spec in SPECS:
                 m = float(np.median(errs))
                 passed[ref][1] += 1
                 passed[ref][0] += m <= 0.03
+                any_ok = bool(any_ok) or m <= 0.03
                 cells.append(f'{L:8.3f} {m:6.1%}')
             else:
                 cells.append(f'{L:8.3f} {"-":>6}')
+        if any_ok is False and k > 0 and lengths[name]['nif'] < 1.0 and off < 1.0:
+            any_ok = True  # a zero-length NIF bone, and an entry that agrees
+        if any_ok is not None:
+            passed['any'][1] += 1
+            passed['any'][0] += any_ok
         best = min(range(len(bodies)), key=lambda b: abs(lengths[bodies[b]]['nif'] - off))
         print(f'  {k:>2} {name:28} {off:11.3f} ' + ' '.join(cells) + f'  {best} {bodies[best]}')
     print('  offsets within 3 % (bones >= 1 unit): ' + ', '.join(f'{ref} {p}/{n}' for ref, (p, n) in passed.items()))
     if want != len(bodies):
         continue
-    results = []
     sample = use[:MAX_FK_CORPSES]
+    results = []
     for seq in map(''.join, itertools.permutations('xyz')):
         for intrinsic in (False, True):
             for sign in (1, -1):

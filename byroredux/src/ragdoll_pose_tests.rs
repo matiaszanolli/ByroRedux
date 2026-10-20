@@ -321,16 +321,115 @@ fn reconciliation_poses_before_ragdoll_activation() {
 #[test]
 fn the_humanoid_body_set_is_matched_by_name_in_order() {
     let names: Vec<Option<String>> = HUMANOID_RAGDOLL_BODIES.iter().map(|n| Some(n.to_string())).collect();
-    assert!(is_humanoid_ragdoll(&names));
+    assert!(is_skyrim_posable_ragdoll(&names));
     let lower: Vec<Option<String>> = HUMANOID_RAGDOLL_BODIES.iter().map(|n| Some(n.to_ascii_lowercase())).collect();
-    assert!(is_humanoid_ragdoll(&lower), "case-insensitive");
+    assert!(is_skyrim_posable_ragdoll(&lower), "case-insensitive");
     let mut swapped = names.clone();
     swapped.swap(1, 4);
-    assert!(!is_humanoid_ragdoll(&swapped), "order matters");
-    assert!(!is_humanoid_ragdoll(&names[..17]));
+    assert!(!is_skyrim_posable_ragdoll(&swapped), "order matters");
+    assert!(!is_skyrim_posable_ragdoll(&names[..17]));
     let mut unnamed = names;
     unnamed[3] = None;
-    assert!(!is_humanoid_ragdoll(&unnamed));
+    assert!(!is_skyrim_posable_ragdoll(&unnamed));
+}
+
+// ---- Other Skyrim rigs (#6068, #6069) --------------------------------------
+
+fn owned_names(set: &[&str]) -> Vec<Option<String>> {
+    set.iter().map(|n| Some(n.to_string())).collect()
+}
+
+/// Each verified Skyrim rig is recognised only as its full, ordered body set:
+/// a truncated or renamed set, an unverified rig (the canine bodies the wolf
+/// and dog share) and the FO4 sets are not.
+#[test]
+fn the_verified_skyrim_body_sets_are_recognised_by_name_only_in_full() {
+    let sets: [&[&str]; 6] = [
+        &HUMANOID_RAGDOLL_BODIES,
+        &DRAUGR_RAGDOLL_BODIES,
+        &SKELETON_S_RAGDOLL_BODIES,
+        &FALMER_RAGDOLL_BODIES,
+        &SKEEVER_RAGDOLL_BODIES,
+        &DEER_RAGDOLL_BODIES,
+    ];
+    for set in sets {
+        let names = owned_names(set);
+        assert!(is_skyrim_posable_ragdoll(&names), "{:?}", set[1]);
+        assert!(!is_skyrim_posable_ragdoll(&names[..names.len() - 1]), "{:?} truncated", set[1]);
+        let mut renamed = names.clone();
+        renamed[2] = Some("Canine_Tail1".to_owned());
+        assert!(!is_skyrim_posable_ragdoll(&renamed), "{:?} renamed", set[1]);
+        assert!(!is_fo4_posable_ragdoll(&names), "{:?} is not an FO4 set", set[1]);
+    }
+    // The draugr rig is the humanoid's but for the left foot's `[LLft ]`, which
+    // kept it off the humanoid gate (#6068).
+    let differing: Vec<usize> = (0..18)
+        .filter(|&i| HUMANOID_RAGDOLL_BODIES[i] != DRAUGR_RAGDOLL_BODIES[i])
+        .collect();
+    assert_eq!(differing, [3]);
+    // SkeletonS is the draugr rig with the jaw after the head.
+    let mut with_jaw = DRAUGR_RAGDOLL_BODIES.to_vec();
+    with_jaw.insert(12, "NPC Head [Jaw]");
+    assert_eq!(with_jaw, SKELETON_S_RAGDOLL_BODIES);
+    // The canine rig (wolf, dog) and the FO4 human are not verified Skyrim sets.
+    let canine = [
+        "Canine_COM", "Canine_Spine1", "Canine_Spine3", "Canine_LFrontLeg1", "Canine_LFrontLeg2",
+        "Canine_LFrontLegPalm", "Canine_RFrontLeg1", "Canine_RFrontLeg2", "Canine_RFrontLegPalm",
+        "Canine_Neck2", "Canine_Head", "Canine_LBackLeg1", "Canine_LBackLeg2", "Canine_LBackLegPalm",
+        "Canine_LBackLegToe", "Canine_RBackLeg1", "Canine_RBackLeg2", "Canine_RBackLegPalm",
+        "Canine_RBackLegToe", "Canine_Tail1", "Canine_Tail2", "Canine_Tail3",
+    ];
+    assert!(!is_skyrim_posable_ragdoll(&owned_names(&canine)));
+    assert!(!is_skyrim_posable_ragdoll(&owned_names(&FO4_HUMAN_RAGDOLL_BODIES)));
+}
+
+/// Entries carrying rotation `k * 0.01` about Z-up Z, so each posed bone names
+/// the entry that posed it.
+fn ordered_entries(count: usize) -> Vec<RagdollPoseBone> {
+    (0..count).map(|k| entry([0.0, 0.0, 1.0], [0.0, 0.0, 0.01 * (k + 1) as f32])).collect()
+}
+
+/// A rig on a verified Skyrim body set is posed by order: entry `k` poses body
+/// `k`, a trailing marker aside.
+#[test]
+fn the_verified_skyrim_creature_rigs_are_posed_by_order() {
+    for (set, marker) in [
+        (&DRAUGR_RAGDOLL_BODIES[..], None),
+        (&SKELETON_S_RAGDOLL_BODIES[..], Some([0.0, 28.71, 108.18])),
+        (&FALMER_RAGDOLL_BODIES[..], None),
+        (&SKEEVER_RAGDOLL_BODIES[..], None),
+        (&DEER_RAGDOLL_BODIES[..], Some([0.0, 32.45, 104.06])),
+    ] {
+        let mut world = World::new();
+        let (root, bones) = bone_chain(&mut world, set, &vec![None; set.len()]);
+        let mut entries = ordered_entries(set.len());
+        if let Some(position) = marker {
+            entries.push(entry(position, [0.0; 3]));
+        }
+        assert_eq!(pose_skeleton(&world, root, &entries), Ok(set.len()), "{:?}", set[1]);
+        let rotation = |bone| world.get::<Transform>(bone).unwrap().rotation;
+        for (k, &bone) in bones.iter().enumerate() {
+            assert!(same_rotation(rotation(bone), expected_yup(0.0, 0.0, 0.01 * (k + 1) as f32)));
+        }
+        assert_eq!(world.get::<Transform>(bones[0]).unwrap().translation, Vec3::ZERO);
+    }
+}
+
+/// #6068 — SkeletonS poses only its 19-entry poses. The 18-entry ones (two
+/// families only the unused `bone_id` tells apart: without the jaw, or without
+/// the neck) and the 20-entry ones (a constant extra entry no body explains)
+/// are refused untouched.
+#[test]
+fn a_skeleton_s_pose_without_the_jaw_or_with_an_extra_entry_is_refused() {
+    let mut world = World::new();
+    let (root, bones) = bone_chain(&mut world, &SKELETON_S_RAGDOLL_BODIES, &[None; 19]);
+    let before = world.get::<Transform>(bones[12]).unwrap().rotation;
+    let mut extra = ordered_entries(19);
+    extra.push(entry([0.0, -8.258, 3.28], [-std::f32::consts::FRAC_PI_2, 0.0, 0.0]));
+    for entries in [ordered_entries(18), extra] {
+        assert!(pose_skeleton(&world, root, &entries).is_err(), "{} entries", entries.len());
+        assert_eq!(world.get::<Transform>(bones[12]).unwrap().rotation, before);
+    }
 }
 
 #[test]
@@ -354,7 +453,9 @@ fn posing_without_a_template_or_with_a_wrong_count_changes_nothing() {
 /// its race loads. The humanoid skeleton (the one the mapping was derived
 /// from) must line up entry-for-body for the large majority of its corpses;
 /// the rest are reported — a mismatch is exactly what the production count
-/// gate refuses.
+/// gate refuses. #6068 / #6069: the corpses the production gate poses (a
+/// verified body set, an entry count equal to its body count) are pinned per
+/// skeleton, and every other skeleton poses none.
 ///
 ///   cargo test -p byroredux --bin byroredux xrgd_entry_counts -- --ignored --nocapture
 #[test]
@@ -378,9 +479,11 @@ fn xrgd_entry_counts_match_the_humanoid_ragdoll_bodies() {
     }
     let index = byroredux_plugin::esm::records::parse_esm(&std::fs::read(&esm).unwrap()).unwrap();
     let archive = byroredux_bsa::BsaArchive::open(&meshes).unwrap();
-    let mut bodies_of: std::collections::HashMap<String, Option<usize>> = Default::default();
-    // skeleton → (corpses, entry count == body count, distinct entry counts)
-    let mut tally: BTreeMap<String, (usize, usize, std::collections::BTreeSet<usize>)> = BTreeMap::new();
+    // skeleton → (ragdoll body count, on a verified Skyrim body set)
+    let mut bodies_of: std::collections::HashMap<String, Option<(usize, bool)>> = Default::default();
+    // skeleton → (corpses, entry count == body count, distinct entry counts, posed)
+    type Tally = (usize, usize, std::collections::BTreeSet<usize>, usize);
+    let mut tally: BTreeMap<String, Tally> = BTreeMap::new();
 
     let mut visit = |r: &byroredux_plugin::esm::cell::PlacedRef| {
         if !r.starts_dead || r.ragdoll_pose.is_empty() {
@@ -403,13 +506,19 @@ fn xrgd_entry_counts_match_the_humanoid_ragdoll_bodies() {
         let bodies = *bodies_of.entry(path.clone()).or_insert_with(|| {
             let name = archive.list_files().into_iter().find(|f| f.to_ascii_lowercase() == path)?;
             let scene = byroredux_nif::parse_nif(&archive.extract(name).ok()?).ok()?;
-            byroredux_nif::import::collision::extract_ragdoll(&scene).map(|r| r.bodies.len())
+            byroredux_nif::import::collision::extract_ragdoll(&scene).map(|r| {
+                let names: Vec<Option<String>> =
+                    r.bodies.iter().map(|b| Some(b.bone_name.to_string())).collect();
+                (r.bodies.len(), is_skyrim_posable_ragdoll(&names))
+            })
         });
         let entry = tally.entry(path).or_default();
         entry.0 += 1;
         let body_entries = body_entries(&r.ragdoll_pose);
-        entry.1 += usize::from(bodies == Some(body_entries.len()));
+        let matching = bodies.is_some_and(|(count, _)| count == body_entries.len());
+        entry.1 += usize::from(matching);
         entry.2.insert(body_entries.len());
+        entry.3 += usize::from(matching && bodies.is_some_and(|(_, posable)| posable));
     };
     for cell in index.cells.cells.values() {
         cell.references.iter().for_each(&mut visit);
@@ -419,9 +528,10 @@ fn xrgd_entry_counts_match_the_humanoid_ragdoll_bodies() {
             cell.references.iter().for_each(&mut visit);
         }
     }
-    for (skeleton, (corpses, matching, counts)) in &tally {
+    for (skeleton, (corpses, matching, counts, posed)) in &tally {
         eprintln!(
-            "{skeleton}: {corpses} corpses, {matching} entry-count == body-count, entry counts {counts:?}, bodies {:?}",
+            "{skeleton}: {corpses} corpses, {matching} entry-count == body-count, entry counts {counts:?}, \
+             (bodies, verified set) {:?}, posed {posed}",
             bodies_of[skeleton]
         );
     }
@@ -447,6 +557,29 @@ fn xrgd_entry_counts_match_the_humanoid_ragdoll_bodies() {
         "the draugr skeleton's corpses line up entry-for-body, got {} of {}",
         draugr.1,
         draugr.0
+    );
+    // #6068 / #6069 — the posed corpses per verified skeleton, measured
+    // 2026-10-20 (`scripts/xrgd-skyrim-rigs.py` carries each rig's evidence).
+    // The draugr rigs were posed by none before #6068: their left foot is
+    // `[LLft ]`, not the humanoid's `[Lft ]`.
+    let posed: Vec<(&str, usize)> = tally
+        .iter()
+        .filter(|(_, t)| t.3 > 0)
+        .map(|(skeleton, t)| (skeleton.as_str(), t.3))
+        .collect();
+    assert_eq!(
+        posed,
+        [
+            ("meshes\\actors\\character\\character assets female\\skeleton_female.nif", 100),
+            ("meshes\\actors\\character\\character assets\\skeleton.nif", 273),
+            ("meshes\\actors\\deer\\character assets\\skeleton.nif", 30),
+            ("meshes\\actors\\draugr\\character assets\\skeleton.nif", 165),
+            ("meshes\\actors\\draugr\\character assets\\skeletonf.nif", 35),
+            ("meshes\\actors\\draugr\\character assets\\skeletons.nif", 53),
+            ("meshes\\actors\\falmer\\character assets\\skeleton.nif", 20),
+            ("meshes\\actors\\skeever\\character assets\\skeleton.nif", 54),
+        ],
+        "the corpses posed per skeleton; every other skeleton poses none"
     );
 }
 
