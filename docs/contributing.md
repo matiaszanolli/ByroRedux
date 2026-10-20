@@ -317,6 +317,19 @@ them. Run the suites above locally, and do not treat a queued or cancelled
 workflow run as a passing gate. Restore the schedule after registering the
 runner (#5905).
 
+The closed-HIGH/CRITICAL regression pins — the `#[ignore]`d real-data tests behind
+fixed HIGH issues — are listed in `.github/real-data-pins.txt` and run, one cargo
+process per pin, by `scripts/run-real-data-pins.sh [filter]` (`--list` prints
+them). The workflow's `closed-high-pins` job calls the same script, so a local run
+is the same command. A new closed-HIGH real-data test appends one
+`<lane> <test title>` line there; the hosted test
+`every_real_data_pin_names_an_ignored_test_in_its_lane` fails if a title does not
+resolve to an `#[ignore]`d `fn` in its lane (#6182, #6183). The
+`rt-correctness.yml` golden-frame/Cornell gates are likewise manual-only (no
+`byroredux-rt` runner): run `cargo test --release -p byroredux --test golden_frames
+-- --ignored` on the RT dev box and regenerate with `BYROREDUX_REGEN_GOLDEN=1`
+when a shader change moves a golden.
+
 ---
 
 ## Conventions

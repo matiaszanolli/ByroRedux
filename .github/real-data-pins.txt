@@ -1,0 +1,74 @@
+# Closed-HIGH/CRITICAL real-data pins — one per line: "<lane> <test title>".
+#
+# The lane names the cargo target (see `scripts/run-real-data-pins.sh`); the title
+# is a libtest substring filter and each pin runs in its own process, which is the
+# memory bound (one `parse_real_esm.rs` process that loads every master spikes
+# past 20 GB). The runner refuses a green no-op, so a typo'd title fails rather
+# than passing vacuously, and `workspace_hygiene_tests`
+# (`every_real_data_pin_names_an_ignored_test_in_its_lane`) checks on every
+# hosted run that each title is a real `#[ignore]`d `fn` in its lane's sources.
+#
+# New closed-HIGH pins append here. Lanes: plugin-lib, plugin-esm, bin, nif-corpus.
+# Run them with `scripts/run-real-data-pins.sh [filter]` (#5799, #6182, #6183).
+
+# plugin lib (records / actor / cell integration)
+plugin-lib fallout3_ruleset_resolves_against_the_real_master
+plugin-lib falloutnv_ruleset_resolves_against_the_real_master
+plugin-lib fallout4_ruleset_resolves_against_the_real_master
+plugin-lib skyrim_ruleset_resolves_against_the_real_master
+plugin-lib skyrim_bodt_body_templates_decode_their_biped_masks
+plugin-lib parse_real_fnv_dial_infos_populated
+plugin-lib parse_real_fo4_dialogues_and_scenes_populated
+plugin-lib parse_real_starfield_dialogues_and_scenes_populated
+plugin-lib parse_real_fnv_race_head_parts_exclude_the_body_section
+plugin-lib parse_real_fo3_megaton_cell_baseline
+plugin-lib parse_real_skyrim_esm
+plugin-lib merge_real_dawnguard_partial_cells_preserves_skyrim_landscape
+plugin-lib parse_real_fo4_esm_surfaces_scol_placements
+plugin-lib parse_real_fo4_esm_surfaces_pkin_contents
+plugin-lib parse_real_oblivion_esm_surfaces_tamriel_worldspace
+plugin-lib parse_real_fo3_esm_surfaces_wasteland_worldspace
+# plugin parse_real_esm integration harness
+plugin-esm fnv_corpses_key_on_base_health_not_xrgd
+plugin-esm fo3_fnv_named_npc_health_matches_the_authored_curve
+plugin-esm fo4_starts_unconscious_and_xrgd_poses_match_the_census
+plugin-esm skyrim_xrgd_poses_match_the_census_and_nothing_is_unconscious
+plugin-esm fo4_pkin_cnam_targets_are_template_cells
+plugin-esm fallout3_dial_topic_flags_census
+plugin-esm fnv_karma_good_global_decodes_float_payload_before_narrowing
+plugin-esm oblivion_spawn_time_global_decodes_float_payload_before_narrowing
+plugin-esm fnv_actor_value_roster_and_health_resolve_on_shipped_master
+plugin-esm fnv_armo_female_meshes_are_parsed_and_selected
+plugin-esm parse_rate_oblivion_esm
+plugin-esm clas_oblivion_knight_against_vanilla
+plugin-esm parse_rate_fnv_pack_pldt_location
+plugin-esm installed_masters_per_water_scalars_are_not_decoded_constants
+plugin-esm fnv_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master
+plugin-esm skyrim_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master
+# byroredux bin (inventory / asset provider / npc spawn / cell loader)
+bin starfield_cydonia_pack_ins_instance_their_template_cells
+bin fo3_fnv_script_killed_corpses_match_the_measured_census
+bin installed_fnv_player_base_builds_a_nonempty_template
+bin facegen_tool_path_resolves_via_basename_fallback
+bin nested_draugr_template_resolves_traits_on_real_skyrim_data
+bin race_skeletons_match_authored_paths_on_real_skyrim_data
+bin installed_oblivion_body_paths_exist_in_the_meshes_archive
+bin installed_fnv_sunny_smiles_selects_the_female_body
+bin installed_oblivion_creature_assets_resolve_from_their_records
+bin bannered_mare_npcs_resolve_a_full_equip_state_on_real_skyrim_data
+bin creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data
+bin helmeted_npcs_get_a_facegen_hide_mask_on_real_skyrim_data
+bin bannered_mare_outfits_keep_every_inam_entry_on_real_skyrim_data
+bin distant_water_mesh_is_per_cell_on_real_fnv
+bin dlc_rebake_of_a_master_owned_cell_decodes_from_the_dlc_csg
+bin exterior_precombine_instances_are_world_absolute
+bin riverwater_flowne_real_record_layers_run_downstream
+# nif whole-corpus harnesses that cite closed-HIGH fixes but sit
+# outside the three binaries the corpus job names. #5784: the first two
+# are Dim 3 real-data tests whose names carry no game token, so no corpus
+# substring filter reaches them (#6183: they live in `translation_completeness`
+# and `parse_real_nifs`, so their lane is nif-corpus, not bin).
+nif-corpus dark_texture_role_population_matches_the_documented_census
+nif-corpus real_archive_torch_meshes_surface_particle_emitters
+nif-corpus lod_and_facegen_geometry_no_longer_imports_flat
+nif-corpus cross_game_translation_completeness

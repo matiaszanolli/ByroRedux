@@ -280,7 +280,7 @@ jobs:
   # objection was waiting for.
   closed-high-pins:
     name: closed-HIGH real-data pins
-    if: github.event_name == 'schedule' || inputs.game == 'all' || inputs.game == 'pins'
+    if: inputs.game == 'all' || inputs.game == 'pins'
     runs-on: [self-hosted, linux, x64, byroredux-game-data]
     timeout-minutes: 240
     steps:
@@ -295,116 +295,10 @@ jobs:
           SKYRIMLE_DATA: ${{ vars.BYROREDUX_SKYRIMLE_DATA }}
           # #3850 — an absent install fails instead of skipping.
           BYROREDUX_REQUIRE_GAME_DATA: "1"
-        run: |
-          set -euo pipefail
-          export BYROREDUX_OBLIVION_DATA="${GAMES_ROOT}/Oblivion/Data"
-          export BYROREDUX_FO3_DATA="${GAMES_ROOT}/Fallout 3 goty/Data"
-          export BYROREDUX_FNV_DATA="${GAMES_ROOT}/Fallout New Vegas/Data"
-          export BYROREDUX_SKYRIMSE_DATA="${GAMES_ROOT}/Skyrim Special Edition/Data"
-          export BYROREDUX_FO4_DATA="${GAMES_ROOT}/Fallout 4/Data"
-          export BYROREDUX_FO76_DATA="${GAMES_ROOT}/Fallout76/Data"
-          export BYROREDUX_STARFIELD_DATA="${GAMES_ROOT}/Starfield/Data"
-          if [ -n "${SKYRIMLE_DATA}" ]; then
-            export BYROREDUX_SKYRIMLE_DATA="${SKYRIMLE_DATA}"
-          fi
-          # One line per pin: "<lane> <test title>". The lane names the cargo
-          # target; the title is a substring filter (libtest ORs nothing —
-          # each process runs exactly one pin, which is the memory bound).
-          # New closed-HIGH pins append here (the lane refuses a green no-op,
-          # so a typo'd title fails rather than passing vacuously).
-          pins=(
-            # plugin lib (records / actor / cell integration)
-            "plugin-lib fallout3_ruleset_resolves_against_the_real_master"
-            "plugin-lib falloutnv_ruleset_resolves_against_the_real_master"
-            "plugin-lib fallout4_ruleset_resolves_against_the_real_master"
-            "plugin-lib skyrim_ruleset_resolves_against_the_real_master"
-            "plugin-lib skyrim_bodt_body_templates_decode_their_biped_masks"
-            "plugin-lib parse_real_fnv_dial_infos_populated"
-            "plugin-lib parse_real_fo4_dialogues_and_scenes_populated"
-            "plugin-lib parse_real_starfield_dialogues_and_scenes_populated"
-            "plugin-lib parse_real_fnv_race_head_parts_exclude_the_body_section"
-            "plugin-lib parse_real_fo3_megaton_cell_baseline"
-            "plugin-lib parse_real_skyrim_esm"
-            "plugin-lib merge_real_dawnguard_partial_cells_preserves_skyrim_landscape"
-            "plugin-lib parse_real_fo4_esm_surfaces_scol_placements"
-            "plugin-lib parse_real_fo4_esm_surfaces_pkin_contents"
-            "plugin-lib parse_real_oblivion_esm_surfaces_tamriel_worldspace"
-            "plugin-lib parse_real_fo3_esm_surfaces_wasteland_worldspace"
-            # plugin parse_real_esm integration harness
-            "plugin-esm fnv_corpses_key_on_base_health_not_xrgd"
-            "plugin-esm fo4_starts_unconscious_and_xrgd_poses_match_the_census"
-            "plugin-esm skyrim_xrgd_poses_match_the_census_and_nothing_is_unconscious"
-            "plugin-esm fo4_pkin_cnam_targets_are_template_cells"
-            "plugin-esm fallout3_dial_topic_flags_census"
-            "plugin-esm fnv_karma_good_global_decodes_float_payload_before_narrowing"
-            "plugin-esm oblivion_spawn_time_global_decodes_float_payload_before_narrowing"
-            "plugin-esm fnv_actor_value_roster_and_health_resolve_on_shipped_master"
-            "plugin-esm fnv_armo_female_meshes_are_parsed_and_selected"
-            "plugin-esm parse_rate_oblivion_esm"
-            "plugin-esm clas_oblivion_knight_against_vanilla"
-            "plugin-esm parse_rate_fnv_pack_pldt_location"
-            "plugin-esm installed_masters_per_water_scalars_are_not_decoded_constants"
-            "plugin-esm fnv_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master"
-            "plugin-esm skyrim_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master"
-            # byroredux bin (inventory / asset provider / npc spawn / cell loader)
-            "bin installed_fnv_player_base_builds_a_nonempty_template"
-            "bin facegen_tool_path_resolves_via_basename_fallback"
-            "bin nested_draugr_template_resolves_traits_on_real_skyrim_data"
-            "bin race_skeletons_match_authored_paths_on_real_skyrim_data"
-            "bin installed_oblivion_body_paths_exist_in_the_meshes_archive"
-            "bin installed_fnv_sunny_smiles_selects_the_female_body"
-            "bin installed_oblivion_creature_assets_resolve_from_their_records"
-            "bin bannered_mare_npcs_resolve_a_full_equip_state_on_real_skyrim_data"
-            "bin creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data"
-            "bin helmeted_npcs_get_a_facegen_hide_mask_on_real_skyrim_data"
-            "bin bannered_mare_outfits_keep_every_inam_entry_on_real_skyrim_data"
-            "bin distant_water_mesh_is_per_cell_on_real_fnv"
-            "bin dlc_rebake_of_a_master_owned_cell_decodes_from_the_dlc_csg"
-            "bin exterior_precombine_instances_are_world_absolute"
-            "bin riverwater_flowne_real_record_layers_run_downstream"
-            # #5784 — Dim 3 real-data tests whose names carry no game token,
-            # so no corpus substring filter reaches them.
-            "bin dark_texture_role_population_matches_the_documented_census"
-            "bin real_archive_torch_meshes_surface_particle_emitters"
-            # nif whole-corpus harnesses that cite closed-HIGH fixes but sit
-            # outside the three binaries the corpus job names
-            "nif-corpus lod_and_facegen_geometry_no_longer_imports_flat"
-            "nif-corpus cross_game_translation_completeness"
-          )
-          mkdir -p target/real-data-gates
-          failed=0
-          for pin in "${pins[@]}"; do
-            lane="${pin%% *}"
-            title="${pin#* }"
-            case "${lane}" in
-              plugin-lib) target="-p byroredux-plugin --lib" ;;
-              plugin-esm) target="-p byroredux-plugin --test parse_real_esm" ;;
-              bin) target="-p byroredux --bin byroredux" ;;
-              nif-corpus) target="-p byroredux-nif --test normal_synthesis_corpus --test translation_completeness" ;;
-            esac
-            log="target/real-data-gates/pins-${title}.log"
-            echo "::group::${title}"
-            # shellcheck disable=SC2086 — ${target} is a word list by design.
-            if ! cargo test --release --no-fail-fast ${target} "${title}"                 -- --ignored --test-threads=1 --nocapture 2>&1 | tee "${log}"; then
-              echo "::endgroup::"
-              echo "::error::closed-HIGH pin '${title}' failed"
-              failed=1
-              continue
-            fi
-            echo "::endgroup::"
-            # Refuse the green no-op, as every other job in this lane does.
-            ran_ok=$(grep -cE '^test .* \.\.\. ok$' "${log}" || true)
-            if [ "${ran_ok}" -eq 0 ]; then
-              echo "::error::closed-HIGH pin '${title}' matched nothing (green no-op)"
-              failed=1
-            else
-              echo "pin '${title}': ${ran_ok} test(s) ran"
-            fi
-          done
-          if [ "${failed}" -eq 0 ]; then
-            echo "all ${#pins[@]} closed-HIGH pins green"
-          fi
-          exit "${failed}"
+        # The pin list is `.github/real-data-pins.txt`; the loop, lane -> cargo
+        # target map and the green-no-op refusal live in the script so a local
+        # run is the same command (#6182).
+        run: scripts/run-real-data-pins.sh
       - name: Publish pin logs
         if: always()
         uses: actions/upload-artifact@v4

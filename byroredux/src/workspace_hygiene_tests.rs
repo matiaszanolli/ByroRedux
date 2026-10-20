@@ -989,3 +989,175 @@ fn example_targets_hold_their_per_crate_ceilings() {
         failures.join("\n"),
     );
 }
+
+/// #6183 — every `fn` in `source` as `(name, carries_an_ignore_attribute)`.
+///
+/// The attribute block above a `fn` is the run of `#[…]` / `//` lines
+/// directly over it; the scan walks back until it reaches the previous item
+/// (a line ending in `}` or `;` that is not itself an attribute or comment).
+fn fns_with_ignore_flag(source: &str) -> Vec<(String, bool)> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        let t = t
+            .strip_prefix("pub(crate) ")
+            .or_else(|| t.strip_prefix("pub "))
+            .unwrap_or(t);
+        let Some(rest) = t.strip_prefix("fn ") else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        let mut ignored = false;
+        for prev in lines[..i].iter().rev().take(12) {
+            let p = prev.trim();
+            if p.starts_with("#[ignore") {
+                ignored = true;
+                break;
+            }
+            let is_attr_or_comment = p.starts_with("#[") || p.starts_with("//");
+            if !is_attr_or_comment && (p.ends_with('}') || p.ends_with(';')) {
+                break;
+            }
+        }
+        out.push((name, ignored));
+    }
+    out
+}
+
+/// #6183 — the source files a `real-data-pins.txt` lane's cargo target compiles
+/// its tests from (the same lane → target map as `scripts/run-real-data-pins.sh`).
+fn real_data_pin_lane_sources(root: &std::path::Path, lane: &str) -> Option<Vec<String>> {
+    let mut sources = Vec::new();
+    let mut add_dir = |dir: &str| {
+        visit_workspace_rs_files(&root.join(dir), &mut |_, contents| {
+            sources.push(contents.to_string());
+        });
+    };
+    match lane {
+        "plugin-lib" => add_dir("crates/plugin/src"),
+        "bin" => add_dir("byroredux/src"),
+        "plugin-esm" | "nif-corpus" => {
+            let files: &[&str] = if lane == "plugin-esm" {
+                &["crates/plugin/tests/parse_real_esm.rs"]
+            } else {
+                &[
+                    "crates/nif/tests/normal_synthesis_corpus.rs",
+                    "crates/nif/tests/translation_completeness.rs",
+                    "crates/nif/tests/parse_real_nifs.rs",
+                ]
+            };
+            for f in files {
+                sources.push(std::fs::read_to_string(root.join(f)).unwrap_or_default());
+            }
+        }
+        _ => return None,
+    }
+    Some(sources)
+}
+
+/// #6183 (TD9-2026-10-19-02) — `.github/real-data-pins.txt` is the closed-HIGH
+/// regression net: real-data tests that no default lane runs. Nothing executes it
+/// on a hosted runner (the repo has no self-hosted runner, #6182), so a pin that
+/// names the wrong lane or a renamed test is invisible until someone runs the
+/// pins by hand — two rows had named the `bin` lane for tests that live in
+/// `byroredux-nif`. This hosted-runnable guard keeps the list honest: every pin's
+/// title must be (a substring of) a real `fn` in the sources its lane's cargo
+/// target compiles, and that `fn` must be `#[ignore]`d (else `--ignored` runs
+/// nothing and the runner's green-no-op refusal turns the lane red forever).
+#[test]
+fn every_real_data_pin_names_an_ignored_test_in_its_lane() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let pins = std::fs::read_to_string(root.join(".github/real-data-pins.txt"))
+        .expect("`.github/real-data-pins.txt` is the closed-HIGH pin list (#6182); it moved");
+    let mut failures = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut count = 0usize;
+    let mut sources_by_lane: std::collections::HashMap<String, Vec<String>> = Default::default();
+    for (idx, raw) in pins.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        count += 1;
+        let at = idx + 1;
+        let Some((lane, title)) = line.split_once(' ') else {
+            failures.push(format!("line {at}: `{line}` is not `<lane> <title>`"));
+            continue;
+        };
+        let title = title.trim();
+        if !seen.insert((lane.to_string(), title.to_string())) {
+            failures.push(format!("line {at}: duplicate pin `{lane} {title}`"));
+            continue;
+        }
+        if !sources_by_lane.contains_key(lane) {
+            match real_data_pin_lane_sources(&root, lane) {
+                Some(s) => {
+                    sources_by_lane.insert(lane.to_string(), s);
+                }
+                None => {
+                    failures.push(format!("line {at}: unknown lane `{lane}` (pin `{title}`)"));
+                    continue;
+                }
+            }
+        }
+        let fns: Vec<(String, bool)> = sources_by_lane[lane]
+            .iter()
+            .flat_map(|src| fns_with_ignore_flag(src))
+            .filter(|(name, _)| name.contains(title))
+            .collect();
+        if fns.is_empty() {
+            failures.push(format!(
+                "line {at}: no `fn` containing `{title}` in the `{lane}` lane's sources — \
+                 the test was renamed, or the pin names the wrong lane"
+            ));
+        } else if !fns.iter().any(|(_, ignored)| *ignored) {
+            failures.push(format!(
+                "line {at}: `{title}` matches {} `fn`(s) in the `{lane}` lane but none is \
+                 `#[ignore]`d, so the pin's `--ignored` run would match nothing",
+                fns.len()
+            ));
+        }
+    }
+    assert!(count > 0, "the pin list is empty");
+    assert!(
+        failures.is_empty(),
+        "{} of {count} real-data pin(s) in `.github/real-data-pins.txt` do not resolve:\n{}",
+        failures.len(),
+        failures.join("\n"),
+    );
+}
+
+/// #6183 — the guard above is only worth having if its scanner tells an
+/// `#[ignore]`d test from a plain one and does not bleed across items.
+#[test]
+fn real_data_pin_scanner_distinguishes_ignored_from_plain_tests() {
+    let src = r#"
+#[test]
+fn plain_unit_test() {}
+
+/// Needs the install.
+#[test]
+#[ignore = "needs FNV game data on disk"]
+fn gated_real_data_test() {}
+
+fn helper_after_a_gated_test() {}
+
+#[test]
+#[ignore = "needs installed data"]
+pub(crate) fn crate_visible_ignored() {}
+"#;
+    let fns = fns_with_ignore_flag(src);
+    let flag = |name: &str| fns.iter().find(|(n, _)| n == name).map(|(_, f)| *f);
+    assert_eq!(flag("plain_unit_test"), Some(false));
+    assert_eq!(flag("gated_real_data_test"), Some(true));
+    assert_eq!(
+        flag("helper_after_a_gated_test"),
+        Some(false),
+        "an ignore must not leak onto the next item"
+    );
+    assert_eq!(flag("crate_visible_ignored"), Some(true));
+}
