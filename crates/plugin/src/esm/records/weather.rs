@@ -358,10 +358,11 @@ pub struct WeatherRecord {
     /// Paths are `textures\`-root-relative
     /// zstrings — see #468 for the normaliser in `TextureProvider`.
     pub cloud_textures: [Option<String>; 4],
-    /// Skyrim Creation-era cloud paths. The first four are also mirrored in
-    /// `cloud_textures` for the legacy renderer path; this full table keeps
-    /// the authored 32-layer weather record lossless for the Creation cloud
-    /// renderer.
+    /// Creation-era (Skyrim, FO4, FO76) cloud paths from `00TX`..`O0TX`. The
+    /// first four are also mirrored in `cloud_textures` for the legacy
+    /// renderer path; this full table keeps the authored 32-layer weather
+    /// record lossless for the Creation cloud renderer. Starfield authors no
+    /// `xTX` (its clouds live on `WTHS`).
     pub skyrim_cloud_textures: [Option<String>; 32],
     /// Oblivion-only HDR / eye-adapt / sunlight-dimmer tuning from the
     /// 56-byte HNAM sub-record. `None` for FNV / FO3 / Skyrim+ weather
@@ -444,7 +445,8 @@ impl Default for WeatherRecord {
 /// - **FO4 / FO76** — Creation-era NAM0 uses 17 or 19 groups and 4 or
 ///   8 authored TOD slots. The shared table retains the first 10 groups
 ///   and synthesises HIGH_NOON/MIDNIGHT from DAY/NIGHT. FO4's 72-byte
-///   FNAM retains all 18 xEdit-defined floats.
+///   FNAM retains all 18 xEdit-defined floats. Cloud textures come from
+///   Skyrim's `00TX`..`O0TX` list (#6039).
 pub fn parse_wthr(
     form_id: u32,
     subs: &[SubRecord],
@@ -713,6 +715,18 @@ pub fn parse_wthr(
             b"CNAM" => record.cloud_textures[1] = Some(read_zstring(&sub.data)),
             b"ANAM" => record.cloud_textures[2] = Some(read_zstring(&sub.data)),
             b"BNAM" => record.cloud_textures[3] = Some(read_zstring(&sub.data)),
+            // #6039 — FO4/FO76/Starfield share Skyrim's `00TX`..`O0TX` cloud
+            // list (xEdit `wbWeatherCloudTextures` for every non-FO3 game):
+            // FO4 authors `00TX` on 63 of 71 weathers, FO76 on 123 of 123.
+            // FO3/FNV never author these FourCCs (#535).
+            sub_type
+                if matches!(
+                    game,
+                    GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
+                ) && skyrim_cloud_layer_index(sub_type).is_some() =>
+            {
+                set_creation_cloud_texture(&mut record, sub_type, &sub.data);
+            }
 
             _ => {}
         }
@@ -962,6 +976,18 @@ fn skyrim_cloud_layer_index(sub_type: &[u8; 4]) -> Option<usize> {
     }
 }
 
+/// Store one Creation-era `xTX` cloud path in the 32-layer table and, for
+/// layers 0..4, the legacy `cloud_textures` mirror. The caller has checked
+/// that `sub_type` is a cloud-layer FourCC.
+fn set_creation_cloud_texture(record: &mut WeatherRecord, sub_type: &[u8; 4], data: &[u8]) {
+    let layer = skyrim_cloud_layer_index(sub_type).expect("caller checked the FourCC");
+    let path = read_zstring(data);
+    if let Some(slot) = record.cloud_textures.get_mut(layer) {
+        *slot = Some(path.clone());
+    }
+    record.skyrim_cloud_textures[layer] = Some(path);
+}
+
 fn parse_glare_table(dst: &mut [SkyColor; 4], data: &[u8]) {
     for (slot, entry) in dst.iter_mut().enumerate() {
         let offset = slot * 4;
@@ -1138,11 +1164,7 @@ fn parse_wthr_skyrim(
                 ));
             }
             sub_type if skyrim_cloud_layer_index(sub_type).is_some() => {
-                let layer = skyrim_cloud_layer_index(sub_type).expect("checked above");
-                record.skyrim_cloud_textures[layer] = Some(read_zstring(&sub.data));
-                if layer < record.cloud_textures.len() {
-                    record.cloud_textures[layer] = record.skyrim_cloud_textures[layer].clone();
-                }
+                set_creation_cloud_texture(&mut record, sub_type, &sub.data);
             }
 
             // DALC — 32 bytes per entry (24, axes only, on the version-31
@@ -1338,6 +1360,31 @@ mod tests {
         ];
         let w = parse_wthr(0xFADE, &subs, GameKind::Fallout3NV, &None);
         assert!(w.cloud_textures.iter().all(|c| c.is_none()));
+    }
+
+    /// #6039 — FO4/FO76/Starfield author Skyrim's `xTX` cloud list; the
+    /// generic arm left all four layers `None` on every Creation-era weather.
+    #[test]
+    fn creation_xtx_cloud_textures_fill_the_cloud_layers() {
+        let subs = vec![
+            sub(b"00TX", b"Sky\\Clouds01.dds\0"),
+            sub(b"10TX", b"Sky\\Clouds02.dds\0"),
+            sub(b"30TX", b"Sky\\Clouds04.dds\0"),
+            sub(b"A0TX", b"Sky\\Clouds18.dds\0"),
+        ];
+        for game in [GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield] {
+            let w = parse_wthr(0xC10D, &subs, game, &None);
+            assert_eq!(w.cloud_textures[0].as_deref(), Some("Sky\\Clouds01.dds"), "{game:?}");
+            assert_eq!(w.cloud_textures[1].as_deref(), Some("Sky\\Clouds02.dds"), "{game:?}");
+            assert_eq!(w.cloud_textures[2], None, "{game:?}");
+            assert_eq!(w.cloud_textures[3].as_deref(), Some("Sky\\Clouds04.dds"), "{game:?}");
+            // `'A'` is layer 17 (#6040), so it fills the full table only.
+            assert_eq!(
+                w.skyrim_cloud_textures[17].as_deref(),
+                Some("Sky\\Clouds18.dds"),
+                "{game:?}"
+            );
+        }
     }
 
     /// Regression for #538 + #543 / audit M33-06: classification sits
