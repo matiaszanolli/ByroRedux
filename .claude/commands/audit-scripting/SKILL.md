@@ -668,7 +668,7 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   (`messages::take_button`), −1 otherwise — #5790 is open on the quest-keyed (CS wiki: global) answer, #5789 on
   `%0.f`, #5788 on the module doc that still calls these phase-1 stubs.
 - **`obscript_quest_tick_system`** (exclusive `Stage::Update`, vanilla `fQuestProcessInterval` 5 s cadence):
-  runs only *running* quests' GameMode block through `QuestCommandHost`, which lowers onto the same
+  runs only *running* quests' GameMode block through `ObScriptCommandHost` (generic over its owner — a quest, or a scripted reference), which lowers onto the same
   `QuestStageState`/`Globals` and emits the same stage events as the fragment path (so Dim 2's journal and
   cascade rules apply). Timers/effect ring (`ObScriptQuestTimers`, `ObScriptEffectLog`, cap 64) are unsaved by
   design — cadence restarts on load (documented M47.3 residual, not silent save loss). Quest-script **locals persist**
