@@ -461,7 +461,13 @@ impl PersistentCellApplyJob {
                     .is_some_and(|(_, loaded_3d)| *loaded_3d)
             })
             .count();
-        self.logical_stub_refs.append(&mut self.remote_actor_refs);
+        // #6076 — a remote actor's tile may have streamed in (and spawned
+        // it for real) while this job was still applying.
+        self.logical_stub_refs.extend(
+            self.remote_actor_refs
+                .drain(..)
+                .filter(|placed| !live_actor_candidates.contains_key(&placed.form_id)),
+        );
         self.logical_stub_refs.extend(
             local_actor_refs
                 .into_iter()
@@ -1109,7 +1115,9 @@ mod persistent_cell_identity_unchanged_tests {
 }
 
 /// Begin spawning the active worldspace's persistent CELL once, outside the
-/// coordinate-streamed tile set.
+/// coordinate-streamed tile set: the refs within `full_3d_radius` of the
+/// arrival, plus a logical stub for every actor beyond it. The refs beyond it
+/// stream with the tiles they stand in (#6076, [`PersistentCellWindow`]).
 ///
 /// Bethesda stores globally persistent exterior actors here (Skyrim's
 /// Hadvar/Ralof ACHRs are the MQ101-critical examples). Giving the CELL its
@@ -1149,6 +1157,12 @@ pub(crate) fn begin_worldspace_persistent_cell(
         }
     }
 
+    // #6076 — the refs left out above belong to the tiles they stand in.
+    world.insert_resource(PersistentCellWindow {
+        cell_form_id: cell.form_id,
+        center: center_grid,
+        radius: full_3d_radius,
+    });
     let cell_root = world.spawn();
     register_cell_root(world, cell_root);
     world.insert(cell_root, CellFormId(cell.form_id));
@@ -1177,14 +1191,165 @@ pub(crate) fn begin_worldspace_persistent_cell(
     })
 }
 
+/// #6076 — the grid window the persistent root spawned at worldspace entry
+/// ([`begin_worldspace_persistent_cell`]), keyed by the persistent CELL it
+/// partitioned. Every persistent ref inside it is the root's for the rest of
+/// the worldspace session; one outside it belongs to the streamed tile it
+/// stands in ([`persistent_refs_for_tile`]), which spawns it when it loads
+/// and releases it when it unloads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PersistentCellWindow {
+    cell_form_id: u32,
+    center: (i32, i32),
+    radius: i32,
+}
+
+impl byroredux_core::ecs::Resource for PersistentCellWindow {}
+
+/// #6076 — the persistent refs tile `(gx, gy)` owns: the ones standing in it,
+/// when the tile lies outside the window the persistent root spawned. Before
+/// this the partition ran once at entry and dropped every non-actor ref beyond
+/// it (5,185 of WastelandNV's 6,069 from the Goodsprings arrival, 373 of them
+/// teleport doors), so they never appeared as the player moved. Empty when no
+/// persistent root has partitioned this worldspace's CELL yet: the root's own
+/// job then owns the whole set, exactly as before.
+pub(crate) fn persistent_refs_for_tile<'a>(
+    wctx: &'a ExteriorWorldContext,
+    world: &World,
+    gx: i32,
+    gy: i32,
+) -> Vec<&'a byroredux_plugin::esm::cell::PlacedRef> {
+    let Some((_, cell)) = resolve_persistent_cell(&wctx.record_index.cells, &wctx.worldspace_key)
+    else {
+        return Vec::new();
+    };
+    let Some(window) = world
+        .try_resource::<PersistentCellWindow>()
+        .map(|window| *window)
+        .filter(|window| window.cell_form_id == cell.form_id)
+    else {
+        return Vec::new();
+    };
+    tile_persistent_refs(&cell.references, window, gx, gy)
+}
+
+fn tile_persistent_refs(
+    references: &[byroredux_plugin::esm::cell::PlacedRef],
+    window: PersistentCellWindow,
+    gx: i32,
+    gy: i32,
+) -> Vec<&byroredux_plugin::esm::cell::PlacedRef> {
+    // The window is whole tiles, so a tile is wholly in or out of it.
+    if persistent_tile_is_local((gx, gy), window.center, window.radius) {
+        return Vec::new();
+    }
+    references
+        .iter()
+        .filter(|placed| persistent_tile_of(placed.position) == (gx, gy))
+        .collect()
+}
+
+/// #6076 — promote: a persistent actor its tile is about to spawn for real
+/// stands as a logical stub (identity, transform, scripts) while the tile is
+/// out of range. Park the stub's state and despawn it first, so the real
+/// actor takes over its identity and script state instead of running beside
+/// it. The stubs carry no mesh or collider, so a plain despawn reclaims them.
+fn promote_persistent_actor_stubs(
+    world: &mut World,
+    wctx: &ExteriorWorldContext,
+    refs: &[byroredux_plugin::esm::cell::PlacedRef],
+) {
+    let actors: HashSet<u32> = refs
+        .iter()
+        .filter(|placed| wctx.record_index.is_actor(placed.base_form_id))
+        .map(|placed| placed.form_id)
+        .collect();
+    if actors.is_empty() {
+        return;
+    }
+    let stubs: Vec<EntityId> = world
+        .query::<byroredux_scripting::SceneAliasCandidate>()
+        .map(|query| {
+            query
+                .iter()
+                .filter(|(_, candidate)| actors.contains(&candidate.reference_form_id))
+                .map(|(entity, _)| entity)
+                .collect()
+        })
+        .unwrap_or_default();
+    if stubs.is_empty() {
+        return;
+    }
+    super::reference_state::capture(world, &stubs);
+    world.despawn_batch(stubs);
+    byroredux_scripting::mark_scene_actor_bindings_dirty(world);
+}
+
+/// #6076 — demote: give every persistent actor of `tiles` that has no entity
+/// left (its tile unloaded or its apply was cancelled) its logical stub back,
+/// owned by `persistent_root` like the stubs the persistent job made, so
+/// quest aliases keep a rankable identity and its scripts keep running.
+/// Idempotent: an actor something already carries is left alone.
+pub(crate) fn ensure_persistent_actor_stubs(
+    world: &mut World,
+    wctx: &ExteriorWorldContext,
+    tiles: &[(i32, i32)],
+    persistent_root: Option<EntityId>,
+) {
+    let Some(persistent_root) = persistent_root else {
+        return;
+    };
+    let actors: Vec<byroredux_plugin::esm::cell::PlacedRef> = tiles
+        .iter()
+        .flat_map(|&(gx, gy)| persistent_refs_for_tile(wctx, world, gx, gy))
+        .filter(|placed| wctx.record_index.is_actor(placed.base_form_id))
+        .cloned()
+        .collect();
+    if actors.is_empty() {
+        return;
+    }
+    let carried: HashSet<u32> = world
+        .query::<byroredux_scripting::SceneAliasCandidate>()
+        .map(|query| query.iter().map(|(_, c)| c.reference_form_id).collect())
+        .unwrap_or_default();
+    let first = world.next_entity_id();
+    let mut spawned = 0;
+    for placed in actors.iter().filter(|placed| !carried.contains(&placed.form_id)) {
+        super::references::spawn_logical_quest_reference_with_scripts(
+            world,
+            placed,
+            &wctx.load_order,
+            &wctx.record_index,
+            super::transition::position_zup_to_yup(placed.position),
+            super::transition::rotation_zup_to_yup_quat(placed.rotation),
+            placed.scale,
+        );
+        spawned += 1;
+    }
+    stamp_cell_root_range(world, persistent_root, first, world.next_entity_id());
+    if spawned > 0 {
+        byroredux_scripting::mark_scene_actor_bindings_dirty(world);
+        log::debug!("persistent CELL: {spawned} actor(s) back to logical stubs after their tile left");
+    }
+}
+
+fn persistent_tile_of(position_zup: [f32; 3]) -> (i32, i32) {
+    (
+        (position_zup[0] / EXTERIOR_CELL_UNITS).floor() as i32,
+        (position_zup[1] / EXTERIOR_CELL_UNITS).floor() as i32,
+    )
+}
+
+fn persistent_tile_is_local(tile: (i32, i32), center_grid: (i32, i32), radius: i32) -> bool {
+    (tile.0 - center_grid.0).abs().max((tile.1 - center_grid.1).abs()) <= radius.max(0)
+}
+
 fn persistent_position_is_local(
     position_zup: [f32; 3],
     center_grid: (i32, i32),
     radius: i32,
 ) -> bool {
-    let gx = (position_zup[0] / EXTERIOR_CELL_UNITS).floor() as i32;
-    let gy = (position_zup[1] / EXTERIOR_CELL_UNITS).floor() as i32;
-    (gx - center_grid.0).abs().max((gy - center_grid.1).abs()) <= radius.max(0)
+    persistent_tile_is_local(persistent_tile_of(position_zup), center_grid, radius)
 }
 
 /// Regression for #2664 (SCR-D7-NEW11-03): the persistent-cell logical-actor
@@ -1294,6 +1459,14 @@ pub(crate) struct ExteriorCellApplyJob {
     /// `CellData::absorbed_ref_bakes` at the reference gate.
     baked_hashes: Option<Vec<u32>>,
     references: Option<Box<ReferenceLoadJob>>,
+    /// The cell's own refs' result centre, once they have all spawned.
+    own_refs_center: Option<Vec3>,
+    /// #6076 — the worldspace persistent CELL's refs this tile owns
+    /// ([`persistent_refs_for_tile`]), spawned after its own and stamped on
+    /// its root so they unload with it.
+    persistent_refs: Vec<byroredux_plugin::esm::cell::PlacedRef>,
+    persistent_promoted: bool,
+    persistent_references: Option<Box<ReferenceLoadJob>>,
 }
 
 // Boxing `Pending` would allocate on every cooperative frame slice. The
@@ -1309,6 +1482,9 @@ impl ExteriorCellApplyJob {
     /// Reclaim every ECS/GPU object produced by an unfinished apply.
     pub(crate) fn cancel(mut self, world: &mut World, ctx: &mut VulkanContext) {
         if let Some(references) = self.references.take() {
+            references.cancel(world);
+        }
+        if let Some(references) = self.persistent_references.take() {
             references.cancel(world);
         }
         super::unload_cell(world, ctx, self.cell_root);
@@ -2177,6 +2353,10 @@ impl ExteriorCellApplyJob {
         stamp_cell_root_range(world, cell_root, first_entity, last_entity);
         budget.complete_unit();
 
+        let persistent_refs = persistent_refs_for_tile(wctx, world, gx, gy)
+            .into_iter()
+            .cloned()
+            .collect();
         Ok(Some(Self {
             gx,
             gy,
@@ -2185,6 +2365,10 @@ impl ExteriorCellApplyJob {
             precombined,
             baked_hashes,
             references: None,
+            own_refs_center: None,
+            persistent_refs,
+            persistent_promoted: false,
+            persistent_references: None,
         }))
     }
 
@@ -2258,51 +2442,223 @@ impl ExteriorCellApplyJob {
                 .as_deref()
                 .expect("precombined apply completed before reference loading"),
         );
-        let label = format!("exterior({},{})", self.gx, self.gy);
-        let first_entity = world.next_entity_id();
-        let progress = load_references_budgeted(
-            &cell.references,
-            index,
-            &wctx.record_index,
-            &wctx.record_index.races,
-            wctx.record_index.game,
-            world,
-            ctx,
-            tex_provider,
-            mat_provider,
-            &label,
-            wctx.load_order.as_ref(),
-            &absorbed,
-            self.references.take(),
-            budget,
-        );
-        let last_entity = world.next_entity_id();
-        stamp_cell_root_range(world, self.cell_root, first_entity, last_entity);
-        // #4699 — CELL `XOWN` for placements with no ownership of their own.
-        crate::inventory::stamp_cell_ownership(
-            world,
-            cell.ownership.as_ref(),
-            first_entity,
-            last_entity,
-        );
+        if self.own_refs_center.is_none() {
+            let label = format!("exterior({},{})", self.gx, self.gy);
+            let first_entity = world.next_entity_id();
+            let progress = load_references_budgeted(
+                &cell.references,
+                index,
+                &wctx.record_index,
+                &wctx.record_index.races,
+                wctx.record_index.game,
+                world,
+                ctx,
+                tex_provider,
+                mat_provider.as_deref_mut(),
+                &label,
+                wctx.load_order.as_ref(),
+                &absorbed,
+                self.references.take(),
+                budget,
+            );
+            let last_entity = world.next_entity_id();
+            stamp_cell_root_range(world, self.cell_root, first_entity, last_entity);
+            // #4699 — CELL `XOWN` for placements with no ownership of their own.
+            crate::inventory::stamp_cell_ownership(
+                world,
+                cell.ownership.as_ref(),
+                first_entity,
+                last_entity,
+            );
 
-        match progress {
-            ReferenceLoadProgress::Pending(references) => {
-                self.references = Some(references);
-                flush_pending_cell_textures_on_yield(ctx);
-                ExteriorCellApplyProgress::Pending(self)
-            }
-            ReferenceLoadProgress::Complete(result) => {
-                let center = self.terrain_center.unwrap_or(result.center);
-                ExteriorCellApplyProgress::Complete(OneCellLoadInfo {
-                    cell_root: self.cell_root,
-                    center,
-                })
+            match progress {
+                ReferenceLoadProgress::Pending(references) => {
+                    self.references = Some(references);
+                    flush_pending_cell_textures_on_yield(ctx);
+                    return ExteriorCellApplyProgress::Pending(self);
+                }
+                ReferenceLoadProgress::Complete(result) => {
+                    self.own_refs_center = Some(self.terrain_center.unwrap_or(result.center));
+                }
             }
         }
+
+        // #6076 — then the persistent CELL's refs that stand in this tile.
+        if !self.persistent_refs.is_empty() {
+            if !self.persistent_promoted {
+                promote_persistent_actor_stubs(world, wctx, &self.persistent_refs);
+                self.persistent_promoted = true;
+            }
+            let label = format!("exterior({},{}) persistent", self.gx, self.gy);
+            let first_entity = world.next_entity_id();
+            let progress = load_references_budgeted(
+                &self.persistent_refs,
+                index,
+                &wctx.record_index,
+                &wctx.record_index.races,
+                wctx.record_index.game,
+                world,
+                ctx,
+                tex_provider,
+                mat_provider,
+                &label,
+                wctx.load_order.as_ref(),
+                &HashSet::new(),
+                self.persistent_references.take(),
+                budget,
+            );
+            stamp_cell_root_range(world, self.cell_root, first_entity, world.next_entity_id());
+            if let ReferenceLoadProgress::Pending(references) = progress {
+                self.persistent_references = Some(references);
+                flush_pending_cell_textures_on_yield(ctx);
+                return ExteriorCellApplyProgress::Pending(self);
+            }
+        }
+        ExteriorCellApplyProgress::Complete(OneCellLoadInfo {
+            cell_root: self.cell_root,
+            center: self
+                .own_refs_center
+                .expect("the cell's own references completed first"),
+        })
     }
 }
 
 // `default_water_for_worldspace` (+ its #1305 / OBL-D6-NEW-02 per-game
 // default-water regressions) moved to the EXAL boundary in
 // `crate::env_translate`; the tests moved with it.
+
+/// #6076 — the persistent CELL beyond the entry window streams with its tiles.
+#[cfg(test)]
+mod persistent_tile_tests {
+    use super::*;
+    use byroredux_plugin::esm::cell::{CellData, EsmCellIndex, PlacedRef};
+    use byroredux_plugin::esm::records::NpcRecord;
+
+    const PERSISTENT_CELL: u32 = 0x0010_1000;
+    const DOOR: u32 = 0x0010_1001;
+    const NEAR_DOOR: u32 = 0x0010_1002;
+    const ACTOR: u32 = 0x0010_1003;
+    const ACTOR_BASE: u32 = 0x0010_1100;
+
+    fn placed(form_id: u32, base_form_id: u32, tile: (i32, i32)) -> PlacedRef {
+        PlacedRef {
+            form_id,
+            position: [
+                tile.0 as f32 * EXTERIOR_CELL_UNITS + 100.0,
+                tile.1 as f32 * EXTERIOR_CELL_UNITS + 100.0,
+                0.0,
+            ],
+            ..crate::cell_loader::refr_texture_overlay_tests::empty_placed_ref(base_form_id)
+        }
+    }
+
+    fn wctx() -> ExteriorWorldContext {
+        let mut cells = EsmCellIndex::default();
+        cells.worldspace_persistent_cells.insert(
+            "wastelandnv".into(),
+            CellData {
+                form_id: PERSISTENT_CELL,
+                references: vec![
+                    placed(NEAR_DOOR, 0x0010_1200, (0, 0)),
+                    placed(DOOR, 0x0010_1200, (20, -3)),
+                    placed(ACTOR, ACTOR_BASE, (20, -3)),
+                ],
+                ..Default::default()
+            },
+        );
+        let mut index = byroredux_plugin::esm::records::EsmIndex {
+            cells,
+            ..Default::default()
+        };
+        index.npcs.insert(
+            ACTOR_BASE,
+            NpcRecord {
+                form_id: ACTOR_BASE,
+                ..Default::default()
+            },
+        );
+        ExteriorWorldContext {
+            record_index: std::sync::Arc::new(index),
+            load_order: std::sync::Arc::new(Default::default()),
+            plugin_path: String::new(),
+            plugin_paths: Vec::new(),
+            worldspace_key: "wastelandnv".into(),
+            climate: None,
+            default_weather: None,
+            default_water_height: None,
+            default_water_type_form: None,
+        }
+    }
+
+    fn window(world: &mut World, cell_form_id: u32) {
+        world.insert_resource(PersistentCellWindow {
+            cell_form_id,
+            center: (0, 0),
+            radius: 3,
+        });
+    }
+
+    fn ids(refs: Vec<&PlacedRef>) -> Vec<u32> {
+        refs.iter().map(|placed| placed.form_id).collect()
+    }
+
+    #[test]
+    fn a_tile_beyond_the_entry_window_owns_the_persistent_refs_standing_in_it() {
+        let wctx = wctx();
+        let mut world = World::new();
+        assert!(
+            persistent_refs_for_tile(&wctx, &world, 20, -3).is_empty(),
+            "no partition yet: the persistent root's job owns the whole set"
+        );
+        window(&mut world, PERSISTENT_CELL);
+        assert_eq!(ids(persistent_refs_for_tile(&wctx, &world, 20, -3)), vec![DOOR, ACTOR]);
+        assert!(
+            persistent_refs_for_tile(&wctx, &world, 0, 0).is_empty(),
+            "inside the window the root spawned them"
+        );
+        assert!(persistent_refs_for_tile(&wctx, &world, 21, -3).is_empty());
+        window(&mut world, 0x0BAD_CE11);
+        assert!(
+            persistent_refs_for_tile(&wctx, &world, 20, -3).is_empty(),
+            "a window over another CELL says nothing about this one"
+        );
+    }
+
+    #[test]
+    fn a_persistent_actor_is_promoted_from_its_stub_and_demoted_back() {
+        let wctx = wctx();
+        let mut world = World::new();
+        world.insert_resource(byroredux_core::form_id::FormIdPool::new());
+        world.insert_resource(crate::cell_loader::reference_state::PersistentReferenceStates::default());
+        window(&mut world, PERSISTENT_CELL);
+        let root = world.spawn();
+        let carriers = |world: &World| {
+            world
+                .query::<byroredux_scripting::SceneAliasCandidate>()
+                .map(|query| {
+                    query
+                        .iter()
+                        .filter(|(_, candidate)| candidate.reference_form_id == ACTOR)
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+
+        ensure_persistent_actor_stubs(&mut world, &wctx, &[(20, -3)], Some(root));
+        assert_eq!(carriers(&world), 1, "the out-of-range actor stands as a stub");
+        ensure_persistent_actor_stubs(&mut world, &wctx, &[(20, -3)], Some(root));
+        assert_eq!(carriers(&world), 1, "idempotent");
+
+        let refs: Vec<PlacedRef> = persistent_refs_for_tile(&wctx, &world, 20, -3)
+            .into_iter()
+            .cloned()
+            .collect();
+        promote_persistent_actor_stubs(&mut world, &wctx, &refs);
+        assert_eq!(carriers(&world), 0, "the tile's real actor takes over its identity");
+
+        ensure_persistent_actor_stubs(&mut world, &wctx, &[(20, -3)], Some(root));
+        assert_eq!(carriers(&world), 1, "the tile left: back to a stub");
+        ensure_persistent_actor_stubs(&mut world, &wctx, &[(20, -3)], None);
+        assert_eq!(carriers(&world), 1, "no persistent root, no owner: nothing spawned");
+    }
+}

@@ -542,6 +542,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ButtonPresses", "an ObScript quest's answered message-box button until its GetButtonPressed reads it; UI state, gone with the box"),
         ("PendingScriptMessages", "script Message.Show / Debug.Notification output, routed to notifications and the message-box queue the frame it is raised"),
         ("QuestScriptInstances", "every quest's VMAD, for quest-script bodies inlined into INFO and scene fragments; rebuilt from the QUST records by install_quest_script_instances every boot"),
+        ("PersistentCellWindow", "the grid window the worldspace persistent root partitioned its CELL by (#6076); rebuilt by begin_worldspace_persistent_cell on every worldspace entry, including the save-load reload"),
         ("AuthoredDisabledReferences", "the load order's initially-disabled references (the cell loader's own rule); rebuilt from the REFRs by install_authored_disabled_references every boot"),
         ("PendingScriptKills", "script Kill requests queued after the quest guards drop, drained by scripted_kill_system the same or the next frame"),
         ("EncumbranceRules", "the CarryWeight / InventoryWeight AVIFs and the over-encumbered movement effect; rebuilt from the load order by install_encumbrance_rules every boot"),

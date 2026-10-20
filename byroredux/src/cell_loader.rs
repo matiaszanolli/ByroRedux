@@ -153,8 +153,9 @@ pub(crate) use euler::euler_zup_to_quat_yup_refr;
 pub use euler::set_refr_rotation_mode_diag;
 
 pub(crate) use exterior::{
-    begin_worldspace_persistent_cell, persistent_root_survives_crossing, ExteriorCellApplyJob,
-    ExteriorCellApplyProgress, PersistentCellApplyJob, PersistentCellApplyProgress,
+    begin_worldspace_persistent_cell, ensure_persistent_actor_stubs,
+    persistent_root_survives_crossing, ExteriorCellApplyJob, ExteriorCellApplyProgress,
+    PersistentCellApplyJob, PersistentCellApplyProgress, PersistentCellWindow,
 };
 pub use exterior::{build_exterior_world_context, load_one_exterior_cell, ExteriorWorldContext};
 pub(crate) use load::apply_interior_cell_lighting;

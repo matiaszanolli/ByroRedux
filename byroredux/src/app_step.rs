@@ -191,6 +191,15 @@ impl App {
             let unload_timings = if unloaded_any {
                 let roots = unloads.iter().map(|(_, root)| *root).collect::<Vec<_>>();
                 let timings = cell_loader::unload_cells(&mut self.world, ctx, &roots);
+                // #6076 — the persistent actors those tiles owned go back to
+                // logical stubs.
+                let coords = unloads.iter().map(|(coord, _)| *coord).collect::<Vec<_>>();
+                cell_loader::ensure_persistent_actor_stubs(
+                    &mut self.world,
+                    &state.wctx,
+                    &coords,
+                    state.persistent_root,
+                );
                 for (coord, root) in unloads {
                     log::info!("Unloaded cell ({},{}) (root {})", coord.0, coord.1, root);
                 }

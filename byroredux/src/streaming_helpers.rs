@@ -605,6 +605,11 @@ pub fn drain_streaming_state(
     }
     let cells: Vec<_> = state.loaded.drain().collect();
     let persistent_root = state.persistent_root.take();
+    // #6076 — the window names the root being unloaded; a crossing that
+    // preserves the root took it out of the state first, so keeps it.
+    if persistent_root.is_some() {
+        world.remove_resource::<cell_loader::PersistentCellWindow>();
+    }
     // #4413 — the authored ground-cover templates are worldspace-scoped: a
     // pseudo cell root, reclaimed in the same batch as the streamed cells.
     let authored_cover_root = state.authored_cover_root.take();
@@ -822,6 +827,14 @@ fn cancel_streaming_apply_job(
         }
         streaming::StreamingCellApplyPhase::Spawn(cell_job) => {
             cell_job.cancel(world, ctx);
+            // #6076 — a cancel after the tile promoted its persistent actors
+            // must hand them back their stubs.
+            cell_loader::ensure_persistent_actor_stubs(
+                world,
+                &state.wctx,
+                &[job.coord],
+                state.persistent_root,
+            );
         }
         _ => {}
     }
