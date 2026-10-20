@@ -38,6 +38,16 @@ pub struct EsmCellIndex {
     /// terrain material back to TX00 diffuse-only. Oblivion ICON-authored
     /// LTEX records have no sibling TXST and therefore do not enter this map.
     pub landscape_texture_sets: HashMap<u32, TextureSet>,
+    /// LTEX form ID → the TXST form ID its `TNAM` names (FO3+), kept
+    /// unresolved so the join that fills `landscape_textures` and
+    /// `landscape_texture_sets` runs against the merged load order.
+    ///
+    /// #6036 — the join used to run per plugin against that plugin's own
+    /// TXSTs and then drop this map, so a DLC LTEX naming a master TXST never
+    /// resolved: Honest Hearts' `ScrubBarrenWastes02GrassMix` (TNAM =
+    /// `FalloutNV.esm` 0x000357BD) lost its 550 ATXT layers in Zion.
+    /// [`Self::resolve_landscape_texture_sets`] re-runs it after every merge.
+    pub landscape_texture_txsts: HashMap<u32, u32>,
     /// Authored vegetation mapping: LTEX form ID → the LTEX's `GNAM`
     /// grass references, in authored order.
     ///
@@ -313,6 +323,35 @@ pub(super) fn merge_cell_override(base: &CellData, over: &mut CellData) {
 }
 
 impl EsmCellIndex {
+    /// Join `landscape_texture_txsts` against `texture_sets`: every
+    /// TNAM-authored LTEX gets its TXST's full set and its TX00 diffuse path.
+    ///
+    /// Authoritative for those LTEXs, so an override that re-points `TNAM`
+    /// replaces what an earlier plugin's TNAM resolved — including dropping it
+    /// when the new TXST has no diffuse or is not loaded. ICON-authored
+    /// (Oblivion) LTEXs are not in the map and keep their direct path.
+    pub(crate) fn resolve_landscape_texture_sets(&mut self) {
+        for (&ltex_id, txst_id) in &self.landscape_texture_txsts {
+            let set = self.texture_sets.get(txst_id);
+            match set.and_then(|s| s.diffuse.as_ref()) {
+                Some(diffuse) => {
+                    self.landscape_textures.insert(ltex_id, diffuse.clone());
+                }
+                None => {
+                    self.landscape_textures.remove(&ltex_id);
+                }
+            }
+            match set {
+                Some(set) => {
+                    self.landscape_texture_sets.insert(ltex_id, set.clone());
+                }
+                None => {
+                    self.landscape_texture_sets.remove(&ltex_id);
+                }
+            }
+        }
+    }
+
     /// The CELL record with `form_id`, wherever it is filed (interior,
     /// exterior grid tile, or a worldspace's persistent cell), in O(1).
     ///
@@ -476,6 +515,7 @@ impl EsmCellIndex {
             statics,
             landscape_textures,
             landscape_texture_sets,
+            landscape_texture_txsts,
             landscape_grasses,
             landscape_texture_names,
             worldspaces,
@@ -577,8 +617,18 @@ impl EsmCellIndex {
         }
 
         self.statics.extend(statics);
+        // An LTEX this plugin re-authors with a direct ICON path and no TNAM
+        // must not be re-resolved through an earlier plugin's TNAM below.
+        for ltex_id in landscape_textures.keys() {
+            if !landscape_texture_txsts.contains_key(ltex_id)
+                && self.landscape_texture_txsts.remove(ltex_id).is_some()
+            {
+                self.landscape_texture_sets.remove(ltex_id);
+            }
+        }
         self.landscape_textures.extend(landscape_textures);
         self.landscape_texture_sets.extend(landscape_texture_sets);
+        self.landscape_texture_txsts.extend(landscape_texture_txsts);
         // Last writer per LTEX wins: an override re-authors the whole GNAM
         // array, so replacing (not appending to) the list is correct.
         self.landscape_grasses.extend(landscape_grasses);
@@ -590,6 +640,10 @@ impl EsmCellIndex {
         self.packins.extend(packins);
         self.movables.extend(movables);
         self.material_swaps.extend(material_swaps);
+        // #6036 — after `texture_sets` holds every plugin so far, so an LTEX
+        // naming a master's TXST (or a master LTEX whose TXST a later plugin
+        // overrides) resolves against the merged maps.
+        self.resolve_landscape_texture_sets();
     }
 
     /// Locate the parent cell of a placed REFR by its placement-level

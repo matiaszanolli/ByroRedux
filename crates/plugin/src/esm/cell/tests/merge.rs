@@ -969,3 +969,91 @@ fn inherit_parent_landscapes_follows_the_chain_and_survives_a_cycle() {
     cyclic.exterior_cells.insert("b".into(), HashMap::from([((0, 0), exterior_cell(2, (0, 0), None))]));
     assert_eq!(cyclic.inherit_parent_landscapes(), 0);
 }
+
+fn txst(diffuse: &str, normal: &str) -> TextureSet {
+    TextureSet {
+        diffuse: Some(diffuse.to_string()),
+        normal: Some(normal.to_string()),
+        ..Default::default()
+    }
+}
+
+/// #6036 — Honest Hearts' `ScrubBarrenWastes02GrassMix` (LTEX 0x0100CD37)
+/// names `FalloutNV.esm`'s TXST 0x000357BD. The per-plugin join could not see
+/// the master's TXST, and the merge only extended the already-resolved maps,
+/// so the LTEX never resolved and Zion lost ~550 ATXT layers.
+#[test]
+fn dlc_ltex_resolves_against_a_master_txst() {
+    const LTEX: u32 = 0x0100_CD37;
+    const TXST: u32 = 0x0003_57BD;
+    let mut master = EsmCellIndex::default();
+    master
+        .texture_sets
+        .insert(TXST, txst("landscape\\scrub.dds", "landscape\\scrub_n.dds"));
+    let mut dlc = EsmCellIndex::default();
+    dlc.landscape_texture_txsts.insert(LTEX, TXST);
+    dlc.resolve_landscape_texture_sets();
+    assert!(
+        !dlc.landscape_textures.contains_key(&LTEX),
+        "the DLC alone cannot resolve a master TXST"
+    );
+
+    let mut merged = EsmCellIndex::default();
+    merged.merge_from(master);
+    merged.merge_from(dlc);
+    assert_eq!(
+        merged.landscape_textures.get(&LTEX).map(String::as_str),
+        Some("landscape\\scrub.dds")
+    );
+    assert_eq!(
+        merged.landscape_texture_sets[&LTEX].normal.as_deref(),
+        Some("landscape\\scrub_n.dds")
+    );
+}
+
+/// #6036 — an override that re-points a master LTEX's `TNAM` at another
+/// master TXST replaces the master's resolution rather than leaving the stale
+/// path in place, and a later TXST override re-resolves the LTEX too.
+#[test]
+fn ltex_override_and_txst_override_re_resolve_after_merge() {
+    const LTEX: u32 = 0x0000_1000;
+    let mut master = EsmCellIndex::default();
+    master.texture_sets.insert(0xA, txst("old.dds", "old_n.dds"));
+    master.texture_sets.insert(0xB, txst("new.dds", "new_n.dds"));
+    master.landscape_texture_txsts.insert(LTEX, 0xA);
+    master.resolve_landscape_texture_sets();
+    assert_eq!(master.landscape_textures[&LTEX], "old.dds");
+
+    let mut repoint = EsmCellIndex::default();
+    repoint.landscape_texture_txsts.insert(LTEX, 0xB);
+    let mut merged = EsmCellIndex::default();
+    merged.merge_from(master);
+    merged.merge_from(repoint);
+    assert_eq!(merged.landscape_textures[&LTEX], "new.dds");
+    assert_eq!(merged.landscape_texture_sets[&LTEX].normal.as_deref(), Some("new_n.dds"));
+
+    let mut txst_override = EsmCellIndex::default();
+    txst_override.texture_sets.insert(0xB, txst("newer.dds", "newer_n.dds"));
+    merged.merge_from(txst_override);
+    assert_eq!(merged.landscape_textures[&LTEX], "newer.dds");
+}
+
+/// An LTEX a later plugin re-authors with a direct ICON path (and no TNAM)
+/// keeps that path; the earlier plugin's TNAM must not re-resolve over it.
+#[test]
+fn icon_override_is_not_re_resolved_through_an_earlier_tnam() {
+    const LTEX: u32 = 0x0000_2000;
+    let mut master = EsmCellIndex::default();
+    master.texture_sets.insert(0xA, txst("txst.dds", "txst_n.dds"));
+    master.landscape_texture_txsts.insert(LTEX, 0xA);
+    master.resolve_landscape_texture_sets();
+
+    let mut icon = EsmCellIndex::default();
+    icon.landscape_textures.insert(LTEX, "textures\\landscape\\icon.dds".into());
+    let mut merged = EsmCellIndex::default();
+    merged.merge_from(master);
+    merged.merge_from(icon);
+    assert_eq!(merged.landscape_textures[&LTEX], "textures\\landscape\\icon.dds");
+    assert!(!merged.landscape_texture_txsts.contains_key(&LTEX));
+    assert!(!merged.landscape_texture_sets.contains_key(&LTEX));
+}

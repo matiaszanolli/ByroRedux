@@ -465,41 +465,23 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // which is what removes an earlier master's live copy.
     index.prune_deleted_records();
 
-    // Resolve LTEX → texture path via TXST indirection.
-    // FO3/FNV: LTEX.TNAM → TXST form ID → TXST.TX00 diffuse path.
-    // Oblivion: LTEX.ICON is a direct texture path (already in
-    // `landscape_textures` from `parse_ltex_group`).
-    for (ltex_id, txst_id) in &ltex_to_txst {
-        if let Some(path) = txst_textures.get(txst_id) {
-            landscape_textures.insert(*ltex_id, path.clone());
-        }
-    }
-
     // Fallout's Mods tab contains the loose MISC object referenced by an
     // OMOD's LNAM, not the OMOD definition itself. OMOD groups commonly
     // follow MISC, so classification is a post-walk pass rather than an
     // order-dependent mutation inside either dispatcher.
     index.classify_fallout_inventory_kinds();
-    // Keep the full LTEX → TXST material association alongside the legacy
-    // diffuse-only lookup. LAND rendering needs TX01/TX07 for normal and
-    // specular/smoothness layers; reducing the relation to TX00 here made
-    // exterior materials weaker than the same texture set on placed meshes.
-    let landscape_texture_sets: HashMap<u32, TextureSet> = ltex_to_txst
-        .iter()
-        .filter_map(|(&ltex_id, txst_id)| {
-            texture_sets.get(txst_id).cloned().map(|set| (ltex_id, set))
-        })
-        .collect();
 
     let total_exterior: usize = exterior_cells.values().map(|m| m.len()).sum();
     let wrld_names: Vec<&str> = exterior_cells.keys().map(|s| s.as_str()).collect();
+    // An LTEX carries a direct ICON path (Oblivion) or a TNAM (FO3+); the
+    // TNAM ones resolve against the merged TXSTs, so count both here.
     log::info!(
         "ESM parsed: {} interior cells, {} exterior cells across {} worldspaces, {} base objects, {} landscape textures",
         cells.len(),
         total_exterior,
         exterior_cells.len(),
         statics.len(),
-        landscape_textures.len(),
+        landscape_textures.len() + ltex_to_txst.len(),
     );
     if !wrld_names.is_empty() {
         log::info!("  Worldspaces: {:?}", wrld_names);
@@ -535,7 +517,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         worldspace_persistent_cells,
         statics,
         landscape_textures,
-        landscape_texture_sets,
+        landscape_texture_txsts: ltex_to_txst,
         landscape_grasses,
         landscape_texture_names,
         worldspaces,
@@ -547,6 +529,11 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         material_swaps,
         ..Default::default()
     };
+    // LTEX.TNAM → TXST: resolved here against this plugin's own TXSTs, and
+    // again by `merge_from` once a master's TXSTs are in the same index
+    // (#6036). LAND needs the full set (TX01 normal, TX07 specular), not just
+    // the TX00 diffuse `landscape_textures` carries.
+    index.cells.resolve_landscape_texture_sets();
     super::spatial_units::normalize(&mut index);
 
     // Single source of truth — both this line and `index.total()` walk
