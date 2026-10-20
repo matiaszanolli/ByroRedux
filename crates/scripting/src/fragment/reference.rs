@@ -260,6 +260,17 @@ pub struct PendingUnloadDeliveries(Vec<Delivery>);
 
 impl Resource for PendingUnloadDeliveries {}
 
+/// A save load replaced the session: the `OnCellDetach` / `OnUnload`
+/// deliveries its own cell teardown queued describe references of the
+/// outgoing timeline, and Bethesda raises no unload event for a load. Left
+/// queued they would run against the restored quest / script state on the
+/// first frame after the load (#6083).
+pub fn discard_pending_unload_deliveries(world: &World) {
+    if let Some(mut pending) = world.try_resource_mut::<PendingUnloadDeliveries>() {
+        pending.0.clear();
+    }
+}
+
 /// Raise `OnCellDetach` and `OnUnload` (CK *OnCellDetach*, *OnUnload*) for the
 /// `victims` of a cell unload — references the scripts attached to, and the
 /// ones quest aliases are filled with, before they despawn. Delivered with the
@@ -546,6 +557,21 @@ fn actor_changes(world: &World) -> ActorChanges {
     watch.bleeding = bleeding;
     watch.combat = combat;
     changes
+}
+
+/// A save load replaced the session: [`ActorWatch`] still holds the outgoing
+/// timeline's bleedout / combat sets (keyed by session-local `EntityId`s) and
+/// the player's pre-load location, so the first pass after the load would
+/// deliver `OnEnterBleedout` / `OnCombatStateChanged` / `OnLocationChange`
+/// across timelines (#6083). Re-baseline against the loaded world, whose
+/// actors did not just enter bleedout or combat, and drop the location so
+/// its next sight is a baseline again (the player's location is republished
+/// by a system, not saved).
+pub fn rebaseline_actor_watch(world: &World) {
+    let _ = actor_changes(world);
+    if let Some(mut watch) = world.try_resource_mut::<ActorWatch>() {
+        watch.player_location = None;
+    }
 }
 
 /// What the reference scripts last saw of the actors. Transient.

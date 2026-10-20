@@ -613,6 +613,11 @@ pub fn execute_pending_save_loads(
     // reported: running their Begin/Change fragments in the loaded session
     // would fire for actors that never ran those packages.
     byroredux_scripting::discard_package_reports(world);
+    // #6083 — the reload's own cell teardown queued `OnCellDetach` /
+    // `OnUnload` for the outgoing session's scripted references; Bethesda
+    // raises no unload event for a load, and the first post-load frame would
+    // run those handlers against the restored script/quest state.
+    byroredux_scripting::discard_pending_unload_deliveries(world);
 
     // The cell/session replacement invalidates every transient SDK entity
     // handle even when the restored population happens to reuse the same raw
@@ -749,6 +754,11 @@ pub fn execute_pending_save_loads(
             return;
         }
     }
+
+    // #6083 — `ActorWatch` still describes the outgoing session's bleedout /
+    // combat sets and the player's old location. Re-baseline it against the
+    // overlaid world so the first pass delivers nothing across timelines.
+    byroredux_scripting::rebaseline_actor_watch(world);
 
     // #1844 / SAVE-01 — mirror the save path's `validate_world` +
     // `validate_form_ids` pairing (see `SaveCommand::execute` above) as a

@@ -168,7 +168,7 @@ pub use fragment::{
     EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS, distance_event_system, DistanceRequest, DistanceTarget, DistanceWatch, DistanceWatches,
     hit_event_system, HitFilter, HitRegistration, HitRegistrations, HitRequest,
     animation_event_system, AnimationEventRegistration, AnimationEventRegistrations, AnimationEventRequest,
-    raise_unload_events, raise_reference_call, run_debug_statement, run_quest_script_function, raise_reference_event, ActorWatch, PendingUnloadDeliveries,
+    raise_unload_events, raise_reference_call, run_debug_statement, run_quest_script_function, raise_reference_event, ActorWatch, PendingUnloadDeliveries, discard_pending_unload_deliveries, rebaseline_actor_watch,
     alias_script_event_system, check_alias_script, install_quest_alias_scripts, is_alias_owner, AliasScript,
     AliasScriptOwners, QuestAliasScripts, ALIAS_OWNER_BASE, DELIVERED_ALIAS_EVENTS,
     package_fragment_system, populate_fragments, populate_package_fragments, FragmentSet, FragmentTable, report_package_end, report_package_transition, discard_package_reports, reported_package, retire_active_packages, ActivePackages, PackageEnd, PackageFragmentSet,

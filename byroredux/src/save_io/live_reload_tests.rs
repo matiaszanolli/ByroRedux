@@ -812,6 +812,36 @@ fn live_load_drain_resets_the_story_location_cursor() {
     assert!(discard > reload, "the discard follows the session replacement");
 }
 
+/// #6083 — the drain drops the unload deliveries its own teardown queued and
+/// re-baselines the actor watch, both after the session was replaced.
+#[test]
+fn live_load_drain_discards_the_outgoing_sessions_script_events() {
+    let source = include_str!("live_load.rs");
+    let body = &source[source
+        .find("pub fn execute_pending_save_loads(")
+        .expect("the live-load drain must exist")..];
+    let reload = body
+        .find("reload_exterior_session(")
+        .expect("the drain must reload the saved exterior");
+    let unloads = body
+        .find("discard_pending_unload_deliveries(world)")
+        .expect("the drain must discard the teardown's unload deliveries (#6083)");
+    let post_restore = body
+        .find("byroredux_save::restore_resources(world, &registry, &snapshot)")
+        .expect("the post-reload restore must exist");
+    assert!(
+        reload < unloads && unloads < post_restore,
+        "discard after the reload that queued them, before the restored state exists to be hit"
+    );
+    let apply = body
+        .find("byroredux_save::apply_deltas(")
+        .expect("the delta overlay must exist");
+    let watch = body
+        .find("rebaseline_actor_watch(world)")
+        .expect("the drain must re-baseline the actor watch (#6083)");
+    assert!(apply < watch, "re-baseline against the overlaid world");
+}
+
 /// #5435 — a Late-stage `StoryEvent` marker (AHEL / drowning KILL) can be
 /// pending on the frame boundary a load drains on; it names the outgoing
 /// session's entities, so the load must drop it rather than let the next

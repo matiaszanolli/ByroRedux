@@ -1025,6 +1025,121 @@ fn lifecycle_events_reach_reference_scripts() {
     assert_eq!(trail(&world), Some(51234.0), "OnCellDetach then OnUnload");
 }
 
+/// #6083 — a save load's own cell teardown queues `OnCellDetach` /
+/// `OnUnload` for the outgoing session; the load discards them rather than
+/// run those handlers against the restored state, while an ordinary unload
+/// still delivers them.
+#[test]
+fn a_load_discards_the_unload_events_its_own_teardown_raised() {
+    const REF: u32 = 0x0001_0F16;
+    let script = parsed_source(
+        "ScriptName VmLoadUnloadScript extends Actor\n\
+         Int Property Trail Auto\n\
+         Event OnCellDetach()\n Trail = Trail * 10 + 3\n EndEvent\n\
+         Event OnUnload()\n Trail = Trail * 10 + 4\n EndEvent\n",
+    );
+    let (events, scripts) =
+        crate::check_reference_script(Arc::clone(&script), &crate::DELIVERED_EVENTS, None).expect("runs");
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(REF),
+    });
+    world.insert_resource(pool);
+    let actor = world.spawn();
+    world.insert(actor, FormIdComponent(id));
+    let instance = ScriptInstance {
+        name: "VmLoadUnloadScript".into(),
+        status: 0,
+        properties: Vec::new(),
+    };
+    crate::attach_reference_script(&mut world, actor, &instance, events, scripts);
+    let trail = |world: &World| {
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(QuestFormId(REF), crate::QuestScriptVariables::property_key("Trail"))
+    };
+
+    crate::raise_unload_events(&world, &[actor]);
+    crate::discard_pending_unload_deliveries(&world);
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(trail(&world), None, "the load's teardown events never ran");
+
+    crate::raise_unload_events(&world, &[actor]);
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(trail(&world), Some(34.0), "an ordinary unload still delivers");
+}
+
+/// #6083 — after a load `ActorWatch` is re-baselined: an actor already in
+/// bleedout or combat in the loaded world did not just enter it, and the
+/// player's location (republished by a system, not saved) is a baseline again
+/// rather than a move from the outgoing timeline's.
+#[test]
+fn a_load_rebaselines_the_actor_watch() {
+    const REF: u32 = 0x0001_0F17;
+    const LOC_A: u32 = 0x0001_0F93;
+    const LOC_B: u32 = 0x0001_0F94;
+    let script = parsed_source(
+        "ScriptName VmLoadWatchScript extends Actor\n\
+         Int Property Bleeds Auto\n\
+         Int Property Moves Auto\n\
+         Event OnEnterBleedout()\n Bleeds += 1\n EndEvent\n\
+         Event OnLocationChange(Location akOldLoc, Location akNewLoc)\n Moves += 1\n EndEvent\n",
+    );
+    let (events, scripts) =
+        crate::check_reference_script(Arc::clone(&script), &crate::DELIVERED_EVENTS, None).expect("runs");
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(REF),
+    });
+    world.insert_resource(pool);
+    let actor = world.spawn();
+    world.insert(actor, FormIdComponent(id));
+    let instance = ScriptInstance {
+        name: "VmLoadWatchScript".into(),
+        status: 0,
+        properties: Vec::new(),
+    };
+    crate::attach_reference_script(&mut world, actor, &instance, events.clone(), scripts.clone());
+    crate::attach_reference_script(&mut world, player, &instance, events, scripts);
+    let value = |world: &World, owner: u32, name: &str| {
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(QuestFormId(owner), crate::QuestScriptVariables::property_key(name))
+    };
+
+    // The outgoing session: the player stood at LOC_A, the actor was upright.
+    world.insert_resource(crate::location::PlayerLocation(Some(LOC_A)));
+    crate::reference_script_event_system(&world, 0.0);
+
+    // The load: the restored actor is already bleeding out, and the system
+    // republishes the player's location (here: already at LOC_B).
+    world.insert(actor, crate::bleedout::Bleedout { remaining_secs: Some(20.0) });
+    world.insert_resource(crate::location::PlayerLocation(Some(LOC_B)));
+    crate::rebaseline_actor_watch(&world);
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(value(&world, REF, "Bleeds"), None, "already bleeding is not an entry");
+    assert_eq!(value(&world, 0x14, "Moves"), None, "the loaded location is a baseline");
+
+    // Real changes after the load still deliver.
+    world.insert_resource(crate::location::PlayerLocation(Some(LOC_A)));
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(value(&world, 0x14, "Moves"), Some(1.0));
+}
+
 /// `OnCombatStateChanged(akTarget, aeCombatState)` follows an actor's combat
 /// target (1 in combat, 0 left); the player's `OnLocationChange(akOldLoc,
 /// akNewLoc)` follows `PlayerLocation`, its first sight a baseline.
