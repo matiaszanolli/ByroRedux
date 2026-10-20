@@ -103,25 +103,32 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     #4415 racial pair, same inline shape) — `RaceSpells` (read, cloned
 ///     out and released) plus the `add_spell`/`remove_spell` chain above
 ///     once per racial spell
+///   - **via the inventory transfers** (`remove_items` / `add_items`, called inline
+///     from the inventory family and the placement arms, #5986) — `Inventory`,
+///     `EquipmentSlots`, `EquippedWeapon`, `ItemInstancePool`, and through
+///     `crate::equipment::{emit_equipment_changes, emit_item_transfers}` the
+///     `EquipmentEventBatch` and `ItemEventBatch` markers
+///   - **via the guard / value evaluators** (`evaluate_guard`, `evaluate_value`,
+///     #5986) — `Dead`, `FollowerState`, `LocationTable`, `MiscStats`,
+///     `StoryManagerRng` (the `GetRandomPercent` draw) and the `ActorVitals`
+///     reads, each taken and released alone
+///   - **via the latent-continuation path** (#5986; this list used to say the
+///     `FragmentExecutionQueue` write was *not* here, which was false) —
+///     `apply_effects` and `budget::defer` take `FragmentExecutionQueue` (write) for
+///     a `Wait` / `WaitWhile` / unstarted `Interpret` run, and `VmFrameBudget`
 ///
-/// so ~19 distinct storage/resource types across ~24 sites. "Directly in
-/// the match arms" is now one delegation hop away: #4340 moved each family
-/// of arms into an `apply_<family>_effect` helper below (globals,
-/// inventory, placement, scene, lock ledger, player control, vehicle
-/// cinematics, AI/combat), plus the pre-existing [`resolve_actor`],
-/// [`crate::condition::entity_global_form_id`], [`update_actor_cinematic_state`] and
-/// [`apply_quest_scoped_effect`]. Nothing about the nesting changed — the
-/// helpers run inside the same two guards, this list still inventories
-/// every lock any of them takes, and the #3949 scan below reads their
-/// bodies together with this function's. The `crate::magic` call-outs are
-/// one hop *further* away (a different module, which the fragment-body
-/// scan is structurally blind to — #5071), so the scan also reads the
-/// five `magic.rs` functions those arms reach; the deferral option was
-/// declined because the arms are already exclusive-lane-safe and deferring
-/// would change ordering semantics P4 relies on. The
-/// `FragmentExecutionQueue`
-/// write is *not* in this list: it belongs to the latent-continuation path
-/// in the dispatch system, outside these guards.
+/// **The Papyrus VM runs under these same guards.** An `Effect::Interpret` reaches
+/// `run_fragment` from `apply_effects`, and the interpreter's natives take well
+/// over twenty further component / resource locks (`Inventory`, `SpellList`,
+/// `Seated`, `PapyrusReferenceScripts`, `InputLayers`, `ConditionForms`,
+/// `HavokImpulseRules`, `EvaluatePackageRequest`, `VmFrameBudget` write, ...).
+/// This list inventories the effect model's arms and the helpers named above, not
+/// that open-ended set, so it is **not** the safety argument. The invariant is:
+/// everything run under the paired quest guards — effect arm, helper or VM
+/// native — relies on exclusive scheduling below, and no component or resource
+/// in this crate may take `QuestStageState` / `QuestObjectiveState` while holding
+/// another lock. The #3949 scan below pins what the effect arms and the helpers
+/// above acquire; it does not follow a native.
 ///
 /// This is only safe because every system that touches the quest resources
 /// is registered `add_exclusive` in `byroredux/src/boot/schedule/` (parallel

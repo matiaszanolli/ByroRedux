@@ -4248,7 +4248,7 @@ fn next_top_level_fn(src: &str, from: usize) -> Option<(usize, &str)> {
     while let Some(nl) = tail[at..].find('\n') {
         let line_start = at + nl + 1;
         let line = &tail[line_start..];
-        for prefix in ["fn ", "pub fn ", "pub(crate) fn ", "pub(super) fn "] {
+        for prefix in ["fn ", "pub fn ", "pub(crate) fn ", "pub(super) fn ", "pub(in crate::fragment) fn "] {
             if let Some(rest) = line.strip_prefix(prefix) {
                 let name = rest.split('(').next().unwrap_or("").trim();
                 return Some((from + at + nl, name));
@@ -4337,6 +4337,49 @@ fn magic_callout_bodies(src: &str) -> String {
     bodies
 }
 
+/// The bodies of the helpers `apply_effects` / the `apply_*_effect` family call
+/// that sit outside the family and outside `magic.rs` (#5986): the continuation
+/// queue writes, the inventory transfers, the guard / value evaluators, the
+/// actor resolvers and the equipment-event emitters. They run under the same
+/// paired quest guards, so a lock one of them takes is a lock taken under it;
+/// the family-only scan was blind to them. Every name must be found, so a rename
+/// fails loud instead of scanning green.
+fn nested_helper_bodies(sources: &str, equipment_rs: &str) -> String {
+    const IN_SOURCES: &[&str] = &[
+        "apply_effects",
+        "resolve_actor",
+        "update_actor_cinematic_state",
+        "evaluate_guard",
+        "evaluate_value",
+        "defer",
+        "remove_items",
+        "add_items",
+    ];
+    const IN_EQUIPMENT: &[&str] = &["emit_equipment_changes", "emit_item_transfers"];
+    let mut bodies = String::new();
+    for (src, wanted, origin) in IN_SOURCES
+        .iter()
+        .map(|name| (sources, *name, "fragment::SOURCES"))
+        .chain(IN_EQUIPMENT.iter().map(|name| (equipment_rs, *name, "equipment.rs")))
+    {
+        let mut at = 0usize;
+        let mut found = false;
+        while let Some((nl, name)) = next_top_level_fn(src, at) {
+            at = nl + 1;
+            if name != wanted {
+                continue;
+            }
+            let end = src[nl..].find("\n}\n").map(|offset| nl + offset).unwrap_or(src.len());
+            bodies.push_str(&src[nl..end]);
+            bodies.push('\n');
+            found = true;
+            break;
+        }
+        assert!(found, "`{wanted}` not found in {origin} — the #5986 helper scan broke, not the doc");
+    }
+    bodies
+}
+
 /// The declaration of `apply_effect` in [`crate::fragment::SOURCES`], as
 /// (offset of the leading newline, declaration line start).
 fn apply_effect_declaration(src: &str) -> usize {
@@ -4405,6 +4448,8 @@ fn the_nested_lock_residual_list_names_every_type_apply_effect_acquires() {
     let doc = &FRAGMENT_RS[contract_start..body_start];
     let mut bodies = apply_effect_family_bodies(FRAGMENT_RS);
     bodies.push_str(&magic_callout_bodies(MAGIC_RS));
+    // #5986 — and the helpers one hop out in the fragment sources / equipment.rs.
+    bodies.push_str(&nested_helper_bodies(FRAGMENT_RS, include_str!("../equipment.rs")));
     let body = bodies.as_str();
 
     // `.query_mut::<crate::HorseTetherState>()` -> `HorseTetherState`.
@@ -4421,7 +4466,12 @@ fn the_nested_lock_residual_list_names_every_type_apply_effect_acquires() {
             || before.ends_with("try_resource")
             || before.ends_with("try_resource_mut")
             || before.ends_with("get")
-            || before.ends_with("get_mut"))
+            || before.ends_with("get_mut")
+            // #5986 — the forms the scan used to miss: presence tests and the
+            // paired acquisitions, whose turbofish names several types.
+            || before.ends_with("has")
+            || before.ends_with("query_2_mut_mut")
+            || before.ends_with("resource_2_mut"))
         {
             continue;
         }
@@ -4429,13 +4479,14 @@ fn the_nested_lock_residual_list_names_every_type_apply_effect_acquires() {
         let Some(close) = rest.find('>') else {
             continue;
         };
-        let path = &rest[..close];
-        if path.is_empty() || path.contains(' ') {
-            continue;
-        }
-        let short = path.rsplit("::").next().unwrap_or(path).to_owned();
-        if !acquired.contains(&short) {
-            acquired.push(short);
+        for path in rest[..close].split(',').map(str::trim) {
+            if path.is_empty() || path.contains(' ') {
+                continue;
+            }
+            let short = path.rsplit("::").next().unwrap_or(path).to_owned();
+            if !acquired.contains(&short) {
+                acquired.push(short);
+            }
         }
     }
     assert!(
@@ -4452,6 +4503,19 @@ fn the_nested_lock_residual_list_names_every_type_apply_effect_acquires() {
          audit checklist delegates to, so an unlisted acquisition is \
          invisible to it (#3949)"
     );
+
+    // #5986 — the false claim the inventory carried: the continuation queue is
+    // written under these guards (`apply_effects`, `budget::defer`), and the doc
+    // must not call the list exhaustive over a VM whose natives it cannot name.
+    assert!(
+        !doc.contains("is *not* in this list"),
+        "FragmentExecutionQueue is taken under the paired guards (apply_effects / defer)"
+    );
+    assert!(
+        !doc.contains("this list still inventories every lock"),
+        "the list cannot inventory the VM's natives; the invariant is exclusive scheduling"
+    );
+    assert!(doc.contains("The Papyrus VM runs under these same guards"));
 
     // The specific stale claim, which no acquisition scan can catch: the
     // fragment table is cloned, never held.
