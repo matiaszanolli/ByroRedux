@@ -139,7 +139,14 @@ assumed):
   script attach. The same row carries the actor's `ScriptPackage` (#6072)
   and a corpse's root pose (#6073): a corpse has no package state, so this
   snapshot never kept a row for it, and the snapshot is cleared on every
-  drain and never saved.
+  drain and never saved. #6085 added the actor's `ActiveMagicEffects`
+  (parked with its `ActorValues` as one unit, so a timed *Recover* effect's
+  pending revert survives — otherwise the buff turned permanent), the
+  `WeaponDrawn` / `IgnoreCrime` markers, and the `ScriptTimer` /
+  `RumbleOnActivate` script state. The save-reload ring park builds the same
+  rows from the snapshot's columns. Which `MUTABLE_DELTA_COLUMNS` entries
+  are parked, carried by this snapshot, or deliberately not, is pinned by
+  `every_delta_column_is_parked_or_explicitly_not`.
 
 ## 5. Lifetime and bounding
 

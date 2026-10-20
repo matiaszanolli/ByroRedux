@@ -1127,3 +1127,142 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
          load path): {seated_without_path:#?}",
     );
 }
+
+/// #6085 — the eviction row (`cell_loader::reference_state`) is the third
+/// per-placement store beside the save registry and `MUTABLE_DELTA_COLUMNS`,
+/// and it drifted twice (GAME-SD-01/02, then SAVE-SD-03): a component added
+/// to the live overlay was silently not parked, so it reverted on every cell
+/// exit. This pins the partition: every `MUTABLE_DELTA_COLUMNS` entry is
+/// either parked in a named `ReferenceState` / `ScriptState` field, carried
+/// by the stream snapshot, or on an explicit not-parked list with its
+/// reason — so adding a delta column fails here until someone decides.
+/// Conversely every parked field must be accounted for by a column.
+#[test]
+fn every_delta_column_is_parked_or_explicitly_not() {
+    /// (delta column, the parked field that carries it).
+    const PARKED: &[(&str, &str)] = &[
+        ("Inventory", "ReferenceState.inventory"),
+        ("EquipmentSlots", "ReferenceState.equipment"),
+        ("EquippedWeapon", "ReferenceState.weapon"),
+        ("ActorValues", "ReferenceState.actor_values"),
+        ("SpellList", "ReferenceState.spells"),
+        ("Perks", "ReferenceState.perks"),
+        ("ActorControlState", "ReferenceState.control"),
+        ("Bleedout", "ReferenceState.bleedout"),
+        ("ScriptPackage", "ReferenceState.script_package"),
+        ("Dead", "ReferenceState.dead"),
+        ("ActiveMagicEffects", "ReferenceState.magic_effects"),
+        ("WeaponDrawn", "ReferenceState.weapon_drawn"),
+        ("IgnoreCrime", "ReferenceState.ignore_crime"),
+        ("TwoStateActivator", "ScriptState.two_state"),
+        ("ScriptVariables", "ScriptState.variables"),
+        ("ScriptTimer", "ScriptState.timer"),
+        ("RumbleOnActivate", "ScriptState.rumble"),
+    ];
+    /// (delta column, the `ActorStreamSnapshot` field that carries it).
+    const STREAM_SNAPSHOT: &[(&str, &str)] = &[
+        ("Transform", "position"),
+        ("TravelState", "travel_destination"),
+        ("Traveled", "traveled"),
+    ];
+    /// Parked fields that no delta column maps to.
+    const FIELDS_WITHOUT_A_COLUMN: &[&str] = &[
+        // Spawn-time derived from `Dead` + `Transform`.
+        "ReferenceState.corpse_pose",
+        // The pickup tombstone; the live marker is `PickedUp`, not a column.
+        "ReferenceState.picked_up",
+    ];
+    /// Columns deliberately not parked, each with its reason. `UNAUDITED`
+    /// rows predate this guard: they were seeded from the delta list as it
+    /// stood and still owe a decision (park them, or replace the marker with
+    /// the real reason).
+    const NOT_PARKED: &[(&str, &str)] = &[
+        (
+            "WanderState",
+            "re-roll on respawn is the intended behaviour (stream-boundary-state-continuity.md)",
+        ),
+        ("LightSource", "UNAUDITED"),
+        ("LightFlicker", "UNAUDITED"),
+        ("CharacterLevel", "UNAUDITED"),
+        ("LevelUpPoints", "UNAUDITED"),
+        ("TimedRestorations", "UNAUDITED"),
+        ("GuardState", "UNAUDITED"),
+        ("PatrolState", "UNAUDITED"),
+        ("Escorted", "UNAUDITED"),
+        ("CharacterController", "the player outlives cell reloads; never evicted"),
+        ("RigidBodyData", "UNAUDITED"),
+    ];
+
+    let covered: std::collections::BTreeSet<&str> = PARKED
+        .iter()
+        .map(|(column, _)| *column)
+        .chain(STREAM_SNAPSHOT.iter().map(|(column, _)| *column))
+        .chain(NOT_PARKED.iter().map(|(column, _)| *column))
+        .collect();
+    let expected: std::collections::BTreeSet<&str> =
+        MUTABLE_DELTA_COLUMNS.iter().copied().collect();
+    assert_eq!(
+        covered.len(),
+        PARKED.len() + STREAM_SNAPSHOT.len() + NOT_PARKED.len(),
+        "a delta column is listed under more than one disposition",
+    );
+    let undecided: Vec<_> = expected.difference(&covered).collect();
+    let stale: Vec<_> = covered.difference(&expected).collect();
+    assert!(
+        undecided.is_empty() && stale.is_empty(),
+        "#6085: MUTABLE_DELTA_COLUMNS and the eviction-row partition disagree. \
+         Delta columns with no decision (park them in `ReferenceState`/`ScriptState`, \
+         or list them as not parked with a reason): {undecided:?}; \
+         partition rows for columns no longer in the list: {stale:?}",
+    );
+    assert!(
+        NOT_PARKED.iter().all(|(_, reason)| !reason.is_empty()),
+        "a not-parked column needs a reason"
+    );
+
+    // The named parked fields exist, and no parked field is unaccounted for.
+    let struct_fields = |source: &str, name: &str| -> Vec<String> {
+        let start = source
+            .find(&format!("\nstruct {name} {{"))
+            .unwrap_or_else(|| panic!("struct {name} moved out of reference_state.rs"));
+        let body = &source[start..];
+        let body = &body[..body.find("\n}\n").expect("struct body ends")];
+        body.lines()
+            .filter(|line| line.starts_with("    ") && !line.starts_with("     "))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter_map(|line| line.trim().split_once(':').map(|(field, _)| field.to_string()))
+            .collect()
+    };
+    let reference_state = include_str!("../cell_loader/reference_state.rs");
+    let mut actual: Vec<String> = Vec::new();
+    for name in ["ReferenceState", "ScriptState"] {
+        actual.extend(
+            struct_fields(reference_state, name)
+                .into_iter()
+                .map(|field| format!("{name}.{field}")),
+        );
+    }
+    for (column, field) in PARKED {
+        assert!(actual.iter().any(|a| a == field), "{column} -> {field}: no such parked field");
+    }
+    let accounted: std::collections::BTreeSet<&str> = PARKED
+        .iter()
+        .map(|(_, field)| *field)
+        .chain(FIELDS_WITHOUT_A_COLUMN.iter().copied())
+        .collect();
+    let orphan_fields: Vec<_> = actual
+        .iter()
+        .filter(|field| !accounted.contains(field.as_str()))
+        .collect();
+    assert!(
+        orphan_fields.is_empty(),
+        "#6085: parked fields with no delta column or listed reason: {orphan_fields:?}",
+    );
+    let snapshot_src = include_str!("../cell_loader/stream_snapshot.rs");
+    for (column, field) in STREAM_SNAPSHOT {
+        assert!(
+            snapshot_src.contains(&format!("pub(crate) {field}:")),
+            "{column} -> ActorStreamSnapshot.{field}: no such field",
+        );
+    }
+}

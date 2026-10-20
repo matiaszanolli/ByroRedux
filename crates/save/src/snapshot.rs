@@ -565,7 +565,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// the required `scripts` rows (a reference's `TwoStateActivator` and
 /// `ScriptVariables`), so an evicted reference keeps its script state, its
 /// script package and its corpse's position.
-pub const FORMAT_MAJOR: u16 = 114;
+///
+/// v114 -> v115 (#6085): the parked `ReferenceState` gained the required `magic_effects` (the actor's
+/// `ActiveMagicEffects`, parked with its `ActorValues` so a Recover effect's pending revert survives),
+/// `weapon_drawn` and `ignore_crime` fields, and `ScriptState` the required `timer` and `rumble`
+/// fields, so a pre-v115 store no longer decodes.
+pub const FORMAT_MAJOR: u16 = 115;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

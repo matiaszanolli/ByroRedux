@@ -71,6 +71,19 @@ struct ReferenceState {
     /// FORMAT_MAJOR gate rather than silently default-filled (#4465 /
     /// SAVE-D2-01, same rule as v23's chargen fields).
     picked_up: bool,
+    /// #6085 — the actor's `ActiveMagicEffects`, parked with `actor_values` as
+    /// one unit. A *Recover* value effect applies `mod_permanent(+amount)` at
+    /// start and the opposite when it finishes, so parking the modified
+    /// values without the list that owns the pending revert made a timed
+    /// buff or debuff permanent after one eviction round trip (the hazard
+    /// #4819 fixed for `SpellList` vs `ActorValues`). Required: pre-v115
+    /// saves are rejected.
+    magic_effects: Option<byroredux_scripting::magic_effects::ActiveMagicEffects>,
+    /// #6085 — ObScript `SetAlert` (`WeaponDrawn`) and `IgnoreCrime`: presence
+    /// markers a script sets and nothing re-derives, so they reverted on every
+    /// cell exit. Required: pre-v115 saves are rejected.
+    weapon_drawn: bool,
+    ignore_crime: bool,
 }
 
 /// #6071 — a reference's script state at eviction. Kept apart from
@@ -83,6 +96,19 @@ struct ReferenceState {
 struct ScriptState {
     two_state: Option<byroredux_scripting::TwoStateActivator>,
     variables: Option<byroredux_scripting::ScriptVariables>,
+    /// #6085 — a spent trap/lever timer must not re-arm on re-entry.
+    timer: Option<byroredux_scripting::ScriptTimer>,
+    /// #6085 — the rumble activator's `Busy` state, likewise.
+    rumble: Option<byroredux_scripting::papyrus_demo::RumbleOnActivate>,
+}
+
+impl ScriptState {
+    fn is_empty(&self) -> bool {
+        self.two_state.is_none()
+            && self.variables.is_none()
+            && self.timer.is_none()
+            && self.rumble.is_none()
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -192,6 +218,9 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
                         dead: false,
                         corpse_pose: None,
                         picked_up: false,
+                        magic_effects: None,
+                        weapon_drawn: false,
+                        ignore_crime: false,
                     },
                 ))
             })
@@ -218,6 +247,22 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
             state.script_package = package_q.get(*entity).copied();
         }
     }
+    if let Some(effects_q) = world.query::<byroredux_scripting::magic_effects::ActiveMagicEffects>()
+    {
+        for (entity, _, state) in &mut rows {
+            state.magic_effects = effects_q.get(*entity).cloned();
+        }
+    }
+    if let Some(drawn_q) = world.query::<byroredux_scripting::obscript_state::WeaponDrawn>() {
+        for (entity, _, state) in &mut rows {
+            state.weapon_drawn = drawn_q.get(*entity).is_some();
+        }
+    }
+    if let Some(ignore_q) = world.query::<byroredux_scripting::obscript_state::IgnoreCrime>() {
+        for (entity, _, state) in &mut rows {
+            state.ignore_crime = ignore_q.get(*entity).is_some();
+        }
+    }
     if let Some(transform_q) = world.query::<byroredux_core::ecs::Transform>() {
         for (entity, _, state) in rows.iter_mut().filter(|(_, _, state)| state.dead) {
             state.corpse_pose = transform_q
@@ -241,6 +286,9 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
                 && !state.picked_up
                 && state.bleedout.is_none()
                 && state.script_package.is_none()
+                && state.magic_effects.is_none()
+                && !state.weapon_drawn
+                && !state.ignore_crime
             {
                 continue;
             }
@@ -326,6 +374,8 @@ fn capture_script_states(
                 ScriptState {
                     two_state: None,
                     variables: None,
+                    timer: None,
+                    rumble: None,
                 },
             )
         })
@@ -340,7 +390,17 @@ fn capture_script_states(
             state.variables = variables_q.get(*entity).cloned();
         }
     }
-    states.retain(|(_, state)| state.two_state.is_some() || state.variables.is_some());
+    if let Some(timer_q) = world.query::<byroredux_scripting::ScriptTimer>() {
+        for ((entity, _, _), (_, state)) in rows.iter().zip(&mut states) {
+            state.timer = timer_q.get(*entity).copied();
+        }
+    }
+    if let Some(rumble_q) = world.query::<byroredux_scripting::papyrus_demo::RumbleOnActivate>() {
+        for ((entity, _, _), (_, state)) in rows.iter().zip(&mut states) {
+            state.rumble = rumble_q.get(*entity).copied();
+        }
+    }
+    states.retain(|(_, state)| !state.is_empty());
     states
 }
 
@@ -364,6 +424,12 @@ pub(crate) fn restore_script_state(world: &mut World, entity: EntityId) -> bool 
     }
     if let Some(variables) = state.variables {
         world.insert(entity, variables);
+    }
+    if let Some(timer) = state.timer {
+        world.insert(entity, timer);
+    }
+    if let Some(rumble) = state.rumble {
+        world.insert(entity, rumble);
     }
     true
 }
@@ -411,6 +477,11 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
     if let Some(values) = state.actor_values {
         world.insert(entity, values);
     }
+    // #6085 — as one unit with the values: the list owns the pending revert
+    // of every Recover effect the parked values already carry.
+    if let Some(effects) = state.magic_effects {
+        world.insert(entity, effects);
+    }
     // #4819 — after the spawn's `stamp_spell_list`, and together with the
     // values above, so membership and the value changes it implies agree.
     if let Some(spells) = state.spells {
@@ -431,6 +502,12 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
     // ahead of its own stack.
     if let Some(script_package) = state.script_package {
         world.insert(entity, script_package);
+    }
+    if state.weapon_drawn {
+        world.insert(entity, byroredux_scripting::obscript_state::WeaponDrawn);
+    }
+    if state.ignore_crime {
+        world.insert(entity, byroredux_scripting::obscript_state::IgnoreCrime);
     }
     if state.dead {
         // #6073 — the root back where the actor died, before the Late
@@ -849,6 +926,23 @@ pub(crate) fn park_unresolved_snapshot_rows(
         column::<byroredux_scripting::TwoStateActivator>(snapshot, "TwoStateActivator");
     let mut variables =
         column::<byroredux_scripting::ScriptVariables>(snapshot, "ScriptVariables");
+    let mut timers = column::<byroredux_scripting::ScriptTimer>(snapshot, "ScriptTimer");
+    let mut rumbles = column::<byroredux_scripting::papyrus_demo::RumbleOnActivate>(
+        snapshot,
+        "RumbleOnActivate",
+    );
+    let mut effects = column::<byroredux_scripting::magic_effects::ActiveMagicEffects>(
+        snapshot,
+        "ActiveMagicEffects",
+    );
+    let weapon_drawn = column::<byroredux_scripting::obscript_state::WeaponDrawn>(
+        snapshot,
+        "WeaponDrawn",
+    );
+    let ignore_crime = column::<byroredux_scripting::obscript_state::IgnoreCrime>(
+        snapshot,
+        "IgnoreCrime",
+    );
     let dead = column::<Dead>(snapshot, "Dead");
 
     // One resource guard at a time (#4982): read the store's keys, drop it,
@@ -868,8 +962,10 @@ pub(crate) fn park_unresolved_snapshot_rows(
             let state = ScriptState {
                 two_state: two_states.remove(&old),
                 variables: variables.remove(&old),
+                timer: timers.remove(&old),
+                rumble: rumbles.remove(&old),
             };
-            (state.two_state.is_some() || state.variables.is_some()).then_some((pair, state))
+            (!state.is_empty()).then_some((pair, state))
         })
         .collect();
     {
@@ -882,11 +978,15 @@ pub(crate) fn park_unresolved_snapshot_rows(
             let has_control = controls.contains_key(&old);
             let has_bleedout = bleedouts.contains_key(&old);
             let has_script_package = script_packages.contains_key(&old);
+            let has_actor_flags = effects.contains_key(&old)
+                || weapon_drawn.contains_key(&old)
+                || ignore_crime.contains_key(&old);
             if items.is_none()
                 && !is_dead
                 && !has_control
                 && !has_bleedout
                 && !has_script_package
+                && !has_actor_flags
                 && !already_parked.contains(&pair)
             {
                 continue;
@@ -937,6 +1037,9 @@ pub(crate) fn park_unresolved_snapshot_rows(
                         .filter(|_| is_dead)
                         .map(|transform| (transform.translation, transform.rotation)),
                     picked_up: false,
+                    magic_effects: effects.remove(&old),
+                    weapon_drawn: weapon_drawn.contains_key(&old),
+                    ignore_crime: ignore_crime.contains_key(&old),
                 },
             ));
         }
@@ -993,6 +1096,9 @@ pub(crate) fn mark_picked_up(world: &World, entity: EntityId) {
                     dead: false,
                     corpse_pose: None,
                     picked_up: true,
+                    magic_effects: None,
+                    weapon_drawn: false,
+                    ignore_crime: false,
                 },
             );
         }
@@ -1785,6 +1891,163 @@ mod tests {
         let gate = reference(&mut dst, "Band.esm", 0x410);
         assert!(restore_script_state(&mut dst, gate));
         assert!(dst.get::<TwoStateActivator>(gate).is_some_and(|state| state.is_open));
+    }
+
+    /// #6085 — a timed *Recover* effect applies `mod_permanent(+amount)` at
+    /// its start and the opposite when it finishes. Parking the modified
+    /// `ActorValues` without the `ActiveMagicEffects` that owns the pending
+    /// revert made the buff permanent after one eviction round trip.
+    #[test]
+    fn a_timed_buff_still_wears_off_after_an_eviction_round_trip() {
+        use byroredux_scripting::magic_effects::{
+            magic_effect_system, start_effects, ActiveMagicEffects, CastEffect, ValueEffect,
+        };
+        const STRENGTH: u32 = 0x5E1;
+        let authored = || {
+            let mut values = ActorValues::new();
+            values.set_base(STRENGTH, 50.0);
+            values
+        };
+        let mut world = world();
+        world.register::<ActiveMagicEffects>();
+        let npc = reference(&mut world, "FalloutNV.esm", 0xA00);
+        world.insert(npc, Inventory::new());
+        world.insert(npc, authored());
+        let buff = CastEffect {
+            mgef: 0x77,
+            script: 0,
+            duration: 10.0,
+            magnitude: 25.0,
+            value: Some(ValueEffect {
+                actor_value: STRENGTH,
+                amount: 25.0,
+                recover: true,
+            }),
+        };
+        assert_eq!(start_effects(&world, npc, None, 0x99, &[buff], false), 1);
+        magic_effect_system(&world, 0.0);
+        assert_eq!(world.get::<ActorValues>(npc).unwrap().current(STRENGTH), 75.0);
+        evict(&mut world, &[npc]);
+
+        // Respawn on the authored values, then the parked row.
+        let npc = reference(&mut world, "FalloutNV.esm", 0xA00);
+        world.insert(npc, Inventory::new());
+        world.insert(npc, authored());
+        assert!(restore(&mut world, npc));
+        assert_eq!(world.get::<ActorValues>(npc).unwrap().current(STRENGTH), 75.0);
+        assert!(world.get::<ActiveMagicEffects>(npc).is_some());
+
+        magic_effect_system(&world, 11.0);
+        assert_eq!(
+            world.get::<ActorValues>(npc).unwrap().current(STRENGTH),
+            50.0,
+            "the effect's revert survived the eviction"
+        );
+    }
+
+    /// #6085 — the ObScript `SetAlert` / `IgnoreCrime` markers and the
+    /// rumble/timer script state outlive a cell exit.
+    #[test]
+    fn scripted_actor_flags_and_trap_timers_survive_eviction() {
+        use byroredux_scripting::obscript_state::{IgnoreCrime, WeaponDrawn};
+        use byroredux_scripting::papyrus_demo::{RumbleOnActivate, RumbleState};
+        use byroredux_scripting::ScriptTimer;
+        let mut world = world();
+        world.register::<WeaponDrawn>();
+        world.register::<IgnoreCrime>();
+        world.register::<ScriptTimer>();
+        world.register::<RumbleOnActivate>();
+        let guard = reference(&mut world, "FalloutNV.esm", 0xA10);
+        world.insert(guard, Inventory::new());
+        world.insert(guard, WeaponDrawn);
+        world.insert(guard, IgnoreCrime);
+        let trap = reference(&mut world, "FalloutNV.esm", 0xA11);
+        world.insert(trap, ScriptTimer { id: 7, remaining: 3.5 });
+        let rumble = RumbleOnActivate {
+            camera_intensity: 0.5,
+            duration: 2.0,
+            repeatable: false,
+            shake_left: 0.1,
+            shake_right: 0.2,
+            state: RumbleState::Busy {
+                wait_remaining_secs: 1.25,
+            },
+        };
+        world.insert(trap, rumble);
+        evict(&mut world, &[guard, trap]);
+
+        let guard = reference(&mut world, "FalloutNV.esm", 0xA10);
+        world.insert(guard, Inventory::new());
+        assert!(restore(&mut world, guard));
+        assert!(world.has::<WeaponDrawn>(guard) && world.has::<IgnoreCrime>(guard));
+
+        let trap = reference(&mut world, "FalloutNV.esm", 0xA11);
+        assert!(restore_script_state(&mut world, trap));
+        assert_eq!(world.get::<ScriptTimer>(trap).map(|t| (t.id, t.remaining)), Some((7, 3.5)));
+        assert!(matches!(
+            world.get::<RumbleOnActivate>(trap).map(|r| r.state),
+            Some(RumbleState::Busy { wait_remaining_secs }) if wait_remaining_secs == 1.25
+        ));
+    }
+
+    /// #6085 — the save-reload ring park carries the same new columns.
+    #[test]
+    fn unresolved_effects_flags_and_timers_are_parked_for_the_next_respawn() {
+        use byroredux_scripting::magic_effects::{ActiveEffect, ActiveMagicEffects};
+        use byroredux_scripting::obscript_state::WeaponDrawn;
+        use byroredux_scripting::ScriptTimer;
+        let mut src = world();
+        src.register::<ActiveMagicEffects>();
+        src.register::<WeaponDrawn>();
+        src.register::<ScriptTimer>();
+        src.insert_resource(byroredux_core::string::StringPool::new());
+        let npc = reference(&mut src, "Band.esm", 0x420);
+        src.insert(npc, WeaponDrawn);
+        src.insert(
+            npc,
+            ActiveMagicEffects(vec![ActiveEffect {
+                source: 1,
+                mgef: 2,
+                caster: 0,
+                script: 0,
+                duration: 30.0,
+                indefinite: false,
+                elapsed: 4.0,
+                started: true,
+                ending: false,
+                value: None,
+                ticks: 0,
+                locals: Vec::new(),
+                ref_locals: Vec::new(),
+            }]),
+        );
+        let trap = reference(&mut src, "Band.esm", 0x421);
+        src.insert(trap, ScriptTimer { id: 3, remaining: 9.0 });
+        let registry = crate::save_io::build_save_registry();
+        let snapshot = byroredux_save::save_world(&src, &registry).unwrap();
+        let bytes = byroredux_save::encode(&snapshot, registry.schema_fingerprint()).unwrap();
+        let decoded = byroredux_save::decode(&bytes, registry.schema_fingerprint()).unwrap();
+
+        let mut dst = world();
+        dst.register::<ActiveMagicEffects>();
+        dst.register::<WeaponDrawn>();
+        dst.register::<ScriptTimer>();
+        byroredux_save::restore_resources(&mut dst, &registry, &decoded).unwrap();
+        let remap = byroredux_save::build_form_id_remap(&dst, &registry, &decoded);
+        let unresolved = byroredux_save::unresolved_form_id_pairs(&registry, &decoded, &remap);
+        assert_eq!(park_unresolved_snapshot_rows(&mut dst, &decoded, &unresolved), 2);
+
+        let npc = reference(&mut dst, "Band.esm", 0x420);
+        assert!(restore(&mut dst, npc));
+        assert!(dst.has::<WeaponDrawn>(npc));
+        assert_eq!(
+            dst.get::<ActiveMagicEffects>(npc).map(|e| e.0.len()),
+            Some(1),
+            "the effect list parks with the actor"
+        );
+        let trap = reference(&mut dst, "Band.esm", 0x421);
+        assert!(restore_script_state(&mut dst, trap));
+        assert_eq!(dst.get::<ScriptTimer>(trap).map(|t| t.id), Some(3));
     }
 
     /// #6072 — a script package outlives the eviction, so the respawned
