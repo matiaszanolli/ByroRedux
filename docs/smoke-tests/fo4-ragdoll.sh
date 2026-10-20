@@ -26,6 +26,7 @@ PORT="${BYRO_DEBUG_PORT:-19882}"
 TIMEOUT="${BYROREDUX_SMOKE_TIMEOUT:-300}"
 LOG_DIR="$(mktemp -d /tmp/byro-fo4-ragdoll.XXXXXX)"
 engine_pid=""
+current_stderr=/dev/null
 
 stop_engine() {
     if [[ -n "$engine_pid" ]]; then
@@ -103,12 +104,33 @@ check_ragdoll() {
         || fail "$what ragdoll is not ${bodies:-fully} live and finite: $(cat "$LOG_DIR/ragdoll.log")"
     grep -Fq "recoveries_total=0" "$LOG_DIR/ragdoll.log" \
         || fail "$what ragdoll needed an invalid-solve recovery (#4772)"
+    # The limits must hold: every authored joint live. The first live run of
+    # this gate found the decoded 18-body FO4 ghoul at live_joints=0 of 17.
+    local joints live_joints
+    joints="$(sed -nE 's/.* joints=([0-9]+) .*/\1/p' "$LOG_DIR/ragdoll.log")"
+    live_joints="$(sed -nE 's/.* live_joints=([0-9]+) .*/\1/p' "$LOG_DIR/ragdoll.log")"
+    [[ -n "$joints" && "$joints" == "$live_joints" ]] \
+        || fail "$what ragdoll has $live_joints of $joints joints live"
+    # ...and no body parked by the solver-explosion recovery (#5161).
+    local skeleton
+    skeleton="$(sed -nE 's/.* skeleton=([0-9]+) .*/\1/p' "$LOG_DIR/ragdoll.log")"
+    if grep -q "\[actor $skeleton bone .*solver-explosion" "$current_stderr"; then
+        fail "$what ragdoll bodies were parked as solver explosions: $(grep -c "\[actor $skeleton bone" "$current_stderr")"
+    fi
     sed -nE 's/.*(bodies=[0-9]+).*(max_distance=[0-9.]+).*/\1 \2/p' "$LOG_DIR/ragdoll.log"
 }
 
 # Swing at `$1` until the combat trace names it killed; at most 60 swings.
 kill_by_swings() {
     local target="$1"
+    # The P2 route: swings are only accepted once the player is in Character
+    # mode (an early press is rejected with `can_swing=false`).
+    local deadline=$((SECONDS + TIMEOUT))
+    until debug_command "player.status" "$LOG_DIR/player.log" \
+        && grep -Fq "mode=Character" "$LOG_DIR/player.log"; do
+        (( SECONDS < deadline )) || fail "the player never reached Character mode"
+        sleep 0.5
+    done
     for swing in $(seq 1 60); do
         debug_command "combat.approach $target" "$LOG_DIR/approach.log" || fail "approach failed"
         debug_command "input.press attack" "$LOG_DIR/press.log" || fail "attack failed"
@@ -137,6 +159,7 @@ launch() {
         --cell "$cell" --player --bench-frames 30 --bench-hold \
         >"$LOG_DIR/$cell.stdout" 2>"$LOG_DIR/$cell.stderr" &
     engine_pid=$!
+    current_stderr="$LOG_DIR/$cell.stderr"
     local deadline=$((SECONDS + TIMEOUT))
     until grep -Fq 'bench-hold:' "$LOG_DIR/$cell.stderr"; do
         kill -0 "$engine_pid" 2>/dev/null || fail "$cell: engine exited before bench-hold"

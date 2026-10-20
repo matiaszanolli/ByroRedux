@@ -608,7 +608,10 @@ pub fn parse_race(
             b"FNAM" => {
                 gender_section = Some(1); // Female
             }
-            b"ANAM" if game == GameKind::Skyrim && in_skeleton_section => {
+            // #6070 — FO4 authors the same MNAM/FNAM `ANAM` skeleton run
+            // (FeralGhoulRace's own rig, the super mutant's, ...); without it
+            // every FO4 race fell back to the human skeleton and its ragdoll.
+            b"ANAM" if matches!(game, GameKind::Skyrim | GameKind::Fallout4) && in_skeleton_section => {
                 if let Some(gender) = gender_section {
                     record.skeleton_models[gender as usize] = read_zstring(&sub.data);
                 }

@@ -21,19 +21,22 @@ fn skyrim_race_preserves_gendered_skeletons_separately_from_body_models() {
         sub(b"NAM3", b""),
         sub(b"MODL", b"DraugrProject.hkx\0"),
     ];
-    let race = parse_race(0xD53, &subs, GameKind::Skyrim, &None);
-    assert_eq!(
-        race.skeleton_models,
-        [
-            r"Actors\Draugr\Character Assets\Skeleton.nif",
-            r"Actors\Draugr\Character Assets\SkeletonF.nif",
-        ]
-    );
-    assert_eq!(race.body_models, ["body.egt", "DraugrProject.hkx"]);
+    // #6070 — FO4 authors the same run (verified on Fallout4.esm by
+    // `installed_fo4_races_resolve_their_own_skeletons`).
+    for game in [GameKind::Skyrim, GameKind::Fallout4] {
+        let race = parse_race(0xD53, &subs, game, &None);
+        assert_eq!(
+            race.skeleton_models,
+            [
+                r"Actors\Draugr\Character Assets\Skeleton.nif",
+                r"Actors\Draugr\Character Assets\SkeletonF.nif",
+            ]
+        );
+        assert_eq!(race.body_models, ["body.egt", "DraugrProject.hkx"]);
+    }
     for game in [
         GameKind::Oblivion,
         GameKind::Fallout3NV,
-        GameKind::Fallout4,
         GameKind::Fallout76,
         GameKind::Starfield,
     ] {
@@ -2305,4 +2308,40 @@ fn fact_extracts_vendor_data() {
     assert!(!vendor.buys_stolen);
     assert!(vendor.everything_not_in_list);
     assert!(parse_fact(0x43, &[sub(b"EDID", b"NCR\0")], &None).vendor.is_none());
+}
+
+/// #6070 — FO4 races carry their own `ANAM` skeleton: the feral ghoul's is not
+/// the human one, and every authored path exists in the mesh archives.
+#[test]
+#[ignore = "needs FO4 game data on disk; parses the whole master"]
+fn installed_fo4_races_resolve_their_own_skeletons() {
+    let data = std::env::var("BYROREDUX_FO4_DATA")
+        .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".to_string());
+    let Ok(bytes) = std::fs::read(std::path::Path::new(&data).join("Fallout4.esm")) else {
+        eprintln!("skipping: Fallout4.esm not available");
+        return;
+    };
+    let index = crate::esm::records::parse_esm(&bytes).expect("parse Fallout4.esm");
+    let skeleton = |edid: &str| {
+        index
+            .races
+            .values()
+            .find(|race| race.editor_id == edid)
+            .map(|race| race.skeleton_models[0].to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    let human = skeleton("HumanRace");
+    let ghoul = skeleton("FeralGhoulRace");
+    eprintln!("HumanRace {human:?}; FeralGhoulRace {ghoul:?}");
+    assert!(human.ends_with("skeleton.nif"), "{human}");
+    assert!(ghoul.ends_with("skeleton.nif") && ghoul != human, "{ghoul}");
+    let authored: Vec<&str> = index
+        .races
+        .values()
+        .flat_map(|race| race.skeleton_models.iter())
+        .filter(|path| !path.is_empty())
+        .map(String::as_str)
+        .collect();
+    eprintln!("{} authored race skeleton paths", authored.len());
+    assert!(authored.len() > 20);
 }

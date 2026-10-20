@@ -168,7 +168,9 @@ pub fn template_from_imported(
             angular_damping: b.angular_damping,
             friction: b.friction,
             restitution: b.restitution,
-            pose_bone_id: None,
+            // #6070 — the FO4 id an `XRGD` entry names its body by; pinned
+            // at `None` here, every FO4 corpse pose was refused live.
+            pose_bone_id: b.pose_bone_id,
         });
     }
     if !dropped_bones.is_empty() {
@@ -2104,6 +2106,8 @@ mod tests {
         let mut head_body = body("Head");
         head_body.translation = head_local_t;
         head_body.rotation = Quat::IDENTITY;
+        // #6070 — an FO4 body's XRGD bone id reaches the template.
+        head_body.pose_bone_id = Some(11);
 
         let imported = ImportedRagdoll {
             bodies: vec![spine_body, head_body],
@@ -2113,6 +2117,8 @@ mod tests {
         let template =
             template_from_imported(&imported, &skel_map, &rest_poses).expect("both bodies resolve");
 
+        assert_eq!(template.bodies[0].pose_bone_id, None);
+        assert_eq!(template.bodies[1].pose_bone_id, Some(11));
         assert!(
             (template.bodies[0].local_translation - spine_local_t).length() < 1e-4,
             "authored translation must pass through untouched, got {:?}",
