@@ -24,7 +24,8 @@ use super::*;
 use byroredux_plugin::esm::records::script_instance::ScriptInstance;
 
 /// The first owner id of an alias script instance. Its range is no plugin's:
-/// the engine's own forms (`0xFF` created references) sit above it.
+/// the load-order slot allocator never hands a regular plugin the `0xFC` byte
+/// (#5988), and the engine's own forms (`0xFF` created references) sit above it.
 pub const ALIAS_OWNER_BASE: u32 = 0xFC00_0000;
 
 /// The events an alias script receives that the engine raises: its own

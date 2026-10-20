@@ -37,7 +37,7 @@ pub(crate) fn plugin_basename_lc(path: &str) -> String {
 /// Load-order plugin basenames paired with the global slot each was assigned.
 ///
 /// The two are *not* interchangeable (#3366). `allocate_global_slot` draws from
-/// two independent counters: regular plugins take `0x00..=0xFD` from
+/// two independent counters: regular plugins take `0x00..=0xFB` from
 /// `next_regular`, light masters take a 12-bit sub-index in the `0xFE` space
 /// from `next_light`. So a plugin's load-order **position** equals its slot byte
 /// only while no ESL precedes a regular plugin. Both vectors are indexed by
@@ -750,15 +750,14 @@ where
 }
 
 /// Allocate one global load-order slot without ever entering reserved or
-/// truncated FormID space. Regular plugins own `0x00..=0xFD`; light masters
+/// truncated FormID space. Regular plugins own `0x00..=0xFB` (`0xFC` is the
+/// alias-script owner range, #5988); light masters
 /// share `0xFE` through a 12-bit `0x000..=0xFFF` sub-index; Starfield
 /// medium masters (#4639) share `0xFD` through an 8-bit sub-index.
 ///
-/// A medium master's `0xFD` space collides with a regular plugin at byte
-/// `0xFD`, so once any medium master is in the order, regular allocation
-/// stops one slot earlier (`0xFC`). On games without medium masters
-/// (everything but Starfield) behaviour is byte-identical to the pre-#4639
-/// 254-slot cap.
+/// A medium master's `0xFD` space can never collide with a regular plugin,
+/// because regular allocation already stops at `0xFB` to leave `0xFC` to the
+/// alias-script owner ids (#5988); the medium guard below is kept as a backstop.
 fn allocate_global_slot(
     light_master: bool,
     medium_master: bool,
@@ -768,8 +767,14 @@ fn allocate_global_slot(
 ) -> anyhow::Result<esm::reader::GlobalSlot> {
     const MAX_LIGHT_SLOT: u16 = 0x0FFF;
     const MAX_MEDIUM_SLOT: u16 = 0x00FF;
-    const MAX_REGULAR_SLOT_FULL: u16 = 0x00FD;
-    const MAX_REGULAR_SLOT_WITH_MEDIUM: u16 = 0x00FC;
+    // #5988 — `0xFC` is the top byte of the Papyrus VM's synthetic alias-script
+    // owner ids (`ALIAS_OWNER_BASE`), and `is_alias_owner` classifies a FormID by
+    // that byte alone: a real form in a regular `0xFC` slot would be taken for an
+    // alias owner and lose its events. So no regular plugin is ever given the
+    // slot, which costs a load order its 253rd and 254th full plugin (the
+    // engines' own limit is 255 total with ESLs counted separately).
+    const MAX_REGULAR_SLOT_FULL: u16 = 0x00FB;
+    const MAX_REGULAR_SLOT_WITH_MEDIUM: u16 = 0x00FB;
 
     // Medium and light are mutually exclusive on the wire (a plugin is
     // one or the other); medium wins if a malformed file sets both.
@@ -1106,19 +1111,19 @@ mod tests {
     }
 
     #[test]
-    fn regular_slot_allocator_rejects_the_255th_plugin() {
+    fn regular_slot_allocator_rejects_the_253rd_plugin() {
         let mut next_regular = 0;
         let mut next_light = 0;
         let mut next_medium = 0;
-        for expected in 0u16..254 {
+        for expected in 0u16..252 {
             assert_eq!(
                 allocate_global_slot(false, false, &mut next_regular, &mut next_light, &mut next_medium).unwrap(),
                 esm::reader::GlobalSlot::Regular(expected as u8),
             );
         }
         let err = allocate_global_slot(false, false, &mut next_regular, &mut next_light, &mut next_medium)
-            .expect_err("0xFE is reserved for light masters");
-        assert!(err.to_string().contains("254 regular-plugin"));
+            .expect_err("0xFC is the alias-owner range and 0xFE is reserved for light masters");
+        assert!(err.to_string().contains("252 regular-plugin"));
     }
 
     #[test]
@@ -1582,7 +1587,7 @@ mod parallel_tests;
 /// Light and regular allocation are unaffected on a medium-free order.
 #[test]
 fn allocate_global_slot_partitions_medium_light_and_regular() {
-    // A medium-free order keeps the historical 254 regular slots.
+    // A medium-free order allocates regular slots from 0.
     let mut r = 0;
     let mut l = 0;
     let mut m = 0;
@@ -1609,15 +1614,16 @@ fn allocate_global_slot_partitions_medium_light_and_regular() {
         allocate_global_slot(false, true, &mut r, &mut l, &mut m).unwrap(),
         esm::reader::GlobalSlot::Medium(1)
     );
-    // The medium masters hold 0xFD, so regular tops out at 0xFC (253).
-    r = 0x00FC;
+    // Regular tops out at 0xFB: 0xFC is the alias-script owner range (#5988)
+    // and 0xFD the medium-master space.
+    r = 0x00FB;
     assert_eq!(
         allocate_global_slot(false, false, &mut r, &mut l, &mut m).unwrap(),
-        esm::reader::GlobalSlot::Regular(0xFC)
+        esm::reader::GlobalSlot::Regular(0xFB)
     );
     assert!(
         allocate_global_slot(false, false, &mut r, &mut l, &mut m).is_err(),
-        "0xFD is medium-master space once a medium master allocated"
+        "0xFC (alias-owner ids) and 0xFD (medium masters) are never regular slots"
     );
 
     // A medium master arriving after a regular plugin already took 0xFD
