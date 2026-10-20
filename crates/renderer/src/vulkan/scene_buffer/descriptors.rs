@@ -49,6 +49,7 @@ impl super::buffers::SceneBuffers {
         cube_view: vk::ImageView,
         sampler: vk::Sampler,
         irradiance_buffer: vk::Buffer,
+        cloud_shadow: (vk::ImageView, vk::Sampler),
     ) {
         let image_info = [vk::DescriptorImageInfo::default()
             .sampler(sampler)
@@ -60,12 +61,18 @@ impl super::buffers::SceneBuffers {
             .buffer(irradiance_buffer)
             .range(crate::vulkan::sky_cube::SKY_IRRADIANCE_BYTES)];
         let sh_write = write_storage_buffer(self.descriptor_sets[frame_index], 21, &sh_info);
+        let shadow_info = [vk::DescriptorImageInfo::default()
+            .sampler(cloud_shadow.1)
+            .image_view(cloud_shadow.0)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let shadow_write =
+            write_combined_image_sampler(self.descriptor_sets[frame_index], 24, &shadow_info);
         unsafe {
             // SAFETY: `device` is live; `descriptor_sets[frame_index]` is
-            // device-allocated and live; `write` borrows `image_info`, whose
+            // device-allocated and live; the writes borrow infos whose
             // handles are caller-owned and live for the whole call. No
             // descriptor copies.
-            device.update_descriptor_sets(&[write, sh_write], &[]);
+            device.update_descriptor_sets(&[write, sh_write, shadow_write], &[]);
         }
     }
 

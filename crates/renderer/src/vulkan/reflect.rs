@@ -1018,7 +1018,11 @@ mod tests {
     /// aperture sentinel adds one more branch (90, #4857). The night-detail
     /// gate in `sky.glsl`'s `weather_sky_details` became a two-term `&&`
     /// (Show Sky / aperture as well as exterior), adding one (91, #4908). The
-    /// direct-shadow filter's `caustic_flags.y` correction gate adds one (92). Pins the
+    /// direct-shadow filter's `caustic_flags.y` correction gate adds one (92).
+    /// SKYAL's far-to-near cloud composite replaced the four flat-plane layer
+    /// gates with the upper-shell plane and added the deck's aerial-perspective
+    /// and mean-depth gates: 97, measured by this test's own counter on the
+    /// recompiled module. Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
@@ -1027,8 +1031,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 92,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 92 — \
+            count, 97,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 97 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \

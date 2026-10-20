@@ -1001,6 +1001,7 @@ impl VulkanContext {
                         s.cube_view(f),
                         s.sampler,
                         s.irradiance_buffer(f),
+                        s.cloud_shadow_view(f),
                     );
                 }
                 Some(s)
@@ -1818,6 +1819,7 @@ impl VulkanContext {
             renderer_config,
             frame_extents,
             frame_counter: 0,
+            camera_cloud_sun_transmittance: 1.0,
             last_live_memory_sample: std::time::Instant::now(),
             rt_flag_last_frame: false,
             tlas_built_this_frame: false,

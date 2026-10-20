@@ -242,12 +242,25 @@ void main() {
             continue;
         }
         vec3 L = normalize(lights[i].direction_angle.xyz);
-        float NdotL = dot(N, L);
 
         // §12.6 front-lit / §12.2 back-lit. These are the two halves of one
         // surface and either alone leaves the meadow flat from one direction,
         // which is why they are computed together rather than in two passes.
-        float diffuse = max(NdotL, 0.0);
+        //
+        // Diffuse is the tuft's MEAN leaf irradiance, not the ribbon plane's
+        // own cosine. A ribbon stands for a tuft of leaves (§6), and §12.5
+        // already models that canopy as a spherical leaf-angle distribution
+        // (`GROUNDCOVER_CANOPY_EXTINCTION_K`). Its mean projection of leaf
+        // area onto the beam is Ross's G-function, which for the spherical
+        // distribution is 0.5 at every sun angle — the same number as K,
+        // since §12.5's `K / cos θ` is `G(θ) / cos θ` (Ross 1981, "The
+        // Radiation Regime and Architecture of Plant Stands"; Campbell &
+        // Norman 1998, ch. 15). Using the literal ribbon plane instead made
+        // an upright blade edge-on to a high sun: `max(N·L, 0)` was ~0 for
+        // every blade at noon, so the meadow rendered as black spikes over
+        // sunlit ground whatever the sun did. Depth in the sward (§12.5),
+        // the traced shadow, sheen and transmission still shade each blade.
+        float diffuse = L.y > 0.0 ? GROUNDCOVER_CANOPY_EXTINCTION_K : 0.0;
         float sheenLobe = byroGcSheenLobe(N, V, L, sheen);
         float lobe = byroGcTransmissionLobe(N, V, L);
 
@@ -282,7 +295,10 @@ void main() {
         // 0.0 for every directional source and `shadowableLightRadiance`
         // never reads on its directional arm — scaling by it here zeroed the
         // sun on every blade (#4291).
-        vec3 incoming = lights[i].color_type.rgb * shadow * canopy;
+        // The upload is the sun above the clouds; the cloud-shadow map
+        // carries what the clouds take out (SKYAL).
+        vec3 incoming = lights[i].color_type.rgb * shadow * canopy
+            * exteriorCloudSunTransmittance(vWorldPos, L);
 
         lit += incoming * (diffuse + sheenLobe);
         transmitted += incoming * (lobe * bladeTransmittance);

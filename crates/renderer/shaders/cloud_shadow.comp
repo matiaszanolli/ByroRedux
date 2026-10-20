@@ -1,0 +1,106 @@
+// SKYAL — cloud-shadow map bake.
+//
+// Direct-sun transmittance through the volumetric cloud deck
+// (`include/clouds.glsl`) per texel of a camera-centred world map
+// (`include/cloud_shadow.glsl`). Surfaces multiply their sun by it, so
+// cloud shadows move with the clouds and fall where the clouds are, replacing
+// a single weather-wide dimming factor that darkened clear patches and lit
+// overcast ones alike.
+//
+// Same parameter UBO and noise volumes as the sky-cube bake, so the shadows
+// are cast by exactly the deck the sky shows: same coverage, morphology, wind
+// and world anchoring.
+//
+// The authored WTHR textures on the upper plane cast none. They are sky art,
+// not a measured medium: Skyrim draws one deck four times at different scrolls
+// (`SkyrimCloudy`'s slots are all `SkyrimCloudsLower01`), so multiplying their
+// opacities blacked out the sun under a clear sky, and none of these games
+// ever shadowed the ground with them. The deck's coverage already follows the
+// weather (`fog_coverage_from_weather`), so overcast still shadows. The plane
+// does still occlude the sun DISC, as the 2D path always did.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+#include "include/shader_constants.glsl"
+#include "include/sky.glsl"
+#include "include/cloud_shadow.glsl"
+
+layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r16f) uniform writeonly image2D cloudShadow;
+
+// The sky-cube bake's parameters for this frame slot (`SkyCubeParams`).
+layout(set = 0, binding = 1) uniform SkyCubeParams {
+    SkyDome dome;
+} params;
+
+layout(set = 0, binding = 2) uniform sampler3D cloudBaseNoise;
+layout(set = 0, binding = 3) uniform sampler3D cloudDetailNoise;
+
+// The camera's own column. Passes that light with one sun value rather than
+// per position (the froxel volumetrics, the interior portal sun, caustics)
+// read it back on the host once this slot's fence has signalled.
+layout(std430, set = 0, binding = 4) writeonly buffer CameraSunTransmittance {
+    float cameraSunTransmittance;
+};
+
+// Direct-sun transmittance of the column above the deck-base point `base_xz`.
+float cloud_shadow_column(SkyDome dome, vec2 base_xz) {
+    vec3 to_sun = dome.sun_dir.xyz;
+    if (to_sun.y <= 0.0) {
+        // The sun is down: there is no direct light left to shadow.
+        return 1.0;
+    }
+    float rise = max(to_sun.y, 1.0e-3);
+    float transmittance = 1.0;
+
+    // The volumetric deck: Beer-Lambert through the same density the sky
+    // marches, sampled at the column's midpoints. Positions are world metres
+    // with y = altitude, which is what the march's world-anchored lookups
+    // see near the viewer.
+    float coverage = clamp(dome.weather_aurora.z, 0.0, 1.0);
+    if (coverage > 0.001) {
+        float step_length = (CLOUD_LAYER_TOP - CLOUD_LAYER_BOTTOM) / rise
+            / float(CLOUD_SHADOW_STEPS);
+        vec2 wind = cloud_wind_offset(dome);
+        vec3 morphology = cloud_morphology(dome);
+        float threshold = dome.weather_aurora.w;
+        float density_sum = 0.0;
+        for (uint i = 0u; i < CLOUD_SHADOW_STEPS; ++i) {
+            float along = (float(i) + 0.5) * step_length;
+            vec3 position = vec3(base_xz.x, CLOUD_LAYER_BOTTOM, base_xz.y) + to_sun * along;
+            float height_fraction = clamp(
+                (position.y - CLOUD_LAYER_BOTTOM) / (CLOUD_LAYER_TOP - CLOUD_LAYER_BOTTOM),
+                0.0, 1.0);
+            float column = cloud_column_coverage(
+                position, threshold, wind, morphology, cloudBaseNoise);
+            density_sum += cloud_density(
+                position, height_fraction, column, wind, morphology,
+                cloudBaseNoise, cloudDetailNoise);
+        }
+        transmittance *= exp(-density_sum * step_length * CLOUD_EXTINCTION_PER_METER);
+    }
+
+    return transmittance;
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(cloudShadow);
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+    SkyDome dome = params.dome;
+    vec2 centre = cloud_shadow_map_centre(dome.cloud_origin.xz);
+    // Texel centre, matching the bilinear lookup's sample positions.
+    vec2 base_xz = centre
+        + ((vec2(coord) + 0.5) / vec2(size) - 0.5) * CLOUD_SHADOW_MAP_EXTENT;
+    imageStore(cloudShadow, coord, vec4(cloud_shadow_column(dome, base_xz), 0.0, 0.0, 0.0));
+
+    if (coord == ivec2(0)) {
+        vec2 camera_base =
+            cloud_shadow_base_crossing(dome.cloud_origin.xz, 0.0, dome.sun_dir.xyz);
+        cameraSunTransmittance = cloud_shadow_column(dome, camera_base);
+    }
+}

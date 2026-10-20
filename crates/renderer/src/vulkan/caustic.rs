@@ -260,9 +260,12 @@ pub struct CausticParams {
     /// x = fixed-point scale, y = IOR (glass = 1.5), z = max lights to
     /// iterate, w = caustic strength multiplier (all ≥ 0).
     pub tune: [f32; 4],
+    /// x = direct-sun cloud transmittance at the camera (SKYAL); the
+    /// directional upload is the sun above the clouds. yzw reserved.
+    pub sun: [f32; 4],
 }
 
-// SAFETY: two `[f32; 4]` fields — homogeneous scalar arrays tile the
+// SAFETY: three `[f32; 4]` fields — homogeneous scalar arrays tile the
 // struct's declared size with no implicit padding (#3761).
 unsafe impl crate::vulkan::buffer::NoUninit for CausticParams {}
 
@@ -303,6 +306,10 @@ pub struct CausticPipeline {
     pub ior: f32,
     pub strength: f32,
     pub max_lights: u32,
+    /// SKYAL — the camera column's direct-sun cloud transmittance, set each
+    /// frame from `VulkanContext::camera_cloud_sun_transmittance`. The sun is
+    /// uploaded above the clouds; this is what they let through to caustics.
+    pub sun_transmittance: f32,
 
     /// Consecutive parked (camera-static) **visits to this FIF slot**, for
     /// progressive 1/N EMA convergence. Reset to 0 on camera motion. Capped
@@ -439,6 +446,7 @@ impl CausticPipeline {
             ior: 1.5,
             strength: 1.0,
             max_lights: 8,
+            sun_transmittance: 1.0,
             parked_frames: [0; MAX_FRAMES_IN_FLIGHT],
             geometry_bound: std::array::from_fn(|_| AtomicBool::new(false)),
         };
@@ -868,6 +876,7 @@ impl CausticPipeline {
                 self.max_lights as f32,
                 self.strength,
             ],
+            sun: [self.sun_transmittance, 0.0, 0.0, 0.0],
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
 

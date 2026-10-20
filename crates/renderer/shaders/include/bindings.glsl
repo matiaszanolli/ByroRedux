@@ -402,6 +402,27 @@ vec3 exteriorSkyRadianceOr(vec3 direction, vec3 fallback) {
     return exteriorSkyRadianceOr(direction, fallback, 0.0);
 }
 
+// SKYAL — the cloud-shadow map (`cloud_shadow.comp`): direct-sun
+// transmittance through the sky's volumetric deck, per world position. Baked with the cube at binding 20, so it shares its
+// `exteriorSkyTint.w` ready flag and PARTIALLY_BOUND contract.
+layout(set = 1, binding = 24) uniform sampler2D cloudShadowMap;
+
+#include "include/cloud_shadow.glsl"
+
+// How much of the sun reaches `worldPos` (world units) through the clouds,
+// for a directional light arriving from `toSun`. The sun's upload is the
+// light ABOVE the clouds; every direct-sun site multiplies by this. 1.0 in
+// interiors (their key light is the room's XCLL directional, not the sun)
+// and while the bake is absent.
+float exteriorCloudSunTransmittance(vec3 worldPos, vec3 toSun) {
+    if (jitter.w <= 0.5 || exteriorSkyTint.w <= 0.5) return 1.0;
+    vec3 receiver = worldPos / WORLD_UNITS_PER_METER;
+    vec3 viewer = cameraPos.xyz / WORLD_UNITS_PER_METER;
+    vec2 crossing = cloud_shadow_base_crossing(receiver.xz, receiver.y - viewer.y, toSun);
+    vec2 uv = cloud_shadow_uv(crossing, cloud_shadow_map_centre(viewer.xz));
+    return textureLod(cloudShadowMap, uv, 0.0).r;
+}
+
 // Global geometry SSBOs for RT reflection UV lookups.
 //
 // Vertex layout (104 B = 26 floats per vertex, mirrors Rust `Vertex`

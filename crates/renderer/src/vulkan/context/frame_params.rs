@@ -885,6 +885,7 @@ pub(super) fn build_composite_params(
     }
     let dome = pack_sky_dome(
         sky_params,
+        camera_pos,
         if interior_show_sky {
             1.0
         } else if interior_portal_sky {
@@ -983,6 +984,7 @@ pub(super) fn build_composite_params(
         ],
         // SKYAL — the directional light surfaces receive; lights the clouds.
         sun_illuminance: dome.sun_illuminance,
+        cloud_origin: dome.cloud_origin,
         sky_aperture_count: [aperture_count as u32, 0, 0, 0],
         sky_apertures,
     }
@@ -997,6 +999,7 @@ pub(super) fn build_composite_params(
 #[allow(clippy::too_many_arguments)]
 fn pack_sky_dome(
     sky: &SkyParams,
+    camera_pos: [f32; 3],
     sky_mode: f32,
     weather_gate: bool,
     froxel_slice_count: f32,
@@ -1101,7 +1104,11 @@ fn pack_sky_dome(
             // Broad procedural-cloud occupancy. Reuses the first reserved
             // lane rather than growing CompositeParams for a scalar.
             sky.weather.cloud_coverage,
-            0.0,
+            // The weather-map threshold that makes that occupancy the
+            // fraction of columns holding cloud (`cloud_column_coverage`).
+            super::super::volumetrics::noise::cloud_column_threshold(
+                sky.weather.cloud_coverage,
+            ),
         ],
         cloud_tint_0: sky.weather.cloud_tints[0],
         cloud_tint_1: sky.weather.cloud_tints[1],
@@ -1118,11 +1125,19 @@ fn pack_sky_dome(
             f32::from_bits(render_debug_mode),
             (frame_counter & 0x00ff_ffff) as f32,
         ],
-        // SKYAL — the directional light surfaces receive; lights the clouds.
+        // SKYAL — the directional light above the clouds; lights the clouds.
         sun_illuminance: [
             sky.sun_illuminance[0],
             sky.sun_illuminance[1],
             sky.sun_illuminance[2],
+            0.0,
+        ],
+        // SKYAL — the absolute camera position in metres anchors the cloud
+        // field to the world (`SkyDome::cloud_origin`).
+        cloud_origin: [
+            camera_pos[0] / super::super::volumetrics::WORLD_UNITS_PER_METER,
+            camera_pos[1] / super::super::volumetrics::WORLD_UNITS_PER_METER,
+            camera_pos[2] / super::super::volumetrics::WORLD_UNITS_PER_METER,
             0.0,
         ],
     }
@@ -1144,6 +1159,7 @@ pub(super) fn build_sky_cube_params(
         let outdoor = outdoor.as_sky_params();
         pack_sky_dome(
             &outdoor,
+            inputs.camera_pos,
             if !outdoor.is_exterior && outdoor.interior_show_sky {
                 1.0
             } else {

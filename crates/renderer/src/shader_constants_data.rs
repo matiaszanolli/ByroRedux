@@ -1473,6 +1473,50 @@ pub const CLOUD_MS_ECCENTRICITY_FALLOFF: f32 = 0.5;
 /// of the range and below it. It replaces an unsourced 0.0016 — about 75x
 /// too optically thin.
 pub const CLOUD_EXTINCTION_PER_METER: f32 = 0.12;
+/// Altitude in metres of the shell the authored WTHR cloud textures are drawn
+/// on (`sky.glsl` `sky_upper_cloud_plane`), above the volumetric deck.
+///
+/// The textures are the games' own cloud art; the volumetric march is the low
+/// deck in front of them. WMO International Cloud Atlas (2017), "Étages":
+/// high-étage clouds (cirrus, cirrocumulus, cirrostratus) occur at 5-13 km in
+/// temperate regions. 9 km is that range's midpoint, and it clears
+/// [`CLOUD_LAYER_TOP`], so the plane is always behind the deck. At the zenith
+/// the shell maps to the same UVs the former flat `dir.xz / dir.y` plane did.
+pub const CLOUD_UPPER_PLANE_ALTITUDE: f32 = 9000.0;
+/// Clear-air extinction for the aerial perspective between the viewer and the
+/// cloud layers (`sky.glsl` `sky_air_optical_depth`). Earth parameters from
+/// Hillaire 2020, "A Scalable and Production Ready Sky and Atmosphere
+/// Rendering Technique" (EGSR), Table 1 (after Bruneton & Neyret 2008):
+/// Rayleigh scattering (5.802, 13.558, 33.1) x 1e-6 m^-1 with an 8 km scale
+/// height — Rayleigh does not absorb, so that is also its extinction — and Mie
+/// scattering 3.996e-6 plus absorption 4.40e-6 m^-1 with a 1.2 km scale
+/// height. Only the extinction is used: the in-scattered colour stays the
+/// authored WTHR sky's, so the palette remains the games'.
+pub const ATMOSPHERE_RAYLEIGH_EXTINCTION: [f32; 3] = [5.802e-6, 13.558e-6, 33.1e-6];
+pub const ATMOSPHERE_RAYLEIGH_SCALE_HEIGHT: f32 = 8000.0;
+pub const ATMOSPHERE_MIE_EXTINCTION: f32 = 8.396e-6;
+pub const ATMOSPHERE_MIE_SCALE_HEIGHT: f32 = 1200.0;
+/// Cloud-shadow map (`cloud_shadow.comp`): direct-sun transmittance through
+/// the volumetric deck and the upper plane, per world position, so surfaces
+/// get moving, position-dependent cloud shadows instead of one weather-wide
+/// dimming factor. Texels per side of the camera-centred square.
+pub const CLOUD_SHADOW_MAP_SIZE: u32 = 512;
+/// Side of that square in metres. The base noise repeats every
+/// 1 / 0.00008 = 12.5 km (`clouds.glsl`), so individual clouds are a few km
+/// across: 64 km holds several cloud cells around the viewer in every
+/// direction at 125 m per texel, which the bilinear sample resolves into
+/// soft-edged shadows. Receivers beyond it take the edge texel.
+pub const CLOUD_SHADOW_MAP_EXTENT: f32 = 64000.0;
+/// Density samples per shadow column through the deck. The column is at most
+/// (top - bottom) / sin(elevation) long; 16 samples put a 3.5 km zenith column
+/// at 219 m per sample, finer than the 125 m texel's footprint can show only
+/// near the horizon, where the sun's own light is weak.
+pub const CLOUD_SHADOW_STEPS: u32 = 16;
+/// Third texture coordinate of the base-noise slice the cloud shell reads as
+/// its 2D weather map: the centre of texel layer `BASE_NOISE_SIZE / 2` (64 /
+/// 2 = 32, so (32 + 0.5) / 64). Pinned against the host's threshold slice by
+/// `cloud_column_threshold_selects_the_coverage_fraction_of_columns`.
+pub const CLOUD_WEATHER_SLICE_W: f32 = 0.5078125;
 
 pub const BLOOM_THRESHOLD: f32 = 1.0;
 /// Half-width of the soft knee around [`BLOOM_THRESHOLD`] — the quadratic
@@ -2699,6 +2743,15 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float CLOUD_MS_EXTINCTION_FALLOFF),
     shader_define!(Float CLOUD_MS_ECCENTRICITY_FALLOFF),
     shader_define!(Float CLOUD_EXTINCTION_PER_METER),
+    shader_define!(Float CLOUD_UPPER_PLANE_ALTITUDE),
+    shader_define!(Vec3 ATMOSPHERE_RAYLEIGH_EXTINCTION),
+    shader_define!(Float ATMOSPHERE_RAYLEIGH_SCALE_HEIGHT),
+    shader_define!(Float ATMOSPHERE_MIE_EXTINCTION),
+    shader_define!(Float ATMOSPHERE_MIE_SCALE_HEIGHT),
+    shader_define!(Float CLOUD_SHADOW_MAP_SIZE as f32),
+    shader_define!(Float CLOUD_SHADOW_MAP_EXTENT),
+    shader_define!(UintPlain CLOUD_SHADOW_STEPS),
+    shader_define!(Float CLOUD_WEATHER_SLICE_W),
     shader_define!(Float VOLUME_FAR),
     HeaderLine::Blank,
     HeaderLine::Comment("Per-instance flag bits (`GpuInstance.flags`, lower 16 bits)."),

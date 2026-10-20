@@ -191,6 +191,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(RenderDebugFlagsCommand);
     registry.register(ShadowFilterCommand);
     registry.register(EnvHealthCommand);
+    registry.register(SkyDumpCommand);
     registry.register(LightDumpCommand);
     registry.register(LightAttenCommand);
     // Stage 1 (RENDERING-PLAN.md) — color-pipeline live controls.

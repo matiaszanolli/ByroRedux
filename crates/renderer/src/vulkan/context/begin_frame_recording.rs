@@ -45,6 +45,13 @@ impl VulkanContext {
         // Safe because in_flight[frame] was just waited on, guaranteeing
         // the GPU has finished with this cmd buffer's previous recording.
         let cmd = self.command_buffers[frame];
+        // SKYAL — this slot's fence has signalled, so the cloud-shadow bake
+        // it last recorded is complete and its camera column host-visible.
+        if let Some(sky_cube) = self.post.sky_cube.as_mut() {
+            if let Some(transmittance) = sky_cube.camera_sun_transmittance(&self.device, frame) {
+                self.camera_cloud_sun_transmittance = transmittance;
+            }
+        }
         // SAFETY: `cmd` is `command_buffers[frame]`, whose fence `in_flight[frame]` was just waited on above, so the GPU has finished its previous recording and the buffer is safe to reset. On error we clear the pending acquire signal before propagating.
         unsafe {
             if let Err(e) = self

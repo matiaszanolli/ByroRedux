@@ -230,10 +230,11 @@ vec3 shadowableLightRadiance(
         // downgraded to point lights.
         atten *= clamp((spotFactor - spotAngle) / max(1.0 - spotAngle, 1e-4), 0.0, 1.0);
     } else {
-        // Directional light.
+        // Directional light. Its upload is the sun above the clouds; the
+        // cloud-shadow map carries what the clouds take out (SKYAL).
         L = normalize(lights[i].direction_angle.xyz);
         dist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
-        atten = 1.0;
+        atten = exteriorCloudSunTransmittance(fragWorldPos, L);
     }
 
     float rawNdotL = dot(N, L);
@@ -542,7 +543,8 @@ bool giLightSample(
     } else {
         L = normalize(lights[i].direction_angle.xyz);
         dist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
-        atten = 1.0;
+        // The sun above the clouds, dimmed by them at the bounce point.
+        atten = exteriorCloudSunTransmittance(p, L);
     }
     contrib = atten * max(dot(n, L), 0.0);
     return contrib >= 1.0e-4;

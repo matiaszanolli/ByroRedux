@@ -1199,6 +1199,9 @@ void main() {
             );
             sunVisibility = dot(sunTransmission, LUMA_REC709);
         }
+        // The glint is a reflection of the sun itself, so the clouds in
+        // front of it dim it exactly as they dim the direct light (SKYAL).
+        sunVisibility *= exteriorCloudSunTransmittance(vWorldPos, sunDir);
     }
     vec3 sunHalfVector = V + sunDir;
     float sunHalfLength = length(sunHalfVector);

@@ -1000,14 +1000,15 @@ mod tests {
         // `incoming` is the one place the traced shadow and the canopy
         // transmittance are folded in, and both lobes read it.
         assert!(
-            body.contains("* shadow * canopy;"),
+            body.contains("* shadow * canopy\n"),
             "both lobes must still be gated on the traced world shadow"
         );
     }
 
     /// #4291 — the blade's directional loop must take the light's radiance
     /// from its colour alone, exactly as `shadowableLightRadiance`'s
-    /// directional arm does (`atten = 1.0`). `params.x` is the point/spot
+    /// directional arm does (no falloff; SKYAL's cloud-shadow transmittance is
+    /// the only attenuation). `params.x` is the point/spot
     /// falloff exponent and `collect_lights` writes it as `0.0` for every
     /// directional source, so any read of it inside this loop zeroes the sun,
     /// its traced shadow and the backlit transmission on every exterior blade
@@ -1030,9 +1031,30 @@ mod tests {
              point/spot falloff exponent (0.0 on every directional GpuLight)"
         );
         assert!(
-            code.contains("vec3 incoming = lights[i].color_type.rgb * shadow * canopy;"),
+            code.contains(
+                "vec3 incoming = lights[i].color_type.rgb * shadow * canopy\n            \
+                 * exteriorCloudSunTransmittance(vWorldPos, L);"
+            ),
             "a directional light's incoming radiance is its colour times the \
-             traced shadow and canopy transmittance"
+             traced shadow, the canopy transmittance and the clouds' (SKYAL)"
+        );
+    }
+
+    /// A ribbon stands for a tuft, and §12.5 models the canopy as a spherical
+    /// leaf-angle distribution; its mean leaf irradiance from a beam is Ross's
+    /// G = 0.5 = K at every sun angle. The ribbon plane's own `max(N·L, 0)` is
+    /// ~0 for an upright blade under a high sun, which rendered noon meadows
+    /// as black spikes over sunlit ground.
+    #[test]
+    fn blade_diffuse_is_the_spherical_canopy_mean() {
+        let src = include_str!("../../shaders/groundcover_blade.frag");
+        assert!(
+            src.contains("float diffuse = L.y > 0.0 ? GROUNDCOVER_CANOPY_EXTINCTION_K : 0.0;"),
+            "the blade's diffuse cosine must be the canopy's mean projection"
+        );
+        assert!(
+            !src.contains("float diffuse = max(NdotL, 0.0);"),
+            "the literal ribbon-plane cosine must not return"
         );
     }
 

@@ -68,7 +68,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 weather_wind; // x = wind dir x, y = normalized speed, z = wind dir z, w reserved
     vec4 weather_lightning; // lightning RGB, moon glare
     vec4 weather_sky; // stars RGB, sun glare
-    vec4 weather_aurora; // aurora intensity, follows-sun flag, procedural cloud coverage, reserved
+    vec4 weather_aurora; // aurora intensity, follows-sun flag, procedural cloud coverage, column-coverage threshold
     vec4 cloud_tint_0; // PNAM/JNAM tint + alpha
     vec4 cloud_tint_1;
     vec4 cloud_tint_2;
@@ -87,9 +87,11 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // (causticTex), so summing both would double-count the glass
     // contribution instead of contributing zero. yzw reserved. #2508.
     vec4 caustic_flags;
-    // SKYAL — xyz = the directional light surfaces receive
+    // SKYAL — xyz = the directional light above the clouds
     // (`SkyParams::sun_illuminance`), w unused. Lights the volumetric clouds.
     vec4 sun_illuminance;
+    // SKYAL — xyz = camera world position in metres; anchors the cloud field.
+    vec4 cloud_origin;
     uvec4 sky_aperture_count;
     SkyAperture sky_apertures[MAX_COMPOSITE_SKY_APERTURES];
 } params;
@@ -427,6 +429,7 @@ SkyDome build_sky_dome() {
     dome.weather_aurora = params.weather_aurora;
     dome.depth_params = params.depth_params;
     dome.sun_illuminance = params.sun_illuminance;
+    dome.cloud_origin = params.cloud_origin;
     return dome;
 }
 

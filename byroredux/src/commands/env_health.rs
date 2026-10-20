@@ -438,6 +438,51 @@ pub(crate) fn check_environment(
     out
 }
 
+/// `sky.dump` — the per-frame `SkyParams` the renderer receives, built by the
+/// same `build_sky_params` the frame uses. The sky is assembled from these in
+/// `include/sky.glsl`, so this is what turns a sky screenshot (sRGB-encoded,
+/// clipped at 1.0) back into the inputs that produced it.
+pub(crate) struct SkyDumpCommand;
+
+impl ConsoleCommand for SkyDumpCommand {
+    fn name(&self) -> &str {
+        "sky.dump"
+    }
+
+    fn description(&self) -> &str {
+        "Print the per-frame SkyParams the renderer receives (colours, sun, clouds)"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let sky = crate::render::sky::build_sky_params(world);
+        let w = &sky.weather;
+        let mut lines = vec![
+            format!("sky: exterior={} zenith={:.3?} horizon={:.3?} lower={:.3?}",
+                sky.is_exterior, sky.zenith_color, sky.horizon_color, sky.lower_color),
+            format!("sky: sun dir={:.3?} color={:.3?} intensity={:.3} size={:.5} illuminance={:.3?}",
+                sky.sun_direction, sky.sun_color, sky.sun_intensity, sky.sun_size, sky.sun_illuminance),
+            format!("sky: coverage={:.3} glare={:.3} precipitation={:.2?} thunder={:.2} wind={:.2?}x{:.2}",
+                w.cloud_coverage, w.sun_glare, w.precipitation, w.thunder_frequency,
+                w.wind_direction, w.wind_speed),
+        ];
+        for (layer, (scale, index)) in [
+            (sky.cloud_tile_scale, sky.cloud_texture_index),
+            (sky.cloud_tile_scale_1, sky.cloud_texture_index_1),
+            (sky.cloud_tile_scale_2, sky.cloud_texture_index_2),
+            (sky.cloud_tile_scale_3, sky.cloud_texture_index_3),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            lines.push(format!(
+                "sky: cloud layer {layer} tile_scale={scale:.4} texture={index} tint={:.3?}",
+                w.cloud_tints[layer]
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
 /// `env.health` — finite/usable check over the live environment resources.
 ///
 /// Emits `env: PASS` or one `env: FAIL - <field>: <detail>` line per violated

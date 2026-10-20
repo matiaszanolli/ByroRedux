@@ -30,8 +30,10 @@ use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
+mod cloud_shadow;
 mod filter;
 mod irradiance;
+pub use cloud_shadow::cloud_shadow_bytes_per_frame;
 pub use irradiance::SH_BYTES as SKY_IRRADIANCE_BYTES;
 
 const SKY_CUBE_COMP_SPV: &[u8] = include_bytes!("../../shaders/sky_cube.comp.spv");
@@ -93,6 +95,7 @@ pub struct SkyCubeParams {
     pub weather_aurora: [f32; 4],
     pub depth_params: [f32; 4],
     pub sun_illuminance: [f32; 4],
+    pub cloud_origin: [f32; 4],
 }
 
 // SAFETY: every field is `[f32; 4]` — homogeneous scalar arrays tile the
@@ -128,18 +131,21 @@ impl SkyCubeParams {
             weather_aurora: p.weather_aurora,
             depth_params: p.depth_params,
             sun_illuminance: p.sun_illuminance,
+            cloud_origin: p.cloud_origin,
         }
     }
 }
 
 /// Every allocation the SKYAL sky bake owns, in bytes, across all
 /// `MAX_FRAMES_IN_FLIGHT` slots: the mipped cubemap, the SH irradiance
-/// buffer and the param UBO per slot. The prefilter pass allocates only
-/// views. Ledgered in `docs/engine/memory-budget.md` (#4300); zero when the
+/// buffer, the cloud-shadow map and the param UBO per slot. The prefilter
+/// pass allocates only views; the shadow map's 16-byte host readback is not
+/// device memory. Ledgered in `docs/engine/memory-budget.md` (#4300); zero when the
 /// pipeline fails to initialise, since every one of these is owned by it.
 pub const fn sky_bake_resident_bytes() -> u64 {
     let per_slot = sky_cube_bytes_per_frame()
         + irradiance::SH_BYTES
+        + cloud_shadow::cloud_shadow_bytes_per_frame()
         + std::mem::size_of::<SkyCubeParams>() as u64;
     super::sync::MAX_FRAMES_IN_FLIGHT as u64 * per_slot
 }
@@ -162,6 +168,7 @@ pub const fn sky_cube_bytes_per_frame() -> u64 {
 pub struct SkyCubePipeline {
     filter: Option<filter::SkyFilter>,
     irradiance: Option<irradiance::SkyIrradiance>,
+    cloud_shadow: Option<cloud_shadow::CloudShadow>,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
@@ -221,6 +228,7 @@ impl SkyCubePipeline {
         let mut partial = Self {
             filter: None,
             irradiance: None,
+            cloud_shadow: None,
             pipeline: vk::Pipeline::null(),
             pipeline_layout: vk::PipelineLayout::null(),
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
@@ -443,6 +451,19 @@ impl SkyCubePipeline {
                 partial.sampler,
             )
         ));
+        partial.cloud_shadow = Some(try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            cloud_shadow::CloudShadow::new(
+                device,
+                allocator,
+                pipeline_cache,
+                bindless_layout,
+                &partial.param_buffers,
+                noise,
+            )
+        ));
         Ok(partial)
     }
 
@@ -458,6 +479,19 @@ impl SkyCubePipeline {
             .expect("fully constructed sky")
             .buffers[frame]
             .buffer
+    }
+
+    /// The cloud-shadow map consumers sample for frame slot `frame`, and its
+    /// sampler (scene set 1 / binding 24).
+    pub fn cloud_shadow_view(&self, frame: usize) -> (vk::ImageView, vk::Sampler) {
+        let shadow = self.cloud_shadow.as_ref().expect("fully constructed sky");
+        (shadow.maps[frame].view, shadow.sampler)
+    }
+
+    /// Direct-sun transmittance of the camera's own cloud column, as last
+    /// baked into slot `frame`. Call only after that slot's fence signalled.
+    pub fn camera_sun_transmittance(&mut self, device: &ash::Device, frame: usize) -> Option<f32> {
+        self.cloud_shadow.as_mut()?.camera_transmittance(device, frame)
     }
 
     /// Upload this frame's sky parameters.
@@ -532,6 +566,9 @@ impl SkyCubePipeline {
         if let Some(irradiance) = &self.irradiance {
             irradiance.record(device, cmd, frame);
         }
+        if let Some(cloud_shadow) = &self.cloud_shadow {
+            cloud_shadow.record(device, cmd, frame, bindless_set);
+        }
     }
 
     /// Record the bake.
@@ -576,6 +613,9 @@ impl SkyCubePipeline {
     /// device is not lost, and that none of these resources are still in
     /// use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        if let Some(mut cloud_shadow) = self.cloud_shadow.take() {
+            cloud_shadow.destroy(device, allocator);
+        }
         if let Some(mut irradiance) = self.irradiance.take() {
             irradiance.destroy(device, allocator);
         }
@@ -1101,7 +1141,7 @@ mod tests {
         let clouds = include_str!("../../shaders/include/clouds.glsl");
         for (term, why) in [
             (
-                "cloud_base_shape(position, height_fraction, coverage, wind, morphology, base_noise)",
+                "cloud_base_shape(field_position, height_fraction, column, wind, morphology, base_noise)",
                 "cheap base-shape-only samples until the iso-surface (Schneider slides 74-77)",
             ),
             (
@@ -1172,5 +1212,108 @@ mod tests {
         // Complete power-of-two pyramid: (4 * base texels - 1) / 3.
         assert_eq!(sky_cube_bytes_per_frame(), 6 * (4 * 128 * 128 - 1) / 3 * 8);
         assert_eq!(SKY_CUBE_FACE_SIZE, 128, "update the figure above with it");
+    }
+
+    /// SKYAL — the directional upload is the sun ABOVE the clouds, so every
+    /// site that lights with it must take the clouds out: per position where
+    /// the scene set (and the cloud-shadow map) is bound, by the camera's own
+    /// column where only one sun value is available. A site that misses this
+    /// receives clear-sky sun under a full deck.
+    #[test]
+    fn every_direct_sun_site_applies_the_cloud_shadow() {
+        let lighting = include_str!("../../shaders/include/lighting.glsl");
+        assert!(
+            lighting.contains("atten = exteriorCloudSunTransmittance(fragWorldPos, L);"),
+            "shadowableLightRadiance's directional arm lost the cloud shadow"
+        );
+        assert!(
+            lighting.contains("atten = exteriorCloudSunTransmittance(p, L);"),
+            "giLightSample's directional arm lost the cloud shadow"
+        );
+        let blades = include_str!("../../shaders/groundcover_blade.frag");
+        assert!(blades.contains("* exteriorCloudSunTransmittance(vWorldPos, L);"));
+        let water = include_str!("../../shaders/water.frag");
+        assert!(water.contains("sunVisibility *= exteriorCloudSunTransmittance(vWorldPos, sunDir);"));
+        let caustics = include_str!("../../shaders/caustic_splat.comp");
+        assert!(caustics.contains("lightReach = clamp(dot(N, -LtoG), 0.0, 1.0) * causticSun.x;"));
+        let post = crate::source_scan::production_text(include_str!("context/post_passes.rs"));
+        assert!(post.contains("caustic.sun_transmittance = self.camera_cloud_sun_transmittance;"));
+        assert!(post.contains("self.camera_cloud_sun_transmittance,\n                    );"));
+    }
+
+    /// The bake and every consumer address the map through one include, and
+    /// the bake marches the sky's own deck — same column coverage, wind and
+    /// world anchoring — so the shadows fall under the clouds drawn.
+    #[test]
+    fn the_cloud_shadow_bake_and_its_consumers_share_one_addressing() {
+        let bake = include_str!("../../shaders/cloud_shadow.comp");
+        let bindings = include_str!("../../shaders/include/bindings.glsl");
+        for (name, src) in [("cloud_shadow.comp", bake), ("bindings.glsl", bindings)] {
+            assert!(
+                src.contains("#include \"include/cloud_shadow.glsl\""),
+                "{name} must address the map through include/cloud_shadow.glsl"
+            );
+            assert!(src.contains("cloud_shadow_map_centre("), "{name}");
+        }
+        assert!(bake.contains("cloud_shadow_map_centre(dome.cloud_origin.xz)"));
+        assert!(bindings.contains("cloud_shadow_map_centre(viewer.xz)"));
+        for term in [
+            "cloud_wind_offset(dome)",
+            "cloud_morphology(dome)",
+            "cloud_column_coverage(",
+            "cloud_density(",
+            "CLOUD_EXTINCTION_PER_METER",
+        ] {
+            assert!(bake.contains(term), "the shadow bake lost `{term}`");
+        }
+        assert!(
+            !bake.contains("sky_upper_cloud_layer("),
+            "the authored upper plane must not cast shadows: Skyrim stacks one \
+             deck four times, and its opacities multiply to a black ground"
+        );
+    }
+
+    /// The cloud field is fixed to the world, not to the viewer: both marches
+    /// look the noise up at camera-relative position + `cloud_origin`, and the
+    /// upper plane's UVs include it — otherwise the cloud shadows (world
+    /// anchored by construction) would slide off the clouds as the camera
+    /// moves.
+    #[test]
+    fn the_cloud_field_is_world_anchored() {
+        let clouds = include_str!("../../shaders/include/clouds.glsl");
+        for term in [
+            "vec3 field_origin = cloud_field_origin(dome);",
+            "vec3 field_position = position + field_origin;",
+            "vec3 light_field = light_pos + field_origin;",
+        ] {
+            assert!(clouds.contains(term), "clouds.glsl lost `{term}`");
+        }
+        let sky = include_str!("../../shaders/include/sky.glsl");
+        assert!(sky.contains("dome.cloud_origin.xz / CLOUD_UPPER_PLANE_ALTITUDE"));
+    }
+
+    /// Coverage is decided per COLUMN from a 2D weather map (Schneider & Vos
+    /// 2015). Applied to the 3D noise at every height, a 3.5 km column almost
+    /// always crossed cloud, so a 0.40 sky was a near-total deck overhead and
+    /// its ground sat in permanent cloud shadow.
+    #[test]
+    fn deck_coverage_is_decided_per_column() {
+        let clouds = include_str!("../../shaders/include/clouds.glsl");
+        for term in [
+            "texture(base_noise, vec3(weather_uv, CLOUD_WEATHER_SLICE_W)).r",
+            "float column_threshold = dome.weather_aurora.w;",
+            "float column = cloud_column_coverage(",
+            "cloud_column_coverage(light_field, column_threshold, wind, morphology, base_noise)",
+            "cloud_remap(base, 1.0 - coverage, 1.0, 0.0, 1.0) * coverage",
+        ] {
+            assert!(clouds.contains(term), "clouds.glsl lost `{term}`");
+        }
+        // Whole file: `frame_params.rs` carries a test module above
+        // `pack_sky_dome`, which `production_text` would cut at.
+        let packing = include_str!("context/frame_params.rs");
+        assert!(
+            packing.contains("volumetrics::noise::cloud_column_threshold("),
+            "pack_sky_dome must pack the column threshold into weather_aurora.w"
+        );
     }
 }

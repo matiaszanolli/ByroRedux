@@ -340,4 +340,93 @@ mod tests {
              include/sky.glsl owns it",
         );
     }
+
+    /// Host mirror of `sky.glsl`'s `sky_erfcx`, line for line.
+    fn erfcx(x: f64) -> f64 {
+        if x < 2.0 {
+            let t = 1.0 / (1.0 + 0.3275911 * x);
+            return t * (0.254829592 + t * (-0.284496736 + t * (1.421413741
+                + t * (-1.453152027 + t * 1.061405429))));
+        }
+        let mut f = x + 3.0 / x;
+        for k in [2.5, 2.0, 1.5, 1.0, 0.5] {
+            f = x + k / f;
+        }
+        0.5641895835477563 / f
+    }
+
+    /// Host mirror of `sky.glsl`'s `sky_air_column`.
+    fn air_column(mu: f64, distance: f64, scale_height: f64) -> f64 {
+        let r = crate::shader_constants::CLOUD_PLANET_RADIUS as f64;
+        let x0 = mu.max(0.0) * (r / (2.0 * scale_height)).sqrt();
+        let mut column = erfcx(x0);
+        if distance >= 0.0 {
+            let x1 = x0 + distance / (2.0 * r * scale_height).sqrt();
+            column -= ((x0 - x1) * (x0 + x1)).exp() * erfcx(x1);
+        }
+        (std::f64::consts::FRAC_PI_2 * r * scale_height).sqrt() * column.max(0.0)
+    }
+
+    /// The aerial perspective's air column (`sky.glsl` `sky_air_column`) is
+    /// the Chapman integral in closed form. Checked against a direct
+    /// numerical integral of `exp(-z / H)` through the TRUE sphere — not the
+    /// second-order altitude the closed form assumes — for both atmosphere
+    /// constituents, from the zenith to the horizon, out to each cloud
+    /// layer and to space. And `erfcx` against its own integral definition
+    /// `2/sqrt(pi) * int_0^inf exp(-u^2 - 2 x u) du`, independent of the
+    /// polynomial and continued fraction it is built from.
+    #[test]
+    fn chapman_column_matches_numerical_integration() {
+        use crate::shader_constants::{
+            ATMOSPHERE_MIE_SCALE_HEIGHT, ATMOSPHERE_RAYLEIGH_SCALE_HEIGHT, CLOUD_LAYER_BOTTOM,
+            CLOUD_LAYER_TOP, CLOUD_PLANET_RADIUS, CLOUD_UPPER_PLANE_ALTITUDE,
+        };
+        // The mirror above must be the shader's formula, not a paraphrase.
+        for term in [
+            "float t = 1.0 / (1.0 + 0.3275911 * x);",
+            "f = x + 0.5 / f;",
+            "float x0 = max(mu, 0.0) * sqrt(R / (2.0 * scale_height));",
+            "float x1 = x0 + distance / sqrt(2.0 * R * scale_height);",
+            "column -= exp((x0 - x1) * (x0 + x1)) * sky_erfcx(x1);",
+        ] {
+            assert!(SKY_GLSL.contains(term), "sky.glsl's air column lost `{term}`");
+        }
+
+        let integrate = |f: &dyn Fn(f64) -> f64, end: f64, steps: usize| -> f64 {
+            let h = end / steps as f64;
+            (0..steps).map(|i| f((i as f64 + 0.5) * h) * h).sum()
+        };
+        for x in [0.0, 0.3, 1.0, 1.9, 2.1, 4.0, 12.0, 45.0] {
+            let reference = std::f64::consts::FRAC_2_SQRT_PI
+                * integrate(&|u| (-u * u - 2.0 * x * u).exp(), 8.0, 400_000);
+            let relative = (erfcx(x) - reference).abs() / reference;
+            assert!(relative < 5.0e-5, "erfcx({x}) off by {relative:.2e}");
+        }
+
+        let r = CLOUD_PLANET_RADIUS as f64;
+        for scale_height in [ATMOSPHERE_RAYLEIGH_SCALE_HEIGHT, ATMOSPHERE_MIE_SCALE_HEIGHT] {
+            let h = scale_height as f64;
+            for mu in [1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.005, 0.0] {
+                let density = |s: f64| {
+                    let altitude = (r * r + s * s + 2.0 * r * s * mu).sqrt() - r;
+                    (-altitude / h).exp()
+                };
+                for altitude in [CLOUD_LAYER_BOTTOM, CLOUD_LAYER_TOP, CLOUD_UPPER_PLANE_ALTITUDE] {
+                    let a = altitude as f64;
+                    let b = r * mu;
+                    let distance = -b + (b * b + 2.0 * r * a + a * a).sqrt();
+                    let reference = integrate(&density, distance, 200_000);
+                    let relative = (air_column(mu, distance, h) - reference).abs() / reference;
+                    assert!(
+                        relative < 1.0e-3,
+                        "column to {a} m at mu {mu}, H {h}: off by {relative:.2e}"
+                    );
+                }
+                // To space: far enough that the remaining air is negligible.
+                let reference = integrate(&density, 2.0e6, 400_000);
+                let relative = (air_column(mu, -1.0, h) - reference).abs() / reference;
+                assert!(relative < 2.0e-3, "column to space at mu {mu}, H {h}: {relative:.2e}");
+            }
+        }
+    }
 }

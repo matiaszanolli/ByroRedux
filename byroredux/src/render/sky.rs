@@ -60,7 +60,7 @@ fn interior_dalc_cube(world: &World) -> Option<SkyDalcCube> {
 /// sun the volumetrics use after a geometry ray proves an opening. None of it
 /// is derived here — #4902 removed the render-loop fallback that re-built the
 /// procedural sky and sun arc every frame on an interior-only boot.
-pub(super) fn build_sky_params(world: &World) -> SkyParams {
+pub(crate) fn build_sky_params(world: &World) -> SkyParams {
     let interior_cube = interior_dalc_cube(world);
 
     // #1199 — `SkyParamsRes` is worldspace-scoped and survives cell
@@ -202,7 +202,6 @@ fn outdoor_sky_params(
                 interior,
                 sky_res.sun_intensity,
                 fade,
-                weather.cloud_coverage,
             )
         },
         // Tangent-plane disk approximation valid only for α < ~0.05 rad
@@ -380,12 +379,13 @@ mod tests {
         assert_eq!(params.sun_intensity, default.sun_intensity);
         assert_eq!(params.portal_sun_direction, [0.5, 0.8, 0.3]);
         // #4909 — the portal sun is the outdoor palette's own illuminance,
-        // not the disc colour × raw intensity ([4.0, 3.8, 3.4] here).
+        // not the disc colour × raw intensity ([4.0, 3.8, 3.4] here): at most
+        // the full-daylight sunlight colour.
         assert_eq!(
             params.portal_sun_radiance,
             params.portal_outdoor_sky.as_ref().unwrap().sun_illuminance
         );
-        assert!(params.portal_sun_radiance[0] < 1.0);
+        assert!(params.portal_sun_radiance[0] <= 1.0);
         assert_eq!(params.cloud_tile_scale, default.cloud_tile_scale);
         assert_eq!(params.cloud_texture_index, default.cloud_texture_index);
         assert!(params.dalc_cube.is_none());
@@ -440,18 +440,16 @@ mod tests {
         let outside = build_sky_params(&world).portal_outdoor_sky.unwrap();
         assert_eq!(outside.sun_illuminance, [0.9, 0.6, 0.3]);
 
-        // A heavier cloud column between the sun and the cloud body dims it,
-        // exactly as it does outdoors.
+        // SKYAL — the clouds are lit by the sun ABOVE them; their own march
+        // self-shadows, so weather coverage must not dim the light they
+        // receive a second time.
         world
             .try_resource_mut::<SkyParamsRes>()
             .unwrap()
             .weather
             .cloud_coverage = 1.0;
         let overcast = build_sky_params(&world).portal_outdoor_sky.unwrap();
-        assert!(
-            overcast.sun_illuminance[0] < outside.sun_illuminance[0]
-                && overcast.sun_illuminance[0] > 0.0
-        );
+        assert_eq!(overcast.sun_illuminance, outside.sun_illuminance);
     }
 
     /// Direct `--cell` boot still has a procedural outdoor sky for the
@@ -513,27 +511,22 @@ mod tests {
         assert_eq!(midnight_outside.sun_illuminance, [0.0; 3]);
     }
 
-    /// #4909 — the portal sun follows the outdoor weather: full overcast
-    /// dims it the way it dims the exterior terrain key, where it used to be
-    /// `sun_color × sun_intensity` at clear-sky strength.
+    /// #4909 / SKYAL — the portal sun is the sun above the clouds, like the
+    /// exterior key. Overcast still dims it: the renderer multiplies it by the
+    /// camera's cloud-shadow column (`volumetric_sun`'s `cloud_transmittance`),
+    /// which is cast by the clouds actually drawn, so weather coverage must
+    /// not dim it a second time here.
     #[test]
-    fn overcast_dims_the_portal_sun() {
+    fn the_portal_sun_is_the_sun_above_the_clouds() {
         let world = interior_boot_world(12.0);
         let clear = build_sky_params(&world).portal_sun_radiance;
+        assert!(clear.iter().all(|c| *c > 0.0), "noon portal sun must be lit");
         world
             .try_resource_mut::<SkyParamsRes>()
             .unwrap()
             .weather
             .cloud_coverage = 1.0;
-        let overcast = build_sky_params(&world).portal_sun_radiance;
-        for c in 0..3 {
-            assert!(
-                overcast[c] > 0.0 && overcast[c] < clear[c] * 0.2,
-                "channel {c}: overcast {} vs clear {}",
-                overcast[c],
-                clear[c]
-            );
-        }
+        assert_eq!(build_sky_params(&world).portal_sun_radiance, clear);
     }
 
     #[test]

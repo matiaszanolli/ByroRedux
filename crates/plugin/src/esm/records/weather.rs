@@ -309,6 +309,10 @@ pub struct WeatherRecord {
     pub cloud_layer_colors: [[SkyColor; 4]; 4],
     /// Skyrim JNAM cloud alpha multipliers, four TOD samples per layer.
     pub cloud_layer_alphas: [[f32; 4]; 4],
+    /// Creation-era only: the authored layer (0..32) each of the four cloud
+    /// slots was taken from (see `select_creation_cloud_layers`); `None` for
+    /// an empty slot and for every FO3/FNV/Oblivion slot, which IS its layer.
+    pub cloud_layer_sources: [Option<u8>; 4],
     /// WTHR DATA transition delta (0..255).
     pub transition_delta: u8,
     /// Precipitation fade-in/fade-out controls from DATA.
@@ -408,6 +412,7 @@ impl Default for WeatherRecord {
                 a: 255,
             }; 4]; 4],
             cloud_layer_alphas: [[1.0; 4]; 4],
+            cloud_layer_sources: [None; 4],
             transition_delta: 0,
             precipitation_fade: [0; 2],
             thunder_fade: [0; 2],
@@ -461,6 +466,12 @@ pub fn parse_wthr(
         form_id,
         ..WeatherRecord::default()
     };
+    // FO4 / FO76 / Starfield author Skyrim's 32-layer cloud table (#6039).
+    let creation_era = matches!(
+        game,
+        GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
+    );
+    let mut creation_layers = CreationCloudLayers::default();
 
     for sub in subs {
         match &sub.sub_type {
@@ -683,11 +694,25 @@ pub fn parse_wthr(
                     record.cloud_layer_velocities_authored[layer] = true;
                 }
             }
-            b"PNAM" if sub.data.len() >= 64 => parse_cloud_colors(
-                &mut record,
-                &sub.data,
-                cloud_color_slots(game, sub.data.len()),
-            ),
+            b"PNAM" if sub.data.len() >= 64 => {
+                let slots = cloud_color_slots(game, sub.data.len());
+                if creation_era {
+                    parse_cloud_colors(&mut creation_layers.colors, &sub.data, slots);
+                } else {
+                    parse_cloud_colors(&mut record.cloud_layer_colors, &sub.data, slots);
+                }
+            }
+            // Creation-era cloud controls, one entry per authored layer (see
+            // `parse_wthr_skyrim`); the four drawn slots are chosen after the
+            // record is read.
+            b"RNAM" if creation_era => creation_layers.read_velocity_component(&sub.data, 1),
+            b"QNAM" if creation_era => creation_layers.read_velocity_component(&sub.data, 0),
+            b"JNAM" if creation_era && sub.data.len() >= 64 => {
+                parse_cloud_alphas(&mut creation_layers.alphas, &sub.data)
+            }
+            b"NAM1" if creation_era && sub.data.len() >= 4 => {
+                creation_layers.disabled = u32::from_le_bytes(sub.data[0..4].try_into().unwrap());
+            }
 
             // Cloud texture paths. Per-game sub-record FourCCs — verified
             // by byte-level scan of FalloutNV.esm, Fallout3.esm,
@@ -719,11 +744,7 @@ pub fn parse_wthr(
             // list (xEdit `wbWeatherCloudTextures` for every non-FO3 game):
             // FO4 authors `00TX` on 63 of 71 weathers, FO76 on 123 of 123.
             // FO3/FNV never author these FourCCs (#535).
-            sub_type
-                if matches!(
-                    game,
-                    GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
-                ) && skyrim_cloud_layer_index(sub_type).is_some() =>
+            sub_type if creation_era && skyrim_cloud_layer_index(sub_type).is_some() =>
             {
                 set_creation_cloud_texture(&mut record, sub_type, &sub.data);
             }
@@ -732,6 +753,9 @@ pub fn parse_wthr(
         }
     }
 
+    if creation_era {
+        select_creation_cloud_layers(&mut record, &creation_layers);
+    }
     record
 }
 
@@ -924,19 +948,19 @@ fn cloud_color_slots(game: GameKind, len: usize) -> usize {
     }
 }
 
-/// Read the first four layers' sunrise/day/sunset/night colours from PNAM,
-/// which stores `slots_per_layer` TOD colours per layer (see
-/// [`cloud_color_slots`]). Skyrim+ author 32 layers; the first four are the
-/// compatibility path used by the current renderer. The extra FNV high-noon /
-/// midnight and FO4 early/late slots are skipped, not decoded.
-fn parse_cloud_colors(record: &mut WeatherRecord, data: &[u8], slots_per_layer: usize) {
-    for layer in 0..4 {
-        for slot in 0..4 {
+/// Read each layer's sunrise/day/sunset/night colours from PNAM, which stores
+/// `slots_per_layer` TOD colours per layer (see [`cloud_color_slots`]), into
+/// as many layers as `dst` holds: FO3/FNV's four directly, the Creation-era
+/// 32 into [`CreationCloudLayers`]. The extra FNV high-noon / midnight and FO4
+/// early/late slots are skipped, not decoded.
+fn parse_cloud_colors(dst: &mut [[SkyColor; 4]], data: &[u8], slots_per_layer: usize) {
+    for (layer, colors) in dst.iter_mut().enumerate() {
+        for (slot, color) in colors.iter_mut().enumerate() {
             let offset = (layer * slots_per_layer + slot) * 4;
             if offset + 4 > data.len() {
                 return;
             }
-            record.cloud_layer_colors[layer][slot] = SkyColor {
+            *color = SkyColor {
                 r: data[offset],
                 g: data[offset + 1],
                 b: data[offset + 2],
@@ -946,19 +970,95 @@ fn parse_cloud_colors(record: &mut WeatherRecord, data: &[u8], slots_per_layer: 
     }
 }
 
-/// Read the first four rendered layers from Skyrim's JNAM array. Each layer
-/// entry is four f32 alpha values for sunrise/day/sunset/night.
-fn parse_cloud_alphas(record: &mut WeatherRecord, data: &[u8]) {
-    for layer in 0..4 {
-        for slot in 0..4 {
-            let offset = (layer * 4 + slot) * 4;
+/// Read each layer's sunrise/day/sunset/night alphas from JNAM: one f32 per
+/// TOD slot, four slots per layer on Skyrim (512 B) and eight on FO4/FO76 at
+/// the 1,024-byte form, like PNAM's colours (#6037).
+fn parse_cloud_alphas(dst: &mut [[f32; 4]], data: &[u8]) {
+    let slots_per_layer = if data.len() >= 32 * 8 * 4 { 8 } else { 4 };
+    for (layer, alphas) in dst.iter_mut().enumerate() {
+        for (slot, alpha) in alphas.iter_mut().enumerate() {
+            let offset = (layer * slots_per_layer + slot) * 4;
             if offset + 4 > data.len() {
                 return;
             }
             let mut bytes = [0u8; 4];
             bytes.copy_from_slice(&data[offset..offset + 4]);
-            record.cloud_layer_alphas[layer][slot] = f32::from_le_bytes(bytes);
+            *alpha = f32::from_le_bytes(bytes);
         }
+    }
+}
+
+/// Number of cloud layers a Creation-era (Skyrim, FO4, FO76) WTHR authors:
+/// `00TX`..`O0TX`, and one PNAM/JNAM entry and one RNAM/QNAM byte per layer.
+const CREATION_CLOUD_LAYERS: usize = 32;
+
+/// A Creation-era WTHR's per-layer cloud data for all
+/// [`CREATION_CLOUD_LAYERS`], before [`select_creation_cloud_layers`] picks
+/// the four the renderer draws.
+struct CreationCloudLayers {
+    colors: [[SkyColor; 4]; CREATION_CLOUD_LAYERS],
+    alphas: [[f32; 4]; CREATION_CLOUD_LAYERS],
+    velocities: [[u8; 2]; CREATION_CLOUD_LAYERS],
+    velocities_authored: [bool; CREATION_CLOUD_LAYERS],
+    /// `NAM1` — xEdit's "Disabled Cloud Layers": bit `n` set disables layer
+    /// `n`. Zero when the record has none (every layer enabled).
+    disabled: u32,
+}
+
+impl Default for CreationCloudLayers {
+    fn default() -> Self {
+        let defaults = WeatherRecord::default();
+        Self {
+            colors: [defaults.cloud_layer_colors[0]; CREATION_CLOUD_LAYERS],
+            alphas: [defaults.cloud_layer_alphas[0]; CREATION_CLOUD_LAYERS],
+            velocities: [[0; 2]; CREATION_CLOUD_LAYERS],
+            velocities_authored: [false; CREATION_CLOUD_LAYERS],
+            disabled: 0,
+        }
+    }
+}
+
+impl CreationCloudLayers {
+    /// RNAM (`component == 1`, Y) or QNAM (`0`, X): one byte per layer.
+    fn read_velocity_component(&mut self, data: &[u8], component: usize) {
+        for (layer, value) in data.iter().copied().take(CREATION_CLOUD_LAYERS).enumerate() {
+            self.velocities[layer][component] = value;
+            self.velocities_authored[layer] = true;
+        }
+    }
+}
+
+/// Fill the four compatibility cloud slots (`cloud_textures`, colours,
+/// alphas, velocities) from the first four layers that are textured and not
+/// disabled by `NAM1`, in authored order.
+///
+/// The slots used to be layers 0–3 verbatim. Skyrim's weathers disable those
+/// whenever they hold legacy references — `SkyrimCloudy` names
+/// `OblivionCloudCloudyUpper01.dds` and `WastelandCloudHorizon01.dds` there,
+/// which Skyrim SE does not ship, with `NAM1 = 0xEF9EF0FF` disabling layers
+/// 0–7 — and author the live decks at 8–11, 16, 21, 22 and 28, so no Skyrim
+/// sky drew any authored cloud. All 71 FO4 weathers author `NAM1` as well.
+/// A plane holds four layers; the lowest enabled ones are the main decks,
+/// and the rest of the 32-layer table stays in `skyrim_cloud_textures`.
+fn select_creation_cloud_layers(record: &mut WeatherRecord, layers: &CreationCloudLayers) {
+    let mut slot = 0;
+    for layer in 0..CREATION_CLOUD_LAYERS {
+        if slot == record.cloud_textures.len() {
+            break;
+        }
+        if layers.disabled & (1 << layer) != 0 {
+            continue;
+        }
+        let Some(path) = record.skyrim_cloud_textures[layer].clone() else {
+            continue;
+        };
+        record.cloud_textures[slot] = Some(path);
+        record.cloud_layer_colors[slot] = layers.colors[layer];
+        record.cloud_layer_alphas[slot] = layers.alphas[layer];
+        record.cloud_layer_velocities[slot] = layers.velocities[layer];
+        record.cloud_layer_velocities_authored[slot] = layers.velocities_authored[layer];
+        record.cloud_layer_sources[slot] = Some(layer as u8);
+        slot += 1;
     }
 }
 
@@ -976,16 +1076,12 @@ fn skyrim_cloud_layer_index(sub_type: &[u8; 4]) -> Option<usize> {
     }
 }
 
-/// Store one Creation-era `xTX` cloud path in the 32-layer table and, for
-/// layers 0..4, the legacy `cloud_textures` mirror. The caller has checked
-/// that `sub_type` is a cloud-layer FourCC.
+/// Store one Creation-era `xTX` cloud path in the 32-layer table;
+/// [`select_creation_cloud_layers`] picks the drawn four from it. The caller
+/// has checked that `sub_type` is a cloud-layer FourCC.
 fn set_creation_cloud_texture(record: &mut WeatherRecord, sub_type: &[u8; 4], data: &[u8]) {
     let layer = skyrim_cloud_layer_index(sub_type).expect("caller checked the FourCC");
-    let path = read_zstring(data);
-    if let Some(slot) = record.cloud_textures.get_mut(layer) {
-        *slot = Some(path.clone());
-    }
-    record.skyrim_cloud_textures[layer] = Some(path);
+    record.skyrim_cloud_textures[layer] = Some(read_zstring(data));
 }
 
 fn parse_glare_table(dst: &mut [SkyColor; 4], data: &[u8]) {
@@ -1046,6 +1142,7 @@ fn parse_wthr_skyrim(
     // Accumulate into a temporary array so out-of-order or partial
     // records don't corrupt earlier slots.
     let mut dalc_buf: [Option<SkyrimAmbientCube>; 4] = [None; 4];
+    let mut creation_layers = CreationCloudLayers::default();
     let mut dalc_idx: usize = 0;
 
     for sub in subs {
@@ -1118,27 +1215,25 @@ fn parse_wthr_skyrim(
                 record.wind_direction_authored = true;
             }
 
-            // Skyrim authored cloud controls. RNAM is the Y component and
-            // QNAM is the X component; JNAM carries four f32 alpha values
-            // for each layer; PNAM carries four RGBA TOD tints per layer.
-            b"RNAM" => {
-                for (layer, value) in sub.data.iter().copied().take(4).enumerate() {
-                    record.cloud_layer_velocities[layer][1] = value;
-                    record.cloud_layer_velocities_authored[layer] = true;
-                }
-            }
-            b"QNAM" => {
-                for (layer, value) in sub.data.iter().copied().take(4).enumerate() {
-                    record.cloud_layer_velocities[layer][0] = value;
-                    record.cloud_layer_velocities_authored[layer] = true;
-                }
-            }
+            // Skyrim authored cloud controls, one entry per authored layer.
+            // RNAM is the Y component and QNAM is the X component; JNAM
+            // carries four f32 alpha values for each layer; PNAM carries
+            // four RGBA TOD tints per layer; NAM1 disables layers. The four
+            // drawn slots are chosen once the record is read
+            // (`select_creation_cloud_layers`).
+            b"RNAM" => creation_layers.read_velocity_component(&sub.data, 1),
+            b"QNAM" => creation_layers.read_velocity_component(&sub.data, 0),
             b"PNAM" if sub.data.len() >= 64 => parse_cloud_colors(
-                &mut record,
+                &mut creation_layers.colors,
                 &sub.data,
                 cloud_color_slots(GameKind::Skyrim, sub.data.len()),
             ),
-            b"JNAM" if sub.data.len() >= 64 => parse_cloud_alphas(&mut record, &sub.data),
+            b"JNAM" if sub.data.len() >= 64 => {
+                parse_cloud_alphas(&mut creation_layers.alphas, &sub.data)
+            }
+            b"NAM1" if sub.data.len() >= 4 => {
+                creation_layers.disabled = u32::from_le_bytes(sub.data[0..4].try_into().unwrap());
+            }
             b"NAM2" if sub.data.len() >= 16 => {
                 parse_glare_table(&mut record.skyrim_sun_glare, &sub.data)
             }
@@ -1178,7 +1273,7 @@ fn parse_wthr_skyrim(
                 dalc_idx += 1;
             }
 
-            // Remaining Creation-only fields (LNAM, NAM1, IMSP and TNAM)
+            // Remaining Creation-only fields (LNAM, IMSP and TNAM)
             // are retained by their owning records or are model references;
             // the procedural sky consumes the portable weather controls
             // above and uses the first four cloud layers on all games.
@@ -1206,6 +1301,7 @@ fn parse_wthr_skyrim(
         record.skyrim_ambient_cube = Some(filled);
     }
 
+    select_creation_cloud_layers(&mut record, &creation_layers);
     record
 }
 
@@ -1374,15 +1470,66 @@ mod tests {
         ];
         for game in [GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield] {
             let w = parse_wthr(0xC10D, &subs, game, &None);
+            // No NAM1, so every textured layer is enabled: the four slots
+            // are layers 0, 1, 3 and 17 in authored order.
             assert_eq!(w.cloud_textures[0].as_deref(), Some("Sky\\Clouds01.dds"), "{game:?}");
             assert_eq!(w.cloud_textures[1].as_deref(), Some("Sky\\Clouds02.dds"), "{game:?}");
-            assert_eq!(w.cloud_textures[2], None, "{game:?}");
-            assert_eq!(w.cloud_textures[3].as_deref(), Some("Sky\\Clouds04.dds"), "{game:?}");
-            // `'A'` is layer 17 (#6040), so it fills the full table only.
+            assert_eq!(w.cloud_textures[2].as_deref(), Some("Sky\\Clouds04.dds"), "{game:?}");
+            assert_eq!(w.cloud_textures[3].as_deref(), Some("Sky\\Clouds18.dds"), "{game:?}");
+            assert_eq!(w.cloud_layer_sources, [Some(0), Some(1), Some(3), Some(17)], "{game:?}");
+            // `'A'` is layer 17 (#6040).
             assert_eq!(
                 w.skyrim_cloud_textures[17].as_deref(),
                 Some("Sky\\Clouds18.dds"),
                 "{game:?}"
+            );
+        }
+    }
+
+    /// SKYAL — `SkyrimCloudy`'s real layer set: `NAM1 = 0xEF9EF0FF` disables
+    /// layers 0–7, which name `OblivionCloudCloudyUpper01.dds` and
+    /// `WastelandCloudHorizon01.dds` (not shipped with Skyrim SE), and enables
+    /// the live decks at 8–11, 16, 21, 22 and 28. Taking layers 0–3 verbatim
+    /// drew no authored cloud on any Skyrim sky; the slots must be the first
+    /// four ENABLED, textured layers, carrying their own PNAM colours.
+    #[test]
+    fn creation_cloud_slots_skip_layers_disabled_by_nam1() {
+        let mut subs = vec![sub(b"NAM1", 0xEF9E_F0FFu32.to_le_bytes().to_vec())];
+        for (fourcc, path) in [
+            (b"00TX", "Sky\\OblivionCloudCloudyUpper01.dds\0"),
+            (b"10TX", "Sky\\WastelandCloudHorizon01.dds\0"),
+            (b"30TX", "Sky\\SkyrimClouds04.dds\0"),
+            (b"80TX", "Sky\\SkyrimCloudsLower01.dds\0"),
+            (b"90TX", "Sky\\SkyrimCloudsLower01.dds\0"),
+            (b":0TX", "Sky\\SkyrimCloudsLower01.dds\0"),
+            (b";0TX", "Sky\\SkyrimCloudsLower01.dds\0"),
+            (b"@0TX", "Sky\\SkyrimCloudsHorizon01.dds\0"),
+            (b"L0TX", "Sky\\SkyrimCloudsFill.dds\0"),
+        ] {
+            subs.push(sub(fourcc, path.as_bytes()));
+        }
+        // PNAM: each layer's colours encode its own index in red.
+        let pnam: Vec<u8> = (0..32 * 4).flat_map(|i| [(i / 4) as u8, 0, 0, 255]).collect();
+        subs.push(sub(b"PNAM", pnam));
+        for game in [GameKind::Skyrim, GameKind::Fallout4] {
+            let w = parse_wthr(0x12F89, &subs, game, &None);
+            assert_eq!(
+                w.cloud_layer_sources,
+                [Some(8), Some(9), Some(10), Some(11)],
+                "{game:?}"
+            );
+            for slot in 0..4 {
+                assert_eq!(
+                    w.cloud_textures[slot].as_deref(),
+                    Some("Sky\\SkyrimCloudsLower01.dds"),
+                    "{game:?} slot {slot}"
+                );
+                assert_eq!(w.cloud_layer_colors[slot][TOD_DAY].r, 8 + slot as u8, "{game:?}");
+            }
+            // The disabled legacy references stay in the full table only.
+            assert_eq!(
+                w.skyrim_cloud_textures[0].as_deref(),
+                Some("Sky\\OblivionCloudCloudyUpper01.dds")
             );
         }
     }
@@ -2257,7 +2404,12 @@ mod tests {
             (GameKind::Fallout4, 4),
             (GameKind::Skyrim, 4),
         ] {
-            let w = parse_wthr(0xC10, &[sub(b"PNAM", pnam(slots))], game, &None);
+            // Textured layers 0..3, so the drawn slots are those layers.
+            let mut subs = vec![sub(b"PNAM", pnam(slots))];
+            for layer in 0..4u8 {
+                subs.push(sub(&[b'0' + layer, b'0', b'T', b'X'], b"sky\\c.dds\0"));
+            }
+            let w = parse_wthr(0xC10, &subs, game, &None);
             for layer in 0..4 {
                 for slot in 0..4 {
                     let c = w.cloud_layer_colors[layer][slot];
@@ -2273,12 +2425,17 @@ mod tests {
 
     #[test]
     fn parse_skyrim_creation_cloud_tables_and_data_tail() {
+        // One RNAM/QNAM byte and one JNAM entry per authored layer. The
+        // textured layers below are 0, 10, 16, 17 and 31; with no NAM1 the
+        // drawn slots are the first four of them.
         let mut rnam = vec![0u8; 32];
         let mut qnam = vec![0u8; 32];
-        rnam[..4].copy_from_slice(&[5, 6, 7, 8]);
-        qnam[..4].copy_from_slice(&[15, 16, 17, 18]);
-        let mut jnam = vec![0u8; 64];
-        jnam[2 * 16..2 * 16 + 4].copy_from_slice(&0.25f32.to_le_bytes());
+        for (layer, (r, q)) in [(0, (5, 15)), (10, (6, 16)), (16, (7, 17)), (17, (8, 18))] {
+            rnam[layer] = r;
+            qnam[layer] = q;
+        }
+        let mut jnam = vec![0u8; 512];
+        jnam[16 * 16..16 * 16 + 4].copy_from_slice(&0.25f32.to_le_bytes());
         let mut data = vec![0u8; SKYRIM_DATA_SIZE];
         data[11] = WTHR_SNOW | WTHR_AURORA_FOLLOWS_SUN;
         data[12..15].copy_from_slice(&[90, 100, 110]);
@@ -2303,6 +2460,7 @@ mod tests {
             GameKind::Skyrim,
             &None,
         );
+        assert_eq!(w.cloud_layer_sources, [Some(0), Some(10), Some(16), Some(17)]);
         assert_eq!(w.cloud_layer_velocities[0], [15, 5]);
         assert_eq!(w.cloud_layer_velocities[3], [18, 8]);
         assert_eq!(w.cloud_layer_velocities_authored, [true; 4]);

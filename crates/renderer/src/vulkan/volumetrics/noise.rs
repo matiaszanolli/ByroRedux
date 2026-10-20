@@ -197,6 +197,36 @@ pub(crate) fn cached_detail_density_noise() -> &'static [u8] {
     DETAIL_NOISE_CACHE.get_or_init(|| generate_density_noise(DETAIL_NOISE_SIZE, true))
 }
 
+/// The base-volume slice the cloud shell reads as its 2D weather map
+/// (`clouds.glsl` `cloud_column_coverage`): texel layer `BASE_NOISE_SIZE / 2`
+/// along the volume's third axis, which the shader samples at the layer's
+/// centre (`CLOUD_WEATHER_SLICE_W`).
+pub(crate) const CLOUD_WEATHER_SLICE: u32 = BASE_NOISE_SIZE / 2;
+
+/// The weather-map value above which a column holds cloud, so that a
+/// `coverage` fraction of all columns does: the `1 - coverage` quantile of
+/// the slice's texels. This is what makes `coverage` a horizontal cloud
+/// fraction (the meteorological cloud amount) rather than a threshold on 3D
+/// noise, which a 3.5 km column through the shell almost always exceeds
+/// somewhere — the cause of a near-total deck overhead at every coverage.
+/// `>= 1` for zero coverage: no column qualifies.
+pub(crate) fn cloud_column_threshold(coverage: f32) -> f32 {
+    static SORTED_SLICE: OnceLock<Vec<u8>> = OnceLock::new();
+    let sorted = SORTED_SLICE.get_or_init(|| {
+        let layer = (BASE_NOISE_SIZE * BASE_NOISE_SIZE) as usize;
+        let start = CLOUD_WEATHER_SLICE as usize * layer;
+        let mut slice = cached_base_density_noise()[start..start + layer].to_vec();
+        slice.sort_unstable();
+        slice
+    });
+    let coverage = if coverage.is_finite() { coverage.clamp(0.0, 1.0) } else { 0.0 };
+    if coverage <= 0.0 {
+        return 1.0;
+    }
+    let index = (((1.0 - coverage) * sorted.len() as f32) as usize).min(sorted.len() - 1);
+    sorted[index] as f32 / 255.0
+}
+
 fn create_staging(
     device: &ash::Device,
     allocator: &SharedAllocator,
@@ -449,6 +479,34 @@ mod tests {
             cached_detail_density_noise().as_ptr(),
             cached_detail_density_noise().as_ptr(),
             "second call must return the same backing allocation, not a fresh one"
+        );
+    }
+
+    /// The column threshold makes `coverage` the fraction of weather-map
+    /// texels that hold cloud, measured on the very slice it is drawn from.
+    #[test]
+    fn cloud_column_threshold_selects_the_coverage_fraction_of_columns() {
+        let layer = (BASE_NOISE_SIZE * BASE_NOISE_SIZE) as usize;
+        let start = CLOUD_WEATHER_SLICE as usize * layer;
+        let slice = &cached_base_density_noise()[start..start + layer];
+        for coverage in [0.1f32, 0.4, 0.55, 0.7, 0.86] {
+            let threshold = cloud_column_threshold(coverage);
+            let above = slice
+                .iter()
+                .filter(|&&t| t as f32 / 255.0 >= threshold)
+                .count() as f32
+                / layer as f32;
+            assert!(
+                (above - coverage).abs() < 0.03,
+                "coverage {coverage}: {above} of the columns pass threshold {threshold}"
+            );
+        }
+        assert!(cloud_column_threshold(0.0) >= 1.0, "no coverage, no cloudy column");
+        assert!(cloud_column_threshold(0.4) > cloud_column_threshold(0.86));
+        assert_eq!(
+            crate::shader_constants::CLOUD_WEATHER_SLICE_W,
+            (CLOUD_WEATHER_SLICE as f32 + 0.5) / BASE_NOISE_SIZE as f32,
+            "the shader must sample the slice the threshold is measured on"
         );
     }
 }

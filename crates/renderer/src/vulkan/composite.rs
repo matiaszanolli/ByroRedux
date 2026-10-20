@@ -247,10 +247,14 @@ pub struct CompositeParams {
     /// frame's `U * (filtered - raw)`; `0.0` = binding 11 is a fallback view
     /// composite must not read. `zw` reserved.
     pub caustic_flags: [f32; 4],
-    /// SKYAL — xyz = the directional light surfaces receive
+    /// SKYAL — xyz = the directional light above the clouds
     /// (`SkyParams::sun_illuminance`), w unused. Lights the volumetric cloud
     /// body. Appended last, so every pre-existing offset is unchanged.
     pub sun_illuminance: [f32; 4],
+    /// SKYAL — xyz = the camera's world position in metres, w unused. The
+    /// cloud field and the upper plane are anchored to the world through it
+    /// (`SkyDome::cloud_origin`). Absolute, unlike `camera_pos`.
+    pub cloud_origin: [f32; 4],
     /// x = populated box-aperture count. Remaining lanes reserved.
     pub sky_aperture_count: [u32; 4],
     /// Authored window planes in render-origin-relative coordinates.
@@ -1856,15 +1860,16 @@ mod composite_params_layout_tests {
         // SKYAL appended `sun_illuminance` after `caustic_flags`, so every
         // earlier offset above is unchanged and only the total grows.
         assert_eq!(offset_of!(CompositeParams, sun_illuminance), 480);
-        assert_eq!(offset_of!(CompositeParams, sky_aperture_count), 496);
-        assert_eq!(offset_of!(CompositeParams, sky_apertures), 512);
+        assert_eq!(offset_of!(CompositeParams, cloud_origin), 496);
+        assert_eq!(offset_of!(CompositeParams, sky_aperture_count), 512);
+        assert_eq!(offset_of!(CompositeParams, sky_apertures), 528);
         assert_eq!(size_of::<CompositeSkyAperture>(), 48);
         assert_eq!(offset_of!(CompositeSkyAperture, camera_local_origin), 0);
         assert_eq!(offset_of!(CompositeSkyAperture, half_extents), 16);
         assert_eq!(offset_of!(CompositeSkyAperture, inverse_rotation), 32);
         assert_eq!(
             size_of::<CompositeParams>(),
-            512 + MAX_SKY_APERTURES * 48,
+            528 + MAX_SKY_APERTURES * 48,
             "CompositeParams window-plane array must match the GLSL UBO"
         );
         assert!(size_of::<CompositeParams>() <= 16 * 1024);
@@ -1921,7 +1926,7 @@ mod composite_params_layout_tests {
     }
 
     #[test]
-    fn procedural_cloud_body_composes_with_authored_layers_and_occludes_celestials() {
+    fn cloud_layers_composite_far_to_near_over_the_celestial_sky() {
         // The sky moved out of `composite.frag` into the shared
         // `include/sky.glsl` so the background pass and the cubemap bake
         // run one implementation. The composition this test pins is the
@@ -1930,37 +1935,60 @@ mod composite_params_layout_tests {
         // `contains` below vacuously unfalsifiable.
         let shader = include_str!("../../shaders/include/sky.glsl");
 
-        // SKYAL — the continuous body is now the volumetric march; the
-        // composition invariants below are unchanged by the swap.
-        for needle in [
-            "#include \"include/clouds.glsl\"",
-            "vec4 volumetric_cloud =",
+        // SKYAL — far to near: the celestial sky (disc, stars, moon, aurora),
+        // then the authored WTHR textures on the 9 km upper shell, then the
+        // 1.5-5 km volumetric deck. Each cloud layer composites by its own
+        // transmittance and is faded into the clear sky by the air in front.
+        let needles = [
+            "sky += disc_rgb * disc;",
+            "sky = weather_sky_details(dome, sky, dir, elevation);",
+            "vec4 upper_plane = sky_upper_cloud_plane(dome, dir, clear_sky);",
+            "sky = sky * (1.0 - upper_plane.a) + upper_plane.rgb;",
+            "vec4 volumetric_cloud = cloud_march(",
             "sky = sky * (1.0 - volumetric_cloud.a) + volumetric_cloud.rgb;",
-            "float cloud_occlusion = volumetric_cloud.a;",
-            "cloud_occlusion = 1.0 - (1.0 - cloud_occlusion)",
-            "float sun_visibility = 1.0 - clamp(cloud_occlusion",
-            "float stars = weather_star_field(dir) * night * sky_visibility;",
+        ];
+        let mut previous = 0;
+        for needle in needles {
+            let at = shader
+                .find(needle)
+                .unwrap_or_else(|| panic!("sky composition must retain `{needle}`"));
+            assert!(
+                at > previous,
+                "`{needle}` is out of order — the sky composites far to near: \
+                 celestials, upper plane, volumetric deck"
+            );
+            previous = at;
+        }
+        for needle in [
+            // The authored plane fades only by the air beyond its zenith path:
+            // the games' cloud art already carries the air overhead.
+            "sky_air_terms(1.0, CLOUD_UPPER_PLANE_ALTITUDE, zenith_transmittance, zenith_in_front);",
+            "volumetric_cloud, clear_sky, dir.y, deck_distance);",
+            "float distance = cloud_shell_distance(dir, 0.0, CLOUD_UPPER_PLANE_ALTITUDE);",
         ] {
             assert!(
                 shader.contains(needle),
-                "procedural/authored cloud composition must retain `{needle}`"
+                "both cloud layers must sit at their altitudes behind the air (`{needle}`)"
             );
         }
-
+        // The fixed occlusion fudges the far-to-near composite replaced: the
+        // disc, glow and night sky used to be dimmed by a hand-picked share of
+        // an accumulated cloud alpha instead of sitting behind the layers.
+        for gone in ["sun_visibility", "glow_visibility", "sky_visibility", "cloud_occlusion"] {
+            assert!(
+                !shader.contains(gone),
+                "`{gone}` is back — celestials must be occluded by the cloud \
+                 layers' own transmittance, not a fixed factor"
+            );
+        }
         assert!(
             !shader.contains("weather_procedural_cloud") && !shader.contains("weather_cloud_fbm"),
             "the 2D cloud body must be gone, not drawn alongside the volumetric one — \
              both together double the cloud body"
         );
-        let procedural = shader
-            .find("vec4 volumetric_cloud =")
-            .expect("volumetric cloud body call");
-        let authored = shader
-            .find("// Cloud layer 0 (from WTHR cloud_textures[0]).")
-            .expect("authored cloud layer");
         assert!(
-            procedural < authored,
-            "the continuous cloud body belongs behind authored WTHR detail"
+            !shader.contains("dir.xz / max(elevation, 0.05)"),
+            "the flat-plane projection must not return — the upper plane is a shell"
         );
     }
 

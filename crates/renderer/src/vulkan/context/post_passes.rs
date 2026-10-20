@@ -54,33 +54,35 @@ struct VolumetricsPassInputs<'a> {
 /// #4909 — both arms carry `sun_illuminance`, the one canonical sun: the
 /// exterior's own lane, or the portal palette's (the interior's
 /// `portal_sun_radiance` is that palette's `sun_illuminance`, assembled in
-/// `render/sky.rs`). It already folds in the HNAM sunlight dimmer, the
-/// daylight fraction and the cloud transmittance, so the haze and godrays dim
-/// with the terrain key under overcast. The exterior arm used to be
-/// `sun_color × sun_intensity` — the sun-disc colour at its raw 0–4 scale —
+/// `render/sky.rs`). It folds in the HNAM sunlight dimmer and the daylight
+/// fraction; the clouds come in through `cloud_transmittance`, so the haze
+/// and godrays dim with the terrain key under overcast. The exterior arm used
+/// to be `sun_color × sun_intensity` — the sun-disc colour at its raw 0–4 scale —
 /// which stayed at clear-sky strength under full overcast (~12× the key).
-fn volumetric_sun(sky: &SkyParams, fog_far: f32) -> ([f32; 3], [f32; 4]) {
-    if sky.is_exterior {
-        (
-            sky.sun_direction,
-            [
-                sky.sun_illuminance[0],
-                sky.sun_illuminance[1],
-                sky.sun_illuminance[2],
-                fog_far,
-            ],
-        )
+///
+/// Both lanes are the sun ABOVE the clouds; `cloud_transmittance` is the
+/// camera column's cloud-shadow value (`camera_cloud_sun_transmittance`). The
+/// froxel grid spans hundreds of metres against clouds kilometres across, so
+/// one column stands for the whole grid.
+fn volumetric_sun(
+    sky: &SkyParams,
+    fog_far: f32,
+    cloud_transmittance: f32,
+) -> ([f32; 3], [f32; 4]) {
+    let (direction, radiance) = if sky.is_exterior {
+        (sky.sun_direction, sky.sun_illuminance)
     } else {
-        (
-            sky.portal_sun_direction,
-            [
-                sky.portal_sun_radiance[0],
-                sky.portal_sun_radiance[1],
-                sky.portal_sun_radiance[2],
-                fog_far,
-            ],
-        )
-    }
+        (sky.portal_sun_direction, sky.portal_sun_radiance)
+    };
+    (
+        direction,
+        [
+            radiance[0] * cloud_transmittance,
+            radiance[1] * cloud_transmittance,
+            radiance[2] * cloud_transmittance,
+            fog_far,
+        ],
+    )
 }
 
 fn volumetric_open_sky_flag(sky: &SkyParams) -> f32 {
@@ -525,6 +527,7 @@ impl VulkanContext {
                 match (tlas_handle, geometry_ready) {
                     (Some(tlas), true) => {
                         caustic.write_tlas(&self.device, frame, tlas);
+                        caustic.sun_transmittance = self.camera_cloud_sun_transmittance;
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_caustic_splat_start(&self.device, cmd, frame);
                         }
@@ -655,7 +658,11 @@ impl VulkanContext {
                             .portal_sun_radiance
                             .iter()
                             .any(|channel| *channel > 0.0);
-                    let (sun_direction, sun_radiance) = volumetric_sun(sky_params, fog_far);
+                    let (sun_direction, sun_radiance) = volumetric_sun(
+                        sky_params,
+                        fog_far,
+                        self.camera_cloud_sun_transmittance,
+                    );
                     super::super::volumetrics::filter_fog_volumes_for_grid(
                         fog_volumes,
                         camera_pos,
@@ -1707,7 +1714,7 @@ mod tests {
             ..SkyParams::default()
         };
         assert_eq!(
-            volumetric_sun(&interior, 4096.0),
+            volumetric_sun(&interior, 4096.0, 1.0),
             ([0.6, 0.8, 0.0], [2.0, 1.0, 0.5, 4096.0])
         );
 
@@ -1719,8 +1726,18 @@ mod tests {
             ..interior
         };
         assert_eq!(
-            volumetric_sun(&exterior, 4096.0),
+            volumetric_sun(&exterior, 4096.0, 1.0),
             ([0.0, -1.0, 0.0], [3.0, 2.0, 1.0, 4096.0])
+        );
+        // SKYAL — the sun is uploaded above the clouds; the camera's cloud
+        // column dims both lanes, and only the radiance, never the range.
+        assert_eq!(
+            volumetric_sun(&exterior, 4096.0, 0.5),
+            ([0.0, -1.0, 0.0], [1.5, 1.0, 0.5, 4096.0])
+        );
+        assert_eq!(
+            volumetric_sun(&interior, 4096.0, 0.25),
+            ([0.6, 0.8, 0.0], [0.5, 0.25, 0.125, 4096.0])
         );
     }
 

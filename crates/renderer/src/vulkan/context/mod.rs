@@ -563,6 +563,13 @@ pub struct VulkanContext {
     /// SVGF read the raw u32 directly (no precision issue on the
     /// Rust side).
     pub frame_counter: u32,
+    /// SKYAL — direct-sun transmittance of the camera's own cloud column,
+    /// read back from the cloud-shadow bake once its slot's fence signalled
+    /// (two frames of latency on clouds that drift over seconds). Passes that
+    /// light with one sun value rather than per position — the froxel
+    /// volumetrics, the interior portal sun, caustics — multiply by it; every
+    /// per-position surface samples the map itself. 1.0 until a bake lands.
+    pub(crate) camera_cloud_sun_transmittance: f32,
     /// Last host-side `VK_EXT_memory_budget` read; throttled to the same
     /// half-second cadence as the engine metrics dashboard.
     pub(crate) last_live_memory_sample: std::time::Instant,

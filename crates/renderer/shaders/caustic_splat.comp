@@ -150,6 +150,7 @@ layout(set = 0, binding = 7, r32ui) uniform uimage2DArray causticAccum;
 layout(set = 0, binding = 8) uniform CausticParams {
     vec4 causticScreen;   // xy = pixel size, zw = 1/size
     vec4 causticTune;     // x = fixed-point scale, y = IOR, z = max_lights, w = strength
+    vec4 causticSun;      // x = camera-column direct-sun cloud transmittance (SKYAL)
 };
 
 // Current global geometry. Streaming may replace these buffers, so the host
@@ -448,7 +449,9 @@ void main() {
             // handles the back-side case, but the cosine here saves the
             // dispatch when the light can't physically reach the surface.
             LtoG = -normalize(L.direction_angle.xyz);
-            lightReach = clamp(dot(N, -LtoG), 0.0, 1.0);
+            // The upload is the sun above the clouds (SKYAL); scale by what
+            // the camera's cloud column lets through.
+            lightReach = clamp(dot(N, -LtoG), 0.0, 1.0) * causticSun.x;
             if (lightReach < 0.001) continue;
             sourceVisibilityDist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
         } else {

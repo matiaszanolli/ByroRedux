@@ -148,6 +148,51 @@ vec3 cloud_morphology(SkyDome dome) {
     return vec3(mix(1.0, 0.58, storm), mix(1.0, 0.62, storm), storm);
 }
 
+// Horizontal advection of the cloud field, in base-noise lookup units. One
+// helper so the sky march and the cloud-shadow bake drift identically.
+//
+// The host packs `[dir.x, speed, dir.z, 0]` (`pack_sky_dome` in
+// `context/frame_params.rs`, since #4925), so direction is `.xz` and speed
+// is `.y`. An earlier `.xy * .z` here folded the speed into the direction
+// and used `dir.z` as the speed, so the layer drifted off-axis and stood
+// still under a pure X wind.
+vec2 cloud_wind_offset(SkyDome dome) {
+    float time = dome.weather_params.w;
+    return dome.weather_wind.xz * dome.weather_wind.y * time * 0.00002;
+}
+
+// The world offset of the cloud field. Marches run in camera-relative
+// metres (the camera at the origin, the planet centre below it); the noise is
+// looked up at camera-relative position + this, so the field is fixed to the
+// world rather than travelling with the viewer. Horizontal only: the march's
+// altitudes stay relative to the viewer, as the sky's shells are.
+vec3 cloud_field_origin(SkyDome dome) {
+    return vec3(dome.cloud_origin.x, 0.0, dome.cloud_origin.z);
+}
+
+// Schneider & Vos 2015's weather map: how much cloud the COLUMN at
+// `position` may hold. Coverage used to be subtracted from the 3D base noise
+// at every height independently, and a 3.5 km column through 3D noise
+// crosses a dense value somewhere almost always — so the deck was a
+// near-total sheet overhead at every coverage, and the ground under a
+// "pleasant" 0.40 sky sat in permanent cloud shadow. The reference instead
+// decides coverage per column from a 2D weather texture; here that texture
+// is one horizontal slice of the same base volume (`CLOUD_WEATHER_SLICE_W`),
+// thresholded at `dome.weather_aurora.w` — the host's quantile that makes a
+// `coverage` fraction of columns pass (`cloud_column_threshold`). Zero
+// outside, rising to one at the field's densest columns.
+float cloud_column_coverage(
+    vec3 position,
+    float threshold,
+    vec2 wind_offset,
+    vec3 morphology,
+    sampler3D base_noise
+) {
+    vec2 weather_uv = position.xz * 0.00008 * morphology.x + wind_offset;
+    float weather = texture(base_noise, vec3(weather_uv, CLOUD_WEATHER_SLICE_W)).r;
+    return cloud_remap(weather, threshold, 1.0, 0.0, 1.0);
+}
+
 // Base cloud shape only: low-frequency noise, coverage and height gradient,
 // no erosion. This is Schneider & Vos's "cheap sample" (slides 74-77): one
 // texture fetch, used to find the cloud iso-surface before paying for the
@@ -168,8 +213,12 @@ float cloud_base_shape(
     );
     float base = texture(base_noise, base_uvw).r;
 
-    // Coverage is SUBTRACTED, not multiplied (see `cloud_remap`).
-    float shaped = cloud_remap(base, 1.0 - coverage, 1.0, 0.0, 1.0);
+    // Coverage is SUBTRACTED, not multiplied (see `cloud_remap`). `coverage`
+    // is the column's own (`cloud_column_coverage`); the result is then
+    // scaled by it so the small clouds at a column's edge are also the
+    // lighter ones (Schneider, "Real-Time Volumetric Cloudscapes", GPU Pro 7,
+    // 2016: `base_cloud_with_coverage *= cloud_coverage`).
+    float shaped = cloud_remap(base, 1.0 - coverage, 1.0, 0.0, 1.0) * coverage;
     return shaped * cloud_height_gradient(height_fraction, morphology.z);
 }
 
@@ -257,7 +306,10 @@ float cloud_shell_distance(vec3 dir, float height, float shell) {
 }
 
 // March the cloud layer along `dir` and return premultiplied
-// (scattered radiance, coverage alpha).
+// (scattered radiance, coverage alpha). `mean_distance` receives the
+// opacity-weighted distance to the scattering (the layer's start when nothing
+// scattered): the depth the layer's radiance comes from on average, which is
+// where `sky_radiance` applies the aerial perspective.
 //
 // `coverage` is `SkyDome::weather_aurora.z`, which EXAL derives from the WTHR
 // classification flags in `env_translate::fog_coverage_from_weather`. This
@@ -276,8 +328,10 @@ vec4 cloud_march(
     vec3 dir,
     sampler3D base_noise,
     sampler3D detail_noise,
-    float jitter
+    float jitter,
+    out float mean_distance
 ) {
+    mean_distance = 0.0;
     float coverage = clamp(dome.weather_aurora.z, 0.0, 1.0);
     // The horizon fade the 2D body this march replaced used, carried over
     // verbatim rather than re-tuned. Near the horizon the shell is ~100 km
@@ -295,6 +349,7 @@ vec4 cloud_march(
     if (start < 0.0 || end <= start) {
         return vec4(0.0);
     }
+    mean_distance = start;
 
     vec3 sun_dir = dome.sun_dir.xyz;
     vec3 sun_illuminance = dome.sun_illuminance.xyz;
@@ -313,14 +368,10 @@ vec4 cloud_march(
     // Constant along the ray, so evaluated once rather than per step.
     vec3 ambient = cloud_ambient_radiance(dome);
 
-    float time = dome.weather_params.w;
-    // The host packs `[dir.x, speed, dir.z, 0]` (`pack_sky_dome` in
-    // `context/frame_params.rs`, since #4925),
-    // so direction is `.xz` and speed is `.y`. An earlier `.xy * .z` here folded
-    // the speed into the direction and used `dir.z` as the speed, so the
-    // layer drifted off-axis and stood still under a pure X wind.
-    vec2 wind = dome.weather_wind.xz * dome.weather_wind.y * time * 0.00002;
+    vec2 wind = cloud_wind_offset(dome);
     vec3 morphology = cloud_morphology(dome);
+    vec3 field_origin = cloud_field_origin(dome);
+    float column_threshold = dome.weather_aurora.w;
 
     // Adaptive march (Schneider & Vos 2015, slides 74-80). A fixed step was
     // aliasing: at the sourced extinction a ~73 m step has optical depth
@@ -355,6 +406,8 @@ vec4 cloud_march(
     bool full_mode = false;
     float transmittance = 1.0;
     vec3 scattered = vec3(0.0);
+    // Sum of (opacity gained in a slab x the slab's centre distance).
+    float weighted_distance = 0.0;
 
     for (int i = 0; i < int(CLOUD_MAX_MARCH_ITERATIONS); ++i) {
         if (transmittance < 0.01 || t >= end) {
@@ -362,10 +415,13 @@ vec4 cloud_march(
         }
         vec3 position = dir * t;
         float height_fraction = cloud_height_fraction(position);
+        vec3 field_position = position + field_origin;
+        float column = cloud_column_coverage(
+            field_position, column_threshold, wind, morphology, base_noise);
 
         if (!full_mode) {
             float base_shape =
-                cloud_base_shape(position, height_fraction, coverage, wind, morphology, base_noise);
+                cloud_base_shape(field_position, height_fraction, column, wind, morphology, base_noise);
             if (base_shape > 0.0) {
                 full_mode = true;
                 t = max(t - cheap_step, marched_until);
@@ -377,7 +433,7 @@ vec4 cloud_march(
 
         float density =
             cloud_density(
-                position, height_fraction, coverage, wind, morphology, base_noise, detail_noise
+                field_position, height_fraction, column, wind, morphology, base_noise, detail_noise
             );
         float step_size = density > 0.0
             ? min(mean_free_path / density, cheap_step)
@@ -424,10 +480,13 @@ vec4 cloud_march(
         for (int j = 0; j < CLOUD_LIGHT_STEPS; ++j) {
             vec3 light_pos = position + sun_dir * light_distance;
             float lh = cloud_height_fraction(light_pos);
+            vec3 light_field = light_pos + field_origin;
             // Each sample stands for the segment back to the previous one.
             light_optical_depth +=
                 cloud_density(
-                    light_pos, lh, coverage, wind, morphology, base_noise, detail_noise
+                    light_field, lh,
+                    cloud_column_coverage(light_field, column_threshold, wind, morphology, base_noise),
+                    wind, morphology, base_noise, detail_noise
                 )
                 * (light_distance - light_previous);
             light_previous = light_distance;
@@ -465,9 +524,14 @@ vec4 cloud_march(
         // which over-brightens at large step sizes.
         vec3 slab = (sun_radiance + ambient) * sigma_t * transport.y;
         scattered += transmittance * slab;
+        weighted_distance += transmittance * (1.0 - transport.x) * (t + 0.5 * step_size);
         transmittance *= transport.x;
         t += step_size;
         marched_until = t;
+    }
+
+    if (transmittance < 1.0) {
+        mean_distance = weighted_distance / (1.0 - transmittance);
     }
 
     // WTHR stays the artistic colour authority, exactly as it was for the 2D

@@ -447,6 +447,16 @@ pub(crate) fn build_scene_descriptor_bindings() -> Vec<vk::DescriptorSetLayoutBi
         vk::DescriptorType::STORAGE_BUFFER,
         vk::ShaderStageFlags::FRAGMENT,
     ));
+    // Binding 24: SKYAL cloud-shadow map — direct-sun transmittance through
+    // the sky's cloud layers per world position (`exteriorCloudSunTransmittance`).
+    // Owned by `SkyCubePipeline` with the cube at binding 20 and written in by
+    // `write_sky_cube`; same optional ownership and `exteriorSkyTint.w`
+    // readiness contract.
+    bindings.push(layout_binding(
+        24,
+        vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     bindings
 }
 

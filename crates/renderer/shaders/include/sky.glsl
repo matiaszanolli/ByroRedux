@@ -45,13 +45,18 @@ struct SkyDome {
     vec4 weather_wind;      // x = wind dir x, y = normalized speed, z = wind dir z, w reserved
     vec4 weather_lightning; // lightning RGB, moon glare
     vec4 weather_sky;       // stars RGB, sun glare
-    vec4 weather_aurora;    // intensity, follows-sun, procedural coverage, reserved
+    vec4 weather_aurora;    // intensity, follows-sun, procedural coverage, column-coverage threshold
     // x = is_exterior — the only lane the dome reads, but carried as the
     // full `vec4` its source field is so each builder stays a plain copy.
     vec4 depth_params;
-    // xyz = the directional light surfaces receive, w unused. The cloud body
-    // is lit by this so clouds and terrain share one sun.
+    // xyz = the directional light above the clouds, w unused. The cloud body
+    // is lit by this; surfaces receive it through the cloud-shadow map.
     vec4 sun_illuminance;
+    // xyz = the camera's world position in metres (renderer Y-up), w unused.
+    // The cloud field and the upper plane are anchored to the world through
+    // it, so they parallax as the viewer moves and the shadows they cast
+    // (`cloud_shadow.comp`) stay where they fall.
+    vec4 cloud_origin;
 };
 
 // The volumetric cloud body. Included here, after `SkyDome`, because every
@@ -81,7 +86,10 @@ float weather_star_field(vec3 dir) {
     return rare * point * bright;
 }
 
-vec3 weather_sky_details(SkyDome dome, vec3 sky, vec3 dir, float elevation, float cloud_occlusion) {
+// Stars, moon and aurora. They sit behind every cloud layer, so they are
+// added to the clear sky and the cloud composites in `sky_radiance` occlude
+// them by their own transmittance.
+vec3 weather_sky_details(SkyDome dome, vec3 sky, vec3 dir, float elevation) {
     // #4908 — gate on "an outdoor palette is drawn", not on the room's
     // weather flag: an interior composite keeps `depth_params.x = 0` so rain
     // and height fog stay off, but paints the outdoor sky through Show Sky
@@ -94,8 +102,7 @@ vec3 weather_sky_details(SkyDome dome, vec3 sky, vec3 dir, float elevation, floa
     // sun_dir.y is positive while the sun is above the horizon and is the
     // canonical day/night signal already used by the TOD system.
     float night = 1.0 - smoothstep(-0.08, 0.20, dome.sun_dir.y);
-    float sky_visibility = 1.0 - clamp(cloud_occlusion, 0.0, 1.0);
-    float stars = weather_star_field(dir) * night * sky_visibility;
+    float stars = weather_star_field(dir) * night;
     sky += dome.weather_sky.rgb * stars;
 
     // At night WTHR's SKY_SUN colour is the authored moon tint in the legacy
@@ -111,7 +118,7 @@ vec3 weather_sky_details(SkyDome dome, vec3 sky, vec3 dir, float elevation, floa
     if (moon_cos > moon_edge && elevation > 0.0) {
         float moon_disc = smoothstep(moon_edge, 1.0, moon_cos);
         sky += dome.sun_color.rgb * moon_disc
-            * dome.weather_lightning.w * night * 0.65 * sky_visibility;
+            * dome.weather_lightning.w * night * 0.65;
     }
 
     float aurora = dome.weather_aurora.x * night
@@ -123,7 +130,7 @@ vec3 weather_sky_details(SkyDome dome, vec3 sky, vec3 dir, float elevation, floa
         float bands = 0.5 + 0.5 * sin(dir.x * 17.0 + dir.z * 5.0 + travel);
         float curtains = 0.5 + 0.5 * sin(dir.z * 31.0 - dir.x * 7.0 + bands * 2.0);
         vec3 aurora_color = mix(vec3(0.08, 0.42, 0.28), vec3(0.18, 0.35, 0.75), curtains);
-        sky += aurora_color * aurora * bands * curtains * 0.38 * sky_visibility;
+        sky += aurora_color * aurora * bands * curtains * 0.38;
     }
 
     return sky;
@@ -161,13 +168,6 @@ vec3 sky_atmospheric_inscatter(SkyDome dome, vec3 dir, float elevation) {
     );
 }
 
-// Compute sky color from view direction.
-//
-// `cloud_base_noise` / `cloud_detail_noise` are the shared density volumes
-// (`CloudNoiseVolumes`); they are parameters rather than bindings because
-// the two consumers bind them in different descriptor sets. `cloud_jitter`
-// is the cloud march's step offset — see `cloud_march`.
-
 // #4230 — the mip for one WTHR cloud layer, from the shared elevation term.
 //
 // A texture LOD is log2 of the footprint in the texture's own mip-0 texels,
@@ -192,6 +192,185 @@ float cloud_layer_lod(float base_lod, float tile_scale, uint texture_index) {
         + log2(tile_scale * width / (CLOUD_TILE_SCALE_LAYER_0 * CLOUD_REF_WIDTH));
 }
 
+// ── Aerial perspective ─────────────────────────────────────────────────────
+//
+// The air between the viewer and a cloud layer both dims the cloud and adds
+// in-scattered sky light in front of it. Extinction comes from the Earth
+// atmosphere (`ATMOSPHERE_*`, Hillaire 2020 Table 1); the in-scattered colour
+// stays the authored WTHR sky's, so the games' palettes are kept.
+
+// Scaled complementary error function erfcx(x) = exp(x^2) erfc(x), x >= 0.
+// Below 2: Abramowitz & Stegun 7.1.26, whose erfc is a polynomial times
+// exp(-x^2), so the polynomial alone is erfcx. Above: their continued
+// fraction 7.1.14 to six levels, where 7.1.26's absolute error would be
+// amplified by exp(x^2). Relative error <= 5e-5 over [0, 50] against the
+// library erfc (`chapman_column_matches_numerical_integration`).
+float sky_erfcx(float x) {
+    if (x < 2.0) {
+        float t = 1.0 / (1.0 + 0.3275911 * x);
+        return t * (0.254829592 + t * (-0.284496736 + t * (1.421413741
+            + t * (-1.453152027 + t * 1.061405429))));
+    }
+    float f = x + 3.0 / x;
+    f = x + 2.5 / f;
+    f = x + 2.0 / f;
+    f = x + 1.5 / f;
+    f = x + 1.0 / f;
+    f = x + 0.5 / f;
+    return 0.5641895835477563 / f; // 1 / (sqrt(pi) * f)
+}
+
+// Sea-level-equivalent path length (metres) through one exponential
+// constituent of scale height `scale_height`, along a ray from the ground at
+// zenith cosine `mu >= 0`, out to `distance` (infinity when negative).
+//
+// Over a curved ground the ray's altitude is mu s + s^2 / 2R to second order,
+// so the column integral of exp(-z / H) has the closed form
+//   sqrt(pi R H / 2) * [erfcx(x0) - exp(x0^2 - x1^2) erfcx(x1)],
+//   x0 = mu sqrt(R / 2H),  x1 = x0 + s / sqrt(2 R H)
+// — the Chapman integral, exact in both limits (H / mu overhead, the grazing
+// sqrt(pi R H / 2) at the horizon). Written with erfcx so neither exponential
+// can overflow. Within 0.02% of a numerical integral through the true sphere
+// at every elevation and cloud distance this sky uses.
+float sky_air_column(float mu, float distance, float scale_height) {
+    float R = CLOUD_PLANET_RADIUS;
+    float x0 = max(mu, 0.0) * sqrt(R / (2.0 * scale_height));
+    float column = sky_erfcx(x0);
+    if (distance >= 0.0) {
+        float x1 = x0 + distance / sqrt(2.0 * R * scale_height);
+        column -= exp((x0 - x1) * (x0 + x1)) * sky_erfcx(x1);
+    }
+    return sqrt(1.5707963267948966 * R * scale_height) * max(column, 0.0);
+}
+
+// Optical depth of clear air along a ray of zenith cosine `mu` from the
+// viewer to `distance` (to space when negative).
+vec3 sky_air_optical_depth(float mu, float distance) {
+    return ATMOSPHERE_RAYLEIGH_EXTINCTION
+            * sky_air_column(mu, distance, ATMOSPHERE_RAYLEIGH_SCALE_HEIGHT)
+        + vec3(ATMOSPHERE_MIE_EXTINCTION
+            * sky_air_column(mu, distance, ATMOSPHERE_MIE_SCALE_HEIGHT));
+}
+
+// Air between the viewer and a point `distance` along a ray of zenith cosine
+// `mu`: its transmittance, and the share of the ray's in-scattered sky light
+// that originates in front of the point.
+//
+// The sky colour is the in-scatter of the WHOLE ray to space. Under single
+// scattering with a uniform source, the share scattered in front of the point
+// is the share of the ray's extinction that lies in front of it:
+// (1 - T(d)) / (1 - T(inf)).
+void sky_air_terms(float mu, float distance, out vec3 transmittance, out vec3 in_front) {
+    transmittance = exp(-sky_air_optical_depth(mu, distance));
+    vec3 total = sky_air_optical_depth(mu, -1.0);
+    in_front = clamp(
+        (1.0 - transmittance) / max(1.0 - exp(-total), vec3(1.0e-5)),
+        vec3(0.0), vec3(1.0));
+}
+
+// Fade a premultiplied cloud layer at `distance` along a view ray of zenith
+// cosine `mu` into the clear sky `haze` in front of it: dimmed by the air's
+// transmittance, plus the sky light scattered in front of it.
+vec4 sky_aerial_perspective(vec4 layer, vec3 haze, float mu, float distance) {
+    vec3 transmittance;
+    vec3 in_front;
+    sky_air_terms(mu, distance, transmittance, in_front);
+    return vec4(layer.rgb * transmittance + haze * layer.a * in_front, layer.a);
+}
+
+// ── Upper cloud plane ──────────────────────────────────────────────────────
+//
+// The authored WTHR cloud textures, drawn on a spherical shell at
+// CLOUD_UPPER_PLANE_ALTITUDE (WMO high étage) behind the volumetric deck.
+// They used to be painted on an infinite flat plane in FRONT of the deck,
+// which put the games' high cirrus layers nearer than 1.5 km cumulus and
+// needed a 0.05 elevation floor plus a 0.12 horizon fade to hide the plane's
+// projection singularity. The shell has none: toward the horizon its UVs
+// converge to sqrt(2 R h / h^2) ~ 38 tile units instead of diverging, and the
+// aerial perspective fades it into the horizon haze.
+//
+// UV convention: the horizontal world position of the shell point, in units
+// of the shell altitude. Relative to the viewer that is `dir.xz / dir.y` at
+// the zenith, so `tile_scale` keeps its authored meaning (#529) and overhead
+// clouds keep their size.
+
+// One authored layer, premultiplied. `tile_scale == 0` is the host's
+// "no texture" sentinel, so the bindless array is never sampled at index 0.
+vec4 sky_upper_cloud_layer(vec4 params, vec4 tint, vec2 shell_uv, float base_lod) {
+    float tile_scale = params.z;
+    if (tile_scale <= 0.0) {
+        return vec4(0.0);
+    }
+    uint texture_index = floatBitsToUint(params.w);
+    vec2 uv = shell_uv * tile_scale + params.xy;
+    // `textureLod` with an analytic LOD: the driver's derivative estimate
+    // sees a huge UV discontinuity across the horizon quads and snaps to
+    // mip 0 (per-texel aliasing, #730 / SH-13).
+    vec4 texel = textureLod(textures[nonuniformEXT(texture_index)], uv,
+        cloud_layer_lod(base_lod, tile_scale, texture_index));
+    float alpha = texel.a * tint.a;
+    return vec4(texel.rgb * tint.rgb * alpha, alpha);
+}
+
+// The four authored layers over one another (layer 0 lowest, layer 3 drawn
+// last, the order the 2D path used), faded into `haze` toward the horizon.
+// Premultiplied (radiance, opacity).
+vec4 sky_upper_cloud_plane(SkyDome dome, vec3 dir, vec3 haze) {
+    if (dir.y <= 0.0) {
+        return vec4(0.0);
+    }
+    float distance = cloud_shell_distance(dir, 0.0, CLOUD_UPPER_PLANE_ALTITUDE);
+    if (distance <= 0.0) {
+        return vec4(0.0);
+    }
+    float stretch = distance / CLOUD_UPPER_PLANE_ALTITUDE;
+    // World-anchored like the deck: the shell point's horizontal world
+    // position, in units of the shell altitude.
+    vec2 shell_uv = dir.xz * stretch + dome.cloud_origin.xz / CLOUD_UPPER_PLANE_ALTITUDE;
+    // Analytic mip: the UV footprint grows with the stretch toward the
+    // horizon; 0.5 keeps the softened slope the flat plane was tuned with
+    // (`log2(1 / elevation) * 0.5`, which `stretch` equals above ~3 degrees).
+    float base_lod = log2(max(stretch, 1.0)) * 0.5;
+
+    vec4 plane = vec4(0.0);
+    vec4 layers[4] = vec4[4](
+        sky_upper_cloud_layer(dome.cloud_params, dome.cloud_tint_0, shell_uv, base_lod),
+        sky_upper_cloud_layer(dome.cloud_params_1, dome.cloud_tint_1, shell_uv, base_lod),
+        sky_upper_cloud_layer(dome.cloud_params_2, dome.cloud_tint_2, shell_uv, base_lod),
+        sky_upper_cloud_layer(dome.cloud_params_3, dome.cloud_tint_3, shell_uv, base_lod)
+    );
+    for (int i = 0; i < 4; ++i) {
+        plane = layers[i] + plane * (1.0 - layers[i].a);
+    }
+    if (plane.a <= 0.0) {
+        return vec4(0.0);
+    }
+    // The authored textures and PNAM tints were made to be composited
+    // straight onto the authored sky, so they already carry the air above an
+    // overhead view; full aerial perspective would haze the games' cloud art
+    // a second time. Apply only the air the path holds BEYOND the zenith
+    // path to the same shell: none overhead, so the authored look is exact
+    // there, rising toward the horizon, where it fades the plane into the
+    // haze — the job the flat plane's `smoothstep(0, 0.12)` horizon fade did.
+    vec3 transmittance;
+    vec3 in_front;
+    sky_air_terms(dir.y, distance, transmittance, in_front);
+    vec3 zenith_transmittance;
+    vec3 zenith_in_front;
+    sky_air_terms(1.0, CLOUD_UPPER_PLANE_ALTITUDE, zenith_transmittance, zenith_in_front);
+    vec3 extra_transmittance = min(transmittance / zenith_transmittance, vec3(1.0));
+    vec3 extra_in_front = clamp(
+        (in_front - zenith_in_front) / max(1.0 - zenith_in_front, vec3(1.0e-5)),
+        vec3(0.0), vec3(1.0));
+    return vec4(plane.rgb * extra_transmittance + haze * plane.a * extra_in_front, plane.a);
+}
+
+// Compute sky color from view direction.
+//
+// `cloud_base_noise` / `cloud_detail_noise` are the shared density volumes
+// (`CloudNoiseVolumes`); they are parameters rather than bindings because
+// the two consumers bind them in different descriptor sets. `cloud_jitter`
+// is the cloud march's step offset — see `cloud_march`.
 vec3 sky_radiance(
     SkyDome dome,
     vec3 dir,
@@ -238,129 +417,46 @@ vec3 sky_radiance(
         sky = mix(horizon, dome.sky_lower.xyz, below);
     }
 
-    // Broad cloud body first; authored WTHR layers below add their original
-    // silhouettes and colour variation without being solely responsible for
-    // sky occupancy. Accumulate opacity so celestial objects remain behind
-    // both representations instead of painting over cloud cover.
+    float cos_angle = dot(dir, sun_direction);
+
+    // Sun glow: soft radial halo around the sun. It is forward aerosol
+    // scattering in the air, so it belongs to the clear-sky radiance the
+    // clouds' aerial perspective fades toward (`clear_sky` below), not to
+    // the celestial layer behind them.
     //
-    // SKYAL — the body is the volumetric march (`include/clouds.glsl`). It
-    // replaced a 2D FBM field that faked self-shadowing with one offset
-    // density tap. Same slot, same coverage lane, same tint authority; the
-    // march returns premultiplied radiance, hence `sky * (1 - a) + rgb` in
-    // place of the old `mix`.
-    vec4 volumetric_cloud =
-        cloud_march(dome, dir, cloud_base_noise, cloud_detail_noise, cloud_jitter);
-    sky = sky * (1.0 - volumetric_cloud.a) + volumetric_cloud.rgb;
-    float cloud_occlusion = volumetric_cloud.a;
-
-    // Cloud layer 0 (from WTHR cloud_textures[0]).
+    // #799 — multiply by `sun_intensity` so the halo fades with the
+    // disc through the day/night ramp. Pre-fix the disc faded
+    // correctly (its `sky += disc_color * sun_intensity * disc`
+    // already carried the factor) but the halo stayed at constant 0.15 *
+    // sun_col, so a WTHR with non-zero `SKY_SUN[NIGHT]` (e.g.
+    // Skyrim's MoonShadow) painted a faint warm halo at midnight.
     //
-    // Project the upper hemisphere onto an infinite horizontal plane
-    // overhead: uv = (dir.xz / dir.y) × tile_scale. This gives perspective-
-    // correct foreshortening at low elevations (clouds at the horizon look
-    // stretched and tile densely, directly overhead they look large and
-    // slow-moving) without needing a real dome mesh.
-    //
-    // cloud_params.z == 0 disables the sample so the checkerboard fallback
-    // handle is never read on cells without WTHR cloud data.
-    // Analytic mip LOD: as elevation → 0 the UV magnitude grows as 1/elevation,
-    // so the mip should rise by log2(1/elevation). Factor 0.5 keeps the transition
-    // gentler than the raw log2 slope. textureLod bypasses the driver's dFdx/dFdy
-    // estimate, which would see a 100x–500x UV discontinuity across horizon-fade
-    // quads and snap to mip-0 (per-texel aliasing visible in #730). SH-13.
-    float cloud_lod = log2(1.0 / max(elevation, 0.05)) * 0.5;
-    // #4230 — that term models only the elevation stretch, and was tuned on
-    // layer 0. It was then reused verbatim by all four layers, although each
-    // multiplies its UV by its own `tile_scale`: layers 1-3 are finer decks
-    // (baselines 0.20 / 0.25 / 0.30 against layer 0's 0.15) and so sampled up
-    // to a whole mip sharper than their frequency warrants — aliasing toward
-    // the horizon. `cloud_layer_lod` adds each layer's own offset.
-    //
-    // The horizon fade (`smoothstep(0, 0.12, elevation)`) and the singularity
-    // floor (`max(elevation, 0.05)`) need no per-layer treatment: both bound
-    // the *projection*, which is the same geometry for every layer whatever
-    // its tile scale.
+    // Falloff tightened to `pow(., 8)` × 0.10 (was `pow(., 4)` × 0.15)
+    // on the Markarth 2026-05-10 probe. The wider 4-power halo at
+    // `sun_intensity = 4` was adding +0.28 RGB to the sky ~33° off the
+    // sun direction; ACES tonemap then pushed the entire visible
+    // upper hemisphere to pale-white in any view including the sun's
+    // half of the sky. The `pow(., 8)` curve concentrates the halo
+    // to ~15° around the disc — preserves the bright sun region
+    // without washing the rest of the sky.
+    float glow = max(cos_angle, 0.0);
+    glow = pow(glow, 8.0);
+    sky += sun_col * glow * 0.10 * sun_intensity * dome.weather_sky.w;
 
-    float tile_scale = dome.cloud_params.z;
-    if (tile_scale > 0.0 && elevation > 0.0) {
-        uint cloud_idx = floatBitsToUint(dome.cloud_params.w);
-        // max() floor guards against the overhead singularity (dir.y → 0)
-        // producing NaN UVs. 0.05 matches ~3° of remaining foreshortening.
-        vec2 uv = dir.xz / max(elevation, 0.05) * tile_scale
-                + dome.cloud_params.xy;
-        vec4 cloud = textureLod(textures[nonuniformEXT(cloud_idx)], uv,
-            cloud_layer_lod(cloud_lod, tile_scale, cloud_idx));
-        // Fade clouds out at the horizon so the projection singularity
-        // doesn't produce an ugly stretched band right at elevation=0.
-        float horizon_fade = smoothstep(0.0, 0.12, elevation);
-        vec4 tint = dome.cloud_tint_0;
-        cloud.rgb *= tint.rgb;
-        float layer_alpha = cloud.a * tint.a * horizon_fade;
-        sky = mix(sky, cloud.rgb, layer_alpha);
-        cloud_occlusion = 1.0 - (1.0 - cloud_occlusion) * (1.0 - layer_alpha);
-    }
-
-    // Cloud layer 1 (WTHR CNAM — higher-altitude deck, opposite drift direction).
-    // tile_scale_1 == 0.0 when no CNAM texture was loaded; the branch is
-    // skipped entirely so the bindless array is never sampled with index 0.
-    float tile_scale_1 = dome.cloud_params_1.z;
-    if (tile_scale_1 > 0.0 && elevation > 0.0) {
-        uint cloud_idx_1 = floatBitsToUint(dome.cloud_params_1.w);
-        vec2 uv_1 = dir.xz / max(elevation, 0.05) * tile_scale_1
-                  + dome.cloud_params_1.xy;
-        vec4 cloud_1 = textureLod(textures[nonuniformEXT(cloud_idx_1)], uv_1,
-            cloud_layer_lod(cloud_lod, tile_scale_1, cloud_idx_1));
-        float horizon_fade_1 = smoothstep(0.0, 0.12, elevation);
-        vec4 tint_1 = dome.cloud_tint_1;
-        cloud_1.rgb *= tint_1.rgb;
-        float layer_alpha_1 = cloud_1.a * tint_1.a * horizon_fade_1;
-        sky = mix(sky, cloud_1.rgb, layer_alpha_1);
-        cloud_occlusion = 1.0 - (1.0 - cloud_occlusion) * (1.0 - layer_alpha_1);
-    }
-
-    // Cloud layer 2 (WTHR ANAM, M33.1) — same projection / fade as layer 1.
-    float tile_scale_2 = dome.cloud_params_2.z;
-    if (tile_scale_2 > 0.0 && elevation > 0.0) {
-        uint cloud_idx_2 = floatBitsToUint(dome.cloud_params_2.w);
-        vec2 uv_2 = dir.xz / max(elevation, 0.05) * tile_scale_2
-                  + dome.cloud_params_2.xy;
-        vec4 cloud_2 = textureLod(textures[nonuniformEXT(cloud_idx_2)], uv_2,
-            cloud_layer_lod(cloud_lod, tile_scale_2, cloud_idx_2));
-        float horizon_fade_2 = smoothstep(0.0, 0.12, elevation);
-        vec4 tint_2 = dome.cloud_tint_2;
-        cloud_2.rgb *= tint_2.rgb;
-        float layer_alpha_2 = cloud_2.a * tint_2.a * horizon_fade_2;
-        sky = mix(sky, cloud_2.rgb, layer_alpha_2);
-        cloud_occlusion = 1.0 - (1.0 - cloud_occlusion) * (1.0 - layer_alpha_2);
-    }
-
-    // Cloud layer 3 (WTHR BNAM, M33.1) — same projection / fade as layer 1.
-    float tile_scale_3 = dome.cloud_params_3.z;
-    if (tile_scale_3 > 0.0 && elevation > 0.0) {
-        uint cloud_idx_3 = floatBitsToUint(dome.cloud_params_3.w);
-        vec2 uv_3 = dir.xz / max(elevation, 0.05) * tile_scale_3
-                  + dome.cloud_params_3.xy;
-        vec4 cloud_3 = textureLod(textures[nonuniformEXT(cloud_idx_3)], uv_3,
-            cloud_layer_lod(cloud_lod, tile_scale_3, cloud_idx_3));
-        float horizon_fade_3 = smoothstep(0.0, 0.12, elevation);
-        vec4 tint_3 = dome.cloud_tint_3;
-        cloud_3.rgb *= tint_3.rgb;
-        float layer_alpha_3 = cloud_3.a * tint_3.a * horizon_fade_3;
-        sky = mix(sky, cloud_3.rgb, layer_alpha_3);
-        cloud_occlusion = 1.0 - (1.0 - cloud_occlusion) * (1.0 - layer_alpha_3);
-    }
+    // The haze colour for the aerial perspective: the clear sky in this
+    // direction, without the disc, stars, moon or aurora, which are sources
+    // behind the air rather than light scattered by it.
+    vec3 clear_sky = sky;
 
     // Sun disc: bright circular spot with a soft edge.
     // sun_size is cos(half-angle) of the disc — lower = wider.
     // Use a smooth transition band outside the core to avoid hard edges
     // from screen-space direction reconstruction precision.
     //
-    // `elevation > 0.0` matches the cloud-layer gate convention above
-    // and stops the disc painting over the below-horizon ground tint
-    // at sunset/sunrise (the `mix(horizon, dome.sky_lower.xyz, below)`
-    // in `sky_radiance` produces a "ground" colour that the disc would
+    // `elevation > 0.0` stops the disc painting over the below-horizon
+    // ground tint at sunset/sunrise (the `mix(horizon, dome.sky_lower.xyz,
+    // below)` above produces a "ground" colour that the disc would
     // otherwise overwrite). #800.
-    float cos_angle = dot(dir, sun_direction);
     float sun_edge_start = sun_size - 0.002; // soft outer fringe
     if (cos_angle > sun_edge_start && elevation > 0.0) {
         float t = (cos_angle - sun_edge_start) / (1.0 - sun_edge_start);
@@ -410,7 +506,6 @@ vec3 sky_radiance(
             disc_color = sun_col * sprite.rgb;
         }
 
-        float sun_visibility = 1.0 - clamp(cloud_occlusion, 0.0, 1.0) * 0.94;
         // #sunset-disc — the disc keeps a fixed luminance contrast against
         // the sky behind it: extinction reddens the sun but never dims it
         // below its surroundings until it sets, and a physical disc is
@@ -427,32 +522,37 @@ vec3 sky_radiance(
         float local_sky_lum = dot(sky, LUMA_REC709);
         vec3 disc_rgb =
             disc_base * max(1.0, local_sky_lum * 1.8 / max(disc_lum, 1.0e-5));
-        sky += disc_rgb * disc * sun_visibility;
+        // No visibility factor: the disc is behind both cloud layers, which
+        // composite over it by their own transmittance below.
+        sky += disc_rgb * disc;
     }
 
-    // Sun glow: soft radial halo around the sun.
-    //
-    // #799 — multiply by `sun_intensity` so the halo fades with the
-    // disc through the day/night ramp. Pre-fix the disc faded
-    // correctly (its `sky += disc_color * sun_intensity * disc`
-    // already carried the factor) but the halo stayed at constant 0.15 *
-    // sun_col, so a WTHR with non-zero `SKY_SUN[NIGHT]` (e.g.
-    // Skyrim's MoonShadow) painted a faint warm halo at midnight.
-    //
-    // Falloff tightened to `pow(., 8)` × 0.10 (was `pow(., 4)` × 0.15)
-    // on the Markarth 2026-05-10 probe. The wider 4-power halo at
-    // `sun_intensity = 4` was adding +0.28 RGB to the sky ~33° off the
-    // sun direction; ACES tonemap then pushed the entire visible
-    // upper hemisphere to pale-white in any view including the sun's
-    // half of the sky. The `pow(., 8)` curve concentrates the halo
-    // to ~15° around the disc — preserves the bright sun region
-    // without washing the rest of the sky.
-    float glow = max(cos_angle, 0.0);
-    glow = pow(glow, 8.0);
-    float glow_visibility = 1.0 - clamp(cloud_occlusion, 0.0, 1.0) * 0.82;
-    sky += sun_col * glow * 0.10 * sun_intensity * dome.weather_sky.w * glow_visibility;
+    sky = weather_sky_details(dome, sky, dir, elevation);
 
-    return weather_sky_details(dome, sky, dir, elevation, cloud_occlusion);
+    // SKYAL — the clouds composite over everything above, far to near:
+    //
+    //   1. the authored WTHR cloud textures on a shell at
+    //      CLOUD_UPPER_PLANE_ALTITUDE (9 km), above the volumetric deck;
+    //   2. the volumetric deck (`include/clouds.glsl`, 1.5-5 km) in front.
+    //
+    // Each is premultiplied (radiance, opacity), faded toward `clear_sky` by
+    // the air between the viewer and the layer, and composited by its own
+    // transmittance, so the sun disc, stars and the upper plane are occluded
+    // physically rather than by fixed visibility factors.
+    vec4 upper_plane = sky_upper_cloud_plane(dome, dir, clear_sky);
+    sky = sky * (1.0 - upper_plane.a) + upper_plane.rgb;
+
+    // The march returns premultiplied radiance, hence `sky * (1 - a) + rgb`.
+    float deck_distance;
+    vec4 volumetric_cloud = cloud_march(
+        dome, dir, cloud_base_noise, cloud_detail_noise, cloud_jitter, deck_distance);
+    if (volumetric_cloud.a > 0.0) {
+        volumetric_cloud = sky_aerial_perspective(
+            volumetric_cloud, clear_sky, dir.y, deck_distance);
+    }
+    sky = sky * (1.0 - volumetric_cloud.a) + volumetric_cloud.rgb;
+
+    return sky;
 }
 
 #endif // SKY_GLSL

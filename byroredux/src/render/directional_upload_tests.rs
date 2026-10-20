@@ -7,7 +7,7 @@ use super::*;
 #[test]
 fn exterior_noon_preserves_pre_fix_brightness() {
     let color =
-        compute_directional_upload(&[0.7, 0.65, 0.55], false, SUN_INTENSITY_PEAK, None, 0.0);
+        compute_directional_upload(&[0.7, 0.65, 0.55], false, SUN_INTENSITY_PEAK, None);
     assert!((color[0] - 0.7).abs() < 1e-6);
     assert!((color[1] - 0.65).abs() < 1e-6);
     assert!((color[2] - 0.55).abs() < 1e-6);
@@ -25,7 +25,6 @@ fn exterior_midnight_zeroes_directional_contribution() {
         false,
         0.0,
         None,
-        0.0,
     );
     assert_eq!(
         color,
@@ -46,33 +45,31 @@ fn exterior_sunrise_half_intensity_half_contribution() {
         false,
         SUN_INTENSITY_PEAK / 2.0,
         None,
-        0.0,
     );
     assert!((color[0] - 0.30).abs() < 1e-6);
     assert!((color[1] - 0.275).abs() < 1e-6);
     assert!((color[2] - 0.20).abs() < 1e-6);
 }
 
-/// The weather cloud shell and exterior directional key consume the same
-/// canonical coverage value. A full deck does not turn the world into night,
-/// but it must not leave clear-noon direct light on surfaces either.
+/// SKYAL — the exterior upload is the sun ABOVE the clouds. Weather coverage
+/// is not an input (it was a weather-wide `exp(-2.5 * coverage)` that cut 63%
+/// of the sun under a pleasant 0.40 sky); the renderer's cloud-shadow map
+/// takes out what the clouds block, per receiver, on every direct-sun path.
 #[test]
-fn exterior_cloud_coverage_attenuates_the_direct_key() {
-    let clear = compute_directional_upload(&[1.0; 3], false, SUN_INTENSITY_PEAK, None, 0.0);
-    let overcast = compute_directional_upload(&[1.0; 3], false, SUN_INTENSITY_PEAK, None, 1.0);
-    let expected = (-2.5_f32).exp();
-    assert_eq!(clear, [1.0; 3]);
-    for channel in overcast {
-        assert!(
-            (channel - expected).abs() < 1e-6,
-            "full weather coverage must attenuate, not remove, the sun key"
-        );
-    }
+fn exterior_upload_is_the_sun_above_the_clouds() {
+    let noon = compute_directional_upload(&[1.0; 3], false, SUN_INTENSITY_PEAK, None);
+    assert_eq!(noon, [1.0; 3]);
 
-    // Interior XCLL is authored cell lighting, not a weather sun.
-    let interior_clear = compute_directional_upload(&[1.0; 3], true, 0.0, Some(0.75), 0.0);
-    let interior_overcast = compute_directional_upload(&[1.0; 3], true, 0.0, Some(0.75), 1.0);
-    assert_eq!(interior_clear, interior_overcast);
+    let lighting = include_str!("../../../crates/renderer/shaders/include/lighting.glsl");
+    let directional_arm = lighting
+        .split_once("// Directional light. Its upload is the sun above the clouds")
+        .expect("shadowableLightRadiance's directional arm moved")
+        .1;
+    assert!(
+        directional_arm[..400].contains("atten = exteriorCloudSunTransmittance(fragWorldPos, L);"),
+        "the surface sun must be dimmed by the cloud-shadow map, now that the \
+         upload no longer carries any cloud term"
+    );
 }
 
 /// Out-of-range `sun_intensity` (negative or > peak) clamps to
@@ -83,9 +80,9 @@ fn exterior_cloud_coverage_attenuates_the_direct_key() {
 /// clamps to 1 → daytime equivalent.
 #[test]
 fn exterior_out_of_range_intensity_is_clamped() {
-    let negative = compute_directional_upload(&[1.0; 3], false, -10.0, None, 0.0);
+    let negative = compute_directional_upload(&[1.0; 3], false, -10.0, None);
     assert_eq!(negative, [0.0; 3], "negative intensity must clamp to zero");
-    let over_cap = compute_directional_upload(&[1.0; 3], false, 100.0, None, 0.0);
+    let over_cap = compute_directional_upload(&[1.0; 3], false, 100.0, None);
     assert_eq!(
         over_cap, [1.0; 3],
         "over-cap intensity must clamp to peak (1.0× ramp)"
@@ -99,8 +96,8 @@ fn exterior_out_of_range_intensity_is_clamped() {
 #[test]
 fn interior_calibration_is_independent_of_exterior_sun() {
     let noon_color =
-        compute_directional_upload(&[0.5, 0.5, 0.5], true, SUN_INTENSITY_PEAK, None, 1.0);
-    let midnight_color = compute_directional_upload(&[0.5, 0.5, 0.5], true, 0.0, None, 1.0);
+        compute_directional_upload(&[0.5, 0.5, 0.5], true, SUN_INTENSITY_PEAK, None);
+    let midnight_color = compute_directional_upload(&[0.5, 0.5, 0.5], true, 0.0, None);
     assert_eq!(
         noon_color, midnight_color,
         "interior XCLL source must NOT vary with sun_intensity"
@@ -111,9 +108,9 @@ fn interior_calibration_is_independent_of_exterior_sun() {
 
 #[test]
 fn interior_authored_directional_fade_replaces_legacy_scale() {
-    let full = compute_directional_upload(&[0.5; 3], true, 0.0, Some(1.0), 1.0);
-    let quarter = compute_directional_upload(&[0.5; 3], true, 0.0, Some(0.25), 1.0);
-    let disabled = compute_directional_upload(&[0.5; 3], true, 0.0, Some(0.0), 1.0);
+    let full = compute_directional_upload(&[0.5; 3], true, 0.0, Some(1.0));
+    let quarter = compute_directional_upload(&[0.5; 3], true, 0.0, Some(0.25));
+    let disabled = compute_directional_upload(&[0.5; 3], true, 0.0, Some(0.0));
 
     assert_eq!(full, [0.5; 3]);
     assert_eq!(quarter, [0.125; 3]);
