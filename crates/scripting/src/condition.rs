@@ -100,6 +100,7 @@ mod eval;
 mod requirement;
 
 pub use catalog::ConditionFunction;
+pub(crate) use catalog::authored_actor_value_is_enum_code;
 pub use context::{ConditionContext, EventDataSlots};
 pub use eval::{
     actor_value_view, entity_global_form_id, evaluate, evaluate_condition, evaluate_function,

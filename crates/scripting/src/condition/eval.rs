@@ -16,7 +16,7 @@ mod global;
 mod reference;
 
 use super::catalog::{
-    authored_actor_value_is_enum_code, index_is_foreign_in, ConditionFunction,
+    index_is_foreign_in, ConditionFunction,
 };
 use super::context::ConditionContext;
 
@@ -81,8 +81,7 @@ pub fn uses_obscript_quest_variables(world: &World) -> bool {
 /// Whether the evaluator can really evaluate `condition` in this world: its
 /// function is catalogued, an index that is a different function in another
 /// game (79, and the [`index_is_foreign_in`] set) is catalogued for the loaded
-/// one, and an authored `GetActorValue` is not an enum code the evaluator would
-/// misread as a FormID (#5989). The fail-closed gates (dialogue
+/// one, and an authored `GetActorValue` index translates to a loaded AVIF (#5989). The fail-closed gates (dialogue
 /// quest gates, Story Manager nodes, perk entries, intrusive packages) decline a
 /// condition for which this is `false`.
 pub fn is_modeled(world: &World, condition: &Condition) -> bool {
@@ -92,8 +91,11 @@ pub fn is_modeled(world: &World, condition: &Condition) -> bool {
     match ConditionFunction::from_index(condition.function_index) {
         ConditionFunction::Unknown(_) => false,
         ConditionFunction::GetQuestVariable => uses_obscript_quest_variables(world),
+        // An authored enum index is readable once it translates to a loaded
+        // AVIF (#5989); one that cannot (Oblivion has no AVIFs, an index the
+        // record set lacks) is declined by the fail-closed gates.
         ConditionFunction::GetActorValue => {
-            !loaded_game(world).is_some_and(authored_actor_value_is_enum_code)
+            crate::actor_value_names::condition_actor_value_form(world, condition.param_1).is_some()
         }
         _ => true,
     }
@@ -526,8 +528,13 @@ pub fn evaluate_function(
         );
     }
     match function {
+        // `param_1` is an AVIF FormID in FO4+ and for engine-built conditions,
+        // an actor-value enum index in authored Oblivion / FO3 / FNV / Skyrim
+        // data; an index that names no loaded AVIF reads the absent-AV default
+        // (#5989).
         ConditionFunction::GetActorValue => {
-            actor_value_view(world, entity, condition.param_1, ActorValueView::Current)
+            crate::actor_value_names::condition_actor_value_form(world, condition.param_1)
+                .map_or(0.0, |avif| actor_value_view(world, entity, avif, ActorValueView::Current))
         }
         ConditionFunction::GetQuestRunning => global::get_quest_running(condition, world),
         ConditionFunction::GetGlobalValue => global::get_global_value(condition, world),

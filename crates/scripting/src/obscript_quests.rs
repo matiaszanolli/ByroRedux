@@ -88,7 +88,7 @@ const CMD_GET_QUEST_COMPLETED: u16 = 0x1222;
 /// not proof that the same number is a *getter* command in a legacy game.
 const SCRIPT_GETTERS: &[ConditionFunction] = &[
     ConditionFunction::GetDistance,       // 0x1001
-    ConditionFunction::GetActorValue,     // 0x100e (declined until #5989 maps the enum code)
+    ConditionFunction::GetActorValue,     // 0x100e (declined: the ObScript `GetAV` code goes through `obscript_actor_values`)
     ConditionFunction::GetDead,           // 0x102e
     ConditionFunction::GetInCell,         // 0x1043
     ConditionFunction::GetInFaction,      // 0x1047

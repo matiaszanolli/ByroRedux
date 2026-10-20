@@ -2490,7 +2490,12 @@ every compiled call's argument with the word in its `SCTX` source, and all of FN
 `AVSmallGuns`, `Survival` 44 is `AVThrowing`, `Turbo` 51 is `AVDetectLifeRange`; `SpeedMult`, `ElectricResist`,
 `FrostResist`, `EmpResist` and `Variable02`..`Variable10` have no AVIF in the master and decline). Oblivion
 has no `AVIF` records, so its actor-value commands stay declined. This is what #5989 asked for on the ObScript
-side; the CTDA `GetActorValue` (fn 14) still waits for a translation at its own boundary.
+side. The CTDA `GetActorValue` (fn 14) authors the same enum on Oblivion / FO3 / FNV / Skyrim
+(only FO4+ authors an AVIF FormID); `condition_actor_value_form` translates it at evaluation — the FO3/FNV
+table above, Skyrim's through the UESP *Actor Value Indices* table — and a `param_1` that is itself a loaded
+AVIF (an engine-built condition) passes through. Every vanilla INFO `GetActorValue` index resolves on
+Skyrim.esm (318 uses) and FalloutNV.esm (1 264; the 5 `Variable10` uses have no AVIF); Oblivion has no
+AVIF records and stays declined.
 
 **Getters.** The host answers from the engine's own reads: the effect model's guards and values where it has
 one (`GetItemCount`, `IsInCombat`, `GetIsReference`, `GetPlayerTeammate`, `GetAV`), the components the runtime

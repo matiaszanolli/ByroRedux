@@ -28,8 +28,10 @@ pub enum ConditionFunction {
     /// FO3 / FNV / Skyrim function index **14**. Only the engine-built
     /// conditions and FO4+ authoring carry an AVIF FormID: an *authored*
     /// condition on Oblivion / FO3 / FNV / Skyrim stores an actor-value enum
-    /// code, so [`is_modeled`](super::is_modeled) reports it unmodeled there
-    /// (#5989) until the code is translated at the parser boundary.
+    /// code; [`condition_actor_value_form`](crate::actor_value_names::condition_actor_value_form)
+    /// translates it to the loaded AVIF at evaluation (#5989), and
+    /// [`is_modeled`](super::is_modeled) reports it unmodeled where it cannot
+    /// (Oblivion has no AVIF records).
     GetActorValue,
     /// `GetQuestRunning(quest_form_id) → f32`. 1.0 while the quest is
     /// running or started in `QuestStageState`. FO3/FNV/Skyrim index
@@ -385,8 +387,8 @@ pub fn index_is_foreign_in(index: u32, game: GameKind) -> bool {
 /// Whether an authored `GetActorValue` (14) stores its `param_1` as an
 /// actor-value *enum code* in `game` (#5989). Oblivion, FO3/FNV and Skyrim do
 /// (xEdit `ptActorValue` = `wbActorValue` enum); only FO4 onward stores an
-/// AVIF FormID, which is what the evaluator and `ActorValues` key on. Until the
-/// code is translated at the parser boundary, such a condition cannot be read.
+/// AVIF FormID, which is what the evaluator and `ActorValues` key on. Such a
+/// condition is read through `condition_actor_value_form`, which translates it.
 pub fn authored_actor_value_is_enum_code(game: GameKind) -> bool {
     matches!(game, GameKind::Oblivion | GameKind::Fallout3NV | GameKind::Skyrim)
 }

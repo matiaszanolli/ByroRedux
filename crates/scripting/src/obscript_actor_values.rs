@@ -117,8 +117,14 @@ pub fn actor_value_form(world: &World, code: f32) -> Option<u32> {
     if !crate::ScriptGame::is_fallout3_nv(world) || code < 0.0 || code.fract() != 0.0 {
         return None;
     }
-    let name = FALLOUT_CODES.get(code as usize)?;
+    let name = fallout_actor_value_name(code as u32)?;
     world.try_resource::<ActorValueNames>()?.resolve(name)
+}
+
+/// The editor ID (minus `AV`) Fallout 3 / New Vegas's actor-value `code` names —
+/// the same enum an authored `GetActorValue` CTDA stores (#5989).
+pub(crate) fn fallout_actor_value_name(code: u32) -> Option<&'static str> {
+    FALLOUT_CODES.get(code as usize).copied()
 }
 
 /// Clear Health and the limb-condition values' damage on `actor` (`ResetHealth`, and the health a

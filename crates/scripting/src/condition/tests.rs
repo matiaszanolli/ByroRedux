@@ -187,6 +187,67 @@ fn authored_get_actor_value_is_unmodeled_where_it_stores_an_enum_code() {
     }
 }
 
+/// #5989 — an authored `GetActorValue` index is translated to the loaded AVIF
+/// instead of being read as a FormID: Skyrim through the UESP index table
+/// (`Speechcraft` 17 = AVIF `0x457`), Fallout 3 / New Vegas through the verified
+/// `GetAV` enum (`Speech` 43). A `param_1` that is itself a loaded AVIF is an
+/// engine-built FormID and passes through; Oblivion (no AVIF records) and an
+/// index the record set lacks stay unreadable.
+#[test]
+fn authored_get_actor_value_index_translates_to_the_loaded_avif() {
+    use byroredux_core::ecs::components::ActorValues;
+    use byroredux_plugin::esm::reader::GameKind;
+    use byroredux_plugin::esm::records::{AvifRecord, EsmIndex};
+
+    let install = |game: GameKind, avifs: &[(u32, &str)]| {
+        let mut index = EsmIndex::default();
+        index.game = game;
+        for &(form_id, editor_id) in avifs {
+            index.actor_values.insert(
+                form_id,
+                AvifRecord { form_id, editor_id: editor_id.into(), ..Default::default() },
+            );
+        }
+        let mut world = World::new();
+        crate::register(&mut world);
+        crate::install_actor_value_names(&mut world, &index);
+        world
+    };
+    let check = |world: &mut World, pairs: &[(u32, f32)], authored: u32, op, bound: f32| {
+        let actor = world.spawn();
+        world.insert(actor, ActorValues::from_pairs(pairs.iter().copied()));
+        let condition = cond(14, op, bound, false).with_param_1(authored);
+        (is_modeled(world, &condition), evaluate_condition(&condition, world, &ctx(actor)))
+    };
+
+    // Skyrim: index 17 is Speechcraft = AVIF 0x457; engine FormID passes through.
+    let mut skyrim = install(GameKind::Skyrim, &[(0x457, "AVSpeechcraft"), (0x3E8, "AVHealth")]);
+    assert_eq!(check(&mut skyrim, &[(0x457, 30.0)], 17, ComparisonOp::Ge, 25.0), (true, true));
+    assert_eq!(check(&mut skyrim, &[(0x457, 20.0)], 17, ComparisonOp::Ge, 25.0), (true, false));
+    assert_eq!(
+        check(&mut skyrim, &[(0x3E8, 90.0)], 0x3E8, ComparisonOp::Ge, 50.0),
+        (true, true),
+        "a loaded AVIF FormID is read as the FormID it is"
+    );
+    // The table lists AVIF 0x45A (Destruction, 20) but this load order has none.
+    assert!(!check(&mut skyrim, &[], 20, ComparisonOp::Ge, 0.0).0, "no such AVIF loaded");
+    assert!(!check(&mut skyrim, &[], 9999, ComparisonOp::Ge, 0.0).0, "outside the table");
+
+    // Fallout 3 / New Vegas: index 43 is Speech.
+    let mut fnv = install(GameKind::Fallout3NV, &[(0x3F5, "AVSpeech")]);
+    assert_eq!(check(&mut fnv, &[(0x3F5, 30.0)], 43, ComparisonOp::Ge, 25.0), (true, true));
+    assert_eq!(check(&mut fnv, &[(0x3F5, 10.0)], 43, ComparisonOp::Ge, 25.0), (true, false));
+    assert!(!check(&mut fnv, &[], 21, ComparisonOp::Ge, 0.0).0, "SpeedMult has no AVIF in the master");
+
+    // Oblivion has no AVIF records: unreadable, so the fail-closed gates decline.
+    let mut oblivion = install(GameKind::Oblivion, &[]);
+    assert!(!check(&mut oblivion, &[], 43, ComparisonOp::Ge, 0.0).0);
+
+    // Fallout 4: always a FormID.
+    let mut fo4 = install(GameKind::Fallout4, &[(0x2BC, "Strength")]);
+    assert_eq!(check(&mut fo4, &[(0x2BC, 7.0)], 0x2BC, ComparisonOp::Ge, 5.0), (true, true));
+}
+
 #[test]
 fn get_quest_variable_uses_obscript_locals_only_for_legacy_game_paths() {
     use byroredux_plugin::esm::reader::GameKind;
@@ -1732,4 +1793,47 @@ fn get_in_faction_reads_membership() {
         !evaluate_condition(&condition, &world, &ctx(bare)),
         "no FactionRanks — not in the faction"
     );
+}
+
+/// #5989 — real-data census: every authored `GetActorValue` index the vanilla
+/// INFO conditions carry translates to a loaded AVIF (the masters' own
+/// `AVIF` set), except the indices with no record in the master.
+///
+/// Run with:
+///   cargo test -p byroredux-scripting --lib authored_actor_value_indices_resolve -- --ignored --nocapture
+#[test]
+#[ignore = "needs Skyrim.esm and FalloutNV.esm on disk"]
+fn authored_actor_value_indices_resolve_in_the_vanilla_masters() {
+    use byroredux_plugin::esm::test_paths::{fnv_esm, skyrim_se_esm};
+    use std::collections::BTreeMap;
+
+    for (label, path) in [("Skyrim", skyrim_se_esm()), ("FalloutNV", fnv_esm())] {
+        if !path.is_file() {
+            if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+                panic!("BYROREDUX_REQUIRE_GAME_DATA is set but {path:?} is missing");
+            }
+            continue;
+        }
+        let index = byroredux_plugin::esm::parse_esm(&std::fs::read(&path).unwrap()).unwrap();
+        let mut world = World::new();
+        crate::register(&mut world);
+        crate::install_actor_value_names(&mut world, &index);
+        let mut seen: BTreeMap<u32, (usize, bool)> = BTreeMap::new();
+        let conditions = index
+            .dialogues
+            .values()
+            .flat_map(|dial| dial.infos.iter())
+            .flat_map(|info| info.conditions.iter());
+        for condition in conditions.filter(|c| c.function_index == 14) {
+            let entry = seen.entry(condition.param_1).or_insert((0, false));
+            entry.0 += 1;
+            entry.1 = crate::actor_value_names::condition_actor_value_form(&world, condition.param_1).is_some();
+        }
+        let total: usize = seen.values().map(|(n, _)| n).sum();
+        let unresolved: Vec<_> = seen.iter().filter(|(_, (_, ok))| !ok).collect();
+        let lost: usize = unresolved.iter().map(|(_, (n, _))| n).sum();
+        println!("{label}: {total} INFO GetActorValue conditions; unresolved indices (code, uses): {:?}",
+            unresolved.iter().map(|(code, (n, _))| (**code, *n)).collect::<Vec<_>>());
+        assert!(lost * 20 < total, "{label}: more than 5% of authored GetActorValue conditions stay unreadable ({lost}/{total})");
+    }
 }
