@@ -5,6 +5,52 @@
 
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 
+/// The two [`WorldspaceRecord::flags`] bit layouts (#3506).
+///
+/// Split into two modules rather than one flat list precisely because the
+/// names do not line up: everything from "no LOD water" upward sits at a
+/// different bit in each family, so a single `NO_LOD_WATER` constant would
+/// be wrong for one of them no matter which value it took. Transcribed from
+/// OpenMW `components/esm4/loadwrld.hpp:46-56`; bits neither column names
+/// are simply absent here rather than guessed at.
+///
+/// Nothing in the engine reads these yet — they exist so the first consumer
+/// picks a column deliberately instead of inheriting the docblock's old,
+/// wrong single list.
+pub mod worldspace_flags {
+    /// Oblivion / FO3 / FNV. `0x08` is unnamed for this family; `0x20`,
+    /// `0x40` and `0x80` are named by xEdit's FO3/FNV schemas only (#6046).
+    pub mod tes4 {
+        pub const SMALL_WORLD: u8 = 0x01;
+        pub const NO_FAST_TRAVEL: u8 = 0x02;
+        pub const OBLIVION_WORLDSPACE: u8 = 0x04;
+        pub const NO_LOD_WATER: u8 = 0x10;
+        /// FO3/FNV only.
+        pub const NO_LOD_NOISE: u8 = 0x20;
+        /// FO3/FNV only.
+        pub const NO_NPC_FALL_DAMAGE: u8 = 0x40;
+        /// FO3/FNV only.
+        pub const NEEDS_WATER_ADJUSTMENT: u8 = 0x80;
+    }
+
+    /// Skyrim+ / FO4+. `0x04` is unnamed in the reference for this family.
+    pub mod tes5 {
+        pub const SMALL_WORLD: u8 = 0x01;
+        pub const NO_FAST_TRAVEL: u8 = 0x02;
+        pub const NO_LOD_WATER: u8 = 0x08;
+        pub const NO_LANDSCAPE: u8 = 0x10;
+        pub const NO_SKY: u8 = 0x20;
+        pub const FIXED_DIMENSIONS: u8 = 0x40;
+        pub const NO_GRASS: u8 = 0x80;
+    }
+}
+
+/// WRLD `PNAM` bit `0x01` — "Use Land Data": the worldspace's landscape comes
+/// from its `WNAM` parent (the GECK/CS "Parent Worldspace" rule). Oblivion
+/// authors no `PNAM`; the parse stamps this bit on every Oblivion child (see
+/// `wrld.rs`).
+pub const PNAM_INHERIT_LAND: u16 = 0x01;
+
 /// Decoded fields from a WRLD (worldspace) record. Captures the
 /// exterior-render-critical bits that pre-#965 fell on the catch-all
 /// `_ => {}` arm of `parse_wrld_group`: parent worldspace, usable
@@ -44,9 +90,13 @@ use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 ///   | 0x04 | Oblivion worldspace | |
 ///   | 0x08 | | No LOD Water |
 ///   | 0x10 | No LOD Water | No Landscape |
-///   | 0x20 | | No Sky |
-///   | 0x40 | | Fixed Dimensions |
-///   | 0x80 | | No Grass |
+///   | 0x20 | No LOD Noise (FO3/FNV) | No Sky |
+///   | 0x40 | Don't Allow NPC Fall Damage (FO3/FNV) | Fixed Dimensions |
+///   | 0x80 | Needs Water Adjustment (FO3/FNV) | No Grass |
+///
+///   The three FO3/FNV-only TES4 names are not in OpenMW's table; they
+///   come from xEdit (`wbDefinitionsFO3.pas` / `wbDefinitionsFNV.pas` WRLD
+///   `DATA`), whose Oblivion schema names nothing above `0x10` (#6046).
 ///
 ///   #3506 — this docblock previously carried the TES5 *names* at
 ///   TES4-shaped *positions* (every entry from "no LOD water" up
@@ -91,46 +141,6 @@ use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 /// process lifetime (the sub-record runs to 177 KB on FalloutNV.esm),
 /// plus a parsed field that read as a live capability. Dropped by
 /// #2454 / EXAL-08; restore it alongside a real consumer, not ahead of
-/// The two [`WorldspaceRecord::flags`] bit layouts (#3506).
-///
-/// Split into two modules rather than one flat list precisely because the
-/// names do not line up: everything from "no LOD water" upward sits at a
-/// different bit in each family, so a single `NO_LOD_WATER` constant would
-/// be wrong for one of them no matter which value it took. Transcribed from
-/// OpenMW `components/esm4/loadwrld.hpp:46-56`; bits neither column names
-/// are simply absent here rather than guessed at.
-///
-/// Nothing in the engine reads these yet — they exist so the first consumer
-/// picks a column deliberately instead of inheriting the docblock's old,
-/// wrong single list.
-pub mod worldspace_flags {
-    /// Oblivion / FO3 / FNV. `0x08`, `0x20`, `0x40` and `0x80` are unnamed
-    /// in the reference for this family.
-    pub mod tes4 {
-        pub const SMALL_WORLD: u8 = 0x01;
-        pub const NO_FAST_TRAVEL: u8 = 0x02;
-        pub const OBLIVION_WORLDSPACE: u8 = 0x04;
-        pub const NO_LOD_WATER: u8 = 0x10;
-    }
-
-    /// Skyrim+ / FO4+. `0x04` is unnamed in the reference for this family.
-    pub mod tes5 {
-        pub const SMALL_WORLD: u8 = 0x01;
-        pub const NO_FAST_TRAVEL: u8 = 0x02;
-        pub const NO_LOD_WATER: u8 = 0x08;
-        pub const NO_LANDSCAPE: u8 = 0x10;
-        pub const NO_SKY: u8 = 0x20;
-        pub const FIXED_DIMENSIONS: u8 = 0x40;
-        pub const NO_GRASS: u8 = 0x80;
-    }
-}
-
-/// WRLD `PNAM` bit `0x01` — "Use Land Data": the worldspace's landscape comes
-/// from its `WNAM` parent (the GECK/CS "Parent Worldspace" rule). Oblivion
-/// authors no `PNAM`; the parse stamps this bit on every Oblivion child (see
-/// `wrld.rs`).
-pub const PNAM_INHERIT_LAND: u16 = 0x01;
-
 /// one. See exal.md §5.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorldspaceRecord {
