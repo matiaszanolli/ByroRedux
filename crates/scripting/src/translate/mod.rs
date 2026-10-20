@@ -126,6 +126,54 @@ pub fn translate_pex_detailed(
     )
 }
 
+/// One `.pex` parsed, preflighted and decompiled — everything about a script
+/// that does not depend on the reference carrying it (#5999). The recognizer
+/// and provider lowering depend on per-reference properties and run against
+/// this per reference; the archive extraction, parse, compatibility preflight
+/// and decompile do not, so a host caches this per script name instead of
+/// redoing them for every scripted reference.
+pub struct DecompiledPex {
+    /// The decompiled AST; `None` when the bytes did not parse or decompile
+    /// (or a stage panicked), which every later translation reads as a miss.
+    script: Option<byroredux_papyrus::ast::Script>,
+    /// The extender-era call preflight, for the load order's registry.
+    pub compatibility: Option<crate::compatibility::CompatibilityReport>,
+    pub fingerprint: u64,
+}
+
+/// Parse, preflight and decompile `.pex` bytes once. The whole sequence runs
+/// inside the panic net (#3948/#1816): every stage consumes untrusted-derived
+/// data on the cell loader's path, where an escaping panic aborts the load.
+pub fn decompile_pex(pex_bytes: &[u8]) -> DecompiledPex {
+    let fingerprint = pex_fingerprint(pex_bytes);
+    catching_panics("decompile_pex", || {
+        let pex = match byroredux_pex::parse(pex_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                log::debug!("translate_pex: .pex parse failed: {e}");
+                return DecompiledPex {
+                    script: None,
+                    compatibility: None,
+                    fingerprint,
+                };
+            }
+        };
+        let compatibility = crate::compatibility::analyze_pex_compatibility(&pex);
+        crate::compatibility::log_compatibility_report(&compatibility);
+        let script = decompile_catching_panics(|| byroredux_pex::decompile::decompile_script(&pex));
+        DecompiledPex {
+            script,
+            compatibility: Some(compatibility),
+            fingerprint,
+        }
+    })
+    .unwrap_or(DecompiledPex {
+        script: None,
+        compatibility: None,
+        fingerprint,
+    })
+}
+
 /// Parse and decompile PEX once, producing both existing canonical behavior
 /// recognition and manifest-backed provider handlers from the same AST.
 pub fn translate_pex_detailed_with_providers(
@@ -135,39 +183,50 @@ pub fn translate_pex_detailed_with_providers(
     owning_quest: Option<u32>,
     providers: &crate::PapyrusProviderCatalog,
 ) -> PexTranslation {
-    let fingerprint = pex_fingerprint(pex_bytes);
-    // #3948 — the whole parse -> preflight -> decompile -> provider-lower ->
-    // recognize sequence runs inside the net, not just the decompile. Every
-    // stage after the parse consumes untrusted-derived data, and this runs
-    // on the cell loader's path where an escaping panic aborts the load.
-    catching_panics("translate_pex", || {
-        let pex = match byroredux_pex::parse(pex_bytes) {
-            Ok(p) => p,
-            Err(e) => {
-                log::debug!("translate_pex: .pex parse failed: {e}");
-                return PexTranslation {
-                    recognized: None,
-                    provider_program: None,
-                    provider_error: None,
-                    compatibility: None,
-                    fingerprint,
-                };
-            }
+    let decompiled = decompile_pex(pex_bytes);
+    let mut translation = translate_decompiled_with_providers(
+        &decompiled,
+        game,
+        script_instance,
+        owning_quest,
+        providers,
+    );
+    translation.compatibility = decompiled.compatibility;
+    translation
+}
+
+/// The per-reference half of [`translate_pex_detailed_with_providers`]: provider
+/// lowering and recognition against an already [`decompile_pex`]ed script. The
+/// returned translation's `compatibility` is `None` — the report belongs to the
+/// decompile and is recorded once per script, not once per reference.
+pub fn translate_decompiled_with_providers(
+    decompiled: &DecompiledPex,
+    game: GameKind,
+    script_instance: Option<&ScriptInstanceData>,
+    owning_quest: Option<u32>,
+    providers: &crate::PapyrusProviderCatalog,
+) -> PexTranslation {
+    let fingerprint = decompiled.fingerprint;
+    // #3948 — lowering and recognition consume the decompiled (untrusted-
+    // derived) AST, so they sit inside the net too.
+    catching_panics("translate_decompiled", || {
+        let Some(script) = decompiled.script.as_ref() else {
+            return PexTranslation {
+                recognized: None,
+                provider_program: None,
+                provider_error: None,
+                compatibility: None,
+                fingerprint,
+            };
         };
-        let compatibility = crate::compatibility::analyze_pex_compatibility(&pex);
-        crate::compatibility::log_compatibility_report(&compatibility);
         let mut provider_program = None;
         let mut provider_error = None;
-        let recognized =
-            decompile_catching_panics(|| byroredux_pex::decompile::decompile_script(&pex))
-                .and_then(|script| {
-                    match crate::lower_provider_program(&script, providers) {
-                        Ok(program) => provider_program = program,
-                        Err(error) => provider_error = Some(error),
-                    }
-                    let source = ScriptSource::PapyrusSource(&script);
-                    translate_script(&source, game, script_instance, owning_quest)
-                });
+        match crate::lower_provider_program(script, providers) {
+            Ok(program) => provider_program = program,
+            Err(error) => provider_error = Some(error),
+        }
+        let source = ScriptSource::PapyrusSource(script);
+        let recognized = translate_script(&source, game, script_instance, owning_quest);
         // #6021 — a provider program runs only the script's provider handlers.
         // If the script also has handlers it left unlowered, only a recognizer
         // that claims the whole script can run them; with none, attaching the
@@ -190,7 +249,7 @@ pub fn translate_pex_detailed_with_providers(
             recognized,
             provider_program,
             provider_error,
-            compatibility: Some(compatibility),
+            compatibility: None,
             fingerprint,
         }
     })
@@ -351,9 +410,9 @@ mod tests {
     fn every_pex_entry_point_wraps_its_whole_sequence_in_the_panic_net() {
         let entries: [(&str, &str, &str); 3] = [
             (
-                "translate_pex_detailed_with_providers",
+                "decompile_pex",
                 include_str!("mod.rs"),
-                "pub fn translate_pex_detailed_with_providers",
+                "pub fn decompile_pex",
             ),
             (
                 "populate_quest_fragments_from_pex_detailed_internal",
@@ -392,6 +451,29 @@ mod tests {
                  (#3948)"
             );
         }
+    }
+
+    /// #5999 — the per-reference half (provider lowering + recognition) runs on
+    /// the decompiled AST of untrusted bytes, so it sits in the net as well; and
+    /// the composed entry point is only a decompile followed by that half.
+    #[test]
+    fn the_cached_translation_half_is_netted_and_the_wrapper_composes_both() {
+        let source = include_str!("mod.rs");
+        let needle = format!("{}{}", "catching_", "panics(");
+        let start = source
+            .find("pub fn translate_decompiled_with_providers")
+            .expect("per-reference half present");
+        let body = &source[start..];
+        let body = &body[..body.find("\n}\n").expect("end of body")];
+        assert!(body.contains(&needle), "translate_decompiled_with_providers: the panic net is gone");
+
+        let start = source
+            .find("pub fn translate_pex_detailed_with_providers")
+            .expect("composed entry present");
+        let body = &source[start..];
+        let body = &body[..body.find("\n}\n").expect("end of body")];
+        assert!(body.contains("decompile_pex(pex_bytes)"));
+        assert!(body.contains("translate_decompiled_with_providers("));
     }
 
     /// #6000 — the M47.2 checkers consume the decompiler's AST of mod-supplied

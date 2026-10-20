@@ -11,6 +11,66 @@ pub(crate) struct ResolvedPex {
     pub(crate) principal: PrincipalId,
 }
 
+/// A script's `.pex` after the reference-independent work: extracted, parsed,
+/// preflighted and decompiled once (#5999), with the archive's principal.
+pub(crate) struct CachedPex {
+    pub(crate) decompiled: byroredux_scripting::DecompiledPex,
+    pub(crate) principal: PrincipalId,
+}
+
+/// Per script name (lowercased), the [`CachedPex`] — or `None` for a script no
+/// archive holds. Cell load used to extract, parse, preflight and decompile a
+/// `.pex` for **every scripted reference** carrying it; only the VM verdict was
+/// cached. Provider lowering and recognition depend on per-reference
+/// properties and still run per reference, against this shared AST.
+#[derive(Default)]
+pub(crate) struct DecompiledPexCache(
+    std::collections::HashMap<String, Option<std::sync::Arc<CachedPex>>>,
+);
+
+impl byroredux_core::ecs::resource::Resource for DecompiledPexCache {}
+
+/// The cached decompile of `script_name`, doing the extraction + decompile on
+/// first sight. The first decompile also records the compatibility preflight in
+/// the load order's registry (once per script — the registry dedups by
+/// fingerprint anyway).
+pub(crate) fn decompiled_pex(
+    world: &mut byroredux_core::ecs::world::World,
+    script_name: &str,
+) -> Option<std::sync::Arc<CachedPex>> {
+    let key = script_name.to_ascii_lowercase();
+    if let Some(hit) = world
+        .try_resource::<DecompiledPexCache>()
+        .and_then(|cache| cache.0.get(&key).cloned())
+    {
+        return hit;
+    }
+    // Scope the provider borrow: extract the owned `.pex` bytes, then drop
+    // the resource read before the `&mut World` work below.
+    let resolved = {
+        let provider = world.try_resource::<ScriptProvider>()?;
+        provider.resolve_pex(script_name)
+    };
+    let cached = resolved.map(|resolved| {
+        let mut decompiled = byroredux_scripting::decompile_pex(&resolved.bytes);
+        byroredux_scripting::record_compatibility_report(
+            world,
+            decompiled.fingerprint,
+            decompiled.compatibility.take(),
+        );
+        std::sync::Arc::new(CachedPex {
+            decompiled,
+            principal: resolved.principal,
+        })
+    });
+    world.init_resource::<DecompiledPexCache>();
+    world
+        .resource_mut::<DecompiledPexCache>()
+        .0
+        .insert(key, cached.clone());
+    cached
+}
+
 /// Searches game archives for compiled Papyrus scripts (`.pex`) by
 /// script name. The M47.2 attach path resolves an attached script
 /// name — read from a base record's `VMAD` — to its bytecode here, then

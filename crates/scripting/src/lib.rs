@@ -309,7 +309,8 @@ pub use scene::{
 };
 pub use timer::{timer_tick_system, ScriptTimer};
 pub use translate::{
-    translate_pex, translate_pex_detailed, translate_pex_detailed_with_providers, translate_script,
+    decompile_pex, translate_decompiled_with_providers, translate_pex, translate_pex_detailed,
+    translate_pex_detailed_with_providers, translate_script, DecompiledPex,
     CanonicalEvent, PexTranslation, RecognizeCtx, Recognized, ScriptSource,
 };
 pub use translate::effects::Effect;

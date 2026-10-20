@@ -863,6 +863,44 @@ fn a_script_with_unlowered_non_provider_handlers_is_declined_whole() {
     assert_eq!(program.unlowered_handlers(), ["OnUpdate".to_owned()]);
 }
 
+/// #5999 — the reference-independent half (parse, preflight, decompile) runs once
+/// and its result serves every reference carrying the script: translating the
+/// same `DecompiledPex` repeatedly, against different catalogs, equals the
+/// composed one-shot entry point each time, and the preflight report is recorded
+/// from the decompile, not carried by every per-reference translation.
+#[test]
+fn one_decompile_serves_every_reference_of_a_script() {
+    let game = byroredux_plugin::esm::reader::GameKind::Skyrim;
+    let bytes = provider_call_pex_bytes();
+    let decompiled = crate::decompile_pex(&bytes);
+    assert!(decompiled.compatibility.is_some(), "the preflight report belongs to the decompile");
+
+    let one_shot = crate::translate_pex_detailed_with_providers(&bytes, game, None, None, &catalog());
+    for _ in 0..3 {
+        let reused =
+            crate::translate_decompiled_with_providers(&decompiled, game, None, None, &catalog());
+        assert_eq!(reused.fingerprint, one_shot.fingerprint);
+        assert_eq!(reused.provider_error, one_shot.provider_error);
+        assert_eq!(reused.provider_program, one_shot.provider_program);
+        assert!(reused.compatibility.is_none(), "recorded once per script, not per reference");
+    }
+    // The same AST lowered against an empty catalog sees no provider: lowering is
+    // per reference, only the decompile is shared.
+    let bare = crate::translate_decompiled_with_providers(
+        &decompiled,
+        game,
+        None,
+        None,
+        &PapyrusProviderCatalog::default(),
+    );
+    assert!(bare.provider_program.is_none());
+
+    // Bytes that do not parse decompile to a miss, not a panic.
+    let junk = crate::decompile_pex(b"not a pex");
+    let miss = crate::translate_decompiled_with_providers(&junk, game, None, None, &catalog());
+    assert!(miss.recognized.is_none() && miss.provider_program.is_none());
+}
+
 #[test]
 fn byte_level_pex_instance_send_mod_event_lowers_with_defaults() {
     let translation = crate::translate_pex_detailed_with_providers(

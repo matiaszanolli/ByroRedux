@@ -816,13 +816,10 @@ pub(super) fn attach_vmad_scripts(
     let mut any = false;
     let scripts = dedup_vmad_scripts(refr_script_instance, base_script_instance);
     for (script_instance, script) in scripts {
-        // Scope the provider borrow: extract the owned `.pex` bytes,
-        // then drop the resource read before the `&mut World` spawn.
-        let resolved = {
-            let provider = world.resource::<crate::asset_provider::ScriptProvider>();
-            provider.resolve_pex(&script.name)
-        };
-        let Some(resolved) = resolved else {
+        // #5999 — extraction, parse, preflight and decompile are per SCRIPT,
+        // not per reference: the cache holds the decompiled AST and only the
+        // per-reference lowering / recognition below repeats.
+        let Some(resolved) = crate::asset_provider::decompiled_pex(world, &script.name) else {
             log::trace!(
                 "M47.2: .pex '{}' not in script archive (base {base_form_id:08X})",
                 script.name,
@@ -841,17 +838,12 @@ pub(super) fn attach_vmad_scripts(
             .try_resource::<byroredux_scripting::PapyrusProviderRuntime>()
             .map(|runtime| runtime.servable_catalog())
             .unwrap_or_default();
-        let translation = byroredux_scripting::translate_pex_detailed_with_providers(
-            &resolved.bytes,
+        let translation = byroredux_scripting::translate_decompiled_with_providers(
+            &resolved.decompiled,
             game,
             Some(&script_instance),
             None,
             &providers,
-        );
-        byroredux_scripting::record_compatibility_report(
-            world,
-            translation.fingerprint,
-            translation.compatibility,
         );
         if let Some(error) = translation.provider_error {
             log::warn!(
