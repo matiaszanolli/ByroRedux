@@ -544,6 +544,37 @@ fn get_vm_script_variable_reads_cis2_named_state_from_reference() {
     assert!(evaluate(&vec![condition], &world, &ctx(subject)));
 }
 
+/// #5985 — a reference script the Papyrus VM runs keeps its variables under the
+/// reference's FormID in the quest-variable store, not on the entity; CTDA 630
+/// reads them there, whether or not the reference is loaded, and the entity
+/// component (the lowered write path) still wins when it holds the variable.
+#[test]
+fn get_vm_script_variable_sees_a_vm_run_reference_scripts_variables() {
+    use crate::quest_variables::QuestScriptVariables;
+    use crate::QuestFormId;
+    use byroredux_plugin::esm::records::condition::ConditionStringId;
+
+    const REFERENCE: u32 = 0x0009_0A05;
+    let mut world = World::new();
+    crate::register(&mut world);
+    let subject = world.spawn();
+    let gate = |variable: &str, comparand: f32| {
+        let mut condition = cond(630, ComparisonOp::Eq, comparand, false).with_param_1(REFERENCE);
+        condition.param_2_text = Some(ConditionStringId::from_text(variable));
+        vec![condition]
+    };
+    assert!(evaluate(&gate("::count_var", 0.0), &world, &ctx(subject)), "nothing written reads 0");
+
+    // The VM's write (`write_quest_variable` under the reference FormID) — the
+    // reference is not even loaded.
+    world.init_resource::<QuestScriptVariables>();
+    world
+        .resource_mut::<QuestScriptVariables>()
+        .set(QuestFormId(REFERENCE), QuestScriptVariables::property_key("count"), 3.0);
+    assert!(evaluate(&gate("::count_var", 3.0), &world, &ctx(subject)));
+    assert!(!evaluate(&gate("::count_var", 0.0), &world, &ctx(subject)));
+}
+
 /// M47.2 — `GetVMQuestVariable` (629) reads the named quest variable:
 /// the scripted write, else the VMAD-authored value, else 0. A condition
 /// without its CIS2 name reads 0.

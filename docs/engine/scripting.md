@@ -409,7 +409,9 @@ A variable of a script attached to a reference, written through a cast to
 its script type (`(Alias_Miraak.GetReference() as Script).fireMiraakKill =
 True`), lowers to `Effect::SetReferenceVariable`. That lands in the loaded
 reference's `ScriptVariables`, which `GetVMScriptVariable` reads, under the
-`::Name_var` spelling. The library must know the type, it must be no quest,
+`::Name_var` spelling; a reference script the Papyrus VM runs keeps its variables in the
+saved quest-variable store under the reference's FormID, and `GetVMScriptVariable` falls
+back to that (#5985). The library must know the type, it must be no quest,
 and it must declare the variable. An INFO / scene quest-variable write
 through the quest script's own properties is scoped to the quest.
 A local assigned a number lowers to `Effect::SetLocal`, kept for the run

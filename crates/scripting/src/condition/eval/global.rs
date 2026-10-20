@@ -126,15 +126,23 @@ pub(super) fn get_vm_script_variable(condition: &Condition, world: &World) -> f3
     // function parameter rather than the Run-On entity. CIS2 carries
     // the variable name; the numeric CTDA param_2 bytes are an
     // editor/runtime artifact and must not be interpreted as an id.
-    let Some(target) = resolve_entity_by_global_form_id(world, condition.param_1) else {
-        return 0.0;
-    };
     let Some(variable) = condition.param_2_text else {
         return 0.0;
     };
-    world
-        .get::<crate::vm_state::ScriptVariables>(target)
-        .and_then(|variables| variables.get(variable))
+    // The lowered `SetReferenceVariable` effect and the two native activator
+    // systems keep a reference script's variables on the entity...
+    let on_entity = resolve_entity_by_global_form_id(world, condition.param_1).and_then(|target| {
+        world
+            .get::<crate::vm_state::ScriptVariables>(target)
+            .and_then(|variables| variables.get(variable))
+    });
+    // ...but a reference script the Papyrus VM runs keeps them under the
+    // reference's FormID in the saved quest-variable store (#5985), so it
+    // outlives the cell and the entity, and a reference that is not loaded
+    // still has its variables. Same store and spelling `GetVMQuestVariable`
+    // reads.
+    on_entity
+        .or_else(|| crate::quest_variables::quest_variable(world, QuestFormId(condition.param_1), variable))
         .unwrap_or(0.0)
 }
 
