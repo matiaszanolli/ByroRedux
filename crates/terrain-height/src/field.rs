@@ -61,7 +61,9 @@ impl HeightField {
         let low = pick(NORMALIZE_CLIP_FRACTION);
         let high = pick(1.0 - NORMALIZE_CLIP_FRACTION);
         let span = high - low;
-        if !(span > f32::EPSILON * low.abs().max(high.abs()).max(1.0)) {
+        // `span` is NaN-free here (sorted finite samples), so `<=` is the
+        // whole "no relief" test.
+        if span <= f32::EPSILON * low.abs().max(high.abs()).max(1.0) {
             self.data.fill(0.5);
         } else {
             for v in &mut self.data {
