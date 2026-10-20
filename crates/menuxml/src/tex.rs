@@ -6,7 +6,11 @@
 //!   vanilla `textures\menus…` mixes DXT3/DXT5 with raw 32-bit BGRA,
 //!   24-bit BGR and 16-bpp A4R4G4B4/R5G6B5 files, a wider surface than
 //!   the `image` crate's DDS decoder accepts, so this module implements
-//!   the format directly);
+//!   the format directly). The same decoder serves engine textures on the
+//!   CPU (`tex.dump`, terrain height generation #6195), so it also reads
+//!   BC4/BC5 (`ATI1`/`ATI2`/`BC4U`/`BC5U`, Fallout 4's two-channel normal
+//!   maps) and the DX10 extended header for BC1–BC5 and 8-bit RGBA/BGRA/R.
+//!   BC6H/BC7 are not decoded;
 //! * font atlases — Bethesda's raw `.tex` (see [`Rgba8::parse_font_tex`]).
 //!
 //! Only the top mip is decoded — menu art authors single-level textures.
@@ -114,13 +118,17 @@ fn decode_dds_impl(bytes: &[u8]) -> Option<Rgba8> {
     let g_mask = h(92);
     let b_mask = h(96);
     let a_mask = h(100);
+    let payload = &bytes[128..];
 
     const DDPF_FOURCC: u32 = 0x4;
     let out = if pf_flags & DDPF_FOURCC != 0 {
         match fourcc {
-            b"DXT1" => decode_dxt1(bytes, width, height),
-            b"DXT3" => decode_dxt3(bytes, width, height),
-            b"DXT5" => decode_dxt5(bytes, width, height),
+            b"DXT1" => decode_dxt1(payload, width, height),
+            b"DXT3" => decode_dxt3(payload, width, height),
+            b"DXT5" => decode_dxt5(payload, width, height),
+            b"ATI1" | b"BC4U" => decode_bc4(payload, width, height),
+            b"ATI2" | b"BC5U" => decode_bc5(payload, width, height),
+            b"DX10" => decode_dx10(bytes, width, height),
             other => {
                 log::debug!("menuxml: DDS fourcc {:?} unsupported", other);
                 return None;
@@ -128,7 +136,7 @@ fn decode_dds_impl(bytes: &[u8]) -> Option<Rgba8> {
         }
     } else {
         decode_uncompressed(
-            bytes, width, height, bit_count, pf_flags, r_mask, g_mask, b_mask, a_mask,
+            payload, width, height, bit_count, pf_flags, r_mask, g_mask, b_mask, a_mask,
         )
     };
     if out.is_none() {
@@ -157,7 +165,7 @@ fn bc_output(bytes: &[u8], width: u32, height: u32, bytes_per_block: usize) -> O
         .ok()?
         .checked_mul(usize::try_from(height.div_ceil(4)).ok()?)?;
     let payload_len = block_count.checked_mul(bytes_per_block)?;
-    if bytes.get(128..)?.len() < payload_len {
+    if bytes.len() < payload_len {
         return None;
     }
     Some(Rgba8::new(width, height))
@@ -218,7 +226,7 @@ fn bc1_colors(
 fn decode_dxt1(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
     let mut out = bc_output(bytes, width, height, 8)?;
     for (bx, by) in blocks(width, height) {
-        let off = 128 + ((by as usize * width.div_ceil(4) as usize + bx as usize) * 8);
+        let off = (by as usize * width.div_ceil(4) as usize + bx as usize) * 8;
         let c0 = u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap());
         let c1 = u16::from_le_bytes(bytes[off + 2..off + 4].try_into().unwrap());
         let indices = u32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap());
@@ -230,7 +238,7 @@ fn decode_dxt1(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
 fn decode_dxt3(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
     let mut out = bc_output(bytes, width, height, 16)?;
     for (bx, by) in blocks(width, height) {
-        let off = 128 + ((by as usize * width.div_ceil(4) as usize + bx as usize) * 16);
+        let off = (by as usize * width.div_ceil(4) as usize + bx as usize) * 16;
         // 8 bytes of 4-bit explicit alpha, row-major within the block.
         let alpha: [u8; 8] = bytes[off..off + 8].try_into().unwrap();
         let c0 = u16::from_le_bytes(bytes[off + 8..off + 10].try_into().unwrap());
@@ -254,41 +262,126 @@ fn decode_dxt3(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
 fn decode_dxt5(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
     let mut out = bc_output(bytes, width, height, 16)?;
     for (bx, by) in blocks(width, height) {
-        let off = 128 + ((by as usize * width.div_ceil(4) as usize + bx as usize) * 16);
-        let a0 = bytes[off];
-        let a1 = bytes[off + 1];
-        // 16 3-bit selectors packed little-endian into 6 bytes.
-        let mut bits = 0u64;
-        for (i, &b) in bytes[off + 2..off + 8].iter().enumerate() {
-            bits |= (b as u64) << (i * 8);
-        }
+        let off = (by as usize * width.div_ceil(4) as usize + bx as usize) * 16;
+        let alpha = bc4_block(&bytes[off..off + 8]);
         let c0 = u16::from_le_bytes(bytes[off + 8..off + 10].try_into().unwrap());
         let c1 = u16::from_le_bytes(bytes[off + 10..off + 12].try_into().unwrap());
         let indices = u32::from_le_bytes(bytes[off + 12..off + 16].try_into().unwrap());
         bc1_colors(c0, c1, indices, false, &mut out, bx * 4, by * 4);
-        for i in 0..16u32 {
-            let x = bx * 4 + i % 4;
-            let y = by * 4 + i / 4;
-            if x >= out.width || y >= out.height {
-                continue;
-            }
-            let sel = ((bits >> (i * 3)) & 0x7) as u8;
-            let alpha = match sel {
-                0 => a0,
-                1 => a1,
-                _ if a0 > a1 => {
-                    ((a0 as u16 * (8 - sel as u16) + a1 as u16 * (sel as u16 - 1)) / 7) as u8
-                }
-                _ if sel < 5 => ((a0 as u16 * (5 - sel as u16) + a1 as u16 * (sel as u16 - 1)) / 5) as u8,
-                5 => 0,
-                6 => 255,
-                _ => a1,
-            };
-            let o = (y as usize * out.width as usize + x as usize) * 4 + 3;
-            out.pixels[o] = alpha;
-        }
+        write_channel(&mut out, bx, by, 3, &alpha);
     }
     Some(out)
+}
+
+/// One 8-byte BC4 block (also BC3's alpha half and each BC5 channel): two
+/// endpoints and 16 3-bit selectors, decoded to 16 values in row-major
+/// block order.
+fn bc4_block(block: &[u8]) -> [u8; 16] {
+    let a0 = block[0];
+    let a1 = block[1];
+    // 16 3-bit selectors packed little-endian into 6 bytes.
+    let mut bits = 0u64;
+    for (i, &b) in block[2..8].iter().enumerate() {
+        bits |= (b as u64) << (i * 8);
+    }
+    let mut out = [0u8; 16];
+    for (i, v) in out.iter_mut().enumerate() {
+        let sel = ((bits >> (i * 3)) & 0x7) as u8;
+        *v = match sel {
+            0 => a0,
+            1 => a1,
+            _ if a0 > a1 => {
+                ((a0 as u16 * (8 - sel as u16) + a1 as u16 * (sel as u16 - 1)) / 7) as u8
+            }
+            // Six-value mode (`a0 <= a1`): selectors 2..=5 interpolate in
+            // fifths, 6 is 0 and 7 is 255. Selector 2 is (4·a0 + a1)/5.
+            _ if sel < 6 => ((a0 as u16 * (6 - sel as u16) + a1 as u16 * (sel as u16 - 1)) / 5) as u8,
+            6 => 0,
+            _ => 255,
+        };
+    }
+    out
+}
+
+/// Store a decoded 4×4 block's values into channel `c` of `out`, clipping
+/// the block to the image edge.
+fn write_channel(out: &mut Rgba8, bx: u32, by: u32, c: usize, values: &[u8; 16]) {
+    for (i, &v) in values.iter().enumerate() {
+        let x = bx * 4 + i as u32 % 4;
+        let y = by * 4 + i as u32 / 4;
+        if x >= out.width || y >= out.height {
+            continue;
+        }
+        out.pixels[(y as usize * out.width as usize + x as usize) * 4 + c] = v;
+    }
+}
+
+/// BC4 (`ATI1`): one channel, decoded as `(r, 0, 0, 255)` — what a GPU
+/// sample of a `BC4_UNORM` texture returns.
+fn decode_bc4(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
+    let mut out = bc_output(bytes, width, height, 8)?;
+    for chunk in out.pixels.chunks_exact_mut(4) {
+        chunk[3] = 255;
+    }
+    for (bx, by) in blocks(width, height) {
+        let off = (by as usize * width.div_ceil(4) as usize + bx as usize) * 8;
+        write_channel(&mut out, bx, by, 0, &bc4_block(&bytes[off..off + 8]));
+    }
+    Some(out)
+}
+
+/// BC5 (`ATI2`): two BC4 channels, decoded as `(r, g, 0, 255)` — Fallout
+/// 4's tangent-space normal maps, whose `z` the consumer reconstructs.
+fn decode_bc5(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
+    let mut out = bc_output(bytes, width, height, 16)?;
+    for chunk in out.pixels.chunks_exact_mut(4) {
+        chunk[3] = 255;
+    }
+    for (bx, by) in blocks(width, height) {
+        let off = (by as usize * width.div_ceil(4) as usize + bx as usize) * 16;
+        write_channel(&mut out, bx, by, 0, &bc4_block(&bytes[off..off + 8]));
+        write_channel(&mut out, bx, by, 1, &bc4_block(&bytes[off + 8..off + 16]));
+    }
+    Some(out)
+}
+
+/// The DX10 extended header: a 20-byte `DDS_HEADER_DXT10` after the
+/// classic header, whose first word is the `DXGI_FORMAT`. BA2 archives
+/// reconstruct this header for every DX10 texture they store.
+fn decode_dx10(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
+    let dxgi = u32::from_le_bytes(bytes.get(128..132)?.try_into().unwrap());
+    let payload = bytes.get(148..)?;
+    match dxgi {
+        // BC1..BC5, TYPELESS / UNORM / UNORM_SRGB each.
+        70..=72 => decode_dxt1(payload, width, height),
+        73..=75 => decode_dxt3(payload, width, height),
+        76..=78 => decode_dxt5(payload, width, height),
+        79 | 80 => decode_bc4(payload, width, height),
+        82 | 83 => decode_bc5(payload, width, height),
+        // R8G8B8A8 (TYPELESS / UNORM / UNORM_SRGB).
+        27..=29 => decode_uncompressed(
+            payload, width, height, 32, 0x41, 0xFF, 0xFF00, 0xFF_0000, 0xFF00_0000,
+        ),
+        // B8G8R8A8 UNORM / TYPELESS / UNORM_SRGB.
+        87 | 90 | 91 => decode_uncompressed(
+            payload, width, height, 32, 0x41, 0xFF_0000, 0xFF00, 0xFF, 0xFF00_0000,
+        ),
+        // R8_UNORM.
+        61 => decode_uncompressed(payload, width, height, 8, 0, 0xFF, 0, 0, 0)
+            .map(|mut img| {
+                // Decoded through the L8 path as (r, r, r); a GPU sample of
+                // R8 is (r, 0, 0).
+                for px in img.pixels.chunks_exact_mut(4) {
+                    px[1] = 0;
+                    px[2] = 0;
+                }
+                img
+            }),
+        other => {
+            log::debug!("menuxml: DDS DX10 DXGI format {other} unsupported");
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +412,7 @@ fn decode_uncompressed(
         }
     };
     let pitch = (width as usize * bytes_per_px).max(1);
-    let data = &bytes[128..];
+    let data = bytes;
     // #5377: size the payload before allocating the RGBA canvas — a
     // 128-byte file claiming 8192² used to reserve 256 MiB before the
     // first bounds check rejected it.
@@ -523,6 +616,85 @@ mod uncompressed_decode_tests {
         for fourcc in [b"DXT1", b"DXT3", b"DXT5"] {
             assert!(Rgba8::decode_dds(&dxt_dds(8192, 8192, fourcc)).is_none());
         }
+    }
+
+    /// #6195 — one BC4 block, endpoints 0/255 (`a0 < a1`, the 6-value
+    /// mode): selector 0 → 0, 1 → 255, 2 → 51. The value lands in R as a
+    /// GPU sample would return it; BC5 decodes the second block into G.
+    fn bc4_block_bytes() -> [u8; 8] {
+        // Selectors for pixels 0..3: 0, 1, 2, 7 (3 bits each, LE).
+        let bits: u64 = (1 << 3) | (2 << 6) | (7 << 9);
+        let mut b = [0u8; 8];
+        b[0] = 0;
+        b[1] = 255;
+        b[2..8].copy_from_slice(&bits.to_le_bytes()[..6]);
+        b
+    }
+
+    /// The BC3-alpha / BC4 six-value mode (`a0 <= a1`) against the D3D
+    /// table, with endpoints that are not 0/255 so the interpolation
+    /// weights are actually exercised: selectors 2..=5 are
+    /// (4a0+a1)/5 … (a0+4a1)/5, 6 is 0 and 7 is 255. The decoder used to
+    /// weight selector 2 as (3a0+a1)/5 and map 5/6/7 to 0/255/a1.
+    #[test]
+    fn bc4_six_value_mode_matches_the_d3d_table() {
+        let mut bits = 0u64;
+        for (i, sel) in (0u64..8).enumerate() {
+            bits |= sel << (i * 3);
+        }
+        let mut block = [0u8; 8];
+        block[0] = 40;
+        block[1] = 200;
+        block[2..8].copy_from_slice(&bits.to_le_bytes()[..6]);
+        let mut dds = dxt_dds(4, 4, b"ATI1");
+        dds.extend_from_slice(&block);
+        let img = Rgba8::decode_dds(&dds).unwrap();
+        let reds: Vec<u8> = img.pixels.chunks_exact(4).take(8).map(|p| p[0]).collect();
+        assert_eq!(reds, [40, 200, 72, 104, 136, 168, 0, 255]);
+    }
+
+    #[test]
+    fn bc4_and_bc5_decode_into_red_and_green() {
+        let mut bc4 = dxt_dds(4, 4, b"ATI1");
+        bc4.extend_from_slice(&bc4_block_bytes());
+        let img = Rgba8::decode_dds(&bc4).unwrap();
+        let reds: Vec<u8> = img.pixels.chunks_exact(4).take(4).map(|p| p[0]).collect();
+        assert_eq!(reds, [0, 255, 51, 255]);
+        assert_eq!(&img.pixels[4..8], &[255, 0, 0, 255]);
+
+        let mut bc5 = dxt_dds(4, 4, b"ATI2");
+        bc5.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]); // R: all endpoint 0
+        bc5.extend_from_slice(&bc4_block_bytes());
+        let img = Rgba8::decode_dds(&bc5).unwrap();
+        assert_eq!(&img.pixels[4..8], &[0, 255, 0, 255]);
+    }
+
+    /// The DX10 extended header (`DXT10` fourcc + 20-byte DXGI header) moves
+    /// the payload to byte 148; BC5_UNORM (83) and R8G8B8A8_UNORM (28) both
+    /// read from there, and BC7 (98) is declined rather than misread.
+    #[test]
+    fn dx10_header_formats_decode_from_the_extended_offset() {
+        let dx10 = |dxgi: u32, w: u32, h: u32, payload: &[u8]| {
+            let mut b = dxt_dds(w, h, b"DX10");
+            let mut ext = [0u8; 20];
+            ext[0..4].copy_from_slice(&dxgi.to_le_bytes());
+            b.extend_from_slice(&ext);
+            b.extend_from_slice(payload);
+            b
+        };
+        let mut bc5 = [0u8; 16];
+        bc5[8..16].copy_from_slice(&bc4_block_bytes());
+        let img = Rgba8::decode_dds(&dx10(83, 4, 4, &bc5)).unwrap();
+        assert_eq!(&img.pixels[4..8], &[0, 255, 0, 255]);
+
+        let img = Rgba8::decode_dds(&dx10(28, 1, 1, &[10, 20, 30, 40])).unwrap();
+        assert_eq!(px(&img), [10, 20, 30, 40]);
+        let img = Rgba8::decode_dds(&dx10(87, 1, 1, &[10, 20, 30, 40])).unwrap();
+        assert_eq!(px(&img), [30, 20, 10, 40]);
+
+        assert!(Rgba8::decode_dds(&dx10(98, 4, 4, &[0u8; 16])).is_none());
+        // Truncated extended header.
+        assert!(Rgba8::decode_dds(&dxt_dds(4, 4, b"DX10")).is_none());
     }
 
     /// #5400 — the vanilla Oblivion A4R4G4B4 layout (flags 0x41, masks

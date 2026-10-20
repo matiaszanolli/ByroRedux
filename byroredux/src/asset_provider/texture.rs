@@ -124,6 +124,13 @@ impl TextureProvider {
         }
     }
 
+    /// The texture pool in lookup order (last wins), as cheap shared handles
+    /// a background job can own — terrain height generation (#6195) reads
+    /// its sources off the main thread through these.
+    pub(crate) fn texture_archive_snapshot(&self) -> Vec<Archive> {
+        self.texture_archives.clone()
+    }
+
     /// Every importable model (`.nif`, plus SpeedTree `.spt`) across the mesh
     /// archives, sorted and de-duplicated, as exact archive keys.
     ///

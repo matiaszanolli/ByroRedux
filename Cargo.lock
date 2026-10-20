@@ -575,6 +575,7 @@ dependencies = [
  "byroredux-settings-io",
  "byroredux-sfmaterial",
  "byroredux-spt",
+ "byroredux-terrain-height",
  "byroredux-ui",
  "dhat",
  "env_logger",
@@ -592,6 +593,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-tracy",
+ "twox-hash",
  "wat",
  "winit",
 ]
@@ -910,6 +912,17 @@ dependencies = [
  "byroredux-bsa",
  "byroredux-core",
  "byroredux-nif",
+]
+
+[[package]]
+name = "byroredux-terrain-height"
+version = "0.1.0"
+dependencies = [
+ "byroredux-bsa",
+ "byroredux-menuxml",
+ "image",
+ "rustfft",
+ "serde",
 ]
 
 [[package]]

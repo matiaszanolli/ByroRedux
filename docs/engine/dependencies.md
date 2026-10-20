@@ -58,6 +58,8 @@ internal graph are not repeated).
 | tempfile           | 3        | texture-upscale, byroredux (dev)              | Isolated external-upscaler files and profile-loader fixtures   |
 | walkdir            | 2.5      | texture-upscale                               | Recursive loose-texture source indexing                       |
 | rustc-hash         | 2        | core, renderer, byroredux                     | Fast non-cryptographic maps and sets on hot paths              |
+| rustfft            | 6        | terrain-height                                | 2D FFT for Frankot–Chellappa normal-map integration (#6195); already in the lock via Ruffle's `realfft` |
+| twox-hash          | 2 (`xxhash64` only) | byroredux                          | Content hash keying the on-disk terrain height-map cache (#6195); already in the lock via `lz4_flex` |
 | **Profiling**      |          |                                               |                                                               |
 | tracing            | 0.1      | byroredux                                     | Wall-clock span ladder for the cell-load critical path (#886) |
 | tracing-subscriber | 0.3      | byroredux                                     | `fmt` + `env-filter` span output                              |

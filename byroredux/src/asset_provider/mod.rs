@@ -8,6 +8,7 @@ pub(crate) mod audio;
 pub(crate) mod material;
 mod object_graph;
 mod script;
+pub(crate) mod terrain_height;
 mod texture;
 mod texture_prefetch;
 

@@ -18,6 +18,7 @@ fn mk_layer(per_quadrant_alpha: [Option<Vec<f32>>; 4]) -> CellSplatLayer {
         diffuse_index: 1,
         normal_index: 0,
         specular_index: 0,
+        height_sources: None,
         per_quadrant_alpha,
     }
 }

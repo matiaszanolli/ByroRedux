@@ -31,7 +31,8 @@ use crate::asset_provider::{
     derive_present_normal_map_path, resolve_linear_texture, resolve_texture, MaterialProvider,
     TextureProvider,
 };
-use crate::components::{MaterialTextureHandles, TerrainTileSlot};
+use crate::asset_provider::terrain_height::LayerHeightSources;
+use crate::components::{MaterialTextureHandles, TerrainLayerHeights, TerrainTileSlot};
 use byroredux_nif::import::MaterialTextureSet;
 
 /// Number of times a LAND diffuse/splat texture tiles across one exterior
@@ -80,6 +81,9 @@ pub(super) struct CellSplatLayer {
     pub normal_index: u32,
     /// Optional TX07 specular-colour map paired with the layer.
     pub specular_index: u32,
+    /// The textures this layer's height map is generated from (#6195):
+    /// authored height, normal map, diffuse, in priority order.
+    pub height_sources: Option<LayerHeightSources>,
     /// Per-quadrant contribution. `[SW, SE, NW, NE]` — `None` means the
     /// quadrant didn't paint this LTEX. Each `Some` is a 17×17 alpha grid.
     pub per_quadrant_alpha: [Option<Vec<f32>>; 4],
@@ -338,6 +342,11 @@ fn resolve_cell_splat_layer(
                 .then_some(default_land.and_then(|land| land.specular))
                 .flatten()
         });
+    let height_sources = LayerHeightSources::new(
+        texture_set.as_ref().and_then(|set| set.height.as_deref()),
+        normal_path.as_deref(),
+        texture_path,
+    );
     CellSplatLayer {
         ltex_form_id: ltex,
         cover_affinity: crate::groundcover_translate::layer_affinity(cover_affinity_key(
@@ -348,6 +357,7 @@ fn resolve_cell_splat_layer(
         diffuse_index,
         normal_index: resolve_optional_terrain_texture(ctx, tex_provider, normal_path.as_deref()),
         specular_index: resolve_optional_terrain_texture(ctx, tex_provider, specular_path),
+        height_sources,
         per_quadrant_alpha,
     }
 }
@@ -972,7 +982,7 @@ pub(super) fn spawn_terrain_mesh(
     // allocator / mesh-upload failure), release them here so the refcount +
     // bindless slot don't leak. Snapshot the indices now so the release
     // doesn't re-borrow `splat_layers` (still needed by the vertex loop).
-    let splat_tex_indices: Vec<u32> = splat_layers
+    let mut splat_tex_indices: Vec<u32> = splat_layers
         .layers
         .iter()
         .flat_map(|layer| {
@@ -1183,6 +1193,21 @@ pub(super) fn spawn_terrain_mesh(
         resolve_optional_terrain_texture(ctx, tex_provider, base_normal_path.as_deref());
     let base_specular_index =
         resolve_optional_terrain_texture(ctx, tex_provider, base_specular_path);
+    // #6195 — every lane's height-map sources, base first. Recorded on the
+    // entity below whether or not the cell gets a splat tile.
+    let height_lanes = TerrainLayerHeights {
+        base: LayerHeightSources::new(
+            base_texture_set.as_ref().and_then(|set| set.height.as_deref()),
+            base_normal_path.as_deref(),
+            base_texture_path,
+        ),
+        layers: std::array::from_fn(|i| {
+            splat_layers
+                .layers
+                .get(i)
+                .and_then(|layer| layer.height_sources.clone())
+        }),
+    };
 
     // Allocate a terrain tile slot only when the cell actually has splat
     // layers. BTXT-only cells skip this and render with the pre-#470
@@ -1263,6 +1288,17 @@ pub(super) fn spawn_terrain_mesh(
             normal_indices[i] = layer.normal_index;
             specular_indices[i] = layer.specular_index;
         }
+        // #6195 — maps already generated bind now; the rest are queued and
+        // `terrain_height::apply_ready_heights` patches them in later.
+        let (base_height_index, layer_height_index) = crate::terrain_height::acquire_spawn_heights(
+            world,
+            ctx,
+            tex_provider,
+            game,
+            &height_lanes,
+        );
+        splat_tex_indices.push(base_height_index);
+        splat_tex_indices.extend_from_slice(&layer_height_index);
         ctx.allocate_terrain_tile(GpuTerrainTile {
             layer_diffuse_index: diffuse_indices,
             layer_normal_index: normal_indices,
@@ -1294,8 +1330,9 @@ pub(super) fn spawn_terrain_mesh(
             // painted-layer average).
             base_cover_affinity: base_affinity,
             base_diffuse_index: tex_handle,
-            pad_to_stride_1: 0.0,
-            pad_to_stride_2: 0.0,
+            base_height_index,
+            layer_height_index,
+            pad_to_stride: 0.0,
         })
     } else {
         None
@@ -1360,6 +1397,7 @@ pub(super) fn spawn_terrain_mesh(
     if let Some(slot) = terrain_tile_index {
         world.insert(entity, TerrainTileSlot(slot));
     }
+    world.insert(entity, height_lanes);
     // #4052 — the cell's Y-up origin, kept so a world-space point can find
     // the terrain instance covering it (`exal-groundcover.md` §11.1's
     // chunk-to-instance association). `origin_y` is the Bethesda Z-up row

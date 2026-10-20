@@ -60,6 +60,7 @@ mod streaming;
 mod streaming_helpers;
 mod studio_host;
 mod systems;
+mod terrain_height;
 mod ui_input;
 #[cfg(test)]
 mod workspace_hygiene_tests;

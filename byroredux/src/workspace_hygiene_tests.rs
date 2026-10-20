@@ -948,6 +948,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         ("scripting", 13, 4853),
         ("sfmaterial", 2, 1094),
         ("spt", 6, 1561),
+        // #6195 — `layer_census.rs`, the real-data check that measured each
+        // game's normal-map green convention for terrain height generation.
+        ("terrain-height", 1, 134),
     ];
     let by_entry = |root: &std::path::Path| {
         // `crates/<name>/examples` or `byroredux/examples` → crate name.

@@ -26,13 +26,19 @@ fn esm_args(data: &std::path::Path) -> Vec<String> {
 #[test]
 fn loose_data_dir_is_the_esm_directory() {
     let tmp = tempfile::tempdir().unwrap();
-    assert_eq!(loose_data_dir(&esm_args(tmp.path())), Some(tmp.path().to_path_buf()));
+    assert_eq!(
+        loose_data_dir(&esm_args(tmp.path())),
+        Some(tmp.path().to_path_buf())
+    );
     // A bare plugin name lives in the working directory.
     assert_eq!(
         loose_data_dir(&["--esm".to_owned(), "Test.esm".to_owned()]),
         Some(std::path::PathBuf::from("."))
     );
-    assert_eq!(loose_data_dir(&["--mesh".to_owned(), "a.nif".to_owned()]), None);
+    assert_eq!(
+        loose_data_dir(&["--mesh".to_owned(), "a.nif".to_owned()]),
+        None
+    );
 }
 
 /// Archive-style keys match regardless of the install's case or separator,
@@ -59,10 +65,7 @@ fn loose_tier_indexes_asset_roots_by_archive_key() {
     assert!(!loose.contains(r"sound\fx\step.wav"));
     assert!(!loose.contains("readme.txt"));
     assert_eq!(
-        loose
-            .extract(r"textures\missing.dds")
-            .unwrap_err()
-            .kind(),
+        loose.extract(r"textures\missing.dds").unwrap_err().kind(),
         std::io::ErrorKind::NotFound
     );
 
@@ -82,12 +85,20 @@ fn providers_serve_loose_assets() {
 
     let textures = build_texture_provider(&args);
     // LTEX-style path, relative to the `textures\` root.
-    assert_eq!(textures.extract(r"landscape\dirt01_d.dds").unwrap(), b"loose dirt");
-    assert_eq!(textures.extract_mesh(r"meshes\clutter\cup.nif").unwrap(), b"cup");
+    assert_eq!(
+        textures.extract(r"landscape\dirt01_d.dds").unwrap(),
+        b"loose dirt"
+    );
+    assert_eq!(
+        textures.extract_mesh(r"meshes\clutter\cup.nif").unwrap(),
+        b"cup"
+    );
 
     let materials = build_material_provider(&args);
     assert_eq!(
-        materials.extract_from_archives(r"materials\landscape\dirt.bgsm").unwrap(),
+        materials
+            .extract_from_archives(r"materials\landscape\dirt.bgsm")
+            .unwrap(),
         b"bgsm"
     );
 }
@@ -110,14 +121,19 @@ fn loose_texture_overrides_the_archived_copy() {
     let key = r"textures\landscape\ground\commonwealthdefault01_d.dds";
     let vanilla = Archive::open(&archive.to_string_lossy()).unwrap();
     assert_ne!(
-        vanilla.extract(key).expect("vanilla FO4 ships the default ground"),
+        vanilla
+            .extract(key)
+            .expect("vanilla FO4 ships the default ground"),
         b"mod dirt"
     );
 
     let tmp = tempfile::tempdir().unwrap();
     write(tmp.path(), &key.replace('\\', "/"), b"mod dirt");
     let mut args = esm_args(tmp.path());
-    args.extend(["--textures-bsa".to_owned(), archive.to_string_lossy().into_owned()]);
+    args.extend([
+        "--textures-bsa".to_owned(),
+        archive.to_string_lossy().into_owned(),
+    ]);
     let provider = build_texture_provider(&args);
     assert_eq!(provider.extract(key).unwrap(), b"mod dirt");
 }

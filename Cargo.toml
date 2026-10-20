@@ -20,6 +20,7 @@ members = [
     "crates/bgsm",
     "crates/sfmaterial",
     "crates/menuxml",
+    "crates/terrain-height",
     "crates/ui",
     "crates/papyrus",
     "crates/pex",
@@ -46,6 +47,7 @@ license = "MIT"
 # Engine crates
 byroredux-core = { path = "crates/core" }
 byroredux-boot-request = { path = "crates/boot-request" }
+byroredux-terrain-height = { path = "crates/terrain-height" }
 byroredux-game-detect = { path = "crates/game-detect" }
 byroredux-settings-io = { path = "crates/settings-io" }
 byroredux-save = { path = "crates/save" }
@@ -127,6 +129,8 @@ string-interner = "0.20"
 # the material_hash <-> hash_gpu_material_fields lockstep test holds and
 # the dirty-gate hashes stay run-stable. SipHash's DoS resistance is
 # irrelevant for an internal key; the debug collision assert guards quality.
+rustfft = "6"
+twox-hash = { version = "2", default-features = false, features = ["xxhash64"] }
 rustc-hash = "2"
 
 # Identity

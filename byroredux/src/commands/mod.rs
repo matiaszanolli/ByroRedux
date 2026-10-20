@@ -54,6 +54,7 @@ mod scene;
 // StringPool` acquisition order instead of re-deriving it.
 pub(crate) mod shared;
 mod studio;
+mod terrain;
 mod time;
 mod view;
 mod water;
@@ -76,6 +77,7 @@ use quest::*;
 use scene::*;
 use shared::*;
 use studio::*;
+use terrain::TerrainHeightCommand;
 use time::*;
 use view::*;
 use water::*;
@@ -186,6 +188,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(ShadowMasksCommand);
     registry.register(LodCoverageCommand);
     registry.register(TerrainSeamsCommand);
+    registry.register(TerrainHeightCommand);
     registry.register(CellOwnersCommand);
     registry.register(RenderDebugCommand);
     registry.register(RenderDebugFlagsCommand);

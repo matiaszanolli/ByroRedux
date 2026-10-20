@@ -1,0 +1,15 @@
+[package]
+name = "byroredux-terrain-height"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustfft = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+# `examples/layer_census.rs` — reads real game archives (opt-in, needs data).
+byroredux-bsa = { workspace = true }
+byroredux-menuxml = { workspace = true }
+image = { workspace = true }

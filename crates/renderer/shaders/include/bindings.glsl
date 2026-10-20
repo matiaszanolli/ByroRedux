@@ -505,9 +505,9 @@ struct GpuTerrainTile {
     //
     // std430: both vec4 rows are on their 16-byte boundaries (96, 112), the
     // Tier-3 atlas uvec4 lands on its own at 144, the #4903 base affinity
-    // follows at 160, and the struct's 16-alignment rounds the stride up to
-    // 176. `gpu_terrain_tile_field_offsets_match_shader_contract` and
-    // `gpu_terrain_tile_is_176_bytes` pin the Rust half against exactly
+    // follows at 160, #6195's height handles at 168..204, and the struct's
+    // 16-alignment rounds the stride up to 208. `gpu_terrain_tile_field_offsets_match_shader_contract` and
+    // `gpu_terrain_tile_is_208_bytes` pin the Rust half against exactly
     // those numbers.
     /// `cover_affinity` for LAND splat layers 0-3 and 4-7.
     vec4 coverAffinity0;
@@ -526,14 +526,17 @@ struct GpuTerrainTile {
     uvec4 groundcoverDetailAtlas;
     /// The BTXT base LTEX's own `cover_affinity` (#4903) — the terrain-side
     /// density evaluations start their ordered mix from it. The named tail
-    /// pads below round the record out to the 176-byte std430 array stride
+    /// pads below round the record out to the 208-byte std430 array stride
     /// (the struct's 16-alignment from its vec4 rows).
     float baseCoverAffinity;
     /// Bindless diffuse handle of the BTXT base texture (#4907). Zero when
     /// the base failed to resolve.
     uint baseDiffuseIndex;
-    float padToStride1;
-    float padToStride2;
+    /// #6195 — per-layer `[0, 1]` height maps (BC4), base then splat lanes.
+    /// Zero = no height (yet). Appended at the tail; stride 176 → 208.
+    uint baseHeightIndex;
+    uint layerHeightIndex[TERRAIN_SPLAT_LAYERS];
+    float padToStride;
 };
 
 /// The terrain's splat colour composition (#4907): start from the BTXT base

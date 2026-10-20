@@ -160,6 +160,26 @@ impl VulkanContext {
         Some(slot)
     }
 
+    /// The live record in terrain tile `slot`, or `None` when it is vacant.
+    pub fn terrain_tile(&self, slot: u32) -> Option<&GpuTerrainTile> {
+        self.terrain_tiles.get(slot as usize)?.as_ref()
+    }
+
+    /// Edit the live record in terrain tile `slot` in place and schedule the
+    /// SSBO re-upload. Returns `false` (and does nothing) for a vacant slot,
+    /// so a late edit to a cell that has since unloaded cannot write into a
+    /// freed — or reallocated — record's texture lanes. Used to patch height
+    /// maps in as they finish generating (#6195); whatever handles the edit
+    /// stores become the tile's to release.
+    pub fn update_terrain_tile(&mut self, slot: u32, edit: impl FnOnce(&mut GpuTerrainTile)) -> bool {
+        let Some(Some(tile)) = self.terrain_tiles.get_mut(slot as usize) else {
+            return false;
+        };
+        edit(tile);
+        self.terrain_tiles_dirty = true;
+        true
+    }
+
     /// Publish the active procedural ground-cover detail atlas to every live
     /// LAND tile. The tile SSBO is the existing per-terrain binding used by
     /// `triangle.frag`, so this keeps the Tier-3 floor aligned with terrain

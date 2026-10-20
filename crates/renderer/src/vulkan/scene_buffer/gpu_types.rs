@@ -64,24 +64,35 @@ pub struct GpuTerrainTile {
     /// base failed to resolve (the coupling then keeps the painted-layer
     /// average).
     pub base_diffuse_index: u32,
+    /// Bindless handle of the BTXT base layer's height map (#6195), 0 when
+    /// it has none yet. Heights are `[0, 1]`, single channel (BC4), one map
+    /// per layer texture — generated from the layer's normal map or diffuse
+    /// when no authored height exists, so "0" also means "still generating".
+    pub base_height_index: u32,
+    /// Height maps paired with [`Self::layer_diffuse_index`], same contract
+    /// as [`Self::base_height_index`]. Appended at the tail so every earlier
+    /// offset — and every shader that reads them — is unchanged.
+    pub layer_height_index: [u32; TERRAIN_SPLAT_LAYERS],
     /// Explicit tail padding to the std430 array stride: the GLSL struct's
-    /// alignment is 16 (its vec4 rows), so its array stride rounds 168 up to
-    /// 176. Named scalars rather than `[f32; 2]` so the declaration matches
-    /// the GLSL field for field — what
-    /// `gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep` guards.
-    pub pad_to_stride_1: f32,
-    pub pad_to_stride_2: f32,
+    /// alignment is 16 (its vec4 rows), so its array stride rounds 204 up to
+    /// 208. A named scalar so the declaration matches the GLSL field for
+    /// field — what `gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep`
+    /// guards.
+    pub pad_to_stride: f32,
 }
 
 impl GpuTerrainTile {
     /// Every texture reference owned by this tile. The cell-unload path uses
     /// this exhaustive iterator to release the same diffuse/normal/specular
-    /// acquisitions that terrain spawning retained.
+    /// acquisitions that terrain spawning retained, and the height maps
+    /// patched in as they finish generating (#6195).
     pub fn texture_indices(&self) -> impl Iterator<Item = u32> + '_ {
         self.layer_diffuse_index
             .iter()
             .chain(self.layer_normal_index.iter())
             .chain(self.layer_specular_index.iter())
+            .chain(std::iter::once(&self.base_height_index))
+            .chain(self.layer_height_index.iter())
             .copied()
     }
 }

@@ -107,4 +107,19 @@ impl Component for TerrainCoverInputs {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Which textures each lane of a LAND tile takes its height map from
+/// (#6195): the BTXT base, then the splat lanes in vertex order. Kept on the
+/// terrain entity so a map that finishes generating after the cell spawned
+/// can find the tile lanes waiting on it, and so the debugger can report
+/// every layer's height source.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TerrainLayerHeights {
+    pub(crate) base: Option<crate::asset_provider::terrain_height::LayerHeightSources>,
+    pub(crate) layers:
+        [Option<crate::asset_provider::terrain_height::LayerHeightSources>; TERRAIN_SPLAT_LAYERS as usize],
+}
+impl Component for TerrainLayerHeights {
+    type Storage = SparseSetStorage<Self>;
+}
+
 // SystemList moved to byroredux_core::ecs::resources::SystemList

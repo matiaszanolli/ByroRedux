@@ -176,7 +176,7 @@ measured allocations.
 | Previous-model SSBO (`33d9a468`) ² | same | 65 536 | 64 B (`mat4`) | 4.2 MB | **8.4 MB** (≤ 33.6 MB) |
 | Indirect draw SSBO ³ | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
 | Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 432 B | 7.1 MB | **14.2 MB** |
-| Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 176 B (`GpuTerrainTile`: 3× `[u32; 8]` texture indices + #4057's two `[f32; 4]` cover-affinity rows, `cell_origin_xz`, `water_y`, `canopy_height`, #4056's ground-cover detail-atlas `uvec4`, and #4903/#4907's `base_cover_affinity` + `base_diffuse_index` tail with its std430 stride padding; pinned by `gpu_terrain_tile_is_176_bytes`) | — | **~176 KB** (single shared buffer, NOT FIF-doubled) |
+| Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 208 B (`GpuTerrainTile`: 3× `[u32; 8]` texture indices + #4057's two `[f32; 4]` cover-affinity rows, `cell_origin_xz`, `water_y`, `canopy_height`, #4056's ground-cover detail-atlas `uvec4`, #4903/#4907's `base_cover_affinity` + `base_diffuse_index`, and #6195's `base_height_index` + `[u32; 8]` layer height handles with its std430 stride padding; pinned by `gpu_terrain_tile_is_208_bytes`) | — | **~208 KB** (single shared buffer, NOT FIF-doubled) |
 | Bone buffers ¹ | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB/buffer | **100.6 MB** |
 | Camera UBO | — | 1 | 368 B (#3323) | 368 B | **736 B** |
 

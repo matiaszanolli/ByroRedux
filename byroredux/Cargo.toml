@@ -51,6 +51,8 @@ byroredux-plugin = { workspace = true }
 byroredux-cxx-bridge = { workspace = true }
 byroredux-ui = { workspace = true }
 byroredux-menuxml = { workspace = true }
+byroredux-terrain-height = { workspace = true }
+twox-hash = { workspace = true }
 byro-texture-upscale = { workspace = true }
 rayon = { workspace = true }
 log = { workspace = true }

@@ -960,8 +960,9 @@ now encoded in the script instead of only in audit prose (#4482, #4509):
    `uint[8] × 3`, pinned by *gpu_terrain_tile_is_96_bytes* and by
    `ArrayStride 96` in the shipped `triangle.frag.spv`. (#4057 has since grown
    it to 144 B with §12.5's terrain-receiver fields, then #4056 added the
-   Tier-3 detail-atlas selector and #4903 the BTXT base lane — bringing it
-   to its current 176 B, pinned by `gpu_terrain_tile_is_176_bytes` — and it
+   Tier-3 detail-atlas selector, #4903 the BTXT base lane and #6195 the
+   per-layer height handles — bringing it to its current 208 B, pinned by
+   `gpu_terrain_tile_is_208_bytes` — and it
    still carries no vertex offset.)
 
    The locator is one record over: `GpuInstance.vertex_offset`

@@ -295,6 +295,8 @@ impl App {
             // `build_render_data` above (see `render::update_morph_weights`'s
             // doc) — needs `&mut ctx`, which `build_render_data` doesn't take.
             crate::render::update_morph_weights(&self.world, ctx);
+            // #6195 — bind terrain height maps that finished generating.
+            crate::terrain_height::apply_ready_heights(&self.world, ctx);
 
             // #4052 — EXAL ground cover §11.1. Stand the harness up on the
             // first frame with a device, then publish this frame's resident
