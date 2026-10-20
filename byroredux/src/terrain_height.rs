@@ -171,6 +171,23 @@ fn acquire_height_texture(ctx: &mut VulkanContext, cached: &CachedHeight) -> u32
     }
 }
 
+/// Terrain spawn for a cell with no splat tile (BTXT only): queue its base
+/// map so it exists — and shows in `terrain.height` — even though there is no
+/// tile lane to bind it to yet.
+pub(crate) fn request_heights(
+    world: &mut World,
+    tex_provider: &TextureProvider,
+    game: GameKind,
+    lanes: &TerrainLayerHeights,
+) {
+    for sources in std::iter::once(&lanes.base)
+        .chain(lanes.layers.iter())
+        .flatten()
+    {
+        service(world).request(sources, game, tex_provider);
+    }
+}
+
 /// Terrain spawn: the height handles for a tile's base and splat lanes. A
 /// lane whose map is ready is bound now (one acquire each, owned by the tile);
 /// the rest are queued and stay 0 until [`apply_ready_heights`].

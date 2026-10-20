@@ -1335,6 +1335,7 @@ pub(super) fn spawn_terrain_mesh(
             pad_to_stride: 0.0,
         })
     } else {
+        crate::terrain_height::request_heights(world, tex_provider, game, &height_lanes);
         None
     };
     if !splat_layers.layers.is_empty() && terrain_tile_index.is_none() {

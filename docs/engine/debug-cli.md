@@ -474,7 +474,7 @@ r.health                    → renderer health summary
 rt.integrity                → ray-tracing structure integrity checks
 lod.coverage                → current LOD coverage diagnostics
 terrain.seams               → terrain seam diagnostics
-terrain.height              → per-layer height maps under the camera: source, state, raw height (#6195)
+terrain.height [all]        → per-layer height maps under the camera: source, state, raw height; `all` tallies every resident cell (#6195)
 render.debug                → renderer debug-mode control
 r.dbg [0xMASK|+0xB|-0xB]    → read / set / add / clear the DBG_* bit mask at runtime
 r.shadowfilter [on|off]     → read or switch the direct-shadow spatial filter

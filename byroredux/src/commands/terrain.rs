@@ -26,6 +26,10 @@ pub(crate) fn land_uv_at(origin_xz: [f32; 2], xz: [f32; 2]) -> Option<[f32; 2]> 
 /// height-map source (authored / from normals / from brightness), its
 /// generation state, and the raw `[0, 1]` height at the texel under the
 /// camera, read back from the cached map exactly as uploaded.
+///
+/// `terrain.height all` instead tallies every lane of every resident cell by
+/// state and names each distinct source still failing or generating — the
+/// "every terrain layer in this area has a height map" check.
 pub(crate) struct TerrainHeightCommand;
 impl ConsoleCommand for TerrainHeightCommand {
     fn name(&self) -> &str {
@@ -33,10 +37,13 @@ impl ConsoleCommand for TerrainHeightCommand {
     }
 
     fn description(&self) -> &str {
-        "Per-layer terrain height maps under the camera: source, state, raw height (#6195)"
+        "Per-layer terrain height maps under the camera: source, state, raw height; `all` tallies every resident cell (#6195)"
     }
 
-    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        if args.trim() == "all" {
+            return census(world);
+        }
         let camera = world
             .try_resource::<ActiveCamera>()
             .map(|active| active.0)
@@ -77,6 +84,51 @@ impl ConsoleCommand for TerrainHeightCommand {
         }
         CommandOutput::lines(out)
     }
+}
+
+/// Every lane of every resident terrain cell, by generation state.
+fn census(world: &World) -> CommandOutput {
+    let Some(lanes) = world.query::<TerrainLayerHeights>() else {
+        return CommandOutput::line("no terrain loaded");
+    };
+    let service = world.try_resource::<TerrainHeightService>();
+    let (mut cells, mut ready, mut pending, mut failed, mut missing) = (0, 0, 0, 0, 0);
+    let mut by_source: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut problems: std::collections::BTreeSet<String> = Default::default();
+    for (_, cell) in lanes.iter() {
+        cells += 1;
+        for sources in std::iter::once(&cell.base)
+            .chain(cell.layers.iter())
+            .flatten()
+        {
+            match service.as_deref().and_then(|s| s.state(sources)) {
+                Some(HeightState::Ready(cached)) => {
+                    ready += 1;
+                    *by_source
+                        .entry(format!("{:?}", cached.meta.source))
+                        .or_default() += 1;
+                }
+                Some(HeightState::Pending) => {
+                    pending += 1;
+                    problems.insert(format!("  generating: {sources:?}"));
+                }
+                Some(HeightState::Failed(reason)) => {
+                    failed += 1;
+                    problems.insert(format!("  FAILED: {reason}"));
+                }
+                None => {
+                    missing += 1;
+                    problems.insert(format!("  not requested: {sources:?}"));
+                }
+            }
+        }
+    }
+    let mut out = vec![format!(
+        "terrain.height all: {cells} cells, lanes ready={ready} generating={pending} \
+         failed={failed} not-requested={missing}; ready by source {by_source:?}"
+    )];
+    out.extend(problems);
+    CommandOutput::lines(out)
 }
 
 fn describe_lane(
