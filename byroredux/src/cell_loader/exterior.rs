@@ -2175,7 +2175,7 @@ impl ExteriorCellApplyJob {
         world: &mut World,
         ctx: &mut VulkanContext,
         tex_provider: &TextureProvider,
-        _mat_provider: Option<&mut MaterialProvider>,
+        mat_provider: Option<&mut MaterialProvider>,
         terrain_blas_accumulator: Option<&mut Vec<(u32, u32, u32)>>,
         budget: &mut FrameTimeBudget,
     ) -> anyhow::Result<Option<Self>> {
@@ -2254,6 +2254,7 @@ impl ExteriorCellApplyJob {
                     tex_provider,
                     landscape_textures: &index.landscape_textures,
                     landscape_texture_sets: &index.landscape_texture_sets,
+                    mat_provider,
                     landscape_grasses: &index.landscape_grasses,
                     landscape_texture_names: &index.landscape_texture_names,
                     blas_specs: &mut *blas_sink,

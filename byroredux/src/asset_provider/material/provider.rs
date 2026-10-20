@@ -506,6 +506,45 @@ impl MaterialProvider {
         }
     }
 
+    /// FO4+ `TXST.MNAM` — fill every still-empty texture role of `set` from
+    /// the BGSM chain its `material_path` names, first-wins child → template.
+    ///
+    /// #6199 — 32 of FO4's 128 vanilla LTEXs (`LCWDefault01Grass01`, the
+    /// `LNFoothills*` family, `LCobblestone01`, …) point at a TXST that
+    /// authors only `MNAM`, so without this the terrain had no diffuse for
+    /// them at all. Authored TX slots keep precedence, the same order
+    /// `RefrTextureOverlay::fill_from_bgsm` applies to REFR overlays. The
+    /// roles are the ones LAND consumes: `smooth_spec_texture` is the `_s` map
+    /// the TX-authored landscape TXSTs put in TX07, and
+    /// `displacement_texture` is the authored height. No-op for a non-BGSM
+    /// path or one the provider cannot resolve.
+    pub(crate) fn fill_texture_set_from_bgsm(
+        &mut self,
+        set: &mut byroredux_plugin::esm::cell::TextureSet,
+    ) {
+        let Some(path) = set.material_path.clone() else {
+            return;
+        };
+        if !path.to_ascii_lowercase().ends_with(".bgsm") {
+            return;
+        }
+        let Some(resolved) = self.resolve_bgsm(&path) else {
+            return;
+        };
+        fn fill(slot: &mut Option<String>, authored: &str) {
+            if slot.is_none() && !authored.is_empty() {
+                *slot = Some(authored.to_string());
+            }
+        }
+        for step in resolved.walk() {
+            let f = &step.file;
+            fill(&mut set.diffuse, &f.diffuse_texture);
+            fill(&mut set.normal, &f.normal_texture);
+            fill(&mut set.specular, &f.smooth_spec_texture);
+            fill(&mut set.height, &f.displacement_texture);
+        }
+    }
+
     /// Detect whether a material file is BGSM or BGEM by magic, independent of
     /// its file extension. Returns `None` when the file isn't found or the
     /// magic is unrecognised.

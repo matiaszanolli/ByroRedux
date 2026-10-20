@@ -28,7 +28,8 @@ use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{
-    derive_present_normal_map_path, resolve_linear_texture, resolve_texture, TextureProvider,
+    derive_present_normal_map_path, resolve_linear_texture, resolve_texture, MaterialProvider,
+    TextureProvider,
 };
 use crate::components::{MaterialTextureHandles, TerrainTileSlot};
 use byroredux_nif::import::MaterialTextureSet;
@@ -99,8 +100,7 @@ type PerQuadrantAlpha = [Option<Vec<f32>>; 4];
 pub(super) fn build_cell_splat_layers(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
-    landscape_textures: &HashMap<u32, String>,
-    landscape_texture_sets: &HashMap<u32, TextureSet>,
+    layer_textures: &mut LandscapeLayerTextures,
     landscape_texture_names: &HashMap<u32, String>,
     land: &esm::cell::LandscapeData,
     canonical_base_ltex: Option<u32>,
@@ -195,8 +195,7 @@ pub(super) fn build_cell_splat_layers(
         layers.push(resolve_cell_splat_layer(
             ctx,
             tex_provider,
-            landscape_textures,
-            landscape_texture_sets,
+            layer_textures,
             landscape_texture_names,
             base_ltex,
             default_land,
@@ -207,8 +206,7 @@ pub(super) fn build_cell_splat_layers(
         layers.push(resolve_cell_splat_layer(
             ctx,
             tex_provider,
-            landscape_textures,
-            landscape_texture_sets,
+            layer_textures,
             landscape_texture_names,
             Some(ltex),
             default_land,
@@ -297,15 +295,16 @@ pub(super) fn base_transition_layers_for_bases(
 fn resolve_cell_splat_layer(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
-    landscape_textures: &HashMap<u32, String>,
-    landscape_texture_sets: &HashMap<u32, TextureSet>,
+    layer_textures: &mut LandscapeLayerTextures,
     landscape_texture_names: &HashMap<u32, String>,
     ltex: Option<u32>,
     default_land: Option<DefaultLandTexture>,
     per_quadrant_alpha: PerQuadrantAlpha,
 ) -> CellSplatLayer {
-    let texture_path = ltex
-        .and_then(|id| landscape_textures.get(&id).map(String::as_str))
+    let texture_set = ltex.and_then(|id| layer_textures.texture_set(id));
+    let texture_path = texture_set
+        .as_ref()
+        .and_then(|set| set.diffuse.as_deref())
         .or_else(|| {
             ltex.is_none()
                 .then_some(default_land.map(|land| land.diffuse))
@@ -316,23 +315,23 @@ fn resolve_cell_splat_layer(
         None => {
             if let Some(ltex) = ltex {
                 log::debug!(
-                    "Terrain splat: LTEX {ltex:08X} not in landscape_textures map; skipping layer"
+                    "Terrain splat: LTEX {ltex:08X} resolves no diffuse; skipping layer"
                 );
             }
             0
         }
     };
-    let texture_set = ltex.and_then(|id| landscape_texture_sets.get(&id));
     let normal_path = if let Some(default_land) = ltex.is_none().then_some(default_land).flatten() {
         default_land.normal.map(str::to_string)
     } else {
         terrain_layer_normal_path(
             tex_provider,
-            texture_set.and_then(|set| set.normal.as_deref()),
+            texture_set.as_ref().and_then(|set| set.normal.as_deref()),
             texture_path,
         )
     };
     let specular_path = texture_set
+        .as_ref()
         .and_then(|set| set.specular.as_deref())
         .or_else(|| {
             ltex.is_none()
@@ -427,6 +426,38 @@ fn resolve_optional_terrain_texture(
         0
     } else {
         handle
+    }
+}
+
+/// The texture roles each LTEX paints with, resolved once per terrain spawn
+/// for both the BTXT base and every splat layer.
+///
+/// `landscape_textures` holds the direct diffuse path — Oblivion's `ICON`, or
+/// a TXST's TX00 — and `landscape_texture_sets` the full TXST. An FO4+ TXST
+/// may author only `MNAM` (#6199); its roles come from the BGSM chain through
+/// `mat_provider`, with authored TX slots keeping precedence.
+pub(super) struct LandscapeLayerTextures<'a> {
+    pub landscape_textures: &'a HashMap<u32, String>,
+    pub landscape_texture_sets: &'a HashMap<u32, TextureSet>,
+    pub mat_provider: Option<&'a mut MaterialProvider>,
+}
+
+impl LandscapeLayerTextures<'_> {
+    /// `None` when the LTEX has neither a texture set nor a direct path.
+    fn texture_set(&mut self, ltex: u32) -> Option<TextureSet> {
+        let direct = self.landscape_textures.get(&ltex);
+        let mut set = match (self.landscape_texture_sets.get(&ltex), direct) {
+            (Some(set), _) => set.clone(),
+            (None, Some(_)) => TextureSet::default(),
+            (None, None) => return None,
+        };
+        if set.diffuse.is_none() {
+            set.diffuse = direct.cloned();
+        }
+        if let Some(provider) = self.mat_provider.as_deref_mut() {
+            provider.fill_texture_set_from_bgsm(&mut set);
+        }
+        Some(set)
     }
 }
 
@@ -743,6 +774,9 @@ pub(super) struct TerrainSpawnCtx<'a> {
     pub tex_provider: &'a TextureProvider,
     pub landscape_textures: &'a HashMap<u32, String>,
     pub landscape_texture_sets: &'a HashMap<u32, TextureSet>,
+    /// Resolves MNAM-only (BGSM) landscape TXSTs (#6199). `None` leaves
+    /// those layers untextured.
+    pub mat_provider: Option<&'a mut MaterialProvider>,
     /// LTEX.GNAM associations keyed by the LAND layer's LTEX form ID.
     pub landscape_grasses: &'a HashMap<u32, Vec<u32>>,
     /// LTEX editor IDs: the ground-cover affinity key (#4899).
@@ -899,6 +933,7 @@ pub(super) fn spawn_terrain_mesh(
         tex_provider,
         landscape_textures,
         landscape_texture_sets,
+        mat_provider,
         landscape_grasses,
         landscape_texture_names,
         blas_specs,
@@ -917,11 +952,15 @@ pub(super) fn spawn_terrain_mesh(
 
     // Collect cell-global splat layers before the vertex loop — we need
     // all 8 resolved before we can pack per-vertex weights. #470.
+    let mut layer_textures = LandscapeLayerTextures {
+        landscape_textures,
+        landscape_texture_sets,
+        mat_provider,
+    };
     let splat_layers = build_cell_splat_layers(
         ctx,
         tex_provider,
-        landscape_textures,
-        landscape_texture_sets,
+        &mut layer_textures,
         landscape_texture_names,
         land,
         land.quadrants.iter().find_map(|q| q.base),
@@ -1101,14 +1140,18 @@ pub(super) fn spawn_terrain_mesh(
     // #2444 (MAT-D3-02) — the path is retained, not just the handle: it is
     // the classifier input for this tile's canonical `Material` below, so
     // landscape shades by the same rules as the statics standing on it.
+    let base_texture_set = match base_ltex {
+        Some(0) | None => None,
+        Some(ltex_id) => layer_textures.texture_set(ltex_id),
+    };
     let base_texture_path: Option<&str> = match base_ltex {
         // BTXT with form ID 0 = the engine's built-in default land texture.
         Some(0) | None => default_land.map(|d| d.diffuse),
-        Some(ltex_id) => match landscape_textures.get(&ltex_id) {
-            Some(path) => Some(path.as_str()),
+        Some(ltex_id) => match base_texture_set.as_ref().and_then(|s| s.diffuse.as_deref()) {
+            Some(path) => Some(path),
             None => {
                 log::debug!(
-                    "Terrain ({},{}): LTEX {:08X} not in landscape_textures map",
+                    "Terrain ({},{}): LTEX {:08X} resolves no diffuse",
                     grid_x,
                     grid_y,
                     ltex_id,
@@ -1121,7 +1164,6 @@ pub(super) fn spawn_terrain_mesh(
         Some(path) => resolve_texture(ctx, tex_provider, Some(path)),
         None => 0,
     };
-    let base_texture_set = base_ltex.and_then(|id| landscape_texture_sets.get(&id));
     let (base_normal_path, base_specular_path) = if uses_default_land {
         (
             default_land.and_then(|d| d.normal).map(str::to_string),
@@ -1131,10 +1173,10 @@ pub(super) fn spawn_terrain_mesh(
         (
             terrain_layer_normal_path(
                 tex_provider,
-                base_texture_set.and_then(|set| set.normal.as_deref()),
+                base_texture_set.as_ref().and_then(|set| set.normal.as_deref()),
                 base_texture_path,
             ),
-            base_texture_set.and_then(|set| set.specular.as_deref()),
+            base_texture_set.as_ref().and_then(|set| set.specular.as_deref()),
         )
     };
     let base_normal_index =
@@ -2129,5 +2171,88 @@ mod tests {
         assert!(land_tile_indices(0x0F).is_empty());
         // The high nibble (FO4 No Collision bits) is not a hide bit.
         assert_eq!(land_tile_indices(0xF0).len(), 32 * 32 * 6);
+    }
+
+    /// #6199 — an FO4 MNAM-only landscape TXST takes its diffuse, normal,
+    /// specular and height from the BGSM chain (leaf first, then template),
+    /// while an authored TX slot keeps precedence over the BGSM's role.
+    #[test]
+    fn mnam_only_landscape_set_resolves_through_bgsm_chain() {
+        use byroredux_bgsm::template::ResolvedMaterial;
+        use byroredux_bgsm::BgsmFile;
+        use std::sync::Arc;
+
+        let leaf_path = r"landscape\ground\nf_dirt01.bgsm";
+        let mut provider = MaterialProvider::new();
+        provider.insert_bgsm_for_test(
+            leaf_path,
+            ResolvedMaterial {
+                file: BgsmFile {
+                    diffuse_texture: "Landscape/Ground/NF_Dirt01_d.dds".into(),
+                    normal_texture: "Landscape/Ground/NF_Dirt01_n.dds".into(),
+                    ..Default::default()
+                },
+                parent: Some(Arc::new(ResolvedMaterial {
+                    file: BgsmFile {
+                        diffuse_texture: "template/wet_d.dds".into(),
+                        smooth_spec_texture: "template/wet_s.dds".into(),
+                        displacement_texture: "template/wet_disp.dds".into(),
+                        ..Default::default()
+                    },
+                    parent: None,
+                })),
+            },
+        );
+
+        const MNAM_ONLY: u32 = 0x000A_B0E5;
+        const AUTHORED_NORMAL: u32 = 0x000A_B0E6;
+        const ICON_ONLY: u32 = 0x000A_B0E7;
+        let sets = HashMap::from([
+            (
+                MNAM_ONLY,
+                TextureSet {
+                    material_path: Some(leaf_path.into()),
+                    ..TextureSet::default()
+                },
+            ),
+            (
+                AUTHORED_NORMAL,
+                TextureSet {
+                    normal: Some(r"landscape\authored_n.dds".into()),
+                    material_path: Some(leaf_path.into()),
+                    ..TextureSet::default()
+                },
+            ),
+        ]);
+        let paths = HashMap::from([(ICON_ONLY, r"landscape\terrainsand01.dds".to_string())]);
+        let mut layers = LandscapeLayerTextures {
+            landscape_textures: &paths,
+            landscape_texture_sets: &sets,
+            mat_provider: Some(&mut provider),
+        };
+
+        let set = layers.texture_set(MNAM_ONLY).expect("MNAM-only set resolves");
+        assert_eq!(set.diffuse.as_deref(), Some("Landscape/Ground/NF_Dirt01_d.dds"));
+        assert_eq!(set.normal.as_deref(), Some("Landscape/Ground/NF_Dirt01_n.dds"));
+        assert_eq!(set.specular.as_deref(), Some("template/wet_s.dds"));
+        assert_eq!(set.height.as_deref(), Some("template/wet_disp.dds"));
+
+        let set = layers.texture_set(AUTHORED_NORMAL).expect("set resolves");
+        assert_eq!(set.normal.as_deref(), Some(r"landscape\authored_n.dds"));
+        assert_eq!(set.diffuse.as_deref(), Some("Landscape/Ground/NF_Dirt01_d.dds"));
+
+        // Oblivion's ICON path has no texture set and no BGSM.
+        let set = layers.texture_set(ICON_ONLY).expect("ICON layer resolves");
+        assert_eq!(set.diffuse.as_deref(), Some(r"landscape\terrainsand01.dds"));
+        assert_eq!(set.normal, None);
+        assert!(layers.texture_set(0x000A_FFFF).is_none());
+
+        // Without a provider the MNAM-only layer stays untextured, as before.
+        let mut no_provider = LandscapeLayerTextures {
+            landscape_textures: &paths,
+            landscape_texture_sets: &sets,
+            mat_provider: None,
+        };
+        assert_eq!(no_provider.texture_set(MNAM_ONLY).unwrap().diffuse, None);
     }
 }
