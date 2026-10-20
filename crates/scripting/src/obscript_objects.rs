@@ -50,8 +50,9 @@
 //!
 //! **Variables.** A script's locals live in the reference's [`ScriptVariables`],
 //! by name — the saved, delta-restored component the Papyrus path and the
-//! `GetVMScriptVariable` condition already use — so they survive a cell unload and
-//! a save without a second ledger.
+//! `GetVMScriptVariable` condition already use. A save carries it for every
+//! resident reference; an evicted reference's set is parked by the cell loader
+//! (`reference_state`) and put back over the fresh one this attach stamps (#6071).
 //!
 //! **Kill switch.** `BYRO_NO_OBSCRIPT_OBJECTS` leaves the table uninstalled, so no
 //! object script attaches or runs (quest scripts are unaffected).

@@ -773,7 +773,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 113;
+    const BASELINE_MAJOR: u16 = 114;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1128,7 +1128,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `BSLightingShaderType`, preserved across the glass classifier's
     // `material_kind` reassignment), so a pre-v113 snapshot's `Material`
     // column no longer decodes.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xf477_f15b_d362_af59;
+    // #6071 / #6072 / #6073 — v114 is a genuine bump: the parked
+    // `ReferenceState` gained the required `script_package` and `corpse_pose`
+    // fields, and `PersistentReferenceStates` the required `scripts` rows (the
+    // new `ScriptState`), so a pre-v114 store no longer decodes.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x7932_7062_349c_b80d;
     // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
     // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
     // keys each shape by its file, so the move alone shifted it; a dump of

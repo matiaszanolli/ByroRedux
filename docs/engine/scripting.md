@@ -2366,8 +2366,9 @@ lines with its compiled blocks (`obscript_tools census`): `GameMode` `0`,
 numbering is not one table across the three. Four blocks run: `GameMode` every
 frame for every loaded scripted reference, `OnLoad` on the cell-load marker,
 `OnDeath` on the death marker (read, not drained: the Papyrus reference system
-owns it) and `OnActivate` (below). Locals live in the reference's saved `ScriptVariables` by name, so they
-survive a cell unload and a save with no second ledger. All object scripts of
+owns it) and `OnActivate` (below). Locals live in the reference's saved `ScriptVariables` by name; a save carries
+them for resident references, and an evicted reference's set is parked in the
+cell loader's per-reference row and restored over the fresh one at attach (#6071). All object scripts of
 Oblivion, Fallout 3 and New Vegas walk cleanly and those four blocks run to
 `End` under both gate answers (`legacy_object_scripts_walk_and_run_without_
 malformed_bytecode`, ignored: needs the masters). `BYRO_NO_OBSCRIPT_OBJECTS`

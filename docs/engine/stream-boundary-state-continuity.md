@@ -130,10 +130,16 @@ assumed):
   today's respawn behavior, and snapshotting mid-animation state is a much
   larger surface (interpolation continuity, clip-transition validity) for
   a benefit nobody has asked for.
-- Script-local Papyrus VM state — canonical save/load already owns this
-  boundary (`ScriptVariables`/`ScriptTimer` are registered in the real save
-  registry); a stream-boundary snapshot duplicating that would be a second,
-  competing source of truth for the same data. Out of scope here entirely.
+- Script-local state — not in *this* snapshot. #6071 corrected the
+  original claim that canonical save/load owns it: the save registry
+  serialises resident entities only, and eviction despawns the reference,
+  so `TwoStateActivator` / `ScriptVariables` were lost on every re-entry.
+  They are parked instead in the durable per-reference row
+  (`cell_loader::reference_state`, the `scripts` map) and put back by the
+  script attach. The same row carries the actor's `ScriptPackage` (#6072)
+  and a corpse's root pose (#6073): a corpse has no package state, so this
+  snapshot never kept a row for it, and the snapshot is cleared on every
+  drain and never saved.
 
 ## 5. Lifetime and bounding
 

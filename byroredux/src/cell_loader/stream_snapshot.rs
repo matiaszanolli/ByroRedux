@@ -39,9 +39,10 @@
 //! Deliberately dropped: `WanderState`, because re-rolling it on respawn is
 //! `WanderBehavior`'s *intended* behaviour — its `form_id` feeds a
 //! deterministic desync hash, so restoring a phase would defeat the
-//! spreading the hash exists to produce. Animation-phase state and
-//! Papyrus VM locals are out of scope for the reasons §4 records (the
-//! latter is already owned by the real save registry).
+//! spreading the hash exists to produce. Animation-phase state is out of
+//! scope for the reasons §4 records. Script locals, a script package and a
+//! corpse's pose are parked in the durable `reference_state` row instead
+//! (#6071–#6073), which survives drains and saves; this store does neither.
 
 use byroredux_core::ecs::components::{FormIdComponent, Furniture, GlobalTransform, Transform};
 use byroredux_core::ecs::resource::Resource;
@@ -124,6 +125,15 @@ impl ActorStreamSnapshot {
             || self.traveled
             || self.seated_furniture_form_id.is_some()
     }
+}
+
+/// Whether two orientations face the same way, within the restore's slack:
+/// same-ish facing (dot ≥ cos of ~1°) costs nothing and accumulates no
+/// drift. glam's `Quat::dot` returns f32 directly; NaN (degenerate capture)
+/// counts as divergent.
+pub(crate) fn rotation_matches(a: Quat, b: Quat) -> bool {
+    let dot = a.dot(b);
+    dot.is_finite() && dot >= 0.999_85
 }
 
 /// FormID-keyed store of actor state captured at tile eviction.
@@ -353,15 +363,8 @@ pub(crate) fn restore_actor_snapshot(
     let mut restored = false;
 
     // #5501 — orientation is in §4's keep-set beside the position, with
-    // the same divergence rule: same-ish facing (dot ≥ cos of ~1°)
-    // costs nothing and accumulates no drift.
-    // glam's `Quat::dot` returns f32 directly; NaN (degenerate capture)
-    // counts as divergent.
-    let rotation_diverged = !(snapshot
-        .rotation
-        .dot(authored_rotation)
-        .is_finite()
-        && snapshot.rotation.dot(authored_rotation) >= 0.999_85);
+    // the same divergence rule.
+    let rotation_diverged = !rotation_matches(snapshot.rotation, authored_rotation);
     if snapshot.position.distance(authored_position) > POSITION_DIVERGENCE_EPSILON
         || rotation_diverged
     {
@@ -380,29 +383,59 @@ pub(crate) fn restore_actor_snapshot(
         }
     }
 
-    if let Some(active) = snapshot.active_package_form_id {
-        if let Some(mut runtimes) = world.query_mut::<AmbientPackageRuntime>() {
-            if let Some(runtime) = runtimes.get_mut(entity) {
-                runtime.active_package_form_id = Some(active);
-                restored = true;
+    // #6074 — the runtime's id names the package whose behavior is
+    // installed, and the first ambient tick installs nothing when its winner
+    // equals it. Spawn installed its own winner, chosen before the quest-alias
+    // overlays exist, so writing a different snapshot id over it left an
+    // alias package recorded as running with the spawn winner's behavior in
+    // place. Install the snapshot's package for real instead; when that is
+    // not possible yet (the package catalog is not populated), keep the spawn
+    // winner and let the first tick reselect. The procedure markers below
+    // belong to the snapshot's package, so they come back only on top of it:
+    // a `Traveled` laid over a different Travel package would complete it.
+    let package_restored = match snapshot.active_package_form_id {
+        Some(active) => {
+            let spawned = world
+                .get::<AmbientPackageRuntime>(entity)
+                .map(|runtime| runtime.active_package_form_id);
+            match spawned {
+                Some(spawned) if spawned == Some(active) => true,
+                Some(_) => crate::npc_spawn::ai_package::install_package_now(world, entity, active),
+                // No runtime: no ambient system will reselect, and nothing
+                // installed contradicts the markers.
+                None => true,
             }
         }
+        None => true,
+    };
+    restored |= package_restored
+        && snapshot.active_package_form_id.is_some()
+        && world.has::<AmbientPackageRuntime>(entity);
+    if !package_restored {
+        log::debug!(
+            "stream-snapshot: {form_id:08X}'s package {:?} is not installable at respawn; \
+             leaving the spawn winner for the first ambient tick",
+            snapshot.active_package_form_id.map(|id| format!("{id:08X}"))
+        );
     }
 
-    if let Some(destination) = snapshot.travel_destination {
+    if let Some(destination) = snapshot.travel_destination.filter(|_| package_restored) {
         if let Some(mut travels) = world.query_mut::<TravelState>() {
             travels.insert(entity, TravelState { destination });
             restored = true;
         }
     }
-    if snapshot.traveled {
+    if snapshot.traveled && package_restored {
         if let Some(mut done) = world.query_mut::<Traveled>() {
             done.insert(entity, Traveled);
             restored = true;
         }
     }
 
-    if let Some(furniture_form_id) = snapshot.seated_furniture_form_id {
+    if let Some(furniture_form_id) = snapshot
+        .seated_furniture_form_id
+        .filter(|_| package_restored)
+    {
         // Re-resolve by FormID, never by the stored `EntityId` — the
         // furniture's respawned entity has a *different* id, and ids are
         // never recycled, so a verbatim restore would name a dead or wrong

@@ -877,6 +877,48 @@ pub(super) fn apply_ai_package_behavior(
     }
 }
 
+/// #6074 — make `package_form_id` `actor`'s running package now: the handover
+/// `ambient_ai_package_system` performs on a change (clear the old procedure,
+/// install the new one, record its id). Used by the stream-snapshot restore,
+/// whose package — an alias overlay's or a script package's — is not what
+/// spawn selected from the actor's own stack. `false`, with nothing touched,
+/// when the package catalog does not hold the package (yet), the installer
+/// would decline it, or the actor has no ambient runtime.
+pub(crate) fn install_package_now(world: &World, actor: EntityId, package_form_id: u32) -> bool {
+    let Some(actor_form_id) = world
+        .get::<AmbientPackageRuntime>(actor)
+        .map(|runtime| runtime.actor_form_id)
+    else {
+        return false;
+    };
+    let behavior = {
+        let Some(registry) = world.try_resource::<PackageRegistry>() else {
+            return false;
+        };
+        let Some(package) = registry.package(package_form_id) else {
+            return false;
+        };
+        if !selectable_by_installer(package, world) {
+            return false;
+        }
+        let template = package
+            .package_template_form_id
+            .and_then(|form_id| registry.package(form_id))
+            .unwrap_or(package);
+        AmbientBehavior::from_package(package, template, actor_form_id, world)
+    };
+    clear_ambient_behavior(world, actor);
+    if let Some(behavior) = behavior {
+        behavior.insert_at_runtime(world, actor);
+    }
+    if let Some(mut query) = world.query_mut::<AmbientPackageRuntime>() {
+        if let Some(runtime) = query.get_mut(actor) {
+            runtime.active_package_form_id = Some(package_form_id);
+        }
+    }
+    true
+}
+
 /// #4815 — re-seat every ambient package against the *restored* clock and
 /// quest state, before a save load overlays the saved procedure columns.
 ///
@@ -1655,6 +1697,78 @@ mod tests {
             "EvaluatePackageRequest must bypass the minute gate (#3353)"
         );
         assert!(!world.has::<WanderBehavior>(actor));
+    }
+
+    /// #6074 — an actor whose running package came from a quest-alias overlay
+    /// comes back from a stream round trip running that package, not the
+    /// spawn winner. Respawn selects over the actor's own stack (the overlay is
+    /// stamped later), so the snapshot's package has to be installed, not just
+    /// recorded: a recorded id made the first tick see "no change" and leave
+    /// the spawn winner's behavior in place.
+    #[test]
+    fn a_respawned_alias_package_is_installed_not_just_recorded() {
+        use crate::cell_loader::stream_snapshot::{
+            restore_actor_snapshot, ActorStreamSnapshot, StreamStateSnapshots,
+        };
+        use byroredux_core::math::Quat;
+        const ACTOR: u32 = 0x0001_6074;
+        let destination = Vec3::new(4000.0, 0.0, 0.0);
+        let snapshot = ActorStreamSnapshot {
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            active_package_form_id: Some(0x200),
+            travel_destination: Some(destination),
+            traveled: false,
+            seated_furniture_form_id: None,
+            seated_animation_restore: None,
+            seated_marker_idx: None,
+        };
+        let respawn = |catalog: Vec<PackRecord>| {
+            let (mut world, actor) =
+                setup_actor_with_catalog(10.0, vec![pack(0x100, PROCEDURE_WANDER, None)], catalog);
+            assert!(world.has::<WanderBehavior>(actor), "spawn installs its own winner");
+            let mut store = StreamStateSnapshots::default();
+            store.insert(ACTOR, snapshot);
+            world.insert_resource(store);
+            restore_actor_snapshot(&mut world, actor, ACTOR, Vec3::ZERO, Quat::IDENTITY);
+            (world, actor)
+        };
+
+        let (world, actor) = respawn(vec![pack(0x200, PROCEDURE_TRAVEL, None)]);
+        assert!(world.has::<TravelBehavior>(actor));
+        assert!(!world.has::<WanderBehavior>(actor));
+        // The overlay lands on the next Update and the tick confirms it.
+        let mut injected = AliasInjectedData::default();
+        injected.packages.push(0x200);
+        world.query_mut::<QuestAliasInjectedOverlays>().unwrap().insert(
+            actor,
+            QuestAliasInjectedOverlays([((QuestFormId(0x900), 1), injected)].into_iter().collect()),
+        );
+        world
+            .query_mut::<EvaluatePackageRequest>()
+            .unwrap()
+            .insert(actor, EvaluatePackageRequest);
+        ambient_ai_package_system(&world, 0.0);
+        assert!(world.has::<TravelBehavior>(actor), "the alias package keeps running");
+        assert_eq!(
+            world.get::<TravelState>(actor).map(|state| state.destination),
+            Some(destination),
+            "Travel progress resumes on top of the installed package"
+        );
+
+        // A package the catalog does not hold cannot be installed: the spawn
+        // winner stays, unrecorded as anything else, and the snapshot's Travel
+        // markers are not laid over it.
+        let (world, actor) = respawn(Vec::new());
+        assert!(world.has::<WanderBehavior>(actor));
+        assert_eq!(
+            world
+                .get::<AmbientPackageRuntime>(actor)
+                .unwrap()
+                .active_package_form_id,
+            Some(0x100)
+        );
+        assert!(!world.has::<TravelState>(actor));
     }
 
     /// #3333 — un-seating must undo the animation park, not just drop the

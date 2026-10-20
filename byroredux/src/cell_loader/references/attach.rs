@@ -174,6 +174,9 @@ pub(super) fn attach_script_for_refr(
     attached |= attach_vmad_scripts(world, entity, base_form_id, index, refr_script_instance);
 
     if attached {
+        // #6071 — the state an earlier visit left, over the authored
+        // defaults both arms just stamped, before the `OnLoad` below runs.
+        crate::cell_loader::reference_state::restore_script_state(world, entity);
         // M47.0 Phase 5 — emit OnCellLoadEvent on the freshly-attached
         // entity so the script's first-tick init hook fires on the same
         // frame the cell loads. Mirrors Papyrus `OnLoad` semantics. The

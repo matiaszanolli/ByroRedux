@@ -558,7 +558,14 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v112 -> v113 (#4256): `Material` gained the required `source_shader_type` field (the authored
 /// `BSLightingShaderType`, kept apart from the glass-reassignable `material_kind`), so a v112
 /// snapshot's `Material` column no longer decodes.
-pub const FORMAT_MAJOR: u16 = 113;
+///
+/// v113 -> v114 (#6071, #6072, #6073): the parked `ReferenceState` gained the
+/// required `script_package` (an ObScript `AddScriptPackage` slot) and
+/// `corpse_pose` (where a corpse died) fields, and `PersistentReferenceStates`
+/// the required `scripts` rows (a reference's `TwoStateActivator` and
+/// `ScriptVariables`), so an evicted reference keeps its script state, its
+/// script package and its corpse's position.
+pub const FORMAT_MAJOR: u16 = 114;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

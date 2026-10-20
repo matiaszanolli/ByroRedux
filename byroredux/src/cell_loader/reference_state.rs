@@ -52,7 +52,19 @@ struct ReferenceState {
     /// this left a respawned essential NPC standing at ≤ 0 Health, never to
     /// recover. Required: pre-v106 saves are rejected.
     bleedout: Option<byroredux_scripting::Bleedout>,
+    /// #6072 — the ObScript `AddScriptPackage` slot. A constrained script
+    /// package "stays until removed, replaced, evaluated away, or completed"
+    /// (GECK), and an eviction is none of those; without it the respawned
+    /// actor's first package tick fell back to its own schedule. Required:
+    /// pre-v114 saves are rejected.
+    script_package: Option<byroredux_scripting::script_packages::ScriptPackage>,
     dead: bool,
+    /// #6073 — a corpse's root pose (translation, rotation) at eviction. The
+    /// ragdoll never moves the actor root, so this is where it died; the
+    /// respawn otherwise builds it at the authored placement and it dies a
+    /// second time there. `None` for a live actor. Required: pre-v114 saves
+    /// are rejected.
+    corpse_pose: Option<(byroredux_core::math::Vec3, byroredux_core::math::Quat)>,
     /// P3 pickup tombstone: the player picked this placement's item up, so a
     /// respawned copy must come back hidden and uninteractive, not restocked.
     /// Required (not `serde(default)`) — pre-v25 saves are rejected by the
@@ -61,12 +73,27 @@ struct ReferenceState {
     picked_up: bool,
 }
 
+/// #6071 — a reference's script state at eviction. Kept apart from
+/// [`ReferenceState`] because it is consumed at a different boundary: the
+/// script attach ([`restore_script_state`]), which stamps the authored
+/// `TwoStateActivator` and a fresh `ScriptVariables` and runs after
+/// [`restore`] — and which scripted activators, which carry no inventory and
+/// so never reach [`restore`], go through too.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ScriptState {
+    two_state: Option<byroredux_scripting::TwoStateActivator>,
+    variables: Option<byroredux_scripting::ScriptVariables>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct PersistentReferenceStates {
     // JSON cannot encode a struct as an object key. Serialize stable pairs as
     // rows, retaining O(1) lookup in the running engine.
     #[serde(with = "pair_rows")]
     rows: HashMap<FormIdPair, ReferenceState>,
+    /// #6071 — required, like the row fields: pre-v114 saves are rejected.
+    #[serde(with = "pair_rows")]
+    scripts: HashMap<FormIdPair, ScriptState>,
 }
 
 impl Resource for PersistentReferenceStates {}
@@ -96,16 +123,16 @@ pub(crate) fn without_parked_state<T>(
 
 mod pair_rows {
     use super::*;
-    pub(super) fn serialize<S: serde::Serializer>(
-        rows: &HashMap<FormIdPair, ReferenceState>,
+    pub(super) fn serialize<S: serde::Serializer, T: Serialize>(
+        rows: &HashMap<FormIdPair, T>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         rows.iter().collect::<Vec<_>>().serialize(serializer)
     }
-    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
         deserializer: D,
-    ) -> Result<HashMap<FormIdPair, ReferenceState>, D::Error> {
-        let rows = Vec::<(FormIdPair, ReferenceState)>::deserialize(deserializer)?;
+    ) -> Result<HashMap<FormIdPair, T>, D::Error> {
+        let rows = Vec::<(FormIdPair, T)>::deserialize(deserializer)?;
         Ok(rows.into_iter().collect())
     }
 }
@@ -161,13 +188,16 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
                         perks: None,
                         control: None,
                         bleedout: None,
+                        script_package: None,
                         dead: false,
+                        corpse_pose: None,
                         picked_up: false,
                     },
                 ))
             })
             .collect()
     };
+    let scripts = capture_script_states(world, &rows);
     if let Some(dead_q) = world.query::<Dead>() {
         for (entity, _, state) in &mut rows {
             state.dead = dead_q.get(*entity).is_some();
@@ -183,6 +213,18 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
             state.bleedout = bleedout_q.get(*entity).copied();
         }
     }
+    if let Some(package_q) = world.query::<byroredux_scripting::script_packages::ScriptPackage>() {
+        for (entity, _, state) in &mut rows {
+            state.script_package = package_q.get(*entity).copied();
+        }
+    }
+    if let Some(transform_q) = world.query::<byroredux_core::ecs::Transform>() {
+        for (entity, _, state) in rows.iter_mut().filter(|(_, _, state)| state.dead) {
+            state.corpse_pose = transform_q
+                .get(*entity)
+                .map(|transform| (transform.translation, transform.rotation));
+        }
+    }
     let mut live_items: Vec<Option<Vec<ItemStack>>> = vec![None; rows.len()];
     if let Some(inventory_q) = world.query::<Inventory>() {
         for ((entity, _, _), items) in rows.iter().zip(&mut live_items) {
@@ -194,7 +236,12 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
         let instances = world.try_resource::<ItemInstancePool>();
         let mut kept = Vec::with_capacity(rows.len());
         for ((entity, pair, mut state), items) in rows.into_iter().zip(live_items) {
-            if items.is_none() && !state.dead && !state.picked_up && state.bleedout.is_none() {
+            if items.is_none()
+                && !state.dead
+                && !state.picked_up
+                && state.bleedout.is_none()
+                && state.script_package.is_none()
+            {
                 continue;
             }
             let stored = items.map(|items| {
@@ -257,10 +304,68 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
             state.control = control_q.get(*entity).copied();
         }
     }
-    world
-        .resource_mut::<PersistentReferenceStates>()
+    let mut store = world.resource_mut::<PersistentReferenceStates>();
+    store
         .rows
         .extend(rows.into_iter().map(|(_, pair, state)| (pair, state)));
+    store.scripts.extend(scripts);
+}
+
+/// #6071 — the script state of each victim that carries any. Every victim
+/// with an identity qualifies, not only the ones [`capture`] keeps an actor
+/// row for: a lever or a scripted static has no inventory.
+fn capture_script_states(
+    world: &World,
+    rows: &[(EntityId, FormIdPair, ReferenceState)],
+) -> Vec<(FormIdPair, ScriptState)> {
+    let mut states: Vec<(FormIdPair, ScriptState)> = rows
+        .iter()
+        .map(|(_, pair, _)| {
+            (
+                *pair,
+                ScriptState {
+                    two_state: None,
+                    variables: None,
+                },
+            )
+        })
+        .collect();
+    if let Some(two_state_q) = world.query::<byroredux_scripting::TwoStateActivator>() {
+        for ((entity, _, _), (_, state)) in rows.iter().zip(&mut states) {
+            state.two_state = two_state_q.get(*entity).copied();
+        }
+    }
+    if let Some(variables_q) = world.query::<byroredux_scripting::ScriptVariables>() {
+        for ((entity, _, _), (_, state)) in rows.iter().zip(&mut states) {
+            state.variables = variables_q.get(*entity).cloned();
+        }
+    }
+    states.retain(|(_, state)| state.two_state.is_some() || state.variables.is_some());
+    states
+}
+
+/// #6071 — put a respawned reference's script state back. Called by the
+/// script attach after both attach arms ran, so the parked state overwrites
+/// the authored `TwoStateActivator` and the fresh `ScriptVariables` they just
+/// stamped, and before the attach's `OnCellLoadEvent` is consumed, so an
+/// `OnLoad` block sees its own locals. Consumes the row, like [`restore`].
+pub(crate) fn restore_script_state(world: &mut World, entity: EntityId) -> bool {
+    let Some(pair) = identity(world, entity) else {
+        return false;
+    };
+    let Some(state) = world
+        .try_resource_mut::<PersistentReferenceStates>()
+        .and_then(|mut store| store.scripts.remove(&pair))
+    else {
+        return false;
+    };
+    if let Some(two_state) = state.two_state {
+        world.insert(entity, two_state);
+    }
+    if let Some(variables) = state.variables {
+        world.insert(entity, variables);
+    }
+    true
 }
 
 /// Restore after authored inventory/equipment/AI have been attached. Consuming
@@ -322,7 +427,30 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
     if let Some(bleedout) = state.bleedout {
         world.insert(entity, bleedout);
     }
+    // #6072 — before the actor's first ambient tick, which reads the slot
+    // ahead of its own stack.
+    if let Some(script_package) = state.script_package {
+        world.insert(entity, script_package);
+    }
     if state.dead {
+        // #6073 — the root back where the actor died, before the Late
+        // reconcile seeds the ragdoll from it. Same divergence rule as the
+        // stream snapshot, so a corpse that never left its placement is left
+        // exactly on the authored pose.
+        if let Some((translation, rotation)) = state.corpse_pose {
+            if let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::Transform>() {
+                if let Some(transform) = transforms.get_mut(entity) {
+                    if translation.distance(transform.translation)
+                        > super::stream_snapshot::POSITION_DIVERGENCE_EPSILON
+                    {
+                        transform.translation = translation;
+                    }
+                    if !super::stream_snapshot::rotation_matches(rotation, transform.rotation) {
+                        transform.rotation = rotation;
+                    }
+                }
+            }
+        }
         world.insert(entity, Dead);
         // #5267 (GAME-D4-2026-10-05-01) — queue the death teardown for the
         // Late-stage sink (`reconcile_pending_dead_actors_system`) instead
@@ -662,6 +790,9 @@ pub(crate) fn restore_resident(world: &mut World) -> usize {
         if restore(world, entity) {
             applied += 1;
         }
+        if restore_script_state(world, entity) {
+            applied += 1;
+        }
     }
     applied
 }
@@ -711,6 +842,13 @@ pub(crate) fn park_unresolved_snapshot_rows(
     let mut controls =
         column::<byroredux_scripting::ActorControlState>(snapshot, "ActorControlState");
     let mut bleedouts = column::<byroredux_scripting::Bleedout>(snapshot, "Bleedout");
+    let mut script_packages =
+        column::<byroredux_scripting::script_packages::ScriptPackage>(snapshot, "ScriptPackage");
+    let mut transforms = column::<byroredux_core::ecs::Transform>(snapshot, "Transform");
+    let mut two_states =
+        column::<byroredux_scripting::TwoStateActivator>(snapshot, "TwoStateActivator");
+    let mut variables =
+        column::<byroredux_scripting::ScriptVariables>(snapshot, "ScriptVariables");
     let dead = column::<Dead>(snapshot, "Dead");
 
     // One resource guard at a time (#4982): read the store's keys, drop it,
@@ -722,6 +860,18 @@ pub(crate) fn park_unresolved_snapshot_rows(
         .copied()
         .collect();
     let mut parked = Vec::new();
+    // #6071 — the script half parks for every unresolved reference that has
+    // one, independent of the actor row's keep rule below.
+    let parked_scripts: Vec<(FormIdPair, ScriptState)> = unresolved
+        .iter()
+        .filter_map(|&(old, pair)| {
+            let state = ScriptState {
+                two_state: two_states.remove(&old),
+                variables: variables.remove(&old),
+            };
+            (state.two_state.is_some() || state.variables.is_some()).then_some((pair, state))
+        })
+        .collect();
     {
         let mut pool = world.try_resource_mut::<ItemInstancePool>();
         for &(old, pair) in unresolved {
@@ -731,10 +881,12 @@ pub(crate) fn park_unresolved_snapshot_rows(
             // scripted wake-up outlives the spawn-time "Starts Unconscious".
             let has_control = controls.contains_key(&old);
             let has_bleedout = bleedouts.contains_key(&old);
+            let has_script_package = script_packages.contains_key(&old);
             if items.is_none()
                 && !is_dead
                 && !has_control
                 && !has_bleedout
+                && !has_script_package
                 && !already_parked.contains(&pair)
             {
                 continue;
@@ -778,7 +930,12 @@ pub(crate) fn park_unresolved_snapshot_rows(
                     perks: perks.remove(&old),
                     control: controls.remove(&old),
                     bleedout: bleedouts.remove(&old),
+                    script_package: script_packages.remove(&old),
                     dead: is_dead,
+                    corpse_pose: transforms
+                        .remove(&old)
+                        .filter(|_| is_dead)
+                        .map(|transform| (transform.translation, transform.rotation)),
                     picked_up: false,
                 },
             ));
@@ -798,6 +955,8 @@ pub(crate) fn park_unresolved_snapshot_rows(
             }
         }
     }
+    let count = count + parked_scripts.len();
+    store.scripts.extend(parked_scripts);
     count
 }
 
@@ -830,7 +989,9 @@ pub(crate) fn mark_picked_up(world: &World, entity: EntityId) {
                     perks: None,
                     control: None,
                     bleedout: None,
+                    script_package: None,
                     dead: false,
+                    corpse_pose: None,
                     picked_up: true,
                 },
             );
@@ -1535,6 +1696,165 @@ mod tests {
             dst.get::<Bleedout>(down).map(|state| state.remaining_secs),
             Some(Some(7.0))
         );
+    }
+
+    /// #6071 — an opened two-state lever and an object script's local outlive
+    /// the eviction. The respawn's script attach stamps the authored
+    /// (closed, never-activated) state and a fresh local set; the parked row
+    /// then puts the visit's state back over them. The lever has no inventory,
+    /// so this row is one [`restore`] would never have reached.
+    #[test]
+    fn script_state_survives_eviction_over_the_attach_defaults() {
+        use byroredux_scripting::{ScriptVariables, TwoStateActivator};
+        let mut world = world();
+        world.register::<TwoStateActivator>();
+        world.register::<ScriptVariables>();
+        let authored = TwoStateActivator {
+            is_open: false,
+            is_animating: false,
+            do_once: true,
+            activated_once: false,
+        };
+        let lever = reference(&mut world, "Skyrim.esm", 0x800);
+        world.insert(
+            lever,
+            TwoStateActivator {
+                is_open: true,
+                activated_once: true,
+                ..authored
+            },
+        );
+        let mut locals = ScriptVariables::default();
+        locals.set_by_name("bDone", 1.0);
+        world.insert(lever, locals);
+        let untouched = reference(&mut world, "Skyrim.esm", 0x801);
+        evict(&mut world, &[lever, untouched]);
+        assert_eq!(
+            world.resource::<PersistentReferenceStates>().scripts.len(),
+            1,
+            "a reference with no script state parks no script row"
+        );
+
+        // Respawn: the attach stamps the authored defaults, then restores.
+        let lever = reference(&mut world, "Skyrim.esm", 0x800);
+        world.insert(lever, authored);
+        world.insert(lever, ScriptVariables::default());
+        assert!(!restore(&mut world, lever), "no actor row was parked");
+        assert!(restore_script_state(&mut world, lever));
+        let state = world.get::<TwoStateActivator>(lever).map(|state| *state);
+        assert_eq!(state.map(|s| (s.is_open, s.activated_once)), Some((true, true)));
+        assert_eq!(
+            world.get::<ScriptVariables>(lever).unwrap().get_by_name("bDone"),
+            Some(1.0)
+        );
+        assert!(!restore_script_state(&mut world, lever), "the row is consumed");
+    }
+
+    /// #6071 — the save-reload park path carries the script half too, for a
+    /// reference with no actor row at all.
+    #[test]
+    fn an_unresolved_script_state_is_parked_for_the_next_respawn() {
+        use byroredux_scripting::{ScriptVariables, TwoStateActivator};
+        let mut src = world();
+        src.register::<TwoStateActivator>();
+        src.register::<ScriptVariables>();
+        src.insert_resource(byroredux_core::string::StringPool::new());
+        let gate = reference(&mut src, "Band.esm", 0x410);
+        src.insert(
+            gate,
+            TwoStateActivator {
+                is_open: true,
+                is_animating: false,
+                do_once: false,
+                activated_once: true,
+            },
+        );
+        let registry = crate::save_io::build_save_registry();
+        let snapshot = byroredux_save::save_world(&src, &registry).unwrap();
+        let bytes = byroredux_save::encode(&snapshot, registry.schema_fingerprint()).unwrap();
+        let decoded = byroredux_save::decode(&bytes, registry.schema_fingerprint()).unwrap();
+
+        let mut dst = world();
+        dst.register::<TwoStateActivator>();
+        dst.register::<ScriptVariables>();
+        byroredux_save::restore_resources(&mut dst, &registry, &decoded).unwrap();
+        let remap = byroredux_save::build_form_id_remap(&dst, &registry, &decoded);
+        let unresolved = byroredux_save::unresolved_form_id_pairs(&registry, &decoded, &remap);
+        assert_eq!(park_unresolved_snapshot_rows(&mut dst, &decoded, &unresolved), 1);
+
+        let gate = reference(&mut dst, "Band.esm", 0x410);
+        assert!(restore_script_state(&mut dst, gate));
+        assert!(dst.get::<TwoStateActivator>(gate).is_some_and(|state| state.is_open));
+    }
+
+    /// #6072 — a script package outlives the eviction, so the respawned
+    /// actor's first package tick still reads the slot ahead of its schedule.
+    #[test]
+    fn a_script_package_survives_eviction() {
+        use byroredux_scripting::script_packages::ScriptPackage;
+        let mut world = world();
+        world.register::<ScriptPackage>();
+        let courier = reference(&mut world, "FalloutNV.esm", 0x900);
+        world.insert(courier, Inventory::new());
+        let slot = ScriptPackage {
+            package: 0x0012_3456,
+            constrained: true,
+            running_secs: Some(42.0),
+        };
+        world.insert(courier, slot);
+        evict(&mut world, &[courier]);
+
+        let courier = reference(&mut world, "FalloutNV.esm", 0x900);
+        world.insert(courier, Inventory::new());
+        assert!(world.get::<ScriptPackage>(courier).is_none());
+        assert!(restore(&mut world, courier));
+        assert_eq!(world.get::<ScriptPackage>(courier).map(|s| *s), Some(slot));
+    }
+
+    /// #6073 — a corpse comes back where it died, not at its authored
+    /// placement; one that died on its placement is left on the authored pose.
+    #[test]
+    fn a_displaced_corpse_comes_back_where_it_died() {
+        use byroredux_core::ecs::Transform;
+        use byroredux_core::math::{Quat, Vec3};
+        let mut world = world();
+        world.register::<Transform>();
+        world.insert_resource(crate::combat::PendingDeathReconciliations::default());
+        let authored = Transform::new(Vec3::new(100.0, 0.0, 50.0), Quat::IDENTITY, 1.0);
+        let fell_at = Transform::new(
+            Vec3::new(2400.0, 10.0, 50.0),
+            Quat::from_rotation_y(1.2),
+            1.0,
+        );
+        let corpse = reference(&mut world, "FalloutNV.esm", 0x910);
+        world.insert(corpse, Inventory::new());
+        world.insert(corpse, Dead);
+        world.insert(corpse, fell_at);
+        let in_place = reference(&mut world, "FalloutNV.esm", 0x911);
+        world.insert(in_place, Inventory::new());
+        world.insert(in_place, Dead);
+        let nudged = Vec3::new(101.0, 0.0, 50.0);
+        world.insert(in_place, Transform::new(nudged, Quat::IDENTITY, 1.0));
+        evict(&mut world, &[corpse, in_place]);
+
+        let corpse = reference(&mut world, "FalloutNV.esm", 0x910);
+        world.insert(corpse, Inventory::new());
+        world.insert(corpse, authored);
+        let in_place = reference(&mut world, "FalloutNV.esm", 0x911);
+        world.insert(in_place, Inventory::new());
+        world.insert(in_place, authored);
+        assert!(restore(&mut world, corpse));
+        assert!(restore(&mut world, in_place));
+
+        let restored = world.get::<Transform>(corpse).map(|t| *t).unwrap();
+        assert_eq!(restored.translation, fell_at.translation);
+        assert_eq!(restored.rotation, fell_at.rotation);
+        assert_eq!(
+            world.get::<Transform>(in_place).map(|t| t.translation),
+            Some(authored.translation),
+            "inside the divergence epsilon the authored pose stays"
+        );
+        assert!(world.get::<Dead>(corpse).is_some());
     }
 
     /// #4814 — an authored "Starts Dead" actor is `Dead` at spawn completion
