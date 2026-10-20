@@ -398,9 +398,25 @@ rule. The 28 left after it: Liberty Prime's furniture (13), vertibird (3),
 power armor (6, three files), eyebot (2), createabot (2), mirelurk queen (1),
 bloatfly (1). The importer still reads every pivot in the body's own frame; the
 reading above is evidence, not wired behaviour (no live ragdoll check exists
-for FO4, #6070). The per-body material and motion-property rows (friction,
-restitution, damping) are present but their field identities are not
-established, so bodies take the values the Skyrim humanoid ragdoll authors.
+for FO4, #6070).
+
+**Friction, restitution and damping (#6066).** Each body takes them from the
+blob's material row (`hknpRagdollData+16`, 80 B) and motion-property row
+(`+32`, 64 B), both indexed by the body's *motion* index (`+12` of its row).
+The material holds three Havok halves (the upper 16 bits of an `f32`) at
+`+18/+20/+22`: dynamic friction, static friction, restitution; the motion
+property holds linear then angular damping as whole `f32`s at `+24/+28`.
+Pinned by varying evidence over the 986 vanilla bodies: the two friction halves
+are equal on every body; the body a skeleton leaves at the authoring defaults
+(88 in the corpus) reads exactly the Skyrim `bhkRigidBody` defaults — friction
+0.3, restitution 0.8 — and 84 of them carry damping 0.1 / 0.05 in the linear,
+angular order, none the reverse; and left/right mirror bones carry identical
+rows in 570 of 574 pairs under the motion index (514 of 566 when the same
+rows are read by body index, a probe over all decoded bodies). The human rig is friction 0.6, restitution 0.2, damping 0.4 / 0.6 — not
+the Skyrim humanoid's 0.3 / 0.8 / 0.1 / 0.05 the importer used before; those
+remain the fallback for a blob with no readable rows. The upper half of the
+material row's third word (`0.0498` on every body) is not identified and not
+read.
 
 ### Active (motorised) ragdoll — **data captured, simulation deferred**
 

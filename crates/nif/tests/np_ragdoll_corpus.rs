@@ -277,3 +277,170 @@ fn every_fo4_ragdoll_body_has_a_shape_whose_volume_times_density_is_its_mass() {
     assert!(hulls >= 50 && compounds >= 5, "{hulls} hulls, {compounds} compounds");
     assert!(checked >= 940, "only {checked} masses had a closed-form volume to check");
 }
+
+/// The left/right mirror of a bone name (`LLeg_Thigh` ↔ `RLeg_Thigh`, `LArm…`,
+/// `…Left…`), or `None` for a bone with no mirror.
+fn mirrored(name: &str) -> Option<String> {
+    for (a, b) in [
+        ("LLeg", "RLeg"),
+        ("RLeg", "LLeg"),
+        ("LArm", "RArm"),
+        ("RArm", "LArm"),
+        ("_L_", "_R_"),
+        ("_R_", "_L_"),
+        ("Left", "Right"),
+        ("Right", "Left"),
+        ("LFront", "RFront"),
+        ("RFront", "LFront"),
+        ("LRear", "RRear"),
+        ("RRear", "LRear"),
+    ] {
+        if name.contains(a) {
+            return Some(name.replacen(a, b, 1));
+        }
+    }
+    let mut chars = name.chars();
+    match (chars.next(), chars.next()) {
+        (Some('L'), Some(c)) if c.is_uppercase() => Some(format!("R{}", &name[1..])),
+        (Some('R'), Some(c)) if c.is_uppercase() => Some(format!("L{}", &name[1..])),
+        _ => None,
+    }
+}
+
+/// #6066 — friction, restitution and damping, read from the material and
+/// motion-property rows and identified by varying evidence over every vanilla
+/// skeleton:
+///
+/// - every one of the 986 bodies has readable rows, and the material's two
+///   friction halves are equal on all of them;
+/// - the body each of a handful of skeletons leaves at the authoring tool's
+///   defaults reads friction 0.3 / restitution 0.8 (the Skyrim `bhkRigidBody`
+///   defaults) *and* damping 0.1 linear / 0.05 angular — the pairing that pins
+///   which damping field is which (84 of the 88 default-material bodies carry
+///   it, none carries the reverse);
+/// - the rows follow the body's motion index: left/right mirror bones carry
+///   identical rows in 562 of 566 pairs under it, 514 under the body index.
+///
+/// Measured 2026-10-20.
+#[test]
+#[ignore = "needs Fallout 4 game data on disk"]
+fn every_fo4_ragdoll_body_reads_friction_restitution_and_damping() {
+    let Some(archives) = open_all_mesh_archives(Game::Fallout4) else {
+        return;
+    };
+    let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+    let (mut bodies, mut readable, mut unequal_friction) = (0usize, 0usize, 0usize);
+    let (mut default_material, mut default_damping_forward, mut default_damping_reverse) = (0usize, 0usize, 0usize);
+    let (mut pairs, mut agreeing) = (0usize, 0usize);
+    for (_, archive) in &archives {
+        for file in archive.list_files() {
+            let lower = file.to_ascii_lowercase();
+            if !byroredux_nif::corpus::is_nif_entry(&lower) || !lower.starts_with("meshes\\actors") {
+                continue;
+            }
+            let Ok(bytes) = archive.extract(&file) else { continue };
+            let Ok(scene) = byroredux_nif::parse_nif(&bytes) else { continue };
+            for block in &scene.blocks {
+                let Some(system) = block.as_any().downcast_ref::<BhkSystemBinary>() else { continue };
+                if system.type_name != "bhkRagdollSystem" {
+                    continue;
+                }
+                let Ok(ragdoll) = decode_np_ragdoll(&system.data) else { continue };
+                for body in &ragdoll.bodies {
+                    bodies += 1;
+                    let Some(p) = body.properties else { continue };
+                    readable += 1;
+                    if p.friction != p.static_friction {
+                        unequal_friction += 1;
+                    }
+                    if near(p.friction, 0.3) && near(p.restitution, 0.8) {
+                        default_material += 1;
+                        if near(p.linear_damping, 0.1) && near(p.angular_damping, 0.05) {
+                            default_damping_forward += 1;
+                        }
+                        if near(p.linear_damping, 0.05) && near(p.angular_damping, 0.1) {
+                            default_damping_reverse += 1;
+                        }
+                    }
+                }
+            }
+            // Mirror bones of one skeleton carry the same rows (the import names bones).
+            if let Some(imported) = byroredux_nif::import::collision::extract_ragdoll(&scene) {
+                let by_name: std::collections::HashMap<&str, [f32; 4]> = imported
+                    .bodies
+                    .iter()
+                    .map(|b| (&*b.bone_name, [b.friction, b.restitution, b.linear_damping, b.angular_damping]))
+                    .collect();
+                for (name, tuple) in &by_name {
+                    if let Some(other) = mirrored(name).and_then(|m| by_name.get(m.as_str()).copied()) {
+                        pairs += 1;
+                        agreeing += usize::from(other == *tuple);
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "[fo4] {bodies} bodies, {readable} with readable rows, {unequal_friction} with unequal friction halves; \
+         {default_material} default-material bodies, {default_damping_forward} with damping 0.1/0.05 and \
+         {default_damping_reverse} with the reverse; {agreeing} of {pairs} mirror pairs identical"
+    );
+    assert!(bodies >= 980, "{bodies} bodies");
+    assert_eq!(readable, bodies, "every vanilla body has readable material and damping rows");
+    assert_eq!(unequal_friction, 0, "dynamic and static friction are equal on every body");
+    assert!(default_material >= 80, "{default_material} default-material bodies");
+    assert_eq!(default_damping_reverse, 0, "no default-material body carries the reversed pair");
+    assert!(
+        default_damping_forward * 100 >= default_material * 90,
+        "{default_damping_forward} of {default_material} default-material bodies carry linear 0.1 / angular 0.05"
+    );
+    assert!(pairs >= 400 && agreeing * 100 >= pairs * 97, "{agreeing} of {pairs} mirror pairs are identical");
+}
+
+/// #6066 — the human rig's values (identical on all 18 bodies) and a creature
+/// rig's, where one body keeps the defaults.
+#[test]
+#[ignore = "needs Fallout 4 game data on disk"]
+fn the_human_and_deathclaw_rigs_carry_their_authored_values() {
+    let Some(archives) = open_all_mesh_archives(Game::Fallout4) else {
+        return;
+    };
+    let import = |path: &str| {
+        let bytes = archives
+            .iter()
+            .find_map(|(_, a)| a.extract(path).ok())
+            .unwrap_or_else(|| panic!("{path}"));
+        let scene = byroredux_nif::parse_nif(&bytes).expect("parses");
+        byroredux_nif::import::collision::extract_ragdoll(&scene).expect("a ragdoll")
+    };
+    let close = |a: f32, b: f32| (a - b).abs() < 0.005;
+
+    let human = import("meshes\\actors\\character\\characterassets\\skeleton.nif");
+    assert_eq!(human.bodies.len(), 18);
+    for b in &human.bodies {
+        assert!(
+            close(b.friction, 0.6) && close(b.restitution, 0.2) && close(b.linear_damping, 0.4) && close(b.angular_damping, 0.6),
+            "{}: friction {} restitution {} damping {} / {}",
+            b.bone_name,
+            b.friction,
+            b.restitution,
+            b.linear_damping,
+            b.angular_damping
+        );
+    }
+
+    let deathclaw = import("meshes\\actors\\deathclaw\\characterassets\\skeleton.nif");
+    let defaults: Vec<&str> = deathclaw
+        .bodies
+        .iter()
+        .filter(|b| close(b.friction, 0.3) && close(b.restitution, 0.8))
+        .map(|b| &*b.bone_name)
+        .collect();
+    assert_eq!(defaults.len(), 1, "one body keeps the authoring defaults: {defaults:?}");
+    let kept = deathclaw.bodies.iter().find(|b| &*b.bone_name == defaults[0]).unwrap();
+    assert!(close(kept.linear_damping, 0.1) && close(kept.angular_damping, 0.05));
+    assert!(
+        deathclaw.bodies.iter().filter(|b| &*b.bone_name != defaults[0]).all(|b| close(b.friction, 0.6) && close(b.restitution, 0.2)),
+        "the other 27 carry the creature values"
+    );
+}

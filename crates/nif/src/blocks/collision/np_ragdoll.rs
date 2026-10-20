@@ -37,14 +37,24 @@
 //!   compound data object stores each child's padded bounds, and only the
 //!   column reading reproduces them for the rotated children.
 //!
-//! The per-body material and motion-property rows (friction, restitution,
-//! damping) are present but their field identities are not established, so
-//! they are not read.
+//! - **Material and motion-property rows** (#6066), identified by varying
+//!   evidence over the 986 vanilla bodies. The material row's three upper-half
+//!   floats at `+18/+20/+22` are dynamic friction, static friction and
+//!   restitution: the first two are equal on every body, and the body each
+//!   skeleton leaves at the authoring tool's defaults (a deathclaw's, a
+//!   radscorpion's, 88 in all) reads exactly the Skyrim `bhkRigidBody` defaults
+//!   — friction 0.3, restitution 0.8. The motion-property row's `f32`s at
+//!   `+24/+28` are linear and angular damping: 84 of those 88 default-material
+//!   bodies carry `0.1 / 0.05` in that order and none carries the reverse. Both
+//!   row arrays are indexed by the body's **motion** index (`+12`), not its body
+//!   index: left/right mirror bones carry identical rows in 570 of 574 pairs
+//!   under the motion index (514 of 566 when the rows are read by body index).
 //!
 //! ## Layout (little-endian, 64-bit pointers, all offsets within `__data__`)
 //!
 //! `hknpRagdollData` at the first object. Its `hkArray` members (pointer at
 //! `+0`, element count at `+8`) sit at `+16 + 16·i`; the ones used are
+//! `+16` (material rows, 80 B), `+32` (motion-property rows, 64 B),
 //! `+48` (motion rows, 112 B), `+64` (body rows, 96 B) and `+80` (joint rows,
 //! 24 B). A body row holds the shape pointer (`+0`), the motion-row index
 //! (`+12`), the skeleton bone id (`+21`, a `u8`), the position (`+48`, three `f32`) and the orientation (`+64`, an
@@ -62,11 +72,22 @@ use super::constraints::{LimitedHingeCInfo, RagdollCInfo};
 use super::havok_packfile::{parse_havok_packfile, HavokPackfile};
 
 /// `hknpRagdollData` header: `hkArray` member offsets.
+const MATERIALS_ARRAY: usize = 16;
+const MOTION_PROPERTIES_ARRAY: usize = 32;
 const MOTIONS_ARRAY: usize = 48;
 const BODIES_ARRAY: usize = 64;
 const JOINTS_ARRAY: usize = 80;
 const BODY_ROW: usize = 96;
+const MATERIAL_ROW: usize = 80;
+const MOTION_PROPERTIES_ROW: usize = 64;
 const MOTION_ROW: usize = 112;
+/// Material row: the upper 16 bits of an `f32` (a Havok half) at each of these.
+const MATERIAL_DYNAMIC_FRICTION: usize = 18;
+const MATERIAL_STATIC_FRICTION: usize = 20;
+const MATERIAL_RESTITUTION: usize = 22;
+/// Motion-property row: whole `f32`s.
+const PROPERTIES_LINEAR_DAMPING: usize = 24;
+const PROPERTIES_ANGULAR_DAMPING: usize = 28;
 const JOINT_ROW: usize = 24;
 
 /// `hknpConvexPolytopeShape`: the vertex-array member and its row size.
@@ -137,6 +158,19 @@ pub struct NpCompoundChild {
     pub shape: Box<NpShape>,
 }
 
+/// What a body's material and motion-property rows say about how it moves and
+/// touches (#6066).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NpBodyProperties {
+    /// The material's dynamic friction; the static value is equal on every
+    /// vanilla body and kept beside it as the evidence.
+    pub friction: f32,
+    pub static_friction: f32,
+    pub restitution: f32,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+}
+
 /// One ragdoll body (`hknpBodyCinfo` row).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NpRagdollBody {
@@ -154,6 +188,10 @@ pub struct NpRagdollBody {
     /// `None` for a shape class this decoder does not read (compounds); the
     /// body cannot be built.
     pub shape: Option<NpShape>,
+    /// Friction, restitution and damping from the rows the body's motion index
+    /// names; `None` when the blob carries no such rows or they hold a
+    /// non-finite or negative value.
+    pub properties: Option<NpBodyProperties>,
     /// Bind-pose position in skeleton-root space (Havok metres, Z-up).
     pub position: [f32; 3],
     /// Bind-pose orientation `[x, y, z, w]` in skeleton-root space.
@@ -299,6 +337,9 @@ pub fn decode_np_ragdoll(blob: &[u8]) -> io::Result<NpRagdoll> {
         }
         Ok((base, count))
     };
+    let (materials, material_count) = array(MATERIALS_ARRAY, MATERIAL_ROW)?;
+    let (motion_properties, motion_properties_count) =
+        array(MOTION_PROPERTIES_ARRAY, MOTION_PROPERTIES_ROW)?;
     let (motions, motion_count) = array(MOTIONS_ARRAY, MOTION_ROW)?;
     let (body_rows, body_count) = array(BODIES_ARRAY, BODY_ROW)?;
     let (joint_rows, joint_count) = array(JOINTS_ARRAY, JOINT_ROW)?;
@@ -322,6 +363,15 @@ pub fn decode_np_ragdoll(blob: &[u8]) -> io::Result<NpRagdoll> {
                 .get(row + 21)
                 .ok_or_else(|| invalid("np ragdoll: truncated"))?,
             shape: fixups.pointer(row).and_then(|at| read_shape(&fixups, &data, at)),
+            properties: (motion < material_count && motion < motion_properties_count)
+                .then(|| {
+                    read_properties(
+                        &data,
+                        materials + motion * MATERIAL_ROW,
+                        motion_properties + motion * MOTION_PROPERTIES_ROW,
+                    )
+                })
+                .flatten(),
             position: data.vec3(row + 48)?,
             rotation: [
                 data.f32(row + 64)?,
@@ -356,6 +406,33 @@ pub fn decode_np_ragdoll(blob: &[u8]) -> io::Result<NpRagdoll> {
         constraints,
         skipped_constraints,
     })
+}
+
+/// A Havok half: the upper 16 bits of an `f32`, stored as a `u16`.
+fn half(data: &Data<'_>, at: usize) -> io::Result<f32> {
+    Ok(f32::from_bits(u32::from(data.u16(at)?) << 16))
+}
+
+/// A body's material row at `material` and motion-property row at `motion`,
+/// or `None` for a value that is not a finite non-negative number.
+fn read_properties(data: &Data<'_>, material: usize, motion: usize) -> Option<NpBodyProperties> {
+    let properties = NpBodyProperties {
+        friction: half(data, material + MATERIAL_DYNAMIC_FRICTION).ok()?,
+        static_friction: half(data, material + MATERIAL_STATIC_FRICTION).ok()?,
+        restitution: half(data, material + MATERIAL_RESTITUTION).ok()?,
+        linear_damping: data.f32(motion + PROPERTIES_LINEAR_DAMPING).ok()?,
+        angular_damping: data.f32(motion + PROPERTIES_ANGULAR_DAMPING).ok()?,
+    };
+    [
+        properties.friction,
+        properties.static_friction,
+        properties.restitution,
+        properties.linear_damping,
+        properties.angular_damping,
+    ]
+    .iter()
+    .all(|v| v.is_finite() && *v >= 0.0)
+    .then_some(properties)
 }
 
 /// Read a body's shape object, or `None` for a class this decoder does not
@@ -731,6 +808,85 @@ mod tests {
             .expect("decodes");
         assert!(r.bodies[0].shape.is_some());
         assert_eq!(r.bodies[1].shape, None);
+    }
+
+    /// Write the two property arrays into the scratch region: one material row
+    /// and one motion-property row per motion, as `(dynamic friction, static
+    /// friction, restitution)` halves and `(linear, angular)` damping.
+    fn write_properties(d: &mut [u8], rows: [([f32; 3], [f32; 2]); 2]) -> Extras {
+        const MATERIALS: usize = EXTRA;
+        const PROPERTIES: usize = EXTRA + 2 * MATERIAL_ROW;
+        for (i, (material, damping)) in rows.into_iter().enumerate() {
+            for (at, v) in [
+                (MATERIAL_DYNAMIC_FRICTION, material[0]),
+                (MATERIAL_STATIC_FRICTION, material[1]),
+                (MATERIAL_RESTITUTION, material[2]),
+            ] {
+                put_u16_at(d, MATERIALS + i * MATERIAL_ROW + at, (v.to_bits() >> 16) as u16);
+            }
+            put_f32(d, PROPERTIES + i * MOTION_PROPERTIES_ROW + PROPERTIES_LINEAR_DAMPING, damping[0]);
+            put_f32(d, PROPERTIES + i * MOTION_PROPERTIES_ROW + PROPERTIES_ANGULAR_DAMPING, damping[1]);
+        }
+        put_u32(d, ROOT + MATERIALS_ARRAY + 8, 2);
+        put_u32(d, ROOT + MOTION_PROPERTIES_ARRAY + 8, 2);
+        Extras {
+            locals: vec![
+                LocalFixup { src_offset: (ROOT + MATERIALS_ARRAY) as u32, dst_offset: MATERIALS as u32 },
+                LocalFixup { src_offset: (ROOT + MOTION_PROPERTIES_ARRAY) as u32, dst_offset: PROPERTIES as u32 },
+            ],
+            ..Extras::default()
+        }
+    }
+
+    /// #6066 — friction, restitution and damping come from the rows the body's
+    /// motion index names (Havok halves for the material, whole floats for the
+    /// damping); a blob with no such rows leaves them `None`.
+    #[test]
+    fn a_body_reads_its_material_and_damping_rows_by_motion_index() {
+        let rows = [([0.5, 0.5, 0.25], [0.1, 0.05]), ([1.0, 1.0, 0.0], [0.5, 0.75])];
+        let blob = fixture_with("hknpCapsuleShape", ATOM_ANGULAR_FRICTION, [2, 2, 1], |d| {
+            // Body 0 names motion 1 and body 1 names motion 0: the rows follow the
+            // motion index, not the body index.
+            put_u32(d, BODIES + 12, 1);
+            put_u32(d, BODIES + BODY_ROW + 12, 0);
+            write_properties(d, rows)
+        });
+        let r = decode_np_ragdoll(&blob).expect("decodes");
+        assert_eq!(
+            r.bodies[0].properties,
+            Some(NpBodyProperties {
+                friction: 1.0,
+                static_friction: 1.0,
+                restitution: 0.0,
+                linear_damping: 0.5,
+                angular_damping: 0.75,
+            })
+        );
+        assert_eq!(
+            r.bodies[1].properties,
+            Some(NpBodyProperties {
+                friction: 0.5,
+                static_friction: 0.5,
+                restitution: 0.25,
+                linear_damping: 0.1,
+                angular_damping: 0.05,
+            })
+        );
+        assert_eq!(decode_np_ragdoll(&good()).unwrap().bodies[0].properties, None);
+    }
+
+    /// A non-finite or negative value refuses the body's properties rather than
+    /// feeding the solver a poisoned coefficient.
+    #[test]
+    fn non_finite_or_negative_properties_are_refused() {
+        for bad in [f32::NAN, f32::INFINITY, -0.5] {
+            let blob = fixture_with("hknpCapsuleShape", ATOM_ANGULAR_FRICTION, [2, 2, 1], |d| {
+                write_properties(d, [([0.5, 0.5, 0.2], [bad, 0.05]), ([0.5, 0.5, 0.2], [0.1, 0.05])])
+            });
+            let r = decode_np_ragdoll(&blob).expect("decodes");
+            assert_eq!(r.bodies[0].properties, None, "{bad}");
+            assert!(r.bodies[1].properties.is_some());
+        }
     }
 
     /// A constraint whose atom ids are not the ones the layout expects is

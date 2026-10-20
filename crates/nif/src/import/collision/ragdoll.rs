@@ -332,11 +332,10 @@ fn try_breakable_joint(
     Some((body_a, body_b, kind))
 }
 
-/// The values every FO4 ragdoll body takes for what its blob stores in rows
-/// whose fields are not identified (material and motion properties — see
-/// [`crate::blocks::collision::np_ragdoll`]): the ones the Skyrim humanoid
-/// ragdoll authors on every body but the head. Mass, shape, pose and joints
-/// are decoded; these four are not.
+/// The values an FO4 ragdoll body takes when its blob carries no readable
+/// material / motion-property rows (#6066 decodes them — see
+/// [`crate::blocks::collision::np_ragdoll`]; every vanilla body has them): the
+/// ones the Skyrim humanoid ragdoll authors on every body but the head.
 const NP_LINEAR_DAMPING: f32 = 0.099_609_375;
 const NP_ANGULAR_DAMPING: f32 = 0.049_804_688;
 const NP_FRICTION: f32 = 0.3;
@@ -419,13 +418,14 @@ pub(super) fn extract_np_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
             }
         };
         blob_to_body.insert(body.index, bodies.len());
+        let properties = body.properties.as_ref();
         bodies.push(ImportedRagdollBody {
             bone_name,
             mass,
-            linear_damping: NP_LINEAR_DAMPING,
-            angular_damping: NP_ANGULAR_DAMPING,
-            friction: NP_FRICTION,
-            restitution: NP_RESTITUTION,
+            linear_damping: properties.map_or(NP_LINEAR_DAMPING, |p| p.linear_damping),
+            angular_damping: properties.map_or(NP_ANGULAR_DAMPING, |p| p.angular_damping),
+            friction: properties.map_or(NP_FRICTION, |p| p.friction),
+            restitution: properties.map_or(NP_RESTITUTION, |p| p.restitution),
             shape,
             translation,
             rotation,
