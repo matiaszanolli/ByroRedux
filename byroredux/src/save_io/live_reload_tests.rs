@@ -651,6 +651,107 @@ fn pre_reload_restore_installs_the_scripted_faction_ledger() {
     );
 }
 
+/// #6081 — a load refused at its pre-teardown preflight keeps the live
+/// session, so the pre-reload restore (which overwrites the four ledgers with
+/// the save's) must be undone: the player keeps their own `Disable()`, lock,
+/// once-only and scripted-faction entries.
+#[test]
+fn an_aborted_load_hands_the_live_ledgers_back() {
+    use byroredux_scripting::{
+        ReferenceEnableState, ReferenceLockState, ReferenceScriptState, ScriptedFactionChanges,
+    };
+
+    let reg = build_save_registry();
+    let make = |reference: u32| {
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        world.insert_resource(FormIdPool::new());
+        let mut enable = ReferenceEnableState::default();
+        enable.set_enabled(reference, false);
+        let mut lock = ReferenceLockState::default();
+        lock.set_locked(reference, 50, None);
+        let mut script = ReferenceScriptState::default();
+        script.park(reference);
+        let mut factions = ScriptedFactionChanges::default();
+        factions.record(reference, 0x0DB1, Some(0));
+        world.insert_resource(enable);
+        world.insert_resource(lock);
+        world.insert_resource(script);
+        world.insert_resource(factions);
+        world
+    };
+
+    // The save's timeline touched reference 0x10; the live session's, 0x20.
+    let saved = save_world(&make(0x10), &reg).unwrap();
+    let bytes = encode(&saved, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+    let mut live = make(0x20);
+
+    let ledgers = LiveReloadLedgers::capture(&live);
+    byroredux_save::restore_resources_subset(&mut live, &reg, &decoded, PRE_RELOAD_RESOURCES)
+        .unwrap();
+    assert_eq!(
+        live.resource::<ReferenceEnableState>().override_for(0x20),
+        None,
+        "the restore replaced the live ledger with the save's"
+    );
+
+    ledgers.reinstate(&mut live);
+    assert_eq!(live.resource::<ReferenceEnableState>().override_for(0x20), Some(false));
+    assert_eq!(live.resource::<ReferenceEnableState>().override_for(0x10), None);
+    assert!(live.resource::<ReferenceLockState>().override_for(0x20).is_some());
+    assert!(live.resource::<ReferenceLockState>().override_for(0x10).is_none());
+    assert!(live.resource::<ReferenceScriptState>().is_parked(0x20));
+    assert!(!live.resource::<ReferenceScriptState>().is_parked(0x10));
+    assert_eq!(
+        live.resource::<ScriptedFactionChanges>().changes_for(0x20),
+        [(0x0DB1, Some(0))]
+    );
+    assert!(live.resource::<ScriptedFactionChanges>().changes_for(0x10).is_empty());
+}
+
+/// #6081 — the drain wiring: the live values are captured BEFORE the
+/// pre-reload restore, and a refused/failed reload (`outcome` is `None`)
+/// reinstates them before returning. `LiveReloadLedgers` carries one field per
+/// `PRE_RELOAD_RESOURCES` entry, so a ledger added to that list must be added
+/// to the struct too.
+#[test]
+fn the_drain_captures_before_the_pre_reload_restore_and_reinstates_on_abort() {
+    let source = include_str!("live_load.rs");
+    let body = &source[source
+        .find("pub fn execute_pending_save_loads(")
+        .expect("the live-load drain must exist")..];
+    let capture = body
+        .find("LiveReloadLedgers::capture(world)")
+        .expect("the drain must capture the live ledgers (#6081)");
+    let restore = body
+        .find("byroredux_save::restore_resources_subset(world, &registry, &snapshot, PRE_RELOAD_RESOURCES)")
+        .expect("the pre-reload restore must exist");
+    assert!(capture < restore, "capture the live ledgers before they are overwritten");
+
+    let none_arm = body
+        .find("let Some(ReloadOutcome {")
+        .expect("the drain must destructure the reload outcome");
+    let reinstate = body[none_arm..]
+        .find("live_ledgers.reinstate(world)")
+        .expect("a refused reload must reinstate the live ledgers (#6081)");
+    let session_replaced = body[none_arm..]
+        .find("reset_story_location_cursor(world)")
+        .expect("the post-reload reset must exist");
+    assert!(
+        reinstate < session_replaced,
+        "the reinstate belongs to the abort arm, before the session-replaced tail"
+    );
+
+    let struct_src = &source[source.find("pub(super) struct LiveReloadLedgers").unwrap()..];
+    let fields = struct_src[..struct_src.find('}').unwrap()].matches("Option<").count();
+    assert_eq!(
+        fields,
+        PRE_RELOAD_RESOURCES.len(),
+        "LiveReloadLedgers must mirror PRE_RELOAD_RESOURCES one for one"
+    );
+}
+
 /// #5435 — an in-process load must not leak the outgoing session's CLOC
 /// location. Before the reset, loading a save in a different cell raised a
 /// CLOC whose `L1` was the pre-load session's LCTN, and loading a save in

@@ -41,6 +41,57 @@ pub(super) const PRE_RELOAD_RESOURCES: &[&str] = &[
     "ScriptedFactionChanges",
 ];
 
+/// The live values of the [`PRE_RELOAD_RESOURCES`] ledgers, taken before the
+/// pre-reload restore overwrites them with the save's (#6081).
+///
+/// The two `reload_*_session` helpers abort on a failed non-destructive
+/// preflight (ESM moved, cell renamed, mod set changed) with "keeping the
+/// current session"; by then the restore had already installed the *other
+/// timeline's* ledgers, and the live session's own `Disable()` / lock /
+/// once-only / faction entries were gone for good, governing the next cell
+/// respawn and persisted by the next quicksave. An aborted load reinstates
+/// these instead. One field per `PRE_RELOAD_RESOURCES` entry (a source
+/// guard in `live_reload_tests.rs` keeps the two in step).
+pub(super) struct LiveReloadLedgers {
+    enable: Option<byroredux_scripting::ReferenceEnableState>,
+    lock: Option<byroredux_scripting::ReferenceLockState>,
+    script: Option<byroredux_scripting::ReferenceScriptState>,
+    factions: Option<byroredux_scripting::ScriptedFactionChanges>,
+}
+
+impl LiveReloadLedgers {
+    pub(super) fn capture(world: &World) -> Self {
+        fn live<R: byroredux_core::ecs::Resource + Clone>(world: &World) -> Option<R> {
+            world.try_resource::<R>().map(|guard| (*guard).clone())
+        }
+        Self {
+            enable: live(world),
+            lock: live(world),
+            script: live(world),
+            factions: live(world),
+        }
+    }
+
+    /// Put the captured values back. A ledger that was absent from the live
+    /// world is removed again rather than left holding the save's value.
+    pub(super) fn reinstate(self, world: &mut World) {
+        fn put<R: byroredux_core::ecs::Resource>(world: &mut World, value: Option<R>) {
+            match value {
+                Some(value) => {
+                    world.insert_resource(value);
+                }
+                None => {
+                    world.remove_resource::<R>();
+                }
+            }
+        }
+        put(world, self.enable);
+        put(world, self.lock);
+        put(world, self.script);
+        put(world, self.factions);
+    }
+}
+
 fn notify_player(world: &World, message: impl Into<String>) {
     crate::notifications::push(world, message);
 }
@@ -509,9 +560,15 @@ pub fn execute_pending_save_loads(
     // itself rebuilt (`CurrentCellContext`, `PlayerPose`). `restore_resources`
     // is a straight per-resource overwrite from the snapshot, so restoring
     // `ReferenceEnableState` a second time here is idempotent.
+    //
+    // #6081 — the restore overwrites the live ledgers, and every abort after
+    // it ("keeping the current session") would otherwise leave the other
+    // timeline's values in the session the player keeps playing.
+    let live_ledgers = LiveReloadLedgers::capture(world);
     if let Err(e) =
         byroredux_save::restore_resources_subset(world, &registry, &snapshot, PRE_RELOAD_RESOURCES)
     {
+        live_ledgers.reinstate(world);
         let message = format!(
             "save load ABORTED — resource restore failed before cell reload; \
              keeping the current session: {e}"
@@ -542,6 +599,9 @@ pub fn execute_pending_save_loads(
         count_label,
     }) = outcome
     else {
+        // #6081 — the load was refused (preflight) or failed: hand the live
+        // session its own ledgers back.
+        live_ledgers.reinstate(world);
         return;
     };
 
