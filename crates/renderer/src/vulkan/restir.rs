@@ -43,7 +43,7 @@ use ash::vk;
 pub const RESERVOIR_STRIDE: vk::DeviceSize = 32;
 
 /// Bytes per pixel claim word (`uint reservoirClaim[]`, binding 22).
-const CLAIM_STRIDE: vk::DeviceSize = 4;
+pub(crate) const CLAIM_STRIDE: vk::DeviceSize = 4;
 
 /// Start of the claim region inside a slot's buffer is rounded up to this:
 /// the Vulkan spec caps `minStorageBufferOffsetAlignment` at 256, so a
@@ -54,7 +54,15 @@ const CLAIM_OFFSET_ALIGN: vk::DeviceSize = 256;
 /// half floats packed into two `uint`s, written by the claim winner beside its
 /// reservoir. The shadow filter pass multiplies it by the filtered-minus-raw
 /// shadow ratio.
-const UNSHADOWED_STRIDE: vk::DeviceSize = 8;
+pub(crate) const UNSHADOWED_STRIDE: vk::DeviceSize = 8;
+
+/// Render-extent bytes one frame-in-flight slot holds per pixel: the
+/// reservoir, its claim word and its unshadowed radiance (#5765), without the
+/// at most two `CLAIM_OFFSET_ALIGN` paddings between the regions. The BLAS
+/// residency reservation bills this per slot (#6035), and
+/// `memory-budget.md`'s "ReSTIR Reservoirs" formula publishes the same sum.
+pub const RESERVOIR_BYTES_PER_PIXEL_PER_SLOT: vk::DeviceSize =
+    RESERVOIR_STRIDE + CLAIM_STRIDE + UNSHADOWED_STRIDE;
 
 /// The claim word a slot starts each frame with: farther than any distance,
 /// so the first claiming fragment always wins its `atomicMin`.
@@ -98,9 +106,9 @@ impl ReservoirBuffers {
         // (one-time, once per swapchain generation).
         Self::zero_fill(device, queue, pool, &buffers)?;
         // PERF-D5-NEW-04 / #1814 — this is the largest single VRAM
-        // addition of the Session 49 denoiser overhaul (~127 MB at
-        // 1080p, ~236 MB at 1440p, ~531 MB at 4K across both FIF
-        // slots) and had no attributing telemetry anywhere; see
+        // addition of the Session 49 denoiser overhaul (~182 MB at
+        // 1080p, ~324 MB at 1440p, ~730 MB at 4K across both FIF
+        // slots with #5765's tails) and had no attributing telemetry; see
         // docs/engine/memory-budget.md's "ReSTIR Reservoirs" section.
         log::info!(
             "ReSTIR reservoir buffers created: {}x{}, {:.1} MB/slot × {} slots = {:.1} MB total",
@@ -346,6 +354,22 @@ mod tests {
         // lightAndSurface + W + M + packed(histLen, depth) + accumR/G/B
         // + pad0 (packed geometric normal). 8 scalars × 4 bytes.
         assert_eq!(RESERVOIR_STRIDE, 8 * 4);
+    }
+
+    /// #6035 — the published per-pixel figure must cover every region a slot
+    /// allocates. A fourth region added to `total_size` without a stride term
+    /// here pushes the slot past the sum plus padding and fails.
+    #[test]
+    fn per_slot_bytes_per_pixel_covers_every_region() {
+        for (w, h) in [(1, 1), (7, 3), (1920, 1080), (2560, 1440), (3840, 2160)] {
+            let pixels = u64::from(w) * u64::from(h);
+            let total = ReservoirBuffers::total_size(w, h);
+            let tight = pixels * RESERVOIR_BYTES_PER_PIXEL_PER_SLOT;
+            assert!(
+                total >= tight && total - tight < 2 * CLAIM_OFFSET_ALIGN,
+                "{w}x{h}: slot is {total} B, per-pixel figure bills {tight} B"
+            );
+        }
     }
 
     /// #2152 / CHAIN-D2-05 — both `new()` and `recreate_on_resize()` must

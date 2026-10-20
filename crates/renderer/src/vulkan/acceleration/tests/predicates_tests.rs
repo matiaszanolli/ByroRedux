@@ -1442,7 +1442,8 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
         use crate::vulkan::context::DEPTH_BYTES_PER_PIXEL;
         use crate::vulkan::frame_upscaler::upscale_output_bytes;
         use crate::vulkan::gbuffer::GBUFFER_BYTES_PER_PIXEL;
-        use crate::vulkan::restir::RESERVOIR_STRIDE;
+        use crate::vulkan::restir::{CLAIM_STRIDE, RESERVOIR_STRIDE, UNSHADOWED_STRIDE};
+        use crate::vulkan::shadow_filter::SHADOW_FILTER_BYTES_PER_PIXEL;
         use crate::vulkan::ssao::SSAO_BYTES_PER_PIXEL;
         use crate::vulkan::svgf::SVGF_BYTES_PER_PIXEL;
         use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
@@ -1462,7 +1463,8 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
             + u64::from(SSAO_BYTES_PER_PIXEL)
             + u64::from(COMPOSITE_BYTES_PER_PIXEL)
             + u64::from(DEPTH_BYTES_PER_PIXEL)
-            + RESERVOIR_STRIDE * MAX_FRAMES_IN_FLIGHT as u64)
+            + (RESERVOIR_STRIDE + CLAIM_STRIDE + UNSHADOWED_STRIDE) * MAX_FRAMES_IN_FLIGHT as u64
+            + SHADOW_FILTER_BYTES_PER_PIXEL * MAX_FRAMES_IN_FLIGHT as u64)
             * 1024
             + u64::from(BLOOM_BYTES_PER_PIXEL_X1024);
 

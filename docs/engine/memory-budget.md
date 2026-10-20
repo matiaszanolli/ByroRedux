@@ -262,16 +262,20 @@ temporal reservoir reuse (Session 49 denoiser overhaul). Unlike every other
 entry on this page, size scales with **swapchain resolution**, not a fixed
 constant — recreated on every resize.
 
-Formula: `width × height × (RESERVOIR_STRIDE + 4)` bytes per FIF slot
-(`RESERVOIR_STRIDE` = 32 B, one [`Reservoir`] per pixel, plus the 4 B
-ownership-claim word per pixel that #5765 put in the same buffer at a
-256-aligned offset).
+Formula: `width × height × RESERVOIR_BYTES_PER_PIXEL_PER_SLOT` bytes per FIF
+slot, where `RESERVOIR_BYTES_PER_PIXEL_PER_SLOT` = `RESERVOIR_STRIDE` (32 B, one
+[`Reservoir`] per pixel) + `CLAIM_STRIDE` (the 4 B ownership-claim word) +
+`UNSHADOWED_STRIDE` (8 B of unshadowed direct radiance) = **44 B/px**. #5765
+put the two tails in the same buffer, each at a 256-aligned offset; the
+alignment padding (under 512 B per slot) is not billed. This page said
+`RESERVOIR_STRIDE + 4` until #6035, which also added the tails to the BLAS
+residency reservation (`render_extent_bytes_per_pixel_x1024`).
 
 | Resolution | Per-slot | × 2 FIF |
 |---|---|---|
-| 1920×1080 | 74.6 MB | **149.3 MB** |
-| 2560×1440 | 132.7 MB | **265.4 MB** |
-| 3840×2160 | 298.6 MB | **597.2 MB** |
+| 1920×1080 | 91.2 MB | **182.5 MB** |
+| 2560×1440 | 162.2 MB | **324.4 MB** |
+| 3840×2160 | 365.0 MB | **729.9 MB** |
 
 This was the largest single VRAM addition of the denoiser overhaul (PERF-D5-NEW-04
 / #1814) — at 4K it is over 13% of the ~4 GB engine budget target below — but
@@ -330,6 +334,20 @@ against it; `SvgfPipeline::new_inner` / `recreate_on_resize` log it.
 | 1920×1080 | ~82.9 MB |
 | 2560×1440 | ~147.5 MB |
 | 3840×2160 | ~331.8 MB |
+
+### Shadow filter
+
+[`shadow_filter.rs`](../../crates/renderer/src/vulkan/shadow_filter.rs) —
+three RGBA16F (8 B/px) images per frame-in-flight: the à-trous ratio
+ping-pong pair and the correction image composite samples.
+`SHADOW_FILTER_BYTES_PER_PIXEL` = 24 B/px/slot × 2 FIF = **48 B/px**. It had
+no ledger entry and no term in the BLAS residency reservation until #6035.
+
+| Resolution | Total (3 images, 2 FIF) |
+|---|---|
+| 1920×1080 | ~99.5 MB |
+| 2560×1440 | ~176.9 MB |
+| 3840×2160 | ~398.1 MB |
 
 ### TAA
 
@@ -1162,7 +1180,8 @@ authoritative rather than re-derived.
 | Cluster light-index buffers (fixed size, 2 FIF, #3993) | ~14 MB | ~14 MB |
 | Volumetric medium + sun-aperture cluster buffers (16³ clusters × (64 density + 128 aperture) indices × 4 B, 16 B entries, 512 × 96 B volumes, 2 FIF) | ~6.5 MB | ~6.5 MB |
 | Scene SSBOs (see [Scene Buffers](#scene-buffers-per-frame-ssbos--ubos); instance pair at starting capacity, peak = grown to `MAX_INSTANCES`) | ~155 MB | ~243 MB |
-| ReSTIR reservoirs (2 FIF) | ~133 MB (1080p) | ~531 MB (4K) |
+| ReSTIR reservoirs + claim + unshadowed tails (44 B/px, 2 FIF, #6035) | ~182 MB (1080p) | ~730 MB (4K) |
+| Shadow filter (3 × RGBA16F, 2 FIF, #6035) | ~100 MB (1080p) | ~398 MB (4K) |
 | SVGF history + à-trous pair (2 FIF) | ~83 MB (1080p) | ~332 MB (4K) |
 | TAA history (2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
 | Glass + water caustics (2 FIF) | ~66 MB (1080p) | ~265 MB (4K) |
@@ -1180,7 +1199,7 @@ authoritative rather than re-derived.
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~2.03 GB** | **~4.36 GB at native 4K** — every resolution-scaled row at 4K, the fixed-size rows and the scene-SSBO peak, plus the content rows (vertex / index pools, textures, BLAS, TLAS) at their *typical* figures: a typical FNV interior rendered at 4K, not every cap at once. Neither total counts the geometry-rebuild transient or the Scaleform rows. So the pools row's cap correction (~1.66 GB → ~480 MB, #4961) moved neither total. Includes the fixed volumetric medium/aperture index budget (~6.5 MB). #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount. #4892 then collapsed that overlay to one texture (−16.6 / −66.4 MB) and ledgered the dynamic-RGBA staging arenas (+16.6 / +66.4 MB), so neither total moved. #4413 corrected the fixed-size sky / ground-cover row from ~20 MB to its section's own sum (~79 MB): the blade arena had grown to 64 MiB in `7996edf61` without it, and the authored-model tier adds 8.3 MiB. While a worldspace has authored cover the scene-SSBO row also grows by the tier's 14 MiB instance tail |
+| **Estimated total** | **~2.18 GB** | **~4.96 GB at native 4K** — #6035 corrected the ReSTIR row to its 44 B/px slot (+49 / +199 MB) and added the shadow-filter row (+100 / +398 MB). every resolution-scaled row at 4K, the fixed-size rows and the scene-SSBO peak, plus the content rows (vertex / index pools, textures, BLAS, TLAS) at their *typical* figures: a typical FNV interior rendered at 4K, not every cap at once. Neither total counts the geometry-rebuild transient or the Scaleform rows. So the pools row's cap correction (~1.66 GB → ~480 MB, #4961) moved neither total. Includes the fixed volumetric medium/aperture index budget (~6.5 MB). #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount. #4892 then collapsed that overlay to one texture (−16.6 / −66.4 MB) and ledgered the dynamic-RGBA staging arenas (+16.6 / +66.4 MB), so neither total moved. #4413 corrected the fixed-size sky / ground-cover row from ~20 MB to its section's own sum (~79 MB): the blade arena had grown to 64 MiB in `7996edf61` without it, and the authored-model tier adds 8.3 MiB. While a worldspace has authored cover the scene-SSBO row also grows by the tier's 14 MiB instance tail |
 
 The 6 GB RT-minimum and 4 GB whole-renderer target remain design targets.
 Static BLAS residency is separately enforced at 1 GiB, so a Vulkan driver

@@ -472,6 +472,18 @@ impl ShadowFilterPipeline {
 
 #[cfg(test)]
 mod tests {
+    /// #6035 — the published figure the BLAS reservation bills must be the
+    /// three `FrameImages` at `FORMAT`'s 8 B/px.
+    #[test]
+    fn bytes_per_pixel_matches_frame_images() {
+        assert_eq!(super::FORMAT, ash::vk::Format::R16G16B16A16_SFLOAT);
+        let own = crate::source_scan::production_text(include_str!("shadow_filter.rs"));
+        let start = own.find("struct FrameImages {").expect("FrameImages");
+        let body = &own[start..start + own[start..].find('}').expect("FrameImages end")];
+        assert_eq!(body.matches(": GpuImage,").count(), 3);
+        assert_eq!(super::SHADOW_FILTER_BYTES_PER_PIXEL, 3 * 8);
+    }
+
     /// #6063 — a failed layout submit may still be executing against the
     /// pass's images, so both the construction and the resize arm must branch
     /// on the in-flight class instead of destroying unconditionally.

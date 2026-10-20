@@ -17,7 +17,8 @@ use crate::vulkan::context::DEPTH_BYTES_PER_PIXEL;
 use crate::vulkan::context::DrawCommand;
 use crate::vulkan::frame_upscaler::upscale_output_bytes;
 use crate::vulkan::gbuffer::GBUFFER_BYTES_PER_PIXEL;
-use crate::vulkan::restir::RESERVOIR_STRIDE;
+use crate::vulkan::restir::RESERVOIR_BYTES_PER_PIXEL_PER_SLOT;
+use crate::vulkan::shadow_filter::SHADOW_FILTER_BYTES_PER_PIXEL;
 use crate::vulkan::ssao::SSAO_BYTES_PER_PIXEL;
 use crate::vulkan::svgf::SVGF_BYTES_PER_PIXEL;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
@@ -911,7 +912,10 @@ pub(super) const fn render_extent_bytes_per_pixel_x1024() -> u64 {
         + SSAO_BYTES_PER_PIXEL as u64
         + COMPOSITE_BYTES_PER_PIXEL as u64
         + DEPTH_BYTES_PER_PIXEL as u64
-        + RESERVOIR_STRIDE * MAX_FRAMES_IN_FLIGHT as u64;
+        // #6035 — the reservoir, claim and unshadowed-radiance regions, and
+        // the shadow filter's three images, are each per frame in flight.
+        + RESERVOIR_BYTES_PER_PIXEL_PER_SLOT * MAX_FRAMES_IN_FLIGHT as u64
+        + SHADOW_FILTER_BYTES_PER_PIXEL * MAX_FRAMES_IN_FLIGHT as u64;
     flat * 1024 + BLOOM_BYTES_PER_PIXEL_X1024 as u64
 }
 
