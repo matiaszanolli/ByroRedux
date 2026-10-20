@@ -411,7 +411,7 @@ const SKYRIM_SKILL_CAP: i32 = 100;
 /// (UESP *CLAS*, Weight Calculations / Skills): first every complete set,
 /// `floor(8 x (level - 1) / sum of weights) x weight`; then the leftover points one at a
 /// time, looping over the skills ordered by weight (higher first) then actor-value index
-/// (lower first), a skill taking no more leftovers than its weight. The page says the
+/// (higher first), a skill taking no more leftovers than its weight. The page says the
 /// assignment changes once a skill reaches 100 and does not give how; the result is capped
 /// at the skill maximum instead.
 pub fn skyrim_class_skill_points(weights: &[u8; 18], level: i32) -> [i32; 18] {

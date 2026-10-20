@@ -725,8 +725,9 @@ weights and `NPC_.ACBS` supplies the effective level. The level is
 `max(record_level, 0)`. The three attributes start with the race's RACE.DATA
 Health, Magicka, and Stamina values; NPC ACBS offsets are then added to the
 matching starting values. The master-backed level-growth rule gives Health
-`+5 × (level − 1)` and distributes `10 × (level − 1)` points across Magicka
-and Stamina using their class weights.
+`+5 × (level − 1)` and distributes `10 × (level − 1)` points across Health,
+Magicka and Stamina using their three `CLAS DATA` attribute weights (Health's
+`+5` is on top of its weighted share).
 
 The 18 skills start at **15**. The class skill weights allocate
 `8 × max(level − 1, 0)` points: complete weighted rounds first, then remaining
