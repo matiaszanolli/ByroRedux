@@ -1498,7 +1498,7 @@ fn consume_item(world: &mut World, index: u32, form_id: u32) -> MutationResult {
     let mut context = byroredux_scripting::condition::ConditionContext::for_subject(player);
     context.target = Some(player); // ingestible target and caster are the user
     effects.retain(|branch| {
-        byroredux_scripting::condition::evaluate(&branch.conditions, world, &context)
+        byroredux_scripting::condition::evaluate_modeled(&branch.conditions, world, &context)
     });
     let Some(health) = world.get::<ActorVitals>(player).map(|r| r.health) else {
         return MutationResult::Unavailable;

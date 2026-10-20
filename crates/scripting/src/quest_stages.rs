@@ -1008,7 +1008,7 @@ fn resolve_target_entities(
             }?;
             let context = crate::condition::ConditionContext::for_subject(entity).with_quest(quest);
             if seen.contains(&entity)
-                || !crate::condition::evaluate(&target.conditions, world, &context)
+                || !crate::condition::evaluate_modeled(&target.conditions, world, &context)
             {
                 return None;
             }
@@ -1370,7 +1370,7 @@ pub fn quest_terminal_stage_system(world: &World, _dt: f32) {
         for log_entry in logs {
             let passes = log_entry.conditions.is_empty()
                 || player.is_some_and(|subject| {
-                    crate::condition::evaluate(
+                    crate::condition::evaluate_modeled(
                         &log_entry.conditions,
                         world,
                         &crate::condition::ConditionContext::for_subject(subject)

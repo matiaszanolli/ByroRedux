@@ -21,7 +21,7 @@ use byroredux_plugin::esm::records::{
 };
 
 use super::{refresh_scene_actor_bindings, SceneActorBindings, SceneRegistry};
-use crate::condition::{evaluate, ConditionContext};
+use crate::condition::{evaluate_modeled, ConditionContext};
 use crate::quest_stages::{
     QuestFormId, QuestStageAdvancedBatch, QuestStageState, SCENE_QUEST_EVENT_SUBSCRIBER,
 };
@@ -382,7 +382,8 @@ fn tick_player(
         |quest| ConditionContext::for_subject(context.subject).with_quest(quest),
     );
     if player.state == ScenePlaybackState::WaitingForStart {
-        if !evaluate(&scene.conditions, context.world, &condition_context) {
+        // #5993 — a scene whose authored gate cannot be read does not start.
+        if !evaluate_modeled(&scene.conditions, context.world, &condition_context) {
             return output;
         }
         player.state = ScenePlaybackState::WaitingForPhaseStart;
@@ -399,7 +400,7 @@ fn tick_player(
             finish_scene(player, scene, &mut output.events, &mut output.fragments);
             return output;
         };
-        if !evaluate(&phase.start_conditions, context.world, &condition_context) {
+        if !evaluate_modeled(&phase.start_conditions, context.world, &condition_context) {
             return output;
         }
         output.events.push(SceneEvent::PhaseStarted {
@@ -465,7 +466,7 @@ fn tick_player(
         ending_actions.iter().all(|action| action.completed)
     };
     let completion_conditions_pass = !phase.completion_conditions.is_empty()
-        && evaluate(
+        && evaluate_modeled(
             &phase.completion_conditions,
             context.world,
             &condition_context,

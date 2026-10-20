@@ -104,6 +104,7 @@ pub(crate) use catalog::authored_actor_value_is_enum_code;
 pub use context::{ConditionContext, EventDataSlots};
 pub use eval::{
     actor_value_view, entity_global_form_id, evaluate, evaluate_condition, evaluate_function,
+    evaluate_modeled,
     evaluate_script_getter, is_modeled, resolve_entity_by_global_form_id,
     uses_obscript_quest_variables, ActorValueView,
 };

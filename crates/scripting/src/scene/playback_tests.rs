@@ -325,6 +325,37 @@ fn phase_start_conditions_are_retried_until_true() {
     assert_eq!(state(&world, entity).state, ScenePlaybackState::Playing);
 }
 
+/// #5993 — a scene (or phase) whose authored gate carries a term the evaluator
+/// cannot read does not start: the uncatalogued function's absent-value default
+/// `0.0` used to satisfy `== 0` and run the scene the gate was holding back.
+#[test]
+fn a_scene_gated_on_an_unreadable_term_does_not_start() {
+    let unreadable = Condition {
+        function_index: 9999, // not in the catalog
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(0.0),
+        run_on: RunOn::Subject,
+        ..Default::default()
+    };
+    // Scene gate.
+    let mut gated = base_scene();
+    gated.conditions.push(unreadable);
+    let (mut world, entity, _) = setup(gated);
+    world.insert(entity, SceneStartRequest);
+    scene_playback_system(&world, 0.0);
+    scene_playback_system(&world, 0.0);
+    assert_eq!(state(&world, entity).state, ScenePlaybackState::WaitingForStart);
+
+    // Phase gate.
+    let mut gated = base_scene();
+    gated.phases[0].start_conditions.push(unreadable);
+    let (mut world, entity, _) = setup(gated);
+    world.insert(entity, SceneStartRequest);
+    scene_playback_system(&world, 0.0);
+    scene_playback_system(&world, 0.0);
+    assert_eq!(state(&world, entity).state, ScenePlaybackState::WaitingForPhaseStart);
+}
+
 #[test]
 fn quest_start_event_auto_starts_flagged_scene() {
     let mut scene = base_scene();

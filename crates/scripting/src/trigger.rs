@@ -352,7 +352,7 @@ pub fn trigger_detection_system(world: &World) {
                                         )
                                     });
                                 !already_done
-                            } && crate::condition::evaluate(
+                            } && crate::condition::evaluate_modeled(
                                 &advance.conditions,
                                 world,
                                 &crate::condition::ConditionContext::for_subject(trigger),
@@ -590,7 +590,7 @@ fn actor_quest_trigger_is_in_sequence(world: &World, trigger: EntityId) -> bool 
             base_form_advance_is_eligible(candidate, advance.owning_quest, current_stage, &stages)
         })
         .filter(|(entity, candidate)| {
-            crate::condition::evaluate(
+            crate::condition::evaluate_modeled(
                 &candidate.conditions,
                 world,
                 &crate::condition::ConditionContext::for_subject(*entity),

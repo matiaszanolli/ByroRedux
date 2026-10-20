@@ -636,6 +636,15 @@ pub fn evaluate(conditions: &ConditionList, world: &World, ctx: &ConditionContex
     })
 }
 
+/// [`evaluate`] for a consumer that *acts* on a pass: it declines (`false`) on any
+/// term the evaluator cannot honestly read ([`is_modeled`]) instead of letting the
+/// absent-value default `0.0` satisfy an `== 0` / `<=` comparison and run what the
+/// authored gate was meant to hold back (#5993). The same fail-closed rule the
+/// dialogue, Story Manager, perk and package gates apply term by term.
+pub fn evaluate_modeled(conditions: &ConditionList, world: &World, ctx: &ConditionContext) -> bool {
+    conditions.iter().all(|condition| is_modeled(world, condition)) && evaluate(conditions, world, ctx)
+}
+
 /// The OR blocks of `conditions`, in order, as index ranges — the units
 /// [`evaluate`] AND-combines.
 pub(crate) fn or_blocks(
