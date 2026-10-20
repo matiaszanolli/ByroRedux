@@ -141,12 +141,11 @@ struct TriggerOccupancyState {
 impl byroredux_core::ecs::resource::Resource for TriggerOccupancyState {}
 
 /// CK *GetTriggerObjectCount - ObjectReference*: "the number of objects
-/// currently inside this trigger volume" — the actors the occupancy pass has
-/// seen inside `volume`.
+/// currently inside this trigger volume" — the player (whose occupancy lives on
+/// the volume's own edge state) and the actors the occupancy pass has seen inside
+/// `volume`; see [`trigger_occupants`] (#5992).
 pub fn trigger_object_count(world: &World, volume: EntityId) -> usize {
-    world
-        .try_resource::<TriggerOccupancyState>()
-        .map_or(0, |state| state.inside.iter().filter(|(trigger, _)| *trigger == volume).count())
+    trigger_occupants(world, volume).len()
 }
 
 /// Everything the occupancy pass has seen inside `volume`: the player when the
@@ -380,6 +379,16 @@ pub fn trigger_detection_system(world: &World) {
         std::mem::swap(previous_inside, next_inside);
         observed_actors.clear();
         observed_actors.extend(actors.iter().map(|(entity, ..)| *entity));
+        observed_volumes.clear();
+        observed_volumes.extend(volumes.iter().map(|(entity, _)| *entity));
+    } else {
+        // #5992 — no candidate remains (every tracked actor despawned). The
+        // pass above is skipped for an empty list, which left the last frame's
+        // pairs in `inside`, so `GetTriggerObjectCount` and `OnTrigger` kept
+        // seeing occupants that no longer exist. A despawned actor is not
+        // reported leaving (see above); its pairs are simply forgotten.
+        previous_inside.clear();
+        observed_actors.clear();
         observed_volumes.clear();
         observed_volumes.extend(volumes.iter().map(|(entity, _)| *entity));
     }
@@ -809,6 +818,34 @@ mod tests {
         };
         assert!(v.contains(Vec3::new(5.0, 1.9, 0.0)));
         assert!(!v.contains(Vec3::new(5.0, 2.1, 0.0)));
+    }
+
+    /// #5992 — `GetTriggerObjectCount` counts every object inside, the player
+    /// included (their occupancy lives on the volume's edge state, not in the
+    /// actor pairs), and an occupant that vanishes is not counted forever: with
+    /// no candidate left the stale pairs are forgotten.
+    #[test]
+    fn trigger_object_count_includes_the_player_and_forgets_vanished_occupants() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let player = world.spawn();
+        world.insert(player, Transform::from_translation(Vec3::ZERO));
+        world.insert(player, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert_resource(PapyrusPlayerEntity(player));
+        let volume = world.spawn();
+        world.insert(volume, axis_box(Vec3::ZERO, Vec3::splat(1.0)));
+        // The occupancy pass saw a (since despawned) actor inside last frame.
+        let ghost = world.spawn();
+        world.resource_mut::<TriggerOccupancyState>().inside.insert((volume, ghost));
+        world.resource_mut::<TriggerOccupancyState>().observed_actors.insert(ghost);
+
+        trigger_detection_system(&world);
+        assert_eq!(
+            trigger_object_count(&world, volume),
+            1,
+            "the player standing in the volume counts, the vanished actor does not"
+        );
+        assert!(world.resource::<TriggerOccupancyState>().inside.is_empty());
     }
 
     /// Build a world with a player at `player_pos` and one box trigger,
