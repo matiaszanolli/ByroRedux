@@ -203,3 +203,38 @@ fn actor_spells_follow_the_template_chain_add_race_spells_and_level_lists() {
         "template spells, the level-5 pick of the LVSP, then the race's (0x50 once)"
     );
 }
+
+/// #6075 — a model-less spawner shell (`CREA`, no `MODL`, `TPLT` -> `LVLC`,
+/// Use Model/Animation) takes its skeleton and `NIFZ` parts from the leveled
+/// pick; without the flag the shell keeps its own (empty) model.
+#[test]
+fn a_model_less_spawner_shell_takes_the_leveled_picks_model() {
+    let mut index = EsmIndex::default();
+    index.creatures.insert(
+        4,
+        NpcRecord {
+            form_id: 4,
+            is_creature: true,
+            model_path: r"Creatures\nvgecko\Skeleton.NIF".to_string(),
+            body_part_models: vec!["Gecko.NIF".to_string()],
+            ..Default::default()
+        },
+    );
+    index.leveled_creatures.insert(2, list(2, &[(1, 4)]));
+    let mut shell = NpcRecord {
+        form_id: 1,
+        is_creature: true,
+        template_form_id: 2,
+        template_flags: TEMPLATE_FLAG_USE_MODEL_ANIMATION,
+        level: 1,
+        ..Default::default()
+    };
+    let resolved = ResolvedNpc::resolve(&shell, &index);
+    assert_eq!(resolved.model.form_id, 4);
+    assert_eq!(resolved.model.model_path, r"Creatures\nvgecko\Skeleton.NIF");
+    assert_eq!(resolved.model.body_part_models, vec!["Gecko.NIF".to_string()]);
+    assert_eq!(resolved.shell.form_id, 1, "identity stays the shell's");
+
+    shell.template_flags = TEMPLATE_FLAG_USE_STATS;
+    assert_eq!(ResolvedNpc::resolve(&shell, &index).model.form_id, 1);
+}

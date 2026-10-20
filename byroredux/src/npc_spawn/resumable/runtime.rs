@@ -436,7 +436,7 @@ mod body_skin_tests {
 
 /// The `CREA` counterpart of [`prepare_runtime_state`]'s humanoid recipe
 /// (#2567). Everything a creature needs is authored in one directory keyed
-/// off its MODL — skeleton, `NIFZ` part meshes, and `idle.kf` — so this is a
+/// off its MODL — skeleton, `NIFZ` part meshes, and its idle clip — so this is a
 /// path derivation plus the shared inventory build, and the same
 /// [`RuntimePhase`] machine runs it from there.
 ///
@@ -451,13 +451,18 @@ pub(super) fn prepare_creature_state(
     placement_root: EntityId,
     resolved: &byroredux_plugin::equip::ResolvedNpc<'_>,
 ) -> RuntimeNpcState {
-    let (skeleton_path, dir) = creature_skeleton_and_dir(&npc.model_path).unwrap_or_default();
-    let body_paths = creature_body_paths(&dir, &npc.body_part_models);
+    // #6075 — the model comes from the "Use Model/Animation" terminal: FNV's
+    // spawner shells author no `MODL` and take the leveled pick's.
+    let model = resolved.model;
+    let (skeleton_path, dir) = creature_skeleton_and_dir(&model.model_path).unwrap_or_default();
+    let body_paths = creature_body_paths(&dir, &model.body_part_models);
     if skeleton_path.is_empty() {
         log::debug!(
-            "Creature {:08X} ({}): no MODL — cannot locate a skeleton, spawning identity only",
+            "Creature {:08X} ({}): no MODL on its model terminal {:08X} — cannot locate a \
+             skeleton, spawning nothing",
             npc.form_id,
             npc.editor_id,
+            model.form_id,
         );
     } else if body_paths.is_empty() {
         // The skeleton NIF carries no geometry of its own, so a creature
@@ -546,6 +551,11 @@ pub(super) fn advance_runtime_unit(
             // prepare step resolved, so a creature loads its own per-species
             // skeleton instead of the humanoid rig.
             if state.skeleton_path.is_empty() {
+                // #6075 — nothing to build a body on. The placement root
+                // carries `ActorValues` / `FactionRanks` / an attack, so left
+                // behind it was a body-less phantom for AI and combat scans;
+                // finalize (AI, disposition, tagging) never runs for it.
+                world.despawn(state.placement_root);
                 return UnitOutcome::Complete(None);
             }
             let skel_path = state.skeleton_path.clone();

@@ -3267,3 +3267,56 @@ fn is_child_race_keeps_oblivion_beast_race_distinct_from_fo3_fnv_child() {
         "no resolved RACE record is never child"
     );
 }
+
+/// #6075 corpus check: the FO3/FNV model-less templated `CREA` spawner
+/// shells (`VSpawn*`, `Lvl*`: no `MODL`, `TPLT` -> `LVLC`, Use
+/// Model/Animation) find a skeleton through the model terminal. Pre-#6075
+/// every one spawned nothing.
+#[test]
+#[ignore = "needs FO3 / FNV game data on disk; parses each master"]
+fn installed_fallout_spawner_shells_resolve_a_model() {
+    for (var, default, esm) in [
+        (
+            "BYROREDUX_FNV_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            "FalloutNV.esm",
+        ),
+        (
+            "BYROREDUX_FO3_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            "Fallout3.esm",
+        ),
+    ] {
+        let data = std::env::var(var).unwrap_or_else(|_| default.to_string());
+        let esm_path = std::path::Path::new(&data).join(esm);
+        let Ok(esm_bytes) = std::fs::read(&esm_path) else {
+            eprintln!("skipping {esm}: {esm_path:?} not available");
+            continue;
+        };
+        let index = byroredux_plugin::esm::parse_esm(&esm_bytes).expect("parse master");
+        let shells: Vec<_> = index
+            .creatures
+            .values()
+            .filter(|record| record.model_path.is_empty() && record.template_form_id != 0)
+            .collect();
+        let mut resolved = 0;
+        let mut unresolved = Vec::new();
+        for shell in &shells {
+            let model = byroredux_plugin::equip::ResolvedNpc::resolve(shell, &index).model;
+            if creature_skeleton_and_dir(&model.model_path).is_some() {
+                resolved += 1;
+            } else if unresolved.len() < 12 {
+                unresolved.push(format!("{:08X} {} (level {})", shell.form_id, shell.editor_id, shell.level));
+            }
+        }
+        eprintln!(
+            "{esm} spawner shells: {resolved}/{} resolve a model; unresolved sample: {unresolved:?}",
+            shells.len()
+        );
+        assert!(
+            resolved * 100 >= shells.len() * 90,
+            "{esm}: only {resolved}/{} spawner shells resolved a model: {unresolved:?}",
+            shells.len()
+        );
+    }
+}

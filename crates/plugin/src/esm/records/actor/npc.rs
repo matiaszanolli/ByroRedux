@@ -375,9 +375,10 @@ pub struct NpcRecord {
     ///   * `0x0001` — **Use Traits** (race). Consumed by
     ///     `equip::resolve_inherited_traits` (#2956).
     ///   * `0x0004` Factions, `0x0008` Actor Effects, `0x0010` AI Data,
-    ///     `0x0020` AI Packages, `0x0040` Model/Animation, `0x0080` Base
-    ///     Data, `0x0200` Script, `0x0400` Def Pack List — parsed and
-    ///     stored for the dispatcher; no consumer yet.
+    ///     `0x0020` AI Packages, `0x0040` Model/Animation (#6075), `0x0080`
+    ///     Base Data — each a `ResolvedNpc` terminal.
+    ///   * `0x0200` Script, `0x0400` Def Pack List — parsed and stored for
+    ///     the dispatcher; no consumer yet.
     pub template_flags: u16,
     /// #5498 — FO4 `TPTA` "Template Actors": 13 per-flag template
     /// FormIDs, one per `template_flags` bit in xEdit's

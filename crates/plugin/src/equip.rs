@@ -395,6 +395,14 @@ pub const TEMPLATE_FLAG_USE_INVENTORY: u16 = 0x0100;
 /// Essential among them, come from the template. Consumed through
 /// [`ResolvedNpc::base_data`].
 pub const TEMPLATE_FLAG_USE_BASE_DATA: u16 = 0x0080;
+/// #6075 — "Use Model/Animation" (xEdit bit 6 on FO3/FNV and Skyrim, FO4's
+/// "Model/Animation"): the model — for a `CREA`, its skeleton `MODL` and the
+/// `NIFZ` part list beside it — comes from the template. FNV places most of
+/// its fauna as model-less spawner shells (`VSpawnTier1CoyoteMed`,
+/// `LvlGecko`, ...) whose `TPLT` names an `LVLC`: all 435 templated
+/// model-less `CREA` in `FalloutNV.esm` carry this bit. Consumed through
+/// [`ResolvedNpc::model`].
+pub const TEMPLATE_FLAG_USE_MODEL_ANIMATION: u16 = 0x0040;
 
 /// Maximum TPLT recursion depth for [`resolve_inherited_record`] and its
 /// public wrappers ([`resolve_inherited_inventory`],
@@ -690,6 +698,12 @@ pub struct ResolvedNpc<'a> {
     /// M47.2 — "Use Base Data" chain terminal: the Essential / Protected
     /// `ACBS` flags.
     pub base_data: &'a crate::esm::records::actor::NpcRecord,
+    /// #6075 — "Use Model/Animation" chain terminal: a creature's skeleton
+    /// `MODL` and `NIFZ` parts. A list in the chain is picked by the walk's
+    /// one policy (the highest entry at or below the shell's level, the last
+    /// on a tie), so a spawner shell takes the model of the creature the
+    /// other categories resolve to.
+    pub model: &'a crate::esm::records::actor::NpcRecord,
     /// The Use-Stats chain shell-first including the terminal, cached so
     /// [`Self::authored_stat_field`] needs no second traversal.
     stats_chain: Vec<&'a crate::esm::records::actor::NpcRecord>,
@@ -761,6 +775,13 @@ impl<'a> ResolvedNpc<'a> {
                 shell_level,
                 index,
                 TEMPLATE_FLAG_USE_BASE_DATA,
+                0,
+            ),
+            model: resolve_inherited_record(
+                shell,
+                shell_level,
+                index,
+                TEMPLATE_FLAG_USE_MODEL_ANIMATION,
                 0,
             ),
             stats_chain,
