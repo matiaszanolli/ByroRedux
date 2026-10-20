@@ -35,18 +35,18 @@ NiRefObject → NiObject → NiObjectNET → NiAVObject → NiNode/NiGeometry
 | NiAVObject field | Redux Component | Storage |
 |---|---|---|
 | m_kLocal | Transform | PackedStorage |
-| m_kWorld | WorldTransform | PackedStorage |
+| m_kWorld | GlobalTransform | PackedStorage |
 | m_pkParent | Parent(EntityId) | SparseSetStorage |
 | children | Children(Vec<EntityId>) | SparseSetStorage |
 | m_kWorldBound | WorldBound | PackedStorage |
 | m_kPropertyList | Material components | Varies |
-| m_spCollisionObject | CollisionObject | SparseSetStorage |
+| m_spCollisionObject | CollisionShape + RigidBodyData (`components/collision.rs`) | SparseSetStorage |
 | m_uFlags | SceneFlags | PackedStorage |
 | Name | Name(FixedString) | SparseSetStorage (done) |
 
 ### NIF Format
 Binary, 3-phase: parse → link (32-bit IDs) → post-link.
-Version range: 20.0.0.3 (Oblivion) – 34.1.1.3 (Skyrim SE).
+Version range: 20.0.0.3 – 34.1.1.3 in the Gamebryo 2.3 source (`docs/legacy/gamebryo-2.3-architecture.md`); shipped Bethesda files are 20.2.0.7 plus a BSVER (Skyrim SE = 20.2.0.7 / BSVER 100 — `docs/engine/game-compatibility.md`).
 
 ### Animation
 NiTimeController → NiInterpolator → keyframes (linear, bezier, B-spline).

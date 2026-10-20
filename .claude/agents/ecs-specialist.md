@@ -17,7 +17,7 @@ Everything under `crates/core/src/ecs/`:
 - `world.rs` — World: TypeMap of RwLock<Storage>, TypeMap of RwLock<Resource>
 - `query.rs` — QueryRead (RwLockReadGuard), QueryWrite (RwLockWriteGuard)
 - `resource.rs` — Resource trait, ResourceRead, ResourceWrite
-- `resources.rs` — DeltaTime, TotalTime, EngineConfig
+- `resources/mod.rs` — DeltaTime, TotalTime, EngineConfig
 - `system.rs` — System trait + blanket impl for Fn closures
 - `scheduler.rs` — Ordered system execution (parallel-ready via RwLock)
 - `lock_tracker.rs` — `held_others` debug tracking (cfg(debug_assertions) only — #823)
@@ -29,8 +29,9 @@ Cross-cuts you should know about (post-Session-34 layout):
 - ECS systems registered by the binary live under `byroredux/src/systems/`
   (36+ per-topic files; `systems.rs` is the ~80-line module index —
   CLAUDE.md's Workspace Structure is the authoritative map).
-  `transform_propagation_system` and `animation_system` live in
-  `animation.rs`; `footstep_system` in `audio.rs`; `weather_system` in
+  `animation_system` lives in `animation.rs` (the transform-propagation
+  system is `make_transform_propagation_system` in
+  `crates/core/src/ecs/systems.rs`); `footstep_system` in `audio.rs`; `weather_system` in
   `weather.rs`; `submersion_system` (M38 water) in `water.rs`.
 - Scratch-buffer Resources: `FootstepScratch` (#932), `NameIndex.map` in-place refill (#824), animation_system event/seen_label hoisting (#828) — all expect capacity to persist across frames. Per-iteration `Vec::new` is the regression pattern.
 
@@ -47,7 +48,7 @@ Cross-cuts you should know about (post-Session-34 layout):
 2. PackedStorage must maintain sort order after insert/remove
 3. Multi-component queries must lock in TypeId order regardless of type parameter order
 4. World::find_by_name resolves through StringPool first (no string comparisons in scan)
-5. Test count grows; current workspace target is 1979+ — never regress past the last shipping count
+5. Tests only grow — a change that deletes or `#[ignore]`s a test to go green is a regression (the live count is `cargo test --workspace -- --list`, not a number written here)
 
 ## When Consulted
 Answer questions about: component design (which storage?), query patterns, system architecture, resource lifetime, entity lifecycle, intersection iteration, thread safety of the RwLock model, performance characteristics of storage backends.
