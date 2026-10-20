@@ -1367,7 +1367,7 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
         CMD_GET_PARENT_REF => Getter::Ref(
             world
                 .try_resource::<crate::AuthoredDisabledReferences>()
-                .and_then(|authored| authored.1.get(&caller).copied())
+                .and_then(|authored| authored.enable_parents.get(&caller).map(|parent| parent.form_id))
                 .unwrap_or(0),
         ),
         // "Returns 1 if the actor is currently running the specified package": the package
@@ -1887,7 +1887,14 @@ mod tests {
         world.insert_resource(links);
         assert_eq!(getter(&world, CMD_GET_LINKED_REF, &[], &ctx), Getter::Ref(OTHER));
         assert_eq!(getter(&world, CMD_GET_PARENT_REF, &[], &ctx), Getter::Ref(0), "no enable parent");
-        world.insert_resource(crate::AuthoredDisabledReferences(Default::default(), [(ACTOR, ITEM)].into()));
+        world.insert_resource(crate::AuthoredDisabledReferences {
+            initially_disabled: Default::default(),
+            enable_parents: [(
+                ACTOR,
+                byroredux_plugin::esm::cell::EnableParent { form_id: ITEM, inverted: false },
+            )]
+            .into(),
+        });
         assert_eq!(getter(&world, CMD_GET_PARENT_REF, &[], &ctx), Getter::Ref(ITEM));
     }
 

@@ -5475,10 +5475,10 @@ fn reference_enabled_guard_reads_scripts_then_the_authored_state() {
     const STARTS_ENABLED: u32 = 0x0002_0002;
     let mut world = fixture();
     world.insert_resource(QuestScriptVariables::default());
-    world.insert_resource(super::AuthoredDisabledReferences(
-        [STARTS_DISABLED].into_iter().collect(),
-        Default::default(),
-    ));
+    world.insert_resource(super::AuthoredDisabledReferences {
+        initially_disabled: [STARTS_DISABLED].into_iter().collect(),
+        enable_parents: Default::default(),
+    });
     let enabled = |name: &str, expected| FragmentGuard::ReferenceEnabled {
         object: ObjectRef::Property(name.into()),
         expected,

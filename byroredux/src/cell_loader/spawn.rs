@@ -473,9 +473,9 @@ pub(crate) fn placement_is_disabled(
     else {
         return false;
     };
-    world
-        .try_resource::<byroredux_scripting::ReferenceEnableState>()
-        .is_some_and(|state| !state.is_enabled(local))
+    // #6077 — through the enable-parent chain, so a child of a disabled
+    // parent is disabled too.
+    !byroredux_scripting::reference_enabled(world, local)
 }
 
 /// Is the reference whose own form id is `reference_form_id` (a
@@ -493,11 +493,25 @@ pub(crate) fn placement_is_disabled(
 /// Disabled" flag. A scripted `Enable()`/`Disable()` recorded in
 /// `ReferenceEnableState` overrides it; with no ledger at all the authored
 /// flag still stands.
+///
+/// #6077 — `enable_parent` is the placement's `XESP`. A child's own flag and
+/// any script override on it are inert: its state is its parent's, resolved
+/// through the load order's authored table (`reference_enabled_with_parent`),
+/// so a disabled quest-marker parent keeps its staged children hidden and a
+/// script enabling it brings them back at the next load.
 pub(crate) fn reference_is_disabled(
     world: &World,
     reference_form_id: u32,
     initially_disabled: bool,
+    enable_parent: Option<byroredux_plugin::esm::cell::EnableParent>,
 ) -> bool {
+    if let Some(parent) = enable_parent.filter(|parent| parent.form_id != 0) {
+        return !byroredux_scripting::reference_enabled_with_parent(
+            world,
+            reference_form_id,
+            Some(parent),
+        );
+    }
     match world.try_resource::<byroredux_scripting::ReferenceEnableState>() {
         Some(state) => !state.is_enabled_with_default(reference_form_id, initially_disabled),
         None => initially_disabled,

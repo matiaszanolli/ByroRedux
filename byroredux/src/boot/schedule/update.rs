@@ -221,6 +221,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             // disabled placements are filtered against the enable ledger.
             .reads::<crate::inventory::PickedUp>()
             .reads_resource::<byroredux_scripting::ReferenceEnableState>()
+            // #6077 — and through the enable-parent chain.
+            .reads_resource::<byroredux_scripting::AuthoredDisabledReferences>()
             .writes::<byroredux_scripting::ActivateEvent>(),
     );
     // #2654 — quest fragments queue their `<Ref>.Activate()` targets rather

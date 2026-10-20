@@ -463,28 +463,3 @@ pub struct EnableParent {
     pub inverted: bool,
 }
 
-impl EnableParent {
-    /// Returns `true` if the REFR should be skipped at cell-load time
-    /// because its parent's assumed initial state would hide it.
-    ///
-    /// Interim predicate (#471): without a two-pass loader that can
-    /// consult the parent REFR's own "initial disabled" flag
-    /// (bit 0x0800), we assume the common case — parents are
-    /// persistent, always-enabled actors / statics. Under that
-    /// assumption:
-    ///   - non-inverted XESP: child visible iff parent enabled → render
-    ///   - inverted XESP:     child visible iff parent disabled → skip
-    ///
-    /// #349's original predicate had the sense flipped and hid every
-    /// non-inverted XESP child, wiping out most quest-enabled clutter,
-    /// shop inventory, and patrol markers on FNV / FO3 cells. False
-    /// negatives on the rarer "supposed to be hidden" XESP chains are
-    /// visually less bad than wholesale invisibility.
-    ///
-    /// The long-term fix is a two-pass loader that builds a REFR flag
-    /// table first, then applies XESP gating against each parent's real
-    /// 0x0800 bit.
-    pub fn default_disabled(self) -> bool {
-        self.form_id != 0 && self.inverted
-    }
-}

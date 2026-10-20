@@ -497,21 +497,6 @@ pub(super) fn load_references_budgeted(
             return ReferenceLoadProgress::Pending(job);
         }
         let placed_ref = &refs[job.next_ref];
-        // Skip REFRs whose XESP gating would keep them hidden under
-        // the parents-assumed-enabled heuristic: inverted XESP children
-        // are visible only when the parent is *disabled*, so under the
-        // default they stay off. Non-inverted XESP children fall through
-        // and render. See #471 (flipped #349's over-hiding predicate)
-        // — long-term fix is a two-pass loader that reads the parent
-        // REFR's own 0x0800 "initial disabled" flag.
-        if let Some(ep) = placed_ref.enable_parent {
-            if ep.default_disabled() {
-                job.enable_skipped += 1;
-                job.next_ref += 1;
-                budget.complete_unit();
-                continue;
-            }
-        }
 
         // #1188 / #5484 — FO4+ PreCombined absorption skip. This REFR's
         // XCRI pair says the bake tool folded its geometry into the
@@ -639,14 +624,21 @@ pub(super) fn load_references_budgeted(
         // as a disabled mesh placement keeps its root — but spawns no content.
         //
         // #4813 — the authored "Initially Disabled" flag is the default a
-        // scripted `Enable()` overrides. Only for a REFR with no enable
-        // parent: an `XESP` child's state follows its parent, which the
-        // heuristic above already decides.
+        // scripted `Enable()` overrides. #6077 — an `XESP` child's state is
+        // its parent's, resolved through the load order's table (the parent
+        // may live in another cell); the child's own flag is inert. A child
+        // its parent disables keeps its root, identity and scripts like any
+        // disabled REFR, instead of the pre-#6077 skip that assumed every
+        // parent enabled (56% of FNV's children spawned in the wrong state).
         let placement_disabled = super::spawn::reference_is_disabled(
             world,
             placed_ref.form_id,
-            placed_ref.initially_disabled && placed_ref.enable_parent.is_none(),
+            placed_ref.initially_disabled,
+            placed_ref.enable_parent,
         );
+        if placement_disabled && placed_ref.enable_parent.is_some() {
+            job.enable_skipped += 1;
+        }
         let synth_count = synth_refs.len();
         let mut synth_idx = job.next_synth;
         while synth_idx < synth_count {

@@ -20,9 +20,10 @@
 //! CS wiki pages':
 //!
 //! - *Enable* / *Disable*: the optional fade argument is cosmetic and ignored. The
-//!   documented "no effect on a reference with an Enable Parent" rule is not
-//!   applied here — the Papyrus path does not apply it either, and the runtime
-//!   has no enable-parent ledger to consult.
+//!   documented "no effect on a reference with an Enable Parent" rule holds on
+//!   the read side: the ledger records the call, and [`reference_enabled`]
+//!   resolves an enable-parent child through its parent, never its own entry
+//!   (#6077).
 //! - *MoveTo*: "Moves the object to the specified reference's location with
 //!   optional axis offset parameters"; neither wiki says the rotation follows,
 //!   so the rotation is left alone. Moving the player "will queue up a movement
@@ -348,7 +349,10 @@ mod tests {
     #[test]
     fn get_disabled_honours_the_authored_flag() {
         let (mut world, _, _) = world(GameKind::Fallout3NV);
-        world.insert_resource(crate::AuthoredDisabledReferences([MOVED].into(), Default::default()));
+        world.insert_resource(crate::AuthoredDisabledReferences {
+            initially_disabled: [MOVED].into(),
+            enable_parents: Default::default(),
+        });
         assert_eq!(
             run(&world, CMD_GET_DISABLED, &[], Some(MOVED)),
             Action::Done { value: Some(ObScriptValue::Num(1.0)), effect: String::new() }

@@ -613,15 +613,11 @@ fn parse_refr_extracts_non_inverted_xesp_renders_by_default() {
         .expect("XESP must populate enable_parent");
     assert_eq!(ep.form_id, 0xCAFE);
     assert!(!ep.inverted);
-    assert!(
-        !ep.default_disabled(),
-        "non-inverted XESP with assumed-enabled parent renders (#471)"
-    );
 }
 
-/// #471: inverted XESP is visible when the parent is *disabled*.
-/// With the parents-assumed-enabled default, the child must be
-/// treated as hidden at cell load.
+/// #471: inverted XESP is visible when the parent is *disabled*. The flag
+/// is what the runtime's enable-parent resolution flips on (#6077,
+/// `byroredux_scripting::reference_enabled_from`).
 #[test]
 fn parse_refr_extracts_inverted_xesp_hidden_by_default() {
     let record = build_refr_with_xesp(0xABCD, 0xCAFE, 0x01); // inverted bit set
@@ -651,16 +647,11 @@ fn parse_refr_extracts_inverted_xesp_hidden_by_default() {
         .expect("XESP must populate enable_parent");
     assert_eq!(ep.form_id, 0xCAFE);
     assert!(ep.inverted);
-    assert!(
-        ep.default_disabled(),
-        "inverted XESP with assumed-enabled parent is hidden (#471)"
-    );
 }
 
-/// Sibling: a REFR with no XESP at all keeps `enable_parent = None`
-/// — `default_disabled()` is irrelevant because the cell loader
-/// only inspects `Some(ep)`. The pre-#349 behaviour is preserved
-/// for the common (non-quest-gated) case.
+/// Sibling: a REFR with no XESP at all keeps `enable_parent = None`, so
+/// its own "Initially Disabled" flag decides its state. The pre-#349
+/// behaviour is preserved for the common (non-quest-gated) case.
 #[test]
 fn parse_refr_without_xesp_has_no_enable_parent() {
     let record = build_refr_with_xesp(0xABCD, 0, 0);
@@ -1033,11 +1024,11 @@ fn parse_refr_group_recognises_oblivion_acre_placement() {
     assert!((r.scale - 1.5).abs() < 1e-6);
 }
 
-/// Edge case: XESP with a zero parent FormID (NULL parent — rare
-/// but legal in vanilla content). Treated as "no real parent" so
-/// the REFR is NOT default-disabled even though XESP is present.
+/// Edge case: XESP with a zero parent FormID (NULL parent — rare but legal
+/// in vanilla content). Parsed as authored; the runtime's enable-parent
+/// resolution treats a zero parent as no parent (#6077).
 #[test]
-fn parse_refr_xesp_with_null_parent_is_not_default_disabled() {
+fn parse_refr_xesp_with_null_parent_keeps_the_zero_parent() {
     let record = build_refr_with_xesp(0xABCD, 0, 0);
     let mut reader = EsmReader::new(&record);
     let end = record.len();
@@ -1063,10 +1054,6 @@ fn parse_refr_xesp_with_null_parent_is_not_default_disabled() {
         .enable_parent
         .expect("XESP populates enable_parent even with null parent");
     assert_eq!(ep.form_id, 0);
-    assert!(
-        !ep.default_disabled(),
-        "null parent FormID = no real gating, so not default-disabled"
-    );
 }
 
 #[test]

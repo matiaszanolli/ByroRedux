@@ -685,10 +685,8 @@ fn parse_refr_group_inner(
                     // ACRE/ACHR/REFR share the layout — see the ACRE note
                     // ~70 lines above. NOT Skyrim+, per #2088). 4-byte
                     // parent FormID + 1-byte flags; bit 0 = inverted.
-                    // Pre-#349 every default-disabled "spawn after
-                    // quest stage" REFR rendered immediately on cell
-                    // load; the cell loader now skips these via
-                    // `enable_parent.default_disabled()`.
+                    // The runtime resolves a child's state through its
+                    // parent's (#6077, `reference_enabled_from`).
                     b"XESP" if sub.data.len() >= 5 => {
                         let form_id = reader.remap_form_id(r.u32_or_default());
                         let inverted = r.u8_or_default() & 1 != 0;

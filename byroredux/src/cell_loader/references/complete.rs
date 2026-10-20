@@ -347,7 +347,7 @@ pub(super) fn complete_reference_load(
     }
     if enable_skipped > 0 {
         log::info!(
-            "  {} REFRs skipped via XESP enable-parent gating (#349)",
+            "  {} REFRs withheld by their XESP enable parent's state (#6077)",
             enable_skipped,
         );
     }

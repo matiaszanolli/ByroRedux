@@ -59,67 +59,147 @@ pub fn install_quest_script_instances(
     count
 }
 
-/// M47.2 — the load order's references that start disabled, by the cell
-/// loader's own rule: "Initially Disabled" with no enable parent, or an
-/// enable-parent child whose parent-assumed-enabled state hides it
-/// (`EnableParent::default_disabled`, #471). `IsDisabled` / `IsEnabled`
-/// guards read it where no script has touched the reference.
-/// `NOT_SAVED_BY_DESIGN`: rebuilt from the REFRs every boot.
+/// M47.2 — the load order's authored enable data: each reference's own
+/// "Initially Disabled" flag (REFR 0x0800) and, for an enable-parent child,
+/// its parent (`XESP`). `IsDisabled` / `IsEnabled` guards and the cell
+/// loader's spawn gate resolve a reference's state through it with
+/// [`reference_enabled_from`]. `NOT_SAVED_BY_DESIGN`: rebuilt from the REFRs
+/// every boot.
 ///
-/// It also holds each enable-parent child's parent (`XESP`), which is what ObScript's
-/// `GetParentRef` answers ("the reference set in the Enable Parent tab").
+/// The parent is also what ObScript's `GetParentRef` answers ("the reference
+/// set in the Enable Parent tab").
 #[derive(Debug, Default, Clone)]
-pub struct AuthoredDisabledReferences(pub HashSet<u32>, pub std::collections::HashMap<u32, u32>);
+pub struct AuthoredDisabledReferences {
+    /// References whose own record carries "Initially Disabled". For a child
+    /// the flag is inert: its state is its parent's (#6077).
+    pub initially_disabled: HashSet<u32>,
+    /// Child -> its `XESP` enable parent.
+    pub enable_parents: HashMap<u32, byroredux_plugin::esm::cell::EnableParent>,
+}
 
 impl Resource for AuthoredDisabledReferences {}
 
 /// Install the load order's [`AuthoredDisabledReferences`]; returns how many
-/// there are.
+/// references start disabled once enable parents are followed.
 pub fn install_authored_disabled_references(
     world: &mut World,
     index: &byroredux_plugin::esm::records::EsmIndex,
 ) -> usize {
+    let mut authored = AuthoredDisabledReferences::default();
     let cells = index
         .cells
         .cells
         .values()
         .chain(index.cells.exterior_cells.values().flat_map(|grid| grid.values()))
         .chain(index.cells.worldspace_persistent_cells.values());
-    let disabled: HashSet<u32> = cells
-        .flat_map(|cell| cell.references.iter())
-        .filter(|placed| match placed.enable_parent {
-            Some(parent) => parent.default_disabled(),
-            None => placed.initially_disabled,
-        })
-        .map(|placed| placed.form_id)
-        .collect();
-    let count = disabled.len();
-    let cells = index
-        .cells
-        .cells
-        .values()
-        .chain(index.cells.exterior_cells.values().flat_map(|grid| grid.values()))
-        .chain(index.cells.worldspace_persistent_cells.values());
-    let parents: std::collections::HashMap<u32, u32> = cells
-        .flat_map(|cell| cell.references.iter())
-        .filter_map(|placed| placed.enable_parent.map(|parent| (placed.form_id, parent.form_id)))
-        .collect();
-    world.insert_resource(AuthoredDisabledReferences(disabled, parents));
+    for placed in cells.flat_map(|cell| cell.references.iter()) {
+        if placed.initially_disabled {
+            authored.initially_disabled.insert(placed.form_id);
+        }
+        if let Some(parent) = placed.enable_parent.filter(|parent| parent.form_id != 0) {
+            authored.enable_parents.insert(placed.form_id, parent);
+        }
+    }
+    let count = authored
+        .initially_disabled
+        .iter()
+        .chain(authored.enable_parents.keys())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .filter(|&&form_id| !reference_enabled_from(None, Some(&authored), form_id, None))
+        .count();
+    world.insert_resource(authored);
     count
 }
 
-/// Whether reference `form_id` is enabled: a script's `Enable()` /
-/// `Disable()` wins, else its authored state. Each guard is released before
-/// the next.
+/// Enable-parent hops followed before a chain is treated as a cycle. Vanilla
+/// chains are short (17 of FNV's 1,876 disabled-parent children have a parent
+/// that is itself a child).
+const ENABLE_PARENT_MAX_DEPTH: usize = 16;
+
+/// #6077 — a reference's effective enable state. A reference with an enable
+/// parent "cannot be enabled or disabled independently of their parent, even
+/// through script. Their disable/enable state is always determined by their
+/// enable parent" (CK *Reference*, Enable Parent; GECK *Enable*: on such a
+/// reference it "will have no effect"), the opposite of it when the child is
+/// flagged "Set Enable State to Opposite of Parent". So the chain is followed
+/// to its first parent-less reference, whose scripted `Enable()` /
+/// `Disable()` wins over its authored flag, and the answer is flipped once
+/// per inverted hop. That is also the cascade: a script toggling a parent
+/// toggles every child read through here.
+///
+/// `first_hop` is the reference's own parent when the caller holds the
+/// placement (the spawn gate), so a child resolves one hop even with no
+/// authored table installed; `None` takes it from `authored`. A parent the
+/// table does not hold counts as authored enabled. A cycle resolves to the
+/// state the reference's own record gives it.
+pub fn reference_enabled_from(
+    scripted: Option<&ReferenceEnableState>,
+    authored: Option<&AuthoredDisabledReferences>,
+    form_id: u32,
+    first_hop: Option<byroredux_plugin::esm::cell::EnableParent>,
+) -> bool {
+    let (root, inverted) = enable_root(authored, form_id, first_hop);
+    let enabled = scripted
+        .and_then(|state| state.override_for(root))
+        .unwrap_or_else(|| !authored.is_some_and(|a| a.initially_disabled.contains(&root)));
+    enabled != inverted
+}
+
+/// The reference whose own state decides `form_id`'s, and whether an odd
+/// number of inverted hops lie between them; `(form_id, false)` for a
+/// parent-less reference or a cycle.
+fn enable_root(
+    authored: Option<&AuthoredDisabledReferences>,
+    form_id: u32,
+    first_hop: Option<byroredux_plugin::esm::cell::EnableParent>,
+) -> (u32, bool) {
+    let parent_of = |form_id: u32| {
+        authored
+            .and_then(|a| a.enable_parents.get(&form_id).copied())
+            .filter(|parent| parent.form_id != 0)
+    };
+    let mut current = form_id;
+    let mut inverted = false;
+    let mut next = first_hop.filter(|parent| parent.form_id != 0).or_else(|| parent_of(form_id));
+    for _ in 0..ENABLE_PARENT_MAX_DEPTH {
+        let Some(parent) = next else {
+            return (current, inverted);
+        };
+        inverted ^= parent.inverted;
+        current = parent.form_id;
+        next = parent_of(current);
+    }
+    log::debug!("enable parent chain from {form_id:08X} exceeds {ENABLE_PARENT_MAX_DEPTH} hops; reading its own state");
+    (form_id, false)
+}
+
+/// Whether reference `form_id` is enabled, with enable parents followed
+/// ([`reference_enabled_from`]). Each guard is released before the next.
 pub fn reference_enabled(world: &World, form_id: u32) -> bool {
+    reference_enabled_with_parent(world, form_id, None)
+}
+
+/// [`reference_enabled`] with the reference's own parent supplied by a caller
+/// that holds the placement (see [`reference_enabled_from`]'s `first_hop`).
+pub fn reference_enabled_with_parent(
+    world: &World,
+    form_id: u32,
+    first_hop: Option<byroredux_plugin::esm::cell::EnableParent>,
+) -> bool {
+    let (root, inverted) = {
+        let authored = world.try_resource::<AuthoredDisabledReferences>();
+        enable_root(authored.as_deref(), form_id, first_hop)
+    };
     let scripted = world
         .try_resource::<ReferenceEnableState>()
-        .and_then(|state| state.override_for(form_id));
-    scripted.unwrap_or_else(|| {
+        .and_then(|state| state.override_for(root));
+    let enabled = scripted.unwrap_or_else(|| {
         !world
             .try_resource::<AuthoredDisabledReferences>()
-            .is_some_and(|authored| authored.0.contains(&form_id))
-    })
+            .is_some_and(|authored| authored.initially_disabled.contains(&root))
+    });
+    enabled != inverted
 }
 
 /// References whose default activation a script blocked (M47.2): the CK's
