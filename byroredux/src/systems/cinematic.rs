@@ -10,8 +10,8 @@ use byroredux_core::string::StringPool;
 use byroredux_physics::{PhysicsWorld, RapierHandles};
 use byroredux_scripting::{
     ActorCinematicState, AnimationTextKeyEvents, CinematicAnimationEvent, HorseTetherState,
-    MotionTypeChangeRequest, PackageTargetRegistry, SceneAliasCandidate, ScenePackageCommand,
-    ScenePackagePlayback,
+    MotionTypeChangeRequest, PackageTargetRegistry, PlayingScriptedIdle, SceneAliasCandidate,
+    ScenePackageCommand, ScenePackagePlayback,
 };
 
 const SCENE_TRIGGER_APPROACH_SPEED: f32 = 500.0;
@@ -98,6 +98,7 @@ pub(crate) fn idle_clip_playback_system(world: &World, _dt: f32) {
         return;
     }
     if !resumes.is_empty() {
+        let playing: Vec<EntityId> = resumes.iter().map(|(actor, _)| *actor).collect();
         if let Some(mut store) = world.query_mut::<crate::components::IdleResume>() {
             for (actor, resume) in resumes {
                 // A second one-shot over the first keeps the idle from before the first.
@@ -107,6 +108,13 @@ pub(crate) fn idle_clip_playback_system(world: &World, _dt: f32) {
                         store.insert(actor, resume);
                     }
                 }
+            }
+        }
+        // ObScript `IsIdlePlaying` reads this marker; it lives exactly as long as the `IdleResume`
+        // (taken after the store above is released, so the two locks are never nested).
+        if let Some(mut marks) = world.query_mut::<PlayingScriptedIdle>() {
+            for actor in playing {
+                marks.insert(actor, PlayingScriptedIdle);
             }
         }
     }
@@ -207,8 +215,13 @@ pub(crate) fn idle_resume_system(world: &World, _dt: f32) {
         }
     }
     if let Some(mut store) = world.query_mut::<crate::components::IdleResume>() {
+        for actor in &done {
+            store.remove(*actor);
+        }
+    }
+    if let Some(mut marks) = world.query_mut::<PlayingScriptedIdle>() {
         for actor in done {
-            store.remove(actor);
+            marks.remove(actor);
         }
     }
 }
@@ -1554,6 +1567,65 @@ mod tests {
             0.25,
             "the same request serial must not restart every frame"
         );
+    }
+
+    /// ObScript `IsIdlePlaying` (0x1070) reads `PlayingScriptedIdle`: a `PlayIdle` one-shot sets it and
+    /// the resume system clears it when the clamp clip has run its duration (#6179).
+    #[test]
+    fn scripted_one_shot_idle_marks_the_actor_until_it_finishes() {
+        use byroredux_core::animation::{AnimationClip, AnimationClipRegistry, CycleType};
+        let mut world = World::new();
+        world.register::<ActorCinematicState>();
+        world.register::<AnimationTarget>();
+        world.register::<AnimationPlayer>();
+        world.register::<RootMotionDelta>();
+        world.register::<crate::components::IdleResume>();
+        world.register::<PlayingScriptedIdle>();
+        let mut clips = AnimationClipRegistry::new();
+        let handle = clips.add(AnimationClip {
+            name: "one_shot".into(),
+            duration: 1.0,
+            cycle_type: CycleType::Clamp,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: Default::default(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        });
+        world.insert_resource(clips);
+        let mut catalog = IdleClipCatalog::default();
+        catalog.handles.insert(0x0010_6AE3, handle);
+        world.insert_resource(catalog);
+
+        let skeleton = world.spawn();
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            ActorCinematicState {
+                requested_idle_form_id: Some(0x0010_6AE3),
+                idle_request_serial: 1,
+                ..Default::default()
+            },
+        );
+        world.insert(actor, AnimationTarget { skeleton_root: skeleton, consumed_idle_serial: 0 });
+        assert!(!world.has::<PlayingScriptedIdle>(actor));
+
+        idle_clip_playback_system(&world, 0.0);
+        assert!(world.has::<PlayingScriptedIdle>(actor), "the one-shot marks the actor");
+        assert!(world.has::<crate::components::IdleResume>(actor));
+
+        idle_resume_system(&world, 0.0);
+        assert!(world.has::<PlayingScriptedIdle>(actor), "still playing: the clip has not run out");
+
+        world.get_mut::<AnimationPlayer>(actor).unwrap().local_time = 1.0;
+        idle_resume_system(&world, 0.0);
+        assert!(!world.has::<PlayingScriptedIdle>(actor), "the marker follows the IdleResume off");
+        assert!(!world.has::<crate::components::IdleResume>(actor));
     }
 
     /// `ApplyHavokImpulse(0, 0, -1, 15)` on a Trap-layer body: the impulse is
