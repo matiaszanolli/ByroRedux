@@ -55,7 +55,8 @@ pub use havok_packfile::{
 #[cfg(test)]
 pub(crate) use np_ragdoll::synthetic_two_body_blob;
 pub use np_ragdoll::{
-    decode_np_ragdoll, NpConstraintData, NpRagdoll, NpRagdollBody, NpRagdollConstraint, NpShape,
+    decode_np_ragdoll, NpCompoundChild, NpConstraintData, NpRagdoll, NpRagdollBody, NpRagdollConstraint,
+    NpShape,
 };
 pub use phantom_action::{
     BhkAabbPhantom, BhkLiquidAction, BhkOrientHingedBodyAction, BhkSimpleShapePhantom,

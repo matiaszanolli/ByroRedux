@@ -357,8 +357,8 @@ const NP_COINCIDENT_DOT: f32 = 1.0 - 1.0e-6;
 /// vanilla ragdoll skeletons whose bodies sit on their bones (`is_t` false,
 /// like a classic non-`T` body), a bone-local offset for the rest (turrets,
 /// the vertibird, a stray body or two on the deathclaw and mirelurk hunter).
-/// Bodies with no host bone or an undecoded shape (convex hulls, compounds)
-/// are dropped, with their joints.
+/// Bodies with no host bone or an undecoded shape are dropped, with their
+/// joints (every vanilla body decodes a shape, #6067).
 pub(super) fn extract_np_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
     let (system_idx, blob) = scene.blocks.iter().enumerate().find_map(|(i, b)| {
         b.as_any()
@@ -400,7 +400,7 @@ pub(super) fn extract_np_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
             log::warn!("extract_np_ragdoll: dropping body {} — its host bone has no name", body.index);
             continue;
         };
-        let Some(shape) = body.shape.and_then(|s| np_shape(s, scale)) else {
+        let Some(shape) = body.shape.as_ref().and_then(|s| np_shape(s, scale)) else {
             log::warn!(
                 "extract_np_ragdoll: dropping body {} ('{bone_name}') — shape class not decoded",
                 body.index
@@ -479,8 +479,8 @@ pub(super) fn extract_np_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
 
 /// A blob shape in engine space (Y-up, havok-scaled), placed in the body's
 /// frame like the classic capsule (`segment_shape`).
-fn np_shape(shape: NpShape, scale: f32) -> Option<CollisionShape> {
-    match shape {
+fn np_shape(shape: &NpShape, scale: f32) -> Option<CollisionShape> {
+    match *shape {
         NpShape::Capsule { a, b, radius } => {
             let p1 = finite_vec(havok_to_engine(a[0], a[1], a[2]) * scale)?;
             let p2 = finite_vec(havok_to_engine(b[0], b[1], b[2]) * scale)?;
@@ -497,6 +497,33 @@ fn np_shape(shape: NpShape, scale: f32) -> Option<CollisionShape> {
         NpShape::Sphere { radius } => Some(CollisionShape::Ball {
             radius: finite(radius * scale)?,
         }),
+        // The convex radius (1 cm on every vanilla hull) rounds the hull's edges;
+        // the rapier hull is the sharp one.
+        NpShape::ConvexHull { ref vertices, .. } => {
+            let vertices = vertices
+                .iter()
+                .map(|v| finite_vec(havok_to_engine(v[0], v[1], v[2]) * scale))
+                .collect::<Option<Vec<_>>>()?;
+            Some(CollisionShape::ConvexHull { vertices })
+        }
+        // Each child keeps the instance transform as the classic compound does: the
+        // child's own geometry is already in engine axes, so the transform is the
+        // Havok one conjugated into them.
+        NpShape::Compound { ref children } => {
+            let children = children
+                .iter()
+                .map(|child| {
+                    let [x, y, z] = child.columns;
+                    let rotation = Quat::from_mat3(&Mat3::from_cols(x.into(), y.into(), z.into()));
+                    let rotation = havok_quat_to_engine([rotation.x, rotation.y, rotation.z, rotation.w]);
+                    let [tx, ty, tz] = child.translation;
+                    let translation = finite_vec(havok_to_engine(tx, ty, tz) * scale)?;
+                    rotation.is_finite().then_some(())?;
+                    Some((translation, rotation, Box::new(np_shape(&child.shape, scale)?)))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(CollisionShape::Compound { children })
+        }
     }
 }
 

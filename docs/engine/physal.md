@@ -346,8 +346,10 @@ array locations rather than from an undifferentiated byte run.
 **FO4 ragdolls (`bhkRagdollSystem`) — decoded and threaded (#5015).** A
 skeleton's articulation is a different blob from the precombine one and does
 not need the compressed-mesh layout: `hknpRagdollData` (bodies, joints),
-`hknpCapsuleShape` / `hknpSphereShape` bodies, and
-`hkpRagdollConstraintData` / `hkpLimitedHingeConstraintData` joints.
+`hknpCapsuleShape` / `hknpSphereShape` / `hknpConvexPolytopeShape` /
+`hknpDynamicCompoundShape` bodies, and `hkpRagdollConstraintData` /
+`hkpLimitedHingeConstraintData` joints (also behind an
+`hknpBreakableConstraintData` wrapper).
 `blocks::collision::decode_np_ragdoll` reads them into the same
 `RagdollCInfo` / `LimitedHingeCInfo` records the classic `bhkConstraint` path
 produces, so the existing joint conversion serves both generations, and
@@ -356,16 +358,47 @@ constraints. Every offset was recovered from the vanilla corpus (no SDK is
 consulted) and is pinned by an independent check: body mass equals capsule
 volume times the density stored beside the inverse mass (18 of 18 human
 bodies, 1e-7); a joint's pivot names the same world point from both bodies
-(783 of 847 corpus joints to 1 cm, every one of the human, supermutant,
+(783 of 850 corpus joints to 1 cm, every one of the human, supermutant,
 feral-ghoul, brahmin, mole-rat, dog, radscorpion, yaoguai, mirelurk-king and
 radstag joints; the exceptions are turrets, the vertibird, Liberty Prime's
 furniture and a few robot parts, whose joints meet at a rest pose other than
 the stored bind pose); and a body's bind pose equals its host bone's rest
 world transform for 59 of 75 skeletons (the rest get a bone-local offset).
 Bodies are named by the skeleton's `bhkNPCollisionObject.body_id`. All 75
-vanilla ragdoll blobs decode; 64 of 986 bodies (convex polytopes, dynamic
-compounds) and 3 breakable joints are not read and are dropped with their
-joints. The per-body material and motion-property rows (friction,
+vanilla ragdoll blobs decode, every one of the 986 bodies has a shape (922
+capsules and spheres, 58 convex polytopes, 6 dynamic compounds) and every one
+of the 850 joints decodes (#6067).
+
+Shapes added by #6067, each pinned by an independent check. A polytope keeps
+its vertices (`u16` count and relative offset at `+48`, 16-byte rows) and the
+convex radius at `+20`; the face planes and index lists after them are
+redundant. Its layout is pinned by the 8-vertex boxes, whose Steiner volume
+(the box grown by the radius, edges and corners rounded) times the density
+reproduces the authored mass to 2% on every box — the mirelurk hunter's 3 cm
+box instead authors the box grown as a cuboid, `(a+2r)(b+2r)(c+2r)`. The
+organic hulls (20–252 vertices) have no closed-form volume and are not pinned.
+A compound keeps its instances (`hkArray` at `+96`, 128-byte rows: rotation
+columns at `+0/+16/+32`, translation `+48`, scale `+64`, child pointer `+80`)
+with leaf children only; the rotation is stored as **columns** (a child point
+`v` sits at `columns·v + translation`), which the compound data object's
+stored child bounds settle (the turret workshop's two rotated children match to
+the convex radius under columns and miss by 0.1–0.2 under rows). Compound
+masses are not volume-checked. The convex radius is dropped on import, as is a
+breakable joint's threshold: a rapier hull is sharp and the joint stays
+unbreakable.
+
+**Joint pivots on off-bone bodies (open, #6067).** 67 of the 850 joints name
+two different world points at the stored bind pose (783 agree). 39 of the 67
+agree when a body that sits off its host bone (`is_t`) takes its pivot in the
+**bone's** frame rather than its own — the deathclaw's four disagreeing joints
+all hang off its offset COM body and share one displacement vector whose length
+is that body's bone offset (0.2044 m) — but the same reading makes some of
+the other joints worse (vertibird, Liberty Prime's furniture), so it is not one
+rule. The 28 left after it: Liberty Prime's furniture (13), vertibird (3),
+power armor (6, three files), eyebot (2), createabot (2), mirelurk queen (1),
+bloatfly (1). The importer still reads every pivot in the body's own frame; the
+reading above is evidence, not wired behaviour (no live ragdoll check exists
+for FO4, #6070). The per-body material and motion-property rows (friction,
 restitution, damping) are present but their field identities are not
 established, so bodies take the values the Skyrim humanoid ragdoll authors.
 
@@ -391,7 +424,7 @@ get-up / hit-react / partial-ragdoll. Needs the joint-limit fidelity work first.
    are done (#3809) and the skeleton ragdoll payload (`bhkRagdollSystem`,
    #5015) is decoded and threaded; what is left is
    `hknpCompressedMeshShapeData`'s field layout (precombined geometry), the
-   hull/compound body shapes and the undecoded material/motion rows.
+   joint-pivot frame on off-bone bodies and the undecoded material/motion rows.
 
 Each step ships independently behind `cargo test`; none touches the Vulkan
 render-pass / pipeline (writeback rides existing skinning).

@@ -4,10 +4,12 @@
 //! A Fallout 4 skeleton NIF hosts its ragdoll in a `bhkRagdollSystem` block
 //! whose [`BhkSystemBinary`](super::BhkSystemBinary) payload is a classic
 //! Havok packfile ([`parse_havok_packfile`]). The packfile's object table
-//! names the classes; this module reads the fields of the three that make a
+//! names the classes; this module reads the fields of the ones that make a
 //! ragdoll — `hknpRagdollData` (the bodies and the joint list), the
-//! `hknpCapsuleShape` / `hknpSphereShape` bodies and the
-//! `hkpRagdollConstraintData` / `hkpLimitedHingeConstraintData` joints — into
+//! `hknpCapsuleShape` / `hknpSphereShape` / `hknpConvexPolytopeShape` /
+//! `hknpDynamicCompoundShape` bodies and the `hkpRagdollConstraintData` /
+//! `hkpLimitedHingeConstraintData` joints (also behind an
+//! `hknpBreakableConstraintData` wrapper) — into
 //! the same [`RagdollCInfo`] / [`LimitedHingeCInfo`] records the classic
 //! (`bhkConstraint`) path produces, so the existing joint conversion serves
 //! both generations.
@@ -29,6 +31,11 @@
 //! - **Joint frames** put each joint's pivot at the same world point from both
 //!   bodies (largest disagreement 6 mm over 17 joints) and their axes
 //!   coincide at the bind pose.
+//! - **Polytope vertices** (#6067) reproduce the authored mass of every
+//!   8-vertex box once the convex radius is folded into the volume.
+//! - **Compound instance transforms** (#6067) are rotation *columns*: the
+//!   compound data object stores each child's padded bounds, and only the
+//!   column reading reproduces them for the rotated children.
 //!
 //! The per-body material and motion-property rows (friction, restitution,
 //! damping) are present but their field identities are not established, so
@@ -62,6 +69,26 @@ const BODY_ROW: usize = 96;
 const MOTION_ROW: usize = 112;
 const JOINT_ROW: usize = 24;
 
+/// `hknpConvexPolytopeShape`: the vertex-array member and its row size.
+const HULL_VERTICES: usize = 48;
+const HULL_VERTEX_ROW: usize = 16;
+/// `hknpDynamicCompoundShape`: the instance array (`hkArray`, pointer at `+96`,
+/// count at `+104`) and its 128-byte rows: three rotation columns at `+0/+16/+32`,
+/// the translation at `+48`, a per-axis scale at `+64` and the child-shape pointer
+/// at `+80`.
+const COMPOUND_INSTANCES: usize = 96;
+const INSTANCE_ROW: usize = 128;
+const INSTANCE_TRANSLATION: usize = 48;
+const INSTANCE_SCALE: usize = 64;
+const INSTANCE_SHAPE: usize = 80;
+/// `hknpBreakableConstraintData`: the pointer to the wrapped constraint data.
+const BREAKABLE_INNER: usize = 24;
+/// The largest vanilla compound has four children; only stops a corrupt count.
+const MAX_COMPOUND_CHILDREN: usize = 64;
+/// More vertices than any vanilla hull carries (corpus maximum is recorded
+/// beside the corpus test); only stops a corrupt count from allocating.
+const MAX_HULL_VERTICES: usize = 1024;
+
 /// Upper bound on bodies/joints a ragdoll blob may declare — the largest
 /// vanilla creature has 41 bodies; the cap only stops a corrupt count from
 /// reserving gigabytes.
@@ -77,7 +104,7 @@ const ATOM_CONE_LIMIT: u16 = 0x10;
 
 /// A ragdoll body's collision shape, in the body's local frame (Havok metres,
 /// Z-up).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NpShape {
     /// Segment `a`–`b` swept by `radius`.
     Capsule {
@@ -88,6 +115,26 @@ pub enum NpShape {
     Sphere {
         radius: f32,
     },
+    /// `hknpConvexPolytopeShape`: the hull's vertices (the face planes and index
+    /// lists that follow them in the object are redundant with the vertices) and
+    /// the convex radius the hull is rounded by.
+    ConvexHull {
+        vertices: Vec<[f32; 3]>,
+        radius: f32,
+    },
+    /// `hknpDynamicCompoundShape`: child shapes, each placed in the body's frame.
+    Compound { children: Vec<NpCompoundChild> },
+}
+
+/// One instance of a compound shape: a leaf shape and where it sits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NpCompoundChild {
+    /// The instance transform's three columns (the images of the child's X, Y
+    /// and Z axes), so a child point `v` sits at `columns · v + translation`.
+    pub columns: [[f32; 3]; 3],
+    pub translation: [f32; 3],
+    /// A capsule, sphere or convex hull — never another compound.
+    pub shape: Box<NpShape>,
 }
 
 /// One ragdoll body (`hknpBodyCinfo` row).
@@ -97,12 +144,15 @@ pub struct NpRagdollBody {
     /// names its host bone by this id.
     pub index: usize,
     pub mass: f32,
+    /// The motion row's density (`+8`, beside the inverse mass): the mass the
+    /// authoring tool derived from the shape's volume is `volume × density`.
+    pub density: f32,
     /// The ragdoll skeleton's bone this body drives (a `u8` at `+21` of the
     /// body row; two bodies may share one — the human's COM and SPINE1 are both
     /// bone 2). An `XRGD` corpse pose names its entries by this id.
     pub bone_id: u8,
-    /// `None` for a shape class this decoder does not read (convex hulls,
-    /// compounds); the body cannot be built.
+    /// `None` for a shape class this decoder does not read (compounds); the
+    /// body cannot be built.
     pub shape: Option<NpShape>,
     /// Bind-pose position in skeleton-root space (Havok metres, Z-up).
     pub position: [f32; 3],
@@ -131,7 +181,7 @@ pub struct NpRagdoll {
     pub bodies: Vec<NpRagdollBody>,
     pub constraints: Vec<NpRagdollConstraint>,
     /// Joint rows whose constraint class or atom layout is not decoded
-    /// (breakable wrappers, unknown atom ids).
+    /// (unknown atom ids, or a class other than a ragdoll or limited hinge).
     pub skipped_constraints: usize,
 }
 
@@ -267,6 +317,7 @@ pub fn decode_np_ragdoll(blob: &[u8]) -> io::Result<NpRagdoll> {
         bodies.push(NpRagdollBody {
             index,
             mass: 1.0 / inverse_mass,
+            density: data.f32(motions + motion * MOTION_ROW + 8)?,
             bone_id: *bytes
                 .get(row + 21)
                 .ok_or_else(|| invalid("np ragdoll: truncated"))?,
@@ -309,18 +360,75 @@ pub fn decode_np_ragdoll(blob: &[u8]) -> io::Result<NpRagdoll> {
 
 /// Read a body's shape object, or `None` for a class this decoder does not
 /// read. Capsule: radius at `+20`, end points at `+80` / `+96`. Sphere:
-/// radius at `+20`.
+/// radius at `+20`. Polytope: radius at `+20`, vertices per
+/// [`read_hull_vertices`]. Compound: instances per [`read_compound`].
 fn read_shape(fixups: &Fixups<'_>, data: &Data<'_>, at: usize) -> Option<NpShape> {
-    let radius = data.f32(at + 20).ok().filter(|r| r.is_finite() && *r >= 0.0)?;
+    read_shape_at(fixups, data, at, true)
+}
+
+fn read_shape_at(
+    fixups: &Fixups<'_>,
+    data: &Data<'_>,
+    at: usize,
+    allow_compound: bool,
+) -> Option<NpShape> {
+    let radius = || data.f32(at + 20).ok().filter(|r| r.is_finite() && *r >= 0.0);
     match fixups.class_at(at)? {
         "hknpCapsuleShape" => Some(NpShape::Capsule {
             a: data.vec3(at + 80).ok()?,
             b: data.vec3(at + 96).ok()?,
-            radius,
+            radius: radius()?,
         }),
-        "hknpSphereShape" => Some(NpShape::Sphere { radius }),
+        "hknpSphereShape" => Some(NpShape::Sphere { radius: radius()? }),
+        "hknpConvexPolytopeShape" => Some(NpShape::ConvexHull {
+            vertices: read_hull_vertices(data, at)?,
+            radius: radius()?,
+        }),
+        "hknpDynamicCompoundShape" if allow_compound => read_compound(fixups, data, at),
         _ => None,
     }
+}
+
+/// A compound's instances. A child that is not a capsule, sphere or hull, or
+/// whose instance scale is not 1, refuses the whole compound rather than
+/// building a body with a part missing.
+fn read_compound(fixups: &Fixups<'_>, data: &Data<'_>, at: usize) -> Option<NpShape> {
+    let count = data.u32(at + COMPOUND_INSTANCES + 8).ok()? as usize;
+    if count == 0 || count > MAX_COMPOUND_CHILDREN {
+        return None;
+    }
+    let first = fixups.pointer(at + COMPOUND_INSTANCES)?;
+    let mut children = Vec::with_capacity(count);
+    for i in 0..count {
+        let row = first + i * INSTANCE_ROW;
+        if row + INSTANCE_ROW > data.bytes.len() {
+            return None;
+        }
+        if data.vec3(row + INSTANCE_SCALE).ok()? != [1.0; 3] {
+            return None;
+        }
+        let child = fixups.pointer(row + INSTANCE_SHAPE)?;
+        children.push(NpCompoundChild {
+            columns: [data.vec3(row).ok()?, data.vec3(row + 16).ok()?, data.vec3(row + 32).ok()?],
+            translation: data.vec3(row + INSTANCE_TRANSLATION).ok()?,
+            shape: Box::new(read_shape_at(fixups, data, child, false)?),
+        });
+    }
+    Some(NpShape::Compound { children })
+}
+
+/// A polytope's vertices: a `u16` count at `+48` and a `u16` byte offset at
+/// `+50` (relative to `+48`) to rows of 16 bytes, three `f32` and a word that
+/// carries the vertex's own index in its low bits and is not read.
+fn read_hull_vertices(data: &Data<'_>, at: usize) -> Option<Vec<[f32; 3]>> {
+    let count = data.u16(at + HULL_VERTICES).ok()? as usize;
+    let first = at + HULL_VERTICES + data.u16(at + HULL_VERTICES + 2).ok()? as usize;
+    if !(4..=MAX_HULL_VERTICES).contains(&count) || first + count * HULL_VERTEX_ROW > data.bytes.len() {
+        return None;
+    }
+    (0..count)
+        .map(|i| data.vec3(first + i * HULL_VERTEX_ROW).ok().filter(|v| v.iter().all(|c| c.is_finite())))
+        .collect()
 }
 
 /// The two body frames of a constraint object: columns and pivot per side.
@@ -337,6 +445,20 @@ fn read_frames(data: &Data<'_>, at: usize) -> io::Result<[[[f32; 4]; 4]; 2]> {
 }
 
 fn read_constraint(fixups: &Fixups<'_>, data: &Data<'_>, at: usize) -> Option<NpConstraintData> {
+    read_constraint_at(fixups, data, at, true)
+}
+
+fn read_constraint_at(
+    fixups: &Fixups<'_>,
+    data: &Data<'_>,
+    at: usize,
+    allow_wrapper: bool,
+) -> Option<NpConstraintData> {
+    if allow_wrapper && fixups.class_at(at)? == "hknpBreakableConstraintData" {
+        // The wrapper holds the constraint it breaks at `+24` (and a threshold
+        // float at `+32`, which is not read: a joint stays unbreakable).
+        return read_constraint_at(fixups, data, fixups.pointer(at + BREAKABLE_INNER)?, false);
+    }
     let [a, b] = read_frames(data, at).ok()?;
     match fixups.class_at(at)? {
         // Atoms after the frames: stabilisation (0x17 @176), motors (0x13 @192),
@@ -412,12 +534,24 @@ mod tests {
     use super::super::havok_packfile::{GlobalFixup, LocalFixup, VirtualFixup};
     use super::*;
 
-    const CLASSES: [&str; 4] = [
+    const CLASSES: [&str; 6] = [
         "hknpRagdollData",
         "hknpCapsuleShape",
         "hknpConvexPolytopeShape",
         "hkpRagdollConstraintData",
+        "hknpDynamicCompoundShape",
+        "hknpBreakableConstraintData",
     ];
+
+    /// What a fixture hook adds to the base fixture.
+    #[derive(Default)]
+    struct Extras {
+        locals: Vec<LocalFixup>,
+        globals: Vec<GlobalFixup>,
+        virtuals: Vec<VirtualFixup>,
+        /// Where the joint row points instead of the constraint object.
+        joint_at: Option<usize>,
+    }
 
     // Synthetic `__data__` layout (offsets within the section).
     const ROOT: usize = 0;
@@ -427,7 +561,9 @@ mod tests {
     const SHAPE_0: usize = 640;
     const SHAPE_1: usize = SHAPE_0 + 432;
     const JOINT: usize = SHAPE_1 + 432;
-    const END: usize = JOINT + 416;
+    /// Scratch space past the joint, for the objects only some tests add.
+    const EXTRA: usize = JOINT + 416;
+    const END: usize = EXTRA + 512;
 
     fn put_f32(buf: &mut [u8], at: usize, v: f32) {
         buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
@@ -451,6 +587,17 @@ mod tests {
     /// `second_shape` names the class of body 1's shape; `friction_atom` the
     /// atom id at the ragdoll friction slot.
     fn fixture(second_shape: &str, friction_atom: u16, counts: [u32; 3]) -> Vec<u8> {
+        fixture_with(second_shape, friction_atom, counts, |_| Extras::default())
+    }
+
+    /// [`fixture`] with a hook that edits the `__data__` bytes before the packfile is
+    /// built and returns the fixups its edit needs.
+    fn fixture_with(
+        second_shape: &str,
+        friction_atom: u16,
+        counts: [u32; 3],
+        edit: impl FnOnce(&mut Vec<u8>) -> Extras,
+    ) -> Vec<u8> {
         let mut d = vec![0u8; END];
         // hknpRagdollData header: arrays (motions, bodies, joints).
         put_u32(&mut d, ROOT + MOTIONS_ARRAY + 8, counts[0]);
@@ -496,11 +643,15 @@ mod tests {
         put_f32(&mut d, JOINT + 376, -0.4);
         put_f32(&mut d, JOINT + 380, 0.2);
 
+        let extras = edit(&mut d);
         let locals = [
             LocalFixup { src_offset: (ROOT + MOTIONS_ARRAY) as u32, dst_offset: MOTIONS as u32 },
             LocalFixup { src_offset: (ROOT + BODIES_ARRAY) as u32, dst_offset: BODIES as u32 },
             LocalFixup { src_offset: (ROOT + JOINTS_ARRAY) as u32, dst_offset: JOINTS as u32 },
-        ];
+        ]
+        .into_iter()
+        .chain(extras.locals)
+        .collect::<Vec<_>>();
         let global = |src: usize, dst: usize| GlobalFixup {
             src_offset: src as u32,
             dst_section: 2,
@@ -509,8 +660,11 @@ mod tests {
         let globals = [
             global(BODIES, SHAPE_0),
             global(BODIES + BODY_ROW, SHAPE_1),
-            global(JOINTS, JOINT),
-        ];
+            global(JOINTS, extras.joint_at.unwrap_or(JOINT)),
+        ]
+        .into_iter()
+        .chain(extras.globals)
+        .collect::<Vec<_>>();
         let virtual_at = |offset: usize, class: &str| VirtualFixup {
             data_offset: offset as u32,
             class_section: 0,
@@ -521,7 +675,10 @@ mod tests {
             virtual_at(SHAPE_0, "hknpCapsuleShape"),
             virtual_at(SHAPE_1, second_shape),
             virtual_at(JOINT, "hkpRagdollConstraintData"),
-        ];
+        ]
+        .into_iter()
+        .chain(extras.virtuals)
+        .collect::<Vec<_>>();
         build_synthetic_packfile_with_fixups(&CLASSES, &d, &locals, &globals, &virtuals)
     }
 
@@ -565,8 +722,9 @@ mod tests {
         assert_eq!(world(0, j.pivot_a), world(1, j.pivot_b));
     }
 
-    /// A shape class the decoder does not read leaves the body decoded with
-    /// `shape: None` (the extractor then drops it), never a misread shape.
+    /// A polytope whose vertex table is empty (here: capsule bytes under a
+    /// polytope class) leaves the body decoded with `shape: None` (the extractor
+    /// then drops it), never a misread shape.
     #[test]
     fn an_unread_shape_class_leaves_the_body_without_a_shape() {
         let r = decode_np_ragdoll(&fixture("hknpConvexPolytopeShape", ATOM_ANGULAR_FRICTION, [2, 2, 1]))
@@ -580,6 +738,153 @@ mod tests {
     #[test]
     fn an_unexpected_atom_layout_skips_the_joint() {
         let r = decode_np_ragdoll(&fixture("hknpCapsuleShape", 0x99, [2, 2, 1])).expect("decodes");
+        assert!(r.constraints.is_empty());
+        assert_eq!(r.skipped_constraints, 1);
+    }
+
+    fn put_u16_at(buf: &mut [u8], at: usize, v: u16) {
+        buf[at..at + 2].copy_from_slice(&v.to_le_bytes());
+    }
+
+    /// A unit cube's eight corners at `at`, written as a polytope's vertex table
+    /// (count and relative offset at `+48`, 16-byte rows from `+80`), the last
+    /// word of each row carrying the vertex index the way the corpus does.
+    fn write_cube_hull(d: &mut [u8], at: usize, half: f32, radius: f32) {
+        put_f32(d, at + 20, radius);
+        put_u16_at(d, at + HULL_VERTICES, 8);
+        put_u16_at(d, at + HULL_VERTICES + 2, 32);
+        for i in 0..8usize {
+            let row = at + 80 + i * HULL_VERTEX_ROW;
+            let corner = [i & 1, (i >> 1) & 1, (i >> 2) & 1].map(|bit| if bit == 1 { half } else { -half });
+            put_vec3(d, row, corner);
+            put_u32(d, row + 12, 0x3f00_0000 | i as u32);
+        }
+    }
+
+    #[test]
+    fn a_polytope_body_decodes_its_vertices_and_radius() {
+        let blob = fixture_with("hknpConvexPolytopeShape", ATOM_ANGULAR_FRICTION, [2, 2, 1], |d| {
+            write_cube_hull(d, SHAPE_1, 0.5, 0.01);
+            Extras::default()
+        });
+        let r = decode_np_ragdoll(&blob).expect("decodes");
+        let Some(NpShape::ConvexHull { vertices, radius }) = &r.bodies[1].shape else {
+            panic!("a hull, got {:?}", r.bodies[1].shape)
+        };
+        assert_eq!(*radius, 0.01);
+        assert_eq!(vertices.len(), 8);
+        assert_eq!(vertices[0], [-0.5, -0.5, -0.5]);
+        assert_eq!(vertices[7], [0.5, 0.5, 0.5], "the index word is not read as a coordinate");
+        assert!(r.bodies[0].shape.is_some(), "the capsule body is unaffected");
+    }
+
+    #[test]
+    fn a_polytope_whose_table_leaves_the_object_or_is_degenerate_is_refused() {
+        for (count, offset) in [(8u16, 0xff00u16), (3, 32), (u16::MAX, 32)] {
+            let blob = fixture_with("hknpConvexPolytopeShape", ATOM_ANGULAR_FRICTION, [2, 2, 1], |d| {
+                write_cube_hull(d, SHAPE_1, 0.5, 0.01);
+                put_u16_at(d, SHAPE_1 + HULL_VERTICES, count);
+                put_u16_at(d, SHAPE_1 + HULL_VERTICES + 2, offset);
+                Extras::default()
+            });
+            let r = decode_np_ragdoll(&blob).expect("decodes");
+            assert_eq!(r.bodies[1].shape, None, "count {count} offset {offset:#x}");
+        }
+    }
+
+    /// A compound of two capsule instances: the second turned a quarter about Z and
+    /// shifted. The columns are the images of the child's axes.
+    fn compound_blob(scale: f32) -> Vec<u8> {
+        fixture_with("hknpDynamicCompoundShape", ATOM_ANGULAR_FRICTION, [2, 2, 1], |d| {
+            put_u32(d, SHAPE_1 + COMPOUND_INSTANCES + 8, 2);
+            let columns = [([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]), ([0.0, 1.0, 0.0], [0.25, 0.0, 0.0])];
+            let turned = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+            for (i, (x, shift)) in columns.into_iter().enumerate() {
+                let row = EXTRA + i * INSTANCE_ROW;
+                let cols = if i == 0 { [x, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] } else { turned };
+                for (k, c) in cols.iter().enumerate() {
+                    put_vec3(d, row + 16 * k, *c);
+                }
+                put_vec3(d, row + INSTANCE_TRANSLATION, shift);
+                put_vec3(d, row + INSTANCE_SCALE, [scale; 3]);
+            }
+            let locals = vec![LocalFixup {
+                src_offset: (SHAPE_1 + COMPOUND_INSTANCES) as u32,
+                dst_offset: EXTRA as u32,
+            }];
+            let globals = (0..2)
+                .map(|i| GlobalFixup {
+                    src_offset: (EXTRA + i * INSTANCE_ROW + INSTANCE_SHAPE) as u32,
+                    dst_section: 2,
+                    dst_offset: SHAPE_0 as u32,
+                })
+                .collect();
+            Extras { locals, globals, ..Extras::default() }
+        })
+    }
+
+    #[test]
+    fn a_compound_body_decodes_its_instances() {
+        let r = decode_np_ragdoll(&compound_blob(1.0)).expect("decodes");
+        let Some(NpShape::Compound { children }) = &r.bodies[1].shape else {
+            panic!("a compound, got {:?}", r.bodies[1].shape)
+        };
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].columns, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        assert_eq!(children[1].columns[0], [0.0, 1.0, 0.0]);
+        assert_eq!(children[1].columns[1], [-1.0, 0.0, 0.0]);
+        assert_eq!(children[1].translation, [0.25, 0.0, 0.0]);
+        assert!(matches!(*children[1].shape, NpShape::Capsule { radius, .. } if radius == 0.1));
+    }
+
+    /// An instance scale other than 1 is not modelled, so the whole compound is
+    /// refused rather than built at the wrong size.
+    #[test]
+    fn a_scaled_compound_instance_refuses_the_compound() {
+        let r = decode_np_ragdoll(&compound_blob(2.0)).expect("decodes");
+        assert_eq!(r.bodies[1].shape, None);
+    }
+
+    /// The joint row points at an `hknpBreakableConstraintData` whose `+24` pointer names
+    /// the ragdoll joint; `wrap_twice` puts a second wrapper in front of the first.
+    fn breakable_blob(wrap_twice: bool) -> Vec<u8> {
+        fixture_with("hknpCapsuleShape", ATOM_ANGULAR_FRICTION, [2, 2, 1], |_| {
+            let wrapper = VirtualFixup {
+                data_offset: EXTRA as u32,
+                class_section: 0,
+                class_name_offset: synthetic_class_name_offset(&CLASSES, "hknpBreakableConstraintData"),
+            };
+            let inner = |wrapper_at: usize, target: usize| GlobalFixup {
+                src_offset: (wrapper_at + BREAKABLE_INNER) as u32,
+                dst_section: 2,
+                dst_offset: target as u32,
+            };
+            let (virtuals, globals, joint_at) = if wrap_twice {
+                let outer = VirtualFixup { data_offset: (EXTRA + 64) as u32, ..wrapper };
+                (vec![wrapper, outer], vec![inner(EXTRA + 64, EXTRA), inner(EXTRA, JOINT)], EXTRA + 64)
+            } else {
+                (vec![wrapper], vec![inner(EXTRA, JOINT)], EXTRA)
+            };
+            Extras { globals, virtuals, joint_at: Some(joint_at), ..Extras::default() }
+        })
+    }
+
+    #[test]
+    fn a_breakable_wrapper_yields_the_joint_it_wraps() {
+        let r = decode_np_ragdoll(&breakable_blob(false)).expect("decodes");
+        assert_eq!(r.skipped_constraints, 0);
+        let [c] = r.constraints.as_slice() else { panic!("one joint") };
+        assert_eq!((c.body_a, c.body_b), (0, 1));
+        let NpConstraintData::Ragdoll(j) = &c.data else { panic!("a ragdoll joint") };
+        assert_eq!(j.pivot_a, [0.5, 0.0, 0.0, 0.0]);
+        assert_eq!(j.cone_max_angle, 0.5);
+    }
+
+    /// A wrapper around a wrapper is a layout this decoder does not know: the joint is
+    /// counted as skipped instead of recursed into.
+    #[test]
+    fn a_wrapper_around_a_wrapper_skips_the_joint() {
+        let r = decode_np_ragdoll(&breakable_blob(true)).expect("decodes");
         assert!(r.constraints.is_empty());
         assert_eq!(r.skipped_constraints, 1);
     }
