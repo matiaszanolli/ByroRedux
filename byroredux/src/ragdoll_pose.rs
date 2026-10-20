@@ -59,8 +59,30 @@
 //! rotation. Reproducible with `crates/plugin/examples/xrgd_dump.rs` and
 //! `scripts/xrgd-fo4-analysis.py`.
 //!
+//! **Per-rig verification (#6065).** The bone-id mapping is skeleton-independent,
+//! but the entry rotation frames and Euler mode are not established per rig, so a
+//! rig is added only when `scripts/xrgd-fo4-rigs.py` passes it on both of #5015's
+//! checks: each entry's offset length equals its bone's own NIF offset (the
+//! verified rigs sit within 3 % on every bone's median: human 17/17, ghoul
+//! 16/16), and forward kinematics ranks intrinsic XYZ with negated angles first
+//! by lying-body extent. Over the 12 creature races that author a pose, only the
+//! **super mutant** passes (15/16 bones — `SPINE1`, a 3-unit bone, is 10 % off —
+//! and rank 1 over 7 corpses). The rest are *not established*: the molerat's
+//! offsets are exact (17/17) but another convention flattens its corpses more
+//! (rank 7), the radstag and brahmin rank first but 6/29 and 22/37 of their
+//! bones' offsets are off (the phantom legs, necks and tails), the dog, cat,
+//! yaoguai, radroach, mirelurk, stingwing and tripod turret fail one or both,
+//! and the FEV hound passes both on its single corpse, too few for a ranking.
+//! The flatness test discriminates weakly for a quadruped, so those failures
+//! mean "not established", not "wrong". Also unresolved: the ghoul poses with 20
+//! entries — two carry an all-zero entry and a constant `(0, 40.321, 100)`
+//! entry rotated `(-π, π/2, -π)` after the 18 bodies, six are a debug cell whose
+//! bone ids are all 0, and four (`NationalGuardTrainingYard01`) carry two
+//! varying extras — and the rigs the id set cannot tell apart from a humanoid
+//! (Protectron, Handy and Assaultron match no skeleton's ids).
+//!
 //! **Scope:** only the verified ragdolls are posed — the Skyrim/draugr
-//! humanoid, and the FO4 human and feral-ghoul rigs. The entry↔body order is
+//! humanoid, and the FO4 human, feral-ghoul and super-mutant rigs. The entry↔body order is
 //! established for the 18-body humanoid skeleton (Skyrim's `skeleton.nif`,
 //! also the draugr's), and [`HUMANOID_RAGDOLL_BODIES`] pins it by bone name: a
 //! skeleton whose ragdoll bodies are anything else — a creature, the beast
@@ -144,6 +166,29 @@ pub(crate) const FO4_GHOUL_RAGDOLL_BODIES: [&str; 18] = [
     "LForeArm1",
     "RHAND",
     "LHAND",
+];
+
+/// The FO4 super mutant ragdoll's bodies in blob (body-id) order, by bone name
+/// (#6065): 17 bodies, no `SPINE2`. Verified by `scripts/xrgd-fo4-rigs.py` —
+/// see the module docs.
+pub(crate) const FO4_SUPERMUTANT_RAGDOLL_BODIES: [&str; 17] = [
+    "COM",
+    "SPINE1",
+    "LLeg_Thigh",
+    "RLeg_Thigh",
+    "Chest",
+    "LLeg_Calf",
+    "RLeg_Calf",
+    "LArm_UpperArm",
+    "Neck",
+    "RArm_UpperArm",
+    "LLeg_Foot",
+    "RLeg_Foot",
+    "LArm_ForeArm1",
+    "HEAD",
+    "RArm_ForeArm1",
+    "LArm_Hand",
+    "RArm_Hand",
 ];
 
 /// An authored corpse's `XRGD` pose, parked on the actor between spawn and
@@ -245,10 +290,14 @@ pub(crate) fn is_humanoid_ragdoll(body_bone_names: &[Option<String>]) -> bool {
 
 /// Whether a ragdoll's bodies, by bone name in template order, are exactly one
 /// of the verified FO4 sets ([`FO4_HUMAN_RAGDOLL_BODIES`],
-/// [`FO4_GHOUL_RAGDOLL_BODIES`]).
+/// [`FO4_GHOUL_RAGDOLL_BODIES`], [`FO4_SUPERMUTANT_RAGDOLL_BODIES`]).
 pub(crate) fn is_fo4_posable_ragdoll(body_bone_names: &[Option<String>]) -> bool {
-    [&FO4_HUMAN_RAGDOLL_BODIES, &FO4_GHOUL_RAGDOLL_BODIES]
-        .into_iter()
+    let sets: [&[&str]; 3] = [
+        &FO4_HUMAN_RAGDOLL_BODIES,
+        &FO4_GHOUL_RAGDOLL_BODIES,
+        &FO4_SUPERMUTANT_RAGDOLL_BODIES,
+    ];
+    sets.into_iter()
         .any(|set| {
             body_bone_names.len() == set.len()
                 && body_bone_names

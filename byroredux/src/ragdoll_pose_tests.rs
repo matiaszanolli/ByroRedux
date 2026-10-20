@@ -460,6 +460,10 @@ const FO4_HUMAN_ENTRY_IDS: [u8; 18] = [2, 8, 9, 10, 14, 15, 16, 2, 3, 4, 5, 6, 7
 const FO4_GHOUL_BODY_IDS: [u8; 18] = [2, 14, 2, 8, 15, 3, 9, 16, 4, 10, 11, 0, 5, 12, 1, 6, 13, 7];
 const FO4_GHOUL_ENTRY_IDS: [u8; 18] = [2, 8, 9, 10, 14, 15, 16, 2, 3, 4, 0, 1, 5, 6, 7, 11, 12, 13];
 
+/// The super mutant (#6065): 17 bodies, the entry ids a vanilla corpse authors.
+const FO4_SUPERMUTANT_BODY_IDS: [u8; 17] = [2, 2, 8, 14, 3, 9, 15, 5, 0, 11, 10, 16, 6, 1, 12, 7, 13];
+const FO4_SUPERMUTANT_ENTRY_IDS: [u8; 17] = [2, 14, 15, 16, 8, 9, 10, 2, 3, 11, 12, 13, 0, 1, 5, 6, 7];
+
 fn id_entry(bone_id: u8, rotation: [f32; 3]) -> RagdollPoseBone {
     RagdollPoseBone {
         bone_id,
@@ -574,6 +578,28 @@ fn an_fo4_ghoul_corpse_is_posed_by_bone_id() {
     assert!(same_rotation(rotation(bones[3]), expected_yup(0.0, 0.0, 0.01 * 2.0)));
 }
 
+/// The super mutant resolves its 17 entries through the same ids: the COM and
+/// `SPINE1` share bone 2, and the entries run COM, R leg … rather than the
+/// human's order.
+#[test]
+fn an_fo4_super_mutant_corpse_is_posed_by_bone_id() {
+    let (world, root, bones) = fo4_pose_world(&FO4_SUPERMUTANT_RAGDOLL_BODIES, &FO4_SUPERMUTANT_BODY_IDS);
+    let entries: Vec<_> = FO4_SUPERMUTANT_ENTRY_IDS
+        .iter()
+        .enumerate()
+        .map(|(k, &id)| id_entry(id, [0.0, 0.0, 0.01 * (k + 1) as f32]))
+        .collect();
+    assert_eq!(pose_skeleton(&world, root, &entries), Ok(17));
+    let rotation = |bone| world.get::<Transform>(bone).unwrap().rotation;
+    // SPINE1 (body 1) is the SECOND bone-2 entry, entry 7.
+    assert!(same_rotation(rotation(bones[1]), expected_yup(0.0, 0.0, 0.01 * 8.0)));
+    // The head (body 13) is the entry named bone 1, entry 13.
+    assert!(same_rotation(rotation(bones[13]), expected_yup(0.0, 0.0, 0.01 * 14.0)));
+    // LLeg_Thigh (body 2) is entry 4.
+    assert!(same_rotation(rotation(bones[2]), expected_yup(0.0, 0.0, 0.01 * 5.0)));
+    assert_eq!(world.get::<Transform>(bones[0]).unwrap().translation, Vec3::ZERO, "COM at the placement");
+}
+
 /// An FO4 ragdoll whose names are the verified set but whose bodies carry no
 /// ids (a classic-path template), or whose names are another skeleton's, is
 /// refused untouched.
@@ -598,14 +624,16 @@ fn the_fo4_body_sets_are_recognised_by_name_only_in_full() {
     let names = |set: &[&str]| set.iter().map(|n| Some(n.to_string())).collect::<Vec<_>>();
     assert!(is_fo4_posable_ragdoll(&names(&FO4_HUMAN_RAGDOLL_BODIES)));
     assert!(is_fo4_posable_ragdoll(&names(&FO4_GHOUL_RAGDOLL_BODIES)));
+    assert!(is_fo4_posable_ragdoll(&names(&FO4_SUPERMUTANT_RAGDOLL_BODIES)));
+    assert!(!is_fo4_posable_ragdoll(&names(&FO4_SUPERMUTANT_RAGDOLL_BODIES)[..16]));
     assert!(!is_fo4_posable_ragdoll(&names(&HUMANOID_RAGDOLL_BODIES)), "the Skyrim set is not an FO4 set");
     assert!(!is_fo4_posable_ragdoll(&names(&FO4_HUMAN_RAGDOLL_BODIES)[..17]));
 }
 
-/// #5015 — the FO4 pose claim against the real corpus: every Starts-Dead ACHR
-/// of `Fallout4.esm` that authors an `XRGD` pose on the human or feral-ghoul
-/// skeleton resolves through the bone-id mapping, and the rig the corpse's
-/// race loads is one of the two verified body sets.
+/// #5015 / #6065 — the FO4 pose claim against the real corpus: every Starts-Dead
+/// ACHR of `Fallout4.esm` that authors an `XRGD` pose on the human, feral-ghoul or
+/// super-mutant skeleton resolves through the bone-id mapping, and the rig the
+/// corpse's race loads is one of the three verified body sets.
 ///
 ///   cargo test -p byroredux --bin byroredux fo4_xrgd_poses -- --ignored --nocapture
 #[test]
@@ -627,7 +655,7 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
     }
     let index = byroredux_plugin::esm::records::parse_esm(&std::fs::read(&esm).unwrap()).unwrap();
     let archive = byroredux_bsa::Ba2Archive::open(&meshes).unwrap();
-    // Race → skeleton NIF for the two verified rigs.
+    // Race → skeleton NIF for the three verified rigs.
     let skeleton_of = |race: &str| match race {
         "HumanRace" | "SynthGen1Race" | "SynthGen2Race" | "GhoulRace" => {
             Some("meshes\\actors\\character\\characterassets\\skeleton.nif")
@@ -635,6 +663,7 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
         "FeralGhoulRace" | "FeralGhoulGlowingRace" => {
             Some("meshes\\actors\\feralghoul\\characterassets\\skeleton.nif")
         }
+        "SuperMutantRace" => Some("meshes\\actors\\supermutant\\characterassets\\skeleton.nif"),
         _ => None,
     };
     // Skeleton → (host bone names, bone ids) in template order.
@@ -674,13 +703,14 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
             cell.references.iter().for_each(&mut visit);
         }
     }
-    eprintln!("[fo4] {corpses} human/ghoul-skeleton corpses, {posable} on a verified body set, {mapped} resolve by bone id");
+    eprintln!("[fo4] {corpses} human/ghoul/super-mutant-skeleton corpses, {posable} on a verified body set, {mapped} resolve by bone id");
     for f in failures.iter().take(10) {
         eprintln!("  refused: {f}");
     }
-    assert!(corpses > 900, "the human and ghoul corpses were found, got {corpses}");
-    assert_eq!(posable, corpses, "both rigs are on the verified body sets");
-    // Measured 2026-10-19: 972 of 987 (98.5 %). The rest are ghouls with two
-    // unmatched trailing entries (20 in all) and a few poses that omit a body.
+    assert!(corpses > 900, "the human, ghoul and super-mutant corpses were found, got {corpses}");
+    assert_eq!(posable, corpses, "all three rigs are on the verified body sets");
+    // Measured 2026-10-19: 972 of 987 on the human and ghoul rigs (98.5 %); the 7
+    // super mutants all resolve. The rest are ghouls with two unmatched trailing
+    // entries (20 in all) and a few poses that omit a body.
     assert!(mapped * 100 >= corpses * 95, "at least 95% resolve, got {mapped} of {corpses}");
 }
