@@ -272,9 +272,11 @@ pub struct WeatherRecord {
     /// distances: lifting the default would turn "no fog authored" into a
     /// 700 000-unit far plane (#5301).
     pub fog_distances_authored: bool,
-    /// Skyrim/FO4 FNAM daytime fog-curve power. Defaults to 1 for earlier games.
+    /// FO3/FNV/Skyrim/FO4 FNAM daytime fog-curve power. Defaults to 1 on
+    /// Oblivion, whose 16-byte FNAM has no power fields.
     pub fog_day_power: f32,
-    /// Skyrim/FO4 FNAM nighttime fog-curve power. Defaults to 1 for earlier games.
+    /// FO3/FNV/Skyrim/FO4 FNAM nighttime fog-curve power. Defaults to 1 on
+    /// Oblivion.
     pub fog_night_power: f32,
     /// Skyrim/FO4 FNAM maximum daytime fog opacity. Defaults to 1.
     pub fog_day_max: f32,
@@ -296,7 +298,8 @@ pub struct WeatherRecord {
     /// Values remain bytes here because the games use the byte range as a
     /// normalized authoring control, not world units per second.
     pub cloud_layer_velocities: [[u8; 2]; 4],
-    /// Whether ONAM/RNAM/QNAM actually supplied a value for each layer
+    /// Whether ONAM/RNAM/QNAM (or Oblivion's `DATA[1..3)`, #6041)
+    /// actually supplied a value for each layer
     /// (#3985) — a deliberately authored `0` is a legal value
     /// indistinguishable from the field's own `[0, 0]` default without
     /// this. Mirrors [`Self::wind_direction_authored`]'s existing
@@ -349,9 +352,10 @@ pub struct WeatherRecord {
     /// composed onto the worldspace's base IMGS. Load-order remapped;
     /// `None` = NULL / unauthored. Always all-`None` on other games.
     pub image_space_modifiers: [Option<u32>; SKY_TIME_SLOTS],
-    /// Cloud texture paths. FNV/FO3 ship 4 layers (DNAM/CNAM/ANAM/BNAM
-    /// = layers 0–3 in schema-emission order); Oblivion ships 2
-    /// (DNAM = 0, CNAM = 1). Paths are `textures\`-root-relative
+    /// Cloud texture paths, layer 0 lowest. FNV/FO3 ship 4 layers
+    /// (DNAM/CNAM/ANAM/BNAM = layers 0–3 in schema-emission order);
+    /// Oblivion ships 2 (CNAM = lower = 0, DNAM = upper = 1, #6041).
+    /// Paths are `textures\`-root-relative
     /// zstrings — see #468 for the normaliser in `TextureProvider`.
     pub cloud_textures: [Option<String>; 4],
     /// Skyrim Creation-era cloud paths. The first four are also mirrored in
@@ -529,10 +533,10 @@ pub fn parse_wthr(
 
             // FNAM: fog distances. Four f32 at offsets 0/4/8/12:
             // `[day_near, day_far, night_near, night_far]`. Game-dependent
-            // total size: 16 B in Oblivion, 24 B in FNV/FO3 (trailing 8 B
-            // have not been cross-checked against a UESP-authoritative
-            // schema so they are ignored here), and 72 B in FO4 and
-            // Starfield.
+            // total size: 16 B in Oblivion, 24 B in FNV/FO3 (the trailing
+            // 8 B are day/night power — xEdit `wbWeatherFogDistance`,
+            // `wbGameMode > gmTES4R`; every vanilla FO3/FNV WTHR ships the
+            // 24-byte form, #6042), and 72 B in FO4 and Starfield.
             //
             // FO4's exact xEdit-defined tail is day/night power + max,
             // followed by ten height-fog values introduced across form
@@ -543,9 +547,7 @@ pub fn parse_wthr(
             // shape (`DefaultWeather`: powers 0.4, max 0.9, height
             // 10/120/…/900) — so Starfield joins the FO4/FO76 gates
             // instead of keeping `power`/`max` at 1.0 defaults and
-            // `fog_height` at None. FO3/FNV's 24-byte tail (day/night
-            // power per xEdit `> gmTES4R`) remains undecoded pending the
-            // FNV/FO3 owners' verification — see #5001's sibling note.
+            // `fog_height` at None.
             //
             // Pre-fix the FNAM arm had an empty body with a comment
             // ("fallback when HNAM is absent"). But FNV and FO3 do not
@@ -559,6 +561,10 @@ pub fn parse_wthr(
                 record.fog_day_far = r.f32().unwrap_or(10000.0);
                 record.fog_night_near = r.f32().unwrap_or(0.0);
                 record.fog_night_far = r.f32().unwrap_or(10000.0);
+                if matches!(game, GameKind::Fallout3NV) && sub.data.len() >= FO3NV_FNAM_SIZE {
+                    record.fog_day_power = r.f32().unwrap_or(1.0);
+                    record.fog_night_power = r.f32().unwrap_or(1.0);
+                }
                 if matches!(
                     game,
                     GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
@@ -653,6 +659,16 @@ pub fn parse_wthr(
             // direction. See `parse_weather_data` for the byte contract.
             b"DATA" if sub.data.len() >= 15 => {
                 parse_weather_data(&mut record, &sub.data);
+                // #6041 — Oblivion authors its two cloud speeds here
+                // (lower, upper); FO3/FNV leave these bytes unused and
+                // carry the speeds in ONAM instead.
+                if matches!(game, GameKind::Oblivion) {
+                    for layer in 0..2 {
+                        let speed = sub.data[WTHR_OBLIVION_CLOUD_SPEED_OFFSET + layer];
+                        record.cloud_layer_velocities[layer] = [speed, 0];
+                        record.cloud_layer_velocities_authored[layer] = true;
+                    }
+                }
             }
 
             // Legacy WTHR cloud motion and tint tables. ONAM is the authored
@@ -672,8 +688,9 @@ pub fn parse_wthr(
             //   FNV / FO3 (4 layers, schema-emission order):
             //     DNAM = layer 0 (base)  CNAM = layer 1
             //     ANAM = layer 2         BNAM = layer 3 (top)
-            //   Oblivion (2 layers):
-            //     DNAM = layer 0         CNAM = layer 1
+            //   Oblivion (2 layers, #6041 — xEdit TES4 / UESP name CNAM
+            //   "Lower" and DNAM "Upper"; layer 0 is the lowest deck):
+            //     CNAM = layer 0         DNAM = layer 1
             // The pre-fix parser matched `00TX/10TX/20TX/30TX` which
             // doesn't appear in any shipped master (M33-02) and read
             // DNAM as `[u8; 4]` cloud speeds (M33-03, #535) — DNAM was
@@ -681,6 +698,12 @@ pub fn parse_wthr(
             //
             // Bodies are `textures\`-root-relative zstrings; #468's
             // `TextureProvider` normaliser prepends the prefix.
+            b"DNAM" if matches!(game, GameKind::Oblivion) => {
+                record.cloud_textures[1] = Some(read_zstring(&sub.data))
+            }
+            b"CNAM" if matches!(game, GameKind::Oblivion) => {
+                record.cloud_textures[0] = Some(read_zstring(&sub.data))
+            }
             b"DNAM" => record.cloud_textures[0] = Some(read_zstring(&sub.data)),
             b"CNAM" => record.cloud_textures[1] = Some(read_zstring(&sub.data)),
             b"ANAM" => record.cloud_textures[2] = Some(read_zstring(&sub.data)),
@@ -740,6 +763,10 @@ const SKYRIM_DALC_SIZE: usize = 32;
 ///   day_max, night_max]`.
 const SKYRIM_FNAM_SIZE: usize = 32;
 
+/// FO3/FNV WTHR FNAM sub-record size (24 bytes = 6 × f32): the four
+/// distances plus day/night power, no max (#6042).
+const FO3NV_FNAM_SIZE: usize = 24;
+
 /// FO4 WTHR FNAM sub-record size (72 bytes = 18 × f32).
 const FO4_FNAM_SIZE: usize = 72;
 
@@ -757,17 +784,16 @@ const SKYRIM_DATA_SIZE: usize = 19;
 /// which is exactly the kind of change that used to require touching ten
 /// independent, ungreppable sites (#3883 / TD7-2026-09-05-05).
 ///
-/// **Bytes `[1..3)` are deliberately unread** (#4015). Byte 0 is
-/// `wind_speed` (`data.first()`, below) and byte 3 is
-/// [`WTHR_TRANSITION_DELTA_OFFSET`]; no source in this repo identifies
-/// what bytes 1–2 hold, and per the no-guessing policy `WeatherRecord`
-/// carries no field for them rather than a guessed name. They are
-/// *not* `cloud_speed_lower`/`cloud_speed_upper` — that claim, made by
-/// `cloud_tile_scale_tests.rs`'s module doc, cited this arm as the
-/// decoder and was wrong; this arm has never decoded them, and
-/// `WeatherRecord` carries no such field (the old `cloud_speeds: [u8; 4]`
-/// was a *DNAM* mis-decode removed by #535). Per-layer cloud motion for
-/// FO3/FNV comes from `ONAM`; Skyrim's is unresolved as of #4015.
+/// **Bytes `[1..3)` are game-dependent and not read here** (#4015,
+/// #6041). Byte 0 is `wind_speed` (`data.first()`, below) and byte 3 is
+/// [`WTHR_TRANSITION_DELTA_OFFSET`]. On FO3/FNV xEdit marks bytes 1–2
+/// `wbUnused(2)`; per-layer cloud motion there comes from `ONAM`. On
+/// Oblivion they are Cloud Speed (Lower) / (Upper)
+/// (`wbDefinitionsTES4.pas` WTHR `DATA`), decoded by `parse_wthr`'s
+/// Oblivion-gated `DATA` arm into `cloud_layer_velocities[0..2]` at
+/// [`WTHR_OBLIVION_CLOUD_SPEED_OFFSET`]. Skyrim's motion comes from
+/// `RNAM`/`QNAM`.
+const WTHR_OBLIVION_CLOUD_SPEED_OFFSET: usize = 1;
 const WTHR_TRANSITION_DELTA_OFFSET: usize = 3;
 const WTHR_SUN_GLARE_OFFSET: usize = 4;
 const WTHR_SUN_DAMAGE_OFFSET: usize = 5;
@@ -874,15 +900,16 @@ fn parse_cloud_alphas(record: &mut WeatherRecord, data: &[u8]) {
     }
 }
 
-/// Skyrim uses a compact `00TX`..`V0TX` FourCC sequence for its 32 cloud
-/// textures. The leading ASCII digit/letter is the layer number.
+/// Skyrim names its 32 cloud textures `00TX`..`O0TX`: the leading byte is
+/// the contiguous ASCII run `'0'..='O'`, so the layer is `byte - b'0'`.
+/// That puts `':'..='@'` at layers 10–16 and `'A'` at 17, not 10 (#6040,
+/// xEdit `wbWeatherCloudTextures`: `_30_0TX`..`_40_0TX`, `A0TX`..`O0TX`).
 fn skyrim_cloud_layer_index(sub_type: &[u8; 4]) -> Option<usize> {
     if sub_type[1] != b'0' || sub_type[2] != b'T' || sub_type[3] != b'X' {
         return None;
     }
     match sub_type[0] {
-        b'0'..=b'9' => Some((sub_type[0] - b'0') as usize),
-        b'A'..=b'V' => Some((sub_type[0] - b'A') as usize + 10),
+        b'0'..=b'O' => Some((sub_type[0] - b'0') as usize),
         _ => None,
     }
 }
@@ -1578,6 +1605,67 @@ mod tests {
         assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\a.dds"));
     }
 
+    /// #6041 — Oblivion names CNAM the *lower* cloud layer and DNAM the
+    /// *upper* (xEdit TES4 / UESP), the reverse of FO3/FNV's DNAM = 0;
+    /// layer 0 is the lowest deck. Its DATA bytes 1–2 are the lower/upper
+    /// cloud speeds, which FO3/FNV leave unused.
+    #[test]
+    fn parse_wthr_oblivion_cloud_layers_and_data_speeds() {
+        let mut data = vec![0u8; 15];
+        data[0] = 30;
+        data[1] = 42;
+        data[2] = 19;
+        data[3] = 7;
+        let subs = vec![
+            sub(b"CNAM", b"sky\\lower.dds\0"),
+            sub(b"DNAM", b"sky\\upper.dds\0"),
+            sub(b"DATA", data.clone()),
+        ];
+        let w = parse_wthr(0x0B1, &subs, GameKind::Oblivion, &None);
+        assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\lower.dds"));
+        assert_eq!(w.cloud_textures[1].as_deref(), Some("sky\\upper.dds"));
+        assert_eq!(w.cloud_layer_velocities[0], [42, 0]);
+        assert_eq!(w.cloud_layer_velocities[1], [19, 0]);
+        assert_eq!(
+            w.cloud_layer_velocities_authored,
+            [true, true, false, false]
+        );
+        assert_eq!(w.wind_speed, 30);
+        assert_eq!(w.transition_delta, 7);
+
+        // The same bytes on FO3/FNV are unused: no motion, DNAM stays 0.
+        let w = parse_wthr(0x0B2, &subs, GameKind::Fallout3NV, &None);
+        assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\upper.dds"));
+        assert_eq!(w.cloud_textures[1].as_deref(), Some("sky\\lower.dds"));
+        assert_eq!(w.cloud_layer_velocities_authored, [false; 4]);
+    }
+
+    /// #6042 — FO3/FNV's 24-byte FNAM carries day/night fog power after
+    /// the four distances; Oblivion's 16-byte FNAM has none.
+    #[test]
+    fn parse_wthr_fo3nv_fnam_decodes_fog_power() {
+        let mut fnam = Vec::with_capacity(FO3NV_FNAM_SIZE);
+        for value in [500.0f32, 15_000.0, 200.0, 8_000.0, 0.25, 0.75] {
+            fnam.extend_from_slice(&value.to_le_bytes());
+        }
+        let w = parse_wthr(0xF3, &[sub(b"FNAM", fnam)], GameKind::Fallout3NV, &None);
+        assert_eq!(w.fog_day_far, 15_000.0);
+        assert_eq!(w.fog_day_power, 0.25);
+        assert_eq!(w.fog_night_power, 0.75);
+        assert_eq!(w.fog_day_max, 1.0);
+        assert_eq!(w.fog_night_max, 1.0);
+        assert!(w.fog_height.is_none());
+
+        let w = parse_wthr(
+            0xF4,
+            &[sub(b"FNAM", vec![0u8; 16])],
+            GameKind::Fallout3NV,
+            &None,
+        );
+        assert_eq!(w.fog_day_power, 1.0);
+        assert_eq!(w.fog_night_power, 1.0);
+    }
+
     /// Regression for #533 / audit M33-01: the 160-byte Oblivion/FO3
     /// NAM0 stride (10 groups × 4 TOD slots × 4 B) must parse. The
     /// pre-fix gate demanded 240 B and silently dropped every Oblivion
@@ -1978,8 +2066,12 @@ mod tests {
                 sub(b"JNAM", jnam),
                 sub(b"DATA", data),
                 sub(b"00TX", b"sky\\cloud0.dds\0"),
-                sub(b"A0TX", b"sky\\cloud10.dds\0"),
-                sub(b"V0TX", b"sky\\cloud31.dds\0"),
+                sub(b":0TX", b"sky\\cloud10.dds\0"),
+                sub(b"@0TX", b"sky\\cloud16.dds\0"),
+                sub(b"A0TX", b"sky\\cloud17.dds\0"),
+                sub(b"O0TX", b"sky\\cloud31.dds\0"),
+                // Past the 32-layer table: not a cloud FourCC (#6040).
+                sub(b"P0TX", b"sky\\bogus.dds\0"),
                 sub(b"MNAM", 0x1234_5678u32.to_le_bytes()),
                 sub(b"NNAM", 0x8765_4321u32.to_le_bytes()),
             ],
@@ -1996,14 +2088,24 @@ mod tests {
         assert_eq!(w.wind_direction, 180);
         assert_eq!(w.wind_direction_range, 20);
         assert!(w.wind_direction_authored);
+        // #6040 — `':'` is layer 10, `'@'` 16, `'A'` 17, `'O'` 31.
         assert_eq!(
             w.skyrim_cloud_textures[10].as_deref(),
             Some("sky\\cloud10.dds")
         );
         assert_eq!(
+            w.skyrim_cloud_textures[16].as_deref(),
+            Some("sky\\cloud16.dds")
+        );
+        assert_eq!(
+            w.skyrim_cloud_textures[17].as_deref(),
+            Some("sky\\cloud17.dds")
+        );
+        assert_eq!(
             w.skyrim_cloud_textures[31].as_deref(),
             Some("sky\\cloud31.dds")
         );
+        assert_eq!(skyrim_cloud_layer_index(b"P0TX"), None);
         assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\cloud0.dds"));
         assert_eq!(w.skyrim_precipitation_effect, Some(0x1234_5678));
         assert_eq!(w.skyrim_visual_effect, Some(0x8765_4321));

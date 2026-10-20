@@ -8,10 +8,11 @@
 //! against `weather.rs` confirmed it does not. **Corrected (#4015)**:
 //! this doc previously named `DATA` bytes 1-2 as `cloud_speed_lower`/
 //! `cloud_speed_upper` and cited the `weather.rs` DATA arm as the
-//! decoder — that arm has never decoded those bytes (they are
-//! deliberately unread, see `WTHR_TRANSITION_DELTA_OFFSET`'s doc), so
-//! the citation resolved to nothing. Per-layer cloud motion for FO3/FNV
-//! comes from `ONAM`, not `DATA`.
+//! decoder — the shared `parse_weather_data` ladder never decodes those
+//! bytes (see `WTHR_TRANSITION_DELTA_OFFSET`'s doc). They are speeds,
+//! not scale, and only on Oblivion, where `parse_wthr`'s Oblivion-gated
+//! `DATA` arm reads them into `cloud_layer_velocities` (#6041); FO3/FNV
+//! leave them unused and author per-layer motion in `ONAM`.
 //!
 //! Per-WTHR authority over cloud density therefore comes from the
 //! authored DDS *width* — a 1024² sprite tiles half as often as a

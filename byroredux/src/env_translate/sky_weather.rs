@@ -106,8 +106,8 @@ pub(crate) fn translate_exterior_cell_lighting(
         // all. It is XCLL-only, so there is nothing to forward here, now
         // or later.
         //
-        // #3957 — WTHR *does* carry its own falloff power on Skyrim, FO4 and
-        // FO76 (`parse_wthr`'s `FNAM` arm decodes it), and this is the
+        // #3957 — WTHR *does* carry its own falloff power on FO3/FNV (#6042),
+        // Skyrim, FO4 and FO76 (`parse_wthr`'s `FNAM` arm decodes it), and this is the
         // day-TOD snapshot, so the day value is the consistent pick alongside
         // `fog_day_near`/`far`/`max` above.
         //
