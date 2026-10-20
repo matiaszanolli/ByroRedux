@@ -673,14 +673,19 @@ pub fn parse_wthr(
 
             // Legacy WTHR cloud motion and tint tables. ONAM is the authored
             // scalar speed for the four classic cloud layers; PNAM contains
-            // four sunrise/day/sunset/night RGBA colours per layer.
+            // one RGBA colour per TOD slot per layer, sunrise/day/sunset/night
+            // first (#6037: 4, 6 or 8 slots — see `cloud_color_slots`).
             b"ONAM" if sub.data.len() >= 4 => {
                 for layer in 0..4 {
                     record.cloud_layer_velocities[layer] = [sub.data[layer], 0];
                     record.cloud_layer_velocities_authored[layer] = true;
                 }
             }
-            b"PNAM" if sub.data.len() >= 64 => parse_cloud_colors(&mut record, &sub.data),
+            b"PNAM" if sub.data.len() >= 64 => parse_cloud_colors(
+                &mut record,
+                &sub.data,
+                cloud_color_slots(game, sub.data.len()),
+            ),
 
             // Cloud texture paths. Per-game sub-record FourCCs — verified
             // by byte-level scan of FalloutNV.esm, Fallout3.esm,
@@ -864,13 +869,31 @@ fn parse_weather_data(record: &mut WeatherRecord, data: &[u8]) {
     }
 }
 
-/// Read the four legacy cloud colour entries from PNAM. Skyrim stores the
-/// same four TOD values repeatedly for each of its 32 layers; the first four
-/// layers are the compatibility path used by the current renderer.
-fn parse_cloud_colors(record: &mut WeatherRecord, data: &[u8]) {
+/// TOD slots per layer in a WTHR `PNAM`, from xEdit's `wbWeatherTimeOfDay`
+/// (#6037). Every layout leads with sunrise/day/sunset/night:
+/// - FO3/FNV: 6 (adding high noon / midnight), except the 64-byte four-layer
+///   form (`wbWeatherTimeOfDayDecider`) — FalloutNV.esm ships 55 of 63 WTHRs
+///   at 96 B and 8 at 64 B; Fallout3.esm ships all 27 at 64 B.
+/// - FO4/FO76/Starfield: 8 at form version 111+, i.e. the 1,024-byte
+///   32-layer form; the four older vanilla FO4 records carry 512 B (4 slots).
+/// - Skyrim: 4.
+fn cloud_color_slots(game: GameKind, len: usize) -> usize {
+    match game {
+        GameKind::Fallout3NV if len >= 4 * 6 * 4 => 6,
+        GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield if len >= 32 * 8 * 4 => 8,
+        _ => 4,
+    }
+}
+
+/// Read the first four layers' sunrise/day/sunset/night colours from PNAM,
+/// which stores `slots_per_layer` TOD colours per layer (see
+/// [`cloud_color_slots`]). Skyrim+ author 32 layers; the first four are the
+/// compatibility path used by the current renderer. The extra FNV high-noon /
+/// midnight and FO4 early/late slots are skipped, not decoded.
+fn parse_cloud_colors(record: &mut WeatherRecord, data: &[u8], slots_per_layer: usize) {
     for layer in 0..4 {
         for slot in 0..4 {
-            let offset = (layer * 4 + slot) * 4;
+            let offset = (layer * slots_per_layer + slot) * 4;
             if offset + 4 > data.len() {
                 return;
             }
@@ -1055,7 +1078,11 @@ fn parse_wthr_skyrim(
                     record.cloud_layer_velocities_authored[layer] = true;
                 }
             }
-            b"PNAM" if sub.data.len() >= 64 => parse_cloud_colors(&mut record, &sub.data),
+            b"PNAM" if sub.data.len() >= 64 => parse_cloud_colors(
+                &mut record,
+                &sub.data,
+                cloud_color_slots(GameKind::Skyrim, sub.data.len()),
+            ),
             b"JNAM" if sub.data.len() >= 64 => parse_cloud_alphas(&mut record, &sub.data),
             b"NAM2" if sub.data.len() >= 16 => {
                 parse_glare_table(&mut record.skyrim_sun_glare, &sub.data)
@@ -2044,6 +2071,69 @@ mod tests {
         assert_eq!(w.cloud_layer_velocities_authored, [true; 4]);
         assert_eq!(w.cloud_layer_colors[2][2].r, 1);
         assert_eq!(w.cloud_layer_colors[2][2].a, 200);
+    }
+
+    /// #6037 — FalloutNV.esm `NVWastelandClearEast` PNAM, verbatim: 96 B =
+    /// 4 layers × 6 TOD slots. Read at the old 16-byte layer stride, layer 1
+    /// was words 4..8 — a magenta sunrise and a black day — and layer 3 was
+    /// words 12..16. At the authored 24-byte stride layer 3 is a coherent
+    /// sunrise/day/sunset/night ramp.
+    #[test]
+    fn fnv_96_byte_pnam_uses_a_six_slot_layer_stride() {
+        // One row per layer: sunrise, day, sunset, night, high noon, midnight.
+        #[rustfmt::skip]
+        let words: [[u8; 3]; 24] = [
+            [252, 234, 214], [87, 196, 90], [6, 255, 150], [30, 30, 30], [255, 0, 128], [0, 0, 0],
+            [255, 255, 255], [255, 255, 255], [245, 194, 156], [0, 0, 0], [0, 0, 0], [0, 0, 0],
+            [255, 255, 255], [255, 255, 255], [213, 210, 202], [0, 0, 0], [0, 0, 0], [0, 0, 0],
+            [230, 190, 182], [241, 238, 228], [253, 203, 189], [24, 28, 35], [241, 238, 228], [37, 44, 56],
+        ];
+        let pnam: Vec<u8> = words.iter().flat_map(|&[r, g, b]| [r, g, b, 0]).collect();
+        assert_eq!(pnam.len(), 96);
+        let w = parse_wthr(0x0F12, &[sub(b"PNAM", pnam)], GameKind::Fallout3NV, &None);
+        let rgb = |c: SkyColor| [c.r, c.g, c.b];
+        for layer in 0..4 {
+            for slot in 0..4 {
+                assert_eq!(
+                    rgb(w.cloud_layer_colors[layer][slot]),
+                    words[layer * 6 + slot],
+                    "layer {layer} slot {slot}"
+                );
+            }
+        }
+        assert_eq!(rgb(w.cloud_layer_colors[1][TOD_DAY]), [255, 255, 255]);
+        assert_eq!(rgb(w.cloud_layer_colors[3][TOD_NIGHT]), [24, 28, 35]);
+    }
+
+    /// #6037 — FO4/FO76/Starfield author 8 TOD slots per layer at form
+    /// version 111+ (1,024 B = 32 layers × 8); the older 512-byte FO4 records
+    /// and every Skyrim record keep 4. Each colour encodes `(layer, slot)`.
+    #[test]
+    fn creation_pnam_layer_stride_follows_the_slot_count() {
+        let pnam = |slots: usize| -> Vec<u8> {
+            (0..32 * slots)
+                .flat_map(|i| [(i / slots) as u8, (i % slots) as u8, 0, 0])
+                .collect()
+        };
+        for (game, slots) in [
+            (GameKind::Fallout4, 8),
+            (GameKind::Fallout76, 8),
+            (GameKind::Starfield, 8),
+            (GameKind::Fallout4, 4),
+            (GameKind::Skyrim, 4),
+        ] {
+            let w = parse_wthr(0xC10, &[sub(b"PNAM", pnam(slots))], game, &None);
+            for layer in 0..4 {
+                for slot in 0..4 {
+                    let c = w.cloud_layer_colors[layer][slot];
+                    assert_eq!(
+                        (c.r as usize, c.g as usize),
+                        (layer, slot),
+                        "{game:?} {slots}-slot PNAM layer {layer} slot {slot}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
