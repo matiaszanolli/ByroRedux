@@ -117,10 +117,10 @@ mod tests {
         data.extend(0u16.to_le_bytes());
         data.extend(0u32.to_le_bytes());
         let subs = vec![
-            sub(b"EDID", b"NVChallengeCaravanWin\0".to_vec()),
-            sub(b"SCRI", 0x0016_577fu32.to_le_bytes().to_vec()),
+            sub(b"EDID", b"NVChallengeCaravanWin\0"),
+            sub(b"SCRI", 0x0016_577fu32.to_le_bytes()),
             sub(b"DATA", data),
-            sub(b"SNAM", 0x0012_0d81u32.to_le_bytes().to_vec()),
+            sub(b"SNAM", 0x0012_0d81u32.to_le_bytes()),
         ];
         let chal = parse_chal(0x165777, &subs, &None);
         assert_eq!(

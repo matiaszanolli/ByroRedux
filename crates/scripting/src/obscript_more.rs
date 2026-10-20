@@ -57,6 +57,11 @@ pub(crate) fn models(cmd: u16, fallout: bool) -> bool {
     if fallout { FALLOUT.contains(&cmd) } else { OBLIVION.contains(&cmd) }
 }
 
+/// The point the crosshair is aimed at, within a reach, in Z-up world units.
+pub type ReticlePointFn = fn(&World, f32) -> Option<[f32; 3]>;
+/// The placement of a point in the player's cell.
+pub type PlacementAtFn = fn(&World, [f32; 3]) -> Option<crate::created_references::CreatedPlacement>;
+
 /// Functions of engine state that need systems this crate does not link (physics, the camera, the
 /// UI), installed by the app at boot. A missing one declines the command that asks.
 #[derive(Default, Clone, Copy)]
@@ -71,7 +76,7 @@ pub struct EngineQueries {
     pub menu_open: Option<fn(&World, u32) -> bool>,
     /// The point the crosshair is aimed at, within `distance` (`0` for the default reach), in Z-up world
     /// units (`PlaceAtReticle`).
-    pub reticle_point: Option<fn(&World, f32) -> Option<[f32; 3]>>,
+    pub reticle_point: Option<ReticlePointFn>,
     /// The actors in contact with a trap right now and how fast the trap moves relative to each
     /// (`TrapUpdate`), in world units per second.
     pub trap_contacts: Option<fn(&World, EntityId) -> Vec<TrapContact>>,
@@ -80,7 +85,7 @@ pub struct EngineQueries {
     /// Whether the player is in the air (`IsPlayerActionActive 6`, jumping).
     pub player_airborne: Option<fn(&World) -> bool>,
     /// The placement of a point in the player's cell, for a reference created there.
-    pub placement_at: Option<fn(&World, [f32; 3]) -> Option<crate::created_references::CreatedPlacement>>,
+    pub placement_at: Option<PlacementAtFn>,
 }
 
 impl Resource for EngineQueries {}

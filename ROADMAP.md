@@ -26,8 +26,8 @@ only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
 bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
---workspace -- -D warnings` was **clean** at the last run (2026-10-15, not
-re-run this close; `--all-targets` is not, Known Issues). All 10 847 tests
+--workspace -- -D warnings` was **clean** at the last run (2026-10-19, after the
+Session 102 ObScript lints were fixed; `--all-targets` is not, Known Issues). All 10 847 tests
 pass (2026-10-19). The lock-order detector is clean locally on
 `-p byroredux-scripting` and `-p byroredux` there (it caught one scripting
 inversion earlier, fixed in `ac0d19f35`); the CI ABBA lane was not read. The bench-of-record below (`a3a7a43b0`) is 515 commits stale (R6a-stale-29). Its one open
@@ -692,8 +692,8 @@ performance finding. The measured knob table is in
 
 ### Infrastructure and tooling
 
-- [ ] **Clippy `--all-targets` carries 6 lints** (2026-10-15): test/example
-  targets of `scripting` (3), `plugin` (2) and the bin (1). The lane is a
+- [ ] **Clippy `--all-targets` carries 20 lints** (2026-10-19): test/example
+  targets across `scripting`, `plugin`, `pex`, `hkx`, `sfmaterial` and the bin. The lane is a
   non-blocking CI step (#5621); the blocking `cargo clippy --workspace -- -D
   warnings` form is clean.
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`

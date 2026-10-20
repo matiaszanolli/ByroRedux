@@ -183,7 +183,8 @@ fn first_dropped_spell_op(op: &'static str, actor: EntityId, spell: u32) -> bool
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
     const CAP: usize = 4096;
-    static SEEN: OnceLock<Mutex<HashSet<(&'static str, EntityId, u32)>>> = OnceLock::new();
+    type Dropped = (&'static str, EntityId, u32);
+    static SEEN: OnceLock<Mutex<HashSet<Dropped>>> = OnceLock::new();
     let mut seen = SEEN
         .get_or_init(|| Mutex::new(HashSet::new()))
         .lock()

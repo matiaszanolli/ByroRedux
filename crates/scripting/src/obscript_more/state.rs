@@ -44,7 +44,7 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         // crime". The engine records no crime, so no actor knows of one.
         0x1077 => flag(false),
         // CS *Get/SetPCExpelled*, *Get/SetPCFactionMurder / Steal / Attack*.
-        0x10c1 | 0x10c2 | 0x10c3 | 0x10c4 | 0x10c5 | 0x10c6 | 0x10c7 if !fallout => {
+        0x10c1..=0x10c7 if !fallout => {
             let kind = match cmd {
                 0x10c1 | 0x10c2 => FactionFlag::Expelled,
                 0x10c3 | 0x10c4 => FactionFlag::Murder,

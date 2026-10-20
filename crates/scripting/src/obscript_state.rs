@@ -385,7 +385,10 @@ impl Component for PlayingScriptedIdle {
 
 /// The polygons of every `REGN`, for `IsPlayerInRegion`. `NOT_SAVED_BY_DESIGN`: rebuilt from the records.
 #[derive(Debug, Default, Clone)]
-pub struct RegionAreas(std::collections::HashMap<u32, (Option<u32>, Vec<Vec<(f32, f32)>>)>);
+pub struct RegionAreas(std::collections::HashMap<u32, (Option<u32>, RegionPolygons)>);
+
+/// A region's polygons, each a ring of `(x, y)` points.
+type RegionPolygons = Vec<Vec<(f32, f32)>>;
 
 impl Resource for RegionAreas {}
 

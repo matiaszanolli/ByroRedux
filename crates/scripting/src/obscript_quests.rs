@@ -444,7 +444,9 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
             0x11ff => world_music(self.world, text).map(ObScriptValue::Ref),
             // `EssentialDeathReload "message"` / `PlayBink "file"`: the string is the command's own argument.
             0x114d | 0x1114 => {
-                self.world.try_resource_mut::<crate::obscript_more::TextArguments>().map(|mut texts| texts.0 = vec![text.to_owned()]);
+                if let Some(mut texts) = self.world.try_resource_mut::<crate::obscript_more::TextArguments>() {
+                    texts.0 = vec![text.to_owned()];
+                }
                 Some(ObScriptValue::Num(0.0))
             }
             // `ShowWarning "text"`: the warning is written to the log and shown as a notification.

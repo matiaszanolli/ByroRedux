@@ -47,15 +47,15 @@ mod tests {
     #[test]
     fn a_new_vegas_music_type_decodes_its_file_and_loop_flag() {
         let subs = vec![
-            sub(b"EDID", b"musDocMitchellHouse\0".to_vec()),
-            sub(b"FNAM", b"loc\\corporateruins\\mus_loc_corpruins_day_3high.mp3\0".to_vec()),
-            sub(b"ANAM", 6.0f32.to_le_bytes().to_vec()),
+            sub(b"EDID", b"musDocMitchellHouse\0"),
+            sub(b"FNAM", b"loc\\corporateruins\\mus_loc_corpruins_day_3high.mp3\0"),
+            sub(b"ANAM", 6.0f32.to_le_bytes()),
         ];
         let musc = parse_musc(0x171b4a, &subs, GameKind::Fallout3NV);
         assert_eq!(musc.editor_id, "musDocMitchellHouse");
         assert_eq!(musc.file, "loc\\corporateruins\\mus_loc_corpruins_day_3high.mp3");
         assert!(musc.looping());
-        let stinger = parse_musc(1, &[sub(b"ANAM", (-0.0001f32).to_le_bytes().to_vec()), sub(b"FNAM", b"a.mp3\0".to_vec())], GameKind::Fallout3NV);
+        let stinger = parse_musc(1, &[sub(b"ANAM", (-0.0001f32).to_le_bytes()), sub(b"FNAM", b"a.mp3\0")], GameKind::Fallout3NV);
         assert!(!stinger.looping());
         assert_eq!(parse_musc(2, &subs, GameKind::Skyrim).file, "", "another game's layout is not read");
     }

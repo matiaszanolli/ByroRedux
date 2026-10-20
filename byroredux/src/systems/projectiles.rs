@@ -72,11 +72,11 @@ fn body_centre_offset(world: &World, entity: EntityId) -> Vec3 {
 
 /// What a shot with `weapon` (and `ammo`, 0 for the weapon's own) is made of: the weapon's damage, the
 /// ammunition's, and the projectile record the ammunition names.
-pub(crate) fn resolve_shot<'a>(
-    index: &'a byroredux_plugin::esm::records::EsmIndex,
+pub(crate) fn resolve_shot(
+    index: &byroredux_plugin::esm::records::EsmIndex,
     weapon: u32,
     ammo: u32,
-) -> Result<(f32, f32, &'a byroredux_plugin::esm::records::ProjRecord), String> {
+) -> Result<(f32, f32, &byroredux_plugin::esm::records::ProjRecord), String> {
     let (weapon_damage, ammo_damage, ammo_form, projectile_form) = resolve_ammunition(index, weapon, ammo)?;
     let proj = index
         .projectiles
