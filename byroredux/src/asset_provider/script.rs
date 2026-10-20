@@ -133,6 +133,21 @@ pub(crate) fn attach_vm_reference_script(
     entity: byroredux_core::ecs::EntityId,
     instance: &byroredux_plugin::esm::records::script_instance::ScriptInstance,
 ) -> bool {
+    // #5998 — the VM reaches a reference script by the reference's FormID: the
+    // index (`ReferenceScriptIndex::refresh`) and delivery
+    // (`collect_deliveries`) both need `entity_global_form_id`. A non-primary
+    // SCOL / PKIN child carries no identity (`stamp_quest_reference` runs for
+    // the primary child only, #3016), so an instance attached to it could never
+    // run — yet it counted as attached and inflated `scripts_recognized`. Decline
+    // it here, before the decompile + check, so the telemetry matches what runs.
+    // Every caller stamps identity before it attaches.
+    if byroredux_scripting::condition::entity_global_form_id(world, entity).is_none() {
+        log::trace!(
+            "M47.2: the Papyrus VM skips '{}' on entity {entity:?}: the reference has no FormID to deliver to",
+            instance.name,
+        );
+        return false;
+    }
     let key = instance.name.to_ascii_lowercase();
     let cached = world
         .try_resource::<VmReferenceScriptChecks>()
@@ -1553,6 +1568,24 @@ pub(crate) fn build_script_provider(args: &[String]) -> ScriptProvider {
 
 #[cfg(test)]
 mod tests {
+    /// #5998 — a reference without a FormID can never be delivered to, so the VM
+    /// attach declines before it spends a decompile + check on it. Driving the
+    /// positive path needs a script archive; pin the order at the source: the
+    /// identity gate precedes the verdict cache and the provider lookup.
+    #[test]
+    fn the_vm_reference_attach_declines_an_identityless_reference_first() {
+        let production = byroredux_core::source_scan::production_text(include_str!("script.rs"));
+        let attach = &production[production
+            .find("pub(crate) fn attach_vm_reference_script")
+            .expect("attach present")..];
+        let gate = attach
+            .find("condition::entity_global_form_id(world, entity).is_none()")
+            .expect("the identity gate (#5998)");
+        let cache = attach.find("VmReferenceScriptChecks").expect("verdict cache lookup");
+        let provider = attach.find("ScriptProvider>()").expect("provider lookup");
+        assert!(gate < cache && gate < provider, "the gate must come before any decompile work");
+    }
+
     /// #6001 — the allowance is spent per uncached script, runs out after
     /// `ALIAS_SCRIPT_CHECKS_PER_FRAME`, and the check loop spends it before
     /// every decompile + check (the quest loop stops, the quest resumes next frame).
