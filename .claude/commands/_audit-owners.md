@@ -67,7 +67,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/menuxml/` | ui, parsers | MEDIUM |
 | `crates/spt/` | speedtree | MEDIUM |
 | `crates/physics/` | physics, safety | HIGH |
-| `crates/scripting/src/fragment/{vm,budget,reference}.rs` | scripting, concurrency, performance Dim 1, tech-debt Dim 1 | HIGH |
+| `crates/scripting/src/fragment/{vm,budget.rs,reference.rs}` | scripting, concurrency, performance Dim 1, tech-debt Dim 1 | HIGH |
 | `crates/scripting/src/magic.rs` | scripting, gameplay, character | MEDIUM |
 | `crates/scripting/src/load_order.rs` | scripting, save | MEDIUM |
 | `crates/scripting/src/{bleedout,bribe,speechcraft,crime_faction,crime_gold,destruction,detection_events,followers,map_markers,ownership,encounter_level}.rs` | scripting, gameplay | MEDIUM |
