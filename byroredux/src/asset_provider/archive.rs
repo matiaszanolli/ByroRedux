@@ -39,6 +39,97 @@ pub(crate) struct ArchiveInner {
 enum Backend {
     Bsa(byroredux_bsa::BsaArchive),
     Ba2(byroredux_bsa::Ba2Archive),
+    Loose(LooseDir),
+}
+
+/// The asset folders a game's `Data` directory can carry loose overrides in:
+/// the same top-level roots the archives store their entries under.
+const LOOSE_ASSET_ROOTS: [&str; 3] = ["textures", "meshes", "materials"];
+
+/// Loose files under a game's `Data` directory, indexed by the archive-style
+/// key they override (`textures\landscape\dirt01_d.dds`: lowercase,
+/// backslash-separated, relative to `Data`).
+///
+/// Mod and user assets win (#6200): every Bethesda title this engine loads
+/// lets a loose file shadow the archived copy at the same path, so the loose
+/// tier is appended after every archive and #3637's last-listed-wins order
+/// puts it on top. The tree is indexed once, when it is opened — the games
+/// themselves index `Data` at startup too, so a file added mid-session is
+/// picked up by the next launch, not the next lookup.
+struct LooseDir {
+    files: HashMap<String, std::path::PathBuf>,
+}
+
+impl LooseDir {
+    /// Index the asset roots under `data_dir`. Directory-name case is
+    /// whatever the install happens to use, so the roots match
+    /// case-insensitively.
+    fn index(data_dir: &std::path::Path) -> Self {
+        let mut files = HashMap::new();
+        let Ok(entries) = std::fs::read_dir(data_dir) else {
+            return Self { files };
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if LOOSE_ASSET_ROOTS.contains(&name.as_str()) && entry.path().is_dir() {
+                Self::walk(&entry.path(), &name, &mut files);
+            }
+        }
+        Self { files }
+    }
+
+    fn walk(dir: &std::path::Path, key: &str, files: &mut HashMap<String, std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let child = format!(
+                "{key}\\{}",
+                entry.file_name().to_string_lossy().to_ascii_lowercase()
+            );
+            let path = entry.path();
+            if path.is_dir() {
+                Self::walk(&path, &child, files);
+            } else if path.is_file() {
+                files.insert(child, path);
+            }
+        }
+    }
+
+    fn key(path: &str) -> String {
+        path.trim_start_matches(['\\', '/'])
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    }
+
+    fn file(&self, path: &str) -> Result<&std::path::PathBuf, std::io::Error> {
+        self.files.get(&Self::key(path)).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, format!("'{path}' is not loose"))
+        })
+    }
+
+    fn declared_size(&self, path: &str) -> Result<usize, std::io::Error> {
+        let len = std::fs::metadata(self.file(path)?)?.len();
+        usize::try_from(len)
+            .ok()
+            .filter(|&len| len <= byroredux_bsa::MAX_CHUNK_BYTES)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("loose '{path}' is {len} bytes, over the archive extract cap"),
+                )
+            })
+    }
+
+    fn extract(&self, path: &str) -> Result<Vec<u8>, std::io::Error> {
+        // Same ceiling an archive entry is held to, checked before reading.
+        self.declared_size(path)?;
+        std::fs::read(self.file(path)?)
+    }
+
+    fn list_files(&self) -> Vec<&str> {
+        self.files.keys().map(String::as_str).collect()
+    }
 }
 
 /// Extract `path` from the first of `archives` that yields it, in iteration
@@ -142,6 +233,55 @@ impl Archive {
     }
 }
 
+impl Archive {
+    /// The loose-file tier of the game `Data` directory `data_dir` (#6200),
+    /// or `None` when it holds no loose assets — the common case for a
+    /// vanilla install, which then pays nothing on any lookup.
+    ///
+    /// Indexed once per directory per process, like [`Self::open_shared`]:
+    /// every provider rebuild (door cover, destination apply, save-load)
+    /// asks again, and re-walking a heavily modded tree each time would put
+    /// a directory scan on the cell-transition path.
+    pub(crate) fn open_loose(data_dir: &std::path::Path) -> Option<Self> {
+        static REGISTRY: OnceLock<Mutex<HashMap<std::path::PathBuf, Option<Archive>>>> =
+            OnceLock::new();
+        let key = data_dir.canonicalize().unwrap_or_else(|_| data_dir.to_path_buf());
+        let registry = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(cached) = registry.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+            return cached.clone();
+        }
+        let dir = LooseDir::index(&key);
+        let archive = (!dir.files.is_empty()).then(|| Archive {
+            inner: Arc::new(ArchiveInner {
+                backend: Backend::Loose(dir),
+                path: key.to_string_lossy().into_owned(),
+                warned: Mutex::new(HashSet::new()),
+                cdb_paths: OnceLock::new(),
+            }),
+        });
+        registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, archive.clone());
+        archive
+    }
+}
+
+/// The game `Data` directory an invocation loads from: the directory the
+/// `--esm` plugin sits in, which is `Data` by definition. `None` without an
+/// `--esm` (a loose-NIF viewer run), so no loose tier is opened.
+pub(crate) fn loose_data_dir(args: &[String]) -> Option<std::path::PathBuf> {
+    let esm = args
+        .windows(2)
+        .find(|pair| pair[0] == "--esm")
+        .map(|pair| std::path::Path::new(&pair[1]))?;
+    let dir = match esm.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    dir.is_dir().then_some(dir)
+}
+
 /// What identifies an on-disk archive's content for [`Archive::open_shared`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ArchiveStamp {
@@ -170,6 +310,11 @@ fn shared_archives() -> &'static Mutex<HashMap<String, (ArchiveStamp, Archive)>>
 }
 
 impl ArchiveInner {
+    /// The file (or, for the loose tier, directory) this was opened from.
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
     /// Paths of the Starfield component databases this archive holds
     /// (#1571), memoised on the archive: scanning the file table for them is
     /// O(entries) and the answer cannot change for an opened archive.
@@ -186,6 +331,7 @@ impl ArchiveInner {
         match &self.backend {
             Backend::Bsa(a) => a.extract(path),
             Backend::Ba2(a) => a.extract(path),
+            Backend::Loose(d) => d.extract(path),
         }
     }
 
@@ -225,6 +371,7 @@ impl ArchiveInner {
         match &self.backend {
             Backend::Bsa(a) => a.declared_size(path),
             Backend::Ba2(a) => a.declared_size(path),
+            Backend::Loose(d) => d.declared_size(path),
         }
     }
 
@@ -237,6 +384,7 @@ impl ArchiveInner {
         match &self.backend {
             Backend::Bsa(a) => a.contains(path),
             Backend::Ba2(a) => a.contains(path),
+            Backend::Loose(d) => d.file(path).is_ok(),
         }
     }
 
@@ -248,6 +396,7 @@ impl ArchiveInner {
         match &self.backend {
             Backend::Bsa(_) => Vec::new(),
             Backend::Ba2(a) => a.list_files(),
+            Backend::Loose(d) => d.list_files(),
         }
     }
 
@@ -288,6 +437,7 @@ impl ArchiveInner {
         match &self.backend {
             Backend::Bsa(a) => a.list_files(),
             Backend::Ba2(a) => a.list_files(),
+            Backend::Loose(d) => d.list_files(),
         }
     }
 }

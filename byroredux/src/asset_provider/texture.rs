@@ -534,6 +534,17 @@ pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
         }
         i += 1;
     }
+    // #6200 — mod/user assets win: the `Data` directory's loose files go on
+    // top of every archive in both pools.
+    if let Some(loose) = loose_data_dir(args).and_then(|dir| Archive::open_loose(&dir)) {
+        for (kind, pool) in [
+            ("loose texture", &mut provider.texture_archives),
+            ("loose mesh", &mut provider.mesh_archives),
+        ] {
+            log_opened_archive(kind, loose.path(), &loose, pool, false);
+            pool.push(loose.clone());
+        }
+    }
     // #1776 — `open_with_numeric_siblings` already warns per failed archive, but
     // a run that requested archives yet opened NONE loads near-empty and prints
     // a spurious bench FPS (~36 entities / ~1792 FPS) that reads as real data.

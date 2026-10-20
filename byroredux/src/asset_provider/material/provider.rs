@@ -98,6 +98,11 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
         }
         i += 1;
     }
+    // #6200 — loose `Data\materials` files override every material archive.
+    if let Some(loose) = loose_data_dir(args).and_then(|dir| Archive::open_loose(&dir)) {
+        log_opened_archive("loose materials", loose.path(), &loose, &provider.archives, false);
+        provider.push_archive(loose);
+    }
     provider
 }
 

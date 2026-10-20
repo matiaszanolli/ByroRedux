@@ -11,6 +11,7 @@ mod bgsm_merge;
 mod facegen_texture_fallback;
 mod fo4_palette_corpus;
 mod material_flags;
+mod loose_override;
 mod material_path;
 mod starfield_mat;
 
