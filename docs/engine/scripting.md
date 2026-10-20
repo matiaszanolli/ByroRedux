@@ -923,7 +923,10 @@ When the allowance is gone:
   scheduler snapshot per delivery just to be deferred. A due `OnUpdate` the
   allowance cannot start is not queued but left due: a periodic registration
   re-arms when taken, so queueing would pile runs up behind a budget the demand
-  exceeds. It is delivered once, on the first frame with allowance left.
+  exceeds. It is delivered once, on the first frame with allowance left. A
+  registered hit (`RegisterForHitEvent`) the allowance cannot start is queued like any
+  other unstarted run (#5987): the hit is a one-shot marker drained at frame end and
+  the registration is one-shot, so skipping it would lose both.
 - **A run in progress yields.** After the statement that used the last of the
   allowance, the run suspends between two statements, exactly as a zero-second
   `Utility.Wait` would: the same `VmResume` frames, resumed innermost-first

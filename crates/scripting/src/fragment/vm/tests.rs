@@ -939,6 +939,32 @@ fn hit_events_are_registered_single_shot_and_filtered() {
     assert!(world.resource::<crate::HitRegistrations>().entries().is_empty(), "single shot");
     strike(&mut world, false);
     assert_eq!(hits(&world), Some(1.0), "re-registration is the script's to do");
+
+    // #5987 — a hit the frame's budget cannot start is deferred, not lost: the
+    // marker is gone by the next frame and the registration was one-shot.
+    let registration = {
+        // Re-arm the (consumed) registration the way the script would.
+        use crate::fragment::{HitRegistrations, HitRequest};
+        let mut registrations = world.resource_mut::<HitRegistrations>();
+        registrations.request(
+            owner,
+            "VmHitAlias",
+            &HitRequest::Register {
+                target: crate::fragment::DistanceTarget::Alias { quest: Q.0, alias: ALIAS },
+                filter: crate::fragment::HitFilter::default(),
+            },
+        );
+        registrations.entries().len()
+    };
+    assert_eq!(registration, 1);
+    budgeted(&mut world, 0);
+    strike(&mut world, false);
+    assert_eq!(hits(&world), Some(1.0), "the exhausted frame did not start the run");
+    assert!(world.resource::<crate::HitRegistrations>().entries().is_empty(), "the registration fired");
+    assert_eq!(world.resource::<crate::FragmentExecutionQueue>().len(), 1, "the hit's run is queued");
+    world.insert_resource(crate::VmFrameBudget::default());
+    next_frame(&world);
+    assert_eq!(hits(&world), Some(2.0), "the deferred hit ran on a later frame");
 }
 
 /// `OnEnterBleedout` arrives when the actor goes into bleedout, `OnDying` with

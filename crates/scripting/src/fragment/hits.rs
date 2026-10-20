@@ -177,7 +177,7 @@ pub fn hit_event_system(world: &World, _dt: f32) {
         candidates.iter().map(|(_, r)| owners.standing(world, &stages, r.owner)).collect()
     };
     let weapons = world.query::<byroredux_core::ecs::components::EquippedWeapon>();
-    let mut fired: Vec<(usize, HitRegistration, EntityId, crate::HitEvent)> = Vec::new();
+    let mut fired: Vec<(usize, HitRegistration, EntityId, crate::HitEvent, bool)> = Vec::new();
     let mut starts = super::budget::runs_startable(world);
     for ((index, registration), standing) in candidates.into_iter().zip(standing) {
         // A quest's (or alias's) registration delivers while the quest runs; a
@@ -207,11 +207,13 @@ pub fn hit_event_system(world: &World, _dt: f32) {
         }) else {
             continue;
         };
-        if starts == 0 {
-            continue;
-        }
-        starts -= 1;
-        fired.push((index, registration, victim, hit));
+        // #5987 — a hit is a one-shot marker (drained at the end of the frame) and
+        // `RegisterForHitEvent` is itself one-shot, so a hit the frame cannot
+        // afford to start must not be skipped: the registration fires either way
+        // and the run is queued for a later frame instead of started now.
+        let defer = starts == 0;
+        starts = starts.saturating_sub(1);
+        fired.push((index, registration, victim, hit, defer));
     }
     if fired.is_empty() {
         return;
@@ -227,7 +229,7 @@ pub fn hit_event_system(world: &World, _dt: f32) {
         });
     }
     let mut advances = Vec::new();
-    for (_, registration, victim, hit) in fired {
+    for (_, registration, victim, hit, defer) in fired {
         let owner = QuestFormId(registration.owner);
         if !owners.handler_runs(registration.owner, &registration.script, "OnHit") {
             log::debug!(
@@ -262,6 +264,15 @@ pub fn hit_event_system(world: &World, _dt: f32) {
             resume: None,
         };
         log::debug!("{:08X}: {}.OnHit", registration.owner, registration.script);
+        let effect = if defer {
+            match super::budget::defer(world, owner, vmad.as_ref(), vec![effect]) {
+                Ok(()) => continue,
+                // No continuation queue: run it now, exactly as before the budget.
+                Err(mut effects) => effects.remove(0),
+            }
+        } else {
+            effect
+        };
         advances.extend(run_papyrus_call(world, owner, vmad.as_ref(), effect));
     }
     flush_advances(world, advances);
