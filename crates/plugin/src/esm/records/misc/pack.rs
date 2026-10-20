@@ -157,7 +157,8 @@ pub enum PackLocationTarget {
 /// union plus one more field), 16 bytes: Type u32 @0, Target union u32 @4,
 /// Count/Distance i32 @8, and a trailing Unknown f32 @12 that has no known
 /// consumer anywhere and isn't stored (same convention PSDT's unused
-/// Month/DayOfWeek/Date bytes already established).
+/// Month/Date bytes already established; its DayOfWeek byte is decoded,
+/// see [`PackDays`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PackTarget {
     /// Raw Target Type enum (0..=3) — kept alongside `target` so a
@@ -346,6 +347,72 @@ pub const PROCEDURE_SLEEP: u32 = 4;
 /// 141 NPC-default references across FalloutNV.esm (2026-10-08 census).
 pub const PROCEDURE_DIALOGUE: u32 = 15;
 
+/// Which days of the week a PACK schedule applies on — PSDT's Day-of-Week byte
+/// (#6079). `-1` is "any day"; `0..=6` are Sunday..Saturday and `7..=10` the
+/// ranges Weekdays, Weekends, Monday-Wednesday-Friday and Tuesday-Thursday.
+///
+/// Verified against FalloutNV.esm and Fallout3.esm: the authored EditorIDs
+/// name the day they were set to (`…10x6Sun` is 0, `…Mon` 1, `…Thu20x2` 4,
+/// `…Sa` 6, `…SS` 8, `…MWF` 9, `…TT` 10) and the 53 FNV / 90 FO3 constrained
+/// packages fall exactly in `0..=10`; 7 is the one slot with no name evidence,
+/// placed by its position between Saturday and Weekends. A byte outside
+/// `-1..=10` is read as "any day", the pre-#6079 behaviour.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PackDays {
+    #[default]
+    Any,
+    /// One weekday, 0 Sunday .. 6 Saturday.
+    Day(u8),
+    Weekdays,
+    Weekends,
+    MonWedFri,
+    TueThu,
+}
+
+impl PackDays {
+    pub fn from_raw(raw: i8) -> Self {
+        match raw {
+            0..=6 => Self::Day(raw as u8),
+            7 => Self::Weekdays,
+            8 => Self::Weekends,
+            9 => Self::MonWedFri,
+            10 => Self::TueThu,
+            _ => Self::Any,
+        }
+    }
+
+    /// True when `weekday` (0 Sunday .. 6 Saturday) is one of the days.
+    pub fn includes(self, weekday: u32) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Day(day) => weekday == u32::from(day),
+            Self::Weekdays => (1..=5).contains(&weekday),
+            Self::Weekends => weekday == 0 || weekday == 6,
+            Self::MonWedFri => matches!(weekday, 1 | 3 | 5),
+            Self::TueThu => matches!(weekday, 2 | 4),
+        }
+    }
+}
+
+/// When a package is being asked about: the hour of day and, where the host
+/// has a calendar for the game, the weekday (0 Sunday .. 6 Saturday).
+/// `weekday = None` leaves day constraints unevaluated — a bare `f32` hour
+/// converts to that, so hour-only callers are unchanged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PackClock {
+    pub hour: f32,
+    pub weekday: Option<u32>,
+}
+
+impl From<f32> for PackClock {
+    fn from(hour: f32) -> Self {
+        Self {
+            hour,
+            weekday: None,
+        }
+    }
+}
+
 /// PACK schedule window from PSDT (FO3/FNV). `start_hour = None` when the raw
 /// `time` byte is -1 (0xFF) = "any time". `duration_hours` is the PSDT
 /// duration (in hours for FO3/FNV — verified against FalloutNV.esm: a
@@ -355,6 +422,12 @@ pub const PROCEDURE_DIALOGUE: u32 = 15;
 pub struct PackSchedule {
     pub start_hour: Option<u8>,
     pub duration_hours: u32,
+    /// The days the window applies on (#6079). Tested against the weekday of
+    /// the moment asked about, including for the post-midnight tail of a
+    /// window that wraps: no source says which day owns that tail, and the
+    /// three vanilla FNV windows that wrap (`VSpecialGSGeckoHunters…`) come
+    /// as MWF/TT/SS triples that cover it either way.
+    pub days: PackDays,
 }
 
 impl PackSchedule {
@@ -403,7 +476,11 @@ impl PackSchedule {
     /// through the wrap branch; and **zero** FNV packages carry a negative
     /// duration, so the `duration.max(0)` clamp in `parse_pack` never fires
     /// on this corpus.
-    pub fn active_at(&self, hour: f32) -> bool {
+    pub fn active_at(&self, clock: impl Into<PackClock>) -> bool {
+        let PackClock { hour, weekday } = clock.into();
+        if weekday.is_some_and(|weekday| !self.days.includes(weekday)) {
+            return false;
+        }
         let Some(start) = self.start_hour else {
             return true;
         };
@@ -545,8 +622,9 @@ impl PackRecord {
 
     /// Whether this package's schedule includes `hour`. No PSDT → always
     /// active (the package is condition/location-gated, not time-gated).
-    pub fn scheduled_active_at(&self, hour: f32) -> bool {
-        self.schedule.is_none_or(|s| s.active_at(hour))
+    pub fn scheduled_active_at(&self, clock: impl Into<PackClock>) -> bool {
+        let clock = clock.into();
+        self.schedule.is_none_or(|s| s.active_at(clock))
     }
 }
 
@@ -580,12 +658,13 @@ impl PackRecord {
 /// resolved to the same package anyway.
 pub fn active_package<'a>(
     packages: impl IntoIterator<Item = &'a PackRecord>,
-    hour: f32,
+    clock: impl Into<PackClock>,
     condition_met: impl Fn(&PackRecord) -> bool,
 ) -> Option<&'a PackRecord> {
+    let clock = clock.into();
     packages
         .into_iter()
-        .find(|pk| pk.scheduled_active_at(hour) && condition_met(pk))
+        .find(|pk| pk.scheduled_active_at(clock) && condition_met(pk))
 }
 
 fn parse_location(
@@ -921,6 +1000,7 @@ pub fn parse_pack(
                 let schedule = PackSchedule {
                     start_hour: if time < 0 { None } else { Some(time as u8) },
                     duration_hours: duration.max(0) as u32,
+                    days: PackDays::from_raw(sub.data[1] as i8),
                 };
                 // #3352 — a `time >= 0, duration == 0` PSDT decodes to a
                 // zero-length window that `active_at` can never satisfy, so
@@ -1394,6 +1474,7 @@ mod tests {
         Some(PackSchedule {
             start_hour,
             duration_hours,
+            ..Default::default()
         })
     }
 
@@ -1409,6 +1490,7 @@ mod tests {
         let schedule = PackSchedule {
             start_hour: Some(7),
             duration_hours: 0,
+            ..Default::default()
         };
         assert!(schedule.is_unsatisfiable());
         for hour in 0..24 {
@@ -1421,6 +1503,7 @@ mod tests {
         assert!(!PackSchedule {
             start_hour: Some(0),
             duration_hours: 0,
+            ..Default::default()
         }
         .active_at(0.0));
     }
@@ -1436,6 +1519,7 @@ mod tests {
             let any = PackSchedule {
                 start_hour: None,
                 duration_hours: duration,
+                ..Default::default()
             };
             assert!(!any.is_unsatisfiable());
             for hour in 0..24 {
@@ -1448,6 +1532,7 @@ mod tests {
             let wrapping = PackSchedule {
                 start_hour: Some(start),
                 duration_hours: duration,
+                ..Default::default()
             };
             for hour in 0..24 {
                 assert!(
@@ -1462,6 +1547,7 @@ mod tests {
             let full_day = PackSchedule {
                 start_hour: Some(start),
                 duration_hours: 24,
+                ..Default::default()
             };
             for hour in 0..24 {
                 assert!(full_day.active_at(hour as f32), "{start}x24 misses {hour}");
@@ -1512,6 +1598,96 @@ mod tests {
             parse_pack(0x2, &[sub(b"PSDT", psdt)], &None, GameKind::Fallout3NV).schedule,
             sched(Some(8), 30),
         );
+    }
+
+    /// #6079 — PSDT's Day-of-Week byte decodes into `PackSchedule::days` and
+    /// gates `active_at` against the caller's weekday (0 Sunday .. 6
+    /// Saturday). The vanilla Primm patrol / gecko hunters come as
+    /// MWF (9) / TT (10) / SS (8) variants that all pass the hour test.
+    #[test]
+    fn psdt_day_of_week_gates_the_schedule() {
+        let psdt = |day: i8| {
+            // month -1, dayOfWeek, date 0, time 8, duration 4
+            let mut data = vec![0xFF, day as u8, 0, 8];
+            data.extend_from_slice(&4i32.to_le_bytes());
+            parse_pack(0x1, &[sub(b"PSDT", data)], &None, GameKind::Fallout3NV)
+                .schedule
+                .expect("schedule decoded")
+        };
+        let at = |schedule: &PackSchedule, weekday: u32| {
+            schedule.active_at(PackClock {
+                hour: 9.0,
+                weekday: Some(weekday),
+            })
+        };
+
+        let any = psdt(-1);
+        assert_eq!(any.days, PackDays::Any);
+        assert!((0..7).all(|day| at(&any, day)));
+
+        let mwf = psdt(9);
+        assert_eq!(mwf.days, PackDays::MonWedFri);
+        assert_eq!(
+            (0..7).filter(|&day| at(&mwf, day)).collect::<Vec<_>>(),
+            [1, 3, 5]
+        );
+        let tt = psdt(10);
+        assert_eq!(
+            (0..7).filter(|&day| at(&tt, day)).collect::<Vec<_>>(),
+            [2, 4]
+        );
+        let weekends = psdt(8);
+        assert_eq!(
+            (0..7).filter(|&day| at(&weekends, day)).collect::<Vec<_>>(),
+            [0, 6]
+        );
+        let weekdays = psdt(7);
+        assert_eq!(
+            (0..7).filter(|&day| at(&weekdays, day)).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        let sunday = psdt(0);
+        assert_eq!(sunday.days, PackDays::Day(0));
+        assert!(at(&sunday, 0) && !at(&sunday, 1));
+        assert_eq!(psdt(6).days, PackDays::Day(6));
+        // Out-of-range bytes keep the pre-#6079 any-day reading.
+        assert_eq!(psdt(11).days, PackDays::Any);
+        assert_eq!(psdt(-2).days, PackDays::Any);
+
+        // The hour test still applies on a matching day, and a host without a
+        // calendar (`weekday: None`, a bare hour) leaves the constraint alone.
+        assert!(!mwf.active_at(PackClock {
+            hour: 13.0,
+            weekday: Some(1)
+        }));
+        assert!(mwf.active_at(9.0));
+    }
+
+    /// #6079 — `active_package` walks past a package whose day does not match
+    /// to the next one in priority order.
+    #[test]
+    fn active_package_skips_a_package_scheduled_for_another_day() {
+        let mut mwf = pack(PROCEDURE_TRAVEL, sched(Some(8), 4));
+        mwf.form_id = 0x10;
+        mwf.schedule.as_mut().unwrap().days = PackDays::MonWedFri;
+        let mut tt = pack(PROCEDURE_TRAVEL, sched(Some(8), 4));
+        tt.form_id = 0x11;
+        tt.schedule.as_mut().unwrap().days = PackDays::TueThu;
+        let packages = [mwf, tt];
+        let pick = |weekday| {
+            active_package(
+                packages.iter(),
+                PackClock {
+                    hour: 9.0,
+                    weekday: Some(weekday),
+                },
+                |_| true,
+            )
+            .map(|p| p.form_id)
+        };
+        assert_eq!(pick(1), Some(0x10));
+        assert_eq!(pick(2), Some(0x11));
+        assert_eq!(pick(0), None);
     }
 
     fn pldt(location_type: u32, raw: u32, radius: i32) -> Vec<u8> {
@@ -1707,6 +1883,7 @@ mod tests {
         let bar = PackSchedule {
             start_hour: Some(8),
             duration_hours: 12,
+            ..Default::default()
         }; // 08:00–20:00
         assert!(bar.active_at(10.0));
         assert!(!bar.active_at(21.0));
@@ -1714,6 +1891,7 @@ mod tests {
         let sleep = PackSchedule {
             start_hour: Some(22),
             duration_hours: 10,
+            ..Default::default()
         }; // 22:00–08:00 (wraps midnight)
         assert!(sleep.active_at(23.0));
         assert!(sleep.active_at(2.0));
@@ -1721,6 +1899,7 @@ mod tests {
         let any = PackSchedule {
             start_hour: None,
             duration_hours: 0,
+            ..Default::default()
         };
         assert!(any.active_at(0.0) && any.active_at(15.0));
     }

@@ -779,7 +779,17 @@ fn select_active_package<'a>(
     // the quest-alias fill loop; every other consumer, including this one,
     // reads the committed `SceneActorBindings` table exactly as before.
     let context = ConditionContext::for_subject(actor);
-    byroredux_plugin::esm::records::active_package(packages, game_hour, |package| {
+    // #6079 — PSDT's Day-of-Week is tested against the game calendar's
+    // weekday where the game's day enum is established; `None` leaves day
+    // constraints unevaluated.
+    let weekday = world
+        .try_resource::<GameTimeRes>()
+        .and_then(|time| byroredux_scripting::globals::package_weekday(world, time.day));
+    let clock = byroredux_plugin::esm::records::PackClock {
+        hour: game_hour,
+        weekday,
+    };
+    byroredux_plugin::esm::records::active_package(packages, clock, |package| {
         package_conditions_pass(&package.conditions, world, &context)
             // #5499 / #5722 — skip any Dialogue package the installer
             // would decline: fail-open conditions, non-player targets, or
@@ -1213,6 +1223,54 @@ mod tests {
         }
     }
 
+    /// #6079 — the Primm Prospector Den patrol ships as MWF / TT / SS variants
+    /// of one package that all pass the hour test; the first listed used to
+    /// win every day. The game calendar's weekday now picks the variant.
+    #[test]
+    fn day_of_week_variants_select_by_the_game_calendar() {
+        use byroredux_plugin::esm::reader::GameKind;
+        use byroredux_plugin::esm::records::PackDays;
+
+        let variant = |form_id: u32, days: PackDays| {
+            pack(
+                form_id,
+                PROCEDURE_SANDBOX,
+                Some(PackSchedule {
+                    start_hour: Some(8),
+                    duration_hours: 4,
+                    days,
+                }),
+            )
+        };
+        let packages = [
+            variant(0x1, PackDays::MonWedFri),
+            variant(0x2, PackDays::TueThu),
+            variant(0x3, PackDays::Weekends),
+        ];
+        let mut world = World::new();
+        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Fallout3NV));
+        let actor = world.spawn();
+        // No start date authored: day 0 falls on a Sunday.
+        let winner = |world: &mut World, day: u64| {
+            let mut time = GameTimeRes::frozen_at(9.0);
+            time.day = day;
+            world.insert_resource(time);
+            select_active_package(world, actor, 9.0, packages.iter()).map(|p| p.form_id)
+        };
+        let week: Vec<_> = (0..7).map(|day| winner(&mut world, day)).collect();
+        assert_eq!(
+            week,
+            [Some(3), Some(1), Some(2), Some(1), Some(2), Some(1), Some(3)],
+            "Sun SS, Mon MWF, Tue TT, Wed MWF, Thu TT, Fri MWF, Sat SS"
+        );
+        assert_eq!(winner(&mut world, 7), Some(3), "the week repeats");
+
+        // A game without an established PSDT calendar leaves the constraint
+        // unevaluated: the first listed package wins every day.
+        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Skyrim));
+        assert_eq!(winner(&mut world, 2), Some(1));
+    }
+
     /// Real-data-shaped Skyrim+ type-19 template: a `Travel`-then-`Sandbox`
     /// tree, mirroring `Skyrim.esm`'s own `Sandbox` template (verified
     /// before this test was written; see `docs/engine/packal.md` §3). The
@@ -1462,6 +1520,7 @@ mod tests {
             Some(PackSchedule {
                 start_hour: Some(8),
                 duration_hours: 2,
+                ..Default::default()
             }),
         );
         dialogue_scheduled.dialogue_topic = Some(0xC8);
@@ -1471,6 +1530,7 @@ mod tests {
             Some(PackSchedule {
                 start_hour: Some(10),
                 duration_hours: 2,
+                ..Default::default()
             }),
         );
         let (mut world, actor) = setup_actor(9.0, vec![dialogue_scheduled, sandbox]);
@@ -1498,6 +1558,7 @@ mod tests {
             Some(PackSchedule {
                 start_hour: Some(8),
                 duration_hours: 12,
+                ..Default::default()
             }),
         );
         let travel = pack(
@@ -1506,6 +1567,7 @@ mod tests {
             Some(PackSchedule {
                 start_hour: Some(20),
                 duration_hours: 2,
+                ..Default::default()
             }),
         );
         let (world, actor) = setup_actor(10.0, vec![sandbox, travel]);
@@ -1556,6 +1618,7 @@ mod tests {
                     Some(PackSchedule {
                         start_hour: Some(8),
                         duration_hours: 12,
+                        ..Default::default()
                     }),
                 ),
                 pack(
@@ -1564,6 +1627,7 @@ mod tests {
                     Some(PackSchedule {
                         start_hour: Some(20),
                         duration_hours: 2,
+                        ..Default::default()
                     }),
                 ),
             ]
@@ -1993,6 +2057,7 @@ mod tests {
             Some(PackSchedule {
                 start_hour: Some(8),
                 duration_hours: 12,
+                ..Default::default()
             }),
         );
         let unconstrained = pack(0x300, PROCEDURE_TRAVEL, None);
@@ -2037,6 +2102,7 @@ mod tests {
             Some(PackSchedule {
                 start_hour: Some(8),
                 duration_hours: 12,
+                ..Default::default()
             }),
         );
         let mut say_to = pack(0x500, PROCEDURE_DIALOGUE, None);

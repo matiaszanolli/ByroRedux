@@ -119,6 +119,36 @@ pub fn gregorian_weekday(year: i64, month: i64, day: i64) -> u32 {
     (days + 4).rem_euclid(7) as u32
 }
 
+/// The weekday (0 Sunday .. 6 Saturday) `days_elapsed` whole days into the game. The engine keeps its
+/// own counter that "is not updated when the game date is changed" (CS), advanced each midnight from the
+/// day a new game starts on. Oblivion "always starts on Morndas" (UESP *Calendar*), a 1; Fallout's start
+/// weekday is in the executable and no document gives it, so the new-game date the globals author is
+/// taken to fall on the day the Gregorian calendar says — the only vanilla use (`VFreeformNovacScript`)
+/// compares the day with one it stored, so no epoch is observable. Shared by `GetDayOfWeek` and the
+/// package schedules' Day-of-Week (#6079).
+pub fn day_of_week(world: &byroredux_core::ecs::World, fallout: bool, days_elapsed: u64) -> u32 {
+    let origin = if fallout {
+        world
+            .try_resource::<GameClockGlobals>()
+            .and_then(|clock| clock.start_date)
+            .map_or(0, |(year, month, day)| gregorian_weekday(year as i64, month as i64 + 1, day as i64))
+    } else {
+        1
+    };
+    ((u64::from(origin) + days_elapsed) % 7) as u32
+}
+
+/// The weekday package schedules test their Day-of-Week against, `days_elapsed` days into the game —
+/// only where the game's PSDT day enum and calendar are established (Fallout 3 / New Vegas, #6079); `None`
+/// elsewhere leaves day constraints unevaluated.
+pub fn package_weekday(world: &byroredux_core::ecs::World, days_elapsed: u64) -> Option<u32> {
+    use byroredux_plugin::esm::reader::GameKind;
+    match world.try_resource::<crate::ScriptGame>()?.0 {
+        GameKind::Fallout3NV => Some(day_of_week(world, true, days_elapsed)),
+        _ => None,
+    }
+}
+
 /// Write the game clock into the globals: the hour of day into `GameHour`, and `GameDaysPassed` as the
 /// authored starting count plus the days run (the fraction of the day in progress included — the GECK
 /// notes the two "may disagree for a few frames" across midnight). A no-op without the globals.

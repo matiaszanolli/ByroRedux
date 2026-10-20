@@ -135,23 +135,8 @@ fn texts(world: &World) -> Vec<String> {
     world.try_resource_mut::<TextArguments>().map(|mut texts| std::mem::take(&mut texts.0)).unwrap_or_default()
 }
 
-/// The weekday `GetDayOfWeek` answers: 0 Sunday .. 6 Saturday. The engine keeps its own counter that "is
-/// not updated when the game date is changed" (CS), advanced each midnight from the day a new game
-/// starts on. Oblivion "always starts on Morndas" (UESP *Calendar*), a 1; Fallout's start weekday is in
-/// the executable and no document gives it, so the new-game date the globals author is taken to fall on
-/// the day the Gregorian calendar says — the only vanilla use (`VFreeformNovacScript`) compares the day
-/// with one it stored, so no epoch is observable.
-fn day_of_week(world: &World, fallout: bool) -> u32 {
-    let elapsed = world.try_resource::<crate::globals::GameCalendar>().map_or(0, |calendar| calendar.days_elapsed);
-    let origin = if fallout {
-        world
-            .try_resource::<crate::globals::GameClockGlobals>()
-            .and_then(|clock| clock.start_date)
-            .map_or(0, |(year, month, day)| crate::globals::gregorian_weekday(year as i64, month as i64 + 1, day as i64))
-    } else {
-        1
-    };
-    ((u64::from(origin) + elapsed) % 7) as u32
+fn elapsed_days(world: &World) -> u64 {
+    world.try_resource::<crate::globals::GameCalendar>().map_or(0, |calendar| calendar.days_elapsed)
 }
 
 pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
@@ -197,7 +182,7 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
 
         // ── calendar ───────────────────────────────────────────────────────────────────────────────
         // GECK / CS *GetDayOfWeek*: 0 Sunday .. 6 Saturday.
-        0x10aa => answer(day_of_week(world, fallout) as f32),
+        0x10aa => answer(crate::globals::day_of_week(world, fallout, elapsed_days(world)) as f32),
 
         // ── actors ─────────────────────────────────────────────────────────────────────────────────
         // `GetOwnerLastTarget`: the last actor the calling actor (the owner of the effect or script)
