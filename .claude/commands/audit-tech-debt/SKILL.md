@@ -78,22 +78,23 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-10-15 at f4ae42a6f (diff direction only, re-run, never quote): markers 24 (15 are `XXXX` false positives, 2 the
-   FO4 `HACK` FourCC — Dim 5), `allow(dead_code)` 41 (44 on 2026-10-12; 12 of them are `cfg(test)` TypeId-only markers in
-   `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 — not debt), `unimplemented!/todo!()` **0** (a
-   fresh hit is notable), `#[ignore]` 322 (299 on 2026-10-12; tools-inclusive — earlier reports scoped to `crates`+`byroredux`
-   read lower),
-   production >2000 LOC: **6** — `crates/scripting/src/fragment/vm.rs` (6213; the M47.2 Papyrus VM, new since 2026-10-12 and
-   a single file), `crates/scripting/src/translate/effects.rs` (5295; it was a ~2000 watch-list row three days ago and the
-   M47.2 native-call arms tripled it), `crates/renderer/src/shader_constants_data.rs` (2900, a data table, Dim 1),
-   `byroredux/src/save_io.rs` (2136), `crates/plugin/src/esm/cell/mod.rs` (2108, crossed from the watch-list) and
-   `crates/scripting/src/condition.rs` (2005, just over). `byroredux/src/components.rs` (#5467, 6ef8976f2 →
-   `components/{render,terrain,environment,indices,input,audio,tuning,ai_anim,navmesh}.rs`) and
-   `crates/scripting/src/fragment/effects.rs` (#5468, adbd468e2 → `effects/{resolve,deferred,inventory,placement,scene,lock,player_control,vehicle_cinematic,ai_combat,quest_scoped,evaluate}.rs`)
-   left the list: each parent survives as a ~1000-LOC (effects) or ~30-LOC (components) hub, none of the new children over
-   1100. Watch-list within 5%: `crates/nif/src/import/types.rs` (1997), `crates/scripting/examples/mq101_conformance.rs` (1974),
-   `crates/audio/src/lib.rs` (1977), `crates/debug-ui/src/panels.rs` (1952), `crates/plugin/src/esm/records/misc/world.rs` (1912),
-   `crates/renderer/src/vulkan/context/init.rs` (1879), `byroredux/src/asset_provider/material/merge.rs` (1860); test-heavy >2000: 84.
+   Measured 2026-10-19 at 12677d718 (diff direction only, re-run, never quote): markers 23 (15 are `XXXX` false positives, 2 the
+   FO4 `HACK` FourCC, 3 quoted upstream FIXMEs, 1 documented `TBD` — Dim 5; two real TODOs in `byroredux/src/loading_screen.rs`),
+   `allow(dead_code)` 41 (12 of them are `cfg(test)` TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 —
+   not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 343 (322 on 2026-10-15; tools-inclusive —
+   earlier reports scoped to `crates`+`byroredux` read lower; none runs on a hosted runner),
+   production >2000 LOC: **4** — `crates/renderer/src/shader_constants_data.rs` (2868, a data table, Dim 1),
+   `crates/scripting/examples/mq101_conformance.rs` (2157), `crates/audio/src/lib.rs` (2034) and
+   `crates/nif/src/import/types.rs` (2001). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
+   `crates/scripting/src/fragment/vm.rs`, `crates/scripting/src/translate/effects.rs`, `crates/scripting/src/condition.rs`,
+   `byroredux/src/save_io.rs` and `crates/plugin/src/esm/cell/mod.rs` are now ~70–140-LOC hubs over `vm/`, `effects/`,
+   `condition/`, `save_io/` and `cell/` directories, the largest child 1538 — as did `byroredux/src/components.rs` (#5467) and
+   `crates/scripting/src/fragment/effects.rs` (#5468) before them. **Split-hub hazard:** a path-scoped `git log` / `grep` on a hub
+   file silently sees only the hub (`git log -- byroredux/src/save_io.rs` returned 0 commits where the directory returned 24);
+   scope Dim 1 deltas to the `<stem>/` directory and measure a split by its children, not by the parent shrinking. Watch-list
+   within 5%: `crates/debug-ui/src/panels.rs` (1921), `crates/renderer/src/vulkan/context/init.rs` (1919),
+   `crates/plugin/src/esm/records/misc/world.rs` (1912); fastest riser `byroredux/src/inventory.rs` (1863, +83 in four days);
+   test-heavy >2000: 86.
    A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
