@@ -815,6 +815,37 @@ impl DefaultLandTexture {
     }
 }
 
+/// Index buffer for one 33×33 LAND tile: 32×32 quads × 2 triangles, each
+/// quad emitted as `(tl, tr, bl), (tr, br, bl)` over the vertex loop's
+/// `row * GRID + col` layout (rows south → north, columns west → east).
+///
+/// #6049 — that order is counter-clockwise seen from above, so every
+/// triangle's face normal points **up** (+Z in Gamebyro space). The
+/// Z-up → Y-up conversion does not change this: `zup_to_yup_pos` is
+/// `(x, y, z) → (x, z, -y)`, a proper rotation (determinant +1), so it
+/// preserves winding and the normal lands on +Y. The upward orientation
+/// is load-bearing for physics: the collider ghost is built from this
+/// same buffer under `TriMeshFlagBits::DEFAULT` (`FIX_INTERNAL_EDGES |
+/// ORIENTED`), which treats the normal side as the outside. Measured with
+/// the order reversed: dynamic bodies dropped on the tile fall straight
+/// through it, while the ground ray and the character controller still
+/// ground. Pinned by `land_tile_indices_face_up` and
+/// `land_tile_collider_grounds_from_above`.
+pub(super) fn land_tile_indices() -> Vec<u32> {
+    const GRID: u32 = LAND_GRID_VERTS as u32;
+    let mut indices = Vec::with_capacity(32 * 32 * 6);
+    for row in 0..GRID - 1 {
+        for col in 0..GRID - 1 {
+            let tl = row * GRID + col;
+            let tr = tl + 1;
+            let bl = (row + 1) * GRID + col;
+            let br = bl + 1;
+            indices.extend_from_slice(&[tl, tr, bl, tr, br, bl]);
+        }
+    }
+    indices
+}
+
 pub(super) fn spawn_terrain_mesh(
     world: &mut World,
     spawn: TerrainSpawnCtx,
@@ -966,24 +997,7 @@ pub(super) fn spawn_terrain_mesh(
         );
     }
 
-    // Indices: 32×32 quads × 2 triangles. The Z-up → Y-up transform
-    // negates Z, flipping winding — emit CW so it becomes CCW (Vulkan
-    // front face) after the coordinate conversion.
-    let mut indices = Vec::with_capacity(32 * 32 * 6);
-    for row in 0..32u32 {
-        for col in 0..32u32 {
-            let tl = row * GRID as u32 + col;
-            let tr = tl + 1;
-            let bl = (row + 1) * GRID as u32 + col;
-            let br = bl + 1;
-            indices.push(tl);
-            indices.push(tr);
-            indices.push(bl);
-            indices.push(tr);
-            indices.push(br);
-            indices.push(bl);
-        }
-    }
+    let indices = land_tile_indices();
 
     if ctx.allocator.is_none() {
         // #1343 — release the splat-layer refcounts before bailing; no
@@ -1908,6 +1922,154 @@ mod tests {
             assert!(
                 component[1] > last_row[2],
                 "row 0 must be the largest Z in the cell; rows advance toward -Z"
+            );
+        }
+    }
+
+    /// A flat LAND tile at `height` (Gamebryo Z) through the production
+    /// vertex layout: `row * GRID + col`, rows south → north, Y-up via the
+    /// shared `zup_to_yup_pos`.
+    fn flat_land_positions(height: f32) -> Vec<[f32; 3]> {
+        let mut positions = Vec::with_capacity(LAND_GRID_VERTS * LAND_GRID_VERTS);
+        for row in 0..LAND_GRID_VERTS {
+            for col in 0..LAND_GRID_VERTS {
+                positions.push(zup_to_yup_pos([
+                    col as f32 * LAND_VERTEX_SPACING,
+                    row as f32 * LAND_VERTEX_SPACING,
+                    height,
+                ]));
+            }
+        }
+        positions
+    }
+
+    /// #6049 — every triangle of the LAND index pattern faces +Y after
+    /// the Z-up → Y-up conversion (a rotation, so the winding is kept).
+    #[test]
+    fn land_tile_indices_face_up() {
+        let positions = flat_land_positions(0.0);
+        let indices = land_tile_indices();
+        assert_eq!(indices.len(), 32 * 32 * 6);
+        for tri in indices.chunks_exact(3) {
+            let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| Vec3::from(positions[i as usize]));
+            let normal = (b - a).cross(c - a);
+            assert!(
+                normal.y > 0.0 && normal.x.abs() < 1e-3 && normal.z.abs() < 1e-3,
+                "triangle {tri:?} faces {normal:?}, not up"
+            );
+        }
+    }
+
+    /// #6049 — the collider built from the LAND index buffer (the same
+    /// `spawn_trimesh_collider_ghost` path `spawn_terrain_mesh` takes, under
+    /// the default `FIX_INTERNAL_EDGES | ORIENTED` flags) holds a dropped
+    /// dynamic body, a ground probe and a walking character on its top
+    /// surface. Only the dynamic body discriminates the winding: with the
+    /// order reversed it falls through the tile, while the ray probe and
+    /// the KCC still ground (measured against parry's oriented trimesh).
+    #[test]
+    fn land_tile_collider_grounds_from_above() {
+        use byroredux_core::ecs::components::{
+            CollisionShape, GlobalTransform, MotionType, RigidBodyData,
+        };
+        use byroredux_physics::{
+            physics_sync_system, set_linear_velocity, CharacterMoveParams, PhysicsWorld,
+            RapierHandles, PHYSICS_DT,
+        };
+
+        const HEIGHT_Y: f32 = 512.0;
+        let positions = flat_land_positions(HEIGHT_Y);
+        let mut world = World::new();
+        world.register::<RapierHandles>();
+        world.insert_resource(PhysicsWorld::new());
+        assert!(crate::cell_loader::spawn::spawn_trimesh_collider_ghost(
+            &mut world,
+            &positions,
+            &land_tile_indices(),
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            None,
+        ));
+        physics_sync_system(&world, 0.0);
+
+        // A dynamic ball dropped onto the tile comes to rest on it.
+        const BALL_RADIUS: f32 = 16.0;
+        let drop = Vec3::new(2048.0, HEIGHT_Y + 60.0, -2048.0);
+        let ball = world.spawn();
+        world.insert(ball, Transform::new(drop, Quat::IDENTITY, 1.0));
+        world.insert(ball, GlobalTransform::new(drop, Quat::IDENTITY, 1.0));
+        world.insert(
+            ball,
+            CollisionShape::Ball {
+                radius: BALL_RADIUS,
+            },
+        );
+        world.insert(
+            ball,
+            RigidBodyData {
+                motion_type: MotionType::Dynamic,
+                // Mass 0 is reclassified static at registration.
+                mass: 10.0,
+                ..Default::default()
+            },
+        );
+        // Dynamic bodies register asleep and the first stepping frame
+        // re-sleeps them (`register_newcomers`' exterior-freeze rule,
+        // #5544); after that a velocity wakes it.
+        physics_sync_system(&world, PHYSICS_DT);
+        assert!(set_linear_velocity(
+            &world,
+            ball,
+            Vec3::new(0.0, -100.0, 0.0)
+        ));
+        for _ in 0..240 {
+            physics_sync_system(&world, PHYSICS_DT);
+        }
+        let ball_y = world
+            .query::<Transform>()
+            .and_then(|q| q.get(ball).map(|t| t.translation.y))
+            .expect("the ball keeps its Transform");
+        // Resting centre = surface + radius, plus the contact skin
+        // (`ContactConfig::default_contact_skin_bu`).
+        assert!(
+            ball_y > HEIGHT_Y + BALL_RADIUS - 1.0 && ball_y < HEIGHT_Y + BALL_RADIUS + 4.0,
+            "the dropped ball must rest on the tile, not fall through (y = {ball_y})"
+        );
+
+        let mut physics = world.resource_mut::<PhysicsWorld>();
+        physics.update_query_pipeline();
+
+        // Centre of the tile: Gamebyro (2048, 2048) → Y-up (2048, _, -2048).
+        let ground = physics
+            .cast_ray_down(Vec3::new(2048.0, HEIGHT_Y + 200.0, -2048.0), 1000.0, None)
+            .expect("the ground probe must hit the tile");
+        assert!((ground - HEIGHT_Y).abs() < 0.5, "probe hit y = {ground}");
+
+        // Production human capsule (half-height 46, radius 18, offset 4):
+        // resting centre = surface + 68. Walk across the tile under gravity.
+        let rest_y = HEIGHT_Y + 46.0 + 18.0 + 4.0;
+        let mut pos = Vec3::new(1024.0, rest_y, -1024.0);
+        for frame in 0..120 {
+            let result = physics.move_character(CharacterMoveParams {
+                capsule_half_height: 46.0,
+                capsule_radius: 18.0,
+                position: pos,
+                desired_translation: Vec3::new(8.0, -4.0, -8.0),
+                dt: PHYSICS_DT,
+                max_slope_climb_deg: 50.0,
+                step_height: 32.0,
+                step_min_width: 8.0,
+                snap_to_ground: 32.0,
+                exclude_collider: None,
+                filter_groups: None,
+                kcc_offset_bu: 4.0,
+            });
+            pos += result.translation;
+            assert!(
+                (pos.y - rest_y).abs() < 2.0,
+                "frame {frame}: capsule left the tile surface (centre y = {})",
+                pos.y
             );
         }
     }
