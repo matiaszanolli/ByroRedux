@@ -750,7 +750,27 @@ fn creation_nam0_shape(size: usize) -> Option<(usize, usize)> {
 /// consume; the first 9 groups align byte-for-byte with the existing
 /// `SKY_UPPER..SKY_HORIZON` constants used by `weather_system` so we
 /// slot them straight into the shared `[10][6]` array.
+///
+/// That is the newest (form version 37+) layout. xEdit appends the trailing
+/// groups by form version — `Cloud LOD Diffuse` / `Cloud LOD Ambient` /
+/// `Fog Far` from 31, `Sky Statics` from 35, `Water Multiplier` / `Sun
+/// Glare` / `Moon Glare` from 37 — so an older record carries a prefix of
+/// the same table: Skyrim.esm ships 11 FX weathers at 14 groups (224 B,
+/// version 35) and `TESTCloudyRain` at 13 (208 B, version 31) (#6038).
 const SKYRIM_NAM0_GROUPS: usize = 17;
+
+/// NAM0 group count for a Skyrim payload size: the four form-version
+/// prefixes of [`SKYRIM_NAM0_GROUPS`] (10 before 31, 13 from 31, 14 from 35,
+/// 17 from 37). Any other size is not a Skyrim layout — a 240-byte FNV-stride
+/// table must not be read as 15 groups.
+fn skyrim_nam0_groups(size: usize) -> Option<usize> {
+    let groups = size / (SKYRIM_NAM0_TOD_SLOTS * 4);
+    match groups {
+        _ if size >= SKYRIM_NAM0_GROUPS * SKYRIM_NAM0_TOD_SLOTS * 4 => Some(SKYRIM_NAM0_GROUPS),
+        10 | 13 | 14 if size % (SKYRIM_NAM0_TOD_SLOTS * 4) == 0 => Some(groups),
+        _ => None,
+    }
+}
 
 /// Number of TOD slots Skyrim ships on disk per NAM0 group — sunrise /
 /// day / sunset / night. The engine's existing TOD model carries 6
@@ -761,6 +781,11 @@ const SKYRIM_NAM0_TOD_SLOTS: usize = 4;
 /// Skyrim WTHR DALC sub-record size (32 bytes). Per UESP: 6 RGB+pad
 /// ambient axes + 1 RGB+pad specular colour + 1 f32 fresnel power.
 const SKYRIM_DALC_SIZE: usize = 32;
+
+/// The 6-axis-only DALC (24 bytes) of pre-version-35 Skyrim weathers:
+/// `TESTCloudyRain` (version 31) ships four of them (#6038). Specular and
+/// fresnel are absent and keep their defaults.
+const SKYRIM_DALC_AXES_SIZE: usize = 24;
 
 /// Skyrim WTHR FNAM sub-record size (32 bytes = 8 × f32). Layout per
 /// UESP / xEdit:
@@ -1001,15 +1026,19 @@ fn parse_wthr_skyrim(
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
 
-            // NAM0 — 17 groups × 4 TOD slots × 4 bytes RGBA = 272 B.
+            // NAM0 — up to 17 groups × 4 TOD slots × 4 bytes RGBA = 272 B.
             // First 9 groups align with the FO3-era constants and slot
             // straight into the shared `[10][6]` array. Group 9 is the
             // Effects Lighting table; groups 10..16 are retained in the
             // Creation-only side table so cloud LOD, fog far, sky statics,
             // water multiplier, sun glare, and moon glare are not lost.
-            b"NAM0" if sub.data.len() >= SKYRIM_NAM0_GROUPS * SKYRIM_NAM0_TOD_SLOTS * 4 => {
+            // Older form versions author a prefix of the table (#6038, see
+            // `SKYRIM_NAM0_GROUPS`); the groups they lack stay default.
+            b"NAM0" if skyrim_nam0_groups(sub.data.len()).is_some() => {
+                let groups =
+                    skyrim_nam0_groups(sub.data.len()).expect("shape checked by match guard");
                 let mut offset = 0;
-                for group in 0..SKYRIM_NAM0_GROUPS {
+                for group in 0..groups {
                     for slot in 0..SKYRIM_NAM0_TOD_SLOTS {
                         // Skyrim ships sunrise / day / sunset / night
                         // in the same TOD-index order as the engine's
@@ -1116,11 +1145,12 @@ fn parse_wthr_skyrim(
                 }
             }
 
-            // DALC — 32 bytes per entry, 4 entries (one per TOD slot).
+            // DALC — 32 bytes per entry (24, axes only, on the version-31
+            // `TESTCloudyRain`, #6038), 4 entries (one per TOD slot).
             // Captured into `skyrim_ambient_cube`. Out-of-order or
             // extra entries clamp at 4 — Bethesda content always ships
             // exactly 4 in sunrise/day/sunset/night order per UESP.
-            b"DALC" if sub.data.len() >= SKYRIM_DALC_SIZE && dalc_idx < dalc_buf.len() => {
+            b"DALC" if sub.data.len() >= SKYRIM_DALC_AXES_SIZE && dalc_idx < dalc_buf.len() => {
                 let cube = parse_skyrim_dalc(&sub.data);
                 dalc_buf[dalc_idx] = Some(cube);
                 dalc_idx += 1;
@@ -1160,7 +1190,8 @@ fn parse_wthr_skyrim(
 /// Parse one 32-byte DALC sub-record body into a [`SkyrimAmbientCube`].
 /// Layout per UESP — 6 RGB+pad axes, 1 RGB+pad specular, 1 f32 fresnel.
 fn parse_skyrim_dalc(data: &[u8]) -> SkyrimAmbientCube {
-    debug_assert!(data.len() >= SKYRIM_DALC_SIZE);
+    debug_assert!(data.len() >= SKYRIM_DALC_AXES_SIZE);
+    let full = data.len() >= SKYRIM_DALC_SIZE;
     let read_color = |off: usize| SkyColor {
         r: data[off],
         g: data[off + 1],
@@ -1174,7 +1205,11 @@ fn parse_skyrim_dalc(data: &[u8]) -> SkyrimAmbientCube {
         neg_y: read_color(12),
         pos_z: read_color(16),
         neg_z: read_color(20),
-        specular: read_color(24),
+        specular: if full {
+            read_color(24)
+        } else {
+            SkyColor::default()
+        },
         fresnel_power: {
             let mut r = SubReader::new(data);
             r.skip_or_eof(28);
@@ -1990,6 +2025,59 @@ mod tests {
         // MIDNIGHT synthesised from NIGHT (slot 3 colour with `g = 4`).
         assert_eq!(w.sky_colors[SKY_UPPER][TOD_MIDNIGHT].r, 1);
         assert_eq!(w.sky_colors[SKY_UPPER][TOD_MIDNIGHT].g, 4);
+    }
+
+    /// #6038 — older Skyrim form versions author a prefix of the NAM0 group
+    /// table: 14 groups (224 B) on Skyrim.esm's 11 version-35 FX weathers,
+    /// 13 (208 B) on the version-31 `TESTCloudyRain`. Requiring the full 272
+    /// bytes decoded all of them to an all-zero sky table.
+    #[test]
+    fn parse_skyrim_older_nam0_decodes_the_authored_groups() {
+        let mut groups: [[[u8; 4]; 4]; SKYRIM_NAM0_GROUPS] = [[[0u8; 4]; 4]; SKYRIM_NAM0_GROUPS];
+        for (g_idx, group) in groups.iter_mut().enumerate() {
+            for (s_idx, slot) in group.iter_mut().enumerate() {
+                *slot = [g_idx as u8 + 1, s_idx as u8 + 1, 0xAA, 0];
+            }
+        }
+        let full = build_skyrim_nam0(&groups);
+        for authored in [14, 13] {
+            let nam0 = full[..authored * SKYRIM_NAM0_TOD_SLOTS * 4].to_vec();
+            let w = parse_wthr(0x5EED, &[sub(b"NAM0", nam0)], GameKind::Skyrim, &None);
+            assert_eq!(w.sky_colors[SKY_UPPER][TOD_DAY].r, 1, "{authored} groups");
+            assert_eq!(w.sky_colors[SKY_SUN][TOD_NIGHT].g, 4, "{authored} groups");
+            assert_eq!(w.sky_colors[9][TOD_SUNRISE].r, 10, "{authored} groups");
+            assert_eq!(w.sky_colors[SKY_UPPER][TOD_HIGH_NOON].g, 2);
+            // Side-table groups 10.. up to the authored count; the rest stay
+            // default rather than reading past the sub-record.
+            for extra in 0..7 {
+                let expected = if 10 + extra < authored {
+                    11 + extra as u8
+                } else {
+                    0
+                };
+                assert_eq!(
+                    w.skyrim_extra_colors[extra][TOD_DAY].r, expected,
+                    "{authored} groups, extra group {extra}"
+                );
+            }
+        }
+    }
+
+    /// #6038 — the version-31 `TESTCloudyRain` authors 24-byte DALCs: the six
+    /// ambient axes with no specular colour or fresnel power.
+    #[test]
+    fn parse_skyrim_24_byte_dalc_keeps_the_six_axes() {
+        let mut dalc = vec![0u8; 24];
+        for axis in 0..6 {
+            dalc[axis * 4] = 0x10 + axis as u8;
+        }
+        let subs: Vec<_> = (0..4).map(|_| sub(b"DALC", dalc.clone())).collect();
+        let w = parse_wthr(0x7E57, &subs, GameKind::Skyrim, &None);
+        let cubes = w.skyrim_ambient_cube.expect("24-byte DALC must decode");
+        assert_eq!(cubes[0].pos_x.r, 0x10);
+        assert_eq!(cubes[3].neg_z.r, 0x15);
+        assert_eq!(cubes[0].specular, SkyColor::default());
+        assert_eq!(cubes[0].fresnel_power, 1.0);
     }
 
     #[test]
