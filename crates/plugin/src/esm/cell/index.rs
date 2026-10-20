@@ -248,78 +248,97 @@ fn merge_navmeshes(
     *over = merged;
 }
 
-/// Apply Bethesda's partial-CELL override contract at the parser boundary.
-/// A child plugin only re-emits fields and child records it changes; absent
-/// payloads inherit from the base instead of erasing terrain, navmeshes,
-/// precombines, lighting, or other canonical cell state.
+/// Merge a path grid list the way [`merge_navmeshes`] does: overlay `over`'s
+/// by record FormID on the base's, appending FormIDs the base didn't have.
+fn merge_pathgrids(
+    base: &[crate::esm::records::PathGridRecord],
+    over: &mut Vec<crate::esm::records::PathGridRecord>,
+) {
+    let mut merged = base.to_vec();
+    let mut by_form: HashMap<u32, usize> = merged
+        .iter()
+        .enumerate()
+        .filter(|(_, grid)| grid.form_id != 0)
+        .map(|(index, grid)| (grid.form_id, index))
+        .collect();
+    for over_grid in over.drain(..) {
+        if over_grid.form_id != 0 {
+            if let Some(&index) = by_form.get(&over_grid.form_id) {
+                merged[index] = over_grid;
+                continue;
+            }
+            by_form.insert(over_grid.form_id, merged.len());
+        }
+        merged.push(over_grid);
+    }
+    *over = merged;
+}
+
+/// Apply Bethesda's CELL override contract at the parser boundary (#6086).
+///
+/// A plugin that overrides a CELL carries the whole CELL *record* — the CK
+/// rewrites it — and the winning override replaces it, so a sub-record the
+/// override omits is omitted on purpose: Update.esm drops `XCWT` from 28
+/// marsh/river cells, a DLC drops `XCRI` to disable a cell's precombine.
+/// Every CELL-record field therefore comes from `over` as parsed.
+///
+/// Only the cell's *child records* are separate records with their own
+/// override chain, so only they inherit from `base` (#1546): the placed
+/// references (with the incoming tombstones applied), the landscape, the
+/// navmeshes and the pathgrids. The one identity-level exception is an EDID
+/// the override doesn't carry (FO4 ships EDID-less interiors, #2911), where
+/// the base's name stays so the cell keeps its alias.
+///
+/// The destructure of `base` has no `..`: a new `CellData` field is a
+/// compile error here, forcing the inherit-or-not decision, as in
+/// [`EsmCellIndex::merge_from`] (#4904).
 pub(super) fn merge_cell_override(base: &CellData, over: &mut CellData) {
-    if is_synthetic_interior_cell_id(over.form_id, &over.editor_id) && !base.editor_id.is_empty() {
-        over.editor_id.clone_from(&base.editor_id);
-    }
-    if over.display_name.is_none() {
-        over.display_name.clone_from(&base.display_name);
-    }
-    if over.show_sky.is_none() {
-        over.show_sky = base.show_sky;
+    let CellData {
+        // Identity — the override is the same CELL by construction.
+        form_id: _,
+        editor_id: base_editor_id,
+        is_interior: _,
+        // CELL-record fields: the winning override's, absent or not.
+        display_name: _,
+        show_sky: _,
+        grid: _,
+        land_flags: _,
+        lighting: _,
+        water_height: _,
+        water_height_is_explicit: _,
+        image_space_form: _,
+        water_type_form: _,
+        acoustic_space_form: _,
+        music_type_form: _,
+        music_type_enum: _,
+        climate_override: _,
+        sky_region: _,
+        location_form: _,
+        encounter_zone_form: _,
+        regions: _,
+        lighting_template_form: _,
+        ownership: _,
+        regional_color_override: _,
+        precombined_mesh_hashes: _,
+        absorbed_ref_bakes: _,
+        // Transient to the one plugin that produced it; consumed by
+        // `merge_placed_references` below.
+        deleted_refs: _,
+        // Child records: separate records with their own override chain.
+        references: _,
+        landscape: base_landscape,
+        navmeshes: base_navmeshes,
+        pathgrids: base_pathgrids,
+    } = base;
+    if is_synthetic_interior_cell_id(over.form_id, &over.editor_id) && !base_editor_id.is_empty() {
+        over.editor_id.clone_from(base_editor_id);
     }
     merge_cell_references(base, over);
-    if over.grid.is_none() {
-        over.grid = base.grid;
-        over.land_flags = base.land_flags;
-    }
-    if over.lighting.is_none() {
-        over.lighting.clone_from(&base.lighting);
-    }
     if over.landscape.is_none() {
-        over.landscape.clone_from(&base.landscape);
+        over.landscape.clone_from(base_landscape);
     }
-    if !over.water_height_is_explicit {
-        over.water_height = base.water_height;
-        over.water_height_is_explicit = base.water_height_is_explicit;
-    }
-    if over.image_space_form.is_none() {
-        over.image_space_form = base.image_space_form;
-    }
-    if over.water_type_form.is_none() {
-        over.water_type_form = base.water_type_form;
-    }
-    if over.acoustic_space_form.is_none() {
-        over.acoustic_space_form = base.acoustic_space_form;
-    }
-    if over.music_type_form.is_none() {
-        over.music_type_form = base.music_type_form;
-    }
-    if over.music_type_enum.is_none() {
-        over.music_type_enum = base.music_type_enum;
-    }
-    if over.climate_override.is_none() {
-        over.climate_override = base.climate_override;
-    }
-    if over.sky_region.is_none() {
-        over.sky_region = base.sky_region;
-    }
-    if over.location_form.is_none() {
-        over.location_form = base.location_form;
-    }
-    if over.regions.is_empty() {
-        over.regions.clone_from(&base.regions);
-    }
-    if over.lighting_template_form.is_none() {
-        over.lighting_template_form = base.lighting_template_form;
-    }
-    if over.ownership.is_none() {
-        over.ownership.clone_from(&base.ownership);
-    }
-    if over.regional_color_override.is_none() {
-        over.regional_color_override = base.regional_color_override;
-    }
-    if over.precombined_mesh_hashes.is_empty() {
-        over.precombined_mesh_hashes
-            .clone_from(&base.precombined_mesh_hashes);
-    }
-    over.absorbed_ref_bakes
-        .extend(base.absorbed_ref_bakes.iter().copied());
-    merge_navmeshes(&base.navmeshes, &mut over.navmeshes);
+    merge_navmeshes(base_navmeshes, &mut over.navmeshes);
+    merge_pathgrids(base_pathgrids, &mut over.pathgrids);
 }
 
 impl EsmCellIndex {
@@ -473,9 +492,11 @@ impl EsmCellIndex {
     /// (`HashMap<String, HashMap<(i32,i32), _>>`) need slightly
     /// different treatment than the flat record maps:
     ///
-    /// * A DLC override cell wins with fields it actually authors; absent
-    ///   CELL payloads inherit from the base. Child collections are merged
-    ///   by their stable identities. In particular, `references` merge per
+    /// * An override cell is the whole CELL record, so every CELL-record
+    ///   field comes from it as authored (a sub-record it drops stays
+    ///   dropped, #6086). The cell's child records — placements, landscape,
+    ///   navmeshes, pathgrids — are separate records and are merged by their
+    ///   stable identities. In particular, `references` merge per
     ///   REFR FormID rather than being whole-value replaced — Dawnguard's
     ///   `kagrenzel01` override carries 0 REFRs over a 1017-REFR base, and
     ///   replacing the vector made the whole cell empty. See
@@ -483,22 +504,15 @@ impl EsmCellIndex {
     /// * Exterior cells merge per-worldspace so a DLC adding a new
     ///   worldspace doesn't stomp the base game's exterior table.
     ///   Within a shared worldspace, per-(x, y) overrides apply through the
-    ///   same partial-CELL merge as interiors.
+    ///   same CELL override merge as interiors.
     ///
-    /// **`worldspaces` is deliberately NOT given the same partial-field
-    /// treatment** (EX-09/17 item 6, #2370): `self.worldspaces.extend(...)`
-    /// below is whole-record last-write-wins, same as `statics` and the
-    /// other flat record maps — an override WRLD entirely replaces the
-    /// base's `WorldspaceRecord`, field-by-field, rather than inheriting
-    /// absent fields the way `merge_cell_override` does for CELL. This
-    /// matches vanilla's typical authoring pattern (a WRLD override
-    /// re-declares the fields it changes AND the ones it doesn't, unlike a
-    /// partial-CELL override), so it's flagged rather than fixed — low risk
-    /// today, but NOT the same partial-inherit guarantee CELL gets. Revisit
-    /// only if a real sparse-WRLD-override mod turns up (one that omits a
-    /// field expecting it to inherit from the base, the way Dawnguard's
-    /// `kagrenzel01` omitted REFRs above); until then a speculative fix has
-    /// no real fixture to validate against.
+    /// **`worldspaces` is whole-record last-write-wins too** (EX-09/17
+    /// item 6, #2370): `self.worldspaces.extend(...)` below is the same as
+    /// `statics` and the other flat record maps — an override WRLD entirely
+    /// replaces the base's `WorldspaceRecord`, as an override CELL replaces
+    /// the base's CELL-record fields. Only child records (the placements
+    /// above) have a separate override chain that inherits; a WRLD has no
+    /// such children here, so nothing is inherited.
     ///
     /// See M46.0 / #561.
     pub fn merge_from(&mut self, other: EsmCellIndex) {

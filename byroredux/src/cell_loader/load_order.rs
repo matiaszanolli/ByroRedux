@@ -1512,8 +1512,8 @@ mod tests {
     }
 
     /// EX-09/17 item 6 (#2370) — pins the documented (not fixed) WRLD
-    /// merge gap as a real load-order fixture: unlike CELL's partial-field
-    /// inherit, an override WRLD wholly replaces the base record. A field
+    /// merge gap as a real load-order fixture: like an override CELL's record
+    /// fields (#6086), an override WRLD wholly replaces the base record. A field
     /// the override omits does NOT fall back to the base's value; it goes
     /// to that field's wire-absent default instead. If this test starts
     /// failing because a future change gives WRLD the same partial-inherit
@@ -1553,8 +1553,8 @@ mod tests {
         fs::write(&base_path, &base_bytes).unwrap();
 
         // DLC override: same WRLD FormID, re-authors EDID but omits DNAM
-        // entirely — a partial-CELL-style override would inherit the
-        // base's water height; today's whole-record WRLD merge does not.
+        // entirely — a field-inheriting override would keep the
+        // base's water height; the whole-record WRLD merge does not.
         let over_wrld = build_wrld_record(0x0000_0100, "TestWorld", None);
         let mut over_bytes = build_tes4_with_masters(0, &["baseworld.esm"]);
         over_bytes.extend_from_slice(&wrap_group(b"WRLD", &over_wrld));

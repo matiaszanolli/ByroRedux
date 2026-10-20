@@ -911,8 +911,8 @@ transitions, saves, and load-order changes.
    see the "no-guessing" posture applied elsewhere in this codebase).
    Recorded in code, not just here: `EsmCellIndex::merge_from`'s own doc
    comment (`crates/plugin/src/esm/cell/mod.rs`) now states explicitly that
-   `self.worldspaces.extend(...)` is whole-record last-write-wins, unlike
-   CELL's `merge_cell_override` partial-field inherit, and names the
+   `self.worldspaces.extend(...)` is whole-record last-write-wins, the same
+   whole-record rule as CELL's record fields in `merge_cell_override` (#6086), and names the
    condition for revisiting it (a real sparse-WRLD-override mod). Pinned by
    a real load-order fixture, `wrld_override_replaces_whole_record_not_partial_fields`
    (item 8) — if a future change gives WRLD partial-inherit, that test is

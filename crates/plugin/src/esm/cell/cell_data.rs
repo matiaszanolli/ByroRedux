@@ -197,13 +197,13 @@ pub struct CellData {
     pub pathgrids: Vec<crate::esm::records::PathGridRecord>,
     /// REFR/ACHR/ACRE FormIDs this specific plugin's own parse marked
     /// Deleted (the tombstone flag, `RECORD_FLAG_DELETED`) within this
-    /// cell (EX-09/17 item 7, #2370). Deliberately transient, unlike
-    /// every other field `merge_cell_override` inherits from `base` when
-    /// `over` leaves it empty: this list only means something for the ONE
+    /// cell (EX-09/17 item 7, #2370). Deliberately transient, unlike the
+    /// child records `merge_cell_override` inherits from `base`: this list
+    /// only means something for the ONE
     /// override round that produced it (a later plugin re-declaring the
     /// same FormID as a live REFR is a legitimate un-delete, not a bug),
-    /// so `merge_cell_override` deliberately does NOT extend it forward
-    /// the way it does `absorbed_ref_bakes`. Consumed by
+    /// so `merge_cell_override` deliberately does NOT extend it forward.
+    /// Consumed by
     /// `merge_placed_references`, which removes any matching FormID from
     /// the base cell's inherited `references` before folding this
     /// plugin's own additions/changes in. Empty for a cell no plugin in

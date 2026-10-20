@@ -30,37 +30,75 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
     }
 }
 
+/// #6086 — the winning CELL override is the whole record: a sub-record it
+/// omits is omitted on purpose (Update.esm drops `XCWT` from 28 marsh/river
+/// cells, a DLC drops `XCRI` to disable a precombine), so no CELL-record
+/// field is filled back in from the base.
 #[test]
-fn show_sky_inherits_only_when_override_omits_cell_data() {
+fn cell_record_fields_come_from_the_winning_override() {
     let mut base = make_interior_cell(0x1234, "OpenRoof");
     base.show_sky = Some(true);
+    base.grid = Some((3, -2));
+    base.land_flags = 0x0C;
+    base.display_name = Some("Base".into());
+    base.water_type_form = Some(0xAA);
+    base.location_form = Some(0xBB);
+    base.encounter_zone_form = Some(0xCC);
+    base.regions = vec![0xDD];
+    base.climate_override = Some(0xEE);
+    base.precombined_mesh_hashes = vec![0xDEAD_BEEF];
+    base.absorbed_ref_bakes.push((0x200, 0xDEAD_BEEF));
 
     let mut omitted = make_interior_cell(0x1234, "OpenRoof");
     merge_cell_override(&base, &mut omitted);
-    assert_eq!(omitted.show_sky, Some(true));
+    assert_eq!(omitted.show_sky, None);
+    assert_eq!((omitted.grid, omitted.land_flags), (None, 0));
+    assert_eq!(omitted.display_name, None);
+    assert_eq!(omitted.water_type_form, None, "XCWT dropped by the patch stays dropped");
+    assert_eq!(omitted.location_form, None);
+    assert_eq!(omitted.encounter_zone_form, None);
+    assert!(omitted.regions.is_empty());
+    assert_eq!(omitted.climate_override, None);
+    assert!(
+        omitted.precombined_mesh_hashes.is_empty() && omitted.absorbed_ref_bakes.is_empty(),
+        "an override that drops XCRI disables the cell's precombine"
+    );
 
     let mut closed = make_interior_cell(0x1234, "OpenRoof");
     closed.show_sky = Some(false);
+    closed.grid = Some((3, -2));
+    closed.water_type_form = Some(0x11);
     merge_cell_override(&base, &mut closed);
     assert_eq!(closed.show_sky, Some(false));
+    assert_eq!(closed.land_flags, 0, "an authored XCLC owns its flags");
+    assert_eq!(closed.water_type_form, Some(0x11));
 }
 
-/// #6043 — the XCLC Land Flags come from the same sub-record as the grid,
-/// so an override without XCLC inherits both, and one with XCLC keeps its own.
+/// The child records are separate records with their own override chain
+/// (#1546): they still inherit from the base, pathgrids included.
 #[test]
-fn land_flags_inherit_with_the_grid() {
-    let mut base = make_interior_cell(0x1234, "HiddenQuads");
-    base.grid = Some((3, -2));
-    base.land_flags = 0x0C;
+fn child_records_still_inherit_from_the_base() {
+    use crate::esm::records::PathGridRecord;
+    let mut base = make_interior_cell(0x1234, "Dungeon");
+    base.pathgrids = vec![PathGridRecord {
+        form_id: 0x300,
+        ..Default::default()
+    }];
 
-    let mut omitted = make_interior_cell(0x1234, "HiddenQuads");
-    merge_cell_override(&base, &mut omitted);
-    assert_eq!((omitted.grid, omitted.land_flags), (Some((3, -2)), 0x0C));
+    let mut over = make_interior_cell(0x1234, "Dungeon");
+    over.pathgrids = vec![PathGridRecord {
+        form_id: 0x301,
+        ..Default::default()
+    }];
+    merge_cell_override(&base, &mut over);
+    assert_eq!(
+        over.pathgrids.iter().map(|g| g.form_id).collect::<Vec<_>>(),
+        vec![0x300, 0x301],
+    );
 
-    let mut cleared = make_interior_cell(0x1234, "HiddenQuads");
-    cleared.grid = Some((3, -2));
-    merge_cell_override(&base, &mut cleared);
-    assert_eq!(cleared.land_flags, 0, "an authored XCLC owns its flags");
+    let mut bare = make_interior_cell(0x1234, "Dungeon");
+    merge_cell_override(&base, &mut bare);
+    assert_eq!(bare.pathgrids.len(), 1, "an override without PGRD keeps the base grid");
 }
 
 /// A `PlacedRef` with a given REFR FormID + base FormID (the base encodes
@@ -561,7 +599,7 @@ fn merge_from_worldspace_persistent_cell_merges_refs_by_form_id() {
 /// produced literal holes in the world. NAVM and FO4 precombine metadata use
 /// the same partial-record contract.
 #[test]
-fn merge_from_partial_exterior_override_preserves_authored_payloads() {
+fn merge_from_partial_exterior_override_preserves_child_records() {
     let mut base = make_interior_cell(0x0001_C000, "Tamriel05");
     base.is_interior = false;
     base.grid = Some((5, 7));
@@ -605,7 +643,10 @@ fn merge_from_partial_exterior_override_preserves_authored_payloads() {
 
     master.merge_from(child);
     let merged = &master.exterior_cells["tamriel"][&(5, 7)];
-    assert_eq!(merged.display_name.as_deref(), Some("Base tile"));
+    assert_eq!(
+        merged.display_name, None,
+        "FULL is a CELL-record field: the override's absence stands (#6086)"
+    );
     assert_eq!(
         merged
             .landscape
@@ -622,11 +663,14 @@ fn merge_from_partial_exterior_override_preserves_authored_payloads() {
             .collect::<Vec<_>>(),
         vec![0x100, 0x101],
     );
-    assert_eq!(merged.precombined_mesh_hashes, vec![0xDEAD_BEEF]);
+    assert!(
+        merged.precombined_mesh_hashes.is_empty(),
+        "an override without XCRI disables the base's precombine (#6086)"
+    );
     assert_eq!(
         merged.absorbed_ref_bakes,
-        vec![(0x201, 0xDEAD_BEEF), (0x200, 0xDEAD_BEEF)],
-        "override's own bakes first, base's inherited after (#5484 shape)"
+        vec![(0x201, 0xDEAD_BEEF)],
+        "only the override's own XCRI bakes apply; the base's refs spawn individually"
     );
 }
 
