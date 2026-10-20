@@ -7,9 +7,9 @@
 // Bezier ribbon — base point, a control point displaced by the bend, a tip —
 // generated here from the 24-bit seed the scatter stored. `gl_VertexIndex`
 // selects the segment and the side; height, width, yaw, twist and colour
-// jitter all derive from the seed. The shipping tier-0 path uses the generated
-// 3-segment constant; the planned tier chain will add the 1-segment and card
-// representations without making this per-frame shape state (§6).
+// jitter all derive from the seed. The segment count comes from the chunk's
+// LOD tier (3/2/1 segments, `groundcover_lod.glsl`, §12.15), a generated
+// constant per tier rather than per-frame shape state.
 //
 // That is where "efficient" actually comes from: no vertex fetch, no per-blade
 // CPU touch, no instance-buffer growth.

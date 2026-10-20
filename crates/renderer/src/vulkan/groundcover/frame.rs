@@ -388,8 +388,9 @@ impl GroundCoverPipeline {
                 ],
                 chunk_count: self.frame_chunk_count,
                 blades_per_chunk: GROUNDCOVER_MAX_BLADES_PER_CHUNK,
-                // The debug view is one point per blade; the blade tier is
-                // `segments * 6`. The scatter writes this into the indirect
+                // The debug view is one point per blade; a blade tier is
+                // `strip_list_verts(segments)` = `3 * (2N - 1)` per blade. The
+                // scatter writes tier 0's figure into the indirect
                 // `vertexCount`, so it has to agree with whatever the vertex
                 // shader will divide `gl_VertexIndex` by.
                 verts_per_blade: if self.frame_debug_points {
@@ -581,10 +582,10 @@ impl GroundCoverPipeline {
                 &[],
             );
             let mut push = self.frame_push;
-            // Stream 0 is the three-segment tier and stream 1 the one-segment
-            // tier. They share every residency slab, while their separate
-            // first-vertex strides prevent an LOD change from re-addressing a
-            // neighbouring chunk's blade records.
+            // Streams 0, 1 and 2 are the three-, two- and one-segment tiers
+            // (`GROUNDCOVER_LOD_TIERS`). They share every residency slab,
+            // while their separate first-vertex strides prevent an LOD change
+            // from re-addressing a neighbouring chunk's blade records.
             let streams = if self.frame_debug_points {
                 1
             } else {

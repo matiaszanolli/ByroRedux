@@ -14,7 +14,9 @@ IMPLEMENTED (2026-09-06, #4058), which answered its own open question about
 which entities feed the field. Phase 3 (#4056) tier 3 and the T0→T1
 projected-pixel ribbon crossover with reduced-density widened Tier 1
 IMPLEMENTED (2026-09-15); Tier 2 palette-atlas clump cards and their area fade
-IMPLEMENTED (2026-09-15). Live visual acceptance evidence remains pending.
+IMPLEMENTED (2026-09-15) and later REMOVED with the rest of that LOD chain by
+af8323881's geomorphing 3/2/1-segment ladder (§12.15 "LOD"). Live visual
+acceptance evidence remains pending.
 Step 7's live `GpuTerrainTile` size claims and blade-geometry literal naming
 were reconciled and test-pinned (2026-09-15). Phase 4 is gated on a
 demonstrated need (§5 Stage 2). Rolls out per §9.
@@ -375,7 +377,7 @@ Four tiers, each blending into the next. The distances are starting points to
 be tuned against real worldspaces, not derived constants:
 
 *(Superseded by af8323881's geomorphing segment ladder — see the "LOD"
-paragraph in §12.14's 2026-10 update below. The table records the design
+paragraph in §12.15's 2026-10 overhaul below. The table records the design
 the chunk rewrite replaced; the tier word's bits still count three
 levels.)*
 
@@ -420,7 +422,7 @@ Tier 3 is not "where grass stops"; it is where grass stops being geometry.
 
 *(Superseded — this subsection describes the pre-af8323881 blue-noise
 cross-fade and clump-card tier. The live design is the geomorphing
-segment ladder documented in §12.14's 2026-10 "LOD" paragraph: no
+segment ladder documented in §12.15's 2026-10 "LOD" paragraph: no
 stochastic handoff, no FSR reactive band, no card tier.)*
 
 The first geometric crossover is now driven by projected blade height rather

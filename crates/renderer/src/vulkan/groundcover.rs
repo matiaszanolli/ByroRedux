@@ -255,8 +255,10 @@ struct BladePush {
     /// xy = unit wind direction, z = speed, w = gust amplitude.
     wind: [f32; 4],
     /// x = gust frequency, y = the preceding wind-clock sample, z = species
-    /// count.  The first two fields form the vertex-motion contract; keeping
-    /// them adjacent makes their std430/push-constant offsets explicit.
+    /// count, w = the segment LOD tier this draw stream renders (0..=2, the
+    /// draw loop adds the stream index per `cmd_draw_indirect`).  The first
+    /// two fields form the vertex-motion contract; keeping them adjacent makes
+    /// their std430/push-constant offsets explicit.
     gust_and_timing: [f32; 4],
 }
 
