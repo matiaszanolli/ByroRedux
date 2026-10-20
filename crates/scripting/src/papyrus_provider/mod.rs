@@ -56,7 +56,7 @@ use byroredux_sdk::{
 };
 
 use crate::events::{
-    ActivateEvent, EquipmentEventBatch, HitEvent, OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent,
+    EquipmentEventBatch, HitEvent, OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent,
 };
 use crate::recurring_update::OnUpdateEvent;
 

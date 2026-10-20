@@ -105,7 +105,6 @@
 //! the existing infrastructure.
 
 use super::PapyrusPlayerEntity;
-use crate::events::ActivateEvent;
 use crate::quest_stages::{QuestFormId, QuestStageState};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
@@ -321,15 +320,10 @@ pub fn mg07_on_activate_system(world: &World) {
     // deadlock risk under the parallel scheduler (invariant #4, #313,
     // #1410). Two-phase collect→apply is already the shape every other
     // system in this module uses.
-    let activations: Vec<(EntityId, EntityId)> = {
-        let Some(events) = world.query::<ActivateEvent>() else {
-            return;
-        };
-        events
-            .iter()
-            .map(|(entity, ev)| (entity, ev.activator))
-            .collect()
-    };
+    // #5994 — `papyrus_activations` leaves out native-only activations
+    // (`Activate(ref, true)`: no OnActivate is sent) and returns with its
+    // marker guards already released.
+    let activations: Vec<(EntityId, EntityId)> = crate::papyrus_activations(world);
     {
         let Some(doors) = world.query::<MG07LabyrinthianDoor>() else {
             return;

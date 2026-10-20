@@ -11,6 +11,7 @@
 
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
+use byroredux_core::ecs::world::World;
 use byroredux_core::string::FixedString;
 
 /// Fired when an entity is activated by another entity (e.g., player uses a door).
@@ -28,13 +29,32 @@ impl Component for ActivateEvent {
 /// *Activate - ObjectReference*, `abDefaultProcessingOnly`): "no OnActivate event will
 /// be sent to any scripts and the object will ignore the blocked flag". The engine's
 /// own activation consumers (door, pickup, container) run as usual; the Papyrus
-/// `OnActivate` delivery and the `BlockActivation` gate stand aside. One-frame marker,
+/// `OnActivate` delivery and the `BlockActivation` gate stand aside. Every
+/// OnActivate-modelling consumer reads [`papyrus_activations`], which applies the rule. One-frame marker,
 /// drained with the event.
 #[derive(Debug, Clone, Copy)]
 pub struct NativeActivation;
 
 impl Component for NativeActivation {
     type Storage = SparseSetStorage<Self>;
+}
+
+/// The activations a Papyrus `OnActivate` handler (or anything modelling one)
+/// receives this frame, as `(activated entity, activator)`: every
+/// [`ActivateEvent`] except the native-only ones ([`NativeActivation`]), for which
+/// the CK says no `OnActivate` event is sent to any script (#5994). Every
+/// OnActivate-modelling consumer reads through this one accessor, so the rule
+/// lives in one place. Both marker guards are released before it returns.
+pub fn papyrus_activations(world: &World) -> Vec<(EntityId, EntityId)> {
+    let Some(events) = world.query::<ActivateEvent>() else {
+        return Vec::new();
+    };
+    let native = world.query::<NativeActivation>();
+    events
+        .iter()
+        .filter(|(entity, _)| native.as_ref().is_none_or(|marks| marks.get(*entity).is_none()))
+        .map(|(entity, event)| (entity, event.activator))
+        .collect()
 }
 
 /// Fired when an entity is hit in combat.

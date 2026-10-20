@@ -566,20 +566,12 @@ pub(super) fn register_extension_setting(
 /// marker.
 pub(crate) fn extension_activation_dispatch_system(world: &World, _dt: f32) {
     let missing_player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world).is_none();
-    let raw_activations: Vec<(EntityId, Option<EntityId>)> = {
-        let Some(events) = world.query::<byroredux_scripting::ActivateEvent>() else {
-            return;
-        };
-        events
-            .iter()
-            .map(|(subject, event)| {
-                (
-                    subject,
-                    (!(missing_player && event.activator == 0)).then_some(event.activator),
-                )
-            })
-            .collect()
-    };
+    // #5994 — a native-only activation (`Activate(ref, true)`) sends no
+    // OnActivate to any script, extension handlers included.
+    let raw_activations: Vec<(EntityId, Option<EntityId>)> = byroredux_scripting::papyrus_activations(world)
+        .into_iter()
+        .map(|(subject, activator)| (subject, (!(missing_player && activator == 0)).then_some(activator)))
+        .collect();
     if raw_activations.is_empty() {
         return;
     }

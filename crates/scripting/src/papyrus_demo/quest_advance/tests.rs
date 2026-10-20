@@ -72,6 +72,30 @@ fn two_triggerers_on_one_volume_in_a_frame_advance_the_stage_once() {
     assert_eq!(batch.0.len(), 1, "one advance for the volume, not one per triggerer");
 }
 
+/// #5994 — `Activate(ref, true)` sends no OnActivate to any script: a native-only
+/// activation of the quest-advance door advances nothing, a plain one does.
+#[test]
+fn a_native_only_activation_does_not_reach_the_quest_advance_handler() {
+    use crate::events::NativeActivation;
+    let (mut world, player, door) = setup_da10_world();
+    world.resource_mut::<QuestStageState>().set_stage(DA10_QUEST_FORM_ID, 37);
+
+    fire_activate(&world, door, player);
+    world.insert(door, NativeActivation);
+    quest_advance_system(&world);
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(DA10_QUEST_FORM_ID),
+        37,
+        "a native-only activation is not an OnActivate"
+    );
+    assert_eq!(crate::papyrus_activations(&world), vec![]);
+
+    world.remove::<NativeActivation>(door);
+    assert_eq!(crate::papyrus_activations(&world), vec![(door, player)]);
+    quest_advance_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(DA10_QUEST_FORM_ID), 40);
+}
+
 // ── Stage-predicate gating ────────────────────────────────────
 
 /// Both pre-conditions wrong — `GetStageDone(37) == 0`, so the

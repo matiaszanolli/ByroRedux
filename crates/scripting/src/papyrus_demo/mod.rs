@@ -53,7 +53,6 @@
 //!       `MG07LabyrinthianDoorScript.psc` (also at
 //!       `docs/r5/source/`) which is left untranslated as future work.
 
-use crate::events::ActivateEvent;
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
@@ -295,9 +294,9 @@ pub fn register(world: &mut World) {
 /// into one immediate system + one tick system because ECS
 /// doesn't suspend.
 pub fn rumble_on_activate_system(world: &World) {
-    let Some(events) = world.query::<ActivateEvent>() else {
-        return;
-    };
+    // #5994 — native-only activations send no OnActivate; the activation list is
+    // collected (and its marker guards released) before the rumble write guard.
+    let activations = crate::papyrus_activations(world);
     let Some(mut rumbles) = world.query_mut::<RumbleOnActivate>() else {
         return;
     };
@@ -310,7 +309,7 @@ pub fn rumble_on_activate_system(world: &World) {
 
     let mut to_shake: Vec<(EntityId, RumbleOnActivate)> = Vec::new();
 
-    for (entity, _ev) in events.iter() {
+    for (entity, _activator) in activations {
         let Some(rumble) = rumbles.get_mut(entity) else {
             continue;
         };
@@ -338,7 +337,6 @@ pub fn rumble_on_activate_system(world: &World) {
     }
 
     drop(rumbles);
-    drop(events);
 
     if to_shake.is_empty() {
         return;

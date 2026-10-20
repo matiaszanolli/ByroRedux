@@ -78,7 +78,7 @@
 
 use super::PapyrusPlayerEntity;
 use crate::condition::{evaluate as evaluate_condition_list, ConditionContext};
-use crate::events::{ActivateEvent, OnTriggerEnterEvent};
+use crate::events::OnTriggerEnterEvent;
 use crate::quest_stages::{
     QuestFormId, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
 };
@@ -360,11 +360,10 @@ pub fn quest_advance_system(world: &World) {
     // precedence.
     let mut triggered: Vec<(EntityId, EntityId)> = Vec::new();
     let mut signalled: HashSet<EntityId> = HashSet::new();
-    if let Some(events) = world.query::<ActivateEvent>() {
-        for (entity, ev) in events.iter() {
-            if signalled.insert(entity) {
-                triggered.push((entity, ev.activator));
-            }
+    // #5994 — a native-only activation (`Activate(ref, true)`) sends no OnActivate.
+    for (entity, activator) in crate::papyrus_activations(world) {
+        if signalled.insert(entity) {
+            triggered.push((entity, activator));
         }
     }
     if let Some(events) = world.query::<OnTriggerEnterEvent>() {

@@ -183,15 +183,9 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
-    let activated = world
-        .query::<ActivateEvent>()
-        .map(|events| {
-            events
-                .iter()
-                .map(|(entity, event)| (entity, event.activator))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
+    // #5994 — a native-only activation sends no OnActivate to any script.
+    let activated: BTreeMap<EntityId, EntityId> =
+        crate::papyrus_activations(world).into_iter().collect();
     let hits = world
         .query::<HitEvent>()
         .map(|events| {

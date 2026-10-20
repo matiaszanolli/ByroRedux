@@ -1,6 +1,7 @@
 //! Execution tests — these drive a live `World`.
 
 use super::*;
+use crate::ActivateEvent;
 
 #[test]
 fn self_receiver_dispatch_resolves_the_current_owner_handle() {
