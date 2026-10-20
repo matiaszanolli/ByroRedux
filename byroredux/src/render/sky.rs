@@ -134,6 +134,23 @@ pub(crate) fn build_sky_params(world: &World) -> SkyParams {
     outdoor_sky_params(world, &sky_res, cell_directional)
 }
 
+/// SKYAL — an authored WTHR sky-dome colour (zenith, horizon, lower) → the
+/// radiance the dome paints.
+///
+/// The legacy sky was a dome mesh whose vertex colours were these values,
+/// written straight to a framebuffer with no sRGB encode, so an authored 0.5
+/// reached the screen as ~128/255. Here the dome's output is linear HDR that
+/// the presentation pass sRGB-encodes, so the raw value displayed as ~188/255
+/// even before exposure: FO4's Commonwealth noon horizon (0.51, 0.57, 0.64)
+/// went near-white once auto-exposure lifted the scene. Decoding once, here,
+/// lands the dome back on its authored display value. Same reasoning, and the
+/// same decode, as fog (`fog::fog_colour_radiance`): the dome paints a
+/// display-space colour, with no texture carrying the transfer function. The
+/// sun and cloud tints are left raw — they multiply, they do not paint.
+fn dome_colour_radiance(authored: [f32; 3]) -> [f32; 3] {
+    crate::fog::fog_colour_radiance(authored)
+}
+
 /// `cell_directional` is the active cell's `(is_interior, directional colour,
 /// directional fade)`. `Some` lights the clouds with the sun the cell's
 /// surfaces receive; `None` (the interior portal palette, where the cell's
@@ -177,17 +194,18 @@ fn outdoor_sky_params(
             .try_resource::<WeatherSurfaceState>()
             .map_or(0.0, |surface| surface.snow),
     };
+    let zenith_color = dome_colour_radiance(sky_res.zenith_color);
     SkyParams {
-        zenith_color: sky_res.zenith_color,
+        zenith_color,
         // On an exterior the two are the same sky by definition; the lane
         // only diverges on interiors (#3323).
-        exterior_zenith_color: sky_res.zenith_color,
+        exterior_zenith_color: zenith_color,
         portal_outdoor_sky: None,
         portal_sun_radiance: [0.0; 3],
         portal_sun_direction: [0.0, -1.0, 0.0],
         interior_show_sky: false,
-        horizon_color: sky_res.horizon_color,
-        lower_color: sky_res.lower_color,
+        horizon_color: dome_colour_radiance(sky_res.horizon_color),
+        lower_color: dome_colour_radiance(sky_res.lower_color),
         sun_direction: sky_res.sun_direction,
         sun_color: sky_res.sun_color,
         sun_size: sky_res.sun_size,
@@ -403,7 +421,7 @@ mod tests {
         // live sky while every field asserted above stays defaulted.
         assert_eq!(
             params.exterior_zenith_color,
-            [0.3, 0.5, 0.9],
+            dome_colour_radiance([0.3, 0.5, 0.9]),
             "the exterior sky lane must survive into an interior — that is \
              the whole point of #3323"
         );
@@ -415,7 +433,7 @@ mod tests {
         );
         let outside = params.portal_outdoor_sky.as_ref().unwrap();
         assert!(outside.is_exterior);
-        assert_eq!(outside.zenith_color, [0.3, 0.5, 0.9]);
+        assert_eq!(outside.zenith_color, dome_colour_radiance([0.3, 0.5, 0.9]));
         assert_eq!(outside.sun_direction, [0.5, 0.8, 0.3]);
     }
 
@@ -462,7 +480,9 @@ mod tests {
         let params = build_sky_params(&world);
         assert_eq!(
             params.exterior_zenith_color,
-            crate::env_translate::procedural_fallback_sky([0.0, 1.0, 0.0]).zenith_color,
+            dome_colour_radiance(
+                crate::env_translate::procedural_fallback_sky([0.0, 1.0, 0.0]).zenith_color
+            ),
             "direct interior boot should use the procedural exterior palette"
         );
         assert!(params.portal_outdoor_sky.unwrap().is_exterior);
@@ -569,7 +589,12 @@ mod tests {
         assert!(params.is_exterior);
         assert_eq!(params.exterior_zenith_color, params.zenith_color);
         assert_eq!(params.portal_sun_radiance, [0.0; 3]);
-        assert_eq!(params.exterior_zenith_color, [0.3, 0.5, 0.9]);
+        assert_eq!(params.exterior_zenith_color, dome_colour_radiance([0.3, 0.5, 0.9]));
+        // SKYAL — the dome paints its authored display value: every dome
+        // colour is decoded once, here, and comes back out on encode.
+        assert_eq!(params.horizon_color, dome_colour_radiance([0.8, 0.8, 0.9]));
+        assert_eq!(params.lower_color, dome_colour_radiance([0.4, 0.4, 0.45]));
+        assert!(params.zenith_color[2] < 0.9 && params.zenith_color[2] > 0.75);
         assert_eq!(params.weather.surface_wetness, 0.8);
         assert_eq!(params.weather.surface_snow, 0.6);
     }
