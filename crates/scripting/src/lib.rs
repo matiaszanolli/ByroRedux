@@ -161,6 +161,7 @@ pub use fragment::{
     QuestScriptInstances,
     ReferenceLockState, ReferenceScriptState, SceneFragments,
     attach_reference_script, check_reference_script, reference_script_event_system,
+    reference_script_hit_system,
     PapyrusReferenceScripts, ReferenceScript, ReferenceScriptIndex, VmFrameBudget, VmFrameUse, DELIVERED_EVENTS,
     script_update_system, ScriptUpdates, UpdateClock, UpdateRegistration, UpdateRequest,
     EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS, distance_event_system, DistanceRequest, DistanceTarget, DistanceWatch, DistanceWatches,

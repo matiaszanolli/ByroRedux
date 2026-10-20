@@ -126,6 +126,8 @@ mod fragment_activation_order_tests {
         for consumer in [
             "crate::combat::combat_damage_system,",
             "byroredux_scripting::hit_event_system)",
+            // #5991 — a consumer of the marker too: its OnHit delivery
+            "byroredux_scripting::reference_script_hit_system)",
         ] {
             for producer in [
                 // the VM effect flush (`ProcessTrapHit`) queues inside the script systems,

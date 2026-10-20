@@ -600,6 +600,10 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // dialogue one, whose same-frame `HitEvent` would be drained unread) land as `HitEvent`s
     // here: after the script systems and projectile flight, before every consumer.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::pending_trap_hit_flush_system);
+    // #5991 — the reference / alias scripts' `OnHit` (and its remote relays) read the same
+    // markers, so they are delivered here, after the projectile and trap hits have landed;
+    // `reference_script_event_system` above delivers every other marker.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::reference_script_hit_system);
     // M47.2 — the hits scripts registered for (Fallout 4 / Starfield
     // `RegisterForHitEvent`), delivered once each while the `HitEvent` markers
     // stand.

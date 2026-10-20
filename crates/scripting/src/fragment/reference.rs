@@ -215,15 +215,41 @@ struct Delivery {
     init_gated: bool,
 }
 
-/// Deliver this frame's events to the reference scripts the VM runs.
+/// Which markers a delivery pass reads (#5991). `HitEvent` is produced late in
+/// the frame — projectile flight and the `ProcessTrapHit` flush land after the
+/// script systems — so its `OnHit` deliveries are a pass of their own,
+/// [`reference_script_hit_system`], scheduled after every producer; everything
+/// else is delivered by [`reference_script_event_system`] where the other
+/// markers' producers have run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Markers {
+    Frame,
+    Hits,
+}
+
+/// Deliver this frame's events to the reference scripts the VM runs — every
+/// marker but `HitEvent` (see [`reference_script_hit_system`]).
 pub fn reference_script_event_system(world: &World, _dt: f32) {
     super::events::prune_stopped_quests(world);
-    relay_engine_events(world);
+    relay_engine_events(world, Markers::Frame);
     let mut deliveries = world
         .try_resource_mut::<PendingUnloadDeliveries>()
         .map(|mut pending| std::mem::take(&mut pending.0))
         .unwrap_or_default();
-    deliveries.extend(collect_deliveries(world));
+    deliveries.extend(collect_deliveries(world, Markers::Frame));
+    run_deliveries(world, deliveries);
+}
+
+/// Deliver this frame's `HitEvent`s as `OnHit` to the reference and alias
+/// scripts (and to remote registrants), after every producer of the marker
+/// (#5991). The melee / NPC strikes are produced before
+/// [`reference_script_event_system`] runs, but the `Weapon.Fire` projectiles and the
+/// `ProcessTrapHit` flush land after it, and `event_cleanup_system` drains the
+/// marker at frame end — a delivery pass ahead of those producers never saw
+/// their hits, so a script reacting to a dart trap's damage never ran.
+pub fn reference_script_hit_system(world: &World, _dt: f32) {
+    relay_engine_events(world, Markers::Hits);
+    let deliveries = collect_deliveries(world, Markers::Hits);
     run_deliveries(world, deliveries);
 }
 
@@ -578,26 +604,32 @@ fn alias_script_targets(world: &World) -> HashMap<EntityId, Vec<(u32, AliasScrip
 /// a run takes the quest guards and may write the marker storages. A marker
 /// on a reference reaches the scripts attached to it and the alias scripts of
 /// the aliases it fills.
-fn collect_deliveries(world: &World) -> Vec<Delivery> {
-    // Pattern B: this system owns `OnDeathEvent`; drain it first, whatever
+fn collect_deliveries(world: &World, markers: Markers) -> Vec<Delivery> {
+    let frame = markers == Markers::Frame;
+    // Pattern B: the frame pass owns `OnDeathEvent`; drain it first, whatever
     // follows.
-    let deaths: HashMap<EntityId, Option<EntityId>> = world
-        .query::<crate::OnDeathEvent>()
-        .map(|q| q.iter().map(|(entity, event)| (entity, event.killer)).collect())
-        .unwrap_or_default();
-    crate::scene::playback::drain::<crate::OnDeathEvent>(world);
+    let deaths: HashMap<EntityId, Option<EntityId>> = if frame {
+        let deaths = world
+            .query::<crate::OnDeathEvent>()
+            .map(|q| q.iter().map(|(entity, event)| (entity, event.killer)).collect())
+            .unwrap_or_default();
+        crate::scene::playback::drain::<crate::OnDeathEvent>(world);
+        deaths
+    } else {
+        HashMap::new()
+    };
     // Before `attached` is held: the quest standing read takes the quest-state
     // guard, which a VM run holds when it reaches for a reference's scripts.
     let aliases = alias_script_targets(world);
-    let changes = actor_changes(world);
+    let changes = if frame { actor_changes(world) } else { Default::default() };
     let attached = world.query::<PapyrusReferenceScripts>();
     let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     let form_of = |entity: EntityId| crate::condition::entity_global_form_id(world, entity);
-    let cell_loads = world.query::<crate::OnCellLoadEvent>();
-    let activations = world.query::<crate::ActivateEvent>();
-    let native = world.query::<crate::NativeActivation>();
-    let triggers = world.query::<crate::OnTriggerEnterEvent>();
-    let hits = world.query::<crate::HitEvent>();
+    let cell_loads = frame.then(|| world.query::<crate::OnCellLoadEvent>()).flatten();
+    let activations = frame.then(|| world.query::<crate::ActivateEvent>()).flatten();
+    let native = frame.then(|| world.query::<crate::NativeActivation>()).flatten();
+    let triggers = frame.then(|| world.query::<crate::OnTriggerEnterEvent>()).flatten();
+    let hits = (!frame).then(|| world.query::<crate::HitEvent>()).flatten();
     let weapons = world.query::<byroredux_core::ecs::components::EquippedWeapon>();
     // Every entity a script is attached to or an alias script follows.
     let mut entities: Vec<EntityId> = attached
@@ -806,7 +838,8 @@ pub fn alias_script_event_system(world: &World, _dt: f32) {
 /// by the registrant with the sender first and the event's own arguments after.
 /// Read without draining: the consumers below and end-of-frame cleanup own the
 /// markers.
-fn relay_engine_events(world: &World) {
+fn relay_engine_events(world: &World, markers: Markers) {
+    let frame = markers == Markers::Frame;
     let any = world
         .try_resource::<super::EventRegistrations>()
         .is_some_and(|registrations| registrations.entries().iter().any(|e| e.remote));
@@ -816,7 +849,7 @@ fn relay_engine_events(world: &World) {
     let form_of = |entity: EntityId| crate::condition::entity_global_form_id(world, entity);
     let reference = |entity: EntityId| VmStored::Form(form_of(entity).unwrap_or(0));
     let mut relays: Vec<(u32, &'static str, Vec<VmStored>)> = Vec::new();
-    if let Some(events) = world.query::<crate::ActivateEvent>() {
+    if let Some(events) = world.query::<crate::ActivateEvent>().filter(|_| frame) {
         // (Acquired after `ActivateEvent`, the order of the delivery pass above.)
         let native = world.query::<crate::NativeActivation>();
         for (entity, event) in events.iter() {
@@ -828,7 +861,7 @@ fn relay_engine_events(world: &World) {
             }
         }
     }
-    if let Some(events) = world.query::<crate::OnTriggerEnterEvent>() {
+    if let Some(events) = world.query::<crate::OnTriggerEnterEvent>().filter(|_| frame) {
         for (entity, event) in events.iter() {
             if let Some(form) = form_of(entity) {
                 for &triggerer in &event.triggerers {
@@ -837,14 +870,14 @@ fn relay_engine_events(world: &World) {
             }
         }
     }
-    if let Some(events) = world.query::<crate::OnDeathEvent>() {
+    if let Some(events) = world.query::<crate::OnDeathEvent>().filter(|_| frame) {
         for (entity, event) in events.iter() {
             if let Some(form) = form_of(entity) {
                 relays.push((form, "OnDeath", vec![event.killer.map_or(VmStored::None, reference)]));
             }
         }
     }
-    if let Some(events) = world.query::<crate::HitEvent>() {
+    if let Some(events) = world.query::<crate::HitEvent>().filter(|_| !frame) {
         for (entity, hit) in events.iter() {
             if let Some(form) = form_of(entity) {
                 relays.push((

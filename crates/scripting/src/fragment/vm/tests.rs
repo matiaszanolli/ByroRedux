@@ -925,6 +925,7 @@ fn hit_events_are_registered_single_shot_and_filtered() {
         );
         // The automatic delivery leaves it alone, the registration takes it.
         crate::reference_script_event_system(world, 0.0);
+        crate::reference_script_hit_system(world, 0.0);
         crate::hit_event_system(world, 0.0);
         world.remove::<crate::HitEvent>(filled);
     };
@@ -2192,7 +2193,11 @@ fn on_hit_receives_the_aggressor_weapon_and_flags() {
             blocked: false,
         },
     );
+    // #5991 — `OnHit` is delivered by the hit pass (scheduled after every
+    // producer of the marker), not by the frame pass.
     crate::reference_script_event_system(&world, 0.0);
+    assert!(crate::fragment::reference_enabled(&world, REF), "the frame pass leaves hits to the hit pass");
+    crate::reference_script_hit_system(&world, 0.0);
     assert!(!crate::fragment::reference_enabled(&world, REF));
 }
 
