@@ -1123,3 +1123,35 @@ fn oblivion_children_inherit_their_parents_land() {
         "the parent itself is untouched"
     );
 }
+
+/// #6047 — an EDID-less WRLD used to leave the previous worldspace's name
+/// current, so its type-1 children group merged into that worldspace's
+/// cell map. Its children must be skipped instead.
+#[test]
+fn edid_less_wrld_children_are_not_filed_under_the_previous_worldspace() {
+    fn exterior_children(wrld_fid: u32, cell_fid: u32, edid: &[u8], grid: (i32, i32)) -> Vec<u8> {
+        let mut xclc = Vec::new();
+        xclc.extend_from_slice(&grid.0.to_le_bytes());
+        xclc.extend_from_slice(&grid.1.to_le_bytes());
+        let cell = build_cell_record(cell_fid, &[(b"EDID", edid.to_vec()), (b"XCLC", xclc)]);
+        let block = build_cell_children_group(0, 4, &build_cell_children_group(0, 5, &cell));
+        build_world_children_group(wrld_fid, &block)
+    }
+
+    let buf = build_wrld_group(&[
+        build_wrld_record(0x0000_3000, &[(b"EDID", b"WorldA\0".to_vec())]),
+        exterior_children(0x0000_3000, 0x0000_3001, b"ACell\0", (1, 1)),
+        build_wrld_record(0x0000_4000, &[(b"FULL", b"Nameless\0".to_vec())]),
+        exterior_children(0x0000_4000, 0x0000_4001, b"Stray\0", (2, 2)),
+    ]);
+    let (worldspaces, _climates, exterior, _persistent) = parse_synthetic_wrld(&buf);
+
+    assert_eq!(worldspaces.len(), 1, "only WorldA is indexable");
+    let world_a = exterior.get("worlda").expect("WorldA's cells");
+    assert!(world_a.contains_key(&(1, 1)));
+    assert!(
+        !world_a.contains_key(&(2, 2)),
+        "the EDID-less WRLD's cell must not merge into WorldA"
+    );
+    assert_eq!(exterior.len(), 1);
+}

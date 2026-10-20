@@ -260,6 +260,16 @@ pub(crate) fn parse_wrld_group(
                     }
                     current_wrld_name = Some(record.editor_id.clone());
                     worldspaces.insert(key, record);
+                } else {
+                    // #6047 — an EDID-less WRLD is unindexable, and its
+                    // type-1 children group must not be filed under the
+                    // PREVIOUS worldspace's name: clear the binding so the
+                    // children arm seeks past them.
+                    log::warn!(
+                        "Skipping WRLD {:08X} without EDID and its world children",
+                        header.form_id,
+                    );
+                    current_wrld_name = None;
                 }
             } else {
                 reader.skip_record(&header);
