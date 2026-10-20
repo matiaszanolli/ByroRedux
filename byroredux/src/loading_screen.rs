@@ -7,7 +7,7 @@
 //! (`first_backend_load_screen`: only well-formed, unconditional records
 //! whose art this engine can resolve). Full legacy XML/NIF menu animation,
 //! TRNS "Around Origin" semantics, ONAM/ZNAM interactive zoom bounds and
-//! the MOD2 camera-path NIFs remain TODO.
+//! the MOD2 camera-path NIFs remain TODO (#6194).
 
 use crate::cell_loader::{LoadedCellIndex, PendingCellTransition};
 use byroredux_core::ecs::storage::EntityId;
@@ -43,7 +43,7 @@ pub(crate) const STAGE_EXPOSURE_LINEAR: f32 = 1.5;
 /// Elevation of the stage camera above the model's bounds centre, as an
 /// angle from the horizontal. A shallow down-tilt — the classic Bethesda
 /// load-screen look — without claiming any per-game authored value (the
-/// authored camera path NIFs, MOD2, are a separate TODO).
+/// authored camera path NIFs, MOD2, are a separate TODO, #6194).
 const STAGE_CAMERA_ELEVATION_RAD: f32 = 0.3;
 
 /// Margin between the posed model's bounding sphere and the frame edge
