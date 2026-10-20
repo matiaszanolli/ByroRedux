@@ -15,16 +15,17 @@ pub(super) struct RuntimeNpcState {
     /// (#2567). A field rather than a `humanoid_skeleton_path(game)` call in
     /// the Skeleton phase precisely so the two can differ.
     pub(super) skeleton_path: String,
-    /// Actor-specific idle clip, when the actor doesn't animate off the
-    /// shared per-cell humanoid idle pool. `Some` for creatures — a rat's
-    /// skeleton shares no bone names with the humanoid rig, so the pooled
-    /// clip drives nothing (#2567).
-    pub(super) idle_kf_path: Option<String>,
-    /// M42.10 — the creature's own walk-forward clip, beside its skeleton
-    /// (same per-directory convention as `idle_kf_path`). `None` for
-    /// humanoids, which resolve the shared per-cell clip by path at
+    /// Actor-specific idle clip candidates, first that loads wins, when the
+    /// actor doesn't animate off the shared per-cell humanoid idle pool.
+    /// Non-empty for creatures — a rat's skeleton shares no bone names with
+    /// the humanoid rig, so the pooled clip drives nothing (#2567). Several
+    /// because the file name varies per game and per directory (#6078).
+    pub(super) idle_kf_paths: Vec<String>,
+    /// M42.10 — the creature's own walk-forward clip candidates, beside its
+    /// skeleton (same per-directory convention as `idle_kf_paths`). Empty
+    /// for humanoids, which resolve the shared per-cell clip by path at
     /// finalize.
-    pub(super) walk_kf_path: Option<String>,
+    pub(super) walk_kf_paths: Vec<String>,
     /// M42.11 — body class for the gendered humanoid walk-clip lookup at
     /// finalize (`humanoid_walk_kf_path`). Creatures carry their resolved
     /// ACBS gender (unused by the per-directory creature path).
@@ -370,8 +371,8 @@ pub(super) fn prepare_runtime_state(
         gender,
         is_child,
         skeleton_path: humanoid_skeleton_path(game).unwrap_or_default().to_owned(),
-        idle_kf_path: None,
-        walk_kf_path: None,
+        idle_kf_paths: Vec::new(),
+        walk_kf_paths: Vec::new(),
         body_paths,
         body_textures,
         head_path,
@@ -469,8 +470,11 @@ pub(super) fn prepare_creature_state(
             skeleton_path,
         );
     }
-    let idle_kf_path = (!dir.is_empty()).then(|| creature_idle_kf_path(&dir));
-    let walk_kf_path = (!dir.is_empty()).then(|| creature_walk_kf_path(&dir));
+    let (idle_kf_paths, walk_kf_paths) = if dir.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        (creature_idle_kf_paths(game, &dir), creature_walk_kf_paths(game, &dir))
+    };
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
     // #4092 (D5-01) — the "Use Traits" terminal off the spawn boundary's
@@ -487,8 +491,8 @@ pub(super) fn prepare_creature_state(
         skel_root: None,
         skel_map: HashMap::new(),
         skeleton_path,
-        idle_kf_path,
-        walk_kf_path,
+        idle_kf_paths,
+        walk_kf_paths,
         gender,
         // Creatures have no child race split (the FO3/FNV RACE flag gate is
         // humanoid-only; `is_child` is computed against the resolved race).
@@ -889,14 +893,17 @@ pub(super) fn advance_runtime_unit(
                     // resolves the idle itself (and first-person keeps the
                     // body's meshes hidden either way).
                     None
-                } else if let Some(path) = state.idle_kf_path.as_deref() {
-                    let handle = load_kf_clip_by_path(world, tex_provider, path);
+                } else if !state.idle_kf_paths.is_empty() {
+                    let handle = state
+                        .idle_kf_paths
+                        .iter()
+                        .find_map(|path| load_kf_clip_by_path(world, tex_provider, path));
                     if handle.is_none() {
                         log::debug!(
-                            "Creature {:08X} ({}): no idle clip at '{}' — spawning unanimated",
+                            "Creature {:08X} ({}): no idle clip at {:?} — spawning unanimated",
                             npc.form_id,
                             npc.editor_id,
-                            path,
+                            state.idle_kf_paths,
                         );
                     }
                     handle
@@ -933,8 +940,11 @@ pub(super) fn advance_runtime_unit(
                 // not this body root. `player_body::` attaches both beside
                 // the assembled root after the job completes.
                 None
-            } else if let Some(path) = state.walk_kf_path.as_deref() {
-                load_kf_clip_by_path(world, tex_provider, path)
+            } else if !state.walk_kf_paths.is_empty() {
+                state
+                    .walk_kf_paths
+                    .iter()
+                    .find_map(|path| load_kf_clip_by_path(world, tex_provider, path))
             } else if index.game.has_kf_animations() {
                 crate::npc_spawn::humanoid_walk_kf_path(index.game, state.gender, state.is_child)
                     .and_then(|path| world.resource::<AnimationClipRegistry>().get_by_path(path))

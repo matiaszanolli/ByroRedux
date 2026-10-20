@@ -2255,7 +2255,40 @@ fn creature_paths_derive_from_the_modl_directory() {
         ],
         "NIFZ entries are authored bare and resolve against the MODL directory"
     );
-    assert_eq!(creature_idle_kf_path(&dir), r"meshes\Creatures\Rat\idle.kf");
+    assert_eq!(
+        creature_idle_kf_paths(GameKind::Oblivion, &dir),
+        vec![r"meshes\Creatures\Rat\idle.kf".to_string()]
+    );
+}
+
+/// #6078 — the creature clip names are per game. FO3/FNV directories ship
+/// `mtidle.kf` and a `locomotion\mtforward.kf` walk (no `idle.kf` /
+/// `forward.kf` in all but one), and the Shivering Isles walkers ship
+/// `forwardwalk.kf` / `walkforward.kf`. The ladders are in census order.
+#[test]
+fn creature_clip_candidates_are_per_game() {
+    let dir = r"meshes\creatures\nvgecko\";
+    assert_eq!(
+        creature_idle_kf_paths(GameKind::Fallout3NV, dir),
+        vec![
+            r"meshes\creatures\nvgecko\mtidle.kf".to_string(),
+            r"meshes\creatures\nvgecko\idle.kf".to_string(),
+        ]
+    );
+    assert_eq!(
+        creature_walk_kf_paths(GameKind::Fallout3NV, dir),
+        vec![
+            r"meshes\creatures\nvgecko\locomotion\mtforward.kf".to_string(),
+            r"meshes\creatures\nvgecko\mtforward.kf".to_string(),
+            r"meshes\creatures\nvgecko\locomotion\mtfoward.kf".to_string(),
+        ]
+    );
+    assert_eq!(
+        creature_walk_kf_paths(GameKind::Oblivion, r"meshes\creatures\grummite\")[1],
+        r"meshes\creatures\grummite\forwardwalk.kf"
+    );
+    assert!(creature_idle_kf_paths(GameKind::Skyrim, dir).is_empty());
+    assert!(creature_walk_kf_paths(GameKind::Fallout4, dir).is_empty());
 }
 
 /// A creature whose MODL is already archive-prefixed must not gain a second
@@ -2357,7 +2390,10 @@ fn installed_oblivion_creature_assets_resolve_from_their_records() {
                 }
             }
         }
-        if archive(&creature_idle_kf_path(&dir)) {
+        if creature_idle_kf_paths(GameKind::Oblivion, &dir)
+            .iter()
+            .any(|path| archive(path))
+        {
             idles.0 += 1;
         } else {
             idles.1 += 1;
@@ -2388,6 +2424,78 @@ fn installed_oblivion_creature_assets_resolve_from_their_records() {
         "only {}/{part_total} creature NIFZ parts resolved: {misses:?}",
         parts.0
     );
+}
+
+/// #6078 corpus check: the FO3/FNV creature clip ladders find a clip in the
+/// shipped mesh archives (base + DLC) for the modelled `CREA` records. The
+/// pre-#6078 `idle.kf` / `forward.kf` names found 1 of 42 FNV directories
+/// for the idle and none for the walk.
+///
+/// Self-skips without the game installed; `BYROREDUX_FNV_DATA` /
+/// `BYROREDUX_FO3_DATA` override the paths.
+#[test]
+#[ignore = "needs FO3 / FNV game data on disk; parses each master"]
+fn installed_fallout_creature_clips_resolve_from_their_records() {
+    for (var, default, esm) in [
+        (
+            "BYROREDUX_FNV_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            "FalloutNV.esm",
+        ),
+        (
+            "BYROREDUX_FO3_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            "Fallout3.esm",
+        ),
+    ] {
+        let data = std::env::var(var).unwrap_or_else(|_| default.to_string());
+        let esm_path = std::path::Path::new(&data).join(esm);
+        let Ok(esm_bytes) = std::fs::read(&esm_path) else {
+            eprintln!("skipping {esm}: {esm_path:?} not available");
+            continue;
+        };
+        // Every BSA: FNV's creature clips are in `Fallout - Meshes.bsa`, the
+        // DLC creatures in each `* - Main.bsa`, a few fixes in `Update.bsa`.
+        let archives: Vec<byroredux_bsa::BsaArchive> = std::fs::read_dir(&data)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("bsa")))
+            .filter_map(|path| byroredux_bsa::BsaArchive::open(&path).ok())
+            .collect();
+        let archive = |path: &str| archives.iter().any(|a| a.contains(path));
+        let index = byroredux_plugin::esm::parse_esm(&esm_bytes).expect("parse master");
+        let mut dirs = std::collections::BTreeMap::<String, (bool, bool)>::new();
+        for record in index.creatures.values() {
+            let Some((_, dir)) = creature_skeleton_and_dir(&record.model_path) else {
+                continue;
+            };
+            let key = dir.to_ascii_lowercase();
+            if dirs.contains_key(&key) {
+                continue;
+            }
+            let any = |paths: Vec<String>| paths.iter().any(|path| archive(path));
+            let idle = any(creature_idle_kf_paths(GameKind::Fallout3NV, &dir));
+            let walk = any(creature_walk_kf_paths(GameKind::Fallout3NV, &dir));
+            dirs.insert(key, (idle, walk));
+        }
+        let idles = dirs.values().filter(|(idle, _)| *idle).count();
+        let walks = dirs.values().filter(|(_, walk)| *walk).count();
+        let no_idle: Vec<_> = dirs.iter().filter(|(_, (idle, _))| !idle).map(|(d, _)| d).collect();
+        eprintln!(
+            "{esm}: {} creature directories, idle {idles}, walk {walks}; no idle: {no_idle:?}",
+            dirs.len()
+        );
+        // The directories without an idle are the humanoid-skeleton ones
+        // (they animate off the humanoid clips) and one or two one-offs.
+        assert!(
+            idles * 100 >= dirs.len() * 85,
+            "{esm}: only {idles}/{} creature directories resolved an idle clip: {no_idle:?}",
+            dirs.len()
+        );
+        assert!(walks > 0, "{esm}: no creature directory resolved a walk clip");
+    }
 }
 
 // ── #2955 — the ACBS level field is overloaded ────────────────────────────

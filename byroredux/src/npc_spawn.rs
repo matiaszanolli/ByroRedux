@@ -567,16 +567,24 @@ pub fn creature_body_paths(dir: &str, body_part_models: &[String]) -> Vec<String
         .collect()
 }
 
-/// A creature's own idle clip, beside its skeleton (#2567).
+/// A creature's own idle clip candidates, beside its skeleton, first that
+/// loads wins (#2567, #6078).
 ///
 /// Creatures do not share the humanoid `idle.kf` — a rat's skeleton has
 /// none of the humanoid bone names, so the shared per-cell idle pool
-/// animates nothing. Every vanilla Oblivion creature directory ships its
-/// own `idle.kf` (verified over `Oblivion - Meshes.bsa`); a creature whose
-/// directory lacks one simply gets no idle, which is the pre-#2567 status
-/// quo rather than a regression.
-pub fn creature_idle_kf_path(dir: &str) -> String {
-    format!("{dir}idle.kf")
+/// animates nothing. The file name is per game. Census of the creature
+/// directories in every shipped mesh archive (base + DLC): Oblivion `idle.kf`
+/// 43; FNV `mtidle.kf` 39, `idle.kf` 1 (`zaxeye`); FO3 `mtidle.kf` 24,
+/// `idle.kf` 1. A creature whose directory has none simply gets no idle,
+/// the pre-#2567 status quo rather than a regression. Empty for the HKX
+/// games, which have no `CREA`.
+pub fn creature_idle_kf_paths(game: GameKind, dir: &str) -> Vec<String> {
+    let names: &[&str] = match game {
+        GameKind::Oblivion => &["idle.kf"],
+        GameKind::Fallout3NV => &["mtidle.kf", "idle.kf"],
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => &[],
+    };
+    names.iter().map(|name| format!("{dir}{name}")).collect()
 }
 
 /// The FO3/FNV "Child" race translation: RACE DATA bit 2, gated on the
@@ -936,13 +944,27 @@ pub fn humanoid_walk_kf_path(
     }
 }
 
-/// A creature's own walk-forward clip, beside its skeleton (#2567
-/// convention — the MODL directory *is* the creature's asset namespace,
-/// and vanilla Oblivion creature directories ship `forward.kf` next to
-/// `idle.kf`). A creature whose directory lacks one simply gets no walk
-/// animation, which matches the idle path's fallback posture.
-pub fn creature_walk_kf_path(dir: &str) -> String {
-    format!("{dir}forward.kf")
+/// A creature's own walk-forward clip candidates, beside its skeleton, first
+/// that loads wins (#2567 convention — the MODL directory *is* the creature's
+/// asset namespace; #6078 — the name is per game). Same census as
+/// [`creature_idle_kf_paths`]: Oblivion `forward.kf` 36, `forwardwalk.kf` 3
+/// (the Shivering Isles `grummite` / `elytra` / `gnarl`), `walkforward.kf` 1
+/// (`hunger`); FNV `locomotion\mtforward.kf` 22, `mtforward.kf` 7, and the
+/// shipped misspelling `locomotion\mtfoward.kf` 2 (`deathclaw`,
+/// `nightstalker`); FO3 15 / 6 / 1 of the same three. A creature whose
+/// directory has none gets no walk animation, which matches the idle path's
+/// fallback posture.
+pub fn creature_walk_kf_paths(game: GameKind, dir: &str) -> Vec<String> {
+    let names: &[&str] = match game {
+        GameKind::Oblivion => &["forward.kf", "forwardwalk.kf", "walkforward.kf"],
+        GameKind::Fallout3NV => &[
+            r"locomotion\mtforward.kf",
+            "mtforward.kf",
+            r"locomotion\mtfoward.kf",
+        ],
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => &[],
+    };
+    names.iter().map(|name| format!("{dir}{name}")).collect()
 }
 
 /// Warm the registry with every humanoid walk variant the game ships
