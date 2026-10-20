@@ -299,6 +299,7 @@ impl CellSubrecordFields {
             is_interior,
             show_sky,
             grid,
+            land_flags: 0,
             lighting,
             landscape: None,
             water_height,

@@ -40,6 +40,12 @@ pub struct CellData {
     pub show_sky: Option<bool>,
     /// Grid coordinates for exterior cells (None for interior).
     pub grid: Option<(i32, i32)>,
+    /// XCLC Land Flags byte (xEdit `wbCellGrid` / `wbLandFlags`, #6043):
+    /// bits 0–3 are Hide Quad 1–4, and on FO4+ bits 4–7 are No Collision
+    /// Quad 1–4. Hiding is render-only; the CK keeps the hidden land's
+    /// collision. 0 for interiors, an 8-byte XCLC, or no XCLC. Travels with
+    /// [`Self::grid`]: both come from the same sub-record.
+    pub land_flags: u8,
     /// Interior cell lighting (from XCLL subrecord).
     pub lighting: Option<CellLighting>,
     /// Landscape terrain data (from LAND record, exterior cells only).

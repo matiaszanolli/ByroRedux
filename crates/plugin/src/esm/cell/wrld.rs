@@ -415,6 +415,7 @@ fn parse_wrld_children_inner(
                 // this walker keeps only its exterior-specific XCLC arm.
                 let mut fields = super::helpers::CellSubrecordFields::default();
                 let mut grid = None;
+                let mut land_flags = 0u8;
 
                 for sub in &subs {
                     match &sub.sub_type {
@@ -432,6 +433,11 @@ fn parse_wrld_children_inner(
                                 sub.data[7],
                             ]);
                             grid = Some((grid_x, grid_y));
+                            // #6043 — `wbCellGrid`'s third field: the Land
+                            // Flags byte. FO3/FNV's trailing dword is
+                            // padding with a zero low byte, so the read is
+                            // safe on every game.
+                            land_flags = sub.data.get(8).copied().unwrap_or(0);
                         }
                         // Everything walker-shared falls through to
                         // `CellSubrecordFields::absorb` (#5309).
@@ -448,7 +454,8 @@ fn parse_wrld_children_inner(
                 // loaded XCRI bake's refs on exterior cells the same way
                 // they already did on interior ones (#5484).
                 let editor_id = std::mem::take(&mut fields.editor_id);
-                let cell = fields.into_cell(header.form_id, editor_id, false, None, grid, None);
+                let mut cell = fields.into_cell(header.form_id, editor_id, false, None, grid, None);
+                cell.land_flags = land_flags;
                 if force_persistent {
                     if persistent_cell.is_none() {
                         *persistent_cell = Some(cell);

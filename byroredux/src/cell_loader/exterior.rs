@@ -2259,6 +2259,7 @@ impl ExteriorCellApplyJob {
                     blas_specs: &mut *blas_sink,
                     water_y: cell_water_y,
                     game: wctx.record_index.game,
+                    hidden_quadrants: cell.land_flags & 0x0F,
                 },
                 gx,
                 gy,

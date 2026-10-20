@@ -759,6 +759,10 @@ pub(super) struct TerrainSpawnCtx<'a> {
     /// Selects the engine's built-in default land texture
     /// ([`DefaultLandTexture::for_game`]) for BTXT-less / BTXT-0 quadrants.
     pub game: esm::reader::GameKind,
+    /// #6043 — XCLC Hide Quad bits (`CellData::land_flags & 0x0F`). Hidden
+    /// quadrants leave the render mesh (and so its BLAS) but keep their
+    /// collision, as the CK documents. See [`land_tile_indices`].
+    pub hidden_quadrants: u8,
 }
 
 /// The texture a game's engine paints where LAND authors no base texture
@@ -831,11 +835,24 @@ impl DefaultLandTexture {
 /// through it, while the ground ray and the character controller still
 /// ground. Pinned by `land_tile_indices_face_up` and
 /// `land_tile_collider_grounds_from_above`.
-pub(super) fn land_tile_indices() -> Vec<u32> {
+///
+/// #6043 — `hidden_quadrants` drops whole LAND quadrants (the XCLC Hide
+/// Quad bits, `CellData::land_flags & 0x0F`): bit `q` hides quadrant `q`
+/// in the BTXT/ATXT quadrant order, 0 = south-west, 1 = south-east,
+/// 2 = north-west, 3 = north-east (`[SW, SE, NW, NE]`, as
+/// `quadrant_samples_for_vertex`). That bit order is read off xEdit naming
+/// the flags "Quad 1"–"Quad 4" over its 0-based quadrant enum; the
+/// all-hidden value `0x0F` (the common vanilla case) does not depend on it.
+pub(super) fn land_tile_indices(hidden_quadrants: u8) -> Vec<u32> {
     const GRID: u32 = LAND_GRID_VERTS as u32;
+    const HALF: u32 = (GRID - 1) / 2;
     let mut indices = Vec::with_capacity(32 * 32 * 6);
     for row in 0..GRID - 1 {
         for col in 0..GRID - 1 {
+            let quadrant = (row >= HALF) as u32 * 2 + (col >= HALF) as u32;
+            if hidden_quadrants & (1 << quadrant) != 0 {
+                continue;
+            }
             let tl = row * GRID + col;
             let tr = tl + 1;
             let bl = (row + 1) * GRID + col;
@@ -844,6 +861,30 @@ pub(super) fn land_tile_indices() -> Vec<u32> {
         }
     }
     indices
+}
+
+/// The LAND tile's collider: the whole tile, hidden quadrants included
+/// (#6043 — the CK's Hide Quad keeps collision). The vertices are already
+/// world-space Y-up (`zup_to_yup_pos`) and the render entity sits at
+/// `Transform::IDENTITY`, so the ghost takes an identity placement at unit
+/// scale and its collider lands exactly on the drawn surface.
+fn spawn_land_collider(world: &mut World, positions: &[[f32; 3]], grid_x: i32, grid_y: i32) {
+    if !crate::cell_loader::spawn::spawn_trimesh_collider_ghost(
+        world,
+        positions,
+        &land_tile_indices(0),
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        None,
+    ) {
+        log::warn!(
+            "Terrain ({},{}): collider synthesis produced no triangles — \
+             tile renders but is not solid",
+            grid_x,
+            grid_y,
+        );
+    }
 }
 
 pub(super) fn spawn_terrain_mesh(
@@ -863,6 +904,7 @@ pub(super) fn spawn_terrain_mesh(
         blas_specs,
         water_y,
         game,
+        hidden_quadrants,
     } = spawn;
     // #4052 — both promoted to `byroredux_core::math::coord` so the
     // ground-cover scatter shader reads the same numbers through
@@ -997,7 +1039,16 @@ pub(super) fn spawn_terrain_mesh(
         );
     }
 
-    let indices = land_tile_indices();
+    let indices = land_tile_indices(hidden_quadrants);
+    let positions: Vec<[f32; 3]> = vertices.iter().map(|v| v.position).collect();
+    if indices.is_empty() {
+        // #6043 — every quadrant hidden: nothing to draw, but the land stays
+        // solid. No mesh, BLAS, terrain-tile slot or ground-cover inputs.
+        release_splat_layer_textures(ctx, &splat_tex_indices);
+        spawn_land_collider(world, &positions, grid_x, grid_y);
+        log::debug!("Terrain ({grid_x},{grid_y}): all four quadrants hidden (XCLC)");
+        return Some(0);
+    }
 
     if ctx.allocator.is_none() {
         // #1343 — release the splat-layer refcounts before bailing; no
@@ -1312,27 +1363,7 @@ pub(super) fn spawn_terrain_mesh(
     // interior `bhk` bodies, but that distinction buys us nothing and only
     // created a class of geometry that rendered without being solid.
     //
-    // The tile's vertices are already world-space Y-up (`zup_to_yup_pos`
-    // above) and the render entity sits at `Transform::IDENTITY`, so the
-    // ghost takes an identity placement at unit scale and its collider
-    // lands exactly on the drawn surface.
-    let positions: Vec<[f32; 3]> = vertices.iter().map(|v| v.position).collect();
-    if !crate::cell_loader::spawn::spawn_trimesh_collider_ghost(
-        world,
-        &positions,
-        &indices,
-        Vec3::ZERO,
-        Quat::IDENTITY,
-        1.0,
-        None,
-    ) {
-        log::warn!(
-            "Terrain ({},{}): collider synthesis produced no triangles — \
-             tile renders but is not solid",
-            grid_x,
-            grid_y,
-        );
-    }
+    spawn_land_collider(world, &positions, grid_x, grid_y);
 
     log::debug!(
         "Terrain mesh ({},{}): {} verts, {} tris, height range {:.0}–{:.0}",
@@ -1948,7 +1979,7 @@ mod tests {
     #[test]
     fn land_tile_indices_face_up() {
         let positions = flat_land_positions(0.0);
-        let indices = land_tile_indices();
+        let indices = land_tile_indices(0);
         assert_eq!(indices.len(), 32 * 32 * 6);
         for tri in indices.chunks_exact(3) {
             let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| Vec3::from(positions[i as usize]));
@@ -1985,7 +2016,7 @@ mod tests {
         assert!(crate::cell_loader::spawn::spawn_trimesh_collider_ghost(
             &mut world,
             &positions,
-            &land_tile_indices(),
+            &land_tile_indices(0),
             Vec3::ZERO,
             Quat::IDENTITY,
             1.0,
@@ -2072,5 +2103,31 @@ mod tests {
                 pos.y
             );
         }
+    }
+
+    /// #6043 — each XCLC Hide Quad bit drops exactly its 16×16-quad
+    /// quadrant (`[SW, SE, NW, NE]`), and `0x0F` leaves nothing to draw.
+    #[test]
+    fn land_tile_indices_drop_hidden_quadrants() {
+        const GRID: u32 = LAND_GRID_VERTS as u32;
+        let quadrant_of = |tri: &[u32]| {
+            // The quad's south-west corner: the least row and least column
+            // among the triangle's vertices.
+            let row = tri.iter().map(|i| i / GRID).min().unwrap();
+            let col = tri.iter().map(|i| i % GRID).min().unwrap();
+            (row >= 16) as u8 * 2 + (col >= 16) as u8
+        };
+        for q in 0..4u8 {
+            let indices = land_tile_indices(1 << q);
+            assert_eq!(indices.len(), 3 * 16 * 16 * 6, "quadrant {q}");
+            assert!(indices.chunks_exact(3).all(|tri| quadrant_of(tri) != q));
+        }
+        // 0x0C hides the northern half: only south-row quads remain.
+        let south = land_tile_indices(0x0C);
+        assert_eq!(south.len(), 2 * 16 * 16 * 6);
+        assert!(south.chunks_exact(3).all(|tri| quadrant_of(tri) < 2));
+        assert!(land_tile_indices(0x0F).is_empty());
+        // The high nibble (FO4 No Collision bits) is not a hide bit.
+        assert_eq!(land_tile_indices(0xF0).len(), 32 * 32 * 6);
     }
 }

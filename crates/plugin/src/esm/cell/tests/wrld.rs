@@ -1155,3 +1155,32 @@ fn edid_less_wrld_children_are_not_filed_under_the_previous_worldspace() {
     );
     assert_eq!(exterior.len(), 1);
 }
+
+/// #6043 — XCLC is `X s32, Y s32, Land Flags u8, unused[3]`; the flags byte
+/// (Hide Quad 1–4 in bits 0–3) must survive, and an 8-byte XCLC reads 0.
+#[test]
+fn exterior_xclc_keeps_the_land_flags_byte() {
+    fn xclc(x: i32, y: i32, tail: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&x.to_le_bytes());
+        v.extend_from_slice(&y.to_le_bytes());
+        v.extend_from_slice(tail);
+        v
+    }
+    let cells = [
+        build_cell_record(0x0000_5001, &[(b"XCLC", xclc(4, 4, &[0x0F, 0, 0, 0]))]),
+        build_cell_record(0x0000_5002, &[(b"XCLC", xclc(5, 4, &[0x0C, 0xAB, 0xCD, 0xEF]))]),
+        build_cell_record(0x0000_5003, &[(b"XCLC", xclc(6, 4, &[]))]),
+    ]
+    .concat();
+    let block = build_cell_children_group(0, 4, &build_cell_children_group(0, 5, &cells));
+    let buf = build_wrld_group(&[
+        build_wrld_record(0x0000_5000, &[(b"EDID", b"Quads\0".to_vec())]),
+        build_world_children_group(0x0000_5000, &block),
+    ]);
+    let (_worldspaces, _climates, exterior, _persistent) = parse_synthetic_wrld(&buf);
+    let world = exterior.get("quads").expect("Quads cells");
+    assert_eq!(world[&(4, 4)].land_flags, 0x0F);
+    assert_eq!(world[&(5, 4)].land_flags, 0x0C);
+    assert_eq!(world[&(6, 4)].land_flags, 0);
+}

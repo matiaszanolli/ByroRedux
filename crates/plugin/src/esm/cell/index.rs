@@ -255,6 +255,7 @@ pub(super) fn merge_cell_override(base: &CellData, over: &mut CellData) {
     merge_cell_references(base, over);
     if over.grid.is_none() {
         over.grid = base.grid;
+        over.land_flags = base.land_flags;
     }
     if over.lighting.is_none() {
         over.lighting.clone_from(&base.lighting);

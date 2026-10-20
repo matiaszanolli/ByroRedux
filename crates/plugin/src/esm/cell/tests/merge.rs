@@ -45,6 +45,24 @@ fn show_sky_inherits_only_when_override_omits_cell_data() {
     assert_eq!(closed.show_sky, Some(false));
 }
 
+/// #6043 — the XCLC Land Flags come from the same sub-record as the grid,
+/// so an override without XCLC inherits both, and one with XCLC keeps its own.
+#[test]
+fn land_flags_inherit_with_the_grid() {
+    let mut base = make_interior_cell(0x1234, "HiddenQuads");
+    base.grid = Some((3, -2));
+    base.land_flags = 0x0C;
+
+    let mut omitted = make_interior_cell(0x1234, "HiddenQuads");
+    merge_cell_override(&base, &mut omitted);
+    assert_eq!((omitted.grid, omitted.land_flags), (Some((3, -2)), 0x0C));
+
+    let mut cleared = make_interior_cell(0x1234, "HiddenQuads");
+    cleared.grid = Some((3, -2));
+    merge_cell_override(&base, &mut cleared);
+    assert_eq!(cleared.land_flags, 0, "an authored XCLC owns its flags");
+}
+
 /// A `PlacedRef` with a given REFR FormID + base FormID (the base encodes
 /// which "version" of the ref this is, so an override can be detected).
 fn placed(form_id: u32, base_form_id: u32) -> PlacedRef {
