@@ -600,7 +600,8 @@ fn clear_empties_content_and_touch_state() {
     assert_eq!(reg.clip_handle_for("a.nif"), Some(7));
     assert!(!reg.access_tick.is_empty());
 
-    reg.clear();
+    let freed = reg.clear();
+    assert_eq!(freed, vec![7], "the memoised clip handle is handed back to be released (#6117)");
 
     assert_eq!(reg.len(), 0);
     assert_eq!(reg.clip_handle_for("a.nif"), None);

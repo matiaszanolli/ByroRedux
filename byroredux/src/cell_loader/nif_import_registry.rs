@@ -632,12 +632,18 @@ impl NifImportRegistry {
     /// requests (e.g. comparing vanilla content against a mod's
     /// overriding BSA in one debug session) would silently keep
     /// serving the first-loaded content. See FNV-D1-02 / #2078.
-    pub(crate) fn clear(&mut self) {
+    ///
+    /// Returns the embedded-clip handles the cleared entries owned, exactly as
+    /// [`Self::insert`] does for an LRU eviction (#863): the caller releases
+    /// them from the `AnimationClipRegistry`, or every clear strands the
+    /// keyframe arrays of each animated cached model (#6117).
+    #[must_use = "the freed clip handles must be released from the AnimationClipRegistry"]
+    pub(crate) fn clear(&mut self) -> Vec<u32> {
         self.core = ParsedNifCache::new();
         self.access_tick.clear();
         self.next_tick = 0;
         self.evictions = 0;
-        self.clip_handles.clear();
+        self.clip_handles.drain().map(|(_, handle)| handle).collect()
     }
 
     /// Look up a previously-registered embedded-clip handle for `key`.

@@ -91,6 +91,14 @@ impl SceneImportCache {
         }
     }
 
+    /// Drop every cached scene. The cache keys by lower-cased path alone, so a
+    /// session that switches archive sets (a debug load across games) must not
+    /// keep serving the previous set's NPC skeletons / bodies / heads (#6117).
+    pub(crate) fn clear(&mut self) {
+        self.core = ParsedNifCache::new();
+        self.insertion_order.clear();
+    }
+
     /// Look up a cached scene by lowercased path. Bumps the
     /// hit/miss counter inline (single-shot per call site —
     /// contrast with `cell_loader::load_references`'s batched

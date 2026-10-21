@@ -324,13 +324,29 @@ fn invalidate_nif_cache_on_archive_change(world: &mut World, source: &DebugLoadS
     if changed {
         log::info!(
             "debug load: archive set changed from the previous debug load — clearing NifImportRegistry \
-             (FNV-D1-02 / #2078, avoids stale cross-load model reuse)",
+             and SceneImportCache (FNV-D1-02 / #2078, #6117, avoids stale cross-load model reuse)",
         );
-        world
+        let freed_clip_handles = world
             .resource_mut::<cell_loader::NifImportRegistry>()
             .clear();
+        release_clip_handles(world, freed_clip_handles);
+        // The NPC loaders' cache is keyed by the same bare path.
+        if let Some(mut scenes) = world.try_resource_mut::<crate::scene_import_cache::SceneImportCache>() {
+            scenes.clear();
+        }
     }
     world.insert_resource(next);
+}
+
+/// Release the keyframes of clips whose owning cache entries were cleared.
+fn release_clip_handles(world: &mut World, handles: Vec<u32>) {
+    if handles.is_empty() {
+        return;
+    }
+    let mut clips = world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+    for handle in handles {
+        clips.release(handle);
+    }
 }
 
 /// Exterior grid target for a debug load: the center cell, stream radius, and
@@ -604,6 +620,59 @@ mod tests {
             world.resource::<NifImportRegistry>().len(),
             0,
             "a changed archive set must clear the registry"
+        );
+    }
+
+    /// #6117 - an archive-set change releases the clip handles the cleared
+    /// registry entries owned (they used to be stranded) and empties the NPC
+    /// loaders' path-keyed `SceneImportCache` too, which would otherwise keep
+    /// serving the previous set's skeleton / body / head scenes.
+    #[test]
+    fn archive_set_change_releases_clips_and_clears_the_scene_cache() {
+        use crate::scene_import_cache::SceneImportCache;
+        use byroredux_core::animation::{AnimationClip, AnimationClipRegistry};
+
+        let mut world = World::new();
+        world.insert_resource(NifImportRegistry::new());
+        world.insert_resource(SceneImportCache::new());
+        world.insert_resource(AnimationClipRegistry::new());
+        let handle = world
+            .resource_mut::<AnimationClipRegistry>()
+            .add(AnimationClip {
+                name: "door".into(),
+                duration: 2.0,
+                cycle_type: byroredux_core::animation::CycleType::Loop,
+                frequency: 1.0,
+                phase: 0.0,
+                weight: 1.0,
+                accum_root_name: None,
+                channels: Default::default(),
+                float_channels: Vec::new(),
+                color_channels: Vec::new(),
+                bool_channels: Vec::new(),
+                texture_flip_channels: Vec::new(),
+                text_keys: Vec::new(),
+            });
+        world.resource_mut::<NifImportRegistry>().set_clip_handle("meshes\\door.nif".into(), handle);
+        world.resource_mut::<SceneImportCache>().insert("meshes\\skeleton.nif".into(), None);
+        assert_eq!(world.resource::<SceneImportCache>().len(), 1);
+
+        fn source<'a>(none: &'a [String], bsas: &'a [String]) -> DebugLoadSource<'a> {
+            DebugLoadSource { esm: "Game.esm", masters: none, bsas, textures_bsas: none }
+        }
+        let none: Vec<String> = Vec::new();
+        let first = vec!["A.bsa".to_string()];
+        let second = vec!["B.bsa".to_string()];
+        invalidate_nif_cache_on_archive_change(&mut world, &source(&none, &first));
+        assert_eq!(world.resource::<SceneImportCache>().len(), 1, "no change yet");
+        assert!(world.resource::<AnimationClipRegistry>().get(handle).unwrap().duration > 0.0);
+
+        invalidate_nif_cache_on_archive_change(&mut world, &source(&none, &second));
+        assert_eq!(world.resource::<SceneImportCache>().len(), 0);
+        assert_eq!(
+            world.resource::<AnimationClipRegistry>().get(handle).unwrap().duration,
+            0.0,
+            "the stranded clip's keyframes are released"
         );
     }
 
