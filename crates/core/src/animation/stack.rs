@@ -391,9 +391,10 @@ fn channel_has_keys(channel: &TransformChannel) -> bool {
 
 /// A layer's weight on one bone: its fade-modulated weight, the clip's own, and - for a
 /// masked layer - the mask's weight for that bone (a bone the mask does not index counts
-/// in full).
+/// in full). Every per-bone weight of a stack goes through here, the root-motion mix
+/// included (#6235): a layer masked off the accumulation root must not move the actor.
 #[inline]
-fn bone_layer_weight(
+pub fn bone_layer_weight(
     stack: &AnimationStack,
     layer: &AnimationLayer,
     clip_weight: f32,

@@ -4,7 +4,7 @@
 //! `SubtreeCache`.
 
 use byroredux_core::animation::{
-    advance_stack, advance_time, sample_blended_transform, sample_bool_channel,
+    advance_stack, advance_time, bone_layer_weight, sample_blended_transform, sample_bool_channel,
     sample_color_channel, sample_float_channel, sample_rotation, sample_scale, sample_translation,
     split_root_motion, visit_stack_text_events, visit_text_key_events, AnimationClipRegistry,
     AnimationPlayer, AnimationStack, ColorTarget, CycleType, FloatTarget, RootMotionDelta,
@@ -909,15 +909,17 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
             // Accum root name from highest-weight active layer (#279 D6-04).
             // Also captures that same layer's own `(clip_handle, prev_time,
             // local_time)` — #3703 needs the *layer's* clock, not the
-            // blended stack output, to compute a per-tick delta.
+            // blended stack output, to compute a per-tick delta. Weighed on
+            // the accumulation root itself, like every other per-bone weight
+            // (clip weight, layer mask — #6235).
             let mut best: Option<(FixedString, f32, u32, f32, f32)> = None;
             for layer in &stack.layers {
-                let ew = layer.effective_weight();
-                if ew < 0.001 {
-                    continue;
-                }
                 if let Some(clip) = registry.get(layer.clip_handle) {
                     if let Some(name) = clip.accum_root_name {
+                        let ew = bone_layer_weight(stack, layer, clip.weight, name);
+                        if ew < 0.001 {
+                            continue;
+                        }
                         if best.as_ref().is_none_or(|(_, bw, ..)| ew > *bw) {
                             best = Some((
                                 name,
@@ -935,12 +937,12 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                 let mut total = 0.0f32;
                 let mut sum = Vec3::ZERO;
                 for layer in &stack.layers {
-                    let weight = layer.effective_weight();
-                    if weight < 0.001 {
-                        continue;
-                    }
                     let Some(clip) = registry.get(layer.clip_handle) else { continue };
                     if clip.accum_root_name != Some(name) {
+                        continue;
+                    }
+                    let weight = bone_layer_weight(stack, layer, clip.weight, name);
+                    if weight < 0.001 {
                         continue;
                     }
                     if let Some(channel) = clip.channels.get(&name) {
@@ -1792,6 +1794,23 @@ mod animation_system_e2e_tests {
         let delta = world.get::<RootMotionDelta>(root).unwrap().0;
         // Slow travels 20, fast 40 in half a second: the mix is 30.
         assert!((delta - Vec3::new(30.0, 0.0, 0.0)).length() < 1e-3, "{delta:?}");
+
+        // #6235 — mask the fast layer off the accumulation root (the upper-body half
+        // of a layered blend): its root delta must not enter the mix, so the actor
+        // travels the slow layer's 20, not the unmasked 30.
+        {
+            let stack = world.get_mut::<AnimationStack>(root).unwrap();
+            stack.bone_index = Some(std::sync::Arc::new([(bone_sym, 0u16)].into_iter().collect()));
+            for layer in &mut stack.layers {
+                layer.local_time = 0.0;
+                layer.prev_time = 0.0;
+            }
+            stack.layers[1].bone_weights = Some(std::sync::Arc::new(vec![0.0]));
+        }
+        world.insert(root, RootMotionDelta(Vec3::ZERO));
+        animation_system(&world, 0.5);
+        let delta = world.get::<RootMotionDelta>(root).unwrap().0;
+        assert!((delta - Vec3::new(20.0, 0.0, 0.0)).length() < 1e-3, "masked layer moved the root: {delta:?}");
     }
 
     /// Regression: #3703 / ECS-2026-08-30-D10-03. The `AnimationStack`
