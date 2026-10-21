@@ -570,7 +570,8 @@ frame. The replaced pair is retired through the deferred-destroy countdown.
 | 6 | `INSTANCE_FLAG_PRESKINNED` | Reserved: pre-skinned vertex offset |
 | 7 | `INSTANCE_FLAG_FLAT_SHADING` | Flat shading via screen-space derivative normal |
 | 8 | `INSTANCE_FLAG_DIFFUSE_ALPHA` | Diffuse format has alpha (BC2/BC3/BC7/RGBA; BC1 is deliberately excluded) and guards `NiAlphaProperty`-less alpha test |
-| 9 | `INSTANCE_FLAG_LOD_BLOCK` | Exclude this draw from the RT LOD path |
+| 9 | `INSTANCE_FLAG_LOD_BLOCK` | Distant terrain/object/placement LOD block. Raster-only diagnostic state: the only shader reader is `triangle.frag`'s `RENDER_DEBUG_TERRAIN_LOD` debug view, which colours the draw blue so LOD handoffs can be inspected in-frame |
+| 10 | `INSTANCE_FLAG_MOVED_THIS_FRAME` | Instance moved this build: a rigid model matrix that differs from its previous one, or a skinned pose marked dirty. Read on the selected shadow ray's hit to keep that pixel's direct-light history short. Assembled for every draw, rasterized or not, since rays hit off-screen movers (`3934f46d7`) |
 | 16–31 | terrain tile index | `(flags >> 16) & 0xFFFF` (when bit 3 set) |
 
 ### `GpuMaterial` — 432 bytes, SSBO (Set 1, Binding 13)
