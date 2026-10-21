@@ -14,6 +14,39 @@ fn printf_conversions_take_the_show_arguments() {
     assert_eq!(substitute_numbers("100% sure", &[]), "100% sure", "a bare % stays");
 }
 
+/// #6013 — a new box reads -1 until pressed; the previous unread answer does
+/// not survive it.
+#[test]
+fn a_new_script_box_clears_the_unread_answer() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    record_button(&world, 1);
+    show_obscript_message(
+        &world,
+        QuestFormId(0x0001_C3D0),
+        crate::obscript_vm::ObScriptMessage {
+            text: "Again?".into(),
+            values: Vec::new(),
+            buttons: Vec::new(),
+            message_box: true,
+        },
+    );
+    assert_eq!(take_button(&world), -1);
+    // A plain `Message` is no box and leaves a pending answer alone.
+    record_button(&world, 1);
+    show_obscript_message(
+        &world,
+        QuestFormId(0x0001_C3D0),
+        crate::obscript_vm::ObScriptMessage {
+            text: "FYI".into(),
+            values: Vec::new(),
+            buttons: Vec::new(),
+            message_box: false,
+        },
+    );
+    assert_eq!(take_button(&world), 1);
+}
+
 /// `<Global=…>` (floats to two places), `<Alias=Player>`, an unfilled alias
 /// (`[...]`), and an unfillable tag left as written.
 #[test]

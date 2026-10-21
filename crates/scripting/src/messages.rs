@@ -163,6 +163,13 @@ pub fn show_obscript_message(
     if message.message_box && buttons.is_empty() {
         buttons.push("Done".to_owned());
     }
+    if message.message_box {
+        // The CS: `GetButtonPressed` "sends -1 while the window is still
+        // open", so an earlier unread answer must not outlive a new box (#6013).
+        if let Some(mut presses) = world.try_resource_mut::<ButtonPresses>() {
+            presses.0 = None;
+        }
+    }
     if let Some(mut pending) = world.try_resource_mut::<PendingScriptMessages>() {
         pending.0.push(ScriptMessage {
             title: String::new(),

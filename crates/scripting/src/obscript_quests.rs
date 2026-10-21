@@ -1022,17 +1022,27 @@ pub fn run_console_command(world: &World, caller: Option<u32>, cmd: u16, args: &
     (answer, host.declined.get())
 }
 
+/// The running quests by FormID. `QuestStageState` iterates in `HashMap` order
+/// (random per process), and quests that share a tick share global slots
+/// (`GetButtonPressed`) and see each other's `SetStage`, so the run order must
+/// not follow it (#6013).
+fn running_quests_in_order(stages: &QuestStageState) -> Vec<u32> {
+    let mut running: Vec<u32> = stages
+        .iter()
+        .filter(|(_, data)| data.status == QuestStatus::Running)
+        .map(|(id, _)| id.0)
+        .collect();
+    running.sort_unstable();
+    running
+}
+
 /// Advance every running quest's script on the vanilla cadence. Exclusive
 /// in `Stage::Update`, beside `ambient_ai_package_system` — it reads the
 /// quest resources and runs pure interpreter work, so exclusivity costs
 /// nothing and keeps the timer maps race-free.
 pub fn obscript_quest_tick_system(world: &World, dt: f32) {
     let running: Vec<u32> = match world.try_resource::<QuestStageState>() {
-        Some(stages) => stages
-            .iter()
-            .filter(|(_, data)| data.status == QuestStatus::Running)
-            .map(|(id, _)| id.0)
-            .collect(),
+        Some(stages) => running_quests_in_order(&stages),
         None => return,
     };
     if running.is_empty() {
@@ -1873,6 +1883,19 @@ mod tick_interval_tests {
 
     fn runs(world: &World) -> u32 {
         world.try_resource::<ObScriptQuestTimers>().unwrap().runs.get(&QUEST).copied().unwrap_or(0)
+    }
+
+    /// Quests sharing a tick run in FormID order, not `HashMap` order (#6013).
+    #[test]
+    fn running_quests_are_ordered_by_form_id() {
+        let mut stages = QuestStageState::default();
+        let ids: Vec<u32> = (0..64).map(|i| 0x0001_0000 + (i * 37) % 64).collect();
+        for id in &ids {
+            stages.start_quest(QuestFormId(*id), None);
+        }
+        let mut expected = ids.clone();
+        expected.sort_unstable();
+        assert_eq!(running_quests_in_order(&stages), expected);
     }
 
     /// The vanilla cadence still applies when nothing is authored.
