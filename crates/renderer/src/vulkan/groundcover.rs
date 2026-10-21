@@ -56,6 +56,7 @@ use crate::shader_constants::{
     GROUNDCOVER_INTERACTION_TEXELS, GROUNDCOVER_INTERACTION_UNITS,
     GROUNDCOVER_INTERACTION_WORKGROUP, GROUNDCOVER_MAX_BLADES_PER_CHUNK, GROUNDCOVER_MAX_CHUNKS,
     GROUNDCOVER_MAX_CELLS, GROUNDCOVER_SPECIES_TABLE_SIZE, GROUNDCOVER_LOD_TIERS, GROUNDCOVER_BLADE_SEGMENTS_FAR,
+    GROUNDCOVER_BLADES_PER_POINT_FAR, GROUNDCOVER_BLADES_PER_POINT_MID,
 };
 
 const SCATTER_SPV: &[u8] = include_bytes!("../../shaders/groundcover_scatter.comp.spv");
@@ -327,6 +328,25 @@ pub const VERTS_PER_BLADE_NEAR: u32 = strip_list_verts(GROUNDCOVER_BLADE_SEGMENT
 pub const VERTS_PER_BLADE_MID: u32 = strip_list_verts(GROUNDCOVER_BLADE_SEGMENTS_MID);
 /// Vertices one tier-2 (far, 1-segment) blade emits: a single triangle.
 pub const VERTS_PER_BLADE_FAR: u32 = strip_list_verts(GROUNDCOVER_BLADE_SEGMENTS_FAR);
+/// Listed vertices of one scatter point at the tier that emits the most (the
+/// scatter's `gcTierVertsPerPoint` maximum).
+const MAX_VERTS_PER_POINT: u64 = {
+    let near = VERTS_PER_BLADE_NEAR as u64 * GROUNDCOVER_BLADES_PER_POINT as u64;
+    let mid = VERTS_PER_BLADE_MID as u64 * GROUNDCOVER_BLADES_PER_POINT_MID as u64;
+    let far = VERTS_PER_BLADE_FAR as u64 * GROUNDCOVER_BLADES_PER_POINT_FAR as u64;
+    let near_mid = if near > mid { near } else { mid };
+    if near_mid > far { near_mid } else { far }
+};
+// #6032 — every blade tier addresses its vertices with 32-bit indices: the
+// scatter writes `firstVertex = sliceBase * vertsPerPoint` and the blade vertex
+// shader divides `gl_VertexIndex` by `vertsPerPoint`. The whole arena's span
+// has to fit a `u32` or both wrap silently (today it is ~12 % of the range;
+// the chunk cap and the candidate budget have each been retuned upward).
+const _: () = assert!(
+    GROUNDCOVER_MAX_CHUNKS as u64 * GROUNDCOVER_MAX_BLADES_PER_CHUNK as u64 * MAX_VERTS_PER_POINT
+        <= u32::MAX as u64,
+    "the blade tiers' vertex span outgrows the 32-bit firstVertex / gl_VertexIndex range"
+);
 /// Near, mid and far segment tiers — one indirect stream each. A chunk draws in
 /// exactly one of them (chosen by the scatter from its camera distance).
 const GROUNDCOVER_INDIRECT_STREAMS: u64 = GROUNDCOVER_LOD_TIERS as u64;
