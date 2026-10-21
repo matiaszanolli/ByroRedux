@@ -151,14 +151,11 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     let mut exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>> = HashMap::new();
     let mut worldspace_persistent_cells: HashMap<String, CellData> = HashMap::new();
     let mut statics: HashMap<u32, StaticObject> = HashMap::new();
-    let mut landscape_textures: HashMap<u32, String> = HashMap::new();
+    let mut ltex = crate::esm::cell::support::LtexTables::default();
     let mut worldspaces: HashMap<String, crate::esm::cell::WorldspaceRecord> = HashMap::new();
     let mut worldspace_climates: HashMap<String, u32> = HashMap::new();
     let mut txst_textures: HashMap<u32, String> = HashMap::new();
     let mut texture_sets: HashMap<u32, TextureSet> = HashMap::new();
-    let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
-    let mut landscape_grasses: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut landscape_texture_names: HashMap<u32, String> = HashMap::new();
     let mut scols: HashMap<u32, ScolRecord> = HashMap::new();
     let mut packins: HashMap<u32, PkinRecord> = HashMap::new();
     let mut movables: HashMap<u32, MovableStaticRecord> = HashMap::new();
@@ -244,14 +241,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 game,
             )?,
             b"LTEX" => {
-                parse_ltex_group(
-                    &mut reader,
-                    end,
-                    &mut ltex_to_txst,
-                    &mut landscape_textures,
-                    &mut landscape_grasses,
-                    &mut landscape_texture_names,
-                )?
+                parse_ltex_group(&mut reader, end, game, &mut ltex)?
             }
             b"TXST" => parse_txst_group(
                 &mut reader,
@@ -502,7 +492,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         total_exterior,
         exterior_cells.len(),
         statics.len(),
-        landscape_textures.len() + ltex_to_txst.len(),
+        ltex.direct_paths.len() + ltex.ltex_to_txst.len(),
     );
     if !wrld_names.is_empty() {
         log::info!("  Worldspaces: {:?}", wrld_names);
@@ -537,10 +527,11 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         exterior_cells,
         worldspace_persistent_cells,
         statics,
-        landscape_textures,
-        landscape_texture_txsts: ltex_to_txst,
-        landscape_grasses,
-        landscape_texture_names,
+        landscape_textures: ltex.direct_paths,
+        landscape_texture_txsts: ltex.ltex_to_txst,
+        landscape_grasses: ltex.ltex_to_grass,
+        landscape_texture_names: ltex.editor_ids,
+        landscape_texture_havok: ltex.havok,
         worldspaces,
         worldspace_climates,
         texture_sets,

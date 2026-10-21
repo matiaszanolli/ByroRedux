@@ -465,32 +465,37 @@ pub(crate) fn ltex_icon_texture_path(icon: &str) -> String {
 ///
 /// FO3/FNV: LTEX has a TNAM sub-record pointing to a TXST form ID.
 /// Oblivion: LTEX has an ICON sub-record with a direct texture path.
+/// Everything the LTEX walk extracts, keyed by LTEX FormID (#6048 bundled
+/// the out-maps so a new field is one more member, not one more parameter
+/// threaded through the recursion).
+#[derive(Debug, Default)]
+pub(crate) struct LtexTables {
+    /// `TNAM` → TXST FormID (FO3 / FNV / Skyrim / FO4).
+    pub(crate) ltex_to_txst: HashMap<u32, u32>,
+    /// Oblivion `ICON` → direct texture path.
+    pub(crate) direct_paths: HashMap<u32, String>,
+    /// `GNAM` grasses, in authored order (#4642).
+    pub(crate) ltex_to_grass: HashMap<u32, Vec<u32>>,
+    /// `EDID` (#4899).
+    pub(crate) editor_ids: HashMap<u32, String>,
+    /// `HNAM` / `MNAM` Havok data (#6048).
+    pub(crate) havok: HashMap<u32, super::LandscapeTextureHavok>,
+}
+
 pub(crate) fn parse_ltex_group(
     reader: &mut EsmReader,
     end: usize,
-    ltex_to_txst: &mut HashMap<u32, u32>,
-    direct_paths: &mut HashMap<u32, String>,
-    ltex_to_grass: &mut HashMap<u32, Vec<u32>>,
-    editor_ids: &mut HashMap<u32, String>,
+    game: GameKind,
+    tables: &mut LtexTables,
 ) -> Result<()> {
-    parse_ltex_group_inner(
-        reader,
-        end,
-        ltex_to_txst,
-        direct_paths,
-        ltex_to_grass,
-        editor_ids,
-        0,
-    )
+    parse_ltex_group_inner(reader, end, game, tables, 0)
 }
 
 fn parse_ltex_group_inner(
     reader: &mut EsmReader,
     end: usize,
-    ltex_to_txst: &mut HashMap<u32, u32>,
-    direct_paths: &mut HashMap<u32, String>,
-    ltex_to_grass: &mut HashMap<u32, Vec<u32>>,
-    editor_ids: &mut HashMap<u32, String>,
+    game: GameKind,
+    tables: &mut LtexTables,
     depth: u32,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
@@ -501,21 +506,20 @@ fn parse_ltex_group_inner(
             else {
                 continue;
             };
-            parse_ltex_group_inner(
-                reader,
-                sub_end,
-                ltex_to_txst,
-                direct_paths,
-                ltex_to_grass,
-                editor_ids,
-                depth + 1,
-            )?;
+            parse_ltex_group_inner(reader, sub_end, game, tables, depth + 1)?;
             continue;
         }
 
         let header = reader.read_record_header()?;
         if &header.record_type == b"LTEX" {
             let subs = reader.read_sub_records(&header)?;
+            let LtexTables {
+                ltex_to_txst,
+                direct_paths,
+                ltex_to_grass,
+                editor_ids,
+                havok,
+            } = &mut *tables;
             for sub in &subs {
                 match sub.sub_type.as_slice() {
                     // #4899 — the editor ID is what the ground-cover
@@ -567,6 +571,33 @@ fn parse_ltex_group_inner(
                                 .or_default()
                                 .push(grass_id);
                         }
+                    }
+                    // #6048 — Havok data. Oblivion / FO3 / FNV author the
+                    // material enum first; Skyrim / FO4 author only friction
+                    // and restitution here and name the material in MNAM.
+                    b"HNAM" => {
+                        let entry = havok.entry(header.form_id).or_default();
+                        let pre_skyrim = matches!(game, GameKind::Oblivion | GameKind::Fallout3NV);
+                        let (material, rest) = if pre_skyrim {
+                            (sub.data.first().copied(), sub.data.get(1..).unwrap_or(&[]))
+                        } else {
+                            (None, &sub.data[..])
+                        };
+                        entry.material = material;
+                        if let [friction, restitution, ..] = *rest {
+                            entry.friction = friction;
+                            entry.restitution = restitution;
+                        }
+                    }
+                    b"MNAM" if sub.data.len() >= 4 => {
+                        let matt = reader.remap_form_id(u32::from_le_bytes([
+                            sub.data[0],
+                            sub.data[1],
+                            sub.data[2],
+                            sub.data[3],
+                        ]));
+                        havok.entry(header.form_id).or_default().material_type_form =
+                            (matt != 0).then_some(matt);
                     }
                     // Oblivion: ICON → direct texture path.
                     b"ICON" => {

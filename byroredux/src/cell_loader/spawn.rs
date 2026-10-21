@@ -396,6 +396,10 @@ fn synthesize_static_trimesh(
 /// instance, and no render cost — Rapier only needs `CollisionShape` +
 /// `RigidBodyData` + `GlobalTransform`. Returns `true` when a collider was
 /// actually spawned. See R6a-stale-14-collider-partial.
+///
+/// `surface_material` is the authored Havok material when the source names
+/// one the geometry itself cannot carry — a LAND tile's ground texture
+/// (#6048); `None` keeps the static default.
 pub(crate) fn spawn_trimesh_collider_ghost(
     world: &mut World,
     positions: &[[f32; 3]],
@@ -404,10 +408,14 @@ pub(crate) fn spawn_trimesh_collider_ghost(
     rot: Quat,
     scale: f32,
     source_form: Option<byroredux_core::form_id::FormId>,
+    surface_material: Option<u32>,
 ) -> bool {
-    let Some((shape, body)) = synthesize_static_trimesh(positions, mesh_indices) else {
+    let Some((shape, mut body)) = synthesize_static_trimesh(positions, mesh_indices) else {
         return false;
     };
+    if let Some(material) = surface_material {
+        body.surface_material = material;
+    }
     let ghost = world.spawn();
     world.insert(ghost, Transform::new(pos, rot, scale));
     world.insert(ghost, GlobalTransform::new(pos, rot, scale));

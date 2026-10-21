@@ -145,6 +145,10 @@ pub struct EsmCellIndex {
     /// `Starfield.esm` ships 12,966; resolve a REFR's list through
     /// [`EsmCellIndex::layered_material_swap_entries`].
     pub layered_material_swaps: HashMap<u32, crate::esm::records::LayeredMaterialSwapRecord>,
+    /// LTEX form ID → its Havok data (`HNAM` / `MNAM`, #6048): the
+    /// ground material, friction and restitution the terrain collider of a
+    /// tile painted with the texture carries.
+    pub landscape_texture_havok: HashMap<u32, super::LandscapeTextureHavok>,
     /// Starfield MTPT (Material Path) form ID → its `Material` path
     /// (#5757): the source an LMSW entry names through
     /// `KeyMaterialPathForm`. Vanilla `Starfield.esm` ships 877.
@@ -628,6 +632,7 @@ impl EsmCellIndex {
             material_swaps,
             layered_material_swaps,
             material_path_forms,
+            landscape_texture_havok,
             cell_form_id_lookup: _,
             refr_lookup: _,
         } = other;
@@ -780,6 +785,7 @@ impl EsmCellIndex {
         self.material_swaps.extend(material_swaps);
         self.layered_material_swaps.extend(layered_material_swaps);
         self.material_path_forms.extend(material_path_forms);
+        self.landscape_texture_havok.extend(landscape_texture_havok);
         // #6036 — after `texture_sets` holds every plugin so far, so an LTEX
         // naming a master's TXST (or a master LTEX whose TXST a later plugin
         // overrides) resolves against the merged maps.

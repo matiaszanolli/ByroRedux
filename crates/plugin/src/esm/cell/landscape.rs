@@ -1,7 +1,33 @@
 //! Landscape (LAND) record types, extracted from ../mod.rs (#5805
 //! type-hub split).
 //!
-//! Types: `TerrainTextureLayer`, `TerrainQuadrant`, `LandscapeData`.
+//! Types: `TerrainTextureLayer`, `TerrainQuadrant`, `LandscapeData`,
+//! `LandscapeTextureHavok`.
+
+/// An LTEX record's Havok data (#6048): what physics knows about ground
+/// painted with this texture. Layouts per xEdit `wbDefinitions*.pas`:
+///
+/// - Oblivion / FO3 / FNV — `HNAM` = `u8` Material Type, `u8` Friction,
+///   `u8` Restitution. The material is the game's Havok material enum,
+///   the same `OB_HAV_MAT_*` / `FO_HAV_MAT_*` value a NIF `bhk` shape
+///   stores (0 Stone, 2 Dirt, 4 Grass, 14 Snow, FO3 18 Sand, …).
+/// - Skyrim / FO4 — `MNAM` = a `MATT` FormID (the material), `HNAM` =
+///   `u8` Friction, `u8` Restitution.
+///
+/// Friction and restitution are kept as authored (vanilla default 30): no
+/// source states the scale the engine applies to turn them into Havok
+/// coefficients, so they are not translated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LandscapeTextureHavok {
+    /// `HNAM` Material Type — Oblivion / FO3 / FNV only.
+    pub material: Option<u8>,
+    /// `MNAM` `MATT` FormID (load-order remapped) — Skyrim / FO4 only.
+    pub material_type_form: Option<u32>,
+    /// `HNAM` Friction, as authored.
+    pub friction: u8,
+    /// `HNAM` Restitution, as authored.
+    pub restitution: u8,
+}
 
 /// A texture layer within a terrain quadrant.
 #[derive(Debug, Clone)]

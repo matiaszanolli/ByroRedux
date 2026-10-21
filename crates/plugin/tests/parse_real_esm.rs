@@ -1304,6 +1304,52 @@ fn starfield_stored_avif_outputs_resolve_on_shipped_master() {
     assert_eq!(index.actor_value_form_id("ActionPoints"), None);
 }
 
+/// #6048 — LTEX Havok data decodes on the shipped masters: the pre-Skyrim
+/// material byte lands inside its game's Havok material enum (xEdit:
+/// Oblivion 0..=30, FO3/FNV 0..=31), and Skyrim names its material by
+/// `MATT` form instead. Counts measured 2026-10-21 (11 Oblivion LTEXs
+/// author no `HNAM`, though xEdit marks it required).
+#[test]
+#[ignore = "needs Oblivion, FNV and Skyrim SE game data on disk"]
+fn ltex_havok_data_decodes_on_shipped_masters() {
+    for (env, default, master, max_material, expected) in [
+        (test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT, "Oblivion.esm", Some(30u8), 218),
+        (test_paths::FNV_ENV, test_paths::FNV_DEFAULT, "FalloutNV.esm", Some(31), 89),
+        (test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT, "Skyrim.esm", None, 68),
+    ] {
+        let Some(data) = data_dir(env, default) else {
+            eprintln!("[LTEX havok] skipping {master}: game data unavailable");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(master)).expect("read master");
+        let index = parse_esm(&bytes).expect("parse master");
+        let havok = &index.cells.landscape_texture_havok;
+        let mut materials = std::collections::BTreeMap::<u8, usize>::new();
+        for h in havok.values() {
+            if let Some(m) = h.material {
+                *materials.entry(m).or_default() += 1;
+            }
+        }
+        let with_matt = havok.values().filter(|h| h.material_type_form.is_some()).count();
+        eprintln!(
+            "[LTEX havok] {master}: havok={} materials={materials:?} matt={with_matt}",
+            havok.len()
+        );
+        assert_eq!(havok.len(), expected, "{master}: LTEXs carrying Havok data");
+        match max_material {
+            Some(max) => {
+                assert_eq!(materials.values().sum::<usize>(), havok.len(), "{master}");
+                assert!(materials.keys().all(|&m| m <= max), "{master}: {materials:?}");
+                assert_eq!(with_matt, 0, "{master}");
+            }
+            None => {
+                assert!(materials.is_empty(), "{master}: no HNAM material byte");
+                assert!(with_matt > 0, "{master}: MNAM names the material");
+            }
+        }
+    }
+}
+
 /// #5757 — the LMSW / MTPT / XLMS census on vanilla `Starfield.esm`.
 /// Starfield's material swaps ride `LMSW` (not FO4's `MSWP`) and a REFR
 /// lists them in `XLMS`; before #5757 both records and the REFR field

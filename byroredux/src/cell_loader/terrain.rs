@@ -791,6 +791,8 @@ pub(super) struct TerrainSpawnCtx<'a> {
     pub landscape_grasses: &'a HashMap<u32, Vec<u32>>,
     /// LTEX editor IDs: the ground-cover affinity key (#4899).
     pub landscape_texture_names: &'a HashMap<u32, String>,
+    /// LTEX Havok data (#6048): the terrain collider's surface material.
+    pub landscape_texture_havok: &'a HashMap<u32, esm::cell::LandscapeTextureHavok>,
     pub blas_specs: &'a mut Vec<(u32, u32, u32)>,
     /// Y-up water-plane height for this cell, or `None` when it has none.
     ///
@@ -907,12 +909,75 @@ pub(super) fn land_tile_indices(hidden_quadrants: u8) -> Vec<u32> {
     indices
 }
 
+/// The LTEX whose ground covers most of a LAND tile (#6048), or `None`
+/// when the engine's built-in default land (a BTXT-less or BTXT-0
+/// quadrant, which carries no LTEX record) covers most of it.
+///
+/// Coverage is composited the way the layers are painted: a quadrant's
+/// BTXT covers all of its 17×17 vertices, and each ATXT layer, in layer
+/// order, covers its per-vertex alpha of whatever lies beneath. The weights
+/// are summed over the whole tile — hidden quadrants included, as the
+/// collider keeps them (#6043). Ties go to the smaller FormID.
+pub(super) fn dominant_land_texture(land: &esm::cell::LandscapeData) -> Option<u32> {
+    const QUAD_VERTS: usize = 17 * 17;
+    let mut coverage: HashMap<u32, f64> = HashMap::new();
+    for quadrant in &land.quadrants {
+        let mut layers: Vec<&esm::cell::TerrainTextureLayer> =
+            quadrant.layers.iter().filter(|l| l.alpha.is_some()).collect();
+        layers.sort_by_key(|l| l.layer);
+        for v in 0..QUAD_VERTS {
+            // Weight of every texture painted so far at this vertex; each
+            // layer scales what lies beneath by its own transparency.
+            let mut stack: Vec<(u32, f64)> = vec![(quadrant.base.unwrap_or(0), 1.0)];
+            for layer in &layers {
+                let alpha = layer
+                    .alpha
+                    .as_ref()
+                    .and_then(|a| a.get(v))
+                    .map_or(0.0, |&a| f64::from(a));
+                for (_, weight) in &mut stack {
+                    *weight *= 1.0 - alpha;
+                }
+                stack.push((layer.ltex_form_id, alpha));
+            }
+            for (ltex, weight) in stack {
+                *coverage.entry(ltex).or_default() += weight;
+            }
+        }
+    }
+    let (ltex, _) = coverage
+        .into_iter()
+        .max_by(|(a_ltex, a), (b_ltex, b)| a.total_cmp(b).then(b_ltex.cmp(a_ltex)))?;
+    (ltex != 0).then_some(ltex)
+}
+
+/// The Havok surface material a LAND tile's collider carries (#6048): the
+/// `HNAM` material of the tile's dominant ground texture. `None` (the
+/// static default) when the default land dominates, or the game names the
+/// material by `MATT` form instead (Skyrim / FO4 — no sourced mapping from
+/// a `MATT` to the `bhk` material id yet).
+fn land_surface_material(
+    land: &esm::cell::LandscapeData,
+    havok: &HashMap<u32, esm::cell::LandscapeTextureHavok>,
+) -> Option<u32> {
+    havok
+        .get(&dominant_land_texture(land)?)?
+        .material
+        .map(u32::from)
+}
+
 /// The LAND tile's collider: the whole tile, hidden quadrants included
 /// (#6043 — the CK's Hide Quad keeps collision). The vertices are already
 /// world-space Y-up (`zup_to_yup_pos`) and the render entity sits at
 /// `Transform::IDENTITY`, so the ghost takes an identity placement at unit
 /// scale and its collider lands exactly on the drawn surface.
-fn spawn_land_collider(world: &mut World, positions: &[[f32; 3]], grid_x: i32, grid_y: i32) {
+fn spawn_land_collider(
+    world: &mut World,
+    positions: &[[f32; 3]],
+    grid_x: i32,
+    grid_y: i32,
+    surface_material: Option<u32>,
+) {
     if !crate::cell_loader::spawn::spawn_trimesh_collider_ghost(
         world,
         positions,
@@ -921,6 +986,7 @@ fn spawn_land_collider(world: &mut World, positions: &[[f32; 3]], grid_x: i32, g
         Quat::IDENTITY,
         1.0,
         None,
+        surface_material,
     ) {
         log::warn!(
             "Terrain ({},{}): collider synthesis produced no triangles — \
@@ -946,11 +1012,13 @@ pub(super) fn spawn_terrain_mesh(
         mat_provider,
         landscape_grasses,
         landscape_texture_names,
+        landscape_texture_havok,
         blas_specs,
         water_y,
         game,
         hidden_quadrants,
     } = spawn;
+    let surface_material = land_surface_material(land, landscape_texture_havok);
     // #4052 — both promoted to `byroredux_core::math::coord` so the
     // ground-cover scatter shader reads the same numbers through
     // `shader_constants.glsl` instead of a second hand-typed copy.
@@ -1094,7 +1162,7 @@ pub(super) fn spawn_terrain_mesh(
         // #6043 — every quadrant hidden: nothing to draw, but the land stays
         // solid. No mesh, BLAS, terrain-tile slot or ground-cover inputs.
         release_splat_layer_textures(ctx, &splat_tex_indices);
-        spawn_land_collider(world, &positions, grid_x, grid_y);
+        spawn_land_collider(world, &positions, grid_x, grid_y, surface_material);
         log::debug!("Terrain ({grid_x},{grid_y}): all four quadrants hidden (XCLC)");
         return Some(0);
     }
@@ -1446,7 +1514,8 @@ pub(super) fn spawn_terrain_mesh(
     // interior `bhk` bodies, but that distinction buys us nothing and only
     // created a class of geometry that rendered without being solid.
     //
-    spawn_land_collider(world, &positions, grid_x, grid_y);
+    // #6048 — the collider carries the dominant ground texture's material.
+    spawn_land_collider(world, &positions, grid_x, grid_y, surface_material);
 
     log::debug!(
         "Terrain mesh ({},{}): {} verts, {} tris, height range {:.0}–{:.0}",
@@ -2104,6 +2173,7 @@ mod tests {
             Quat::IDENTITY,
             1.0,
             None,
+            None,
         ));
         physics_sync_system(&world, 0.0);
 
@@ -2295,5 +2365,142 @@ mod tests {
             mat_provider: None,
         };
         assert_eq!(no_provider.texture_set(MNAM_ONLY).unwrap().diffuse, None);
+    }
+}
+
+/// #6048 — the LAND tile's collider carries its dominant ground texture's
+/// LTEX Havok material.
+#[cfg(test)]
+mod land_havok_tests {
+    use super::*;
+    use esm::cell::{LandscapeData, LandscapeTextureHavok, TerrainQuadrant, TerrainTextureLayer};
+
+    const DIRT: u32 = 0x0000_0A01;
+    const SNOW: u32 = 0x0000_0A02;
+    const GRASS: u32 = 0x0000_0A03;
+
+    fn land(quadrants: [TerrainQuadrant; 4]) -> LandscapeData {
+        LandscapeData {
+            heights: vec![0.0; LAND_GRID_VERTS * LAND_GRID_VERTS],
+            normals: None,
+            vertex_colors: None,
+            quadrants,
+        }
+    }
+
+    fn base(ltex: u32) -> TerrainQuadrant {
+        TerrainQuadrant {
+            base: Some(ltex),
+            layers: Vec::new(),
+        }
+    }
+
+    fn layer(ltex: u32, layer: u16, alpha: f32) -> TerrainTextureLayer {
+        TerrainTextureLayer {
+            ltex_form_id: ltex,
+            layer,
+            alpha: Some(vec![alpha; 17 * 17]),
+        }
+    }
+
+    #[test]
+    fn the_texture_covering_most_quadrants_dominates() {
+        let tile = land([base(DIRT), base(DIRT), base(DIRT), base(SNOW)]);
+        assert_eq!(dominant_land_texture(&tile), Some(DIRT));
+    }
+
+    /// Layers composite over the base in layer order: an opaque top layer
+    /// hides everything beneath it, a half-transparent one splits the
+    /// vertex with what it covers.
+    #[test]
+    fn layers_cover_what_lies_beneath_them_in_layer_order() {
+        let mut snowed = base(DIRT);
+        snowed.layers = vec![layer(GRASS, 1, 1.0), layer(SNOW, 2, 1.0)];
+        let tile = land([snowed.clone(), snowed, base(DIRT), base(GRASS)]);
+        // SNOW: 2 quadrants; DIRT: 1; GRASS: 1 (its own base; the layer is buried).
+        assert_eq!(dominant_land_texture(&tile), Some(SNOW));
+
+        // Layer order, not authored order, decides what is on top.
+        let mut reversed = base(DIRT);
+        reversed.layers = vec![layer(SNOW, 2, 1.0), layer(GRASS, 1, 1.0)];
+        let tile = land([reversed.clone(), reversed, base(GRASS), base(DIRT)]);
+        assert_eq!(dominant_land_texture(&tile), Some(SNOW));
+        // An exact tie goes to the smaller FormID.
+        let tile = land([base(SNOW), base(SNOW), base(DIRT), base(DIRT)]);
+        assert_eq!(dominant_land_texture(&tile), Some(DIRT));
+
+        // A 0.4-alpha layer over every quadrant leaves the base at 0.6.
+        let mut thin = base(DIRT);
+        thin.layers = vec![layer(SNOW, 1, 0.4)];
+        let tile = land([thin.clone(), thin.clone(), thin.clone(), thin]);
+        assert_eq!(dominant_land_texture(&tile), Some(DIRT));
+    }
+
+    /// The engine's default land (no BTXT, or BTXT 0) has no LTEX record
+    /// and so no Havok data: when it dominates, the collider keeps the
+    /// static default.
+    #[test]
+    fn default_land_dominating_yields_no_texture() {
+        let none = TerrainQuadrant::default();
+        let tile = land([none.clone(), none.clone(), base(0), base(SNOW)]);
+        assert_eq!(dominant_land_texture(&tile), None);
+    }
+
+    /// The material is the `HNAM` byte (Oblivion / FO3 / FNV); a Skyrim / FO4
+    /// texture names a `MATT` and gives no material here.
+    #[test]
+    fn surface_material_is_the_dominant_textures_hnam_material() {
+        let mut havok = HashMap::new();
+        havok.insert(
+            SNOW,
+            LandscapeTextureHavok {
+                material: Some(14),
+                material_type_form: None,
+                friction: 30,
+                restitution: 30,
+            },
+        );
+        havok.insert(
+            GRASS,
+            LandscapeTextureHavok {
+                material: None,
+                material_type_form: Some(0x0001_2345),
+                friction: 30,
+                restitution: 30,
+            },
+        );
+        let snowy = land([base(SNOW), base(SNOW), base(SNOW), base(DIRT)]);
+        assert_eq!(land_surface_material(&snowy, &havok), Some(14));
+        let grassy = land([base(GRASS), base(GRASS), base(GRASS), base(DIRT)]);
+        assert_eq!(land_surface_material(&grassy, &havok), None);
+        let dirty = land([base(DIRT), base(DIRT), base(DIRT), base(SNOW)]);
+        assert_eq!(land_surface_material(&dirty, &havok), None, "no Havok data for DIRT");
+    }
+
+    /// End to end through physics: the footstep probe reads the material
+    /// off the terrain collider.
+    #[test]
+    fn the_footstep_probe_reads_the_terrain_material() {
+        use byroredux_physics::{physics_sync_system, PhysicsWorld, RapierHandles};
+        let mut positions = Vec::with_capacity(LAND_GRID_VERTS * LAND_GRID_VERTS);
+        for row in 0..LAND_GRID_VERTS {
+            for col in 0..LAND_GRID_VERTS {
+                positions.push(zup_to_yup_pos([
+                    col as f32 * LAND_VERTEX_SPACING,
+                    row as f32 * LAND_VERTEX_SPACING,
+                    0.0,
+                ]));
+            }
+        }
+        let mut world = World::new();
+        world.register::<RapierHandles>();
+        world.insert_resource(PhysicsWorld::new());
+        spawn_land_collider(&mut world, &positions, 0, 0, Some(14));
+        physics_sync_system(&world, 0.0);
+        let physics = world.resource::<PhysicsWorld>();
+        assert_eq!(
+            physics.surface_material_under(Vec3::new(2048.0, 50.0, -2048.0), 200.0, None),
+            Some(14)
+        );
     }
 }

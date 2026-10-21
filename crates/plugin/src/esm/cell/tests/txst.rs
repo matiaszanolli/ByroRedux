@@ -750,19 +750,14 @@ fn ltex_gnam_array_survives_decode_in_authored_order() {
     let mut reader = EsmReader::new(&group);
     let header = reader.read_group_header().expect("group header");
     let end = reader.group_content_end(&header);
-    let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
-    let mut direct_paths: HashMap<u32, String> = HashMap::new();
-    let mut ltex_to_grass: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut editor_ids: HashMap<u32, String> = HashMap::new();
-    parse_ltex_group(
-        &mut reader,
-        end,
-        &mut ltex_to_txst,
-        &mut direct_paths,
-        &mut ltex_to_grass,
-        &mut editor_ids,
-    )
-    .expect("parse must succeed");
+    let mut tables = super::super::support::LtexTables::default();
+    parse_ltex_group(&mut reader, end, GameKind::Fallout3NV, &mut tables)
+        .expect("parse must succeed");
+    let super::super::support::LtexTables {
+        editor_ids,
+        ltex_to_grass,
+        ..
+    } = tables;
     assert_eq!(
         editor_ids.get(&0x0000_2001).map(String::as_str),
         Some("LFieldGrass01NoGrass"),
@@ -779,4 +774,83 @@ fn ltex_gnam_array_survives_decode_in_authored_order() {
         "all three authored grasses must survive, in authored order"
     );
     assert_eq!(ltex_to_grass.get(&0x0000_2002), Some(&vec![0xB7]));
+}
+
+/// One LTEX record (form `0x2001`) of the given sub-records, in a
+/// top-level LTEX GRUP, walked by `parse_ltex_group` for `game`.
+fn parse_one_ltex(
+    game: GameKind,
+    subs: &[(&[u8; 4], &[u8])],
+) -> super::super::support::LtexTables {
+    use super::super::support::parse_ltex_group;
+    let mut sub_data = Vec::new();
+    for (sig, data) in subs {
+        sub_data.extend_from_slice(*sig);
+        sub_data.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(data);
+    }
+    let mut record = Vec::new();
+    record.extend_from_slice(b"LTEX");
+    record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    record.extend_from_slice(&0u32.to_le_bytes());
+    record.extend_from_slice(&0x0000_2001u32.to_le_bytes());
+    record.extend_from_slice(&[0u8; 8]);
+    record.extend_from_slice(&sub_data);
+    let mut group = Vec::new();
+    group.extend_from_slice(b"GRUP");
+    group.extend_from_slice(&((record.len() + 24) as u32).to_le_bytes());
+    group.extend_from_slice(b"LTEX");
+    group.extend_from_slice(&0u32.to_le_bytes());
+    group.extend_from_slice(&[0u8; 8]);
+    group.extend_from_slice(&record);
+
+    let mut reader = EsmReader::new(&group);
+    let header = reader.read_group_header().expect("group header");
+    let end = reader.group_content_end(&header);
+    let mut tables = super::super::support::LtexTables::default();
+    parse_ltex_group(&mut reader, end, game, &mut tables).expect("parse must succeed");
+    tables
+}
+
+/// #6048 — LTEX Havok data, per xEdit: Oblivion / FO3 / FNV `HNAM` is
+/// material, friction, restitution (`u8` each); Skyrim / FO4 `HNAM` is
+/// friction, restitution, with the material a `MATT` FormID in `MNAM`.
+#[test]
+fn ltex_havok_data_decodes_per_game_layout() {
+    for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
+        // Snow (14), friction 10, restitution 5.
+        let tables = parse_one_ltex(game, &[(b"HNAM", &[14, 10, 5])]);
+        assert_eq!(
+            tables.havok.get(&0x0000_2001),
+            Some(&LandscapeTextureHavok {
+                material: Some(14),
+                material_type_form: None,
+                friction: 10,
+                restitution: 5,
+            }),
+            "{game:?}"
+        );
+    }
+    for game in [GameKind::Skyrim, GameKind::Fallout4] {
+        let tables = parse_one_ltex(
+            game,
+            &[(b"MNAM", &0x0001_2345u32.to_le_bytes()), (b"HNAM", &[30, 20])],
+        );
+        assert_eq!(
+            tables.havok.get(&0x0000_2001),
+            Some(&LandscapeTextureHavok {
+                material: None,
+                material_type_form: Some(0x0001_2345),
+                friction: 30,
+                restitution: 20,
+            }),
+            "{game:?}"
+        );
+    }
+    // A short HNAM keeps what it carries and nothing it does not.
+    let tables = parse_one_ltex(GameKind::Oblivion, &[(b"HNAM", &[2])]);
+    assert_eq!(tables.havok[&0x0000_2001].material, Some(2));
+    assert_eq!(tables.havok[&0x0000_2001].friction, 0);
+    // No Havok sub-records, no entry.
+    assert!(parse_one_ltex(GameKind::Oblivion, &[]).havok.is_empty());
 }

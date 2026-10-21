@@ -657,9 +657,8 @@ mod tests {
             parse_modl_group(r, end, &mut statics)
         });
         check("parse_ltex_group", &any, &mut |r, end| {
-            let (mut ltex_to_txst, mut direct, mut grass, mut edids) =
-                (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
-            parse_ltex_group(r, end, &mut ltex_to_txst, &mut direct, &mut grass, &mut edids)
+            let mut tables = crate::esm::cell::support::LtexTables::default();
+            parse_ltex_group(r, end, GameKind::Fallout3NV, &mut tables)
         });
         check("parse_txst_group", &any, &mut |r, end| {
             let (mut textures, mut sets) = (HashMap::new(), HashMap::new());

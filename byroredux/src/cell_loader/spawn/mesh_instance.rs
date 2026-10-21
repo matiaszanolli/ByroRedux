@@ -1546,6 +1546,7 @@ pub(super) fn spawn_mesh_instance(
             final_rot,
             final_scale,
             source_form,
+            None,
         );
     }
     // Attach ESM light_data ONLY if the NIF didn't actually spawn

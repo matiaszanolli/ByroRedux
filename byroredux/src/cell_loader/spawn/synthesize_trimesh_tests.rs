@@ -54,6 +54,7 @@ fn floor_collider_ghost_is_static_and_renderer_free() {
         Quat::IDENTITY,
         1.0,
         None,
+        None,
     ));
 
     let shape_q = world
@@ -99,6 +100,7 @@ fn placement_trimesh_ghost_keeps_reference_ownership_backlink() {
         Quat::IDENTITY,
         1.0,
         Some(source_form),
+        None,
     ));
 
     let backlink = world
@@ -126,6 +128,7 @@ fn placement_scale_is_applied_once_by_the_shared_converter() {
         Vec3::ZERO,
         Quat::IDENTITY,
         2.0,
+        None,
         None,
     ));
     physics_sync_system(&world, 0.0);

@@ -42,7 +42,7 @@ pub use cell_data::CellData;
 pub use index::{
     CellRef, EsmCellIndex, OwnedCellRef, parse_esm_cells, parse_esm_cells_with_load_order,
 };
-pub use landscape::{LandscapeData, TerrainQuadrant, TerrainTextureLayer};
+pub use landscape::{LandscapeData, LandscapeTextureHavok, TerrainQuadrant, TerrainTextureLayer};
 pub use lighting::{CellLighting, StarfieldLighting};
 pub use placed_ref::{
     ActivateParent, CellOwnership, EnableParent, LinkedRef, LockData, PlacedRef, PortalLink,

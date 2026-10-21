@@ -459,7 +459,14 @@ per-part sequence is stored in `RigidBodyData::part_surface_materials`;
 `collision_shape_to_parts` maps it 1:1 onto parts so a compound body whose
 bhk children carry
 different materials reads back per-part. Both are `serde(skip)`-ed:
-the NIF is re-parsed on load and the values re-derived. Consumers:
+the NIF is re-parsed on load and the values re-derived. Terrain has no
+bhk shape: a LAND tile's collider carries the LTEX Havok material of the
+tile's dominant ground texture (#6048, `land_surface_material` in
+`cell_loader/terrain.rs`) — the `HNAM` material byte on Oblivion/FO3/FNV,
+the same enum the bhk leaves use. Skyrim/FO4 name it by `MATT` form,
+which has no sourced mapping to the bhk id yet, so their tiles keep the
+static default; LTEX friction/restitution are decoded but not translated
+(no source gives their scale). Consumers:
 
 - `PhysicsWorld::surface_material_under` — a ground-probe ray that
   returns the hit collider's material byte; `footstep_system` feeds it
