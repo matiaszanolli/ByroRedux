@@ -945,15 +945,24 @@ pub struct Attenuation {
 }
 
 impl Attenuation {
-    /// Min/max as a kira `RangeInclusive`, normalized so `min <= max`.
+    /// Min/max as a kira `RangeInclusive`, normalized so `min < max`.
     /// kira computes attenuation as `distance.clamp(min, max)`, and
     /// `f32::clamp` panics when `min > max` — a reversed range (e.g. from a
     /// future data-driven producer, or hand-edited content) would otherwise
     /// abort the whole audio render thread at playback, invisible to the
     /// dispatch call site. Clamp-normalize at the boundary instead. #1612.
+    ///
+    /// An equal range is the other degenerate case: kira's linear falloff is
+    /// `(distance - min) / (max - min)`, which is `0 / 0 = NaN` when the two
+    /// meet, and the NaN gain poisons the whole mix (and, through the reverb
+    /// send, every later interior sound). `max` is pushed a few ULPs above
+    /// `min`, so a listener at or inside `min` still hears full volume. #6207.
     pub fn distance_range(&self) -> std::ops::RangeInclusive<f32> {
         let lo = self.min_distance.min(self.max_distance);
-        let hi = self.min_distance.max(self.max_distance);
+        let hi = self
+            .min_distance
+            .max(self.max_distance)
+            .max(lo + lo.abs().max(1.0) * f32::EPSILON * 4.0);
         lo..=hi
     }
 }

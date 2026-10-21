@@ -1309,6 +1309,31 @@ fn reversed_attenuation_normalizes_instead_of_panicking() {
     assert_eq!(ok.distance_range(), 0.5..=12.0);
 }
 
+/// #6207 — an equal Attenuation (ObScript `PlayMusic` passes `1e9..=1e9`)
+/// must leave kira a strictly positive span: its linear falloff divides by
+/// `max - min`, and `0 / 0` turned the whole mix NaN. The falloff kira
+/// computes from the returned range must stay finite and at full volume.
+#[test]
+fn equal_attenuation_never_hands_kira_a_zero_span() {
+    for d in [0.0_f32, 1.0, 30.0, 1.0e9] {
+        let range = Attenuation {
+            min_distance: d,
+            max_distance: d,
+        }
+        .distance_range();
+        let (lo, hi) = (*range.start(), *range.end());
+        assert_eq!(lo, d);
+        assert!(hi > lo, "{d}: span must be positive, got {lo}..={hi}");
+        // kira's spatial stage: clamp, then normalize over the span.
+        for listener in [0.0_f32, d, d * 2.0 + 1.0] {
+            let t = (listener.clamp(lo, hi) - lo) / (hi - lo);
+            assert!(t.is_finite(), "{d} @ {listener}: falloff {t} is not finite");
+        }
+        let at_min = (d.clamp(lo, hi) - lo) / (hi - lo);
+        assert_eq!(at_min, 0.0, "{d}: a listener at min must hear full volume");
+    }
+}
+
 /// AUD-2026-08-07-D5-01 — the reverb-send gate that both
 /// `drain_pending_oneshots` and `dispatch_new_oneshots` now share via
 /// `apply_reverb_send` must key off `SILENCE_DB`, not a re-typed
