@@ -790,7 +790,17 @@ fn parse_npc_core(
         // rejected every vanilla FO4 NPC ACBS, leaving flags=0 (all actors
         // resolved Male), level=1, and template_flags=0. Female-only outfit
         // ARMAs then had no male mesh to attach, producing floating heads.
-        b"ACBS" if matches!(game, GameKind::Fallout4) && sub.data.len() >= 20 => {
+        //
+        // Starfield's is the same layout without the trailing bleedout /
+        // unknown words: 16 bytes, template flags still at +14 (all 7,131
+        // `Starfield.esm` NPC_ records are exactly 16 bytes; the bit-set
+        // template flags of 45,738 TPTA entries sit at +14 and nowhere else).
+        // Without this arm every Starfield actor kept acbs_flags = 0 (all male,
+        // none essential / unique) and template_flags = 0 (#6120).
+        b"ACBS"
+            if (matches!(game, GameKind::Fallout4) && sub.data.len() >= 20)
+                || (matches!(game, GameKind::Starfield) && sub.data.len() >= 16) =>
+        {
             let mut r = SubReader::new(&sub.data);
             record.acbs_flags = r.u32_or_default();
             r.skip_or_eof(2); // XP value offset (i16)

@@ -201,6 +201,39 @@ fn fallout4_20byte_acbs_parses_gender_level_and_template_flags() {
     assert_eq!(n.template_flags, 0x0002);
 }
 
+/// #6120 - Starfield's `NPC_.ACBS` is the FO4 layout minus the trailing
+/// bleedout / unknown words: 16 bytes, template flags at +14. No parse arm
+/// matched it, so every Starfield actor kept flags 0 (male, not essential) and
+/// template flags 0 (no trait / stat / inventory inheritance).
+#[test]
+fn starfield_16byte_acbs_parses_gender_level_and_template_flags() {
+    use crate::equip::Gender;
+
+    let acbs = [
+        0x01, 0x00, 0x00, 0x00, // flags = 0x1 (Female)
+        0x00, 0x00, // XP value offset
+        0x07, 0x00, // level = 7
+        0x03, 0x00, // calc min = 3
+        0x00, 0x00, // calc max
+        0x32, 0x00, // disposition = 50
+        0x03, 0x00, // template flags = Use Traits | Use Stats
+    ];
+    assert_eq!(acbs.len(), 16);
+    let subs = vec![sub(b"EDID", b"SF_Npc\0"), sub(b"ACBS", acbs)];
+
+    let n = parse_npc(0x0001_2345, &subs, GameKind::Starfield, &None);
+
+    assert_eq!(n.acbs_flags, 1);
+    assert_eq!(Gender::from_acbs_flags(n.acbs_flags), Gender::Female);
+    assert_eq!(n.level, 7);
+    assert_eq!(n.calc_min, 3);
+    assert_eq!(n.disposition_base, 50);
+    assert_eq!(n.template_flags, 0x0003, "Use Traits | Use Stats");
+    // The shorter payload does not leak into the games that need more bytes.
+    let fo4 = parse_npc(0x0004_5AD1, &subs, GameKind::Fallout4, &None);
+    assert_eq!((fo4.acbs_flags, fo4.template_flags), (0, 0));
+}
+
 /// Skyrim shares FNV's 24-byte ACBS length but not its field layout. Pin all
 /// three signed pool offsets plus the fields on either side of the Health
 /// offset so the generic Fallout arm cannot silently reclaim this payload.
