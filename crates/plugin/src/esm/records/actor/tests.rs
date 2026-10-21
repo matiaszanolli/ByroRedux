@@ -23,7 +23,8 @@ fn skyrim_race_preserves_gendered_skeletons_separately_from_body_models() {
     ];
     // #6070 — FO4 authors the same run (verified on Fallout4.esm by
     // `installed_fo4_races_resolve_their_own_skeletons`).
-    for game in [GameKind::Skyrim, GameKind::Fallout4] {
+    // #6122 — and Starfield (31 of 31 `Starfield.esm` RACE records).
+    for game in [GameKind::Skyrim, GameKind::Fallout4, GameKind::Starfield] {
         let race = parse_race(0xD53, &subs, game, &None);
         assert_eq!(
             race.skeleton_models,
@@ -38,7 +39,6 @@ fn skyrim_race_preserves_gendered_skeletons_separately_from_body_models() {
         GameKind::Oblivion,
         GameKind::Fallout3NV,
         GameKind::Fallout76,
-        GameKind::Starfield,
     ] {
         assert_eq!(parse_race(1, &subs, game, &None).skeleton_models, ["", ""]);
     }
@@ -2377,4 +2377,33 @@ fn installed_fo4_races_resolve_their_own_skeletons() {
         .collect();
     eprintln!("{} authored race skeleton paths", authored.len());
     assert!(authored.len() > 20);
+}
+
+/// #6120 / #6122 - Starfield's NPC_ ACBS and RACE ANAM decode on the real
+/// master: roughly 28% of NPCs are female (2,021 of 7,131 measured), most
+/// carry template flags, and `HumanRace` names its own male and female rigs.
+#[test]
+#[ignore = "needs Starfield game data on disk; parses the whole master (~3.4 GB peak)"]
+fn installed_starfield_npcs_and_races_decode_acbs_and_skeletons() {
+    let data = std::env::var("BYROREDUX_STARFIELD_DATA")
+        .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data".to_string());
+    let Ok(bytes) = std::fs::read(std::path::Path::new(&data).join("Starfield.esm")) else {
+        eprintln!("skipping: Starfield.esm not available");
+        return;
+    };
+    let index = crate::esm::records::parse_esm(&bytes).expect("parse Starfield.esm");
+    let npcs = index.npcs.len();
+    let female = index.npcs.values().filter(|n| n.acbs_flags & 1 != 0).count();
+    let templated = index.npcs.values().filter(|n| n.template_flags != 0).count();
+    eprintln!("{npcs} NPC_: {female} female, {templated} with template flags");
+    assert!(female > npcs / 5, "female NPCs must decode ({female} of {npcs})");
+    assert!(templated > npcs / 2, "template flags must decode ({templated} of {npcs})");
+    let human = index
+        .races
+        .values()
+        .find(|race| race.editor_id == "HumanRace")
+        .expect("HumanRace");
+    eprintln!("HumanRace skeletons {:?}", human.skeleton_models);
+    assert!(human.skeleton_models[0].to_ascii_lowercase().ends_with("characterassets\\skeleton.nif"));
+    assert!(human.skeleton_models[1].to_ascii_lowercase().contains("female"));
 }

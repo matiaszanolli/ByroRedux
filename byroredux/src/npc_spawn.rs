@@ -540,9 +540,33 @@ fn npc_skeleton_path(game: GameKind, traits: &NpcRecord, index: &EsmIndex) -> Op
         .map(|race| &race.skeleton_models[gender])
         .filter(|path| !path.is_empty())
     {
-        return Some(normalize_mesh_path(path).into_owned());
+        let path = normalize_mesh_path(path).into_owned();
+        if game == GameKind::Starfield {
+            return Some(starfield_face_rig(path));
+        }
+        return Some(path);
     }
     humanoid_skeleton_path(game).map(str::to_owned)
+}
+
+/// Starfield's human RACE authors the body-only rig (`...\characterassets\
+/// skeleton.nif`, and `...\female\skeleton.nif`), but NPC FaceGen heads, hair,
+/// teeth, lashes and brows skin to `faceBone_*` joints only the complete
+/// `skeleton_facebones.nif` beside it carries (see [`humanoid_skeleton_path`]).
+/// Both human rigs ship that sibling in `Starfield - Meshes01/02.ba2`
+/// (#6122); any other race's rig (ModelA, turrets, critters) has no face parts
+/// and is left as authored.
+fn starfield_face_rig(path: String) -> String {
+    let lower = path.to_ascii_lowercase().replace('/', "\\");
+    let human_body_rig = [
+        r"meshes\actors\human\characterassets\skeleton.nif",
+        r"meshes\actors\human\characterassets\female\skeleton.nif",
+    ];
+    if human_body_rig.contains(&lower.as_str()) {
+        let stem = path.len() - "skeleton.nif".len();
+        return format!("{}skeleton_facebones.nif", &path[..stem]);
+    }
+    path
 }
 
 /// Split a creature's `CREA` MODL into `(skeleton path, directory prefix)`,

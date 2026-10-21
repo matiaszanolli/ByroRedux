@@ -588,6 +588,53 @@ fn race_skeleton_selection_preserves_gender_and_authored_missing_paths() {
     );
 }
 
+/// #6122 - a Starfield race's authored rig is used (so a non-human actor no
+/// longer skins to the human one, and a female takes her own), with the human
+/// body-only rig swapped for its `_facebones` sibling.
+#[test]
+fn starfield_race_skeletons_are_used_and_human_rigs_take_the_face_bones() {
+    let mut index = EsmIndex::default();
+    index.races.insert(
+        1,
+        RaceRecord {
+            skeleton_models: [
+                r"Actors\Human\CharacterAssets\skeleton.nif".into(),
+                r"Actors\Human\CharacterAssets\Female\skeleton.nif".into(),
+            ],
+            ..Default::default()
+        },
+    );
+    index.races.insert(
+        2,
+        RaceRecord {
+            skeleton_models: [r"Actors\ModelA\CharacterAssets\Skeleton.nif".into(), String::new()],
+            ..Default::default()
+        },
+    );
+    let mut npc = NpcRecord { race_form_id: 1, ..Default::default() };
+    let path = |npc: &NpcRecord| npc_skeleton_path(GameKind::Starfield, npc, &index);
+    assert_eq!(path(&npc).as_deref(), Some(r"meshes\Actors\Human\CharacterAssets\skeleton_facebones.nif"));
+    npc.acbs_flags = 1;
+    assert_eq!(
+        path(&npc).as_deref(),
+        Some(r"meshes\Actors\Human\CharacterAssets\Female\skeleton_facebones.nif"),
+        "a female takes her own rig, not the male one"
+    );
+    npc.acbs_flags = 0;
+    npc.race_form_id = 2;
+    assert_eq!(
+        path(&npc).as_deref(),
+        Some(r"meshes\Actors\ModelA\CharacterAssets\Skeleton.nif"),
+        "a non-human rig is left as authored"
+    );
+    // The swap is Starfield's alone: the same authored path elsewhere is untouched.
+    npc.race_form_id = 1;
+    assert_eq!(
+        npc_skeleton_path(GameKind::Fallout4, &npc, &index).as_deref(),
+        Some(r"meshes\Actors\Human\CharacterAssets\skeleton.nif")
+    );
+}
+
 #[test]
 #[ignore = "needs Skyrim SE game data on disk"]
 fn nested_draugr_template_resolves_traits_on_real_skyrim_data() {

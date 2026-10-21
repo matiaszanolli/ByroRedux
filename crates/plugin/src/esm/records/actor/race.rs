@@ -27,7 +27,7 @@ pub struct RaceRecord {
     pub skill_bonuses: Vec<(u8, i8)>,
     /// Body part model paths (head, body, hand, foot).
     pub body_models: Vec<String>,
-    /// Skyrim RACE ANAM skeleton paths, indexed male then female. These
+    /// Skyrim / FO4 / Starfield RACE ANAM skeleton paths, indexed male then female. These
     /// belong to the opening MNAM/FNAM section, not the later MODL body
     /// or behavior-project sections. Empty means no authored path.
     pub skeleton_models: [String; 2],
@@ -611,7 +611,14 @@ pub fn parse_race(
             // #6070 — FO4 authors the same MNAM/FNAM `ANAM` skeleton run
             // (FeralGhoulRace's own rig, the super mutant's, ...); without it
             // every FO4 race fell back to the human skeleton and its ragdoll.
-            b"ANAM" if matches!(game, GameKind::Skyrim | GameKind::Fallout4) && in_skeleton_section => {
+            //
+            // #6122 — Starfield's RACE authors it too (31 of 31 records:
+            // `HumanRace` male and `Female\` rigs, ModelA, turrets, critters ...).
+            // FO76 is left out: its RACE has not been measured.
+            b"ANAM"
+                if matches!(game, GameKind::Skyrim | GameKind::Fallout4 | GameKind::Starfield)
+                    && in_skeleton_section =>
+            {
                 if let Some(gender) = gender_section {
                     record.skeleton_models[gender as usize] = read_zstring(&sub.data);
                 }
