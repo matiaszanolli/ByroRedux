@@ -329,6 +329,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<crate::npc_spawn::loot_appearance::NpcLootAppearance>();
     world.register::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>();
     world.register::<crate::ragdoll::RagdollActive>();
+    world.register::<crate::ragdoll::RetiredBodyRows>();
     // M44 Phase 3.5: pre-register footstep emitter storage so
     // `footstep_system`'s `query_mut::<FootstepEmitter>` returns
     // `Some` even before the first emitter is inserted (e.g. on

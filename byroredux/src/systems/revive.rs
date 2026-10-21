@@ -18,14 +18,14 @@
 //! flag), and the items the CS says "may" be removed. The death *count* is not lowered (GECK *GetDeadCount*:
 //! "Resurrecting a killed actor will not lower the death count").
 
-use byroredux_core::ecs::components::{Dead, MotionType, RigidBodyData};
+use byroredux_core::ecs::components::{Dead, RigidBodyData};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_physics::{PhysicsWorld, Ragdoll};
 use byroredux_scripting::obscript_state::ReviveRequest;
 
 use crate::components::{AmbientPackageRuntime, AnimationTarget};
-use crate::ragdoll::{RagdollActive, RagdollTemplate};
+use crate::ragdoll::{RagdollActive, RetiredBodyRows};
 
 /// Revive the actors `Resurrect` was called on this frame.
 pub(crate) fn revive_system(world: &World, _dt: f32) {
@@ -79,26 +79,18 @@ pub(crate) fn stand_up(world: &World, actor: EntityId) -> Vec<String> {
     if let Some(mut active) = world.query_mut::<RagdollActive>() {
         active.remove(root);
     }
-    // The keyframed collision body each ragdoll bone had while the actor lived (activation removed it).
-    let bones: Vec<EntityId> = world.get::<RagdollTemplate>(root).map(|template| template.bodies.iter().map(|body| body.bone).collect()).unwrap_or_default();
+    // The keyframed collision rows the bones and the #6070 stand-in capsule had while the actor lived:
+    // activation parked exactly those (#6326), so the authored layer, sensor flag, materials and contact
+    // coefficients come back with them, and a bone that never had a row gets none.
+    let retired = world.query_mut::<RetiredBodyRows>().and_then(|mut parked| parked.remove(root)).map(|rows| rows.0).unwrap_or_default();
     if let Some(mut bodies) = world.query_mut::<RigidBodyData>() {
-        for bone in &bones {
-            if bodies.get(*bone).is_none() {
-                bodies.insert(*bone, RigidBodyData { motion_type: MotionType::Keyframed, ..Default::default() });
+        for (entity, row) in &retired {
+            if bodies.get(*entity).is_none() {
+                bodies.insert(*entity, row.clone());
             }
         }
     }
-    notes.push(format!("{} bone bodies restored", bones.len()));
-    // #6070 — and the shape-less-actor stand-in capsule that death retired
-    // (the one-body corpse template's bone is that capsule; handled above).
-    let stand_ins = crate::ragdoll::fallback_colliders_of(world, root);
-    if let Some(mut bodies) = world.query_mut::<RigidBodyData>() {
-        for collider in &stand_ins {
-            if bodies.get(*collider).is_none() {
-                bodies.insert(*collider, RigidBodyData { motion_type: MotionType::Keyframed, ..Default::default() });
-            }
-        }
-    }
+    notes.push(format!("{} bone bodies restored", retired.len()));
 
     // The generic idle, on the actor, driving its skeleton.
     let idle = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|index| index.0.game).and_then(|game| {

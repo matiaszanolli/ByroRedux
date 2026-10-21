@@ -80,6 +80,40 @@ impl Component for RagdollActive {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// The keyframed collision rows ragdoll activation took off the skeleton's
+/// bones and stand-in capsule, parked on the skeleton root so getting up
+/// (`systems::revive::stand_up`) puts back exactly what the actor spawned
+/// with: the authored layer, sensor flag, surface materials and contact
+/// coefficients (#6326). A bone that had no row stays without one.
+#[derive(Debug, Clone, Default)]
+pub struct RetiredBodyRows(pub Vec<(EntityId, RigidBodyData)>);
+
+impl Component for RetiredBodyRows {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Remove `entities`' `RigidBodyData` rows and park them on `root`'s
+/// [`RetiredBodyRows`]. A re-activation finds the rows already gone and adds
+/// nothing, so the first activation's rows survive it.
+fn retire_body_rows(world: &World, root: EntityId, entities: impl IntoIterator<Item = EntityId>) {
+    let retired: Vec<(EntityId, RigidBodyData)> = match world.query_mut::<RigidBodyData>() {
+        Some(mut rbq) => entities
+            .into_iter()
+            .filter_map(|entity| rbq.remove(entity).map(|row| (entity, row)))
+            .collect(),
+        None => return,
+    };
+    if retired.is_empty() {
+        return;
+    }
+    if let Some(mut parked) = world.query_mut::<RetiredBodyRows>() {
+        match parked.get_mut(root) {
+            Some(rows) => rows.0.extend(retired),
+            None => parked.insert(root, RetiredBodyRows(retired)),
+        }
+    }
+}
+
 /// Resolve an [`ImportedRagdoll`] (bone names) against a skeleton's
 /// name→entity map into a [`RagdollTemplate`]. Bodies whose bone name
 /// doesn't resolve are dropped and the constraint indices remapped;
@@ -546,11 +580,8 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
     // any followers. Remove their spawn recipes even when no handles exist;
     // otherwise the next sync creates kinematic bodies overlapping the new
     // dynamic ragdoll and feeds both representations into the solver.
-    if let Some(mut rbq) = world.query_mut::<RigidBodyData>() {
-        for body in &spec.bodies {
-            rbq.remove(body.entity);
-        }
-    }
+    // #6326 — parked, not dropped: getting up restores these exact rows.
+    retire_body_rows(world, actor, spec.bodies.iter().map(|body| body.entity));
 
     // #6070 — and the shape-less-actor stand-in capsule, unless it IS one of
     // the bodies (the one-body corpse template). A decoded articulation
@@ -577,11 +608,7 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
                 hq.remove(*collider);
             }
         }
-        if let Some(mut rbq) = world.query_mut::<RigidBodyData>() {
-            for collider in &stand_ins {
-                rbq.remove(*collider);
-            }
-        }
+        retire_body_rows(world, actor, stand_ins.iter().copied());
     }
 
     Ok(n)
@@ -1942,6 +1969,7 @@ mod tests {
         world.register::<RapierHandles>();
         world.register::<RagdollTemplate>();
         world.register::<RagdollActive>();
+        world.register::<RetiredBodyRows>();
         world.register::<Ragdoll>();
         world.register::<FallbackActorCollider>();
         world.register::<ActorColliderOwner>();
@@ -1961,7 +1989,18 @@ mod tests {
             },
         );
         world.insert(capsule, CollisionShape::Capsule { half_height: 32.0, radius: 20.0 });
-        world.insert(capsule, RigidBodyData { motion_type: MotionType::Keyframed, ..Default::default() });
+        // #6326 — authored values a default row would lose.
+        world.insert(
+            capsule,
+            RigidBodyData {
+                motion_type: MotionType::Keyframed,
+                friction: 0.9,
+                restitution: 0.1,
+                havok_layer: 8,
+                surface_material: 7,
+                ..Default::default()
+            },
+        );
         world.insert(capsule, ActorBoneCollider);
         world.insert(capsule, ActorColliderOwner(placement));
         world.insert(capsule, FallbackActorCollider);
@@ -2030,9 +2069,24 @@ mod tests {
             "the retired capsule must not re-register"
         );
 
-        // Stand-up (revive / end of knockdown) puts the capsule's recipe back.
+        // Stand-up (revive / end of knockdown) puts the capsule's recipe back,
+        // exactly as parked (#6326), and invents no row for the shape-less
+        // template bones, which never had one.
         crate::systems::revive::stand_up(&world, actor);
-        assert!(world.query::<RigidBodyData>().unwrap().get(capsule).is_some());
+        {
+            let rows = world.query::<RigidBodyData>().unwrap();
+            let row = rows.get(capsule).expect("the capsule's row is restored");
+            assert_eq!(row.motion_type, MotionType::Keyframed);
+            assert_eq!((row.friction, row.restitution), (0.9, 0.1));
+            assert_eq!((row.havok_layer, row.surface_material), (8, 7));
+            for bone in &bones {
+                assert!(rows.get(*bone).is_none(), "a bone with no row before death gets none back");
+            }
+        }
+        assert!(
+            world.query::<RetiredBodyRows>().unwrap().get(actor).is_none(),
+            "the parked rows are consumed by the get-up"
+        );
 
         // A one-body template whose body is the capsule keeps it.
         let (mut world2, actor2) = {

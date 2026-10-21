@@ -913,6 +913,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("HudControl", "console-facing HUD control (backend choice, visibility, hud.values-pinned bar fractions) inserted at launch and mutated only by hud.* commands — operator presentation state, not gameplay; the pinned fractions overlay values derived from saved ActorValues"),
         ("PlayerMode", "engine-wide FlyCam/Character flag set at scene-setup from CLI flags + scene type, not gameplay state"),
         ("RagdollActive", "marker for live ragdoll simulation, same physics-rebuild posture as PhysicsWorld above — not snapshot-restored"),
+        ("RetiredBodyRows", "the bone collision rows a live ragdoll parked for get-up (#6326); a load respawns the actor with fresh rows from its NIF and re-activates the corpse, which parks them again — same posture as RigidBodyData"),
         ("AuthoredRagdollPose", "an authored corpse's XRGD pose parked between spawn and death reconciliation (#5015); derived from plugin data on every spawn and consumed by the reconciliation — never carried across a save"),
         ("RagdollTemplate", "per-actor ragdoll blueprint resolved at spawn against the loaded skeleton, rederived identically every load — same posture as PhysicsWorld"),
         ("NpcEquipmentPart", "spawn-derived armor-root ownership and intrinsic race-skin classification; rebuilt with the actor, never serialize process-local entity IDs"),
