@@ -270,16 +270,20 @@ const MAX_GENERATOR_DEPTH: usize = 32;
 /// The most steps one behavior-graph decode may take: an object entered counts one,
 /// once for every pointer that reaches it (a shared generator is read again from each
 /// parent, because each read builds its own owned subtree), and so does every entry of
-/// a child array it walks, null or not. The depth caps bound how deep the readers go,
-/// not how much they build: a few kilobytes of child pointers that fan out to shared
-/// descendants multiply per level.
+/// a child array it walks, null or not. So does every entry of a leaf table read inside
+/// an object: clip triggers, variable bindings (scanned once per member asked about),
+/// bone weights, transitions, event ranges, expressions and assign-variable bindings
+/// (#6211). Uncharged, those tables let one shared clip with 1,024 triggers or 4,096
+/// bindings cost up to 4,096x a step, so a graph inside the budget could take gigabytes
+/// or minutes. The depth caps bound how deep the readers go, not how much they build: a
+/// few kilobytes of child pointers that fan out to shared descendants multiply per level.
 ///
-/// The shipped graphs need at most 115,605 steps by `behavior_graph_steps` (Fallout 4's
+/// The shipped graphs need at most 245,831 steps by `behavior_graph_steps` (Fallout 4's
 /// `_1stperson\behaviors\gunbehavior.hkx`, across the base game and every DLC and Creation
-/// archive; Skyrim SE's largest takes 353), and that one decodes in 27 ms, about 230 ns
-/// a step. The cap is about 8.6x the shipped maximum, so a graph at the cap costs about a
+/// archive; Skyrim SE's largest takes 3,329), and that one decodes in 27 ms, about 110 ns
+/// a step. The cap is about 8.1x the shipped maximum, so a graph at the cap costs about a
 /// quarter of a second to refuse.
-pub(crate) const MAX_GRAPH_STEPS: usize = 1_000_000;
+pub(crate) const MAX_GRAPH_STEPS: usize = 2_000_000;
 
 /// A graph's event and variable names by position, so inlining a sub-behavior looks each of
 /// its names up in a hash map instead of scanning the whole table (up to 4,096 events a
@@ -1062,12 +1066,15 @@ fn string_array(file: &Packfile, field: usize, cap: usize, label: &'static str) 
     (0..len).map(|index| string(file, data + index * 8, label)).collect()
 }
 
-/// The variable the `member` of the bindable at `bindable` is bound to, when it is.
-fn bound_variable(file: &Packfile, bindable: usize, member: &str) -> Result<Option<usize>> {
+/// The variable the `member` of the bindable at `bindable` is bound to, when it is. Every
+/// binding scanned is charged to `walk` (#6211): the set is read again for each member asked
+/// about, from each parent that reaches the bindable.
+fn bound_variable(file: &Packfile, bindable: usize, member: &str, walk: &mut Walk) -> Result<Option<usize>> {
     let Some(set) = file.object_pointer(bindable + BINDABLE_BINDING_SET) else {
         return Ok(None);
     };
     let (data, len) = array(file, set + BINDING_SET_BINDINGS, MAX_VARIABLES, "variable bindings")?;
+    walk.charge(len)?;
     for index in 0..len {
         let element = data + index * BINDING_STRIDE;
         if string(file, element + BINDING_MEMBER_PATH, "binding member")?.eq_ignore_ascii_case(member) {
@@ -1079,24 +1086,25 @@ fn bound_variable(file: &Packfile, bindable: usize, member: &str) -> Result<Opti
 }
 
 /// The blending effect's duration, and the variable that overrides it.
-fn read_transition_effect(file: &Packfile, effect: usize) -> Result<(f32, Option<usize>)> {
+fn read_transition_effect(file: &Packfile, effect: usize, walk: &mut Walk) -> Result<(f32, Option<usize>)> {
     let l = layout(file);
     if file.class_at(effect) != Some("hkbBlendingTransitionEffect") {
         return Ok((0.0, None));
     }
     let duration = file.f32(effect + l.effect_duration, "transition duration")?;
     let duration = if duration.is_finite() && duration > 0.0 { duration } else { 0.0 };
-    Ok((duration, bound_variable(file, effect, "duration")?))
+    Ok((duration, bound_variable(file, effect, "duration", walk)?))
 }
 
-fn read_transitions(file: &Packfile, array_object: usize) -> Result<Vec<Transition>> {
+fn read_transitions(file: &Packfile, array_object: usize, walk: &mut Walk) -> Result<Vec<Transition>> {
     let l = layout(file);
     let (data, len) = array(file, array_object + l.transitions_array, MAX_TRANSITIONS, "transitions")?;
+    walk.charge(len)?;
     (0..len)
         .map(|index| {
             let element = data + index * l.transition_stride;
             let (blend_duration, blend_duration_variable) = match file.object_pointer(element + TRANSITION_EFFECT) {
-                Some(effect) => read_transition_effect(file, effect)?,
+                Some(effect) => read_transition_effect(file, effect, walk)?,
                 None => (0.0, None),
             };
             let condition = match file.object_pointer(element + TRANSITION_CONDITION) {
@@ -1118,11 +1126,12 @@ fn read_transitions(file: &Packfile, array_object: usize) -> Result<Vec<Transiti
         .collect()
 }
 
-fn read_clip(file: &Packfile, clip: usize) -> Result<StateClip> {
+fn read_clip(file: &Packfile, clip: usize, walk: &mut Walk) -> Result<StateClip> {
     let l = layout(file);
     let mut triggers = Vec::new();
     if let Some(array_object) = file.object_pointer(clip + l.clip_triggers) {
         let (data, len) = array(file, array_object + TRIGGERS_ARRAY, MAX_TRIGGERS, "clip triggers")?;
+        walk.charge(len)?;
         for index in 0..len {
             let element = data + index * TRIGGER_STRIDE;
             triggers.push(ClipTrigger {
@@ -1147,7 +1156,7 @@ fn read_clip(file: &Packfile, clip: usize) -> Result<StateClip> {
         start_time: file.f32(clip + l.clip_start_time, "clip start time")?,
         user_fraction: file.f32(clip + l.clip_user_fraction, "clip user fraction")?,
         triggers,
-        playback_speed_variable: bound_variable(file, clip, "playbackSpeed")?,
+        playback_speed_variable: bound_variable(file, clip, "playbackSpeed", walk)?,
     })
 }
 
@@ -1160,12 +1169,14 @@ fn bone_of_binding(offset_plus_one: u32) -> Option<usize> {
 /// `hkbBoneWeightArray`: its weights (`boneWeights` at the bindable base's end), and the
 /// elements variables drive (bindings on the array whose member is `boneWeights`, the
 /// element being the binding's `offsetInArrayPlusOne`).
-fn read_bone_weights(file: &Packfile, array_object: usize) -> Result<BoneWeights> {
+fn read_bone_weights(file: &Packfile, array_object: usize, walk: &mut Walk) -> Result<BoneWeights> {
     let (data, len) = array(file, array_object + BONE_WEIGHTS, MAX_BONES, "bone weights")?;
+    walk.charge(len)?;
     let weights = (0..len).map(|index| file.f32(data + index * 4, "bone weight")).collect::<Result<Vec<_>>>()?;
     let mut bound = Vec::new();
     if let Some(set) = file.object_pointer(array_object + BINDABLE_BINDING_SET) {
         let (bindings, count) = array(file, set + BINDING_SET_BINDINGS, MAX_VARIABLES, "bone weight bindings")?;
+        walk.charge(count)?;
         for index in 0..count {
             let element = bindings + index * BINDING_STRIDE;
             if !string(file, element + BINDING_MEMBER_PATH, "binding member")?.eq_ignore_ascii_case("boneWeights") {
@@ -1215,7 +1226,7 @@ fn read_generator_node(
     let l = layout(file);
     Ok(match file.class_at(generator) {
         Some("hkbClipGenerator") => {
-            let read = read_clip(file, generator)?;
+            let read = read_clip(file, generator, walk)?;
             if clip.is_none() {
                 *clip = Some(read.clone());
             } else {
@@ -1268,7 +1279,7 @@ fn read_generator_node(
             let mut node = read_generator(file, inner, clip, content, depth + 1, walk)?;
             if let Some(Generator::Blender(blender)) = &mut node {
                 if blender.parameter_variable.is_none() {
-                    blender.parameter_variable = bound_variable(file, generator, "fBlendParameter")?;
+                    blender.parameter_variable = bound_variable(file, generator, "fBlendParameter", walk)?;
                 }
             }
             node
@@ -1286,7 +1297,7 @@ fn read_generator_node(
                 }
             }
             let index = i32::from(file.u8(generator + field + SELECTOR_INDEX_AFTER_ARRAY, "selected generator")? as i8);
-            Some(Generator::Selector { index, index_variable: bound_variable(file, generator, "selectedGeneratorIndex")?, children })
+            Some(Generator::Selector { index, index_variable: bound_variable(file, generator, "selectedGeneratorIndex", walk)?, children })
         }
         Some("hkbBehaviorReferenceGenerator") => {
             let Some(field) = l.reference_behavior_name else { return Ok(None) };
@@ -1308,14 +1319,14 @@ fn read_generator_node(
                 let Some(inner) = file.object_pointer(child + l.blender_child_generator) else { continue };
                 let Some(node) = read_generator(file, inner, clip, content, depth + 1, walk)? else { continue };
                 let bone_weights = match file.object_pointer(child + BLENDER_CHILD_BONE_WEIGHTS) {
-                    Some(array_object) => Some(read_bone_weights(file, array_object)?),
+                    Some(array_object) => Some(read_bone_weights(file, array_object, walk)?),
                     None => None,
                 };
                 children.push(BlendChild {
                     weight: file.f32(child + BLENDER_CHILD_WEIGHT, "blender child weight")?,
-                    weight_variable: bound_variable(file, child, "weight")?,
+                    weight_variable: bound_variable(file, child, "weight", walk)?,
                     bone_weights,
-                    bone_weights_variable: bound_variable(file, child, "boneWeights")?,
+                    bone_weights_variable: bound_variable(file, child, "boneWeights", walk)?,
                     generator: node,
                 });
             }
@@ -1324,7 +1335,7 @@ fn read_generator_node(
                 cyclic: flags & BLENDER_FLAG_CYCLIC != 0,
                 sync: flags & BLENDER_FLAG_SYNC != 0,
                 parameter: file.f32(generator + l.blender_parameter, "blend parameter")?,
-                parameter_variable: bound_variable(file, generator, "blendParameter")?,
+                parameter_variable: bound_variable(file, generator, "blendParameter", walk)?,
                 min_cyclic: file.f32(generator + l.blender_min_cyclic, "min cyclic parameter")?,
                 max_cyclic: file.f32(generator + l.blender_max_cyclic, "max cyclic parameter")?,
                 children,
@@ -1368,6 +1379,7 @@ fn read_modifier_node(file: &Packfile, object: usize, depth: usize, walk: &mut W
             let (mut floats, mut ints) = (Vec::new(), Vec::new());
             if let Some(set) = file.object_pointer(object + BINDABLE_BINDING_SET) {
                 let (bindings, count) = array(file, set + BINDING_SET_BINDINGS, MAX_VARIABLES, "assign bindings")?;
+                walk.charge(count)?;
                 for index in 0..count {
                     let element = bindings + index * BINDING_STRIDE;
                     let path = string(file, element + BINDING_MEMBER_PATH, "binding member")?;
@@ -1393,6 +1405,7 @@ fn read_modifier_node(file: &Packfile, object: usize, depth: usize, walk: &mut W
             let mut ranges = Vec::new();
             if let Some(array_object) = file.object_pointer(object + EVENTS_FROM_RANGE_RANGES) {
                 let (data, len) = array(file, array_object + EVENT_RANGES_ARRAY, MAX_STATES, "event ranges")?;
+                walk.charge(len)?;
                 for index in 0..len {
                     let element = data + index * EVENT_RANGE_STRIDE;
                     ranges.push(EventRange {
@@ -1404,7 +1417,7 @@ fn read_modifier_node(file: &Packfile, object: usize, depth: usize, walk: &mut W
             }
             Modifier::EventsFromRange {
                 input: file.f32(object + EVENTS_FROM_RANGE_INPUT, "range input")?,
-                input_variable: bound_variable(file, object, "inputValue")?,
+                input_variable: bound_variable(file, object, "inputValue", walk)?,
                 lower_bound: file.f32(object + EVENTS_FROM_RANGE_LOWER, "range lower bound")?,
                 ranges,
             }
@@ -1413,6 +1426,7 @@ fn read_modifier_node(file: &Packfile, object: usize, depth: usize, walk: &mut W
             let mut expressions = Vec::new();
             if let Some(array_object) = file.object_pointer(object + EVALUATE_EXPRESSION_EXPRESSIONS) {
                 let (data, len) = array(file, array_object + EXPRESSION_ARRAY, MAX_STATES, "expressions")?;
+                walk.charge(len)?;
                 for index in 0..len {
                     let element = data + index * EXPRESSION_STRIDE;
                     expressions.push(ExpressionData {
@@ -1435,7 +1449,7 @@ fn read_modifier_node(file: &Packfile, object: usize, depth: usize, walk: &mut W
             active_by_default: file.u8(object + EVENT_DRIVEN_BY_DEFAULT, "event driven default")? != 0,
             inner: child!(EVENT_DRIVEN_MODIFIER),
         },
-        Some("BSGetTimeStepModifier") => Modifier::TimeStep { variable: bound_variable(file, object, "timeStep")? },
+        Some("BSGetTimeStepModifier") => Modifier::TimeStep { variable: bound_variable(file, object, "timeStep", walk)? },
         Some("hkbTimerModifier" | "BSTimerModifier") => Modifier::Timer {
             alarm_seconds: file.f32(object + TIMER_ALARM, "alarm time")?,
             event: event_at(file, object + TIMER_EVENT)?,
@@ -1465,7 +1479,7 @@ fn read_modifier_node(file: &Packfile, object: usize, depth: usize, walk: &mut W
 fn read_state(file: &Packfile, state: usize, depth: usize, walk: &mut Walk) -> Result<State> {
     let l = layout(file);
     let transitions = match file.object_pointer(state + l.state_transitions) {
-        Some(array_object) => read_transitions(file, array_object)?,
+        Some(array_object) => read_transitions(file, array_object, walk)?,
         None => Vec::new(),
     };
     let mut clip = None;
@@ -1502,12 +1516,12 @@ fn read_machine_at(file: &Packfile, machine: usize, depth: usize, walk: &mut Wal
         states.push(read_state(file, state, depth, walk)?);
     }
     let wildcard = match file.object_pointer(machine + l.machine_wildcard) {
-        Some(array_object) => read_transitions(file, array_object)?,
+        Some(array_object) => read_transitions(file, array_object, walk)?,
         None => Vec::new(),
     };
     Ok(StateMachine {
         start_state: file.u32(machine + l.machine_start_state, "start state")? as i32,
-        start_state_variable: bound_variable(file, machine, "startStateId")?,
+        start_state_variable: bound_variable(file, machine, "startStateId", walk)?,
         states,
         wildcard,
     })
@@ -1743,6 +1757,74 @@ mod tests {
         walk.enter(16).unwrap();
         walk.leave();
         assert!(walk.enter(8).is_err(), "the root is still an ancestor");
+    }
+
+    /// A Havok 2010 packfile of two blenders and one clip: blender 0 has `fan` children that
+    /// all blend blender 1, which has `fan` children that all blend the clip. The clip carries
+    /// `triggers` triggers and a binding set of `bindings` bindings, none of them
+    /// `playbackSpeed` (null member paths), so every read of the clip walks both tables whole.
+    fn fan_to_shared_clip(fan: usize, triggers: usize, bindings: usize) -> Vec<u8> {
+        let l = &LAYOUT_2010;
+        // Each blender's region holds its child array, then one 0x40-byte record per child.
+        let records = CHILD_ARRAY + fan * 8;
+        let region = records + fan * 0x40;
+        let clip = 2 * region;
+        let (trigger_array, binding_set) = (clip + 0x100, clip + 0x140);
+        let trigger_data = clip + 0x200;
+        let binding_data = trigger_data + triggers * TRIGGER_STRIDE;
+        let mut builder = PackfileBuilder {
+            data: vec![0u8; binding_data + bindings * BINDING_STRIDE + 0x40],
+            ..Default::default()
+        };
+        let blender_class = builder.class("hkbBlenderGenerator");
+        let clip_class = builder.class("hkbClipGenerator");
+        let count = |builder: &mut PackfileBuilder, field: usize, n: usize| {
+            builder.data[field + 8..field + 12].copy_from_slice(&(n as u32).to_le_bytes());
+        };
+        for i in 0..2 {
+            let blender = i * region;
+            builder.virtual_fixups.push((blender as u32, 0, blender_class));
+            builder.local.push(((blender + l.blender_children) as u32, (blender + CHILD_ARRAY) as u32));
+            count(&mut builder, blender + l.blender_children, fan);
+            let target = if i == 0 { region } else { clip };
+            for k in 0..fan {
+                let child = blender + records + k * 0x40;
+                builder.global.push(((blender + CHILD_ARRAY + k * 8) as u32, 1, child as u32));
+                builder.global.push(((child + l.blender_child_generator) as u32, 1, target as u32));
+            }
+        }
+        builder.virtual_fixups.push((clip as u32, 0, clip_class));
+        builder.global.push(((clip + l.clip_triggers) as u32, 1, trigger_array as u32));
+        builder.local.push(((trigger_array + TRIGGERS_ARRAY) as u32, trigger_data as u32));
+        count(&mut builder, trigger_array + TRIGGERS_ARRAY, triggers);
+        builder.global.push(((clip + BINDABLE_BINDING_SET) as u32, 1, binding_set as u32));
+        builder.local.push(((binding_set + BINDING_SET_BINDINGS) as u32, binding_data as u32));
+        count(&mut builder, binding_set + BINDING_SET_BINDINGS, bindings);
+        builder.local.sort_unstable();
+        builder.global.sort_unstable();
+        builder.build()
+    }
+
+    #[test]
+    fn a_shared_clips_leaf_tables_are_charged_on_every_read() {
+        // 8 x 8 children reach the clip 64 times; each read walks 128 triggers and 256 bindings.
+        let bytes = fan_to_shared_clip(8, 128, 256);
+        let (read, steps) = read_first_blender(&bytes, MAX_GRAPH_STEPS);
+        assert!(matches!(read, Ok(Some(Generator::Blender(_)))), "{read:?}");
+        // Blender 0 (1) + its 8 entries + blender 1 eight times (8 x (1 + 8)) + 64 clip reads,
+        // each entering the clip (1) and walking both tables (128 + 256).
+        assert_eq!(steps, 1 + 8 + 8 * 9 + 64 * (1 + 128 + 256));
+    }
+
+    #[test]
+    fn a_fan_out_onto_a_clip_with_full_tables_is_refused_by_the_step_budget() {
+        // #6211 — 32 x 32 reads of one clip with 1,024 triggers and 4,096 bindings. Before the
+        // tables were charged this walked 2,113 steps and built 1,024 copies of the trigger
+        // table (the shape that extrapolated to ~12 GiB / ~135 s at the caps).
+        let bytes = fan_to_shared_clip(32, MAX_TRIGGERS, MAX_VARIABLES);
+        let (read, steps) = read_first_blender(&bytes, MAX_GRAPH_STEPS);
+        assert!(matches!(read, Err(HkxError::InvalidData("behavior graph takes too many steps to read"))), "{read:?}");
+        assert!(steps <= MAX_GRAPH_STEPS + MAX_VARIABLES, "the work stops at the budget, not {steps}");
     }
 
     fn animations_archive() -> Option<byroredux_bsa::BsaArchive> {
@@ -2113,7 +2195,7 @@ mod tests {
         let read = |offset| {
             let bytes = bone_weight_array(offset);
             let file = Packfile::parse(&bytes).expect("a well-formed packfile");
-            read_bone_weights(&file, 0).expect("the array decodes").bound
+            read_bone_weights(&file, 0, &mut Walk::new(MAX_GRAPH_STEPS)).expect("the array decodes").bound
         };
         assert_eq!(read(2), [(1, 3)], "the second weight is driven by variable 3");
         assert!(read(0x8000_0000).is_empty());

@@ -129,8 +129,8 @@ fn fallout_4_animations_archive_census_is_exact() {
     assert_eq!(files.len(), 121 + 328 + 222 + 235 + 14_370 + 43 + 1, "every .hkx is accounted for");
 }
 
-/// The behavior graphs and characters of the same archive: all decode, and the largest takes 115,605
-/// steps - the figure `MAX_GRAPH_STEPS` is set 8x above.
+/// The behavior graphs and characters of the same archive: all decode, and the largest takes 245,831
+/// steps (leaf tables charged since #6211) - the figure `MAX_GRAPH_STEPS` is set 8x above.
 #[test]
 #[ignore = "needs Fallout 4 game data on disk"]
 fn fallout_4_behavior_graph_census_is_exact() {
@@ -151,11 +151,11 @@ fn fallout_4_behavior_graph_census_is_exact() {
         }
     }
     assert_eq!((behaviors, characters), (328, 222));
-    assert_eq!((max_steps, worst.as_str()), (115_605, "meshes\\actors\\character\\_1stperson\\behaviors\\gunbehavior.hkx"));
+    assert_eq!((max_steps, worst.as_str()), (245_831, "meshes\\actors\\character\\_1stperson\\behaviors\\gunbehavior.hkx"));
     assert!(max_steps * 8 <= MAX_GRAPH_STEPS, "the step cap keeps 8x headroom over the shipped maximum");
 }
 
-/// Skyrim SE's behavior graphs: 420 decode (the largest takes 353 steps); the three that do not are
+/// Skyrim SE's behavior graphs: 420 decode (the largest takes 3,329 steps); the three that do not are
 /// the `_lod` variants of the goat and the frostbite spider, which carry no string data.
 #[test]
 #[ignore = "needs Skyrim SE game data on disk"]
@@ -178,7 +178,7 @@ fn skyrim_se_behavior_graph_census_is_exact() {
             }
         }
     }
-    assert_eq!((decoded, max_steps), (420, 353));
+    assert_eq!((decoded, max_steps), (420, 3_329));
     let missing = "HKX object class 'hkbBehaviorGraphStringData' is missing";
     let expected: BTreeMap<String, String> = [
         "meshes\\actors\\frostbitespider\\behaviors\\frostbitespiderbehavior_lod.hkx",
