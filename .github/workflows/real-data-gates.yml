@@ -225,7 +225,7 @@ jobs:
             # Refuse a green no-op, as the corpus job does. Summed from the
             # per-binary summaries: under --nocapture a test's own output can
             # split its `test ... ok` line.
-            ran=$(grep -oE 'test result: ok\. [0-9]+ passed' "${log}" | awk '{n += $4} END {print n + 0}')
+            ran=$(scripts/count-passed-tests.sh "${log}")
             if [ "${ran}" -eq 0 ]; then
               echo "::error::no real-data test ran for byroredux-${crate}"
               failed=1
@@ -252,7 +252,7 @@ jobs:
             vanilla_oblivion_quest_scripts_execute_and_setstage \
             -- --ignored --test-threads=1 --nocapture 2>&1 | tee "${log}"
           # Refuse a green no-op, as the loop above does.
-          ran=$(grep -oE 'test result: ok\. [0-9]+ passed' "${log}" | awk '{n += $4} END {print n + 0}')
+          ran=$(scripts/count-passed-tests.sh "${log}")
           if [ "${ran}" -eq 0 ]; then
             echo "::error::the ObScript quest-script gate did not run for byroredux-scripting"
             exit 1

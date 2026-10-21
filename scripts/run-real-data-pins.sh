@@ -86,8 +86,10 @@ for pin in "${pins[@]}"; do
         continue
     fi
     endgroup
-    # Refuse the green no-op, as every other job in this lane does.
-    ran_ok=$(grep -cE '^test .* \.\.\. ok$' "${log}" || true)
+    # Refuse the green no-op, as every other job in this lane does. Summed from
+    # the per-binary summaries: --nocapture splits a printing test's
+    # `test ... ok` line (#6319).
+    ran_ok=$(scripts/count-passed-tests.sh "${log}")
     if [ "${ran_ok}" -eq 0 ]; then
         error "closed-HIGH pin '${title}' matched nothing (green no-op)"
         failed=1
