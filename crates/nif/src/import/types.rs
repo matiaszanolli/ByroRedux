@@ -331,6 +331,11 @@ pub enum ImportedTextureSource {
     /// A Starfield `.mat` source: the loose JSON file (#4277 Stage A) or
     /// the compiled CDB row (`apply_cdb_material`).
     Mat,
+    /// The engine replaced the authored path at spawn - an NPC's race / head /
+    /// eye texture (#6131). Stamped by the caller that overrides the role, never
+    /// by an importer, so a path that came from a RACE record is not reported
+    /// as the NIF's own.
+    RuntimeOverride,
 }
 
 /// Source-agnostic texture roles produced by NIF material translation.

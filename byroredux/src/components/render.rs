@@ -388,7 +388,8 @@ pub(crate) enum MaterialTextureSource {
     TxstOverride,
     /// The legacy `<base>_n.dds` convention synthesized a normal path.
     DerivedNormal,
-    /// A runtime caller replaced an authored path (currently FaceGen tint).
+    /// A runtime caller replaced an authored path (FaceGen tint, an NPC's race
+    /// body / head / eye texture).
     RuntimeOverride,
 }
 
@@ -417,6 +418,7 @@ impl From<byroredux_nif::import::ImportedTextureSource> for MaterialTextureSourc
             // or compiled CDB row). Shares the provenance spelling
             // `mat.dump` documents.
             byroredux_nif::import::ImportedTextureSource::Mat => Self::Mat,
+            byroredux_nif::import::ImportedTextureSource::RuntimeOverride => Self::RuntimeOverride,
         }
     }
 }

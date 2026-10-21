@@ -803,7 +803,7 @@ pub(super) fn advance_runtime_unit(
                         return;
                     };
                     for mesh in &mut scene.meshes {
-                        mesh.material.textures.base_color = Some(texture);
+                        super::super::loot_appearance::override_base_color(mesh, texture);
                     }
                 };
                 let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
@@ -1079,7 +1079,7 @@ pub(super) fn spawn_runtime_head(
     let mut hook = |scene: &mut byroredux_nif::import::ImportedScene| {
         if let Some(texture) = head_texture {
             for mesh in &mut scene.meshes {
-                mesh.material.textures.base_color = Some(texture);
+                super::super::loot_appearance::override_base_color(mesh, texture);
             }
         }
         apply_head_morphs(scene, hook_state.take());

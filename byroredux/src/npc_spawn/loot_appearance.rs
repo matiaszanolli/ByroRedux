@@ -48,8 +48,21 @@ pub(super) fn set_body_base_color(
     texture: byroredux_core::string::FixedString,
 ) {
     for mesh in &mut scene.meshes {
-        mesh.material.textures.base_color = Some(texture);
+        override_base_color(mesh, texture);
     }
+}
+
+/// Replace a mesh's authored base colour with `texture` and say so: the
+/// provenance label reads `runtime-override`, not the NIF's texture set the
+/// path no longer came from (#6131). The single place the NPC spawn hooks
+/// (body, head, eyes, restore) swap a base texture on the imported tier.
+pub(super) fn override_base_color(
+    mesh: &mut byroredux_nif::import::ImportedMesh,
+    texture: byroredux_core::string::FixedString,
+) {
+    mesh.material.textures.base_color = Some(texture);
+    mesh.material.texture_sources.base_color =
+        byroredux_nif::import::ImportedTextureSource::RuntimeOverride;
 }
 
 #[derive(Default)]
@@ -1118,6 +1131,34 @@ impl GearImportLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6131 — a race / head / eye texture the NPC hooks put on a mesh reads as
+    /// `runtime-override` in `tex.*` / `mat.dump`, not as the NIF's own slot;
+    /// the label survives the conversion the mesh spawn applies.
+    #[test]
+    fn an_npc_texture_override_is_labelled_a_runtime_override() {
+        use crate::components::MaterialTextureSource;
+        use byroredux_nif::import::{ImportedMesh, ImportedTextureSource};
+
+        let mut mesh = ImportedMesh::from_geometry(
+            vec![[0.0; 3]], Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+        );
+        let mut pool = byroredux_core::string::StringPool::new();
+        let authored = pool.intern("textures/characters/imperial/upperbody.dds");
+        mesh.material.textures.base_color = Some(authored);
+        assert_eq!(mesh.material.texture_sources.base_color, ImportedTextureSource::NifTextureSet);
+
+        let race_skin = pool.intern("textures/characters/dunmer/upperbody.dds");
+        override_base_color(&mut mesh, race_skin);
+        assert_eq!(mesh.material.textures.base_color, Some(race_skin));
+        assert_eq!(mesh.material.texture_sources.base_color, ImportedTextureSource::RuntimeOverride);
+        assert_eq!(
+            MaterialTextureSource::from(mesh.material.texture_sources.base_color),
+            MaterialTextureSource::RuntimeOverride,
+        );
+        // Only the overridden role: the normal map keeps whatever it had.
+        assert_eq!(mesh.material.texture_sources.normal, ImportedTextureSource::NifTextureSet);
+    }
 
     fn fixture() -> (World, EntityId, EntityId, EntityId, EntityId) {
         let mut world = World::new();
