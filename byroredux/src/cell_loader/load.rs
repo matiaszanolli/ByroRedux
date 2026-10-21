@@ -19,7 +19,7 @@ use byroredux_renderer::VulkanContext;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::components::{CellLightingRes, CellRootIndex};
 
-use super::load_order::{parse_record_indexes_in_load_order, LoadOrder};
+use super::load_order::{parse_record_indexes_shared, LoadOrder};
 use super::references::{ReferenceLoadJob, ReferenceLoadProgress};
 use super::water;
 use super::FrameTimeBudget;
@@ -381,7 +381,8 @@ pub fn validate_cell_loadable(
         .map(|s| s.as_str())
         .chain(std::iter::once(esm_path))
         .collect();
-    let (index, _load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
+    // Through the memo: the load this validates for then finds the parse resident.
+    let (index, _load_order) = parse_record_indexes_shared(&plugin_paths, false)?;
     let cell_key = cell_editor_id.to_ascii_lowercase();
     anyhow::ensure!(
         index.cells.cells.contains_key(&cell_key),
@@ -512,8 +513,10 @@ pub(crate) struct InteriorCellApplyJob {
     masters: Vec<String>,
     esm_path: String,
     cell_editor_id: String,
-    index: esm::records::EsmIndex,
-    load_order: LoadOrder,
+    /// Shared with the session's resident index when the plugin set is the
+    /// one already parsed (#6123).
+    index: std::sync::Arc<esm::records::EsmIndex>,
+    load_order: std::sync::Arc<LoadOrder>,
     cell_root: EntityId,
     /// #5484 — hashes whose `_oc.nif` bake drew geometry. Keys
     /// `CellData::absorbed_ref_bakes` at the reference gate.
@@ -552,7 +555,9 @@ impl InteriorCellApplyJob {
             .collect();
         let mut phases = CellLoadPhaseTimings::default();
         let phase_started = Instant::now();
-        let (index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
+        // #6123 — a door within the session's own plugin set finds its index
+        // already parsed; only a different set (or an edited file) parses.
+        let (index, load_order) = parse_record_indexes_shared(&plugin_paths, false)?;
         phases.esm_parse = phase_started.elapsed();
 
         let cell = find_interior_cell(&index, cell_editor_id)?;
@@ -780,12 +785,8 @@ impl InteriorCellApplyJob {
                 &index.record_types,
                 &index.factions,
             );
-        world.insert_resource(super::LoadedCellIndex(std::sync::Arc::new(index)));
-        super::load_order::install_form_resolver(
-            world,
-            form_resolver,
-            std::sync::Arc::new(load_order),
-        );
+        world.insert_resource(super::LoadedCellIndex(index));
+        super::load_order::install_form_resolver(world, form_resolver, load_order);
         world.insert_resource(super::CurrentCellRoot(Some(cell_root)));
         world.insert_resource(super::CurrentCellContext {
             cell_editor_id: cell_editor_id.clone(),

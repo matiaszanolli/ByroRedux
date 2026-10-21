@@ -50,6 +50,17 @@ Nothing evicts these maps; they are held for the whole session. This is the
 largest single CPU-side allocation in a normal run and, unlike every other
 subsystem on this page, was previously undocumented here.
 
+One index per session, not one per door: the interior apply job and the
+exterior world context take the parse from `SharedParseCache`
+(`cell_loader/load_order.rs`, #6123), which hands back the resident `Arc` while
+the plugin set (paths, lengths, mtimes) is unchanged. A door transition
+therefore costs no parse and no second index; only a different plugin set holds
+two at once, for the duration of the new parse. The one exception is an
+Oblivion interior session entering an exterior, which parses once more for the
+landscape inheritance only an exterior needs. The lazily built reverse indexes
+beside the maps (`cell_by_form_id`, `locate_refr`, #6125) cost about 13 bytes
+per placed REFR once a lookup first needs them.
+
 Measured with `crates/plugin/examples/esm_dim8_bench` under
 `/usr/bin/time -f %M`, release build (2026-09-09, #4085 — superseding the
 2026-08-30 figures below, which had drifted 8–37% low over the ten days

@@ -15,7 +15,7 @@ use std::{
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 
 use super::load::{register_cell_root, stamp_cell_root_range};
-use super::load_order::parse_record_indexes_in_load_order;
+use super::load_order::parse_record_indexes_shared;
 use super::references::{
     flush_pending_cell_textures, flush_pending_cell_textures_on_yield, load_references_budgeted,
     ReferenceLoadJob, ReferenceLoadProgress,
@@ -1972,17 +1972,9 @@ pub fn build_exterior_world_context(
         .map(|s| s.as_str())
         .chain(std::iter::once(esm_path))
         .collect();
-    let (mut record_index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
-    // #5505 — Oblivion's city worldspaces author LAND only for their own
-    // footprint and sit at the city's real Tamriel grid position; the empty
-    // ring around it is the parent's countryside. Oblivion only: the
-    // co-located grid was measured there, not on the FO3+ children.
-    if record_index.game == byroredux_plugin::esm::reader::GameKind::Oblivion {
-        let filled = record_index.cells.inherit_parent_landscapes();
-        if filled > 0 {
-            log::info!("Oblivion child worldspaces: {filled} LAND-less cells take their parent's landscape");
-        }
-    }
+    // #6123 — the plugin set the session already parsed is reused as is; the
+    // exterior-only landscape inheritance (#5505) is part of the shared parse.
+    let (record_index, load_order) = parse_record_indexes_shared(&plugin_paths, true)?;
     let index = &record_index.cells;
 
     // Best worldspace per `select_worldspace_key`'s documented priority:
@@ -2090,8 +2082,8 @@ pub fn build_exterior_world_context(
         );
 
     Ok(ExteriorWorldContext {
-        record_index: Arc::new(record_index),
-        load_order: Arc::new(load_order),
+        record_index,
+        load_order,
         plugin_path: esm_path.to_string(),
         plugin_paths: plugin_paths.iter().map(|s| s.to_string()).collect(),
         worldspace_key,

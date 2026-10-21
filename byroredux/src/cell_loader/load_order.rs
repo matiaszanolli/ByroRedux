@@ -576,6 +576,121 @@ pub(crate) fn parse_record_indexes_in_load_order(
     )
 }
 
+/// The post-parse step only an exterior session wants: Oblivion's city
+/// worldspaces author LAND for their own footprint only, so the LAND-less cells
+/// around them take their parent's landscape (#5505). Idempotent; a no-op on
+/// every other game, so an index of those is ready for both kinds of session.
+fn apply_exterior_processing(index: &mut esm::records::EsmIndex) {
+    // Oblivion only: the co-located grid was measured there, not on the FO3+
+    // children.
+    if index.game == esm::reader::GameKind::Oblivion {
+        let filled = index.cells.inherit_parent_landscapes();
+        if filled > 0 {
+            log::info!("Oblivion child worldspaces: {filled} LAND-less cells take their parent's landscape");
+        }
+    }
+}
+
+/// One plugin file as the shared parse saw it: a changed length or mtime
+/// retires the cached parse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PluginFingerprint {
+    path: String,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+fn fingerprint(plugin_paths: &[&str]) -> Vec<PluginFingerprint> {
+    plugin_paths
+        .iter()
+        .map(|path| {
+            let meta = std::fs::metadata(path).ok();
+            PluginFingerprint {
+                path: (*path).to_owned(),
+                len: meta.as_ref().map_or(0, std::fs::Metadata::len),
+                modified: meta.and_then(|meta| meta.modified().ok()),
+            }
+        })
+        .collect()
+}
+
+struct SharedParse {
+    files: Vec<PluginFingerprint>,
+    index: Arc<esm::records::EsmIndex>,
+    load_order: Arc<LoadOrder>,
+    /// [`apply_exterior_processing`] has run on `index`.
+    exterior_ready: bool,
+}
+
+/// A one-slot memo of the last full load-order parse (#6123).
+///
+/// A door transition used to re-parse the whole load order (FNV 1.5 s, FO4 +
+/// DLC 3 s, Starfield 8 s, on the main thread) although the index it needs is
+/// the one already resident. Both callers of the parse that run per
+/// transition - the interior apply job and the exterior world context - take
+/// it from here, so the plugin set the session was built from is parsed once.
+/// The key is the exact path list plus each file's length and mtime, so a
+/// different set, or an edited file, parses afresh. The slot holds the `Arc`s
+/// the session itself shares through `LoadedCellIndex`, not a second copy.
+pub(crate) struct SharedParseCache {
+    slot: std::sync::Mutex<Option<SharedParse>>,
+}
+
+impl SharedParseCache {
+    pub(crate) const fn new() -> Self {
+        Self { slot: std::sync::Mutex::new(None) }
+    }
+
+    /// The parse of `plugin_paths`, from the memo when it holds exactly this
+    /// set. `exterior` asks for the index as an exterior session needs it; an
+    /// index parsed for an interior is reused for one only when that needs no
+    /// extra processing (anything but Oblivion), otherwise it parses again -
+    /// `EsmIndex` is shared and not `Clone`, so it cannot be processed in place.
+    fn get_or_parse(
+        &self,
+        plugin_paths: &[&str],
+        exterior: bool,
+        parse: impl FnOnce(&[&str]) -> anyhow::Result<(esm::records::EsmIndex, LoadOrder)>,
+    ) -> anyhow::Result<(Arc<esm::records::EsmIndex>, Arc<LoadOrder>)> {
+        let files = fingerprint(plugin_paths);
+        {
+            let slot = self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(shared) = slot.as_ref() {
+                let ready = shared.exterior_ready || !exterior;
+                if shared.files == files && ready {
+                    log::debug!("load-order parse: reusing the resident index ({} plugins)", files.len());
+                    return Ok((Arc::clone(&shared.index), Arc::clone(&shared.load_order)));
+                }
+            }
+        }
+        let (mut index, load_order) = parse(plugin_paths)?;
+        if exterior {
+            apply_exterior_processing(&mut index);
+        }
+        let exterior_ready = exterior || index.game != esm::reader::GameKind::Oblivion;
+        let (index, load_order) = (Arc::new(index), Arc::new(load_order));
+        *self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SharedParse {
+            files,
+            index: Arc::clone(&index),
+            load_order: Arc::clone(&load_order),
+            exterior_ready,
+        });
+        Ok((index, load_order))
+    }
+}
+
+static SHARED_PARSE: SharedParseCache = SharedParseCache::new();
+
+/// [`parse_record_indexes_in_load_order`] through the session's memo: the
+/// per-door-transition entry point (#6123). `exterior` is whether the caller
+/// builds an exterior streaming context from it.
+pub(crate) fn parse_record_indexes_shared(
+    plugin_paths: &[&str],
+    exterior: bool,
+) -> anyhow::Result<(Arc<esm::records::EsmIndex>, Arc<LoadOrder>)> {
+    SHARED_PARSE.get_or_parse(plugin_paths, exterior, parse_record_indexes_in_load_order)
+}
+
 /// Where each plugin's record walk runs (#3813).
 #[derive(Clone, Copy, Debug)]
 enum PluginWalk {
@@ -1669,4 +1784,123 @@ fn string_archive_discovery_treats_a_bare_plugin_name_as_the_cwd() {
     let read = std::fs::read_dir(strings_archive_directory(Path::new("Cargo.toml")))
         .expect("the cwd fallback must be a readable directory");
     assert!(read.count() > 0, "the cwd fallback must list the cwd");
+}
+
+/// #6123 — the memo that keeps a door transition from re-parsing the load
+/// order. Each case counts real calls of an injected parse, on its own cache
+/// instance, so no other test's use of the process-wide one can interfere.
+#[cfg(test)]
+mod shared_parse_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn plugin_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("byro-shared-parse-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(dir: &Path, name: &str, bytes: &[u8]) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn fake_parse(
+        calls: &Cell<usize>,
+        game: esm::reader::GameKind,
+    ) -> impl Fn(&[&str]) -> anyhow::Result<(esm::records::EsmIndex, LoadOrder)> + '_ {
+        move |paths| {
+            calls.set(calls.get() + 1);
+            let index = esm::records::EsmIndex { game, ..Default::default() };
+            let names = paths.iter().map(|path| plugin_basename_lc(path)).collect();
+            Ok((index, LoadOrder::all_regular(names)))
+        }
+    }
+
+    /// The second and later transitions of a session, interior or exterior,
+    /// share the first parse and perform zero.
+    #[test]
+    fn a_second_transition_over_the_same_plugins_does_not_parse() {
+        let dir = plugin_dir("same");
+        let master = write(&dir, "Master.esm", b"master");
+        let active = write(&dir, "Active.esm", b"active");
+        let paths = [master.as_str(), active.as_str()];
+        let cache = SharedParseCache::new();
+        let calls = Cell::new(0);
+        let parse = fake_parse(&calls, esm::reader::GameKind::Fallout3NV);
+
+        let (first, order) = cache.get_or_parse(&paths, false, &parse).unwrap();
+        assert_eq!(calls.get(), 1);
+        for exterior in [false, true, false, true] {
+            let (again, again_order) = cache.get_or_parse(&paths, exterior, &parse).unwrap();
+            assert!(Arc::ptr_eq(&again, &first), "the resident index, not a copy");
+            assert!(Arc::ptr_eq(&again_order, &order));
+        }
+        assert_eq!(calls.get(), 1, "four more transitions parsed nothing");
+    }
+
+    /// A different plugin set, or an edited plugin file, is a different parse.
+    #[test]
+    fn a_different_set_or_an_edited_file_parses_again() {
+        let dir = plugin_dir("diff");
+        let a = write(&dir, "A.esm", b"aaaa");
+        let b = write(&dir, "B.esm", b"bbbb");
+        let cache = SharedParseCache::new();
+        let calls = Cell::new(0);
+        let parse = fake_parse(&calls, esm::reader::GameKind::Fallout3NV);
+
+        cache.get_or_parse(&[a.as_str()], false, &parse).unwrap();
+        cache.get_or_parse(&[a.as_str(), b.as_str()], false, &parse).unwrap();
+        assert_eq!(calls.get(), 2, "another set");
+        cache.get_or_parse(&[a.as_str(), b.as_str()], false, &parse).unwrap();
+        assert_eq!(calls.get(), 2);
+        // The same path with different content (length) is not the same parse.
+        write(&dir, "B.esm", b"bbbbbbbb");
+        cache.get_or_parse(&[a.as_str(), b.as_str()], false, &parse).unwrap();
+        assert_eq!(calls.get(), 3, "an edited plugin");
+        // And the order of the set matters: it is the load order.
+        cache.get_or_parse(&[b.as_str(), a.as_str()], false, &parse).unwrap();
+        assert_eq!(calls.get(), 4);
+    }
+
+    /// An Oblivion index parsed for an interior lacks the exterior-only
+    /// landscape inheritance, so an exterior session parses again - once; the
+    /// processed index then serves both kinds.
+    #[test]
+    fn an_oblivion_interior_parse_is_not_served_to_an_exterior_session() {
+        let dir = plugin_dir("obl");
+        let path = write(&dir, "Oblivion.esm", b"oblivion");
+        let cache = SharedParseCache::new();
+        let calls = Cell::new(0);
+        let parse = fake_parse(&calls, esm::reader::GameKind::Oblivion);
+
+        cache.get_or_parse(&[path.as_str()], false, &parse).unwrap();
+        cache.get_or_parse(&[path.as_str()], false, &parse).unwrap();
+        assert_eq!(calls.get(), 1);
+        cache.get_or_parse(&[path.as_str()], true, &parse).unwrap();
+        assert_eq!(calls.get(), 2, "the exterior session needs the processed index");
+        cache.get_or_parse(&[path.as_str()], true, &parse).unwrap();
+        cache.get_or_parse(&[path.as_str()], false, &parse).unwrap();
+        assert_eq!(calls.get(), 2, "the processed index serves both");
+    }
+
+    /// A parse failure is returned and leaves the previous memo usable.
+    #[test]
+    fn a_failed_parse_keeps_the_resident_index() {
+        let dir = plugin_dir("fail");
+        let a = write(&dir, "A.esm", b"aaaa");
+        let b = write(&dir, "B.esm", b"bbbb");
+        let cache = SharedParseCache::new();
+        let calls = Cell::new(0);
+        let parse = fake_parse(&calls, esm::reader::GameKind::Fallout3NV);
+        let (resident, _) = cache.get_or_parse(&[a.as_str()], false, &parse).unwrap();
+        let failing = |_: &[&str]| -> anyhow::Result<(esm::records::EsmIndex, LoadOrder)> {
+            anyhow::bail!("unreadable")
+        };
+        assert!(cache.get_or_parse(&[b.as_str()], false, failing).is_err());
+        let (again, _) = cache.get_or_parse(&[a.as_str()], false, &parse).unwrap();
+        assert!(Arc::ptr_eq(&again, &resident));
+        assert_eq!(calls.get(), 1);
+    }
 }
