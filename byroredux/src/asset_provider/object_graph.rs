@@ -26,7 +26,41 @@ use std::sync::Arc;
 /// that did not decode (tried once). `NOT_SAVED_BY_DESIGN`: rebuilt from the
 /// archives.
 #[derive(Default)]
-pub(crate) struct ObjectGraphCache(HashMap<String, Option<Arc<LoadedGraph>>>);
+pub(crate) struct ObjectGraphCache {
+    graphs: HashMap<String, Option<Arc<LoadedGraph>>>,
+    /// Entities whose graph could not be attached, with the inputs that failed:
+    /// the project and the sequences of their own NIF. The pass skips them
+    /// until either changes (#6126) instead of re-deriving the cache key and
+    /// finding the cached `None` every streaming frame.
+    stuck: HashMap<EntityId, StuckGraph>,
+}
+
+/// What an entity's failed attach was made of (compared by identity).
+struct StuckGraph {
+    project: Arc<str>,
+    sequences: Option<Arc<Vec<(String, GraphClip)>>>,
+}
+
+impl ObjectGraphCache {
+    fn is_stuck(
+        &self,
+        entity: EntityId,
+        project: &Arc<str>,
+        sequences: Option<&Arc<Vec<(String, GraphClip)>>>,
+    ) -> bool {
+        self.stuck.get(&entity).is_some_and(|stuck| {
+            Arc::ptr_eq(&stuck.project, project)
+                && match (&stuck.sequences, sequences) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                    _ => false,
+                }
+        })
+    }
+}
+
+/// Stuck entries past this many are checked for despawned entities.
+const STUCK_PRUNE_THRESHOLD: usize = 256;
 
 impl Resource for ObjectGraphCache {}
 
@@ -165,15 +199,19 @@ pub(crate) fn populate_object_graphs(world: &mut World, provider: &TextureProvid
             .map(|(entity, reference)| (entity, Arc::clone(&reference.0)))
             .collect()
     };
-    // (entity, clip path, the decoded sequences named by that path)
-    type PendingClip = (EntityId, Arc<str>, Arc<Vec<(String, GraphClip)>>);
+    // (entity, project, the decoded sequences of the entity's own NIF)
+    type PendingClip = (EntityId, Arc<str>, Option<Arc<Vec<(String, GraphClip)>>>);
     let pending: Vec<PendingClip> = {
         let sequences = world.query::<byroredux_scripting::GraphSequences>();
+        let cache = world.try_resource::<ObjectGraphCache>();
         wanting
             .into_iter()
             .map(|(entity, project)| {
-                let own = sequences.as_ref().and_then(|s| s.get(entity)).map(|s| Arc::clone(&s.0)).unwrap_or_default();
+                let own = sequences.as_ref().and_then(|s| s.get(entity)).map(|s| Arc::clone(&s.0));
                 (entity, project, own)
+            })
+            .filter(|(entity, project, own)| {
+                !cache.as_ref().is_some_and(|cache| cache.is_stuck(*entity, project, own.as_ref()))
             })
             .collect()
     };
@@ -182,13 +220,14 @@ pub(crate) fn populate_object_graphs(world: &mut World, provider: &TextureProvid
     }
     world.init_resource::<ObjectGraphCache>();
     let mut attached = 0;
-    for (entity, project, own_sequences) in pending {
+    for (entity, project, own) in pending {
+        let own_sequences = own.clone().unwrap_or_default();
         // A project can be shared by NIFs with different sequences (generic
         // behaviors), so the cache is keyed by both.
         let mut names: Vec<&str> = own_sequences.iter().map(|(name, _)| name.as_str()).collect();
         names.sort_unstable();
         let key = format!("{}|{}", project.to_ascii_lowercase(), names.join(","));
-        let cached = world.resource::<ObjectGraphCache>().0.get(&key).cloned();
+        let cached = world.resource::<ObjectGraphCache>().graphs.get(&key).cloned();
         let loaded = match cached {
             Some(loaded) => loaded,
             None => {
@@ -203,11 +242,32 @@ pub(crate) fn populate_object_graphs(world: &mut World, provider: &TextureProvid
                     ),
                     None => log::debug!("Behavior graph '{project}' unavailable"),
                 }
-                world.resource_mut::<ObjectGraphCache>().0.insert(key, loaded.clone());
+                world.resource_mut::<ObjectGraphCache>().graphs.insert(key, loaded.clone());
                 loaded
             }
         };
         let Some(mut graph) = loaded.and_then(|loaded| ObjectAnimationGraph::new(loaded, entity)) else {
+            // Unavailable (cached `None`) or machine-less: skip this entity
+            // until its project or sequences change (#6126).
+            let despawned: Vec<EntityId> = {
+                let cache = world.resource::<ObjectGraphCache>();
+                if cache.stuck.len() >= STUCK_PRUNE_THRESHOLD {
+                    let refs = world.query::<BehaviorGraphRef>();
+                    cache
+                        .stuck
+                        .keys()
+                        .copied()
+                        .filter(|stuck| !refs.as_ref().is_some_and(|refs| refs.get(*stuck).is_some()))
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            };
+            let mut cache = world.resource_mut::<ObjectGraphCache>();
+            for gone in despawned {
+                cache.stuck.remove(&gone);
+            }
+            cache.stuck.insert(entity, StuckGraph { project, sequences: own });
             continue;
         };
         let start = graph.start();
@@ -297,6 +357,37 @@ mod tests {
         world.insert_resource(AnimationClipRegistry::new());
         world.insert_resource(StringPool::new());
         world
+    }
+
+    /// #6126 — a prop whose behaviour graph is unavailable is skipped by later passes
+    /// instead of being re-keyed and re-looked-up every streaming frame, until its
+    /// project or its own NIF's sequences change.
+    #[test]
+    fn a_prop_whose_graph_is_unavailable_is_not_retried_until_its_inputs_change() {
+        use byroredux_scripting::{BehaviorGraphRef, GraphSequences};
+        let mut world = world();
+        byroredux_scripting::register(&mut world);
+        let provider = TextureProvider::new();
+        let prop = world.spawn();
+        world.insert(prop, BehaviorGraphRef(Arc::from("Meshes\\Missing\\Missing.hkx")));
+
+        assert_eq!(populate_object_graphs(&mut world, &provider), 0);
+        {
+            let cache = world.resource::<ObjectGraphCache>();
+            assert_eq!(cache.stuck.len(), 1, "the failed prop is remembered");
+            assert_eq!(cache.graphs.len(), 1, "and its failure cached once");
+        }
+        // Later passes skip it: nothing new is keyed or recorded.
+        for _ in 0..3 {
+            assert_eq!(populate_object_graphs(&mut world, &provider), 0);
+        }
+        assert_eq!(world.resource::<ObjectGraphCache>().graphs.len(), 1);
+
+        // New sequences from its NIF are new inputs: tried again, under a new key.
+        world.insert(prop, GraphSequences(Arc::new(vec![("Open".to_owned(), GraphClip { handle: 1, duration: 1.0 })])));
+        assert_eq!(populate_object_graphs(&mut world, &provider), 0);
+        assert_eq!(world.resource::<ObjectGraphCache>().graphs.len(), 2, "re-attempted with the new sequences");
+        assert_eq!(world.resource::<ObjectGraphCache>().stuck.len(), 1);
     }
 
     /// One clip the archives do not have (or that does not decode) costs the states that play
