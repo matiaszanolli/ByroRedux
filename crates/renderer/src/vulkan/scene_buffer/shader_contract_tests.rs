@@ -1815,6 +1815,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
     let groundcover_rs = include_str!("../groundcover.rs");
     let groundcover_models_comp = include_str!("../../../shaders/groundcover_models.comp");
     let groundcover_scatter_comp = include_str!("../../../shaders/groundcover_scatter.comp");
+    let groundcover_blade_vert = include_str!("../../../shaders/groundcover_blade.vert");
     let groundcover_models_rs = include_str!("../groundcover_models.rs");
     let groundcover_bench_rs = include_str!("../groundcover_bench.rs");
     let groundcover_bench_glsl = include_str!("../../../shaders/include/groundcover_bench.glsl");
@@ -1958,6 +1959,43 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct BenchChunk",
             groundcover_bench_rs,
             "struct GpuBenchChunk",
+            NO_ALIASES,
+        ),
+        // #6033 — the ground-cover push blocks. Their descriptor sets are
+        // reflection-validated, the push ranges only size-pinned, so a reorder
+        // or a uint<->float swap would have pushed into the wrong lane with a
+        // green suite. The Rust names keep the lane's older meaning where the
+        // GLSL name records what its `w` became.
+        (
+            "GcScatterPush",
+            groundcover_scatter_comp,
+            "uniform GcScatterPush",
+            groundcover_rs,
+            "struct ScatterPush",
+            &[("render_origin", "renderOriginEnable")],
+        ),
+        (
+            "GcBladePush",
+            groundcover_blade_vert,
+            "uniform GcBladePush",
+            groundcover_rs,
+            "struct BladePush",
+            &[("gust_and_timing", "gustAndCounts")],
+        ),
+        (
+            "GcModelPush",
+            groundcover_models_comp,
+            "uniform GcModelPush",
+            groundcover_models_rs,
+            "struct ModelPush",
+            NO_ALIASES,
+        ),
+        (
+            "BenchPush",
+            groundcover_bench_glsl,
+            "uniform BenchPush",
+            groundcover_bench_rs,
+            "struct BenchPush",
             NO_ALIASES,
         ),
     ] {

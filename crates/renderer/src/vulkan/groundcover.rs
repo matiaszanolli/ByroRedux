@@ -236,6 +236,10 @@ struct ScatterPush {
     verts_per_blade: u32,
     species_count: u32,
 }
+// SAFETY: `#[repr(C)]` over 4-byte scalars, 48 bytes, no padding. Mirrors
+// `GcScatterPush`; `name_diverging_glsl_rust_mirrors_stay_in_lockstep` pins the
+// fields (#6033).
+unsafe impl NoUninit for ScatterPush {}
 
 /// Push constants for the blade / debug draw. 64 bytes, inside Vulkan's
 /// guaranteed 128-byte `maxPushConstantsSize` floor, which is why the fields
@@ -262,6 +266,9 @@ struct BladePush {
     /// their std430/push-constant offsets explicit.
     gust_and_timing: [f32; 4],
 }
+// SAFETY: four `[f32; 4]`, 64 bytes, no padding. Mirrors `GcBladePush`, pinned
+// field for field like `ScatterPush` (#6033).
+unsafe impl NoUninit for BladePush {}
 
 /// Everything the host publishes for one frame of ground cover.
 pub use super::groundcover_stats::GroundCoverStats;

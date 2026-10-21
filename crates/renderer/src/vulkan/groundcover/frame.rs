@@ -408,7 +408,7 @@ impl GroundCoverPipeline {
                 self.scatter_pipeline_layout,
                 vk::ShaderStageFlags::COMPUTE,
                 0,
-                scatter_push_bytes(&push),
+                crate::vulkan::buffer::byte_view(std::slice::from_ref(&push)),
             );
             // §4: one workgroup per chunk, mirroring `cluster_cull.comp`.
             device.cmd_dispatch(cmd, self.frame_chunk_count, 1, 1);
@@ -598,7 +598,7 @@ impl GroundCoverPipeline {
                     self.draw_pipeline_layout,
                     vk::ShaderStageFlags::VERTEX,
                     0,
-                    blade_push_bytes(&push),
+                    crate::vulkan::buffer::byte_view(std::slice::from_ref(&push)),
                 );
                 device.cmd_draw_indirect(
                     cmd,
@@ -785,27 +785,6 @@ fn buffer_barrier(
             &[],
             &[],
         );
-    }
-}
-
-fn scatter_push_bytes(push: &ScatterPush) -> &[u8] {
-    // SAFETY: `#[repr(C)]` over 4-byte scalars with no padding, so every byte
-    // of the struct is initialised; the slice borrows `push`.
-    unsafe {
-        std::slice::from_raw_parts(
-            (push as *const ScatterPush).cast::<u8>(),
-            std::mem::size_of::<ScatterPush>(),
-        )
-    }
-}
-
-fn blade_push_bytes(push: &BladePush) -> &[u8] {
-    // SAFETY: as `scatter_push_bytes`.
-    unsafe {
-        std::slice::from_raw_parts(
-            (push as *const BladePush).cast::<u8>(),
-            std::mem::size_of::<BladePush>(),
-        )
     }
 }
 

@@ -171,6 +171,8 @@ struct BenchPush {
     sink_scale: f32,
     result_mask: u32,
 }
+// SAFETY: `#[repr(C)]` over five 4-byte scalars, 20 bytes, no padding.
+unsafe impl super::buffer::NoUninit for BenchPush {}
 
 /// Push constants for the bake. Mirrors `BakePush` in
 /// `groundcover_bench_bake.comp`.
@@ -1351,7 +1353,7 @@ impl GroundcoverBench {
                 self.sample_pipeline_layout,
                 vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX,
                 0,
-                push_bytes(push),
+                super::buffer::byte_view(std::slice::from_ref(push)),
             );
             // §4: one workgroup per chunk, mirroring `cluster_cull.comp`.
             device.cmd_dispatch(cmd, chunk_count, 1, 1);
@@ -1400,23 +1402,11 @@ impl GroundcoverBench {
                 self.sample_pipeline_layout,
                 vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX,
                 0,
-                push_bytes(push),
+                super::buffer::byte_view(std::slice::from_ref(push)),
             );
             device.cmd_draw(cmd, vertex_count, 1, 0, 0);
             device.cmd_end_render_pass(cmd);
         }
-    }
-}
-
-fn push_bytes(push: &BenchPush) -> &[u8] {
-    // SAFETY: `BenchPush` is `#[repr(C)]` over five 4-byte scalars with no
-    // padding, so every byte of its 20-byte footprint is initialised. The
-    // slice borrows `push` and cannot outlive it.
-    unsafe {
-        std::slice::from_raw_parts(
-            (push as *const BenchPush).cast::<u8>(),
-            std::mem::size_of::<BenchPush>(),
-        )
     }
 }
 
