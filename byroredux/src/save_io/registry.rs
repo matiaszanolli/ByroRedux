@@ -128,10 +128,6 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // and fractional drowning state must be overlaid explicitly. The pose
     // restore below still clears velocity/grounded/jump after this column.
     "CharacterController",
-    // #2379 / SAVE-D1-14 — `RigidBodyData`: `MotionType` enum (no payload)
-    // + 5 plain f32s (mass/friction/restitution/linear_damping/
-    // angular_damping). No FixedString / EntityId / session handle.
-    "RigidBodyData",
     // #2382 / SAVE-D1-17 — `RumbleOnActivate`: f32/bool property fields +
     // `RumbleState` enum (`Busy` carries one f32). No FixedString /
     // EntityId / session handle.
@@ -231,29 +227,6 @@ pub struct PendingSaveLoadSlot {
 
 impl Resource for PendingSaveLoadSlot {}
 
-/// #5686 — the live-load overlay hook for `RigidBodyData`
-/// (`register_component_preserving`): `part_surface_materials` is
-/// `serde(skip)` — derived from the NIF collision tree at import, the
-/// #3470 class — so applying a saved row wholesale used to wipe the
-/// freshly re-imported slice and collapse every compound collider part
-/// onto the body-level material. Keep the live slice when the
-/// deserialized row carries none (always, today — forward-compatible if
-/// the field ever joins the snapshot). `restore_world` never runs this
-/// hook; there is no live row to preserve.
-fn keep_reimported_part_surface_materials(
-    incoming: &mut byroredux_core::ecs::components::RigidBodyData,
-    live: &byroredux_core::ecs::components::RigidBodyData,
-) {
-    if incoming.part_surface_materials.is_empty() && !live.part_surface_materials.is_empty() {
-        incoming.part_surface_materials = live.part_surface_materials.clone();
-    }
-    // `havok_layer` is derived from the NIF the same way (`serde(skip)`): a
-    // deserialized row reads 0, so the re-imported layer is kept.
-    if incoming.havok_layer == 0 {
-        incoming.havok_layer = live.havok_layer;
-    }
-}
-
 /// Build the curated game-state save registry.
 ///
 /// Only types that carry *player-visible game state* are registered —
@@ -265,7 +238,7 @@ pub fn build_save_registry() -> SaveRegistry {
     use byroredux_core::ecs::components::{
         ActorValues, ActorVitals, Children, Dead, EquipmentSlots, EquippedWeapon, EscortState,
         Escorted, FollowState, GuardState, Inventory, LightFlicker, LightSource, Material, Name,
-        Parent, PatrolState, RigidBodyData, Seated, Transform, TravelState, Traveled, WanderState,
+        Parent, PatrolState, Seated, Transform, TravelState, Traveled, WanderState,
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
     use byroredux_scripting::papyrus_demo::RumbleOnActivate;
@@ -273,7 +246,7 @@ pub fn build_save_registry() -> SaveRegistry {
     use byroredux_scripting::{
         ActorCinematicState, ActorControlState, CinematicPresentationState, FragmentExecutionQueue,
         Globals, HorseTetherState, PapyrusProviderContinuationQueue, PlayerControlState,
-        QuestAliasInjectionState, ReferenceEnableState, ReferenceLockState, ReferenceScriptState,
+        QuestAliasInjectionState, ReferenceEnableState, ReferenceLockState, ReferenceMotionTypeState, ReferenceScriptState,
         ScriptTimer, ScriptVariables,
         TwoStateActivator,
     };
@@ -383,21 +356,6 @@ pub fn build_save_registry() -> SaveRegistry {
         // M47.3 — a package a quest script gave an actor reloads still its package.
         .register_replacing_component::<byroredux_scripting::script_packages::ScriptPackage>("ScriptPackage")
         .register_component::<byroredux_physics::CharacterController>("CharacterController")
-        // #2379 / SAVE-D1-14 — `motion_type` (+ mass/friction/restitution/
-        // damping) is mutated at runtime by Papyrus `.SetMotionType()`
-        // (`scripted_motion_type_system`), not just static bhkRigidBody
-        // import data. Flat enum + f32s, delta-safe. Pre-fix a scripted
-        // motion-type change (e.g. making a prop dynamic for a scripted
-        // sequence) silently reverted to the ESM-derived default on reload.
-        // #5686 — preserving, not plain: `part_surface_materials` is
-        // `serde(skip)` (re-derived from the NIF collision tree at
-        // import), so the live-load overlay must keep the freshly
-        // re-imported slice instead of overwriting it with the row's
-        // empty default.
-        .register_component_preserving::<RigidBodyData>(
-            "RigidBodyData",
-            keep_reimported_part_surface_materials,
-        )
         // #2378 / SAVE-D1-13 — the `mat.set` debug console command
         // live-mutates a Material's PBR scalars/colors/material_kind at
         // runtime, the same class of gap #1834 fixed for `ActorValues`
@@ -629,6 +587,14 @@ pub fn build_save_registry() -> SaveRegistry {
         // revisit so the attach path does not re-arm them. Plain local
         // FormID keys, no session-local handles.
         .register_resource::<ReferenceScriptState>("ReferenceScriptState")
+        // #6237 — the motion-type ledger, fourth sibling. A script's
+        // `SetMotionType` changes bodies that are separate collision entities
+        // (`PhysicsSourceForm`, never `FormIdComponent`), so the former
+        // `RigidBodyData` column (#2379) had nothing to overlay on a live load
+        // and stored one dead row per resident collider; cell unload despawns
+        // them too. Keyed by local FormID and applied by `cell_loader::spawn`
+        // to every collider of the placement. Plain `MotionType` payloads.
+        .register_resource::<ReferenceMotionTypeState>("ReferenceMotionTypeState")
         // #2380 / SAVE-D1-15 — MQ101 cinematic presentation state
         // (sitting rotation, animation-event registrations, active IMAD
         // applications). No `EntityId`/`FixedString` anywhere.

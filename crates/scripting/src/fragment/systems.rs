@@ -191,6 +191,8 @@ pub fn register(world: &mut World) {
     world.insert_resource(ReferenceEnableState::default());
     // #4136 — sibling ledger for scripted lock/unlock, same lifetime.
     world.insert_resource(crate::ReferenceLockState::default());
+    // #6237 — sibling ledger for scripted motion types, same lifetime.
+    world.insert_resource(crate::ReferenceMotionTypeState::default());
     // #4334 — sibling ledger for once-only scripts that parked in a
     // terminal GotoState, same lifetime (outlives cell unload).
     world.insert_resource(crate::ReferenceScriptState::default());

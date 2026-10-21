@@ -160,7 +160,7 @@ pub use fragment::{
     reference_enabled, reference_enabled_from, reference_enabled_with_parent,
     AuthoredDisabledReferences, install_quest_script_instances,
     QuestScriptInstances,
-    ReferenceLockState, ReferenceScriptState, SceneFragments,
+    ReferenceLockState, ReferenceMotionTypeState, ReferenceScriptState, SceneFragments,
     attach_reference_script, check_reference_script, reference_script_event_system,
     reference_script_hit_system,
     PapyrusReferenceScripts, ReferenceScript, ReferenceScriptIndex, VmFrameBudget, VmFrameUse, DELIVERED_EVENTS,

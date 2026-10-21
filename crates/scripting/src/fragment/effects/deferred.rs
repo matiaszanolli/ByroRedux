@@ -83,6 +83,9 @@ pub struct DeferredFragmentEffects {
     /// reference's cell, and a component cannot survive its own entity's
     /// despawn on cell unload.
     pub(super) reference_lock_changes: Vec<(u32, DeferredLockChange)>,
+    /// #6237 — scripted `SetMotionType` calls, FormID-keyed for the same
+    /// reason: the bodies they change are despawned with the reference's cell.
+    pub(super) reference_motion_type_changes: Vec<(u32, byroredux_core::ecs::components::MotionType)>,
     /// `Effect::SetEnemy` / `Effect::SetAlly` calls — `(faction,
     /// other_faction, faction's reaction, other's reaction)` in global
     /// FormIDs — applied to `FactionRelations` after the quest-state guards
@@ -293,6 +296,7 @@ impl DeferredFragmentEffects {
             native_activations: Vec::new(),
             reference_enable_changes: Vec::new(),
             reference_lock_changes: Vec::new(),
+            reference_motion_type_changes: Vec::new(),
             faction_relations: Vec::new(),
             quest_variables: Vec::new(),
             quest_objects: Vec::new(),
@@ -441,6 +445,7 @@ impl DeferredFragmentEffects {
         self.flush_activations(world);
         self.flush_reference_enable_changes(world);
         self.flush_reference_lock_changes(world);
+        self.flush_reference_motion_type_changes(world);
         self.flush_cinematic_presentation(world);
         self.flush_faction_changes(world);
         self.flush_quest_variables(world);
@@ -1001,6 +1006,23 @@ impl DeferredFragmentEffects {
                     "fragment lock change dropped from the persistent ledger: \
                      ReferenceLockState is unavailable — the live component still \
                      changed, but the change will not survive a cell reload (#4136)"
+                ),
+            }
+        }
+    }
+
+    fn flush_reference_motion_type_changes(&mut self, world: &World) {
+        if !self.reference_motion_type_changes.is_empty() {
+            match world.try_resource_mut::<crate::ReferenceMotionTypeState>() {
+                Some(mut state) => {
+                    for (form_id, motion_type) in self.reference_motion_type_changes.drain(..) {
+                        state.set(form_id, motion_type);
+                    }
+                }
+                None => log::debug!(
+                    "fragment motion-type change dropped from the persistent ledger: \
+                     ReferenceMotionTypeState is unavailable — the live bodies still \
+                     change, but not across a load or a cell reload (#6237)"
                 ),
             }
         }

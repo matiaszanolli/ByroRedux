@@ -125,10 +125,7 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   `execute_pending_save_loads` now resets it on every in-process load, #5435 `557ead21d`, pinned in
   `live_reload_tests.rs`).
 - **Removed-from-allowlist stays registered**: `CharacterController` (fractional breath/drowning carry),
-  `RigidBodyData` (registered via `register_component_preserving`: its `serde(skip)` `part_surface_materials`
-  is re-derived by NIF import, so the overlay's `preserve` hook keeps the live slice instead of wiping it with
-  the row's empty default — #5686 `4e0c962c4`; a new `serde(skip)` import-derived field on an overlaid column
-  needs the same hook), `Material`, `RumbleOnActivate`, `FragmentExecutionQueue`, the cinematic trio — verify none
+  `Material`, `RumbleOnActivate`, `FragmentExecutionQueue`, the cinematic trio — verify none
   regressed out of `build_save_registry`, and no re-added `NOT_SAVED_BY_DESIGN` entry re-excludes them.
 - **Two lists, one truth**: the live load overlays only columns in BOTH the registry and
   `MUTABLE_DELTA_COLUMNS`. A registered mutable column absent from the overlay is captured but never
@@ -162,8 +159,12 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   `PendingGearRelease` — both dropped together on load by `clear_player_gear_handoff_scratch`, #5255 `6b494d002`,
   `PendingInventoryActions`) and NPC dialogue (`NpcDialogueTopic`, `DialogueSurfaceState`) are all
   `NOT_SAVED_BY_DESIGN`; `ObjectiveHudCache` is an `App` field, not a Resource. Verify each reason (body subtree
-  entities have no `FormIdComponent`: captured by `save_world`, never remapped — the basis of `RigidBodyData`'s
-  "NoReconcilerNeeded" row).
+  entities have no `FormIdComponent`: captured by `save_world`, never remapped). `RigidBodyData` is
+  `NOT_SAVED_BY_DESIGN` since v116 (#6237): every carrier is a `PhysicsSourceForm` collision entity the live
+  overlay can never resolve, so #2379's column only ever round-tripped through `restore_world`; a script's
+  `SetMotionType` lives in the `ReferenceMotionTypeState` ledger (`PRE_RELOAD_RESOURCES`), applied by
+  `cell_loader::spawn::scripted_motion_type` to each collider. A re-registered `RigidBodyData` column is the
+  regression.
 - **Determinism** (the `Snapshot` doc claims reproducible CRCs at equal state): `Snapshot` maps are
   `BTreeMap` and component rows are sorted by entity id (`registry.rs`), but saved **resources** serialize
   as-is — at 2026-09-19 `Globals(HashMap<u32, f32>)`, `QuestStageState`, `ReferenceEnableState` (`HashSet`),
@@ -191,7 +192,8 @@ First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git
   fields and columns (`Bleedout.remaining_secs` → `Option` v105, parked `ReferenceState.bleedout` v106, M47.3 ObScript
   columns v109–v112, `Material.source_shader_type` v113 #4256, parked `ReferenceState` script package / corpse pose +
   `PersistentReferenceStates` script rows v114 #6071–#6073 `611769b16`, parked `ReferenceState` magic effects /
-`weapon_drawn` / `ignore_crime` + `ScriptState` timer / rumble v115 #6085 `3b9060701`); do not hardcode the number elsewhere). Precedent: v112
+`weapon_drawn` / `ignore_crime` + `ScriptState` timer / rumble v115 #6085 `3b9060701`; `RigidBodyData` out,
+`ReferenceMotionTypeState` in v116 #6237); do not hardcode the number elsewhere). Precedent: v112
   (#6050 `5f8bbf454`) — `register_saved` columns landed after a baseline refresh with no bump and the shape guard sat
   red on main; a new registered column's defining file joins the shape scan, so it is a bump here too. Intra-type shape changes need a bump because
   `schema_fingerprint` hashes only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved

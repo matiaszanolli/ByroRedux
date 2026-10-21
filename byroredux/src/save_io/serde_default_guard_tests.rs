@@ -773,7 +773,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 115;
+    const BASELINE_MAJOR: u16 = 116;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1136,7 +1136,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // required `magic_effects`, `weapon_drawn` and `ignore_crime` fields, and
     // `ScriptState` the required `timer` and `rumble` fields, so a pre-v115
     // store no longer decodes.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xa024_a2eb_5d86_9132;
+    // #6237 — v116 is a genuine bump: the `RigidBodyData` column left the
+    // registry (its carriers are collision entities a live load can never
+    // resolve) and the `ReferenceMotionTypeState` resource joined it, in
+    // `fragment/state.rs`, so a script's `SetMotionType` survives a load.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x8038_fe45_bd2c_70a1;
     // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
     // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
     // keys each shape by its file, so the move alone shifted it; a dump of

@@ -3397,6 +3397,17 @@ fn dispatch_cart_animation_vehicle_and_motion_effects() {
             byroredux_core::math::Vec3::new(10.0, 0.0, 0.0),
         ),
     );
+    // #6237 — a placed reference: its `SetMotionType` is recorded by local FormID.
+    let cart_pair = byroredux_core::form_id::FormIdPair {
+        plugin: byroredux_core::form_id::PluginId::from_filename("Skyrim.esm"),
+        local: byroredux_core::form_id::LocalFormId(0x0003_C0A7),
+    };
+    if world.try_resource::<byroredux_core::form_id::FormIdPool>().is_none() {
+        world.insert_resource(byroredux_core::form_id::FormIdPool::new());
+    }
+    let cart_fid = world.resource_mut::<byroredux_core::form_id::FormIdPool>().intern(cart_pair);
+    world.register::<byroredux_core::ecs::components::FormIdComponent>();
+    world.insert(cart, byroredux_core::ecs::components::FormIdComponent(cart_fid));
     {
         let mut bindings = world.resource_mut::<crate::SceneActorBindings>();
         bindings.bind(Q, i32::from(RIDER_ALIAS), rider);
@@ -3511,6 +3522,11 @@ fn dispatch_cart_animation_vehicle_and_motion_effects() {
             .unwrap()
             .motion_type,
         MotionType::Keyframed
+    );
+    assert_eq!(
+        world.resource::<crate::ReferenceMotionTypeState>().override_for(0x0003_C0A7),
+        Some(MotionType::Keyframed),
+        "#6237 — the persistent half outlives the bodies the request changes"
     );
     let presentation = world.resource::<crate::CinematicPresentationState>();
     assert_eq!(presentation.sitting_rotation_degrees, -55.0);

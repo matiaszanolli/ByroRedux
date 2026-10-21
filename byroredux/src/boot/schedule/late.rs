@@ -579,6 +579,7 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // `npc_dialogue_selection_declares_everything_…` source scan.
             .writes_resource::<byroredux_scripting::ReferenceEnableState>()
             .writes_resource::<byroredux_scripting::ReferenceLockState>()
+            .writes_resource::<byroredux_scripting::ReferenceMotionTypeState>()
             .writes_resource::<byroredux_scripting::CinematicPresentationState>()
             .writes_resource::<byroredux_scripting::FactionRelations>()
             .reads_resource::<byroredux_scripting::LoadOrderIdentity>()

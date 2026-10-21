@@ -570,7 +570,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// `ActiveMagicEffects`, parked with its `ActorValues` so a Recover effect's pending revert survives),
 /// `weapon_drawn` and `ignore_crime` fields, and `ScriptState` the required `timer` and `rumble`
 /// fields, so a pre-v115 store no longer decodes.
-pub const FORMAT_MAJOR: u16 = 115;
+///
+/// v115 -> v116 (#6237): the `RigidBodyData` column is gone (its rows were
+/// collision entities the live load can never resolve, one per resident
+/// collider) and the `ReferenceMotionTypeState` resource joined, so a
+/// script's `SetMotionType` survives a load; the registry schema changed.
+pub const FORMAT_MAJOR: u16 = 116;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

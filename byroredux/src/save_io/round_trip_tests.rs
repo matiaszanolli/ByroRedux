@@ -84,9 +84,6 @@ fn delta_columns_carry_only_session_stable_fields() {
         // carry are gameplay state; pose restore clears its three transient
         // movement fields after the overlay.
         "CharacterController",
-        // #2379 — RigidBodyData: MotionType enum (no payload) + 5 plain
-        // f32s. No FixedString / EntityId / session handle → delta-safe.
-        "RigidBodyData",
         // #2382 — RumbleOnActivate: f32/bool property fields +
         // RumbleState enum (Busy carries one f32). No FixedString /
         // EntityId / session handle → delta-safe.
@@ -191,19 +188,6 @@ fn delta_columns_removed_at_runtime_have_a_load_reconciler() {
             "Escorted",
             RemovalDisposition::NoReconcilerNeeded(
                 "NPC-only carrier; destroyed and rebuilt by the cell reload",
-            ),
-        ),
-        // player_body.rs' `attach_assembled_root` strips bhk-derived
-        // CollisionShape/RigidBodyData from the assembled player body at
-        // Character-mode boot spawn (the visual-only body must not register
-        // bone bodies beside the capsule). Every carrier is a player-body
-        // subtree entity: no FormIdComponent, spawned after the save
-        // registry exists but before the first frame, and never captured by
-        // any save — the additive overlay cannot meet a removed row.
-        (
-            "RigidBodyData",
-            RemovalDisposition::NoReconcilerNeeded(
-                "boot-time player-body attach on never-saved visual-only subtree entities",
             ),
         ),
     ];
@@ -764,36 +748,26 @@ fn a_script_package_survives_save_load_round_trip() {
     assert_eq!(dst.get::<ScriptPackage>(sent).map(|slot| *slot), Some(package));
 }
 
-/// Regression: #2379 (SAVE-D1-14) — a scripted `.SetMotionType()` call
-/// must survive a save/load round trip. Pre-fix, `RigidBodyData` was
-/// absent from `build_save_registry`, so a scripted motion-type change
-/// (e.g. making a normally-static prop dynamic for a scripted sequence)
-/// silently reverted to the ESM-derived default on reload.
+/// Regression: #6237 (and #2379 before it) — a scripted `.SetMotionType()`
+/// must survive a save/load. #2379 saved the `RigidBodyData` column, but its
+/// carriers are collision entities stamped with `PhysicsSourceForm`, never
+/// `FormIdComponent`, so the live load could never overlay a row onto one
+/// (only `restore_world` round-tripped). The change now lives in the
+/// FormID-keyed `ReferenceMotionTypeState` ledger, restored before the reload
+/// and applied by `cell_loader::spawn` to every collider of the placement.
 #[test]
-fn rigid_body_data_survives_save_load_round_trip() {
-    use byroredux_core::ecs::components::{MotionType, RigidBodyData};
+fn reference_motion_type_state_survives_save_load_round_trip() {
+    use byroredux_core::ecs::components::MotionType;
+    use byroredux_scripting::ReferenceMotionTypeState;
 
     let reg = build_save_registry();
     let mut src = World::new();
     src.insert_resource(StringPool::new());
     src.insert_resource(FormIdPool::new());
-
-    let prop = src.spawn();
-    src.insert(
-        prop,
-        RigidBodyData {
-            motion_type: MotionType::Dynamic,
-            mass: 12.5,
-            friction: 0.4,
-            restitution: 0.2,
-            linear_damping: 0.1,
-            angular_damping: 0.05,
-            collidable: true,
-            surface_material: 0,
-            part_surface_materials: Box::new([]),
-            havok_layer: 0,
-        },
-    );
+    let mut ledger = ReferenceMotionTypeState::default();
+    ledger.set(0x0001_0BF2, MotionType::Dynamic);
+    ledger.set(0x0001_0BF3, MotionType::Keyframed);
+    src.insert_resource(ledger);
 
     let snapshot = save_world(&src, &reg).unwrap();
     let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
@@ -802,82 +776,17 @@ fn rigid_body_data_survives_save_load_round_trip() {
     let mut dst = World::new();
     dst.insert_resource(FormIdPool::new());
     restore_world(&mut dst, &reg, &decoded).unwrap();
-
-    let restored = dst
-        .get::<RigidBodyData>(prop)
-        .expect("RigidBodyData must round-trip");
-    assert_eq!(restored.motion_type, MotionType::Dynamic);
-    assert_eq!(restored.mass, 12.5);
-    assert_eq!(restored.friction, 0.4);
-    assert_eq!(restored.restitution, 0.2);
-    assert_eq!(restored.linear_damping, 0.1);
-    assert_eq!(restored.angular_damping, 0.05);
-}
-
-/// Regression: #5686 — `RigidBodyData::part_surface_materials` is
-/// `serde(skip)` (re-derived from the NIF collision tree at import, the
-/// #3470 class). The live-load overlay replaces matched entities'
-/// components wholesale, so pre-fix the freshly re-imported slice was
-/// wiped by the deserialized row's empty default and every compound
-/// collider part collapsed onto the body-level material. The column is
-/// registered *preserving*: the apply hook keeps the live slice while
-/// the saved row still restores the scripted `motion_type` (#2379).
-#[test]
-fn rigid_body_part_materials_survive_live_delta_overlay() {
-    use byroredux_core::ecs::components::{FormIdComponent, MotionType, RigidBodyData};
-    use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
-
-    let pair = FormIdPair {
-        plugin: PluginId::from_filename("Skyrim.esm"),
-        local: LocalFormId(0x0001_0BF2),
-    };
-    let reg = build_save_registry();
-    let mut saved = World::new();
-    saved.insert_resource(StringPool::new());
-    saved.insert_resource(FormIdPool::new());
-    let old = saved.spawn();
-    let fid = saved.resource_mut::<FormIdPool>().intern(pair);
-    saved.insert(old, FormIdComponent(fid));
-    saved.insert(
-        old,
-        RigidBodyData {
-            motion_type: MotionType::Dynamic,
-            ..RigidBodyData::static_body()
-        },
+    let restored = dst.resource::<ReferenceMotionTypeState>();
+    assert_eq!(restored.override_for(0x0001_0BF2), Some(MotionType::Dynamic));
+    assert_eq!(restored.override_for(0x0001_0BF3), Some(MotionType::Keyframed));
+    assert_eq!(restored.override_for(0x0001_0BF4), None);
+    assert!(
+        super::live_load::PRE_RELOAD_RESOURCES.contains(&"ReferenceMotionTypeState"),
+        "the spawn path reads the ledger while the reload builds the cell"
     );
-    let snapshot = save_world(&saved, &reg).unwrap();
-
-    // The reload has re-imported the NIF: the live row carries the
-    // authored per-part Havok materials but the ESM-default (static)
-    // motion type the save must override.
-    let mut live = World::new();
-    live.insert_resource(FormIdPool::new());
-    let current = live.spawn();
-    let fid = live.resource_mut::<FormIdPool>().intern(pair);
-    live.insert(current, FormIdComponent(fid));
-    live.insert(
-        current,
-        RigidBodyData {
-            part_surface_materials: Box::new([7, 9, 0xDF3A_9B3F]),
-            ..RigidBodyData::static_body()
-        },
-    );
-
-    let remap = byroredux_save::build_form_id_remap(&live, &reg, &snapshot);
-    byroredux_save::apply_deltas(&mut live, &reg, &snapshot, &remap, MUTABLE_DELTA_COLUMNS)
-        .unwrap();
-    let restored = live
-        .get::<RigidBodyData>(current)
-        .expect("the overlay applied the saved row");
-    assert_eq!(
-        restored.motion_type,
-        MotionType::Dynamic,
-        "the scripted motion type still crosses via the saved row"
-    );
-    assert_eq!(
-        restored.part_surface_materials.as_ref(),
-        [7, 9, 0xDF3A_9B3F],
-        "the freshly re-imported per-part materials survive the overlay"
+    assert!(
+        !MUTABLE_DELTA_COLUMNS.contains(&"RigidBodyData"),
+        "collider bodies are rebuilt from the NIF; a delta row could never resolve to one"
     );
 }
 

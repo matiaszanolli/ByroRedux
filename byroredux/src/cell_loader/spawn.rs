@@ -286,6 +286,7 @@ fn spawn_packed_collision_proxy(
         Quat::IDENTITY,
         1.0,
     );
+    let motion_type = scripted_motion_type(world, placement_fid).unwrap_or(MotionType::Keyframed);
     let ghost = world.spawn();
     world.insert(ghost, Transform::new(local_center, Quat::IDENTITY, 1.0));
     world.insert(ghost, GlobalTransform::new(world_center, world_rot, 1.0));
@@ -296,7 +297,8 @@ fn spawn_packed_collision_proxy(
             // The packed blob's mass and motion type are unknown. Kinematic is
             // conservative and follows any script/animation that moves the
             // placement root instead of drifting away from the visual model.
-            motion_type: MotionType::Keyframed,
+            // A script's `SetMotionType` wins (#6237).
+            motion_type,
             ..RigidBodyData::static_body()
         },
     );
@@ -415,6 +417,9 @@ pub(crate) fn spawn_trimesh_collider_ghost(
     };
     if let Some(material) = surface_material {
         body.surface_material = material;
+    }
+    if let Some(motion_type) = scripted_motion_type(world, source_form) {
+        body.motion_type = motion_type;
     }
     let ghost = world.spawn();
     world.insert(ghost, Transform::new(pos, rot, scale));
@@ -547,6 +552,23 @@ pub(crate) fn scripted_lock_override(
     world
         .try_resource::<byroredux_scripting::ReferenceLockState>()
         .and_then(|state| state.override_for(pair.local.0))
+}
+
+/// The motion type a script gave this placement's bodies with
+/// `SetMotionType`, if one has (#6237). Applied to every collider the
+/// placement spawns, so the change survives a save/load and a cell revisit
+/// (both rebuild the bodies from the NIF). Keyed by *local* form id like its
+/// [`scripted_lock_override`] sibling.
+pub(crate) fn scripted_motion_type(
+    world: &World,
+    placement_fid: Option<byroredux_core::form_id::FormId>,
+) -> Option<byroredux_core::ecs::components::MotionType> {
+    let local = world
+        .try_resource::<FormIdPool>()
+        .and_then(|pool| pool.resolve(placement_fid?).map(|pair| pair.local.0))?;
+    world
+        .try_resource::<byroredux_scripting::ReferenceMotionTypeState>()
+        .and_then(|state| state.override_for(local))
 }
 
 pub(crate) fn light_radius_or_default(radius: f32) -> f32 {
@@ -1484,6 +1506,9 @@ fn spawn_node_collisions(
         if body.motion_type == byroredux_core::ecs::components::MotionType::Static {
             body.motion_type = byroredux_core::ecs::components::MotionType::Keyframed;
         }
+        if let Some(motion_type) = scripted_motion_type(world, placement_fid) {
+            body.motion_type = motion_type;
+        }
         let entity = world.spawn();
         world.insert(entity, Transform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
         world.insert(entity, GlobalTransform::new(pos, rot, scale));
@@ -1542,6 +1567,11 @@ fn spawn_collision_shapes(
         // reaches parry3d — a step that happens downstream of this spawn
         // site, not here.
         let shape = coll.shape.clone();
+        let mut body = coll.body.clone();
+        // #6237 — a script's `SetMotionType` outlives the bodies it changed.
+        if let Some(motion_type) = scripted_motion_type(world, placement_fid) {
+            body.motion_type = motion_type;
+        }
 
         let entity = world.spawn();
         world.insert(entity, Transform::new(final_pos, final_rot, final_scale));
@@ -1550,7 +1580,7 @@ fn spawn_collision_shapes(
             GlobalTransform::new(final_pos, final_rot, final_scale),
         );
         world.insert(entity, shape);
-        world.insert(entity, coll.body.clone());
+        world.insert(entity, body);
         // #1698 — tag this collision entity with its source REFR's form id
         // and content-class so a runtime diagnostic (`dump_awake_fallers`)
         // can resolve WHICH placement an awake/free-falling dynamic body
@@ -1633,6 +1663,49 @@ mod node_collision_tests {
         assert_eq!(world.get::<RigidBodyData>(collider).unwrap().havok_layer, 14);
         let global = world.get::<GlobalTransform>(collider).unwrap();
         assert!((global.translation - Vec3::new(100.0, 256.0, 0.0)).length() < 1.0e-3, "{:?}", global.translation);
+    }
+
+    /// #6237 — a script's `SetMotionType` is recorded against the placement's
+    /// local FormID and re-applied to every collider the placement spawns, so a
+    /// load or a cell revisit (both rebuild the bodies) keeps it. A placement
+    /// no script touched keeps its authored type.
+    #[test]
+    fn a_scripted_motion_type_is_applied_to_the_placements_rebuilt_colliders() {
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<RigidBodyData>();
+        world.register::<CollisionShape>();
+        world.register::<RenderLayer>();
+        world.register::<byroredux_core::ecs::components::PhysicsSourceForm>();
+        world.insert_resource(FormIdPool::new());
+        let pair = |local| FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(local) };
+        let (moved, untouched) = {
+            let mut pool = world.resource_mut::<FormIdPool>();
+            (pool.intern(pair(0x0001_0BF2)), pool.intern(pair(0x0001_0BF3)))
+        };
+        let mut ledger = byroredux_scripting::ReferenceMotionTypeState::default();
+        ledger.set(0x0001_0BF2, MotionType::Dynamic);
+        world.insert_resource(ledger);
+
+        let collision = ImportedCollision {
+            translation: [0.0; 3],
+            rotation: Quat::IDENTITY.to_array(),
+            scale: 1.0,
+            shape: CollisionShape::Ball { radius: 5.0 },
+            body: RigidBodyData::static_body(),
+        };
+        for fid in [moved, untouched] {
+            spawn_collision_shapes(&mut world, std::slice::from_ref(&collision), &[None], Vec3::ZERO, Quat::IDENTITY, 1.0, Some(fid), RenderLayer::Clutter);
+        }
+        let motion_of = |fid| {
+            let colliders = world.query::<byroredux_core::ecs::components::PhysicsSourceForm>().unwrap();
+            let (entity, _) = colliders.iter().find(|(_, source)| source.0 == fid).expect("the placement's collider");
+            world.get::<RigidBodyData>(entity).unwrap().motion_type
+        };
+        assert_eq!(motion_of(moved), MotionType::Dynamic, "the scripted type wins over the authored one");
+        assert_eq!(motion_of(untouched), MotionType::Static, "an untouched placement keeps its authored type");
     }
 }
 

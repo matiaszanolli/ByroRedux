@@ -617,8 +617,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PrecombinedMesh", "write-once at precombine spawn (EX-15 / #2369), idempotent across reloads of the same cell — same category as CellRoot/RenderLayer, split out purely so world.owners can track precombine geometry as its own reclaim class"),
         ("RenderDebugControl", "operator-only renderer diagnostics and one-frame probe handoff state; deliberately resets to the default view on process start/load"),
         ("RenderLayer", "every insert site is one-shot at cell-load/NPC-spawn via pure classifier functions, no runtime mutator"),
-        // RigidBodyData: FIXED — registered (#2379 / SAVE-D1-14), no
-        // longer allowlisted here.
+        ("RigidBodyData", "rebuilt from the NIF collision tree whenever a placement spawns; a script's SetMotionType, the one runtime mutation that must persist, is carried by the ReferenceMotionTypeState ledger and applied at spawn (#6237) — a saved column could never overlay it (its carriers are PhysicsSourceForm collision entities, never FormIdComponent)"),
         ("SandboxBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; only read by sandbox_seat_system"),
         ("CreatureActor", "spawn-derived actor-kind marker stamped from the CREA record in prepare_creature_state (#5495); re-stamped on every spawn and only read by the M42 seat gates"),
         ("EatBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; the seated pose it ends in is NOT carried by a live load (Seated is registered for restore_world only, not the live overlay): the actor respawns standing and re-derives it by re-walking and re-seating through eat_sleep_system"),
@@ -839,7 +838,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // entry below; classifies every `impl Component`/`impl
         // Resource` under the binary crate not already registered in
         // `build_save_registry` (`ActorCinematicState`,
-        // `HorseTetherState`, `ActorControlState`, `RigidBodyData`,
+        // `HorseTetherState`, `ActorControlState`,
         // `Material`, `RumbleOnActivate`, `CurrentCellContext`,
         // `PlayerPose`, `GameTimeRes` all already are). Verified
         // 2026-08-08 against real (non-`#[cfg(test)]`) insertion sites
@@ -1192,7 +1191,6 @@ fn every_delta_column_is_parked_or_explicitly_not() {
         ("PatrolState", "UNAUDITED"),
         ("Escorted", "UNAUDITED"),
         ("CharacterController", "the player outlives cell reloads; never evicted"),
-        ("RigidBodyData", "UNAUDITED"),
     ];
 
     let covered: std::collections::BTreeSet<&str> = PARKED

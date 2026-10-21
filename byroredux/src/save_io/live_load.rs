@@ -39,6 +39,9 @@ pub(super) const PRE_RELOAD_RESOURCES: &[&str] = &[
     "ReferenceLockState",
     "ReferenceScriptState",
     "ScriptedFactionChanges",
+    // #6237 — `cell_loader::spawn::scripted_motion_type` reads it as each
+    // collider is built.
+    "ReferenceMotionTypeState",
 ];
 
 /// The live values of the [`PRE_RELOAD_RESOURCES`] ledgers, taken before the
@@ -57,6 +60,7 @@ pub(super) struct LiveReloadLedgers {
     lock: Option<byroredux_scripting::ReferenceLockState>,
     script: Option<byroredux_scripting::ReferenceScriptState>,
     factions: Option<byroredux_scripting::ScriptedFactionChanges>,
+    motion: Option<byroredux_scripting::ReferenceMotionTypeState>,
 }
 
 impl LiveReloadLedgers {
@@ -69,6 +73,7 @@ impl LiveReloadLedgers {
             lock: live(world),
             script: live(world),
             factions: live(world),
+            motion: live(world),
         }
     }
 
@@ -89,6 +94,7 @@ impl LiveReloadLedgers {
         put(world, self.lock);
         put(world, self.script);
         put(world, self.factions);
+        put(world, self.motion);
     }
 }
 

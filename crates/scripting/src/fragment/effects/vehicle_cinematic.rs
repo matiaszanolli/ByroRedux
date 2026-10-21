@@ -115,6 +115,11 @@ pub(super) fn apply_vehicle_cinematic_effect(
             motion_type,
             allow_activate,
         } => {
+            // #6237 — the persistent half: the bodies the request changes are
+            // collision entities the next load or cell visit rebuilds.
+            if let Some(form_id) = object_form_id(vmad, world, context, target, deferred) {
+                deferred.reference_motion_type_changes.push((form_id, *motion_type));
+            }
             let target =
                 resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
             if let Some(mut requests) = world.query_mut::<crate::MotionTypeChangeRequest>() {

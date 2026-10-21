@@ -361,6 +361,51 @@ impl ReferenceLockState {
     }
 }
 
+/// Persistent scripted motion types for placed references, keyed by
+/// **local** form ID like [`ReferenceLockState`] and for the same reason.
+///
+/// #6237. `SetMotionType` changes the motion type of the bodies a
+/// reference owns, and every one of those is a separate collision entity
+/// stamped with `PhysicsSourceForm`, never `FormIdComponent` (so
+/// `find_by_form_id` stays unambiguous). A saved `RigidBodyData` column
+/// therefore had nothing to overlay on a live load, and leaving the cell
+/// despawned the bodies outright, so a prop a quest made dynamic (or froze
+/// keyframed) reverted to its authored motion type on every load and every
+/// revisit. A ledger outlives the bodies; `cell_loader::spawn` applies it to
+/// each collider of the placement as it is built. Only a script's
+/// `SetMotionType` writes it: `TetherToHorse` keyframes its cart through the
+/// same request bridge, but that belongs to the tether, not the reference.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct ReferenceMotionTypeState {
+    overrides: HashMap<u32, byroredux_core::ecs::components::MotionType>,
+}
+
+impl Resource for ReferenceMotionTypeState {}
+
+impl ReferenceMotionTypeState {
+    /// Record that a script set `form_id`'s motion type.
+    pub fn set(&mut self, form_id: u32, motion_type: byroredux_core::ecs::components::MotionType) {
+        self.overrides.insert(form_id, motion_type);
+    }
+
+    /// The scripted motion type for `form_id`, if any. `None` means no
+    /// script has changed it and the authored bodies' own types stand.
+    pub fn override_for(&self, form_id: u32) -> Option<byroredux_core::ecs::components::MotionType> {
+        self.overrides.get(&form_id).copied()
+    }
+
+    /// Number of references carrying a scripted motion type. Diagnostic.
+    pub fn len(&self) -> usize {
+        self.overrides.len()
+    }
+
+    /// Returns `true` when no script has changed any motion type.
+    pub fn is_empty(&self) -> bool {
+        self.overrides.is_empty()
+    }
+}
+
 impl ReferenceEnableState {
     /// Whether no script has disabled this reference. Ignores the authored
     /// "Initially Disabled" default — spawn paths use
