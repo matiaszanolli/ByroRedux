@@ -131,7 +131,7 @@ fn cond(
 /// an uncatalogued function. The same index stays modeled on its own games.
 #[test]
 fn colliding_indices_are_unmodeled_on_the_games_that_reuse_them() {
-    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Skyrim};
+    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Oblivion, Skyrim, Starfield};
 
     // (index, a game that reuses it, a game the catalog row is right for)
     let cases = [
@@ -143,6 +143,10 @@ fn colliding_indices_are_unmodeled_on_the_games_that_reuse_them() {
         (550, Fallout3NV, Skyrim),
         (555, Fallout3NV, Fallout4),
         (630, Fallout4, Skyrim),
+        // #5778 — 365 is Oblivion's GetPlayerInSEWorld, IsChild everywhere else.
+        (365, Fallout3NV, Oblivion),
+        (365, Skyrim, Oblivion),
+        (365, Starfield, Oblivion),
     ];
     let mut world = World::new();
     crate::register(&mut world);
@@ -804,6 +808,123 @@ fn has_loaded_3d_tracks_live_spatial_component() {
     let condition = vec![cond(555, ComparisonOp::Eq, 1.0, false)];
     assert!(evaluate(&condition, &world, &ctx(loaded)));
     assert!(!evaluate(&condition, &world, &ctx(not_loaded)));
+}
+
+/// #5778 — Oblivion's quest-level dialogue gates are `GetIsPlayableRace` (254)
+/// and `GetPlayerInSEWorld` (365) on 339 of 390 quests. Both evaluate now:
+/// the RACE Playable flag through `PlayableRaces`, the Shivering Isles flag
+/// from the ledger `SetPlayerInSEWorld` writes.
+#[test]
+fn oblivion_quest_gate_functions_read_the_playable_flag_and_the_se_world_flag() {
+    use byroredux_core::character::Background;
+    use byroredux_plugin::esm::reader::GameKind;
+    use byroredux_plugin::esm::records::{EsmIndex, RaceRecord};
+    const IMPERIAL: u32 = 0x0000_0907;
+    const DREMORA: u32 = 0x0003_1E53;
+    let mut index = EsmIndex::default();
+    for (form, flags) in [(IMPERIAL, 0x01), (DREMORA, 0x00)] {
+        index.races.insert(
+            form,
+            RaceRecord {
+                form_id: form,
+                race_flags: flags,
+                ..RaceRecord::default()
+            },
+        );
+    }
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(GameKind::Oblivion));
+    world.insert_resource(crate::obscript_more::PlayableRaces::from_index(&index));
+    let race = |world: &mut World, race_form_id| {
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            Background {
+                race_form_id,
+                class_form_id: 0,
+            },
+        );
+        actor
+    };
+    let imperial = race(&mut world, IMPERIAL);
+    let dremora = race(&mut world, DREMORA);
+
+    let playable = vec![cond(254, ComparisonOp::Eq, 1.0, false)];
+    assert!(is_modeled(&world, &playable[0]));
+    assert!(evaluate(&playable, &world, &ctx(imperial)));
+    assert!(!evaluate(&playable, &world, &ctx(dremora)));
+    let raceless = world.spawn();
+    assert!(!evaluate(&playable, &world, &ctx(raceless)), "no Background → 0");
+
+    // The vanilla Tamriel gate: `GetPlayerInSEWorld == 0`.
+    let in_tamriel = vec![cond(365, ComparisonOp::Eq, 0.0, false)];
+    assert!(is_modeled(&world, &in_tamriel[0]));
+    assert!(evaluate(&in_tamriel, &world, &ctx(imperial)), "a new game starts in Tamriel");
+    world
+        .resource_mut::<crate::obscript_ledger::ObScriptLedger>()
+        .set_value(0x116c, 0, 1.0);
+    assert!(!evaluate(&in_tamriel, &world, &ctx(imperial)), "SetPlayerInSEWorld 1");
+}
+
+/// #5778 — the two remaining functions of the Oblivion quest-level census
+/// that every game authors at the same index: `GetIsSex` (70) off the
+/// base's ACBS female flag, `GetInWorldspace` (310) off the cell kind.
+#[test]
+fn get_is_sex_and_get_in_worldspace_read_the_shared_helpers() {
+    use crate::cell_kind::ExteriorCell;
+    use byroredux_core::ecs::components::{CellFormId, CellRoot};
+    use byroredux_plugin::esm::records::{EsmIndex, NpcRecord};
+    const FEMALE: u32 = 0x0001_0001;
+    const MALE: u32 = 0x0001_0002;
+    const TAMRIEL: u32 = 0x0000_003C;
+    let mut index = EsmIndex::default();
+    for (form, acbs_flags) in [(FEMALE, 0x1), (MALE, 0x0)] {
+        index.npcs.insert(
+            form,
+            NpcRecord {
+                form_id: form,
+                acbs_flags,
+                ..Default::default()
+            },
+        );
+    }
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.register::<ExteriorCell>();
+    crate::actor_base_traits::install_actor_base_traits(&mut world, &index);
+    let exterior = world.spawn();
+    world.insert(exterior, CellFormId(2));
+    world.insert(exterior, ExteriorCell(TAMRIEL));
+    let interior = world.spawn();
+    world.insert(interior, CellFormId(1));
+    let actor = |world: &mut World, base_form_id, cell| {
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            crate::scene::SceneAliasCandidate {
+                base_form_id,
+                ..Default::default()
+            },
+        );
+        world.insert(actor, CellRoot(cell));
+        actor
+    };
+    let outdoors_female = actor(&mut world, FEMALE, exterior);
+    let indoors_male = actor(&mut world, MALE, interior);
+
+    let female = vec![cond(70, ComparisonOp::Eq, 1.0, false).with_param_1(1)];
+    let male = vec![cond(70, ComparisonOp::Eq, 1.0, false).with_param_1(0)];
+    assert!(evaluate(&female, &world, &ctx(outdoors_female)));
+    assert!(!evaluate(&male, &world, &ctx(outdoors_female)));
+    assert!(evaluate(&male, &world, &ctx(indoors_male)));
+    assert!(!evaluate(&female, &world, &ctx(indoors_male)));
+
+    let in_tamriel = vec![cond(310, ComparisonOp::Eq, 1.0, false).with_param_1(TAMRIEL)];
+    assert!(evaluate(&in_tamriel, &world, &ctx(outdoors_female)));
+    assert!(!evaluate(&in_tamriel, &world, &ctx(indoors_male)), "0 in an interior");
+    let elsewhere = vec![cond(310, ComparisonOp::Eq, 1.0, false).with_param_1(TAMRIEL + 1)];
+    assert!(!evaluate(&elsewhere, &world, &ctx(outdoors_female)));
 }
 
 #[test]
@@ -1867,4 +1988,83 @@ fn authored_actor_value_indices_resolve_in_the_vanilla_masters() {
             unresolved.iter().map(|(code, (n, _))| (**code, *n)).collect::<Vec<_>>());
         assert!(lost * 20 < total, "{label}: more than 5% of authored GetActorValue conditions stay unreadable ({lost}/{total})");
     }
+}
+
+/// #5778 — the census behind the issue, re-run against vanilla
+/// `Oblivion.esm`: quest-level dialogue lists (`dialogue_conditions`) that
+/// still hold a function the evaluator cannot read on Oblivion, and the
+/// INFOs (and GREETING INFOs) owned by those quests, which the fail-closed
+/// quest gate declines. Before 254/365 (and 70/310) were catalogued: 339
+/// of 390 quests, 16,799 of 19,278 INFOs, 3,247 of 3,743 GREETING; after,
+/// 1 quest, 9 INFOs, 9 GREETING.
+#[test]
+#[ignore = "needs Oblivion.esm on disk (~160 MB resident)"]
+fn oblivion_quest_level_dialogue_gates_census() {
+    use byroredux_plugin::esm::reader::GameKind;
+    let path = byroredux_plugin::esm::test_paths::oblivion_esm();
+    if !path.is_file() {
+        if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+            panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but Oblivion.esm was not found at {path:?}");
+        }
+        return;
+    }
+    let esm = std::fs::read(&path).unwrap();
+    let index = byroredux_plugin::esm::parse_esm(&esm).unwrap();
+    let mut world = World::new();
+    crate::register(&mut world);
+    crate::actor_value_names::install_actor_value_names(&mut world, &index);
+    assert!(matches!(world.resource::<crate::ScriptGame>().0, GameKind::Oblivion));
+
+    let gated: Vec<u32> = index
+        .quests
+        .values()
+        .filter(|q| !q.dialogue_conditions.is_empty())
+        .map(|q| q.form_id)
+        .collect();
+    let mut unread_functions = std::collections::BTreeMap::<u32, usize>::new();
+    let declined: std::collections::HashSet<u32> = index
+        .quests
+        .values()
+        .filter(|q| {
+            let mut unread = false;
+            for c in &q.dialogue_conditions {
+                if !is_modeled(&world, c) {
+                    *unread_functions.entry(c.function_index).or_default() += 1;
+                    unread = true;
+                }
+            }
+            unread
+        })
+        .map(|q| q.form_id)
+        .collect();
+    let (mut infos, mut declined_infos, mut greetings, mut declined_greetings) = (0, 0, 0, 0);
+    for dial in index.dialogues.values() {
+        let greeting = dial.editor_id.eq_ignore_ascii_case("GREETING");
+        for info in &dial.infos {
+            let out = declined.contains(&info.quest);
+            infos += 1;
+            declined_infos += out as usize;
+            if greeting {
+                greetings += 1;
+                declined_greetings += out as usize;
+            }
+        }
+    }
+    eprintln!(
+        "[#5778] quests={} gated={} declined={} unread_functions={unread_functions:?} \
+         infos={infos} declined_infos={declined_infos} greetings={greetings} \
+         declined_greetings={declined_greetings}",
+        index.quests.len(),
+        gated.len(),
+        declined.len(),
+    );
+    assert_eq!(gated.len(), 339, "the issue's quest-level list count");
+    // Measured 2026-10-21: only 313 (IsActorEvil, one quest) stays
+    // uncatalogued.
+    assert_eq!(unread_functions.into_iter().collect::<Vec<_>>(), vec![(313, 1)]);
+    assert_eq!(
+        (declined.len(), declined_infos, declined_greetings),
+        (1, 9, 9),
+        "quests / INFOs / GREETING INFOs the quest gate still declines"
+    );
 }

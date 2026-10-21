@@ -542,6 +542,15 @@ pub fn evaluate_function(
         ConditionFunction::GetDistance => reference::get_distance(condition, entity, world),
         ConditionFunction::GetRelationshipRank => actor::get_relationship_rank(condition, entity, world),
         ConditionFunction::GetIsGhost => truth(crate::is_ghost(world, entity)),
+        ConditionFunction::GetIsPlayableRace => actor::get_is_playable_race(entity, world),
+        ConditionFunction::GetPlayerInSEWorld => crate::obscript_more::player_in_se_world(world),
+        ConditionFunction::GetIsSex => truth(
+            crate::actor_base_traits::is_female(world, entity)
+                .is_some_and(|female| female == (condition.param_1 == 1)),
+        ),
+        ConditionFunction::GetInWorldspace => truth(
+            crate::cell_kind::in_worldspace(world, entity, condition.param_1).unwrap_or(false),
+        ),
         ConditionFunction::HasKeyword => {
             truth(crate::keywords::has_keyword(world, entity, condition.param_1))
         }

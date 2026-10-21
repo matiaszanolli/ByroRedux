@@ -677,6 +677,16 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's SetCleared, and the IsCleared guard.
             .reads_resource::<byroredux_scripting::LocationClearState>()
             .writes_resource::<byroredux_scripting::LocationClearState>()
+            // #5778 — the Oblivion quest-level gate functions: GetIsPlayableRace
+            // (the RACE Playable set), GetPlayerInSEWorld (the ledger's SE
+            // flag), GetIsSex (the bases' ACBS traits) and GetInWorldspace
+            // (the cell kind: an exterior root's worldspace, the player's
+            // published kind).
+            .reads_resource::<byroredux_scripting::obscript_more::PlayableRaces>()
+            .reads_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()
+            .reads_resource::<byroredux_scripting::ActorBaseTraits>()
+            .reads_resource::<byroredux_scripting::cell_kind::PlayerCellKind>()
+            .reads::<byroredux_scripting::cell_kind::ExteriorCell>()
             // M47.2 — a spoken line's SetEssential / SetProtected, and the
             // IsEssential / IsBleedingOut guards.
             .reads::<byroredux_scripting::ActorProtection>()

@@ -55,8 +55,35 @@ impl byroredux_core::ecs::Resource for ChildRaces {}
 
 impl ChildRaces {
     pub fn from_index(index: &byroredux_plugin::esm::records::EsmIndex) -> Self {
-        Self(std::sync::Arc::new(index.races.iter().filter(|(_, race)| race.race_flags & 0x04 != 0).map(|(&form, _)| form).collect()))
+        Self(races_flagged(index, 0x04))
     }
+}
+
+/// The races flagged *Playable* (`GetIsPlayableRace`; RACE `DATA` flag `0x01` — xEdit's TES4 `Playable`, bit 0
+/// of the flags word on every later game), by race FormID. `NOT_SAVED_BY_DESIGN`: rebuilt from the records at
+/// every content load.
+#[derive(Debug, Default, Clone)]
+pub struct PlayableRaces(std::sync::Arc<std::collections::HashSet<u32>>);
+
+impl byroredux_core::ecs::Resource for PlayableRaces {}
+
+impl PlayableRaces {
+    pub fn from_index(index: &byroredux_plugin::esm::records::EsmIndex) -> Self {
+        Self(races_flagged(index, 0x01))
+    }
+
+    /// Whether `race` is a playable race of the loaded records.
+    pub fn contains(&self, race: u32) -> bool {
+        self.0.contains(&race)
+    }
+}
+
+/// The FormIDs of the races whose RACE `DATA` flags carry any bit of `flag`.
+fn races_flagged(
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    flag: u32,
+) -> std::sync::Arc<std::collections::HashSet<u32>> {
+    std::sync::Arc::new(index.races.iter().filter(|(_, race)| race.race_flags & flag != 0).map(|(&form, _)| form).collect())
 }
 
 /// The DLC master files, in the order a New Vegas script counts them (`IsDLCInstalled`): Dead Money,

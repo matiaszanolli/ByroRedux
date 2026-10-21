@@ -24,6 +24,18 @@ pub(super) fn get_player_teammate(entity: EntityId, world: &World) -> f32 {
     }))
 }
 
+/// #5778 — the actor's `Background` race against the load's
+/// [`PlayableRaces`](crate::obscript_more::PlayableRaces).
+pub(super) fn get_is_playable_race(entity: EntityId, world: &World) -> f32 {
+    use byroredux_core::character::Background;
+    let race = world.get::<Background>(entity).map(|b| b.race_form_id);
+    truth(race.is_some_and(|race| {
+        world
+            .try_resource::<crate::obscript_more::PlayableRaces>()
+            .is_some_and(|races| races.contains(race))
+    }))
+}
+
 pub(super) fn get_dead(entity: EntityId, world: &World) -> f32 {
     // Death is a sparse lifecycle marker: absence is the overwhelmingly
     // common alive state, while combat/scripts/resurrection can share

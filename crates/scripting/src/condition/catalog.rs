@@ -247,6 +247,27 @@ pub enum ConditionFunction {
     /// `GetIsGhost → f32` (M47.2): 1.0 when the Run-On actor is a ghost
     /// (`SetGhost`, [`crate::ActorControlState::ghost`]).
     GetIsGhost,
+    /// `GetIsPlayableRace → f32` (#5778): 1.0 when the Run-On actor's race
+    /// carries the RACE *Playable* flag ([`crate::obscript_more::PlayableRaces`]),
+    /// else 0.0 (also without `Background`). Index **254** in every game
+    /// (xEdit `wbDefinitions*.pas`). Oblivion authors it on 308 quest-level
+    /// dialogue lists.
+    GetIsPlayableRace,
+    /// `GetPlayerInSEWorld → f32` (#5778, Oblivion): 1.0 while the engine's
+    /// Shivering Isles flag is set (CS *SetPlayerInSEWorld*; CS wiki: "used
+    /// extensively by Oblivion.esm to activate/deactivate quests (and thus
+    /// standard dialog)"). Reads no Run-On. Index **365** on Oblivion only —
+    /// every later game authors 365 as `IsChild` ([`FOREIGN_INDICES`]).
+    GetPlayerInSEWorld,
+    /// `GetIsSex(sex) → f32` (#5778): 1.0 when the Run-On actor's base is
+    /// female and `param_1` is 1, or male and `param_1` is 0
+    /// ([`crate::actor_base_traits::is_female`]); 0.0 without an actor base.
+    /// Index **70** in every game.
+    GetIsSex,
+    /// `GetInWorldspace(worldspace) → f32` (#5778): 1.0 when the Run-On
+    /// reference is in one of `param_1`'s exterior cells, 0.0 in an interior
+    /// ([`crate::cell_kind::in_worldspace`]). Index **310** in every game.
+    GetInWorldspace,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -346,6 +367,10 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::GetRelationshipRank, indices: &[403], name: "GetRelationshipRank", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::HasKeyword, indices: &[560], name: "HasKeyword", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetIsGhost, indices: &[237], name: "GetIsGhost", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetIsPlayableRace, indices: &[254], name: "GetIsPlayableRace", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetPlayerInSEWorld, indices: &[365], name: "GetPlayerInSEWorld", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetIsSex, indices: &[70], name: "GetIsSex", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetInWorldspace, indices: &[310], name: "GetInWorldspace", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
 ];
 
 /// CTDA function indices that are a *different* function in some games than
@@ -361,11 +386,13 @@ const ROWS: &[Row] = &[
 /// | 550 | `IsSceneActionComplete` (Skyrim/FO4) | FO3/FNV: `IsGoreDisabled` |
 /// | 555 | `HasLoaded3D` (Skyrim/FO4) | FO3/FNV: `GetSpellUsageNum` |
 /// | 630 | `GetVMScriptVariable` (Skyrim) | FO4: `GetCombatAudioDetection` |
+/// | 365 | `GetPlayerInSEWorld` (Oblivion) | FO3/FNV, Skyrim, FO4, FO76, Starfield: `IsChild` |
 ///
 /// Index 79 (`GetQuestVariable`) is the opposite shape — valid only on the
 /// pre-Papyrus games — and keeps its own check in the evaluator. A game not
-/// named here (Oblivion, FO76, Starfield) is left as it was: no definition
-/// has been read for it, so nothing claims the index is foreign.
+/// named in a row is left as it was: for every row but 365 no FO76 or
+/// Starfield definition has been read, so nothing claims the index is
+/// foreign there.
 const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
     (403, &[GameKind::Fallout3NV]),
     (449, &[GameKind::Skyrim, GameKind::Fallout4]),
@@ -373,6 +400,16 @@ const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
     (550, &[GameKind::Fallout3NV]),
     (555, &[GameKind::Fallout3NV]),
     (630, &[GameKind::Fallout4]),
+    (
+        365,
+        &[
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ],
+    ),
 ];
 
 /// Whether CTDA function `index` is a different function in `game` than the
@@ -416,7 +453,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 48] = [
+    pub const CATALOG: [ConditionFunction; 52] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -465,6 +502,10 @@ impl ConditionFunction {
         Self::GetRelationshipRank,
         Self::HasKeyword,
         Self::GetIsGhost,
+        Self::GetIsPlayableRace,
+        Self::GetPlayerInSEWorld,
+        Self::GetIsSex,
+        Self::GetInWorldspace,
     ];
 
     /// This function's [`ROWS`] row. `Unknown` has none — the panicking
@@ -656,7 +697,11 @@ mod tests {
                 ConditionFunction::GetPlayerTeammate |
                 ConditionFunction::GetRelationshipRank |
                 ConditionFunction::HasKeyword |
-                ConditionFunction::GetIsGhost => {
+                ConditionFunction::GetIsGhost |
+                ConditionFunction::GetIsPlayableRace |
+                ConditionFunction::GetPlayerInSEWorld |
+                ConditionFunction::GetIsSex |
+                ConditionFunction::GetInWorldspace => {
                     assert_eq!(
                         rows_of(function),
                         1,

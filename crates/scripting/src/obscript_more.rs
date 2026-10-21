@@ -25,7 +25,7 @@ mod actions;
 mod extras;
 mod state;
 mod tail;
-pub use tail::{ChildRaces, CellZones, ExitGameRequest, PendingVideos};
+pub use tail::{ChildRaces, CellZones, ExitGameRequest, PendingVideos, PlayableRaces};
 pub use extras::{AshPiles, MusicTrack, MusicTracks, PendingMusic, PendingTextureSwaps, ReloadRequest, TextArguments, TextureSwap, UseWeaponRequest};
 
 /// Fallout 3 / New Vegas command ids this module runs.
@@ -169,6 +169,7 @@ pub fn install(world: &mut World) {
     world.init_resource::<ExitGameRequest>();
     world.init_resource::<CellZones>();
     world.init_resource::<ChildRaces>();
+    world.init_resource::<PlayableRaces>();
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -207,6 +208,13 @@ fn player(world: &World) -> Option<EntityId> {
 fn caller(world: &World, ctx: &Context) -> Option<(u32, EntityId)> {
     let form = ctx.caller.filter(|&form| form != 0)?;
     live(world, form).map(|entity| (form, entity))
+}
+
+/// Oblivion's Shivering Isles world flag (CS *GetPlayerInSEWorld*: "1 if the player is currently in the
+/// Shivering Isles"), the engine flag *SetPlayerInSEWorld* (`0x116c`) writes into the ledger; 0 until a script
+/// sets it, as on a new game in Tamriel. The quest-level dialogue gate (condition 365) reads it too.
+pub(crate) fn player_in_se_world(world: &World) -> f32 {
+    ledger(world, |l| l.value(0x116c, 0)).flatten().unwrap_or(0.0)
 }
 
 fn ledger<R>(world: &World, f: impl FnOnce(&ObScriptLedger) -> R) -> Option<R> {
@@ -363,11 +371,7 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], ctx: &Context
         // the base record's `ACBS` female flag.
         0x1046 | 0x1083 => {
             let who = if cmd == 0x1083 { player(world) } else { caller(world, ctx).map(|(_, e)| e).or_else(|| player(world)) };
-            let female = who
-                .and_then(|who| crate::relationships::actor_base(world, who))
-                .and_then(|base| world.try_resource::<crate::actor_base_traits::ActorBaseTraits>()?.get(base))
-                .map(|traits| traits.female);
-            match female {
+            match who.and_then(|who| crate::actor_base_traits::is_female(world, who)) {
                 Some(female) => flag(female == (num(args, 0) as i32 == 1)),
                 None => Action::Declined,
             }

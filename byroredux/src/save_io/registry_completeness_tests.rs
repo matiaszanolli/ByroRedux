@@ -777,6 +777,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ExitGameRequest", "M47.3 — ExitGame's request to end the game, consumed the frame it is raised"),
         ("CellZones", "M47.3 — each cell's encounter zone (XEZN) by cell form id; rebuilt from the records at every content load"),
         ("ChildRaces", "M47.3 — the races flagged Child; rebuilt from the records at every content load"),
+        ("PlayableRaces", "#5778 — the races flagged Playable (GetIsPlayableRace); rebuilt from the records at every content load"),
         ("ScriptRequestLog", "M47.3 — the bounded log of menus and videos scripts asked for; presentation"),
         ("ChargenWatch", "M47.3 — whether SetInChargen was on at the last pass; derived from the saved ledger flag"),
         ("GameCalendar", "M47.3 — whole game days run, republished every frame from the saved game clock for GetDayOfWeek"),

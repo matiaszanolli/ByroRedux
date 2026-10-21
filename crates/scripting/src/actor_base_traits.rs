@@ -60,6 +60,14 @@ pub fn install_actor_base_traits(world: &mut World, index: &EsmIndex) -> usize {
     count
 }
 
+/// Whether the actor `entity` is female (its base's `ACBS` female flag) —
+/// *GetIsSex*, both the script getter and condition 70. `None` when the
+/// entity has no actor base with recorded traits.
+pub fn is_female(world: &World, entity: EntityId) -> Option<bool> {
+    let base = crate::relationships::actor_base(world, entity)?;
+    Some(world.try_resource::<ActorBaseTraits>()?.get(base)?.female)
+}
+
 /// The voice type of the actor `entity` (its base's `VTCK`).
 pub fn voice_type(world: &World, entity: EntityId) -> Option<u32> {
     let base = crate::relationships::actor_base(world, entity)?;

@@ -1426,10 +1426,9 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
             Some(kind) => Getter::Value(f32::from(u8::from(kind == crate::cell_kind::CellKind::Interior))),
             None => Getter::Declined,
         },
-        CMD_GET_IN_WORLDSPACE => match (crate::cell_kind::cell_kind_of(world, subject), form_arg(args, 0)) {
-            (Some(crate::cell_kind::CellKind::Exterior { worldspace }), Some(asked)) => Getter::Value(f32::from(u8::from(worldspace == asked))),
-            (Some(crate::cell_kind::CellKind::Interior), Some(_)) => Getter::Value(0.0),
-            _ => Getter::Declined,
+        CMD_GET_IN_WORLDSPACE => match form_arg(args, 0).and_then(|asked| crate::cell_kind::in_worldspace(world, subject, asked)) {
+            Some(inside) => Getter::Value(f32::from(u8::from(inside))),
+            None => Getter::Declined,
         },
         // GECK *HasMagicEffect*: 1 when an effect of that magic effect is running on the calling actor.
         CMD_HAS_MAGIC_EFFECT => match form_arg(args, 0) {

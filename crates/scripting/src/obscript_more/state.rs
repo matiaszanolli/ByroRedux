@@ -247,7 +247,7 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         // CS *SetPlayerInSEWorld <flag>* / *GetPlayerInSEWorld* (Oblivion; `0x116c` is DamageObject in
         // Fallout): "a game engine flag indicating whether the player is in the Shivering Isles".
         0x116c if !fallout => store(world, cmd, 0, num(args, 0)),
-        0x116d if !fallout => answer(ledger(world, |l| l.value(0x116c, 0)).flatten().unwrap_or(0.0)),
+        0x116d if !fallout => answer(super::player_in_se_world(world)),
         // CS *IsActorUsingATorch*: "1 if the calling actor is currently using a torch (i.e. has it out)". The
         // equipment model carries armor and a weapon, not a light, so no actor can have a torch out.
         0x1132 => match caller(world, ctx) {

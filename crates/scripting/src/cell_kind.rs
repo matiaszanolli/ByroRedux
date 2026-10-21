@@ -51,6 +51,16 @@ pub fn cell_kind_of(world: &World, entity: EntityId) -> Option<CellKind> {
     })
 }
 
+/// *GetInWorldspace* — both the script getter and condition 310: whether
+/// `entity` is in one of `worldspace`'s exterior cells (`false` in an
+/// interior). `None` when the entity is in no known cell.
+pub fn in_worldspace(world: &World, entity: EntityId, worldspace: u32) -> Option<bool> {
+    Some(match cell_kind_of(world, entity)? {
+        CellKind::Exterior { worldspace: here } => here == worldspace,
+        CellKind::Interior => false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

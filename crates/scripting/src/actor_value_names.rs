@@ -293,6 +293,7 @@ pub fn install_actor_value_names(world: &mut World, index: &EsmIndex) -> usize {
     world.insert_resource(crate::obscript_more::AshPiles::from_index(index));
     world.insert_resource(crate::obscript_more::CellZones::from_index(index));
     world.insert_resource(crate::obscript_more::ChildRaces::from_index(index));
+    world.insert_resource(crate::obscript_more::PlayableRaces::from_index(index));
     world.insert_resource(crate::obscript_state::RegionAreas::from_index(index));
     world.insert_resource(crate::magic_shaders::ShaderCatalog::from_index(index));
     world.insert_resource(crate::skills::SkillScaling::from_index(index));
