@@ -139,11 +139,15 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   on the just-written mip only); `up_mips[0]` completes before composite samples it. Caustic: CLEAR → COMPUTE → FRAGMENT.
 - **Ground-cover / sky-bake compute** (pipeline semantics belong to `/audit-exterior`): sync correctness
   stays here. `groundcover/frame.rs::record_scatter` orders counter zero-fill → extrema seeds (TRANSFER→TRANSFER,
-  #4293), scatter → publish incl. counter readback (#4181), and the interaction field's trailing barrier;
+  #4293), scatter → publish incl. counter readback (#4181), and the interaction field's trailing barrier. The field's
+  ping-pong (`field_write_half` / previous-half header) advances only through `commit_field_state` after
+  `record_interaction` actually recorded the dispatch — a no-TLAS skip or failed upload must not flip it, or the next
+  frame reads an unwritten half (#6031, 21b9743e0; `a_frame_without_a_recorded_dispatch_does_not_advance_the_field`);
   `sky_cube.rs::record_bake` runs mid-frame (`context/build_and_upload_instances.rs`) — check its
   publish barrier before the first consumer. Evidence is a `BYRO_VALIDATION` capture, not reading.
 - **Passes new since 2026-10-15.** The direct-shadow filter (`shadow_filter.rs`, dispatched inside
-  `record_svgf_pass`) reads the current frame's ReSTIR reservoir buffer that `triangle.frag` wrote (FRAGMENT_WRITE →
+  `record_svgf_pass`, or on the SVGF-absent fallback; both go through `record_shadow_filter`, which also brackets
+  its own GPU timer pair since fc83608d3) reads the current frame's ReSTIR reservoir buffer that `triangle.frag` wrote (FRAGMENT_WRITE →
   COMPUTE_READ) and writes the correction composite samples (COMPUTE_WRITE → FRAGMENT_READ); its a-trous ping-pong
   needs a barrier per iteration. The SKYAL cloud-shadow bake (`sky_cube/cloud_shadow.rs`, recorded from
   `sky_cube.rs`) feeds scene set 1 binding 24 and a per-FIF host readback of the camera column, which needs its own
@@ -209,6 +213,12 @@ re-audit it here. This dimension owns how *systems* use it.
   internally) while the `MeshHandle` guard was alive, re-recording the edge #5535 removed (#5954, 7a4f6c1a2) — a shared
   helper that acquires internally counts as an acquisition at the call site. Attribution recipe: a temporary edge logger
   in `record_and_check`, `--test-threads=1 --nocapture`; fix by gathering under one guard, dropping it, then composing.
+- **Two resources held nested take them TypeId-sorted** (`resource_2_mut`, or its read twin `try_resource_2`), never two
+  `try_resource` calls in code order: TypeIds shift with the unified feature set, so a code-order pair agrees with the
+  sorted sites in one build and closes an ABBA in another — deterministic per build configuration, so it looks
+  transient (#6101, 824c620a5: the quest stage / objective pair in `evaluate_guard_guard_free`, red only in the
+  multi-crate `-p byroredux-core -p byroredux-physics -p byroredux-scripting --lib` lane; pinned by
+  `try_resource_2_does_not_deadlock_against_resource_2_mut` in `crates/core/src/ecs/world_tests.rs`).
 - **A fixture records only the edges its storages allow.** #5372 (1c15a2270) closed
   `LoadedCellIndex → StoryEvent → LoadedCellIndex` (the hello location resolved under the `StoryEvent` guard), which the
   lane never saw because the dialogue fixture lacked the Story Manager storages and `raise_hello_story_event` returned
@@ -349,7 +359,9 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   *then* `join_with_timeout` (poll on
   `is_finished`, no watcher thread); `Drop` only calls `shutdown(1 s)` as a safety net, so a prior explicit
   shutdown short-circuits it. The worker runs each cell under `catch_unwind`
-  (`pre_parse_cell_panic_safe`).
+  (`pre_parse_cell_panic_safe`), and each NIF's parse (`parse_one_nif`) and archive extraction (`extract_guarded`,
+  #6119 3c57697c8) under its own, so one panicking file reads as a negative entry instead of discarding the whole
+  cell's payload.
 - **Worker ↔ main flow.** Parsed payloads move to the main thread over a channel; no shared `&mut World`.
   The worker parses on its own rayon pool (`build_stream_parse_pool`, sized so it does not starve the
   scheduler's global pool) and uses `Arc<TextureProvider>`; BSA/BA2/CSG extraction is lock-free positional
@@ -377,7 +389,10 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   branches that take ECS guards on pool threads — every branch must be read-only, or a write in one branch vs.
   a read in another is a cross-thread ABBA no CI lane drives. The plugin load-order walk
   (`cell_loader/load_order.rs`, `rayon::in_place_scope`, #3813) walks plugins in parallel; the `merge_from`
-  fold must follow load order, never completion order.
+  fold must follow load order, never completion order. Its result is memoised in a process-wide
+  `static SHARED_PARSE: SharedParseCache` (a `Mutex<Option<…>>` holding the session's `Arc<EsmIndex>` /
+  `Arc<LoadOrder>`, #6123 588c87bc4); the lock must stay dropped across the parse itself (two racing callers both parse,
+  last write wins — benign), and nothing acquires an ECS guard while holding it.
 - Out of scope: parse-time `Material` translation is single-threaded (`/audit-nifal`).
 **Output**: `/tmp/audit/concurrency/dim_7.md`
 

@@ -78,24 +78,26 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-10-20 at ae557b935 (diff direction only, re-run, never quote): markers 23 (15 are `XXXX` false positives, 2 the
+   Measured 2026-10-21 at 1be33af66 (diff direction only, re-run, never quote): markers 26 (18 are `XXXX` false positives — three
+   are the `--type XXXX` usage placeholder in `crates/plugin/examples/dump_wths_refl.rs` — 2 the
    FO4 `HACK` FourCC, 3 quoted upstream FIXMEs, 1 documented `TBD` — Dim 5; two real TODOs in `byroredux/src/loading_screen.rs`,
    which cite the open #6194 since #6181, 51f97f708),
    `allow(dead_code)` 41 (12 of them are `cfg(test)` TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 —
-   not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 352 (322 on 2026-10-15; tools-inclusive —
+   not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 363 (352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
    earlier reports scoped to `crates`+`byroredux` read lower; none runs on a hosted runner),
    production >2000 LOC: **4** — `crates/renderer/src/shader_constants_data.rs` (2949, a data table, Dim 1),
    `crates/scripting/examples/mq101_conformance.rs` (2157), `crates/audio/src/lib.rs` (2034) and
-   `crates/nif/src/import/types.rs` (2001). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
+   `crates/nif/src/import/types.rs` (2011, +10 in a day). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
    `crates/scripting/src/fragment/vm.rs`, `crates/scripting/src/translate/effects.rs`, `crates/scripting/src/condition.rs`,
    `byroredux/src/save_io.rs` and `crates/plugin/src/esm/cell/mod.rs` are now ~70–140-LOC hubs over `vm/`, `effects/`,
    `condition/`, `save_io/` and `cell/` directories, the largest child 1538 — as did `byroredux/src/components.rs` (#5467) and
    `crates/scripting/src/fragment/effects.rs` (#5468) before them. **Split-hub hazard:** a path-scoped `git log` / `grep` on a hub
    file silently sees only the hub (`git log -- byroredux/src/save_io.rs` returned 0 commits where the directory returned 24);
    scope Dim 1 deltas to the `<stem>/` directory and measure a split by its children, not by the parent shrinking. Watch-list
-   within 5%: `crates/debug-ui/src/panels.rs` (1921), `crates/renderer/src/vulkan/context/init.rs` (1921),
-   `crates/plugin/src/esm/records/misc/world.rs` (1912); fastest riser `byroredux/src/inventory.rs` (1863, +83 in four days);
-   test-heavy >2000: 88.
+   within 5%: `crates/debug-ui/src/panels.rs` (1934), `crates/renderer/src/vulkan/context/init.rs` (1921),
+   `crates/plugin/src/esm/records/misc/world.rs` (1912); fastest riser `crates/renderer/src/vulkan/gpu_timers.rs` (1874, +57 in
+   a day, fc83608d3), then `byroredux/src/inventory.rs` (1863) and `byroredux/src/asset_provider/material/merge.rs` (1860);
+   test-heavy >2000: 92.
    A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents

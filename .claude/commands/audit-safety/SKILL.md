@@ -20,11 +20,13 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Re-measured 2026-10-20 at ae557b935 (922 tokens / 704 blocks at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
+only 2 real blocks). Re-measured 2026-10-21 at 1be33af66 (941 tokens / 717 blocks / 35 impls at ae557b935 on 2026-10-20; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
 
-- `crates/renderer/src`: **941** word tokens (950 by the substring recipe) — 717 `unsafe {`
+- `crates/renderer/src`: **943** word tokens (952 by the substring recipe) — 716 `unsafe {`
   blocks, 100 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~145: prose and source-scan
-  strings), 35 `unsafe impl` (newest: `NoUninit for ModelPush`), ~809 `SAFETY` mentions. Growth since 10-15 is two new
+  strings), 38 `unsafe impl` (newest: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, which
+  routed the ground-cover push byte views through `byte_view` and dropped three hand-rolled `from_raw_parts` blocks;
+  fc83608d3 added two in `vulkan/gpu_timers.rs` for the shadow-filter bracket), ~811 `SAFETY` mentions. Growth since 10-15 is two new
   passes — `vulkan/shadow_filter.rs` (9 blocks + `unsafe fn destroy`) and the SKYAL cloud-shadow bake
   `vulkan/sky_cube/cloud_shadow.rs` (5 + `unsafe fn record` / `destroy`, c231f5b5f) — plus `descriptors::clamp_sampler`
   (`unsafe fn`, #5809 31f4919d5, which first spliced it between `memory_barrier`'s doc and item, leaving the wrong fn
@@ -35,8 +37,8 @@ only 2 real blocks). Re-measured 2026-10-20 at ae557b935 (922 tokens / 704 block
   #4599 poison-policy extraction cut `vulkan/buffer.rs` 40 → 19 blocks; #5273 (74ed66f0a) replaced the five
   `CStr::from_ptr` device/extension-name blocks in `vulkan/device.rs` with ash's bounded `*_as_c_str()` accessors
   (pinned by `device_names_read_through_bounded_accessors`); `vulkan/groundcover.rs` split into
-  `vulkan/groundcover/{construct,frame}.rs` (17 + 12). Densest files: `vulkan/gpu_timers.rs` (62),
-  `vulkan/acceleration/blas_static.rs` (29), `vulkan/groundcover_bench.rs` (27). Compare against the previous
+  `vulkan/groundcover/{construct,frame}.rs` (16 + 10 today). Densest files: `vulkan/gpu_timers.rs` (64),
+  `vulkan/acceleration/blas_static.rs` (29), `vulkan/groundcover_bench.rs` (26). Compare against the previous
   report, not this text.
 - Tail: `crates/fsr3-sys` 10 blocks in `src` (one is the test-only `byro_fsr3_abi_layout` probe; Dim 1) plus 20 in the
   `examples/vulkan_context_smoke.rs` harness, `crates/nif` 1
@@ -132,6 +134,13 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
   `texture_pending_destroy_count`). All ticks run AFTER the in-flight fence wait
   (`context/sync_and_acquire_frame.rs`) and shutdown drains; a missed drain leaks GPU memory, a too-early
   destroy is UAF (CRITICAL). Skin-compute resources use no shared queue — verify their own path when touched.
+- **Texture refs on cell unload**: every component that stores a `resolve_texture` handle must be read by
+  `collect_victim_gpu_handles` (`cell_loader/unload.rs`), or the ref is never released and the refcount grows per
+  load. `ParticleEmitter.greyscale_lut_index` was the missed one (#6109, 5f7e01fbe;
+  `unload_walk_collects_a_particle_emitters_greyscale_lut` in `cell_loader/unload_greyscale_lut_tests.rs`), and a ref
+  taken before a spawn path's early exit (fog-volume replacement, unresolvable sprite) must be released at that exit.
+  Same class on the CPU side: a registry `clear()` that drops handles without returning them (#6117, 67a055d3d —
+  `NifImportRegistry::clear` now returns the clip handles `#[must_use]`).
 - **`AllocatorResource` drop order (#1406)**: removed from the ECS `World` BEFORE `VulkanContext::drop()`
   (`remove_resource` / re-insert in `byroredux/src/app_events.rs`); its `Drop` calls the driver, so a
   `World` that outlives the context makes it call a destroyed device (CRITICAL). Check the
@@ -149,7 +158,10 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
   `NotSubmitted`, `std::mem::forget` on `OneTimeCommandError::may_be_in_flight` (`vulkan/texture.rs`), since the GPU may
   still be executing against the handles. Pass constructors and recreate paths apply it too: volumetrics / density-noise
   init (#5947, cf1a234d0), the shadow filter's construct and resize layout walk (#6063, 4a6128389,
-  `a_failed_layout_submit_leaks_instead_of_destroying`). Flag the reverse — an unconditional `destroy` after a submit
+  `a_failed_layout_submit_leaks_instead_of_destroying`). Constructors push each created resource into the shared
+  `try_or_cleanup!` partial before filling it, so a failed `write_mapped` cannot drop a buffer the cleanup never saw
+  (`GpuBuffer::Drop`'s debug leak assert fires on it; #5946, 267279ac2, pinned for volumetrics by
+  `every_created_resource_is_pushed_before_anything_else_runs`). Flag the reverse — an unconditional `destroy` after a submit
   whose failure class is unknown (UAF) — or an untyped error that reaches `may_be_in_flight` (answers `true`, so it leaks).
 - **egui**: texture free is deferred one frame (`pending_free`) on `draw_frame`'s fence wait — freeing on the
   arriving frame is UAF. Partial deltas are promoted to full uploads from a CPU mirror (#4986), so replacing an

@@ -47,9 +47,13 @@ constraint CInfo decode is a NIF seam).
 3. `cargo test -p byroredux-nif` (default lane); record the pass count.
 4. **Corpus gates are opt-in** (`#[ignore]`, need installed data): `parse_real_nifs`,
    `per_block_baselines`, `block_coverage_baselines`, `oblivion_stream_drift_corpus`,
-   `constraint_drift_corpus`, `normal_synthesis_corpus`, `np_ragdoll_corpus` under `crates/nif/tests/`. They are
-   wired per title in `.github/workflows/real-data-gates.yml` (`BYROREDUX_REQUIRE_GAME_DATA=1`,
-   so an absent corpus is a failed job). Locally: one title at a time,
+   `constraint_drift_corpus`, `normal_synthesis_corpus`, `np_ragdoll_corpus` under `crates/nif/tests/`. Only
+   the first three are wired per title in `.github/workflows/real-data-gates.yml`
+   (`BYROREDUX_REQUIRE_GAME_DATA=1`, so an absent corpus is a failed job); named
+   `normal_synthesis_corpus` / `translation_completeness` / `parse_real_nifs` pins run in its
+   `closed-high-pins` job (`.github/real-data-pins.txt`, lane `nif-corpus`), and
+   `oblivion_stream_drift_corpus`, `constraint_drift_corpus` and `np_ragdoll_corpus` are in no
+   lane — hand-run them. Locally: one title at a time,
    `BYROREDUX_<GAME>_DATA=<Data dir> cargo test -p byroredux-nif --test per_block_baselines <game> -- --ignored --nocapture`.
    The workflow parses since d98769436 (#4619, closed), but no `byroredux-game-data`
    self-hosted runner is registered, so the lane is **manual-only** (*workflow_dispatch*; the
@@ -109,7 +113,11 @@ fails, c2d3914bf #5780).
   #1337, #1329, #1310/#1301/#1302 — method: extract → `trace_block` → byte-decode; memory
   *nif_v10x_stride_drift_resolved*); Starfield shader over-read (#1510: gate FO76-tail fields
   on `bsver < STARFIELD`, since `#BS_F76#` is stream 155 only); root-NiNode / inline-type-name
-  truncation recovers rather than hard-`Err` (#688/#698).
+  truncation recovers rather than hard-`Err` (#688/#698). A recovered scene must stay visible
+  downstream: every consumer (REFR loader, streaming pre-parse worker, NPC loader) passes it
+  through `note_scene_health` (`byroredux/src/parsed_nif_cache.rs`: `truncated` /
+  `recovered_blocks` warn once per path, counted as `partial_nifs=` on the streaming bench
+  line; bbb4dc3d7, #6115) — a new parse consumer caching a partial scene silently is the finding.
 - If a corpus is available: report consumed-vs-`block_size` mismatches by block type with
   counts; any non-zero on a *known* type is drift; separately any `no_block_sizes` truncation.
 **Output**: `/tmp/audit/nif/dim_1.md`
@@ -282,7 +290,9 @@ from the data block's `sub_parts`, #5541);
 `tests/constraint_drift_corpus.rs` (opt-in; `decoded_constraints_consume_their_whole_block` —
 drift must be exactly 0 on Oblivion, FO3, FNV, Skyrim LE and SE);
 `tests/np_ragdoll_corpus.rs` (opt-in FO4: every ragdoll blob decodes with consistent joint
-pivots, every body's shape volume × density equals its mass).
+pivots, every body's shape volume × density equals its mass, every body reads finite friction /
+restitution / damping from its material + motion-property rows —
+`every_fo4_ragdoll_body_reads_friction_restitution_and_damping`, 019b087e3, #6066).
 **Checklist**:
 - **`bhk*` field-for-field**: rigid-body flag width (`uses_old_rigid_body_layout`,
   `RIGID_BODY_FLAGS16 = 76`, `RIGID_BODY_EXTRA_FLOATS = 9`); MOPP offset / strips scale gated
@@ -333,7 +343,10 @@ pivots, every body's shape volume × density equals its mass).
   it as decoded. The FO4 skeleton **ragdoll** blob is decoded (`blocks/collision/np_ragdoll.rs`,
   `decode_np_ragdoll`: `hknpRagdollData` capsule / sphere / `hknpConvexPolytopeShape` /
   `hknpDynamicCompoundShape` bodies, ragdoll + limited-hinge joints, `hknpBreakableConstraintData`
-  unwrapped — e1bd40bcf, #5015 (closed); fc4a15104, #6067 (open: 64 joints whose bind-pose pivots disagree are only characterised)) into the classic
+  unwrapped, per-body friction / restitution / damping read from the material (Havok halves at
+  `+18/+20/+22`) and motion-property (`f32` at `+24/+28`) rows indexed by the body's *motion*
+  index, the Skyrim humanoid constants only a fallback for a blob with no readable rows
+  (`NpBodyProperties`, 019b087e3, #6066) — e1bd40bcf, #5015 (closed); fc4a15104 + 0d775dc61, #6067 (closed: the 67 joints whose bind-pose pivots disagree stay a recorded property of the data — the body-frame pivot reading is kept, and the rigs hold together live, pinned by `fo4_bind_pose_ragdoll_holds_together_in_free_fall` in `byroredux/src/ragdoll_installed_tests.rs`)) into the classic
   `RagdollCInfo` / `LimitedHingeCInfo` records; its offsets were recovered from the corpus (no
   SDK) and are pinned by independent physical checks, so a layout claim needs a corpus
   measurement, not nif.xml. `summarize_collision_authoring` scans every collision block and feeds
@@ -377,7 +390,10 @@ exactly for a `VF_TANGENTS | VF_NORMALS` descriptor and not otherwise, both pack
   input, admitted first against `STREAM_PARSE_INPUT_BYTES` (64 MiB) by the archive-declared size
   (`mesh_declared_size`) so nothing is allocated before admission; cells with < 8 fresh inputs
   keep a serial fast path. A coordinator-side extract-all barrier returning is the regression
-  (its doc comment was corrected to the per-task extract in 3deda6bb7, #5063). Regression guard:
+  (its doc comment was corrected to the per-task extract in 3deda6bb7, #5063). Each limit of
+  `ParseInputBudget` (task cap, byte cap, oversized-alone, permit released on unwind) binds in a
+  pure-CPU test (c501edfc5, #6104), and the extraction runs under `extract_guarded` so a reader
+  panic costs only its own NIF a negative entry, not the cell's parsed siblings (3c57697c8, #6119). Regression guard:
   #1171's compile-time `PartialNifImport: Send` assertion (restored beside the struct in
   `byroredux/src/streaming/mod.rs`, 7de61c2c2, #5442, after the #5092 split dropped it).
 - `NifStream` caps any single file-driven allocation (256 MB); confirm new readers route

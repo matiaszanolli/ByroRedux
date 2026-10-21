@@ -19,8 +19,9 @@ changes gameplay silently — no crash, no validation error, no failing test unl
 
 - `crates/core/src/character/` (14 modules, `mod_docstring_indexes_every_sub_module` pins the count):
   `ruleset.rs` (`CharacterRuleset`, the per-game `Resource` seam), `profile.rs` (`CharacterRulesProfile` —
-  the single per-game policy row: `NpcStatModel`, `creature_stats`, `body_condition_base`,
-  `RulesetBuilder`), `derived.rs` (`DerivedStatFormula`/`DerivedInput`/`DerivedOutput`/`DerivedScope`/
+  the single per-game policy row: `NpcStatModel`, `creature_stats`, `body_condition_base`, `vital_pools`,
+  `RulesetBuilder`, and since #5921 `3162b21b8` `OverEncumberedRule`, `awards_kill_experience`,
+  `essential_death_time_secs`, `BarterModel`, `PerkEntryPointDialect`), `derived.rs` (`DerivedStatFormula`/`DerivedInput`/`DerivedOutput`/`DerivedScope`/
   `RoundMode`), `leveling.rs`, `attribute.rs`/`skill.rs`, `fallout.rs`/`tes.rs`/`skyrim.rs` (per-family
   ruleset builders), `regen.rs`, `affliction.rs`/`resistance.rs`, `reputation.rs`, `components.rs`.
   Substrate: `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs`.
@@ -57,7 +58,7 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   Skyrim a perk point + a pool pick (#5916 `612bd179e`); only classic-TES `SkillUse` has no XP-driven roll.
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-10-20) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
+- Open (verified 2026-10-21) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
   #4232 (`effective_actor_level` returns 0 verbatim). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
@@ -85,14 +86,17 @@ skim dimensions whose Paths did not change (constants only move when a capture o
 
 ### Dimension 1: Ruleset Seam & Doctrine
 Paths: `crates/core/src/character/{ruleset,profile,mod}.rs`, `byroredux/src/npc_spawn.rs`
-First step: `grep -rn 'GameKind\|\.game ==\|game_kind' crates/core/src/character byroredux/src/npc_spawn* crates/plugin/src/esm/records/actor_value_derive.rs`
+First step: `grep -rn 'GameKind\|\.game ==\|game_kind' crates/core/src/character byroredux/src/npc_spawn* crates/plugin/src/esm/records/actor_value_derive.rs byroredux/src/{encumbrance,barter,combat}.rs crates/scripting/src/{bleedout,perk_entry_points}.rs`
 - **Doctrine**: the per-game seam is *data in the tables*, never a branch in a consumer. Report every
   `game ==` / `GameKind` / master-name test in CHARAL population or consumers (weight = `/audit-nifal`'s
-  render-time per-game branch). Precedent: FO3/FNV body-condition seeding was a raw `GameKind` gate until
-  it became `CharacterRulesProfile.body_condition_base` (#4447).
+  render-time per-game branch). Precedents: FO3/FNV body-condition seeding was a raw `GameKind` gate until
+  it became `CharacterRulesProfile.body_condition_base` (#4447); five M47.2 consumers (`install_encumbrance_rules`,
+  `BarterRules::from_index`, `install_experience_rules`, bleedout's `engine_defaults`, `PerkEntryTable`) matched on
+  `GameKind` until #5921 `3162b21b8` moved each table onto a profile row. Every row is an exhaustive struct
+  literal (a new profile cannot compile without stating each); pin `per_game_rule_rows_are_stated_on_every_profile`.
 - **Profile-as-oracle**: `CharacterRulesProfile` is the only FO3-vs-FNV discriminator (both are
   `GameKind::Fallout3NV`); non-character consumers (`cell_loader/references/attach.rs::obscript_dialect_for`,
-  `crates/plugin/src/consumables.rs` fn-586 gate) borrow it. The duty is documented and pinned (#4448) —
+  `crates/plugin/src/consumables.rs` fn-586 gate, and the #5921 rule-row readers above) borrow it. The duty is documented and pinned (#4448) —
   verify each consumer still has a test proving the discriminator is the *profile row*, and that a new
   borrower adds one.
 - **Single sink**: `build_character_ruleset` is the only construction site; no second site builds a
@@ -189,7 +193,9 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   `walk_inherited_records` picks the flag's own entry when non-zero (#5498 `99c22a8db`; FO4-only data, no game
   branch — pinned by `crates/plugin/src/equip.rs` tests). Since #4457 the population boundary resolves
   every category once through `ResolvedNpc::resolve` (`crates/plugin/src/equip.rs`; M47.2 added the
-  `base_data` terminal for "Use Base Data", `TEMPLATE_FLAG_USE_BASE_DATA`, which carries Essential/Protected)
+  `base_data` terminal for "Use Base Data", `TEMPLATE_FLAG_USE_BASE_DATA`, which carries Essential/Protected —
+  decoded per game in `parse_npc` into `NpcRecord::essential`/`protected` since #5921, so `ActorProtection::from_record`
+  takes no game)
   and consumers read the resolved type; the guard pins production `resolve_inherited_*` calls per file (two left, both pre-spawn
   race boundaries: `cell_loader/references/mod.rs` and `player_body.rs`, the latter joined in #5047
   `c20dcdb04`, which also moved the player's level/Background/outfit reads onto the Use-Stats/Use-Traits/

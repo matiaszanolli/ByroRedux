@@ -21,6 +21,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/renderer/src/vulkan/water` | renderer Dim 8, exterior | HIGH |
 | `crates/renderer/shaders/water.` | renderer Dim 8, exterior | HIGH |
 | `crates/renderer/src/vulkan/acceleration/` | renderer, safety, concurrency | HIGH |
+| `crates/renderer/src/vulkan/scene_buffer/terrain_height_blend_tests.rs` | exterior Dim 2, renderer | HIGH |
 | `crates/renderer/src/vulkan/scene_buffer/` | renderer, nifal | HIGH |
 | `crates/renderer/src/vulkan/material` | renderer, nifal | HIGH |
 | `crates/renderer/src/vulkan/descriptors.rs` | renderer, safety, concurrency, performance, tech-debt Dim 2 | HIGH |
@@ -59,12 +60,16 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/nif/src/anim/` | nif Dim 6, nifal Dim 7; per-game | HIGH |
 | `crates/nif/src/import/walk/` | nif Dim 4, nifal; per-game | HIGH |
 | `crates/nif/src/blocks/collision/np_ragdoll.rs` | nif Dim 5, physics, nifal Dim 6; fo4 | HIGH |
+| `crates/nif/tests/np_ragdoll_corpus.rs` | nif Dim 5, physics; fo4 | LOW |
 | `crates/nif/` | nif; per-game | HIGH |
 | `crates/plugin/src/esm/records/{weather,weather_settings,weather_settings_instance}.rs` | esm, exterior; per-game | HIGH |
 | `crates/plugin/src/esm/cell/wrld.rs` | esm, exterior; per-game | HIGH |
 | `crates/plugin/src/esm/records/misc/{location,relationship}.rs` | esm, scripting, performance Dim 7; per-game | HIGH |
 | `crates/plugin/src/esm/records/misc/challenge.rs` | esm, scripting, performance Dim 7; fnv | MEDIUM |
 | `crates/plugin/src/esm/cell/index.rs` | esm, exterior, performance Dim 7; per-game | HIGH |
+| `crates/plugin/src/esm/records/lmsw.rs` | esm, nifal, performance Dim 7; starfield, fo4 | MEDIUM |
+| `crates/plugin/src/esm/records/actor/npc.rs` | esm, character Dim 4, performance Dim 7; per-game | HIGH |
+| `crates/plugin/src/esm/cell/support.rs` | esm, physics, performance Dim 7; per-game | HIGH |
 | `crates/plugin/` | esm, performance Dim 7; per-game | HIGH |
 | `crates/bsa/src/read_at.rs` | parsers, concurrency Dim 7 | MEDIUM |
 | `crates/bsa/` | parsers; per-game | HIGH |
@@ -82,11 +87,15 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/scripting/src/magic.rs` | scripting, gameplay, character | MEDIUM |
 | `crates/scripting/src/load_order.rs` | scripting, save | MEDIUM |
 | `crates/scripting/src/{crime_faction,crime_gold,ownership}.rs` | scripting, gameplay, save Dims 1-2 | MEDIUM |
-| `crates/scripting/src/{bleedout,bribe,speechcraft,destruction,detection_events,followers,map_markers,encounter_level}.rs` | scripting, gameplay | MEDIUM |
+| `crates/scripting/src/bleedout.rs` | scripting, gameplay, character | MEDIUM |
+| `crates/scripting/src/{speechcraft,destruction}.rs` | scripting, gameplay, save Dims 1-2 | MEDIUM |
+| `crates/scripting/src/{bribe,detection_events,followers,map_markers,encounter_level}.rs` | scripting, gameplay | MEDIUM |
+| `crates/scripting/src/loc_ref_types.rs` | scripting, save Dims 1-2 | MEDIUM |
 | `crates/scripting/src/{challenges,magic_effects}.rs` | scripting, save Dims 1-2 | MEDIUM |
 | `crates/scripting/src/{obscript_state,obscript_ledger}.rs` | scripting, save Dims 1-2; fnv, fo3, oblivion | MEDIUM |
 | `crates/scripting/src/obscript` | scripting; fnv, fo3, oblivion | MEDIUM |
-| `crates/scripting/src/{skills,perk_entry_points,relationships}.rs` | scripting, character | MEDIUM |
+| `crates/scripting/src/skills.rs` | scripting, character, save Dims 1-2 | MEDIUM |
+| `crates/scripting/src/{perk_entry_points,relationships}.rs` | scripting, character | MEDIUM |
 | `crates/scripting/src/faction_changes.rs` | scripting, character, save | MEDIUM |
 | `crates/scripting/src/trap_hit_requests.rs` | scripting, gameplay | MEDIUM |
 | `crates/scripting/src/{projectile_requests,havok_impulse}.rs` | scripting, gameplay, physics | MEDIUM |
@@ -105,6 +114,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/sdk/` | tooling | MEDIUM |
 | `crates/debug-server/` | tooling, concurrency Dim 7 | MEDIUM |
 | `crates/debug-protocol/` | tooling | MEDIUM |
+| `crates/debug-ui/src/panels.rs` | tooling, performance | LOW |
 | `crates/debug-ui/` | tooling | LOW |
 | `crates/boot-request/` | tooling | MEDIUM |
 | `crates/settings-io/` | tooling | MEDIUM |
@@ -116,17 +126,17 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/groundcover_translate` | exterior | MEDIUM |
 | `byroredux/src/fog.rs` | exterior, renderer | MEDIUM |
 | `byroredux/src/terrain_height.rs` | exterior Dim 2, performance Dim 7, concurrency Dim 7 | MEDIUM |
-| `byroredux/src/cell_loader/terrain` | exterior; per-game | MEDIUM |
+| `byroredux/src/cell_loader/terrain` | exterior, physics; per-game | MEDIUM |
 | `byroredux/src/cell_loader/water.rs` | exterior, performance Dim 7; per-game | MEDIUM |
 | `byroredux/src/cell_loader/lod_bands.rs` | exterior, performance; fo3, fnv | MEDIUM |
 | `byroredux/src/cell_loader/lod` | exterior, performance | MEDIUM |
 | `byroredux/src/cell_loader/object_lod.rs` | exterior, performance | MEDIUM |
 | `byroredux/src/cell_loader/placement_lod.rs` | exterior, performance; oblivion | MEDIUM |
 | `byroredux/src/cell_loader/legacy_lod_index` | exterior, performance; fo3, fnv | MEDIUM |
-| `byroredux/src/cell_loader/reference_state.rs` | gameplay, save, concurrency Dim 5, performance Dim 7; fnv, fo3 | MEDIUM |
+| `byroredux/src/cell_loader/reference_state.rs` | gameplay, save, scripting, concurrency Dim 5, performance Dim 7; fnv, fo3 | MEDIUM |
 | `byroredux/src/cell_loader/stream_snapshot.rs` | save, performance | MEDIUM |
 | `byroredux/src/cell_loader/interior_spawn.rs` | gameplay; per-game | MEDIUM |
-| `byroredux/src/cell_loader/load_order.rs` | esm, concurrency Dim 7; per-game | HIGH |
+| `byroredux/src/cell_loader/load_order.rs` | esm, concurrency Dim 7, performance Dim 7; per-game | HIGH |
 | `byroredux/src/cell_loader/precombined` | fo4; performance | HIGH |
 | `byroredux/src/cell_loader/spawn/precombined.rs` | fo4, performance | MEDIUM |
 | `byroredux/src/cell_loader/spawn/authored_cover.rs` | exterior | MEDIUM |
@@ -137,9 +147,10 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/{created,graph_nodes}.rs` | scripting, gameplay, performance; per-game | MEDIUM |
 | `byroredux/src/cell_loader` | per-game; performance | MEDIUM |
 | `byroredux/src/material_translate.rs` | nifal | HIGH |
+| `byroredux/src/ragdoll_installed_tests.rs` | physics, nif Dim 5; skyrim, fo4, starfield | MEDIUM |
 | `byroredux/src/ragdoll` | physics; skyrim, fo4, starfield | HIGH |
 | `byroredux/src/npc_spawn/seam_blend` | nifal, gameplay; oblivion, fo3, fnv | MEDIUM |
-| `byroredux/src/npc_spawn/loot_appearance.rs` | gameplay, save Dim 1; skyrim | MEDIUM |
+| `byroredux/src/npc_spawn/loot_appearance.rs` | gameplay, save Dim 1, nifal; skyrim | MEDIUM |
 | `byroredux/src/npc_spawn/ai_package.rs` | gameplay, scripting Dim 5, performance Dim 7, concurrency Dim 7; per-game | MEDIUM |
 | `byroredux/src/npc_spawn` | gameplay, character Dim 4, performance Dim 7, concurrency Dim 7; per-game | MEDIUM |
 | `byroredux/src/systems/water.rs` | exterior, physics | MEDIUM |
@@ -165,8 +176,9 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/render/` | renderer, performance, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/boot/` | concurrency Dim 4, ecs Dim 5, tooling | HIGH |
 | `byroredux/src/scheduler_access_tests.rs` | concurrency, ecs | HIGH |
+| `byroredux/src/save_io/live_load.rs` | save, scripting | MEDIUM |
 | `byroredux/src/save_io` | save | MEDIUM |
-| `byroredux/src/{barter,encumbrance}.rs` | gameplay Dim 1, scripting Dim 5, ecs | MEDIUM |
+| `byroredux/src/{barter,encumbrance}` | gameplay Dim 1, scripting Dim 5, character Dim 1, ecs | MEDIUM |
 | `byroredux/src/combat.rs` | gameplay, character, physics Dim 6 | MEDIUM |
 | `byroredux/src/inventory.rs` | gameplay, character Dim 4 | MEDIUM |
 | `byroredux/src/interaction.rs` | gameplay, ui, scripting Dim 5, save Dim 4 | MEDIUM |
@@ -178,6 +190,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/player_body.rs` | gameplay Dim 1, ecs Dim 9, save, physics Dim 4, concurrency Dim 4 | MEDIUM |
 | `byroredux/src/scaleform_hud.rs` | ui | MEDIUM |
 | `byroredux/src/ui_input.rs` | ui | MEDIUM |
+| `byroredux/src/streaming/pre_parse.rs` | nif Dim 6, performance Dim 7, concurrency Dim 7, exterior; fo4 | MEDIUM |
 | `byroredux/src/streaming` | performance Dim 7, concurrency Dim 7, exterior; fo4 | MEDIUM |
 | `byroredux/src/extensions/` | safety Dim 8, tooling | MEDIUM |
 | `byroredux/src/studio_host.rs` | tooling | MEDIUM |
@@ -186,6 +199,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/commands/actor_value.rs` | character Dim 4, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/{quest,condition}.rs` | scripting, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/{anim_archetype,anim_event,bribe_info,cndf,script_var}.rs` | scripting, ecs, tooling | MEDIUM |
+| `byroredux/src/commands/terrain.rs` | exterior Dim 2, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/gameplay.rs` | gameplay, character Dims 3-4, ecs, tooling | MEDIUM |
 | `byroredux/src/commands` | ecs, tooling | MEDIUM |
 | `byroredux/src/asset_provider/{actor_graph,archetype_idle,object_graph}.rs` | gameplay Dim 5, scripting Dim 5, parsers; fo4 | MEDIUM |
@@ -240,6 +254,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `docs/smoke-tests/m47-2-bleedout.sh` | runtime, gameplay; skyrim | LOW |
 | `docs/smoke-tests/m42-eat-sleep.sh` | runtime, gameplay; fnv | LOW |
 | `docs/smoke-tests/m-trees.sh` | runtime, speedtree; fnv, fo3 | LOW |
+| `docs/smoke-tests/fo4-ragdoll.sh` | runtime, physics; fo4 | LOW |
 | `docs/smoke-tests/` | runtime | LOW |
 | `docs/releasing.md` | tooling, tech-debt (release packaging) | LOW |
 | `docs/` | tech-debt (doc rot) | LOW |

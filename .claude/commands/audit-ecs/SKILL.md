@@ -50,11 +50,15 @@ adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
   `BYRO_LOCK_ORDER_CHECK=1` (#313). Every `query` / `query_mut` / `resource` / `resource_mut` site in
   `world.rs` must arm a `TrackedRead` / `TrackedWrite` scope, defuse it only AFTER the real lock is
   taken, and untrack in `Drop`.
-- **TypeId-sorted pairs**: `query_2_mut`, `query_2_mut_mut`, `resource_2_mut`, `try_resource_2_mut`
-  acquire in `TypeId` order AND arm tracker scopes in the same order (arming in parameter order
-  re-opens #313 — a caller spelling `<B, A>` then looks like ABBA). Each `assert_ne!`s `A == B`; a
-  silent self-deadlock is the regression. `try_resource_2_mut` checks BOTH existences before taking
-  EITHER lock (#465).
+- **TypeId-sorted pairs**: `query_2_mut`, `query_2_mut_mut`, `resource_2_mut`, `try_resource_2_mut`,
+  and the read-only `try_resource_2` (#6101 `824c620a5`) acquire in `TypeId` order AND arm tracker scopes in
+  the same order (arming in parameter order re-opens #313 — a caller spelling `<B, A>` then looks like ABBA).
+  Each `assert_ne!`s `A == B`; a silent self-deadlock is the regression. `try_resource_2_mut` and
+  `try_resource_2` check BOTH existences before taking EITHER lock (#465). Two nested single `try_resource`
+  reads of a pair that some other site takes through a `*_2` helper are the #6101 shape: `TypeId`s move with the
+  unified feature set, so the inversion reddens only the build configuration that hashes the pair the other way
+  (it surfaced in the multi-crate `-p byroredux-core -p byroredux-physics -p byroredux-scripting --lib` lane);
+  pinned by `try_resource_2_does_not_deadlock_against_resource_2_mut` (`crates/core/src/ecs/world_tests.rs`).
 - **Tracker internals** (each pinned by tests in `lock_tracker.rs` — read them, do not re-derive):
   `record_and_check` runs BEFORE the incoming `LockState` row is inserted, on the fresh-acquire AND
   recursive-read paths (#2384/#3696; `is_clean()` true after a caught ABBA panic); `GRAPH` lock
