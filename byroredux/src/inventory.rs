@@ -2624,6 +2624,7 @@ mod tests {
         world.insert_resource(PlayerEncumbrance::default());
         let mut index = EsmIndex {
             game: byroredux_plugin::esm::reader::GameKind::Fallout3NV,
+            character_rules: byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS,
             ..Default::default()
         };
         for (form_id, editor_id) in [(0x2D1, "CarryWeight"), (0x2D2, "InventoryWeight")] {

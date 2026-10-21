@@ -100,7 +100,10 @@ pub use fallout::{
     fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, melee_damage_config, MeleeDamageConfig,
 };
 pub use leveling::{LevelReward, LevelingModel};
-pub use profile::{CharacterRulesProfile, NpcHealthCurve, NpcStatModel};
+pub use profile::{
+    BarterModel, CharacterRulesProfile, NpcHealthCurve, NpcStatModel, OverEncumberedRule,
+    PerkEntryPointDialect,
+};
 pub use regen::{
     magicka_regen_per_sec, pool_regen_tick_system, PoolRegenAccumulator, PoolRegenConfig,
     FATIGUE_REGEN_PER_SEC, MAGICKA_REGEN_BASE, MAGICKA_REGEN_WILLPOWER_COEFF, POOL_REGEN_DT,

@@ -66,7 +66,7 @@ use byroredux_core::ecs::components::ActorValues;
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
-use byroredux_plugin::esm::reader::GameKind;
+use byroredux_core::character::PerkEntryPointDialect;
 use byroredux_plugin::esm::records::{
     ActorValueRef, EsmIndex, PerkConditionTab, PerkEntryBody, PerkFunctionData,
 };
@@ -137,7 +137,7 @@ pub struct PerkEntryPointEntry {
 /// `NOT_SAVED_BY_DESIGN`: re-derived from the load order every boot.
 #[derive(Debug, Default, Clone)]
 pub struct PerkEntryTable {
-    game: Option<GameKind>,
+    dialect: PerkEntryPointDialect,
     perks: HashMap<u32, Arc<Vec<PerkEntryPointEntry>>>,
     rank_limits: HashMap<u32, u8>,
 }
@@ -149,15 +149,17 @@ impl PerkEntryTable {
     /// whose function is not value math, or whose parameters did not decode,
     /// are left out of the composition table but retain their rank limit.
     pub fn from_index(index: &EsmIndex) -> Self {
-        let game = index.game;
+        // #5921 — the numbering is the character profile's row, not a game
+        // match.
+        let dialect = index.character_rules.perk_entry_points();
         let rank_limits = index
             .perks
             .iter()
             .map(|(&form_id, perk)| (form_id, perk.num_ranks))
             .collect();
-        if !matches!(game, GameKind::Fallout3NV | GameKind::Skyrim) {
+        if dialect == PerkEntryPointDialect::None {
             return Self {
-                game: None,
+                dialect,
                 perks: HashMap::new(),
                 rank_limits,
             };
@@ -176,7 +178,7 @@ impl PerkEntryTable {
                     continue;
                 };
                 let Some(op) =
-                    resolve_op(index, game, *entry_point_index, *function, function_data)
+                    resolve_op(index, dialect, *entry_point_index, *function, function_data)
                 else {
                     continue;
                 };
@@ -193,14 +195,15 @@ impl PerkEntryTable {
             }
         }
         Self {
-            game: Some(game),
+            dialect,
             perks,
             rank_limits,
         }
     }
 
-    pub fn game(&self) -> Option<GameKind> {
-        self.game
+    /// The entry-point numbering the table was folded under.
+    pub fn dialect(&self) -> PerkEntryPointDialect {
+        self.dialect
     }
 
     pub fn len(&self) -> usize {
@@ -224,20 +227,20 @@ impl PerkEntryTable {
 }
 
 /// FNV hooks whose function 1 subtracts (`epftSubtract` in xEdit).
-fn is_subtract_hook(game: GameKind, entry_point: u8) -> bool {
-    game == GameKind::Fallout3NV && matches!(entry_point, 53 | 56 | 58)
+fn is_subtract_hook(dialect: PerkEntryPointDialect, entry_point: u8) -> bool {
+    dialect == PerkEntryPointDialect::Fallout3NV && matches!(entry_point, 53 | 56 | 58)
 }
 
 fn resolve_op(
     index: &EsmIndex,
-    game: GameKind,
+    dialect: PerkEntryPointDialect,
     entry_point: u8,
     function: u8,
     data: &PerkFunctionData,
 ) -> Option<PerkOp> {
     let av = |actor_value: u32| index.resolve_actor_value(ActorValueRef::Index(actor_value));
     Some(match (function, data) {
-        (1, PerkFunctionData::Float(x)) if is_subtract_hook(game, entry_point) => {
+        (1, PerkFunctionData::Float(x)) if is_subtract_hook(dialect, entry_point) => {
             PerkOp::Subtract(*x)
         }
         (1, PerkFunctionData::Float(x)) => PerkOp::Set(*x),
@@ -254,19 +257,19 @@ fn resolve_op(
         (6, _) => PerkOp::Absolute,
         (7, _) => PerkOp::NegativeAbsolute,
         // 12-14 exist on Skyrim only (FNV's table ends at 9).
-        (12, PerkFunctionData::ActorValueMult { actor_value, mult }) if game == GameKind::Skyrim => {
+        (12, PerkFunctionData::ActorValueMult { actor_value, mult }) if dialect == PerkEntryPointDialect::Skyrim => {
             PerkOp::SetToAvMult {
                 avif: av(*actor_value),
                 mult: *mult,
             }
         }
-        (13, PerkFunctionData::ActorValueMult { actor_value, mult }) if game == GameKind::Skyrim => {
+        (13, PerkFunctionData::ActorValueMult { actor_value, mult }) if dialect == PerkEntryPointDialect::Skyrim => {
             PerkOp::MultiplyAvMult {
                 avif: av(*actor_value),
                 mult: *mult,
             }
         }
-        (14, PerkFunctionData::ActorValueMult { actor_value, mult }) if game == GameKind::Skyrim => {
+        (14, PerkFunctionData::ActorValueMult { actor_value, mult }) if dialect == PerkEntryPointDialect::Skyrim => {
             PerkOp::MultiplyOnePlusAvMult {
                 avif: av(*actor_value),
                 mult: *mult,
@@ -294,20 +297,20 @@ pub fn compose_outgoing_damage(
     target: EntityId,
     base: f32,
 ) -> f32 {
-    let game = world
+    let dialect = world
         .try_resource::<PerkEntryTable>()
-        .and_then(|table| table.game());
+        .map_or(PerkEntryPointDialect::None, |table| table.dialect());
     let subjects = [None, Some(target)];
-    match game {
-        Some(GameKind::Fallout3NV) => {
+    match dialect {
+        PerkEntryPointDialect::Fallout3NV => {
             compose_entry_point(world, attacker, fnv::CALCULATE_WEAPON_DAMAGE, base, &subjects)
         }
-        Some(GameKind::Skyrim) => {
+        PerkEntryPointDialect::Skyrim => {
             let modded =
                 compose_entry_point(world, attacker, skyrim::MOD_ATTACK_DAMAGE, base, &subjects);
             compose_entry_point(world, attacker, skyrim::CALCULATE_WEAPON_DAMAGE, modded, &subjects)
         }
-        _ => base,
+        PerkEntryPointDialect::None => base,
     }
 }
 
@@ -326,10 +329,10 @@ pub fn compose_damage_threshold(
     target: EntityId,
     base: f32,
 ) -> f32 {
-    let game = world
+    let dialect = world
         .try_resource::<PerkEntryTable>()
-        .and_then(|table| table.game());
-    if game != Some(GameKind::Fallout3NV) {
+        .map_or(PerkEntryPointDialect::None, |table| table.dialect());
+    if dialect != PerkEntryPointDialect::Fallout3NV {
         return base;
     }
     let subjects = [None, None];
@@ -354,11 +357,11 @@ pub fn compose_damage_threshold(
 pub fn compose_max_carry_weight(world: &World, actor: EntityId, base: f32) -> f32 {
     let hook = match world
         .try_resource::<PerkEntryTable>()
-        .and_then(|table| table.game())
+        .map_or(PerkEntryPointDialect::None, |table| table.dialect())
     {
-        Some(GameKind::Fallout3NV) => fnv::GET_MAX_CARRY_WEIGHT,
-        Some(GameKind::Skyrim) => skyrim::GET_MAX_CARRY_WEIGHT,
-        _ => return base,
+        PerkEntryPointDialect::Fallout3NV => fnv::GET_MAX_CARRY_WEIGHT,
+        PerkEntryPointDialect::Skyrim => skyrim::GET_MAX_CARRY_WEIGHT,
+        PerkEntryPointDialect::None => return base,
     };
     compose_entry_point(world, actor, hook, base, &[None, None])
 }

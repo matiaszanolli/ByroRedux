@@ -19,15 +19,8 @@
 use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Component, Resource, SparseSetStorage, World};
-use byroredux_plugin::esm::reader::GameKind;
-use byroredux_plugin::esm::records::{EsmIndex, ALIAS_FLAG_ESSENTIAL, ALIAS_FLAG_PROTECTED};
-
-/// `ACBS` flag bit 1, Essential, on every game's `NPC_` (and FO3/FNV
-/// `CREA`) record (xEdit).
-pub const ACBS_FLAG_ESSENTIAL: u32 = 0x0000_0002;
-/// `ACBS` flag bit 11, Protected, on Skyrim and later. FO3/FNV use the bit
-/// for "No Blood Spray" (xEdit), so it is not read there.
-pub const ACBS_FLAG_PROTECTED: u32 = 0x0000_0800;
+use byroredux_core::character::CharacterRulesProfile;
+use byroredux_plugin::esm::records::{EsmIndex, NpcRecord, ALIAS_FLAG_ESSENTIAL, ALIAS_FLAG_PROTECTED};
 
 /// The base record's Essential / Protected flags, resolved through the
 /// template's "Use Base Data" and stamped at spawn. Rebuilt from the load
@@ -43,13 +36,13 @@ impl Component for ActorProtection {
 }
 
 impl ActorProtection {
-    /// Decode the `ACBS` flags of `game`'s records. `None` when neither is
-    /// set, so unprotected actors carry no component.
-    pub fn from_acbs_flags(flags: u32, game: GameKind) -> Option<Self> {
-        let protected_bit = !matches!(game, GameKind::Oblivion | GameKind::Fallout3NV);
+    /// The base record's Essential / Protected flags, decoded per game at
+    /// the parse boundary (`parse_npc`, #5921). `None` when neither is set,
+    /// so unprotected actors carry no component.
+    pub fn from_record(npc: &NpcRecord) -> Option<Self> {
         let protection = Self {
-            essential: flags & ACBS_FLAG_ESSENTIAL != 0,
-            protected: protected_bit && flags & ACBS_FLAG_PROTECTED != 0,
+            essential: npc.essential,
+            protected: npc.protected,
         };
         (protection.essential || protection.protected).then_some(protection)
     }
@@ -137,17 +130,12 @@ impl Resource for BleedoutRules {}
 /// (Fallout3.exe, SkyrimSE.exe, Fallout4.exe hold the value before a pointer
 /// to the name; Oblivion.exe loads it as a constant beside the name). They
 /// agree with the GECK (10 s) and the Skyrim CK *Settings* table (0.3).
-/// FalloutNV.exe is encrypted on disk; New Vegas runs the Fallout 3 engine
-/// and the GECK page documents both. Starfield's executable carries no
-/// `fEssentialDeathTime`, so it has no rules and never recovers.
-fn engine_defaults(game: GameKind) -> Option<BleedoutRules> {
-    let death_time_secs = match game {
-        GameKind::Oblivion | GameKind::Fallout3NV => 10.0,
-        GameKind::Skyrim | GameKind::Fallout4 => 30.0,
-        GameKind::Fallout76 | GameKind::Starfield => return None,
-    };
+/// The per-game death time is the character profile's row (#5921); a
+/// profile without one (Starfield's executable carries no
+/// `fEssentialDeathTime`) has no rules and never recovers.
+fn engine_defaults(profile: CharacterRulesProfile) -> Option<BleedoutRules> {
     Some(BleedoutRules {
-        death_time_secs,
+        death_time_secs: profile.essential_death_time_secs()?,
         health_regain: 0.3,
     })
 }
@@ -156,7 +144,7 @@ fn engine_defaults(game: GameKind) -> Option<BleedoutRules> {
 /// settings (Skyrim.esm and Fallout4.esm author a 20 s death time), else the
 /// engine defaults.
 pub fn install_bleedout_rules(world: &mut World, index: &EsmIndex) {
-    match engine_defaults(index.game) {
+    match engine_defaults(index.character_rules) {
         Some(defaults) => {
             world.insert_resource(BleedoutRules {
                 death_time_secs: index

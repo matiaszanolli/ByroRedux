@@ -126,6 +126,54 @@ impl NpcStatModel {
     }
 }
 
+/// What carrying more than the `CarryWeight` capacity does (#5921).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverEncumberedRule {
+    /// No over-encumbrance rule is wired for the game.
+    None,
+    /// Movement speed scales by `fMoveEncumEffect` (FO3 / FNV GECK).
+    SpeedMult,
+    /// The actor cannot sprint (Skyrim).
+    NoSprint,
+}
+
+/// The perk entry-point numbering a game's `PERK` records author (#5921):
+/// which entry-point index is which hook, and which function ids exist.
+/// The value-math decode is wired for these two; every other game's
+/// entries are not composed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PerkEntryPointDialect {
+    #[default]
+    None,
+    /// FO3 / FNV (`wbDefinitionsFO3.pas`, FNV identical for these hooks).
+    Fallout3NV,
+    /// Skyrim (`wbDefinitionsTES5.pas`).
+    Skyrim,
+}
+
+/// A game's barter price model (#5921): the executable defaults the
+/// masters' GMSTs override, by setting name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BarterModel {
+    /// The AVIF editor id prices scale with.
+    pub skill: &'static str,
+    /// The skill value that reaches `barter_min`.
+    pub skill_scale: f32,
+    /// The skill value past which skill stops mattering.
+    pub skill_cap: Option<f32>,
+    /// `fBarterMax` / `fBarterMin` defaults.
+    pub barter_max: f32,
+    pub barter_min: f32,
+    /// The setting naming the purchase floor, and its default.
+    pub buy_floor_setting: &'static str,
+    pub buy_floor: f32,
+    /// `fBarterSellMax` default.
+    pub sell_ceiling: f32,
+    /// The (buy, sell) price perk entry points, where the game's perk
+    /// entries are decoded.
+    pub perk_hooks: Option<(u8, u8)>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RulesetBuilder {
     /// No runtime ruleset. Oblivion is the only *wired* game that lands
@@ -188,7 +236,27 @@ pub struct CharacterRulesProfile {
     /// per candidate rather than erroring.
     vital_pools: &'static [(&'static str, &'static str)],
     ruleset: RulesetBuilder,
+    /// #5921 — what over-encumbrance does.
+    over_encumbered: OverEncumberedRule,
+    /// #5921 — whether killing an actor awards experience. The GECK
+    /// documents FO3 / FNV kill rewards; Skyrim.esm authors the same
+    /// `iXPLevelKill*` names but levels by skill use and awards none.
+    kill_experience: bool,
+    /// #5921 — the engine's `fEssentialDeathTime` default (seconds an
+    /// essential actor stays down), read from each executable's setting
+    /// table; `None` where the executable carries no such setting, so the
+    /// game has no bleedout recovery.
+    essential_death_time_secs: Option<f32>,
+    /// #5921 — the barter price model, where one is sourced.
+    barter: Option<BarterModel>,
+    /// #5921 — the perk entry-point numbering.
+    perk_entry_points: PerkEntryPointDialect,
 }
+
+/// Skyrim's *Mod Buy Prices* / *Mod Sell Prices* entry points
+/// (`wbEntryPointsEnum`, xEdit `wbDefinitionsTES5`).
+const SKYRIM_MOD_BUY_PRICES: u8 = 8;
+const SKYRIM_MOD_SELL_PRICES: u8 = 60;
 
 impl CharacterRulesProfile {
     pub const NONE: Self = Self {
@@ -199,6 +267,11 @@ impl CharacterRulesProfile {
         body_condition_base: None,
         vital_pools: &[],
         ruleset: RulesetBuilder::None,
+        over_encumbered: OverEncumberedRule::None,
+        kill_experience: false,
+        essential_death_time_secs: None,
+        barter: None,
+        perk_entry_points: PerkEntryPointDialect::None,
     };
 
     pub const OBLIVION: Self = Self {
@@ -212,6 +285,12 @@ impl CharacterRulesProfile {
         // roster states the intent, the resolver gates reality.
         vital_pools: &[("Health", "Health"), ("Magicka", "Magicka"), ("Fatigue", "Fatigue")],
         ruleset: RulesetBuilder::None,
+        over_encumbered: OverEncumberedRule::None,
+        kill_experience: false,
+        // Oblivion.exe loads it as a constant beside the name.
+        essential_death_time_secs: Some(10.0),
+        barter: None,
+        perk_entry_points: PerkEntryPointDialect::None,
     };
 
     pub const FALLOUT3: Self = Self {
@@ -234,6 +313,12 @@ impl CharacterRulesProfile {
         body_condition_base: Some(100.0),
         vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
         ruleset: RulesetBuilder::Fallout3,
+        over_encumbered: OverEncumberedRule::SpeedMult,
+        kill_experience: true,
+        // Fallout3.exe's setting table; the GECK says 10 s.
+        essential_death_time_secs: Some(10.0),
+        barter: None,
+        perk_entry_points: PerkEntryPointDialect::Fallout3NV,
     };
 
     pub const FALLOUT_NEW_VEGAS: Self = Self {
@@ -254,6 +339,13 @@ impl CharacterRulesProfile {
         body_condition_base: Some(100.0),
         vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
         ruleset: RulesetBuilder::FalloutNewVegas,
+        over_encumbered: OverEncumberedRule::SpeedMult,
+        kill_experience: true,
+        // FalloutNV.exe is encrypted on disk; New Vegas runs the Fallout 3
+        // engine and the GECK page documents both.
+        essential_death_time_secs: Some(10.0),
+        barter: None,
+        perk_entry_points: PerkEntryPointDialect::Fallout3NV,
     };
 
     pub const SKYRIM: Self = Self {
@@ -275,6 +367,23 @@ impl CharacterRulesProfile {
         body_condition_base: None,
         vital_pools: &[("Health", "Health"), ("Magicka", "Magicka"), ("Stamina", "Stamina")],
         ruleset: RulesetBuilder::Skyrim,
+        over_encumbered: OverEncumberedRule::NoSprint,
+        kill_experience: false,
+        // SkyrimSE.exe's setting table.
+        essential_death_time_secs: Some(30.0),
+        barter: Some(BarterModel {
+            skill: "Speechcraft",
+            skill_scale: 100.0,
+            // "skill levels over 100 have no effect".
+            skill_cap: Some(100.0),
+            barter_max: 2.4,
+            barter_min: 1.4,
+            buy_floor_setting: "fBarterBuyMin",
+            buy_floor: 1.05,
+            sell_ceiling: 0.95,
+            perk_hooks: Some((SKYRIM_MOD_BUY_PRICES, SKYRIM_MOD_SELL_PRICES)),
+        }),
+        perk_entry_points: PerkEntryPointDialect::Skyrim,
     };
 
     pub const FALLOUT4: Self = Self {
@@ -285,6 +394,25 @@ impl CharacterRulesProfile {
         body_condition_base: None,
         vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
         ruleset: RulesetBuilder::Fallout4,
+        // No sourced FO4 over-encumbrance effect is wired (#5921 capture
+        // note: intended, not an oversight).
+        over_encumbered: OverEncumberedRule::None,
+        kill_experience: false,
+        // Fallout4.exe's setting table.
+        essential_death_time_secs: Some(30.0),
+        barter: Some(BarterModel {
+            skill: "Charisma",
+            skill_scale: 10.0,
+            skill_cap: None,
+            barter_max: 2.5,
+            barter_min: 1.5,
+            buy_floor_setting: "fBarterBuyMax",
+            buy_floor: 1.05,
+            sell_ceiling: 0.95,
+            // FO4's PERK entry layout is not decoded.
+            perk_hooks: None,
+        }),
+        perk_entry_points: PerkEntryPointDialect::None,
     };
 
     pub const FALLOUT76: Self = Self {
@@ -303,6 +431,12 @@ impl CharacterRulesProfile {
         body_condition_base: None,
         vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
         ruleset: RulesetBuilder::None,
+        over_encumbered: OverEncumberedRule::None,
+        kill_experience: false,
+        // No executable capture for FO76.
+        essential_death_time_secs: None,
+        barter: None,
+        perk_entry_points: PerkEntryPointDialect::None,
     };
 
     pub const STARFIELD: Self = Self {
@@ -323,6 +457,12 @@ impl CharacterRulesProfile {
         // unknown editor ids rather than erroring).
         vital_pools: &[("HP", "Health"), ("O2", "Oxygen")],
         ruleset: RulesetBuilder::None,
+        over_encumbered: OverEncumberedRule::None,
+        kill_experience: false,
+        // Starfield's executable carries no `fEssentialDeathTime`.
+        essential_death_time_secs: None,
+        barter: None,
+        perk_entry_points: PerkEntryPointDialect::None,
     };
 
     #[must_use]
@@ -367,6 +507,37 @@ impl CharacterRulesProfile {
         self.body_condition_base
     }
 
+    /// #5921 — what over-encumbrance does under this profile.
+    #[must_use]
+    pub const fn over_encumbered(self) -> OverEncumberedRule {
+        self.over_encumbered
+    }
+
+    /// #5921 — whether killing an actor awards experience.
+    #[must_use]
+    pub const fn awards_kill_experience(self) -> bool {
+        self.kill_experience
+    }
+
+    /// #5921 — the engine's `fEssentialDeathTime` default, `None` where the
+    /// game has no bleedout recovery.
+    #[must_use]
+    pub const fn essential_death_time_secs(self) -> Option<f32> {
+        self.essential_death_time_secs
+    }
+
+    /// #5921 — the barter price model, `None` where none is sourced.
+    #[must_use]
+    pub const fn barter(self) -> Option<BarterModel> {
+        self.barter
+    }
+
+    /// #5921 — the perk entry-point numbering the game's `PERK`s author.
+    #[must_use]
+    pub const fn perk_entry_points(self) -> PerkEntryPointDialect {
+        self.perk_entry_points
+    }
+
     /// Build the canonical runtime ruleset with authored AVIF FormIDs.
     pub fn build_ruleset<F, G>(self, resolve: F, gmst: G) -> Option<CharacterRuleset>
     where
@@ -395,6 +566,53 @@ impl Default for CharacterRulesProfile {
 mod tests {
     use super::*;
     use crate::character::LevelingModel;
+
+    /// #5921 — the per-game rule rows that used to be consumer-side
+    /// `GameKind` matches (encumbrance, kill XP, bleedout defaults, barter,
+    /// perk entry points), pinned per profile. Each row is an exhaustive
+    /// struct literal, so a new profile cannot compile without stating every
+    /// one; this pin keeps the stated values from drifting.
+    #[test]
+    fn per_game_rule_rows_are_stated_on_every_profile() {
+        use OverEncumberedRule as E;
+        use PerkEntryPointDialect as P;
+        let rows = [
+            (CharacterRulesProfile::NONE, E::None, false, None, None, P::None),
+            (CharacterRulesProfile::OBLIVION, E::None, false, Some(10.0), None, P::None),
+            (CharacterRulesProfile::FALLOUT3, E::SpeedMult, true, Some(10.0), None, P::Fallout3NV),
+            (
+                CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+                E::SpeedMult,
+                true,
+                Some(10.0),
+                None,
+                P::Fallout3NV,
+            ),
+            (
+                CharacterRulesProfile::SKYRIM,
+                E::NoSprint,
+                false,
+                Some(30.0),
+                Some("Speechcraft"),
+                P::Skyrim,
+            ),
+            (CharacterRulesProfile::FALLOUT4, E::None, false, Some(30.0), Some("Charisma"), P::None),
+            (CharacterRulesProfile::FALLOUT76, E::None, false, None, None, P::None),
+            (CharacterRulesProfile::STARFIELD, E::None, false, None, None, P::None),
+        ];
+        for (profile, encumbered, kill_xp, death_time, barter_skill, perks) in rows {
+            let name = profile.name();
+            assert_eq!(profile.over_encumbered(), encumbered, "{name}");
+            assert_eq!(profile.awards_kill_experience(), kill_xp, "{name}");
+            assert_eq!(profile.essential_death_time_secs(), death_time, "{name}");
+            assert_eq!(profile.barter().map(|b| b.skill), barter_skill, "{name}");
+            assert_eq!(profile.perk_entry_points(), perks, "{name}");
+        }
+        // The price perk hooks exist only where the perk entries decode.
+        let skyrim = CharacterRulesProfile::SKYRIM.barter().unwrap();
+        assert_eq!(skyrim.perk_hooks, Some((8, 60)));
+        assert_eq!(CharacterRulesProfile::FALLOUT4.barter().unwrap().perk_hooks, None);
+    }
 
     #[test]
     fn fallout_profiles_keep_roster_health_and_ruleset_in_lockstep() {

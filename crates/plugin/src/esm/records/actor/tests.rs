@@ -2407,3 +2407,23 @@ fn installed_starfield_npcs_and_races_decode_acbs_and_skeletons() {
     assert!(human.skeleton_models[0].to_ascii_lowercase().ends_with("characterassets\\skeleton.nif"));
     assert!(human.skeleton_models[1].to_ascii_lowercase().contains("female"));
 }
+
+/// #5921 — Essential / Protected are decoded at the parse boundary: Essential
+/// is `ACBS` bit 1 everywhere; bit 11 is Protected from Skyrim on and "No
+/// Blood Spray" on FO3/FNV (xEdit), so it reads `false` there.
+#[test]
+fn acbs_essential_and_protected_decode_per_game() {
+    let acbs = |flags: u32| {
+        let mut data = vec![0u8; 24];
+        data[..4].copy_from_slice(&flags.to_le_bytes());
+        data
+    };
+    let fnv = parse_npc(1, &[sub(b"ACBS", &acbs(0x802))], GameKind::Fallout3NV, &None);
+    assert!(fnv.essential);
+    assert!(!fnv.protected, "bit 11 is No Blood Spray on FO3/FNV");
+    let skyrim = parse_npc(2, &[sub(b"ACBS", &acbs(0x800))], GameKind::Skyrim, &None);
+    assert!(!skyrim.essential);
+    assert!(skyrim.protected);
+    let plain = parse_npc(3, &[sub(b"ACBS", &acbs(0x1))], GameKind::Skyrim, &None);
+    assert!(!plain.essential && !plain.protected);
+}

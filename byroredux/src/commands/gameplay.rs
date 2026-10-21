@@ -743,6 +743,7 @@ mod level_up_tests {
         world.register::<Perks>();
         let mut index = EsmIndex {
             game: GameKind::Fallout3NV,
+            character_rules: byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS,
             ..Default::default()
         };
         for (form_id, editor_id) in [(INTELLIGENCE, "AVIntelligence"), (SCIENCE, "AVScience")] {

@@ -294,6 +294,14 @@ pub struct NpcRecord {
     pub disposition_base: i16,
     /// Flags (from ACBS).
     pub acbs_flags: u32,
+    /// #5921 — `ACBS` Essential (bit 1, `0x2`, every game's `NPC_` and
+    /// FO3/FNV `CREA`, xEdit), decoded here at the parse boundary so no
+    /// consumer re-reads the per-game flag layout.
+    pub essential: bool,
+    /// #5921 — `ACBS` Protected (bit 11, `0x800`), a Skyrim-and-later flag:
+    /// FO3/FNV use the bit for "No Blood Spray" (xEdit), so it is `false`
+    /// on Oblivion / FO3 / FNV whatever the bit holds.
+    pub protected: bool,
     /// Skyrim `DNAM` base skill values (18 bytes, One-handed to Enchanting in actor-value
     /// index order): what a Skyrim NPC without the auto-calc flag stores (UESP *NPC_*).
     /// `None` outside Skyrim and when the record carries no `DNAM`.
@@ -490,6 +498,8 @@ pub fn parse_npc(
         health_offset: 0,
         disposition_base: 50,
         acbs_flags: 0,
+        essential: false,
+        protected: false,
         skill_values: None,
         skyrim_calculated_pools: None,
         has_script: common.has_script,
@@ -571,9 +581,19 @@ pub fn parse_npc(
     if !recipe.is_empty() {
         record.runtime_facegen = Some(recipe);
     }
+    record.essential = record.acbs_flags & ACBS_FLAG_ESSENTIAL != 0;
+    record.protected = !matches!(game, GameKind::Oblivion | GameKind::Fallout3NV)
+        && record.acbs_flags & ACBS_FLAG_PROTECTED != 0;
 
     record
 }
+
+/// `ACBS` flag bit 1, Essential, on every game's `NPC_` (and FO3/FNV
+/// `CREA`) record (xEdit).
+pub const ACBS_FLAG_ESSENTIAL: u32 = 0x0000_0002;
+/// `ACBS` flag bit 11, Protected, on Skyrim and later. FO3/FNV use the bit
+/// for "No Blood Spray" (xEdit), so it is not read there.
+pub const ACBS_FLAG_PROTECTED: u32 = 0x0000_0800;
 
 /// Identity, faction, inventory and actor-configuration sub-records
 /// shared by every NPC_/CREA record regardless of game era. Split out

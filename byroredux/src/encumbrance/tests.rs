@@ -1,9 +1,20 @@
 use super::*;
+use byroredux_core::character::CharacterRulesProfile;
+use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{AvifRecord, GameSetting, SettingValue};
 
 fn index(game: GameKind) -> EsmIndex {
+    // The parser selects the profile from the game (#5921 reads the
+    // over-encumbrance rule off it).
+    let character_rules = match game {
+        GameKind::Fallout3NV => CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        GameKind::Skyrim => CharacterRulesProfile::SKYRIM,
+        GameKind::Fallout4 => CharacterRulesProfile::FALLOUT4,
+        _ => unreachable!("not used by these tests"),
+    };
     let mut index = EsmIndex {
         game,
+        character_rules,
         ..Default::default()
     };
     for (form_id, editor_id) in [(0x2D1, "CarryWeight"), (0x2D2, "InventoryWeight")] {

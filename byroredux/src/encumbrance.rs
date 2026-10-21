@@ -21,7 +21,7 @@
 
 use byroredux_core::ecs::components::{ActorValues, Inventory};
 use byroredux_core::ecs::{Resource, World};
-use byroredux_plugin::esm::reader::GameKind;
+use byroredux_core::character::OverEncumberedRule;
 use byroredux_plugin::esm::records::EsmIndex;
 use byroredux_scripting::condition::{evaluate_function, ConditionFunction};
 
@@ -92,12 +92,13 @@ pub(crate) fn install_encumbrance_rules(world: &mut World, index: &EsmIndex) -> 
         world.remove_resource::<EncumbranceRules>();
         return false;
     };
-    let effect = match index.game {
-        GameKind::Fallout3NV => Some(OverEncumbered::SpeedMult(
+    // #5921 — the rule is the character profile's row, not a game match.
+    let effect = match index.character_rules.over_encumbered() {
+        OverEncumberedRule::SpeedMult => Some(OverEncumbered::SpeedMult(
             fallout_move_encumbrance_multiplier(index.game_setting_float("fMoveEncumEffect")),
         )),
-        GameKind::Skyrim => Some(OverEncumbered::NoSprint),
-        _ => None,
+        OverEncumberedRule::NoSprint => Some(OverEncumbered::NoSprint),
+        OverEncumberedRule::None => None,
     };
     world.insert_resource(EncumbranceRules {
         carry_weight,

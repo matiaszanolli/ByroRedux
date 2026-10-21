@@ -46,17 +46,11 @@ use byroredux_core::ecs::components::{FactionRanks, FormIdComponent, Inventory};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Resource, World};
 use byroredux_core::form_id::FormIdPool;
-use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{EsmIndex, VendorData};
 use byroredux_scripting::condition::{evaluate_function, ConditionFunction};
 
 /// Gold (Skyrim `Gold001`) and caps (Fallout 4 `Caps001`).
 const CURRENCY: u32 = 0x0000_000F;
-
-/// Skyrim's *Mod Buy Prices* / *Mod Sell Prices* entry points
-/// (`wbEntryPointsEnum`, xEdit `wbDefinitionsTES5`).
-const SKYRIM_MOD_BUY_PRICES: u8 = 8;
-const SKYRIM_MOD_SELL_PRICES: u8 = 60;
 
 /// The load order's vendors and price rules. `NOT_SAVED_BY_DESIGN`: rebuilt
 /// from the records every boot.
@@ -90,25 +84,9 @@ impl Resource for BarterRules {}
 
 impl BarterRules {
     fn from_index(index: &EsmIndex) -> Option<Self> {
-        let (skill, skill_scale, skill_cap, buy_floor_setting, buy_floor, sell_ceiling, hooks) =
-            match index.game {
-                // Executable defaults, overridden by the masters' GMSTs.
-                GameKind::Skyrim => (
-                    "Speechcraft",
-                    100.0,
-                    Some(100.0),
-                    "fBarterBuyMin",
-                    1.05,
-                    0.95,
-                    Some((SKYRIM_MOD_BUY_PRICES, SKYRIM_MOD_SELL_PRICES)),
-                ),
-                GameKind::Fallout4 => ("Charisma", 10.0, None, "fBarterBuyMax", 1.05, 0.95, None),
-                _ => return None,
-            };
-        let (barter_max, barter_min) = match index.game {
-            GameKind::Skyrim => (2.4, 1.4),
-            _ => (2.5, 1.5),
-        };
+        // #5921 — the price model is the character profile's row: executable
+        // defaults, overridden by the masters' GMSTs.
+        let model = index.character_rules.barter()?;
         let setting = |name: &str, default: f32| index.game_setting_float(name).unwrap_or(default);
         let vendors: HashMap<u32, VendorData> = index
             .factions
@@ -146,14 +124,14 @@ impl BarterRules {
             .map(|item| (item.form_id, item.common.keywords.clone()))
             .collect();
         Some(Self {
-            skill: index.actor_value_form_id(skill)?,
-            skill_scale,
-            skill_cap,
-            barter_max: setting("fBarterMax", barter_max),
-            barter_min: setting("fBarterMin", barter_min),
-            buy_floor: setting(buy_floor_setting, buy_floor),
-            sell_ceiling: setting("fBarterSellMax", sell_ceiling),
-            perk_hooks: hooks,
+            skill: index.actor_value_form_id(model.skill)?,
+            skill_scale: model.skill_scale,
+            skill_cap: model.skill_cap,
+            barter_max: setting("fBarterMax", model.barter_max),
+            barter_min: setting("fBarterMin", model.barter_min),
+            buy_floor: setting(model.buy_floor_setting, model.buy_floor),
+            sell_ceiling: setting("fBarterSellMax", model.sell_ceiling),
+            perk_hooks: model.perk_hooks,
             vendors,
             containers,
             lists,

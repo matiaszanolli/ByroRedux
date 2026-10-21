@@ -502,8 +502,8 @@ pub(crate) fn install_experience_rules(
     const DIFFICULTIES: [&str; 5] = ["VeryEasy", "Easy", "Average", "Hard", "VeryHard"];
     // The GECK page documents Fallout 3 / New Vegas. Skyrim.esm authors the
     // same `iXPLevelKill*` / `iXPRewardKillOpponent*` names but levels by
-    // skill use and awards no kill experience.
-    if index.game != byroredux_plugin::esm::reader::GameKind::Fallout3NV {
+    // skill use and awards no kill experience — the profile's row (#5921).
+    if !index.character_rules.awards_kill_experience() {
         world.remove_resource::<ExperienceRules>();
         return false;
     }
@@ -1469,6 +1469,7 @@ mod tests {
         const BLOODY_MESS: u32 = 0x94EBA;
         let mut index = EsmIndex {
             game: GameKind::Fallout3NV,
+            character_rules: byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS,
             ..Default::default()
         };
         index.perks.insert(
@@ -1542,6 +1543,7 @@ mod tests {
 
         let mut index = EsmIndex {
             game: GameKind::Fallout3NV,
+            character_rules: byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS,
             ..Default::default()
         };
         index.perks.insert(

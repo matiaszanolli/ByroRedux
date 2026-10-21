@@ -1,4 +1,5 @@
 use super::*;
+use byroredux_plugin::esm::reader::GameKind;
 use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageState};
 use crate::scene::{install_scene_quest_aliases, SceneActorBindings};
@@ -28,26 +29,30 @@ fn world() -> (World, EntityId, EntityId) {
     (world, player, actor)
 }
 
-/// xEdit: Essential is `ACBS` bit 1 everywhere; bit 11 is Protected from
-/// Skyrim on and "No Blood Spray" on FO3/FNV.
+/// The component mirrors the record's parse-boundary decode (#5921):
+/// either flag stamps it, neither leaves the actor without one.
 #[test]
-fn acbs_flags_decode_per_game() {
+fn protection_follows_the_records_decoded_flags() {
+    let npc = |essential, protected| NpcRecord {
+        essential,
+        protected,
+        ..Default::default()
+    };
     assert_eq!(
-        ActorProtection::from_acbs_flags(0x802, GameKind::Fallout3NV),
+        ActorProtection::from_record(&npc(true, false)),
         Some(ActorProtection {
             essential: true,
             protected: false
         })
     );
-    assert_eq!(ActorProtection::from_acbs_flags(0x800, GameKind::Fallout3NV), None);
     assert_eq!(
-        ActorProtection::from_acbs_flags(0x800, GameKind::Skyrim),
+        ActorProtection::from_record(&npc(false, true)),
         Some(ActorProtection {
             essential: false,
             protected: true
         })
     );
-    assert_eq!(ActorProtection::from_acbs_flags(0x1, GameKind::Skyrim), None);
+    assert_eq!(ActorProtection::from_record(&npc(false, false)), None);
 }
 
 /// An essential actor bleeds out, whoever strikes, and stays down on further
@@ -167,6 +172,7 @@ fn rules_read_the_load_order_settings_else_the_engine_defaults() {
     let mut world = World::new();
     let mut index = EsmIndex {
         game: GameKind::Fallout3NV,
+        character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
         ..Default::default()
     };
     install_bleedout_rules(&mut world, &index);
@@ -178,6 +184,7 @@ fn rules_read_the_load_order_settings_else_the_engine_defaults() {
         }
     );
     index.game = GameKind::Skyrim;
+    index.character_rules = CharacterRulesProfile::SKYRIM;
     index.game_settings.insert(
         0x10,
         GameSetting {
@@ -189,6 +196,7 @@ fn rules_read_the_load_order_settings_else_the_engine_defaults() {
     install_bleedout_rules(&mut world, &index);
     assert_eq!(world.resource::<BleedoutRules>().death_time_secs, 20.0);
     index.game = GameKind::Starfield;
+    index.character_rules = CharacterRulesProfile::STARFIELD;
     install_bleedout_rules(&mut world, &index);
     assert!(world.try_resource::<BleedoutRules>().is_none());
 }

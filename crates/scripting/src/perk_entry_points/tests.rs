@@ -1,4 +1,5 @@
 use super::*;
+use byroredux_plugin::esm::reader::GameKind;
 use byroredux_core::ecs::components::{ActorValues, Dead};
 use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue, RunOn};
 use byroredux_plugin::esm::records::{AvifRecord, PerkEntry, PerkRecord};
@@ -41,8 +42,20 @@ fn perk(form_id: u32, entries: Vec<PerkEntry>) -> PerkRecord {
 }
 
 fn index(game: GameKind, perks: Vec<PerkRecord>) -> EsmIndex {
+    use byroredux_core::character::CharacterRulesProfile;
+    // The parser selects the profile from the game (#5921 reads the
+    // entry-point dialect off it); FO3/FNV share theirs.
+    let character_rules = match game {
+        GameKind::Oblivion => CharacterRulesProfile::OBLIVION,
+        GameKind::Fallout3NV => CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        GameKind::Skyrim => CharacterRulesProfile::SKYRIM,
+        GameKind::Fallout4 => CharacterRulesProfile::FALLOUT4,
+        GameKind::Fallout76 => CharacterRulesProfile::FALLOUT76,
+        GameKind::Starfield => CharacterRulesProfile::STARFIELD,
+    };
     let mut index = EsmIndex {
         game,
+        character_rules,
         ..Default::default()
     };
     for record in perks {

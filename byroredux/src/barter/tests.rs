@@ -1,4 +1,6 @@
 use super::*;
+use byroredux_core::character::CharacterRulesProfile;
+use byroredux_plugin::esm::reader::GameKind;
 use byroredux_core::ecs::components::ItemStack;
 use byroredux_plugin::esm::records::common::CommonItemFields;
 use byroredux_plugin::esm::records::{ContainerRecord, InventoryEntry, ItemKind, ItemRecord};
@@ -118,6 +120,7 @@ fn count(world: &World, entity: EntityId, form: u32) -> u32 {
 fn barter_trades_with_an_unloaded_merchant_chest_and_parks_its_stock() {
     let mut index = EsmIndex {
         game: GameKind::Skyrim,
+        character_rules: CharacterRulesProfile::SKYRIM,
         ..Default::default()
     };
     index.items.insert(SWORD, misc(SWORD, "Iron Sword", 25));
