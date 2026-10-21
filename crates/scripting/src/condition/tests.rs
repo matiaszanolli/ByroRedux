@@ -1371,7 +1371,7 @@ fn param1_form_id_table_matches_the_condition_catalog() {
             function.name()
         );
     }
-    // 24 catalog entries, HasPerk answering to two indices.
+    // Every catalog entry, plus HasPerk's second index.
     assert_eq!(covered, ConditionFunction::CATALOG.len() + 1);
 }
 

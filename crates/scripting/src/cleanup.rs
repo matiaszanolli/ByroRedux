@@ -42,6 +42,7 @@
 //! | `ScenePackageEventBatch`, `ScenePackageCompletionBatch`, `EvaluatePackageRequest` | `package::scene_package_system` |
 //! | `StoryEvent` | `story_manager::story_manager_dispatch_system` (#5366) |
 //! | `TwoStateTransitionBatch` | `vm_state::two_state_activator_system` |
+//! | `OnDeathEvent` | `fragment::reference::collect_deliveries` (the frame pass drains it before anything else runs) |
 //! | `HavokImpulseRequest` | `byroredux::systems::cinematic::scripted_havok_impulse_system` (snapshots every request and drains exactly those; the only early return before the drain is the empty set, and a missing `HavokImpulseRules` drains the snapshot before returning, #6009) |
 //! | `MotionTypeChangeRequest` | `byroredux::systems::cinematic` (the one tail-drain — it removes exactly the entities it snapshotted, after an empty-set early return that strands nothing) |
 //!
@@ -218,7 +219,26 @@ mod contract_tests {
                 include_str!("vm_state.rs"),
                 "query_mut::<TwoStateTransitionBatch>",
             ),
+            (
+                "OnDeathEvent",
+                include_str!("fragment/reference.rs"),
+                "drain::<crate::OnDeathEvent>",
+            ),
+            // The two physics markers' consumers live in the binary crate.
+            (
+                "HavokImpulseRequest",
+                include_str!("../../../byroredux/src/systems/cinematic.rs"),
+                "query_mut::<byroredux_scripting::HavokImpulseRequest>",
+            ),
+            (
+                "MotionTypeChangeRequest",
+                include_str!("../../../byroredux/src/systems/cinematic.rs"),
+                "query_mut::<MotionTypeChangeRequest>",
+            ),
         ] {
+            // Production code only: a test module that merely mentions the
+            // drain must not satisfy the pin.
+            let consumer_src = byroredux_core::source_scan::production_text_or_whole(consumer_src);
             assert!(
                 consumer_src.contains(drain_site),
                 "`{marker}` is documented as Pattern B (self-draining in its \

@@ -16,7 +16,7 @@ use byroredux_plugin::esm::reader::GameKind;
 /// index from `Condition.function_index` with a typed constructor so
 /// the dispatcher's `match` is exhaustive against the known catalog.
 ///
-/// New functions land by adding a variant + a match arm in
+/// New functions land by adding a variant, a [`ROWS`] row and a match arm in
 /// [`evaluate_function`]. Unknown indices fall through to
 /// [`Self::Unknown`] which evaluates to `0.0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -81,10 +81,9 @@ pub enum ConditionFunction {
     /// `GetInFaction(faction_form_id) → f32`. Boolean membership probe
     /// off the same `FactionRanks` component as `GetFactionRank`: 1.0
     /// when the actor holds any rank in `param_1`'s faction, 0.0
-    /// otherwise. Skyrim function index **71** (6 904 corpus uses, every
-    /// `param_1` a FACT; FO3 / FNV author no CTDA at 71 across their
-    /// condition-bearing record types — INFO/PACK/QUST/NPC_/PERK
-    /// censused — so the shared catalog cannot mislabel them there).
+    /// otherwise. Function index **71** on Skyrim (6 904 corpus uses, every
+    /// `param_1` a FACT), and also on FO3 (2 450 uses) and FNV (3 535) where
+    /// 71 is `GetInFaction` too (#5996).
     GetInFaction,
     /// `GetLevel → f32`. The Run-On actor's character level from its
     /// `CharacterLevel` component (0.0 when absent). No parameter.
