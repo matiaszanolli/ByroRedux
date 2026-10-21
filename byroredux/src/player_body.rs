@@ -33,7 +33,8 @@
 //! person via `HiddenFirstPerson`). One half stays open and is tracked in the
 //! slice doc: player FaceGen (vanilla ships no facegeom for the player
 //! record — #5095: the pre-baked miss now assembles the head from the
-//! player's authored PNAM head-part HDPTs instead of leaving none).
+//! head-part fallback (the race's base parts plus the player's authored PNAM
+//! HDPTs, #5408) instead of leaving none).
 
 
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};

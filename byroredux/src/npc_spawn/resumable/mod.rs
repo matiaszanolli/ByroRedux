@@ -299,7 +299,7 @@ impl NpcSpawnState {
             Self::Prebaked(state) => match state.phase {
                 PrebakedPhase::Skeleton => "skeleton",
                 PrebakedPhase::Facegen => "pre-baked FaceGen",
-                PrebakedPhase::HeadParts(_) => "PNAM head-part fallback",
+                PrebakedPhase::HeadParts(_) => "head-part fallback",
                 PrebakedPhase::Armor(_) => "armor",
                 PrebakedPhase::Finalize => "finalization",
             },
@@ -1632,9 +1632,9 @@ mod tests {
     /// #5095 — vanilla Skyrim ships no facegeom for the player record, so
     /// the pre-baked miss is the player's *normal* path, and it used to
     /// jump straight to armor: a headless third-person body. The miss now
-    /// routes through the NPC's authored PNAM head parts when it has any
-    /// (the player record authors ManHead / eyes / hair / brows), and only
-    /// an NPC with neither source stays headless.
+    /// routes through the head-part fallback (the race's base parts plus the
+    /// NPC's own `PNAM` parts, #5408) when it yields any, and only an NPC
+    /// with neither source stays headless.
     #[test]
     fn missing_prebaked_facegen_falls_back_to_authored_head_parts() {
         let mut world = World::new();
@@ -1674,7 +1674,8 @@ mod tests {
 
     /// #5095 — the fallback source itself: the NPC's `PNAM` head-part list
     /// resolved through `HDPT.MODL`, authored order kept, unresolvable
-    /// FormIDs and path-less records skipped.
+    /// FormIDs and path-less records skipped (the race's base parts that
+    /// precede it are #5408's, pinned below).
     #[test]
     fn prebaked_head_fallback_paths_follow_pnam_order_and_skip_unresolvable() {
         use byroredux_plugin::esm::records::HdptRecord;

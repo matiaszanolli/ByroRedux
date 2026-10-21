@@ -50,10 +50,12 @@
 //! the load radius so a boundary crossing cannot flap it.
 //!
 //! Selecting by name rather than deriving a lattice from the worldspace's
-//! `NAM0` is deliberate: the baked-LOD lattice origin is an open problem for
-//! the other rings (#2586 — Tamriel's `.btr`/`.bto` sit on a lattice `NAM0`
-//! does not give), and a tree quad's own name is the authoritative statement
-//! of where it stands.
+//! `NAM0` is a choice, not a workaround: a tree quad's own name is the
+//! authoritative statement of where it stands. (The other rings' lattice
+//! origin was once an open problem — Tamriel's `.btr`/`.bto` sit on a lattice
+//! `NAM0` does not give, #2586 — but it is closed: they now read it from
+//! `lodsettings\<ws>.lod`, so the by-name selection no longer needs that
+//! justification.)
 
 use std::collections::HashSet;
 

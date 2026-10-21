@@ -21,25 +21,26 @@ pub(super) struct PrebakedNpcState {
     pub(super) combat_anim_draugr: bool,
     /// Player-body attach — same finalize-skip contract as the runtime twin.
     pub(super) player_body: bool,
-    /// #5095 — the NPC's own `PNAM` head-part meshes (HDPT model paths, in
-    /// authored order), the fallback assembled by
-    /// [`PrebakedPhase::HeadParts`] when the per-NPC FaceGen mesh is
-    /// missing. Vanilla Skyrim ships no `facegeom\skyrim.esm\00000007.nif`
-    /// for the player record, so the third-person player rendered
-    /// headless — no head, eyes, hair or brows — through exactly this
-    /// miss; the player's authored PNAM list (ManHead / eyes / hair /
-    /// brows) is the data a head needs.
+    /// #5095 / #5408 — the head-part meshes (HDPT model paths) the fallback
+    /// assembles via [`PrebakedPhase::HeadParts`] when the per-NPC FaceGen
+    /// mesh is missing: the race's per-gender base head parts, minus each
+    /// type the NPC's own `PNAM` list authors, then the NPC's parts, then each
+    /// loaded part's `HNAM` extras depth-first (see
+    /// [`prebaked_head_fallback_paths`]). Vanilla Skyrim ships no
+    /// `facegeom\skyrim.esm\00000007.nif` for the player record, so the
+    /// third-person player rendered headless — no head, eyes, hair or brows —
+    /// through exactly this miss. The list is the Use-Traits terminal's (#6113).
     pub(super) head_fallback: Vec<HeadFallbackPart>,
     pub(super) phase: PrebakedPhase,
 }
 
 impl PrebakedNpcState {
     /// Missing per-NPC FaceGen is a visual degradation, not the end of the
-    /// spawn job. #5095 — the head degrades to the NPC's authored PNAM
-    /// head parts when there are any (vanilla Skyrim's player is the
-    /// canonical case: no player facegeom exists, but the record authors
-    /// its head-part list); only an NPC with neither source continues
-    /// headless. Armor, animation/ragdoll targeting, AI, and descendant
+    /// spawn job. #5095 / #5408 — the head degrades to the head-part
+    /// fallback (race base parts + the NPC's own `PNAM` parts + extras) when
+    /// that yields any (vanilla Skyrim's player is the canonical case: no
+    /// player facegeom exists); only an NPC with neither race head parts nor
+    /// a `PNAM` list continues headless. Armor, animation/ragdoll targeting, AI, and descendant
     /// tagging still have to finalize on the already-loaded skeleton.
     pub(super) fn skip_missing_facegen(&mut self) -> UnitOutcome {
         if self.head_fallback.is_empty() {
@@ -47,7 +48,7 @@ impl PrebakedNpcState {
         } else {
             log::info!(
                 "NPC pre-baked FaceGen miss — assembling the head from {} \
-                 authored PNAM head part(s) instead",
+                 fallback head part(s) (race base parts + the NPC's PNAM) instead",
                 self.head_fallback.len(),
             );
             self.phase = PrebakedPhase::HeadParts(0);
@@ -72,8 +73,8 @@ const HEAD_PART_TYPE_FACE: u32 = 1;
 pub(super) enum PrebakedPhase {
     Skeleton,
     Facegen,
-    /// #5095 — the PNAM head-part fallback for a missing per-NPC FaceGen
-    /// mesh; index into [`PrebakedNpcState::head_fallback`]. Transitions to
+    /// #5095 / #5408 — the head-part fallback (race base parts + the NPC's
+    /// own parts + extras) for a missing per-NPC FaceGen mesh; index into [`PrebakedNpcState::head_fallback`]. Transitions to
     /// `Armor(0)` when the list is exhausted, exactly where the Facegen
     /// phase's success path goes.
     HeadParts(usize),
