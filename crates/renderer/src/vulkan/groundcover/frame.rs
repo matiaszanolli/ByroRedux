@@ -51,14 +51,16 @@ impl GroundCoverPipeline {
             return false;
         }
 
-        // §12.4 — advance the field's header before the descriptor write, so
-        // this slot's state buffer and its descriptor go up together.
+        // §12.4 — build the field's header before the descriptor write, so
+        // this slot's state buffer and its descriptor go up together. The
+        // ping-pong itself only advances once `record_scatter` has recorded
+        // the dispatch that writes this half (#6031).
         let disturbers = &input.disturbers[..input
             .disturbers
             .len()
             .min(GROUNDCOVER_INTERACTION_MAX_DISTURBERS as usize)];
         let field_state =
-            self.advance_field_state(input.camera_pos, input.delta_seconds, disturbers.len());
+            self.field_state_for_frame(input.camera_pos, input.delta_seconds, disturbers.len());
 
         // §7's selection table, padded to its fixed size with species 0 so
         // every entry the scatter's 8 hash bits can reach is initialised.
@@ -131,7 +133,8 @@ impl GroundCoverPipeline {
         true
     }
 
-    /// Advance §12.4's field header for this frame and flip the ping-pong.
+    /// §12.4's field header for this frame: the half to write and the
+    /// previous half to reproject from.
     ///
     /// **The origin is snapped to the texel grid**, which is what makes the
     /// compute pass's reprojection a copy rather than a filtered fetch. A
@@ -140,17 +143,20 @@ impl GroundCoverPipeline {
     /// crisp channel smears into nothing within a second or two.
     ///
     /// The previous half is only declared usable once one update has actually
-    /// run, so the first frame starts from an empty field rather than from
-    /// whatever `create_device_local_uninit` left in the allocation.
-    fn advance_field_state(
-        &mut self,
+    /// been recorded, so the first frame starts from an empty field rather
+    /// than from whatever `create_device_local_uninit` left in the allocation.
+    /// That is why this only reads the ping-pong: a frame that never records
+    /// its dispatch (no TLAS, a failed upload) must not leave a half the GPU
+    /// never wrote marked as holding a field (#6031).
+    fn field_state_for_frame(
+        &self,
         camera_pos: [f32; 3],
         delta_seconds: f32,
         disturbers: usize,
     ) -> GpuGroundCoverFieldState {
-        advance_field_state(
-            &mut self.field_previous,
-            &mut self.field_write_half,
+        field_state_for_frame(
+            self.field_previous,
+            self.field_write_half,
             camera_pos,
             delta_seconds,
             disturbers,
@@ -308,7 +314,13 @@ impl GroundCoverPipeline {
         if let Some(timers) = timers.as_deref_mut() {
             timers.cmd_groundcover_scatter_start(device, cmd, frame);
         }
-        self.record_interaction(device, cmd, frame);
+        if self.record_interaction(device, cmd, frame) {
+            commit_field_state(
+                &self.frame_field_state,
+                &mut self.field_previous,
+                &mut self.field_write_half,
+            );
+        }
         let counters = self.counter_buffer.as_ref().expect("created in new()");
         // SAFETY: `cmd` is recording; every handle below is live and owned by
         // this pipeline. The barriers order the clear against the dispatch and
@@ -478,9 +490,11 @@ impl GroundCoverPipeline {
     /// live frame snaps to either matches (the camera did not move, and the
     /// trail is genuinely still there) or does not (every reprojection falls
     /// outside the previous field and reads zero).
-    fn record_interaction(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+    /// Returns whether the dispatch was recorded, i.e. whether this frame's
+    /// write half will hold a field.
+    fn record_interaction(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) -> bool {
         if self.interaction_pipeline == vk::Pipeline::null() {
-            return;
+            return false;
         }
         // SAFETY: `cmd` is recording; the pipeline, layout and set are live and
         // owned here, and the caller has waited slot `frame`'s fence so the
@@ -537,6 +551,7 @@ impl GroundCoverPipeline {
                 vk::AccessFlags::SHADER_READ,
             );
         }
+        true
     }
 
     /// Record the blade (or debug-point) draw. Must be INSIDE the main
@@ -722,11 +737,11 @@ impl GroundCoverPipeline {
     }
 }
 
-/// Free-function core of [`GroundCoverPipeline::advance_field_state`], so the
-/// snapping and clamping rules can be tested without a Vulkan device.
-fn advance_field_state(
-    field_previous: &mut Option<[f32; 2]>,
-    field_write_half: &mut u32,
+/// Free-function core of [`GroundCoverPipeline::field_state_for_frame`], so
+/// the snapping and clamping rules can be tested without a Vulkan device.
+fn field_state_for_frame(
+    field_previous: Option<[f32; 2]>,
+    field_write_half: u32,
     camera_pos: [f32; 3],
     delta_seconds: f32,
     disturbers: usize,
@@ -745,19 +760,26 @@ fn advance_field_state(
     } else {
         0.0
     };
-    let write_half = *field_write_half;
-    let previous = *field_previous;
-    *field_write_half = 1 - write_half;
-    *field_previous = Some(origin);
     GpuGroundCoverFieldState {
-        current: [origin[0], origin[1], dt, write_half as f32],
+        current: [origin[0], origin[1], dt, field_write_half as f32],
         previous: [
-            previous.map_or(0.0, |p| p[0]),
-            previous.map_or(0.0, |p| p[1]),
+            field_previous.map_or(0.0, |p| p[0]),
+            field_previous.map_or(0.0, |p| p[1]),
             disturbers as f32,
-            if previous.is_some() { 1.0 } else { 0.0 },
+            if field_previous.is_some() { 1.0 } else { 0.0 },
         ],
     }
+}
+
+/// Flip the ping-pong once `state`'s dispatch has been recorded: its write half
+/// now holds a field at its origin, and the next frame writes the other half.
+fn commit_field_state(
+    state: &GpuGroundCoverFieldState,
+    field_previous: &mut Option<[f32; 2]>,
+    field_write_half: &mut u32,
+) {
+    *field_write_half = 1 - state.current[3] as u32;
+    *field_previous = Some([state.current[0], state.current[1]]);
 }
 
 fn buffer_barrier(
@@ -850,8 +872,7 @@ mod tests {
             (10.0, 0.25),
             (0.016, 0.016),
         ] {
-            let (mut prev, mut half) = (None, 0u32);
-            let state = advance_field_state(&mut prev, &mut half, [0.0; 3], input, 0);
+            let state = field_state_for_frame(None, 0, [0.0; 3], input, 0);
             assert_eq!(state.current[2], expected, "dt {input} clamped wrong");
         }
     }
@@ -862,7 +883,8 @@ mod tests {
     fn the_field_origin_snaps_to_the_texel_grid() {
         let (mut prev, mut half) = (None, 0u32);
         // First update has no previous half to reproject from.
-        let first = advance_field_state(&mut prev, &mut half, [1234.5, 0.0, -987.25], 0.016, 3);
+        let first = field_state_for_frame(prev, half, [1234.5, 0.0, -987.25], 0.016, 3);
+        commit_field_state(&first, &mut prev, &mut half);
         assert_eq!(first.previous[3], 0.0);
         assert_eq!(first.current[3], 0.0, "first frame writes half 0");
         for axis in [first.current[0], first.current[1]] {
@@ -873,12 +895,35 @@ mod tests {
             );
         }
         // Second update flips the half and can reproject.
-        let second = advance_field_state(&mut prev, &mut half, [1234.5, 0.0, -987.25], 0.016, 3);
+        let second = field_state_for_frame(prev, half, [1234.5, 0.0, -987.25], 0.016, 3);
         assert_eq!(second.current[3], 1.0);
         assert_eq!(second.previous[3], 1.0);
         assert_eq!(second.previous[0], first.current[0]);
         assert_eq!(second.previous[1], first.current[1]);
         assert_eq!(second.previous[2], 3.0, "disturber count rides previous.z");
+    }
+
+    /// #6031 — a frame whose dispatch is never recorded (no TLAS, a failed
+    /// upload) must not advance the ping-pong: the next frame rewrites the same
+    /// half and still reprojects from the last half the GPU actually wrote, so
+    /// a never-written (uninitialised) half is never declared to hold a field.
+    #[test]
+    fn a_frame_without_a_recorded_dispatch_does_not_advance_the_field() {
+        let camera = [1234.5, 0.0, -987.25];
+        // The very first live frame is skipped: nothing was ever written.
+        let skipped = field_state_for_frame(None, 0, camera, 0.016, 0);
+        let (mut prev, mut half) = (None, 0u32);
+        let retried = field_state_for_frame(prev, half, camera, 0.016, 0);
+        assert_eq!(retried.previous[3], 0.0, "no half was written, so none may be reprojected");
+        assert_eq!(retried.current[3], skipped.current[3], "the unwritten half is written next");
+
+        // Mid-session: one frame recorded, the next skipped, then a third.
+        commit_field_state(&retried, &mut prev, &mut half);
+        let _skipped = field_state_for_frame(prev, half, [camera[0] + 64.0, 0.0, camera[2]], 0.016, 0);
+        let third = field_state_for_frame(prev, half, camera, 0.016, 0);
+        assert_eq!(third.current[3], 1.0, "the skipped frame's half is written again");
+        assert_eq!(third.previous[3], 1.0);
+        assert_eq!([third.previous[0], third.previous[1]], [retried.current[0], retried.current[1]]);
     }
 
     /// #4293 — the counter clear's seed fills must be sequenced after the zero
