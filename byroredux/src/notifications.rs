@@ -4,6 +4,12 @@ use std::collections::VecDeque;
 
 const MAX_PENDING: usize = 8;
 
+/// Script message boxes that may wait for the player at once. A box drains
+/// only when the player answers it, and the text comes from mod scripts, so
+/// an unconditional `MessageBox` in a polled quest block would otherwise
+/// queue one (up to 64 KB) per tick without bound (#6012).
+const MAX_PENDING_BOXES: usize = 16;
+
 #[derive(Default)]
 pub(crate) struct PlayerNotifications(VecDeque<String>);
 impl Resource for PlayerNotifications {}
@@ -42,7 +48,16 @@ pub(crate) fn route_script_messages(world: &World) -> bool {
     for message in raised {
         if message.message_box {
             if let Some(mut boxes) = world.try_resource_mut::<MessageBoxQueue>() {
-                boxes.0.push_back(message);
+                // Refuse rather than drop the oldest: the front box is the one
+                // the player is reading and the one whose answer is awaited.
+                if boxes.0.len() >= MAX_PENDING_BOXES {
+                    log::warn!(
+                        "script message box dropped, {MAX_PENDING_BOXES} already waiting: {:?}",
+                        message.text.chars().take(80).collect::<String>()
+                    );
+                } else {
+                    boxes.0.push_back(message);
+                }
             }
         } else {
             push(world, message.text);
@@ -126,6 +141,42 @@ mod tests {
         assert_eq!(front_message_box(&world).unwrap().text, "Leave?");
         assert!(!answer_message_box(&world, Some(0)));
         assert!(!route_script_messages(&world), "raised once");
+    }
+
+    #[test]
+    fn message_box_queue_is_bounded_and_keeps_the_oldest() {
+        use byroredux_scripting::{PendingScriptMessages, ScriptMessage};
+        let mut world = World::new();
+        world.insert_resource(PlayerNotifications::default());
+        world.insert_resource(MessageBoxQueue::default());
+        world.insert_resource(PendingScriptMessages(
+            (0..MAX_PENDING_BOXES + 10)
+                .map(|i| ScriptMessage {
+                    title: String::new(),
+                    text: format!("Box {i}"),
+                    message_box: true,
+                    buttons: Vec::new(),
+                    source: None,
+                })
+                .collect(),
+        ));
+        assert!(route_script_messages(&world));
+        assert_eq!(world.resource::<MessageBoxQueue>().0.len(), MAX_PENDING_BOXES);
+        assert_eq!(front_message_box(&world).unwrap().text, "Box 0");
+        // Answering frees room for a later box.
+        answer_message_box(&world, None);
+        world.insert_resource(PendingScriptMessages(vec![ScriptMessage {
+            title: String::new(),
+            text: "Late".to_owned(),
+            message_box: true,
+            buttons: Vec::new(),
+            source: None,
+        }]));
+        route_script_messages(&world);
+        assert_eq!(
+            world.resource::<MessageBoxQueue>().0.back().unwrap().text,
+            "Late"
+        );
     }
 
     #[test]
