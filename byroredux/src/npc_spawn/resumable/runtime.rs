@@ -420,6 +420,50 @@ pub(super) fn prepare_runtime_state(
 }
 
 #[cfg(test)]
+mod subtree_walk_tests {
+    use super::subtree_has_skinned_mesh;
+    use byroredux_core::ecs::{Children, SkinnedMesh, World};
+
+    fn world() -> World {
+        let mut world = World::new();
+        world.register::<Children>();
+        world.register::<SkinnedMesh>();
+        world
+    }
+
+    /// #6103 - the answer is unchanged by taking the guard after the walk, and a
+    /// cyclic `Children` edge terminates (the collector's visited set).
+    #[test]
+    fn finds_a_skinned_descendant_and_survives_a_cycle() {
+        let mut world = world();
+        let (root, mid, leaf) = (world.spawn(), world.spawn(), world.spawn());
+        world.insert(root, Children(vec![mid]));
+        world.insert(mid, Children(vec![leaf, root]));
+        assert!(!subtree_has_skinned_mesh(&world, root), "no skinned mesh yet");
+        world.insert(leaf, SkinnedMesh::new_with_global(None, Vec::new(), Vec::new(), byroredux_core::math::Mat4::IDENTITY));
+        assert!(subtree_has_skinned_mesh(&world, root));
+        assert!(!subtree_has_skinned_mesh(&world, world.next_entity_id()), "an entity outside the subtree");
+    }
+
+    /// #6103 - `Children` is acquired (inside `collect_subtree`) before the
+    /// `SkinnedMesh` guard, the canonical order. A fixture without the storage
+    /// records no edge at all (`query` returns `None`), so the order is pinned
+    /// on the source: the collection must precede the query.
+    #[test]
+    fn the_walk_collects_before_it_takes_the_skinned_mesh_guard() {
+        let source = byroredux_core::source_scan::strip_test_modules(include_str!("runtime.rs"));
+        let body = source
+            .split_once("fn subtree_has_skinned_mesh(")
+            .and_then(|(_, rest)| rest.split_once("\n}\n"))
+            .map(|(body, _)| body)
+            .expect("subtree_has_skinned_mesh must exist");
+        let collect = body.find("collect_subtree(").expect("the walk goes through collect_subtree");
+        let guard = body.find("query::<byroredux_core::ecs::SkinnedMesh>").expect("the SkinnedMesh probe");
+        assert!(collect < guard, "collect_subtree must run before the SkinnedMesh guard is taken (#6103)");
+    }
+}
+
+#[cfg(test)]
 mod body_skin_tests {
     use super::race_body_texture;
     use byroredux_plugin::esm::records::RaceRecord;
@@ -1342,10 +1386,16 @@ const HEAD_MOUNTED_PART_LABELS: [&str; 4] = ["hair", "eyebrow HDPT", "eye mesh",
 pub(super) fn subtree_has_skinned_mesh(world: &World, root: EntityId) -> bool {
     // #5713 — the shared cycle-safe collector, then one SkinnedMesh
     // probe per entity (the subtree is an NPC part hierarchy, small).
-    let skinned = world.query::<byroredux_core::ecs::SkinnedMesh>();
-    byroredux_core::ecs::collect_subtree(world, root)
-        .into_iter()
-        .any(|entity| skinned.as_ref().is_some_and(|q| q.get(entity).is_some()))
+    //
+    // #6103 — collect FIRST, then take the `SkinnedMesh` guard: the collector
+    // acquires `Children`, and the canonical order (`ecs.md` "Canonical
+    // acquisition order", and `systems/bounds.rs`) is Children -> SkinnedMesh.
+    // Holding `SkinnedMesh` across the walk recorded the reverse edge.
+    let subtree = byroredux_core::ecs::collect_subtree(world, root);
+    let Some(skinned) = world.query::<byroredux_core::ecs::SkinnedMesh>() else {
+        return false;
+    };
+    subtree.into_iter().any(|entity| skinned.get(entity).is_some())
 }
 
 /// `entity`'s bind-pose transform expressed in `ancestor`'s space, composed
