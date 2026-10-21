@@ -240,9 +240,9 @@ pub(crate) struct CachedNifImport {
     /// node names. `None` when the NIF authored no supported
     /// controllers. See #261.
     ///
-    /// Currently write-only on the cell-loader path (the spawn doesn't
-    /// yet attach `Name` components or parent meshes under a placement
-    /// root).
+    /// Read at spawn: `synth_child.rs` converts it once into a clip handle
+    /// (kept in `clip_handles`, #544) and attaches an `AnimationPlayer` per
+    /// placement.
     pub(super) embedded_clip: Option<byroredux_nif::anim::AnimationClip>,
     /// Every `NiControllerSequence` of a NIF that names a behavior graph: the
     /// clips the graph's Gamebryo sequence generators play, by sequence name.
@@ -664,6 +664,20 @@ impl NifImportRegistry {
         self.core.len()
     }
 
+    /// #4684 — test-only seeding so other modules' tests can populate the
+    /// registry's authoring totals without duplicating the field-by-field
+    /// literal or reaching through `pub(super)` fields.
+    #[cfg(test)]
+    pub(crate) fn test_support_seed_authoring(&mut self, key: &str, classic: u32, new_physics: u32) {
+        let mut entry = crate::cell_loader::nif_import_registry_tests::dummy_cached();
+        let e = std::sync::Arc::get_mut(&mut entry).unwrap();
+        e.collision_authoring.classic = classic;
+        e.collision_authoring.new_physics = new_physics;
+        // Test seeding: no clip handles exist to release, so the eviction
+        // return is deliberately dropped.
+        let _ = self.insert(key.to_string(), Some(entry));
+    }
+
     /// Sum every cached model's [`CollisionAuthoringSummary`] into the
     /// spawn-census view of "was collision authored at all?" (#2874).
     ///
@@ -682,20 +696,7 @@ impl NifImportRegistry {
     /// arm the census was mis-reporting.
     ///
     /// [`CollisionAuthoringSummary`]: byroredux_nif::import::collision::CollisionAuthoringSummary
-    /// #4684 — test-only seeding so other modules' tests can populate the
-    /// registry's authoring totals without duplicating the field-by-field
-    /// literal or reaching through `pub(super)` fields.
-    #[cfg(test)]
-    pub(crate) fn test_support_seed_authoring(&mut self, key: &str, classic: u32, new_physics: u32) {
-        let mut entry = crate::cell_loader::nif_import_registry_tests::dummy_cached();
-        let e = std::sync::Arc::get_mut(&mut entry).unwrap();
-        e.collision_authoring.classic = classic;
-        e.collision_authoring.new_physics = new_physics;
-        // Test seeding: no clip handles exist to release, so the eviction
-        // return is deliberately dropped.
-        let _ = self.insert(key.to_string(), Some(entry));
-    }
-
+    ///
     /// #4684 (PHYS-D6-2026-09-21-01) — the name states the scope the old
     /// name hid: this sums EVERY cached NIF in the process (up to the LRU
     /// cap, across all cells visited), not any particular cell or column.

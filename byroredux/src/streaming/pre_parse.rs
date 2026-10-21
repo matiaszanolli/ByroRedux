@@ -1,9 +1,7 @@
 //! #5092 — the streaming pre-parse worker pipeline: the bounded join,
 //! the rayon pool, the per-cell pre-parser and its input budget, split
-//! out of the streaming driver.
-
-//! bootstrap uses the same request and payload path instead of maintaining
-//! a second synchronous loader.
+//! out of the streaming driver. Bootstrap uses the same request and payload
+//! path instead of maintaining a second synchronous loader.
 
 use crate::cell_loader::{canonical_model_path_key, ExteriorWorldContext};
 use super::telemetry::StreamingWorkerTimings;
@@ -258,13 +256,6 @@ where
     })
 }
 
-/// Per-cell pre-parse: walk references, resolve unique model paths,
-/// extract NIF bytes from the texture provider's mesh archives, and
-/// run the worker-safe parse/import portion of the NIF pipeline.
-///
-/// `cached_keys` is the main-thread snapshot of
-/// [`crate::cell_loader::NifImportRegistry`] at request-build time;
-/// any model path it contains is skipped here — the drain step's
 /// Parse + import a single (path, Option<bytes>) pair. Shared between
 /// the serial and parallel branches of `pre_parse_cell` so both paths
 /// stay byte-identical — no logic drift between code paths.
@@ -681,7 +672,6 @@ pub(crate) fn pre_parse_model_skip_reason(
     skip_all,
     fields(gx = gx, gy = gy, generation = generation, cached_count = cached_keys.len()),
 )]
-
 pub(crate) fn pre_parse_cell(
     gx: i32,
     gy: i32,

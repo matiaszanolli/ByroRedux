@@ -13,9 +13,10 @@
 //!     `access_tick`, `evictions`) + per-key animation-clip handle
 //!     memoisation (`clip_handles`, #544 / #863) + the streaming
 //!     snapshot path (#862).
-//!   * `SceneImportCache` adds a `bypass_parses` counter for the
-//!     pre_spawn_hook = Some path that intentionally skips the
-//!     cache (head FaceGen morphs, #880).
+//!   * `SceneImportCache` adds nothing but its own key (the lower-cased
+//!     path): a per-NPC `pre_spawn_hook` runs on a private copy of the
+//!     cached scene rather than bypassing the cache (head FaceGen morphs,
+//!     #880).
 //!
 //! Only the bookkeeping core lives here — wrapper-specific machinery
 //! (LRU eviction, clip handles, snapshot keys) stays in the wrappers

@@ -150,8 +150,8 @@ pub(crate) fn finish_partial_import(
 
 /// Cache `cached` under `cache_key` (recording its clip handle, if any) and
 /// release the keyframes of any clip handles whose owning cache entries the
-/// insert LRU-evicted (#863). No-op release when `BYRO_NIF_CACHE_MAX=0`
-/// (default unlimited mode).
+/// insert LRU-evicted (#863). Nothing is evicted, so nothing is released, when
+/// the cap is disabled with `BYRO_NIF_CACHE_MAX=0` (the default cap is 2048).
 fn insert_cached_import(
     world: &mut World,
     cache_key: String,
