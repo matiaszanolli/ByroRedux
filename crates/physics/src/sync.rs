@@ -60,20 +60,11 @@ pub fn set_linear_velocity(world: &World, entity: EntityId, velocity: glam::Vec3
         Some(h) => h,
         None => return false,
     };
-    let nonzero = velocity.length_squared() > 1e-6;
-    let mut pw = world.resource_mut::<PhysicsWorld>();
-    let Some(body) = pw.bodies.get_mut(handles.body) else {
-        return false;
-    };
-    body.set_linvel(velocity, nonzero);
-    if nonzero {
-        // Re-engage the pipeline step this frame so the velocity integrates
-        // even if the scene was otherwise asleep (the static-scene fast path).
-        // A zero velocity (a stop) must NOT wake — otherwise a stationary
-        // velocity-driven body pins the simulation awake every frame.
-        pw.wake();
-    }
-    true
+    // Wake discipline and the newcomer spawn-sleep handoff live on the
+    // method, beside the other motion starters (#6324).
+    world
+        .resource_mut::<PhysicsWorld>()
+        .set_linear_velocity(handles.body, velocity)
 }
 
 /// M28.5 — queue the next kinematic translation on a body by ECS

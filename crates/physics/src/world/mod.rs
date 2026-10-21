@@ -1177,6 +1177,33 @@ impl PhysicsWorld {
         false
     }
 
+    /// Set a body's linear velocity (engine world-space, Y-up). A nonzero
+    /// velocity is a motion start like [`Self::apply_impulse`]: it wakes the
+    /// body and re-engages the pipeline step this frame even if the scene
+    /// was otherwise asleep, and takes a newcomer off the spawn re-sleep list
+    /// so the settle pass does not put it back to sleep and zero the
+    /// requested velocity (#6324, the velocity sibling of #5936). A zero
+    /// velocity (a stop) wakes nothing — otherwise a stationary
+    /// velocity-driven body pins the simulation awake every frame.
+    ///
+    /// Returns `false` (no-op) if `handle` is dead.
+    pub fn set_linear_velocity(
+        &mut self,
+        handle: RigidBodyHandle,
+        velocity: byroredux_core::math::Vec3,
+    ) -> bool {
+        let nonzero = velocity.length_squared() > 1e-6;
+        let Some(body) = self.bodies.get_mut(handle) else {
+            return false;
+        };
+        body.set_linvel(velocity, nonzero);
+        if nonzero {
+            self.forget_spawn_sleep(handle);
+            self.wake();
+        }
+        true
+    }
+
     /// Clear the accumulated external force + torque on a body. Called by
     /// the buoyancy / flow systems at the top of each frame before they
     /// re-`add_force`, so forces don't compound frame-over-frame. No-op on
@@ -4043,6 +4070,42 @@ mod tests {
             (body.translation() - spawn).length() < SPAWN_SLEEP_DRIFT_BU,
             "fixture stays inside the begin-touch drift threshold"
         );
+    }
+
+    /// #6324 — the velocity path is a motion start too. A newcomer launched
+    /// by `set_linear_velocity` before its first step must not be re-slept
+    /// (which zeroes the velocity) for staying inside the drift threshold.
+    #[test]
+    fn explicit_velocity_keeps_newcomer_awake_through_first_step() {
+        let mut w = PhysicsWorld::new();
+        let h = spawn_ball(&mut w, 100.0);
+        let spawn = w.bodies[h].translation();
+        w.spawn_sleep_pending.push((h, spawn));
+
+        assert!(w.set_linear_velocity(h, byroredux_core::math::Vec3::X));
+        assert!(w.spawn_sleep_pending.is_empty());
+        w.step(PHYSICS_DT);
+
+        let body = &w.bodies[h];
+        assert!(!body.is_sleeping(), "explicitly launched newcomer stays awake");
+        assert!(body.linvel().x > 0.0, "the gentle velocity survives the settle pass");
+        assert!(
+            (body.translation() - spawn).length() < SPAWN_SLEEP_DRIFT_BU,
+            "fixture stays inside the begin-touch drift threshold"
+        );
+    }
+
+    /// A zero velocity is a stop, not a motion start: it leaves a newcomer on
+    /// the settle list and does not wake the pipeline.
+    #[test]
+    fn zero_velocity_leaves_newcomer_on_the_settle_list() {
+        let mut w = PhysicsWorld::new();
+        let h = spawn_ball(&mut w, 100.0);
+        let spawn = w.bodies[h].translation();
+        w.spawn_sleep_pending.push((h, spawn));
+
+        assert!(w.set_linear_velocity(h, byroredux_core::math::Vec3::ZERO));
+        assert_eq!(w.spawn_sleep_pending.len(), 1);
     }
 
     /// After `reset_forces`, with nothing re-applied, the body falls under
