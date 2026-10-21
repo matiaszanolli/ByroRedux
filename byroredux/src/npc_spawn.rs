@@ -38,7 +38,7 @@ pub(crate) use resumable::{NpcSpawnJob, NpcSpawnProgress};
 use crate::anim_convert::convert_nif_clip;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::helpers::add_child;
-use crate::scene::load_nif_bytes_with_skeleton;
+use crate::scene::{load_nif_bytes_with_skeleton, load_nif_extracting_with_skeleton};
 
 use byroredux_plugin::equip::{Gender, ResolvedNpc};
 

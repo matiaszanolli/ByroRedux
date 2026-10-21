@@ -217,19 +217,36 @@ fn cached_scene(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
 ) -> Option<std::sync::Arc<byroredux_nif::import::ImportedScene>> {
+    cached_scene_lazy(
+        world,
+        path,
+        || match data {
+            Some(data) => Some(std::borrow::Cow::Borrowed(data)),
+            None => tex_provider.extract_mesh(path).map(std::borrow::Cow::Owned),
+        },
+        tex_provider,
+        mat_provider,
+    )
+}
+
+/// [`cached_scene`] whose bytes are produced only on a cache miss: a hit
+/// returns the shared scene without touching them, so a caller whose bytes
+/// cost an archive read + inflate (an NPC's shared skeleton / body / hair)
+/// pays that once per distinct mesh, not once per actor (#6124).
+fn cached_scene_lazy<'a>(
+    world: &mut World,
+    path: &str,
+    extract: impl FnOnce() -> Option<std::borrow::Cow<'a, [u8]>>,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+) -> Option<std::sync::Arc<byroredux_nif::import::ImportedScene>> {
     let key = path.to_ascii_lowercase();
     let cached = world.resource_mut::<crate::scene_import_cache::SceneImportCache>().get(&key);
     if let Some(cached) = cached {
         return cached;
     }
-    let extracted;
-    let data = if let Some(data) = data {
-        data
-    } else {
-        extracted = tex_provider.extract_mesh(path)?;
-        &extracted
-    };
-    let scene = parse_import_and_merge(world, data, path, tex_provider, mat_provider)
+    let data = extract()?;
+    let scene = parse_import_and_merge(world, &data, path, tex_provider, mat_provider)
         .map(std::sync::Arc::new);
     world.resource_mut::<crate::scene_import_cache::SceneImportCache>().insert(key, scene)
 }
@@ -468,8 +485,89 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     Option<EntityId>,
     std::collections::HashMap<std::sync::Arc<str>, EntityId>,
 ) {
+    load_nif_with_skeleton_from(
+        world,
+        ctx,
+        || Some(std::borrow::Cow::Borrowed(data)),
+        label,
+        tex_provider,
+        mat_provider,
+        external_skeleton,
+        diffuse_override,
+        pre_spawn_hook,
+    )
+}
+
+/// [`load_nif_bytes_with_skeleton`] for a mesh still in the archives: the
+/// bytes are extracted only when the import cache does not already hold the
+/// scene (#6124). `None` when the cache missed and the archives do not have
+/// `label`; the caller's own "not in archives" handling applies exactly as it
+/// did to a failed `extract_mesh`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_nif_extracting_with_skeleton(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    label: &str,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
+    diffuse_override: Option<&str>,
+    pre_spawn_hook: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)>,
+) -> Option<(
+    usize,
+    Option<EntityId>,
+    std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+)> {
+    let mut missing = false;
+    let loaded = load_nif_with_skeleton_from(
+        world,
+        ctx,
+        || {
+            let data = tex_provider.extract_mesh(label);
+            missing = data.is_none();
+            data.map(std::borrow::Cow::Owned)
+        },
+        label,
+        tex_provider,
+        mat_provider,
+        external_skeleton,
+        diffuse_override,
+        pre_spawn_hook,
+    );
+    (!missing).then_some(loaded)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_nif_with_skeleton_from<'a>(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    extract: impl FnOnce() -> Option<std::borrow::Cow<'a, [u8]>>,
+    label: &str,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
+    // M41.0 Phase 4.x — per-call diffuse override (#2095 / SKY-D3-NEW-03).
+    // Wins over the SkinTint submesh's NIF-authored diffuse when present.
+    // Used by the pre-baked FaceGen path to bind the per-NPC face-tint DDS
+    // to the head while mouth / brows / eyes / hair retain their authored
+    // textures; `None` for every other caller.
+    diffuse_override: Option<&str>,
+    // M41.0 Phase 3b — optional callback invoked once after the
+    // import returns and before the per-mesh GPU upload loop runs.
+    // Lets the caller mutate `imported.meshes[i].positions`
+    // (for FaceGen morph deformation: head NIF + EGM sliders) or
+    // any other field the renderer reads from `ImportedMesh`.
+    // `&mut dyn FnMut` (rather than a generic) keeps the function
+    // monomorphisation-cheap; static-dispatch isn't worth a
+    // generic parameter for a load-time call.
+    pre_spawn_hook: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)>,
+) -> (
+    usize,
+    Option<EntityId>,
+    std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+) {
     let is_spt = label.to_ascii_lowercase().ends_with(".spt");
-    let Some(cached) = cached_scene(world, label, Some(data), tex_provider, mat_provider) else {
+    let Some(cached) = cached_scene_lazy(world, label, extract, tex_provider, mat_provider) else {
         return (0, None, std::collections::HashMap::new());
     };
     let owned = apply_spawn_hook(cached, pre_spawn_hook);
@@ -1958,5 +2056,54 @@ mod cache_hook_tests {
         let inspected = peek_or_parse_scene(&mut world, "hand.nif", &provider, None).unwrap();
         assert!(Arc::ptr_eq(&inspected, &scene));
         assert_eq!(world.resource::<SceneImportCache>().parses(), 1);
+    }
+
+    /// #6124 — a scene the import cache already holds is returned without its
+    /// bytes being produced: the second and later NPC of a race pay no archive
+    /// read + inflate for the shared skeleton / body / hair. A miss still
+    /// extracts, and a mesh the archives lack is a miss that yields nothing.
+    #[test]
+    fn a_cached_scene_never_asks_for_its_bytes() {
+        let mut world = World::new();
+        world.insert_resource(SceneImportCache::new());
+        let provider = TextureProvider::new();
+        let scene = Arc::new(byroredux_nif::import::ImportedScene {
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            particle_emitters: Vec::new(), bsx_flags: None, bs_bound: None,
+            phantom_bounds: None, attach_points: None, child_attach_connections: None,
+            furniture_markers: Vec::new(), embedded_clip: None, ragdoll: None, lights: Vec::new(),
+        });
+        world.resource_mut::<SceneImportCache>().insert("skeleton.nif".into(), Some(scene.clone()));
+
+        let mut extractions = 0;
+        for _ in 0..5 {
+            let hit = cached_scene_lazy(
+                &mut world,
+                "Skeleton.nif",
+                || {
+                    extractions += 1;
+                    None
+                },
+                &provider,
+                None,
+            );
+            assert!(Arc::ptr_eq(&hit.unwrap(), &scene));
+        }
+        assert_eq!(extractions, 0, "five cache hits read no bytes");
+
+        // A miss does ask - and a mesh the archives lack yields nothing, cached nowhere.
+        let miss = cached_scene_lazy(
+            &mut world,
+            "body.nif",
+            || {
+                extractions += 1;
+                None
+            },
+            &provider,
+            None,
+        );
+        assert!(miss.is_none());
+        assert_eq!(extractions, 1);
     }
 }

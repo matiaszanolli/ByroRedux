@@ -347,27 +347,28 @@ pub(super) fn advance_prebaked_unit(
             };
             let part_path = fallback_part.path.as_str();
             let is_face = fallback_part.is_face;
-            match tex_provider.extract_mesh(part_path) {
-                Some(data) => {
-                    let hidden_biped_mask = state.facegen_hidden_mask;
-                    let mut hide_displaced_head =
-                        |scene: &mut byroredux_nif::import::ImportedScene| {
-                            hide_skin_partitions(scene, hidden_biped_mask);
-                        };
-                    let pre_spawn: Option<
-                        &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
-                    > = (hidden_biped_mask != 0).then_some(&mut hide_displaced_head);
-                    let (_, root, _) = load_nif_bytes_with_skeleton(
-                        world,
-                        ctx,
-                        &data,
-                        part_path,
-                        tex_provider,
-                        mat_provider,
-                        Some(&state.skel_map),
-                        None,
-                        pre_spawn,
-                    );
+            let hidden_biped_mask = state.facegen_hidden_mask;
+            let mut hide_displaced_head =
+                |scene: &mut byroredux_nif::import::ImportedScene| {
+                    hide_skin_partitions(scene, hidden_biped_mask);
+                };
+            let pre_spawn: Option<
+                &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
+            > = (hidden_biped_mask != 0).then_some(&mut hide_displaced_head);
+            // #6124 — the PNAM fallback head parts are shared across
+            // NPCs: the bytes are read only on an import-cache miss.
+            let loaded = load_nif_extracting_with_skeleton(
+                world,
+                ctx,
+                part_path,
+                tex_provider,
+                mat_provider,
+                Some(&state.skel_map),
+                None,
+                pre_spawn,
+            );
+            match loaded {
+                Some((_, root, _)) => {
                     if let Some(root) = root {
                         parent_part(world, state.placement_root, root);
                         // #5095 — mark the fallback head so player.body can

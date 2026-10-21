@@ -452,26 +452,25 @@ fn spawn_armor_unit(
     equipped_armor_count: &mut u32,
     armor: &SpawnArmor,
 ) -> bool {
-    let Some(data) = tex_provider.extract_mesh(&armor.model_path) else {
-        return false;
-    };
     let hidden_biped_mask = armor.hidden_biped_mask;
     let mut hide_displaced_skin = |scene: &mut byroredux_nif::import::ImportedScene| {
         hide_skin_partitions(scene, hidden_biped_mask);
     };
     let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
         (hidden_biped_mask != 0).then_some(&mut hide_displaced_skin);
-    let (_, root, _) = load_nif_bytes_with_skeleton(
+    // #6124 — the bytes are read only if the import cache lacks this armour.
+    let Some((_, root, _)) = load_nif_extracting_with_skeleton(
         world,
         ctx,
-        &data,
         &armor.model_path,
         tex_provider,
         mat_provider,
         Some(skel_map),
         None,
         pre_spawn,
-    );
+    ) else {
+        return false;
+    };
     if let Some(root) = root {
         parent_equipment_part(world, root, armor.ownership);
         if !armor.ownership.intrinsic_skin || armor.hidden_biped_mask != 0 {
@@ -513,7 +512,17 @@ fn spawn_skeleton_unit(
     placement_root: EntityId,
     player_body: bool,
 ) -> SkeletonUnit {
-    let Some(data) = tex_provider.extract_mesh(skel_path) else {
+    // #6124 — every NPC after the first finds the skeleton in the import cache.
+    let Some((_, root, skel_map)) = load_nif_extracting_with_skeleton(
+        world,
+        ctx,
+        skel_path,
+        tex_provider,
+        mat_provider,
+        None,
+        None,
+        None,
+    ) else {
         log::warn!(
             "NPC {:08X} ({}): skeleton '{}' not found in archives — skipping mesh spawn \
              (equip state retained)",
@@ -523,17 +532,6 @@ fn spawn_skeleton_unit(
         );
         return SkeletonUnit::Missing;
     };
-    let (_, root, skel_map) = load_nif_bytes_with_skeleton(
-        world,
-        ctx,
-        &data,
-        skel_path,
-        tex_provider,
-        mat_provider,
-        None,
-        None,
-        None,
-    );
     let fallback_collider = if player_body {
         None
     } else {

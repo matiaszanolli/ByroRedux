@@ -634,73 +634,73 @@ pub(super) fn advance_runtime_unit(
                 state.phase = RuntimePhase::Head;
                 return UnitOutcome::Continue;
             };
-            match tex_provider.extract_mesh(body_path) {
-                Some(body_data) => {
-                    // #5487 — the race's body-section ICON replaces the
-                    // NIF's own (Imperial-default) base texture. Hands
-                    // additionally carry the wrist cut; they are the only
-                    // body part blended on a private copy of the cached
-                    // import. The torso and legs stay shared and untouched
-                    // apart from the texture swap, which happens at spawn
-                    // time, not in the shared cache.
-                    let body_texture = state.body_textures.get(index).cloned().flatten();
-                    let body_texture_id = body_texture.as_ref().map(|texture| {
-                        let mut pool = world.resource_mut::<StringPool>();
-                        pool.intern(texture)
-                    });
-                    let hand_seams = state
-                        .seam_context
+            // #5487 — the race's body-section ICON replaces the
+            // NIF's own (Imperial-default) base texture. Hands
+            // additionally carry the wrist cut; they are the only
+            // body part blended on a private copy of the cached
+            // import. The torso and legs stay shared and untouched
+            // apart from the texture swap, which happens at spawn
+            // time, not in the shared cache.
+            let body_texture = state.body_textures.get(index).cloned().flatten();
+            let body_texture_id = body_texture.as_ref().map(|texture| {
+                let mut pool = world.resource_mut::<StringPool>();
+                pool.intern(texture)
+            });
+            let hand_seams = state
+                .seam_context
+                .clone()
+                .filter(|_| is_hand_part(body_path));
+            let mut tone_sampler = super::seam_blend::ToneSampler::new(world, tex_provider);
+            let mut blend_hand = |scene: &mut byroredux_nif::import::ImportedScene| {
+                if let Some(texture) = body_texture_id {
+                    super::super::loot_appearance::set_body_base_color(scene, texture);
+                }
+                let Some(context) = hand_seams.as_deref() else {
+                    return;
+                };
+                let source = body_path.to_ascii_lowercase();
+                for (index, mesh) in scene.meshes.iter_mut().enumerate() {
+                    let own_texture = body_texture
                         .clone()
-                        .filter(|_| is_hand_part(body_path));
-                    let mut tone_sampler = super::seam_blend::ToneSampler::new(world, tex_provider);
-                    let mut blend_hand = |scene: &mut byroredux_nif::import::ImportedScene| {
-                        if let Some(texture) = body_texture_id {
-                            super::super::loot_appearance::set_body_base_color(scene, texture);
-                        }
-                        let Some(context) = hand_seams.as_deref() else {
-                            return;
-                        };
-                        let source = body_path.to_ascii_lowercase();
-                        for (index, mesh) in scene.meshes.iter_mut().enumerate() {
-                            let own_texture = body_texture
-                                .clone()
-                                .or_else(|| context.textures.get(&(source.clone(), index)).cloned());
-                            let stats = super::seam_blend::blend_part_seams(
-                                mesh,
-                                &source,
-                                own_texture.as_deref(),
-                                context,
-                                &mut |texture, uv| tone_sampler.sample(texture, uv),
-                            );
-                            log::debug!(
-                                "NPC {:08X}: '{}' seam blend matched {} edge vertices, toned {}",
-                                npc.form_id,
-                                source,
-                                stats.matched_vertices,
-                                stats.toned_vertices,
-                            );
-                        }
-                    };
-                    let pre_spawn: Option<
-                        &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
-                    > = if body_texture.is_some()
-                        || (state.seam_context.is_some() && is_hand_part(body_path))
-                    {
-                        Some(&mut blend_hand)
-                    } else {
-                        None
-                    };
-                    let (_, body_root, _) = load_nif_bytes_with_skeleton(
-                        world,
-                        ctx,
-                        &body_data,
-                        body_path,
-                        tex_provider,
-                        mat_provider,
-                        Some(&state.skel_map),
-                        None,
-                        pre_spawn,
+                        .or_else(|| context.textures.get(&(source.clone(), index)).cloned());
+                    let stats = super::seam_blend::blend_part_seams(
+                        mesh,
+                        &source,
+                        own_texture.as_deref(),
+                        context,
+                        &mut |texture, uv| tone_sampler.sample(texture, uv),
                     );
+                    log::debug!(
+                        "NPC {:08X}: '{}' seam blend matched {} edge vertices, toned {}",
+                        npc.form_id,
+                        source,
+                        stats.matched_vertices,
+                        stats.toned_vertices,
+                    );
+                }
+            };
+            let pre_spawn: Option<
+                &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
+            > = if body_texture.is_some()
+                || (state.seam_context.is_some() && is_hand_part(body_path))
+            {
+                Some(&mut blend_hand)
+            } else {
+                None
+            };
+            // #6124 — torso, legs and feet are shared across NPCs:
+            // the bytes are read only on an import-cache miss.
+            match load_nif_extracting_with_skeleton(
+                world,
+                ctx,
+                body_path,
+                tex_provider,
+                mat_provider,
+                Some(&state.skel_map),
+                None,
+                pre_spawn,
+            ) {
+                Some((_, body_root, _)) => {
                     if let Some(root) = body_root {
                         parent_part(world, state.placement_root, root);
                     }
@@ -1032,15 +1032,6 @@ pub(super) fn spawn_runtime_head(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
 ) {
-    let Some(head_data) = tex_provider.extract_mesh(head_path) else {
-        log::debug!(
-            "NPC {:08X} ({}): head '{}' not in archives — skipping head mesh",
-            npc.form_id,
-            npc.editor_id,
-            head_path,
-        );
-        return;
-    };
     let recipe = npc.runtime_facegen.as_ref();
     let egm_bytes = recipe
         .and_then(|_| facegen_sidecar_path(head_path, "egm"))
@@ -1112,17 +1103,26 @@ pub(super) fn spawn_runtime_head(
     };
     let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
         if has_hook { Some(&mut hook) } else { None };
-    let (_, root, _) = load_nif_bytes_with_skeleton(
+    // #6124 — the race head NIF is shared (the morphs and seams are hooks on a
+    // private copy of the cached scene), so its bytes are read only on a miss.
+    let Some((_, root, _)) = load_nif_extracting_with_skeleton(
         world,
         ctx,
-        &head_data,
         head_path,
         tex_provider,
         mat_provider,
         Some(&state.skel_map),
         None,
         pre_spawn,
-    );
+    ) else {
+        log::debug!(
+            "NPC {:08X} ({}): head '{}' not in archives — skipping head mesh",
+            npc.form_id,
+            npc.editor_id,
+            head_path,
+        );
+        return;
+    };
     if let Some(root) = root {
         parent_part(world, state.placement_root, root);
     }
@@ -1192,7 +1192,18 @@ pub(super) fn spawn_shared_skeleton_part(
     mat_provider: Option<&mut MaterialProvider>,
     pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)>,
 ) {
-    let Some(data) = tex_provider.extract_mesh(path) else {
+    // #6124 — hair, eyes, brows, teeth are shared across NPCs: the bytes are
+    // read only on an import-cache miss.
+    let Some((_, root, _)) = load_nif_extracting_with_skeleton(
+        world,
+        ctx,
+        path,
+        tex_provider,
+        mat_provider,
+        Some(&state.skel_map),
+        None,
+        pre_spawn,
+    ) else {
         log::debug!(
             "NPC {:08X} ({}): {} '{}' not in archives — skipping",
             npc.form_id,
@@ -1202,17 +1213,6 @@ pub(super) fn spawn_shared_skeleton_part(
         );
         return;
     };
-    let (_, root, _) = load_nif_bytes_with_skeleton(
-        world,
-        ctx,
-        &data,
-        path,
-        tex_provider,
-        mat_provider,
-        Some(&state.skel_map),
-        None,
-        pre_spawn,
-    );
     if let Some(root) = root {
         // Fallout 3 / New Vegas head parts — hair, brows, eyes, mouth,
         // teeth, tongue — are unskinned meshes whose vertices sit around the
