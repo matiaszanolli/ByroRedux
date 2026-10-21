@@ -388,6 +388,20 @@ pub(crate) struct PreParseTaskTimings {
     input_bytes: usize,
 }
 
+/// Run an archive extraction inside a panic guard (#6119). `parse_one_nif`
+/// already turns a parser panic into a negative result for its NIF, but the
+/// extraction feeding it ran outside that guard: a reader panic unwound the
+/// whole cell's pre-parse, discarded every sibling NIF it had parsed, recorded
+/// nothing as failed, and left the main thread to replay the same extraction
+/// unguarded. A panic here reads as "not in the archives" instead - the same
+/// negative entry the parse step produces.
+pub(crate) fn extract_guarded(key: &str, extract: impl FnOnce() -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(extract)).unwrap_or_else(|_| {
+        log::error!("[stream-worker] panic extracting NIF '{key}' — treated as missing (#6119)");
+        None
+    })
+}
+
 /// Extract `input`'s bytes and parse them. Runs inside the pool task, so
 /// archive reads and inflates proceed in parallel instead of one at a time
 /// on the coordinator (the readers are lock-free — positional reads).
@@ -396,7 +410,7 @@ pub(crate) fn pre_parse_one(
     ctx: &PreParseContext<'_>,
 ) -> (ParsedNifResult, PreParseTaskTimings) {
     let started = Instant::now();
-    let bytes = ctx.mesh_resolver.extract_mesh(&input.key);
+    let bytes = extract_guarded(&input.key, || ctx.mesh_resolver.extract_mesh(&input.key));
     let extract = started.elapsed();
     let input_bytes = bytes.as_ref().map_or(0, Vec::capacity);
     let parse_started = Instant::now();
@@ -880,5 +894,20 @@ pub(crate) fn pre_parse_cell(
             ..StreamingWorkerTimings::default()
         },
         parsed,
+    }
+}
+
+#[cfg(test)]
+mod extraction_guard_tests {
+    use super::extract_guarded;
+
+    /// #6119 - a reader panic during extraction is contained to its own NIF
+    /// (reads as missing), not propagated to take the whole cell with it.
+    #[test]
+    fn a_panicking_extraction_reads_as_missing() {
+        assert_eq!(extract_guarded("a.nif", || Some(vec![1, 2, 3])), Some(vec![1, 2, 3]));
+        assert_eq!(extract_guarded("b.nif", || None), None);
+        let panicked = extract_guarded("c.nif", || -> Option<Vec<u8>> { panic!("reader bug") });
+        assert_eq!(panicked, None);
     }
 }
