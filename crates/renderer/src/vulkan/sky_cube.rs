@@ -1260,7 +1260,7 @@ mod tests {
         let caustics = include_str!("../../shaders/caustic_splat.comp");
         assert!(caustics.contains("lightReach = clamp(dot(N, -LtoG), 0.0, 1.0) * causticSun.x;"));
         let post = crate::source_scan::production_text(include_str!("context/post_passes.rs"));
-        assert!(post.contains("caustic.sun_transmittance = self.camera_cloud_sun_transmittance;"));
+        assert!(post.contains("caustic_sun_transmittance(is_exterior, self.camera_cloud_sun_transmittance);"));
         assert!(post.contains("self.camera_cloud_sun_transmittance,\n                    );"));
         // #6244 — derived, not listed: every directional-light arm of the main
         // fragment shader (the effect-lit one-light pass was missed) applies

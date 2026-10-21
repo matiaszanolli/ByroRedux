@@ -64,6 +64,22 @@ struct VolumetricsPassInputs<'a> {
 /// camera column's cloud-shadow value (`camera_cloud_sun_transmittance`). The
 /// froxel grid spans hundreds of metres against clouds kilometres across, so
 /// one column stands for the whole grid.
+/// The cloud-shadow factor the caustic splat applies to its directional
+/// lights. Outdoors that light is the sun above the clouds, so the camera
+/// column's transmittance applies. Indoors it is the room's XCLL key, which
+/// no outdoor cloud shades (`exteriorCloudSunTransmittance` returns 1.0
+/// there for the same reason), while the cloud bake keeps running on the
+/// portal / default sky: passing it through made interior glass and water
+/// caustics fade with the weather outside and pulse as clouds drifted
+/// (#6245).
+fn caustic_sun_transmittance(is_exterior: bool, camera_cloud_sun_transmittance: f32) -> f32 {
+    if is_exterior {
+        camera_cloud_sun_transmittance
+    } else {
+        1.0
+    }
+}
+
 fn volumetric_sun(
     sky: &SkyParams,
     fog_far: f32,
@@ -324,7 +340,7 @@ impl VulkanContext {
         fog_cluster_ns: &mut u64,
     ) {
         self.record_svgf_pass(cmd, frame);
-        self.record_caustic_splat_pass(cmd, frame, caustic_history_valid);
+        self.record_caustic_splat_pass(cmd, frame, caustic_history_valid, sky_params.is_exterior);
         self.record_volumetrics_pass(
             cmd,
             frame,
@@ -508,6 +524,7 @@ impl VulkanContext {
         cmd: vk::CommandBuffer,
         frame: usize,
         history_valid: bool,
+        is_exterior: bool,
     ) {
         // SAFETY: `cmd` is recording outside a render pass, and the live
         // caustic/TLAS resources are indexed by the current in-flight `frame`.
@@ -541,7 +558,8 @@ impl VulkanContext {
                 match (tlas_handle, geometry_ready) {
                     (Some(tlas), true) => {
                         caustic.write_tlas(&self.device, frame, tlas);
-                        caustic.sun_transmittance = self.camera_cloud_sun_transmittance;
+                        caustic.sun_transmittance =
+                            caustic_sun_transmittance(is_exterior, self.camera_cloud_sun_transmittance);
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_caustic_splat_start(&self.device, cmd, frame);
                         }
@@ -1590,7 +1608,7 @@ fn skip_clear_decision(ran: bool, already_cleared: bool) -> (bool, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{skip_clear_decision, volumetric_open_sky_flag, volumetric_sun, SkyParams};
+    use super::{caustic_sun_transmittance, skip_clear_decision, volumetric_open_sky_flag, volumetric_sun, SkyParams};
     use crate::source_scan::strip_test_modules;
 
     #[test]
@@ -1716,6 +1734,19 @@ mod tests {
         }
     }
 
+
+    /// #6245 — indoors the caustic's directional light is the room's XCLL key,
+    /// so the outdoor cloud column must not dim it; outdoors it is the sun and does.
+    #[test]
+    fn caustic_sun_transmittance_applies_the_cloud_column_only_outdoors() {
+        assert_eq!(caustic_sun_transmittance(true, 0.12), 0.12);
+        assert_eq!(caustic_sun_transmittance(false, 0.12), 1.0);
+        let source = crate::source_scan::production_text(include_str!("post_passes.rs"));
+        assert!(
+            source.contains("self.record_caustic_splat_pass(cmd, frame, caustic_history_valid, sky_params.is_exterior);"),
+            "the caustic pass must be told whether the frame is exterior"
+        );
+    }
 
     #[test]
     fn volumetric_sun_uses_portal_lane_only_inside() {
