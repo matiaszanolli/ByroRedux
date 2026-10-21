@@ -723,6 +723,29 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
     }
 }
 
+/// Clear the user force of every body that was inside a current marker last
+/// scan, for the no-marker early return, which never reaches the per-body
+/// reset (#5933). Ragdoll links have no `RapierHandles` row; the dry-link
+/// damping pass resets them.
+fn release_current_forces(world: &World, in_current_prev: &[EntityId]) {
+    if in_current_prev.is_empty() {
+        return;
+    }
+    let bodies: Vec<_> = {
+        let Some(handles_q) = world.query::<RapierHandles>() else {
+            return;
+        };
+        in_current_prev
+            .iter()
+            .filter_map(|&entity| handles_q.get(entity).map(|handles| handles.body))
+            .collect()
+    };
+    let mut pw = world.resource_mut::<PhysicsWorld>();
+    for body in bodies {
+        pw.reset_forces(body, false);
+    }
+}
+
 fn apply_buoyancy_with_scratch(
     world: &World,
     had_newcomers: bool,
@@ -789,6 +812,7 @@ fn apply_buoyancy_with_scratch(
             // No markers at all — no body can be inside one, so the #3268
             // latch is stale by definition. Dropping it here is what lets a
             // re-streamed marker wake its bodies again.
+            release_current_forces(world, in_current_prev);
             in_current_prev.clear();
             return;
         }
@@ -1067,7 +1091,16 @@ fn apply_buoyancy_with_scratch(
             // reset_forces". Clearing every dynamic body every frame would
             // silently turn that public API into a one-frame impulse.
 
-            if current_flow.is_some() || surface.is_some() || t.prior_wet {
+            // #5933 — a body that was inside a current marker last scan holds
+            // that marker's last `add_force` until something resets it. A
+            // marker that overlaps no plane never makes the body wet, so on
+            // the frame it leaves the marker neither of the other terms
+            // holds and the stale term would push it forever.
+            if current_flow.is_some()
+                || surface.is_some()
+                || t.prior_wet
+                || in_current_prev.binary_search(&t.entity).is_ok()
+            {
                 pw.reset_forces(t.handles.body, false);
             }
 
@@ -3363,6 +3396,88 @@ mod tests {
             "body settled at {final_vx} BU/s against an authored current of 8.0 \
              — overshoot or undershoot means the response is not proportional"
         );
+    }
+
+    /// #5933 — a body leaving a marker-only current (no water plane, so it is
+    /// never wet) must not keep the marker's last `add_force`: rapier user
+    /// forces persist until `reset_forces`, and none of the old reset-gate terms
+    /// held on the exit frame. Both exits: the marker moves away from the body
+    /// (the full scan's reset gate), and the marker streams out entirely (the
+    /// no-marker early return).
+    #[test]
+    fn leaving_a_marker_only_current_releases_its_force() {
+        use crate::{physics_sync_system, RapierHandles};
+        use byroredux_core::ecs::components::collision::{
+            CollisionShape, MotionType, RigidBodyData,
+        };
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+        use byroredux_core::ecs::World;
+
+        let marker_volume = |min: f32, max: f32| WaterCurrentVolume {
+            volume: WaterVolume { min: [min; 3], max: [max; 3] },
+            flow: WaterFlow::new([1.0, 0.0, 0.0], 8.0),
+        };
+        for despawn in [false, true] {
+            let mut world = World::new();
+            world.insert_resource(PhysicsWorld::new());
+            world.insert_resource(PhysicsWaterConstants::default());
+            // Carries the #3268 latch across scans, as the engine boot does.
+            world.insert_resource(WaterContactScratch::default());
+            world.register::<RapierHandles>();
+            world.register::<WaterContact>();
+            world.resource_mut::<PhysicsWorld>().gravity = Vector::ZERO;
+            let marker = world.spawn();
+            world.insert(marker, marker_volume(-500.0, 500.0));
+            let body = world.spawn();
+            world.insert(body, CollisionShape::Ball { radius: 10.0 });
+            world.insert(
+                body,
+                RigidBodyData {
+                    motion_type: MotionType::Dynamic,
+                    mass: 20.0,
+                    ..RigidBodyData::static_body()
+                },
+            );
+            world.insert(body, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+            world.insert(body, Transform::from_translation(Vec3::ZERO));
+            physics_sync_system(&world, PHYSICS_DT);
+
+            let user_force = |world: &World| -> f32 {
+                let handles = *world.query::<RapierHandles>().unwrap().get(body).unwrap();
+                let pw = world.resource::<PhysicsWorld>();
+                let f = pw.bodies.get(handles.body).expect("body is registered").user_force();
+                (f.x * f.x + f.y * f.y + f.z * f.z).sqrt()
+            };
+            let step_awake = |world: &World| {
+                let handles = *world.query::<RapierHandles>().unwrap().get(body).unwrap();
+                {
+                    let mut pw = world.resource_mut::<PhysicsWorld>();
+                    if let Some(b) = pw.bodies.get_mut(handles.body) {
+                        b.wake_up(true);
+                    }
+                    pw.wake();
+                }
+                physics_sync_system(world, PHYSICS_DT);
+            };
+            for _ in 0..30 {
+                step_awake(&world);
+            }
+            assert!(user_force(&world) > 1.0, "the marker never pushed the body");
+
+            if despawn {
+                world.despawn(marker);
+            } else {
+                world.insert(marker, marker_volume(5000.0, 6000.0));
+            }
+            for _ in 0..5 {
+                step_awake(&world);
+            }
+            assert_eq!(
+                user_force(&world),
+                0.0,
+                "the body kept the marker's last force after leaving it (despawn = {despawn})"
+            );
+        }
     }
 }
 
