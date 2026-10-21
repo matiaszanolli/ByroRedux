@@ -1237,8 +1237,9 @@ mod tests {
                 PROCEDURE_SANDBOX,
                 Some(PackSchedule {
                     start_hour: Some(8),
-                    duration_hours: 4,
+                    duration_minutes: 4 * 60,
                     days,
+                    ..Default::default()
                 }),
             )
         };
@@ -1519,7 +1520,7 @@ mod tests {
             PROCEDURE_DIALOGUE,
             Some(PackSchedule {
                 start_hour: Some(8),
-                duration_hours: 2,
+                duration_minutes: 2 * 60,
                 ..Default::default()
             }),
         );
@@ -1529,7 +1530,7 @@ mod tests {
             PROCEDURE_SANDBOX,
             Some(PackSchedule {
                 start_hour: Some(10),
-                duration_hours: 2,
+                duration_minutes: 2 * 60,
                 ..Default::default()
             }),
         );
@@ -1557,7 +1558,7 @@ mod tests {
             PROCEDURE_SANDBOX,
             Some(PackSchedule {
                 start_hour: Some(8),
-                duration_hours: 12,
+                duration_minutes: 12 * 60,
                 ..Default::default()
             }),
         );
@@ -1566,7 +1567,7 @@ mod tests {
             PROCEDURE_TRAVEL,
             Some(PackSchedule {
                 start_hour: Some(20),
-                duration_hours: 2,
+                duration_minutes: 2 * 60,
                 ..Default::default()
             }),
         );
@@ -1617,7 +1618,7 @@ mod tests {
                     PROCEDURE_SANDBOX,
                     Some(PackSchedule {
                         start_hour: Some(8),
-                        duration_hours: 12,
+                        duration_minutes: 12 * 60,
                         ..Default::default()
                     }),
                 ),
@@ -1626,7 +1627,7 @@ mod tests {
                     PROCEDURE_TRAVEL,
                     Some(PackSchedule {
                         start_hour: Some(20),
-                        duration_hours: 2,
+                        duration_minutes: 2 * 60,
                         ..Default::default()
                     }),
                 ),
@@ -2056,7 +2057,7 @@ mod tests {
             PROCEDURE_SANDBOX,
             Some(PackSchedule {
                 start_hour: Some(8),
-                duration_hours: 12,
+                duration_minutes: 12 * 60,
                 ..Default::default()
             }),
         );
@@ -2101,7 +2102,7 @@ mod tests {
             PROCEDURE_SANDBOX,
             Some(PackSchedule {
                 start_hour: Some(8),
-                duration_hours: 12,
+                duration_minutes: 12 * 60,
                 ..Default::default()
             }),
         );

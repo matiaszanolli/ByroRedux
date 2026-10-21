@@ -131,7 +131,8 @@ to `parse_pack` (`crates/plugin/src/esm/records/misc/pack.rs:178`),
 populating `EsmIndex.packages: HashMap<u32, PackRecord>`. `PackRecord`
 (`pack.rs`) decodes four sub-records: `PKDT` (flags +
 `procedure_type`, a **single byte** — a pre-#446 bug had read this as a
-polluted `u32`), `PSDT` (`PackSchedule { start_hour, duration_hours }`),
+polluted `u32`), `PSDT` (`PackSchedule { start_hour, start_minute, duration_minutes, days }` —
+hours on FO3/FNV/Oblivion, minutes on the 12-byte Skyrim+ layout, #6210),
 `PLDT` (`PackLocation { location_type, target, radius }` — only 3
 of the location-type variants carry a resolvable FormID), and `PTDT`
 (`PackTarget { target_type, target, count_or_distance }`, M42.5 — only 2

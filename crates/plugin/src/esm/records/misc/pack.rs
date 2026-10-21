@@ -413,15 +413,25 @@ impl From<f32> for PackClock {
     }
 }
 
-/// PACK schedule window from PSDT (FO3/FNV). `start_hour = None` when the raw
-/// `time` byte is -1 (0xFF) = "any time". `duration_hours` is the PSDT
-/// duration (in hours for FO3/FNV — verified against FalloutNV.esm: a
-/// bartender's `8x12` = 08:00 for 12 h, an evening idle `20x2` = 20:00 for 2 h,
-/// a `22x10` sleep = 22:00 for 10 h wrapping to 08:00).
+/// PACK schedule window from PSDT. `start_hour = None` when the raw `time`
+/// byte is -1 (0xFF) = "any time". `duration_minutes` is the PSDT duration
+/// in minutes, whichever unit the record stores it in:
+///
+/// - FO3/FNV/Oblivion author whole **hours** (xEdit `itU32` 'Duration
+///   (Hours)'; verified against FalloutNV.esm: a bartender's `8x12` = 08:00
+///   for 12 h, an evening idle `20x2` = 20:00 for 2 h, a `22x10` sleep = 22:00
+///   for 10 h wrapping to 08:00), scaled ×60 at decode.
+/// - Skyrim/FO4/FO76/Starfield author **minutes** (xEdit `wbDiv(60)`: the
+///   field is shown as hours but stored ×60; Skyrim.esm's
+///   `WhiterunBraithSleep21x12` stores 720), plus a start `minute` byte
+///   carried in `start_minute`. 36 vanilla Skyrim windows are not whole
+///   hours, so the unit is kept (#6210).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PackSchedule {
     pub start_hour: Option<u8>,
-    pub duration_hours: u32,
+    /// Minute past `start_hour` the window opens (Skyrim+ only; 0 elsewhere).
+    pub start_minute: u8,
+    pub duration_minutes: u32,
     /// The days the window applies on (#6079). Tested against the weekday of
     /// the moment asked about, including for the post-midnight tail of a
     /// window that wraps: no source says which day owns that tail, and the
@@ -441,15 +451,16 @@ impl PackSchedule {
     /// loggable instead of silently swallowed. See `active_at`'s notes for the
     /// census and the evidence gap.
     pub fn is_unsatisfiable(&self) -> bool {
-        self.start_hour.is_some() && self.duration_hours == 0
+        self.start_hour.is_some() && self.duration_minutes == 0
     }
 
-    /// True when `hour` (0..24) falls in `[start, start + duration)` mod 24.
+    /// True when `hour` (0..24, fractional) falls in `[start, start + duration)`
+    /// mod 24, with `start` = `start_hour` + `start_minute` / 60.
     /// Any-time (`start_hour == None`) is always active.
     ///
     /// # The zero-duration hole (#3352) — known, deliberately not "fixed"
     ///
-    /// `start_hour = Some(h), duration_hours = 0` makes the window
+    /// `start_hour = Some(h), duration_minutes = 0` makes the window
     /// `[h, h)` — empty, so this returns `false` at every hour and the
     /// package can never be selected. A census of `FalloutNV.esm` finds **12**
     /// packages in that state, 5 of them `Travel` (an implemented procedure):
@@ -484,8 +495,8 @@ impl PackSchedule {
         let Some(start) = self.start_hour else {
             return true;
         };
-        let start = start as f32;
-        let end = start + self.duration_hours as f32;
+        let start = start as f32 + self.start_minute as f32 / 60.0;
+        let end = start + self.duration_minutes as f32 / 60.0;
         let h = hour.rem_euclid(24.0);
         if end <= 24.0 {
             h >= start && h < end
@@ -975,8 +986,7 @@ pub fn parse_pack(
                 //
                 // #2012 / LC0716-01 — Skyrim+ PSDT grew to 12 bytes: the
                 // same month/day/date/hour i8 quartet, plus a new
-                // `minute` i8 (offset 4, not decoded here — no consumer
-                // needs sub-hour precision yet) and 3 bytes of padding,
+                // `minute` i8 (offset 4) and 3 bytes of padding,
                 // pushing `duration` from offset 4 to offset 8. Reading
                 // offset 4 unconditionally on a Skyrim+ record misreads
                 // `minute` + padding as `duration`. Cross-checked against
@@ -985,8 +995,18 @@ pub fn parse_pack(
                 // is Redux's existing "post-Skyrim" predicate (Skyrim /
                 // FO4 / FO76 / Starfield) — reused here rather than
                 // inventing a second one for the same era split.
+                //
+                // #6210 — and the 12-byte duration is MINUTES: xEdit types it
+                // `wbInteger('Duration (Hours)', itU32, wbDiv(60, 4))`
+                // (TES5 / FO4 / SF1), i.e. displayed ÷60. Skyrim.esm's
+                // `WhiterunBraithSleep21x12` stores hour 21, duration 720.
+                // Read as hours, 1,536 of 1,545 timed Skyrim windows ran past
+                // 24 h and every scheduled package was active around the clock.
+                // The 8-byte FO3/FNV (and Oblivion) duration stays plain hours
+                // (`FNV.pas` / `TES4.pas`: bare `itU32`).
                 let time = sub.data[3] as i8;
-                let duration_offset = if game.uses_prebaked_facegen() { 8 } else { 4 };
+                let skyrim_era = game.uses_prebaked_facegen();
+                let duration_offset = if skyrim_era { 8 } else { 4 };
                 let duration = if sub.data.len() >= duration_offset + 4 {
                     i32::from_le_bytes([
                         sub.data[duration_offset],
@@ -997,9 +1017,14 @@ pub fn parse_pack(
                 } else {
                     0
                 };
+                let duration = duration.max(0) as u32;
+                // The minute byte is only meaningful under a real hour; an
+                // any-time window (-1) or an out-of-range byte opens on the hour.
+                let minute = sub.data[4] as i8;
                 let schedule = PackSchedule {
                     start_hour: if time < 0 { None } else { Some(time as u8) },
-                    duration_hours: duration.max(0) as u32,
+                    start_minute: if skyrim_era && time >= 0 && (0..60).contains(&minute) { minute as u8 } else { 0 },
+                    duration_minutes: if skyrim_era { duration } else { duration.saturating_mul(60) },
                     days: PackDays::from_raw(sub.data[1] as i8),
                 };
                 // #3352 — a `time >= 0, duration == 0` PSDT decodes to a
@@ -1473,7 +1498,7 @@ mod tests {
     fn sched(start_hour: Option<u8>, duration_hours: u32) -> Option<PackSchedule> {
         Some(PackSchedule {
             start_hour,
-            duration_hours,
+            duration_minutes: duration_hours * 60,
             ..Default::default()
         })
     }
@@ -1489,7 +1514,7 @@ mod tests {
     fn zero_duration_window_is_unsatisfiable_at_every_hour() {
         let schedule = PackSchedule {
             start_hour: Some(7),
-            duration_hours: 0,
+            duration_minutes: 0 * 60,
             ..Default::default()
         };
         assert!(schedule.is_unsatisfiable());
@@ -1502,7 +1527,7 @@ mod tests {
         // `VChupacabraNightkinMoveToPen` — start_hour 0 takes the same arm.
         assert!(!PackSchedule {
             start_hour: Some(0),
-            duration_hours: 0,
+            duration_minutes: 0 * 60,
             ..Default::default()
         }
         .active_at(0.0));
@@ -1518,7 +1543,7 @@ mod tests {
         for duration in [0, 1, 24, 128] {
             let any = PackSchedule {
                 start_hour: None,
-                duration_hours: duration,
+                duration_minutes: duration * 60,
                 ..Default::default()
             };
             assert!(!any.is_unsatisfiable());
@@ -1531,7 +1556,7 @@ mod tests {
         for (start, duration) in [(6u8, 128u32), (0, 73), (18, 71), (23, 25)] {
             let wrapping = PackSchedule {
                 start_hour: Some(start),
-                duration_hours: duration,
+                duration_minutes: duration * 60,
                 ..Default::default()
             };
             for hour in 0..24 {
@@ -1546,7 +1571,7 @@ mod tests {
         for start in [0u8, 7, 23] {
             let full_day = PackSchedule {
                 start_hour: Some(start),
-                duration_hours: 24,
+                duration_minutes: 24 * 60,
                 ..Default::default()
             };
             for hour in 0..24 {
@@ -1579,25 +1604,71 @@ mod tests {
     /// offset instead of misreading `minute` + padding as the duration.
     #[test]
     fn parse_pack_reads_skyrim_plus_psdt_schedule_from_offset_8() {
-        // month=0xff day=0xff date=0x00 hour=0x08 minute=0x1e(30, unused)
-        // pad=[0,0,0] duration=12 (0x0c000000 LE) — AtBar-equivalent
-        // schedule (08:00 for 12h) under the 12-byte Skyrim+ layout.
-        let psdt = [0xff, 0xff, 0x00, 0x08, 0x1e, 0, 0, 0, 0x0c, 0, 0, 0];
+        // month=0xff day=0xff date=0x00 hour=0x08 minute=0x1e(30)
+        // pad=[0,0,0] duration=720 minutes (0xd0020000 LE) — the 12-byte
+        // Skyrim+ layout: 08:30 for 12 h.
+        let psdt = [0xff, 0xff, 0x00, 0x08, 0x1e, 0, 0, 0, 0xd0, 0x02, 0, 0];
         assert_eq!(
             parse_pack(0x1, &[sub(b"PSDT", psdt)], &None, GameKind::Skyrim).schedule,
-            sched(Some(8), 12),
+            Some(PackSchedule {
+                start_hour: Some(8),
+                start_minute: 30,
+                duration_minutes: 720,
+                ..Default::default()
+            }),
             "Skyrim+ PSDT must read duration from offset 8, not offset 4 \
-             (which holds `minute` + padding under the 12-byte layout)"
+             (which holds `minute` + padding under the 12-byte layout), \
+             and keep it in minutes"
         );
 
         // Same bytes read under Fallout3NV (the old 8-byte-layout era)
         // must reinterpret offset 4 (`minute`=0x1e=30) as `duration`,
-        // proving the two branches genuinely diverge on this input
-        // rather than coincidentally agreeing.
+        // in hours, proving the two branches genuinely diverge on this
+        // input rather than coincidentally agreeing.
         assert_eq!(
             parse_pack(0x2, &[sub(b"PSDT", psdt)], &None, GameKind::Fallout3NV).schedule,
             sched(Some(8), 30),
         );
+    }
+
+    /// #6210 — the 12-byte (Skyrim/FO4/FO76/Starfield) PSDT duration is
+    /// minutes (xEdit `wbDiv(60)`). Read as hours, Skyrim.esm's
+    /// `WhiterunBraithSleep21x12` (hour 21, duration 720) became a 741-hour
+    /// window whose wrap arm matched every hour, so every scheduled package
+    /// was active around the clock.
+    #[test]
+    fn skyrim_plus_psdt_duration_is_minutes_so_the_window_closes() {
+        let braith_sleep = [0xff, 0xff, 0x00, 21, 0, 0, 0, 0, 0xd0, 0x02, 0, 0];
+        for game in [GameKind::Skyrim, GameKind::Fallout4, GameKind::Starfield] {
+            let schedule = parse_pack(0x1, &[sub(b"PSDT", braith_sleep)], &None, game)
+                .schedule
+                .expect("schedule decoded");
+            assert_eq!(schedule.duration_minutes, 720, "{game:?}");
+            // 21:00 for 12 h wraps to 09:00.
+            for hour in [21.0, 23.5, 0.0, 8.99] {
+                assert!(schedule.active_at(hour), "{game:?}: {hour} is inside 21:00+12h");
+            }
+            for hour in [9.0, 12.0, 20.99] {
+                assert!(!schedule.active_at(hour), "{game:?}: {hour} is outside 21:00+12h");
+            }
+        }
+
+        // A 90-minute window opening at 08:30 survives to the minute.
+        let half_past = [0xff, 0xff, 0x00, 8, 30, 0, 0, 0, 90, 0, 0, 0];
+        let schedule = parse_pack(0x2, &[sub(b"PSDT", half_past)], &None, GameKind::Skyrim)
+            .schedule
+            .expect("schedule decoded");
+        assert!(!schedule.active_at(8.25));
+        assert!(schedule.active_at(8.5));
+        assert!(schedule.active_at(9.99));
+        assert!(!schedule.active_at(10.0));
+
+        // An any-time window ignores the minute byte.
+        let any_time = [0xff, 0xff, 0x00, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0];
+        let schedule = parse_pack(0x3, &[sub(b"PSDT", any_time)], &None, GameKind::Skyrim)
+            .schedule
+            .expect("schedule decoded");
+        assert_eq!((schedule.start_hour, schedule.start_minute), (None, 0));
     }
 
     /// #6079 — PSDT's Day-of-Week byte decodes into `PackSchedule::days` and
@@ -1882,7 +1953,7 @@ mod tests {
     fn pack_schedule_active_at_windows() {
         let bar = PackSchedule {
             start_hour: Some(8),
-            duration_hours: 12,
+            duration_minutes: 12 * 60,
             ..Default::default()
         }; // 08:00–20:00
         assert!(bar.active_at(10.0));
@@ -1890,7 +1961,7 @@ mod tests {
         assert!(!bar.active_at(7.9));
         let sleep = PackSchedule {
             start_hour: Some(22),
-            duration_hours: 10,
+            duration_minutes: 10 * 60,
             ..Default::default()
         }; // 22:00–08:00 (wraps midnight)
         assert!(sleep.active_at(23.0));
@@ -1898,7 +1969,7 @@ mod tests {
         assert!(!sleep.active_at(10.0));
         let any = PackSchedule {
             start_hour: None,
-            duration_hours: 0,
+            duration_minutes: 0 * 60,
             ..Default::default()
         };
         assert!(any.active_at(0.0) && any.active_at(15.0));
