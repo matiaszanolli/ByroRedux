@@ -752,6 +752,10 @@ struct App {
     /// alive across frames until the REFR/NPC phase completes or is
     /// cancelled by a replacement transition/shutdown (#3671).
     interior_transition: Option<cell_loader::InteriorCellApply>,
+    /// The `cell_loader::created::created_work` key the created-reference step
+    /// last ran for; while every record is placed and it is unchanged the step
+    /// has nothing to do (#6125). Session state.
+    created_step_key: Option<u64>,
     loading_screen: loading_screen::LoadingScreen,
     loot_appearance_loader: npc_spawn::loot_appearance::LootAppearanceLoader,
     gear_import_loader: npc_spawn::loot_appearance::GearImportLoader,
@@ -1252,6 +1256,7 @@ impl App {
             screenshot_deadline_frames: 0,
             streaming: None,
             interior_transition: None,
+            created_step_key: None,
             loading_screen: loading_screen::LoadingScreen::default(),
             loot_appearance_loader: Default::default(),
             gear_import_loader: Default::default(),

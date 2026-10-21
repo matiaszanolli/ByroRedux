@@ -988,13 +988,26 @@ impl App {
     /// creation, or its cell reloaded). Idle — one resource read — while no
     /// quest has created anything.
     pub(crate) fn step_created_references(&mut self) {
-        if self.interior_transition.is_some()
-            || self
-                .world
-                .try_resource::<byroredux_scripting::CreatedReferences>()
-                .is_none_or(|created| created.iter().next().is_none())
-        {
+        if self.interior_transition.is_some() {
             return;
+        }
+        // #6125 — once every record is placed the step has work only when the
+        // records or the loaded cells change; until then it is one pass over
+        // the records (tombstones included) and nothing else.
+        let interior_root = self
+            .world
+            .try_resource::<cell_loader::CurrentCellRoot>()
+            .and_then(|root| root.0);
+        let grids = self.streaming.iter().flat_map(|state| state.loaded.keys().copied());
+        match cell_loader::created::created_work(&self.world, interior_root, grids) {
+            cell_loader::created::CreatedWork::Idle => return,
+            cell_loader::created::CreatedWork::Unplaced => self.created_step_key = None,
+            cell_loader::created::CreatedWork::Placed(key) => {
+                if self.created_step_key == Some(key) {
+                    return;
+                }
+                self.created_step_key = Some(key);
+            }
         }
         cell_loader::created::place_created_references(&self.world);
         let Some(ctx) = self.renderer.as_mut() else {

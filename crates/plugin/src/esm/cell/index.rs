@@ -145,6 +145,21 @@ pub struct EsmCellIndex {
     /// by [`EsmCellIndex::merge_from`] (#5489). Crate-private: it is derived
     /// state, so it is neither parsed nor documented as index content.
     pub(crate) cell_form_id_lookup: std::sync::OnceLock<HashMap<u32, CellLocator>>,
+    /// Placed REFR form ID → its cell slot and position in that cell's
+    /// `references`, built on first use by [`EsmCellIndex::locate_refr`] and
+    /// cleared by [`EsmCellIndex::merge_from`] (#6125). Derived state like
+    /// `cell_form_id_lookup`; priced at ~13 bytes per placed REFR.
+    pub(crate) refr_lookup: std::sync::OnceLock<RefrLookup>,
+}
+
+/// The reverse index behind [`EsmCellIndex::locate_refr`]: one entry per
+/// placed REFR, pointing into a table with one slot per CELL (so a cell's key
+/// is stored once, not once per reference).
+#[derive(Debug, Default)]
+pub(crate) struct RefrLookup {
+    cells: Vec<CellLocator>,
+    /// REFR form ID → (index into `cells`, index into that cell's `references`).
+    refs: HashMap<u32, (u32, u32)>,
 }
 
 /// Where one CELL sits in an [`EsmCellIndex`] (see
@@ -540,10 +555,12 @@ impl EsmCellIndex {
             movables,
             material_swaps,
             cell_form_id_lookup: _,
+            refr_lookup: _,
         } = other;
         // The lookup is derived from the cell maps this merge is about to
         // change; rebuild it on next use.
         self.cell_form_id_lookup = std::sync::OnceLock::new();
+        self.refr_lookup = std::sync::OnceLock::new();
         // #3362 — a REFR is a globally-unique FormID: deleting it removes the
         // object wherever it lives, and the CELL GRUP the tombstone happens
         // to be authored under is not part of its identity.
@@ -705,13 +722,10 @@ impl EsmCellIndex {
     /// M40 Phase 2 Stage 1 (door-teleport plumbing): the `door.teleport`
     /// console command and gameplay activate system feed an
     /// XTEL destination FormID through this helper to decide which
-    /// cell to load. Today it scans interior, exterior, and worldspace-
-    /// persistent maps linearly
-    /// — vanilla `Skyrim.esm` carries ~63 k REFRs across ~3 k cells,
-    /// so the worst-case lookup is ~63 k comparisons. That's fine for
-    /// console-driven testing; Phase 2 Stage 2 will materialise a
-    /// `HashMap<u32, CellRef>` reverse index built once at plugin-load
-    /// so the F-key path stays cheap.
+    /// cell to load. The first call builds a reverse index over the interior,
+    /// exterior and worldspace-persistent maps (#6125); every lookup after it
+    /// is O(1), a miss included. Like [`Self::cell_by_form_id`]'s, it is stale
+    /// if the cell maps are edited afterwards — [`Self::merge_from`] clears it.
     pub fn cell_for_refr_form_id(&self, refr_form_id: u32) -> Option<CellRef<'_>> {
         self.locate_refr(refr_form_id).map(|(cell, _)| cell)
     }
@@ -724,44 +738,55 @@ impl EsmCellIndex {
     /// partner's own `XTEL` is the floor-level pose the engine places the
     /// player at when they walk through it into the door's cell.
     pub fn locate_refr(&self, refr_form_id: u32) -> Option<(CellRef<'_>, &PlacedRef)> {
-        for cell in self.cells.values() {
-            if let Some(reference) = cell.references.iter().find(|r| r.form_id == refr_form_id) {
-                return Some((
-                    CellRef::Interior {
-                        editor_id: &cell.editor_id,
-                    },
-                    reference,
-                ));
+        let lookup = self.refr_lookup.get_or_init(|| {
+            let mut lookup = RefrLookup::default();
+            let add = |lookup: &mut RefrLookup, locator: CellLocator, references: &[PlacedRef]| {
+                let slot = lookup.cells.len() as u32;
+                lookup.cells.push(locator);
+                for (position, reference) in references.iter().enumerate() {
+                    // The first cell holding a form ID keeps it, in the
+                    // interior, exterior, persistent order the scan used.
+                    lookup.refs.entry(reference.form_id).or_insert((slot, position as u32));
+                }
+            };
+            for (key, cell) in &self.cells {
+                add(&mut lookup, CellLocator::Interior(key.clone()), &cell.references);
             }
-        }
-        for (worldspace, grids) in &self.exterior_cells {
-            for ((gx, gy), cell) in grids {
-                if let Some(reference) = cell.references.iter().find(|r| r.form_id == refr_form_id)
-                {
-                    return Some((
-                        CellRef::Exterior {
-                            worldspace,
-                            grid: (*gx, *gy),
-                        },
-                        reference,
-                    ));
+            for (worldspace, grids) in &self.exterior_cells {
+                for (&grid, cell) in grids {
+                    add(&mut lookup, CellLocator::Exterior(worldspace.clone(), grid), &cell.references);
                 }
             }
-        }
-        for (worldspace, cell) in &self.worldspace_persistent_cells {
-            if let Some(reference) = cell
-                .references
-                .iter()
-                .find(|reference| reference.form_id == refr_form_id)
-            {
+            for (worldspace, cell) in &self.worldspace_persistent_cells {
+                add(&mut lookup, CellLocator::WorldspacePersistent(worldspace.clone()), &cell.references);
+            }
+            lookup
+        });
+        let &(slot, position) = lookup.refs.get(&refr_form_id)?;
+        let (cell_ref, references) = match lookup.cells.get(slot as usize)? {
+            CellLocator::Interior(key) => {
+                let cell = self.cells.get(key)?;
+                (CellRef::Interior { editor_id: &cell.editor_id }, &cell.references)
+            }
+            CellLocator::Exterior(worldspace, grid) => {
+                let (worldspace, grids) = self.exterior_cells.get_key_value(worldspace)?;
+                (CellRef::Exterior { worldspace, grid: *grid }, &grids.get(grid)?.references)
+            }
+            CellLocator::WorldspacePersistent(worldspace) => {
+                let (worldspace, cell) = self.worldspace_persistent_cells.get_key_value(worldspace)?;
+                let reference = cell.references.get(position as usize)?;
                 let grid = (
                     (reference.position[0] / EXTERIOR_CELL_UNITS).floor() as i32,
                     (reference.position[1] / EXTERIOR_CELL_UNITS).floor() as i32,
                 );
-                return Some((CellRef::Exterior { worldspace, grid }, reference));
+                return (reference.form_id == refr_form_id)
+                    .then_some((CellRef::Exterior { worldspace, grid }, reference));
             }
-        }
-        None
+        };
+        let reference = references.get(position as usize)?;
+        // A stale entry (the maps were edited after the first lookup) must
+        // miss, not name another reference.
+        (reference.form_id == refr_form_id).then_some((cell_ref, reference))
     }
 }
 

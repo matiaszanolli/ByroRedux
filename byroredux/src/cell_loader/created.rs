@@ -76,6 +76,60 @@ fn player_placement(world: &World) -> Option<CreatedPlacement> {
     placement_at_position(world, position_zup)
 }
 
+/// What [`step_created_references`](crate) has to decide each frame, from one
+/// pass over the records (#6125).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CreatedWork {
+    /// No record exists.
+    Idle,
+    /// At least one record has no placement yet: its target may become
+    /// resolvable at any frame (the player appears, another record is placed),
+    /// so the step keeps running until every record is placed.
+    Unplaced,
+    /// Every record is placed. The step has work only when this key changes: it
+    /// covers the records (count, deletions) and the loaded cells the placed
+    /// ones are spawned into (`loaded_grids`, the interior root).
+    Placed(u64),
+}
+
+/// The step's gate. `interior` is the interior cell root in play, if any.
+pub(crate) fn created_work(
+    world: &World,
+    interior: Option<EntityId>,
+    loaded_grids: impl Iterator<Item = (i32, i32)>,
+) -> CreatedWork {
+    use byroredux_scripting::CreatedDeletion;
+    let Some(created) = world.try_resource::<CreatedReferences>() else {
+        return CreatedWork::Idle;
+    };
+    let (mut total, mut deleted) = (0u64, 0u64);
+    for record in created.iter() {
+        if record.placement.is_none() {
+            return CreatedWork::Unplaced;
+        }
+        total += 1;
+        deleted += u64::from(record.deletion == CreatedDeletion::Deleted);
+    }
+    if total == 0 {
+        return CreatedWork::Idle;
+    }
+    // An order-independent mix of the loaded grids: the set matters, not the
+    // iteration order of the map it came from.
+    let (mut count, mut mixed) = (0u64, 0u64);
+    for (gx, gy) in loaded_grids {
+        count += 1;
+        let h = (gx as u32 as u64) << 32 | gy as u32 as u64;
+        mixed ^= h.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(23);
+    }
+    let interior = interior.map_or(0, |root| u64::from(root) + 1);
+    let key = [total, deleted, count, mixed, interior]
+        .into_iter()
+        .fold(0xCBF2_9CE4_8422_2325u64, |acc, word| {
+            (acc ^ word).wrapping_mul(0x100_0000_01B3).rotate_left(17)
+        });
+    CreatedWork::Placed(key)
+}
+
 /// Place every record that has no placement yet, at its target reference's
 /// placement (the player's position for the player; another created
 /// reference's placement for one). Returns how many were placed.
@@ -270,6 +324,46 @@ mod tests {
     use super::*;
     use byroredux_plugin::esm::cell::CellData;
     use byroredux_scripting::QuestFormId;
+
+    /// #6125 — the per-frame gate. No records: idle. Any unplaced record: keep
+    /// running (its target can resolve at any frame). All placed: a stable key
+    /// that moves only when the records or the loaded cells do, so a session
+    /// with tombstones stops paying for the step every frame.
+    #[test]
+    fn the_step_gate_changes_only_with_the_records_or_the_loaded_cells() {
+        let grids = |cells: &[(i32, i32)]| cells.to_vec().into_iter();
+        let mut world = World::new();
+        assert_eq!(created_work(&world, None, grids(&[])), CreatedWork::Idle, "no resource");
+        world.insert_resource(CreatedReferences::default());
+        assert_eq!(created_work(&world, None, grids(&[])), CreatedWork::Idle, "no records");
+
+        let form_id = world.resource_mut::<CreatedReferences>().create(QuestFormId(7), 1, 0xB1, 0, 0x55).unwrap();
+        assert_eq!(created_work(&world, None, grids(&[])), CreatedWork::Unplaced);
+
+        let placement = CreatedPlacement {
+            cell: CreatedCell::Interior { editor_id: "DunHold".into() },
+            position_zup: [0.0; 3],
+            rotation_zup: [0.0; 3],
+        };
+        world.resource_mut::<CreatedReferences>().place(form_id, placement);
+        let CreatedWork::Placed(key) = created_work(&world, Some(4), grids(&[(0, 0), (1, 2)])) else {
+            panic!("every record is placed");
+        };
+        // Same inputs, same key - whatever order the loaded map iterates in.
+        assert_eq!(created_work(&world, Some(4), grids(&[(1, 2), (0, 0)])), CreatedWork::Placed(key));
+        // A cell streams in or out, the interior changes, a record is deleted,
+        // another is created: each moves the key.
+        for other in [
+            created_work(&world, Some(4), grids(&[(0, 0), (1, 2), (3, 3)])),
+            created_work(&world, Some(4), grids(&[(0, 0)])),
+            created_work(&world, Some(5), grids(&[(0, 0), (1, 2)])),
+            created_work(&world, None, grids(&[(0, 0), (1, 2)])),
+        ] {
+            assert_ne!(other, CreatedWork::Placed(key));
+        }
+        world.resource_mut::<CreatedReferences>().mark_deleted(form_id);
+        assert_ne!(created_work(&world, Some(4), grids(&[(0, 0), (1, 2)])), CreatedWork::Placed(key));
+    }
 
     /// A record is placed at its target's placement, and only a placed record
     /// of the asked cell without a live entity wants spawning.

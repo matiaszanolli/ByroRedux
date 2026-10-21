@@ -213,3 +213,31 @@ fn cell_for_refr_form_id_returns_owned_variant_via_to_owned() {
         "to_owned must materialise an owned-string variant that outlives the index borrow"
     );
 }
+
+/// #6125 — `locate_refr` answers from a reverse index built on first use:
+/// it returns the placement itself (not just the cell), a miss is a miss, and
+/// a `merge_from` rebuilds it instead of answering from the old maps.
+#[test]
+fn locate_refr_uses_a_reverse_index_that_merge_from_rebuilds() {
+    let mut index = EsmCellIndex::default();
+    index.cells.insert("a".to_string(), interior_cell("A", &[0x1001, 0x1002]));
+    let mut grids = std::collections::HashMap::new();
+    grids.insert((3, -4), exterior_cell(3, -4, &[0x2001, 0x2002]));
+    index.exterior_cells.insert("ws".to_string(), grids);
+
+    let (cell, reference) = index.locate_refr(0x2002).expect("hit");
+    assert_eq!(cell, CellRef::Exterior { worldspace: "ws", grid: (3, -4) });
+    assert_eq!(reference.form_id, 0x2002, "the placement itself, not a neighbour");
+    assert_eq!(index.locate_refr(0x1001).unwrap().1.form_id, 0x1001);
+    assert!(index.locate_refr(0x9999).is_none());
+
+    // A merged-in cell is found: the index built above is dropped by merge_from.
+    let mut other = EsmCellIndex::default();
+    other.cells.insert("b".to_string(), interior_cell("B", &[0x3001]));
+    index.merge_from(other);
+    assert_eq!(
+        index.locate_refr(0x3001).map(|(cell, _)| cell),
+        Some(CellRef::Interior { editor_id: "B" })
+    );
+    assert!(index.locate_refr(0x1002).is_some(), "the old cells are still there");
+}
