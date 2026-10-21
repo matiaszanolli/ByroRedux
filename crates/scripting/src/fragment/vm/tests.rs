@@ -1301,6 +1301,55 @@ fn game_time_updates_count_game_hours() {
     assert!(world.resource::<crate::ScriptUpdates>().registrations().is_empty(), "a single update");
 }
 
+/// #5997 — a reference attached with `OnInitEvent` alone (no 3D) is sent `OnInit`
+/// and not `OnLoad`; `OnCellLoadEvent` (its 3D arrived) sends `OnLoad` too, and
+/// `OnInit` still runs only once.
+#[test]
+fn an_identity_only_reference_gets_on_init_but_not_on_load() {
+    const INIT_REF: u32 = 0x0001_0F21;
+    const LOAD_REF: u32 = 0x0001_0F22;
+    let init_script = parsed_source(
+        "ScriptName VmIdentityInit extends ObjectReference\n\
+         Event OnInit()\n Self.Disable()\n EndEvent\n",
+    );
+    let load_script = parsed_source(
+        "ScriptName VmIdentityLoad extends ObjectReference\n\
+         Event OnLoad()\n Self.Disable()\n EndEvent\n",
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let mut attach = |world: &mut World, local: u32, name: &str, script: Arc<Script>| {
+        let (events, scripts) =
+            crate::check_reference_script(script, &crate::DELIVERED_EVENTS, None).expect("runs");
+        let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(local) });
+        let reference = world.spawn();
+        world.insert(reference, FormIdComponent(id));
+        let instance = ScriptInstance { name: name.into(), status: 0, properties: Vec::new() };
+        crate::attach_reference_script(world, reference, &instance, events, scripts);
+        world.insert(reference, crate::OnInitEvent);
+        reference
+    };
+    let init_ref = attach(&mut world, INIT_REF, "VmIdentityInit", init_script);
+    let load_ref = attach(&mut world, LOAD_REF, "VmIdentityLoad", load_script);
+    world.insert_resource(pool);
+
+    crate::reference_script_event_system(&world, 0.0);
+    assert!(!crate::fragment::reference_enabled(&world, INIT_REF), "OnInit ran");
+    assert!(crate::fragment::reference_enabled(&world, LOAD_REF), "no 3D: no OnLoad");
+
+    // Its 3D arrives: the full set is delivered.
+    world.remove::<crate::OnInitEvent>(load_ref);
+    world.insert(load_ref, crate::OnCellLoadEvent);
+    world.remove::<crate::OnInitEvent>(init_ref);
+    crate::reference_script_event_system(&world, 0.0);
+    assert!(!crate::fragment::reference_enabled(&world, LOAD_REF), "OnLoad ran with the 3D");
+}
+
 /// A `Native` declaration in a parent script the library serves (`Quest`,
 /// `ObjectReference`, …) is not a script body: `Self.SetStage` still runs the
 /// native, never the declaration's empty body.

@@ -155,12 +155,21 @@ pub(super) fn trigger_volume_from_primitive(
 
 /// Returns `true` when canonical behavior attached (either per-game arm
 /// recognized the script) — the cell loader counts these for its summary.
+///
+/// `has_3d` is whether the entity stands for a reference that spawned real 3D
+/// into the loaded cell. Papyrus `OnLoad` / `OnCellLoad` are sent only then, so
+/// an identity-only entity (a `placement_disabled` body, a logical-actor or
+/// scene stub whose home cell is not loaded, a marker or missing-mesh
+/// fallback) gets [`OnInitEvent`](byroredux_scripting::OnInitEvent) alone and
+/// its `OnInit` still runs; the `OnCellLoadEvent` follows when its real 3D
+/// spawns (#5997).
 pub(super) fn attach_script_for_refr(
     world: &mut byroredux_core::ecs::world::World,
     entity: byroredux_core::ecs::EntityId,
     base_form_id: u32,
     index: &esm::records::EsmIndex,
     refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+    has_3d: bool,
 ) -> bool {
     // Two mutually-exclusive per-game attach paths converge here. A
     // record carries either a pre-Skyrim `SCRI` → SCPT (Obscript, the
@@ -182,8 +191,12 @@ pub(super) fn attach_script_for_refr(
         // frame the cell loads. Mirrors Papyrus `OnLoad` semantics. The
         // marker is drained by `event_cleanup_system` at end-of-frame,
         // so each script sees exactly one OnCellLoad per cell entry.
-        if let Some(mut q) = world.query_mut::<byroredux_scripting::OnCellLoadEvent>() {
-            q.insert(entity, byroredux_scripting::OnCellLoadEvent);
+        if has_3d {
+            if let Some(mut q) = world.query_mut::<byroredux_scripting::OnCellLoadEvent>() {
+                q.insert(entity, byroredux_scripting::OnCellLoadEvent);
+            }
+        } else if let Some(mut q) = world.query_mut::<byroredux_scripting::OnInitEvent>() {
+            q.insert(entity, byroredux_scripting::OnInitEvent);
         }
     }
     attached

@@ -206,6 +206,7 @@ pub(crate) fn spawn_logical_quest_reference_with_scripts(
         placed_ref.base_form_id,
         record_index,
         placed_ref.script_instance.as_ref(),
+        false,
     );
     (entity, attached)
 }
@@ -238,6 +239,31 @@ pub(super) fn attach_quest_reference_script(
         base_form_id,
         record_index,
         refr_script_instance,
+        true,
+    ) {
+        accum.scripts_recognized += 1;
+    }
+}
+
+/// [`attach_quest_reference_script`] for the entity
+/// [`spawn_logical_quest_reference`] made: identity and scripts, no 3D, so no
+/// `OnLoad` / `OnCellLoad` (#5997). Every spawn of a logical reference pairs
+/// with this one, never the 3D variant.
+pub(super) fn attach_identity_reference_script(
+    world: &mut World,
+    entity: EntityId,
+    base_form_id: u32,
+    record_index: &byroredux_plugin::esm::records::EsmIndex,
+    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+    accum: &mut RefLoadAccum,
+) {
+    if attach_script_for_refr(
+        world,
+        entity,
+        base_form_id,
+        record_index,
+        refr_script_instance,
+        false,
     ) {
         accum.scripts_recognized += 1;
     }
@@ -374,6 +400,8 @@ pub(super) fn spawn_synth_child(
                     child_form_id,
                     record_index,
                     refr_script_instance,
+                    // A `Disable()`d trigger keeps identity and scripts but no volume.
+                    !placement_disabled,
                 ) {
                     accum.scripts_recognized += 1;
                 }
@@ -405,7 +433,7 @@ pub(super) fn spawn_synth_child(
                 let entity = spawn_logical_quest_reference(
                     world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
                 );
-                attach_quest_reference_script(
+                attach_identity_reference_script(
                     world,
                     entity,
                     child_form_id,
@@ -461,7 +489,7 @@ pub(super) fn spawn_synth_child(
             let entity = spawn_logical_quest_reference(
                 world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
             );
-            attach_quest_reference_script(
+            attach_identity_reference_script(
                 world,
                 entity,
                 child_form_id,
@@ -500,7 +528,7 @@ pub(super) fn spawn_synth_child(
             let entity = spawn_logical_quest_reference(
                 world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
             );
-            attach_quest_reference_script(
+            attach_identity_reference_script(
                 world,
                 entity,
                 child_form_id,
@@ -543,7 +571,7 @@ pub(super) fn spawn_synth_child(
             let entity = spawn_logical_quest_reference(
                 world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
             );
-            attach_quest_reference_script(
+            attach_identity_reference_script(
                 world,
                 entity,
                 child_form_id,
@@ -745,7 +773,7 @@ pub(super) fn spawn_synth_child(
             let entity = spawn_logical_quest_reference(
                 world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
             );
-            attach_quest_reference_script(
+            attach_identity_reference_script(
                 world,
                 entity,
                 child_form_id,
@@ -938,6 +966,7 @@ pub(super) fn spawn_synth_child(
         child_form_id,
         record_index,
         refr_script_instance,
+        true,
     ) {
         accum.scripts_recognized += 1;
     }

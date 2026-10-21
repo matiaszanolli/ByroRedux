@@ -668,7 +668,7 @@ pub(super) fn load_references_budgeted(
                         let entity = spawn_logical_quest_reference(
                             world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
                         );
-                        attach_quest_reference_script(
+                        attach_identity_reference_script(
                             world,
                             entity,
                             child_form_id,
@@ -1096,8 +1096,8 @@ mod complete;
 mod synth_child;
 use complete::complete_reference_load;
 use synth_child::{
-    attach_quest_reference_script, refr_script_instance_for_synth_child, spawn_synth_child,
-    stamp_quest_reference,
+    attach_identity_reference_script, attach_quest_reference_script,
+    refr_script_instance_for_synth_child, spawn_synth_child, stamp_quest_reference,
 };
 // #2664 — the exterior persistent-cell loader spawns the same logical
 // identity entity for a 3D-less persistent ACHR, so the one spawner is

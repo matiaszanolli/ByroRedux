@@ -652,6 +652,7 @@ fn collect_deliveries(world: &World, markers: Markers) -> Vec<Delivery> {
     let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
     let form_of = |entity: EntityId| crate::condition::entity_global_form_id(world, entity);
     let cell_loads = frame.then(|| world.query::<crate::OnCellLoadEvent>()).flatten();
+    let inits = frame.then(|| world.query::<crate::OnInitEvent>()).flatten();
     let activations = frame.then(|| world.query::<crate::ActivateEvent>()).flatten();
     let native = frame.then(|| world.query::<crate::NativeActivation>()).flatten();
     let triggers = frame.then(|| world.query::<crate::OnTriggerEnterEvent>()).flatten();
@@ -666,6 +667,10 @@ fn collect_deliveries(world: &World, markers: Markers) -> Vec<Delivery> {
     let mut deliveries = Vec::new();
     for entity in entities {
         let loaded = cell_loads.as_ref().is_some_and(|q| q.get(entity).is_some());
+        // An identity-only reference (no 3D, or a home cell that is not loaded)
+        // is attached with `OnInitEvent` alone: `OnLoad` / `OnCellLoad` are
+        // "sent only when the object's 3d is loaded", `OnInit` is not (#5997).
+        let init_only = !loaded && inits.as_ref().is_some_and(|q| q.get(entity).is_some());
         // (`Activate(…, true)` is default processing only: no `OnActivate`.)
         let activator = activations
             .as_ref()
@@ -683,6 +688,7 @@ fn collect_deliveries(world: &World, markers: Markers) -> Vec<Delivery> {
         let combat = changes.combat.get(&entity).copied();
         let relocated = (Some(entity) == player).then_some(changes.player_location).flatten();
         if !loaded
+            && !init_only
             && activator.is_none()
             && triggerers.is_empty()
             && death.is_none()
@@ -700,6 +706,8 @@ fn collect_deliveries(world: &World, markers: Markers) -> Vec<Delivery> {
             for event in ["OnInit", "OnCellAttach", "OnLoad", "OnCellLoad"] {
                 events.push((event, Vec::new()));
             }
+        } else if init_only {
+            events.push(("OnInit", Vec::new()));
         }
         if let Some(activator) = activator {
             events.push(("OnActivate", vec![reference(activator)]));

@@ -52,9 +52,62 @@ fn attach_script_for_refr_emits_no_event_when_nothing_attaches() {
     let index = esm::records::EsmIndex::default();
     let entity = world.spawn();
 
-    attach_script_for_refr(&mut world, entity, 0x0000_1234, &index, None);
+    attach_script_for_refr(&mut world, entity, 0x0000_1234, &index, None, true);
+    attach_script_for_refr(&mut world, entity, 0x0000_1234, &index, None, false);
     assert!(
         !world.has::<byroredux_scripting::OnCellLoadEvent>(entity),
         "no script attached → no OnCellLoadEvent",
+    );
+    assert!(
+        !world.has::<byroredux_scripting::OnInitEvent>(entity),
+        "no script attached → no OnInitEvent either",
+    );
+}
+
+/// #5997 — an attached script's load marker follows whether the entity has 3D:
+/// `OnCellLoadEvent` (OnInit + OnCellAttach + OnLoad + OnCellLoad) when it
+/// does, `OnInitEvent` alone when it is identity-only.
+#[test]
+fn attach_script_for_refr_sends_the_load_events_only_to_entities_with_3d() {
+    use byroredux_core::ecs::world::World;
+    use esm::records::{ActiRecord, ScriptRecord};
+
+    const BASE: u32 = 0x00BB_0001;
+    const SCRI: u32 = 0x00BB_0002;
+
+    fn spawn_marker(world: &mut World, entity: byroredux_core::ecs::EntityId) {
+        use byroredux_scripting::papyrus_demo::RumbleOnActivate;
+        if let Some(mut q) = world.query_mut::<RumbleOnActivate>() {
+            q.insert(entity, RumbleOnActivate::default());
+        }
+    }
+
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+    world.insert_resource(byroredux_core::form_id::FormIdPool::new());
+    let mut registry = byroredux_scripting::ScriptRegistry::new();
+    registry.register("Has3dScript", spawn_marker);
+    world.insert_resource(registry);
+    let mut index = esm::records::EsmIndex::default();
+    index.activators.insert(
+        BASE,
+        ActiRecord { form_id: BASE, editor_id: "Has3dBase".to_string(), script_form_id: SCRI, ..Default::default() },
+    );
+    index.scripts.insert(
+        SCRI,
+        ScriptRecord { form_id: SCRI, editor_id: "Has3dScript".to_string(), ..Default::default() },
+    );
+
+    let with_3d = world.spawn();
+    assert!(attach_script_for_refr(&mut world, with_3d, BASE, &index, None, true));
+    assert!(world.has::<byroredux_scripting::OnCellLoadEvent>(with_3d));
+    assert!(!world.has::<byroredux_scripting::OnInitEvent>(with_3d));
+
+    let identity_only = world.spawn();
+    assert!(attach_script_for_refr(&mut world, identity_only, BASE, &index, None, false));
+    assert!(world.has::<byroredux_scripting::OnInitEvent>(identity_only));
+    assert!(
+        !world.has::<byroredux_scripting::OnCellLoadEvent>(identity_only),
+        "no 3D → no OnLoad / OnCellLoad",
     );
 }

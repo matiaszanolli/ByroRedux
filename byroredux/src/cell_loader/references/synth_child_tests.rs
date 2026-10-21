@@ -607,6 +607,13 @@ fn logical_quest_reference_spawns_identity_and_attaches_scripts() {
         world.has::<byroredux_scripting::SceneAliasCandidate>(entity),
         "the stub must still register as an alias candidate",
     );
+    // #5997 — a stub has no 3D: its scripts get `OnInit`, never the
+    // `OnLoad` / `OnCellLoad` pair the marker stands for.
+    assert!(world.has::<byroredux_scripting::OnInitEvent>(entity));
+    assert!(
+        !world.has::<byroredux_scripting::OnCellLoadEvent>(entity),
+        "an identity-only stub must not receive OnCellLoad",
+    );
 
     // Attach once per reference_form_id: a second stub for the same REFR
     // would run that reference's behavior twice.

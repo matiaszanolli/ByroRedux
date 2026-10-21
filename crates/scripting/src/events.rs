@@ -221,7 +221,9 @@ impl Component for OnTriggerLeaveEvent {
 /// entity's first-tick initialization hook).
 ///
 /// Lifecycle: emitted by the cell loader on every newly-spawned REFR
-/// that carries a script. Drained by `event_cleanup_system` at end-
+/// that carries a script *and* spawned 3D (Papyrus `OnLoad` is "only sent when
+/// an object's 3d is loaded"); an identity-only entity gets [`OnInitEvent`]
+/// instead (#5997). Drained by `event_cleanup_system` at end-
 /// of-frame so each script sees exactly one `OnCellLoad` invocation.
 ///
 /// Distinct from `ActivateEvent`: `OnCellLoad` fires unconditionally
