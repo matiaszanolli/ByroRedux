@@ -781,6 +781,43 @@ fn get_hit_tri_world_positions_returns_absolute_space_on_both_branches() {
     );
 }
 
+/// #6213 — the EyeEnvmap block places the authored eye centres with
+/// `instances[..].model`, which is render-origin-RELATIVE
+/// (`rebase_model_matrix`), so it must measure them against
+/// `fragWorldPosRel`. Measured against the absolute `fragWorldPos`, the
+/// eye-to-fragment vector was the >= 4096-unit snapped origin offset: one
+/// near-constant reflection direction for every iris fragment, and an
+/// arbitrary left/right pick. Static source check: inside the block every
+/// `fragWorldPos` read is the relative one.
+#[test]
+fn eye_envmap_measures_its_relative_centres_against_the_relative_position() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let start = frag
+        .find("if (isEyeEnvmap) {")
+        .expect("the EyeEnvmap block must exist");
+    let block = &frag[start..];
+    let block = &block[..block
+        .find("Lo += eyeEnv")
+        .expect("the EyeEnvmap block must accumulate into Lo")];
+
+    assert!(
+        block.contains("instances[fragInstanceIndex].model"),
+        "the eye centres are placed by the instance model"
+    );
+    assert!(
+        block.contains("reflect(normalize(fragWorldPosRel - centerRel), N)"),
+        "the eye reflection direction must be formed in render-origin-relative space"
+    );
+    for (at, _) in block.match_indices("fragWorldPos") {
+        assert!(
+            block[at..].starts_with("fragWorldPosRel"),
+            "EyeEnvmap block reads the absolute `fragWorldPos` against \
+             render-origin-relative eye centres (#6213): {}",
+            &block[at..block.len().min(at + 60)]
+        );
+    }
+}
+
 /// Pin the scale-aware offset and its zero-tMin shadow traversal together.
 /// Reintroducing a fixed world epsilon at either layer recreates acne at
 /// large coordinates and light leaks at small/detail scale.

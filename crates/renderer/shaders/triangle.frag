@@ -3143,14 +3143,20 @@ void main() {
     // and the instance `model` places them — skinned eyes under head-bone
     // rotation track the actor root, not the head-look delta. Rigid and
     // static heads are exact.
+    //
+    // #6213 — `model` is render-origin-RELATIVE (`rebase_model_matrix`), so
+    // the centres it places are too: the whole block works against
+    // `fragWorldPosRel`, never the absolute `fragWorldPos`. Mixing the two
+    // made the eye-to-fragment vector the >= 4096-unit origin offset — one
+    // near-constant direction for every iris fragment.
     if (isEyeEnvmap) {
-        vec3 leftWS = (instances[fragInstanceIndex].model
+        vec3 leftRel = (instances[fragInstanceIndex].model
             * vec4(mat.eyeLeftCenterX, mat.eyeLeftCenterY, mat.eyeLeftCenterZ, 1.0)).xyz;
-        vec3 rightWS = (instances[fragInstanceIndex].model
+        vec3 rightRel = (instances[fragInstanceIndex].model
             * vec4(mat.eyeRightCenterX, mat.eyeRightCenterY, mat.eyeRightCenterZ, 1.0)).xyz;
-        vec3 centerWS = distance(fragWorldPos, leftWS) <= distance(fragWorldPos, rightWS)
-            ? leftWS : rightWS;
-        vec3 eyeR = reflect(normalize(fragWorldPos - centerWS), N);
+        vec3 centerRel = distance(fragWorldPosRel, leftRel) <= distance(fragWorldPosRel, rightRel)
+            ? leftRel : rightRel;
+        vec3 eyeR = reflect(normalize(fragWorldPosRel - centerRel), N);
         // Renderer world space is Y-up; authored cubemaps are Z-up — the
         // same (x, z, -y) face selection the generic cube path uses.
         vec3 cubeDirection = normalize(vec3(eyeR.x, -eyeR.z, eyeR.y));
