@@ -460,6 +460,41 @@ pub(super) fn discard_pending_story_events(world: &World) {
     }
 }
 
+/// #6239 — discard the value-keyed requests the outgoing session's scripts
+/// queued. They hold FormIDs, amounts and names rather than entities, so
+/// nothing stops them resolving in the loaded world, and the drain runs
+/// between their producer and consumer more than once: a fragment's player
+/// `MoveTo` (`PlayerMoveRequest`) is taken by `step_cell_transition` after
+/// this drain in the same `about_to_wait`, and XP / skill grants raised by
+/// the Late fragment runners registered after `scripted_experience_system` /
+/// `scripted_skill_system` wait a frame. Applied in the loaded game they
+/// would move the player off the restored pose or grant unearned progress,
+/// and the next save would keep it. The rest are the same shape: sleep hours,
+/// music, script messages and the message boxes they opened.
+pub(super) fn discard_outgoing_session_requests(world: &World) {
+    if let Some(mut request) = world.try_resource_mut::<byroredux_scripting::PlayerMoveRequest>() {
+        request.0 = None;
+    }
+    if let Some(mut grants) = world.try_resource_mut::<byroredux_scripting::story_manager::PendingPlayerXp>() {
+        grants.0.clear();
+    }
+    if let Some(mut advances) = world.try_resource_mut::<byroredux_scripting::PendingSkillAdvances>() {
+        advances.0.clear();
+    }
+    if let Some(mut sleep) = world.try_resource_mut::<byroredux_scripting::obscript_more::PendingSleep>() {
+        sleep.0 = 0.0;
+    }
+    if let Some(mut music) = world.try_resource_mut::<byroredux_scripting::obscript_more::PendingMusic>() {
+        music.0.clear();
+    }
+    if let Some(mut messages) = world.try_resource_mut::<byroredux_scripting::PendingScriptMessages>() {
+        messages.0.clear();
+    }
+    if let Some(mut boxes) = world.try_resource_mut::<crate::notifications::MessageBoxQueue>() {
+        boxes.0.clear();
+    }
+}
+
 /// Drain a queued live-load: reload the saved cell or exterior worldspace
 /// via the existing loaders (full GPU/physics/camera setup), restore saved
 /// resources, then overlay the form-id-keyed mutable component deltas.
@@ -621,6 +656,7 @@ pub fn execute_pending_save_loads(
     // #6238 — and the cell resets it raised: each rebuilt cell noted the
     // player entering it against the outgoing session's visits and clock.
     byroredux_scripting::obscript_state::discard_pending_cell_resets(world);
+    discard_outgoing_session_requests(world);
 
     // The cell/session replacement invalidates every transient SDK entity
     // handle even when the restored population happens to reuse the same raw

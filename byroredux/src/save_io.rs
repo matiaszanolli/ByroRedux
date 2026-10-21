@@ -85,7 +85,8 @@ pub(crate) use commands::{quickload_latest, quicksave};
 #[cfg(test)]
 use live_load::{
     LiveReloadLedgers, PRE_RELOAD_RESOURCES, clear_player_gear_handoff_scratch,
-    discard_pending_story_events, exterior_reload_bootstrap_mode, reset_story_location_cursor,
+    discard_outgoing_session_requests, discard_pending_story_events,
+    exterior_reload_bootstrap_mode, reset_story_location_cursor,
 };
 
 // Tests live in sibling files by topic (#2407 / TD1-004) — the repo's

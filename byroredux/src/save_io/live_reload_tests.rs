@@ -877,6 +877,41 @@ fn live_load_drain_discards_the_cell_resets_its_reload_raised() {
     assert!(reload < resets && resets < post_restore);
 }
 
+/// #6239 — value-keyed requests the outgoing session's scripts queued (a
+/// player `MoveTo`, XP / skill grants, sleep, music, messages) are dropped
+/// by the drain instead of resolving in the loaded world.
+#[test]
+fn live_load_drain_discards_the_outgoing_sessions_requests() {
+    use byroredux_scripting::obscript_more::{MusicTrack, PendingMusic, PendingSleep};
+    use byroredux_scripting::story_manager::PendingPlayerXp;
+    use byroredux_scripting::{PendingScriptMessages, PendingSkillAdvances, PlayerMoveRequest};
+    let mut world = World::new();
+    world.insert_resource(PlayerMoveRequest(Some(0x0001_2345)));
+    world.insert_resource(PendingPlayerXp(vec![(25, false)]));
+    world.insert_resource(PendingSkillAdvances(vec![("Lockpicking".into(), 10.0)]));
+    world.insert_resource(PendingSleep(8.0));
+    world.insert_resource(PendingMusic(vec![MusicTrack { form_id: 1, file: "explore.mp3".into(), looping: false, decibels: 0.0 }]));
+    world.insert_resource(PendingScriptMessages::default());
+    world.insert_resource(crate::notifications::MessageBoxQueue::default());
+    discard_outgoing_session_requests(&world);
+    assert_eq!(world.resource::<PlayerMoveRequest>().0, None);
+    assert!(world.resource::<PendingPlayerXp>().0.is_empty());
+    assert!(world.resource::<PendingSkillAdvances>().0.is_empty());
+    assert_eq!(world.resource::<PendingSleep>().0, 0.0);
+    assert!(world.resource::<PendingMusic>().0.is_empty());
+
+    let source = include_str!("live_load.rs");
+    let body = &source[source
+        .find("pub fn execute_pending_save_loads(")
+        .expect("the live-load drain must exist")..];
+    let reload = body.find("reload_exterior_session(").expect("the drain must reload");
+    let discard = body
+        .find("discard_outgoing_session_requests(world)")
+        .expect("the drain must discard the outgoing session's requests (#6239)");
+    let pose = body.find("apply_player_pose(").expect("the drain must restore the saved pose");
+    assert!(reload < discard && discard < pose, "discard after the reload, before the saved pose lands");
+}
+
 /// #5435 — a Late-stage `StoryEvent` marker (AHEL / drowning KILL) can be
 /// pending on the frame boundary a load drains on; it names the outgoing
 /// session's entities, so the load must drop it rather than let the next
