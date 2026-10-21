@@ -889,6 +889,7 @@ fn decode_lossless_in(pack: &Packfile<'_>) -> Result<HkxAnimation> {
     }
 
     let mut tracks = vec![Vec::with_capacity(frame_count); transform_count];
+    // A track with a non-finite value, or a rotation `normalize_quaternion` refuses (#6242).
     let mut non_finite_tracks = vec![false; transform_count];
     for frame in 0..frame_count {
         for track in 0..transform_count {
@@ -904,12 +905,20 @@ fn decode_lossless_in(pack: &Packfile<'_>) -> Result<HkxAnimation> {
                 let at = array.0 + index * 16;
                 Ok([pack.f32(at, "rotation")?, pack.f32(at + 4, "rotation")?, pack.f32(at + 8, "rotation")?, pack.f32(at + 12, "rotation")?])
             };
-            let rotation = match channels_r[track] {
+            let stored = match channels_r[track] {
                 Channel::Absent => HkxTransform::IDENTITY.rotation,
                 Channel::Static(index) => rotation_at(static_rotations, index)?,
                 Channel::Dynamic(series) => rotation_at(rotations, frame * series_r + series)?,
             };
-            if !translation.iter().chain(&rotation).all(|value| value.is_finite()) {
+            // #6242 - the spline path's quaternion policy: a non-unit rotation is normalised, and
+            // one it refuses (non-finite, zero-length, overflowing) drops the track like any
+            // non-finite value. Passed through raw, a zero quaternion reached the pose unwarned and
+            // collapsed the bone.
+            let rotation = normalize_quaternion(stored).unwrap_or_else(|_| {
+                non_finite_tracks[track] = true;
+                stored
+            });
+            if !translation.iter().all(|value| value.is_finite()) {
                 non_finite_tracks[track] = true;
             }
             tracks[track].push(HkxTransform { translation, rotation, scale: [1.0; 3] });
@@ -2839,7 +2848,8 @@ mod tests {
             ],
             "static x, dynamic y (series 0 = every other float), absent z",
         );
-        let turned = [0.0, side, 0.0, side];
+        // Lossless rotations are normalised like the spline path's (#6242), to the last ulp.
+        let turned = normalize_quaternion([0.0, side, 0.0, side]).unwrap();
         assert_eq!(
             clip.tracks[1],
             [transform([0.0, 20.0, 0.0], turned), transform([0.0, 21.0, 0.0], turned), transform([0.0, 22.0, 0.0], turned)],
@@ -2924,6 +2934,19 @@ mod tests {
         put_f32(&mut builder.data, T_DYN, &[f32::NAN, f32::NAN]); // frame 0 of both series: tracks 0 and 1
         put_f32(&mut builder.data, R_DYN + 16, &[f32::NAN]); // track 2's rotation at frame 0
         assert!(decode_animation(&builder.build()).is_err(), "every track dropped");
+    }
+
+    /// #6242 - lossless rotations follow the spline path's `normalize_quaternion`: a zero-length
+    /// one drops its track (reported like a non-finite value), a non-unit one is normalised.
+    #[test]
+    fn a_lossless_rotation_the_spline_policy_refuses_drops_its_track_and_others_are_normalised() {
+        let mut builder = lossless_clip();
+        put_f32(&mut builder.data, R_STAT, &[0.0, 0.0, 0.0, 0.0]); // track 1's static rotation
+        put_f32(&mut builder.data, R_DYN, &[0.0, 0.0, 0.0, 2.0]); // track 0, frame 0
+        let clip = decode_animation(&builder.build()).expect("two tracks are fine");
+        assert_eq!(clip.dropped_bones, [7], "the zero quaternion's track is dropped");
+        assert_eq!(clip.track_to_bone, [5, 9]);
+        assert_eq!(clip.tracks[0][0].rotation, [0.0, 0.0, 0.0, 1.0], "a length-2 rotation is normalised");
     }
 
     #[test]
