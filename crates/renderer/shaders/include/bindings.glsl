@@ -561,6 +561,18 @@ struct GpuTerrainTile {
 /// terrain without height maps shades exactly as before. The only texture
 /// reads are the height samples themselves, one per weighted height-mapped
 /// layer, with the caller's uniform-flow gradients (#4016).
+///
+/// #6202 — a lane's blended share must vanish *with* its painted share.
+/// Raw `h_i + share_i / S` tends to `h_i`, not to nothing, as `share_i → 0`,
+/// so a high texel kept up to half the surface right up to the lane's
+/// zero-weight edge and then dropped out — a hard seam along the triangle
+/// edge at every painted rim (and at a fully opaque layer's core, where the
+/// base's share reaches 0). Each lane's height and in-band part are scaled
+/// by `fade_i = min(share_i / (S · k), 1)`, `k = 1 / (TERRAIN_SPLAT_LAYERS
+/// + 1)`: the largest `k` that keeps the biggest-share lane (≥ `S / lanes`)
+/// unfaded, so the band always holds a full-strength lane and a vanishing
+/// lane can never be the only survivor. Lanes at or above `S · k` blend
+/// exactly as before.
 void byroTerrainHeightBlend(
     inout vec4 splat0,
     inout vec4 splat1,
@@ -604,21 +616,29 @@ void byroTerrainHeightBlend(
         return;
     }
 
+    const float fadeShare = 1.0 / float(TERRAIN_SPLAT_LAYERS + 1u);
+    float fade[TERRAIN_SPLAT_LAYERS + 1u];
     float top = -1.0e30;
     for (uint i = 0u; i <= TERRAIN_SPLAT_LAYERS; ++i) {
+        fade[i] = 0.0;
         if (hasHeight[i]) {
-            top = max(top, h[i] + share[i] / heightShare);
+            float rel = share[i] / heightShare;
+            fade[i] = min(rel / fadeShare, 1.0);
+            h[i] = fade[i] * h[i] + rel;
+            top = max(top, h[i]);
         }
     }
     float floorScore = top - max(band, 1.0e-4);
     float total = 0.0;
     for (uint i = 0u; i <= TERRAIN_SPLAT_LAYERS; ++i) {
         if (hasHeight[i]) {
-            h[i] = max(h[i] + share[i] / heightShare - floorScore, 0.0);
+            h[i] = fade[i] * max(h[i] - floorScore, 0.0);
             total += h[i];
         }
     }
-    // `total > 0`: the top scorer is `band` above the floor by construction.
+    // `total > 0`: the top scorer sits `band` above the floor, and it is
+    // never faded below 1/10 (a faded lane outscores the unfaded
+    // biggest-share lane only with `fade ≥ 0.1`).
     for (uint i = 0u; i <= TERRAIN_SPLAT_LAYERS; ++i) {
         if (hasHeight[i]) {
             share[i] = heightShare * h[i] / total;

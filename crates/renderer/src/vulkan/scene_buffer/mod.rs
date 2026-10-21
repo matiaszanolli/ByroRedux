@@ -50,3 +50,5 @@ mod material_hash_tests;
 mod scene_descriptor_reflection_tests;
 #[cfg(test)]
 mod shader_contract_tests;
+#[cfg(test)]
+mod terrain_height_blend_tests;

@@ -338,8 +338,10 @@ void main() {
             (inst.flags >> INSTANCE_TERRAIN_TILE_SHIFT) & INSTANCE_TERRAIN_TILE_MASK;
         terrainTile = terrainTiles[nonuniformEXT(terrainTileIdx)];
         // #6196 — height-based layer blending. Rewrites the splat lanes in
-        // place, so the diffuse / specular / normal loops below (and the
-        // Tier-3 detail density) all compose the same blended surface.
+        // place, so the diffuse / specular / normal loops below all compose
+        // the same blended surface. The ground-cover density sites (Tier 3,
+        // the canopy receiver) read the painted `fragSplat0/1` instead: they
+        // must evaluate the field the scatter places blades from (#6203).
         // Band 0 (the setting at 0, or a tile spawned this frame before the
         // broadcast) leaves the weights untouched.
         if (terrainTile.heightBlendBand > 0.0) {
@@ -428,8 +430,8 @@ void main() {
         TerrainSample gcDetailSample;
         gcDetailSample.height = fragWorldPos.y;
         gcDetailSample.normal = normalize(fragNormalEffective);
-        gcDetailSample.splat0 = terrainSplat[0];
-        gcDetailSample.splat1 = terrainSplat[1];
+        gcDetailSample.splat0 = fragSplat0;
+        gcDetailSample.splat1 = fragSplat1;
         gcDetailSample.valid = true;
         float gcDetailLap = byroGcLaplacian(
             inst.vertexOffset, terrainTile.cellOriginXZ, fragWorldPos.xz, fragWorldPos.y);
@@ -2877,7 +2879,9 @@ void main() {
     // casting it cannot disagree. Splat weights and the geometry normal come
     // from the interpolated vertex attributes rather than a re-sample —
     // they are the same numbers `byroSampleTerrain` would return, already
-    // interpolated by the rasterizer — while the height stencil §3's shelter
+    // interpolated by the rasterizer; the painted `fragSplat0/1`, never the
+    // height-blended `terrainSplat`, which the scatter does not see (#6203)
+    // — while the height stencil §3's shelter
     // term needs does go through the sampler, because curvature is not
     // something a single fragment's attributes can carry.
     //
@@ -2896,8 +2900,8 @@ void main() {
             TerrainSample gcSample;
             gcSample.height = fragWorldPos.y;
             gcSample.normal = terrainGeometryNormal;
-            gcSample.splat0 = terrainSplat[0];
-            gcSample.splat1 = terrainSplat[1];
+            gcSample.splat0 = fragSplat0;
+            gcSample.splat1 = fragSplat1;
             gcSample.valid = true;
             float gcLap = byroGcLaplacian(
                 inst.vertexOffset,

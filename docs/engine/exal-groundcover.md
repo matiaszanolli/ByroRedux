@@ -1339,7 +1339,9 @@ calibration scalar — an extinction coefficient and a leaf area density; see
 **How the terrain receiver gets `d_ground`.** It evaluates the same
 `byroGcDensityGround`, off the same include, from `triangle.frag`. Splat
 weights and the geometry normal are already there as interpolated vertex
-attributes; the height stencil §3's shelter term needs goes through
+attributes — the *painted* weights (`fragSplat0/1`), not the height-blended
+lanes the surface shades with (#6196), since the scatter places blades from
+the painted field and the two must agree (#6203); the height stencil §3's shelter term needs goes through
 `byroSampleTerrain` against the global vertex SSBO, which `triangle.frag`
 already binds. The four remaining per-cell inputs — the affinity table, the
 water plane, the cell origin and the canopy thickness — ride `GpuTerrainTile`,
