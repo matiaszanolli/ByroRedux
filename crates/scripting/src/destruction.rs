@@ -203,6 +203,22 @@ pub struct PendingStageChanges(pub Vec<EntityId>);
 
 impl Resource for PendingStageChanges {}
 
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: destructible references' damage (saved) and the stage
+/// changes awaiting their ObScript blocks (transient).
+pub fn install(world: &mut World) {
+    world.init_resource::<DestructionStates>();
+    world.init_resource::<PendingStageChanges>();
+}
+
+/// #5802 — this subsystem's saved column. Called by the binary's
+/// `build_save_registry` at its place in the row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<DestructionStates>("DestructionStates");
+}
+
 /// Whether `entity`'s base object carries destruction data.
 pub fn is_destructible(world: &World, entity: EntityId) -> bool {
     let Some(base) = base_of(world, entity) else { return false };

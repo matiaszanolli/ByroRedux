@@ -58,7 +58,6 @@ pub fn register(world: &mut World) {
     crate::magic_effects::install(world);
     crate::magic_shaders::install(world);
     world.register::<crate::obscript_anim::HeadLook>();
-    world.init_resource::<crate::destruction::PendingStageChanges>();
     // M47.2 — form lists scripts read (derived).
     world.init_resource::<FormLists>();
     // M47.2 — the weather scripts can ask about (derived).
@@ -66,28 +65,25 @@ pub fn register(world: &mut World) {
     world.init_resource::<WeatherClassifications>();
     // M47.2 — keyword data scripts attached to locations (saved).
     world.init_resource::<LocationKeywordData>();
-    // M47.2 — destructible objects' damage (saved).
-    world.init_resource::<destruction::DestructionStates>();
+    // M47.2 — destructible objects' damage and stage changes, SetBribed /
+    // SetIntimidated, SetLocRefType and Game.AdvanceSkill: each subsystem
+    // installs its own resources (#5802).
+    destruction::install(world);
+    speechcraft::install(world);
+    loc_ref_types::install(world);
+    skills::install(world);
     // M47.2 — Papyrus animation event registrations (saved).
     world.init_resource::<AnimationEventRegistrations>();
     // M47.2 — Papyrus hit event registrations (saved).
     world.init_resource::<HitRegistrations>();
     // M47.2 — scripted SetLinkedRef links (saved).
     world.init_resource::<LinkedRefOverrides>();
-    // M47.2 — SetBribed / SetIntimidated flags and ChangeAnimArchetype
-    // assignments (saved).
-    world.init_resource::<SpeechcraftOutcomes>();
+    // M47.2 — ChangeAnimArchetype assignments (saved).
     world.init_resource::<AnimArchetypeOverrides>();
     // M47.2 — Starfield SetScanned / AddToMapScanned flags (saved).
     world.init_resource::<ScannedReferences>();
     // M47.2 — forms scripts added to form lists (saved).
     world.init_resource::<FormListAdditions>();
-    // M47.2 — scripted SetLocRefType assignments (saved).
-    world.init_resource::<LocRefTypeOverrides>();
-    // M47.2 — Game.AdvanceSkill: banked usage XP (saved) and the advances
-    // scripts queued (transient).
-    world.init_resource::<SkillProgress>();
-    world.init_resource::<PendingSkillAdvances>();
     // M47.2 — script-filled reference-collection alias members (saved).
     world.init_resource::<AliasCollections>();
     // M47.2 — scripted SetPlayerTeammate / SetDoingFavor flags (saved).

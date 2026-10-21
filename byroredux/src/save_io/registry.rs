@@ -521,23 +521,25 @@ pub fn build_save_registry() -> SaveRegistry {
     byroredux_scripting::challenges::register_saved(&mut r);
     // M47.3 — the magic effects running on an actor (script effects, timed value changes).
     byroredux_scripting::magic_effects::register_saved(&mut r);
+    // M47.2 — Actor.SetBribed / SetIntimidated flags.
+    byroredux_scripting::speechcraft::register_saved(&mut r);
     r
-        // M47.2 — Actor.SetBribed / SetIntimidated flags.
-        .register_resource::<byroredux_scripting::SpeechcraftOutcomes>("SpeechcraftOutcomes")
         // M47.2 — Actor.ChangeAnimArchetype assignments.
         .register_resource::<byroredux_scripting::AnimArchetypeOverrides>("AnimArchetypeOverrides")
         // M47.2 — Starfield SetScanned / AddToMapScanned flags.
         .register_resource::<byroredux_scripting::ScannedReferences>("ScannedReferences")
         // M47.2 — FormList.AddForm / RemoveAddedForm / Revert.
-        .register_resource::<byroredux_scripting::FormListAdditions>("FormListAdditions")
-        // M47.2 — ObjectReference.SetLocRefType assignments.
-        .register_resource::<byroredux_scripting::LocRefTypeOverrides>("LocRefTypeOverrides")
+        .register_resource::<byroredux_scripting::FormListAdditions>("FormListAdditions");
+    // M47.2 — ObjectReference.SetLocRefType assignments.
+    byroredux_scripting::loc_ref_types::register_saved(&mut r);
+    r
         // M47.2 — alias script owner ids and the quests whose alias scripts started.
         .register_resource::<byroredux_scripting::AliasScriptOwners>("AliasScriptOwners")
         // M47.2 — Papyrus hit event registrations.
-        .register_resource::<byroredux_scripting::AnimationEventRegistrations>("AnimationEventRegistrations")
-        .register_resource::<byroredux_scripting::destruction::DestructionStates>("DestructionStates")
-        .register_resource::<byroredux_scripting::HitRegistrations>("HitRegistrations")
+        .register_resource::<byroredux_scripting::AnimationEventRegistrations>("AnimationEventRegistrations");
+    // M47.2 — destructible references' damage.
+    byroredux_scripting::destruction::register_saved(&mut r);
+    r.register_resource::<byroredux_scripting::HitRegistrations>("HitRegistrations")
         // M47.2 — Location.SetKeywordData data.
         .register_resource::<byroredux_scripting::LocationKeywordData>("LocationKeywordData")
         // M47.2 — SetNoFavorAllowed / SetActorCause flags.
@@ -551,9 +553,10 @@ pub fn build_save_registry() -> SaveRegistry {
         // M47.2 — script-filled RefCollectionAlias members.
         .register_resource::<byroredux_scripting::AliasCollections>("AliasCollections")
         // M47.2 — Papyrus custom / remote event registrations.
-        .register_resource::<byroredux_scripting::EventRegistrations>("EventRegistrations")
-        // M47.2 — Game.AdvanceSkill's banked usage XP per skill.
-        .register_resource::<byroredux_scripting::SkillProgress>("SkillProgress")
+        .register_resource::<byroredux_scripting::EventRegistrations>("EventRegistrations");
+    // M47.2 — Game.AdvanceSkill's banked usage XP per skill.
+    byroredux_scripting::skills::register_saved(&mut r);
+    r
         // M47.2 — script AddKeyword / RemoveKeyword changes.
         .register_resource::<byroredux_scripting::keywords::ScriptedKeywords>("ScriptedKeywords")
         // M47.2 — script ActorBase.SetEssential / SetProtected.

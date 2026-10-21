@@ -67,6 +67,22 @@ pub struct PendingSkillAdvances(pub Vec<(String, f32)>);
 
 impl Resource for PendingSkillAdvances {}
 
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: `Game.AdvanceSkill`'s banked usage XP (saved) and the
+/// advances scripts queued (transient).
+pub fn install(world: &mut World) {
+    world.init_resource::<SkillProgress>();
+    world.init_resource::<PendingSkillAdvances>();
+}
+
+/// #5802 — this subsystem's saved column. Called by the binary's
+/// `build_save_registry` at its place in the row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<SkillProgress>("SkillProgress");
+}
+
 /// Advance the player's skill `name` by `magnitude` usage units. Returns the
 /// levels the skill reached, in order (empty when it only banked XP, or when
 /// the skill is unknown, absent from the player, or capped).

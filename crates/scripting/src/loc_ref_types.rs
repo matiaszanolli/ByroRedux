@@ -26,6 +26,20 @@ pub struct LocRefTypeOverrides {
 
 impl Resource for LocRefTypeOverrides {}
 
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: the scripted SetLocRefType assignments (saved).
+pub fn install(world: &mut World) {
+    world.init_resource::<LocRefTypeOverrides>();
+}
+
+/// #5802 — this subsystem's saved column. Called by the binary's
+/// `build_save_registry` at its place in the row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<LocRefTypeOverrides>("LocRefTypeOverrides");
+}
+
 impl LocRefTypeOverrides {
     /// Give `reference` the ref type `ref_type`; `0` (a `None` argument)
     /// clears every type scripts gave it.

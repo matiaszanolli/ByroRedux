@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 
 use byroredux_core::ecs::resource::Resource;
+use byroredux_core::ecs::world::World;
 
 /// Which outcome a script is flagging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,20 @@ pub struct SpeechcraftOutcomes {
 }
 
 impl Resource for SpeechcraftOutcomes {}
+
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: the scripted SetBribed / SetIntimidated flags (saved).
+pub fn install(world: &mut World) {
+    world.init_resource::<SpeechcraftOutcomes>();
+}
+
+/// #5802 — this subsystem's saved column. Called by the binary's
+/// `build_save_registry` at its place in the row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<SpeechcraftOutcomes>("SpeechcraftOutcomes");
+}
 
 impl SpeechcraftOutcomes {
     fn set_of(&self, outcome: SpeechcraftOutcome) -> &BTreeSet<u32> {
