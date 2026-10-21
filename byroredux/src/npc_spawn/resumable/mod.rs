@@ -980,6 +980,10 @@ mod tests {
             mesh(2, vec![[0.3, 1.0, 1.0, 1.0], [0.55, 1.0, 1.0, 0.5]]),
             mesh(3, Vec::new()),
         ];
+        // The shader authors the `Hair` bit on both (#6130).
+        for mesh in &mut meshes {
+            mesh.material.fallout_hair = true;
+        }
         bake_fallout_hair_tint(&mut meshes, Some([0.25; 3]));
         assert_eq!(
             meshes[0].colors,
@@ -988,8 +992,26 @@ mod tests {
         assert_eq!(meshes[1].colors, vec![[0.5, 0.5, 0.5, 1.0]; 3]);
 
         let mut neutral = vec![mesh(1, vec![[0.3, 1.0, 1.0, 1.0]])];
+        neutral[0].material.fallout_hair = true;
         bake_fallout_hair_tint(&mut neutral, None);
         assert_eq!(neutral[0].colors, vec![[1.0, 1.0, 1.0, 1.0]]);
+    }
+
+    /// #6130 — the mask is baked into meshes that author the `Hair` bit, not
+    /// into every mesh of a hair NIF: glasses and powdered wigs live in the
+    /// same folder (18 of 105 in vanilla FO3 / FNV) and author none.
+    #[test]
+    fn fallout_hair_bake_leaves_meshes_without_the_hair_bit_alone() {
+        use byroredux_nif::import::ImportedMesh;
+        let colours = vec![[0.3, 0.9, 0.2, 1.0]];
+        let mut meshes = vec![
+            ImportedMesh::from_geometry(vec![[0.0; 3]], colours.clone(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+            ImportedMesh::from_geometry(vec![[0.0; 3]], colours.clone(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+        ];
+        meshes[0].material.fallout_hair = true;
+        bake_fallout_hair_tint(&mut meshes, Some([0.25; 3]));
+        assert_ne!(meshes[0].colors, colours, "the hair mesh is baked");
+        assert_eq!(meshes[1].colors, colours, "the glasses keep their own colours");
     }
 
     /// Regression: FaceGen noses rendered broken. EGM deltas are Z-up (as

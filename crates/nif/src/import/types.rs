@@ -665,6 +665,10 @@ pub struct ImportedMaterial {
     pub water_shader_flags: u32,
     /// Whether the source shader is a dedicated mesh-water shader.
     pub is_water_shader: bool,
+    /// The FO3/FNV lit shader authors its `Hair` bit: this mesh's vertex
+    /// colours are a tint mask, not a colour (#6130). Raw-tier fact for the
+    /// NPC spawn hook; no canonical component reads it.
+    pub fallout_hair: bool,
     pub textures: MaterialTextureSet<Option<FixedString>>,
     /// Per-role source retained for cold-path diagnostics. A role with no
     /// path is still treated as absent downstream regardless of this value.
@@ -870,6 +874,7 @@ impl Default for ImportedMaterial {
         Self {
             water_shader_flags: 0,
             is_water_shader: false,
+            fallout_hair: false,
             textures: MaterialTextureSet::default(),
             texture_sources: MaterialTextureSet::default(),
             detail_neutral: byroredux_core::ecs::components::material::DETAIL_NEUTRAL_MODULATE2X,

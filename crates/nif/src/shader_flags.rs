@@ -55,6 +55,13 @@ pub mod fo3nv_f1 {
     /// `BSShaderPPLightingProperty`, mirroring the Skyrim+ path in
     /// `apply_shader_type_data`. See #2321.
     pub const FIRE_REFRACTION: u32 = 0x0001_0000;
+    /// Bit 18 — `Hair`. The FO3/FNV hair material: its vertex colours are a
+    /// tint mask the shipped `HairTint` pixel shader reads, not a colour to
+    /// multiply into the albedo (#6130). Measured on both games' vanilla
+    /// archives: 87 of the 105 `meshes\characters\hair\*.nif` author it on
+    /// every `BSShaderPPLightingProperty`; the other 18 are glasses, an
+    /// eyepatch and the powdered wigs.
+    pub const HAIR: u32 = 0x0004_0000;
     /// Bit 11 — `Parallax_Shader_Index_15`. Authors POM (texture slot 3,
     /// `Parallax_Occulsion` below) on this material. nif.xml names it
     /// "Parallax" and notes it selects shader index 15. See #2317.

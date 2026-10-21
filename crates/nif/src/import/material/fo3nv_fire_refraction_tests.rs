@@ -146,3 +146,20 @@ fn fo3nv_no_refraction_flags_leaves_refraction_strength_at_parsed_default() {
     assert_ne!(info.material_kind, 103);
     assert_eq!(info.refraction_strength, 0.0);
 }
+
+/// #6130 — the FO3/FNV `Hair` shader-flag bit crosses the import boundary, so
+/// the NPC hair hook keys on what the NIF authored, not on the game.
+#[test]
+fn fo3nv_hair_bit_is_surfaced_on_the_material() {
+    let extract = |flags: u32| {
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(fo3_pp_lighting_with_flags(flags, 0.0))];
+        let scene = NifScene { blocks, ..NifScene::default() };
+        let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
+        extract_with_pool(&scene, &shape, &[]).0
+    };
+    assert!(extract(crate::shader_flags::fo3nv_f1::HAIR).fallout_hair);
+    assert!(extract(crate::shader_flags::fo3nv_f1::HAIR | crate::shader_flags::fo3nv_f1::PARALLAX).fallout_hair);
+    assert!(!extract(0).fallout_hair, "glasses author no Hair bit");
+    assert!(!extract(crate::shader_flags::fo3nv_f1::EYE_ENVIRONMENT_MAPPING).fallout_hair);
+    assert_eq!(crate::shader_flags::fo3nv_f1::HAIR, 1 << 18, "nif.xml BSShaderFlags bit 18");
+}

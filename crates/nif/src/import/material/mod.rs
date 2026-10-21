@@ -985,6 +985,10 @@ pub(super) struct MaterialInfo {
     /// `BSWaterShaderProperty`. The older block has no dedicated flag word,
     /// but it still must use the water renderer.
     pub is_water_shader: bool,
+    /// The FO3/FNV `BSShaderPPLightingProperty` authors the `Hair` bit
+    /// (`fo3nv_f1::HAIR`): this mesh's vertex colours are a hair tint mask
+    /// (#6130).
+    pub fallout_hair: bool,
 }
 
 /// Stencil-test state captured from `NiStencilProperty`. Mirrors the
@@ -1316,6 +1320,7 @@ impl Default for MaterialInfo {
             sky_object_type: 0,
             water_shader_flags: 0,
             is_water_shader: false,
+            fallout_hair: false,
         }
     }
 }
@@ -1531,6 +1536,7 @@ impl MaterialInfo {
             texture_sources: super::types::MaterialTextureSet::default(),
             water_shader_flags: self.water_shader_flags,
             is_water_shader: self.is_water_shader,
+            fallout_hair: self.fallout_hair,
             material_path: self.material_path,
             // #4282 — the FO4+/FO76+ wetness/luminance captures cross the
             // boundary here; `translate_material` forwards them to the

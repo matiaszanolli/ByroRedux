@@ -54,7 +54,10 @@ pub(super) struct RuntimeNpcState {
     pub(super) head_parts_use_head_bone_mount: bool,
     /// Fallout 3 / New Vegas hair is lit by the `HairTint` lighting-shader
     /// variants, whose vertex colour is a tint mask rather than a colour
-    /// (see [`fallout_hair_tint_factor`]).
+    /// (see [`fallout_hair_tint_factor`]). This only selects the family whose
+    /// hair carries the mask (Oblivion multiplies its diffuse instead); which
+    /// *meshes* of the hair NIF carry it is what each authored, via
+    /// `ImportedMaterial::fallout_hair` (#6130).
     pub(super) hair_uses_fallout_tint_mask: bool,
     pub(super) brow_path: Option<String>,
     pub(super) eye_paths: Vec<String>,
@@ -1492,12 +1495,16 @@ pub(super) fn fallout_hair_tint_factor(hair_tint: [f32; 3], mask: f32) -> [f32; 
 /// Gamebryo. Without an authored HCLR the tint is the neutral 0.5 — an
 /// engine choice, not a measured FO3 default — which leaves the texture as
 /// authored.
+///
+/// Only meshes whose shader authors the `Hair` bit (`ImportedMaterial::
+/// fallout_hair`, #6130) carry such a mask: the glasses, eyepatch and
+/// powdered wigs that share the hair folder do not, and keep their colours.
 pub(super) fn bake_fallout_hair_tint(
     meshes: &mut [byroredux_nif::import::ImportedMesh],
     hair_tint: Option<[f32; 3]>,
 ) {
     let tint = hair_tint.unwrap_or([0.5; 3]);
-    for mesh in meshes {
+    for mesh in meshes.iter_mut().filter(|mesh| mesh.material.fallout_hair) {
         if mesh.colors.len() != mesh.positions.len() {
             mesh.colors = vec![[1.0; 4]; mesh.positions.len()];
         }

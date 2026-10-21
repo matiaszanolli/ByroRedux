@@ -492,6 +492,8 @@ fn apply_pp_lighting_property(
         // importer arm before this. See `MaterialInfo::legacy_shader_type`
         // for why this is its own field, not `Self::shader_type`.
         info.legacy_shader_type = Some(shader.shader.shader_type);
+        // #6130 — the authored `Hair` bit: vertex colours are a tint mask.
+        info.fallout_hair |= shader.shader_flags_1() & crate::shader_flags::fo3nv_f1::HAIR != 0;
         // FO3-D1-02 / #2317 — computed once, shared by the slot-3 texture
         // bind below and the scalar-write gate further down.
         let parallax_authored = fo3_parallax_authored(shader.shader_flags_1());
