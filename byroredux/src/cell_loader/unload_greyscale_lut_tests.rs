@@ -192,3 +192,35 @@ fn unload_walk_collects_every_texture_flip_frame() {
          base TextureHandle; the fallback and placeholder frames are skipped"
     );
 }
+
+/// #6109 - a particle emitter's greyscale palette LUT is a `resolve_texture`
+/// ref held in a plain `u32` on `ParticleEmitter`; the victim walk used to read
+/// the `TextureHandle` sprite but not it, so every distinct LUT's ref leaked per
+/// unloaded cell. `0` (its "no LUT" sentinel) and the fallback are skipped.
+#[test]
+fn unload_walk_collects_a_particle_emitters_greyscale_lut() {
+    use byroredux_core::ecs::ParticleEmitter;
+
+    let mut world = World::new();
+    let fallback_tex: u32 = 999;
+    let mut emitter = |lut: u32, sprite: u32| {
+        let entity = world.spawn();
+        world.insert(entity, TextureHandle(sprite));
+        world.insert(entity, ParticleEmitter { greyscale_lut_index: lut, ..ParticleEmitter::default() });
+        entity
+    };
+    let with_lut = emitter(42, 7);
+    let no_lut = emitter(0, 8);
+    let fallback_lut = emitter(fallback_tex, 9);
+
+    let (_mesh, drops, _terrain) =
+        collect_victim_gpu_handles(&world, &[with_lut, no_lut, fallback_lut], fallback_tex);
+
+    assert!(drops.contains(&42), "the emitter's LUT ref must be released on unload (#6109)");
+    for sprite in [7, 8, 9] {
+        assert!(drops.contains(&sprite), "the sprite is still released through TextureHandle");
+    }
+    assert!(!drops.contains(&0), "the no-LUT sentinel is never released");
+    assert!(!drops.contains(&fallback_tex), "nor the shared fallback");
+    assert_eq!(drops.iter().filter(|&&handle| handle == 42).count(), 1);
+}

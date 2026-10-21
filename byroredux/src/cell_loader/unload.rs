@@ -3,7 +3,7 @@
 use byroredux_core::ecs::components::{CellRoot, Children, Inventory, ItemInstanceId, Parent};
 use byroredux_core::ecs::resources::ItemInstancePool;
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{ActiveCamera, AnimatedTextureFlip, MeshHandle, TextureHandle, World};
+use byroredux_core::ecs::{ActiveCamera, AnimatedTextureFlip, MeshHandle, ParticleEmitter, TextureHandle, World};
 use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -813,6 +813,7 @@ pub(crate) fn collect_victim_gpu_handles(
     let mtq = world.query::<MaterialTextureHandles>();
     let ttq = world.query::<TerrainTileSlot>();
     let ftq = world.query::<AnimatedTextureFlip>();
+    let peq = world.query::<ParticleEmitter>();
     for &eid in victims {
         if let Some(mq) = &mq {
             if let Some(mh) = mq.get(eid) {
@@ -853,6 +854,15 @@ pub(crate) fn collect_victim_gpu_handles(
                 for handle in flip.all_handles() {
                     push_tex_drop(handle, &mut texture_drops);
                 }
+            }
+        }
+        // #6109 — an emitter's greyscale palette LUT is a `resolve_texture` ref
+        // the spawn took and stored in a plain `u32`; without this the ref was
+        // never given back (`0`, its "no LUT" sentinel, is skipped by
+        // `push_tex_drop`). The sprite is the entity's `TextureHandle`, above.
+        if let Some(peq) = &peq {
+            if let Some(emitter) = peq.get(eid) {
+                push_tex_drop(emitter.greyscale_lut_index, &mut texture_drops);
             }
         }
         if let Some(ttq) = &ttq {

@@ -1365,6 +1365,17 @@ pub(crate) fn script_texture_path(name: &str) -> String {
     path
 }
 
+/// Give back a `resolve_texture` ref that ended up attached to nothing - an
+/// emitter's greyscale LUT, resolved up front, when the emitter turns out to
+/// spawn no entity that carries it (#6109). `None`, `0` and the fallback are
+/// never refcounted per holder, so they are not released.
+pub(crate) fn release_unattached_texture(ctx: &mut VulkanContext, handle: Option<u32>) {
+    let fallback = ctx.texture_registry.fallback();
+    if let Some(handle) = displaced_texture(handle, fallback) {
+        ctx.texture_registry.drop_texture(&ctx.device, handle);
+    }
+}
+
 /// The texture ref a mesh gives up when its `TextureHandle` is overwritten: the
 /// previous handle, unless it was none, the null handle `0` or the fallback
 /// checkerboard - the ones unload never releases either (#6110).

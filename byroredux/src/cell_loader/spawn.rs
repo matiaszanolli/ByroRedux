@@ -1353,6 +1353,9 @@ fn spawn_particle_emitters(
         // blackbody temperature. Lighting visibility remains the shared
         // BLAS-backed TLAS query in the volumetric inject pass.
         if let Some(fog_volume) = crate::fog::medium_from_particle(&host, &preset) {
+            // #6109 — the volume carries no `ParticleEmitter`, so nothing would
+            // release the LUT ref taken above.
+            crate::asset_provider::release_unattached_texture(ctx, greyscale_lut);
             log::debug!(
                 target: "byroredux::fog",
                 "replaced particle emitter with local {} volume: \
@@ -1413,6 +1416,8 @@ fn spawn_particle_emitters(
                 em.original_type,
                 preset.texture_path,
             );
+            // #6109 — no emitter entity: give the LUT ref back.
+            crate::asset_provider::release_unattached_texture(ctx, greyscale_lut);
             continue;
         }
         let entity = world.spawn();

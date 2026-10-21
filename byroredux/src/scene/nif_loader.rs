@@ -1844,10 +1844,15 @@ fn spawn_nif_particle_emitters(
                     emitter.original_type,
                     preset.texture_path,
                 );
+                // #6109 — no emitter entity: give the LUT ref back.
+                crate::asset_provider::release_unattached_texture(ctx, greyscale_lut);
                 continue;
             }
             Some(handle)
         } else {
+            // #6109 — the fog volume carries no `ParticleEmitter`, so nothing
+            // would release the LUT ref taken above.
+            crate::asset_provider::release_unattached_texture(ctx, greyscale_lut);
             // The fog primitive is texture-independent. Its density was seeded
             // from authored alpha and it is modulated procedurally in froxel
             // space, so an absent sprite must not suppress the replacement.
