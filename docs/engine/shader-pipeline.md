@@ -305,6 +305,17 @@ is not named here.
    [COMPUTE→COMPUTE]        ping-pong slots gated each iteration by a
                            COMPUTE→COMPUTE barrier; final (odd count → slot 0)
                            is what composite samples via indirect_view(frame)
+11b shadow_filter.comp ×2 ─ direct-shadow spatial filter: an edge-aware 5x5
+   [FRAG→COMPUTE,          a-trous chain over the ReSTIR shadow ratio, writing
+    COMPUTE→COMPUTE,       the correction composite adds to direct light
+    COMPUTE→FRAG]          (`record_shadow_filter`). Recorded inside the SVGF
+                           timer bracket and in its own nested
+                           `shadow_filter_ms` one (#5959); still runs, outside
+                           SVGF, when SVGF is absent. A FRAGMENT→COMPUTE
+                           buffer barrier makes the reservoir writes visible;
+                           each iteration's image is barriered
+                           COMPUTE→COMPUTE, the last (the correction)
+                           COMPUTE→FRAGMENT for composite
 12 caustic_splat.comp   ─  caustic scatter (`record_caustic_splat_pass`)
 13 volumetrics_inject   ─┐ froxel grid (output consumed by composite,
                            VOLUMETRIC_OUTPUT_CONSUMED = true); reads

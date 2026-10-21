@@ -377,7 +377,7 @@ Every fallible Vulkan call propagates as a Rust `Result` and aborts the
 submit cleanly so the swapchain stays consistent. Each major pass is
 bracketed with a `gpu_timers` timestamp pair when the timer pool is active.
 
-The timestamp pool has 56 slots (28 pairs). Five pairs subdivide the inclusive
+The timestamp pool has 58 slots (29 pairs). Five pairs subdivide the inclusive
 main-render bracket into opaque/alpha-tested geometry, blended geometry,
 water, authored groundcover model draws, and procedural groundcover blade
 draws. `BYRO_PROFILE=1` emits `gpu_geometry phases:` with each duration and an
@@ -388,8 +388,9 @@ intervals under normal GPU overlap, not isolated shader instruction costs;
 setup, clears and attachment stores are not all inside the child intervals.
 Do not add the children to their inclusive main-render parent. The same holds
 for `volumetrics_inject` / `volumetrics_integrate`, which are recorded inside
-the `volumetrics` bracket: the debug overlay lists them but leaves them out of
-its GPU Σ (#4977).
+the `volumetrics` bracket, and for `shadow_filter`, recorded inside `svgf`
+(#5959): the debug overlay lists them but leaves them out of its GPU Σ while
+the parent ran (#4977).
 
 ## Resize
 

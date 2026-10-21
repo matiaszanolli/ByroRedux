@@ -2,14 +2,16 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, `QUERIES_PER_FRAME` (56) TIMESTAMP queries
-//! each — 28 start/end brackets, bumped from 32/16 by #4052's
+//! per frame-in-flight slot, `QUERIES_PER_FRAME` (58) TIMESTAMP queries
+//! each — 29 start/end brackets, bumped from 32/16 by #4052's
 //! ground-cover-bench bracket (#4210), again from 34/17 by the SKYAL
 //! sky-cubemap bake, again from 36/18 by the production ground-cover
 //! scatter (#4315), again from 38/19 by the exposure meter (#4618), again
 //! from 40/20 to 46/23 by the ground-cover model tier and the split
-//! volumetrics inject / integrate brackets (`88c23887b`), and again from
-//! 46/23 by the five main-pass geometry phases (`0925f7926`):
+//! volumetrics inject / integrate brackets (`88c23887b`), again from
+//! 46/23 by the five main-pass geometry phases (`0925f7926`), and again
+//! from 56/28 by the direct-shadow filter nested in the SVGF bracket
+//! (#5959):
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -59,16 +61,18 @@
 //! | 43   | volumetrics inject — end                             |
 //! | 44   | volumetrics integrate — start                        |
 //! | 45   | volumetrics integrate — end                          |
-//! | 46   | main pass, opaque phase (profile only) — start       |
-//! | 47   | main pass, opaque phase (profile only) — end         |
-//! | 48   | main pass, blended phase (profile only) — start      |
-//! | 49   | main pass, blended phase (profile only) — end        |
-//! | 50   | main pass, water phase (profile only) — start        |
-//! | 51   | main pass, water phase (profile only) — end          |
-//! | 52   | main pass, ground-cover model draw (profile only) — start |
-//! | 53   | main pass, ground-cover model draw (profile only) — end   |
-//! | 54   | main pass, ground-cover blade draw (profile only) — start |
-//! | 55   | main pass, ground-cover blade draw (profile only) — end   |
+//! | 46   | direct-shadow filter (inside SVGF) — start           |
+//! | 47   | direct-shadow filter (inside SVGF) — end             |
+//! | 48   | main pass, opaque phase (profile only) — start       |
+//! | 49   | main pass, opaque phase (profile only) — end         |
+//! | 50   | main pass, blended phase (profile only) — start      |
+//! | 51   | main pass, blended phase (profile only) — end        |
+//! | 52   | main pass, water phase (profile only) — start        |
+//! | 53   | main pass, water phase (profile only) — end          |
+//! | 54   | main pass, ground-cover model draw (profile only) — start |
+//! | 55   | main pass, ground-cover model draw (profile only) — end   |
+//! | 56   | main pass, ground-cover blade draw (profile only) — start |
+//! | 57   | main pass, ground-cover blade draw (profile only) — end   |
 //!
 //! The original three brackets (skin dispatch / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work; the skin-palette bracket (slots 28/29)
@@ -128,7 +132,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 
 /// Two TIMESTAMP queries per bracket (start, end); the module doc's table is
 /// the one place that counts them.
-const QUERIES_PER_FRAME: u32 = 56;
+const QUERIES_PER_FRAME: u32 = 58;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -196,6 +200,10 @@ const Q_VOLUMETRICS_INJECT_START: u32 = 42;
 const Q_VOLUMETRICS_INJECT_END: u32 = 43;
 const Q_VOLUMETRICS_INTEGRATE_START: u32 = 44;
 const Q_VOLUMETRICS_INTEGRATE_END: u32 = 45;
+/// #5959 — the direct-shadow spatial filter, nested inside the SVGF
+/// bracket (it is dispatched there, so `svgf_ms` keeps including it).
+const Q_SHADOW_FILTER_START: u32 = 46;
+const Q_SHADOW_FILTER_END: u32 = 47;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -327,6 +335,13 @@ pub struct GpuTimerSnapshot {
     /// `volumetrics_integrate.comp` alone — the second half of
     /// `volumetrics_ms`.
     pub volumetrics_integrate_ms: f32,
+    /// #5959 — the direct-shadow spatial filter (`shadow_filter.comp`'s
+    /// a-trous chain). Dispatched inside the SVGF bracket, so on a frame
+    /// SVGF runs it is nested in `svgf_ms`: never sum the two. (With SVGF
+    /// absent the filter still runs, outside it.) Starts at
+    /// `COMPUTE_SHADER`. Inactive on any frame the filter is off or failed
+    /// to initialise.
+    pub shadow_filter_ms: f32,
     // Main-pass phase fields (`0925f7926`): BOTTOM_OF_PIPE phase-completion
     // intervals inside `main_render_ms`, one per `GeometryTimerPhase`. GPU
     // overlap can move work across boundaries; these are not isolated shader
@@ -377,6 +392,7 @@ pub struct GpuTimerSnapshot {
     pub groundcover_models_active: bool,
     pub volumetrics_inject_active: bool,
     pub volumetrics_integrate_active: bool,
+    pub shadow_filter_active: bool,
     pub main_opaque_active: bool,
     pub main_blended_active: bool,
     pub main_water_active: bool,
@@ -443,6 +459,7 @@ const BIT_EXPOSURE_METER: u32 = 0x0008_0000;
 const BIT_GROUNDCOVER_MODELS: u32 = 1 << 20;
 const BIT_VOLUMETRICS_INJECT: u32 = 1 << 21;
 const BIT_VOLUMETRICS_INTEGRATE: u32 = 1 << 22;
+const BIT_SHADOW_FILTER: u32 = 1 << 23;
 
 /// Consecutive raster phases inside the inclusive main-render bracket.
 ///
@@ -464,8 +481,8 @@ pub(crate) enum GeometryTimerPhase {
 /// constants so a new named bracket must move these bases rather than
 /// silently aliasing `MainOpaque`'s slot and bit; the `const` asserts below
 /// and `every_timer_slot_and_active_bit_is_unique_and_in_range` pin the rest.
-const Q_GEOMETRY_PHASE_BASE: u32 = Q_VOLUMETRICS_INTEGRATE_END + 1;
-const GEOMETRY_PHASE_BIT_BASE: u32 = BIT_VOLUMETRICS_INTEGRATE.trailing_zeros() + 1;
+const Q_GEOMETRY_PHASE_BASE: u32 = Q_SHADOW_FILTER_END + 1;
+const GEOMETRY_PHASE_BIT_BASE: u32 = BIT_SHADOW_FILTER.trailing_zeros() + 1;
 const GEOMETRY_TIMER_PHASE_COUNT: u32 = 5;
 const _: () = assert!(
     Q_GEOMETRY_PHASE_BASE + 2 * GEOMETRY_TIMER_PHASE_COUNT == QUERIES_PER_FRAME,
@@ -612,6 +629,10 @@ fn snapshot_from_bits_with_valid_bits(
     snap.volumetrics_integrate_active = bits & BIT_VOLUMETRICS_INTEGRATE != 0;
     if snap.volumetrics_integrate_active {
         snap.volumetrics_integrate_ms = bracket_ms(Q_VOLUMETRICS_INTEGRATE_START);
+    }
+    snap.shadow_filter_active = bits & BIT_SHADOW_FILTER != 0;
+    if snap.shadow_filter_active {
+        snap.shadow_filter_ms = bracket_ms(Q_SHADOW_FILTER_START);
     }
     snap.main_opaque_active = bits & GeometryTimerPhase::MainOpaque.active_bit() != 0;
     if snap.main_opaque_active {
@@ -1756,6 +1777,42 @@ impl GpuPerFrameTimers {
         self.active_bits[frame] |= BIT_VOLUMETRICS_INJECT;
     }
 
+    /// #5959 — open the direct-shadow filter's bracket, inside the SVGF one.
+    pub fn cmd_shadow_filter_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_SHADOW_FILTER_START,
+            );
+        }
+    }
+
+    pub fn cmd_shadow_filter_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_SHADOW_FILTER_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_SHADOW_FILTER;
+    }
+
     pub fn cmd_volumetrics_integrate_start(
         &mut self,
         device: &ash::Device,
@@ -2050,6 +2107,26 @@ mod tests {
         assert_eq!(snap.volumetrics_inject_ms, 0.0);
     }
 
+    /// #5959 — the shadow filter reads back on its own bit, nested in the
+    /// SVGF bracket, which keeps reading its own (inclusive) span.
+    #[test]
+    fn shadow_filter_bracket_reports_measured_duration_inside_svgf() {
+        let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_SVGF_START as usize] = 1_000;
+        ticks[Q_SHADOW_FILTER_START as usize] = 4_000;
+        ticks[Q_SHADOW_FILTER_END as usize] = 6_000;
+        ticks[Q_SVGF_END as usize] = 7_000;
+
+        let snap = snapshot_from_bits(BIT_SVGF | BIT_SHADOW_FILTER, &ticks, 0.5);
+        assert!(snap.shadow_filter_active && snap.svgf_active);
+        assert_eq!(snap.shadow_filter_ms, 2_000.0 * 0.5);
+        assert_eq!(snap.svgf_ms, 6_000.0 * 0.5, "SVGF stays inclusive of the filter");
+
+        let snap = snapshot_from_bits(BIT_SVGF, &ticks, 0.5);
+        assert!(!snap.shadow_filter_active, "the filter off: its bit never set");
+        assert_eq!(snap.shadow_filter_ms, 0.0);
+    }
+
     #[test]
     fn volumetrics_integrate_bracket_reports_measured_duration() {
         let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
@@ -2213,7 +2290,7 @@ mod tests {
     /// bracket addition has one number to move. The stale spellings are
     /// assembled from fragments below so this test's own source can't match
     /// them. Each bump adds the spellings it retires (#4618 added 38/19's;
-    /// #4981 added 40/20's and 46/23's).
+    /// #4981 added 40/20's and 46/23's; #5959 added 56/28's).
     #[test]
     fn prose_outside_the_module_header_carries_no_bracket_counts() {
         let src = include_str!("gpu_timers.rs");
@@ -2232,6 +2309,9 @@ mod tests {
             format!("currently {}", 23),
             format!("{}-query", 46),
             format!("full {}", 46),
+            format!("currently {}", 28),
+            format!("{}-query", 56),
+            format!("full {}", 56),
         ];
         for pattern in &rotted {
             assert!(

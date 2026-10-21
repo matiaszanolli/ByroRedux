@@ -77,7 +77,7 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
         "main_render={} depth_history_copy={} tlas={} svgf={} composite={} cluster_cull={} \
          ssao={} bloom={} caustic={} volumetrics={} skin={} blas_refit={} \
          taa={} skin_palette={} upscale={} presentation={} sky_cube={} \
-         groundcover_scatter={} exposure_meter={} groundcover_models={} volumetrics_inject={} volumetrics_integrate={} rt_tier={} volumetric_light_cap={} froxel_extent={}x{}x{} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={}",
+         groundcover_scatter={} exposure_meter={} groundcover_models={} volumetrics_inject={} volumetrics_integrate={} shadow_filter={} rt_tier={} volumetric_light_cap={} froxel_extent={}x{}x{} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={}",
         ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
         ms(
             cov.gpu_depth_history_copy_ms,
@@ -106,6 +106,7 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
         ms(cov.gpu_groundcover_models_ms, cov.gpu_groundcover_models_active),
         ms(cov.gpu_volumetrics_inject_ms, cov.gpu_volumetrics_inject_active),
         ms(cov.gpu_volumetrics_integrate_ms, cov.gpu_volumetrics_integrate_active),
+        ms(cov.gpu_shadow_filter_ms, cov.gpu_shadow_filter_active),
         cov.volumetrics_state.rt_tier,
         cov.volumetrics_state.light_cap,
         cov.volumetrics_state.froxel_extent[0],

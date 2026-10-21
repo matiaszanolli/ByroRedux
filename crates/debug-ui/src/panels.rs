@@ -1883,18 +1883,31 @@ fn setting_matches(entry: &SettingEntry, filter: &str) -> bool {
         || entry.description.to_lowercase().contains(filter)
 }
 
-/// `gpu_pass_ms` rows whose GPU bracket is recorded *inside* another listed
-/// bracket, so the parent's time already includes theirs (#4977):
-/// `record_volumetrics_pass` wraps `VolumetricsPipeline::dispatch`, which
-/// stamps the inject and integrate brackets. Shown as rows, never summed.
-const NESTED_GPU_BRACKETS: &[&str] = &["volumetrics_inject", "volumetrics_integrate"];
+/// `(child, parent)` `gpu_pass_ms` rows whose GPU bracket is recorded
+/// *inside* the parent's, so the parent's time already includes theirs
+/// (#4977): `record_volumetrics_pass` wraps `VolumetricsPipeline::dispatch`,
+/// which stamps the inject and integrate brackets, and the direct-shadow
+/// filter is dispatched inside the SVGF bracket (#5959). Shown as rows,
+/// summed only on a cycle the parent did not run (the filter still runs
+/// without SVGF).
+const NESTED_GPU_BRACKETS: &[(&str, &str)] = &[
+    ("volumetrics_inject", "volumetrics"),
+    ("volumetrics_integrate", "volumetrics"),
+    ("shadow_filter", "svgf"),
+];
 
 /// The overlay's "GPU passes Σ": every bracket that ran this cycle (#2513),
-/// excluding [`NESTED_GPU_BRACKETS`] so no pass is counted twice (#4977).
+/// excluding a [`NESTED_GPU_BRACKETS`] child whose parent ran, so no pass is
+/// counted twice (#4977).
 fn gpu_pass_upper_bound_ms(gpu_pass_ms: &std::collections::BTreeMap<String, Option<f32>>) -> f32 {
+    let nested_in_a_running_parent = |name: &str| {
+        NESTED_GPU_BRACKETS.iter().any(|&(child, parent)| {
+            child == name && gpu_pass_ms.get(parent).is_some_and(Option::is_some)
+        })
+    };
     gpu_pass_ms
         .iter()
-        .filter(|(name, _)| !NESTED_GPU_BRACKETS.contains(&name.as_str()))
+        .filter(|(name, _)| !nested_in_a_running_parent(name))
         .filter_map(|(_, v)| *v)
         .sum()
 }
@@ -2445,5 +2458,21 @@ mod tests {
             gpu_pass_upper_bound_ms(&rows),
             gpu_pass_upper_bound_ms(&parents_only)
         );
+    }
+
+    /// #5959 — the shadow filter is nested in SVGF when SVGF runs; with SVGF
+    /// absent the filter runs on its own and counts.
+    #[test]
+    fn shadow_filter_counts_only_when_svgf_did_not_run() {
+        let mut rows: std::collections::BTreeMap<String, Option<f32>> = [
+            ("svgf".to_string(), Some(0.9)),
+            ("shadow_filter".to_string(), Some(0.35)),
+            ("composite".to_string(), Some(0.25)),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(gpu_pass_upper_bound_ms(&rows), 0.9 + 0.25);
+        rows.insert("svgf".to_string(), None);
+        assert_eq!(gpu_pass_upper_bound_ms(&rows), 0.35 + 0.25);
     }
 }

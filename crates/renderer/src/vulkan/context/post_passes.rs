@@ -438,11 +438,9 @@ impl VulkanContext {
                     // that no producer could ever populate.
                     svgf.dispatch(&self.device, cmd, frame, svgf_dbg_flags);
                     // The direct-shadow spatial filter rides the SVGF bracket,
-                    // so its cost reads as part of `gpu_svgf`.
-                    if let Some(filter) = self.shadow_filter_active() {
-                        filter.dispatch(&self.device, cmd, frame, &self.reservoir_buffers);
-                        filter_dispatched = true;
-                    }
+                    // so its cost reads as part of `gpu_svgf`, and in its own
+                    // nested `gpu_shadow_filter` bracket (#5959).
+                    filter_dispatched = self.record_shadow_filter(cmd, frame);
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_svgf_end(&self.device, cmd, frame);
                     }
@@ -451,11 +449,27 @@ impl VulkanContext {
             // SVGF absent or latched off: the correction composite reads must
             // still be this frame's.
             if !filter_dispatched {
-                if let Some(filter) = self.shadow_filter_active() {
-                    filter.dispatch(&self.device, cmd, frame, &self.reservoir_buffers);
-                }
+                self.record_shadow_filter(cmd, frame);
             }
         }
+    }
+
+    /// Dispatch the direct-shadow filter, when active, inside its own GPU
+    /// timer bracket (#5959). Returns whether it was dispatched.
+    fn record_shadow_filter(&mut self, cmd: vk::CommandBuffer, frame: usize) -> bool {
+        if self.shadow_filter_active().is_none() {
+            return false;
+        }
+        if let Some(ref mut timers) = self.gpu_timers {
+            timers.cmd_shadow_filter_start(&self.device, cmd, frame);
+        }
+        if let Some(filter) = self.shadow_filter_active() {
+            filter.dispatch(&self.device, cmd, frame, &self.reservoir_buffers);
+        }
+        if let Some(ref mut timers) = self.gpu_timers {
+            timers.cmd_shadow_filter_end(&self.device, cmd, frame);
+        }
+        true
     }
 
     /// The shadow filter when it exists and `r.shadowfilter` has not turned
@@ -1590,7 +1604,7 @@ mod tests {
                 name.starts_with("record_").then_some(name)
             })
             .collect();
-        assert_eq!(helpers.len(), 10, "update the documented pass inventory");
+        assert_eq!(helpers.len(), 11, "update the documented pass inventory");
         for helper in helpers {
             assert!(
                 docs.contains(helper),
