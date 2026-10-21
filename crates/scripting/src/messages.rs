@@ -195,10 +195,90 @@ impl Resource for PendingScriptMessages {}
 /// nine significant digits, so anything past this is padding (#6011).
 const MAX_PRINTF_PRECISION: usize = 20;
 
-/// Substitute `args` into `text`'s `printf` conversions: `%[width][.precision]f`,
-/// `%d` / `%i`, and `%%`. Width is ignored; a conversion past the last
+/// Largest field width honoured, for the same reason: a width of 10^9 would
+/// allocate that many pad characters per conversion.
+const MAX_PRINTF_WIDTH: usize = 64;
+
+/// One parsed `%[flags][width][.precision]` prefix.
+#[derive(Default)]
+struct PrintfSpec {
+    left: bool,
+    plus: bool,
+    space: bool,
+    zero: bool,
+    width: usize,
+    precision: Option<usize>,
+}
+
+impl PrintfSpec {
+    /// The conversion's digits `body` of a value with sign `negative`, padded
+    /// to the field width. `0` fills between sign and digits unless `-` is
+    /// set; a non-finite `body` is padded with spaces.
+    fn pad(&self, negative: bool, body: String, finite: bool) -> String {
+        let sign = if negative {
+            "-"
+        } else if self.plus {
+            "+"
+        } else if self.space {
+            " "
+        } else {
+            ""
+        };
+        let len = sign.len() + body.len();
+        let fill = self.width.saturating_sub(len);
+        if self.left {
+            format!("{sign}{body}{}", " ".repeat(fill))
+        } else if self.zero && finite {
+            format!("{sign}{}{body}", "0".repeat(fill))
+        } else {
+            format!("{}{sign}{body}", " ".repeat(fill))
+        }
+    }
+
+    /// `%f`: fixed notation.
+    fn fixed(&self, value: f32, default_precision: usize) -> String {
+        let precision = self.precision.unwrap_or(default_precision).min(MAX_PRINTF_PRECISION);
+        let body = format!("{:.precision$}", value.abs());
+        self.pad(value.is_sign_negative() && !value.is_nan(), body, value.is_finite())
+    }
+
+    /// `%e`: scientific notation in the form the CS wiki documents for the
+    /// game's formatter, `1.23E+005` (upper-case `E`, three exponent digits).
+    fn scientific(&self, value: f32, default_precision: usize) -> String {
+        if !value.is_finite() {
+            return self.fixed(value, default_precision);
+        }
+        let precision = self.precision.unwrap_or(default_precision).min(MAX_PRINTF_PRECISION);
+        // Rust writes `1.230e5` / `1.230e-5`; split it into mantissa and exponent.
+        let text = format!("{:.precision$e}", f64::from(value.abs()));
+        let (mantissa, exponent) = text.split_once('e').unwrap_or((&text, "0"));
+        let exponent: i32 = exponent.parse().unwrap_or(0);
+        let body = format!("{mantissa}E{}{:03}", if exponent < 0 { '-' } else { '+' }, exponent.abs());
+        self.pad(value.is_sign_negative(), body, true)
+    }
+
+    /// `%g`: "usually works just like `%.0f`"; from 1000000 up "the game
+    /// displays it in scientific notation (1E+006)".
+    fn general(&self, value: f32) -> String {
+        if value.abs() >= 1_000_000.0 {
+            self.scientific(value, 0)
+        } else {
+            self.fixed(value, 0)
+        }
+    }
+
+    /// `%d` / `%i`.
+    fn integer(&self, value: f32) -> String {
+        let value = value as i64;
+        self.pad(value < 0, value.unsigned_abs().to_string(), true)
+    }
+}
+
+/// Substitute `args` into `text`'s `printf` conversions:
+/// `%[+- 0][width][.precision](f|e|g|d|i)` (the switches of the CS wiki's
+/// *MessageFormatting* template) and `%%`. A conversion past the last
 /// argument reads 0 (the `Show` defaults); anything else after `%` stays as
-/// written.
+/// written and consumes no argument.
 pub fn substitute_numbers(text: &str, args: &[f32]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -213,39 +293,66 @@ pub fn substitute_numbers(text: &str, args: &[f32]) -> String {
             out.push('%');
             continue;
         }
-        // `%[width][.precision](f|d|i)`; width is accepted but not applied.
-        let mut spec = String::new();
+        // The spec as written, kept to emit it back if no conversion follows.
+        let mut raw = String::new();
+        let mut spec = PrintfSpec::default();
         while let Some(&d) = chars.peek() {
-            if d == '.' || d.is_ascii_digit() {
-                spec.push(d);
-                chars.next();
-            } else {
-                break;
+            match d {
+                '-' => spec.left = true,
+                '+' => spec.plus = true,
+                ' ' => spec.space = true,
+                '0' => spec.zero = true,
+                // C's alternate form: accepted, no effect on these conversions.
+                '#' => {}
+                _ => break,
             }
+            raw.push(d);
+            chars.next();
+        }
+        let mut width = String::new();
+        while let Some(&d) = chars.peek().filter(|d| d.is_ascii_digit()) {
+            width.push(d);
+            chars.next();
+        }
+        spec.width = if width.is_empty() {
+            0
+        } else {
+            width.parse::<usize>().unwrap_or(MAX_PRINTF_WIDTH).min(MAX_PRINTF_WIDTH)
+        };
+        raw.push_str(&width);
+        if chars.peek() == Some(&'.') {
+            chars.next();
+            let mut precision = String::new();
+            while let Some(&d) = chars.peek().filter(|d| d.is_ascii_digit()) {
+                precision.push(d);
+                chars.next();
+            }
+            // `%.f` is `%.0f`; a precision too large to parse is clamped.
+            spec.precision = Some(if precision.is_empty() {
+                0
+            } else {
+                precision.parse::<usize>().unwrap_or(MAX_PRINTF_PRECISION)
+            });
+            raw.push('.');
+            raw.push_str(&precision);
         }
         let value = args.get(next).copied().unwrap_or(0.0);
-        match chars.peek() {
-            Some('f') => {
+        let converted = match chars.peek() {
+            Some('f') => Some(spec.fixed(value, 6)),
+            Some('e') => Some(spec.scientific(value, 6)),
+            Some('g') => Some(spec.general(value)),
+            Some('d') | Some('i') => Some(spec.integer(value)),
+            _ => None,
+        };
+        match converted {
+            Some(converted) => {
                 chars.next();
                 next += 1;
-                let precision = spec.split_once('.').map_or(6, |(_, precision)| {
-                    if precision.is_empty() {
-                        0
-                    } else {
-                        precision.parse::<usize>().unwrap_or(6)
-                    }
-                })
-                .min(MAX_PRINTF_PRECISION);
-                out.push_str(&format!("{value:.precision$}"));
+                out.push_str(&converted);
             }
-            Some('d') | Some('i') => {
-                chars.next();
-                next += 1;
-                out.push_str(&format!("{}", value as i64));
-            }
-            _ => {
+            None => {
                 out.push('%');
-                out.push_str(&spec);
+                out.push_str(&raw);
             }
         }
     }

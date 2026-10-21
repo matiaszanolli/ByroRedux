@@ -9,9 +9,43 @@ fn printf_conversions_take_the_show_arguments() {
         "learn 20% faster (3 days, 1.50)"
     );
     assert_eq!(substitute_numbers("%0.f", &[3.0]), "3");
-    assert_eq!(substitute_numbers("%2.0f", &[3.0]), "3");
+    assert_eq!(substitute_numbers("%2.0f", &[3.0]), " 3", "width is a minimum, space-filled");
     assert_eq!(substitute_numbers("%d and %.0f", &[7.9]), "7 and 0", "missing args read 0");
     assert_eq!(substitute_numbers("100% sure", &[]), "100% sure", "a bare % stays");
+}
+
+/// #6014 — the CS wiki's switches `+`, space, `-`, `0` and the `%g` / `%e`
+/// conversions parse, consume their argument and format; the arguments after
+/// them stay aligned.
+#[test]
+fn printf_switches_consume_their_argument() {
+    assert_eq!(substitute_numbers("%05.2f", &[123.45]), "123.45", "already wider than 5");
+    assert_eq!(substitute_numbers("%08.2f", &[123.45]), "00123.45");
+    assert_eq!(substitute_numbers("%08.2f", &[-123.45]), "-0123.45", "zeros go after the sign");
+    assert_eq!(substitute_numbers("%+.0f", &[7.0]), "+7");
+    assert_eq!(substitute_numbers("%+.0f", &[-7.0]), "-7");
+    assert_eq!(substitute_numbers("% .0f", &[7.0]), " 7");
+    assert_eq!(substitute_numbers("[%-5.0f]", &[12.0]), "[12   ]");
+    assert_eq!(substitute_numbers("[%5.0f]", &[12.0]), "[   12]");
+    assert_eq!(substitute_numbers("[%+-5.0f]", &[12.0]), "[+12  ]");
+    assert_eq!(substitute_numbers("[%05d]", &[42.9]), "[00042]");
+    assert_eq!(substitute_numbers("%+-5.0f|%.0f|% 5.2f|%e|%d", &[1.0, 2.0, 3.0, 4.0, 5.0]),
+        "+1   |2| 3.00|4.000000E+000|5");
+    assert_eq!(substitute_numbers("%.3e", &[123000.0]), "1.230E+005");
+    assert_eq!(substitute_numbers("%.3e", &[0.00123]), "1.230E-003");
+    assert_eq!(substitute_numbers("%g", &[999999.0]), "999999");
+    assert_eq!(substitute_numbers("%g", &[1_000_000.0]), "1E+006");
+    assert_eq!(substitute_numbers("%+5q|%.0f", &[9.0]), "%+5q|9", "an unknown conversion consumes nothing");
+    assert_eq!(substitute_numbers("%-", &[]), "%-", "a dangling spec stays");
+}
+
+/// A mod-supplied width never allocates unbounded padding.
+#[test]
+fn printf_width_is_clamped() {
+    let wide = substitute_numbers("%99999999999999999999.0f", &[1.0]);
+    assert_eq!(wide.len(), MAX_PRINTF_WIDTH);
+    assert_eq!(substitute_numbers("%64.0f", &[1.0]).len(), MAX_PRINTF_WIDTH);
+    assert_eq!(substitute_numbers("%65.0f", &[1.0]).len(), MAX_PRINTF_WIDTH);
 }
 
 /// #6013 — a new box reads -1 until pressed; the previous unread answer does
