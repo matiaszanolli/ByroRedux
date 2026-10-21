@@ -61,17 +61,26 @@ pub(crate) fn idle_clip_playback_system(world: &World, _dt: f32) {
 
     // The idle the actor was in, for the one-shots that hand it back (see `idle_resume_system`).
     let mut resumes: Vec<(EntityId, crate::components::IdleResume)> = Vec::new();
-    let one_shot = |handle: u32| {
-        world
-            .try_resource::<byroredux_core::animation::AnimationClipRegistry>()
-            .and_then(|clips| clips.get(handle).map(|clip| clip.cycle_type == byroredux_core::animation::CycleType::Clamp))
-            .unwrap_or(false)
+    // #6208 — resolve which requested clips are one-shots under one registry read, dropped before the
+    // `AnimationPlayer` write guard: `animation_system_inner` holds the registry outermost and then takes
+    // the player/stack storages (#2400), so reading the registry under `players` closes a cycle.
+    let one_shots: Vec<bool> = {
+        let clips = world.try_resource::<byroredux_core::animation::AnimationClipRegistry>();
+        requests
+            .iter()
+            .map(|(_, _, _, handle)| {
+                clips
+                    .as_ref()
+                    .and_then(|clips| clips.get(*handle))
+                    .is_some_and(|clip| clip.cycle_type == byroredux_core::animation::CycleType::Clamp)
+            })
+            .collect()
     };
     if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
-        for (actor, _, skeleton_root, handle) in &requests {
+        for ((actor, _, skeleton_root, handle), &one_shot) in requests.iter().zip(&one_shots) {
             let replacement = AnimationPlayer::new(*handle).with_root(*skeleton_root);
             if let Some(player) = players.get_mut(*actor) {
-                if player.clip_handle != *handle && one_shot(*handle) {
+                if player.clip_handle != *handle && one_shot {
                     resumes.push((
                         *actor,
                         crate::components::IdleResume {
@@ -85,7 +94,7 @@ pub(crate) fn idle_clip_playback_system(world: &World, _dt: f32) {
                 *player = replacement;
             } else {
                 // It was playing nothing: when the one-shot ends the player goes again.
-                if one_shot(*handle) {
+                if one_shot {
                     resumes.push((
                         *actor,
                         crate::components::IdleResume { idle_clip: *handle, clip: None, speed: 1.0, local_time: 0.0 },
@@ -178,23 +187,27 @@ pub(crate) fn idle_resume_system(world: &World, _dt: f32) {
         Some(resumes) if !resumes.is_empty() => resumes.iter().map(|(actor, resume)| (actor, *resume)).collect(),
         _ => return,
     };
-    let finished = |handle: u32, time: f32| {
-        world
-            .try_resource::<byroredux_core::animation::AnimationClipRegistry>()
-            .and_then(|clips| clips.get(handle).map(|clip| time >= clip.duration))
-            .unwrap_or(true)
+    // #6208 — each resume's one-shot duration, read before the `AnimationPlayer` write guard (see
+    // `idle_clip_playback_system`). Only a player still on `idle_clip` is tested, so that is the clip to
+    // look up; a clip (or registry) that is gone counts as finished.
+    let durations: Vec<Option<f32>> = {
+        let clips = world.try_resource::<byroredux_core::animation::AnimationClipRegistry>();
+        resumable
+            .iter()
+            .map(|(_, resume)| clips.as_ref().and_then(|clips| clips.get(resume.idle_clip)).map(|clip| clip.duration))
+            .collect()
     };
     let mut done: Vec<EntityId> = Vec::new();
     let mut finished_idle: Vec<EntityId> = Vec::new();
     if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
-        for (actor, resume) in &resumable {
+        for ((actor, resume), duration) in resumable.iter().zip(&durations) {
             let Some(player) = players.get_mut(*actor) else {
                 done.push(*actor);
                 continue;
             };
             if player.clip_handle != resume.idle_clip {
                 done.push(*actor);
-            } else if finished(player.clip_handle, player.local_time) {
+            } else if duration.is_none_or(|duration| player.local_time >= duration) {
                 match resume.clip {
                     Some(clip) => {
                         let root = player.root_entity;
