@@ -570,13 +570,16 @@ pub const GROUNDCOVER_BLADES_PER_POINT_FAR: u32 = 1;
 pub const GROUNDCOVER_LOD_NEAR_END: f32 = 600.0;
 pub const GROUNDCOVER_LOD_MID_END: f32 = 1400.0;
 pub const GROUNDCOVER_LOD_MORPH_UNITS: f32 = 200.0;
-/// The blade tier's own density fade. Long on purpose: the stochastic thinning
-/// of far points starts well inside the draw distance and is paid back by
-/// widening the survivors (`GROUNDCOVER_FADE_COVERAGE_MAX_GAIN`), so coverage
-/// stays level instead of stepping at one hard radius — the "bright dense band"
-/// where density dropped while the blades' pixel-floor widening kept growing
-/// their footprint. The authored-model tier keeps `GROUNDCOVER_FADE_START`.
-pub const GROUNDCOVER_BLADE_FADE_START: f32 = 7000.0;
+/// Where the blade tier's density fade starts. The blade tier's thinning is
+/// paid back by widening the survivors (`GROUNDCOVER_FADE_COVERAGE_MAX_GAIN`),
+/// so coverage stays level instead of stepping at one hard radius (the "bright
+/// dense band" where density dropped while the blades' pixel-floor widening
+/// kept growing their footprint); the authored-model tier's fade is not repaid.
+/// It used to start well inside the draw distance (3000 against the model
+/// tier's 7000). Since the reach change (`b731b01f5`) both tiers take Skyrim's
+/// 7000-to-8000 fade, so this is the model tier's start, kept as its own knob
+/// for the blade tier's compensated fade (#6030).
+pub const GROUNDCOVER_BLADE_FADE_START: f32 = GROUNDCOVER_FADE_START;
 const _: () = {
     assert!(
         GROUNDCOVER_FADE_START < GROUNDCOVER_DRAW_DISTANCE,
