@@ -77,7 +77,7 @@ fn rotated_box_trigger_composes_rotation_in_same_frame_as_permuted_extents() {
     };
     let center = Vec3::ZERO;
     // A pure 90° yaw (Bethesda's "rz" Euler component) — same helper,
-    // same shipping mode (1 = CW+ZYX), as every other placed REFR.
+    // same shipping mode (0 = CW+XYZ), as every other placed REFR.
     let ref_rot = euler_zup_to_quat_yup_refr(0.0, 0.0, FRAC_PI_2);
     let v = trigger_volume_from_primitive(&prim, center, ref_rot, 1.0)
         .expect("box primitive yields a volume");

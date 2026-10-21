@@ -145,9 +145,12 @@ it should be.
 
 **Triage**: surfaces in `cell_refr_outliers`'s rotation-outlier
 table. Confirm against `cell_rot_sweep.rs` whether the REFR is
-mode-sensitive (XYZ vs ZYX). The 2026-05-26 ZYX-OpenMW fix shipped
-in commit `20074410` was the canonical mode flip for FNV — pre-fix
-content rendered with mode 0 would show this class.
+mode-sensitive (XYZ vs ZYX). The shipping convention is mode 0 (CW +
+XYZ, Gamebryo `FromEulerAnglesXYZ`). The 2026-05-26 flip to ZYX (mode 1,
+commit `20074410`) misread OpenMW's `osg::Quat` order and misplaced every
+multi-axis REFR (~30% of FNV interior REFRs) until it was reverted on
+2026-10-16 (`2a8b8e505`). Content rendered with mode 1 shows this class;
+a report from a build in that window is not evidence against mode 0.
 
 ### 4. Floating-mesh / fall-through-floor
 

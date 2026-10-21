@@ -1,9 +1,10 @@
-//! REFR rotation A/B sweep — for issue #1277, the post-mode-1 "walls 90° off"
-//! investigation. For every REFR in the given cell, apply each of the 4 Euler
-//! conversion modes (the same set the runtime dispatcher exposes via
-//! `--rotation-mode N`) and surface REFRs whose computed Y-up quaternion differs
-//! between modes. These are the only REFRs that can be visually affected by the
-//! shipped ZYX-vs-XYZ flip.
+//! REFR rotation A/B sweep — written for issue #1277, the "walls 90° off"
+//! investigation while mode 1 (CW + ZYX) shipped. For every REFR in the given
+//! cell, apply each of the 4 Euler conversion modes (the same set the runtime
+//! dispatcher exposes via `--rotation-mode N`) and surface REFRs whose computed
+//! Y-up quaternion differs between modes. These are the only REFRs that a
+//! ZYX-vs-XYZ choice can visually affect; the ship is mode 0 (CW + XYZ) again
+//! since 2026-10-16.
 //!
 //! Modes are defined once in
 //! [`byroredux_core::math::coord::euler_zup_to_quat_yup_mode`] — the same

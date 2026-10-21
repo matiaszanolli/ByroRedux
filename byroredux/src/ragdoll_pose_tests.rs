@@ -43,14 +43,19 @@ fn rotation_is_the_gamebryo_xyz_product_with_negated_angles() {
     }
 }
 
-/// The order matters: this convention is not the REFR `ZYX` product, and a
-/// pose with two non-zero angles tells them apart.
+/// XRGD and REFR share one convention: since the REFR ship mode went back to
+/// Gamebryo's CW + XYZ product (mode 0, 2026-10-16), the pose rotation equals
+/// the REFR placement rotation. The order still matters, and a pose with two
+/// non-zero angles tells it apart from the ZYX product (diagnostic mode 1).
 #[test]
-fn rotation_is_not_the_refr_zyx_product() {
+fn rotation_is_the_gamebryo_xyz_product_not_zyx() {
     let rotation = [0.7, 0.4, 0.0];
     let xrgd = bone_poses(&[entry([0.0; 3], rotation)], 1).unwrap()[0].rotation;
-    let refr = euler_zup_to_quat_yup_mode(1, rotation[0], rotation[1], rotation[2]);
-    assert!(!same_rotation(xrgd, refr));
+    let [rx, ry, rz] = rotation;
+    let refr_ship = euler_zup_to_quat_yup_mode(byroredux_core::math::coord::REFR_ROTATION_MODE_SHIP, rx, ry, rz);
+    assert!(same_rotation(xrgd, refr_ship));
+    let zyx = euler_zup_to_quat_yup_mode(1, rx, ry, rz);
+    assert!(!same_rotation(xrgd, zyx));
 }
 
 #[test]

@@ -407,8 +407,8 @@ pub fn position_zup_to_yup(p: [f32; 3]) -> Vec3 {
 ///
 /// #2435 / COORD-2 — this used to call the plain (non-dispatcher)
 /// `euler_zup_to_quat_yup`, contradicting this doc comment. Zero
-/// effect at the shipping default (`--rotation-mode 1` ≡ the plain
-/// helper's formula), but under `--rotation-mode 0/2/3` the player
+/// effect at the shipping default (`--rotation-mode 0`, CW + XYZ ≡ the
+/// plain helper's formula), but under `--rotation-mode 1/2/3` the player
 /// would land at a door with an orientation from a DIFFERENT
 /// convention than the surrounding geometry — exactly the scenario
 /// the diagnostic flag exists to triage, and XTEL was the one REFR-
@@ -703,7 +703,7 @@ mod tests {
     /// `--rotation-mode` dispatcher every other REFR-family site uses),
     /// but it used to call the plain, non-dispatcher `euler_zup_to_quat_yup`
     /// instead. A value-based test can't discriminate the two at the
-    /// shipping default (`--rotation-mode 1`'s formula is bit-identical
+    /// shipping default (`--rotation-mode 0`'s formula is bit-identical
     /// to the plain helper's), and mutating the dispatcher's shared
     /// `AtomicU8` mode from a test would race every other test in this
     /// crate that exercises REFR placement concurrently — so this is a

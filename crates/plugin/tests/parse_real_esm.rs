@@ -3695,7 +3695,8 @@ fn dump_prospector_saloon_refrs() {
 
     // Tally multi-axis REFRs (those whose rotation has TWO or more
     // non-trivial Euler components — these are the ones that would
-    // expose XYZ vs ZYX product divergence post the 2026-05-26 fix).
+    // expose XYZ vs ZYX product divergence — mode 0, the ship, vs the
+    // diagnostic mode 1 that shipped 2026-05-26 → 2026-10-16).
     let mut multi_axis = 0usize;
     let mut only_z = 0usize;
     let eps = 0.01_f32.to_radians();
