@@ -285,6 +285,9 @@ pub(crate) fn parse_one_nif(
                 return None;
             }
         };
+        // #6115 — the sync REFR loader warned on a truncated scene; this worker,
+        // which parses the exterior statics, cached it silently.
+        crate::parsed_nif_cache::note_scene_health(&path, &scene);
         // M49 — a shared-variant precombine carries its geometry in the
         // companion `.csg`; the walk-based import below would produce zero
         // meshes for it. Same decision the main-thread `PrecombinedSpawnJob`

@@ -54,13 +54,7 @@ pub(super) fn parse_and_import_nif(
     let scene = match byroredux_nif::parse_nif(nif_data) {
         Ok(s) => {
             log::debug!("Parsed NIF '{}': {} blocks", label, s.len());
-            if s.truncated {
-                log::warn!(
-                    "  NIF '{}' parsed with truncation — downstream import will \
-                     work from the partial block list",
-                    label
-                );
-            }
+            crate::parsed_nif_cache::note_scene_health(label, &s);
             s
         }
         Err(e) => {

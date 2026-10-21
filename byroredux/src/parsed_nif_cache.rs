@@ -256,3 +256,81 @@ mod tests {
         assert!((cache.hit_rate_pct() - (1000.0 / 13.0)).abs() < 1e-6);
     }
 }
+
+/// Parser health of the scenes the engine has consumed (#6115).
+///
+/// `NifScene` carries `truncated`, `dropped_block_count` and `recovered_blocks`
+/// so a consumer can see that a file did not parse cleanly, but only the
+/// synchronous REFR loader looked: the streaming worker and the NPC loaders
+/// cached the partial scene as a positive entry, with no log line naming the
+/// file and no retry. Every consumer now routes through
+/// [`note_scene_health`], which warns once per path and counts the files in
+/// [`partial_scene_count`] (shown on the streaming bench line). Vanilla content
+/// measures zero partial scenes, so a non-zero count is mod content.
+static PARTIAL_SCENES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Distinct paths already reported. Bounded: past the cap a path is still
+/// counted and warned, just not remembered, so a hostile load order cannot
+/// grow it without limit.
+static REPORTED_PARTIAL: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+    std::sync::Mutex::new(None);
+const REPORTED_PARTIAL_CAP: usize = 4096;
+
+/// Warn (once per path) and count if `scene` parsed partially: truncated, or
+/// with blocks recovered by skipping. Returns `true` the first time a path is
+/// reported. The scene is still usable - this only makes the loss visible.
+pub(crate) fn note_scene_health(label: &str, scene: &byroredux_nif::scene::NifScene) -> bool {
+    if !scene.truncated && scene.recovered_blocks == 0 {
+        return false;
+    }
+    let mut reported = REPORTED_PARTIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reported = reported.get_or_insert_with(Default::default);
+    let key = label.to_ascii_lowercase();
+    if reported.contains(&key) {
+        return false;
+    }
+    if reported.len() < REPORTED_PARTIAL_CAP {
+        reported.insert(key);
+    }
+    PARTIAL_SCENES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    log::warn!(
+        "NIF '{label}' parsed partially (truncated={}, {} blocks dropped, {} recovered, {} by guess) - \
+         the import works from the blocks that parsed",
+        scene.truncated,
+        scene.dropped_block_count,
+        scene.recovered_blocks,
+        scene.recovered_by_guess,
+    );
+    true
+}
+
+/// Distinct files reported by [`note_scene_health`] this process.
+pub(crate) fn partial_scene_count() -> u64 {
+    PARTIAL_SCENES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod scene_health_tests {
+    use super::*;
+    use byroredux_nif::scene::NifScene;
+
+    /// #6115 - a clean scene is silent; a truncated or recovered one is
+    /// reported once per path (case-insensitively) and counted.
+    #[test]
+    fn partial_scenes_are_reported_once_per_path() {
+        let clean = NifScene::default();
+        assert!(!note_scene_health("meshes\\health\\clean.nif", &clean));
+
+        let truncated = NifScene { truncated: true, dropped_block_count: 3, ..NifScene::default() };
+        let before = partial_scene_count();
+        assert!(note_scene_health("meshes\\health\\Mod_Truncated.nif", &truncated));
+        assert!(partial_scene_count() > before, "the file is counted");
+        assert!(
+            !note_scene_health("MESHES\\health\\mod_truncated.NIF", &truncated),
+            "the same path (any case) is reported once"
+        );
+
+        let recovered = NifScene { recovered_blocks: 2, ..NifScene::default() };
+        assert!(note_scene_health("meshes\\health\\mod_recovered.nif", &recovered));
+    }
+}

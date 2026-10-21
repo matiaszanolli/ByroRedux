@@ -333,7 +333,7 @@ impl StreamingTelemetry {
              unload_despawn_max_ms={:.2} unload_finalize_max_ms={:.2} \
              worker_queue_avg_ms={:.2} worker_queue_max_ms={:.2} \
              worker_avg_ms={:.2} worker_max_ms={:.2} \
-             worker_batch_duplicate_skips={} worker_stale_salvaged={} \
+             worker_batch_duplicate_skips={} worker_stale_salvaged={} partial_nifs={} \
              apply_samples={} apply_avg_ms={:.2} apply_max_ms={:.2} apply_total_ms={:.2} \
              apply_tex_extracts={} apply_tex_extract_total_ms={:.2} \
              apply_tex_extract_max_ms={:.2} apply_tex_prefetched={} \
@@ -369,6 +369,7 @@ impl StreamingTelemetry {
             self.worker_parse.max_ms(),
             self.worker_batch_duplicate_skips,
             self.worker_stale_salvaged_imports,
+            crate::parsed_nif_cache::partial_scene_count(),
             self.apply_slices.samples,
             self.apply_slices.average_ms(),
             self.apply_slices.max_ms(),

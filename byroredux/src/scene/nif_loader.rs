@@ -330,6 +330,9 @@ pub(super) fn parse_import_and_merge(
             return None;
         }
     };
+    // #6115 — every NPC skeleton / body / head / armour NIF comes through here
+    // and is cached; a partial one must at least name itself.
+    crate::parsed_nif_cache::note_scene_health(label, &scene);
     let mut pool = world.resource_mut::<StringPool>();
     let mut imported = byroredux_nif::import::import_nif_scene_with_resolver(
         &scene,
