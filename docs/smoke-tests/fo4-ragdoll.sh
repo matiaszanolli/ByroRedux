@@ -2,22 +2,34 @@
 # FO4 ragdoll activation and XRGD-posed corpses, live (#6070, split from #5015).
 #
 # The FO4 ragdoll decode and the human / feral-ghoul `XRGD` corpse poses were
-# verified against the data files only. This drives them in the engine, in two
-# interiors, each session under `BYRO_VALIDATION=1`:
+# verified against the data files only. This drives them in the engine, in
+# three interiors, each session under `BYRO_VALIDATION=1`:
 #
-#   MedTekResearch01   the authored corpse Loot_CorpseFeralGhoul01 (REFR
-#                      00106A72, 18 XRGD entries) is posed from its XRGD and
-#                      simulates an 18-body ragdoll; then the P2 fixture's
-#                      LvlFeralGhoul (REFR 00084CEC) dies to real swings.
-#   ShamrockTaphouse01 the authored corpse Loot_CorpseSettlerMale (REFR
-#                      000F123A, 19 XRGD entries: 18 bodies + the marker) the
-#                      same; then a LvlRaiderMelee (REFR 0007432D, a human) and
-#                      a LvlMoleratAggro512Delayed (REFR 000F2A45, a creature
-#                      whose rig is not posable) die to real swings.
+#   MedTekResearch01      the P2 fixture's LvlFeralGhoul (REFR 00084CEC) dies to
+#                         real swings.
+#   CharlestownHouse01    two authored feral-ghoul corpses (REFR 00203ACA,
+#                         00203AC9; 18 XRGD entries each) are posed from their
+#                         XRGD and simulate 18-body ragdolls.
+#   ShamrockTaphouse01    the authored corpse Loot_CorpseSettlerMale (REFR
+#                         000F123A, 19 XRGD entries: 18 bodies + the marker) the
+#                         same; a LvlRaiderMelee (REFR 0007432D, a human) dies to
+#                         real swings; and LvlMoleratAggro512Delayed (REFR
+#                         000F2A45), a creature whose rig is not posable, is a
+#                         starts-dead corpse that must simulate a stable 20-body
+#                         ragdoll (every molerat in this cell is dead on load, so
+#                         there is none to swing at).
 #
-# Every ragdoll must report all bodies live, finite, and no invalid-solve
-# recovery; every session must be validation-clean. Not gated: the death
-# hitch (no per-frame timing is read back).
+# Every ragdoll must report all bodies live, finite, every joint live, and no
+# invalid-solve recovery or parked body; every session must be validation-clean.
+# Not gated: the death hitch (no per-frame timing is read back).
+#
+# Not covered, and why: an authored corpse whose REFR carries a large X/Y
+# rotation. 466 of the 971 posed FO4 human / ghoul corpses do (the CK writes
+# the settled root orientation into the reference), and the composition of that
+# rotation with the pose is not established: MedTekResearch01's
+# Loot_CorpseFeralGhoul01 (REFR 00106A72, rotation -0.79 / 0.90 / 4.65) seeds
+# 121 units tall, 60 below its centre of mass, and the solver throws it ~2,700
+# units. The corpses above all have |X|, |Y| under 0.25 rad.
 #
 #   docs/smoke-tests/fo4-ragdoll.sh
 set -euo pipefail
@@ -120,9 +132,14 @@ check_ragdoll() {
     sed -nE 's/.*(bodies=[0-9]+).*(max_distance=[0-9.]+).*/\1 \2/p' "$LOG_DIR/ragdoll.log"
 }
 
-# Swing at `$1` until the combat trace names it killed; at most 60 swings.
+# Swing at `$1` (approaching it each time) until an actor named `$2` is killed;
+# at most 60 swings. The swings hit whichever actor is nearest the player, and
+# the fixtures stand in packs, so the kill that counts is the next `kills`
+# increment whose victim is called `$2` -- not necessarily `$1` itself. Writes
+# the victim's entity to `killed.entity` and the combat trace's ragdoll line to
+# `killed.activation` in the log directory.
 kill_by_swings() {
-    local target="$1"
+    local target="$1" name="$2"
     # The P2 route: swings are only accepted once the player is in Character
     # mode (an early press is rejected with `can_swing=false`).
     local deadline=$((SECONDS + TIMEOUT))
@@ -131,18 +148,26 @@ kill_by_swings() {
         (( SECONDS < deadline )) || fail "the player never reached Character mode"
         sleep 0.5
     done
+    local seen_kills=0 kills victim
     for swing in $(seq 1 60); do
         debug_command "combat.approach $target" "$LOG_DIR/approach.log" || fail "approach failed"
         debug_command "input.press attack" "$LOG_DIR/press.log" || fail "attack failed"
         sleep 0.6
         debug_command "combat.status" "$LOG_DIR/combat.log" || fail "combat.status failed"
-        if grep -q "last_target=$target .*killed=true" "$LOG_DIR/combat.log"; then
-            grep -oE "ragdoll (activated \([0-9]+ bodies\)|unavailable: .*)" "$LOG_DIR/combat.log" \
-                | tail -1
-            return 0
+        kills="$(sed -nE 's/.* kills=([0-9]+) .*/\1/p' "$LOG_DIR/combat.log" | tail -1)"
+        if [[ -n "$kills" ]] && (( kills > seen_kills )) && grep -q "killed=true" "$LOG_DIR/combat.log"; then
+            seen_kills="$kills"
+            victim="$(sed -nE 's/.*last_target=([0-9]+) .*/\1/p' "$LOG_DIR/combat.log" | tail -1)"
+            debug_command "mesh.info $victim" "$LOG_DIR/mesh.log" || continue
+            if grep -Fq "Entity $victim ($name)" "$LOG_DIR/mesh.log"; then
+                echo "$victim" >"$LOG_DIR/killed.entity"
+                grep -oE "ragdoll (activated \([0-9]+ bodies\)|unavailable: .*)" "$LOG_DIR/combat.log" \
+                    | tail -1 >"$LOG_DIR/killed.activation"
+                return 0
+            fi
         fi
     done
-    fail "60 swings at $target never killed it"
+    fail "60 swings at $target never killed a $name"
 }
 
 launch() {
@@ -185,14 +210,26 @@ check_authored_corpse() {
 
 check_kill() {
     local cell="$1" name="$2" refr="$3" bodies="$4"
-    local target activation
+    local target victim activation
     target="$(entity_of_ref "$name" "$refr")" || fail "$cell: $name $refr not found"
-    activation="$(kill_by_swings "$target")"
-    [[ "$activation" == "ragdoll activated ("* ]] || fail "$cell: $name died without a ragdoll: $activation"
+    kill_by_swings "$target" "$name"
+    victim="$(cat "$LOG_DIR/killed.entity")"
+    activation="$(cat "$LOG_DIR/killed.activation")"
+    [[ "$activation" == "ragdoll activated ("* ]] || fail "$cell: $name $victim died without a ragdoll: $activation"
     sleep 1
     local summary
-    summary="$(check_ragdoll "$target" "$bodies" "$name")"
-    echo "smoke[fo4-ragdoll]: $cell $name killed, $activation; $summary"
+    summary="$(check_ragdoll "$victim" "$bodies" "$name")"
+    echo "smoke[fo4-ragdoll]: $cell $name $victim killed, $activation; $summary"
+}
+
+# A creature that spawns dead (its rig is not posable from an XRGD) collapses
+# into its ragdoll at load.
+check_creature_corpse() {
+    local cell="$1" name="$2" refr="$3" bodies="$4"
+    local corpse summary
+    corpse="$(entity_of_ref "$name" "$refr")" || fail "$cell: $name $refr not found"
+    summary="$(check_ragdoll "$corpse" "$bodies" "$name")"
+    echo "smoke[fo4-ragdoll]: $cell creature corpse $refr (entity $corpse); $summary"
 }
 
 check_validation() {
@@ -207,14 +244,18 @@ check_validation() {
 }
 
 launch MedTekResearch01
-check_authored_corpse MedTekResearch01 loot_corpseferalghoul01 0x106A72
 check_kill MedTekResearch01 lvlferalghoul 0x084CEC ""
 check_validation MedTekResearch01
+
+launch CharlestownHouse01
+check_authored_corpse CharlestownHouse01 loot_corpseferalghoul01 0x203ACA
+check_authored_corpse CharlestownHouse01 loot_corpseferalghoul05 0x203AC9
+check_validation CharlestownHouse01
 
 launch ShamrockTaphouse01
 check_authored_corpse ShamrockTaphouse01 loot_corpsesettlermale 0x0F123A
 check_kill ShamrockTaphouse01 lvlraidermelee 0x07432D ""
-check_kill ShamrockTaphouse01 lvlmolerataggro512delayed 0x0F2A45 ""
+check_creature_corpse ShamrockTaphouse01 lvlmolerataggro512delayed 0x0F2A45 20
 check_validation ShamrockTaphouse01
 
 echo "smoke[fo4-ragdoll]: PASS"

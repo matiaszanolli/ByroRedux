@@ -81,6 +81,21 @@
 //! varying extras — and the rigs the id set cannot tell apart from a humanoid
 //! (Protectron, Handy and Assaultron match no skeleton's ids).
 //!
+//! **Placement tilt (#6070, open).** The entries are poses relative to the
+//! reference, but 466 of the 971 posed FO4 human / ghoul corpses carry a large X
+//! or Y rotation on the reference itself (the CK writes the settled root
+//! orientation into it; the Skyrim corpses are nearly all upright). Composed
+//! the usual way (`REFR_ROTATION_MODE_SHIP`, the same mode as the entries) the
+//! pose of such a corpse is not a lying one — MedTekResearch01's
+//! `Loot_CorpseFeralGhoul01` (REFR 00106A72, rotation -0.79 / 0.90 / 4.65) seeds
+//! 121 units tall with its legs 60 below the centre of mass, and the solver
+//! throws it ~2,700 units — and none of the 48 axis-order / angle-sign
+//! alternatives (or their inverses) restores the untilted corpses' lying extent
+//! (best 32.5 against 25.1 for a human; the shipped mode is not among the
+//! top eight). Corpses with |X|, |Y| under ~0.25 rad are unaffected, and
+//! `docs/smoke-tests/fo4-ragdoll.sh` gates those. The composition for the rest
+//! is not established.
+//!
 //! ## Other Skyrim rigs (#6068, #6069)
 //!
 //! The order rule was derived on one skeleton, so every further Skyrim rig is

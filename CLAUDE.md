@@ -116,10 +116,12 @@ real swings put the essential Delphine into bleedout instead of
 killing her, she gets back up 20 s later at 30 health, and Orgnar,
 who is not essential, dies to the same blows.
 [`fo4-ragdoll.sh`](docs/smoke-tests/fo4-ragdoll.sh) gates the FO4
-ragdoll live (#6070): authored `XRGD` corpses in MedTekResearch01 (feral
-ghoul) and ShamrockTaphouse01 (human) lie posed (18 bones) on an 18-body
-ragdoll, and a feral ghoul, a raider and a molerat killed by real swings
-activate finite ragdolls, every session under `BYRO_VALIDATION=1`.
+ragdoll live (#6070): authored `XRGD` corpses in CharlestownHouse01 (two
+feral ghouls) and ShamrockTaphouse01 (human) lie posed (18 bones) on an
+18-body ragdoll, a feral ghoul and a raider killed by real swings activate
+finite ragdolls, and a starts-dead molerat holds a stable 20-body one, every
+session under `BYRO_VALIDATION=1` (corpses whose reference carries a large X/Y
+tilt are not covered: their pose composition is not established).
 
 ### Shader Compilation
 ```bash

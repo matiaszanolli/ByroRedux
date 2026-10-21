@@ -89,6 +89,16 @@ pub(crate) fn stand_up(world: &World, actor: EntityId) -> Vec<String> {
         }
     }
     notes.push(format!("{} bone bodies restored", bones.len()));
+    // #6070 — and the shape-less-actor stand-in capsule that death retired
+    // (the one-body corpse template's bone is that capsule; handled above).
+    let stand_ins = crate::ragdoll::fallback_colliders_of(world, root);
+    if let Some(mut bodies) = world.query_mut::<RigidBodyData>() {
+        for collider in &stand_ins {
+            if bodies.get(*collider).is_none() {
+                bodies.insert(*collider, RigidBodyData { motion_type: MotionType::Keyframed, ..Default::default() });
+            }
+        }
+    }
 
     // The generic idle, on the actor, driving its skeleton.
     let idle = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|index| index.0.game).and_then(|game| {

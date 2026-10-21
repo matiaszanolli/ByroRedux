@@ -826,6 +826,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // ── crates/physics/src/ ──────────────────────────────────────
         ("ActorBoneCollider", "derived label, not state: re-applied to every skeleton bone by keyframe_live_ragdoll_bones on each NPC spawn, which a load re-runs (#2873)"),
         ("ActorColliderOwner", "derived skeleton-bone to placement-root link rebuilt by keyframe_live_ragdoll_bones on every NPC spawn"),
+        ("FallbackActorCollider", "derived marker, not state: re-installed with the fallback capsule by keyframe_live_ragdoll_bones on every NPC spawn (#6070)"),
         ("ContactConfig", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
         ("PhysicsWaterConstants", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
         ("WaterContactScratch", "transient per-tick buoyancy staging buffers whose capacities are reused; surfaces, currents, targets, and writes are derived from live ECS/physics state, and the #3268 in-current latch and the #5561 rest-depth latch are re-derived by the first scan after a load (worst case one redundant wake, or a float settling at its current depth)"),

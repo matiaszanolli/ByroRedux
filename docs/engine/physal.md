@@ -397,8 +397,19 @@ the other joints worse (vertibird, Liberty Prime's furniture), so it is not one
 rule. The 28 left after it: Liberty Prime's furniture (13), vertibird (3),
 power armor (6, three files), eyebot (2), createabot (2), mirelurk queen (1),
 bloatfly (1). The importer still reads every pivot in the body's own frame; the
-reading above is evidence, not wired behaviour (no live ragdoll check exists
-for FO4, #6070).
+reading above is evidence, not wired behaviour.
+
+**Live check (#6070).** `docs/smoke-tests/fo4-ragdoll.sh` drives the decoded
+ragdolls in the engine under `BYRO_VALIDATION=1`: a feral ghoul and a raider
+killed by real swings, three authored `XRGD` corpses (two ghouls, a settler) posed
+from their entries, and a starts-dead molerat (20 bodies, 19 joints). Every one
+reports all bodies live and finite, every joint live, no invalid-solve recovery
+and no parked body. It found three defects: RACE `ANAM` was only read on
+Skyrim (every FO4 actor spawned on the human skeleton), the one-body corpse
+template overwrote the decoded articulation, and the keyframed stand-in capsule
+that makes a shape-less actor hittable stayed behind at death, overlapping every
+limb. Open: a corpse whose reference is tilted is not posed correctly (see
+`ragdoll_pose.rs`).
 
 **Friction, restitution and damping (#6066).** Each body takes them from the
 blob's material row (`hknpRagdollData+16`, 80 B) and motion-property row

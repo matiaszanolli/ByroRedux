@@ -270,6 +270,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // in the same frame the cell loads.
     world.register::<byroredux_physics::ActorBoneCollider>();
     world.register::<byroredux_physics::ActorColliderOwner>();
+    // #6070 — queried by ragdoll activation / stand-up on every death.
+    world.register::<crate::npc_spawn::FallbackActorCollider>();
     world.register::<byroredux_core::ecs::components::ActorVitals>();
     world.register::<byroredux_core::ecs::components::TimedRestorations>();
     world.register::<byroredux_core::ecs::components::EquippedWeapon>();

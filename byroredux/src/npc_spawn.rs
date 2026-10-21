@@ -401,6 +401,20 @@ pub(crate) const FALLBACK_ACTOR_CAPSULE_RADIUS: f32 = 20.0;
 pub(crate) const FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT: f32 =
     FALLBACK_ACTOR_CAPSULE_HALF_HEIGHT + FALLBACK_ACTOR_CAPSULE_RADIUS;
 
+/// Marks the stand-in targetable capsule [`install_fallback_actor_collider`]
+/// gives an actor whose skeleton authors no collision bodies (#6070).
+///
+/// The capsule exists so a *living* shape-less actor can be hit. When the
+/// skeleton instead carries a decoded articulation (FO4's `bhkRagdollSystem`),
+/// the death ragdoll's own bodies take over and the capsule must go: left as
+/// a keyframed body it overlaps every limb, and the solver ejects them.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FallbackActorCollider;
+
+impl byroredux_core::ecs::Component for FallbackActorCollider {
+    type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
+}
+
 /// Give an otherwise shape-less live actor one conservative, targetable body.
 ///
 /// FO4's shipped skeletons can contain no bhk bone bodies at all.  Their
@@ -439,6 +453,7 @@ fn install_fallback_actor_collider(world: &mut World, actor_root: EntityId) -> E
     );
     world.insert(collider, byroredux_physics::ActorBoneCollider);
     world.insert(collider, byroredux_physics::ActorColliderOwner(actor_root));
+    world.insert(collider, FallbackActorCollider);
     world.insert(collider, Parent(actor_root));
     add_child(world, actor_root, collider);
     collider

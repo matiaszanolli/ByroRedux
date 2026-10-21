@@ -552,7 +552,59 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
         }
     }
 
+    // #6070 — and the shape-less-actor stand-in capsule, unless it IS one of
+    // the bodies (the one-body corpse template). A decoded articulation
+    // (FO4) brings its own bodies; the capsule left behind overlaps all of
+    // them.
+    let ragdoll_bones: Vec<EntityId> = spec.bodies.iter().map(|b| b.entity).collect();
+    let stand_ins: Vec<EntityId> = fallback_colliders_of(world, actor)
+        .into_iter()
+        .filter(|collider| !ragdoll_bones.contains(collider))
+        .collect();
+    if !stand_ins.is_empty() {
+        let handles: Vec<RapierHandles> = match world.query::<RapierHandles>() {
+            Some(hq) => stand_ins.iter().filter_map(|c| hq.get(*c).copied()).collect(),
+            None => Vec::new(),
+        };
+        {
+            let mut pw = world.resource_mut::<PhysicsWorld>();
+            for handle in &handles {
+                pw.remove_body(handle.body);
+            }
+        }
+        if let Some(mut hq) = world.query_mut::<RapierHandles>() {
+            for collider in &stand_ins {
+                hq.remove(*collider);
+            }
+        }
+        if let Some(mut rbq) = world.query_mut::<RigidBodyData>() {
+            for collider in &stand_ins {
+                rbq.remove(*collider);
+            }
+        }
+    }
+
     Ok(n)
+}
+
+/// The shape-less-actor stand-in capsules ([`FallbackActorCollider`]) that
+/// belong to the actor whose skeleton root is `skeleton_root` — children of
+/// the placement root the skeleton hangs under (#6070).
+pub(crate) fn fallback_colliders_of(world: &World, skeleton_root: EntityId) -> Vec<EntityId> {
+    let Some(owner) = world.get::<Parent>(skeleton_root).map(|parent| parent.0) else {
+        return Vec::new();
+    };
+    let Some(markers) = world.query::<crate::npc_spawn::FallbackActorCollider>() else {
+        return Vec::new();
+    };
+    let Some(owners) = world.query::<byroredux_physics::ActorColliderOwner>() else {
+        return Vec::new();
+    };
+    markers
+        .iter()
+        .map(|(entity, _)| entity)
+        .filter(|entity| owners.get(*entity).is_some_and(|o| o.0 == owner))
+        .collect()
 }
 
 /// Per-frame: copy each active ragdoll's simulated body poses onto the
@@ -1868,6 +1920,148 @@ mod tests {
             3,
             "no keyframed follower re-registered after activation",
         );
+    }
+
+    /// #6070 — an actor whose skeleton authors no collision bodies carries a
+    /// keyframed stand-in capsule so the living actor can be hit. A decoded
+    /// multi-body ragdoll brings its own bodies; activation must retire the
+    /// capsule (it overlaps every limb and the solver ejects them), and
+    /// stand-up must put it back. A one-body corpse template whose body IS the
+    /// capsule keeps it.
+    #[test]
+    fn activation_retires_the_stand_in_capsule_and_stand_up_restores_it() {
+        use crate::npc_spawn::FallbackActorCollider;
+        use byroredux_core::ecs::components::MotionType;
+        use byroredux_physics::{physics_sync_system, ActorBoneCollider, ActorColliderOwner};
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<CollisionShape>();
+        world.register::<RigidBodyData>();
+        world.register::<RapierHandles>();
+        world.register::<RagdollTemplate>();
+        world.register::<RagdollActive>();
+        world.register::<Ragdoll>();
+        world.register::<FallbackActorCollider>();
+        world.register::<ActorColliderOwner>();
+        world.insert_resource(PhysicsWorld::new());
+
+        // placement root > skeleton root (the template's owner) + the capsule.
+        let placement = world.spawn();
+        let actor = world.spawn();
+        world.insert(actor, Parent(placement));
+        let capsule = world.spawn();
+        world.insert(
+            capsule,
+            GlobalTransform {
+                translation: Vec3::new(0.0, 1000.0, 0.0),
+                rotation: Quat::IDENTITY,
+                scale: 1.0,
+            },
+        );
+        world.insert(capsule, CollisionShape::Capsule { half_height: 32.0, radius: 20.0 });
+        world.insert(capsule, RigidBodyData { motion_type: MotionType::Keyframed, ..Default::default() });
+        world.insert(capsule, ActorBoneCollider);
+        world.insert(capsule, ActorColliderOwner(placement));
+        world.insert(capsule, FallbackActorCollider);
+        let bones: Vec<EntityId> = (0..2)
+            .map(|i| {
+                let bone = world.spawn();
+                world.insert(
+                    bone,
+                    GlobalTransform {
+                        translation: Vec3::new(i as f32 * 25.0, 1000.0, 0.0),
+                        rotation: Quat::IDENTITY,
+                        scale: 1.0,
+                    },
+                );
+                bone
+            })
+            .collect();
+        let body = |bone| RagdollTemplateBody {
+            bone,
+            local_translation: Vec3::ZERO,
+            local_rotation: Quat::IDENTITY,
+            shape: CollisionShape::Ball { radius: 5.0 },
+            mass: 4.0,
+            linear_damping: 0.05,
+            angular_damping: 0.05,
+            friction: 0.5,
+            restitution: 0.0,
+            pose_bone_id: None,
+        };
+        world.insert(
+            actor,
+            RagdollTemplate {
+                bodies: bones.iter().map(|&bone| body(bone)).collect(),
+                constraints: vec![RagdollTemplateConstraint {
+                    body_a: 0,
+                    body_b: 1,
+                    joint: RagdollJointSpec::Ragdoll {
+                        twist_a: Vec3::X,
+                        plane_a: Vec3::Y,
+                        pivot_a: Vec3::new(12.5, 0.0, 0.0),
+                        twist_b: Vec3::X,
+                        plane_b: Vec3::Y,
+                        pivot_b: Vec3::new(-12.5, 0.0, 0.0),
+                        cone_max: std::f32::consts::PI,
+                        twist_min: -std::f32::consts::PI,
+                        twist_max: std::f32::consts::PI,
+                    },
+                }],
+            },
+        );
+        physics_sync_system(&world, PHYSICS_DT);
+        assert!(world.query::<RapierHandles>().unwrap().get(capsule).is_some());
+        assert_eq!(world.resource::<PhysicsWorld>().body_count(), 1);
+
+        assert_eq!(activate_ragdoll(&world, actor).unwrap(), 2);
+        assert!(world.query::<RapierHandles>().unwrap().get(capsule).is_none());
+        assert!(world.query::<RigidBodyData>().unwrap().get(capsule).is_none());
+        assert_eq!(
+            world.resource::<PhysicsWorld>().body_count(),
+            2,
+            "the capsule is freed; only the 2 dynamic ragdoll bodies remain"
+        );
+        physics_sync_system(&world, PHYSICS_DT);
+        assert!(
+            world.query::<RapierHandles>().unwrap().get(capsule).is_none(),
+            "the retired capsule must not re-register"
+        );
+
+        // Stand-up (revive / end of knockdown) puts the capsule's recipe back.
+        crate::systems::revive::stand_up(&world, actor);
+        assert!(world.query::<RigidBodyData>().unwrap().get(capsule).is_some());
+
+        // A one-body template whose body is the capsule keeps it.
+        let (mut world2, actor2) = {
+            let mut w = World::new();
+            w.register::<Transform>();
+            w.register::<GlobalTransform>();
+            w.register::<CollisionShape>();
+            w.register::<RigidBodyData>();
+            w.register::<RapierHandles>();
+            w.register::<RagdollTemplate>();
+            w.register::<RagdollActive>();
+            w.register::<Ragdoll>();
+            w.register::<FallbackActorCollider>();
+            w.register::<ActorColliderOwner>();
+            w.insert_resource(PhysicsWorld::new());
+            let placement = w.spawn();
+            let actor = w.spawn();
+            w.insert(actor, Parent(placement));
+            (w, actor)
+        };
+        let lone = world2.spawn();
+        world2.insert(lone, GlobalTransform { translation: Vec3::new(0.0, 1000.0, 0.0), rotation: Quat::IDENTITY, scale: 1.0 });
+        let owner = world2.get::<Parent>(actor2).unwrap().0;
+        world2.insert(lone, ActorColliderOwner(owner));
+        world2.insert(lone, FallbackActorCollider);
+        world2.insert(actor2, RagdollTemplate { bodies: vec![body(lone)], constraints: Vec::new() });
+        assert_eq!(fallback_colliders_of(&world2, actor2), vec![lone]);
+        assert_eq!(activate_ragdoll(&world2, actor2).unwrap(), 1);
+        assert_eq!(world2.resource::<PhysicsWorld>().body_count(), 1, "its own body is not torn down");
     }
 
     fn bone_y(world: &World, bone: EntityId) -> f32 {

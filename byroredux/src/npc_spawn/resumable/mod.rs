@@ -542,7 +542,12 @@ fn spawn_skeleton_unit(
     if let Some(root) = root {
         parent_part(world, placement_root, root);
         if let Some(collider) = fallback_collider {
-            install_fallback_ragdoll_template(world, root, collider);
+            // #6070 — a skeleton that authors its own articulation (FO4's
+            // `bhkRagdollSystem` blob) already carries a decoded template;
+            // the one-body corpse stand-in is for skeletons with none.
+            if world.get::<crate::ragdoll::RagdollTemplate>(root).is_none() {
+                install_fallback_ragdoll_template(world, root, collider);
+            }
         }
     } else {
         log::debug!(
@@ -1074,6 +1079,26 @@ mod tests {
             false,
         );
         assert_eq!(state.skeleton_path.as_deref(), Some(r"meshes\female.nif"));
+    }
+
+    /// #6070 — the one-body corpse stand-in must not overwrite a template the
+    /// skeleton import already produced (FO4's decoded `bhkRagdollSystem`
+    /// articulation): the decoded 18-body ragdoll was silently replaced by a
+    /// single capsule on every FO4 actor.
+    #[test]
+    fn the_stand_in_ragdoll_template_never_replaces_a_decoded_one() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn spawn_skeleton_unit(")
+            .expect("the skeleton unit must exist");
+        let body = &source[start..];
+        let install = body
+            .find("install_fallback_ragdoll_template(world, root, collider)")
+            .expect("the stand-in template install must exist");
+        let guard = body
+            .find("world.get::<crate::ragdoll::RagdollTemplate>(root).is_none()")
+            .expect("the install must be guarded by the absence of a decoded template (#6070)");
+        assert!(guard < install, "the guard precedes the install");
     }
 
     /// #6080 (CHAR-SD-01) — the Female flag is a Use-Traits field. A female
