@@ -28,7 +28,11 @@
 //! All of a quad file's trees share one mesh, so the cost is one entity and
 //! one global-SSBO range per `.btt` — the same residency shape as a `.bto`
 //! quad ([`super::object_lod::ObjectLodBlock`]), drawn by the ordinary static
-//! pass with alpha test and no BLAS ([`IsLodTerrain`]).
+//! pass with alpha test. It builds no BLAS at spawn; like every
+//! [`IsLodTerrain`] entity, a quad whose bound reaches within
+//! `LOD_SHADOW_CASTER_DISTANCE` of the camera is admitted into the TLAS as an
+//! alpha-tested shadow caster, so the near part of the ring does cost RT
+//! budget (a quad's bound spans up to ~16k BU).
 //!
 //! **This is an interpretation, not the engine's draw.** The engine's tree
 //! LOD billboards face the camera; here the quads are static. A crossed pair
@@ -518,7 +522,8 @@ fn spawn_tree_lod_quad(
     world.insert(entity, material);
     world.insert(entity, TwoSided);
     world.insert(entity, RenderLayer::Architecture);
-    // No BLAS, lean static draw, out of the TLAS — shared with every LOD.
+    // No BLAS at spawn; camera-local quads join the TLAS as alpha-tested
+    // casters (`LOD_SHADOW_CASTER_DISTANCE`) — shared with every LOD.
     world.insert(entity, IsLodTerrain);
 
     if parsed.trailing_bytes > 0 || mesh.skipped > 0 {

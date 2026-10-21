@@ -172,17 +172,17 @@ pub(crate) fn decal_uses_implicit_alpha_blend(
     is_decal && !has_alpha_blend && alpha_test && alpha_threshold < 0.25
 }
 
-/// Marker component for distant-terrain LOD blocks (engine-generated from
-/// the worldspace heightmaps beyond the full-detail streamed ring). These
-/// are coarse multi-cell meshes with a single base texture, no splat
-/// layers, and **no BLAS** — they rasterize for far view distance but stay
-/// out of the TLAS (RT shadows/GI/reflections sample the full-detail
-/// near terrain only), so they cost zero ray-tracing budget.
+/// Marker component for distant LOD entities beyond the full-detail streamed
+/// ring: terrain LOD blocks (engine-generated from the worldspace heightmaps),
+/// `.bto` object LOD and `.btt` tree LOD quads. They build **no BLAS** at
+/// spawn. They draw through the ordinary `collect_static_mesh_draws` loop,
+/// whose `tlas_exclusion` keeps them out of the TLAS unless their bound comes
+/// within `LOD_SHADOW_CASTER_DISTANCE` of the camera; those camera-local ones
+/// are admitted as RT shadow casters (#4180), and everything beyond that ring
+/// costs zero ray-tracing budget.
 ///
-/// Set in [`crate::cell_loader::terrain_lod::spawn_lod_block`]; consumed by
-/// [`crate::render::collect_lod_terrain_draws`] (their dedicated lean draw
-/// path) and skipped by the heavy `collect_static_mesh_draws` loop so they
-/// are never emitted twice or charged the ~13-component per-entity walk.
+/// Set in [`crate::cell_loader::terrain_lod::spawn_lod_block`], the object
+/// LOD and the tree LOD spawns.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct IsLodTerrain;
 impl Component for IsLodTerrain {

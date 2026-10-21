@@ -417,7 +417,7 @@ pub(crate) fn object_lod_quad_paths(
 /// Resolve + import + spawn one quad's `.bto`. Returns `None` when the quad
 /// has no baked `.bto` (the common case), `Some(empty)`-equivalent is handled
 /// by the caller. Each imported sub-mesh becomes an [`IsLodTerrain`] entity
-/// (no BLAS, lean static draw) positioned by its world-absolute import
+/// (no BLAS at spawn, ordinary static draw) positioned by its world-absolute import
 /// transform (verified: `.bto` geometry is authored in engine-aligned world
 /// coords — EXAL step 6).
 ///
@@ -512,7 +512,7 @@ fn spawn_object_lod_quad(
 
         // Lean global-only upload (no per-mesh buffers / no BLAS) — same path
         // terrain LOD uses: LOD geometry rasterizes from the global SSBO and
-        // never enters the TLAS.
+        // enters the TLAS only within `LOD_SHADOW_CASTER_DISTANCE`.
         let handle = match ctx
             .mesh_registry
             .upload_scene_mesh_global_only(&verts, &mesh.indices)
@@ -621,8 +621,8 @@ fn spawn_object_lod_quad(
             (texture != 0).then(|| tex_path.clone()),
         );
         world.insert(entity, RenderLayer::Architecture);
-        // No BLAS, lean static draw, kept out of the TLAS (shared with terrain
-        // LOD). The active full-model VWD cull is deferred; reconciliation
+        // No BLAS at spawn; out of the TLAS beyond `LOD_SHADOW_CASTER_DISTANCE`
+        // (shared with terrain LOD). The active full-model VWD cull is deferred; reconciliation
         // rejects any quad intersecting actual full-cell residency, so no
         // resident full model conflicts here. The per-record VWD signal is
         // now materialised as the

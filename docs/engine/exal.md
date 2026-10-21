@@ -429,7 +429,9 @@ Per-game impls (the runtime source per the Q3 finding):
     once per streaming state, so the ring needs no lattice origin), and every one within `fTreeLoadDistance` (75000 BU
     at Ultra, `Ultra.ini`) of the player whose footprint touches no resident
     full-detail cell becomes one mesh of **crossed alpha-tested card pairs**
-    (one entity per `.btt`, `IsLodTerrain`, no BLAS). The engine's own
+    (one entity per `.btt`, `IsLodTerrain`: no BLAS at spawn, and quads whose
+    bound comes within `LOD_SHADOW_CASTER_DISTANCE` of the camera enter the TLAS
+    as alpha-tested shadow casters). The engine's own
     billboards face the camera; these are static crosses, an interpretation
     that keeps motion vectors honest and needs no shader change. The alpha
     cutoff (0.5) is unsourced. FO4/FO76 bake their trees into the `.bto` and
@@ -801,8 +803,8 @@ render-pass / pipeline.
      + `stream_object_lod_blocks` — a streaming ring (mirroring `terrain_lod`)
      that, for Skyrim/FO4 worldspaces, resolves
      `meshes\terrain\<world>\objects\<world>.<level>.<x>.<y>.bto` from the BSA,
-     imports it, and spawns each sub-mesh as an `IsLodTerrain` entity (no BLAS,
-     lean static draw, shared object atlas). Reuses the existing `IsLodTerrain`
+     imports it, and spawns each sub-mesh as an `IsLodTerrain` entity (no BLAS
+     at spawn, ordinary static draw, shared object atlas). Reuses the existing `IsLodTerrain`
      marker + draw path rather than duplicating one. Quads load only **outside**
      the full-detail ring, so no resident full model conflicts (the runtime half
      of the VWD rule, without needing the flag yet).

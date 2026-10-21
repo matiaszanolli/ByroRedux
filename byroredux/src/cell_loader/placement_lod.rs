@@ -42,8 +42,8 @@
 //! named by the file, so the files are **per-cell**.
 //!
 //! Each placement spawns one imported `_far.nif` as an
-//! [`IsLodTerrain`](crate::components::IsLodTerrain) entity (no BLAS, lean
-//! static draw) — reusing the proven import path
+//! [`IsLodTerrain`](crate::components::IsLodTerrain) entity (no BLAS at
+//! spawn, ordinary static draw) — reusing the proven import path
 //! [`super::object_lod`] uses for `.bto`. The base record's model is
 //! resolved through `record_index.statics` (the same table the REFR spawn
 //! path reads); the `_far.nif` is that model with `.nif` → `_far.nif`.
@@ -640,8 +640,8 @@ fn spawn_placement_lod_cell(
                 );
                 world.insert(entity, sub.material.clone());
                 world.insert(entity, RenderLayer::Architecture);
-                // No BLAS, lean static draw, kept out of the TLAS (shared with
-                // terrain / object LOD). Cells load only where that exact
+                // No BLAS at spawn; out of the TLAS beyond
+                // `LOD_SHADOW_CASTER_DISTANCE` (shared with terrain / object LOD). Cells load only where that exact
                 // coordinate has no resident full-detail representation.
                 world.insert(entity, IsLodTerrain);
                 entities.push(entity);

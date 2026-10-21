@@ -211,8 +211,9 @@ fn btr_local_to_world(local: [f32; 3], level: i32, qx: i32, qy: i32) -> [f32; 3]
 /// single world-space mesh** — terrain LOD is a single decimated surface, so
 /// one [`MeshHandle`] keeps the [`LodBlock`] tracking (which is `Copy`,
 /// single-mesh) unchanged. The block spawns as an [`IsLodTerrain`] entity
-/// (no BLAS, lean static draw, never enters the TLAS), exactly like the
-/// synth path and object LOD.
+/// (no BLAS at spawn; only camera-local blocks within
+/// `LOD_SHADOW_CASTER_DISTANCE` enter the TLAS as shadow casters), exactly
+/// like the synth path and object LOD.
 ///
 /// `level` is the quad edge in cells — 4 for the closest band (see
 /// [`super::terrain_lod::LOD_BLOCK_CELLS`]), or 8 / 16 / 32 for the coarse
@@ -379,7 +380,7 @@ pub(crate) fn spawn_btr_block(
 
     // Lean global-only upload (no per-mesh buffers / no BLAS) — same path the
     // synth blocks + object LOD use; LOD geometry rasterizes from the global
-    // SSBO and never enters the TLAS.
+    // SSBO and enters the TLAS only within `LOD_SHADOW_CASTER_DISTANCE`.
     let mesh_handle = match ctx
         .mesh_registry
         .upload_scene_mesh_global_only(&vertices, &indices)
