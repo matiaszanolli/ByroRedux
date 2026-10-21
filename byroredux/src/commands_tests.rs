@@ -1561,3 +1561,41 @@ fn form_id_arguments_parse_hex_through_one_spelling() {
         );
     }
 }
+
+/// #6322 — `mesh.info` prints a placement's rotation as the REFR `DATA`
+/// triple, so it can be compared with FNVEdit directly. The old glam ZYX
+/// decomposition of the Y-up quat put a pure heading on `ry` with its sign
+/// flipped, and scrambled every multi-axis REFR.
+#[test]
+fn mesh_info_rotation_reads_back_the_refr_data_triple() {
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    for (rx, ry, rz) in [(0.0_f32, 0.0_f32, 30.0_f32), (10.0, 20.0, 50.0), (-35.0, 5.0, 120.0)] {
+        let entity = world.spawn();
+        let mut transform = Transform::IDENTITY;
+        transform.rotation = byroredux_core::math::coord::euler_zup_to_quat_yup(
+            rx.to_radians(),
+            ry.to_radians(),
+            rz.to_radians(),
+        );
+        world.insert(entity, transform);
+        let out = MeshInfoCommand.execute(&world, &entity.to_string()).lines.join("\n");
+        // A bare `mesh.info` reads the `prid` selection (triage workflow step 3).
+        world.insert_resource(SelectedRef(Some(entity)));
+        assert_eq!(MeshInfoCommand.execute(&world, "").lines.join("\n"), out);
+        let line = out
+            .lines()
+            .find(|l| l.contains("rot (deg, REFR DATA convention)"))
+            .unwrap_or_else(|| panic!("no REFR DATA rotation line:\n{out}"));
+        let angle = |key: &str| -> f32 {
+            let rest = &line[line.find(key).unwrap_or_else(|| panic!("no `{key}` in {line}")) + key.len()..];
+            rest.split_whitespace().next().unwrap().parse().unwrap()
+        };
+        for (key, want) in [("rx=", rx), ("ry=", ry), ("rz=", rz)] {
+            assert!(
+                (angle(key) - want).abs() < 0.01,
+                "DATA ({rx}, {ry}, {rz}): `{key}` should read {want}:\n{line}"
+            );
+        }
+    }
+}

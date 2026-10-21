@@ -643,12 +643,18 @@ impl ConsoleCommand for MeshInfoCommand {
         "mesh.info"
     }
     fn description(&self) -> &str {
-        "Show mesh/texture/material/transform/parent/FormID for an entity: mesh.info <entity_id>"
+        "Show mesh/texture/material/transform/parent/FormID for an entity: mesh.info [entity_id|.] (default: the prid selection)"
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
-        let id: u32 = match args.trim().parse() {
+        // A bare `mesh.info` reads the `prid` selection, as step 3 of the
+        // geometry-defect triage workflow runs it.
+        let token = match args.trim() {
+            "" => ".",
+            tok => tok,
+        };
+        let id = match resolve_console_entity(world, token) {
             Ok(v) => v,
-            Err(_) => return CommandOutput::line("Usage: mesh.info <entity_id>"),
+            Err(e) => return CommandOutput::line(format!("Usage: mesh.info [entity_id|.] — {e}")),
         };
         let name = resolve_entity_name(world, id);
         let mut lines = vec![match &name {
@@ -658,20 +664,22 @@ impl ConsoleCommand for MeshInfoCommand {
 
         // Local Transform: translation / Euler-from-quat (degrees) / scale.
         // Euler is for human reading only — the canonical rotation is the
-        // quat; we surface ZYX-extracted Euler so it matches the
-        // FNVEdit / CK convention the user sees in the ESM (REFR DATA
-        // stores RX RY RZ as ZYX-composed Euler in radians).
+        // quat. `quat_yup_to_euler_zup` is the exact inverse of the shipping
+        // REFR conversion, so on a placement root this prints the Z-up
+        // `DATA` triple FNVEdit / the CK show for that REFR (#6322). A glam
+        // `to_euler` on the Y-up quat would report angles about the engine's
+        // axes instead: a pure heading `rz` read back as `ry = -rz`.
         if let Some(t) = world.get::<Transform>(id) {
-            let (z, y, x) = t.rotation.to_euler(byroredux_core::math::EulerRot::ZYX);
+            let (rx, ry, rz) = byroredux_core::math::coord::quat_yup_to_euler_zup(t.rotation);
             lines.push(format!(
                 "  Transform.local:   pos ({:>+8.2},{:>+8.2},{:>+8.2})",
                 t.translation.x, t.translation.y, t.translation.z
             ));
             lines.push(format!(
-                "                     rot (deg ZYX-extracted) rx={:>+7.2}  ry={:>+7.2}  rz={:>+7.2}",
-                x.to_degrees(),
-                y.to_degrees(),
-                z.to_degrees()
+                "                     rot (deg, REFR DATA convention) rx={:>+7.2}  ry={:>+7.2}  rz={:>+7.2}",
+                rx.to_degrees(),
+                ry.to_degrees(),
+                rz.to_degrees()
             ));
             lines.push(format!(
                 "                     scale {:.3}  (uniform)",

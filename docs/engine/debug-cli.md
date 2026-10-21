@@ -547,12 +547,16 @@ protocol change.
 
 ### `mesh.info` — the "what is this entity?" dump
 
-`mesh.info <id>` is the workhorse for diagnosing a single entity. It now
-prints (in `byroredux/src/commands/mod.rs::MeshInfoCommand`):
+`mesh.info <id>` is the workhorse for diagnosing a single entity. A bare
+`mesh.info` (or `mesh.info .`) dumps the current `prid` selection. It now
+prints (in `byroredux/src/commands/assets.rs::MeshInfoCommand`):
 
-- **Transform.local** — translation, ZYX-extracted Euler in degrees (for human
-  reading; the quat is canonical, ZYX matches the FNVEdit/CK REFR DATA
-  convention), and uniform scale.
+- **Transform.local** — translation, the rotation as a Z-up Euler triple in
+  degrees, and uniform scale. The quat is canonical; the triple is
+  `quat_yup_to_euler_zup`, the exact inverse of the shipping REFR conversion, so
+  on a placement root it reads the same `rx ry rz` FNVEdit / the CK show in the
+  REFR's `DATA` (#6322). Under a non-default `--rotation-mode` (a diagnostic
+  A/B knob) it will not, since the placement was built with another formula.
 - **Transform.global** — world translation.
 - **Parent chain** — walks up `Parent` links (capped at 32 to guard cycles)
   and reports the `id -> parent -> …` chain. The FormID is attached only at the

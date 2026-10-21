@@ -335,7 +335,7 @@ pub fn print_help() {
     println!("  tex.loaded         Currently-resident textures + byte size");
     println!("  tex.dump <bsa> <tex> [out.png]  Extract + decode one archive");
     println!("                     texture to PNG (menu sets + font atlases)");
-    println!("  mesh.info <id>     MeshHandle / TextureHandle / Material paths");
+    println!("  mesh.info [id]     MeshHandle / TextureHandle / Material paths (default: prid selection)");
     println!("  mesh.cache         NIF import cache stats");
     println!();
     println!("Capture:");
