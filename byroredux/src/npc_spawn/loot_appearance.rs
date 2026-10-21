@@ -118,13 +118,15 @@ pub(crate) fn mesh_entities_under(world: &World, root: EntityId) -> Vec<EntityId
         .collect()
 }
 
-/// Collision entities standing in for `root`'s placement: standalone ECS
-/// entities tagged [`PhysicsSourceForm`] with the placement's form id, one
-/// per collider a compound bhk shape spawned (#1698). They are deliberately
-/// NOT descendants of the root — their transforms are world-composed, and
+/// Collision entities standing in for `root`'s placement: ECS entities
+/// tagged [`PhysicsSourceForm`] with the placement's form id, one per collider
+/// a compound bhk shape spawned (#1698). Those are deliberately NOT
+/// descendants of the root — their transforms are world-composed, and
 /// `Parent`-ing them would double-transform under propagation — which is
 /// exactly why the `PickedUp` subtree marker cannot reach them and a taken
-/// item's colliders must be swept separately (#4818).
+/// item's colliders must be swept separately (#4818). The packed-Havok proxy
+/// and behaviour-graph node colliders ARE parented, so a despawning caller
+/// must detach the result from its surviving parents first (#6132).
 pub(crate) fn collision_entities_of(world: &World, root: EntityId) -> Vec<EntityId> {
     use byroredux_core::ecs::components::{FormIdComponent, PhysicsSourceForm};
 

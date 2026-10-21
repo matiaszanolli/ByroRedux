@@ -655,7 +655,7 @@ fn release_entities_timed(
 /// each, and built a `HashSet` of every victim unconditionally);
 /// partial-subtree releases (#5028's gear release) leave no dangling
 /// child id behind.
-fn detach_victims_from_surviving_parents(world: &mut World, victims: &[EntityId]) {
+pub(super) fn detach_victims_from_surviving_parents(world: &mut World, victims: &[EntityId]) {
     if victims.is_empty() {
         return;
     }

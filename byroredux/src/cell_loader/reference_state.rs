@@ -561,16 +561,24 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
             }
         }
         // #4818 — the respawned placement's colliders are standalone
-        // entities, not descendants, and this restore runs *after* they
-        // spawn (`spawn.rs` registers shapes before `synth_child.rs` gets
-        // to the per-placement state), so the marker cannot cover them.
-        // Despawn them outright — `&mut World` makes the full teardown
-        // available, and a not-yet-registered body (physics hasn't ticked
-        // since the respawn) must not be left for `collect_newcomers` to
-        // register the frame after this.
+        // entities for the bhk / trimesh ghosts, and this restore runs
+        // *after* they spawn (`spawn.rs` registers shapes before
+        // `synth_child.rs` gets to the per-placement state), so the marker
+        // cannot cover them. Despawn them outright — `&mut World` makes the
+        // full teardown available, and a not-yet-registered body (physics
+        // hasn't ticked since the respawn) must not be left for
+        // `collect_newcomers` to register the frame after this.
+        //
+        // #6132 — not all of them are standalone: the packed-Havok proxy is
+        // `Parent(placement_root)` and a behaviour-graph node collider is
+        // `Parent(node)`, both `add_child`-ed. `despawn_batch` frees rows
+        // only, so detach them from the parents that survive (this root
+        // does) or the dead id stays in `Children` and `validate_world`
+        // refuses every later save.
         let colliders = crate::npc_spawn::loot_appearance::collision_entities_of(world, entity);
         if !colliders.is_empty() {
             super::unload::release_victim_rapier_bodies(world, &colliders);
+            super::unload::detach_victims_from_surviving_parents(world, &colliders);
             world.despawn_batch(colliders);
         }
     }
@@ -2457,6 +2465,11 @@ mod tests {
             respawned = Some(entity);
         });
         let respawned = respawned.expect("reload spawned the placement");
+        // #6132 — the packed-Havok proxy is a CHILD of the placement root.
+        let proxy = world.spawn();
+        world.insert(proxy, byroredux_core::ecs::components::PhysicsSourceForm(root_form));
+        world.insert(proxy, byroredux_core::ecs::Parent(respawned));
+        crate::helpers::add_child(&mut world, respawned, proxy);
         assert!(world.get::<crate::inventory::PickedUp>(respawned).is_none());
         assert!(
             world.get::<byroredux_core::ecs::components::PhysicsSourceForm>(collider).is_some(),
@@ -2471,6 +2484,20 @@ mod tests {
         assert!(
             collision_entities_of(&world, respawned).is_empty(),
             "#4818 — the tombstone's collision entities must be swept with it"
+        );
+        // #6132 — the parented proxy went too, and left no dangling `Children`
+        // entry behind: the placement survives, so a save would be refused.
+        assert!(world.get::<byroredux_core::ecs::Parent>(proxy).is_none());
+        assert!(
+            world
+                .get::<byroredux_core::ecs::Children>(respawned)
+                .is_none_or(|children| !children.0.contains(&proxy)),
+            "the swept proxy must be detached from the surviving placement root"
+        );
+        assert!(
+            byroredux_save::validate::validate_world(&world).is_empty(),
+            "a save after the sweep must not be refused: {:?}",
+            byroredux_save::validate::validate_world(&world)
         );
         // The row was consumed: a second pass finds nothing to do.
         assert_eq!(restore_resident(&mut world), 0);
