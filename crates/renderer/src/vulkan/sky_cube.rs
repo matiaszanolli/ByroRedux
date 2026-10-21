@@ -1262,6 +1262,21 @@ mod tests {
         let post = crate::source_scan::production_text(include_str!("context/post_passes.rs"));
         assert!(post.contains("caustic.sun_transmittance = self.camera_cloud_sun_transmittance;"));
         assert!(post.contains("self.camera_cloud_sun_transmittance,\n                    );"));
+        // #6244 — derived, not listed: every directional-light arm of the main
+        // fragment shader (the effect-lit one-light pass was missed) applies
+        // the map before its block closes.
+        let frag = include_str!("../../shaders/triangle.frag");
+        let arms: Vec<_> = frag.match_indices("color_type.w) == 2u").map(|(at, _)| at).collect();
+        assert!(!arms.is_empty(), "the effect-lit pass's directional arm must still exist");
+        for at in arms {
+            let arm = &frag[at..];
+            let arm = &arm[..arm.find("break;").unwrap_or(arm.len()).min(1200)];
+            assert!(
+                arm.contains("exteriorCloudSunTransmittance(fragWorldPos, Ldir)"),
+                "a triangle.frag directional arm reads the sun without the cloud shadow: {}",
+                &frag[at..frag.len().min(at + 120)]
+            );
+        }
     }
 
     /// Weather-wide cover above the pleasant baseline darkens the ground

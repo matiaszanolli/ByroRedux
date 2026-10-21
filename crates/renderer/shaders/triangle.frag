@@ -1145,7 +1145,11 @@ void main() {
                     // convention) — do not negate it here (#1939).
                     vec3 Ldir = normalize(lights[lIdx].direction_angle.xyz);
                     float NdotL = max(dot(N, Ldir), 0.0);
-                    lit += lights[lIdx].color_type.rgb * NdotL * surf;
+                    // #6244 — the exterior directional upload is the sun
+                    // above the clouds (c231f5b5f); every direct-sun site
+                    // applies the cloud-shadow map itself (1.0 indoors).
+                    lit += lights[lIdx].color_type.rgb * NdotL * surf
+                        * exteriorCloudSunTransmittance(fragWorldPos, Ldir);
                     break;
                 }
             }
