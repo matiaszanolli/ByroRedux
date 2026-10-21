@@ -689,6 +689,32 @@ ReSTIR invalid-selection sentinel and is never occupied by a real light.
 | 56 | `visibility_mask` | Exact f32 encoding of `VisibilityMask` bits; decoded to the ray-query cull mask by `decodeVisibilityMask` |
 | 60 | `attenuation_model` | `ATTENUATION_MODEL_*` discriminant encoded as f32 |
 
+### `GpuTerrainTile` — 208 bytes, SSBO (Set 1, Binding 10)
+
+One record per LAND tile slot (`MAX_TERRAIN_TILES`), indexed by the slot in
+`GpuInstance.flags` bits 16–31. The full field list lives on the struct
+(`crates/renderer/src/vulkan/scene_buffer/gpu_types.rs`; offsets pinned by
+`gpu_instance_layout_tests.rs`). Its tail drives height-based layer blending
+(#6195 / #6196):
+
+| Offset | Field | Contents |
+|---|---|---|
+| 168 | `base_height_index` | Bindless BC4 height map of the BTXT base (0 = none yet) |
+| 172–203 | `layer_height_index[8]` | Same, per splat lane |
+| 204 | `height_blend_band` | Transition band of `byroTerrainHeightBlend`; 0 = blending off |
+
+`height_blend_band` is not per-cell data: the `render.terrain_height_blend_band`
+setting (debug-UI slider, `terrain.blend`) is broadcast into every tile by
+`VulkanContext::set_terrain_height_blend_band`, which dirties the buffer only
+when the value moves. `byroTerrainHeightBlend` (`include/bindings.glsl`)
+re-divides the painted shares of the height-mapped lanes by `height + share`
+(Mishkinis 2013) and writes them back as ordered-`mix` weights, so
+`triangle.frag`'s diffuse / specular / normal loops and
+`groundcover_blade.frag`'s ground colour shade the blended surface. Each
+lane fades out with its own painted share (#6202). The ground-cover density
+sites keep the painted weights, the field the scatter places blades from
+(#6203).
+
 ---
 
 ## Scene Buffer Capacity Constants
