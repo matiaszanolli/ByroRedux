@@ -588,6 +588,32 @@ fn race_skeleton_selection_preserves_gender_and_authored_missing_paths() {
     );
 }
 
+/// #6105 - tagging an actor's meshes terminates on a cyclic `Children` graph
+/// and tags each mesh entity once, instead of spinning on an unbounded queue.
+#[test]
+fn tag_descendants_as_actor_terminates_on_a_cycle_and_tags_meshes_only() {
+    use byroredux_core::ecs::components::RenderLayer;
+    use byroredux_core::ecs::{Children, MeshHandle};
+
+    let mut world = World::new();
+    world.register::<Children>();
+    world.register::<MeshHandle>();
+    world.register::<RenderLayer>();
+    let (root, body, head, stranger) = (world.spawn(), world.spawn(), world.spawn(), world.spawn());
+    world.insert(root, Children(vec![body, head]));
+    world.insert(head, Children(vec![root, body])); // a cycle and a duplicated edge
+    world.insert(body, MeshHandle(1));
+    world.insert(head, MeshHandle(2));
+    world.insert(stranger, MeshHandle(3));
+
+    tag_descendants_as_actor(&mut world, root);
+
+    assert_eq!(world.get::<RenderLayer>(body).map(|layer| *layer), Some(RenderLayer::Actor));
+    assert_eq!(world.get::<RenderLayer>(head).map(|layer| *layer), Some(RenderLayer::Actor));
+    assert!(world.get::<RenderLayer>(root).is_none(), "the root carries no mesh");
+    assert!(world.get::<RenderLayer>(stranger).is_none(), "outside the subtree");
+}
+
 /// #6122 - a Starfield race's authored rig is used (so a non-human actor no
 /// longer skins to the human one, and a female takes her own), with the human
 /// body-only rig swapped for its `_facebones` sibling.

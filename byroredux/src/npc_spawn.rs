@@ -1742,30 +1742,21 @@ pub fn prebaked_facegen_tint_path(plugin_name: &str, form_id: u32) -> Option<Str
 /// [`crate::anim_convert::build_subtree_name_map`]'s walk shape.
 pub(crate) fn tag_descendants_as_actor(world: &mut World, root: EntityId) {
     use byroredux_core::ecs::components::RenderLayer;
-    use byroredux_core::ecs::{Children, MeshHandle};
+    use byroredux_core::ecs::MeshHandle;
 
     // Collect first (read locks), mutate after (write locks). The
     // ECS API forbids holding read + write guards simultaneously.
-    let mut to_tag: Vec<EntityId> = Vec::new();
-    {
-        let children_q = world.query::<Children>();
-        let mesh_q = world.query::<MeshHandle>();
-        let mut queue = vec![root];
-        while let Some(e) = queue.pop() {
-            if let Some(ref mq) = mesh_q {
-                if mq.get(e).is_some() {
-                    to_tag.push(e);
-                }
-            }
-            if let Some(ref cq) = children_q {
-                if let Some(children) = cq.get(e) {
-                    for &c in &children.0 {
-                        queue.push(c);
-                    }
-                }
-            }
-        }
-    }
+    //
+    // #6105 — the subtree comes from the shared cycle-safe collector (visited
+    // set + traversal budget, like every other whole-subtree walk since #5513 /
+    // #5713); a cyclic or duplicated `Children` edge used to spin this loop with
+    // an unbounded queue. The `MeshHandle` guard is taken after it, so the
+    // `Children` -> `MeshHandle` order is the collector's, not hand-held here.
+    let subtree = byroredux_core::ecs::collect_subtree(world, root);
+    let to_tag: Vec<EntityId> = match world.query::<MeshHandle>() {
+        Some(mesh_q) => subtree.into_iter().filter(|&e| mesh_q.get(e).is_some()).collect(),
+        None => Vec::new(),
+    };
     for e in to_tag {
         world.insert(e, RenderLayer::Actor);
     }
