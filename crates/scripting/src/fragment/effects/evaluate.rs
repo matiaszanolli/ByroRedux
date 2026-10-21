@@ -590,9 +590,8 @@ pub(super) fn set_actor_value_base(world: &World, actor: EntityId, avif: u32, va
 }
 
 /// Read `value` with no quest guard held by the caller (M47.3: an ObScript
-/// getter lowered onto the Papyrus read model): the stage and objective
-/// resources are read-locked for the call, in the order the effect applier takes
-/// them. `None` when the value cannot be read.
+/// getter lowered onto the Papyrus read model): the stage resource is
+/// read-locked for the call. `None` when the value cannot be read.
 pub(crate) fn evaluate_value_guard_free(
     world: &World,
     value: &ValueExpr,
@@ -604,7 +603,9 @@ pub(crate) fn evaluate_value_guard_free(
     evaluate_value(value, context, vmad, world, &stages, &deferred)
 }
 
-/// [`evaluate_value_guard_free`] for a guard.
+/// [`evaluate_value_guard_free`] for a guard: the stage and objective resources
+/// are read-locked together, in the `TypeId` order the effect applier's
+/// `resource_2_mut` takes them.
 pub(crate) fn evaluate_guard_guard_free(
     world: &World,
     guard: &FragmentGuard,
@@ -612,8 +613,10 @@ pub(crate) fn evaluate_guard_guard_free(
     vmad: Option<&ScriptInstanceData>,
 ) -> Option<bool> {
     let deferred = DeferredFragmentEffects::new(world);
-    let stages = world.try_resource::<QuestStageState>()?;
-    let objectives = world.try_resource::<QuestObjectiveState>()?;
+    // #6101 - one TypeId-sorted acquisition, like every `resource_2_mut` site
+    // that takes this pair; two `try_resource` calls in code order closed an
+    // ABBA cycle in whichever build hashed Objective below Stage.
+    let (stages, objectives) = world.try_resource_2::<QuestStageState, QuestObjectiveState>()?;
     evaluate_guard(guard, context, vmad, world, &stages, &objectives, &deferred)
 }
 

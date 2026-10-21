@@ -895,6 +895,79 @@ fn resource_2_mut_reverse_order_same_result() {
 }
 
 #[test]
+fn try_resource_2_reads_both_in_either_generic_order() {
+    let mut world = World::new();
+    assert!(world.try_resource_2::<ResA, ResB>().is_none(), "neither exists");
+    world.insert_resource(ResA(1.0));
+    assert!(world.try_resource_2::<ResA, ResB>().is_none(), "one missing is none");
+    world.insert_resource(ResB(2.0));
+    {
+        let (a, b) = world.try_resource_2::<ResA, ResB>().expect("both exist");
+        assert_eq!((a.0, b.0), (1.0, 2.0));
+    }
+    // Named the other way round, the guards still come back in (A, B) order.
+    let (b, a) = world.try_resource_2::<ResB, ResA>().expect("both exist");
+    assert_eq!((b.0, a.0), (2.0, 1.0));
+}
+
+#[test]
+#[should_panic(expected = "must be different resource types")]
+fn try_resource_2_same_type_panics() {
+    let mut world = World::new();
+    world.insert_resource(ResA(1.0));
+    let _ = world.try_resource_2::<ResA, ResA>();
+}
+
+/// #6101 - readers that name the pair in opposite orders, against a writer that
+/// takes it through `resource_2_mut`, all acquire in `TypeId` order and cannot
+/// deadlock. An unsorted nested `try_resource` pair is the ABBA this replaced;
+/// it hangs here (under writer-preferring locks) rather than failing, so the
+/// run is bounded by a watchdog.
+#[test]
+fn try_resource_2_does_not_deadlock_against_resource_2_mut() {
+    let mut world = World::new();
+    world.insert_resource(ResA(0.0));
+    world.insert_resource(ResB(0.0));
+    let world = std::sync::Arc::new(world);
+    let (done, finished) = std::sync::mpsc::channel();
+    let mut workers = Vec::new();
+    for reverse in [false, true] {
+        let world = std::sync::Arc::clone(&world);
+        let done = done.clone();
+        workers.push(std::thread::spawn(move || {
+            for _ in 0..2000 {
+                if reverse {
+                    let (_b, _a) = world.try_resource_2::<ResB, ResA>().unwrap();
+                } else {
+                    let (_a, _b) = world.try_resource_2::<ResA, ResB>().unwrap();
+                }
+            }
+            let _ = done.send(());
+        }));
+    }
+    let writer = {
+        let world = std::sync::Arc::clone(&world);
+        let done = done.clone();
+        std::thread::spawn(move || {
+            for _ in 0..2000 {
+                let (mut a, mut b) = world.resource_2_mut::<ResB, ResA>();
+                a.0 += 1.0;
+                b.0 += 1.0;
+            }
+            let _ = done.send(());
+        })
+    };
+    for _ in 0..3 {
+        finished
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("a sorted pair acquisition must not deadlock");
+    }
+    for worker in workers.into_iter().chain([writer]) {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
 #[should_panic(expected = "must be different resource types")]
 fn resource_2_mut_same_type_panics() {
     let mut world = World::new();

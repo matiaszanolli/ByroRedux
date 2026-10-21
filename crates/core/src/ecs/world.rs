@@ -926,6 +926,38 @@ impl World {
         Some(self.resource_2_mut::<A, B>())
     }
 
+    /// Read two resources at once, acquiring their locks in `TypeId` order
+    /// whichever order the caller names them - the read counterpart of
+    /// [`Self::resource_2_mut`]. Code that holds two resources nested and
+    /// takes them one `try_resource` at a time records its own order in the
+    /// lock graph; a `resource_2_mut` of the same pair elsewhere records the
+    /// sorted one, and whichever binary happens to hash the pair the other way
+    /// round closes an ABBA cycle (#6101). `None` when either is missing; the
+    /// guards come back in `(A, B)` order.
+    ///
+    /// # Panics
+    /// Panics if `A` and `B` are the same type, or if either lock is poisoned.
+    #[track_caller]
+    pub fn try_resource_2<A: Resource, B: Resource>(
+        &self,
+    ) -> Option<(ResourceRead<'_, A>, ResourceRead<'_, B>)> {
+        let (id_a, id_b) = (TypeId::of::<A>(), TypeId::of::<B>());
+        assert_ne!(id_a, id_b, "try_resource_2: A and B must be different resource types");
+        // Existence before any lock - see #465.
+        if !self.resources.contains_key(&id_a) || !self.resources.contains_key(&id_b) {
+            return None;
+        }
+        if id_a < id_b {
+            let a = self.try_resource::<A>()?;
+            let b = self.try_resource::<B>()?;
+            Some((a, b))
+        } else {
+            let b = self.try_resource::<B>()?;
+            let a = self.try_resource::<A>()?;
+            Some((a, b))
+        }
+    }
+
     // ── Internal ────────────────────────────────────────────────────────
 
     /// Get or create the storage for a component type (requires &mut self).
