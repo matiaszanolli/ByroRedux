@@ -1265,9 +1265,14 @@ fn spawn_nif_mesh(
     // handle again would queue a redundant rebuild that drops and
     // re-creates a valid BLAS. Mirrors the cell loader's
     // `fresh_for_rt: false` on cache hits.
-    if for_rt && fresh_source {
-        blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
-    }
+    //
+    // #6107 — queued after the skin binding below, and only for a mesh that did
+    // not bind: a bound skinned mesh is drawn with `bone_offset != 0`, the TLAS
+    // takes its per-entity skinned BLAS and never reads this handle-keyed one,
+    // so the bind-pose BLAS was dead VRAM plus a fence-waited build per NPC
+    // part. A skinned mesh that falls back to rigid drawing gets its static
+    // BLAS from `restore_missing_static_blas_for_draws` on demand.
+    let queue_static_blas = for_rt && fresh_source;
 
     // Census-only provenance: name the asset class behind every NPC /
     // loose-NIF upload so duplicate-geometry attribution can separate this
@@ -1599,6 +1604,9 @@ fn spawn_nif_mesh(
 
     // Skinning binding, if the NIF authored one (#3858).
     let skin_attached = attach_nif_skin_binding(world, entity, mesh, external_skeleton, node_by_name);
+    if queue_static_blas && !skin_attached {
+        blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
+    }
     // #3231 / #4399 — GPU morph-target slot. Created only when the
     // canonical `SkinnedMesh` was actually attached: the read side gates on
     // `bone_offset != 0` (`build_and_upload_instances`, `skin_vertices.comp`
@@ -2022,6 +2030,33 @@ fn attach_nif_skin_binding(
     } else {
         // No authored skin — nothing attached (#4399's canonical gate).
         false
+    }
+}
+
+/// #6107 - the static BLAS queued for a freshly uploaded NPC / loose-NIF mesh
+/// is paired with the skin gate: a mesh whose skin bound is drawn through its
+/// per-entity skinned BLAS and must not also pay for a handle-keyed one the TLAS
+/// never reads. (`spawn_nif_mesh` needs a Vulkan device, so the pairing is
+/// pinned on the source.)
+#[cfg(test)]
+mod skinned_blas_gate_tests {
+    #[test]
+    fn the_static_blas_spec_is_pushed_only_for_a_mesh_whose_skin_did_not_bind() {
+        let source = byroredux_core::source_scan::strip_test_modules(include_str!("nif_loader.rs"));
+        let body = source
+            .split_once("fn spawn_nif_mesh(")
+            .map(|(_, rest)| rest)
+            .expect("spawn_nif_mesh must exist");
+        assert_eq!(
+            body.matches("blas_specs.push(").count(),
+            1,
+            "one static-BLAS queue site, so the gate below covers it"
+        );
+        let attach = body.find("attach_nif_skin_binding(world").expect("the skin binding call");
+        let push = body.find("blas_specs.push(").unwrap();
+        assert!(attach < push, "the spec is queued after the skin binding is known");
+        let gate = body[..push].rfind("if queue_static_blas && !skin_attached").expect("the push is gated on the skin");
+        assert!(gate > attach && push - gate < 120, "the gate sits directly on the push");
     }
 }
 
