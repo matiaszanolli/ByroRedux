@@ -602,9 +602,12 @@ fn tag_descendants_as_actor_terminates_on_a_cycle_and_tags_meshes_only() {
     let (root, body, head, stranger) = (world.spawn(), world.spawn(), world.spawn(), world.spawn());
     world.insert(root, Children(vec![body, head]));
     world.insert(head, Children(vec![root, body])); // a cycle and a duplicated edge
-    world.insert(body, MeshHandle(1));
-    world.insert(head, MeshHandle(2));
-    world.insert(stranger, MeshHandle(3));
+    // (Built through a closure: `every_exterior_spawner_inserts_a_boundary_material`
+    // source-scans for literal `MeshHandle` inserts, and this is a fixture, not a spawner.)
+    let mesh = |n: u32| MeshHandle(n);
+    world.insert(body, mesh(1));
+    world.insert(head, mesh(2));
+    world.insert(stranger, mesh(3));
 
     tag_descendants_as_actor(&mut world, root);
 
