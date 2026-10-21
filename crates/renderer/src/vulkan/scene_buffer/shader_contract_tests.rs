@@ -5726,7 +5726,13 @@ fn shader_pipeline_doc_does_not_advertise_live_lanes_as_free() {
     );
 
     // `material_flags` bit 10 — `material_flag::BGSM_AUTHORED`, host-side only.
-    let bit10 = DOC
+    // Searched from the `material_flags` table on: the `GpuInstance` flag table
+    // above it has a bit-10 row of its own (#6318).
+    let material_flags = DOC
+        .find("**`material_flags`**")
+        .map(|start| &DOC[start..])
+        .expect("shader-pipeline.md must still have the material_flags table");
+    let bit10 = material_flags
         .lines()
         .find(|line| line.starts_with("| 10 |"))
         .expect("shader-pipeline.md must still document material_flags bit 10");
