@@ -397,7 +397,14 @@ the other joints worse (vertibird, Liberty Prime's furniture), so it is not one
 rule. The 28 left after it: Liberty Prime's furniture (13), vertibird (3),
 power armor (6, three files), eyebot (2), createabot (2), mirelurk queen (1),
 bloatfly (1). The importer still reads every pivot in the body's own frame; the
-reading above is evidence, not wired behaviour.
+reading above is evidence, not wired behaviour. Live check (#6070): the rigs
+that carry disagreeing joints are not unstable for it — the deathclaw (28 bodies,
+27 joints), mirelurk queen (59 / 58), molerat, super mutant, human and feral
+ghoul all hold every joint live with no solver recovery over two seconds of free
+fall from the bind pose (`ragdoll_installed_tests::fo4_bind_pose_ragdoll_holds_together_in_free_fall`;
+the soft joint limits absorb the 0.2 m pivot gap). So the importer keeps the
+body-frame reading everywhere and the 67 stay a recorded property of the data
+(turrets, the vertibird, Liberty Prime's furniture and a few robot parts).
 
 **Live check (#6070).** `docs/smoke-tests/fo4-ragdoll.sh` drives the decoded
 ragdolls in the engine under `BYRO_VALIDATION=1`: a feral ghoul and a raider
