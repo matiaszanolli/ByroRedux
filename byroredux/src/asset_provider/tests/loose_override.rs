@@ -74,6 +74,27 @@ fn loose_tier_indexes_asset_roots_by_archive_key() {
     assert!(Archive::open_loose(empty.path()).is_none());
 }
 
+/// #6243 — a symlinked directory is followed, but a link back to an ancestor
+/// is not re-walked: two looping links used to cost ~2^40 `read_dir` calls
+/// at boot, and one re-indexed its subtree ~40 times under longer keys.
+#[cfg(unix)]
+#[test]
+fn loose_tier_walks_a_symlink_loop_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "textures/real/a.dds", b"a");
+    write(tmp.path(), "outside/linked.dds", b"linked");
+    let textures = tmp.path().join("textures");
+    std::os::unix::fs::symlink(&textures, textures.join("loop_a")).unwrap();
+    std::os::unix::fs::symlink(&textures, textures.join("loop_b")).unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("outside"), textures.join("deployed")).unwrap();
+
+    let loose = Archive::open_loose(tmp.path()).expect("loose assets present");
+    assert!(loose.contains(r"textures\real\a.dds"));
+    assert!(loose.contains(r"textures\deployed\linked.dds"), "a linked directory is followed");
+    assert!(!loose.contains(r"textures\loop_a\real\a.dds"), "a link to an ancestor is not re-walked");
+    assert_eq!(loose.list_files().len(), 2, "{:?}", loose.list_files());
+}
+
 /// Both providers pick the tier up from `--esm` alone.
 #[test]
 fn providers_serve_loose_assets() {

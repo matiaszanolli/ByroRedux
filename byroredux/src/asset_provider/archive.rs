@@ -46,6 +46,11 @@ enum Backend {
 /// the same top-level roots the archives store their entries under.
 const LOOSE_ASSET_ROOTS: [&str; 3] = ["textures", "meshes", "materials"];
 
+/// How many directory levels below an asset root the loose index descends.
+/// Archive paths are shallow (vanilla nests a handful deep), so this only
+/// ever stops a tree no game could address (#6243).
+const MAX_LOOSE_DEPTH: usize = 32;
+
 /// Loose files under a game's `Data` directory, indexed by the archive-style
 /// key they override (`textures\landscape\dirt01_d.dds`: lowercase,
 /// backslash-separated, relative to `Data`).
@@ -69,16 +74,38 @@ impl LooseDir {
         let Ok(entries) = std::fs::read_dir(data_dir) else {
             return Self { files };
         };
+        let mut visited = std::collections::HashSet::new();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
             if LOOSE_ASSET_ROOTS.contains(&name.as_str()) && entry.path().is_dir() {
-                Self::walk(&entry.path(), &name, &mut files);
+                Self::walk(&entry.path(), &name, 0, &mut visited, &mut files);
             }
         }
         Self { files }
     }
 
-    fn walk(dir: &std::path::Path, key: &str, files: &mut HashMap<String, std::path::PathBuf>) {
+    /// Index `dir` under `key`. Symlinked directories are followed (mod
+    /// managers deploy by link), but each directory is walked once, by its
+    /// canonical path: a link back to an ancestor, or a second link to a
+    /// directory already indexed, is not re-walked. Unguarded, one looping
+    /// link re-indexed its subtree ~40 times (until `ELOOP`) and two made
+    /// ~2^40 `read_dir` calls at boot (#6243).
+    fn walk(
+        dir: &std::path::Path,
+        key: &str,
+        depth: usize,
+        visited: &mut std::collections::HashSet<std::path::PathBuf>,
+        files: &mut HashMap<String, std::path::PathBuf>,
+    ) {
+        if depth > MAX_LOOSE_DEPTH {
+            return;
+        }
+        let Ok(canonical) = std::fs::canonicalize(dir) else {
+            return;
+        };
+        if !visited.insert(canonical) {
+            return;
+        }
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
@@ -89,7 +116,7 @@ impl LooseDir {
             );
             let path = entry.path();
             if path.is_dir() {
-                Self::walk(&path, &child, files);
+                Self::walk(&path, &child, depth + 1, visited, files);
             } else if path.is_file() {
                 files.insert(child, path);
             }
