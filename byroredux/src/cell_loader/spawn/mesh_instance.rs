@@ -154,7 +154,7 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                         // same material under another spelling is no swap.
                         if !same_material_path(&swapped, &current) {
                             let mut ov2 = refr_ov.clone();
-                            ov2.material_path = Some(pool.intern(&swapped));
+                            ov2.material_path = Some(pool.intern(&canonical_swap_target(&swapped)));
                             if let Some(provider) = mat_provider.as_deref_mut() {
                                 ov2.fill_from_bgsm(provider, &mut pool);
                             }
@@ -2693,17 +2693,17 @@ mod tests {
         let resolved = resolve_mesh_paths(&mut world, &meshes, Some(&overlay), None, None);
         assert_eq!(
             resolved[0].material_path.as_deref(),
-            Some(r"setdressing\paintingsgeneric\paintinggeneric21.bgsm"),
+            Some(r"materials\setdressing\paintingsgeneric\paintinggeneric21.bgsm"),
             "a `Materials\\…` shader name must match its bare BNAM"
         );
         assert_eq!(
             resolved[1].material_path.as_deref(),
-            Some(r"interiors\vault\vault111\v111elevplatform02.bgsm"),
+            Some(r"materials\interiors\vault\vault111\v111elevplatform02.bgsm"),
             "an absolute build-path shader name must match its bare BNAM"
         );
         assert_eq!(
             resolved[2].material_path.as_deref(),
-            Some(r"vehicles\stationwagon_postwar_cheap04.bgsm"),
+            Some(r"materials\vehicles\stationwagon_postwar_cheap04.bgsm"),
             "a `Data\\materials\\…` shader name must match its bare BNAM"
         );
     }
@@ -2740,7 +2740,7 @@ mod tests {
         );
         assert_eq!(
             resolved[0].material_path.as_deref(),
-            Some(r"landscape\ground\craterdebris01snow.bgsm")
+            Some(r"materials\landscape\ground\craterdebris01snow.bgsm")
         );
         assert_eq!(
             resolved[1].material_path.as_deref(),
@@ -2788,8 +2788,51 @@ mod tests {
         let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None, None);
         assert_eq!(
             resolved[0].material_path.as_deref(),
-            Some(r"vehicles\automotive\car_glass01dirty.bgem"),
+            Some(r"materials\vehicles\automotive\car_glass01dirty.bgem"),
             "a FNAM that is not a prefix of the shape's material must not block the swap"
+        );
+    }
+
+    /// #5757 — a Starfield shape names its `.mat` as `Materials\…`, an
+    /// LMSW entry names source and override bare. The swap must fire, and
+    /// the swapped path must key the CDB like the NIF spelling does:
+    /// `material_key` hashes the directory, so the bare override would
+    /// miss the `materials\architecture\…` entry.
+    #[test]
+    fn lmsw_swap_retargets_a_starfield_mat_to_a_cdb_resolvable_path() {
+        let mut pool = StringPool::new();
+        let trim = pool
+            .intern(r"Materials\Architecture\IndustrialKit\Interiors\IndIntMetalTrimGrey03.mat");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut mesh = empty_mesh();
+        mesh.material.material_path = Some(trim);
+        let override_path = r"Architecture\IndustrialKit\Interiors\IndIntMetalTrimBlue03.mat";
+        let overlay = RefrTextureOverlay {
+            material_swaps: vec![swap_entry(
+                r"Architecture\IndustrialKit\Interiors\IndIntMetalTrimGrey03.mat",
+                override_path,
+            )],
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None, None);
+        let swapped = resolved[0].material_path.as_deref().expect("swapped path");
+        assert_eq!(
+            swapped,
+            r"materials\architecture\industrialkit\interiors\indintmetaltrimblue03.mat"
+        );
+        let key = byroredux_sfmaterial::material_key;
+        assert_eq!(
+            key(swapped),
+            key(r"Materials\Architecture\IndustrialKit\Interiors\IndIntMetalTrimBlue03.mat"),
+            "the swapped path keys the CDB like a NIF reference"
+        );
+        assert_ne!(
+            key(override_path),
+            key(swapped),
+            "fixture: the bare override alone would miss the CDB entry"
         );
     }
 

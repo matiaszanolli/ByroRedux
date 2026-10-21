@@ -1304,6 +1304,116 @@ fn starfield_stored_avif_outputs_resolve_on_shipped_master() {
     assert_eq!(index.actor_value_form_id("ActionPoints"), None);
 }
 
+/// #5757 — the LMSW / MTPT / XLMS census on vanilla `Starfield.esm`.
+/// Starfield's material swaps ride `LMSW` (not FO4's `MSWP`) and a REFR
+/// lists them in `XLMS`; before #5757 both records and the REFR field
+/// were dropped, and 44.5 % of Cydonia rendered its un-swapped kit
+/// material.
+#[test]
+#[ignore = "needs Starfield game data on disk"]
+fn starfield_layered_material_swaps_decode_and_resolve_from_refrs() {
+    let Some(data) = data_dir(test_paths::STARFIELD_ENV, test_paths::STARFIELD_DEFAULT) else {
+        eprintln!("[Starfield LMSW] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Starfield.esm")).expect("read Starfield.esm");
+    let index = parse_esm(&bytes).expect("parse Starfield.esm");
+    let cells = &index.cells;
+
+    let lmsw = &cells.layered_material_swaps;
+    let entries: usize = lmsw.values().map(|r| r.entries.len()).sum();
+    let collections = lmsw.values().filter(|r| !r.swaps_collection.is_empty()).count();
+    let both = lmsw
+        .values()
+        .filter(|r| !r.entries.is_empty() && !r.swaps_collection.is_empty())
+        .count();
+    let empty = lmsw
+        .values()
+        .filter(|r| r.entries.is_empty() && r.swaps_collection.is_empty())
+        .count();
+    let sourceless = lmsw
+        .values()
+        .flat_map(|r| r.entries.iter())
+        .filter(|e| {
+            e.key.is_empty()
+                && e
+                    .key_material_path_form
+                    .and_then(|f| cells.material_path_forms.get(&f))
+                    .is_none()
+        })
+        .count();
+    let dangling_members = lmsw
+        .values()
+        .flat_map(|r| r.swaps_collection.iter())
+        .filter(|f| !lmsw.contains_key(f))
+        .count();
+
+    let all_cells = cells
+        .cells
+        .values()
+        .chain(cells.exterior_cells.values().flat_map(|w| w.values()))
+        .chain(cells.worldspace_persistent_cells.values());
+    let (mut refs, mut with_xlms, mut unresolved_forms) = (0usize, 0usize, 0usize);
+    for cell in all_cells {
+        for r in &cell.references {
+            refs += 1;
+            if !r.layered_material_swap_refs.is_empty() {
+                with_xlms += 1;
+                unresolved_forms += r
+                    .layered_material_swap_refs
+                    .iter()
+                    .filter(|f| !lmsw.contains_key(f))
+                    .count();
+            }
+        }
+    }
+    eprintln!(
+        "[Starfield LMSW] lmsw={} mtpt={} entries={entries} collections={collections} \
+         both={both} empty={empty} sourceless={sourceless} dangling_members={dangling_members} \
+         refs={refs} with_xlms={with_xlms} unresolved_xlms_forms={unresolved_forms}",
+        lmsw.len(),
+        cells.material_path_forms.len(),
+    );
+    assert_eq!(lmsw.len(), 12_966, "the #5757 census count");
+    assert_eq!(cells.material_path_forms.len(), 877, "every MTPT decodes a path");
+    // Measured 2026-10-21 on vanilla Starfield.esm.
+    assert_eq!(entries, 12_965);
+    assert_eq!(collections, 2_263);
+    assert_eq!(both, 13, "records whose collection-vs-own order matters");
+    assert_eq!(sourceless, 13, "entries naming neither a Key nor an indexed MTPT");
+    assert_eq!(with_xlms, 689_041, "placed references carrying XLMS");
+    assert_eq!(unresolved_forms, 0, "every XLMS FormID names an indexed LMSW");
+    assert_eq!(dangling_members, 0, "every SwapsCollection member is indexed");
+
+    // The audit's Cydonia rows: an MTPT-keyed industrial-kit swap and an
+    // inline-keyed tile swap flatten to their (source, override) pairs.
+    let flat = |form| {
+        cells
+            .layered_material_swap_entries(&[form])
+            .into_iter()
+            .map(|e| (e.source, e.target))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        flat(0x001A_0953),
+        vec![(
+            r"Architecture\IndustrialKit\Interiors\IndIntMetalTrimGrey03.mat".to_string(),
+            r"Architecture\IndustrialKit\Interiors\IndIntMetalTrimBlue03.mat".to_string(),
+        )]
+    );
+    assert_eq!(
+        flat(0x0024_9791),
+        vec![(
+            r"Architecture\IndustrialKit\Interiors\IndIntMetalTileGrey01.mat".to_string(),
+            r"Architecture\City\Cydonia\Cydonia_Paintedmetal02_OffWhite01.mat".to_string(),
+        )]
+    );
+    assert!(
+        !flat(0x0014_9FA2).is_empty(),
+        "the pipe collection flattens through its two member swaps"
+    );
+}
+
 /// #5364 — the WTHS decode census on vanilla `Starfield.esm`: 181
 /// records, 18 roots carrying a full `REFL` whose schema resolves
 /// (root class `BGSWeatherSettingsForm`, named weather parameters like

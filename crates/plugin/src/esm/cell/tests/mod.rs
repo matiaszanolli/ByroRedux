@@ -10,6 +10,7 @@
 //! - [`cell`]        — CELL (water height, RCLR, Skyrim/FNV extended XCLL)
 //! - [`land`]        — LAND (VHGT heightmap decode, VNML/VCLR storage, BTXT/ATXT/VTXT)
 //! - [`txst`]        — TXST (8 texture slots, MNAM, DODT, DNAM flags)
+//! - [`lmsw`]        — Starfield LMSW/XLMS swap flattening (#5757)
 //! - [`merge`]       — Plugin merge across statics + cells + worldspaces
 //! - [`wrld`]        — WRLD (worldspace fields, parent link, truncated)
 //! - [`integration`] — Real ESM walkers: FNV / Oblivion / FO3 / Skyrim / FO4
@@ -20,6 +21,7 @@ mod cell_for_refr;
 mod integration;
 mod land;
 mod light;
+mod lmsw;
 mod merge;
 mod movs;
 mod refr;

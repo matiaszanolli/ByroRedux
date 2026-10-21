@@ -433,6 +433,15 @@ pub(crate) fn mswp_source_matches(source: &str, current: &str) -> bool {
     wildcard_eq_ignore_ascii_case(source.as_bytes(), current.as_bytes())
 }
 
+/// A swap target in the canonical `materials\…` form. MSWP `SNAM` and
+/// LMSW `OverrideMaterialPath` are bare (relative to `Data\Materials\`);
+/// the BGSM provider canonicalizes on lookup, but Starfield's CDB keys a
+/// `.mat` by its directory, `materials\` included (#5757), so the
+/// swapped path is stored canonical for every consumer.
+pub(crate) fn canonical_swap_target(target: &str) -> String {
+    crate::asset_provider::normalize_material_path(target).into_owned()
+}
+
 /// Do `a` and `b` name the same material once canonicalized through
 /// [`normalize_material_path`](crate::asset_provider::normalize_material_path)?
 pub(crate) fn same_material_path(a: &str, b: &str) -> bool {
@@ -479,6 +488,7 @@ pub(crate) fn build_refr_texture_overlay(
         && placed.land_texture_ref.is_none()
         && placed.texture_slot_swaps.is_empty()
         && placed.material_swap_ref.is_none()
+        && placed.layered_material_swap_refs.is_empty()
     {
         return None;
     }
@@ -515,26 +525,30 @@ pub(crate) fn build_refr_texture_overlay(
     // path applies them per shape with later-wins semantics matching
     // the MSWP file format. The record's FNAM is the CK's object-window
     // tree folder, not a filter (#5756), so it gates nothing here.
-    if let Some(swap_ref) = placed.material_swap_ref {
-        if let Some(table) = index.material_swaps.get(&swap_ref) {
-            // Apply the XATO-set material_path swap eagerly when the
-            // overlay already carries one (XATO MNAM-only TXST path).
-            // Multi-shape per-slot application happens at mesh-spawn
-            // time using `material_swaps` below.
-            if let Some(current_sym) = ov.material_path {
-                if let Some(current) = pool.resolve(current_sym).map(str::to_owned) {
-                    for entry in &table.swaps {
-                        if !entry.target.is_empty() && mswp_source_matches(&entry.source, &current)
-                        {
-                            ov.material_path = Some(pool.intern(&entry.target));
-                        }
-                    }
-                }
+    // Clone is cheap — vanilla MSWPs ship ~2.18 entries on average.
+    if let Some(table) = placed
+        .material_swap_ref
+        .and_then(|swap_ref| index.material_swaps.get(&swap_ref))
+    {
+        ov.material_swaps = table.swaps.clone();
+    }
+    // XLMS — Starfield's layered material swaps (#5757), flattened into
+    // the same `(source, target)` shape and appended, so they ride the
+    // same per-shape path (and its #4290 `.mat` re-merge through the
+    // CDB). Starfield ships no MSWP record for an XMSP to resolve, so
+    // the order between the two lists only matters for a cross-game
+    // plugin stack.
+    ov.material_swaps
+        .extend(index.layered_material_swap_entries(&placed.layered_material_swap_refs));
+    // Apply the XATO-set material_path swap eagerly when the overlay
+    // already carries one (XATO MNAM-only TXST path). Multi-shape
+    // per-slot application happens at mesh-spawn time using
+    // `material_swaps`.
+    if let Some(current) = ov.material_path.and_then(|sym| pool.resolve(sym).map(str::to_owned)) {
+        for entry in &ov.material_swaps {
+            if !entry.target.is_empty() && mswp_source_matches(&entry.source, &current) {
+                ov.material_path = Some(pool.intern(&canonical_swap_target(&entry.target)));
             }
-            // Always preserve the resolved swap list for the spawn-path
-            // per-shape consumer. Clone is cheap — vanilla MSWPs ship
-            // ~2.18 entries on average.
-            ov.material_swaps = table.swaps.clone();
         }
     }
 

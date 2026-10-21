@@ -266,6 +266,8 @@ pub struct EsmCellIndex {
     pub packins:                     HashMap<u32, PkinRecord>,                         // FO4+ pack-in
     pub movables:                    HashMap<u32, MovableStaticRecord>,
     pub material_swaps:              HashMap<u32, MaterialSwapRecord>,
+    pub layered_material_swaps:      HashMap<u32, LayeredMaterialSwapRecord>,          // Starfield LMSW (#5757)
+    pub material_path_forms:         HashMap<u32, String>,                             // Starfield MTPT path
 }
 ```
 

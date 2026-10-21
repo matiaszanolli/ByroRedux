@@ -154,7 +154,7 @@ Defer face genetics to a follow-up; render NPCs with neutral default heads for P
 - **Stars** (STDT) + sun presets (SUNP) — star-map UI; pretty but optional.
 - **Biomes** (BIOM) + surface patterns (SFBK/SFPT/SFTR) — drive procedural exterior generation (M64-tier engine work).
 - **Procedural planet content managers** (PCMT/PCBN/PCCN) — Bethesda's procgen engine; very deep.
-- **Layered material swaps** (LMSW) + material paths (MTPT) — material system enhancements; ride on the deferred Phase 2 of #1289 (CDB per-field extraction).
+- ~~**Layered material swaps** (LMSW) + material paths (MTPT)~~ — **done (#5757)**: both decode through the WTHS reflection reader, REFR `XLMS` lists resolve against them, and the flattened `(source, override)` pairs ride the FO4 MSWP per-shape swap path, `.mat` targets re-merged through the CDB. Not modeled: an entry's `Properties` snapshot (bound material-property overrides) and the record keywords.
 - **Ship assembly** (BlueprintShips, MOD attachments) — gameplay-driven; out of scope without a form-linker for runtime entity composition.
 
 ## Decision points before starting

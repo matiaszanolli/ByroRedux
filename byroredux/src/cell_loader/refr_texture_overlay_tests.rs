@@ -45,6 +45,7 @@ pub(crate) fn empty_placed_ref(base_form_id: u32) -> PlacedRef {
         texture_slot_swaps: Vec::new(),
         emissive_light_ref: None,
         material_swap_ref: None,
+        layered_material_swap_refs: Vec::new(),
         ownership: None,
         script_instance: None,
         lock: None,
@@ -340,7 +341,7 @@ fn build_overlay_xmsp_substitutes_xato_material_path_on_source_match() {
     // The XATO MNAM-only TXST seeded material_path; XMSP rewrote it.
     assert_eq!(
         resolved(&pool, ov.material_path),
-        Some(r"vehicles\stationwagon_postwar_cheap04.bgsm")
+        Some(r"materials\vehicles\stationwagon_postwar_cheap04.bgsm")
     );
 }
 
@@ -376,7 +377,7 @@ fn build_overlay_xmsp_fnam_tree_folder_does_not_gate_the_swap() {
         .expect("XATO + XMSP must produce an overlay");
     assert_eq!(
         resolved(&pool, ov.material_path),
-        Some(r"setdressing\vault\vltlight01off.bgsm"),
+        Some(r"materials\setdressing\vault\vltlight01off.bgsm"),
         "a FNAM that is not a prefix of the BNAM must not drop the swap (#5756)"
     );
     assert_eq!(ov.material_swaps.len(), 1);
@@ -413,7 +414,7 @@ fn build_overlay_xmsp_matches_a_materials_prefixed_xato_path() {
         .expect("XATO + XMSP must produce an overlay");
     assert_eq!(
         resolved(&pool, ov.material_path),
-        Some(r"vehicles\stationwagon_postwar_cheap04.bgsm")
+        Some(r"materials\vehicles\stationwagon_postwar_cheap04.bgsm")
     );
 }
 
@@ -436,6 +437,47 @@ fn mswp_source_matches_canonicalizes_and_honours_wildcards() {
     assert!(m(r"kit\*", r"Materials\Kit\anything.bgem"));
     assert!(!m(r"kit\a*.bgsm", r"Materials\Kit\A.BGEM"));
     assert!(!m(r"kit\*a", r"Materials\Kit\ab"));
+}
+
+/// #5757 — Starfield's XLMS alone produces an overlay carrying the
+/// flattened LMSW entries (an MTPT-named source resolved to its path)
+/// for the per-shape consumer.
+#[test]
+fn build_overlay_xlms_only_refr_carries_the_flattened_layered_swaps() {
+    use byroredux_plugin::esm::records::{LayeredMaterialSwapEntry, LayeredMaterialSwapRecord};
+    let mut index = EsmCellIndex::default();
+    index.layered_material_swaps.insert(
+        0x001A_0953,
+        LayeredMaterialSwapRecord {
+            form_id: 0x001A_0953,
+            editor_id: "IndustrialKit_Swap_BlueA_IndIntMetalTrimGrey03".into(),
+            entries: vec![LayeredMaterialSwapEntry {
+                key: String::new(),
+                key_material_path_form: Some(0x001F_A537),
+                override_material_path:
+                    r"Architecture\IndustrialKit\Interiors\IndIntMetalTrimBlue03.mat".into(),
+            }],
+            swaps_collection: vec![],
+        },
+    );
+    index.material_path_forms.insert(
+        0x001F_A537,
+        r"Architecture\IndustrialKit\Interiors\IndIntMetalTrimGrey03.mat".into(),
+    );
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.layered_material_swap_refs = vec![0x001A_0953];
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
+        .expect("XLMS alone must produce an overlay so the spawn path can apply it");
+    assert_eq!(
+        ov.material_swaps,
+        vec![MaterialSwapEntry {
+            source: r"Architecture\IndustrialKit\Interiors\IndIntMetalTrimGrey03.mat".into(),
+            target: r"Architecture\IndustrialKit\Interiors\IndIntMetalTrimBlue03.mat".into(),
+            color_remap_index: None,
+        }]
+    );
 }
 
 #[test]

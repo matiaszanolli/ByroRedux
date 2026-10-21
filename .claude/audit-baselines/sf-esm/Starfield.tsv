@@ -9,7 +9,7 @@ top	GBFM	1	36136218	3141	0	0
 top	PNDT	1	25787085	1765	0	0
 top	STDT	1	11970778	123	0	0
 top	STAT	1	8075099	20607	1	0
-top	LMSW	1	7967056	12966	0	0
+top	LMSW	1	7967056	12966	1	0
 top	NPC_	1	6309192	7131	1	0
 top	BIOM	1	5275505	431	0	0
 top	EFSQ	1	4557891	484	0	0
@@ -57,7 +57,7 @@ top	STMP	1	222756	655	0	0
 top	IDLE	1	219880	1158	1	0
 top	PCCN	1	217485	1805	0	0
 top	MRPH	1	196422	998	0	0
-top	MTPT	1	195922	877	0	0
+top	MTPT	1	195922	877	1	0
 top	GLOB	1	188404	2677	1	0
 top	FLST	1	180327	1142	1	0
 top	FLOR	1	165473	300	1	0
@@ -268,7 +268,7 @@ leaf	LENS	23	0	0	0	0
 leaf	LGDI	84	0	0	0	0
 leaf	LGTM	6	0	0	1	0
 leaf	LIGH	1575	0	0	1	0
-leaf	LMSW	12966	0	0	0	0
+leaf	LMSW	12966	0	0	1	0
 leaf	LSCR	304	0	0	1	0
 leaf	LTEX	416	0	0	1	0
 leaf	LVLB	356	0	0	0	0
@@ -284,7 +284,7 @@ leaf	MISC	1319	0	0	1	0
 leaf	MOVT	43	0	0	0	0
 leaf	MRPH	998	0	0	0	0
 leaf	MSTT	1771	0	0	1	0
-leaf	MTPT	877	0	0	0	0
+leaf	MTPT	877	0	0	1	0
 leaf	MUSC	83	0	0	1	0
 leaf	MUST	235	0	0	0	0
 leaf	NAVI	1	0	0	1	0
@@ -358,3 +358,4 @@ leaf	WWED	489	0	0	0	0
 leaf	ZOOM	118	0	0	0	0
 # regenerated 2026-10-15 (#5758): dispatch arms AOPF/DLBR/OMOD/SCEN/SECH/SMBN/SMQN/SMEN/TRNS/WTHS now
 # read handled=1; byte totals from the installed 2026-07-01 Starfield build.
+# regenerated 2026-10-21 (#5757): dispatch arms LMSW/MTPT now read handled=1.

@@ -848,6 +848,31 @@ fn parse_refr_without_xmsp_has_no_material_swap_ref() {
     assert!(r.material_swap_ref.is_none());
 }
 
+/// #5757 — Starfield's XLMS is a list of 4-byte LMSW FormIDs (4–28 B
+/// in vanilla), every one load-order remapped, in authored order. A
+/// trailing partial FormID is dropped, not read past.
+#[test]
+fn parse_refr_extracts_xlms_layered_material_swap_list() {
+    let mut xlms = Vec::new();
+    // Self-authored forms (mod-index 0x01 past the one master) → slot 0x02.
+    for fid in [0x0100_0A11u32, 0x0100_0B22, 0x0100_0C33] {
+        xlms.extend_from_slice(&fid.to_le_bytes());
+    }
+    xlms.extend_from_slice(&[0xFF, 0xFF]);
+    let record = build_refr_with_subs(0xBEEF, &[(b"XLMS", &xlms)]);
+    let r = parse_one_refr_with_remap(
+        &record,
+        crate::esm::reader::FormIdRemap::regular(2, vec![0]),
+    );
+    assert_eq!(
+        r.layered_material_swap_refs,
+        vec![0x0200_0A11, 0x0200_0B22, 0x0200_0C33]
+    );
+    assert!(parse_one_refr(&build_refr_with_subs(0xBEEF, &[]))
+        .layered_material_swap_refs
+        .is_empty());
+}
+
 /// Regression for #412 — XRMR room membership count + refs. Pre-fix
 /// FO4 interior cell-subdivided culling had no room assignment to
 /// work from. The helper also asserts the allocation bound: a

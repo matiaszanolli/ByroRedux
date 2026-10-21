@@ -1946,7 +1946,9 @@ fn categories_table_row_count_pinned() {
     //   `ConditionForm.IsTrue` evaluates).
     // Bumped 108 → 109 in M47.2 (keywords — KYWD editor ids, which name the
     //   AnimArchetype keywords `ChangeAnimArchetype` swaps between).
-    assert_eq!(EsmIndex::categories().len(), 109);
+    // Bumped 109 → 111 in #5757 (layered_material_swaps + material_path_forms
+    //   — Starfield LMSW / MTPT, what REFR `XLMS` resolves through).
+    assert_eq!(EsmIndex::categories().len(), 111);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

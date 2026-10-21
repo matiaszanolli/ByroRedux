@@ -74,7 +74,7 @@ The biggest remaining gaps the dispatch doesn't touch:
 | PNDT | 26 MB | BGSPlanet::PlanetData | No |
 | PERS | 18 MB | TESDataHandlerPersistentCreatedUtil | Probably no |
 | STDT | 12 MB | BSGalaxy::BGSStar | No |
-| LMSW | 10 MB | BGSLayeredMaterialSwap | Eventually yes (material variants) |
+| LMSW | 10 MB | BGSLayeredMaterialSwap | Yes — 44.5 % of Cydonia REFRs carry `XLMS`; decoded since #5757 |
 | RFGP | 7 MB | BGSReferenceGroup | Possibly (cell-level grouping) |
 | EFSQ | 6 MB | BGSEffectSequenceForm | Probably no |
 | BIOM | 5 MB | BGSBiome (procgen) | No |

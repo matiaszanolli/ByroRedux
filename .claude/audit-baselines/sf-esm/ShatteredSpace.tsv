@@ -4,7 +4,7 @@ top	WRLD	1	401097113	1	1	0
 top	CELL	1	56541998	0	1	0
 top	NAVI	1	26117786	1	1	0
 top	QUST	1	6459506	1	1	0
-top	LMSW	1	1726371	2610	0	0
+top	LMSW	1	1726371	2610	1	0
 top	RFGP	1	1406101	27660	0	0
 top	EFSQ	1	1316390	162	0	0
 top	NPC_	1	974561	679	1	0
@@ -79,7 +79,7 @@ top	CSTY	1	5892	7	1	0
 top	HAZD	1	5886	6	0	0
 top	OTFT	1	5694	68	1	0
 top	PCBN	1	4758	19	0	0
-top	MTPT	1	4408	18	0	0
+top	MTPT	1	4408	18	1	0
 top	AVIF	1	4235	29	1	0
 top	STBH	1	3910	3	0	0
 top	VOLI	1	3842	2	0	0
@@ -190,7 +190,7 @@ leaf	LCRT	842	0	0	1	0
 leaf	LCTN	188	0	0	1	0
 leaf	LGDI	13	0	0	0	0
 leaf	LIGH	97	0	0	1	0
-leaf	LMSW	2610	0	0	0	0
+leaf	LMSW	2610	0	0	1	0
 leaf	LSCR	46	0	0	1	0
 leaf	LTEX	13	0	0	1	0
 leaf	LVLB	2	0	0	0	0
@@ -202,7 +202,7 @@ leaf	MGEF	44	0	0	1	0
 leaf	MISC	46	0	0	1	0
 leaf	MRPH	44	0	0	0	0
 leaf	MSTT	164	0	0	1	0
-leaf	MTPT	18	0	0	0	0
+leaf	MTPT	18	0	0	1	0
 leaf	MUSC	19	0	0	1	0
 leaf	MUST	19	0	0	0	0
 leaf	NAVI	1	0	0	1	0
@@ -256,3 +256,4 @@ leaf	WWED	102	0	0	0	0
 leaf	ZOOM	4	0	0	0	0
 # regenerated 2026-10-15 (#5758): dispatch arms AOPF/DLBR/OMOD/SCEN/SECH/SMBN/SMQN/SMEN/TRNS/WTHS now
 # read handled=1; byte totals from the installed 2026-07-01 Starfield build.
+# regenerated 2026-10-21 (#5757): dispatch arms LMSW/MTPT now read handled=1.

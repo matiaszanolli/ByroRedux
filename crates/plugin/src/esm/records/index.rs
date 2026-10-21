@@ -1016,6 +1016,8 @@ impl EsmIndex {
             cell_category!("packins", packins),
             cell_category!("movables", movables),
             cell_category!("material_swaps", material_swaps),
+            cell_category!("layered_material_swaps", layered_material_swaps),
+            cell_category!("material_path_forms", material_path_forms),
         ]
     }
 

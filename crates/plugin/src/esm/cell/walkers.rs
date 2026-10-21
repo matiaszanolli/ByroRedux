@@ -633,6 +633,7 @@ fn parse_refr_group_inner(
             let mut texture_slot_swaps: Vec<TextureSlotSwap> = Vec::new();
             let mut emissive_light_ref: Option<u32> = None;
             let mut material_swap_ref: Option<u32> = None;
+            let mut layered_material_swap_refs: Vec<u32> = Vec::new();
             // #692 — per-REFR ownership override. Scopes ownership to a
             // single placed object (chest, bed, locker) when the parent
             // cell is public. Same XOWN / XRNK / XGLB layout as CELL.
@@ -866,6 +867,17 @@ fn parse_refr_group_inner(
                     b"XMSP" => {
                         material_swap_ref = r.u32().ok().map(|fid| reader.remap_form_id(fid));
                     }
+                    // #5757 — XLMS, Starfield's per-REFR layered material
+                    // swaps: a list of 4-byte LMSW FormIDs (4–28 B in
+                    // vanilla; 689,016 Starfield.esm REFRs carry one).
+                    // Resolves against `EsmCellIndex.layered_material_swaps`
+                    // at cell load, feeding the same per-shape swap path
+                    // as XMSP.
+                    b"XLMS" => {
+                        while let Ok(fid) = r.u32() {
+                            layered_material_swap_refs.push(reader.remap_form_id(fid));
+                        }
+                    }
                     // #692 — per-REFR ownership override (mirrors the
                     // CELL walker arms). XOWN owner FormID, XRNK
                     // faction-rank gate, XGLB global-var gate. Same
@@ -966,6 +978,7 @@ fn parse_refr_group_inner(
                     texture_slot_swaps,
                     emissive_light_ref,
                     material_swap_ref,
+                    layered_material_swap_refs,
                     ownership,
                     script_instance: ref_script_instance,
                     lock,

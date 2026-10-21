@@ -171,6 +171,12 @@ pub struct PlacedRef {
     /// rendered with the base mesh's textures because this field was
     /// silently dropped at parse time. See audit FO4-D4-NEW-08.
     pub material_swap_ref: Option<u32>,
+    /// Starfield LMSW FormIDs from the REFR's `XLMS` sub-record (#5757),
+    /// in authored order — resolved against
+    /// `EsmCellIndex.layered_material_swaps` and applied after any
+    /// `XMSP` table, later entries winning. Empty on every pre-Starfield
+    /// game.
+    pub layered_material_swap_refs: Vec<u32>,
     /// Per-REFR ownership override (XOWN / XRNK / XGLB). When `Some`,
     /// the placed object (chest, bed, individual storage) is owned
     /// independently of the parent cell's ownership — stealing the
@@ -292,6 +298,7 @@ impl PlacedRef {
             texture_slot_swaps: Vec::new(),
             emissive_light_ref: None,
             material_swap_ref: None,
+            layered_material_swap_refs: Vec::new(),
             ownership: None,
             script_instance: None,
             lock: None,

@@ -38,6 +38,7 @@ fn placed_ref(form_id: u32) -> PlacedRef {
         texture_slot_swaps: Vec::new(),
         emissive_light_ref: None,
         material_swap_ref: None,
+        layered_material_swap_refs: Vec::new(),
         ownership: None,
         script_instance: None,
         lock: None,

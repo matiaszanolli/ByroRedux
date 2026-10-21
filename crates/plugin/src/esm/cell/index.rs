@@ -140,6 +140,15 @@ pub struct EsmCellIndex {
     /// Vanilla `Fallout4.esm` ships ~2,500 MSWP records — see audit
     /// FO4-DIM6-05 / #590.
     pub material_swaps: HashMap<u32, crate::esm::records::MaterialSwapRecord>,
+    /// Starfield LMSW (Layered Material Swap) records keyed by form ID
+    /// (#5757) — the swap tables REFR `XLMS` lists point at. Vanilla
+    /// `Starfield.esm` ships 12,966; resolve a REFR's list through
+    /// [`EsmCellIndex::layered_material_swap_entries`].
+    pub layered_material_swaps: HashMap<u32, crate::esm::records::LayeredMaterialSwapRecord>,
+    /// Starfield MTPT (Material Path) form ID → its `Material` path
+    /// (#5757): the source an LMSW entry names through
+    /// `KeyMaterialPathForm`. Vanilla `Starfield.esm` ships 877.
+    pub material_path_forms: HashMap<u32, String>,
     /// CELL form ID → where that cell lives in the three CELL maps above,
     /// built on first use by [`EsmCellIndex::cell_by_form_id`] and cleared
     /// by [`EsmCellIndex::merge_from`] (#5489). Crate-private: it is derived
@@ -357,6 +366,69 @@ pub(super) fn merge_cell_override(base: &CellData, over: &mut CellData) {
 }
 
 impl EsmCellIndex {
+    /// #5757 — flatten a REFR's `XLMS` list into MSWP-shaped swap
+    /// entries for the cell loader's shared per-shape swap path, in
+    /// application order (the consumer applies later-wins): for each
+    /// listed LMSW, its `SwapsCollection` members (recursively, in
+    /// order), then its own entries. An entry's source is its inline
+    /// `Key`, else its MTPT's `Material`; an entry with neither, and an
+    /// unknown LMSW form, contribute nothing. A collection that names an
+    /// LMSW already on the current chain, or nests past
+    /// `MAX_LMSW_NESTING`, is cut there.
+    ///
+    /// Members-before-own is not sourced: it only decides which swap wins
+    /// when a record's own entry and a member's share a source, and 13 of
+    /// vanilla's 12,966 records carry both lists.
+    pub fn layered_material_swap_entries(
+        &self,
+        forms: &[u32],
+    ) -> Vec<crate::esm::records::MaterialSwapEntry> {
+        const MAX_LMSW_NESTING: usize = 16;
+        fn visit(
+            index: &EsmCellIndex,
+            form: u32,
+            chain: &mut Vec<u32>,
+            out: &mut Vec<crate::esm::records::MaterialSwapEntry>,
+        ) {
+            if chain.len() >= MAX_LMSW_NESTING || chain.contains(&form) {
+                return;
+            }
+            let Some(record) = index.layered_material_swaps.get(&form) else {
+                return;
+            };
+            chain.push(form);
+            for &member in &record.swaps_collection {
+                visit(index, member, chain, out);
+            }
+            chain.pop();
+            for entry in &record.entries {
+                let source = if entry.key.is_empty() {
+                    entry
+                        .key_material_path_form
+                        .and_then(|mtpt| index.material_path_forms.get(&mtpt))
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    entry.key.clone()
+                };
+                if source.is_empty() {
+                    continue;
+                }
+                out.push(crate::esm::records::MaterialSwapEntry {
+                    source,
+                    target: entry.override_material_path.clone(),
+                    color_remap_index: None,
+                });
+            }
+        }
+        let mut out = Vec::new();
+        let mut chain = Vec::new();
+        for &form in forms {
+            visit(self, form, &mut chain, &mut out);
+        }
+        out
+    }
+
     /// Join `landscape_texture_txsts` against `texture_sets`: every
     /// TNAM-authored LTEX gets its TXST's full set and its TX00 diffuse path.
     ///
@@ -554,6 +626,8 @@ impl EsmCellIndex {
             packins,
             movables,
             material_swaps,
+            layered_material_swaps,
+            material_path_forms,
             cell_form_id_lookup: _,
             refr_lookup: _,
         } = other;
@@ -704,6 +778,8 @@ impl EsmCellIndex {
         self.packins.extend(packins);
         self.movables.extend(movables);
         self.material_swaps.extend(material_swaps);
+        self.layered_material_swaps.extend(layered_material_swaps);
+        self.material_path_forms.extend(material_path_forms);
         // #6036 — after `texture_sets` holds every plugin so far, so an LTEX
         // naming a master's TXST (or a master LTEX whose TXST a later plugin
         // overrides) resolves against the merged maps.

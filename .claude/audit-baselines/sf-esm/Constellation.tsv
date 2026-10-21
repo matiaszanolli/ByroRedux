@@ -1,7 +1,7 @@
 # sf_smoke baseline — /mnt/data/SteamLibrary/steamapps/common/Starfield/Data/Constellation.esm (variant=Tes5Plus game=Starfield hedr=0.9600)
 # columns: scope	fourcc	grup_count	bytes_total	immediate_records	handled	byte_error
 top	AVMD	1	34369	35	0	0
-top	LMSW	1	1735	1	0	0
+top	LMSW	1	1735	1	1	0
 top	KYWD	1	1029	9	1	0
 top	OMOD	1	908	4	1	0
 top	COBJ	1	699	4	1	0
@@ -11,8 +11,9 @@ leaf	AVMD	35	0	0	0	0
 leaf	COBJ	4	0	0	1	0
 leaf	GLOB	2	0	0	1	0
 leaf	KYWD	9	0	0	1	0
-leaf	LMSW	1	0	0	0	0
+leaf	LMSW	1	0	0	1	0
 leaf	LVLI	1	0	0	1	0
 leaf	OMOD	4	0	0	1	0
 # regenerated 2026-10-15 (#5758): dispatch arms AOPF/DLBR/OMOD/SCEN/SECH/SMBN/SMQN/SMEN/TRNS/WTHS now
 # read handled=1; byte totals from the installed 2026-07-01 Starfield build.
+# regenerated 2026-10-21 (#5757): dispatch arms LMSW/MTPT now read handled=1.

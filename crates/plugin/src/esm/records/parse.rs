@@ -55,8 +55,8 @@ pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
     *b"DLBR", *b"DOBJ", *b"DOOR", *b"ECZN", *b"EFSH", *b"ENCH", *b"EXPL", *b"EYES", *b"FACT", *b"FLOR",
     *b"FLST", *b"FURN", *b"GLOB", *b"GMST", *b"GRAS", *b"HAIR", *b"HDPT", *b"HUNG", *b"IDLE",
     *b"IDLM", *b"IMAD", *b"IMGS", *b"IMOD", *b"INGR", *b"IPCT", *b"IPDS", *b"KEYM", *b"KYWD", *b"LCRT", *b"LCTN",
-    *b"LGTM", *b"LIGH", *b"LSCR", *b"LSCT", *b"LTEX", *b"LVLC", *b"LVLI", *b"LVLN", *b"LVSP", *b"MESG",
-    *b"MGEF", *b"MICN", *b"MISC", *b"MOVS", *b"MSET", *b"MSTT", *b"MSWP", *b"MUSC", *b"NAVI",
+    *b"LGTM", *b"LIGH", *b"LMSW", *b"LSCR", *b"LSCT", *b"LTEX", *b"LVLC", *b"LVLI", *b"LVLN", *b"LVSP", *b"MESG",
+    *b"MGEF", *b"MICN", *b"MISC", *b"MOVS", *b"MSET", *b"MSTT", *b"MSWP", *b"MTPT", *b"MUSC", *b"NAVI",
     *b"NAVM", *b"NOTE", *b"NPC_", *b"OMOD", *b"OTFT", *b"PACK", *b"PERK", *b"PKIN", *b"PROJ",
     *b"PWAT", *b"QUST", *b"RACE", *b"RADS", *b"RCCT", *b"RCPE", *b"REGN", *b"RELA", *b"REPU", *b"RGDL",
     *b"SCEN", *b"SCOL", *b"SCPT", *b"SCRL", *b"SECH", *b"SGST", *b"SLGM", *b"SLPD", *b"SMBN",
@@ -163,6 +163,8 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     let mut packins: HashMap<u32, PkinRecord> = HashMap::new();
     let mut movables: HashMap<u32, MovableStaticRecord> = HashMap::new();
     let mut material_swaps: HashMap<u32, MaterialSwapRecord> = HashMap::new();
+    let mut layered_material_swaps: HashMap<u32, super::LayeredMaterialSwapRecord> = HashMap::new();
+    let mut material_path_forms: HashMap<u32, String> = HashMap::new();
 
     // #348 / #624 — push the TES4 `Localized` flag into a thread-local
     // so every record parser's FULL/DESC decoder can route through the
@@ -322,6 +324,25 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                     );
                 }
                 reader.skip_group(&group);
+            }
+            // #5757 — Starfield's LMSW layered material swaps (what REFR
+            // `XLMS` points at) and the MTPT material-path forms their
+            // entries may name the source through. Both are EDID + REFL
+            // reflection blobs whose Ref leaves are load-order remapped.
+            // Only Starfield ships either label, so no `game` gate.
+            b"LMSW" => {
+                let remap = reader.get_form_id_remap();
+                super::extract_records(&mut reader, end, b"LMSW", &mut |fid, subs| {
+                    layered_material_swaps.insert(fid, super::parse_lmsw(fid, subs, &remap));
+                })?
+            }
+            b"MTPT" => {
+                let remap = reader.get_form_id_remap();
+                super::extract_records(&mut reader, end, b"MTPT", &mut |fid, subs| {
+                    if let Some(path) = super::parse_mtpt(subs, &remap) {
+                        material_path_forms.insert(fid, path);
+                    }
+                })?
             }
             // PDCL (Starfield BGSProjectedDecal, #1568 / SF-D4-02) — the
             // single most frequent unresolved base type in Cydonia
@@ -527,6 +548,8 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         packins,
         movables,
         material_swaps,
+        layered_material_swaps,
+        material_path_forms,
         ..Default::default()
     };
     // LTEX.TNAM → TXST: resolved here against this plugin's own TXSTs, and

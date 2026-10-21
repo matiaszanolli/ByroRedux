@@ -22,6 +22,7 @@ pub mod global;
 pub mod gras;
 pub mod items;
 pub mod list_record;
+pub mod lmsw;
 pub mod load_screen;
 pub mod misc;
 pub mod movs;
@@ -44,6 +45,7 @@ pub mod weather_settings;
 pub mod weather_settings_instance;
 
 pub use list_record::{parse_flst, FlstRecord};
+pub use lmsw::{parse_lmsw, parse_mtpt, LayeredMaterialSwapEntry, LayeredMaterialSwapRecord};
 pub use load_screen::{
     first_backend_load_screen, load_screen_census, parse_lscr, parse_trns, LoadScreenCensus,
     LoadScreenLocation, LoadScreenRecord, LoadScreenRejection, LoadScreenTransform,

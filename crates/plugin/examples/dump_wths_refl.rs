@@ -4,8 +4,11 @@
 //! instance-value follow-up (OBJT/LIST/USER): it prints the schema
 //! half through the parser and the instance half as raw hex.
 //!
+//! `--type XXXX` dumps another reflection-carrying record type instead
+//! (`LMSW` layered material swaps, #5757).
+//!
 //! Usage:
-//!   cargo run -p byroredux-plugin --example dump_wths_refl -- <Starfield.esm> [substr...]
+//!   cargo run -p byroredux-plugin --example dump_wths_refl -- <Starfield.esm> [--type XXXX] [substr...]
 
 use byroredux_plugin::esm::reader::{EsmReader, RecordHeader, SubRecord};
 use byroredux_plugin::esm::records::parse_bgs_reflection;
@@ -14,8 +17,17 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let path = args
         .next()
-        .ok_or_else(|| anyhow::anyhow!("usage: <Starfield.esm> [substr...]"))?;
-    let filters: Vec<String> = args.collect();
+        .ok_or_else(|| anyhow::anyhow!("usage: <Starfield.esm> [--type XXXX] [substr...]"))?;
+    let mut filters: Vec<String> = args.collect();
+    let mut record_type = *b"WTHS";
+    if let Some(i) = filters.iter().position(|a| a == "--type") {
+        let ty = filters
+            .get(i + 1)
+            .filter(|t| t.len() == 4)
+            .ok_or_else(|| anyhow::anyhow!("--type takes a four-character record type"))?;
+        record_type.copy_from_slice(ty.as_bytes());
+        filters.drain(i..i + 2);
+    }
 
     let bytes = std::fs::read(&path)?;
     println!("Parsing {} ({:.1} MB)\u{2026}", path, bytes.len() as f64 / 1_048_576.0);
@@ -23,9 +35,9 @@ fn main() -> anyhow::Result<()> {
     let mut reader = EsmReader::new(&bytes);
     let _hdr = reader.read_file_header()?;
     let mut found = 0;
-    // WTHS records live in the WTHS top-level group; the bounded walk's
-    // FourCC filter reaches every one of them.
-    reader.for_each_record(bytes.len(), Some(b"WTHS"), |h, subs| {
+    // Each record type lives in its own top-level group; the bounded
+    // walk's FourCC filter reaches every one of them.
+    reader.for_each_record(bytes.len(), Some(&record_type), |h, subs| {
         found += 1;
         let edid = subs
             .iter()
@@ -38,7 +50,10 @@ fn main() -> anyhow::Result<()> {
             print_wths(h, &edid, &subs);
         }
     })?;
-    println!("\ntotal WTHS records: {found}");
+    println!(
+        "\ntotal {} records: {found}",
+        String::from_utf8_lossy(&record_type)
+    );
     Ok(())
 }
 
@@ -146,6 +161,9 @@ fn print_value(v: &byroredux_plugin::esm::records::ReflectionValue, depth: usize
         byroredux_plugin::esm::records::ReflectionValue::List(items) => {
             for (i, item) in items.iter().enumerate() {
                 println!("{indent}[{i}] {}", summarize(item));
+                if let byroredux_plugin::esm::records::ReflectionValue::Object(_) = item {
+                    print_value(item, depth + 1);
+                }
             }
         }
         _ => println!("{indent}{}", summarize(v)),
