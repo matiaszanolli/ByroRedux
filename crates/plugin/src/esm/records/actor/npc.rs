@@ -811,6 +811,11 @@ fn parse_npc_core(
         // resolved Male), level=1, and template_flags=0. Female-only outfit
         // ARMAs then had no male mesh to attach, producing floating heads.
         //
+        // Fallout 76 ships the FO4 layout unchanged (`wbDefinitionsFO76.pas`
+        // NPC_ ACBS; all 6,551 `SeventySix.esm` NPC_ records are 20 bytes).
+        // Matching only `Fallout4` left every FO76 actor with flags = 0 and
+        // template_flags = 0, so no TPLT inheritance ran (#6240).
+        //
         // Starfield's is the same layout without the trailing bleedout /
         // unknown words: 16 bytes, template flags still at +14 (all 7,131
         // `Starfield.esm` NPC_ records are exactly 16 bytes; the bit-set
@@ -818,7 +823,7 @@ fn parse_npc_core(
         // Without this arm every Starfield actor kept acbs_flags = 0 (all male,
         // none essential / unique) and template_flags = 0 (#6120).
         b"ACBS"
-            if (matches!(game, GameKind::Fallout4) && sub.data.len() >= 20)
+            if (matches!(game, GameKind::Fallout4 | GameKind::Fallout76) && sub.data.len() >= 20)
                 || (matches!(game, GameKind::Starfield) && sub.data.len() >= 16) =>
         {
             let mut r = SubReader::new(&sub.data);

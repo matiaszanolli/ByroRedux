@@ -234,6 +234,34 @@ fn starfield_16byte_acbs_parses_gender_level_and_template_flags() {
     assert_eq!((fo4.acbs_flags, fo4.template_flags), (0, 0));
 }
 
+/// #6240 — Fallout 76's ACBS is the FO4 20-byte layout (`wbDefinitionsFO76.pas`;
+/// every `SeventySix.esm` NPC_ ACBS is 20 bytes). It matched no arm, so every FO76
+/// actor parsed as male, level 1, with no template flags.
+#[test]
+fn fallout_76_20byte_acbs_uses_the_fallout_4_layout() {
+    use crate::equip::Gender;
+
+    let mut acbs = Vec::with_capacity(20);
+    acbs.extend_from_slice(&0x0000_0003u32.to_le_bytes()); // Female | Essential
+    acbs.extend_from_slice(&0i16.to_le_bytes()); // XP value offset
+    acbs.extend_from_slice(&12i16.to_le_bytes()); // level
+    acbs.extend_from_slice(&4u16.to_le_bytes()); // calc min
+    acbs.extend_from_slice(&20u16.to_le_bytes()); // calc max
+    acbs.extend_from_slice(&35i16.to_le_bytes()); // disposition
+    acbs.extend_from_slice(&0x0101u16.to_le_bytes()); // template flags: Traits | Inventory
+    acbs.extend_from_slice(&0u16.to_le_bytes()); // bleedout override
+    acbs.extend_from_slice(&0u16.to_le_bytes()); // unused
+    assert_eq!(acbs.len(), 20);
+    let subs = vec![sub(b"EDID", b"FO76_Npc\0"), sub(b"ACBS", acbs)];
+
+    let n = parse_npc(0x0001_2345, &subs, GameKind::Fallout76, &None);
+
+    assert_eq!(Gender::from_acbs_flags(n.acbs_flags), Gender::Female);
+    assert!(n.essential);
+    assert_eq!((n.level, n.calc_min, n.disposition_base), (12, 4, 35));
+    assert_eq!(n.template_flags, 0x0101);
+}
+
 /// Skyrim shares FNV's 24-byte ACBS length but not its field layout. Pin all
 /// three signed pool offsets plus the fields on either side of the Health
 /// offset so the generic Fallout arm cannot silently reclaim this payload.
