@@ -518,6 +518,11 @@ pub(crate) struct InteriorCellApplyJob {
     /// #5484 — hashes whose `_oc.nif` bake drew geometry. Keys
     /// `CellData::absorbed_ref_bakes` at the reference gate.
     baked_hashes: Vec<u32>,
+    /// [`effective_absorbed_refs`](super::precombined::effective_absorbed_refs)
+    /// of the two above, built by the first slice: both inputs are fixed once
+    /// `begin` returns, so later slices reuse it instead of re-hashing the
+    /// cell's bake list (#6127).
+    absorbed: Option<std::collections::HashSet<u32>>,
     references: Option<Box<ReferenceLoadJob>>,
     phases: CellLoadPhaseTimings,
 }
@@ -623,6 +628,7 @@ impl InteriorCellApplyJob {
             load_order,
             cell_root,
             baked_hashes,
+            absorbed: None,
             references: None,
             phases,
         })
@@ -645,8 +651,9 @@ impl InteriorCellApplyJob {
             .cells
             .get(&cell_key)
             .expect("interior cell existed when its apply job began");
-        let absorbed =
-            super::precombined::effective_absorbed_refs(&cell.absorbed_ref_bakes, &self.baked_hashes);
+        let absorbed = self.absorbed.get_or_insert_with(|| {
+            super::precombined::effective_absorbed_refs(&cell.absorbed_ref_bakes, &self.baked_hashes)
+        });
         let first_entity = world.next_entity_id();
         let phase_started = Instant::now();
         let progress = super::references::load_references_budgeted(

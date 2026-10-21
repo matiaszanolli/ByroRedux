@@ -1458,6 +1458,10 @@ pub(crate) struct ExteriorCellApplyJob {
     /// the precombined phase completes). Keys
     /// `CellData::absorbed_ref_bakes` at the reference gate.
     baked_hashes: Option<Vec<u32>>,
+    /// [`effective_absorbed_refs`](super::precombined::effective_absorbed_refs)
+    /// of `baked_hashes`, built when the own-refs phase first needs it: the
+    /// inputs are fixed once the precombined phase completes (#6127).
+    absorbed: Option<HashSet<u32>>,
     references: Option<Box<ReferenceLoadJob>>,
     /// The cell's own refs' result centre, once they have all spawned.
     own_refs_center: Option<Vec3>,
@@ -2366,6 +2370,7 @@ impl ExteriorCellApplyJob {
             terrain_center,
             precombined,
             baked_hashes,
+            absorbed: None,
             references: None,
             own_refs_center: None,
             persistent_refs,
@@ -2438,13 +2443,15 @@ impl ExteriorCellApplyJob {
                 return ExteriorCellApplyProgress::Pending(self);
             }
         }
-        let absorbed = super::precombined::effective_absorbed_refs(
-            &cell.absorbed_ref_bakes,
-            self.baked_hashes
-                .as_deref()
-                .expect("precombined apply completed before reference loading"),
-        );
         if self.own_refs_center.is_none() {
+            let absorbed = &*self.absorbed.get_or_insert_with(|| {
+                super::precombined::effective_absorbed_refs(
+                    &cell.absorbed_ref_bakes,
+                    self.baked_hashes
+                        .as_deref()
+                        .expect("precombined apply completed before reference loading"),
+                )
+            });
             let label = format!("exterior({},{})", self.gx, self.gy);
             let first_entity = world.next_entity_id();
             let progress = load_references_budgeted(
@@ -2459,7 +2466,7 @@ impl ExteriorCellApplyJob {
                 mat_provider.as_deref_mut(),
                 &label,
                 wctx.load_order.as_ref(),
-                &absorbed,
+                absorbed,
                 self.references.take(),
                 budget,
             );
