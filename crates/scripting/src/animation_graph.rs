@@ -983,14 +983,20 @@ impl ObjectAnimationGraph {
 
     /// Move every periodic trigger that is still due at `limit` to its first occurrence after
     /// it, keeping its phase: the occurrences in between are skipped. One whose period is too
-    /// small for that to land after `limit` in `f32` is dropped; a one-shot stays due.
+    /// small for that to land after `limit` in `f32` is dropped, and so is a one-shot still due
+    /// (#6010): this runs only when a step saturated, and a one-shot that is still due then is
+    /// the tail of states whose zero-length triggers raise each other's transition, which
+    /// would otherwise spend the whole budget again every frame for ever.
     fn skip_missed(&mut self, limit: f32) {
         let mut dropped = false;
         self.scheduled.retain_mut(|scheduled| {
             if scheduled.at > limit {
                 return true;
             }
-            let Some(period) = scheduled.period else { return true };
+            let Some(period) = scheduled.period else {
+                dropped = true;
+                return false;
+            };
             let mut next = scheduled.at + ((limit - scheduled.at) / period).floor() * period + period;
             if next <= limit {
                 // The loops divide the frame evenly and `f32` rounded the last one back onto
@@ -1006,14 +1012,14 @@ impl ObjectAnimationGraph {
             }
         });
         if dropped {
-            self.report_runaway("it comes round faster than a frame can hold");
+            self.report_runaway("it comes round faster than a frame can hold, or one-shots keep re-arming each other");
         }
     }
 
     fn report_runaway(&mut self, why: &str) {
         if !self.runaway_reported {
             self.runaway_reported = true;
-            log::warn!("behavior graph on entity {}: a looping trigger is dropped, {why}", self.root);
+            log::warn!("behavior graph on entity {}: a trigger is dropped, {why}", self.root);
         }
     }
 
@@ -2335,6 +2341,43 @@ mod tests {
         assert!(raised <= MAX_TRIGGERS_PER_STEP + 1, "{raised} events from one frame");
         assert_eq!(next.len(), 1, "the trigger is still scheduled: {next:?}");
         assert!(next[0] > 1000.0 && next[0] <= 1000.11, "on its phase, just after the frame: {}", next[0]);
+    }
+
+    /// Two states whose single-play clips each raise, at once, the event that moves to the
+    /// other: every transition re-schedules a due-now one-shot. Not a periodic trigger, so
+    /// only the step's cap bounded it - 1024 transitions every frame, for ever (#6010).
+    #[test]
+    fn one_shots_that_re_arm_each_other_are_dropped_once_a_step_saturates() {
+        let trigger = |event| ClipTrigger { local_time: 0.0, event, relative_to_end: false, annotation: false };
+        let state = |id: i32, name: &str, to: i32, event: i32, animation: &str| State {
+            id,
+            name: name.into(),
+            transitions: vec![transition(event, to)],
+            clip: Some(clip(animation, ClipMode::SinglePlay, 1.0, vec![trigger(event)])),
+            content: Default::default(),
+        };
+        let machine = StateMachine {
+            start_state: 0,
+            start_state_variable: None,
+            states: vec![state(0, "A", 1, 0, "a/a.hkx"), state(1, "B", 0, 1, "a/b.hkx")],
+            wildcard: vec![],
+        };
+        let graph = BehaviorGraph { variables: Vec::new(), events: vec!["ToB".into(), "ToA".into()], machine: Some(machine) };
+        let mut clips = HashMap::new();
+        clips.insert(("a/a.hkx".to_owned(), false), GraphClip { handle: 1, duration: 1.0 });
+        clips.insert(("a/b.hkx".to_owned(), false), GraphClip { handle: 2, duration: 1.0 });
+        let (first, second, left) = within_ten_seconds(move || {
+            let mut graph =
+                ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips, sequences: HashMap::new(), lazy: None }), 5).unwrap();
+            graph.start();
+            graph.step(1.0 / 60.0);
+            let first = graph.take_raised().len();
+            graph.step(1.0 / 60.0);
+            (first, graph.take_raised().len(), graph.scheduled.len())
+        });
+        assert!(first <= MAX_TRIGGERS_PER_STEP + 1, "{first} events from the saturated frame");
+        assert_eq!(second, 0, "the next frame owes nothing: the tail was dropped");
+        assert_eq!(left, 0, "and nothing is left to re-arm");
     }
 
     #[test]
