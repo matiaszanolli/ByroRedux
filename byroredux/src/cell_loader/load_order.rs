@@ -370,6 +370,7 @@ pub(super) fn plugin_for_form_id(form_id: u32, load_order: &LoadOrder) -> Option
 pub(super) fn build_remap_for_plugin(
     plugin_path: &str,
     header: &esm::reader::FileHeader,
+    game: esm::reader::GameKind,
     plugin_slot: esm::reader::GlobalSlot,
     load_order: &[String],
     slots: &[esm::reader::GlobalSlot],
@@ -408,6 +409,13 @@ pub(super) fn build_remap_for_plugin(
     Ok(esm::reader::FormIdRemap {
         plugin_slot,
         master_slots,
+        // #6118 — Starfield addresses small / medium masters in their own
+        // `0xFE` / `0xFD` spaces, not by `MAST` position.
+        scheme: if game == esm::reader::GameKind::Starfield {
+            esm::reader::FormIdScheme::Starfield
+        } else {
+            esm::reader::FormIdScheme::Positional
+        },
     })
 }
 
@@ -782,11 +790,17 @@ where
             // Read the TES4 header once: masters (for the remap), the ESL
             // flag (slot assignment, #1554), and the Localized flag (the
             // .STRINGS guard, #1553).
-            let header = {
+            let (header, game) = {
                 let mut reader = esm::reader::EsmReader::new(&bytes);
-                reader.read_file_header().map_err(|e| {
+                let header = reader.read_file_header().map_err(|e| {
                     anyhow::anyhow!("Failed to read TES4 header for '{}': {}", path, e)
-                })?
+                })?;
+                let game = esm::reader::GameKind::from_header(
+                    reader.variant(),
+                    header.hedr_version,
+                    header.record_version,
+                );
+                (header, game)
             };
 
             let plugin_slot = allocate_global_slot(
@@ -798,7 +812,7 @@ where
             )?;
             slots.push(plugin_slot);
 
-            let remap = build_remap_for_plugin(path, &header, plugin_slot, &load_order, &slots)?;
+            let remap = build_remap_for_plugin(path, &header, game, plugin_slot, &load_order, &slots)?;
             let plugin_dependencies = header
                 .master_files
                 .iter()

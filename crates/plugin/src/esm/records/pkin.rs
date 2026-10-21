@@ -297,6 +297,7 @@ mod remap_tests {
         let remap = Some(FormIdRemap {
             plugin_slot: GlobalSlot::Regular(0x02),
             master_slots: vec![GlobalSlot::Regular(0x00)],
+            scheme: Default::default(),
         });
         let mk = |typ: &[u8; 4], v: u32| SubRecord {
             sub_type: *typ,
@@ -324,6 +325,7 @@ mod remap_tests {
         let remap = Some(FormIdRemap {
             plugin_slot: GlobalSlot::Regular(0x02),
             master_slots: vec![GlobalSlot::Regular(0x00)],
+            scheme: Default::default(),
         });
         let subs = vec![
             SubRecord {
@@ -349,6 +351,7 @@ mod remap_tests {
         let remap = Some(FormIdRemap {
             plugin_slot: GlobalSlot::Regular(0x02),
             master_slots: vec![GlobalSlot::Regular(0x00)],
+            scheme: Default::default(),
         });
         let mk = |typ: &[u8; 4], v: u32| SubRecord {
             sub_type: *typ,

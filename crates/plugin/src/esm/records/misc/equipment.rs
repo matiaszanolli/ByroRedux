@@ -571,6 +571,7 @@ mod remap_tests {
         Some(FormIdRemap {
             plugin_slot: GlobalSlot::Regular(0x02),
             master_slots: vec![GlobalSlot::Regular(0x00)],
+            scheme: Default::default(),
         })
     }
 

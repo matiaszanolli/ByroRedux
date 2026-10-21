@@ -470,6 +470,26 @@ pub struct FormIdRemap {
     /// that master. `master_slots[N]` is where a FormID with mod-index
     /// `N` actually lives.
     pub master_slots: Vec<GlobalSlot>,
+    /// How this plugin's FormID top bytes address its `MAST` list.
+    pub scheme: FormIdScheme,
+}
+
+/// How a plugin's raw FormIDs address its own `MAST` list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FormIdScheme {
+    /// Oblivion through Fallout 76: the top byte is a position in the `MAST`
+    /// list, and equal to its length means the plugin itself (an ESL's own
+    /// forms are stored that way too and only composed into `0xFE` space on
+    /// load).
+    #[default]
+    Positional,
+    /// Starfield (#6118): the file stores small and medium masters' forms in
+    /// their own spaces, with ordinals counted per kind. `0xFE` + a 12-bit
+    /// ordinal among this file's *small* masters + a 12-bit object id;
+    /// `0xFD` + an 8-bit ordinal among its *medium* masters + a 16-bit id; any
+    /// other top byte is an ordinal among its *regular* masters only. An ordinal
+    /// equal to the number of masters of that kind is the plugin itself.
+    Starfield,
 }
 
 /// A plugin's resolved position in the global load order.
@@ -530,6 +550,7 @@ impl FormIdRemap {
                 .into_iter()
                 .map(GlobalSlot::Regular)
                 .collect(),
+            scheme: FormIdScheme::Positional,
         }
     }
 
@@ -545,6 +566,9 @@ impl FormIdRemap {
         // optional reference into a live-looking light-space FormID.
         if raw == 0 {
             return 0;
+        }
+        if self.scheme == FormIdScheme::Starfield {
+            return self.remap_starfield(raw);
         }
         let mod_index = (raw >> 24) as usize;
         let slot = if mod_index == self.master_slots.len() {
@@ -585,6 +609,38 @@ impl FormIdRemap {
             return raw;
         };
         slot.compose(raw)
+    }
+
+    /// [`FormIdScheme::Starfield`]: route `raw` by the space its top byte
+    /// names, counting masters of that kind only (#6118).
+    fn remap_starfield(&self, raw: u32) -> u32 {
+        // The ordinal of `raw` among the masters whose slot `is_kind` picks,
+        // resolved to that master's global slot - or this plugin's own when it
+        // is equal to the count.
+        let resolve = |ordinal: usize, is_kind: fn(&GlobalSlot) -> bool| -> Option<GlobalSlot> {
+            let mut of_kind = self.master_slots.iter().copied().filter(|slot| is_kind(slot));
+            let count = of_kind.clone().count();
+            if ordinal == count {
+                Some(self.plugin_slot)
+            } else {
+                of_kind.nth(ordinal)
+            }
+        };
+        let slot = match raw >> 24 {
+            0xFE => resolve(((raw >> 12) & 0x0FFF) as usize, |slot| matches!(slot, GlobalSlot::Light(_))),
+            0xFD => resolve(((raw >> 16) & 0x00FF) as usize, |slot| matches!(slot, GlobalSlot::Medium(_))),
+            top => resolve(top as usize, |slot| matches!(slot, GlobalSlot::Regular(_))),
+        };
+        match slot {
+            Some(slot) => slot.compose(raw),
+            None => {
+                log::warn!(
+                    "Starfield FormID {raw:08x} names a master this plugin does not list ({} masters) - passed through",
+                    self.master_slots.len()
+                );
+                raw
+            }
+        }
     }
 }
 
@@ -1379,6 +1435,7 @@ mod tests {
         let remap = FormIdRemap {
             plugin_slot: GlobalSlot::Light(7),
             master_slots: Vec::new(),
+            scheme: Default::default(),
         };
         assert_eq!(remap.remap(0), 0, "NULL must not become 0xFE00_7000");
     }
@@ -1506,6 +1563,7 @@ mod tests {
         let remap = FormIdRemap {
             plugin_slot: GlobalSlot::Light(2),
             master_slots: vec![GlobalSlot::Regular(0)],
+            scheme: Default::default(),
         };
         // Self-ref (mod_index 1 == master count): raw 0x0100_0800 →
         // 0xFE | sub 2 | object 0x800.
@@ -1523,11 +1581,133 @@ mod tests {
         let remap = FormIdRemap {
             plugin_slot: GlobalSlot::Regular(1),
             master_slots: vec![GlobalSlot::Light(5)],
+            scheme: Default::default(),
         };
         // Reference to the ESL master (mod_index 0) → 0xFE | sub 5 | 0xABC.
         assert_eq!(remap.remap(0x0000_0ABC), 0xFE00_5ABC);
         // Self-ref (mod_index 1 == master count) → regular byte 1.
         assert_eq!(remap.remap(0x0112_3456), 0x0112_3456);
+    }
+
+    fn starfield(plugin_slot: GlobalSlot, master_slots: Vec<GlobalSlot>) -> FormIdRemap {
+        FormIdRemap { plugin_slot, master_slots, scheme: FormIdScheme::Starfield }
+    }
+
+    /// #6118 - a small master's own records are `0xFE` + a file-local ordinal
+    /// (the number of small masters in its own `MAST`) + 12 bits, and
+    /// references to a small master use that master's ordinal among the SMALL
+    /// masters. Shapes from `Constellation.esm`, `SFBGS019.esm` and
+    /// `SFBGS047.esm`.
+    #[test]
+    fn starfield_small_master_forms_decode_by_small_ordinal() {
+        // Constellation: small at Light(0), masters [Starfield]. Own sub 0.
+        let constellation = starfield(GlobalSlot::Light(0), vec![GlobalSlot::Regular(0)]);
+        assert_eq!(constellation.remap(0xFE00_001A), 0xFE00_001A);
+        // SFBGS019: small at Light(2), masters [Starfield, SFBGS004 (Light 1)].
+        // Its own records carry sub 1 (one small master); a reference to
+        // SFBGS004 carries sub 0.
+        let sfbgs019 = starfield(GlobalSlot::Light(2), vec![GlobalSlot::Regular(0), GlobalSlot::Light(1)]);
+        assert_eq!(sfbgs019.remap(0xFE00_1ABC), 0xFE00_2ABC, "own: Light(2)");
+        assert_eq!(sfbgs019.remap(0xFE00_0017), 0xFE00_1017, "SFBGS004's: Light(1)");
+        assert_eq!(sfbgs019.remap(0x0000_0ABC), 0x0000_0ABC, "Starfield.esm's, regular ordinal 0");
+        // SFBGS047: masters [Starfield, SFBGS004 (small), SFBGS00D (regular 1)].
+        // A top byte of 1 is the second REGULAR master (SFBGS00D), not
+        // MAST[1], which is the small SFBGS004.
+        let sfbgs047 = starfield(
+            GlobalSlot::Light(3),
+            vec![GlobalSlot::Regular(0), GlobalSlot::Light(1), GlobalSlot::Regular(1)],
+        );
+        assert_eq!(sfbgs047.remap(0x0100_79E3), 0x0100_79E3, "the WRLD override of SFBGS00D");
+        assert_eq!(sfbgs047.remap(0xFE00_02A5), 0xFE00_12A5, "a KYWD in SFBGS004, small ordinal 0");
+        assert_eq!(sfbgs047.remap(0xFE00_1123), 0xFE00_3123, "own, sub 1");
+    }
+
+    /// #6118 - the measured collision: every small master numbers its own
+    /// records from `0xFE000xxx`, so two of them must land in two slots.
+    #[test]
+    fn starfield_two_small_masters_do_not_share_a_global_id() {
+        let first = starfield(GlobalSlot::Light(0), vec![GlobalSlot::Regular(0)]);
+        let second = starfield(GlobalSlot::Light(1), vec![GlobalSlot::Regular(0)]);
+        assert_ne!(first.remap(0xFE00_0002), second.remap(0xFE00_0002));
+        assert_eq!(first.remap(0xFE00_0002), 0xFE00_0002);
+        assert_eq!(second.remap(0xFE00_0002), 0xFE00_1002);
+    }
+
+    /// #6118 - a medium master's own records are `0xFD` + (its medium-master
+    /// count) + a 16-bit id; references to a medium master use its ordinal
+    /// among the MEDIUM masters.
+    #[test]
+    fn starfield_medium_master_forms_decode_by_medium_ordinal() {
+        // SFBGS003: medium at Medium(0), masters [Starfield].
+        let sfbgs003 = starfield(GlobalSlot::Medium(0), vec![GlobalSlot::Regular(0)]);
+        assert_eq!(sfbgs003.remap(0xFD00_0E90), 0xFD00_0E90);
+        // A medium plugin after it, with SFBGS003 as its first medium master.
+        let outpost = starfield(
+            GlobalSlot::Medium(1),
+            vec![GlobalSlot::Regular(0), GlobalSlot::Regular(1), GlobalSlot::Medium(0)],
+        );
+        assert_eq!(outpost.remap(0xFD00_0050), 0xFD00_0050, "ordinal 0 = SFBGS003");
+        assert_eq!(outpost.remap(0xFD01_0123), 0xFD01_0123, "own: ordinal 1 = the medium count");
+    }
+
+    /// #6118 - a regular plugin's top byte counts REGULAR masters only, so its
+    /// own records stay its own even with a small master in its `MAST` (this
+    /// was sent to the small master's slot, and truncated to 12 bits).
+    #[test]
+    fn starfield_regular_plugin_with_a_small_master_keeps_its_own_records() {
+        // better_living: masters [Starfield, BlueprintShips, SFBGS004 (small)].
+        let better_living = starfield(
+            GlobalSlot::Regular(4),
+            vec![GlobalSlot::Regular(0), GlobalSlot::Regular(1), GlobalSlot::Light(0)],
+        );
+        assert_eq!(better_living.remap(0x0200_1234), 0x0400_1234, "own: 2 regular masters");
+        assert_eq!(better_living.remap(0x0100_0042), 0x0100_0042, "BlueprintShips");
+        assert_eq!(better_living.remap(0xFE00_0099), 0xFE00_0099, "SFBGS004, small ordinal 0");
+    }
+
+    /// #6118 - the scheme is Starfield's alone; Skyrim / FO4 plugins keep the
+    /// positional `MAST` index, and a Starfield form naming a master the file
+    /// does not list is passed through, not sent to a wrong slot.
+    #[test]
+    fn starfield_scheme_is_opt_in_and_unlisted_masters_pass_through() {
+        let masters = vec![GlobalSlot::Regular(0), GlobalSlot::Light(1)];
+        let positional = FormIdRemap {
+            plugin_slot: GlobalSlot::Regular(3),
+            master_slots: masters.clone(),
+            scheme: FormIdScheme::Positional,
+        };
+        assert_eq!(positional.remap(0x0100_0ABC), 0xFE00_1ABC, "MAST[1] is the ESL, by position");
+        let starfield_remap = starfield(GlobalSlot::Regular(3), masters);
+        // Sub 5 names a fifth small master this file does not have.
+        assert_eq!(starfield_remap.remap(0xFE00_5123), 0xFE00_5123);
+        assert_eq!(starfield_remap.remap(0), 0);
+    }
+
+    /// #6118 on the real masters: the small masters installed with Starfield
+    /// number their own records from the same `0xFE000xxx` base, and once
+    /// each is decoded into its own slot no global id is claimed twice.
+    #[test]
+    #[ignore = "needs Starfield game data on disk"]
+    fn installed_starfield_small_masters_do_not_collide() {
+        let data = std::env::var("BYROREDUX_STARFIELD_DATA")
+            .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data".to_string());
+        let parse = |file: &str, slot: GlobalSlot, masters: Vec<GlobalSlot>| {
+            let bytes = std::fs::read(std::path::Path::new(&data).join(file)).ok()?;
+            let remap = starfield(slot, masters);
+            let index = crate::esm::records::parse_esm_with_load_order(&bytes, Some(remap)).ok()?;
+            Some(index.record_types.keys().copied().collect::<std::collections::HashSet<u32>>())
+        };
+        let (Some(constellation), Some(sfbgs004)) = (
+            parse("Constellation.esm", GlobalSlot::Light(0), vec![GlobalSlot::Regular(0)]),
+            parse("SFBGS004.esm", GlobalSlot::Light(1), vec![GlobalSlot::Regular(0)]),
+        ) else {
+            eprintln!("skipping: Starfield small masters not available");
+            return;
+        };
+        eprintln!("Constellation {} ids, SFBGS004 {} ids", constellation.len(), sfbgs004.len());
+        assert!(!constellation.is_empty() && !sfbgs004.is_empty());
+        let shared: Vec<u32> = constellation.intersection(&sfbgs004).copied().take(5).collect();
+        assert!(shared.is_empty(), "two small masters claimed the same global ids: {shared:08x?}");
     }
 
     /// #1554 — `read_file_header` decodes both the Localized (0x80) and
