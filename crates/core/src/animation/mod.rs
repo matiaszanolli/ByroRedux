@@ -30,7 +30,7 @@ pub use interpolation::{
 pub use named_sequences::NamedSequences;
 pub use player::{advance_time, AnimationPlayer};
 pub use registry::AnimationClipRegistry;
-pub use root_motion::{split_root_motion, RootMotionDelta};
+pub use root_motion::{split_root_motion, RootMotionDelta, RootMotionYaw};
 pub use stack::{
     advance_stack, bone_layer_weight, sample_blended_transform, visit_stack_text_events,
     AnimationLayer, AnimationStack,
@@ -443,6 +443,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
         advance_time(&mut player, &clip, 0.6);
@@ -474,6 +475,7 @@ mod tests {
                     bool_channels: Vec::new(),
                     texture_flip_channels: Vec::new(),
                     text_keys: Vec::new(),
+                    root_yaw: Vec::new(),
                 };
                 let mut player = AnimationPlayer::new(0);
                 player.local_time = 0.25;
@@ -511,6 +513,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         };
         let mut registry = AnimationClipRegistry::new();
         let handle = registry.add(clip);
@@ -541,7 +544,26 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         }
+    }
+
+    /// #6241 — the extracted root yaw samples linearly, clamps outside its keys, and a
+    /// looping clip that wraps turns to its end and on from its start.
+    #[test]
+    fn root_yaw_samples_and_wraps_like_root_translation() {
+        let mut clip = flat_clip("turn", CycleType::Loop, 2.0);
+        assert_eq!(clip.root_yaw_at(1.0), None);
+        assert_eq!(clip.root_yaw_delta(0.5, 1.0), 0.0, "no keys, no turn");
+        clip.root_yaw = vec![(0.0, 0.0), (2.0, -1.0)];
+        assert_eq!(clip.root_yaw_at(-1.0), Some(0.0));
+        assert_eq!(clip.root_yaw_at(1.0), Some(-0.5));
+        assert_eq!(clip.root_yaw_at(5.0), Some(-1.0));
+        assert!((clip.root_yaw_delta(0.5, 1.5) + 0.5).abs() < 1e-6);
+        // 1.5 -> wrap -> 0.5: a quarter to the end, a quarter from the start.
+        assert!((clip.root_yaw_delta(1.5, 0.5) + 0.5).abs() < 1e-6);
+        clip.cycle_type = CycleType::Clamp;
+        assert!((clip.root_yaw_delta(1.5, 0.5) - 0.5).abs() < 1e-6, "a clamped clip does not wrap");
     }
 
     /// Regression: #3701 / ECS-2026-08-30-D10-01. `with_blend_in` used to
@@ -676,6 +698,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
         advance_time(&mut player, &clip, 2.0);
@@ -698,6 +721,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
         advance_time(&mut player, &clip, 0.8);
@@ -730,6 +754,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
         // dt=0.55 → delta=0.55, far beyond 2*duration=0.2.
@@ -759,6 +784,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         };
         let handle = reg.add(clip);
         assert_eq!(handle, 0);
@@ -788,6 +814,7 @@ mod tests {
                 (1.0, pool.intern("sound: swing")),
                 (1.5, pool.intern("end")),
             ],
+            root_yaw: Vec::new(),
         };
 
         // Cross the first key.
@@ -821,6 +848,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: vec![(0.2, pool.intern("start")), (1.8, pool.intern("end"))],
+            root_yaw: Vec::new(),
         };
 
         // Loop wrap: prev=1.7, curr=0.3 → fires "end" (>1.7) and "start" (<=0.3).
@@ -854,6 +882,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: vec![(0.5, pool.intern("hit")), (1.8, pool.intern("end"))],
+            root_yaw: Vec::new(),
         };
 
         // A whole period (2.0s) elapsed and the loop landed exactly back at
@@ -898,6 +927,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: vec![(0.2, pool.intern("a")), (0.45, pool.intern("b"))],
+            root_yaw: Vec::new(),
         };
 
         let events = collect_text_key_events(&clip, &pool, 0.1, 0.4, false, 1.3f32);
@@ -947,6 +977,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: vec![(0.5, pool.intern("hit")), (1.8, pool.intern("end"))],
+            root_yaw: Vec::new(),
         };
 
         // Identical (prev, curr) to `text_key_full_period_advance_fires_every_key_once`
@@ -1005,6 +1036,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: vec![(0.5, pool.intern("hit")), (1.8, pool.intern("end"))],
+            root_yaw: Vec::new(),
         };
 
         let mut player = AnimationPlayer::new(0);
@@ -1052,6 +1084,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: vec![(1.0, pool.intern("end"))],
+            root_yaw: Vec::new(),
         };
         // Clamp saturated at `duration`: the playhead genuinely stopped, so
         // the applied delta is whatever the caller supplied but the arm is
@@ -1088,6 +1121,7 @@ mod tests {
                 (1.0, pool.intern("swing")),
                 (1.5, pool.intern("end")),
             ],
+            root_yaw: Vec::new(),
         };
 
         // Backward leg 1.2 → 0.4 crosses "hit" (0.5) and "swing" (1.0), NOT
@@ -1126,6 +1160,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         };
         let events = collect_text_key_events(&clip, &pool, 0.0, 1.0, false, 1.0f32);
         assert!(events.is_empty());
@@ -1153,6 +1188,7 @@ mod tests {
                 (1.0, pool.intern("sound: swing")),
                 (1.8, pool.intern("end")),
             ],
+            root_yaw: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
 
@@ -1212,6 +1248,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: vec![(1.0, pool.intern("ExitCartEnd"))],
+            root_yaw: Vec::new(),
         };
         let mut player = AnimationPlayer::new(0);
 
@@ -1319,6 +1356,7 @@ mod tests {
                 bool_channels: Vec::new(),
                 texture_flip_channels: Vec::new(),
                 text_keys: Vec::new(),
+                root_yaw: Vec::new(),
             }
         };
 
@@ -1392,6 +1430,7 @@ mod tests {
                 bool_channels: Vec::new(),
                 texture_flip_channels: Vec::new(),
                 text_keys: Vec::new(),
+                root_yaw: Vec::new(),
             }
         };
 
@@ -1461,6 +1500,7 @@ mod tests {
                 bool_channels: Vec::new(),
                 texture_flip_channels: Vec::new(),
                 text_keys: Vec::new(),
+                root_yaw: Vec::new(),
             }
         };
 
@@ -1532,6 +1572,7 @@ mod tests {
                 bool_channels: Vec::new(),
                 texture_flip_channels: Vec::new(),
                 text_keys: Vec::new(),
+                root_yaw: Vec::new(),
             }
         };
         let mut registry = AnimationClipRegistry::new();
@@ -1631,6 +1672,7 @@ mod tests {
                 bool_channels: Vec::new(),
                 texture_flip_channels: Vec::new(),
                 text_keys: Vec::new(),
+                root_yaw: Vec::new(),
             }
         };
 
@@ -1720,6 +1762,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         };
 
         let mut registry = AnimationClipRegistry::new();
@@ -1772,6 +1815,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         };
 
         let mut registry = AnimationClipRegistry::new();

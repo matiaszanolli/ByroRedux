@@ -19,6 +19,24 @@ impl Component for RootMotionDelta {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Per-frame root yaw extracted alongside [`RootMotionDelta`], in radians
+/// about the renderer's up axis (+Y), positive counter-clockwise seen from
+/// above — the same sense as `Quat::from_rotation_y`.
+///
+/// Only a clip that carries an extracted turn fills it (Fallout 4's Havok
+/// reference frame, [`AnimationClip::root_yaw`](super::AnimationClip::root_yaw));
+/// a NIF / KF clip plays its turn in the pose. Written by the animation
+/// system where the component exists and consumed by whichever system owns
+/// the entity's heading: `graph_root_motion_system` for a graph-driven
+/// actor. An AI mover that already steers the heading never reads it, so a
+/// turn is never applied twice (#6241).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RootMotionYaw(pub f32);
+
+impl Component for RootMotionYaw {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Split a sampled root-node translation into the part that stays on
 /// the `Transform` and the part that becomes a `RootMotionDelta`.
 ///

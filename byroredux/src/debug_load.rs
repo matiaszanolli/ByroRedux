@@ -652,6 +652,7 @@ mod tests {
                 bool_channels: Vec::new(),
                 texture_flip_channels: Vec::new(),
                 text_keys: Vec::new(),
+                root_yaw: Vec::new(),
             });
         world.resource_mut::<NifImportRegistry>().set_clip_handle("meshes\\door.nif".into(), handle);
         world.resource_mut::<SceneImportCache>().insert("meshes\\skeleton.nif".into(), None);

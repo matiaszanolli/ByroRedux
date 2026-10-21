@@ -453,6 +453,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("StringPool", "serialized specially as Snapshot.strings so FixedString symbol order is restored before component columns"),
         ("CommandRegistry", "boot-time function-pointer command table; reconstructed by command registration and not serializable gameplay state"),
         ("RootMotionDelta", "per-frame animation output consumed and cleared by movement systems"),
+        ("RootMotionYaw", "per-frame animation output (the extracted turn, #6241) consumed and cleared by graph_root_motion_system"),
         ("AnimationClipRegistry", "asset registry rebuilt from NIF/KF/KFM content; numeric handles are session-local"),
         // ── byroredux/src/extensions/ (#3843 exposed these) ───────
         ("ExtensionHostSlot", "the live Arc<Mutex<ExtensionHost>> owner: function pointers into loaded sandbox modules and session-local SDK handles, neither serializable nor meaningful across a process. Extension state that IS durable persists separately through capture_extension_state/restore_extension_state, which writes authored-identity rows rather than runtime handles"),

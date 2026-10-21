@@ -210,10 +210,12 @@ pub(crate) fn graph_locomotion_system(world: &World, dt: f32) {
 /// the actor - `bGraphDriven` / `bAnimationDriven` set, as in the transitions that walk it
 /// into a seat or turn it on the spot - the displacement the playing clips extract (the
 /// animation system leaves it in `RootMotionDelta`, blended across the stack's layers) is
-/// the movement: this moves the actor by it, in the actor's own frame, and consumes it.
-/// Yaw in the extracted motion is not applied.
+/// the movement: this moves the actor by it, in the actor's own frame, then turns the actor
+/// by the extracted yaw (`RootMotionYaw`, #6241 - a turn-in-place clip's whole turn lives
+/// there), and consumes both. An actor the AI movers steer is not graph-driven, so its
+/// heading is never turned twice.
 pub(crate) fn graph_root_motion_system(world: &World, _dt: f32) {
-    use byroredux_core::animation::RootMotionDelta;
+    use byroredux_core::animation::{RootMotionDelta, RootMotionYaw};
     let actors: Vec<(EntityId, Quat)> = {
         let Some(graphs) = world.query::<ObjectAnimationGraph>() else { return };
         let Some(transforms) = world.query::<Transform>() else { return };
@@ -230,7 +232,7 @@ pub(crate) fn graph_root_motion_system(world: &World, _dt: f32) {
     if actors.is_empty() {
         return;
     }
-    // The animation system writes only where the component exists.
+    // The animation system writes only where the components exist.
     if let Some(mut deltas) = world.query_mut::<RootMotionDelta>() {
         for (entity, _) in &actors {
             if deltas.get(*entity).is_none() {
@@ -238,12 +240,28 @@ pub(crate) fn graph_root_motion_system(world: &World, _dt: f32) {
             }
         }
     }
-    let motions: Vec<(EntityId, Vec3, Quat)> = match world.query::<RootMotionDelta>() {
+    if let Some(mut yaws) = world.query_mut::<RootMotionYaw>() {
+        for (entity, _) in &actors {
+            if yaws.get(*entity).is_none() {
+                yaws.insert(*entity, RootMotionYaw(0.0));
+            }
+        }
+    }
+    let yaw_of = |entity: EntityId| {
+        world
+            .query::<RootMotionYaw>()
+            .and_then(|yaws| yaws.get(entity).map(|yaw| yaw.0))
+            .filter(|yaw| yaw.is_finite())
+            .unwrap_or(0.0)
+    };
+    let motions: Vec<(EntityId, Vec3, f32, Quat)> = match world.query::<RootMotionDelta>() {
         Some(deltas) => actors
             .iter()
             .filter_map(|(entity, rotation)| {
                 let delta = deltas.get(*entity)?.0;
-                (delta.is_finite() && delta != Vec3::ZERO).then_some((*entity, delta, *rotation))
+                let delta = if delta.is_finite() { delta } else { Vec3::ZERO };
+                let yaw = yaw_of(*entity);
+                (delta != Vec3::ZERO || yaw != 0.0).then_some((*entity, delta, yaw, *rotation))
             })
             .collect(),
         None => return,
@@ -253,17 +271,27 @@ pub(crate) fn graph_root_motion_system(world: &World, _dt: f32) {
     }
     let mut moved = Vec::with_capacity(motions.len());
     if let Some(mut transforms) = world.query_mut::<Transform>() {
-        for (entity, delta, rotation) in &motions {
+        for (entity, delta, yaw, rotation) in &motions {
             if let Some(transform) = transforms.get_mut(*entity) {
+                // The animation system expressed the travel in the heading the actor had
+                // before this tick's turn, so it moves first and turns after.
                 transform.translation += *rotation * (*delta * transform.scale);
+                transform.rotation = (transform.rotation * Quat::from_rotation_y(*yaw)).normalize();
                 moved.push((*entity, transform.translation));
             }
         }
     }
     if let Some(mut deltas) = world.query_mut::<RootMotionDelta>() {
-        for (entity, _, _) in &motions {
+        for (entity, ..) in &motions {
             if let Some(delta) = deltas.get_mut(*entity) {
                 delta.0 = Vec3::ZERO;
+            }
+        }
+    }
+    if let Some(mut yaws) = world.query_mut::<RootMotionYaw>() {
+        for (entity, ..) in &motions {
+            if let Some(yaw) = yaws.get_mut(*entity) {
+                yaw.0 = 0.0;
             }
         }
     }
@@ -411,6 +439,35 @@ mod tests {
         // Forward (-Z) turned a quarter by +90 degrees of yaw is -X.
         assert!((moved - Vec3::new(-10.0, 0.0, 0.0)).length() < 1e-4, "{moved:?}");
         assert_eq!(world.get::<RootMotionDelta>(actor).unwrap().0, Vec3::ZERO, "consumed");
+    }
+
+    /// #6241 — a graph-driven actor turns by the yaw its clips extract (a Fallout 4
+    /// turn-in-place clip's whole turn), after moving in its pre-turn heading; the yaw is
+    /// consumed with the travel. A locomotion-driven actor is not turned.
+    #[test]
+    fn root_yaw_turns_only_a_graph_driven_actor() {
+        use byroredux_core::animation::{RootMotionDelta, RootMotionYaw};
+        use std::f32::consts::FRAC_PI_2;
+        let (mut world, actor) = world_with_actor();
+        world.register::<RootMotionDelta>();
+        world.register::<RootMotionYaw>();
+        let mut shared = (*world.get::<ObjectAnimationGraph>(actor).unwrap().graph_arc()).clone();
+        shared.graph.variables.push(Variable { name: "bGraphDriven".into(), kind: VariableKind::Bool, initial: 0.0 });
+        let mut graph = ObjectAnimationGraph::new(Arc::new(shared), actor).unwrap();
+        graph.root = actor;
+        world.insert(actor, graph);
+        world.insert(actor, RootMotionDelta(Vec3::new(0.0, 0.0, -10.0)));
+        world.insert(actor, RootMotionYaw(-FRAC_PI_2));
+
+        graph_root_motion_system(&world, 0.016);
+        assert_eq!(world.get::<Transform>(actor).unwrap().rotation, Quat::IDENTITY, "not graph-driven: left to the movers");
+
+        byroredux_scripting::animation_graph::set_variable_value(&world, actor, "bGraphDriven", 1.0);
+        graph_root_motion_system(&world, 0.016);
+        let transform = *world.get::<Transform>(actor).unwrap();
+        assert!((transform.translation - Vec3::new(0.0, 0.0, -10.0)).length() < 1e-4, "moved forward before turning: {:?}", transform.translation);
+        assert!(transform.rotation.angle_between(Quat::from_rotation_y(-FRAC_PI_2)) < 1e-4, "a quarter turn right: {:?}", transform.rotation);
+        assert_eq!(world.get::<RootMotionYaw>(actor).unwrap().0, 0.0, "consumed");
     }
 
     /// The observation must never hold `Transform` across another acquisition: the walk

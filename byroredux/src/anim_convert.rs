@@ -673,6 +673,7 @@ pub(crate) fn convert_nif_clip(
         bool_channels,
         texture_flip_channels,
         text_keys,
+        root_yaw: Vec::new(),
     }
 }
 

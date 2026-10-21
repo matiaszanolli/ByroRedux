@@ -773,6 +773,7 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::Children>()
             .writes::<Transform>()
             .writes::<byroredux_core::animation::RootMotionDelta>()
+            .writes::<byroredux_core::animation::RootMotionYaw>()
             .writes::<byroredux_core::ecs::AnimatedVisibility>()
             .writes::<byroredux_core::ecs::AnimatedDiffuseColor>()
             .writes::<byroredux_core::ecs::AnimatedAmbientColor>()

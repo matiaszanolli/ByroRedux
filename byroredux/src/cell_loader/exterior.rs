@@ -971,6 +971,7 @@ mod persistent_cell_stamp_tests {
                 bool_channels: Vec::new(),
                 texture_flip_channels: Vec::new(),
                 text_keys: Vec::new(),
+                root_yaw: Vec::new(),
             })
         };
         assert!(

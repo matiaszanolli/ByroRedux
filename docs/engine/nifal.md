@@ -636,6 +636,22 @@ per-clip `.hkx` data the parser reads, so `convert_hkx_clip` fabricates the
 two the ECS scripting layer needs to detect cart/furniture-exit completion
 without a full behavior-graph interpreter.
 
+The same boundary also serves Fallout 4's Havok 2014 clips. Their extracted
+motion (`hkaDefaultAnimatedReferenceFrame`, `ReferenceFrame.samples` =
+`(x, y, z, yaw)`) is translated, not dropped: the position rides the root
+bone, where the accumulation root splits it back out as `RootMotionDelta`
+(e8026e737), and the yaw becomes `AnimationClip::root_yaw` keys (#6241,
+`reference_frame_yaw_keys`), sampled per tick into `RootMotionYaw`. The yaw is
+the turn itself, not a copy of the pose: `turninplaceright90.hkx` runs its
+frame's yaw 0 → −π/2 while its `Root` and `COM` rotations stay constant
+(pinned on real data by
+`fallout_4_turn_in_place_clip_carries_its_turn_as_root_yaw`). Only
+`graph_root_motion_system` applies it, to a `bGraphDriven` /
+`bAnimationDriven` actor; an actor the AI movers steer never reads it, so a
+turn is not applied twice. A turning clip's travel is re-expressed in the
+heading already turned (`sampled_root_motion_delta`), and a clip with no yaw
+keys (every NIF / KF clip) is unchanged.
+
 ### Shader flags / texture sets / effect shaders — **converged (surveyed 2026-06-02)**
 
 **Skin-tint (`_sk`) consumer — parked pending M56 (#4423, 2026-09-18).** The

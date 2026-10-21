@@ -341,6 +341,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // storage that was never registered and would drop the pose silently.
     world.register::<byroredux_core::animation::AnimationStack>();
     world.register::<byroredux_core::animation::RootMotionDelta>();
+    world.register::<byroredux_core::animation::RootMotionYaw>();
     world.register::<crate::systems::GraphLocomotion>();
     world.register::<crate::systems::ConsoleWalk>();
 

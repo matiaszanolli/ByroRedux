@@ -285,6 +285,46 @@ pub struct AnimationClip {
     /// (#231 / SI-04). Resolve via `StringPool::resolve` when a `&str`
     /// is actually required.
     pub text_keys: Vec<(f32, FixedString)>,
+    /// Extracted root yaw keys `(time, yaw)`: radians about the renderer's
+    /// up axis (+Y), cumulative (unwrapped), linear between keys. Filled only
+    /// where the source extracts the turn out of the pose — Fallout 4's Havok
+    /// reference frame, whose `turninplace*` clips keep the root bone still
+    /// and turn only there (#6241). Empty for every NIF / KF clip, whose turn
+    /// stays in the pose. Read through [`Self::root_yaw_delta`] into
+    /// [`RootMotionYaw`](super::RootMotionYaw).
+    pub root_yaw: Vec<(f32, f32)>,
+}
+
+impl AnimationClip {
+    /// The extracted root yaw at `time`, clamped to the key range; `None` for
+    /// a clip with no [`Self::root_yaw`] keys.
+    pub fn root_yaw_at(&self, time: f32) -> Option<f32> {
+        let keys = &self.root_yaw;
+        let (first, last) = (keys.first()?, keys.last()?);
+        if time <= first.0 {
+            return Some(first.1);
+        }
+        if time >= last.0 {
+            return Some(last.1);
+        }
+        let next = keys.partition_point(|key| key.0 <= time);
+        let (a, b) = (keys[next - 1], keys[next]);
+        let span = b.0 - a.0;
+        let t = if span > 0.0 { (time - a.0) / span } else { 0.0 };
+        Some(a.1 + (b.1 - a.1) * t)
+    }
+
+    /// The root yaw turned between `previous_time` and `current_time` — a
+    /// looping clip that wrapped this tick turns to its end and on from its
+    /// start, like `sampled_root_motion_delta`. Zero without keys.
+    pub fn root_yaw_delta(&self, previous_time: f32, current_time: f32) -> f32 {
+        let yaw = |time| self.root_yaw_at(time).unwrap_or(0.0);
+        if self.cycle_type == CycleType::Loop && current_time < previous_time {
+            (yaw(self.duration) - yaw(previous_time)) + (yaw(current_time) - yaw(0.0))
+        } else {
+            yaw(current_time) - yaw(previous_time)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -390,6 +430,7 @@ mod authored_speed_tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         }
     }
 

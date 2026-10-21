@@ -787,6 +787,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         });
         world.insert_resource(registry);
 

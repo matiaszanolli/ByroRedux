@@ -356,6 +356,7 @@ mod tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: labels.iter().map(|(time, label)| (*time, pool.intern(label))).collect(),
+            root_yaw: Vec::new(),
         }
     }
 

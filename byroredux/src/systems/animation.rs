@@ -7,7 +7,7 @@ use byroredux_core::animation::{
     advance_stack, advance_time, bone_layer_weight, sample_blended_transform, sample_bool_channel,
     sample_color_channel, sample_float_channel, sample_rotation, sample_scale, sample_translation,
     split_root_motion, visit_stack_text_events, visit_text_key_events, AnimationClipRegistry,
-    AnimationPlayer, AnimationStack, ColorTarget, CycleType, FloatTarget, RootMotionDelta,
+    AnimationPlayer, AnimationStack, ColorTarget, CycleType, FloatTarget, RootMotionDelta, RootMotionYaw,
     TransformChannel,
 };
 use byroredux_core::ecs::storage::EntityId;
@@ -89,6 +89,17 @@ fn write_root_motion(world: &World, entity: EntityId, motion: Vec3) {
     }
 }
 
+/// Write this tick's extracted root yaw into `RootMotionYaw`, the same
+/// assignment-sink contract as [`write_root_motion`] (#6241).
+#[inline]
+fn write_root_yaw(world: &World, entity: EntityId, yaw: f32) {
+    if let Some(mut yq) = world.query_mut::<RootMotionYaw>() {
+        if let Some(y) = yq.get_mut(entity) {
+            y.0 = yaw;
+        }
+    }
+}
+
 /// Convert an accumulation root's absolute sampled translation into the
 /// displacement crossed during this tick. Havok cart exits author COM in
 /// seat-relative coordinates, so applying the absolute sample every frame
@@ -106,10 +117,20 @@ fn sampled_root_motion_delta(
     };
     let previous = horizontal(previous_time);
     let current = horizontal(current_time);
+    // #6241 — a clip that extracts its turn (`root_yaw`) authors its travel in
+    // the frame it started in, while the actor has already turned by the yaw so
+    // far. Express the displacement in the actor's heading at `previous_time`
+    // (where the consumer applies it), so a walking turn curves instead of
+    // sliding off along the start heading. No keys: no turn, unchanged.
+    let start_yaw = clip.root_yaw_at(0.0).unwrap_or(0.0);
+    let turned = |time| clip.root_yaw_at(time).map_or(0.0, |yaw| yaw - start_yaw);
+    let into_heading = Quat::from_rotation_y(-turned(previous_time));
     if clip.cycle_type == CycleType::Loop && current_time < previous_time {
-        (horizontal(clip.duration) - previous) + (current - horizontal(0.0))
+        // The new cycle starts where the old one ended, turned a whole cycle.
+        let lap = Quat::from_rotation_y(turned(clip.duration));
+        into_heading * ((horizontal(clip.duration) - previous) + lap * (current - horizontal(0.0)))
     } else {
-        current - previous
+        into_heading * (current - previous)
     }
 }
 
@@ -759,6 +780,7 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
 
             // Write root motion delta to the player entity.
             write_root_motion(world, entity, root_motion);
+            write_root_yaw(world, entity, clip.root_yaw_delta(ps.prev_time, current_time));
         }
 
         // Apply float channels — alpha + UV params + shader floats +
@@ -855,6 +877,7 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
         // weighted: a blended pose (a walk mixed into a run) travels the mix of their
         // extracted motions, not the heaviest layer's alone.
         let mut blended_root_delta = Vec3::ZERO;
+        let mut blended_root_yaw = 0.0f32;
         let dominant_info: Option<(u32, f32)>;
         let stack_root: Option<EntityId>;
         {
@@ -936,6 +959,7 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
             if let Some(name) = accum_root {
                 let mut total = 0.0f32;
                 let mut sum = Vec3::ZERO;
+                let mut yaw_sum = 0.0f32;
                 for layer in &stack.layers {
                     let Some(clip) = registry.get(layer.clip_handle) else { continue };
                     if clip.accum_root_name != Some(name) {
@@ -947,11 +971,13 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                     }
                     if let Some(channel) = clip.channels.get(&name) {
                         sum += sampled_root_motion_delta(clip, channel, layer.prev_time, layer.local_time) * weight;
+                        yaw_sum += clip.root_yaw_delta(layer.prev_time, layer.local_time) * weight;
                         total += weight;
                     }
                 }
                 if total > 0.0 {
                     blended_root_delta = sum / total;
+                    blended_root_yaw = yaw_sum / total;
                 }
             }
 
@@ -1012,6 +1038,7 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
         drop(tq);
 
         write_root_motion(world, entity, root_motion);
+        write_root_yaw(world, entity, if accum_root.is_some() { blended_root_yaw } else { 0.0 });
 
         // Phase 3c: apply non-transform channels from the dominant layer
         // (AR-01). Access channel Vecs through the registry directly —
@@ -1590,6 +1617,7 @@ mod animation_system_e2e_tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         }
     }
 
@@ -1637,6 +1665,7 @@ mod animation_system_e2e_tests {
             bool_channels: Vec::new(),
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
+            root_yaw: Vec::new(),
         };
 
         assert_eq!(
@@ -1717,6 +1746,7 @@ mod animation_system_e2e_tests {
                 bool_channels: Vec::new(),
                 texture_flip_channels: Vec::new(),
                 text_keys: Vec::new(),
+                root_yaw: Vec::new(),
             });
         world.insert(root, RootMotionDelta(Vec3::ZERO));
         world.insert(root, AnimationPlayer::new(handle).with_root(root));
@@ -1732,6 +1762,56 @@ mod animation_system_e2e_tests {
             Vec3::new(0.0, 105.0, 0.0),
             "COM height remains skeletal pose while horizontal travel is extracted"
         );
+    }
+
+    /// #6241 — a clip that extracts its turn authors its travel in the frame it started
+    /// in. The per-tick displacement is re-expressed in the heading the actor has already
+    /// turned to, so the consumer (which applies it in the actor's current frame) curves
+    /// the walk; the tick's turn itself comes out of `root_yaw_delta`. A clip with no yaw
+    /// keys is unchanged.
+    #[test]
+    fn root_motion_of_a_turning_clip_is_expressed_in_the_turned_heading() {
+        use std::f32::consts::FRAC_PI_2;
+        let key = |time: f32| TranslationKey {
+            time,
+            value: Vec3::new(10.0 * time, 0.0, 0.0),
+            forward: Vec3::ZERO,
+            backward: Vec3::ZERO,
+            tbc: None,
+        };
+        let channel = TransformChannel {
+            translation_keys: vec![key(0.0), key(1.0)],
+            translation_type: KeyType::Linear,
+            rotation_keys: Vec::new(),
+            rotation_type: KeyType::Linear,
+            scale_keys: Vec::new(),
+            scale_type: KeyType::Linear,
+            priority: 0,
+        };
+        let mut clip = AnimationClip {
+            name: "turn".into(),
+            duration: 1.0,
+            cycle_type: CycleType::Clamp,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: FxHashMap::default(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+            root_yaw: Vec::new(),
+        };
+        let straight = sampled_root_motion_delta(&clip, &channel, 0.5, 0.6);
+        assert!((straight - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-5, "no yaw keys: unchanged, {straight:?}");
+
+        clip.root_yaw = vec![(0.0, 0.0), (1.0, FRAC_PI_2)];
+        let turned = sampled_root_motion_delta(&clip, &channel, 0.5, 0.6);
+        let expected = Quat::from_rotation_y(-FRAC_PI_2 * 0.5) * Vec3::new(1.0, 0.0, 0.0);
+        assert!((turned - expected).length() < 1e-5, "{turned:?} vs {expected:?}");
+        assert!((clip.root_yaw_delta(0.5, 0.6) - FRAC_PI_2 * 0.1).abs() < 1e-5);
     }
 
     /// A blended stack travels the weighted mix of its layers' extracted motions, not
@@ -1778,6 +1858,7 @@ mod animation_system_e2e_tests {
                 bool_channels: Vec::new(),
                 texture_flip_channels: Vec::new(),
                 text_keys: Vec::new(),
+                root_yaw: Vec::new(),
             })
         };
         let (slow, fast) = (clip_with_speed(40.0), clip_with_speed(80.0));
@@ -1884,6 +1965,7 @@ mod animation_system_e2e_tests {
                 bool_channels: Vec::new(),
                 texture_flip_channels: Vec::new(),
                 text_keys: Vec::new(),
+                root_yaw: Vec::new(),
             });
 
         let mut stack = AnimationStack::new();

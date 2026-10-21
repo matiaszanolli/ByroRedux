@@ -465,8 +465,8 @@ fn idle_animation_candidates(event: &str) -> Vec<String> {    let event = event.
 }
 
 /// The extracted-motion position of a clip's reference frame at `time`, in engine space.
-/// The samples are spread evenly over the frame's duration; yaw is not applied (a clip that
-/// turns its root plays the turn in the pose).
+/// The samples are spread evenly over the frame's duration. The frame's yaw is carried
+/// separately, by [`reference_frame_yaw_keys`].
 fn reference_frame_position(frame: &byroredux_hkx::ReferenceFrame, time: f32) -> Vec3 {
     let last = frame.samples.len() - 1;
     let at = if frame.duration > 0.0 { (time / frame.duration).clamp(0.0, 1.0) * last as f32 } else { 0.0 };
@@ -475,6 +475,40 @@ fn reference_frame_position(frame: &byroredux_hkx::ReferenceFrame, time: f32) ->
     let t = at - at.floor();
     let lerp = |index: usize| a[index] + (b[index] - a[index]) * t;
     Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos([lerp(0), lerp(1), lerp(2)]))
+}
+
+/// The turn a clip's reference frame extracts, as `AnimationClip::root_yaw` keys: radians
+/// about the renderer's up axis, unwrapped, at the frame's evenly spread sample times.
+///
+/// #6241 — the yaw is the clip's turn, not a duplicate of the pose: Fallout 4's
+/// `turninplaceright90.hkx` runs its frame's yaw 0 -> -pi/2 while the `Root` and `COM`
+/// tracks' rotations stay constant and the travel stays under 5e-5. A Havok Z-up yaw about
+/// +Z maps to the same angle about the renderer's +Y under `zup_to_yup_pos`.
+fn reference_frame_yaw_keys(frame: &byroredux_hkx::ReferenceFrame) -> Vec<(f32, f32)> {
+    let last = frame.samples.len().saturating_sub(1);
+    let mut keys = Vec::with_capacity(frame.samples.len());
+    // Whole revolutions added so far: a step past +-pi between neighbouring samples is
+    // the seam, not a near-full turn, and the authored value is kept exactly otherwise.
+    let mut revolutions = 0.0f32;
+    let mut previous: Option<f32> = None;
+    for (index, sample) in frame.samples.iter().enumerate() {
+        let yaw = sample[3];
+        if !yaw.is_finite() {
+            return Vec::new();
+        }
+        if let Some(before) = previous {
+            let step = yaw - before;
+            if step > std::f32::consts::PI {
+                revolutions -= std::f32::consts::TAU;
+            } else if step < -std::f32::consts::PI {
+                revolutions += std::f32::consts::TAU;
+            }
+        }
+        previous = Some(yaw);
+        let time = if last > 0 { frame.duration * index as f32 / last as f32 } else { 0.0 };
+        keys.push((time, yaw + revolutions));
+    }
+    keys
 }
 
 /// #4563 — the one decision point for canonical clip fields on the HKX
@@ -697,6 +731,7 @@ pub(super) fn convert_hkx_clip(
         bool_channels: Vec::new(),
         texture_flip_channels: Vec::new(),
         text_keys,
+        root_yaw: animation.reference_frame.as_ref().map(reference_frame_yaw_keys).unwrap_or_default(),
     }
 }
 
@@ -723,6 +758,46 @@ fn behavior_completion_events(idle_event: &str) -> &'static [&'static str] {
 mod tests {
     use super::*;
     use crate::asset_provider::build_texture_provider;
+
+    /// #6241 — real data: Fallout 4's `turninplaceright90.hkx` keeps its `Root` / `COM`
+    /// rotations constant and turns only in its reference frame; the converted clip
+    /// must carry that quarter turn right as `root_yaw`, on the accumulation root.
+    #[test]
+    #[ignore = "needs Fallout 4 game data on disk"]
+    fn fallout_4_turn_in_place_clip_carries_its_turn_as_root_yaw() {
+        let data = std::env::var_os("BYROREDUX_FO4_DATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".into());
+        let Ok(archive) = byroredux_bsa::Ba2Archive::open(data.join("Fallout4 - Animations.ba2")) else {
+            return;
+        };
+        let read = |path: &str| archive.extract(path).unwrap_or_else(|error| panic!("{path}: {error}"));
+        let skeleton = byroredux_hkx::decode_skeleton(&read(r"meshes\actors\character\characterassets\skeleton.hkx")).unwrap();
+        let path = r"meshes\actors\character\animations\mt\neutral\turninplaceright90.hkx";
+        let animation = byroredux_hkx::decode_animation(&read(path)).unwrap();
+        let mut pool = StringPool::new();
+        let clip = convert_hkx_clip(path, "", &skeleton, &animation, &mut pool, false, None);
+        assert!(clip.accum_root_name.is_some(), "the reference root accumulates");
+        let (start, end) = (clip.root_yaw_at(0.0).unwrap(), clip.root_yaw_at(clip.duration).unwrap());
+        assert!(((end - start) + std::f32::consts::FRAC_PI_2).abs() < 1e-3, "a quarter turn right: {start} -> {end}");
+    }
+
+    /// #6241 — the reference frame's yaw becomes `root_yaw` keys at the frame's sample
+    /// times, unwrapped across the +-pi seam so a turn through it does not spin back a
+    /// whole revolution; a non-finite yaw carries no turn at all.
+    #[test]
+    fn reference_frame_yaw_becomes_unwrapped_root_yaw_keys() {
+        use std::f32::consts::PI;
+        let frame = |yaws: &[f32]| byroredux_hkx::ReferenceFrame {
+            duration: 1.0,
+            samples: yaws.iter().map(|&yaw| [0.0, 0.0, 0.0, yaw]).collect(),
+        };
+        let right90 = reference_frame_yaw_keys(&frame(&[0.0, -PI / 4.0, -PI / 2.0]));
+        assert_eq!(right90, [(0.0, 0.0), (0.5, -PI / 4.0), (1.0, -PI / 2.0)]);
+        let seam = reference_frame_yaw_keys(&frame(&[3.0, -3.0]));
+        assert!((seam[1].1 - (2.0 * PI - 3.0)).abs() < 1e-5, "crossing +pi keeps turning the same way: {seam:?}");
+        assert!(reference_frame_yaw_keys(&frame(&[0.0, f32::NAN])).is_empty());
+    }
 
     #[test]
     fn idle_event_candidates_cover_direct_and_driver_aliases() {
