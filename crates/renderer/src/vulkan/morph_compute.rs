@@ -207,9 +207,11 @@ impl MorphSlot {
         if let Ok(bytes) = weight_buffer.mapped_slice_mut() {
             bytes.fill(0);
         }
-        weight_buffer
-            .flush_if_needed(device)
-            .context("flush morph weight buffer zero-init")?;
+        // #5946 — a dropped `GpuBuffer` debug-asserts and would mask the `Err`.
+        if let Err(error) = weight_buffer.flush_if_needed(device) {
+            weight_buffer.destroy(device, allocator);
+            return Err(error).context("flush morph weight buffer zero-init");
+        }
 
         // SAFETY: the buffer was just created with SHADER_DEVICE_ADDRESS.
         let weight_address = unsafe {

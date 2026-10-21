@@ -717,7 +717,7 @@ impl VolumetricsPipeline {
             ],
         };
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let mut buffer = try_or_cleanup!(
+            let buffer = try_or_cleanup!(
                 partial,
                 device,
                 allocator,
@@ -728,15 +728,21 @@ impl VolumetricsPipeline {
                     vk::BufferUsageFlags::UNIFORM_BUFFER,
                 )
             );
+            // #5946 — pushed before it is filled, so a failed write leaves the
+            // buffer where `partial.destroy` frees it (the #5772 shape).
+            partial.integration_param_buffers.push(buffer);
+            let params_init = partial
+                .integration_param_buffers
+                .last_mut()
+                .expect("integration params buffer was just pushed")
+                .write_mapped(device, std::slice::from_ref(&int_params))
+                .context("write integration params");
             try_or_cleanup!(
                 partial,
                 device,
                 allocator,
-                buffer
-                    .write_mapped(device, std::slice::from_ref(&int_params))
-                    .context("write integration params")
+                params_init
             );
-            partial.integration_param_buffers.push(buffer);
         }
 
         // ── 8. Integration descriptor set layout ──────────────────────
@@ -1078,5 +1084,56 @@ impl VolumetricsPipeline {
             (base_texels.len() + detail_texels.len()) / 1024,
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// #5772 / #5946 — every resource `new_inner` creates through
+    /// `try_or_cleanup!` is handed to `partial` by the very next statement, so a
+    /// later failure (a mapped write, the next allocation) finds it in
+    /// `partial.destroy` instead of in a dropped local, whose `GpuBuffer::Drop`
+    /// debug-asserts and masks the `Err`. A buffer filled before its push needs
+    /// a `let mut` binding, so that is refused outright too.
+    #[test]
+    fn every_created_resource_is_pushed_before_anything_else_runs() {
+        let source = crate::source_scan::production_text(include_str!("init.rs"));
+        let mut bindings = 0;
+        let mut rest: &str = &source;
+        while let Some(at) = rest.find("= try_or_cleanup!(") {
+            let head = &rest[..at];
+            let name = head.trim_end().rsplit(char::is_whitespace).next().unwrap();
+            let is_binding = head.trim_end().ends_with(&format!("let {name}"));
+            assert!(!head.trim_end().ends_with(&format!("let mut {name}")), "`let mut {name}` is filled before its push");
+            let body = &rest[at + "= try_or_cleanup!".len()..];
+            let mut depth = 0usize;
+            let close = body
+                .char_indices()
+                .find(|&(_, c)| {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0
+                })
+                .map(|(index, _)| index)
+                .expect("balanced try_or_cleanup! call");
+            let after = &body[close + 1..];
+            if is_binding {
+                bindings += 1;
+                let mut next = after.trim_start_matches(';').trim_start();
+                while next.starts_with("//") {
+                    next = next[next.find('\n').unwrap_or(next.len())..].trim_start();
+                }
+                let statement = &next[..next.find(';').unwrap_or(next.len())];
+                assert!(
+                    statement.starts_with("partial") && statement.contains(&format!(".push({name})")),
+                    "`{name}` is not pushed into `partial` by the next statement: {statement:?}"
+                );
+            }
+            rest = after;
+        }
+        assert!(bindings >= 10, "scan found only {bindings} bound resources; the shape it reads moved");
     }
 }
