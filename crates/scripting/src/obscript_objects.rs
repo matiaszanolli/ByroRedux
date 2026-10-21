@@ -1418,6 +1418,73 @@ mod tests {
         assert!(!note_cell_entered(&world, CELL, 400.0, Some(500.0)));
     }
 
+    /// #6102 - a reset owed to a cell that spawns its references over several frames reaches every
+    /// scripted reference, each once, however late it appears.
+    #[test]
+    fn on_reset_reaches_references_that_spawn_in_later_slices() {
+        use crate::obscript_state::{cell_load_finished, mark_cell_reset, note_cell_entered, OnResetEvent, PendingCellResets};
+        use byroredux_core::ecs::components::{CellFormId, CellRoot};
+        const CELL: u32 = 0x0004_0002;
+        let (mut world, first) = world_with(&[BLOCK_ON_RESET]);
+        let root = world.spawn();
+        world.insert(root, CellFormId(CELL));
+        world.insert(first, CellRoot(root));
+        assert!(!note_cell_entered(&world, CELL, 0.0, None));
+        assert!(note_cell_entered(&world, CELL, 100.0, None), "expired: owed a reset");
+
+        // Slice 1: one scripted reference exists.
+        mark_cell_reset(&world, 0.016);
+        assert!(world.get::<OnResetEvent>(first).is_some());
+        assert_eq!(world.resource::<PendingCellResets>().cells(), vec![CELL], "the cell is still loading");
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, first), 1.0);
+
+        // Slice 2: a second scripted reference appears; the first is not reset again.
+        let late = world.spawn();
+        let late_id = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(REF + 1),
+        });
+        world.insert(late, FormIdComponent(late_id));
+        assert!(attach_object_script(&mut world, late, SCRIPT));
+        world.insert(late, CellRoot(root));
+        mark_cell_reset(&world, 0.016);
+        assert!(world.get::<OnResetEvent>(late).is_some(), "the late reference is marked");
+        obscript_object_system(&world, 0.016);
+        assert_eq!(counter(&world, first), 1.0, "marked once");
+        assert_eq!(counter(&world, late), 1.0);
+
+        // Load complete: one last pass, then the entry is retired.
+        cell_load_finished(&world, root);
+        mark_cell_reset(&world, 0.016);
+        assert!(world.resource::<PendingCellResets>().cells().is_empty());
+    }
+
+    /// #6102 - a cell with no scripted reference retires its pending reset when its load completes,
+    /// instead of rescanning forever and resetting a later visit that never expired.
+    #[test]
+    fn a_scriptless_cell_retires_its_pending_reset_on_completion() {
+        use crate::obscript_state::{cell_load_finished, mark_cell_reset, note_cell_entered, PendingCellResets};
+        use byroredux_core::ecs::components::CellFormId;
+        const CELL: u32 = 0x0004_0003;
+        let (mut world, _) = world_with(&[BLOCK_ON_RESET]);
+        let root = world.spawn();
+        world.insert(root, CellFormId(CELL));
+        note_cell_entered(&world, CELL, 0.0, None);
+        assert!(note_cell_entered(&world, CELL, 100.0, None));
+        mark_cell_reset(&world, 0.016);
+        assert_eq!(world.resource::<PendingCellResets>().cells(), vec![CELL], "kept while loading");
+        cell_load_finished(&world, root);
+        mark_cell_reset(&world, 0.016);
+        assert!(world.resource::<PendingCellResets>().cells().is_empty(), "retired with no scripted reference");
+
+        // A cancelled load (its root despawned) retires too.
+        assert!(note_cell_entered(&world, CELL, 300.0, None));
+        world.despawn(root);
+        mark_cell_reset(&world, 0.016);
+        assert!(world.resource::<PendingCellResets>().cells().is_empty(), "no root: the load was cancelled");
+    }
+
     /// `OnMagicEffectHit` runs on the target's script when an effect lands: the block written for that
     /// effect, and the one with no parameter for any.
     #[test]

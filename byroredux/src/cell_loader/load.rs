@@ -728,6 +728,9 @@ impl InteriorCellApplyJob {
             mut phases,
             ..
         } = self;
+        // #6102 — every reference has spawned: a reset owed to this cell is
+        // delivered to what it holds by the next pass, then retired.
+        byroredux_scripting::obscript_state::cell_load_finished(world, cell_root);
         let cell_key = cell_editor_id.to_ascii_lowercase();
         let cell = index
             .cells

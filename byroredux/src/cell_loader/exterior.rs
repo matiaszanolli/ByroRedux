@@ -2515,6 +2515,9 @@ impl ExteriorCellApplyJob {
                 return ExteriorCellApplyProgress::Pending(self);
             }
         }
+        // #6102 — every reference of the tile has spawned: retire its pending
+        // `OnReset` after the next pass marks the last slices' scripted refs.
+        byroredux_scripting::obscript_state::cell_load_finished(world, self.cell_root);
         ExteriorCellApplyProgress::Complete(OneCellLoadInfo {
             cell_root: self.cell_root,
             center: self

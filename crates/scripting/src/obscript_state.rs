@@ -17,7 +17,7 @@
 //! * **Ignore crime** — GECK *IgnoreCrime*: "prevents an NPC from attacking or reporting a player for
 //!   crime"; *GetIgnoreCrime* reads it back.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
@@ -158,10 +158,35 @@ impl CellVisits {
     }
 }
 
+/// One cell owed an `OnReset` (it reset as the player entered it), until it has finished loading.
+#[derive(Debug)]
+pub struct PendingCellReset {
+    cell: u32,
+    /// Every scripted reference already given its [`OnResetEvent`], so one that spawns in a later
+    /// slice of the same load is marked once and none twice.
+    marked: HashSet<EntityId>,
+    /// The cell's load has completed ([`cell_load_finished`]): the next pass is its last.
+    loaded: bool,
+}
+
+impl PendingCellReset {
+    fn new(cell: u32) -> Self {
+        Self { cell, marked: HashSet::new(), loaded: false }
+    }
+}
+
 /// Cells whose scripted references are owed an `OnReset` (the cell reset as the player entered it):
-/// consumed by [`mark_cell_reset`]. `NOT_SAVED_BY_DESIGN`: raised and drained within a frame or two.
+/// consumed by [`mark_cell_reset`], which keeps an entry for as long as the cell is loading (#6102).
+/// `NOT_SAVED_BY_DESIGN`: raised and drained within the cell's load.
 #[derive(Debug, Default)]
-pub struct PendingCellResets(pub Vec<u32>);
+pub struct PendingCellResets(pub Vec<PendingCellReset>);
+
+impl PendingCellResets {
+    /// The cells currently owed a reset, in the order they were raised.
+    pub fn cells(&self) -> Vec<u32> {
+        self.0.iter().map(|pending| pending.cell).collect()
+    }
+}
 
 impl Resource for PendingCellResets {}
 
@@ -181,17 +206,43 @@ pub fn note_cell_entered(world: &World, cell: u32, now: f64, respawn_hours: Opti
     drop(visits);
     if expired {
         if let Some(mut pending) = world.try_resource_mut::<PendingCellResets>() {
-            pending.0.push(cell);
+            // A cell re-entered while its reset is still pending is the same reset.
+            if !pending.0.iter().any(|entry| entry.cell == cell) {
+                pending.0.push(PendingCellReset::new(cell));
+            }
         }
     }
     expired
 }
 
+/// The load of the cell whose root is `cell_root` has completed: its last scripted reference has spawned,
+/// so a reset owed to it is delivered by the next [`mark_cell_reset`] pass and then retired - whether or
+/// not the cell held any scripted reference (#6102).
+pub fn cell_load_finished(world: &World, cell_root: EntityId) {
+    let Some(cell) = world
+        .get::<byroredux_core::ecs::components::CellFormId>(cell_root)
+        .map(|id| id.0)
+    else {
+        return;
+    };
+    if let Some(mut pending) = world.try_resource_mut::<PendingCellResets>() {
+        for entry in pending.0.iter_mut().filter(|entry| entry.cell == cell) {
+            entry.loaded = true;
+        }
+    }
+}
+
 /// Give every scripted reference in a cell that reset its [`OnResetEvent`]; run each frame, before the
-/// object scripts. A cell that has not finished spawning keeps its entry until it has references.
+/// object scripts.
+///
+/// References spawn in budgeted slices across frames, so an entry is kept while its cell is loading and
+/// each pass marks the references that have appeared since (#6102): it used to retire at the first
+/// scripted reference it saw, missing the rest of a multi-frame load, and never retire for a cell with
+/// none, rescanning every frame and resetting a later, unexpired visit. It is retired by
+/// [`cell_load_finished`], or when its cell root is gone (the load was cancelled).
 pub fn mark_cell_reset(world: &World, _dt: f32) {
     use byroredux_core::ecs::components::{CellFormId, CellRoot};
-    let cells = match world.try_resource_mut::<PendingCellResets>() {
+    let mut cells = match world.try_resource_mut::<PendingCellResets>() {
         Some(mut pending) if !pending.0.is_empty() => std::mem::take(&mut pending.0),
         _ => return,
     };
@@ -199,26 +250,30 @@ pub fn mark_cell_reset(world: &World, _dt: f32) {
         .query::<crate::obscript_objects::ObScriptInstance>()
         .map(|instances| instances.iter().map(|(entity, _)| entity).collect())
         .unwrap_or_default();
-    let mut unresolved = Vec::new();
-    for cell in cells {
-        let mut found = false;
+    // The cell roots that exist: an entry whose root is gone belongs to a load that was cancelled.
+    let live: HashSet<u32> = world
+        .query::<CellFormId>()
+        .map(|ids| ids.iter().map(|(_, id)| id.0).collect())
+        .unwrap_or_default();
+    cells.retain_mut(|entry| {
+        if !live.contains(&entry.cell) {
+            return false;
+        }
         for &entity in &scripted {
             let root = world.get::<CellRoot>(entity).map_or(entity, |root| root.0);
-            if world.get::<CellFormId>(root).is_some_and(|id| id.0 == cell) {
-                found = true;
+            if world.get::<CellFormId>(root).is_some_and(|id| id.0 == entry.cell) && entry.marked.insert(entity) {
                 if let Some(mut events) = world.query_mut::<OnResetEvent>() {
                     events.insert(entity, OnResetEvent);
                 }
             }
         }
-        // The cell is not loaded yet (its references have not been attached): try again next frame.
-        if !found {
-            unresolved.push(cell);
-        }
-    }
-    if !unresolved.is_empty() {
+        !entry.loaded
+    });
+    if !cells.is_empty() {
         if let Some(mut pending) = world.try_resource_mut::<PendingCellResets>() {
-            pending.0.extend(unresolved);
+            // Entries raised while this pass ran queue behind the ones it kept.
+            cells.append(&mut pending.0);
+            pending.0 = cells;
         }
     }
 }
