@@ -904,3 +904,118 @@ mod extraction_guard_tests {
         assert_eq!(panicked, None);
     }
 }
+
+/// #6104 - the admission control is a `Mutex` + `Condvar` pair whose failure
+/// shape (the coordinator parked forever, so streaming silently stops) no other
+/// guard can see, and the one test that crosses the rayon threshold feeds it
+/// zero-byte inputs, so no limit ever binds. These drive `ParseInputBudget`
+/// alone: pure CPU, no archives.
+#[cfg(test)]
+mod parse_input_budget_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn budget(max_tasks: usize) -> ParseInputBudget {
+        ParseInputBudget {
+            usage: Mutex::new(ParseInputUsage::default()),
+            released: Condvar::new(),
+            max_tasks,
+        }
+    }
+
+    fn usage(budget: &ParseInputBudget) -> (usize, usize) {
+        let usage = budget.usage.lock().unwrap();
+        (usage.tasks, usage.bytes)
+    }
+
+    /// `acquire(bytes)` on another thread, admitted straight away? A request
+    /// that cannot be admitted would park its thread - and the scope joining
+    /// it - for good, so a `false` answer is only available through
+    /// [`blocks_until`], which frees it.
+    fn admitted_within(budget: &ParseInputBudget, bytes: usize, wait: Duration) -> bool {
+        std::thread::scope(|scope| {
+            let (done, admitted) = mpsc::channel();
+            scope.spawn(move || {
+                let permit = budget.acquire(bytes);
+                let _ = done.send(());
+                drop(permit);
+            });
+            admitted.recv_timeout(wait).is_ok()
+        })
+    }
+
+    /// `acquire(bytes)` must wait: it is not admitted within [`NOT_ADMITTED`];
+    /// then `release` frees capacity and it must be admitted promptly.
+    fn blocks_until(budget: &ParseInputBudget, bytes: usize, release: impl FnOnce()) {
+        std::thread::scope(|scope| {
+            let (done, admitted) = mpsc::channel();
+            scope.spawn(move || {
+                let permit = budget.acquire(bytes);
+                let _ = done.send(());
+                drop(permit);
+            });
+            assert!(admitted.recv_timeout(NOT_ADMITTED).is_err(), "{bytes} bytes must wait");
+            release();
+            assert!(admitted.recv_timeout(ADMITTED).is_ok(), "and be admitted once capacity returns");
+        });
+    }
+
+    const NOT_ADMITTED: Duration = Duration::from_millis(150);
+    const ADMITTED: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn the_task_limit_blocks_until_a_permit_drops() {
+        let budget = budget(2);
+        let first = budget.acquire(1);
+        let second = budget.acquire(1);
+        assert_eq!(usage(&budget), (2, 2));
+        blocks_until(&budget, 1, || drop(first));
+        drop(second);
+        assert_eq!(usage(&budget), (0, 0));
+    }
+
+    #[test]
+    fn the_byte_cap_blocks_an_input_that_does_not_fit() {
+        let budget = budget(8);
+        let half = STREAM_PARSE_INPUT_BYTES / 2 + 1;
+        let held = budget.acquire(half);
+        // A small one still fits beside it ...
+        assert!(admitted_within(&budget, 1024, ADMITTED));
+        // ... a second half-cap input does not, until the first drops.
+        blocks_until(&budget, half, || drop(held));
+        assert_eq!(usage(&budget), (0, 0));
+    }
+
+    /// A single asset bigger than the whole cap must still load: admitted alone,
+    /// and nothing else is admitted beside it.
+    #[test]
+    fn an_oversized_input_is_admitted_only_alone_and_blocks_the_next() {
+        let budget = budget(8);
+        let huge = STREAM_PARSE_INPUT_BYTES + 4096;
+        let holding = budget.acquire(huge);
+        assert_eq!(usage(&budget).0, 1, "admitted with nothing else in flight");
+        // Even a tiny input waits behind it ...
+        blocks_until(&budget, 1, || drop(holding));
+
+        // ... and it does not squeeze in beside a running task either.
+        let small = budget.acquire(16);
+        blocks_until(&budget, huge, || drop(small));
+        assert_eq!(usage(&budget), (0, 0));
+    }
+
+    /// The permit lives in the task closure, so a parser panic unwinds through
+    /// its drop and capacity is returned.
+    #[test]
+    fn a_permit_moved_into_a_panicking_task_is_released() {
+        let budget = budget(1);
+        let permit = budget.acquire(4096);
+        assert_eq!(usage(&budget), (1, 4096));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _permit = permit;
+            panic!("parser bug");
+        }));
+        assert!(outcome.is_err());
+        assert_eq!(usage(&budget), (0, 0), "the unwind released the permit");
+        assert!(admitted_within(&budget, 1, ADMITTED), "so the next task is admitted");
+    }
+}
