@@ -299,6 +299,12 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     assert!(telemetry
         .bench_line()
         .contains("worker_batch_duplicate_skips=4"));
+    // #6106 — refused geometry uploads are counted and shown.
+    assert!(telemetry.bench_line().contains("full_detail_refusals=0"));
+    telemetry.record_full_detail_refusals(3);
+    telemetry.record_full_detail_refusals(2);
+    assert_eq!(telemetry.full_detail_geometry_refusals, 5);
+    assert!(telemetry.bench_line().contains("full_detail_refusals=5"));
     assert!(telemetry.bench_line().contains(
         "apply_total_ms=3.00 apply_tex_extracts=5 apply_tex_extract_total_ms=2.00 \
          apply_tex_extract_max_ms=2.00 apply_tex_prefetched=3"

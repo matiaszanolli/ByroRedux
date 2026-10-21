@@ -149,6 +149,12 @@ pub struct StreamingTelemetry {
     /// is also the condition under which the registry's LRU can evict a
     /// snapshot key between dispatch and apply.
     pub worker_stale_salvaged_imports: u64,
+    /// #6106 — scene-geometry uploads the pool refused (admission closed at its
+    /// resident limit) during full-detail apply slices. A refused mesh is
+    /// skipped for good for that residency - the cell loses its uncached
+    /// statics or its ground - and nothing retries it, so a non-zero count is
+    /// the only trace of a cell that came in incomplete.
+    pub full_detail_geometry_refusals: u64,
     pub apply_slices: StreamingLatencySummary,
     /// Per apply slice: main-thread texture archive extraction (read +
     /// inflate on the resolve miss path) inside that slice. Same samples as
@@ -219,6 +225,12 @@ impl StreamingTelemetry {
                 .apply_texture_prefetched
                 .saturating_add(texture_extract.prefetched);
         }
+    }
+
+    /// Count uploads the geometry pool refused while a full-detail apply slice
+    /// ran (#6106).
+    pub(crate) fn record_full_detail_refusals(&mut self, refused: u64) {
+        self.full_detail_geometry_refusals = self.full_detail_geometry_refusals.saturating_add(refused);
     }
 
     pub(crate) fn record_texture_prefetch(&mut self, queued: usize, stats: PrefetchStats) {
@@ -334,6 +346,7 @@ impl StreamingTelemetry {
              worker_queue_avg_ms={:.2} worker_queue_max_ms={:.2} \
              worker_avg_ms={:.2} worker_max_ms={:.2} \
              worker_batch_duplicate_skips={} worker_stale_salvaged={} partial_nifs={} \
+             full_detail_refusals={} \
              apply_samples={} apply_avg_ms={:.2} apply_max_ms={:.2} apply_total_ms={:.2} \
              apply_tex_extracts={} apply_tex_extract_total_ms={:.2} \
              apply_tex_extract_max_ms={:.2} apply_tex_prefetched={} \
@@ -370,6 +383,7 @@ impl StreamingTelemetry {
             self.worker_batch_duplicate_skips,
             self.worker_stale_salvaged_imports,
             crate::parsed_nif_cache::partial_scene_count(),
+            self.full_detail_geometry_refusals,
             self.apply_slices.samples,
             self.apply_slices.average_ms(),
             self.apply_slices.max_ms(),

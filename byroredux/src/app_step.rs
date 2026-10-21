@@ -259,8 +259,23 @@ impl App {
         let mut apply_budget = cell_loader::FrameTimeBudget::until(streaming_deadline);
         let apply_started = Instant::now();
         let tex_extract_before = state.tex_provider.resolve_extract_totals();
+        let refusals_before = ctx.mesh_registry.scene_geometry_admission_rejections();
         let full_detail_worked =
             advance_streaming_apply(&mut self.world, ctx, state, &mut apply_budget);
+        // #6106 — a cell whose meshes the pool refused is inserted into `loaded`
+        // like any other and never retried: count and name it.
+        let refused = ctx
+            .mesh_registry
+            .scene_geometry_admission_rejections()
+            .saturating_sub(refusals_before);
+        if refused > 0 {
+            state.telemetry.record_full_detail_refusals(refused);
+            log::warn!(
+                "Exterior apply: {refused} scene-geometry upload(s) refused at the resident pool \
+                 limit this slice - the cell(s) being applied lose those meshes (or their ground) \
+                 until they are reloaded (#6106)",
+            );
+        }
         state.telemetry.record_apply_slice(
             apply_started.elapsed(),
             full_detail_worked,
