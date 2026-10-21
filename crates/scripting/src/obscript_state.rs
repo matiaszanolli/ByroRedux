@@ -96,6 +96,11 @@ impl KillRecords {
 }
 
 /// The weather a script forced, and whether it holds ("override flag"). `None` is the climate's own.
+///
+/// `locked` is recorded and saved but read by nothing: the engine runs one weather per worldspace
+/// and never re-rolls it on its own, so an unlocked force is indistinguishable from a locked one
+/// today. It is kept (not dropped) so a regional weather change can honour the flag without a save
+/// format change.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ForcedWeather {

@@ -249,26 +249,38 @@ fn apply_environment(
         image_spaces: &wctx.record_index.image_spaces,
         modifiers: &wctx.record_index.imagespace_modifiers,
     };
-    // A weather a script forced (ObScript `ForceWeather` / `SetWeather`) replaces the climate's own.
-    let forced = world
+    let weather = forced_or(world, &wctx.record_index.weathers, default_weather);
+    apply_environment_with_sources(world, ctx, tex_provider, climate, weather, &image_spaces);
+}
+
+/// The weather form a script forced (ObScript `ForceWeather` / `SetWeather`), `None` when
+/// none holds.
+fn forced_weather_form(world: &World) -> Option<u32> {
+    world
         .try_resource::<byroredux_scripting::obscript_state::ForcedWeather>()
         .and_then(|forced| forced.weather)
-        .and_then(|form| wctx.record_index.weathers.get(&form));
-    apply_environment_with_sources(
-        world,
-        ctx,
-        tex_provider,
-        climate,
-        forced.or(default_weather),
-        &image_spaces,
-    );
+}
+
+/// The weather a script forced replaces the climate's own `default_weather`. Every
+/// environment install takes its weather through this, the exterior's and a Show-Sky
+/// interior's alike (#6028).
+fn forced_or<'a>(
+    world: &World,
+    weathers: &'a std::collections::HashMap<u32, byroredux_plugin::esm::records::WeatherRecord>,
+    default_weather: Option<&'a byroredux_plugin::esm::records::WeatherRecord>,
+) -> Option<&'a byroredux_plugin::esm::records::WeatherRecord> {
+    forced_weather_form(world)
+        .and_then(|form| weathers.get(&form))
+        .or(default_weather)
 }
 
 /// Switch the exterior to the weather a script forced, or back to the climate's own when the override
 /// is released: ObScript `ForceWeather` / `SetWeather` ("switch to the specified weather at once"),
-/// `ReleaseWeatherOverride`. `applied` is what the last call saw (`None` before the first, which only
-/// records it — the bootstrap already applied whatever was forced); the sky is re-installed only when
-/// the forced weather changed. `true` when it was.
+/// `ReleaseWeatherOverride`. `applied` is what the last call saw, seeded by
+/// [`assemble_exterior_streaming`] with the weather its bootstrap installed (`None` only for a state
+/// built elsewhere, whose first call just records it); the sky is re-installed only when the forced
+/// weather changed. The switch snaps: the worldspace-change cross-fade is collapsed to its target.
+/// `true` when the sky was re-installed.
 pub(crate) fn apply_forced_weather(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -277,9 +289,7 @@ pub(crate) fn apply_forced_weather(
     applied_climate: Option<u32>,
     applied: &mut Option<Option<u32>>,
 ) -> bool {
-    let forced = world
-        .try_resource::<byroredux_scripting::obscript_state::ForcedWeather>()
-        .and_then(|forced| forced.weather);
+    let forced = forced_weather_form(world);
     let previous = applied.replace(forced);
     if previous.is_none() || previous == Some(forced) {
         return false;
@@ -293,6 +303,8 @@ pub(crate) fn apply_forced_weather(
         .or(wctx.default_weather.as_ref());
     log::info!("Forced weather {previous:08X?} -> {forced:08X?}: re-applying the exterior sky");
     apply_environment(world, ctx, tex_provider, wctx, climate, default);
+    // `ForceWeather` "forces the weather to immediately switch" (GECK): no 8 s fade.
+    collapse_weather_transition(world);
     true
 }
 
@@ -562,6 +574,9 @@ pub(crate) fn apply_show_sky_interior_climate(
         return false;
     };
 
+    // A weather a script holds wins over the climate's default here too (#6028).
+    let weather = forced_or(world, &index.weathers, Some(weather));
+
     // `apply_environment_with_sources` samples the weather immediately, so
     // set the interior gate before it resamples the sky for the first frame.
     world.insert_resource(crate::components::InteriorSkyExposureRes(true));
@@ -576,7 +591,7 @@ pub(crate) fn apply_show_sky_interior_climate(
         ctx,
         tex_provider,
         Some(climate),
-        Some(weather),
+        weather,
         &image_spaces,
     );
     true
@@ -1273,8 +1288,12 @@ pub(crate) fn assemble_exterior_streaming(
     // the walk clip and under the same idempotence + silent-downgrade
     // contract (`docs/engine/p2-combat-anim-sound-fixture.md`).
     crate::asset_provider::populate_draugr_combat_clips(world, &wctx.record_index, &tex_provider);
+    // What the bootstrap sky is built from: a force a script issues before the
+    // first `step_streaming` differs from this and is installed then (#6028).
+    let bootstrap_forced_weather = forced_weather_form(world);
     apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
     let mut state = WorldStreamingState::new(wctx, tex_provider, mat_provider, radius);
+    state.applied_forced_weather = Some(bootstrap_forced_weather);
     if let Some(root) = preserved_persistent_root {
         state.persistent_root = Some(root);
         log::info!(
@@ -1930,6 +1949,32 @@ mod tests {
             "leaving the tagged cell must re-resolve to no directive"
         );
         assert_eq!(cache.map(|(grid, _)| grid), Some((1, 1)));
+    }
+
+    /// #6028 — a script-forced weather replaces the climate's default for every
+    /// install; a form the load order lacks, or none, leaves the default.
+    #[test]
+    fn a_forced_weather_replaces_the_default_in_every_install() {
+        use byroredux_scripting::obscript_state::ForcedWeather;
+        use byroredux_plugin::esm::records::WeatherRecord;
+        const DEFAULT: u32 = 0x0000_0022;
+        const FORCED: u32 = 0x0000_0033;
+        let weathers = std::collections::HashMap::from([
+            (DEFAULT, WeatherRecord { form_id: DEFAULT, ..Default::default() }),
+            (FORCED, WeatherRecord { form_id: FORCED, ..Default::default() }),
+        ]);
+        let default = weathers.get(&DEFAULT);
+        let mut world = World::new();
+        let pick = |world: &World| forced_or(world, &weathers, default).map(|w| w.form_id);
+
+        assert_eq!(pick(&world), Some(DEFAULT), "no resource: the default");
+        world.insert_resource(ForcedWeather::default());
+        assert_eq!(pick(&world), Some(DEFAULT), "nothing forced: the default");
+        *world.resource_mut::<ForcedWeather>() = ForcedWeather { weather: Some(FORCED), locked: false };
+        assert_eq!(pick(&world), Some(FORCED));
+        *world.resource_mut::<ForcedWeather>() = ForcedWeather { weather: Some(0xDEAD), locked: true };
+        assert_eq!(pick(&world), Some(DEFAULT), "a weather the load order lacks cannot be installed");
+        assert_eq!(forced_or(&world, &weathers, None).map(|w| w.form_id), None);
     }
 
     #[test]
