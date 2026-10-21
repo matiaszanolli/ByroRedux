@@ -191,7 +191,8 @@ layout(push_constant) uniform GcModelPush {
     /// Instance slots the tail may use this frame.
     uint tailCapacity;
     float gridSpacing;
-    uint pad;
+    /// GROUNDCOVER_MODEL_FLAG_* bits.
+    uint flags;
 } pc;
 
 #include "include/terrain_sample.glsl"
@@ -449,7 +450,15 @@ void place(uint chunkIdx, uint lane) {
                     GroundCoverFactors f = byroGcDensityFactors(
                         s, worldXZ, cell.affinity0, cell.affinity1, cell.baseAffinity,
                     cell.waterY, laplacian);
-                    float field = clamp(f.affinity * f.slope * f.shelter * f.clump, 0.0, 1.0);
+                    // #6027 — with authored `GRAS` links the host already folded each
+                    // record's density into the affinity lanes AND `pick.accept` is
+                    // the lane-weighted union of those same densities, so the
+                    // affinity enters the accept test once, through the pick.
+                    float affinity =
+                        (pc.flags & GROUNDCOVER_MODEL_FLAG_AFFINITY_IN_PICK) != 0u
+                            ? 1.0
+                            : f.affinity;
+                    float field = clamp(affinity * f.slope * f.shelter * f.clump, 0.0, 1.0);
                     vec3 world = vec3(worldXZ.x, s.height, worldXZ.y);
                     float fade = byroGcDistanceFade(distance(world, pc.cameraPos.xyz));
                     if (gcUnit(gcModelHash(h, 3u)) < pick.accept * field * fade

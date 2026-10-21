@@ -668,6 +668,11 @@ pub const GROUNDCOVER_MODEL_MAX_INSTANCES: u32 = 32768;
 pub const GROUNDCOVER_MODEL_PHASE_PLACE: u32 = 0;
 pub const GROUNDCOVER_MODEL_PHASE_LAYOUT: u32 = 1;
 pub const GROUNDCOVER_MODEL_PHASE_EMIT: u32 = 2;
+/// Model-tier push-constant `flags` bit: the host has folded the authored
+/// `GRAS` densities into the §3 affinity lanes (`AuthoredCover::localised`), and
+/// the pick's lane-weighted union (`GcLocalPick.accept`) is that same value, so
+/// the placement field must not multiply the affinity in a second time (#6027).
+pub const GROUNDCOVER_MODEL_FLAG_AFFINITY_IN_PICK: u32 = 1;
 /// Record flag bits: scale all three axes / tilt onto the terrain normal.
 pub const GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING: u32 = 1;
 pub const GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE: u32 = 2;
@@ -2571,6 +2576,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint GROUNDCOVER_MODEL_PHASE_PLACE),
     shader_define!(Uint GROUNDCOVER_MODEL_PHASE_LAYOUT),
     shader_define!(Uint GROUNDCOVER_MODEL_PHASE_EMIT),
+    shader_define!(Uint GROUNDCOVER_MODEL_FLAG_AFFINITY_IN_PICK),
     shader_define!(Uint GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING),
     shader_define!(Uint GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE),
     shader_define!(Uint GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM),

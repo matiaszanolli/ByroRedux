@@ -40,7 +40,7 @@ use super::buffer::{GpuBuffer, NoUninit, byte_view};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{
-    GROUNDCOVER_MAX_CHUNKS, GROUNDCOVER_MODEL_MAX_INSTANCES, GROUNDCOVER_MODEL_MAX_RECORDS,
+    GROUNDCOVER_MAX_CHUNKS, GROUNDCOVER_MODEL_FLAG_AFFINITY_IN_PICK, GROUNDCOVER_MODEL_MAX_INSTANCES, GROUNDCOVER_MODEL_MAX_RECORDS,
     GROUNDCOVER_MODEL_MAX_SHAPES, GROUNDCOVER_MODEL_PHASE_EMIT, GROUNDCOVER_MODEL_PHASE_LAYOUT,
     GROUNDCOVER_MODEL_PHASE_PLACE, GROUNDCOVER_MODEL_POINTS_PER_CHUNK,
     GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM, GROUNDCOVER_MODEL_STATS_REGION,
@@ -136,10 +136,11 @@ struct ModelPush {
     tail_base: u32,
     tail_capacity: u32,
     grid_spacing: f32,
-    pad: u32,
+    /// `GROUNDCOVER_MODEL_FLAG_*` bits.
+    flags: u32,
 }
-// SAFETY: `#[repr(C)]` over 4-byte scalars, 64 bytes, the one padding word
-// named (`pad`) and initialised by every constructor; `host_mirrors_match_
+// SAFETY: `#[repr(C)]` over 4-byte scalars, 64 bytes, no padding word
+// (`flags` is the last scalar) initialised by every constructor; `host_mirrors_match_
 // the_shader_strides` pins the size. Adding a field that breaks the tiling
 // now fails the `NoUninit` gate here instead of pushing uninitialised bytes
 // into `vkCmdPushConstants` (#5122).
@@ -159,6 +160,19 @@ pub struct GroundCoverModelFrame<'a> {
     /// transform). The host's own template list, passed as is (#4922).
     pub shapes: &'a [(u32, super::context::DrawCommand)],
     pub grid_spacing: f32,
+    /// The authored `GRAS` densities are already in the cell affinities and the
+    /// pick (`AuthoredCover::localised`): the placement field must not apply the
+    /// affinity again (#6027).
+    pub authored_density_in_pick: bool,
+}
+
+/// The push-constant `flags` word for a frame.
+fn push_flags(authored_density_in_pick: bool) -> u32 {
+    if authored_density_in_pick {
+        GROUNDCOVER_MODEL_FLAG_AFFINITY_IN_PICK
+    } else {
+        0
+    }
 }
 
 /// Raster state the geometry pass applies before a shape's indirect draw —
@@ -202,6 +216,8 @@ pub struct GroundCoverModelTier {
     frame_record_count: u32,
     frame_shape_count: u32,
     frame_grid_spacing: f32,
+    /// The push-constant `flags` word the frame's dispatch carries.
+    frame_flags: u32,
     frame_draws: Vec<ModelShapeDraw>,
     /// Whether the frame's dispatch was recorded, so the geometry pass draws
     /// only what this frame wrote.
@@ -318,6 +334,7 @@ impl GroundCoverModelTier {
             frame_record_count: 0,
             frame_shape_count: 0,
             frame_grid_spacing: 0.0,
+            frame_flags: 0,
             frame_draws: Vec::new(),
             frame_recorded: false,
             pending_stats: [false; MAX_FRAMES_IN_FLIGHT],
@@ -594,6 +611,7 @@ impl GroundCoverModelTier {
             self.frame_record_count = records.len() as u32;
             self.frame_shape_count = shapes.len() as u32;
             self.frame_grid_spacing = input.grid_spacing;
+            self.frame_flags = push_flags(input.authored_density_in_pick);
         } else {
             self.frame_draws.clear();
             // #5220 — shapes-empty or upload-failed is also "nothing placed
@@ -764,7 +782,7 @@ impl GroundCoverModelTier {
             tail_base,
             tail_capacity: tail_capacity.min(GROUNDCOVER_MODEL_MAX_INSTANCES),
             grid_spacing: self.frame_grid_spacing,
-            pad: 0,
+            flags: self.frame_flags,
         };
         if let Some(timers) = timers.as_deref_mut() {
             timers.cmd_groundcover_models_start(device, cmd, frame);
@@ -1289,6 +1307,46 @@ mod tests {
         // ledgers — a change here is a budget change.
         assert_eq!(std::mem::size_of::<GpuGroundCoverModelPoint>(), 32);
         assert_eq!(std::mem::size_of::<ModelPush>(), 64);
+    }
+
+    /// #6027 — the model tier's placement field applies the authored density
+    /// once. With authored links the host folds each record's density into the
+    /// cell affinities, and `GcLocalPick.accept` is the lane-weighted union of
+    /// those same densities, so a pure-ground lone record of density `d` accepts
+    /// `d`, not `d * d`. The shader drops the affinity factor on this flag; the
+    /// flag is the push word's last scalar and tracks the host's `localised`.
+    #[test]
+    fn the_model_field_applies_the_authored_density_once() {
+        assert_eq!(push_flags(false), 0);
+        assert_eq!(push_flags(true), GROUNDCOVER_MODEL_FLAG_AFFINITY_IN_PICK);
+
+        let shader = include_str!("../../shaders/groundcover_models.comp");
+        assert!(
+            shader.contains("uint flags;") && !shader.contains("uint pad;"),
+            "the push block's last word is the flags word"
+        );
+        let field = shader
+            .split_once("float affinity =")
+            .expect("the placement field picks its affinity")
+            .1;
+        let (picked, rest) = field.split_once(';').expect("the affinity statement ends");
+        assert!(
+            picked.contains("pc.flags & GROUNDCOVER_MODEL_FLAG_AFFINITY_IN_PICK")
+                && picked.contains("1.0")
+                && picked.contains("f.affinity"),
+            "flagged covers use a neutral affinity, unflagged ones the keyword field: {picked}"
+        );
+        assert!(
+            rest.contains("float field = clamp(affinity * f.slope")
+                && !rest.contains("f.affinity * f.slope"),
+            "the field must multiply the selected affinity, never f.affinity directly"
+        );
+        // The accept test multiplies the pick's accept rate in exactly once.
+        assert_eq!(
+            shader.matches("pick.accept * field * fade").count(),
+            1,
+            "the pick's accept rate is applied once"
+        );
     }
 
     #[test]

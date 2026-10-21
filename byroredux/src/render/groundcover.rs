@@ -387,6 +387,17 @@ pub(crate) fn cover_masks_for_cell(
     masks
 }
 
+/// Whether the installed [`AuthoredCover`] carries texture→grass links
+/// (`localised`), so the model tier's cell affinities already hold the authored
+/// densities and its placement field must not apply the affinity again (#6027).
+///
+/// [`AuthoredCover`]: byroredux_core::ecs::components::groundcover::AuthoredCover
+pub(crate) fn authored_cover_is_localised(world: &World) -> bool {
+    world
+        .try_resource::<byroredux_core::ecs::components::groundcover::AuthoredCover>()
+        .is_some_and(|authored| authored.localised)
+}
+
 /// Collect this frame's ground-cover scatter input.
 ///
 /// `cells` and `chunks` are caller-owned scratch, cleared on entry so their
@@ -1477,6 +1488,27 @@ mod tests {
         for empty in [1, 2, 4, 5, 6, 7, 8] {
             assert!(lane(empty).iter().all(|&w| w == 0), "lane {empty}");
         }
+    }
+
+    /// #6027 — the model tier is told to apply the authored density once only
+    /// when the installed cover is localised (its affinities then hold the
+    /// densities already); an unlocalised cover or none keeps the keyword field.
+    #[test]
+    fn the_model_tier_drops_the_affinity_only_for_a_localised_cover() {
+        use byroredux_core::ecs::components::groundcover::{AuthoredCover, Climate};
+        let cover = |localised| AuthoredCover {
+            records: Vec::new(),
+            grid_spacing: 80.0,
+            climate: Climate::Arid,
+            localised,
+            generation: 1,
+        };
+        let mut world = World::new();
+        assert!(!authored_cover_is_localised(&world), "no cover installed");
+        world.insert_resource(cover(false));
+        assert!(!authored_cover_is_localised(&world));
+        world.insert_resource(cover(true));
+        assert!(authored_cover_is_localised(&world));
     }
 
     /// A load order with no texture→grass links places every record by

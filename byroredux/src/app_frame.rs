@@ -1008,6 +1008,9 @@ fn prepare_groundcover_models(
         selection: table,
         shapes: if spacing.is_some() { template_draws } else { &[] },
         grid_spacing: spacing.unwrap_or(0.0),
+        // #6027 — authored texture→grass links put the densities in the
+        // affinities already: the field must not apply them a second time.
+        authored_density_in_pick: crate::render::groundcover::authored_cover_is_localised(world),
     });
 }
 
