@@ -1725,7 +1725,12 @@ fn apply_debug_ui_outputs(
         };
         match result {
             Ok(changed) => {
-                settings_changed |= changed;
+                // #6204 — an explicit menu edit supersedes a session-only
+                // console value (`terrain.blend`'s pin): release it and persist.
+                let released = world
+                    .try_resource_mut::<settings_io::SettingsPersistence>()
+                    .is_some_and(|mut persistence| persistence.unpin_stored(&change.id));
+                settings_changed |= changed || released;
                 if let Some(ui) = debug_ui.as_deref_mut() {
                     ui.apply_setting_change(&change);
                 }

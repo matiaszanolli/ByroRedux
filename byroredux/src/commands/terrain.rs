@@ -118,6 +118,15 @@ impl ConsoleCommand for TerrainBlendCommand {
             if let Err(error) = result {
                 return CommandOutput::line(format!("terrain.blend: {error}"));
             }
+            // #6204 — session-only for real: `settings_io::save` writes every
+            // entry that moved, so without the pin the next unrelated settings
+            // save would persist this A/B value. A menu edit of the slider
+            // releases it (`apply_debug_ui_outputs`).
+            if let Some(mut persistence) =
+                world.try_resource_mut::<crate::settings_io::SettingsPersistence>()
+            {
+                persistence.pin_stored(ID);
+            }
         }
         let band = crate::setting_number(world, ID, f32::NAN);
         CommandOutput::line(format!(
@@ -234,5 +243,48 @@ mod tests {
         );
         assert_eq!(land_uv_at(origin, [origin[0] - 1.0, origin[1]]), None);
         assert_eq!(land_uv_at(origin, [origin[0], origin[1] + 1.0]), None);
+    }
+
+    /// #6204 — `terrain.blend` is session-only: the next unrelated settings
+    /// save leaves the band off disk, until a menu edit of the slider makes it
+    /// an explicit choice that persists.
+    #[test]
+    fn terrain_blend_stays_off_disk_until_the_slider_is_edited() {
+        use byroredux_core::settings::{SettingChange, SettingValue, SettingsRegistry};
+        use byroredux_debug_ui::{FOV_SETTING_ID, TERRAIN_HEIGHT_BLEND_BAND_SETTING_ID as BAND};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let mut settings = SettingsRegistry::default();
+        byroredux_debug_ui::register_builtin_settings(&mut settings).unwrap();
+        let mut world = World::new();
+        world.insert_resource(settings);
+        world.insert_resource(crate::settings_io::SettingsPersistence::at(path.clone()));
+        let stored = || std::fs::read_to_string(&path).unwrap_or_default();
+        let menu_edit = |world: &mut World, id: &str, value: SettingValue| {
+            let mut outputs = byroredux_debug_ui::PanelOutputs::default();
+            outputs.setting_changes.push(SettingChange::new(id, value));
+            crate::apply_debug_ui_outputs(world, outputs, &mut false, None);
+        };
+
+        TerrainBlendCommand.execute(&world, "0");
+        assert_eq!(crate::setting_number(&world, BAND, f32::NAN), 0.0);
+        menu_edit(&mut world, FOV_SETTING_ID, SettingValue::Number(80.0));
+        assert!(
+            stored().contains(FOV_SETTING_ID),
+            "the unrelated edit must save"
+        );
+        assert!(
+            !stored().contains(BAND),
+            "a console A/B band must not persist:\n{}",
+            stored()
+        );
+
+        menu_edit(&mut world, BAND, SettingValue::Number(0.3));
+        assert!(
+            stored().contains(BAND),
+            "a slider edit is an explicit choice:\n{}",
+            stored()
+        );
     }
 }
