@@ -119,13 +119,6 @@ pub(crate) struct RefrTextureOverlay {
     /// through so the spawn path can walk it once it knows the host
     /// mesh's per-shape material assignments.
     pub(crate) material_swaps: Vec<esm::records::MaterialSwapEntry>,
-    /// The source MSWP's `FNAM` path-prefix filter (#973 /
-    /// FO4-D4-NEW-08-followup), carried alongside `material_swaps` so
-    /// the per-shape spawn-time consumer can re-evaluate it against
-    /// each shape's OWN source path — the eager single-`material_path`
-    /// substitution above only checks it against the overlay's shared
-    /// path. `None` means "apply to any host mesh".
-    pub(crate) material_swaps_filter: Option<FixedString>,
     /// `TextureSet.flags & 0x04` — DNAM `HasModelSpaceNormals` bit
     /// (FO4 TXST records). Set when the overlay's normal slot came
     /// from a TXST that explicitly authors a model-space normal map
@@ -420,6 +413,58 @@ impl RefrTextureOverlay {
     }
 }
 
+/// Does an MSWP entry's `BNAM` source name the material `current`?
+///
+/// #5755 — the two sides never share a spelling in shipped data. `BNAM`
+/// is bare (relative to `Data\Materials\`: every one of Fallout4's
+/// 9,065), while a NIF shader names its material `Materials\…` or by
+/// the absolute build path (`C:\Projects\Fallout4\Build\PC\Data\
+/// materials\…`), interned verbatim. Both sides go through
+/// [`normalize_material_path`] before a case-insensitive compare, and
+/// `*` in the source matches any run of characters, the CK's
+/// documented wildcard (127 vanilla `BNAM`s, e.g.
+/// `landscape\ground\craterdebris01*.bgsm`).
+///
+/// [`normalize_material_path`]: crate::asset_provider::normalize_material_path
+pub(crate) fn mswp_source_matches(source: &str, current: &str) -> bool {
+    use crate::asset_provider::normalize_material_path;
+    let source = normalize_material_path(source);
+    let current = normalize_material_path(current);
+    wildcard_eq_ignore_ascii_case(source.as_bytes(), current.as_bytes())
+}
+
+/// Do `a` and `b` name the same material once canonicalized through
+/// [`normalize_material_path`](crate::asset_provider::normalize_material_path)?
+pub(crate) fn same_material_path(a: &str, b: &str) -> bool {
+    use crate::asset_provider::normalize_material_path;
+    normalize_material_path(a).eq_ignore_ascii_case(&normalize_material_path(b))
+}
+
+/// Case-insensitive match of `text` against `pattern`, where each `*` in
+/// `pattern` matches any (possibly empty) byte run. Greedy with
+/// single-point backtracking: on a mismatch, the last `*` absorbs one
+/// more byte and matching resumes after it.
+fn wildcard_eq_ignore_ascii_case(pattern: &[u8], text: &[u8]) -> bool {
+    let (mut p, mut t) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        if p < pattern.len() && pattern[p] == b'*' {
+            star = Some((p, t));
+            p += 1;
+        } else if p < pattern.len() && pattern[p].eq_ignore_ascii_case(&text[t]) {
+            p += 1;
+            t += 1;
+        } else if let Some((star_p, star_t)) = star {
+            p = star_p + 1;
+            t = star_t + 1;
+            star = Some((star_p, star_t + 1));
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&c| c == b'*')
+}
+
 /// Build a texture overlay for a REFR when its parser-side override
 /// sub-records (XATO, XTNM, XTXR) carry actionable TXST FormIDs. Returns
 /// `None` when the REFR has no overrides — the hot path for interior
@@ -466,12 +511,10 @@ pub(crate) fn build_refr_texture_overlay(
     // XMSP — MSWP material-swap table (#971 / FO4-D4-NEW-08). Resolved
     // against `EsmCellIndex.material_swaps`. The table substitutes
     // BGSM/BGEM source-path → target-path on the base mesh's authored
-    // material slots; entries that fail the FNAM path-prefix filter
-    // against the overlay's `material_path` (when one is already set
-    // by XATO/XTNM MNAM) are dropped here so the spawn path doesn't
-    // have to re-evaluate it per shape. Entries are kept in authoring
-    // order — the spawn path applies them per shape with later-wins
-    // semantics matching the MSWP file format.
+    // material slots. Entries are kept in authoring order — the spawn
+    // path applies them per shape with later-wins semantics matching
+    // the MSWP file format. The record's FNAM is the CK's object-window
+    // tree folder, not a filter (#5756), so it gates nothing here.
     if let Some(swap_ref) = placed.material_swap_ref {
         if let Some(table) = index.material_swaps.get(&swap_ref) {
             // Apply the XATO-set material_path swap eagerly when the
@@ -480,27 +523,18 @@ pub(crate) fn build_refr_texture_overlay(
             // time using `material_swaps` below.
             if let Some(current_sym) = ov.material_path {
                 if let Some(current) = pool.resolve(current_sym).map(str::to_owned) {
-                    let filter_ok = table.path_filter.as_deref().is_none_or(|f| {
-                        current
-                            .to_ascii_lowercase()
-                            .starts_with(&f.to_ascii_lowercase())
-                    });
-                    if filter_ok {
-                        for entry in &table.swaps {
-                            if entry.source.eq_ignore_ascii_case(&current)
-                                && !entry.target.is_empty()
-                            {
-                                ov.material_path = Some(pool.intern(&entry.target));
-                            }
+                    for entry in &table.swaps {
+                        if !entry.target.is_empty() && mswp_source_matches(&entry.source, &current)
+                        {
+                            ov.material_path = Some(pool.intern(&entry.target));
                         }
                     }
                 }
             }
-            // Always preserve the resolved swap list (+ its filter) for
-            // the spawn-path per-shape consumer. Clone is cheap —
-            // vanilla MSWPs ship ~2.18 entries on average.
+            // Always preserve the resolved swap list for the spawn-path
+            // per-shape consumer. Clone is cheap — vanilla MSWPs ship
+            // ~2.18 entries on average.
             ov.material_swaps = table.swaps.clone();
-            ov.material_swaps_filter = table.path_filter.as_deref().map(|f| pool.intern(f));
         }
     }
 

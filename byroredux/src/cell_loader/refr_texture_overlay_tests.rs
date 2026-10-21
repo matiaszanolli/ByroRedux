@@ -264,11 +264,11 @@ fn build_overlay_xtxr_later_swap_wins_for_same_slot() {
 
 // --- #971 / FO4-D4-NEW-08 XMSP regression tests ---
 
-fn mswp(swaps: Vec<(&str, &str)>, filter: Option<&str>) -> MaterialSwapRecord {
+fn mswp(swaps: Vec<(&str, &str)>, tree_folder: Option<&str>) -> MaterialSwapRecord {
     MaterialSwapRecord {
         form_id: 0x0024_0001,
         editor_id: "TestSwap".into(),
-        path_filter: filter.map(str::to_string),
+        tree_folder: tree_folder.map(str::to_string),
         swaps: swaps
             .into_iter()
             .map(|(s, t)| MaterialSwapEntry {
@@ -344,21 +344,26 @@ fn build_overlay_xmsp_substitutes_xato_material_path_on_source_match() {
     );
 }
 
+/// #5756 — FNAM is the CK object-window tree folder, not a path-prefix
+/// filter. The vanilla vault-light swaps file `SetDressing\Vault\…`
+/// sources under `Interiors\Vault`; the swap must still fire.
 #[test]
-fn build_overlay_xmsp_fnam_filter_skips_non_matching_paths() {
+fn build_overlay_xmsp_fnam_tree_folder_does_not_gate_the_swap() {
     let mut index = EsmCellIndex::default();
     index.texture_sets.insert(
         0x0020_0001,
         TextureSet {
-            // Outside the FNAM "Interiors\Vault" filter.
-            material_path: Some(r"Vehicles\StationWagon01a.BGSM".to_string()),
+            material_path: Some(r"SetDressing\Vault\VltLight01.BGSM".to_string()),
             ..TextureSet::default()
         },
     );
     index.material_swaps.insert(
         0x0024_0001,
         mswp(
-            vec![(r"vehicles\stationwagon01a.bgsm", r"vehicles\swapped.bgsm")],
+            vec![(
+                r"SetDressing\Vault\VltLight01.BGSM",
+                r"SetDressing\Vault\VltLight01Off.BGSM",
+            )],
             Some(r"Interiors\Vault"),
         ),
     );
@@ -368,15 +373,69 @@ fn build_overlay_xmsp_fnam_filter_skips_non_matching_paths() {
 
     let mut pool = StringPool::new();
     let ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
-        .expect("XATO + XMSP must produce an overlay even when filter drops the swap");
-    // Filter did not match, so material_path stays as the XATO MNAM.
+        .expect("XATO + XMSP must produce an overlay");
     assert_eq!(
         resolved(&pool, ov.material_path),
-        Some(r"vehicles\stationwagon01a.bgsm")
+        Some(r"setdressing\vault\vltlight01off.bgsm"),
+        "a FNAM that is not a prefix of the BNAM must not drop the swap (#5756)"
     );
-    // The swap list still rides through — the spawn path's per-shape
-    // application re-applies the filter against each shape's source.
     assert_eq!(ov.material_swaps.len(), 1);
+}
+
+/// #5755 — the eager arm canonicalizes like the per-shape one: a source
+/// spelled `Materials\…` still matches the bare `BNAM`.
+#[test]
+fn build_overlay_xmsp_matches_a_materials_prefixed_xato_path() {
+    let mut index = EsmCellIndex::default();
+    index.texture_sets.insert(
+        0x0020_0001,
+        TextureSet {
+            material_path: Some(r"Materials\Vehicles\StationWagon01a_Rust.BGSM".to_string()),
+            ..TextureSet::default()
+        },
+    );
+    index.material_swaps.insert(
+        0x0024_0001,
+        mswp(
+            vec![(
+                r"vehicles\stationwagon01a_rust.bgsm",
+                r"vehicles\stationwagon_postwar_cheap04.bgsm",
+            )],
+            None,
+        ),
+    );
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.alt_texture_ref = Some(0x0020_0001);
+    placed.material_swap_ref = Some(0x0024_0001);
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
+        .expect("XATO + XMSP must produce an overlay");
+    assert_eq!(
+        resolved(&pool, ov.material_path),
+        Some(r"vehicles\stationwagon_postwar_cheap04.bgsm")
+    );
+}
+
+/// #5755 — the compare rule itself: canonical spelling on both sides,
+/// case-insensitive, `*` matching any (possibly empty) run.
+#[test]
+fn mswp_source_matches_canonicalizes_and_honours_wildcards() {
+    use super::refr::mswp_source_matches as m;
+    assert!(m(r"kit\a.bgsm", r"Materials\Kit\A.BGSM"));
+    assert!(m(
+        r"kit\a.bgsm",
+        r"c:\projects\fallout4\build\pc\data\materials\kit\a.bgsm"
+    ));
+    assert!(m(r"kit/a.bgsm", r"data\materials\kit\a.bgsm"));
+    assert!(!m(r"kit\a.bgsm", r"Materials\Kit\B.BGSM"));
+    assert!(!m(r"kit\a.bgsm", r"Materials\Kit\A.BGSM.bak"));
+    assert!(m(r"kit\a*.bgsm", r"Materials\Kit\A.BGSM"), "empty run");
+    assert!(m(r"kit\a*.bgsm", r"Materials\Kit\Abc.bgsm"));
+    assert!(m(r"kit\*a*b*.bgsm", r"Materials\Kit\xaxxbx.bgsm"));
+    assert!(m(r"kit\*", r"Materials\Kit\anything.bgem"));
+    assert!(!m(r"kit\a*.bgsm", r"Materials\Kit\A.BGEM"));
+    assert!(!m(r"kit\*a", r"Materials\Kit\ab"));
 }
 
 #[test]

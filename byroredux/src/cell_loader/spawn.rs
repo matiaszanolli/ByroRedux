@@ -29,7 +29,7 @@ use crate::components::{
 
 use super::nif_import_registry::CachedNifImport;
 use super::references::attach_light_flicker_if_needed;
-use super::refr::RefrTextureOverlay;
+use super::refr::{mswp_source_matches, same_material_path, RefrTextureOverlay};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct PlacementSpawnTimings {

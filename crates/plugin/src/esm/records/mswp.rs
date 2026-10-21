@@ -1,8 +1,8 @@
 //! MSWP (Material Swap) — FO4+ per-REFR material substitution table.
 //!
 //! An MSWP authors a list of `(source.bgsm/.bgem → target.bgsm/.bgem,
-//! optional intensity)` substitutions plus an optional path-prefix
-//! filter. Cell REFRs reference an MSWP via `XMSP` to apply the
+//! optional palette row)` substitutions plus the CK's optional object-
+//! window tree folder. Cell REFRs reference an MSWP via `XMSP` to apply the
 //! substitution table to a given placement (Raider armour colour
 //! variants, station-wagon rust variants, vault-decay overlays), or
 //! the table is sourced through other workflows (Material Swap form
@@ -11,13 +11,19 @@
 //! **Sub-record layout** (every record):
 //!
 //! - `EDID` — editor ID (z-string), exactly once
-//! - `FNAM` — optional path-prefix filter (z-string). Limits the swap
-//!   to materials whose source path starts with this string.
+//! - `FNAM` — optional "Tree Folder" (z-string): the folder the Creation
+//!   Kit's Material Swap dialog files the record under in its object
+//!   window. Editor-only, no runtime semantics (#5756): it is not a prefix
+//!   of the swapped materials (`Interiors\Vault` heads the vault-light
+//!   swaps of `SetDressing\Vault\VltLight01.BGSM`; `Effects` heads a
+//!   `Vehicles\Automotive\Car_Glass01.BGEM` swap). Kept for tooling.
 //! - Repeated `(BNAM, SNAM, optional CNAM)` triples — one per swap
 //!   entry. Order matters when the same source path appears more
 //!   than once (later entry wins).
-//!     - `BNAM` = source material path (z-string)
-//!     - `SNAM` = target material path (z-string)
+//!     - `BNAM` = source material path (z-string), bare — relative to
+//!       `Data\Materials\`, no `Materials\` prefix (#5755). May hold the
+//!       CK's `*` wildcard (`landscape\ground\craterdebris01*.bgsm`).
+//!     - `SNAM` = target material path (z-string), bare like `BNAM`
 //!     - `CNAM` = optional 4-byte f32 Color Remapping Index — the
 //!       greyscale-to-palette row the placement samples the remap LUT
 //!       at (#5497; see `MaterialSwapEntry::color_remap_index`), NOT an
@@ -34,11 +40,11 @@
 //! once a REFR's `XMSP` sub-record is parsed — see
 //! `byroredux/src/cell_loader/refr.rs`. The XMSP value is a FormID
 //! pointing at an MSWP record; the cell loader resolves it there, eagerly
-//! applies an already-set `material_path` (the XATO MNAM-only TXST case)
-//! against the FNAM path-prefix filter, and preserves the resolved
-//! `swaps` list (+ filter) on the overlay as `material_swaps`/
-//! `material_swaps_filter` for the spawn path's per-shape,
-//! later-entry-wins substitution.
+//! applies it to an already-set `material_path` (the XATO MNAM-only TXST
+//! case), and preserves the resolved `swaps` list on the overlay as
+//! `material_swaps` for the spawn path's per-shape, later-entry-wins
+//! substitution. Both compare through `mswp_source_matches`, which
+//! canonicalizes the bare `BNAM` and the NIF's spelling alike.
 //!
 //! See audit FO4-DIM6-05 / #590.
 
@@ -48,8 +54,10 @@ use crate::esm::records::common::{read_string_sub, read_zstring};
 /// One source → target swap entry inside an MSWP record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterialSwapEntry {
-    /// Source material path (BGSM / BGEM). Matched verbatim against
-    /// the host mesh's authored material slots when applying the swap.
+    /// Source material path (BGSM / BGEM), bare (relative to
+    /// `Data\Materials\`), possibly with a `*` wildcard. Kept as read;
+    /// the consumer canonicalizes it against the host mesh's authored
+    /// material slots (#5755).
     pub source: String,
     /// Replacement material path. Empty means "fall back to the
     /// authored material" — vanilla MSWPs occasionally ship that
@@ -76,10 +84,12 @@ pub struct MaterialSwapEntry {
 pub struct MaterialSwapRecord {
     pub form_id: u32,
     pub editor_id: String,
-    /// Optional path-prefix filter limiting which host meshes the
-    /// swap applies to. Set on ~53 % of vanilla records (1338/2537).
-    /// `None` means "apply to any host mesh".
-    pub path_filter: Option<String>,
+    /// `FNAM` — the Creation Kit object-window "Tree Folder" the record
+    /// is filed under. Editor metadata only: it filters nothing at
+    /// runtime (#5756 — read as a path-prefix filter, it rejected every
+    /// swap of 806 of the 1,482 vanilla FNAM-carrying records). Kept for
+    /// tooling. `None` when absent or empty.
+    pub tree_folder: Option<String>,
     /// Swap entries in authoring order. Vanilla records average
     /// ~2.18 entries; the largest ships ~30 entries (Vault damage
     /// theme overlays).
@@ -97,7 +107,7 @@ pub struct MaterialSwapRecord {
 /// Wire format is FO4-and-later; pre-FO4 games don't emit MSWP.
 pub fn parse_mswp(form_id: u32, subs: &[SubRecord]) -> MaterialSwapRecord {
     let editor_id = read_string_sub(subs, b"EDID").unwrap_or_default();
-    let path_filter = read_string_sub(subs, b"FNAM").filter(|s| !s.is_empty());
+    let tree_folder = read_string_sub(subs, b"FNAM").filter(|s| !s.is_empty());
 
     let mut swaps: Vec<MaterialSwapEntry> = Vec::new();
 
@@ -150,7 +160,7 @@ pub fn parse_mswp(form_id: u32, subs: &[SubRecord]) -> MaterialSwapRecord {
     MaterialSwapRecord {
         form_id,
         editor_id,
-        path_filter,
+        tree_folder,
         swaps,
     }
 }
@@ -187,7 +197,7 @@ mod tests {
         let rec = parse_mswp(0x0024_9A4E, &subs);
         assert_eq!(rec.form_id, 0x0024_9A4E);
         assert_eq!(rec.editor_id, "StationWagon_Postwar_Cheap04_Swap");
-        assert!(rec.path_filter.is_none());
+        assert!(rec.tree_folder.is_none());
         assert_eq!(rec.swaps.len(), 1);
         assert_eq!(
             rec.swaps[0].source,
@@ -200,9 +210,9 @@ mod tests {
         assert!(rec.swaps[0].color_remap_index.is_none());
     }
 
-    /// FNAM filter + multiple swap pairs — Vault damage theme shape.
+    /// FNAM tree folder + multiple swap pairs — Vault damage theme shape.
     #[test]
-    fn parse_record_with_fnam_filter_and_multiple_pairs() {
+    fn parse_record_with_fnam_tree_folder_and_multiple_pairs() {
         let subs = vec![
             sub(b"EDID", z("VaultDamageTheme18")),
             sub(b"FNAM", z("Interiors\\Vault")),
@@ -215,7 +225,7 @@ mod tests {
             sub(b"SNAM", z("interiors\\Vault\\VltAtrium01_Damage.BGSM")),
         ];
         let rec = parse_mswp(0x0024_70A8, &subs);
-        assert_eq!(rec.path_filter.as_deref(), Some("Interiors\\Vault"));
+        assert_eq!(rec.tree_folder.as_deref(), Some("Interiors\\Vault"));
         assert_eq!(rec.swaps.len(), 2);
         assert_eq!(
             rec.swaps[0].source,
@@ -295,11 +305,10 @@ mod tests {
         assert_eq!(rec.swaps[0].target, "b.bgsm");
     }
 
-    /// FNAM equal to empty string is treated as absent — keeps the
-    /// `path_filter` field semantically honest (`None` = "apply to
-    /// any path", `Some("")` would be ambiguous).
+    /// FNAM equal to empty string is treated as absent — `None` and
+    /// `Some("")` would otherwise both mean "no folder".
     #[test]
-    fn empty_fnam_is_treated_as_no_filter() {
+    fn empty_fnam_is_treated_as_no_tree_folder() {
         let subs = vec![
             sub(b"EDID", z("NoFilter")),
             sub(b"FNAM", z("")),
@@ -307,7 +316,7 @@ mod tests {
             sub(b"SNAM", z("b.bgsm")),
         ];
         let rec = parse_mswp(0xAB12, &subs);
-        assert!(rec.path_filter.is_none());
+        assert!(rec.tree_folder.is_none());
     }
 
     /// Records with no BNAM / SNAM at all (rare — vanilla has none

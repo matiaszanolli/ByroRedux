@@ -29,7 +29,7 @@
 
 use byroredux_bgsm::MaterialFile;
 
-fn fo4_data_dir() -> std::path::PathBuf {
+pub(super) fn fo4_data_dir() -> std::path::PathBuf {
     // #3850: an explicitly-set override is BINDING — never silently
     // substitute the hardcoded dev-machine path for a typo'd/missing one.
     if let Some(v) = std::env::var_os("BYROREDUX_FO4_DATA").filter(|s| !s.is_empty()) {

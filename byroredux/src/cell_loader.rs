@@ -143,7 +143,8 @@ pub(crate) use nif_import_registry::{
 };
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use refr::{
-    build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements_if, scol_cm_path,
+    build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements_if,
+    mswp_source_matches, same_material_path, scol_cm_path,
 };
 // The no-predicate wrapper is only what the expansion tests call (#5523).
 #[cfg(test)]

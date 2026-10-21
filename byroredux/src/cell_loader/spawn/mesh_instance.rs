@@ -93,9 +93,9 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
             // in a multi-shape mesh (e.g. a Raider armour's separate body /
             // arm / leg pieces) was silently left on its NIF-authored BGSM.
             //
-            // Re-evaluates the FNAM path-prefix filter against THIS
-            // shape's own source path (not the overlay's shared one), then
-            // — only when a substitution actually changes the path — walks
+            // Matches THIS shape's own source path (not the overlay's
+            // shared one) against the entries, then — only when a
+            // substitution actually changes the path — walks
             // the swapped target's BGSM/BGEM chain via a shape-scoped clone
             // of the overlay. Cloning first means any slot the REFR-level
             // XATO/XTNM/XTXR already set stays put (`fill_from_bgsm`'s
@@ -113,56 +113,52 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                 if !refr_ov.material_swaps.is_empty() {
                     let base_path_sym = refr_ov.material_path.or(mesh.material.material_path);
                     if let Some(current) = resolve_to_owned(&pool, base_path_sym) {
-                        let filter_ok = refr_ov
-                            .material_swaps_filter
-                            .and_then(|f| pool.resolve(f).map(str::to_owned))
-                            .is_none_or(|f| {
-                                current
-                                    .to_ascii_lowercase()
-                                    .starts_with(&f.to_ascii_lowercase())
-                            });
-                        if filter_ok {
-                            let mut swapped = current.clone();
-                            // Authoring-order, later-wins: matches the MSWP
-                            // file format (later `(BNAM, SNAM)` pair for the
-                            // same source overrides an earlier one).
-                            //
-                            // #3242 — compare against `current` (never
-                            // mutated), not the running `swapped` output.
-                            // Comparing against `swapped` broke later-wins
-                            // for a duplicate `source` (only the first
-                            // matching entry ever fired — the reverse of
-                            // "later entry overrides") and could silently
-                            // chain unrelated entries (A→B→C) whenever one
-                            // entry's `target` happened to equal a later
-                            // entry's `source`. Mirrors the sibling
-                            // reference implementation, `refr.rs`'s
-                            // `build_refr_texture_overlay` loop, which
-                            // already compared against a fixed value.
-                            for entry in &refr_ov.material_swaps {
-                                if entry.source.eq_ignore_ascii_case(&current) {
-                                    if !entry.target.is_empty() {
-                                        swapped = entry.target.clone();
-                                    }
-                                    // The row rides any matching entry —
-                                    // including an identity swap whose
-                                    // only payload is the CNAM (the top
-                                    // vanilla shape: MachineKitGray01's
-                                    // 6,684 REFRs swap nothing but the
-                                    // row).
-                                    if let Some(row) = entry.color_remap_index {
-                                        mswp_remap_row = Some(row);
-                                    }
+                        let mut swapped = current.clone();
+                        // Authoring-order, later-wins: matches the MSWP
+                        // file format (later `(BNAM, SNAM)` pair for the
+                        // same source overrides an earlier one).
+                        //
+                        // #3242 — compare against `current` (never
+                        // mutated), not the running `swapped` output.
+                        // Comparing against `swapped` broke later-wins
+                        // for a duplicate `source` (only the first
+                        // matching entry ever fired — the reverse of
+                        // "later entry overrides") and could silently
+                        // chain unrelated entries (A→B→C) whenever one
+                        // entry's `target` happened to equal a later
+                        // entry's `source`. Mirrors the sibling
+                        // reference implementation, `refr.rs`'s
+                        // `build_refr_texture_overlay` loop, which
+                        // already compared against a fixed value.
+                        //
+                        // #5755 — the match canonicalizes both spellings
+                        // (bare `BNAM` vs the NIF's `Materials\…` /
+                        // build-path name) and honours `*`.
+                        for entry in &refr_ov.material_swaps {
+                            if mswp_source_matches(&entry.source, &current) {
+                                if !entry.target.is_empty() {
+                                    swapped = entry.target.clone();
+                                }
+                                // The row rides any matching entry —
+                                // including an identity swap whose
+                                // only payload is the CNAM (the top
+                                // vanilla shape: MachineKitGray01's
+                                // 6,684 REFRs swap nothing but the
+                                // row).
+                                if let Some(row) = entry.color_remap_index {
+                                    mswp_remap_row = Some(row);
                                 }
                             }
-                            if swapped != current {
-                                let mut ov2 = refr_ov.clone();
-                                ov2.material_path = Some(pool.intern(&swapped));
-                                if let Some(provider) = mat_provider.as_deref_mut() {
-                                    ov2.fill_from_bgsm(provider, &mut pool);
-                                }
-                                shape_ov = Some(ov2);
+                        }
+                        // An identity entry spells its target bare; the
+                        // same material under another spelling is no swap.
+                        if !same_material_path(&swapped, &current) {
+                            let mut ov2 = refr_ov.clone();
+                            ov2.material_path = Some(pool.intern(&swapped));
+                            if let Some(provider) = mat_provider.as_deref_mut() {
+                                ov2.fill_from_bgsm(provider, &mut pool);
                             }
+                            shape_ov = Some(ov2);
                         }
                     }
                 }
@@ -2409,7 +2405,10 @@ mod tests {
     #[test]
     fn mswp_identity_entry_stamps_its_palette_row() {
         let mut pool = StringPool::new();
-        let kit = pool.intern(r"materials\kit\machinekitquad03.bgsm");
+        // #5755 — spelled as shipped: the NIF names `Materials\…`, the
+        // MSWP entry is bare on both sides. A shared literal hid the
+        // verbatim compare that never fired on real data.
+        let kit = pool.intern(r"Materials\Kit\MachineKitQuad03.BGSM");
         let mut world = World::new();
         world.insert_resource(pool);
 
@@ -2417,10 +2416,7 @@ mod tests {
         mesh.material.material_path = Some(kit);
         mesh.material.grayscale_to_palette_scale = 1.0;
 
-        let mut entry = swap_entry(
-            r"materials\kit\machinekitquad03.bgsm",
-            r"materials\kit\machinekitquad03.bgsm",
-        );
+        let mut entry = swap_entry(r"Kit\MachineKitQuad03.BGSM", r"Kit\MachineKitQuad03.BGSM");
         entry.color_remap_index = Some(0.805);
         let overlay = RefrTextureOverlay {
             material_swaps: vec![entry],
@@ -2432,7 +2428,12 @@ mod tests {
         assert_eq!(
             resolved[0].material_path.as_deref(),
             Some(r"materials\kit\machinekitquad03.bgsm"),
-            "an identity swap keeps the authored path"
+            "an identity swap keeps the authored path (the bare SNAM is the \
+             same material, not a swap)"
+        );
+        assert!(
+            resolved[0].swapped_material.is_some(),
+            "the stamped row rides a cloned material"
         );
         assert_eq!(
             resolved[0].material(&mesh).grayscale_to_palette_scale,
@@ -2646,52 +2647,149 @@ mod tests {
         assert!(std::ptr::eq(resolved[0].material(&mesh), &mesh.material));
     }
 
-    /// The FNAM path-prefix filter on an MSWP must be re-evaluated against
-    /// EACH shape's own source path, not the overlay's shared one — a
-    /// shape outside the filtered prefix keeps its authored material even
-    /// though the REFR carries a matching swap table.
+    /// #5755 — MSWP `BNAM`s are bare (relative to `Data\Materials\`),
+    /// while a NIF names its material `Materials\…`, by the absolute build
+    /// path, or `Data\materials\…`, interned verbatim. Pre-fix the compare
+    /// was verbatim equality, so no placement in the vanilla data ever
+    /// swapped. The fixtures spell the two sides the way the shipped data
+    /// does (the vanilla rows: `PictureFrame05Dest`, `VltElevator`).
     #[test]
-    fn mswp_filter_is_re_evaluated_per_shape() {
+    fn mswp_bare_bnam_matches_every_nif_spelling() {
         let mut pool = StringPool::new();
-        let filter = pool.intern(r"materials\armor\raider\");
-        let in_scope = pool.intern(r"materials\armor\raider\body01.bgsm");
-        let out_of_scope = pool.intern(r"materials\clutter\crate01.bgsm");
+        let nif_names = [
+            r"Materials\SetDressing\PaintingsGeneric\PaintingGeneric_CanvasSwap.BGSM",
+            r"C:\Projects\Fallout4\Build\PC\Data\materials\Interiors\Vault\Vault111\V111ElevPlatform01.BGSM",
+            r"Data\materials\Vehicles\StationWagon01a_Rust.BGSM",
+        ];
+        let meshes: Vec<_> = nif_names
+            .iter()
+            .map(|name| {
+                let mut mesh = empty_mesh();
+                mesh.material.material_path = Some(pool.intern(name));
+                mesh
+            })
+            .collect();
         let mut world = World::new();
         world.insert_resource(pool);
 
-        let mut body = empty_mesh();
-        body.material.material_path = Some(in_scope);
-        let mut crate_mesh = empty_mesh();
-        crate_mesh.material.material_path = Some(out_of_scope);
-
         let overlay = RefrTextureOverlay {
-            material_swaps_filter: Some(filter),
             material_swaps: vec![
                 swap_entry(
-                    r"materials\armor\raider\body01.bgsm",
-                    r"materials\armor\raider\body01_variant04.bgsm",
+                    r"setdressing\paintingsgeneric\PaintingGeneric_CanvasSwap.BGSM",
+                    r"SetDressing\PaintingsGeneric\PaintingGeneric21.BGSM",
                 ),
-                // Would match verbatim if the filter weren't re-checked
-                // per shape — the filter must block it.
                 swap_entry(
-                    r"materials\clutter\crate01.bgsm",
-                    r"materials\clutter\crate01_damaged.bgsm",
+                    r"interiors\vault\vault111\v111elevplatform01.bgsm",
+                    r"Interiors\Vault\Vault111\V111ElevPlatform02.BGSM",
+                ),
+                swap_entry(
+                    r"Vehicles\StationWagon01a_Rust.BGSM",
+                    r"Vehicles\StationWagon_Postwar_Cheap04.BGSM",
                 ),
             ],
             ..Default::default()
         };
 
-        let resolved =
-            resolve_mesh_paths(&mut world, &[body, crate_mesh], Some(&overlay), None, None);
+        let resolved = resolve_mesh_paths(&mut world, &meshes, Some(&overlay), None, None);
         assert_eq!(
             resolved[0].material_path.as_deref(),
-            Some(r"materials\armor\raider\body01_variant04.bgsm"),
-            "in-prefix shape swaps"
+            Some(r"setdressing\paintingsgeneric\paintinggeneric21.bgsm"),
+            "a `Materials\\…` shader name must match its bare BNAM"
         );
         assert_eq!(
             resolved[1].material_path.as_deref(),
-            Some(r"materials\clutter\crate01.bgsm"),
-            "out-of-prefix shape must keep its authored material unchanged"
+            Some(r"interiors\vault\vault111\v111elevplatform02.bgsm"),
+            "an absolute build-path shader name must match its bare BNAM"
+        );
+        assert_eq!(
+            resolved[2].material_path.as_deref(),
+            Some(r"vehicles\stationwagon_postwar_cheap04.bgsm"),
+            "a `Data\\materials\\…` shader name must match its bare BNAM"
+        );
+    }
+
+    /// #5755 — `*` in a `BNAM` is the CK's documented wildcard (127 vanilla
+    /// entries). It matches any run, and only where it stands.
+    #[test]
+    fn mswp_wildcard_bnam_matches_any_run() {
+        let mut pool = StringPool::new();
+        let wet = pool.intern(r"Materials\Landscape\Ground\CraterDebris01Wet.BGSM");
+        let other = pool.intern(r"Materials\Landscape\Ground\CraterDebris02.BGSM");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut wet_mesh = empty_mesh();
+        wet_mesh.material.material_path = Some(wet);
+        let mut other_mesh = empty_mesh();
+        other_mesh.material.material_path = Some(other);
+
+        let overlay = RefrTextureOverlay {
+            material_swaps: vec![swap_entry(
+                r"landscape\ground\craterdebris01*.bgsm",
+                r"landscape\ground\craterdebris01snow.bgsm",
+            )],
+            ..Default::default()
+        };
+
+        let resolved = resolve_mesh_paths(
+            &mut world,
+            &[wet_mesh, other_mesh],
+            Some(&overlay),
+            None,
+            None,
+        );
+        assert_eq!(
+            resolved[0].material_path.as_deref(),
+            Some(r"landscape\ground\craterdebris01snow.bgsm")
+        );
+        assert_eq!(
+            resolved[1].material_path.as_deref(),
+            Some(r"materials\landscape\ground\craterdebris02.bgsm"),
+            "the wildcard must not widen past its literal prefix"
+        );
+    }
+
+    /// #5756 — an MSWP's FNAM is the CK object-window tree folder, not a
+    /// path-prefix filter. The overlay no longer carries it, so a shape
+    /// whose source sits outside the folder still swaps (`Effects` heads a
+    /// `Vehicles\Automotive\Car_Glass01.BGEM` swap in vanilla).
+    #[test]
+    fn mswp_swap_fires_regardless_of_the_records_tree_folder() {
+        let mut pool = StringPool::new();
+        let glass = pool.intern(r"Materials\Vehicles\Automotive\Car_Glass01.BGEM");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut mesh = empty_mesh();
+        mesh.material.material_path = Some(glass);
+
+        let mut index = esm::cell::EsmCellIndex::default();
+        index.material_swaps.insert(
+            0x0024_0001,
+            esm::records::MaterialSwapRecord {
+                form_id: 0x0024_0001,
+                editor_id: "CarGlassSwap".into(),
+                tree_folder: Some("Effects".into()),
+                swaps: vec![swap_entry(
+                    r"Vehicles\Automotive\Car_Glass01.BGEM",
+                    r"Vehicles\Automotive\Car_Glass01Dirty.BGEM",
+                )],
+            },
+        );
+        let mut placed =
+            crate::cell_loader::refr_texture_overlay_tests::empty_placed_ref(0x0100_0001);
+        placed.material_swap_ref = Some(0x0024_0001);
+        let overlay = {
+            let mut pool = world.resource_mut::<StringPool>();
+            crate::cell_loader::build_refr_texture_overlay(&placed, &index, None, &mut pool)
+                .expect("XMSP alone must produce an overlay")
+        };
+
+        let resolved = resolve_mesh_paths(&mut world, &[mesh], Some(&overlay), None, None);
+        assert_eq!(
+            resolved[0].material_path.as_deref(),
+            Some(r"vehicles\automotive\car_glass01dirty.bgem"),
+            "a FNAM that is not a prefix of the shape's material must not block the swap"
         );
     }
 
