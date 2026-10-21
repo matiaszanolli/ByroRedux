@@ -190,6 +190,17 @@ impl PendingCellResets {
 
 impl Resource for PendingCellResets {}
 
+/// Drop every cell reset still owed: a save load replaced the session. The load's own cell reload
+/// notes the player entering each cell against the outgoing session's `CellVisits` and clock (both are
+/// restored only afterwards), so a cell that session left long enough ago would be "reset" in the
+/// loaded game. A load is not a reset, and the restored `CellVisits` is authoritative - a cold load,
+/// with no visits yet, raises none (#6238).
+pub fn discard_pending_cell_resets(world: &World) {
+    if let Some(mut pending) = world.try_resource_mut::<PendingCellResets>() {
+        pending.0.clear();
+    }
+}
+
 /// An object script's `OnReset` is due. `NOT_SAVED_BY_DESIGN`: consumed the frame it is raised.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OnResetEvent;

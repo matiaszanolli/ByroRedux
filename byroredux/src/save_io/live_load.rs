@@ -618,6 +618,9 @@ pub fn execute_pending_save_loads(
     // raises no unload event for a load, and the first post-load frame would
     // run those handlers against the restored script/quest state.
     byroredux_scripting::discard_pending_unload_deliveries(world);
+    // #6238 — and the cell resets it raised: each rebuilt cell noted the
+    // player entering it against the outgoing session's visits and clock.
+    byroredux_scripting::obscript_state::discard_pending_cell_resets(world);
 
     // The cell/session replacement invalidates every transient SDK entity
     // handle even when the restored population happens to reuse the same raw

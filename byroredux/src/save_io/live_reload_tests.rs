@@ -842,6 +842,41 @@ fn live_load_drain_discards_the_outgoing_sessions_script_events() {
     assert!(apply < watch, "re-baseline against the overlaid world");
 }
 
+/// #6238 — the reload notes each rebuilt cell against the outgoing session's
+/// `CellVisits` and clock, so a cell that session left >= 72 h ago is queued
+/// for a reset the loaded game does not owe. The drain drops it after the
+/// reload, before the restored state exists to be reset.
+#[test]
+fn live_load_drain_discards_the_cell_resets_its_reload_raised() {
+    use byroredux_scripting::obscript_state::{
+        discard_pending_cell_resets, note_cell_entered, CellVisits, PendingCellResets,
+    };
+    let mut world = World::new();
+    world.insert_resource(CellVisits::default());
+    world.insert_resource(PendingCellResets::default());
+    // The outgoing session was last in the cell at hour 10; its clock reads 100.
+    assert!(!note_cell_entered(&world, 0x0001_2345, 10.0, None));
+    assert!(note_cell_entered(&world, 0x0001_2345, 100.0, None), "the outgoing clock owes a reset");
+    assert_eq!(world.resource::<PendingCellResets>().cells(), [0x0001_2345]);
+    discard_pending_cell_resets(&world);
+    assert!(world.resource::<PendingCellResets>().cells().is_empty());
+
+    let source = include_str!("live_load.rs");
+    let body = &source[source
+        .find("pub fn execute_pending_save_loads(")
+        .expect("the live-load drain must exist")..];
+    let reload = body
+        .find("reload_exterior_session(")
+        .expect("the drain must reload the saved exterior");
+    let resets = body
+        .find("discard_pending_cell_resets(world)")
+        .expect("the drain must discard the reload's cell resets (#6238)");
+    let post_restore = body
+        .find("byroredux_save::restore_resources(world, &registry, &snapshot)")
+        .expect("the post-reload restore must exist");
+    assert!(reload < resets && resets < post_restore);
+}
+
 /// #5435 — a Late-stage `StoryEvent` marker (AHEL / drowning KILL) can be
 /// pending on the frame boundary a load drains on; it names the outgoing
 /// session's entities, so the load must drop it rather than let the next
