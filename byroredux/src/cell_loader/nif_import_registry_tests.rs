@@ -113,6 +113,7 @@ fn registry_with_cap(max_entries: usize) -> NifImportRegistry {
         max_entries,
         evictions: 0,
         clip_handles: HashMap::new(),
+        warned_shared_eviction: false,
     }
 }
 
@@ -687,4 +688,42 @@ fn beam_classification_reuses_positive_and_negative_model_results() {
         assert!(Arc::ptr_eq(next[0].as_ref().unwrap(), &media));
         assert!(next[1].is_none());
     }
+}
+
+/// #6114 - an FO4 `_oc.nif` precombine entry belongs to one cell and is the
+/// newest thing in the cache when it lands; under plain LRU it pushed the
+/// oldest shared model out. The LRU now drops the oldest per-cell precombine
+/// entry first, so the shared statics outlast them.
+#[test]
+fn lru_evicts_per_cell_precombine_entries_before_shared_models() {
+    let oc = |n: u32| format!("meshes\\precombined\\{n:08x}_deadbeef_oc.nif");
+    let mut reg = registry_with_cap(4);
+    let _ = reg.insert("rock.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert(oc(1), Some(dummy_cached()));
+    let _ = reg.insert("tree.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert(oc(2), Some(dummy_cached()));
+    assert_eq!(reg.evictions, 0);
+
+    // Two more inserts overflow twice. Plain LRU would drop `rock.nif` and
+    // then the first precombine; here both victims are precombine entries,
+    // oldest first.
+    let _ = reg.insert("fence.nif".into(), Some(dummy_cached()));
+    assert!(!reg.core.cache.contains_key(&oc(1)), "the oldest precombine goes first");
+    assert!(reg.core.cache.contains_key("rock.nif"), "the oldest shared model survives it");
+    let _ = reg.insert(oc(3), Some(dummy_cached()));
+    assert!(!reg.core.cache.contains_key(&oc(2)));
+    for shared in ["rock.nif", "tree.nif", "fence.nif"] {
+        assert!(reg.core.cache.contains_key(shared), "{shared} must stay resident");
+    }
+    assert!(reg.core.cache.contains_key(&oc(3)), "the entry just inserted is never its own victim");
+    assert_eq!(reg.evictions, 2);
+    assert!(!reg.warned_shared_eviction, "no shared model was evicted");
+
+    // With no precombine entry left to drop, a shared model is the victim
+    // (plain LRU), and the cap-below-working-set warning latches once.
+    let _ = reg.insert(oc(4), Some(dummy_cached()));
+    let _ = reg.insert("barrel.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("crate.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("pole.nif".into(), Some(dummy_cached()));
+    assert!(reg.warned_shared_eviction);
 }

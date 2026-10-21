@@ -581,6 +581,16 @@ pub(crate) struct NifImportRegistry {
     /// stale handle can never reach the player after the underlying
     /// cache entry has been dropped.
     pub(super) clip_handles: HashMap<String, u32>,
+    /// A shared (non-precombine) model has been LRU-evicted: the cap is below
+    /// the streaming ring's working set (#6114). Latch for the one warning.
+    pub(super) warned_shared_eviction: bool,
+}
+
+/// FO4 `_oc.nif` precombine entries are keyed by a path unique to one cell
+/// (`meshes\precombined\<cell>_<hash>_oc.nif`) and never serve another cell, so
+/// the LRU evicts them before any shared model (#6114).
+fn is_cell_unique_key(key: &str) -> bool {
+    key.ends_with("_oc.nif") && key.contains("\\precombined\\")
 }
 
 impl Default for NifImportRegistry {
@@ -612,6 +622,7 @@ impl NifImportRegistry {
             max_entries,
             evictions: 0,
             clip_handles: HashMap::new(),
+            warned_shared_eviction: false,
         }
     }
 
@@ -870,15 +881,32 @@ impl NifImportRegistry {
                 //
                 // O(N) sweep(s) over `access_tick`, same cost class as the
                 // pre-existing plain-LRU scan below.
+                // #6114 — a per-cell precombine entry is the cheapest victim:
+                // it is shared with no other cell, so evicting the oldest one
+                // costs a re-parse only if its own cell is still to apply,
+                // while the models every cell shares stay resident. Left to
+                // plain LRU these (the newest inserts) pushed the shared
+                // statics out.
                 let victim = self
                     .access_tick
                     .iter()
                     .filter(|(k, _)| {
                         k.as_str() != inserted_key.as_str()
+                            && is_cell_unique_key(k)
                             && !self.clip_handles.contains_key(k.as_str())
                     })
                     .min_by_key(|(_, &tick)| tick)
                     .map(|(k, _)| k.clone())
+                    .or_else(|| {
+                        self.access_tick
+                            .iter()
+                            .filter(|(k, _)| {
+                                k.as_str() != inserted_key.as_str()
+                                    && !self.clip_handles.contains_key(k.as_str())
+                            })
+                            .min_by_key(|(_, &tick)| tick)
+                            .map(|(k, _)| k.clone())
+                    })
                     .or_else(|| {
                         self.access_tick
                             .iter()
@@ -889,6 +917,16 @@ impl NifImportRegistry {
                 let Some(victim_key) = victim else {
                     break;
                 };
+                if !is_cell_unique_key(&victim_key) && !self.warned_shared_eviction {
+                    self.warned_shared_eviction = true;
+                    log::warn!(
+                        "NifImportRegistry: evicting a shared model ('{victim_key}') at its {}-entry cap. \
+                         When the streaming ring references more distinct models than that (Fallout 4's \
+                         default radius peaks near 9,700), cells whose worker skipped a model as cached \
+                         re-parse it on the main thread; raise BYRO_NIF_CACHE_MAX (#6114).",
+                        self.max_entries,
+                    );
+                }
                 let _ = self.core.remove(&victim_key);
                 self.access_tick.remove(&victim_key);
                 // #544 — drop the memoised clip handle in lockstep so
