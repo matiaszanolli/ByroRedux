@@ -85,6 +85,79 @@ pub(crate) struct SeamContext {
     pub textures: HashMap<(String, usize), String>,
 }
 
+impl SeamContext {
+    /// Add the skin meshes of `sources` — `(NIF path, base-texture override)`
+    /// pairs, the override being the race body texture a body piece takes at
+    /// spawn (#5487) — as neighbours, and record each mesh's resolved diffuse.
+    /// Scenes come from the shared import cache, or a fully material-resolved
+    /// cache fill, so load order does not matter. Needs `bone_binds` first.
+    pub(crate) fn add_skin_neighbors(
+        &mut self,
+        world: &mut byroredux_core::ecs::World,
+        tex_provider: &crate::asset_provider::TextureProvider,
+        mut mat_provider: Option<&mut crate::asset_provider::MaterialProvider>,
+        sources: impl IntoIterator<Item = (String, Option<String>)>,
+    ) {
+        for (path, override_texture) in sources {
+            let Some(scene) =
+                crate::scene::peek_or_parse_scene(world, &path, tex_provider, mat_provider.as_deref_mut())
+            else {
+                continue;
+            };
+            let source = path.to_ascii_lowercase();
+            let pool = world.resource::<byroredux_core::string::StringPool>();
+            for (index, mesh) in scene.meshes.iter().enumerate() {
+                let Some(texture) = override_texture.clone().or_else(|| {
+                    mesh.material
+                        .textures
+                        .base_color
+                        .and_then(|symbol| pool.resolve(symbol))
+                        .map(str::to_owned)
+                }) else {
+                    continue;
+                };
+                if let Some(neighbor) = neighbor_from_mesh(mesh, &source, &texture, &self.bone_binds) {
+                    self.neighbors.push(neighbor);
+                }
+                self.textures.insert((source.clone(), index), texture);
+            }
+        }
+    }
+}
+
+/// Whether a body-part NIF is a hand (`lefthand.nif`, `femalerighthand.nif`,
+/// …), whose wrist cut the seam pass blends.
+pub(crate) fn is_hand_part(path: &str) -> bool {
+    path.rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|file| file.to_ascii_lowercase().contains("hand"))
+}
+
+/// Blend every mesh of a hand scene into the actor's neighbouring skin, the
+/// pass both the spawn and the corpse-restore re-import run (#6320). Each
+/// mesh's own texture is `body_texture` (the race skin it was given) or, when
+/// there is none, the diffuse `context` resolved for it. Returns the summed
+/// stats.
+pub(crate) fn blend_hand_scene_seams(
+    scene: &mut byroredux_nif::import::ImportedScene,
+    path: &str,
+    body_texture: Option<&str>,
+    context: &SeamContext,
+    sample: &mut TextureSampler<'_>,
+) -> SeamStats {
+    let source = path.to_ascii_lowercase();
+    let mut total = SeamStats::default();
+    for (index, mesh) in scene.meshes.iter_mut().enumerate() {
+        let own_texture = body_texture
+            .map(str::to_owned)
+            .or_else(|| context.textures.get(&(source.clone(), index)).cloned());
+        let stats = blend_part_seams(mesh, &source, own_texture.as_deref(), context, sample);
+        total.matched_vertices += stats.matched_vertices;
+        total.toned_vertices += stats.toned_vertices;
+    }
+    total
+}
+
 mod tone;
 pub(crate) use tone::ToneSampler;
 

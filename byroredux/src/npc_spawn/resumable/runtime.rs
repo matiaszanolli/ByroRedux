@@ -666,12 +666,24 @@ pub(super) fn advance_runtime_unit(
             state.skel_root = skel_root;
             state.skel_map = skel_map;
             if state.blend_skin_seams && state.skel_root.is_some() {
-                state.seam_context = Some(std::sync::Arc::new(build_seam_context(
-                    state,
-                    world,
-                    tex_provider,
-                    mat_provider.as_deref_mut(),
-                )));
+                let context = build_seam_context(state, world, tex_provider, mat_provider.as_deref_mut());
+                // #6320 — a covered hand the corpse restore re-imports later
+                // blends on these binds, against the skin worn by then.
+                let restores_a_hand = state
+                    .appearance
+                    .parts
+                    .iter()
+                    .any(|part| super::seam_blend::is_hand_part(&part.path));
+                if restores_a_hand {
+                    let worn_body = state
+                        .body_paths
+                        .iter()
+                        .cloned()
+                        .zip(state.body_textures.iter().cloned())
+                        .collect();
+                    state.appearance.seams = Some(super::super::loot_appearance::RestoreSeams::new(&context, worn_body));
+                }
+                state.seam_context = Some(std::sync::Arc::new(context));
             }
             state.phase = RuntimePhase::Body(0);
             UnitOutcome::Continue
@@ -696,7 +708,7 @@ pub(super) fn advance_runtime_unit(
             let hand_seams = state
                 .seam_context
                 .clone()
-                .filter(|_| is_hand_part(body_path));
+                .filter(|_| super::seam_blend::is_hand_part(body_path));
             let mut tone_sampler = super::seam_blend::ToneSampler::new(world, tex_provider);
             let mut blend_hand = |scene: &mut byroredux_nif::import::ImportedScene| {
                 if let Some(texture) = body_texture_id {
@@ -705,31 +717,25 @@ pub(super) fn advance_runtime_unit(
                 let Some(context) = hand_seams.as_deref() else {
                     return;
                 };
-                let source = body_path.to_ascii_lowercase();
-                for (index, mesh) in scene.meshes.iter_mut().enumerate() {
-                    let own_texture = body_texture
-                        .clone()
-                        .or_else(|| context.textures.get(&(source.clone(), index)).cloned());
-                    let stats = super::seam_blend::blend_part_seams(
-                        mesh,
-                        &source,
-                        own_texture.as_deref(),
-                        context,
-                        &mut |texture, uv| tone_sampler.sample(texture, uv),
-                    );
-                    log::debug!(
-                        "NPC {:08X}: '{}' seam blend matched {} edge vertices, toned {}",
-                        npc.form_id,
-                        source,
-                        stats.matched_vertices,
-                        stats.toned_vertices,
-                    );
-                }
+                let stats = super::seam_blend::blend_hand_scene_seams(
+                    scene,
+                    body_path,
+                    body_texture.as_deref(),
+                    context,
+                    &mut |texture, uv| tone_sampler.sample(texture, uv),
+                );
+                log::debug!(
+                    "NPC {:08X}: '{}' seam blend matched {} edge vertices, toned {}",
+                    npc.form_id,
+                    body_path,
+                    stats.matched_vertices,
+                    stats.toned_vertices,
+                );
             };
             let pre_spawn: Option<
                 &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
             > = if body_texture.is_some()
-                || (state.seam_context.is_some() && is_hand_part(body_path))
+                || (state.seam_context.is_some() && super::seam_blend::is_hand_part(body_path))
             {
                 Some(&mut blend_hand)
             } else {
@@ -1208,13 +1214,6 @@ pub(super) fn apply_head_morphs(
         );
 }
 
-/// Whether a body-part NIF is a hand (`lefthand.nif`, `femalerighthand.nif`,
-/// …), whose wrist cut the seam pass blends.
-pub(super) fn is_hand_part(path: &str) -> bool {
-    path.rsplit(['\\', '/'])
-        .next()
-        .is_some_and(|file| file.to_ascii_lowercase().contains("hand"))
-}
 
 /// Resolve the shared humanoid head node used by the classic runtime-hair
 /// assets. `Bip01 Head` is the vanilla FO3/FNV spelling; the alternate name
@@ -1308,7 +1307,7 @@ pub(super) fn build_seam_context(
     state: &RuntimeNpcState,
     world: &mut World,
     tex_provider: &TextureProvider,
-    mut mat_provider: Option<&mut MaterialProvider>,
+    mat_provider: Option<&mut MaterialProvider>,
 ) -> super::seam_blend::SeamContext {
     let mut context = super::seam_blend::SeamContext::default();
     for (name, &bone) in &state.skel_map {
@@ -1336,31 +1335,7 @@ pub(super) fn build_seam_context(
         .chain(state.armor.iter().map(|armor| {
             (armor.model_path.to_owned(), None::<String>)
         }));
-    for (path, override_texture) in sources {
-        let Some(scene) = crate::scene::peek_or_parse_scene(world, &path, tex_provider, mat_provider.as_deref_mut()) else {
-            continue;
-        };
-        let source = path.to_ascii_lowercase();
-        let pool = world.resource::<StringPool>();
-        for (index, mesh) in scene.meshes.iter().enumerate() {
-            let Some(texture) = override_texture.clone().or_else(|| {
-                mesh.material
-                    .textures
-                    .base_color
-                    .and_then(|symbol| pool.resolve(symbol))
-                    .map(str::to_owned)
-            })
-            else {
-                continue;
-            };
-            if let Some(neighbor) =
-                super::seam_blend::neighbor_from_mesh(mesh, &source, &texture, &context.bone_binds)
-            {
-                context.neighbors.push(neighbor);
-            }
-            context.textures.insert((source.clone(), index), texture);
-        }
-    }
+    context.add_skin_neighbors(world, tex_provider, mat_provider, sources);
     log::debug!(
         "seam context: {} of {} skeleton bones bound, {} skin neighbour mesh(es): {:?}",
         context.bone_binds.len(),

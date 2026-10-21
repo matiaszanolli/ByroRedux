@@ -65,10 +65,40 @@ pub(super) fn override_base_color(
         byroredux_nif::import::ImportedTextureSource::RuntimeOverride;
 }
 
+/// What a restored hand's wrist cut blends against (#6320). The spawn pass
+/// blended the hands against the outfit they were worn with; once it is
+/// taken, the neighbours are the body pieces worn since spawn plus the ones
+/// the restore brings back, so the restore builds its own context. It keeps
+/// the spawn's bone binds: they were read before any animation attached, and
+/// a posed corpse cannot give them back.
+pub(super) struct RestoreSeams {
+    bone_binds: HashMap<String, byroredux_core::math::Mat4>,
+    /// Body pieces worn since spawn, with their spawn-time race textures.
+    worn_body: Vec<(String, Option<String>)>,
+    /// Built on the first restored hand, shared by the second.
+    context: Option<Arc<super::seam_blend::SeamContext>>,
+}
+
+impl RestoreSeams {
+    pub(super) fn new(
+        spawn: &super::seam_blend::SeamContext,
+        worn_body: Vec<(String, Option<String>)>,
+    ) -> Self {
+        Self {
+            bone_binds: spawn.bone_binds.clone(),
+            worn_body,
+            context: None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct NpcLootAppearance {
     pub(super) skeleton: HashMap<Arc<str>, EntityId>,
     pub(super) parts: Vec<RestorePart>,
+    /// Set when a restored part is a hand and the actor was spawned with seam
+    /// blending (FO3 / FNV / Oblivion runtime assembly).
+    pub(super) seams: Option<RestoreSeams>,
     pub(super) original_roots: Vec<EntityId>,
     staged_roots: Vec<EntityId>,
     next_part: usize,
@@ -818,19 +848,43 @@ impl LootAppearanceLoader {
             );
             return;
         };
+        // #6320 — a restored hand gets the wrist-cut blend its spawn-time
+        // import had, against the skin the actor wears now.
+        let hand_seams = if super::seam_blend::is_hand_part(&part.path) {
+            restore_seam_context(world, actor, textures, materials)
+        } else {
+            None
+        };
+        let mut tone_sampler = super::seam_blend::ToneSampler::new(world, textures);
         let first = world.next_entity_id();
         // #6128 — the restored piece gets the skin its spawn-time import had.
         let body_texture = part
             .body_texture
             .as_deref()
             .map(|texture| world.resource_mut::<StringPool>().intern(texture));
-        let mut apply_body_texture = |scene: &mut byroredux_nif::import::ImportedScene| {
+        let mut restore_hook = |scene: &mut byroredux_nif::import::ImportedScene| {
             if let Some(texture) = body_texture {
                 set_body_base_color(scene, texture);
             }
+            if let Some(context) = hand_seams.as_deref() {
+                let stats = super::seam_blend::blend_hand_scene_seams(
+                    scene,
+                    &part.path,
+                    part.body_texture.as_deref(),
+                    context,
+                    &mut |texture, uv| tone_sampler.sample(texture, uv),
+                );
+                log::debug!(
+                    "npc.loot-appearance: actor={actor} '{}' seam blend matched {} edge vertices, toned {}",
+                    part.path,
+                    stats.matched_vertices,
+                    stats.toned_vertices,
+                );
+            }
         };
         let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
-            body_texture.map(|_| &mut apply_body_texture as &mut dyn FnMut(&mut _));
+            (body_texture.is_some() || hand_seams.is_some())
+                .then_some(&mut restore_hook as &mut dyn FnMut(&mut _));
         let (meshes, root, _) = load_nif_bytes_with_skeleton(
             world,
             ctx,
@@ -866,6 +920,46 @@ impl LootAppearanceLoader {
             part.path
         );
     }
+}
+
+/// The seam context a restored hand blends against (#6320): the spawn's bone
+/// binds, and as neighbours the body pieces worn since spawn plus every piece
+/// the restore brings back (whatever order they load in). Built once per
+/// actor; `None` when the actor was not spawned with seam blending.
+fn restore_seam_context(
+    world: &mut World,
+    actor: EntityId,
+    textures: &TextureProvider,
+    materials: &mut MaterialProvider,
+) -> Option<Arc<super::seam_blend::SeamContext>> {
+    let (bone_binds, sources) = {
+        let appearance = world.get::<NpcLootAppearance>(actor)?;
+        let seams = appearance.seams.as_ref()?;
+        if let Some(context) = &seams.context {
+            return Some(context.clone());
+        }
+        let restored = appearance
+            .parts
+            .iter()
+            .map(|part| (part.path.clone(), part.body_texture.clone()));
+        (
+            seams.bone_binds.clone(),
+            seams.worn_body.iter().cloned().chain(restored).collect::<Vec<_>>(),
+        )
+    };
+    let mut context = super::seam_blend::SeamContext {
+        bone_binds,
+        ..Default::default()
+    };
+    context.add_skin_neighbors(world, textures, Some(materials), sources);
+    let context = Arc::new(context);
+    if let Some(seams) = world
+        .get_mut::<NpcLootAppearance>(actor)
+        .and_then(|appearance| appearance.seams.as_mut())
+    {
+        seams.context = Some(context.clone());
+    }
+    Some(context)
 }
 
 /// The player's body root when `wearer` is the player, `None` for any other
@@ -1131,6 +1225,81 @@ impl GearImportLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6320 — a restored hand blends against what the actor wears once its
+    /// outfit is taken: the body pieces worn since spawn plus the restored
+    /// ones, on the spawn's bone binds. The context is built once per actor.
+    #[test]
+    fn restored_hands_blend_against_the_worn_and_restored_skin() {
+        use crate::scene_import_cache::SceneImportCache;
+        use byroredux_core::math::Mat4;
+        use byroredux_nif::import::{ImportedBone, ImportedMesh, ImportedScene, ImportedSkin};
+
+        fn skin_scene(texture: byroredux_core::string::FixedString) -> Arc<ImportedScene> {
+            let mut mesh = ImportedMesh::from_geometry(
+                vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                Vec::new(),
+                vec![[0.0, 0.0, 1.0]; 3],
+                Vec::new(),
+                vec![[0.5, 0.5]; 3],
+                vec![0, 1, 2],
+            );
+            mesh.material.textures.base_color = Some(texture);
+            mesh.skin = Some(ImportedSkin {
+                bones: vec![ImportedBone {
+                    name: "Bip01".into(),
+                    bind_inverse: Mat4::IDENTITY.to_cols_array_2d(),
+                    bounding_sphere: [0.0; 4],
+                }],
+                vertex_bone_indices: vec![[0; 4]; 3],
+                vertex_bone_weights: vec![[1.0, 0.0, 0.0, 0.0]; 3],
+                ..Default::default()
+            });
+            Arc::new(ImportedScene {
+                nodes: Vec::new(),
+                meshes: vec![mesh],
+                particle_emitters: Vec::new(), bsx_flags: None, bs_bound: None,
+                phantom_bounds: None, attach_points: None, child_attach_connections: None,
+                furniture_markers: Vec::new(), embedded_clip: None, ragdoll: None, lights: Vec::new(),
+            })
+        }
+
+        let mut world = World::new();
+        world.register::<NpcLootAppearance>();
+        world.insert_resource(StringPool::new());
+        world.insert_resource(SceneImportCache::new());
+        let skin = world.resource_mut::<StringPool>().intern("textures\\characters\\male\\upperbody.dds");
+        for path in ["legs.nif", "upperbody.nif", "lefthand.nif"] {
+            world.resource_mut::<SceneImportCache>().insert(path.into(), Some(skin_scene(skin)));
+        }
+        let spawn = super::super::seam_blend::SeamContext {
+            bone_binds: HashMap::from([("bip01".to_string(), Mat4::IDENTITY)]),
+            ..Default::default()
+        };
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            NpcLootAppearance {
+                parts: vec![RestorePart::body("upperbody.nif"), RestorePart::body("lefthand.nif")],
+                seams: Some(RestoreSeams::new(&spawn, vec![("legs.nif".to_string(), None)])),
+                ..Default::default()
+            },
+        );
+
+        let textures = TextureProvider::new();
+        let mut materials = MaterialProvider::new();
+        let context = restore_seam_context(&mut world, actor, &textures, &mut materials).expect("seam context");
+        let mut sources: Vec<&str> = context.neighbors.iter().map(|n| n.source.as_str()).collect();
+        sources.sort();
+        assert_eq!(sources, ["lefthand.nif", "legs.nif", "upperbody.nif"]);
+        let again = restore_seam_context(&mut world, actor, &textures, &mut materials).unwrap();
+        assert!(Arc::ptr_eq(&context, &again), "built once, shared by the second hand");
+
+        // An actor spawned without seam blending gets no restore blend.
+        let plain = world.spawn();
+        world.insert(plain, NpcLootAppearance::default());
+        assert!(restore_seam_context(&mut world, plain, &textures, &mut materials).is_none());
+    }
 
     /// #6131 — a race / head / eye texture the NPC hooks put on a mesh reads as
     /// `runtime-override` in `tex.*` / `mat.dump`, not as the NIF's own slot;
