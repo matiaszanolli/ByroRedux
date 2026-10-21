@@ -327,6 +327,7 @@ pub(super) fn advance_prebaked_unit(
                     state.appearance.parts.push(RestorePart {
                         path: facegen_path.to_owned(),
                         tint: tint_path.map(str::to_owned),
+                        body_texture: None,
                     });
                 }
             }
@@ -377,6 +378,7 @@ pub(super) fn advance_prebaked_unit(
                             state.appearance.parts.push(RestorePart {
                                 path: part_path.to_owned(),
                                 tint: None,
+                                body_texture: None,
                             });
                         }
                     }

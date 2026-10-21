@@ -14,6 +14,11 @@ use std::sync::Arc;
 pub(super) struct RestorePart {
     pub path: String,
     pub tint: Option<String>,
+    /// The race body-section `ICON` the part takes as its base texture at
+    /// spawn (Oblivion, #5487). The restore re-import applies the same one
+    /// through [`set_body_base_color`], so a restored torso keeps the race's
+    /// skin rather than the NIF's Imperial default (#6128).
+    pub body_texture: Option<String>,
 }
 
 impl RestorePart {
@@ -21,7 +26,29 @@ impl RestorePart {
         Self {
             path: path.to_owned(),
             tint: None,
+            body_texture: None,
         }
+    }
+
+    /// A body piece with the race skin its spawn-time import was given.
+    pub(super) fn body_with_texture(path: &str, body_texture: Option<String>) -> Self {
+        Self {
+            body_texture,
+            ..Self::body(path)
+        }
+    }
+}
+
+/// The imported-tier override a body piece takes from its race at spawn: every
+/// mesh's base colour becomes `texture`. The one definition both the spawn
+/// (`resumable/runtime.rs`) and the restore re-import call (#6128), so the two
+/// cannot drift apart.
+pub(super) fn set_body_base_color(
+    scene: &mut byroredux_nif::import::ImportedScene,
+    texture: byroredux_core::string::FixedString,
+) {
+    for mesh in &mut scene.meshes {
+        mesh.material.textures.base_color = Some(texture);
     }
 }
 
@@ -779,6 +806,18 @@ impl LootAppearanceLoader {
             return;
         };
         let first = world.next_entity_id();
+        // #6128 — the restored piece gets the skin its spawn-time import had.
+        let body_texture = part
+            .body_texture
+            .as_deref()
+            .map(|texture| world.resource_mut::<StringPool>().intern(texture));
+        let mut apply_body_texture = |scene: &mut byroredux_nif::import::ImportedScene| {
+            if let Some(texture) = body_texture {
+                set_body_base_color(scene, texture);
+            }
+        };
+        let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
+            body_texture.map(|_| &mut apply_body_texture as &mut dyn FnMut(&mut _));
         let (meshes, root, _) = load_nif_bytes_with_skeleton(
             world,
             ctx,
@@ -788,7 +827,7 @@ impl LootAppearanceLoader {
             Some(materials),
             Some(&skeleton),
             part.tint.as_deref(),
-            None,
+            pre_spawn,
         );
         let last = world.next_entity_id();
         crate::cell_loader::stamp_cell_root_range(world, cell, first, last);

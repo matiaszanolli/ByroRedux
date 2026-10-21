@@ -147,6 +147,21 @@ fn race_body_texture(
     .filter(|texture| !texture.is_empty())
 }
 
+/// A body piece the restore path re-imports, carrying the race skin the
+/// spawn-time import of the same mesh was given (#6128): the same
+/// `humanoid_body_path_icon_index` -> `race_body_texture` lookup the spawn
+/// uses, so the two cannot disagree.
+fn restore_body_part(
+    game: GameKind,
+    race: Option<&RaceRecord>,
+    want_gender_tag: u8,
+    path: &str,
+) -> RestorePart {
+    let texture = crate::npc_spawn::humanoid_body_path_icon_index(game, path)
+        .and_then(|icon_idx| race_body_texture(race, icon_idx, want_gender_tag));
+    RestorePart::body_with_texture(path, texture)
+}
+
 /// Shared filter behind [`head_part_paths`] / [`head_part_texture`]: the
 /// entries of an `(INDX, path, gender section)` list matching `roles`, in
 /// role order.
@@ -237,17 +252,17 @@ pub(super) fn prepare_runtime_state(
     // one resolution (#4457), the same source `stamp_character_components`'s
     // `Background` uses.
     let equip = build_npc_equip_state(&resolved, index, game, gender);
-    let mut appearance = NpcLootAppearance::default();
-    appearance.parts = equip
-        .restore_skin_paths
-        .iter()
-        .map(|path| RestorePart::body(path))
-        .collect();
     let is_child = crate::npc_spawn::is_child_race(game, race.map(|race| race.race_flags));
     let want_gender_tag = match gender {
         Gender::Male => 0,
         Gender::Female => 1,
     };
+    let mut appearance = NpcLootAppearance::default();
+    appearance.parts = equip
+        .restore_skin_paths
+        .iter()
+        .map(|path| restore_body_part(game, race, want_gender_tag, path))
+        .collect();
     // #5487 — pair each mesh with the race's body-section ICON skin for
     // its slot (Oblivion only; FO3/FNV body skins ride the head table).
     let (body_paths, body_textures): (Vec<String>, Vec<Option<String>>) =
@@ -258,7 +273,7 @@ pub(super) fn prepare_runtime_state(
                     .and_then(|icon_idx| race_body_texture(race, icon_idx, want_gender_tag));
                 ((*path).to_owned(), texture)
             })
-            .filter(|(path, _)| {
+            .filter(|(path, texture)| {
                 let body_piece_mask = humanoid_body_path_biped_mask(game, path);
                 let covered = if path.ends_with("upperbody.nif") {
                     equip.main_body_covered(game)
@@ -267,7 +282,7 @@ pub(super) fn prepare_runtime_state(
                 };
                 let keep = !covered;
                 if !keep {
-                    appearance.parts.push(RestorePart::body(path));
+                    appearance.parts.push(RestorePart::body_with_texture(path, texture.clone()));
                     log::info!(
                         "NPC {:08X} ({}): equipped armor covers body mask {body_piece_mask:#06X} — skipping {}",
                         npc.form_id,
@@ -434,6 +449,32 @@ mod body_skin_tests {
         );
         assert_eq!(race_body_texture(Some(&race), 2, 1), None);
         assert_eq!(race_body_texture(None, 0, 0), None);
+    }
+
+    /// #6128 — a body piece registered for the take-all restore carries the race
+    /// skin its spawn-time import had; before this, `RestorePart` held a path
+    /// alone and the re-import fell back to the NIF's Imperial default.
+    #[test]
+    fn a_restored_oblivion_body_part_keeps_the_race_skin() {
+        use super::restore_body_part;
+        use byroredux_plugin::esm::reader::GameKind;
+        let race = RaceRecord {
+            body_part_textures: vec![
+                (0, "dunmer-upper.dds".to_string(), Some(0)),
+                (1, "dunmer-leg.dds".to_string(), None),
+                (2, "dunmer-hand.dds".to_string(), None),
+            ],
+            ..RaceRecord::default()
+        };
+        let part = |path: &str| restore_body_part(GameKind::Oblivion, Some(&race), 0, path);
+        assert_eq!(part("characters/_male/upperbody.nif").body_texture.as_deref(), Some("dunmer-upper.dds"));
+        assert_eq!(part("characters/_male/lowerbody.nif").body_texture.as_deref(), Some("dunmer-leg.dds"));
+        assert_eq!(part("characters/_male/hand.nif").body_texture.as_deref(), Some("dunmer-hand.dds"));
+        assert_eq!(part("characters/_male/foot.nif").body_texture, None, "the race lists no foot skin");
+        assert_eq!(part("armor/iron/cuirass.nif").body_texture, None, "not a loose body piece");
+        // FO3 / FNV naked meshes keep their own NIF-authored skin.
+        let fnv = restore_body_part(GameKind::Fallout3NV, Some(&race), 0, "characters/_male/upperbody.nif");
+        assert_eq!(fnv.body_texture, None);
     }
 }
 
@@ -614,9 +655,7 @@ pub(super) fn advance_runtime_unit(
                     let mut tone_sampler = super::seam_blend::ToneSampler::new(world, tex_provider);
                     let mut blend_hand = |scene: &mut byroredux_nif::import::ImportedScene| {
                         if let Some(texture) = body_texture_id {
-                            for mesh in &mut scene.meshes {
-                                mesh.material.textures.base_color = Some(texture);
-                            }
+                            super::super::loot_appearance::set_body_base_color(scene, texture);
                         }
                         let Some(context) = hand_seams.as_deref() else {
                             return;
