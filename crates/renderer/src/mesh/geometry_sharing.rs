@@ -112,7 +112,10 @@ impl MeshRegistry {
             let Some(mesh) = self.get(handle) else {
                 return false;
             };
-            if self.refcount(handle) == Some(0) {
+            // `refcount` is `None` for a released handle (it filters zero
+            // out), so the guard tests that - `== Some(0)` could never hold
+            // (#6112). This holds even where the cache was not pruned.
+            if self.refcount(handle).is_none() {
                 return false;
             }
             let vs = mesh.global_vertex_offset as usize;
@@ -198,6 +201,36 @@ mod tests {
         assert!(registry.geometry_cache.is_empty());
         assert_eq!(registry.acquire_cached("second.nif", 7), None);
         assert_eq!(registry.acquire_matching_geometry(&upload, false), None);
+    }
+
+    /// #6112 - a released handle that still sits in the geometry cache must not
+    /// shadow a live one of identical content. `acquire_mesh_alias` refuses a
+    /// zero count too, but only after `find` has already settled on the dead
+    /// candidate, so with an inert guard the live twin behind it was never
+    /// shared with.
+    #[test]
+    fn a_released_handle_does_not_shadow_a_live_twin_in_the_cache() {
+        let mut registry = MeshRegistry::new();
+        let vertices = triangle();
+        let released = registry
+            .upload_scene_mesh_global_only(&vertices, &[0, 1, 2])
+            .unwrap();
+        let live = registry
+            .upload_scene_mesh_global_only(&vertices, &[0, 1, 2])
+            .unwrap();
+        registry.register_scene_geometry_for_sharing(released);
+        registry.register_scene_geometry_for_sharing(live);
+        let upload = SceneMeshUpload {
+            vertices: &vertices,
+            indices: &[0, 1, 2],
+            rt_enabled: false,
+            cache_key: None,
+        };
+        // Release the first holder by hand, leaving its cache entry and slot.
+        registry.mesh_ref_counts[released as usize] = 0;
+        assert_eq!(registry.refcount(released), None);
+        assert!(registry.get(released).is_some(), "the slot is still populated");
+        assert_eq!(registry.acquire_matching_geometry(&upload, false), Some(live));
     }
 
     #[test]
