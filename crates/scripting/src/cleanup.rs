@@ -42,7 +42,7 @@
 //! | `ScenePackageEventBatch`, `ScenePackageCompletionBatch`, `EvaluatePackageRequest` | `package::scene_package_system` |
 //! | `StoryEvent` | `story_manager::story_manager_dispatch_system` (#5366) |
 //! | `TwoStateTransitionBatch` | `vm_state::two_state_activator_system` |
-//! | `HavokImpulseRequest` | `byroredux::systems::cinematic::scripted_havok_impulse_system` (snapshots every request, drains exactly those, early-returns only when there are none) |
+//! | `HavokImpulseRequest` | `byroredux::systems::cinematic::scripted_havok_impulse_system` (snapshots every request and drains exactly those; the only early return before the drain is the empty set, and a missing `HavokImpulseRules` drains the snapshot before returning, #6009) |
 //! | `MotionTypeChangeRequest` | `byroredux::systems::cinematic` (the one tail-drain — it removes exactly the entities it snapshotted, after an empty-set early return that strands nothing) |
 //!
 //! Everything else is **persistent state**, not a marker, and belongs to

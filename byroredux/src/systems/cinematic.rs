@@ -478,6 +478,20 @@ pub(crate) fn scripted_havok_impulse_system(world: &World, _dt: f32) {
     if asked.is_empty() {
         return;
     }
+    let drain_asked = |asked: Vec<(EntityId, byroredux_scripting::HavokImpulseRequest)>| {
+        if let Some(mut request_q) = world.query_mut::<byroredux_scripting::HavokImpulseRequest>() {
+            for (entity, _) in asked {
+                request_q.remove(entity);
+            }
+        }
+    };
+    // Without the rules there is no engine factor to apply: the requests are
+    // dropped, not left to be re-resolved against every rigid body each frame
+    // until the resource appears (#6009).
+    let Some(rules) = world.try_resource::<byroredux_scripting::HavokImpulseRules>().map(|rules| *rules) else {
+        drain_asked(asked);
+        return;
+    };
     // The impulse acts on each body of the reference's collision.
     let mut requests: Vec<(EntityId, byroredux_scripting::HavokImpulseRequest)> = Vec::new();
     for (entity, request) in &asked {
@@ -487,9 +501,6 @@ pub(crate) fn scripted_havok_impulse_system(world: &World, _dt: f32) {
         }
         requests.extend(bodies.into_iter().map(|body| (body, *request)));
     }
-    let Some(rules) = world.try_resource::<byroredux_scripting::HavokImpulseRules>().map(|rules| *rules) else {
-        return;
-    };
     let bodies: Vec<(Option<RapierHandles>, u8)> = {
         let handles_q = world.query::<RapierHandles>();
         let data_q = world.query::<RigidBodyData>();
@@ -517,11 +528,7 @@ pub(crate) fn scripted_havok_impulse_system(world: &World, _dt: f32) {
             physics.apply_impulse(handles.body, impulse);
         }
     }
-    if let Some(mut request_q) = world.query_mut::<byroredux_scripting::HavokImpulseRequest>() {
-        for (entity, _) in asked {
-            request_q.remove(entity);
-        }
-    }
+    drain_asked(asked);
 }
 
 /// Drive a native Skyrim cart tether along the horse reference's authored
@@ -1669,6 +1676,22 @@ mod tests {
         let expected = -15.0 * 150.0 * 0.15 / mass;
         assert!((velocity - expected).abs() < 0.05 * expected.abs(), "vy {velocity} vs {expected}");
         assert!(world.query::<byroredux_scripting::HavokImpulseRequest>().unwrap().get(trap).is_none(), "drained");
+    }
+
+    /// #6009 — a request that finds no `HavokImpulseRules` is drained, not left
+    /// to be re-resolved against every rigid body each frame.
+    #[test]
+    fn havok_impulse_request_is_drained_even_without_rules() {
+        let mut world = World::new();
+        world.register::<RigidBodyData>();
+        byroredux_scripting::register(&mut world);
+        let entity = world.spawn();
+        assert!(byroredux_scripting::request_havok_impulse(&world, entity, 0.0, 0.0, 1.0, 1.0));
+        assert!(world.try_resource::<byroredux_scripting::HavokImpulseRules>().is_none());
+
+        scripted_havok_impulse_system(&world, 0.0);
+
+        assert!(world.query::<byroredux_scripting::HavokImpulseRequest>().unwrap().get(entity).is_none());
     }
 
     #[test]
