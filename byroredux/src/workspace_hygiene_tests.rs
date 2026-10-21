@@ -1164,3 +1164,118 @@ pub(crate) fn crate_visible_ignored() {}
     );
     assert_eq!(flag("crate_visible_ignored"), Some(true));
 }
+
+/// #6321 — the Z-up → Y-up position swap has one home,
+/// `byroredux_core::math::coord::zup_to_yup_pos` (the #1044 consolidation).
+/// Tree-LOD billboards and scripted Havok impulses had re-grown inline
+/// `Vec3::new(x, z, -y)` copies that a future change to the canonical
+/// conversion would miss. Matches the field form (`x, z, -y`, `p.x, p.z,
+/// -p.y`) and the index form (`p[0], p[2], -p[1]`) in production code: files
+/// named `*_tests.rs` / `tests.rs`, `tests/` directories and everything after a
+/// file's first `#[cfg(test)]` are skipped, since fixtures may spell the swap
+/// out on purpose.
+#[test]
+fn no_production_vec3_hand_rolls_the_zup_to_yup_swap() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut roots = vec![manifest.join("src")];
+    for entry in std::fs::read_dir(manifest.join("../crates")).expect("workspace crates/ directory") {
+        let src = entry.expect("unreadable crates/ entry").path().join("src");
+        if src.is_dir() {
+            roots.push(src);
+        }
+    }
+
+    let mut found = Vec::new();
+    for root in &roots {
+        visit_workspace_rs_files(root, &mut |path, contents| {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let in_tests_dir = path.components().any(|c| c.as_os_str() == "tests");
+            if name.ends_with("_tests.rs") || name == "tests.rs" || in_tests_dir {
+                return;
+            }
+            let production = contents.split("#[cfg(test)]").next().unwrap_or("");
+            for (line_no, line) in hand_rolled_zup_swaps(production) {
+                found.push(format!("{}:{line_no}: {}", path.display(), line.trim()));
+            }
+        });
+    }
+    assert!(
+        found.is_empty(),
+        "route these through `byroredux_core::math::coord::zup_to_yup_pos` \
+         (`Vec3::from(zup_to_yup_pos(p))`) instead of swapping inline:\n{}",
+        found.join("\n"),
+    );
+}
+
+/// Every `Vec3::new(a, b, -c)` in `src` whose arguments are one value's
+/// `(x, z, y)` fields or `[0], [2], [1]` indices, as `(line, text)`.
+fn hand_rolled_zup_swaps(src: &str) -> Vec<(usize, &str)> {
+    const SUFFIXES: [[&str; 3]; 2] = [["x", "z", "y"], ["[0]", "[2]", "[1]"]];
+    let mut hits = Vec::new();
+    for (start, _) in src.match_indices("Vec3::new(") {
+        let line_start = src[..start].rfind('\n').map_or(0, |i| i + 1);
+        let line = src[line_start..].lines().next().unwrap_or("");
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let Some(args) = top_level_args(&src[start + "Vec3::new(".len()..]) else {
+            continue;
+        };
+        let [a, b, c] = args.as_slice() else {
+            continue;
+        };
+        let Some(c) = c.strip_prefix('-') else {
+            continue;
+        };
+        let swapped = SUFFIXES.iter().any(|[sx, sz, sy]| {
+            match (a.strip_suffix(sx), b.strip_suffix(sz), c.strip_suffix(sy)) {
+                (Some(pa), Some(pb), Some(pc)) => pa == pb && pb == pc,
+                _ => false,
+            }
+        });
+        if swapped {
+            hits.push((src[..start].matches('\n').count() + 1, line));
+        }
+    }
+    hits
+}
+
+/// The whitespace-stripped top-level arguments of a call whose opening paren
+/// has already been consumed, or `None` if it never closes.
+fn top_level_args(rest: &str) -> Option<Vec<String>> {
+    let (mut depth, mut args, mut current) = (0usize, Vec::new(), String::new());
+    for ch in rest.chars() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' if depth == 0 => {
+                args.push(current);
+                return Some(args);
+            }
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                args.push(std::mem::take(&mut current));
+                continue;
+            }
+            _ => {}
+        }
+        if !ch.is_whitespace() {
+            current.push(ch);
+        }
+    }
+    None
+}
+
+/// #6321 — the scanner above recognises both spellings the tree used and
+/// leaves look-alikes alone.
+#[test]
+fn zup_swap_scanner_recognises_both_spellings() {
+    let src = "let a = Vec3::new(x, z, -y);\n\
+               let b = glam::Vec3::new(p[0], p[2],\n    -p[1]);\n\
+               let c = Vec3::new(v.x, v.z, -v.y) * f;\n\
+               // let d = Vec3::new(x, z, -y);\n\
+               let e = Vec3::new(x, y, -z);\n\
+               let f = Vec3::new(p[0], q[2], -p[1]);\n\
+               let g = Vec3::new(cos, 0.0, -sin);\n";
+    let lines: Vec<usize> = hand_rolled_zup_swaps(src).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(lines, vec![1, 2, 4]);
+}

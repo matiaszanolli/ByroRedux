@@ -65,6 +65,7 @@ use std::collections::HashSet;
 
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, TextureHandle, Transform, World, WorldBound};
+use byroredux_core::math::coord::zup_to_yup_pos;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_renderer::{Vertex, VulkanContext};
 
@@ -260,8 +261,7 @@ pub(crate) fn build_tree_lod_mesh(trees: &[TreeLodInstance], species: &[TreeLodS
             mesh.skipped += 1;
             continue;
         }
-        let [x, y, z] = tree.position;
-        let base = Vec3::new(x, z, -y);
+        let base = Vec3::from(zup_to_yup_pos(tree.position));
         let (sin, cos) = tree.rotation.sin_cos();
         // Z-up plan directions (cos, sin) and (-sin, cos) → Y-up XZ.
         for dir in [Vec3::new(cos, 0.0, -sin), Vec3::new(sin, 0.0, cos)] {

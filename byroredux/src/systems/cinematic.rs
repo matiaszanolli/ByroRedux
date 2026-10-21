@@ -6,6 +6,7 @@ use byroredux_core::animation::{AnimationPlayer, RootMotionDelta};
 use byroredux_core::ecs::components::RigidBodyData;
 use byroredux_core::ecs::Transform;
 use byroredux_core::ecs::{EntityId, World};
+use byroredux_core::math::coord::zup_to_yup_pos;
 use byroredux_core::string::StringPool;
 use byroredux_physics::{PhysicsWorld, RapierHandles};
 use byroredux_scripting::{
@@ -534,9 +535,7 @@ pub(crate) fn scripted_havok_impulse_system(world: &World, _dt: f32) {
                 continue;
             };
             let factor = rules.engine_factor(*layer, SKYRIM_HAVOK_SCALE);
-            let [x, y, z] = request.vector;
-            // Z-up game space to the engine's Y-up: (x, y, z) -> (x, z, -y).
-            let impulse = byroredux_core::math::Vec3::new(x, z, -y) * factor;
+            let impulse = byroredux_core::math::Vec3::from(zup_to_yup_pos(request.vector)) * factor;
             log::debug!("ApplyHavokImpulse on entity {entity}: {impulse:?} (layer {layer})");
             physics.apply_impulse(handles.body, impulse);
         }
