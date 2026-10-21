@@ -2126,7 +2126,10 @@ enum MirrorClass {
     /// A Rust counterpart exists and a named test compares the two.
     Guarded(&'static str),
     /// A Rust counterpart exists, but no field-level comparison yet. Carries
-    /// the specific blocker, not a shrug.
+    /// the specific blocker, not a shrug. Empty since `Reservoir` got its
+    /// guard (#6317); kept as the place the next unguarded mirror goes, so
+    /// classifying one never means inventing the bucket under deadline.
+    #[allow(dead_code)]
     MirroredPendingGuard(&'static str),
     /// No Rust counterpart — a GLSL-local working type. A byte-stride constant
     /// the host sizes a buffer from IS a counterpart, though the
@@ -2224,10 +2227,11 @@ fn every_shader_struct_is_classified() {
             "BenchChunk",
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
-        // Rust holds a byte stride (`RESERVOIR_BYTES`), not a mirrored struct.
+        // Rust holds a byte stride (`RESERVOIR_STRIDE`), not a mirrored
+        // struct; the guard pins both GLSL copies to each other and to it.
         (
             "Reservoir",
-            MirroredPendingGuard("Rust side is a stride constant, not a struct"),
+            Guarded("reservoir_glsl_copies_stay_in_lockstep"),
         ),
         ("GroundCoverFactors", ShaderLocal),
         (
@@ -7683,5 +7687,62 @@ fn shadowable_light_radiance_splits_transmission_lobes_from_traced_visibility() 
         4,
         "all three selection sites (streaming, temporal reuse, spatial \
          reuse) must set the transmission companion register (#5192)"
+    );
+}
+
+/// Every GLSL declaration of `struct Reservoir`. `shadow_filter.comp` keeps
+/// its own copy because it cannot include `bindings.glsl` (that header
+/// declares the main pass's descriptor sets).
+const RESERVOIR_GLSL_MIRRORS: &[(&str, &str)] = &[
+    (
+        "include/bindings.glsl",
+        include_str!("../../../shaders/include/bindings.glsl"),
+    ),
+    (
+        "shadow_filter.comp",
+        include_str!("../../../shaders/shadow_filter.comp"),
+    ),
+];
+
+/// #6317 — `struct Reservoir` has two GLSL copies: the one the main pass
+/// writes (`bindings.glsl`) and the one the shadow filter decodes
+/// (`shadow_filter.comp`). Name-matching classification passed the second
+/// copy, and `reservoir_stride_matches_shader` asserts the Rust stride
+/// against a literal. A field moved in one copy, for example the packed
+/// normal out of `pad0`, would leave the filter reading ratio and guides
+/// from the wrong lanes. The copies must declare identical fields in the
+/// same order, every field a 4-byte scalar (no std430 vector alignment), and
+/// the whole struct must be exactly the host's `RESERVOIR_STRIDE`.
+#[test]
+fn reservoir_glsl_copies_stay_in_lockstep() {
+    assert_mirror_list_is_complete("struct Reservoir", RESERVOIR_GLSL_MIRRORS, "#6317");
+
+    let (ref_name, ref_src) = RESERVOIR_GLSL_MIRRORS[0];
+    let reference = parse_glsl_struct_fields_typed(ref_src, "struct Reservoir");
+    assert!(
+        reference.len() >= 8,
+        "{ref_name}: parsed only {} Reservoir field(s) — parser likely broke",
+        reference.len()
+    );
+    for (name, src) in &RESERVOIR_GLSL_MIRRORS[1..] {
+        assert_eq!(
+            parse_glsl_struct_fields_typed(src, "struct Reservoir"),
+            reference,
+            "Reservoir layout mismatch: `{ref_name}` vs `{name}`. Both GLSL copies must \
+             declare identical fields in the same order (#6317)."
+        );
+    }
+
+    for (ty, field) in &reference {
+        assert!(
+            matches!(ty.as_str(), "uint" | "float" | "int"),
+            "Reservoir.{field} is `{ty}`: the host sizes the buffer as packed 4-byte \
+             scalars, so a vector would change the std430 stride"
+        );
+    }
+    assert_eq!(
+        reference.len() as u64 * 4,
+        crate::vulkan::restir::RESERVOIR_STRIDE,
+        "the GLSL `struct Reservoir` must be exactly RESERVOIR_STRIDE bytes"
     );
 }

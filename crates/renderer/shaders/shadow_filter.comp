@@ -22,8 +22,8 @@
 
 layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y, local_size_z = 1) in;
 
-// std430 mirror of `struct Reservoir` in include/bindings.glsl (32 B). Not
-// yet pinned by a GLSL-copies lockstep test: change both together.
+// std430 mirror of `struct Reservoir` in include/bindings.glsl (32 B).
+// `reservoir_glsl_copies_stay_in_lockstep` pins the two copies (#6317).
 struct Reservoir {
     uint  lightAndSurface;
     float W;
