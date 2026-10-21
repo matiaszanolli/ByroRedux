@@ -1595,26 +1595,25 @@ fn surface_save_load_output(
     }
 }
 
-pub(crate) fn setting_number(world: &World, id: &str, fallback: f32) -> f32 {
+/// The live registry value of `id`, if the registry and the entry exist.
+fn setting_value(world: &World, id: &str) -> Option<SettingValue> {
     world
         .try_resource::<SettingsRegistry>()
         .and_then(|registry| registry.get(id).map(|entry| entry.value.clone()))
-        .and_then(|value| match value {
-            SettingValue::Number(value) => Some(value),
-            _ => None,
-        })
-        .unwrap_or(fallback)
+}
+
+pub(crate) fn setting_number(world: &World, id: &str, fallback: f32) -> f32 {
+    match setting_value(world, id) {
+        Some(SettingValue::Number(value)) => value,
+        _ => fallback,
+    }
 }
 
 fn setting_bool(world: &World, id: &str, fallback: bool) -> bool {
-    world
-        .try_resource::<SettingsRegistry>()
-        .and_then(|registry| registry.get(id).map(|entry| entry.value.clone()))
-        .and_then(|value| match value {
-            SettingValue::Bool(value) => Some(value),
-            _ => None,
-        })
-        .unwrap_or(fallback)
+    match setting_value(world, id) {
+        Some(SettingValue::Bool(value)) => value,
+        _ => fallback,
+    }
 }
 
 /// Apply the [`PanelOutputs`] the overlay produced back to the world. Queued
