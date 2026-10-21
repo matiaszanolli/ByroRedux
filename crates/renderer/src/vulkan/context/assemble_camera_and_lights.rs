@@ -73,23 +73,29 @@ pub(super) struct CameraAssemblyOutput {
     pub(super) fsr_frame: Option<FsrFrameParameters>,
 }
 
-/// Absolute floor of [`view_proj_is_static`]: the old exact-compare
-/// tolerance, kept for entries near zero.
-const VIEW_PROJ_STATIC_ABS_EPS: f32 = 1.0e-6;
-/// Relative tolerance of [`view_proj_is_static`], per matrix entry.
-///
-/// Bound: a relative perturbation `ε` of every entry moves a clip-space
-/// point by at most `ε · Σ|term|` — for the translation column of an
-/// interior camera that is ~`ε · 4536` against `w ≈ 2120` (measured on the
-/// FO4 Institute, #5370), i.e. `2ε` NDC. At `ε = 1e-5` that is `2e-5` NDC,
-/// ≈ 0.013 px on a 1280-wide frame (NDC spans 2 units = 1280 px): well under
-/// the sub-pixel shift the temporal history already absorbs through
-/// reprojection, and ~40× below the ≈ 0.5 px at which a parked pixel
-/// would visibly slide.
-const VIEW_PROJ_STATIC_REL_EPS: f32 = 1.0e-5;
+/// View depths (clip `w`, world units) at which [`view_proj_is_static`]
+/// reprojects its probes: a surface ~46 cm away (the 5-unit near plane
+/// is closer, but a standing player keeps more room than that), room
+/// scale, and far.
+const VIEW_PROJ_STATIC_PROBE_DEPTHS: [f64; 3] = [32.0, 256.0, 2048.0];
+/// NDC positions of the probes: the centre, where a translation reads
+/// cleanest, and the four corners, where a rotation moves pixels furthest.
+const VIEW_PROJ_STATIC_PROBE_NDC: [[f64; 2]; 5] = [
+    [0.0, 0.0],
+    [-1.0, -1.0],
+    [1.0, -1.0],
+    [-1.0, 1.0],
+    [1.0, 1.0],
+];
+/// Largest screen shift, in render-resolution pixels, any probe may make
+/// between frames while the camera still counts as parked: half the
+/// ≈ 0.5 px at which a parked pixel would visibly slide. The standing
+/// capsule wobble (~2.1e-3 units of camera Y, #5370) shifts the nearest
+/// probe ~0.13 px at 2160 lines; a 0.05-unit step shifts it ~1 px at 720.
+const VIEW_PROJ_STATIC_MAX_SHIFT_PX: f64 = 0.25;
 
-/// Is the camera parked? True when every view-projection entry is unchanged
-/// from last frame to within sub-pixel tolerance.
+/// Is the camera parked? True when no probe point moves more than
+/// [`VIEW_PROJ_STATIC_MAX_SHIFT_PX`] render pixels between `prev` and `vp`.
 ///
 /// #5370 — this used to be an ABSOLUTE `1e-6` compare. A matrix entry of
 /// magnitude ≥ 8 cannot even resolve that (f32 ULP at 879 is 6e-5), and a
@@ -97,12 +103,50 @@ const VIEW_PROJ_STATIC_REL_EPS: f32 = 1.0e-5;
 /// (kinematic-controller grounding, period 3 on the Institute), so
 /// `camera_static` was false in every real interior session: the ReSTIR
 /// direct-light EMA stayed on the moving-camera cap (16) and 0.1 floor, the
-/// standing per-pixel speckle over every bright surface. The tolerance is
-/// relative so it scales with the entry, and sub-pixel by construction (see
-/// [`VIEW_PROJ_STATIC_REL_EPS`]).
-pub(super) fn view_proj_is_static(vp: &[f32; 16], prev: &[f32; 16]) -> bool {
-    vp.iter().zip(prev.iter()).all(|(a, b)| {
-        (a - b).abs() <= VIEW_PROJ_STATIC_ABS_EPS + VIEW_PROJ_STATIC_REL_EPS * a.abs().max(b.abs())
+/// standing per-pixel speckle over every bright surface.
+///
+/// #5766 — the per-entry RELATIVE tolerance that followed still depended on
+/// where the camera stood: the matrices are relative to the 4096-snapped
+/// render origin, so the translation entries grow with the camera's offset
+/// from an arbitrary grid plane rather than with pixel motion. A level
+/// camera under 160 units above the plane never read parked; near the
+/// origin's far side a surface 10 units away could creep ~2.9 px a frame
+/// and still read parked. The test is now the reprojection itself:
+/// probe points at fixed view depths along fixed NDC rays are unprojected
+/// through `vp` and reprojected through `prev`, in f64, and the largest
+/// screen shift is compared in pixels — independent of the origin. A
+/// singular `vp` or a probe behind `prev`'s eye (the zeroed first-frame
+/// history) is not parked.
+pub(super) fn view_proj_is_static(vp: &[f32; 16], prev: &[f32; 16], extent: [f32; 2]) -> bool {
+    use byroredux_core::math::{DMat4, DVec2, DVec4};
+    if vp == prev {
+        return true;
+    }
+    let to_f64 = |m: &[f32; 16]| DMat4::from_cols_array(&m.map(f64::from));
+    let (cur, prev) = (to_f64(vp), to_f64(prev));
+    let det = cur.determinant();
+    if det == 0.0 || !det.is_finite() {
+        return false;
+    }
+    let inv = cur.inverse();
+    let w_row = cur.row(3);
+    let half_extent = DVec2::new(f64::from(extent[0]), f64::from(extent[1])) * 0.5;
+    VIEW_PROJ_STATIC_PROBE_NDC.iter().all(|&[x, y]| {
+        let ndc = DVec2::new(x, y);
+        // Two points on this NDC ray (both depth values are finite under
+        // either depth mapping), then the clip `w` each sits at.
+        let unproject = |z: f64| {
+            let h = inv * DVec4::new(x, y, z, 1.0);
+            h.truncate() / h.w
+        };
+        let (a, b) = (unproject(0.25), unproject(0.75));
+        let (wa, wb) = (w_row.dot(a.extend(1.0)), w_row.dot(b.extend(1.0)));
+        VIEW_PROJ_STATIC_PROBE_DEPTHS.iter().all(|&depth| {
+            let point = a + (b - a) * ((depth - wa) / (wb - wa));
+            let clip = prev * point.extend(1.0);
+            let shift_px = ((clip.truncate().truncate() / clip.w - ndc) * half_extent).length();
+            clip.w > 0.0 && shift_px <= VIEW_PROJ_STATIC_MAX_SHIFT_PX
+        })
     })
 }
 
@@ -453,7 +497,14 @@ impl VulkanContext {
         // means a parked camera. Computed BEFORE the camera UBO is built so
         // the flag can ride `dof_params.w` into triangle.frag's GI-seed
         // decorrelation, and BEFORE `prev_view_proj` is overwritten below.
-        let camera_static = view_proj_is_static(vp, &self.history.prev_view_proj);
+        let camera_static = view_proj_is_static(
+            vp,
+            &self.history.prev_view_proj,
+            [
+                self.frame_extents.render.width as f32,
+                self.frame_extents.render.height as f32,
+            ],
+        );
         let camera = scene_buffer::GpuCamera {
             view_proj: [
                 [vp[0], vp[1], vp[2], vp[3]],
@@ -862,6 +913,13 @@ mod restir_history_mode_tests {
 #[cfg(test)]
 mod view_proj_static_tests {
     use super::view_proj_is_static;
+    use crate::vulkan::scene_buffer::snap_render_origin;
+    use byroredux_core::ecs::components::Camera;
+    use byroredux_core::math::camera::rh::view::look_at_mat4;
+    use byroredux_core::math::{Quat, Vec3};
+
+    const HD: [f32; 2] = [1280.0, 720.0];
+    const UHD: [f32; 2] = [3840.0, 2160.0];
 
     /// The Institute's measured matrix (#5370): translation column
     /// `[-4536.442, 879.368, 2114.9124, 2119.8857]`; the standing capsule's
@@ -880,6 +938,17 @@ mod view_proj_static_tests {
         vp
     }
 
+    /// The origin-relative view-projection the app uploads for a camera at
+    /// absolute `eye` with `yaw` / `pitch` (radians), built the way
+    /// `render::camera` builds it: snap the origin, then `proj ·
+    /// look_at(eye − origin, …)` with the engine's 5-unit near plane.
+    fn camera_vp(eye: Vec3, yaw: f32, pitch: f32) -> [f32; 16] {
+        let proj = Camera::new(1.0, 16.0 / 9.0, 5.0, 400_000.0).projection_matrix();
+        let rel = eye - snap_render_origin(eye);
+        let forward = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch) * -Vec3::Z;
+        (proj * look_at_mat4(rel, rel + forward, Vec3::Y)).to_cols_array()
+    }
+
     #[test]
     fn a_capsule_wobble_does_not_defeat_the_parked_camera_flag() {
         for (a, b) in [
@@ -888,11 +957,56 @@ mod view_proj_static_tests {
             (879.36774, 879.368),
         ] {
             assert!(
-                view_proj_is_static(&institute_vp(a), &institute_vp(b)),
+                view_proj_is_static(&institute_vp(a), &institute_vp(b), HD),
                 "{a} -> {b} is a sub-pixel wobble"
             );
         }
-        assert!(view_proj_is_static(&institute_vp(879.368), &institute_vp(879.368)));
+        assert!(view_proj_is_static(
+            &institute_vp(879.368),
+            &institute_vp(879.368),
+            HD
+        ));
+    }
+
+    /// #5766 — the wobble must read parked wherever the camera stands
+    /// relative to the 4096-snapped origin. The old per-entry relative
+    /// tolerance cleared the flag for a level camera under ~160 units above
+    /// the snapped plane, so these heights (60 and 128) failed it.
+    #[test]
+    fn the_wobble_reads_parked_at_any_height_above_the_snapped_origin() {
+        for height in [60.0, 128.0, 364.0, 4000.0] {
+            for pitch in [-0.35, 0.0, 0.35] {
+                for extent in [HD, UHD] {
+                    let eye = Vec3::new(8192.0 + 1500.0, height, -4096.0 + 2000.0);
+                    let wobbled = eye + Vec3::new(0.0, 2.1e-3, 0.0);
+                    assert!(
+                        view_proj_is_static(
+                            &camera_vp(wobbled, 0.7, pitch),
+                            &camera_vp(eye, 0.7, pitch),
+                            extent,
+                        ),
+                        "height {height}, pitch {pitch}, extent {extent:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// #5766 — the converse: 2000 units from the origin the old tolerance
+    /// let a 0.05-unit step (~1 px at the nearest probe) read parked.
+    #[test]
+    fn a_small_step_far_from_the_origin_still_clears_it() {
+        let eye = Vec3::new(2000.0, 128.0, 300.0);
+        for step in [Vec3::X, Vec3::Z, -Vec3::X] {
+            assert!(
+                !view_proj_is_static(
+                    &camera_vp(eye + step * 0.05, 0.0, 0.0),
+                    &camera_vp(eye, 0.0, 0.0),
+                    HD,
+                ),
+                "step {step}"
+            );
+        }
     }
 
     #[test]
@@ -901,15 +1015,30 @@ mod view_proj_static_tests {
         // vp[13]: a thousand times the wobble.
         assert!(!view_proj_is_static(
             &institute_vp(879.368),
-            &institute_vp(879.368 + 3.3)
+            &institute_vp(879.368 + 3.3),
+            HD,
         ));
-        // A rotation-sized change in a unit-magnitude entry.
-        let mut turned = institute_vp(879.368);
-        turned[0] += 1.0e-3;
-        assert!(!view_proj_is_static(&turned, &institute_vp(879.368)));
-        // A sub-pixel shift of a ~1 entry (5e-6 < 1e-5 relative) stays parked.
-        let mut sub = institute_vp(879.368);
-        sub[0] += 5.0e-6;
-        assert!(view_proj_is_static(&sub, &institute_vp(879.368)));
+        // A 1e-3 rad turn moves even the centre probe ~0.66 px at 1280
+        // wide; a 1e-5 rad drift moves it ~0.007 px.
+        let eye = Vec3::new(100.0, 128.0, 100.0);
+        let parked = camera_vp(eye, 0.3, 0.0);
+        assert!(!view_proj_is_static(
+            &camera_vp(eye, 0.3 + 1.0e-3, 0.0),
+            &parked,
+            HD
+        ));
+        assert!(view_proj_is_static(
+            &camera_vp(eye, 0.3 + 1.0e-5, 0.0),
+            &parked,
+            HD
+        ));
+    }
+
+    /// The zeroed first-frame history and a singular matrix are not parked.
+    #[test]
+    fn degenerate_history_is_not_parked() {
+        let vp = camera_vp(Vec3::new(10.0, 128.0, 10.0), 0.0, 0.0);
+        assert!(!view_proj_is_static(&vp, &[0.0; 16], HD));
+        assert!(!view_proj_is_static(&[0.0; 16], &vp, HD));
     }
 }
