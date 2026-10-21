@@ -3065,6 +3065,30 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
         .map(|(production, _)| production)
         .expect("actor_value_derive.rs must still carry a #[cfg(test)] mod tests block");
 
+    // #6113 — a field read straight off the shell (`npc.form_id`,
+    // `npc.face_morphs`) is invisible to the call counts above: the pre-baked
+    // arm took its FaceGen ids and PNAM list from the shell while the terminal
+    // sat resolved in the same function. Those reads belong to `traits`.
+    {
+        let prebaked_code: String = RESUMABLE_PREBAKED_RS
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prepare = prebaked_code
+            .split_once("fn prepare_prebaked_state(")
+            .and_then(|(_, rest)| rest.split_once("\n}\n"))
+            .map(|(body, _)| body)
+            .expect("prepare_prebaked_state must still exist");
+        for forbidden in ["npc.form_id", "npc.face_morphs", "prebaked_head_fallback_paths(npc"] {
+            assert!(
+                !prepare.contains(forbidden),
+                "prepare_prebaked_state reads `{forbidden}` off the shell; the face is a \
+                 Use-Traits field - read it from `traits` (#6113)"
+            );
+        }
+    }
+
     const INVENTORY_RS: &str = include_str!("../inventory.rs");
     let counts = [
         ("npc_spawn.rs", count_calls(NPC_SPAWN_RS, &call_names)),

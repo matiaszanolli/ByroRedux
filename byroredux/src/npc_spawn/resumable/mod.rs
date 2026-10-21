@@ -146,6 +146,11 @@ impl NpcSpawnJob {
     /// Skyrim+ vanilla ships zero `.kf` files. Pre-baked-track NPCs expose
     /// their skeleton root as a Havok animation target; supported IDLE
     /// events are resolved from `.hkx` by the archive-backed runtime.
+    ///
+    /// `plugin_name` is the plugin that owns the **face**: the `<plugin>`
+    /// segment above belongs to the "Use Traits" terminal `npc` inherits its
+    /// race, gender and face from (the shell itself when it inherits none),
+    /// and the `<formid>` is that terminal's (#6113).
     pub(crate) fn prebaked(
         npc: &NpcRecord,
         game: GameKind,
@@ -1099,6 +1104,62 @@ mod tests {
             false,
         );
         assert_eq!(state.skeleton_path.as_deref(), Some(r"meshes\female.nif"));
+    }
+
+    /// #6113 - the facegeom / facetint ids and the PNAM head-part list belong to
+    /// the "Use Traits" terminal, not the placed shell: the CK bakes facegeom for
+    /// the record that owns the face, and the shell's own PNAM list is ignored by
+    /// the game for an actor that uses its template's traits.
+    #[test]
+    fn prebaked_face_inputs_come_from_the_use_traits_terminal() {
+        use byroredux_plugin::esm::records::{HdptRecord, NpcFaceMorphs, RaceRecord as Race};
+        let mut index = EsmIndex { game: GameKind::Skyrim, ..Default::default() };
+        index.races.insert(2, Race::default());
+        let head = |form_id: u32, path: &str| HdptRecord {
+            form_id,
+            model_path: path.into(),
+            part_type: Some(1),
+            ..Default::default()
+        };
+        index.head_parts.insert(0xA1, head(0xA1, r"meshes\terminal_face.nif"));
+        index.head_parts.insert(0xB1, head(0xB1, r"meshes\shell_face.nif"));
+        let face = |part: u32| NpcFaceMorphs { head_parts: vec![part], ..Default::default() };
+        // The terminal authors the face (and would ship facegeom 0x3); the shell
+        // is a bandit-style record that uses its traits and lists its own PNAM.
+        index.npcs.insert(
+            3,
+            NpcRecord { form_id: 3, race_form_id: 2, face_morphs: Some(face(0xA1)), ..Default::default() },
+        );
+        let shell = NpcRecord {
+            form_id: 4,
+            race_form_id: 2,
+            template_form_id: 3,
+            template_flags: byroredux_plugin::equip::TEMPLATE_FLAG_USE_TRAITS,
+            face_morphs: Some(face(0xB1)),
+            ..Default::default()
+        };
+        let mut world = World::new();
+        let state = prepare_prebaked_state(
+            &mut world, &shell, GameKind::Skyrim, "Skyrim.esm", Vec3::ZERO, Quat::IDENTITY, 1.0, &index, false,
+        );
+        assert_eq!(
+            state.facegen_path.as_deref(),
+            Some(r"meshes\actors\character\facegendata\facegeom\skyrim.esm\00000003.nif"),
+            "the terminal's facegeom, not the shell's 00000004"
+        );
+        assert_eq!(
+            state.tint_path.as_deref(),
+            Some(r"textures\actors\character\facegendata\facetint\skyrim.esm\00000003.dds")
+        );
+        let paths: Vec<&str> = state.head_fallback.iter().map(|part| part.path.as_str()).collect();
+        assert_eq!(paths, [r"meshes\terminal_face.nif"], "the terminal's PNAM list only");
+
+        // A shell that uses no template is its own terminal.
+        let own = NpcRecord { template_flags: 0, ..shell.clone() };
+        let state = prepare_prebaked_state(
+            &mut world, &own, GameKind::Skyrim, "Skyrim.esm", Vec3::ZERO, Quat::IDENTITY, 1.0, &index, false,
+        );
+        assert!(state.facegen_path.as_deref().is_some_and(|path| path.ends_with("00000004.nif")));
     }
 
     /// #6070 — the one-body corpse stand-in must not overwrite a template the

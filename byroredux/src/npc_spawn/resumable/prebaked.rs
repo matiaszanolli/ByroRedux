@@ -144,14 +144,21 @@ pub(super) fn prepare_prebaked_state(
         placement_root,
         skel_root: None,
         skel_map: HashMap::new(),
-        facegen_path: prebaked_facegen_nif_path(plugin_name, npc.form_id),
-        tint_path: prebaked_facegen_tint_path(plugin_name, npc.form_id),
+        // #6113 — the face is a Use-Traits field (the CK bakes facegeom for the
+        // record that owns the face, not for an inheriting shell: 2,051 of
+        // Skyrim.esm's 2,053 Use-Traits records ship none), so the facegeom /
+        // facetint ids come from the terminal, and `plugin_name` is the
+        // terminal's owner - the caller resolves it from the same chain.
+        facegen_path: prebaked_facegen_nif_path(plugin_name, traits.form_id),
+        tint_path: prebaked_facegen_tint_path(plugin_name, traits.form_id),
         armor,
         facegen_hidden_mask,
         equipped_armor_count: 0,
         combat_anim_draugr: is_draugr_race(index.races.get(&traits.race_form_id)),
         player_body,
-        head_fallback: prebaked_head_fallback_paths(npc, traits.race_form_id, gender, index),
+        // The PNAM head-part list is the terminal's too: the shell's own is
+        // ignored by the game for an actor that uses its template's traits.
+        head_fallback: prebaked_head_fallback_paths(traits, traits.race_form_id, gender, index),
         phase: PrebakedPhase::Skeleton,
     }
 }

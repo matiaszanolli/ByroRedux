@@ -698,12 +698,12 @@ pub(super) fn load_references_budgeted(
                     // `resolve_armor_meshes` — the same "invisible or
                     // wrong-race body" failure #1ee804c2/#3714 fixed for
                     // FormID remapping.
-                    let resolved_race_form_id = byroredux_plugin::equip::resolve_inherited_traits(
+                    let traits_terminal = byroredux_plugin::equip::resolve_inherited_traits(
                         npc,
                         byroredux_plugin::esm::records::effective_actor_level(npc),
                         record_index,
-                    )
-                    .race_form_id;
+                    );
+                    let resolved_race_form_id = traits_terminal.race_form_id;
                     job.active_npc = if game.has_runtime_facegen_recipe() {
                         Some(NpcSpawnJob::runtime(
                             npc,
@@ -714,8 +714,12 @@ pub(super) fn load_references_budgeted(
                             ref_scale,
                         ))
                     } else if game.uses_prebaked_facegen() {
+                        // #6113 — the FaceGen files belong to the Use-Traits
+                        // terminal, so the plugin segment of their path is its
+                        // owner's, not the placed shell's.
                         let plugin =
-                            load_order::plugin_for_form_id(child_form_id, load_order).unwrap_or("");
+                            load_order::plugin_for_form_id(traits_terminal.form_id, load_order)
+                                .unwrap_or("");
                         Some(NpcSpawnJob::prebaked(
                             npc, game, plugin, ref_pos, ref_rot, ref_scale,
                         ))
