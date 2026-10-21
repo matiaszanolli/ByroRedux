@@ -128,7 +128,10 @@ fn nif_pose(nodes: &[GraphNode], index: usize) -> (Vec3, Quat, f32) {
     }
 }
 
-/// For each flat collision, the node that carries a body and stands at its pose.
+/// For each flat collision, the node below the root that carries a body and stands
+/// at its pose. The root is the placement root itself and never gets a node
+/// entity, so a body on it stays on the flat detached spawn, like a mesh straight
+/// under the root (#5932).
 fn pair_collisions(
     nodes: &[GraphNode],
     imported: &[byroredux_nif::import::ImportedNode],
@@ -144,7 +147,7 @@ fn pair_collisions(
                 collision.rotation[2],
                 collision.rotation[3],
             );
-            (0..nodes.len()).filter(|&index| imported[index].collision.is_some()).find(|&index| {
+            (0..nodes.len()).filter(|&index| nodes[index].parent.is_some() && imported[index].collision.is_some()).find(|&index| {
                 let (pos, rot, scale) = nif_pose(nodes, index);
                 pos.distance(position) < 1.0e-2 && rot.dot(rotation).abs() > 0.9999 && (scale - collision.scale).abs() < 1.0e-3
             })
@@ -338,6 +341,43 @@ mod tests {
         // The animation finds the bone by its NIF name.
         let name = world.get::<Name>(lever).unwrap().0;
         assert_eq!(name, world.resource_mut::<StringPool>().intern("Lever01"));
+    }
+
+    /// #5932 — a body on the root node pairs with no node, so the flat spawn keeps
+    /// it (the root is never spawned as a node entity); a child body at the root's
+    /// identity pose pairs with the child, not the root.
+    #[test]
+    fn a_root_hosted_body_stays_on_the_flat_spawn() {
+        use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
+        use byroredux_nif::import::{ImportedCollision, ImportedNode};
+        let imported_node = |parent: Option<usize>, body: bool| ImportedNode {
+            name: None,
+            translation: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+            parent_node: parent,
+            collision: body.then(|| (CollisionShape::Ball { radius: 1.0 }, RigidBodyData::static_body())),
+            billboard_mode: None,
+            tree_bones: None,
+            range_kind: None,
+            flags: 0,
+            bs_value_node: None,
+            bs_ordered_node: None,
+            lod_group: None,
+        };
+        let nodes = vec![node("BearTrap01", None, Vec3::ZERO), node("Jaws", Some(0), Vec3::ZERO)];
+        let collision = ImportedCollision {
+            translation: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+            shape: CollisionShape::Ball { radius: 1.0 },
+            body: RigidBodyData::static_body(),
+        };
+        let collisions = std::slice::from_ref(&collision);
+        let on_root = [imported_node(None, true), imported_node(Some(0), false)];
+        assert_eq!(pair_collisions(&nodes, &on_root, collisions), vec![None], "the root body stays detached");
+        let on_child = [imported_node(None, true), imported_node(Some(0), true)];
+        assert_eq!(pair_collisions(&nodes, &on_child, collisions), vec![Some(1)], "the child body rides its own node");
     }
 
     #[test]
