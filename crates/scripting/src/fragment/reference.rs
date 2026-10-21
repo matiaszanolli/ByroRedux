@@ -630,6 +630,13 @@ fn alias_script_targets(world: &World) -> HashMap<EntityId, Vec<(u32, AliasScrip
 /// a run takes the quest guards and may write the marker storages. A marker
 /// on a reference reaches the scripts attached to it and the alias scripts of
 /// the aliases it fills.
+/// Whether this frame raised any `T` marker.
+fn raised<T: byroredux_core::ecs::Component>(
+    marker: &Option<byroredux_core::ecs::QueryRead<'_, T>>,
+) -> bool {
+    marker.as_ref().is_some_and(|q| !q.is_empty())
+}
+
 fn collect_deliveries(world: &World, markers: Markers) -> Vec<Delivery> {
     let frame = markers == Markers::Frame;
     // Pattern B: the frame pass owns `OnDeathEvent`; drain it first, whatever
@@ -658,6 +665,22 @@ fn collect_deliveries(world: &World, markers: Markers) -> Vec<Delivery> {
     let triggers = frame.then(|| world.query::<crate::OnTriggerEnterEvent>()).flatten();
     let hits = (!frame).then(|| world.query::<crate::HitEvent>()).flatten();
     let weapons = world.query::<byroredux_core::ecs::components::EquippedWeapon>();
+    // #5764 — every event below comes from one of these markers or watched
+    // changes. A frame that raised none (nearly every frame) delivers
+    // nothing, so it returns before the walk over every attached script —
+    // that walk was the whole idle cost, linear in attached references.
+    if deaths.is_empty()
+        && changes.bleedout.is_empty()
+        && changes.combat.is_empty()
+        && changes.player_location.is_none()
+        && !raised(&cell_loads)
+        && !raised(&inits)
+        && !raised(&activations)
+        && !raised(&triggers)
+        && !raised(&hits)
+    {
+        return Vec::new();
+    }
     // Every entity a script is attached to or an alias script follows.
     let mut entities: Vec<EntityId> = attached
         .as_ref()
