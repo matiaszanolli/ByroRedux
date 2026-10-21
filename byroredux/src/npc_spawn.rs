@@ -1083,14 +1083,17 @@ use crate::asset_provider::normalize_mesh_path;
 /// drives a different clip). Verified via vanilla BSA scan
 /// 2026-04-29; the more obvious `_male\idle.kf` does NOT exist in
 /// vanilla (`idleanims/` carries 962 specific clips like `talk_*`,
-/// `chair_*`, `dlcanch*`, but no plain `idle.kf` base). Per-NPC
+/// `chair_*`, `dlcanch*`, but no plain `idle.kf` base). Oblivion is the
+/// opposite: no `locomotion\`, and a plain `_male\idle.kf` (#6100). Per-NPC
 /// overrides from IDLE form records and AI packages slot in on top
 /// once M42 / M47 land.
 pub fn humanoid_default_idle_kf_path(game: GameKind) -> Option<&'static str> {
     match game {
-        GameKind::Oblivion | GameKind::Fallout3NV => {
-            Some(r"meshes\characters\_male\locomotion\mtidle.kf")
-        }
+        // Oblivion ships no `locomotion\` directory at all (BSA scan, zero hits
+        // across the base archive and all 17 DLC / Knights archives, 2026-10-19);
+        // its standing idle is `characters\_male\idle.kf` (#6100).
+        GameKind::Oblivion => Some(r"meshes\characters\_male\idle.kf"),
+        GameKind::Fallout3NV => Some(r"meshes\characters\_male\locomotion\mtidle.kf"),
         GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => None,
     }
 }

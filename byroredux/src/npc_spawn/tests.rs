@@ -882,6 +882,55 @@ fn installed_oblivion_body_paths_exist_in_the_meshes_archive() {
     }
 }
 
+/// #6100 - the default idle clip of each kf-era game must exist in its meshes
+/// archive. The Oblivion arm shared FNV's `locomotion\mtidle.kf`, a file
+/// Oblivion does not ship, so every standing Oblivion humanoid had an empty
+/// idle pool; `is_some()` passed for a path nothing checked against the
+/// archive.
+#[test]
+#[ignore = "needs Oblivion / FNV game data on disk"]
+fn installed_default_idle_clips_exist_in_the_meshes_archive() {
+    for (game, env, default_dir, archive) in [
+        (
+            GameKind::Oblivion,
+            "BYROREDUX_OBLIVION_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+            "Oblivion - Meshes.bsa",
+        ),
+        (
+            GameKind::Fallout3NV,
+            "BYROREDUX_FNV_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            "Fallout - Meshes.bsa",
+        ),
+    ] {
+        let data = std::env::var(env).unwrap_or_else(|_| default_dir.to_string());
+        let bsa_path = std::path::Path::new(&data).join(archive);
+        let Ok(bsa) = byroredux_bsa::BsaArchive::open(&bsa_path) else {
+            require_game_data(env, &bsa_path);
+            eprintln!("skipping {game:?}: {bsa_path:?} not available");
+            continue;
+        };
+        let names: std::collections::HashSet<String> =
+            bsa.list_files().into_iter().map(|name| name.to_ascii_lowercase()).collect();
+        let idle = humanoid_default_idle_kf_path(game).expect("a kf-era game has a default idle");
+        assert!(names.contains(&idle.to_ascii_lowercase()), "{game:?} default idle {idle} is not in {archive}");
+    }
+}
+
+#[test]
+fn oblivion_and_fallout_idle_paths_are_not_shared() {
+    // Oblivion has no `locomotion\` directory; sharing FNV's path left its idle
+    // pool empty (#6100).
+    let oblivion = humanoid_default_idle_kf_path(GameKind::Oblivion).unwrap();
+    assert_eq!(oblivion, r"meshes\characters\_male\idle.kf");
+    assert!(!oblivion.contains("locomotion"));
+    assert_eq!(
+        humanoid_default_idle_kf_path(GameKind::Fallout3NV),
+        Some(r"meshes\characters\_male\locomotion\mtidle.kf")
+    );
+}
+
 #[test]
 #[ignore = "needs FNV game data on disk; parses the whole master (~850 MB resident)"]
 fn installed_fnv_sunny_smiles_selects_the_female_body() {
