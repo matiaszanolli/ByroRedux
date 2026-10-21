@@ -1018,6 +1018,35 @@ pub(crate) fn resolve_flip_texture_for_role(
 
 #[cfg(test)]
 mod tests {
+    /// #6110 - the displaced original goes back unless it is a handle unload
+    /// never releases (none, `0`, the fallback checkerboard).
+    #[test]
+    fn a_swap_releases_only_a_real_displaced_texture() {
+        use super::displaced_texture;
+        assert_eq!(displaced_texture(Some(7), 3), Some(7));
+        assert_eq!(displaced_texture(None, 3), None);
+        assert_eq!(displaced_texture(Some(0), 3), None);
+        assert_eq!(displaced_texture(Some(3), 3), None);
+    }
+
+    /// #6110 - the swap acquires one ref per matched mesh (inside the loop), not
+    /// one shared across them: unload releases one per holder. `apply_texture_swap`
+    /// needs a Vulkan device, so the placement is pinned on the source.
+    #[test]
+    fn a_swap_resolves_its_texture_once_per_matched_mesh() {
+        let source = byroredux_core::source_scan::strip_test_modules(include_str!("texture.rs"));
+        let body = source
+            .split_once("pub(crate) fn apply_texture_swap(")
+            .map(|(_, rest)| rest)
+            .expect("apply_texture_swap must exist");
+        let body = body.split_once("\n}\n").map(|(body, _)| body).unwrap_or(body);
+        let loop_start = body.find("for &mesh in &meshes").expect("the per-mesh loop");
+        let resolve = body.find("resolve_texture(").expect("the resolve call");
+        assert_eq!(body.matches("resolve_texture(").count(), 1);
+        assert!(resolve > loop_start, "resolve_texture must be inside the per-mesh loop (#6110)");
+        assert!(body.contains("drop_texture(&ctx.device, displaced)"), "the displaced original is released");
+    }
+
     use super::{
         flip_role_texture_profile, map_secondary_texture_handles, missing_archive_errors,
         FOOTSTEP_CANDIDATES, WATER_SPLASH_CANDIDATES,
@@ -1336,6 +1365,13 @@ pub(crate) fn script_texture_path(name: &str) -> String {
     path
 }
 
+/// The texture ref a mesh gives up when its `TextureHandle` is overwritten: the
+/// previous handle, unless it was none, the null handle `0` or the fallback
+/// checkerboard - the ones unload never releases either (#6110).
+fn displaced_texture(previous: Option<u32>, fallback: u32) -> Option<u32> {
+    previous.filter(|&handle| handle != 0 && handle != fallback)
+}
+
 /// Give every mesh under `swap.target` whose material texture is named `swap.slot` the texture
 /// `swap.texture`. Returns how many meshes changed.
 pub(crate) fn apply_texture_swap(
@@ -1359,10 +1395,21 @@ pub(crate) fn apply_texture_swap(
         return 0;
     }
     let path = script_texture_path(&swap.texture);
-    let handle = resolve_texture(ctx, tex_provider, Some(&path));
+    let fallback = ctx.texture_registry.fallback();
     for &mesh in &meshes {
+        // #6110 — one `resolve_texture` takes one ref and unload releases one
+        // per `TextureHandle` holder, so each matched mesh acquires its own;
+        // sharing one ref across M meshes released M-1 refs it never took
+        // (freeing a texture other meshes still bind, or underflowing).
+        let handle = resolve_texture(ctx, tex_provider, Some(&path));
+        let previous = world.get::<TextureHandle>(mesh).map(|held| held.0);
         if let Some(mut handles) = world.query_mut::<TextureHandle>() {
             handles.insert(mesh, TextureHandle(handle));
+        }
+        // ... and the displaced original's ref (taken at spawn) goes back, or
+        // each swap leaked it.
+        if let Some(displaced) = displaced_texture(previous, fallback) {
+            ctx.texture_registry.drop_texture(&ctx.device, displaced);
         }
         if let Some(mut materials) = world.query_mut::<Material>() {
             if let Some(material) = materials.get_mut(mesh) {
