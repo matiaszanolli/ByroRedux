@@ -1143,17 +1143,10 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
             // the dynamic side alone — resting statics stay
             // unsubscribed). The threshold stays rapier's 0.0 default;
             // the consumer gates on force magnitude.
-            let active_events =
-                if contact_force_events_enabled
-                    && matches!(
-                        n.body_data.motion_type,
-                        byroredux_core::ecs::components::MotionType::Dynamic
-                    )
-                {
-                    rapier3d::prelude::ActiveEvents::CONTACT_FORCE_EVENTS
-                } else {
-                    rapier3d::prelude::ActiveEvents::empty()
-                };
+            let active_events = crate::world::contact_force_active_events(
+                contact_force_events_enabled,
+                matches!(body_type, RigidBodyType::Dynamic),
+            );
             let collider = ColliderBuilder::new(shape)
                 .position(iso)
                 .friction(n.body_data.friction)

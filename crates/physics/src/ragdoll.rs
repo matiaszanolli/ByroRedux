@@ -438,6 +438,10 @@ pub fn build_ragdoll(
         // to eliminate. `config.rs`'s module doc enumerates the unification
         // sites and simply never listed this one.
         let contact_skin = cfg.default_contact_skin_bu.max(0.0);
+        // #6325 — ragdoll links are dynamic, so they report impacts on the
+        // same terms as every other dynamic collider.
+        let active_events =
+            crate::world::contact_force_active_events(pw.contact_force_events_enabled(), true);
         let PhysicsWorld {
             ref mut bodies,
             ref mut colliders,
@@ -455,6 +459,7 @@ pub fn build_ragdoll(
                 .restitution_combine_rule(crate::config::CONTACT_COEFFICIENT_COMBINE_RULE)
                 .mass(part_mass)
                 .contact_skin(contact_skin)
+                .active_events(active_events)
                 .build();
             let ch = colliders.insert_with_parent(col, h, bodies);
             first_collider.get_or_insert(ch);
@@ -1184,6 +1189,33 @@ mod tests {
                     cfg.default_contact_skin_bu,
                     "ragdoll limb must carry the same skin register_newcomers applies"
                 );
+            }
+        }
+    }
+
+    /// #6325 — a ragdoll built while impact events are enabled subscribes
+    /// its links like any other dynamic collider, and one built while they
+    /// are disabled does not.
+    #[test]
+    fn ragdoll_links_follow_the_contact_force_subscription() {
+        for enabled in [true, false] {
+            let mut pw = PhysicsWorld::new();
+            pw.set_contact_force_events_enabled(enabled);
+            let spec = RagdollSpec {
+                bodies: vec![ball_body(1, 0.0, 100.0), ball_body(2, 50.0, 100.0)],
+                constraints: vec![loose_ragdoll(0, 1)],
+            };
+            let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
+            for (_, handle, _) in &rag.bodies {
+                for collider in pw.bodies[*handle].colliders() {
+                    assert_eq!(
+                        pw.colliders[*collider]
+                            .active_events()
+                            .contains(rapier3d::prelude::ActiveEvents::CONTACT_FORCE_EVENTS),
+                        enabled,
+                        "ragdoll link subscription must track the toggle (enabled = {enabled})"
+                    );
+                }
             }
         }
     }

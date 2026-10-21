@@ -185,6 +185,28 @@ pub fn actor_move_interaction_groups() -> rapier3d::prelude::InteractionGroups {
     ground_probe_groups()
 }
 
+/// #6325 — the one contact-force subscription rule: a collider reports
+/// impacts while the subscription is enabled and its parent body is dynamic
+/// *now*. The dynamic side alone is enough, since Rapier's pair flag is a
+/// union, so resting statics and keyframed actor bones stay unsubscribed.
+///
+/// Every producer and retagger goes through it: `register_newcomers`,
+/// `build_ragdoll`, [`PhysicsWorld::set_contact_force_events_enabled`] and
+/// [`PhysicsWorld::set_motion_type`]. Before it, the toggle retagged by the
+/// `dynamic_bodies` index while ragdolls and script-flipped bodies set
+/// nothing, so which bodies emitted impacts depended on whether they existed
+/// when the toggle last flipped.
+pub(crate) fn contact_force_active_events(
+    enabled: bool,
+    body_is_dynamic: bool,
+) -> rapier3d::prelude::ActiveEvents {
+    if enabled && body_is_dynamic {
+        rapier3d::prelude::ActiveEvents::CONTACT_FORCE_EVENTS
+    } else {
+        rapier3d::prelude::ActiveEvents::empty()
+    }
+}
+
 /// The filter every *solid-world* probe must use: fixed geometry only, actor
 /// bones masked out, and **sensors excluded**.
 ///
@@ -729,30 +751,26 @@ impl PhysicsWorld {
     }
 
     /// Enable force-event subscriptions only while an impact sound consumer
-    /// has content. Existing dynamic colliders are updated on a state change;
-    /// newcomer registration reads the stored flag for future colliders.
+    /// has content. Existing colliders are retagged on a state change;
+    /// newcomer registration, `build_ragdoll` and `set_motion_type` read the
+    /// stored flag, all through [`contact_force_active_events`].
     pub fn set_contact_force_events_enabled(&mut self, enabled: bool) {
         if self.contact_force_events_enabled == enabled {
             return;
         }
         self.contact_force_events_enabled = enabled;
 
-        let dynamic_bodies: std::collections::HashSet<_> = self
-            .dynamic_bodies
-            .iter()
-            .filter(|handle| self.bodies.get(**handle).is_some_and(|body| body.is_dynamic()))
-            .copied()
-            .collect();
-        for (_, collider) in self.colliders.iter_mut() {
+        let PhysicsWorld {
+            ref bodies,
+            ref mut colliders,
+            ..
+        } = *self;
+        for (_, collider) in colliders.iter_mut() {
             let dynamic_parent = collider
                 .parent()
-                .is_some_and(|parent| dynamic_bodies.contains(&parent));
-            let active_events = if enabled && dynamic_parent {
-                rapier3d::prelude::ActiveEvents::CONTACT_FORCE_EVENTS
-            } else {
-                rapier3d::prelude::ActiveEvents::empty()
-            };
-            collider.set_active_events(active_events);
+                .and_then(|parent| bodies.get(parent))
+                .is_some_and(|body| body.is_dynamic());
+            collider.set_active_events(contact_force_active_events(enabled, dynamic_parent));
         }
 
         if !enabled {
@@ -1255,6 +1273,17 @@ impl PhysicsWorld {
         // colliders into the BVH as new leaves, which re-reports every pair
         // the `ActiveCollisionTypes` filter withheld.
         body.set_body_type(body_type, wake_up);
+        // #6325 — a flip to or from dynamic changes the body's contact-force
+        // subscription, the same rule registration and the toggle apply.
+        let active_events = contact_force_active_events(
+            self.contact_force_events_enabled,
+            body_type == RigidBodyType::Dynamic,
+        );
+        for collider in body.colliders() {
+            if let Some(collider) = self.colliders.get_mut(*collider) {
+                collider.set_active_events(active_events);
+            }
+        }
         if wake_up {
             self.forget_spawn_sleep(handle);
             self.wake();
@@ -4589,6 +4618,40 @@ mod tests {
             saw_started,
             "dropping a ball onto a floor must produce a started force crossing"
         );
+    }
+
+    /// #6325 — a body flipped to dynamic after the toggle subscribes, a
+    /// body flipped away unsubscribes, and the toggle covers a dynamic body
+    /// whatever index it is in. One rule, independent of history.
+    #[test]
+    fn contact_force_subscription_follows_the_body_type_not_history() {
+        let subscribed = |w: &PhysicsWorld, body: RigidBodyHandle| {
+            w.bodies[body].colliders().iter().all(|c| {
+                w.colliders[*c]
+                    .active_events()
+                    .contains(ActiveEvents::CONTACT_FORCE_EVENTS)
+            })
+        };
+        let mut w = PhysicsWorld::new();
+        let body = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders.insert_with_parent(ColliderBuilder::ball(0.5).build(), body, &mut w.bodies);
+        // Not in `dynamic_bodies`: the toggle must still read the live type.
+        let unindexed = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        w.colliders.insert_with_parent(ColliderBuilder::ball(0.5).build(), unindexed, &mut w.bodies);
+
+        w.set_contact_force_events_enabled(true);
+        assert!(!subscribed(&w, body), "a fixed body stays unsubscribed");
+        assert!(subscribed(&w, unindexed), "a dynamic body subscribes on the toggle");
+
+        assert!(w.set_motion_type(body, MotionType::Dynamic, false));
+        assert!(subscribed(&w, body), "flipped to dynamic after the toggle");
+        assert!(w.set_motion_type(body, MotionType::Keyframed, false));
+        assert!(!subscribed(&w, body), "flipped away from dynamic");
+
+        w.set_contact_force_events_enabled(false);
+        assert!(w.set_motion_type(body, MotionType::Dynamic, false));
+        assert!(!subscribed(&w, body), "disabled subscriptions stay off on a flip");
+        assert!(!subscribed(&w, unindexed));
     }
 
     #[test]
