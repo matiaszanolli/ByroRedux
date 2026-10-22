@@ -17,7 +17,7 @@
 //! `GetChallengeCompleted` is "completed at least once": a recurring challenge restarts on completion,
 //! but the tier chains (`GetChallengeCompleted NVChallengeShootEmUp`) ask whether it was ever done.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use byroredux_core::ecs::{Resource, World};
@@ -79,15 +79,17 @@ pub fn misc_stat_name(index: u16) -> Option<&'static str> {
 }
 
 /// The load order's challenges by form id. `NOT_SAVED_BY_DESIGN`: rebuilt from the records at every
-/// content load.
+/// content load. Ordered (#6265): when one event or stat rise finishes several challenges they
+/// complete, bump `Challenges Completed` and start their reward scripts in form-id order, not in
+/// per-process hash order.
 #[derive(Debug, Default, Clone)]
-pub struct ChallengeDefs(Arc<HashMap<u32, ChalRecord>>);
+pub struct ChallengeDefs(Arc<BTreeMap<u32, ChalRecord>>);
 
 impl Resource for ChallengeDefs {}
 
 impl ChallengeDefs {
     pub fn from_index(index: &EsmIndex) -> Self {
-        Self(Arc::new(index.challenges.clone()))
+        Self(Arc::new(index.challenges.iter().map(|(&form, def)| (form, def.clone())).collect()))
     }
 
     pub fn get(&self, challenge: u32) -> Option<&ChalRecord> {
@@ -450,5 +452,26 @@ mod tests {
         assert_eq!((progress(&world, 0x20), completed(&world, 0x20)), (Some(1), Some(false)));
         note(&world, ChallengeEvent::ItemUsed { item: TURBO });
         assert_eq!(completed(&world, 0x20), Some(true));
+    }
+
+    /// #6265 — challenges finished by the same event complete, and start their reward scripts, in
+    /// form-id order. Under the old `HashMap` the 32 rewards landed in per-process hash order.
+    #[test]
+    fn challenges_finished_together_complete_in_form_id_order() {
+        const TURBO: u32 = 0x0012_0d81;
+        let mut defs: Vec<ChalRecord> = (0..32u32)
+            .map(|i| ChalRecord { script_form_id: 0x0050_0000 + i, ..chal(0x0040_0000 + i * 0x101, kind::USE_ITEM, 1, 0, 0, TURBO) })
+            .collect();
+        defs.reverse();
+        let mut world = world(defs);
+        world.register::<crate::magic_effects::ActiveMagicEffects>();
+        let player = world.spawn();
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        note(&world, ChallengeEvent::ItemUsed { item: TURBO });
+        let sources: Vec<u32> = world.get::<crate::magic_effects::ActiveMagicEffects>(player).unwrap().0.iter().map(|effect| effect.source).collect();
+        let mut sorted = sources.clone();
+        sorted.sort_unstable();
+        assert_eq!(sources.len(), 32);
+        assert_eq!(sources, sorted);
     }
 }
