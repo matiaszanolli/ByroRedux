@@ -36,7 +36,7 @@ pub(crate) struct ArchetypeIdleSeen {
     overrides: AnimArchetypeOverrides,
     /// Actors with no entry (or no clip for it) at the last selection: not asked
     /// again until the overrides change.
-    unmatched: std::collections::HashSet<EntityId>,
+    unmatched: rustc_hash::FxHashSet<EntityId>,
 }
 
 impl Resource for ArchetypeIdleSeen {}
@@ -66,7 +66,14 @@ pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
         log::debug!("archetype idle: the archetype overrides changed");
     }
     let actors: Vec<(EntityId, EntityId)> = match world.query::<AnimationTarget>() {
-        Some(targets) => targets.iter().map(|(entity, target)| (entity, target.skeleton_root)).collect(),
+        Some(targets) => {
+            // #6292 — entity ids are never recycled, so an actor that streamed out
+            // would stay in `unmatched` for the session; forget the ones that are gone.
+            if let Some(mut seen) = world.try_resource_mut::<ArchetypeIdleSeen>() {
+                seen.unmatched.retain(|actor| targets.contains(*actor));
+            }
+            targets.iter().map(|(entity, target)| (entity, target.skeleton_root)).collect()
+        }
         None => return,
     };
     let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
@@ -216,6 +223,26 @@ mod tests {
         world.resource_mut::<AnimArchetypeOverrides>().set(key, 0);
         archetype_idle_system(&world, 0.0);
         assert_eq!(clip_of(&world, actor), Some(10), "no archetype: Neutral");
+    }
+
+    /// #6292 — an actor with no matching entry is remembered so it is not re-asked each
+    /// frame, but not once it is gone: the set only holds actors that still exist.
+    #[test]
+    fn the_unmatched_set_forgets_actors_that_are_gone() {
+        let (mut world, actor, _) = world_with_settler();
+        let skeleton = world.get::<AnimationTarget>(actor).unwrap().skeleton_root;
+        let gone = world.spawn();
+        world.insert(gone, AnimationTarget { skeleton_root: skeleton, consumed_idle_serial: 0 });
+        {
+            let mut seen = world.resource_mut::<ArchetypeIdleSeen>();
+            seen.unmatched.insert(actor);
+            seen.unmatched.insert(gone);
+        }
+        world.query_mut::<AnimationTarget>().unwrap().remove(gone);
+        archetype_idle_system(&world, 0.0);
+        let seen = world.resource::<ArchetypeIdleSeen>();
+        assert!(seen.unmatched.contains(&actor), "a live unmatched actor stays remembered");
+        assert!(!seen.unmatched.contains(&gone), "a gone actor is forgotten");
     }
 
     /// An actor something else animates keeps that, and the dead are left alone.
