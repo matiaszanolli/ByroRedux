@@ -149,7 +149,7 @@ Every node carries a `Span` (byte offset range, in `span.rs`) for diagnostics, w
 | `Variable` | typed field: `ty`, `name`, `initial_value`, `is_conditional`, `is_const`, `is_hidden` (FO4 struct members) |
 | `Property` | typed field, `flags: PropertyFlags`, `initial_value`, optional `getter`/`setter`, `doc_comment` |
 | `Function` | `return_type`, `name`, `params: Vec<Param>`, `flags: FunctionFlags`, `body: Vec<Spanned<Stmt>>`, `doc_comment` |
-| `Event` | like `Function` but no return type; a remote handler's `name` is `Sender.EventName` |
+| `Event` | like `Function` but no return type; a remote handler's `name` is `Sender_EventName` (#5887) |
 | `Param` | `ty`, `name`, optional `default` expression |
 | `State` | `name`, `is_auto`, `body: Vec<Spanned<StateItem>>` |
 | `StateItem` | `Function` or `Event` |
@@ -157,7 +157,7 @@ Every node carries a `Span` (byte offset range, in `span.rs`) for diagnostics, w
 | `Group` | `name`, `flags: GroupFlags`, `properties: Vec<Spanned<Property>>` |
 | `Stmt` | `Assign{target, op, value}`, `Return(Option<Expr>)`, `If{condition, body, elseif_clauses, else_body}`, `While{condition, body}`, `ExprStmt`, `VarDecl(Variable)` |
 | `AssignOp` | `Eq`, `PlusEq`, `MinusEq`, `MulEq`, `DivEq`, `ModEq` |
-| `Expr` | `IntLit`, `FloatLit`, `BoolLit`, `StringLit`, `NoneLit`, `Ident`, `MemberAccess`, `Index`, `Call{callee, args}`, `UnaryOp`, `BinaryOp`, `Cast`, `New{ty, size}`, `ArrayLit`, `ParentAccess` |
+| `Expr` | `IntLit`, `FloatLit`, `BoolLit`, `StringLit`, `NoneLit`, `Ident`, `MemberAccess`, `Index`, `Call{callee, args}`, `UnaryOp`, `BinaryOp`, `Cast`, `Is{expr, target_type}` (FO4 type test), `New{ty, size}`, `NewStruct{ty}` (FO4 `new S`), `ArrayLit`, `ParentAccess` |
 | `CallArg` | optional `name` (named argument `name = value`) + `value` |
 | `UnaryOp` | `Neg`, `Not` |
 | `BinaryOp` | `Or`, `And`, `Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`, `Add`, `Sub`, `Mul`, `Div`, `Mod`, `StrCat` |

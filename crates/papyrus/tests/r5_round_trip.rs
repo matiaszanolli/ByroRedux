@@ -1,6 +1,6 @@
 //! M30.2 Phase 4 — round-trip the four R5 source `.psc` files through
-//! the full parser to validate end-to-end shape: lex → preprocess →
-//! parse_script → typed AST with the expected items.
+//! the full parser to validate end-to-end shape: lex → parse_script →
+//! typed AST with the expected items.
 //!
 //! These are the same scripts the R5 prototype hand-translated, so
 //! they exercise every grammar feature that M47.2's transpiler will
