@@ -657,6 +657,16 @@ pub(crate) fn clear_actor_value_damage(world: &World, actor: EntityId, avifs: &[
 /// raises KILL and queues the teardown. Idempotent for an actor that is
 /// already dead or still above zero; the caller holds no `ActorValues` guard.
 pub(super) fn queue_health_death(world: &World, actor: EntityId) {
+    queue_health_death_by(world, actor, || None);
+}
+
+/// [`queue_health_death`] crediting a killer, resolved only when the death is
+/// queued (#6232: a magic effect's caster).
+pub(crate) fn queue_health_death_by(
+    world: &World,
+    actor: EntityId,
+    killer: impl FnOnce() -> Option<EntityId>,
+) {
     use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead};
     if world.get::<Dead>(actor).is_some() {
         return;
@@ -669,7 +679,7 @@ pub(super) fn queue_health_death(world: &World, actor: EntityId) {
         .is_some_and(|values| values.current(health) <= 0.0);
     if lethal {
         if let Some(mut pending) = world.try_resource_mut::<crate::story_manager::PendingScriptKills>() {
-            pending.0.push((actor, None, false));
+            pending.0.push((actor, killer(), false));
         }
     }
 }

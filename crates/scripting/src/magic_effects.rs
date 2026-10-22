@@ -357,6 +357,17 @@ pub fn magic_effect_system(world: &World, dt: f32) {
                     change_value(world, target, |values| values.mod_permanent(value.actor_value, -value.amount));
                 }
             }
+            // #6232 — any value change above (an instant or per-second damage, a
+            // Drain, a Fortify given back) may have taken Health to zero, and
+            // nothing else sweeps actors at Health <= 0. Queue the death every
+            // other producer does; the caster is the killer.
+            if effect.value.is_some() {
+                let caster = effect.caster;
+                crate::fragment::queue_health_death_by(world, target, || {
+                    crate::condition::resolve_entity_by_global_form_id(world, caster)
+                        .filter(|&killer| caster != 0 && killer != target)
+                });
+            }
             // Write back — unless a script changed the list under us (a Dispel), which wins.
             if let Some(mut active) = world.query_mut::<ActiveMagicEffects>() {
                 if let Some(list) = active.get_mut(target) {
@@ -486,6 +497,42 @@ mod tests {
         magic_effect_system(&world, 2.0);
         assert_eq!(health(&world, target), 70.0);
         assert!(world.get::<ActiveMagicEffects>(target).is_none(), "ended at 3 s");
+    }
+
+    fn pending_kills(world: &World) -> Vec<(EntityId, Option<EntityId>, bool)> {
+        world.resource::<crate::story_manager::PendingScriptKills>().0.clone()
+    }
+
+    /// #6232 — a lethal instant effect queues the death every other Health
+    /// writer does, crediting the caster; a survivable one queues nothing.
+    #[test]
+    fn a_lethal_instant_effect_queues_one_death_crediting_the_caster() {
+        let (mut world, target) = world_with(index_with_value_effect(MGEF_FLAG_DETRIMENTAL, 150.0, 0));
+        world.insert(target, byroredux_core::ecs::components::ActorVitals { health: HEALTH });
+        let caster = world.spawn();
+        let mut pool = world.resource_mut::<byroredux_core::form_id::FormIdPool>();
+        let caster_id = pool.intern(byroredux_core::form_id::FormIdPair {
+            plugin: byroredux_core::form_id::PluginId::from_filename("FalloutNV.esm"),
+            local: byroredux_core::form_id::LocalFormId(0x5678),
+        });
+        drop(pool);
+        world.insert(caster, byroredux_core::ecs::components::FormIdComponent(caster_id));
+        assert!(cast_spell(&world, Some(caster), target, 0x500));
+        magic_effect_system(&world, 0.016);
+        assert!(health(&world, target) <= 0.0);
+        assert_eq!(pending_kills(&world), vec![(target, Some(caster), false)]);
+    }
+
+    #[test]
+    fn a_lethal_per_second_effect_queues_the_death_on_the_killing_tick() {
+        let (mut world, target) = world_with(index_with_value_effect(MGEF_FLAG_DETRIMENTAL, 60.0, 3));
+        world.insert(target, byroredux_core::ecs::components::ActorVitals { health: HEALTH });
+        assert!(cast_spell(&world, None, target, 0x500));
+        magic_effect_system(&world, 0.0);
+        magic_effect_system(&world, 1.0);
+        assert!(pending_kills(&world).is_empty(), "40 health left after the first tick");
+        magic_effect_system(&world, 1.0);
+        assert_eq!(pending_kills(&world), vec![(target, None, false)]);
     }
 
     #[test]

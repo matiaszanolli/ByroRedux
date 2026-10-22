@@ -291,7 +291,9 @@ pub fn remove_race_spells(world: &World, actor: EntityId) -> bool {
 /// Apply (`direction` 1) or undo (-1) one spell's constant modifiers on the
 /// actor's permanent modifiers. Spawn applies an actor's authored spells
 /// through this same function, so authored and scripted spells can never
-/// disagree about what a spell does.
+/// disagree about what a spell does. A change that takes Health to zero (a
+/// Fortify Health ability removed from a wounded actor) queues the death
+/// like every other script Health write (#6232).
 pub fn apply_constant_modifiers(world: &World, actor: EntityId, spell: u32, direction: f32) {
     let modifiers = world
         .try_resource::<SpellCatalog>()
@@ -300,13 +302,16 @@ pub fn apply_constant_modifiers(world: &World, actor: EntityId, spell: u32, dire
     if modifiers.is_empty() {
         return;
     }
-    let Some(mut values) = world.query_mut::<ActorValues>() else {
-        return;
-    };
-    let Some(values) = values.get_mut(actor) else {
-        return;
-    };
-    apply_modifiers(values, &modifiers, direction);
+    {
+        let Some(mut values) = world.query_mut::<ActorValues>() else {
+            return;
+        };
+        let Some(values) = values.get_mut(actor) else {
+            return;
+        };
+        apply_modifiers(values, &modifiers, direction);
+    }
+    crate::fragment::queue_health_death_by(world, actor, || None);
 }
 
 /// Add (`direction` 1) or remove (-1) constant modifiers on one actor's
@@ -540,6 +545,30 @@ mod tests {
         assert_eq!(health(&world), 100.0);
         assert!(!remove_spell(&world, actor, 0x20));
         assert_eq!(world.get::<SpellList>(actor).unwrap().0, vec![0x21]);
+    }
+
+    /// #6232 — removing a Fortify Health ability from a wounded actor can take
+    /// Health to zero; that queues the death like any script Health write.
+    #[test]
+    fn removing_a_fortify_ability_from_a_wounded_actor_queues_its_death() {
+        let mut world = World::new();
+        world.register::<SpellList>();
+        world.insert_resource(SpellCatalog::from_index(&index()));
+        world.insert_resource(crate::story_manager::PendingScriptKills::default());
+        let actor = world.spawn();
+        let mut values = ActorValues::new();
+        values.set_base(HEALTH, 100.0);
+        world.insert(actor, values);
+        world.insert(actor, SpellList::default());
+        world.insert(actor, byroredux_core::ecs::components::ActorVitals { health: HEALTH });
+        let pending =
+            |world: &World| world.resource::<crate::story_manager::PendingScriptKills>().0.clone();
+
+        assert!(add_spell(&world, actor, 0x20));
+        world.query_mut::<ActorValues>().unwrap().get_mut(actor).unwrap().apply_damage(HEALTH, 110.0);
+        assert!(pending(&world).is_empty(), "10 health left under the +20 ability");
+        assert!(remove_spell(&world, actor, 0x20));
+        assert_eq!(pending(&world), vec![(actor, None, false)]);
     }
 
     /// #4415 — `AddRaceSpells` / `RemoveRaceSpells` operate on exactly the
