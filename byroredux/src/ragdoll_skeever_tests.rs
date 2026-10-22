@@ -1,27 +1,18 @@
-//! #5161 isolation probe — the BleakFallsBarrow01 skeever-corpse ragdoll
+//! #5161 pin — the BleakFallsBarrow01 skeever-corpse ragdoll
 //! (`meshes\Actors\Skeever\Character Assets\skeleton.nif`, 21 bodies)
-//! explodes its multibody solve to |t|=2.7e13 within one substep at
+//! exploded its multibody solve to |t|=2.7e13 within one substep at
 //! load-settle. Under rapier 0.22 that poisoned the multi-SAP broad phase
 //! and a later proxy insertion panicked `sap_axis.rs` (#5161, #5488); the
-//! BVH broad phase of rapier 0.27+ has no such failure mode, so the probe
-//! now pins the containment instead (the counters line per 30 ticks: the
-//! clamp → park → detach ladder, and restore events). This probe replays
-//! the exact live spec: seed poses captured from the failing engine run,
-//! shapes, masses and joints straight from the authored NIF.
+//! BVH broad phase of rapier 0.27+ has no such failure mode, so this pins the
+//! containment instead (the clamp -> park -> detach ladder). It replays the
+//! exact live spec: seed poses captured from the failing engine run, shapes,
+//! masses and joints straight from the authored NIF, which is read from
+//! `Skyrim - Meshes0.bsa`.
 //!
-//! Measured on the rapier 0.36 upgrade against the same probe on 0.22:
-//! with the floor at the seed (`BYRO_PROBE_PENETRATION` unset) both settle
-//! in place (0.22: 3 clamps; 0.36: 1); at `BYRO_PROBE_PENETRATION=20` both
-//! detach the articulation within 30 ticks and the freed capsules fall
-//! through the 10-BU floor they start inside (worst |t| at tick 599: 2.5e4
-//! on 0.22, 2.9e4 on 0.36). Neither panics.
-//!
-//! Needs the extracted skeleton on disk:
-//!   cargo run --release -p byroredux-bsa --example bsa_extract_one -- \
-//!     "<Skyrim Data>/Skyrim - Meshes0.bsa" \
-//!     "meshes\actors\skeever\character assets\skeleton.nif" /tmp/skeever_skeleton.nif
-//!   BYRO_SKEEVER_NIF=/tmp/skeever_skeleton.nif cargo test -p byroredux \
-//!     --bin byroredux skeever -- --ignored --nocapture
+//! The pin is that nothing diverges (worst |t| stays under 5e5 over 600 ticks)
+//! and nothing panics, with the floor at the seed pose and 20 BU inside the
+//! corpse. Run with
+//!   cargo test -p byroredux --bin byroredux skeever -- --ignored
 
 use super::*;
 
@@ -35,7 +26,7 @@ fn skeever_spec(nif_bytes: &[u8]) -> RagdollSpec {
     let imported = byroredux_nif::import::collision::extract_ragdoll(&scene)
         .expect("skeever skeleton must carry its ragdoll");
     assert_eq!(imported.bodies.len(), 21);
-    let mut bodies = vec![
+    let bodies = vec![
         RagdollBodySpec { entity: 0, translation: Vec3::new(877.95874, -223.1185, -982.9688), rotation: Quat::from_xyzw(-0.5709435, -2.4956702e-8, 2.6645353e-15, 0.8209894), scale: 1.0, shape: imported.bodies[0].shape.clone(), mass: imported.bodies[0].mass, linear_damping: imported.bodies[0].linear_damping, angular_damping: imported.bodies[0].angular_damping, friction: imported.bodies[0].friction, restitution: imported.bodies[0].restitution },
         RagdollBodySpec { entity: 1, translation: Vec3::new(870.65076, -223.1185, -982.9688), rotation: Quat::from_xyzw(1.7787971e-6, -0.08429253, 0.99644107, -1.2319967e-5), scale: 1.0, shape: imported.bodies[1].shape.clone(), mass: imported.bodies[1].mass, linear_damping: imported.bodies[1].linear_damping, angular_damping: imported.bodies[1].angular_damping, friction: imported.bodies[1].friction, restitution: imported.bodies[1].restitution },
         RagdollBodySpec { entity: 2, translation: Vec3::new(870.65204, -246.57822, -979.4851), rotation: Quat::from_xyzw(3.0258088e-6, 0.14810261, 0.98897207, 5.257017e-5), scale: 1.0, shape: imported.bodies[2].shape.clone(), mass: imported.bodies[2].mass, linear_damping: imported.bodies[2].linear_damping, angular_damping: imported.bodies[2].angular_damping, friction: imported.bodies[2].friction, restitution: imported.bodies[2].restitution },
@@ -58,13 +49,7 @@ fn skeever_spec(nif_bytes: &[u8]) -> RagdollSpec {
         RagdollBodySpec { entity: 19, translation: Vec3::new(877.95874, -233.67592, -942.2456), rotation: Quat::from_xyzw(0.7720883, 3.589096e-8, 3.9889536e-9, 0.63551533), scale: 1.0, shape: imported.bodies[19].shape.clone(), mass: imported.bodies[19].mass, linear_damping: imported.bodies[19].linear_damping, angular_damping: imported.bodies[19].angular_damping, friction: imported.bodies[19].friction, restitution: imported.bodies[19].restitution },
         RagdollBodySpec { entity: 20, translation: Vec3::new(877.95874, -236.56416, -927.5018), rotation: Quat::from_xyzw(0.68852943, 3.1734345e-8, 4.221069e-9, 0.7252084), scale: 1.0, shape: imported.bodies[20].shape.clone(), mass: imported.bodies[20].mass, linear_damping: imported.bodies[20].linear_damping, angular_damping: imported.bodies[20].angular_damping, friction: imported.bodies[20].friction, restitution: imported.bodies[20].restitution },
     ];
-    let zero_rest = std::env::var("BYRO_PROBE_ZERO_REST").is_ok();
-    let no_joints = std::env::var("BYRO_PROBE_NOJOINTS").is_ok();
-    let constraints = if no_joints {
-        println!("probe: joints DROPPED (free-body isolation)");
-        Vec::new()
-    } else {
-        imported
+    let constraints = imported
         .constraints
         .iter()
         .map(|c| RagdollConstraintSpec {
@@ -72,30 +57,34 @@ fn skeever_spec(nif_bytes: &[u8]) -> RagdollSpec {
             body_b: c.body_b,
             joint: joint_from_imported(&c.kind),
         })
-        .collect()
-    };
-    if zero_rest {
-        println!("probe: restitution zeroed");
-        for b in &mut bodies {
-            b.restitution = 0.0;
-        }
-    }
+        .collect();
     RagdollSpec { bodies, constraints }
 }
 
-/// Step the exact live spec on a flat floor and report the worst body
-/// translation magnitude every 60 ticks. The live failure reaches 2.7e13
-/// within one substep of the first contact solve.
-#[test]
-#[ignore = "real-data isolation probe (needs BYRO_SKEEVER_NIF)"]
-fn skeever_ragdoll_survives_six_hundred_floor_ticks() {
-    let path = std::env::var("BYRO_SKEEVER_NIF")
-        .unwrap_or_else(|_| "/tmp/byro-5161-probe3/skeever_skeleton.nif".to_owned());
-    let Ok(nif_bytes) = std::fs::read(&path) else {
-        panic!("set BYRO_SKEEVER_NIF to the extracted skeever skeleton (missing: {path})");
-    };
-    let spec = skeever_spec(&nif_bytes);
+/// The authored skeleton, from the vanilla Skyrim archive.
+fn skeever_skeleton_nif() -> Option<Vec<u8>> {
+    use byroredux_plugin::esm::test_paths;
+    let meshes = test_paths::skyrim_se_data_dir().join("Skyrim - Meshes0.bsa");
+    if !meshes.is_file() {
+        test_paths::require_or_skip(&format!("{meshes:?}"));
+        return None;
+    }
+    let provider = crate::asset_provider::build_texture_provider(&[
+        "byroredux".into(),
+        "--bsa".into(),
+        meshes.to_string_lossy().into_owned(),
+    ]);
+    let bytes = provider
+        .extract_mesh(r"meshes\actors\skeever\character assets\skeleton.nif")
+        .expect("the skeever skeleton ships in Skyrim - Meshes0.bsa");
+    Some(bytes)
+}
 
+/// Step the exact live spec on a flat floor whose top sits `penetration` BU
+/// inside the corpse's lowest capsules (seed bottoms ≈ y −262) and assert the
+/// worst body translation stays bounded every tick. The live failure reached
+/// 2.7e13 within one substep of the first contact solve.
+fn settle_on_floor(spec: &RagdollSpec, penetration: f32) {
     let mut world = World::new();
     world.register::<Transform>();
     world.register::<GlobalTransform>();
@@ -106,28 +95,16 @@ fn skeever_ragdoll_survives_six_hundred_floor_ticks() {
 
     // Flat floor under the corpse pose (seeds span y≈[-262, -219]).
     let floor = world.spawn();
-    let no_floor = std::env::var("BYRO_PROBE_NOFLOOR").is_ok();
-    if no_floor {
-        println!("probe: floor DISABLED (joint-only isolation)");
-    }
     // Transform must carry the pose: register_newcomers re-runs transform
     // propagation, which recomposes GlobalTransform from Transform and would
     // otherwise park the floor at the origin. GlobalTransform is seeded to
     // match so the composition below is a no-op.
-    // BYRO_PROBE_PENETRATION=N raises the floor top N BU INTO the corpse's
-    // lowest capsules (seed bottoms ≈ y −262), simulating activation inside
-    // real corridor geometry.
-    let penetration: f32 = std::env::var("BYRO_PROBE_PENETRATION")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.0);
     let floor_top = -262.0 + penetration;
     let floor_pose = Transform {
         translation: Vec3::new(877.0, floor_top - 5.0, -985.0),
         rotation: Quat::IDENTITY,
         scale: 1.0,
     };
-    println!("probe: floor top at y={floor_top} (penetration {penetration} BU)");
     world.insert(floor, floor_pose);
     world.insert(
         floor,
@@ -141,61 +118,45 @@ fn skeever_ragdoll_survives_six_hundred_floor_ticks() {
         half_extents: Vec3::new(5000.0, 5.0, 5000.0),
     });
     world.insert(floor, RigidBodyData::static_body());
-    if no_floor {
-        world.remove::<CollisionShape>(floor);
-    }
     let registered = byroredux_physics::register_newcomers_and_refresh_queries(&world);
-    assert_eq!(registered, usize::from(!no_floor), "floor must register");
+    assert_eq!(registered, 1, "floor must register");
 
     let rag = {
         let mut pw = world.resource_mut::<PhysicsWorld>();
-        build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane seed")
+        build_ragdoll(&mut pw, spec, &ContactConfig::DEFAULT).expect("sane seed")
     };
 
     for tick in 0..600 {
-        let (worst, worst_body) = {
+        let worst = {
             let mut pw = world.resource_mut::<PhysicsWorld>();
             pw.step(byroredux_physics::world::PHYSICS_DT);
             rag.bodies
                 .iter()
-                .filter_map(|&(e, h, _)| {
-                    byroredux_physics::ragdoll::body_translation(&pw, h).map(|t| (t.length(), e))
+                .filter_map(|&(_, h, _)| {
+                    byroredux_physics::ragdoll::body_translation(&pw, h).map(|t| t.length())
                 })
-                .max_by(|a, b| a.0.total_cmp(&b.0))
-                .unwrap_or((0.0, u32::MAX))
+                .max_by(f32::total_cmp)
+                .unwrap_or(0.0)
         };
-        if tick % 30 == 0 || tick > 590 {
-            println!("tick {tick}: worst |t| = {worst:.3e} (entity {worst_body})");
-            let pw = world.resource::<PhysicsWorld>();
-            let joints_alive = rag
-                .joints
-                .iter()
-                .filter(|j| pw.multibody_joints.get(**j).is_some())
-                .count();
-            println!(
-                "tick {tick}: containment recov={:?} clamps={} detaches={} joints_alive={joints_alive}",
-                pw.recovery_counts(),
-                pw.velocity_clamps_total(),
-                pw.explosive_detaches_total(),
-            );
-        }
-        if tick == 0 || tick == 15 || tick == 30 || tick == 60 || tick == 120 {
-            let pw = world.resource::<PhysicsWorld>();
-            let ys: Vec<String> = rag
-                .bodies
-                .iter()
-                .map(|&(e, h, _)| {
-                    let y = byroredux_physics::ragdoll::body_translation(&pw, h)
-                        .map(|t| format!("{:.1}", t.y))
-                        .unwrap_or("?".into());
-                    format!("{e}:{y}")
-                })
-                .collect();
-            println!("tick {tick} y: {}", ys.join(" "));
-        }
         assert!(
             worst.is_finite() && worst <= 5.0e5,
-            "articulation diverged at tick {tick}: worst |t| = {worst:.3e}"
+            "penetration {penetration} BU: articulation diverged at tick {tick}: worst |t| = {worst:.3e}"
         );
     }
+}
+
+/// With the floor at the seed pose the articulation settles in place; with the
+/// floor 20 BU inside the corpse (activation inside real corridor geometry) the
+/// articulation detaches within 30 ticks and the freed capsules fall through
+/// the 10-BU floor they start inside (worst |t| ≈ 2.9e4 on rapier 0.36). Neither
+/// may diverge or panic the broad phase.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skeever_ragdoll_survives_six_hundred_floor_ticks() {
+    let Some(nif_bytes) = skeever_skeleton_nif() else {
+        return;
+    };
+    let spec = skeever_spec(&nif_bytes);
+    settle_on_floor(&spec, 0.0);
+    settle_on_floor(&spec, 20.0);
 }

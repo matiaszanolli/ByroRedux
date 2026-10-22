@@ -914,7 +914,7 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
 mod installed_tests;
 
 #[cfg(test)]
-#[path = "ragdoll_skeever_probe_tests.rs"]
+#[path = "ragdoll_skeever_tests.rs"]
 mod skeever_probe;
 
 #[cfg(test)]
