@@ -1,6 +1,6 @@
 # #6209: ECS-2026-10-21-02: `collect_victim_gpu_handles` takes `ParticleEmitter` under seven storage guards
-
-**Labels**: high,ecs,concurrency,bug
+STATE: OPEN
+LABELS: bug,ecs,high,concurrency
 
 **Source**: docs/audits/AUDIT_ECS_2026-10-21.md · **Severity**: HIGH · **Dimension**: 1 Lock Ordering & Deadlock Machinery · **Location**: `byroredux/src/cell_loader/unload.rs:809-816`
 
@@ -16,3 +16,4 @@
 - [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
 - [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
 - [ ] **TESTS**: A regression test pins this specific fix
+

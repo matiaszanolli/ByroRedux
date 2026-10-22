@@ -1,6 +1,6 @@
 # #6218: SCR-2026-10-21-04: Two script-side `OnActivate` consumers still read raw `ActivateEvent`, so default-processing-only activations reach them (#5994 residual)
-
-**Labels**: medium,scripting,bug
+STATE: OPEN
+LABELS: bug,medium,scripting
 
 **Source**: docs/audits/AUDIT_SCRIPTING_2026-10-21.md · **Severity**: MEDIUM · **Dimension**: Event Runtime · **Location**: `crates/scripting/src/vm_state.rs:131-137` (`two_state_activator_system`); `crates/scripting/src/obscript_runtime.rs:700-703` (`legacy_obscript_load_order_system`)
 
@@ -33,3 +33,4 @@ Read `crate::papyrus_activations(world)` in both systems, and add them to the #5
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (every remaining `query::<ActivateEvent>` consumer in crates/scripting and byroredux/src)
 - [ ] **TESTS**: A regression test pins this specific fix
+

@@ -106,14 +106,14 @@ fn avalanche(seed: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Deterministic per-(actor, pick, draw) seed. `salt` distinguishes
+/// Deterministic per-(actor, pick, draw) seed. `draw_index` distinguishes
 /// independent draws from the same `(form_id, pick_count)` pair (angle vs.
 /// distance vs. pause duration) without them collapsing to the same value.
-fn wander_seed(form_id: u32, pick_count: u32, salt: u64) -> u64 {
+fn wander_seed(form_id: u32, pick_count: u32, draw_index: u64) -> u64 {
     let base = (form_id as u64)
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
         .wrapping_add((pick_count as u64) << 32)
-        .wrapping_add(salt)
+        .wrapping_add(draw_index)
         .wrapping_add(0x1234_5678);
     avalanche(base)
 }

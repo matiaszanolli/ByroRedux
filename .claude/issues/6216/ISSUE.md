@@ -1,6 +1,6 @@
 # #6216: SCR-2026-10-21-02: The VM returns every native numeric read as `Float` and stores locals untyped, so `IDiv` over an Int-returning native runs as float division
-
-**Labels**: medium,scripting,bug
+STATE: OPEN
+LABELS: bug,medium,scripting
 
 **Source**: docs/audits/AUDIT_SCRIPTING_2026-10-21.md · **Severity**: MEDIUM · **Dimension**: Fragment Dispatch & Locks (Papyrus VM) · **Location**: `crates/scripting/src/fragment/vm/interp.rs:1134-1139` (`classify_native_value` → `Ok(Value::Float(number))`), `:454-460` (`Stmt::VarDecl` inserts the evaluated value, ignoring `variable.ty`), `:520-527` (`assign` to a local stores untyped); `crates/scripting/src/fragment/vm/value.rs:359-385` (integer `/` only when both runtime values are `Value::Int`), `:72` (`Float` text is `{:.6}`); `crates/pex/src/decompile/lift.rs:125` (`IDiv | FDiv` → `"/"`)
 
@@ -35,3 +35,4 @@ Give each native value read its declared return type (`Value::Int(number as i32)
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (every Int-returning row of the native value table; locals declared via function params as well as VarDecl)
 - [ ] **TESTS**: A regression test pins this specific fix
+

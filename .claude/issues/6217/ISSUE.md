@@ -1,6 +1,6 @@
 # #6217: SCR-2026-10-21-03: The parallel `player_controller_system` writes `KillRecords` (and reads the FormID/alias storages) through the drowning death, undeclared
-
-**Labels**: medium,scripting,concurrency,bug
+STATE: OPEN
+LABELS: bug,medium,scripting,concurrency
 
 **Source**: docs/audits/AUDIT_SCRIPTING_2026-10-21.md · **Severity**: MEDIUM · **Dimension**: Fragment Dispatch & Locks (scheduler access) · **Location**: `byroredux/src/boot/schedule/early.rs:21` (`add_to_with_access`, parallel); call path `systems/character.rs:1593-1612` `apply_player_drowning_damage` → `systems/story_events.rs:199` `raise_kill_story_event` → `:185` `raise_death_event` → `crates/scripting/src/obscript_state.rs:501-516` `note_death`; scan list `byroredux/src/boot/schedule/mod.rs:752-768`
 
@@ -32,3 +32,4 @@ Declare `.writes_resource::<KillRecords>()` plus the reads on the `player_contro
 - [ ] **SIBLING**: Same pattern checked in related files (other PARALLEL_SYSTEMS rows that reach raise_death_event / note_death)
 - [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
 - [ ] **TESTS**: A regression test pins this specific fix
+

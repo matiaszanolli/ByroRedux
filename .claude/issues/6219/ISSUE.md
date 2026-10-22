@@ -1,6 +1,6 @@
 # #6219: SCR-2026-10-21-05: #6102's fix never retires the worldspace persistent CELL's pending `OnReset`, which brings back the per-frame rescan and late spurious resets
-
-**Labels**: medium,scripting,performance,bug,game:fnv,game:fo3,game:oblivion
+STATE: OPEN
+LABELS: bug,medium,performance,scripting,game:fnv,game:fo3,game:oblivion
 
 **Source**: docs/audits/AUDIT_SCRIPTING_2026-10-21.md · **Severity**: MEDIUM · **Dimension**: Legacy ObScript (loader-fed state) · **Location**: `byroredux/src/cell_loader/exterior.rs:1166-1170` (the persistent root calls `note_player_entered_cell`); `PersistentCellApplyJob::advance`, `exterior.rs:329-431` (returns `Complete` with no `cell_load_finished`); the only retirers are `load.rs:733` and `exterior.rs:2521`; `crates/scripting/src/obscript_state.rs:243-280` (`mark_cell_reset`)
 
@@ -31,3 +31,4 @@ Call `obscript_state::cell_load_finished(world, self.cell_root)` before `Persist
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (every cell-root producer that calls note_player_entered_cell (interior, tile, persistent))
 - [ ] **TESTS**: A regression test pins this specific fix
+

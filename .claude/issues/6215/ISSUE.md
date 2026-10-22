@@ -1,6 +1,6 @@
 # #6215: SCR-2026-10-21-01: `GetValueInt()` and `x as Int` keep the untruncated float in fragment guards and values; #5974 fixed only `/` and `SetValueInt`
-
-**Labels**: medium,scripting,bug
+STATE: OPEN
+LABELS: bug,medium,scripting
 
 **Source**: docs/audits/AUDIT_SCRIPTING_2026-10-21.md · **Severity**: MEDIUM · **Dimension**: Recognizer Chain · **Location**: `crates/scripting/src/translate/effects/guards.rs:77-81` (`classify_value` strips every `Cast`), `:357-360` (`guard_reading` strips casts), `:407-412` (`GetValue` and `GetValueInt` → the same `GuardReading::Global`), `:21` (`INT_READS` lists `GetValueInt` as provably integral); evaluated raw at `crates/scripting/src/fragment/effects/evaluate.rs:68-72` and `:263-269`; applied raw at `fragment/effects.rs:162-167`
 
@@ -31,3 +31,4 @@ In `classify_value` and `guard_reading`, decline a `Cast { Int }` whose operand 
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (other cast-stripping sites in translate/effects; every INT_READS row (GetStage, GetItemCount, GetLevel) used as a guard/value)
 - [ ] **TESTS**: A regression test pins this specific fix
+

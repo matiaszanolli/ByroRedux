@@ -1,6 +1,6 @@
 # #6212: PAR-D1-02: `inline_references` multiplies the per-decode budget by up to 65: each of its 64 resolves is a full clone of a cached decoded graph, all live at once on the recursion (10%-of-budget self-reference peaks at 2 GiB / 9.7 s)
-
-**Labels**: high,bug,import-pipeline,animation,safety,game:fo4
+STATE: OPEN
+LABELS: bug,animation,import-pipeline,high,safety,game:fo4
 
 **Source**: docs/audits/AUDIT_PARSERS_2026-10-21.md · **Severity**: HIGH · **Dimension**: Size Discipline · **Location**: `crates/hkx/src/behavior.rs` (`inline_references` / `inline_machine`); `byroredux/src/asset_provider/actor_graph.rs` (`decode_behavior`, `build`)
 
@@ -33,3 +33,4 @@
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
 - [ ] **TESTS**: A regression test pins this specific fix
+

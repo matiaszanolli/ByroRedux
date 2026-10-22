@@ -1,6 +1,6 @@
 # #6214: SKY-D2-01: EyeEnvmap reflection centres cross the NIFAL boundary in Gamebryo Z-up, and the shader places them with the Y-up instance matrix
-
-**Labels**: high,bug,nifal,nif-parser,renderer,shaders,game:skyrim,game:fo4,legacy-compat
+STATE: OPEN
+LABELS: bug,nif-parser,renderer,high,legacy-compat,game:fo4,game:skyrim,shaders,nifal
 
 **Source**: docs/audits/AUDIT_SKYRIM_2026-10-21.md · **Severity**: HIGH · **Dimension**: 2 (Skyrim material slice) / NIFAL coordinate boundary · **Location**: `crates/nif/src/import/material/shader_data.rs:201-209`: `ShaderTypeData::EyeEnvmap` is copied verbatim into `ShaderTypeFields::eye_{left,right}_reflection_center`.
 
@@ -37,3 +37,4 @@ convert both centres with `zup_to_yup_pos` where `ShaderTypeData::EyeEnvmap` is 
 - [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
 - [ ] **CANONICAL-BOUNDARY**: If the fix touches `byroredux/src/material_translate.rs` (`translate_material`), `Material::resolve_pbr` (`crates/core/src/ecs/components/material.rs`), or the emitter params in `crates/nif/src/import/walk/emitter.rs` (`extract_emitter_params` / `extract_emitter_rate`), per-game logic stays at the NIFAL parser→`Material` boundary — never pushed into shaders/renderer, never re-derived at render time. See `/audit-nifal`.
 - [ ] **TESTS**: A regression test pins this specific fix
+
