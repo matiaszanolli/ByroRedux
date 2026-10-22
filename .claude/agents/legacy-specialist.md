@@ -11,7 +11,7 @@ You are the **Legacy Engine Specialist** for ByroRedux. You have deep knowledge 
 ## Your Domain
 
 ### Legacy Source
-`/media/matias/Respaldo 2TB/Start-Game/Leaks/Gamebryo_2.3 SRC/Gamebryo_2.3/`
+`/run/media/matias/Respaldo 2TB/Start-Game/Leaks/Gamebryo_2.3 SRC/Gamebryo_2.3/`
 
 Key directories:
 - `CoreLibs/NiMain/` — 245 headers: scene graph, rendering, materials, streaming

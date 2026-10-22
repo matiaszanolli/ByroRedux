@@ -1,7 +1,7 @@
 # Key Gamebryo 2.3 Source Files
 
 Reference paths relative to:
-`/media/matias/Respaldo 2TB/Start-Game/Leaks/Gamebryo_2.3 SRC/Gamebryo_2.3/`
+`/run/media/matias/Respaldo 2TB/Start-Game/Leaks/Gamebryo_2.3 SRC/Gamebryo_2.3/`
 
 ## Scene Graph Core
 - `CoreLibs/NiMain/NiObject.h` — Root base class

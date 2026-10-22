@@ -1,6 +1,6 @@
 # Gamebryo 2.3 Architecture Reference
 
-Source: `/media/matias/Respaldo 2TB/Start-Game/Leaks/Gamebryo_2.3 SRC/Gamebryo_2.3/`
+Source: `/run/media/matias/Respaldo 2TB/Start-Game/Leaks/Gamebryo_2.3 SRC/Gamebryo_2.3/`
 
 Used in: The Elder Scrolls IV: Oblivion, Fallout 3, Fallout: New Vegas
 

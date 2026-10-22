@@ -8,7 +8,7 @@ description: "Look up a Gamebryo class, function, or pattern in the legacy 2.3 s
 Search the Gamebryo 2.3 source for the given class, function, or pattern.
 
 ## Source Location
-`/media/matias/Respaldo 2TB/Start-Game/Leaks/Gamebryo_2.3 SRC/Gamebryo_2.3/`
+`/run/media/matias/Respaldo 2TB/Start-Game/Leaks/Gamebryo_2.3 SRC/Gamebryo_2.3/`
 
 ## Process
 

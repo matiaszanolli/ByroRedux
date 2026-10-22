@@ -23,7 +23,7 @@ Skyrim SE:  /mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/
 Fallout 4:  /mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/
 Fallout 76: /mnt/data/SteamLibrary/steamapps/common/Fallout76/Data/
 Starfield:  /mnt/data/SteamLibrary/steamapps/common/Starfield/Data/
-Gamebryo 2.3 source: /media/matias/Respaldo 2TB/Start-Game/Leaks/Gamebryo_2.3 SRC/Gamebryo_2.3/
+Gamebryo 2.3 source: /run/media/matias/Respaldo 2TB/Start-Game/Leaks/Gamebryo_2.3 SRC/Gamebryo_2.3/
   (CoreLibs/NiMain scene graph · NiAnimation · NiCollision · NiSystem · SDK/Win32/Include 1,592 headers)
 ```
 
