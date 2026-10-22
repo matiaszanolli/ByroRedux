@@ -24,7 +24,13 @@ fn skyrim_race_preserves_gendered_skeletons_separately_from_body_models() {
     // #6070 — FO4 authors the same run (verified on Fallout4.esm by
     // `installed_fo4_races_resolve_their_own_skeletons`).
     // #6122 — and Starfield (31 of 31 `Starfield.esm` RACE records).
-    for game in [GameKind::Skyrim, GameKind::Fallout4, GameKind::Starfield] {
+    // #6297 — and Fallout 76 (157 `SeventySix.esm` RACE records).
+    for game in [
+        GameKind::Skyrim,
+        GameKind::Fallout4,
+        GameKind::Starfield,
+        GameKind::Fallout76,
+    ] {
         let race = parse_race(0xD53, &subs, game, &None);
         assert_eq!(
             race.skeleton_models,
@@ -35,13 +41,35 @@ fn skyrim_race_preserves_gendered_skeletons_separately_from_body_models() {
         );
         assert_eq!(race.body_models, ["body.egt", "DraugrProject.hkx"]);
     }
-    for game in [
-        GameKind::Oblivion,
-        GameKind::Fallout3NV,
-        GameKind::Fallout76,
-    ] {
+    for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
         assert_eq!(parse_race(1, &subs, game, &None).skeleton_models, ["", ""]);
     }
+}
+
+/// #6297 — a SeventySix-shaped RACE: each `ANAM` skeleton is followed by its
+/// `MODT`, and `NAM1` closes the run as on the other games.
+#[test]
+fn fo76_race_reads_its_skeleton_run_with_modt_between() {
+    let subs = vec![
+        sub(b"MNAM", b""),
+        sub(b"ANAM", b"actors/deathclaw/characterassets/skeleton.nif\0"),
+        sub(b"MODT", &[0u8; 12]),
+        sub(b"FNAM", b""),
+        sub(b"ANAM", b"actors/deathclaw/characterassets/skeletonf.nif\0"),
+        sub(b"MODT", &[0u8; 12]),
+        sub(b"NAM2", b""),
+        sub(b"NAM1", b""),
+        sub(b"MNAM", b""),
+        sub(b"ANAM", b"not-a-skeleton.nif\0"),
+    ];
+    let race = parse_race(0x1234, &subs, GameKind::Fallout76, &None);
+    assert_eq!(
+        race.skeleton_models,
+        [
+            "actors/deathclaw/characterassets/skeleton.nif",
+            "actors/deathclaw/characterassets/skeletonf.nif",
+        ]
+    );
 }
 
 #[test]
