@@ -1240,8 +1240,8 @@ mod tests {
             );
         }
         assert!(
-            production.contains(".image_view(noise.base)")
-                && production.contains(".image_view(noise.detail)"),
+            production.contains("sampled_image_info(noise.sampler, noise.base)")
+                && production.contains("sampled_image_info(noise.sampler, noise.detail)"),
             "bindings 2/3 must come from the shared CloudNoiseViews",
         );
     }

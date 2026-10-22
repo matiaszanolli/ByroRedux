@@ -903,7 +903,7 @@ mod tests {
         let production = crate::source_scan::production_text(include_str!("taa.rs"));
         assert!(production.contains("compute_binding(9,"));
         assert!(production.contains("write_combined_image_sampler(set, 9, &reactive)"));
-        assert!(production.contains(".image_view(reactive_views[f])"));
+        assert!(production.contains("sampled_image_info(self.point_sampler, reactive_views[f])"));
     }
 
     /// NCPS-05 — CPU-side guard for the first-frame flag. The shader's
