@@ -923,7 +923,12 @@ fn try_resource_2_same_type_panics() {
 /// deadlock. An unsorted nested `try_resource` pair is the ABBA this replaced;
 /// it hangs here (under writer-preferring locks) rather than failing, so the
 /// run is bounded by a watchdog.
+///
+/// Ignored under Miri (#6234): it tests lock order, not pointer provenance, and
+/// its 6000 lock round-trips outrun the 20 s watchdog at Miri's speed, which
+/// turned the `ecs-query-miri` gate red.
 #[test]
+#[cfg_attr(miri, ignore = "lock-order stress test; outruns the watchdog under Miri (#6234)")]
 fn try_resource_2_does_not_deadlock_against_resource_2_mut() {
     let mut world = World::new();
     world.insert_resource(ResA(0.0));

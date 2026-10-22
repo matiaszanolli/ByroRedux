@@ -309,6 +309,10 @@ jobs:
   # model does not support. That test exercises the scheduler, not the
   # cached-pointer contract this job checks, so it is skipped here rather
   # than skipping Miri coverage for the module entirely.
+  # `try_resource_2_does_not_deadlock_against_resource_2_mut` (#6101) is the
+  # other exception: a lock-order stress test whose 6000 round-trips outrun
+  # its 20 s watchdog under Miri, so it carries `#[cfg_attr(miri, ignore)]`
+  # in world_tests.rs instead of a --skip here (#6234).
   # ──────────────────────────────────────────────────────────────────────────
   ecs-query-miri:
     name: ECS cached-pointer aliasing (Miri)
