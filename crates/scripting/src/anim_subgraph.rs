@@ -73,8 +73,10 @@ impl SubgraphTable {
             .npcs
             .values()
             .map(|npc| {
-                let female = (npc.acbs_flags & FEMALE != 0) != (npc.acbs_flags & SWAP_GENDER_ANIMS != 0);
-                (npc.form_id, (npc.race_form_id, female))
+                // #6228 — race and the sex flags are Use-Traits fields: the shell's own are not the body's.
+                let traits = byroredux_plugin::equip::traits_terminal(npc, index);
+                let female = (traits.acbs_flags & FEMALE != 0) != (traits.acbs_flags & SWAP_GENDER_ANIMS != 0);
+                (npc.form_id, (traits.race_form_id, female))
             })
             .collect();
         Self { races, npcs, archetypes, female_keyword }

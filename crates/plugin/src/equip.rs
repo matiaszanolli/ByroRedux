@@ -479,6 +479,18 @@ pub fn resolve_inherited_traits<'a>(
     resolve_inherited_record(npc, actor_level, index, TEMPLATE_FLAG_USE_TRAITS, 0)
 }
 
+/// #6228 — the "Use Traits" terminal of `shell` at the shell's own effective
+/// level: the record [`ResolvedNpc::resolve`] takes `traits` from, for the
+/// readers that hold a base FormID rather than a spawn's resolution — sex
+/// (`ACBS` bit 0), voice type (`VTCK`) and race, all Use-Traits fields
+/// (GECK *Template Data*; xEdit hides `VTCK` under `wbActorTemplateUseTraits`).
+pub fn traits_terminal<'a>(
+    shell: &'a crate::esm::records::actor::NpcRecord,
+    index: &'a EsmIndex,
+) -> &'a crate::esm::records::actor::NpcRecord {
+    resolve_inherited_traits(shell, crate::esm::records::effective_actor_level(shell), index)
+}
+
 /// Resolve the NPC record that should supply faction membership for this
 /// actor, honouring the same `TPLT` inheritance as [`resolve_inherited_stats`]
 /// / [`resolve_inherited_traits`] but gated on

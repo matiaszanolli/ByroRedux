@@ -379,10 +379,13 @@ pub(crate) fn play_line_voice(
         log::debug!("#5367 V: npc {npc} has no alias candidate");
         return None;
     };
-    let Some(npc_record) = index.npcs.get(&base) else {
+    let Some(shell) = index.npcs.get(&base) else {
         log::debug!("#5367 V: base {base:#X} not in npcs index");
         return None;
     };
+    // #6228 — voice type, sex and race are Use-Traits fields: a templated shell speaks with its
+    // terminal's, the record its body was spawned from.
+    let npc_record = byroredux_plugin::equip::traits_terminal(shell, &index);
     // The speaker's voice key. FO3/FNV: the voice-type EDID through VTCK ->
     // VTYP. Oblivion authors neither record (#5526): its key is the voice
     // race folder plus the sex folder, through the speaker's RACE `VNAM`.

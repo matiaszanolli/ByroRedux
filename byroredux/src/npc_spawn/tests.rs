@@ -3173,6 +3173,26 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
         }
     }
 
+    // #6228 — the Use-Traits readers that hold a base FormID rather than a
+    // spawn's resolution (the dialogue voice key, the actor traits behind
+    // GetIsSex / GetVoiceType / GetLeveledActorBase, the gendered animation
+    // subgraph) must read sex, voice and race off the terminal, not the shell.
+    for (file, source) in [
+        ("systems/dialogue_voice.rs", include_str!("../systems/dialogue_voice.rs")),
+        ("scripting/actor_base_traits.rs", include_str!("../../../crates/scripting/src/actor_base_traits.rs")),
+        ("scripting/anim_subgraph.rs", include_str!("../../../crates/scripting/src/anim_subgraph.rs")),
+    ] {
+        let code = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            code.contains("traits_terminal("),
+            "{file} reads Use-Traits fields without resolving the terminal (#6228)"
+        );
+    }
+
     const INVENTORY_RS: &str = include_str!("../inventory.rs");
     let counts = [
         ("npc_spawn.rs", count_calls(NPC_SPAWN_RS, &call_names)),
