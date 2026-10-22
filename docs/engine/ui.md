@@ -880,8 +880,9 @@ profile with a ninth font slot).
   `menus\prefabs\meter.xml` as a named child rect, so
   `parent()`/`sibling()` ops resolve against the wrapper).
 - `prepare.rs` (Scaleform profiles) — `normalize_scaleform_dialect`
-  (#4470, #5456, #5479): the one choke point every shipped SWF passes
-  through before Ruffle sees it, owning the vanilla dialect patches
+  (#4470, #5456, #5479): the choke point every root and `ImportAssets`
+  movie passes through before Ruffle sees it (a movie a running menu loads
+  through `Loader.load` / `loadClip` reaches Ruffle un-shimmed, #5480), owning the vanilla dialect patches
   (the #5456/#5479 PlaceObject3 family) on the uncompressed/freshly
   inflated stream; conforming FWS/ZWS containers return `None` and take
   the stock path. Whatever this shim accepts is the dialect contract —
@@ -891,6 +892,8 @@ profile with a ninth font slot).
   (#5966, `MAX_SWF_BODY_BYTES` = 128 MiB over FWS/CWS/ZWS claims) gates
   `prepare_movie`, the navigator's dependency decodes,
   `ScaleformProfile::detect` and both host-call scanners before any decode,
+  and the navigator's fetch holds every SWF body it serves to it (#6225) —
+  the second choke point, since Ruffle decodes a runtime-loaded movie itself,
   and a source-shape test fails on a new `decompress_swf(` call without it.
   `SwfDecodeCounts::decompresses` (#5967) is measured: a CWS menu open
   reads 1, an uncompressed movie 0, a shim that inflates and then declines

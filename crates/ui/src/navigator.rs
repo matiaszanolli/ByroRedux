@@ -275,6 +275,14 @@ fn load_archive_resource(
             );
         }
     };
+    // #6225 — every SWF body is held to the #5966 ceiling, not only import assets: a movie a running
+    // menu loads (`Loader.load`, `loadClip`, `loadMovie`) reaches Ruffle's own `SwfMovieData::from_data`,
+    // which inflates to the header's claim, and no decode site in this crate sees that one.
+    if is_swf(&body) {
+        if let Err(message) = crate::prepare::ensure_declared_len_within_ceiling(&body) {
+            return record_degraded(state, &request_url, message);
+        }
+    }
     let is_import_asset = state.borrow().import_asset_paths.contains(&archive_path);
     let (body, import_preload_rewritten) = if is_import_asset {
         match prepare_import_asset_swf(&body) {
@@ -706,6 +714,32 @@ mod tests {
         let url = url::Url::parse("file:///interface/hudmenu.swf").unwrap();
         let error = import_asset_paths(&url, &bomb).unwrap_err();
         assert!(error.contains("ceiling"), "import_asset_paths: {error}");
+    }
+
+    /// #6225 — a movie a running menu fetches (`Loader.load` / `loadClip`), named by no
+    /// `ImportAssets` tag, is held to the same ceiling: Ruffle would inflate it to the header's
+    /// claim itself. It answers the placeholder and records the refusal.
+    #[test]
+    fn a_runtime_loaded_movie_over_the_ceiling_is_refused_before_ruffle_sees_it() {
+        let provider = Arc::new(MemoryProvider(HashMap::from([(
+            "interface\\pipboy_datapage.swf".to_string(),
+            crate::prepare::hostile_cws_header_bomb(),
+        )])));
+        let (navigator, mut runtime, _) = ScaleformNavigatorRuntime::create(
+            archive_movie_url("interface\\pipboy_menu.swf").unwrap(),
+            Vec::new(),
+            Vec::new(),
+            provider as Arc<dyn ScaleformResourceProvider>,
+        )
+        .unwrap();
+        let response = match block_on(navigator.fetch(Request::get("pipboy_datapage.swf".to_string()))) {
+            Ok(response) => response,
+            Err(error) => panic!("a refused movie answers the placeholder: {}", error.error),
+        };
+        assert_eq!(block_on(response.body()).unwrap(), placeholder_movie());
+        let errors = runtime.take_errors();
+        assert!(errors.iter().any(|error| error.contains("ceiling")), "{errors:?}");
+        assert!(runtime.take_loads().is_empty(), "a refused body is not a load");
     }
 
     #[test]
