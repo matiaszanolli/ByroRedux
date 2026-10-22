@@ -12,7 +12,10 @@ the gate only on its own evidence:
            the ragdoll hkaSkeleton's bone (`hkx`, the second skeleton in
            skeleton.hkx, `Ragdoll_<bone>`, some rigs with an `01` suffix), the
            animation hkaSkeleton's bone of the same name (`anim`, the first),
-           and the rest distance from the parent body's bone (`rest`); `any`
+           the rest distance from the parent body's bone (`rest`), and the
+           length of the body's joint pivot in its parent body (`pivot`, the
+           constraint's `pivot_b`; FO3/FNV's forearms and hands follow it,
+           #6252); `any`
            counts the bones that match at least one — the verified humanoid
            matches 17/17 that way (its calves, forearms and head follow `hkx`,
            its upper arms `nif`). Also per entry: which body's NIF bone length
@@ -38,6 +41,10 @@ Inputs (tools in this repo; one file per rig name):
 Usage: xrgd-skyrim-rigs.py <poses.jsonl> <rigs-dir> <rig>=<Race>[,<Race>..] [..]
        (append `:<n>` to a rig to analyse only poses with n body entries; default:
         the body count)
+
+The #6252 run (FO3 / FNV, `characters\_male\skeleton.nif`; corpses are the
+dead-base ones the dump marks `dead`): fnvhuman=<every humanoid race of the
+18-entry corpses> on FalloutNV.esm's poses, fo3human=... on Fallout3.esm's.
 
 The #6068 / #6069 run (rig names are whatever the dumps were saved as):
   skeletons=SkeletonRace  draugr=DraugrRace,RigidSkeletonRace  falmer=FalmerRace
@@ -76,6 +83,12 @@ def strip_marker(entries):
 
 def load_rig(rig):
     bodies, parent_body = [], {}
+    pivot = {}
+    text = open(f'{RIGS_DIR}/rd/{rig}.txt').read()
+    for m in re.finditer(r'joint#\d+ a=(\d+) b=\d+ kind=\w+ \{(.*?)\n\}', text, re.S):
+        p = re.search(r'pivot_b: Vec3\(\s*([-\d.e]+),\s*([-\d.e]+),\s*([-\d.e]+),', m.group(2))
+        if p:
+            pivot[int(m.group(1))] = float(np.linalg.norm([float(x) for x in p.groups()]))
     for line in open(f'{RIGS_DIR}/rd/{rig}.txt'):
         m = re.match(r'#(\d+) "([^"]+)"', line)
         if m:
@@ -104,7 +117,7 @@ def load_rig(rig):
                 hkx.setdefault(name.removesuffix('01'), t)
             else:
                 anim[m.group(2).lower()] = t
-    return bodies, parent_body, tree, order, hkx, anim
+    return bodies, parent_body, tree, order, hkx, anim, pivot
 
 
 def rest_world(tree, order):
@@ -152,7 +165,7 @@ for spec in SPECS:
         rig, want = rig.split(':')
         want = int(want)
     races = set(races.split(','))
-    bodies, parent_body, tree, order, hkx, anim = load_rig(rig)
+    bodies, parent_body, tree, order, hkx, anim, pivot = load_rig(rig)
     want = want or len(bodies)
     corpses = [r for r in dead if r['race'] in races]
     counts = collections.Counter(len(strip_marker(r['entries'])) for r in corpses)
@@ -172,17 +185,18 @@ for spec in SPECS:
             'hkx': float(np.linalg.norm(hkx[b.lower()])) if b.lower() in hkx else None,
             'anim': float(np.linalg.norm(anim[b.lower()])) if b.lower() in anim else None,
             'rest': float(np.linalg.norm(rest[b] - rest[bodies[parent_body[k]]])) if k in parent_body else None,
+            'pivot': pivot.get(k),
         }
         for k, b in enumerate(bodies)
     }
-    print(f'  {"k":>2} {"body":28} {"entry |off|":>11} {"nif":>8} {"err":>6} {"hkx":>8} {"err":>6} {"anim":>8} {"err":>6} {"rest":>8} {"err":>6}  argmin(nif)')
-    passed = {'nif': [0, 0], 'hkx': [0, 0], 'anim': [0, 0], 'rest': [0, 0], 'any': [0, 0]}
+    print(f'  {"k":>2} {"body":28} {"entry |off|":>11} {"nif":>8} {"err":>6} {"hkx":>8} {"err":>6} {"anim":>8} {"err":>6} {"rest":>8} {"err":>6} {"pivot":>8} {"err":>6}  argmin(nif)')
+    passed = {'nif': [0, 0], 'hkx': [0, 0], 'anim': [0, 0], 'rest': [0, 0], 'pivot': [0, 0], 'any': [0, 0]}
     for k in range(min(want, len(bodies))):
         off = float(np.median([np.linalg.norm(strip_marker(r['entries'])[k][1:4]) for r in use]))
         name = bodies[k]
         cells = []
         any_ok = None
-        for ref in ('nif', 'hkx', 'anim', 'rest'):
+        for ref in ('nif', 'hkx', 'anim', 'rest', 'pivot'):
             L = lengths[name][ref]
             if L is None:
                 cells.append(f'{"-":>8} {"-":>6}')

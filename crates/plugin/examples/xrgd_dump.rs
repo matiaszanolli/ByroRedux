@@ -1,7 +1,9 @@
 //! #5015 census tool: dump every placed actor's authored `XRGD` ragdoll pose.
 //!
 //! One JSON line per placement carrying a pose: the placement's own transform,
-//! its base NPC / race, whether it is a Starts-Dead corpse, and every pose
+//! its base NPC / race, whether it is a corpse (the placement's Starts Dead
+//! flag, or a dead base: FO3 / FNV base health <= 0, Oblivion's base flag —
+//! #6252), and every pose
 //! entry `[bone_id, px, py, pz, rx, ry, rz]` exactly as decoded
 //! (`PlacedRef::ragdoll_pose`). Feeds the offline analysis that derives the
 //! id → ragdoll-body mapping and the rotation convention (#5015).
@@ -27,7 +29,7 @@ fn main() -> anyhow::Result<()> {
         {
             return;
         }
-        let (editor_id, race, creature) = index
+        let (editor_id, race, creature, base_dead) = index
             .npcs
             .get(&r.base_form_id)
             .map(|npc| {
@@ -36,7 +38,7 @@ fn main() -> anyhow::Result<()> {
                     .get(&npc.race_form_id)
                     .map(|race| race.editor_id.clone())
                     .unwrap_or_default();
-                (npc.editor_id.clone(), race, npc.is_creature)
+                (npc.editor_id.clone(), race, npc.is_creature, npc.starts_dead)
             })
             .unwrap_or_default();
         let entries: Vec<[f32; 7]> = r
@@ -63,7 +65,7 @@ fn main() -> anyhow::Result<()> {
             .join(",");
         println!(
             "{{\"cell\":\"{cell}\",\"ref\":{},\"base\":{},\"npc\":\"{editor_id}\",\"race\":\"{race}\",\"creature\":{creature},\"dead\":{},\"pos\":{:?},\"rot\":{:?},\"entries\":[{entries}]}}",
-            r.form_id, r.base_form_id, r.starts_dead, r.position, r.rotation,
+            r.form_id, r.base_form_id, r.starts_dead || base_dead, r.position, r.rotation,
         );
     };
 

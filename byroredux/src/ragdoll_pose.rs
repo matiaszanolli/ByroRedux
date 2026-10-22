@@ -156,9 +156,33 @@
 //! whose offsets match (28/28, 5/5) but whose flat bodies the extent cannot
 //! rank (11th, 3rd); the cow (22/22, but 3 corpses and 50.3 against 50.4).
 //!
+//! ## Fallout 3 / New Vegas (#6252)
+//!
+//! A FO3/FNV corpse is marked on its base record (`DATA` health <= 0,
+//! [`NpcRecord::starts_dead`](byroredux_plugin::esm::records::NpcRecord)), not
+//! the placement, and its `XRGD` is pose-only data. The humanoid rig
+//! (`characters\_male\skeleton.nif`, the same 18 bodies in both games,
+//! [`FALLOUT_HUMANOID_RAGDOLL_BODIES`]) passes #5015's checks by order, as the
+//! Skyrim humanoid does: over 202 FNV and 307 FO3 dead-base humanoid corpses
+//! (every one with 18 entries but three FO3 19-entry poses, which the count gate
+//! refuses), each entry's offset matches its body's bone within 3 % for 17/17
+//! bones — the NIF's local offset for the legs, spine, neck, head and upper
+//! arms, the elbow and wrist hinges' child pivot (19.591, 16.170) for the
+//! forearms and hands, whose NIF offsets (17.364, 18.129) put the elbow 2.2
+//! units higher — and forward kinematics ranks intrinsic XYZ with negated
+//! angles first by lying extent (FNV 20.9 against 34.2, FO3 21.1 against 37.5;
+//! 105.7 standing). The `bone_id` field is again not the order (the same
+//! permutation on every corpse). Entry 0's body (`Bip01 NonAccum`, at the
+//! pelvis) belongs at the reference's position like Skyrim's COM: placed corpses
+//! stand a median 10.9 units above their nearest live NPC, and the lying body's
+//! lowest bone is 8.9 under that root. Unlike Skyrim's COM, its parent (`Bip01`)
+//! carries the 67.8-unit hip height, so the root body is placed at the skeleton
+//! root rather than given a zero local translation ([`BonePose::at_placement`]).
+//! Creatures stay refused until each rig is verified.
+//!
 //! **Scope:** only the verified ragdolls are posed — the Skyrim humanoid,
-//! draugr, SkeletonS, falmer, skeever and deer rigs, and the FO4 human,
-//! feral-ghoul and super-mutant rigs. A Skyrim rig is pinned by its bodies'
+//! draugr, SkeletonS, falmer, skeever and deer rigs, the FO4 human,
+//! feral-ghoul and super-mutant rigs, and the FO3/FNV humanoid rig. A Skyrim rig is pinned by its bodies'
 //! bone names in order ([`is_skyrim_posable_ragdoll`]): a skeleton whose
 //! ragdoll bodies are anything else — another creature, the beast races'
 //! tailed rig — is refused rather than posed from a guess, and so is a pose
@@ -174,6 +198,7 @@ use byroredux_core::ecs::{
 use byroredux_core::math::coord::euler_zup_to_quat_yup_mode;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm::cell::RagdollPoseBone;
+use byroredux_plugin::esm::reader::GameKind;
 
 /// The humanoid ragdoll's bodies in the order the `XRGD` entries list them
 /// (the skeleton NIF's `bhkRigidBody` order), by bone name. See the module
@@ -333,6 +358,30 @@ const SKYRIM_POSABLE_RAGDOLLS: [&[&str]; 6] = [
     &DEER_RAGDOLL_BODIES,
 ];
 
+/// The FO3 / FNV humanoid ragdoll's bodies in the skeleton NIF's
+/// `bhkRigidBody` order, which the `XRGD` entries follow (#6252, see the
+/// module docs).
+pub(crate) const FALLOUT_HUMANOID_RAGDOLL_BODIES: [&str; 18] = [
+    "Bip01 NonAccum",
+    "Bip01 L Thigh",
+    "Bip01 L Calf",
+    "Bip01 L Foot",
+    "Bip01 R Thigh",
+    "Bip01 R Calf",
+    "Bip01 R Foot",
+    "Bip01 Spine",
+    "Bip01 Spine1",
+    "Bip01 Spine2",
+    "Bip01 Neck1",
+    "Bip01 Head",
+    "Bip01 L UpperArm",
+    "Bip01 L Forearm",
+    "Bip01 L Hand",
+    "Bip01 R UpperArm",
+    "Bip01 R Forearm",
+    "Bip01 R Hand",
+];
+
 /// The FO4 human ragdoll's bodies in blob (body-id) order, by bone name.
 pub(crate) const FO4_HUMAN_RAGDOLL_BODIES: [&str; 18] = [
     "COM",
@@ -448,12 +497,14 @@ pub(crate) fn body_entries(entries: &[RagdollPoseBone]) -> &[RagdollPoseBone] {
 }
 
 /// What the pose writes onto one ragdoll body's bone: its parent-local
-/// rotation (Y-up), and for the root (the COM) a zeroed local translation so
-/// the centre of mass sits at the actor's placement.
+/// rotation (Y-up), and for the root body (the COM) a local translation that
+/// puts it at the actor's placement — zero where its parents sit at the
+/// placement origin (Skyrim, FO4), the inverse of `Bip01`'s hip height on
+/// FO3/FNV (#6252).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BonePose {
     pub(crate) rotation: Quat,
-    pub(crate) zero_translation: bool,
+    pub(crate) at_placement: bool,
 }
 
 /// The per-body bone poses an `XRGD` pose asks for, or why it cannot be
@@ -480,7 +531,7 @@ pub(crate) fn bone_poses(
             let [rx, ry, rz] = entry.rotation;
             Ok(BonePose {
                 rotation: euler_zup_to_quat_yup_mode(XRGD_ROTATION_MODE, rx, ry, rz),
-                zero_translation: k == 0,
+                at_placement: k == 0,
             })
         })
         .collect()
@@ -503,6 +554,27 @@ pub(crate) fn is_skyrim_posable_ragdoll(body_bone_names: &[Option<String>]) -> b
     SKYRIM_POSABLE_RAGDOLLS
         .into_iter()
         .any(|set| is_body_set(body_bone_names, set))
+}
+
+/// Whether a ragdoll's bodies, by bone name in template order, are the FO3 /
+/// FNV humanoid set, whose `XRGD` entries pose them by order (#6252).
+pub(crate) fn is_fallout_posable_ragdoll(body_bone_names: &[Option<String>]) -> bool {
+    is_body_set(body_bone_names, &FALLOUT_HUMANOID_RAGDOLL_BODIES)
+}
+
+/// Whether a spawn parks a placed actor's `XRGD` pose for its death
+/// reconciliation. Skyrim+ marks the corpse on the placement (`Starts Dead`);
+/// FO3/FNV mark it on the base record, and a pose on a live base (Fisto,
+/// `VHDKimballRangerAmbushed01`) is not a corpse's (#6252). Oblivion's base
+/// flag also marks a corpse, but no Oblivion rig is verified, so its poses are
+/// not parked.
+pub(crate) fn parks_authored_pose(
+    placement_starts_dead: bool,
+    base_dead: bool,
+    game: GameKind,
+    pose: &[RagdollPoseBone],
+) -> bool {
+    !pose.is_empty() && (placement_starts_dead || (base_dead && game == GameKind::Fallout3NV))
 }
 
 /// Whether a ragdoll's bodies, by bone name in template order, are exactly one
@@ -572,7 +644,7 @@ pub(crate) fn bone_poses_mapped(
             let [rx, ry, rz] = entry.rotation;
             Ok(BonePose {
                 rotation: euler_zup_to_quat_yup_mode(XRGD_ROTATION_MODE, rx, ry, rz),
-                zero_translation: k == 0,
+                at_placement: k == 0,
             })
         })
         .collect()
@@ -598,7 +670,7 @@ pub(crate) fn pose_skeleton(
         .iter()
         .map(|&bone| crate::commands::shared::resolve_entity_name(world, bone))
         .collect();
-    let poses = if is_skyrim_posable_ragdoll(&names) {
+    let poses = if is_skyrim_posable_ragdoll(&names) || is_fallout_posable_ragdoll(&names) {
         bone_poses(entries, bones.len())?
     } else if is_fo4_posable_ragdoll(&names) {
         let ids: Vec<Option<u8>> = world
@@ -617,22 +689,47 @@ pub(crate) fn pose_skeleton(
         );
     };
 
+    // Resolved before the write: the root body's parents are not ragdoll
+    // bodies, so the pose leaves their globals as they are.
+    let placements: Vec<Option<Vec3>> = bones
+        .iter()
+        .zip(&poses)
+        .map(|(&bone, pose)| pose.at_placement.then(|| placement_local(world, skeleton_root, bone)))
+        .collect();
     {
         let mut transforms = world
             .query_mut::<Transform>()
             .ok_or("Transform storage not registered")?;
-        for (&bone, pose) in bones.iter().zip(&poses) {
+        for ((&bone, pose), placement) in bones.iter().zip(&poses).zip(placements) {
             let Some(local) = transforms.get_mut(bone) else {
                 return Err(format!("ragdoll bone {bone} has no Transform"));
             };
             local.rotation = pose.rotation;
-            if pose.zero_translation {
-                local.translation = Vec3::ZERO;
+            if let Some(translation) = placement {
+                local.translation = translation;
             }
         }
     }
     recompute_globals(world, skeleton_root);
     Ok(bones.len())
+}
+
+/// The local translation that puts `bone` at `skeleton_root`'s position: the
+/// root's world position in the bone's parent frame. Zero when the parents sit
+/// at the placement origin (the Skyrim and FO4 COM); without the globals to
+/// read, zero as before (#6252).
+fn placement_local(world: &World, skeleton_root: EntityId, bone: EntityId) -> Vec3 {
+    let parent = world.get::<Parent>(bone).map(|parent| parent.0);
+    let (Some(parent), Some(globals)) = (parent, world.query::<GlobalTransform>()) else {
+        return Vec3::ZERO;
+    };
+    let (Some(parent), Some(root)) = (globals.get(parent), globals.get(skeleton_root)) else {
+        return Vec3::ZERO;
+    };
+    if parent.scale.abs() < f32::EPSILON {
+        return Vec3::ZERO;
+    }
+    parent.rotation.inverse() * (root.translation - parent.translation) / parent.scale
 }
 
 /// Recompose every `GlobalTransform` under `root` from the local transforms,

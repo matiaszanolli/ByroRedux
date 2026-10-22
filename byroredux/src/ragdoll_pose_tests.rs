@@ -59,11 +59,11 @@ fn rotation_is_the_gamebryo_xyz_product_not_zyx() {
 }
 
 #[test]
-fn only_the_root_entry_zeroes_its_translation() {
+fn only_the_root_entry_is_placed_at_the_placement() {
     let entries = vec![entry([0.0; 3], [0.1, 0.2, 0.3]); 4];
     let poses = bone_poses(&entries, 4).unwrap();
     assert_eq!(
-        poses.iter().map(|p| p.zero_translation).collect::<Vec<_>>(),
+        poses.iter().map(|p| p.at_placement).collect::<Vec<_>>(),
         [true, false, false, false]
     );
 }
@@ -297,8 +297,8 @@ fn starts_dead_spawn_parks_xrgd_before_queuing_reconciliation() {
     let start = source.find("pub(super) fn load_references_budgeted").unwrap();
     let loader = &source[start..];
     let gate = loader
-        .find("if placed_ref.starts_dead && !placed_ref.ragdoll_pose.is_empty()")
-        .expect("XRGD pose parking stays gated on Starts Dead and a non-empty pose");
+        .find("if crate::ragdoll_pose::parks_authored_pose(")
+        .expect("XRGD pose parking stays gated on a corpse and a non-empty pose");
     let body = &loader[gate..];
     let insert = body
         .find("AuthoredRagdollPose(")
@@ -418,6 +418,72 @@ fn the_verified_skyrim_creature_rigs_are_posed_by_order() {
         }
         assert_eq!(world.get::<Transform>(bones[0]).unwrap().translation, Vec3::ZERO);
     }
+}
+
+/// #6252 — the FO3/FNV humanoid rig is posed by order, like the Skyrim
+/// humanoid.
+#[test]
+fn the_fallout_humanoid_rig_is_posed_by_order() {
+    let mut world = World::new();
+    let set = &FALLOUT_HUMANOID_RAGDOLL_BODIES[..];
+    let (root, bones) = bone_chain(&mut world, set, &[None; 18]);
+    assert!(is_fallout_posable_ragdoll(&owned_names(set)));
+    assert!(!is_skyrim_posable_ragdoll(&owned_names(set)));
+    assert_eq!(pose_skeleton(&world, root, &ordered_entries(18)), Ok(18));
+    let rotation = |bone| world.get::<Transform>(bone).unwrap().rotation;
+    for (k, &bone) in bones.iter().enumerate() {
+        assert!(same_rotation(rotation(bone), expected_yup(0.0, 0.0, 0.01 * (k + 1) as f32)));
+    }
+    // A 19-entry pose (three FO3 corpses end in an entry no body explains) is refused.
+    let mut extra = ordered_entries(18);
+    extra.push(entry([1.9, -0.9, 1.7], [-2.29, -0.06, -0.4]));
+    assert!(pose_skeleton(&world, root, &extra).is_err());
+}
+
+/// #6252 — the root body is placed at the skeleton root (the reference
+/// position), not merely given a zero local translation: FO3/FNV's
+/// `Bip01 NonAccum` hangs under `Bip01`, which carries the hip height. Where
+/// the parents sit at the placement origin (Skyrim, FO4) the two agree.
+#[test]
+fn the_root_body_lands_on_the_placement_through_a_lifted_parent() {
+    use byroredux_core::ecs::Name;
+    let mut world = World::new();
+    let set = &FALLOUT_HUMANOID_RAGDOLL_BODIES[..];
+    let (root, bones) = bone_chain(&mut world, set, &[None; 18]);
+    // Splice `Bip01` (hip height, a quarter turn) between the root and NonAccum.
+    let hip = Vec3::new(0.0, 67.8, 0.66);
+    let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    let bip01 = world.spawn();
+    let symbol = world.resource_mut::<byroredux_core::string::StringPool>().intern("Bip01");
+    world.insert(bip01, Name(symbol));
+    world.insert(bip01, Transform::new(hip, turn, 1.0));
+    world.insert(bip01, GlobalTransform::new(Vec3::new(10.0, 0.0, 0.0) + hip, turn, 1.0));
+    world.insert(bip01, Parent(root));
+    world.insert(root, Children(vec![bip01]));
+    world.insert(bones[0], Parent(bip01));
+    world.insert(bip01, Children(vec![bones[0]]));
+
+    assert_eq!(pose_skeleton(&world, root, &ordered_entries(18)), Ok(18));
+    let com = *world.get::<GlobalTransform>(bones[0]).unwrap();
+    assert!(
+        (com.translation - Vec3::new(10.0, 0.0, 0.0)).length() < 1.0e-3,
+        "the root body sits at the reference position, not {:?}",
+        com.translation
+    );
+}
+
+/// #6252 — which spawns park their `XRGD` pose: a Starts-Dead placement
+/// (Skyrim+), or a dead base on FO3/FNV; never a pose on a live FO3/FNV base,
+/// an Oblivion base (no verified rig) or an empty pose.
+#[test]
+fn a_corpse_pose_is_parked_on_the_placement_flag_or_a_fallout_dead_base() {
+    use byroredux_plugin::esm::reader::GameKind;
+    let pose = ordered_entries(18);
+    assert!(parks_authored_pose(true, false, GameKind::Skyrim, &pose));
+    assert!(parks_authored_pose(false, true, GameKind::Fallout3NV, &pose));
+    assert!(!parks_authored_pose(false, false, GameKind::Fallout3NV, &pose), "Fisto's pose");
+    assert!(!parks_authored_pose(false, true, GameKind::Oblivion, &pose));
+    assert!(!parks_authored_pose(true, true, GameKind::Fallout3NV, &[]));
 }
 
 /// #6068 — SkeletonS poses only its 19-entry poses. The 18-entry ones (two
@@ -851,4 +917,59 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
     // super mutants all resolve. The rest are ghouls with two unmatched trailing
     // entries (20 in all) and a few poses that omit a body.
     assert!(mapped * 100 >= corpses * 95, "at least 95% resolve, got {mapped} of {corpses}");
+}
+
+/// #6252 — against the shipped data: `FalloutNV.esm`'s dead-base humanoid
+/// corpses that author an `XRGD` pose are parked, and every one lines up
+/// entry-for-body with the humanoid skeleton's ragdoll, which is the verified
+/// FO3/FNV body set. A pose on a live base is not parked.
+///
+///   cargo test -p byroredux --bin byroredux fnv_xrgd -- --ignored --nocapture
+#[test]
+#[ignore = "needs Fallout New Vegas game data on disk"]
+fn fnv_xrgd_corpse_poses_line_up_with_the_humanoid_ragdoll() {
+    use byroredux_plugin::esm::reader::GameKind;
+    let data = std::env::var("BYROREDUX_FNV_DATA")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data".into());
+    let (esm, meshes) = (data.join("FalloutNV.esm"), data.join("Fallout - Meshes.bsa"));
+    if !esm.is_file() || !meshes.is_file() {
+        assert!(
+            std::env::var("BYROREDUX_REQUIRE_GAME_DATA").map_or(true, |v| v == "0"),
+            "BYROREDUX_REQUIRE_GAME_DATA is set, but {esm:?} / {meshes:?} are missing"
+        );
+        return;
+    }
+    let archive = byroredux_bsa::BsaArchive::open(&meshes).unwrap();
+    let skeleton = archive.extract(r"meshes\characters\_male\skeleton.nif").unwrap();
+    let ragdoll = byroredux_nif::import::collision::extract_ragdoll(&byroredux_nif::parse_nif(&skeleton).unwrap())
+        .expect("the humanoid skeleton carries a ragdoll");
+    let names: Vec<Option<String>> = ragdoll.bodies.iter().map(|b| Some(b.bone_name.to_string())).collect();
+    assert!(is_fallout_posable_ragdoll(&names), "{names:?}");
+
+    let index = byroredux_plugin::esm::records::parse_esm(&std::fs::read(&esm).unwrap()).unwrap();
+    let (mut parked, mut posable, mut live_posed) = (0, 0, 0);
+    let mut visit = |r: &byroredux_plugin::esm::cell::PlacedRef| {
+        let Some(npc) = index.npcs.get(&r.base_form_id).filter(|npc| !npc.is_creature) else { return };
+        if r.ragdoll_pose.is_empty() {
+            return;
+        }
+        if !parks_authored_pose(r.starts_dead, npc.starts_dead, GameKind::Fallout3NV, &r.ragdoll_pose) {
+            live_posed += 1;
+            return;
+        }
+        parked += 1;
+        posable += usize::from(bone_poses(&r.ragdoll_pose, ragdoll.bodies.len()).is_ok());
+    };
+    for cell in index.cells.cells.values() {
+        cell.references.iter().for_each(&mut visit);
+    }
+    for cells in index.cells.exterior_cells.values() {
+        cells.values().flat_map(|cell| cell.references.iter()).for_each(&mut visit);
+    }
+    eprintln!("FNV: {parked} parked corpse poses, {posable} posable, {live_posed} on live bases");
+    assert_eq!((parked, posable), (202, 202));
+    assert_eq!(live_posed, 1, "the one indexed pose on a live base is not a corpse's");
 }

@@ -775,8 +775,14 @@ pub(super) fn load_references_budgeted(
                                 {
                                     // #5015 — an authored corpse lies as
                                     // posed: park the `XRGD` pose for the
-                                    // death reconciliation to apply.
-                                    if placed_ref.starts_dead && !placed_ref.ragdoll_pose.is_empty() {
+                                    // death reconciliation to apply. #6252 —
+                                    // on FO3/FNV the corpse is the base's.
+                                    if crate::ragdoll_pose::parks_authored_pose(
+                                        placed_ref.starts_dead,
+                                        npc.starts_dead,
+                                        game,
+                                        &placed_ref.ragdoll_pose,
+                                    ) {
                                         world.insert(
                                             root,
                                             crate::ragdoll_pose::AuthoredRagdollPose(
