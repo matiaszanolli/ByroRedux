@@ -541,20 +541,25 @@ fn parse_qust_header(
         }
         // Skyrim+ widened flags to u16 and moved the quest header to
         // DNAM: flags, priority, form version, four unknown bytes, type.
-        b"DNAM" if sub.data.len() >= 3 => {
-            *skyrim_plus = true;
-            out.skyrim_plus = true;
-            out.quest_flags = u16::from_le_bytes([sub.data[0], sub.data[1]]);
-            out.priority = sub.data[2];
-            out.general_version = sub.data.get(3).copied().unwrap_or_default();
-            if sub.data.len() >= 8 {
-                out.general_aux.copy_from_slice(&sub.data[4..8]);
-            }
-            if sub.data.len() >= 9 {
-                let mut raw = [0; 4];
-                let available = (sub.data.len() - 8).min(4);
-                raw[..available].copy_from_slice(&sub.data[8..8 + available]);
-                out.quest_type = u32::from_le_bytes(raw);
+        b"DNAM" => {
+            let mut r = SubReader::new(&sub.data);
+            if let (Ok(flags), Ok(priority)) = (r.u16(), r.u8()) {
+                *skyrim_plus = true;
+                out.skyrim_plus = true;
+                out.quest_flags = flags;
+                out.priority = priority;
+                out.general_version = r.u8_or_default();
+                if let Ok(aux) = r.fixed::<4>() {
+                    out.general_aux = aux;
+                    // The type is zero-extended when the record is truncated mid-field.
+                    let tail = r.rest();
+                    if !tail.is_empty() {
+                        let mut raw = [0; 4];
+                        let available = tail.len().min(4);
+                        raw[..available].copy_from_slice(&tail[..available]);
+                        out.quest_type = u32::from_le_bytes(raw);
+                    }
+                }
             }
         }
         b"ENAM" if sub.data.len() >= 4 => {

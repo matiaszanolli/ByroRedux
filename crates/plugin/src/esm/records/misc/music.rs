@@ -6,6 +6,7 @@
 
 use super::super::common::{read_zstring, CommonNamedFields};
 use crate::esm::reader::{GameKind, SubRecord};
+use crate::esm::sub_reader::SubReader;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MuscRecord {
@@ -32,7 +33,11 @@ pub fn parse_musc(form_id: u32, subs: &[SubRecord], game: GameKind) -> MuscRecor
     for sub in subs {
         match &sub.sub_type {
             b"FNAM" => out.file = read_zstring(&sub.data),
-            b"ANAM" if sub.data.len() >= 4 => out.decibels = f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
+            b"ANAM" => {
+                if let Ok(decibels) = SubReader::new(&sub.data).f32() {
+                    out.decibels = decibels;
+                }
+            }
             _ => {}
         }
     }
@@ -58,5 +63,11 @@ mod tests {
         let stinger = parse_musc(1, &[sub(b"ANAM", (-0.0001f32).to_le_bytes()), sub(b"FNAM", b"a.mp3\0")], GameKind::Fallout3NV);
         assert!(!stinger.looping());
         assert_eq!(parse_musc(2, &subs, GameKind::Skyrim).file, "", "another game's layout is not read");
+    }
+
+    #[test]
+    fn a_truncated_decibel_field_is_skipped_not_indexed() {
+        let truncated = parse_musc(3, &[sub(b"ANAM", [0u8, 0, 0x80])], GameKind::Fallout3NV);
+        assert_eq!(truncated.decibels, 0.0);
     }
 }

@@ -69,10 +69,11 @@ pub fn parse_avif(
                         .unwrap_or([0.0; 4]),
                 );
             }
-            b"PNAM" if sub.data.len() >= 4 => {
-                let raw = u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
-                let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
-                out.perks.push(remapped);
+            b"PNAM" => {
+                if let Ok(raw) = SubReader::new(&sub.data).u32() {
+                    let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
+                    out.perks.push(remapped);
+                }
             }
             _ => {}
         }

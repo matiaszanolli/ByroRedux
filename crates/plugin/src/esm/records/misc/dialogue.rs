@@ -689,10 +689,11 @@ pub fn parse_info(
                 let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
                 out.quest = remapped;
             }
-            b"ANAM" if sub.data.len() >= 4 => {
-                let raw = u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
-                let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
-                out.actor_form_id = remapped;
+            b"ANAM" => {
+                if let Ok(raw) = SubReader::new(&sub.data).u32() {
+                    let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
+                    out.actor_form_id = remapped;
+                }
             }
             // #4469 — the INFO's own `DATA` header, previously dropped on
             // 100% of measured FO3/FNV INFOs. #5295 — typed per xEdit's
@@ -731,9 +732,12 @@ pub fn parse_info(
             // Reset Hours u16` (UESP INFO table). Sourced for Skyrim only;
             // FO4 also authors an ENAM whose layout this tree has no local
             // source for, so it stays undecoded rather than guessed.
-            b"ENAM" if game == GameKind::Skyrim && sub.data.len() >= 4 => {
-                out.skyrim_response_flags = Some(u16::from_le_bytes([sub.data[0], sub.data[1]]));
-                out.skyrim_reset_hours_raw = Some(u16::from_le_bytes([sub.data[2], sub.data[3]]));
+            b"ENAM" if game == GameKind::Skyrim => {
+                let mut r = SubReader::new(&sub.data);
+                if let (Ok(flags), Ok(reset_hours)) = (r.u16(), r.u16()) {
+                    out.skyrim_response_flags = Some(flags);
+                    out.skyrim_reset_hours_raw = Some(reset_hours);
+                }
             }
             // #3614 — `CTDT` is the legacy fixed-layout encoding of the
             // same condition; see `push_ctda`'s doc.

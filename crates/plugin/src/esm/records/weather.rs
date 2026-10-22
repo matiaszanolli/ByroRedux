@@ -1262,21 +1262,19 @@ fn parse_wthr_skyrim(
             }
             // #4069 — MNAM is a SPGD (precipitation shader-particle
             // geometry) cross-reference, so it takes the load-order remap.
-            b"MNAM" if sub.data.len() >= 4 => {
-                record.skyrim_precipitation_effect = Some(remap_fid(
-                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
-                    remap,
-                ));
+            b"MNAM" => {
+                if let Ok(form) = SubReader::new(&sub.data).u32() {
+                    record.skyrim_precipitation_effect = Some(remap_fid(form, remap));
+                }
             }
             b"IMSP" if sub.data.len() >= 16 => {
                 record.image_spaces = parse_image_spaces(&sub.data, remap);
             }
             // #4069 — NNAM is an RFCT (visual effect) cross-reference.
-            b"NNAM" if sub.data.len() >= 4 => {
-                record.skyrim_visual_effect = Some(remap_fid(
-                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
-                    remap,
-                ));
+            b"NNAM" => {
+                if let Ok(form) = SubReader::new(&sub.data).u32() {
+                    record.skyrim_visual_effect = Some(remap_fid(form, remap));
+                }
             }
             sub_type if skyrim_cloud_layer_index(sub_type).is_some() => {
                 set_creation_cloud_texture(&mut record, sub_type, &sub.data);

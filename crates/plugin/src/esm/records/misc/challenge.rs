@@ -70,6 +70,9 @@ impl ChalRecord {
     }
 }
 
+/// The `DATA` struct: type, threshold, flags, interval (u32 each), two u16 values and a u32.
+const CHAL_DATA_LEN: usize = 24;
+
 pub fn parse_chal(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::reader::FormIdRemap>) -> ChalRecord {
     let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut out = ChalRecord {
@@ -82,7 +85,7 @@ pub fn parse_chal(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::r
     for sub in subs {
         match &sub.sub_type {
             b"DESC" => out.description = super::super::common::read_lstring_or_zstring(&sub.data),
-            b"DATA" if sub.data.len() >= 24 => {
+            b"DATA" if sub.data.len() >= CHAL_DATA_LEN => {
                 let mut r = SubReader::new(&sub.data);
                 out.challenge_type = r.u32_or_default();
                 out.threshold = r.u32_or_default();
@@ -92,8 +95,16 @@ pub fn parse_chal(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::r
                 out.value2 = r.u16_or_default();
                 out.value3 = r.u32_or_default();
             }
-            b"SNAM" if sub.data.len() >= 4 => out.form1 = remap_fid(u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]), remap),
-            b"XNAM" if sub.data.len() >= 4 => out.form2 = remap_fid(u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]), remap),
+            b"SNAM" => {
+                if let Ok(form) = SubReader::new(&sub.data).u32() {
+                    out.form1 = remap_fid(form, remap);
+                }
+            }
+            b"XNAM" => {
+                if let Ok(form) = SubReader::new(&sub.data).u32() {
+                    out.form2 = remap_fid(form, remap);
+                }
+            }
             _ => {}
         }
     }

@@ -1404,7 +1404,7 @@ pub fn parse_watr(
                 // shape). Do not let that short record overwrite the visual
                 // payload when both are present.
                 if sub.data.len() == 2 {
-                    out.legacy_damage = Some(u16::from_le_bytes([sub.data[0], sub.data[1]]));
+                    out.legacy_damage = SubReader::new(&sub.data).u16().ok();
                 } else {
                     // Oblivion inserts scroll speeds before its fog/color
                     // block; FO3/FNV use the short compatibility prefix or

@@ -1836,8 +1836,8 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             b"WNAM" => out.welcome_text = read_lstring_or_zstring(&sub.data),
             b"BSIZ" => {
                 out.body_size = match sub.data.len() {
-                    4 => u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
-                    1..=3 => sub.data[0] as u32,
+                    4 => le_u32_at(&sub.data, 0).unwrap_or_default(),
+                    1..=3 => SubReader::new(&sub.data).u8_or_default() as u32,
                     _ => 0,
                 };
             }
@@ -1865,9 +1865,9 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     item.flags = sub.data[0];
                 }
             }
-            b"ITID" if sub.data.len() >= 2 => {
-                if let Some(item) = out.menu_items.last_mut() {
-                    item.item_id = u16::from_le_bytes([sub.data[0], sub.data[1]]);
+            b"ITID" => {
+                if let (Ok(id), Some(item)) = (SubReader::new(&sub.data).u16(), out.menu_items.last_mut()) {
+                    item.item_id = id;
                 }
             }
             // #4641 — `UNAM` — the text an `ANAM = 8` ("Display Text")

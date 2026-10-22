@@ -41,6 +41,7 @@
 //! See `byroredux::cell_loader::expand_scol_placements` (#585).
 
 use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::sub_reader::SubReader;
 use crate::esm::records::common::{remap_fid, CommonNamedFields};
 
 /// One per-child placement inside an SCOL — position / rotation
@@ -153,16 +154,13 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             // redundant `has_script = true` arm here shadowed that result
             // with a local duplicate that computes the identical thing.
             b"ONAM" => {
-                if sub.data.len() >= 4 {
+                if let Ok(base) = SubReader::new(&sub.data).u32() {
                     // #3400 — the child base form is looked up in
                     // `index.scols` / `index.statics`, both keyed by the
                     // REMAPPED id (`read_record_header` remaps every
                     // record's own FormID). Left raw, every child of the
                     // second and later plugin in a load order missed.
-                    current_base = Some(remap_fid(
-                        u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
-                        remap,
-                    ));
+                    current_base = Some(remap_fid(base, remap));
                     // Each ONAM starts a new ScolPart — push one even
                     // with zero placements so `parts.len() == number
                     // of ONAMs in the record`. The paired DATA fills
