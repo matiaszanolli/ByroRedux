@@ -65,6 +65,8 @@ Before committing, verify:
 - [ ] **SIBLING**: Same bug pattern checked in related files
 - [ ] **DROP**: Vulkan object lifecycle correct (destroy-before-parent)
 - [ ] **TESTS**: Regression test added if applicable
+- [ ] **PINS**: A HIGH/CRITICAL fix whose proof is an `#[ignore]`d real-data test
+      appends `<lane> <test fn>` to `.github/real-data-pins.txt` (#6224)
 
 ## Phase 8: Commit & Close
 Commit with conventional message referencing the issue:

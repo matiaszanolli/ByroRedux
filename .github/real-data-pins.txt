@@ -28,6 +28,7 @@ plugin-lib parse_real_fo4_esm_surfaces_scol_placements
 plugin-lib parse_real_fo4_esm_surfaces_pkin_contents
 plugin-lib parse_real_oblivion_esm_surfaces_tamriel_worldspace
 plugin-lib parse_real_fo3_esm_surfaces_wasteland_worldspace
+plugin-lib installed_starfield_small_masters_do_not_collide
 # plugin parse_real_esm integration harness
 plugin-esm fnv_corpses_key_on_base_health_not_xrgd
 plugin-esm fo3_fnv_named_npc_health_matches_the_authored_curve
@@ -63,6 +64,9 @@ bin distant_water_mesh_is_per_cell_on_real_fnv
 bin dlc_rebake_of_a_master_owned_cell_decodes_from_the_dlc_csg
 bin exterior_precombine_instances_are_world_absolute
 bin riverwater_flowne_real_record_layers_run_downstream
+bin fo4_mswp_canvas_swap_matches_the_picture_frame_nif
+bin installed_default_idle_clips_exist_in_the_meshes_archive
+bin installed_fallout_spawner_shells_resolve_a_model
 # nif whole-corpus harnesses that cite closed-HIGH fixes but sit
 # outside the three binaries the corpus job names. #5784: the first two
 # are Dim 3 real-data tests whose names carry no game token, so no corpus
