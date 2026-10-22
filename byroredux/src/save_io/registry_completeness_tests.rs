@@ -1189,24 +1189,61 @@ fn every_delta_column_is_parked_or_explicitly_not() {
         "ReferenceState.picked_up",
     ];
     /// Columns deliberately not parked, each with its reason. `UNAUDITED`
-    /// rows predate this guard: they were seeded from the delta list as it
-    /// stood and still owe a decision (park them, or replace the marker with
-    /// the real reason).
+    /// rows predate this guard and still owe a decision (park them, or
+    /// replace the marker with the real reason); [`STILL_UNAUDITED`] names the
+    /// ones that remain and no new row may join them (#6294).
     const NOT_PARKED: &[(&str, &str)] = &[
         (
             "WanderState",
             "re-roll on respawn is the intended behaviour (stream-boundary-state-continuity.md)",
         ),
-        ("LightSource", "UNAUDITED"),
-        ("LightFlicker", "UNAUDITED"),
-        ("CharacterLevel", "UNAUDITED"),
-        ("LevelUpPoints", "UNAUDITED"),
-        ("TimedRestorations", "UNAUDITED"),
-        ("GuardState", "UNAUDITED"),
-        ("PatrolState", "UNAUDITED"),
+        (
+            "LightSource",
+            "mutated only by light-controller playback (systems/animation.rs), which is re-derived on respawn",
+        ),
+        (
+            "LightFlicker",
+            "mutated only by light_anim flicker playback, which is re-derived on respawn",
+        ),
+        (
+            "CharacterLevel",
+            "player progression (combat::grant_experience); the player outlives cell reloads and is never evicted",
+        ),
+        (
+            "LevelUpPoints",
+            "player progression; the player outlives cell reloads and is never evicted",
+        ),
+        (
+            "TimedRestorations",
+            "the only production insert is on the player (inventory.rs); the player is never evicted",
+        ),
+        (
+            "GuardState",
+            "AI runtime that re-rolls on respawn, as WanderState does",
+        ),
+        (
+            "PatrolState",
+            "AI runtime that re-rolls on respawn, as WanderState does",
+        ),
+        // The one open decision (gameplay-owned): `Escorted` is the terminal marker of a
+        // finished escort, so after an eviction the escort package can run again and fire
+        // its PF_ fragments a second time. Park it, or justify the repeat.
         ("Escorted", "UNAUDITED"),
         ("CharacterController", "the player outlives cell reloads; never evicted"),
     ];
+
+    /// The `UNAUDITED` rows still owed a decision. The list may shrink; a new
+    /// delta column has to be parked or given its real reason (#6294).
+    const STILL_UNAUDITED: &[&str] = &["Escorted"];
+    let unaudited: Vec<&str> = NOT_PARKED
+        .iter()
+        .filter(|(_, reason)| *reason == "UNAUDITED")
+        .map(|(column, _)| *column)
+        .collect();
+    assert!(
+        unaudited.iter().all(|column| STILL_UNAUDITED.contains(column)),
+        "#6294: only {STILL_UNAUDITED:?} may stay `UNAUDITED`; decide these instead: {unaudited:?}",
+    );
 
     let covered: std::collections::BTreeSet<&str> = PARKED
         .iter()
