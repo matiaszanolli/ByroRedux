@@ -14,12 +14,14 @@ Bethesda Gamebryo/Creation game (Oblivion through Starfield).
 
 ## Workspace Structure
 
-The workspace is **27 members**: 24 library/system crates under `crates/`, the
-`byroredux` binary, and two tools.
+The workspace is **35 members** (2026-10-22): 30 library/system crates under
+`crates/`, the `byroredux` binary, and four tools under `tools/`
+(`tools/nifskope` is on disk but not a member). The live count is in ROADMAP's
+Project Stats.
 
 ```
 byroredux/
-├── Cargo.toml                 Workspace root (27 members)
+├── Cargo.toml                 Workspace root (35 members)
 ├── byroredux/                 Binary crate — game loop, scene setup, cell loader,
 │                              world streaming, NPC spawn/equip, fly + character
 │                              controllers, animation/transform/render systems
@@ -27,6 +29,9 @@ byroredux/
 │   ├── core/                  ECS, math (glam), animation engine, types,
 │   │                          string interning, form IDs, components/resources,
 │   │                          console-command registry
+│   ├── boot-request/          Launcher → engine handoff contract
+│   ├── game-detect/           Install detection and pre-launch validation
+│   ├── settings-io/           Persistent user settings (profiles.toml)
 │   ├── save/                  Snapshot registry, validation, atomic disk format
 │   ├── plugin/                Plugin system, ESM/ESP parser (cell + records),
 │   │                          manifests, conflict resolution, legacy bridge
@@ -39,6 +44,7 @@ byroredux/
 │   │                          (Oblivion through Starfield)
 │   ├── bgsm/                  BGSM / BGEM material readers (FO4+) + template merge
 │   ├── sfmaterial/            Starfield .mat / layered-material reader
+│   ├── terrain-height/        Per-terrain-layer height maps (TSD-1, #6195)
 │   ├── facegen/               FaceGen .egm / .egt / .tri morph readers + eval
 │   ├── physics/               Rapier3D-backed physics simulation + kinematic
 │   │                          character controller, consumes NIF collision data
@@ -47,6 +53,7 @@ byroredux/
 │   ├── fsr3-sys/              FidelityFX FSR 3 native bridge
 │   ├── audio/                 kira-backed audio (spatial sub-tracks, music, reverb)
 │   ├── ui/                    Scaleform/SWF UI system (Ruffle integration)
+│   ├── menuxml/               Oblivion / FO3 / FNV legacy MenuXml UI track
 │   ├── scripting/             ECS-native scripting (events, timers, conditions,
 │   │                          quest/scene fragments and runtime effects)
 │   ├── papyrus/               Papyrus language parser (.psc source → AST)
@@ -56,9 +63,12 @@ byroredux/
 │   ├── cxx-bridge/            C++ interop via cxx
 │   ├── debug-protocol/        Wire types + component registry for the debug CLI
 │   ├── debug-server/          TCP debug server embedded in the engine
-│   └── debug-ui/              In-engine egui overlay (metrics, load queue)
+│   ├── debug-ui/              In-engine egui overlay (metrics, load queue)
+│   └── sdk/                   Public tooling APIs for content applications
 ├── tools/
 │   ├── byro-dbg/              Standalone debug CLI binary (TCP client, REPL)
+│   ├── byro-detect/           Find installed Bethesda titles and validate them
+│   ├── byro-launcher/         Profile launcher (shares the --profiles parser)
 │   └── texture-upscale/       Archive-aware, reference-guided texture upscaler
 └── docs/
     ├── engine/                This documentation
