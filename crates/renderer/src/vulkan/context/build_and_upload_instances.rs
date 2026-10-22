@@ -28,45 +28,77 @@ use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use ash::vk;
 use std::time::Instant;
 
-/// Fold material and stable ambient inputs into the progressive SVGF key.
-/// Continuous cloud motion and weather animation time are omitted so they do
-/// not keep the whole image at the recovery alpha floor.
-fn fold_svgf_scene_inputs(
-    mut key: u64,
-    materials: &[GpuMaterial],
-    fog_inputs: &[f32],
-    sky: &SkyParams,
-) -> u64 {
-    fn fold_floats(key: &mut u64, values: &[f32]) {
-        for value in values {
-            *key = crate::vulkan::caustic::fold_caustic_key_f32(*key, *value);
-        }
-    }
-
+/// Fold the discrete material and ambient inputs into the progressive SVGF
+/// key. Continuous inputs are left out so they do not keep the whole image at
+/// the recovery alpha floor: cloud motion and weather time, and (#6247) the
+/// time-of-day sky / fog values in [`svgf_continuous_inputs`] and the
+/// per-frame-animated material lanes [`svgf_material_hash`] neutralises.
+fn fold_svgf_scene_inputs(mut key: u64, materials: &[GpuMaterial], sky: &SkyParams) -> u64 {
     key = crate::vulkan::caustic::fold_caustic_key_u64(key, materials.len() as u64);
     for material in materials {
-        key = crate::vulkan::caustic::fold_caustic_key_u64(
-            key,
-            super::super::material::hash_gpu_material_fields(material),
-        );
+        key = crate::vulkan::caustic::fold_caustic_key_u64(key, svgf_material_hash(material));
     }
-    fold_floats(&mut key, fog_inputs);
-    fold_floats(&mut key, &sky.zenith_color);
-    fold_floats(&mut key, &sky.exterior_zenith_color);
-    fold_floats(&mut key, &sky.horizon_color);
-    fold_floats(&mut key, &sky.lower_color);
-    fold_floats(&mut key, &sky.sun_direction);
-    fold_floats(&mut key, &sky.sun_color);
-    fold_floats(&mut key, &[sky.sun_size, sky.sun_intensity, sky.sun_angular_radius]);
-    fold_floats(&mut key, &sky.sun_illuminance);
-    fold_floats(&mut key, &sky.portal_sun_radiance);
-    fold_floats(&mut key, &sky.portal_sun_direction);
     key = crate::vulkan::caustic::fold_caustic_key_u64(key, sky.is_exterior as u64);
     key = crate::vulkan::caustic::fold_caustic_key_u64(key, sky.interior_show_sky as u64);
     key = crate::vulkan::caustic::fold_caustic_key_u64(key, sky.sun_texture_index as u64);
-    if let Some(dalc) = sky.dalc_cube {
-        key = crate::vulkan::caustic::fold_caustic_key_u64(key, 1);
-        for axis in [
+    crate::vulkan::caustic::fold_caustic_key_u64(key, sky.dalc_cube.is_some() as u64)
+}
+
+/// A material's hash with the lanes the draw rewrites every frame zeroed
+/// (#6247): UV offset / scale (texture-transform controllers: waterfalls,
+/// conveyor belts), the four material colours, alpha and the shader
+/// colour / float (material-colour, alpha and shader controllers), and the
+/// emissive multiplier (a playing magic shader's tint). One animated material
+/// anywhere in the table re-keyed the whole image every frame. A changed
+/// texture, kind, flag or any other lane still re-keys.
+fn svgf_material_hash(material: &GpuMaterial) -> u64 {
+    let mut stable = *material;
+    stable.emissive_mult = 0.0;
+    stable.emissive_r = 0.0;
+    stable.emissive_g = 0.0;
+    stable.emissive_b = 0.0;
+    stable.specular_r = 0.0;
+    stable.specular_g = 0.0;
+    stable.specular_b = 0.0;
+    stable.diffuse_r = 0.0;
+    stable.diffuse_g = 0.0;
+    stable.diffuse_b = 0.0;
+    stable.ambient_r = 0.0;
+    stable.ambient_g = 0.0;
+    stable.ambient_b = 0.0;
+    stable.material_alpha = 0.0;
+    stable.uv_offset_u = 0.0;
+    stable.uv_offset_v = 0.0;
+    stable.uv_scale_u = 0.0;
+    stable.uv_scale_v = 0.0;
+    stable.shader_color_r = 0.0;
+    stable.shader_color_g = 0.0;
+    stable.shader_color_b = 0.0;
+    stable.shader_float = 0.0;
+    super::super::material::hash_gpu_material_fields(&stable)
+}
+
+/// Fog lanes in [`svgf_continuous_inputs`], in the order the caller passes.
+pub(super) const SVGF_FOG_INPUTS: usize = 11;
+/// Every continuous input [`svgf_continuous_inputs`] lays out.
+pub(super) const SVGF_CONTINUOUS_INPUTS: usize = SVGF_FOG_INPUTS + 30 + 22;
+
+/// The fog and sky inputs that follow the game clock (#6247). Each is
+/// re-interpolated from the fractional hour every frame (`compute_sun_arc`,
+/// the TOD colour pair, the weather's fog and DALC), so folding them into the
+/// key meant no exterior with the clock running ever accumulated. They are
+/// compared against last frame through [`svgf_continuous_inputs_jumped`]
+/// instead: the drift is tracked by the accumulators' own bounded history
+/// (SVGF's 255-frame age cap, the caustic pool's 0.995 decay), and only a jump
+/// (`time.set`, a lightning flash, a cell change) needs the reset.
+fn svgf_continuous_inputs(
+    fog_inputs: &[f32; SVGF_FOG_INPUTS],
+    sky: &SkyParams,
+) -> [f32; SVGF_CONTINUOUS_INPUTS] {
+    let mut out = [0.0; SVGF_CONTINUOUS_INPUTS];
+    let dalc = sky.dalc_cube.map(|dalc| {
+        let mut lanes = [0.0; 22];
+        for (axis, rgb) in [
             dalc.pos_x,
             dalc.neg_x,
             dalc.pos_y,
@@ -74,14 +106,56 @@ fn fold_svgf_scene_inputs(
             dalc.pos_z,
             dalc.neg_z,
             dalc.specular,
-        ] {
-            fold_floats(&mut key, &axis);
+        ]
+        .iter()
+        .enumerate()
+        {
+            lanes[axis * 3..axis * 3 + 3].copy_from_slice(rgb);
         }
-        fold_floats(&mut key, &[dalc.fresnel_power]);
-    } else {
-        key = crate::vulkan::caustic::fold_caustic_key_u64(key, 0);
+        lanes[21] = dalc.fresnel_power;
+        lanes
+    });
+    let sun_shape = [sky.sun_size, sky.sun_intensity, sky.sun_angular_radius];
+    let lanes = fog_inputs
+        .iter()
+        .chain(&sky.zenith_color)
+        .chain(&sky.exterior_zenith_color)
+        .chain(&sky.horizon_color)
+        .chain(&sky.lower_color)
+        .chain(&sky.sun_direction)
+        .chain(&sky.sun_color)
+        .chain(&sun_shape)
+        .chain(&sky.sun_illuminance)
+        .chain(&sky.portal_sun_radiance)
+        .chain(&sky.portal_sun_direction)
+        .chain(dalc.iter().flatten());
+    let mut written = 0;
+    for (slot, value) in out.iter_mut().zip(lanes) {
+        *slot = *value;
+        written += 1;
     }
-    key
+    debug_assert_eq!(
+        written,
+        SVGF_CONTINUOUS_INPUTS - if dalc.is_some() { 0 } else { 22 },
+        "SVGF_CONTINUOUS_INPUTS out of step with the lanes"
+    );
+    out
+}
+
+/// Per-frame change in a continuous input that counts as a jump: 1% of the
+/// value's magnitude, at least 0.01 absolute (about 0.6 degrees on a unit
+/// direction). The running clock moves these by ~0.01% a frame at the
+/// default timescale, so drift never trips it. A non-finite lane always does.
+const SVGF_CONTINUOUS_JUMP: f32 = 0.01;
+
+fn svgf_continuous_inputs_jumped(
+    previous: &[f32; SVGF_CONTINUOUS_INPUTS],
+    current: &[f32; SVGF_CONTINUOUS_INPUTS],
+) -> bool {
+    previous.iter().zip(current).any(|(&a, &b)| {
+        let tolerance = SVGF_CONTINUOUS_JUMP * a.abs().max(b.abs()).max(1.0);
+        !((a - b).abs() <= tolerance)
+    })
 }
 
 /// Output of [`VulkanContext::build_and_upload_instances`] — the locals
@@ -793,10 +867,12 @@ impl VulkanContext {
         }
         // #5767 — materials and stable ambient/fog inputs also determine
         // the filtered indirect-light image, including time-of-day changes.
+        // #6247 — only their discrete parts are keyed; the continuous ones
+        // reset history on a jump, not on the clock's per-frame drift.
         let material_count = materials.len().min(scene_buffer::MAX_MATERIALS);
-        caustic_scene_key = fold_svgf_scene_inputs(
-            caustic_scene_key,
-            &materials[..material_count],
+        caustic_scene_key =
+            fold_svgf_scene_inputs(caustic_scene_key, &materials[..material_count], sky_params);
+        let continuous_inputs = svgf_continuous_inputs(
             &[
                 fog_color[0],
                 fog_color[1],
@@ -812,6 +888,9 @@ impl VulkanContext {
             ],
             sky_params,
         );
+        let continuous_jumped =
+            svgf_continuous_inputs_jumped(&self.prev_svgf_continuous_inputs, &continuous_inputs);
+        self.prev_svgf_continuous_inputs = continuous_inputs;
         // The accumulator's history is valid only when nothing that
         // determines a splat's landing point changed: the camera (the
         // pre-#2468 gate), the light rig or caustic-source placement (the
@@ -825,7 +904,8 @@ impl VulkanContext {
                 self.history.previous_rigid_models.len(),
                 current_rigid_models.len(),
             );
-        let caustic_key_static = caustic_scene_key == self.prev_caustic_scene_key;
+        let caustic_key_static =
+            caustic_scene_key == self.prev_caustic_scene_key && !continuous_jumped;
         let caustic_scene_static = !(rigid_instance_moved || rigid_set_changed)
             && pose_dirty.is_empty()
             && caustic_key_static;
@@ -2278,42 +2358,92 @@ mod instance_capacity_growth_pin {
 
 #[cfg(test)]
 mod svgf_scene_input_key_tests {
-    use super::fold_svgf_scene_inputs;
+    use super::{fold_svgf_scene_inputs, svgf_continuous_inputs, svgf_continuous_inputs_jumped};
     use crate::vulkan::context::SkyParams;
     use crate::vulkan::material::GpuMaterial;
 
     #[test]
-    fn material_fog_and_sky_changes_rekey_progressive_history() {
+    fn material_and_sky_discrete_changes_rekey_progressive_history() {
         let material = GpuMaterial::default();
         let sky = SkyParams::default();
-        let key = fold_svgf_scene_inputs(17, &[material], &[0.1, 100.0], &sky);
+        let key = fold_svgf_scene_inputs(17, &[material], &sky);
 
-        let mut emissive = material;
-        emissive.emissive_mult += 1.0;
-        assert_ne!(key, fold_svgf_scene_inputs(17, &[emissive], &[0.1, 100.0], &sky));
-        assert_ne!(key, fold_svgf_scene_inputs(17, &[material], &[0.2, 100.0], &sky));
+        let mut retextured = material;
+        retextured.normal_map_index += 1;
+        assert_ne!(key, fold_svgf_scene_inputs(17, &[retextured], &sky));
+        let mut rekinded = material;
+        rekinded.material_kind += 1;
+        assert_ne!(key, fold_svgf_scene_inputs(17, &[rekinded], &sky));
+        assert_ne!(key, fold_svgf_scene_inputs(17, &[material, material], &sky));
 
         let mut changed_sky = SkyParams::default();
-        changed_sky.sun_illuminance[0] += 1.0;
-        assert_ne!(
-            key,
-            fold_svgf_scene_inputs(17, &[material], &[0.1, 100.0], &changed_sky)
-        );
+        changed_sky.sun_texture_index += 1;
+        assert_ne!(key, fold_svgf_scene_inputs(17, &[material], &changed_sky));
         changed_sky = SkyParams::default();
-        changed_sky.zenith_color[1] += 1.0;
-        assert_ne!(
-            key,
-            fold_svgf_scene_inputs(17, &[material], &[0.1, 100.0], &changed_sky)
-        );
+        changed_sky.is_exterior = !changed_sky.is_exterior;
+        assert_ne!(key, fold_svgf_scene_inputs(17, &[material], &changed_sky));
+    }
+
+    /// #6247 — the lanes texture-transform, colour, alpha and shader
+    /// controllers (and a magic shader's tint) rewrite every frame do not
+    /// re-key the whole image.
+    #[test]
+    fn per_frame_animated_material_lanes_do_not_rekey_history() {
+        let material = GpuMaterial::default();
+        let sky = SkyParams::default();
+        let key = fold_svgf_scene_inputs(17, &[material], &sky);
+        let mut animated = material;
+        animated.uv_offset_u += 0.3;
+        animated.uv_scale_v += 0.5;
+        animated.emissive_r += 0.7;
+        animated.emissive_mult += 2.0;
+        animated.material_alpha -= 0.4;
+        animated.diffuse_g += 0.1;
+        animated.shader_float += 0.2;
+        assert_eq!(key, fold_svgf_scene_inputs(17, &[animated], &sky));
+    }
+
+    /// #6247 — the running clock's per-frame sky / fog drift is not a jump;
+    /// a `time.set`-sized change, a weather fog swap or a NaN is.
+    #[test]
+    fn continuous_sky_and_fog_reset_history_on_a_jump_not_on_drift() {
+        let fog = [0.4, 0.5, 0.6, 500.0, 90000.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let parked = || {
+            let mut sky = SkyParams::default();
+            sky.sun_direction = [0.0, 0.8, 0.6];
+            sky.sun_illuminance = [90000.0, 85000.0, 80000.0];
+            sky
+        };
+        let sky = parked();
+        let base = svgf_continuous_inputs(&fog, &sky);
+        assert!(!svgf_continuous_inputs_jumped(&base, &base));
+
+        // One frame of the clock: the sun moves ~0.002 degrees, colours a
+        // hundredth of a percent.
+        let mut drifted = parked();
+        drifted.sun_direction = [0.0, 0.80003, 0.59996];
+        drifted.sun_illuminance = [90009.0, 85008.0, 80008.0];
+        let drifted = svgf_continuous_inputs(&fog, &drifted);
+        assert!(!svgf_continuous_inputs_jumped(&base, &drifted));
+
+        let mut jumped = parked();
+        jumped.sun_direction = [0.0, 0.6, 0.8];
+        assert!(svgf_continuous_inputs_jumped(&base, &svgf_continuous_inputs(&fog, &jumped)));
+        let mut fogged = fog;
+        fogged[4] = 30000.0;
+        assert!(svgf_continuous_inputs_jumped(&base, &svgf_continuous_inputs(&fogged, &sky)));
+        let mut broken = fog;
+        broken[0] = f32::NAN;
+        assert!(svgf_continuous_inputs_jumped(&base, &svgf_continuous_inputs(&broken, &sky)));
     }
 
     #[test]
     fn continuously_scrolling_clouds_do_not_rekey_history() {
         let material = GpuMaterial::default();
         let mut sky = SkyParams::default();
-        let key = fold_svgf_scene_inputs(23, &[material], &[], &sky);
+        let key = fold_svgf_scene_inputs(23, &[material], &sky);
         sky.cloud_scroll[0] += 0.25;
         sky.weather_time_seconds += 5.0;
-        assert_eq!(key, fold_svgf_scene_inputs(23, &[material], &[], &sky));
+        assert_eq!(key, fold_svgf_scene_inputs(23, &[material], &sky));
     }
 }

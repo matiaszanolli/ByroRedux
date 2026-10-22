@@ -1849,6 +1849,7 @@ impl VulkanContext {
                 suppress_rigid_history_next_build: false,
             },
             prev_caustic_scene_key: 0,
+            prev_svgf_continuous_inputs: [0.0; build_and_upload_instances::SVGF_CONTINUOUS_INPUTS],
             scene_static_last_build: false,
             prev_restir_rig_key: crate::vulkan::caustic::caustic_key_seed(),
             restir_rig_static_last_build: false,

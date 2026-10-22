@@ -689,6 +689,11 @@ pub struct VulkanContext {
     /// player standing still while a torch-carrying NPC walks past keeps
     /// a ~3 s caustic ghost of the old pool.
     prev_caustic_scene_key: u64,
+    /// #6247 — the previous build's time-of-day sky / fog inputs, compared
+    /// for a jump rather than keyed (their per-frame drift re-keyed every
+    /// exterior frame with the clock running).
+    prev_svgf_continuous_inputs:
+        [f32; build_and_upload_instances::SVGF_CONTINUOUS_INPUTS],
     /// #4942 — the previous build's `caustic_scene_static` (nothing but the
     /// camera could have changed the image: light rig, caustic sources, rigid
     /// instances and their set, skinned poses). The camera UBO is assembled
