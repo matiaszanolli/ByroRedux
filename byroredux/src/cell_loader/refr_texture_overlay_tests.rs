@@ -480,6 +480,54 @@ fn build_overlay_xlms_only_refr_carries_the_flattened_layered_swaps() {
     );
 }
 
+/// #6260 — a pack-in template child's own swaps (`inner`) produce an overlay
+/// even when the outer REFR authors none, and when both swap the same source
+/// the outer REFR's entry comes LAST, so the per-shape later-wins application
+/// lets the placed instance beat its template (a pinned decision; unsourced).
+#[test]
+fn build_overlay_over_layers_template_child_swaps_beneath_the_outer_refr() {
+    use super::refr::{build_refr_texture_overlay_over, MaterialSwapRef};
+    use byroredux_plugin::esm::records::{LayeredMaterialSwapEntry, LayeredMaterialSwapRecord};
+    let lmsw = |form_id: u32, target: &str| LayeredMaterialSwapRecord {
+        form_id,
+        editor_id: format!("Swap{form_id:X}"),
+        entries: vec![LayeredMaterialSwapEntry {
+            key: r"kit\trim.mat".into(),
+            key_material_path_form: None,
+            override_material_path: target.into(),
+        }],
+        swaps_collection: vec![],
+    };
+    let mut index = EsmCellIndex::default();
+    index.layered_material_swaps.insert(0x10, lmsw(0x10, r"kit\trim_blue.mat"));
+    index.layered_material_swaps.insert(0x20, lmsw(0x20, r"kit\trim_red.mat"));
+    index.material_swaps.insert(
+        0x0024_0001,
+        mswp(vec![(r"kit\pipe.bgsm", r"kit\pipe_rust.bgsm")], None),
+    );
+    let target = |entry: &MaterialSwapEntry| entry.target.clone();
+
+    let mut pool = StringPool::new();
+    let bare = empty_placed_ref(0x0100_0001);
+    let inner = [MaterialSwapRef::Table(0x0024_0001), MaterialSwapRef::Layered(0x10)];
+    let ov = build_refr_texture_overlay_over(&bare, &inner, &index, None, &mut pool)
+        .expect("the child's own swaps alone produce an overlay");
+    assert_eq!(
+        ov.material_swaps.iter().map(target).collect::<Vec<_>>(),
+        [r"kit\pipe_rust.bgsm", r"kit\trim_blue.mat"]
+    );
+
+    let mut outer = empty_placed_ref(0x0100_0002);
+    outer.layered_material_swap_refs = vec![0x20];
+    let ov = build_refr_texture_overlay_over(&outer, &inner[1..], &index, None, &mut pool).unwrap();
+    assert_eq!(
+        ov.material_swaps.iter().map(target).collect::<Vec<_>>(),
+        [r"kit\trim_blue.mat", r"kit\trim_red.mat"],
+        "the outer REFR's swap is applied after (over) the template child's"
+    );
+    assert!(build_refr_texture_overlay_over(&bare, &[], &index, None, &mut pool).is_none());
+}
+
 #[test]
 fn build_overlay_xmsp_missing_record_is_a_no_op() {
     let index = EsmCellIndex::default();

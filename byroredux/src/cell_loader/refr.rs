@@ -474,6 +474,37 @@ fn wildcard_eq_ignore_ascii_case(pattern: &[u8], text: &[u8]) -> bool {
     pattern[p..].iter().all(|&c| c == b'*')
 }
 
+/// One material-swap reference a placement authors: an `XMSP` MSWP table
+/// (#971) or an `XLMS` layered swap (#5757).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaterialSwapRef {
+    Table(u32),
+    Layered(u32),
+}
+
+/// One synthetic placement a SCOL / PKIN expansion produces:
+/// `(base_form_id, pos, rot, scale, swaps)`. `swaps` are the material swaps a
+/// pack-in template child authors on its own REFR (#6260), the deepest
+/// nesting level first; empty for SCOL parts, base-record fan-out and the
+/// pack-in's own identity entry (the outer REFR's overlay covers those).
+pub(crate) type SynthPlacement = (u32, Vec3, Quat, f32, Vec<MaterialSwapRef>);
+
+/// `placed`'s own material swaps, `XMSP` before `XLMS` (the order
+/// [`build_refr_texture_overlay`] has always applied them in).
+fn placed_material_swaps(placed: &esm::cell::PlacedRef) -> Vec<MaterialSwapRef> {
+    placed
+        .material_swap_ref
+        .map(MaterialSwapRef::Table)
+        .into_iter()
+        .chain(
+            placed
+                .layered_material_swap_refs
+                .iter()
+                .map(|&form| MaterialSwapRef::Layered(form)),
+        )
+        .collect()
+}
+
 /// Build a texture overlay for a REFR when its parser-side override
 /// sub-records (XATO, XTNM, XTXR) carry actionable TXST FormIDs. Returns
 /// `None` when the REFR has no overrides — the hot path for interior
@@ -484,11 +515,25 @@ pub(crate) fn build_refr_texture_overlay(
     mat_provider: Option<&mut MaterialProvider>,
     pool: &mut StringPool,
 ) -> Option<RefrTextureOverlay> {
+    build_refr_texture_overlay_over(placed, &[], index, mat_provider, pool)
+}
+
+/// [`build_refr_texture_overlay`] for one pack-in template child (#6260):
+/// `inner` is the child's own swaps (a [`SynthPlacement`]'s), applied
+/// beneath the outer REFR's.
+pub(crate) fn build_refr_texture_overlay_over(
+    placed: &esm::cell::PlacedRef,
+    inner: &[MaterialSwapRef],
+    index: &esm::cell::EsmCellIndex,
+    mat_provider: Option<&mut MaterialProvider>,
+    pool: &mut StringPool,
+) -> Option<RefrTextureOverlay> {
     if placed.alt_texture_ref.is_none()
         && placed.land_texture_ref.is_none()
         && placed.texture_slot_swaps.is_empty()
         && placed.material_swap_ref.is_none()
         && placed.layered_material_swap_refs.is_empty()
+        && inner.is_empty()
     {
         return None;
     }
@@ -526,20 +571,31 @@ pub(crate) fn build_refr_texture_overlay(
     // the MSWP file format. The record's FNAM is the CK's object-window
     // tree folder, not a filter (#5756), so it gates nothing here.
     // Clone is cheap — vanilla MSWPs ship ~2.18 entries on average.
-    if let Some(table) = placed
-        .material_swap_ref
-        .and_then(|swap_ref| index.material_swaps.get(&swap_ref))
-    {
-        ov.material_swaps = table.swaps.clone();
-    }
     // XLMS — Starfield's layered material swaps (#5757), flattened into
     // the same `(source, target)` shape and appended, so they ride the
     // same per-shape path (and its #4290 `.mat` re-merge through the
     // CDB). Starfield ships no MSWP record for an XMSP to resolve, so
     // the order between the two lists only matters for a cross-game
     // plugin stack.
-    ov.material_swaps
-        .extend(index.layered_material_swap_entries(&placed.layered_material_swap_refs));
+    //
+    // #6260 — a pack-in template child's own swaps (`inner`) go first and
+    // the placed REFR's after them, so under the later-wins application the
+    // pack-in instance's swap beats its template child's for a shared
+    // source material. That order is a decision, not a sourced fact: no
+    // document says which wins.
+    for swap in inner.iter().copied().chain(placed_material_swaps(placed)) {
+        match swap {
+            MaterialSwapRef::Table(form) => {
+                if let Some(table) = index.material_swaps.get(&form) {
+                    ov.material_swaps.extend(table.swaps.iter().cloned());
+                }
+            }
+            MaterialSwapRef::Layered(form) => {
+                ov.material_swaps
+                    .extend(index.layered_material_swap_entries(&[form]));
+            }
+        }
+    }
     // Apply the XATO-set material_path swap eagerly when the overlay
     // already carries one (XATO MNAM-only TXST path). Multi-shape
     // per-slot application happens at mesh-spawn time using
@@ -626,7 +682,7 @@ pub(crate) fn expand_pkin_placements(
     outer_rot: Quat,
     outer_scale: f32,
     index: &esm::cell::EsmCellIndex,
-) -> Option<Vec<(u32, Vec3, Quat, f32)>> {
+) -> Option<Vec<SynthPlacement>> {
     expand_pkin_placements_with_depth(base_form_id, outer_pos, outer_rot, outer_scale, index, 0)
 }
 
@@ -637,7 +693,7 @@ fn expand_pkin_placements_with_depth(
     outer_scale: f32,
     index: &esm::cell::EsmCellIndex,
     depth: u32,
-) -> Option<Vec<(u32, Vec3, Quat, f32)>> {
+) -> Option<Vec<SynthPlacement>> {
     let pkin = index.packins.get(&base_form_id)?;
     if pkin.contents.is_empty() {
         return None;
@@ -668,7 +724,17 @@ fn expand_pkin_placements_with_depth(
                     local_rot,
                     placed.scale,
                 );
-                push_expanded_child(&mut out, placed.base_form_id, pos, rot, scale, index, depth);
+                // #6260 — the child's own XMSP / XLMS ride with it.
+                push_expanded_child(
+                    &mut out,
+                    placed.base_form_id,
+                    pos,
+                    rot,
+                    scale,
+                    placed_material_swaps(placed),
+                    index,
+                    depth,
+                );
             }
             instanced_template |= out.len() > before;
             continue;
@@ -679,6 +745,7 @@ fn expand_pkin_placements_with_depth(
             outer_pos,
             outer_rot,
             outer_scale,
+            Vec::new(),
             index,
             depth,
         );
@@ -692,7 +759,7 @@ fn expand_pkin_placements_with_depth(
     if instanced_template && depth == 0 {
         // The REFR's own identity rides the primary synthetic child; the
         // template's contents follow it (see the doc above).
-        out.insert(0, (base_form_id, outer_pos, outer_rot, outer_scale));
+        out.insert(0, (base_form_id, outer_pos, outer_rot, outer_scale, Vec::new()));
     }
     Some(out)
 }
@@ -701,22 +768,31 @@ fn expand_pkin_placements_with_depth(
 /// PKIN or a SCOL (bounded by [`MAX_PKIN_DEPTH`]); anything else — or a
 /// nested expansion that placed nothing — is a leaf placement, so it at
 /// least reaches the loader's `stat_miss` accounting (bounded against
-/// accidental cycles).
+/// accidental cycles). `swaps` (the child REFR's own material swaps, #6260)
+/// follow every placement it expands to, after the nested level's own.
+#[allow(clippy::too_many_arguments)]
 fn push_expanded_child(
-    out: &mut Vec<(u32, Vec3, Quat, f32)>,
+    out: &mut Vec<SynthPlacement>,
     child_form_id: u32,
     pos: Vec3,
     rot: Quat,
     scale: f32,
+    swaps: Vec<MaterialSwapRef>,
     index: &esm::cell::EsmCellIndex,
     depth: u32,
 ) {
+    let inherit = |nested: Vec<SynthPlacement>, out: &mut Vec<SynthPlacement>| {
+        out.extend(nested.into_iter().map(|(base, pos, rot, scale, mut own)| {
+            own.extend_from_slice(&swaps);
+            (base, pos, rot, scale, own)
+        }));
+    };
     // Recurse into nested PKINs up to the depth cap (#635).
     if depth + 1 < MAX_PKIN_DEPTH && index.packins.contains_key(&child_form_id) {
         if let Some(nested) =
             expand_pkin_placements_with_depth(child_form_id, pos, rot, scale, index, depth + 1)
         {
-            out.extend(nested);
+            inherit(nested, out);
             return;
         }
     }
@@ -737,11 +813,11 @@ fn push_expanded_child(
             depth + 1,
         );
         if !nested.is_empty() {
-            out.extend(nested);
+            inherit(nested, out);
             return;
         }
     }
-    out.push((child_form_id, pos, rot, scale));
+    out.push((child_form_id, pos, rot, scale, swaps));
 }
 
 /// Produce the list of `(base_form_id, composed_pos, composed_rot,
@@ -784,7 +860,7 @@ pub(crate) fn expand_scol_placements(
     outer_rot: Quat,
     outer_scale: f32,
     index: &esm::cell::EsmCellIndex,
-) -> Vec<(u32, Vec3, Quat, f32)> {
+) -> Vec<SynthPlacement> {
     expand_scol_placements_if(base_form_id, outer_pos, outer_rot, outer_scale, index, &|_| false)
 }
 
@@ -800,7 +876,7 @@ pub(crate) fn expand_scol_placements_if(
     outer_scale: f32,
     index: &esm::cell::EsmCellIndex,
     cm_missing: &dyn Fn(u32) -> bool,
-) -> Vec<(u32, Vec3, Quat, f32)> {
+) -> Vec<SynthPlacement> {
     expand_scol_placements_with_depth(
         base_form_id,
         outer_pos,
@@ -865,7 +941,7 @@ fn expand_scol_placements_with_depth(
     index: &esm::cell::EsmCellIndex,
     cm_missing: &dyn Fn(u32) -> bool,
     depth: u32,
-) -> Vec<(u32, Vec3, Quat, f32)> {
+) -> Vec<SynthPlacement> {
     // Expand only when the outer REFR's base is a SCOL with no valid
     // cached model. `statics.get(base).model_path` empty — or the base
     // isn't in `statics` at all (mod-added SCOL without EDID/MODL) — or
@@ -878,7 +954,7 @@ fn expand_scol_placements_with_depth(
             .is_none_or(|s| s.model_path.is_empty())
             || cm_missing(base_form_id));
     if !must_expand {
-        return vec![(base_form_id, outer_pos, outer_rot, outer_scale)];
+        return vec![(base_form_id, outer_pos, outer_rot, outer_scale, Vec::new())];
     }
 
     let Some(scol) = index.scols.get(&base_form_id) else {
@@ -886,7 +962,7 @@ fn expand_scol_placements_with_depth(
         // (shouldn't happen outside concurrent mutation), fall back to
         // the non-expanded single-entry path so the REFR at least gets
         // logged as a stats miss rather than silently dropped.
-        return vec![(base_form_id, outer_pos, outer_rot, outer_scale)];
+        return vec![(base_form_id, outer_pos, outer_rot, outer_scale, Vec::new())];
     };
 
     let mut out = Vec::new();
@@ -950,7 +1026,7 @@ fn expand_scol_placements_with_depth(
                     }
                 }
             }
-            out.push((part.base_form_id, final_pos, final_rot, final_scale));
+            out.push((part.base_form_id, final_pos, final_rot, final_scale, Vec::new()));
         }
     }
     out

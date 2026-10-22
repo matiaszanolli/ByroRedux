@@ -445,7 +445,7 @@ fn expand_pkin_instances_its_template_cell_under_the_outer_transform() {
     assert_eq!(synths.len(), 3, "the outer entry + the two template children");
     assert_eq!(
         synths[0],
-        (pkin_id, outer_pos, outer_rot, outer_scale),
+        (pkin_id, outer_pos, outer_rot, outer_scale, Vec::new()),
         "the outer PKIN stays the primary synthetic child"
     );
     // Z-up (x, y, z) -> Y-up (x, z, -y), then composed under the outer
@@ -568,6 +568,50 @@ fn expand_pkin_template_nests_pack_ins_and_survives_a_cycle() {
     assert!(synths.len() <= 2 * 4, "{}", synths.len());
 }
 
+/// #6260 — a template child's own `XMSP` / `XLMS` ride with its placement
+/// (they used to be dropped with everything but base + transform). A nested
+/// pack-in's leaves carry their own swaps first, then the nesting child's; the
+/// outer REFR's identity entry carries none (its overlay is the outer one).
+#[test]
+fn expand_pkin_template_children_carry_their_own_material_swaps() {
+    use super::refr::MaterialSwapRef::{Layered, Table};
+    let mut index = EsmCellIndex::default();
+    let (outer, inner) = (0x0070_0010, 0x0070_0011);
+    let (outer_cell, inner_cell) = (0x0070_00B0, 0x0070_00B1);
+    let (plain, swapped, leaf) = (0x0071_0010, 0x0071_0011, 0x0071_0012);
+    index.packins.insert(outer, mk_pkin(outer, "Outer", vec![outer_cell]));
+    index.packins.insert(inner, mk_pkin(inner, "Inner", vec![inner_cell]));
+    let mut swapped_child = template_child(swapped, [0.0; 3], [0.0; 3], 1.0);
+    swapped_child.material_swap_ref = Some(0x0024_0001);
+    swapped_child.layered_material_swap_refs = vec![0x10, 0x11];
+    let mut nested_child = template_child(inner, [10.0, 0.0, 0.0], [0.0; 3], 1.0);
+    nested_child.layered_material_swap_refs = vec![0x20];
+    let (key, mut cell) = template_cell(outer_cell, "OuterTemplate");
+    cell.references = vec![
+        template_child(plain, [0.0; 3], [0.0; 3], 1.0),
+        swapped_child,
+        nested_child,
+    ];
+    index.cells.insert(key, cell);
+    let mut leaf_child = template_child(leaf, [0.0; 3], [0.0; 3], 1.0);
+    leaf_child.layered_material_swap_refs = vec![0x30];
+    let (key, mut cell) = template_cell(inner_cell, "InnerTemplate");
+    cell.references = vec![leaf_child];
+    index.cells.insert(key, cell);
+
+    let synths = expand_pkin_placements(outer, Vec3::ZERO, Quat::IDENTITY, 1.0, &index).unwrap();
+    let carried: Vec<(u32, Vec<_>)> = synths.iter().map(|s| (s.0, s.4.clone())).collect();
+    assert_eq!(
+        carried,
+        vec![
+            (outer, vec![]),
+            (plain, vec![]),
+            (swapped, vec![Table(0x0024_0001), Layered(0x10), Layered(0x11)]),
+            (leaf, vec![Layered(0x30), Layered(0x20)]),
+        ]
+    );
+}
+
 /// #5489 real-data gate: on vanilla `Starfield.esm`, `citycydoniamainlevel`
 /// places 370 pack-ins whose template cells hold 12,218 child REFRs (audit
 /// `SF-2026-10-09-D4-01`, GRUP-walk census). Every one of those placements must
@@ -591,6 +635,7 @@ fn starfield_cydonia_pack_ins_instance_their_template_cells() {
         .get("citycydoniamainlevel")
         .expect("the reference cell parses");
     let (mut pack_in_refs, mut expanded_children, mut unexpanded) = (0usize, 0usize, 0usize);
+    let mut children_with_swaps = 0usize;
     for placed in &cell.references {
         if !index.cells.packins.contains_key(&placed.base_form_id) {
             continue;
@@ -604,17 +649,27 @@ fn starfield_cydonia_pack_ins_instance_their_template_cells() {
             &index.cells,
         ) {
             // Minus the outer pack-in's own identity entry.
-            Some(synths) => expanded_children += synths.len() - 1,
+            Some(synths) => {
+                expanded_children += synths.len() - 1;
+                children_with_swaps += synths.iter().filter(|s| !s.4.is_empty()).count();
+            }
             None => unexpanded += 1,
         }
     }
     eprintln!(
         "[Starfield PKIN] Cydonia: {pack_in_refs} pack-in REFRs, {expanded_children} instanced \
-         template children, {unexpanded} left to the default path"
+         template children ({children_with_swaps} carrying their own material swaps), \
+         {unexpanded} left to the default path"
     );
     assert_eq!(pack_in_refs, 370, "audit census (SF-2026-10-09-D4-01)");
     assert!(
         expanded_children >= 12_218,
         "the template cells hold 12,218 children one level deep: {expanded_children}"
+    );
+    // #6260 — audit census (SF-2026-10-21-D4-02): 2,107 of the leaf children
+    // author an XLMS. Nested levels pass theirs down, so the count can exceed it.
+    assert!(
+        children_with_swaps >= 2_107,
+        "template children's own XLMS must ride with them: {children_with_swaps}"
     );
 }

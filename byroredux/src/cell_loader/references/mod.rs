@@ -24,8 +24,8 @@ use super::euler::euler_zup_to_quat_yup_refr;
 use super::load_order::{self, plugin_for_form_id, LoadOrder};
 use super::nif_import_registry::{canonical_model_path_key, CachedNifImport, NifImportRegistry};
 use super::refr::{
-    build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements_if, scol_cm_path,
-    RefrTextureOverlay,
+    build_refr_texture_overlay, build_refr_texture_overlay_over, expand_pkin_placements,
+    expand_scol_placements_if, scol_cm_path, RefrTextureOverlay, SynthPlacement,
 };
 use super::spawn::{light_radius_or_default, spawn_placed_instances};
 use super::FrameTimeBudget;
@@ -67,10 +67,11 @@ pub(super) struct RefLoadResult {
 /// exterior streaming can return to the main loop between REFRs without
 /// duplicating the interior/reference pipeline.
 /// One SCOL/PKIN REFR's expanded child placements plus the shared texture
-/// overlay that applies to all of them: `(child_form_id, position,
-/// rotation, scale)` per child. Named so `ReferenceLoadJob`'s resume cache
-/// doesn't trip `clippy::type_complexity` (#2409 / TD1-006).
-pub(super) type SynthChildPlan = (Vec<(u32, Vec3, Quat, f32)>, Option<RefrTextureOverlay>);
+/// overlay that applies to all of them: a [`SynthPlacement`] per child (a
+/// pack-in template child carrying its own swaps gets its own overlay at
+/// spawn, #6260). Named so `ReferenceLoadJob`'s resume cache doesn't trip
+/// `clippy::type_complexity` (#2409 / TD1-006).
+pub(super) type SynthChildPlan = (Vec<SynthPlacement>, Option<RefrTextureOverlay>);
 
 pub(super) struct ReferenceLoadJob {
     next_ref: usize,
@@ -646,7 +647,10 @@ pub(super) fn load_references_budgeted(
                 job.current_ref_synth = Some((synth_refs, refr_overlay));
                 return ReferenceLoadProgress::Pending(job);
             }
-            let (child_form_id, ref_pos, ref_rot, ref_scale) = synth_refs[synth_idx];
+            let (child_form_id, ref_pos, ref_rot, ref_scale) = {
+                let (form_id, pos, rot, scale, _) = &synth_refs[synth_idx];
+                (*form_id, *pos, *rot, *scale)
+            };
 
             // EXAL sub-REFR continuation: an actor is a bundle of top-level
             // NIFs, not one indivisible placement.  Keep its skeleton map and
@@ -840,6 +844,22 @@ pub(super) fn load_references_budgeted(
                 synth_idx,
                 placed_ref.script_instance.as_ref(),
             );
+            // #6260 — a pack-in template child that authors its own XMSP /
+            // XLMS gets the outer overlay with its swaps layered beneath the
+            // outer REFR's; every other child shares `refr_overlay`.
+            let child_swaps = &synth_refs[synth_idx].4;
+            let child_overlay = if child_swaps.is_empty() {
+                None
+            } else {
+                let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+                build_refr_texture_overlay_over(
+                    placed_ref,
+                    child_swaps,
+                    index,
+                    mat_provider.as_deref_mut(),
+                    &mut pool,
+                )
+            };
             spawn_synth_child(
                 &mut job.accum,
                 world,
@@ -847,7 +867,11 @@ pub(super) fn load_references_budgeted(
                 &cell,
                 mat_provider.as_deref_mut(),
                 placed_ref,
-                &refr_overlay,
+                if child_overlay.is_some() {
+                    &child_overlay
+                } else {
+                    &refr_overlay
+                },
                 child_form_id,
                 ref_pos,
                 ref_rot,
