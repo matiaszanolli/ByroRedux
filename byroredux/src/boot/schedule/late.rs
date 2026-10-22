@@ -431,6 +431,8 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::LegacyObscriptProgram>()
             .reads::<byroredux_scripting::OnCellLoadEvent>()
             .reads::<byroredux_scripting::ActivateEvent>()
+            // #6218 — through `papyrus_activations`: a native-only activation is no OnActivate.
+            .reads::<byroredux_scripting::NativeActivation>()
             .writes::<byroredux_scripting::ScriptVariables>(),
     );
     // Manifest-published `Provider.Function(...)` calls use the same live host

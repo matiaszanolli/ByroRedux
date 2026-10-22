@@ -12,7 +12,6 @@ use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::condition::ConditionStringId;
 
-use crate::events::ActivateEvent;
 
 const IS_OPEN_VARIABLE: &str = "::isOpen_var";
 const IS_ANIMATING_VARIABLE: &str = "::isAnimating_var";
@@ -130,10 +129,9 @@ fn drain_transitions(world: &World) {
 /// Consume `OnActivate` for canonical two-state activators.
 pub fn two_state_activator_system(world: &World, _dt: f32) {
     drain_transitions(world);
-    let activated: Vec<EntityId> = world
-        .query::<ActivateEvent>()
-        .map(|events| events.iter().map(|(entity, _)| entity).collect())
-        .unwrap_or_default();
+    // #6218 — `Activate(…, true)` is default processing only: "no OnActivate event
+    // will be sent to any scripts" (CK), so a `NativeActivation` does not toggle.
+    let activated: Vec<EntityId> = crate::papyrus_activations(world).into_iter().map(|(entity, _)| entity).collect();
     if activated.is_empty() {
         return;
     }
@@ -195,7 +193,7 @@ mod tests {
         let mut variables = ScriptVariables::default();
         variables.set_by_name(IS_OPEN_VARIABLE, 0.0);
         world.insert(activator, variables);
-        world.insert(activator, ActivateEvent { activator: actor });
+        world.insert(activator, crate::events::ActivateEvent { activator: actor });
 
         two_state_activator_system(&world, 0.0);
 
@@ -214,6 +212,20 @@ mod tests {
 
         two_state_activator_system(&world, 0.0);
         assert!(world.get::<TwoStateActivator>(activator).unwrap().is_open);
+    }
+
+    /// #6218 — a default-processing-only activation is no `OnActivate`: the lever does not flip.
+    #[test]
+    fn a_native_only_activation_does_not_toggle_the_activator() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let lever = world.spawn();
+        world.insert(lever, TwoStateActivator::default());
+        world.insert(lever, ScriptVariables::default());
+        world.insert(lever, crate::events::ActivateEvent { activator: lever });
+        world.insert(lever, crate::events::NativeActivation);
+        two_state_activator_system(&world, 0.0);
+        assert!(!world.get::<TwoStateActivator>(lever).unwrap().is_open);
     }
 
     #[test]

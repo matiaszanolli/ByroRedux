@@ -21,7 +21,7 @@ use byroredux_sdk::legacy_script::{
 };
 use byroredux_sdk::script_function::{ScriptValue, MAX_SCRIPT_CALL_BYTES, MAX_SCRIPT_STRING_BYTES};
 
-use crate::events::{ActivateEvent, OnCellLoadEvent};
+use crate::events::OnCellLoadEvent;
 use crate::obscript::{decode_exact_load_order_expression, ObscriptDialect};
 use crate::vm_state::ScriptVariables;
 
@@ -674,10 +674,9 @@ pub fn legacy_obscript_load_order_system(world: &World, _dt: f32) {
         .query::<OnCellLoadEvent>()
         .map(|events| events.iter().map(|(entity, _)| entity).collect::<Vec<_>>())
         .unwrap_or_default();
-    let activated = world
-        .query::<ActivateEvent>()
-        .map(|events| events.iter().map(|(entity, _)| entity).collect::<Vec<_>>())
-        .unwrap_or_default();
+    // #6218 — a `NativeActivation` (default processing only, including the one this
+    // script's own `Activate` queued) sends no `OnActivate`.
+    let activated: Vec<EntityId> = crate::papyrus_activations(world).into_iter().map(|(entity, _)| entity).collect();
 
     let Some(programs) = world.query::<LegacyObscriptProgram>() else {
         return;
@@ -1459,7 +1458,12 @@ mod tests {
             None
         );
 
-        world.insert(entity, ActivateEvent { activator: entity });
+        // #6218 — a default-processing-only activation runs no OnActivate handler.
+        world.insert(entity, crate::events::ActivateEvent { activator: entity });
+        world.insert(entity, crate::events::NativeActivation);
+        legacy_obscript_load_order_system(&world, 0.0);
+        assert_eq!(world.get::<ScriptVariables>(entity).unwrap().get_by_name("index"), None);
+        world.remove::<crate::events::NativeActivation>(entity);
         legacy_obscript_load_order_system(&world, 0.0);
         assert_eq!(
             world
