@@ -54,8 +54,11 @@ pub enum LevelingModel {
     /// Fallout — an XP-to-next curve `xp_a·L + xp_b`, a `level_cap` (`0` =
     /// uncapped), and a per-level [`LevelReward`]. The curve and cap overlay
     /// the authored `iXPBumpBase` / `iXPBase` / `iMaxCharacterLevel` GMSTs
-    /// ([`LevelingModel::with_gmst`]), so a DLC master that raises the cap
-    /// (`BrokenSteel.esm`) is honoured through the merged load order.
+    /// ([`LevelingModel::with_gmst`]), so a DLC master that authors a higher
+    /// cap (`BrokenSteel.esm`) is honoured through the merged load order. New
+    /// Vegas's add-ons author none — the executable adds their +5 each — so
+    /// that raise is profile data applied after the overlay
+    /// ([`LevelingModel::raise_cap`], #6227).
     XpCurve {
         xp_a: f32,
         xp_b: f32,
@@ -137,6 +140,23 @@ impl LevelingModel {
         }
     }
 
+    /// #6227 — add `levels` to a capped model's cap: the raises an executable
+    /// applies for a loaded plugin rather than a master authoring them. An
+    /// uncapped model (`0`) stays uncapped, and a model with no cap concept
+    /// is unchanged.
+    #[must_use]
+    pub fn raise_cap(self, levels: u16) -> Self {
+        match self {
+            Self::XpCurve { xp_a, xp_b, level_cap, reward } if level_cap > 0 => Self::XpCurve {
+                xp_a,
+                xp_b,
+                level_cap: level_cap.saturating_add(levels),
+                reward,
+            },
+            other => other,
+        }
+    }
+
     /// FO4 — `75·L + 125`, +1 SPECIAL or a perk per level, no hard cap.
     pub const FO4: Self = Self::XpCurve {
         xp_a: 75.0,
@@ -159,7 +179,8 @@ impl LevelingModel {
     };
 
     /// FNV — same curve as FO3, `10 + INT/2` skill points (0.5 carries on
-    /// odd INT) + a perk every other level, cap 30 (50 with all add-ons).
+    /// odd INT) + a perk every other level, cap 30 (50 with all four story
+    /// add-ons — applied by `CharacterRulesProfile::level_cap_raise`, #6227).
     pub const FNV: Self = Self::XpCurve {
         xp_a: 150.0,
         xp_b: 50.0,
@@ -430,6 +451,15 @@ mod tests {
             }
             _ => panic!("Oblivion should be a skill-use model"),
         }
+    }
+
+    /// #6227 — a raise lifts a capped curve and leaves an uncapped or
+    /// skill-driven model alone.
+    #[test]
+    fn raise_cap_lifts_only_a_capped_curve() {
+        assert_eq!(LevelingModel::FNV.raise_cap(20).level_cap(), 50);
+        assert_eq!(LevelingModel::FO4.raise_cap(20).level_cap(), 0);
+        assert_eq!(LevelingModel::SKYRIM.raise_cap(20), LevelingModel::SKYRIM);
     }
 
     #[test]

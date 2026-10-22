@@ -255,6 +255,10 @@ pub struct CharacterRulesProfile {
     barter: Option<BarterModel>,
     /// #5921 — the perk entry-point numbering.
     perk_entry_points: PerkEntryPointDialect,
+    /// #6227 — level-cap raises the executable applies, not a master: each
+    /// `(master stem, levels)` adds its levels to the cap (after the
+    /// `iMaxCharacterLevel` overlay) when a plugin of that stem is loaded.
+    level_cap_raises: &'static [(&'static str, u16)],
 }
 
 /// Skyrim's *Mod Buy Prices* / *Mod Sell Prices* entry points
@@ -276,6 +280,7 @@ impl CharacterRulesProfile {
         essential_death_time_secs: None,
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
+        level_cap_raises: &[],
     };
 
     pub const OBLIVION: Self = Self {
@@ -295,6 +300,7 @@ impl CharacterRulesProfile {
         essential_death_time_secs: Some(10.0),
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
+        level_cap_raises: &[],
     };
 
     pub const FALLOUT3: Self = Self {
@@ -323,6 +329,7 @@ impl CharacterRulesProfile {
         essential_death_time_secs: Some(10.0),
         barter: None,
         perk_entry_points: PerkEntryPointDialect::Fallout3NV,
+        level_cap_raises: &[],
     };
 
     pub const FALLOUT_NEW_VEGAS: Self = Self {
@@ -350,6 +357,13 @@ impl CharacterRulesProfile {
         essential_death_time_secs: Some(10.0),
         barter: None,
         perk_entry_points: PerkEntryPointDialect::Fallout3NV,
+        // #6227 — each story add-on raises the cap by 5 (Fallout wiki *Level*:
+        // "each of the four add-ons raises the level cap by 5 levels"; Dead
+        // Money's / Honest Hearts' load MESGs: "Your level cap has been
+        // raised by 5"). No master authors it: `iMaxCharacterLevel` is in
+        // FalloutNV.esm alone. FalloutNV.exe carries exactly these four
+        // stems as a string table beside its master-file loading strings.
+        level_cap_raises: &[("DeadMoney", 5), ("HonestHearts", 5), ("OldWorldBlues", 5), ("LonesomeRoad", 5)],
     };
 
     pub const SKYRIM: Self = Self {
@@ -388,6 +402,7 @@ impl CharacterRulesProfile {
             perk_hooks: Some((SKYRIM_MOD_BUY_PRICES, SKYRIM_MOD_SELL_PRICES)),
         }),
         perk_entry_points: PerkEntryPointDialect::Skyrim,
+        level_cap_raises: &[],
     };
 
     pub const FALLOUT4: Self = Self {
@@ -417,6 +432,7 @@ impl CharacterRulesProfile {
             perk_hooks: None,
         }),
         perk_entry_points: PerkEntryPointDialect::None,
+        level_cap_raises: &[],
     };
 
     pub const FALLOUT76: Self = Self {
@@ -441,6 +457,7 @@ impl CharacterRulesProfile {
         essential_death_time_secs: None,
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
+        level_cap_raises: &[],
     };
 
     pub const STARFIELD: Self = Self {
@@ -470,6 +487,7 @@ impl CharacterRulesProfile {
         essential_death_time_secs: None,
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
+        level_cap_raises: &[],
     };
 
     #[must_use]
@@ -545,8 +563,25 @@ impl CharacterRulesProfile {
         self.perk_entry_points
     }
 
-    /// Build the canonical runtime ruleset with authored AVIF FormIDs.
-    pub fn build_ruleset<F, G>(self, resolve: F, gmst: G) -> Option<CharacterRuleset>
+    /// #6227 — the levels the executable adds to the cap for the loaded
+    /// plugins (file names, any case, with or without extension).
+    #[must_use]
+    pub fn level_cap_raise(self, plugin_files: &[String]) -> u16 {
+        self.level_cap_raises
+            .iter()
+            .filter(|(stem, _)| {
+                plugin_files.iter().any(|file| {
+                    let file = file.rsplit(['/', '\\']).next().unwrap_or(file);
+                    let loaded = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+                    loaded.eq_ignore_ascii_case(stem)
+                })
+            })
+            .fold(0u16, |raise, (_, levels)| raise.saturating_add(*levels))
+    }
+
+    /// Build the canonical runtime ruleset with authored AVIF FormIDs, the
+    /// authored GMSTs, and the loaded plugins' executable-applied cap raises.
+    pub fn build_ruleset<F, G>(self, resolve: F, gmst: G, plugin_files: &[String]) -> Option<CharacterRuleset>
     where
         F: Fn(&str) -> Option<u32>,
         G: Fn(&str) -> Option<f32>,
@@ -558,7 +593,10 @@ impl CharacterRulesProfile {
             RulesetBuilder::Skyrim => skyrim_ruleset(resolve),
             RulesetBuilder::None => return None,
         };
-        ruleset.leveling = ruleset.leveling.with_gmst(gmst);
+        ruleset.leveling = ruleset
+            .leveling
+            .with_gmst(gmst)
+            .raise_cap(self.level_cap_raise(plugin_files));
         Some(ruleset)
     }
 }
@@ -783,10 +821,10 @@ mod tests {
         let no_gmst = |_: &str| None;
 
         let fo3 = CharacterRulesProfile::FALLOUT3
-            .build_ruleset(no_resolve, no_gmst)
+            .build_ruleset(no_resolve, no_gmst, &[])
             .expect("FO3 has a ruleset builder");
         let fnv = CharacterRulesProfile::FALLOUT_NEW_VEGAS
-            .build_ruleset(no_resolve, no_gmst)
+            .build_ruleset(no_resolve, no_gmst, &[])
             .expect("FNV has a ruleset builder");
 
         assert_eq!(
@@ -834,7 +872,7 @@ mod tests {
         };
 
         let skyrim = CharacterRulesProfile::SKYRIM
-            .build_ruleset(no_resolve, gmst)
+            .build_ruleset(no_resolve, gmst, &[])
             .expect("Skyrim must have a ruleset builder now that #3848 wires one");
 
         assert!(
@@ -852,6 +890,24 @@ mod tests {
             "gmst must actually be invoked for the level-up mult curve setting, \
              got {requested:?}"
         );
+    }
+
+    /// #6227 — New Vegas's story add-ons each raise the cap by 5 on top of
+    /// the authored `iMaxCharacterLevel`, keyed on the loaded file's stem in
+    /// any case; the gear packs and other games raise nothing.
+    #[test]
+    fn new_vegas_add_ons_raise_the_level_cap_and_nothing_else_does() {
+        let cap = |profile: CharacterRulesProfile, files: &[&str]| {
+            let files: Vec<String> = files.iter().map(|file| (*file).to_owned()).collect();
+            let gmst = |name: &str| (name == "iMaxCharacterLevel").then_some(30.0);
+            profile.build_ruleset(|_| None, gmst, &files).unwrap().leveling.level_cap()
+        };
+        let fnv = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
+        assert_eq!(cap(fnv, &["falloutnv.esm"]), 30);
+        assert_eq!(cap(fnv, &["falloutnv.esm", "deadmoney.esm", "GunRunnersArsenal.esm"]), 35);
+        let all = ["FalloutNV.esm", "DeadMoney.esm", "HonestHearts.esm", "OldWorldBlues.esm", "LonesomeRoad.esm"];
+        assert_eq!(cap(fnv, &all), 50);
+        assert_eq!(cap(CharacterRulesProfile::FALLOUT3, &all), 30, "FO3's cap is the GMST alone");
     }
 
     /// #4447 — body-condition seeding is profile data, not a consumer-side
@@ -897,7 +953,7 @@ mod tests {
     fn oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate() {
         assert!(
             CharacterRulesProfile::OBLIVION
-                .build_ruleset(|_| None, |_| None)
+                .build_ruleset(|_| None, |_| None, &[])
                 .is_none(),
             "Oblivion is blocked on a pre-AVIF actor-value resolver (#3768); if it \
              now builds one, wire it deliberately rather than letting this pass",

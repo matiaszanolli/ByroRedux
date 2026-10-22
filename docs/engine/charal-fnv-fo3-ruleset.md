@@ -457,7 +457,7 @@ Source: fandom *Level*. Steeper than FO4's `75·L+125`, fitting the hard caps. S
 `a·L+b` shape → `LevelingModel::XpCurve { a:150, b:50 }`.
 
 **Level cap:** FO3 **20** (30 with *Broken Steel*); FNV **30** (50 with the four
-add-ons, +5 each). The cap and the XP curve are overlaid from the authored `iMaxCharacterLevel` / `iXPBumpBase` / `iXPBase` GMSTs (`LevelingModel::with_gmst`, #5915; `BrokenSteel.esm` authors 30), the constants above being the fallback. **Perk cadence:** FO3 = 1 perk **every level**; FNV = 1 perk
+add-ons, +5 each). The cap and the XP curve are overlaid from the authored `iMaxCharacterLevel` / `iXPBumpBase` / `iXPBase` GMSTs (`LevelingModel::with_gmst`, #5915; `BrokenSteel.esm` authors 30), the constants above being the fallback. FNV's add-on raises are authored by no master (`iMaxCharacterLevel` is in `FalloutNV.esm` alone; the executable applies them), so they are profile data: `CharacterRulesProfile::level_cap_raise` adds 5 per loaded `DeadMoney` / `HonestHearts` / `OldWorldBlues` / `LonesomeRoad` plugin after the overlay (#6227). **Perk cadence:** FO3 = 1 perk **every level**; FNV = 1 perk
 **every other level**. These cadences are also represented in the games'
 `LevelingModel` data; they are not inferred from the shared skill-point GMSTs.
 

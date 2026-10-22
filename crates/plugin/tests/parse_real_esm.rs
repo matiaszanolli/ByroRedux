@@ -747,6 +747,7 @@ fn assert_rosters_resolve(case: &RosterCase) {
     let ruleset = index.character_rules.build_ruleset(
         |id| index.actor_value_form_id(id),
         |id| index.game_setting_float(id),
+        &index.plugin_files,
     );
     match case.derived_rows {
         Some(expected) => {

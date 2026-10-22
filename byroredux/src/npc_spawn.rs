@@ -304,7 +304,7 @@ pub fn build_character_ruleset(
 ) -> Option<byroredux_core::character::CharacterRuleset> {
     let resolve = |editor_id: &str| index.actor_value_form_id(editor_id);
     let gmst = |editor_id: &str| index.game_setting_float(editor_id);
-    index.character_rules.build_ruleset(resolve, gmst)
+    index.character_rules.build_ruleset(resolve, gmst, &index.plugin_files)
 }
 
 /// Build the per-game [`MeleeDamageConfig`](byroredux_core::character::MeleeDamageConfig)

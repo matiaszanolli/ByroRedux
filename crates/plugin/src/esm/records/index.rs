@@ -266,6 +266,11 @@ pub struct EsmIndex {
     /// Canonical character policy selected once from the source master header.
     /// Unlike `game`, this deliberately distinguishes FO3 from New Vegas.
     pub character_rules: byroredux_core::character::CharacterRulesProfile,
+    /// #6227 — the plugin file names of the load order (lower-cased, in
+    /// order), set by the load-order driver once every plugin is folded in.
+    /// Rules the executable keys on a loaded plugin rather than a record
+    /// read it (New Vegas's add-on level-cap raises). Empty for a lone parse.
+    pub plugin_files: Vec<String>,
     /// Remapped FormID → four-byte signature for every consumed record.
     pub record_types: HashMap<u32, [u8; 4]>,
     /// Tombstones retained across plugin merges so deleted overrides remove
@@ -1959,6 +1964,10 @@ mod tests {
         /// Maps that are deliberately NOT record counts, each with the reason
         /// a reader would otherwise have to reconstruct.
         const EXCLUSIONS: &[(&str, &str)] = &[
+            (
+                "plugin_files",
+                "#6227 — the load order's file names, set by the load-order driver after the fold; no records",
+            ),
             (
                 "record_types",
                 "generic metadata duplicates typed record maps and must not inflate record totals",

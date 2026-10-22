@@ -873,6 +873,7 @@ where
     // (Akila's weathers → Starfield.esm's roots), so the RFDP-chain
     // synthesis only resolves once every plugin is folded in.
     merged.synthesize_wths_weathers();
+    merged.plugin_files = load_order.clone();
     let mut order = LoadOrder::with_dependencies(load_order, slots, dependencies);
     order.script_winners = script_winners;
     Ok((merged, order))
