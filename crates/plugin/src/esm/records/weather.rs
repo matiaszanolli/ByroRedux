@@ -4,13 +4,20 @@
 //! and cloud layers. Each worldspace references a default weather; the game
 //! interpolates between weathers based on time of day and climate.
 //!
-//! FNV / FO3 layout (NAM0 = 240 bytes):
-//!   10 color groups × 6 time-of-day slots × 4 bytes (RGBA u8).
-//!   Groups, per tes5edit fopdoc (FNV + FO3 WTHR records — both games
-//!   share this schema):
-//!     0 sky_upper, 1 fog, 2 unused, 3 ambient, 4 sunlight, 5 sun,
-//!     6 stars, 7 sky_lower, 8 horizon, 9 unused.
+//! FNV / FO3 / Oblivion layout (NAM0 = 240 or 160 bytes):
+//!   10 color groups × 6 (or 4) time-of-day slots × 4 bytes (RGB u8 +
+//!   one unused byte, xEdit `wbByteColors`).
+//!   Groups, per xEdit `wbWeatherColors`:
+//!     0 sky_upper, 1 fog, 2 *, 3 ambient, 4 sunlight, 5 sun,
+//!     6 stars, 7 sky_lower, 8 horizon, 9 **.
+//!   *  group 2: Oblivion `Clouds-Lower`; FO3 / FNV `Unused`.
+//!   ** group 9: Oblivion `Clouds-Upper`; FO3 `Clouds (Unused)`; FNV
+//!      `Effect Lighting`.
 //!   Slots: sunrise, day, sunset, night, high_noon, midnight.
+//!
+//! Oblivion authors no `PNAM`, so its cloud tints are those two NAM0
+//! groups (#6258) — copied onto cloud layers 0 (lower, `CNAM`) and 1
+//! (upper, `DNAM`).
 //!
 //! Pre-fix the constants below were `sky_upper, fog, ambient, sunlight,
 //! sun, stars, sky_lower, horizon, clouds_lower, clouds_upper` —
@@ -20,9 +27,9 @@
 //! cell ambient term, the real Ambient slot for the directional
 //! sunlight term, and the real Sky-Lower slot for the sky horizon
 //! ring. The real Horizon slot (8) was never read at all because the
-//! invented `clouds_lower` / `clouds_upper` slots had no consumer
-//! (cloud colours come from the cloud TEXTURE paths in
-//! DNAM/CNAM/ANAM/BNAM, not NAM0). See issue #729 / EXT-RENDER-1.
+//! invented `clouds_lower` / `clouds_upper` slots had no consumer. See
+//! issue #729 / EXT-RENDER-1. (Oblivion's real cloud groups are 2 and 9,
+//! above — not 8 and 9.)
 
 use super::common::{read_zstring, remap_fid};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
@@ -33,26 +40,25 @@ pub const SKY_COLOR_GROUPS: usize = 10;
 /// Number of time-of-day slots per color group (FNV).
 pub const SKY_TIME_SLOTS: usize = 6;
 
-/// Color group indices into `sky_colors`. Indices match the tes5edit
-/// fopdoc layout for FNV + FO3 verbatim — slots 2 and 9 are explicitly
-/// "Unused" in the schema and exist here only as no-op placeholders so
-/// the on-disk stride still walks 10 groups deep.
+/// Color group indices into `sky_colors`, per xEdit `wbWeatherColors`.
+/// Groups 2 and 9 change meaning by game (see the module doc), so they
+/// are named by index.
 pub const SKY_UPPER: usize = 0;
 pub const SKY_FOG: usize = 1;
-/// Slot 2 is documented as "Unused" by tes5edit fopdoc. Authored data
-/// occasionally appears here in vanilla weathers (e.g. NVWastelandClear)
-/// but the original engine ignores it. Exposed so consumers that want
-/// to dump the full table can still address it by name. See #729.
-pub const SKY_UNUSED_2: usize = 2;
+/// Group 2: Oblivion `Clouds-Lower` (read into `cloud_layer_colors[0]`,
+/// #6258); FO3 / FNV `Unused` — authored data occasionally appears there
+/// in vanilla weathers (e.g. NVWastelandClear) but the engine ignores it.
+/// See #729.
+pub const SKY_GROUP_2: usize = 2;
 pub const SKY_AMBIENT: usize = 3;
 pub const SKY_SUNLIGHT: usize = 4;
 pub const SKY_SUN: usize = 5;
 pub const SKY_STARS: usize = 6;
 pub const SKY_LOWER: usize = 7;
 pub const SKY_HORIZON: usize = 8;
-/// Slot 9 — second documented "Unused" slot. Same rationale as
-/// `SKY_UNUSED_2`.
-pub const SKY_UNUSED_9: usize = 9;
+/// Group 9: Oblivion `Clouds-Upper` (read into `cloud_layer_colors[1]`,
+/// #6258); FO3 `Clouds (Unused)`; FNV and later `Effect Lighting`.
+pub const SKY_GROUP_9: usize = 9;
 
 /// Time-of-day slot indices.
 pub const TOD_SUNRISE: usize = 0;
@@ -540,6 +546,20 @@ pub fn parse_wthr(
                         record.sky_colors[group][TOD_HIGH_NOON] = record.sky_colors[group][TOD_DAY];
                         record.sky_colors[group][TOD_MIDNIGHT] =
                             record.sky_colors[group][TOD_NIGHT];
+                    }
+                }
+                // #6258 — Oblivion's cloud tints live in NAM0 (it authors
+                // no PNAM): `Clouds-Lower` → layer 0 (`CNAM`, #6041),
+                // `Clouds-Upper` → layer 1 (`DNAM`). The fourth byte is
+                // xEdit's `wbUnused`, not opacity, so alpha stays opaque.
+                if matches!(game, GameKind::Oblivion) {
+                    for (layer, group) in [(0, SKY_GROUP_2), (1, SKY_GROUP_9)] {
+                        for slot in 0..4 {
+                            record.cloud_layer_colors[layer][slot] = SkyColor {
+                                a: 255,
+                                ..record.sky_colors[group][slot]
+                            };
+                        }
                     }
                 }
             }
@@ -1926,6 +1946,33 @@ mod tests {
         assert_eq!(w.cloud_layer_velocities_authored, [false; 4]);
     }
 
+    /// #6258 — Oblivion's 160-byte NAM0 carries the cloud tints in groups
+    /// 2 (`Clouds-Lower`) and 9 (`Clouds-Upper`); with no PNAM they become
+    /// cloud layers 0 and 1, per TOD slot, alpha opaque (the fourth byte is
+    /// unused). FO3/FNV read the same groups as unused: tints stay white.
+    #[test]
+    fn parse_wthr_oblivion_cloud_colours_come_from_nam0_groups_2_and_9() {
+        let mut nam0 = vec![0u8; SKY_COLOR_GROUPS * 4 * 4];
+        for slot in 0..4 {
+            let lower = (SKY_GROUP_2 * 4 + slot) * 4;
+            nam0[lower..lower + 4].copy_from_slice(&[10 + slot as u8, 20, 30, 7]);
+            let upper = (SKY_GROUP_9 * 4 + slot) * 4;
+            nam0[upper..upper + 4].copy_from_slice(&[40 + slot as u8, 50, 60, 0]);
+        }
+        let subs = vec![sub(b"NAM0", nam0)];
+        let w = parse_wthr(0x0B3, &subs, GameKind::Oblivion, &None);
+        for slot in 0..4 {
+            let s = slot as u8;
+            assert_eq!(w.cloud_layer_colors[0][slot], SkyColor { r: 10 + s, g: 20, b: 30, a: 255 });
+            assert_eq!(w.cloud_layer_colors[1][slot], SkyColor { r: 40 + s, g: 50, b: 60, a: 255 });
+        }
+        let white = SkyColor { r: 255, g: 255, b: 255, a: 255 };
+        assert_eq!(w.cloud_layer_colors[2], [white; 4], "Oblivion draws two decks");
+
+        let w = parse_wthr(0x0B4, &subs, GameKind::Fallout3NV, &None);
+        assert_eq!(w.cloud_layer_colors, [[white; 4]; 4]);
+    }
+
     /// #6042 — FO3/FNV's 24-byte FNAM carries day/night fog power after
     /// the four distances; Oblivion's 16-byte FNAM has none.
     #[test]
@@ -2037,14 +2084,14 @@ mod tests {
     fn sky_group_indices_match_xedit_fopdoc() {
         assert_eq!(SKY_UPPER, 0);
         assert_eq!(SKY_FOG, 1);
-        assert_eq!(SKY_UNUSED_2, 2);
+        assert_eq!(SKY_GROUP_2, 2);
         assert_eq!(SKY_AMBIENT, 3);
         assert_eq!(SKY_SUNLIGHT, 4);
         assert_eq!(SKY_SUN, 5);
         assert_eq!(SKY_STARS, 6);
         assert_eq!(SKY_LOWER, 7);
         assert_eq!(SKY_HORIZON, 8);
-        assert_eq!(SKY_UNUSED_9, 9);
+        assert_eq!(SKY_GROUP_9, 9);
     }
 
     /// Regression for #729 / EXT-RENDER-1: the parser must place each
@@ -2072,14 +2119,14 @@ mod tests {
         let day = TOD_DAY;
         assert_eq!(w.sky_colors[SKY_UPPER][day].r, 0); // 0  Sky-Upper
         assert_eq!(w.sky_colors[SKY_FOG][day].r, 16); // 1  Fog
-        assert_eq!(w.sky_colors[SKY_UNUSED_2][day].r, 32); // 2  Unused
+        assert_eq!(w.sky_colors[SKY_GROUP_2][day].r, 32); // 2  Unused (FO3/FNV)
         assert_eq!(w.sky_colors[SKY_AMBIENT][day].r, 48); // 3  Ambient
         assert_eq!(w.sky_colors[SKY_SUNLIGHT][day].r, 64); // 4  Sunlight
         assert_eq!(w.sky_colors[SKY_SUN][day].r, 80); // 5  Sun
         assert_eq!(w.sky_colors[SKY_STARS][day].r, 96); // 6  Stars
         assert_eq!(w.sky_colors[SKY_LOWER][day].r, 112); // 7  Sky-Lower
         assert_eq!(w.sky_colors[SKY_HORIZON][day].r, 128); // 8  Horizon
-        assert_eq!(w.sky_colors[SKY_UNUSED_9][day].r, 144); // 9  Unused
+        assert_eq!(w.sky_colors[SKY_GROUP_9][day].r, 144); // 9  Effect Lighting (FNV)
     }
 
     /// #539 / M33-07 — Skyrim WTHR has a different NAM0 stride (and
@@ -2241,7 +2288,7 @@ mod tests {
         assert_eq!(w.sky_colors[SKY_SUN][TOD_SUNRISE].r, 6);
         assert_eq!(w.sky_colors[SKY_SUN][TOD_SUNRISE].g, 1);
         // Group 9 (last that fits in the shared 10-group array — Skyrim
-        // "Effects Lighting" / FO3-era SKY_UNUSED_9).
+        // "Effect Lighting" / SKY_GROUP_9).
         assert_eq!(w.sky_colors[9][TOD_DAY].r, 10);
         // HIGH_NOON synthesised from DAY (slot 1 colour with `g = 2`).
         assert_eq!(w.sky_colors[SKY_UPPER][TOD_HIGH_NOON].r, 1);
