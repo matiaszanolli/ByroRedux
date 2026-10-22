@@ -688,6 +688,14 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::ActorBaseTraits>()
             .reads_resource::<byroredux_scripting::cell_kind::PlayerCellKind>()
             .reads::<byroredux_scripting::cell_kind::ExteriorCell>()
+            // #6251 — the getters catalogued from the ObScript VM: GetIsCreature,
+            // GetHealthPercentage (the Health stat's id), GetDeadCount (the
+            // kill ledger) and GetItemCount's form-list expansion.
+            .reads::<byroredux_core::ecs::components::CreatureActor>()
+            .reads::<byroredux_core::ecs::components::ActorVitals>()
+            .reads_resource::<byroredux_scripting::obscript_state::KillRecords>()
+            .reads_resource::<byroredux_scripting::FormLists>()
+            .reads_resource::<byroredux_scripting::FormListAdditions>()
             // M47.2 — a spoken line's SetEssential / SetProtected, and the
             // IsEssential / IsBleedingOut guards.
             .reads::<byroredux_scripting::ActorProtection>()
