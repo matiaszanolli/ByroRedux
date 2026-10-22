@@ -45,6 +45,16 @@
 //! | `OnDeathEvent` | `fragment::reference::collect_deliveries` (the frame pass drains it before anything else runs) |
 //! | `HavokImpulseRequest` | `byroredux::systems::cinematic::scripted_havok_impulse_system` (snapshots every request and drains exactly those; the only early return before the drain is the empty set, and a missing `HavokImpulseRules` drains the snapshot before returning, #6009) |
 //! | `MotionTypeChangeRequest` | `byroredux::systems::cinematic` (the one tail-drain — it removes exactly the entities it snapshotted, after an empty-set early return that strands nothing) |
+//! | `OnResetEvent` | `obscript_objects::obscript_object_system` (`collect_due` takes it first, before its no-instances early returns, #6267) |
+//! | `PickIdleRequest` | `byroredux::systems::cinematic::pick_idle_system` |
+//! | `FleeRequest` | `byroredux::systems::flee::flee_system` (`start_flights`) |
+//! | `PushActorRequest` | `byroredux::systems::knockdown::push_actor_system` |
+//! | `ReviveRequest` | `byroredux::systems::revive::revive_system` |
+//! | `UseWeaponRequest` | `byroredux::systems::script_requests::use_weapon_system` |
+//! | `ResetInventoryRequest` | `byroredux::systems::script_requests::reset_inventory_system` |
+//!
+//! The binary-side request consumers above all snapshot-then-drain: the only early return before the
+//! drain is the empty set, which strands nothing.
 //!
 //! Everything else is **persistent state**, not a marker, and belongs to
 //! neither pattern: playback/plan components (`ScenePlayer`,
@@ -234,6 +244,42 @@ mod contract_tests {
                 "MotionTypeChangeRequest",
                 include_str!("../../../byroredux/src/systems/cinematic.rs"),
                 "query_mut::<MotionTypeChangeRequest>",
+            ),
+            // #6267 — the ObScript request markers.
+            (
+                "OnResetEvent",
+                include_str!("obscript_objects.rs"),
+                "query_mut::<crate::obscript_state::OnResetEvent>",
+            ),
+            (
+                "PickIdleRequest",
+                include_str!("../../../byroredux/src/systems/cinematic.rs"),
+                "query_mut::<byroredux_scripting::PickIdleRequest>",
+            ),
+            (
+                "FleeRequest",
+                include_str!("../../../byroredux/src/systems/flee.rs"),
+                "query_mut::<FleeRequest>",
+            ),
+            (
+                "PushActorRequest",
+                include_str!("../../../byroredux/src/systems/knockdown.rs"),
+                "query_mut::<PushActorRequest>",
+            ),
+            (
+                "ReviveRequest",
+                include_str!("../../../byroredux/src/systems/revive.rs"),
+                "query_mut::<ReviveRequest>",
+            ),
+            (
+                "UseWeaponRequest",
+                include_str!("../../../byroredux/src/systems/script_requests.rs"),
+                "query_mut::<UseWeaponRequest>",
+            ),
+            (
+                "ResetInventoryRequest",
+                include_str!("../../../byroredux/src/systems/script_requests.rs"),
+                "query_mut::<ResetInventoryRequest>",
             ),
         ] {
             // Production code only: a test module that merely mentions the

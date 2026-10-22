@@ -253,17 +253,9 @@ pub fn obscript_object_system(world: &World, dt: f32) {
 /// The references with something to run, and which blocks, snapshotted before any
 /// runs.
 fn collect_due(world: &World) -> Vec<Due> {
-    let instances: Vec<(EntityId, u32)> = match world.query::<ObScriptInstance>() {
-        Some(query) => query.iter().map(|(entity, instance)| (entity, instance.script)).collect(),
-        None => return Vec::new(),
-    };
-    if instances.is_empty() {
-        return Vec::new();
-    }
-    let entities_with = |events: Option<Vec<EntityId>>| -> HashSet<EntityId> { events.unwrap_or_default().into_iter().collect() };
-    let loaded = entities_with(world.query::<OnCellLoadEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
     // The cell expired and reset as the player entered it (`CellVisits`): the marker is this system's
-    // alone, so it is taken here.
+    // alone, so it is taken here — first, ahead of the early returns below, so a marker whose instance
+    // went away is not stranded (Pattern B, #6267).
     let reset = {
         let owed: Vec<EntityId> = world
             .query::<crate::obscript_state::OnResetEvent>()
@@ -276,6 +268,15 @@ fn collect_due(world: &World) -> Vec<Due> {
         }
         owed.into_iter().collect::<HashSet<EntityId>>()
     };
+    let instances: Vec<(EntityId, u32)> = match world.query::<ObScriptInstance>() {
+        Some(query) => query.iter().map(|(entity, instance)| (entity, instance.script)).collect(),
+        None => return Vec::new(),
+    };
+    if instances.is_empty() {
+        return Vec::new();
+    }
+    let entities_with = |events: Option<Vec<EntityId>>| -> HashSet<EntityId> { events.unwrap_or_default().into_iter().collect() };
+    let loaded = entities_with(world.query::<OnCellLoadEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
     // Read, not drained: `reference_script_event_system` owns the marker.
     let died = entities_with(world.query::<OnDeathEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
     // Activations, minus the native-only ones: "no OnActivate event will be sent
