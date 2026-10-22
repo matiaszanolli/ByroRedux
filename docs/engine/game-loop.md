@@ -399,22 +399,24 @@ The per-frame work split across helper methods on `App`:
 ## Per-frame timing reference
 
 Bench-of-record native-TAA numbers (RTX 4070 Ti, Ryzen 9 7950X), from the
-75-run stepped-camera refresh at commit `2da754e7` (2026-09-03). See
+75-run stepped-camera refresh at commit `d9a201c71` (2026-10-22). See
 [ROADMAP.md](../../ROADMAP.md) for the authoritative, continuously
 refreshed bench table:
 
 | Cell | Entities | FPS | Frame | Fence | Draws |
 |---|---|---|---|---|---|
-| FNV Prospector Saloon (interior) | 3146 | 74.0 | 13.51 ms | 10.80 ms | 928 |
-| Skyrim SE Whiterun Bannered Mare (interior) | 5765 | 89.9 | 11.12 ms | 7.59 ms | 1260 |
-| FO4 MedTekResearch01 (interior) | 39537 | 27.1 | 36.95 ms | 15.53 ms | 13545 |
+| FNV Prospector Saloon (interior) | 2359 | 83.8 | 11.93 ms | 9.30 ms | 814 |
+| Skyrim SE Whiterun Bannered Mare (interior) | 5853 | 83.7 | 11.94 ms | 9.17 ms | 1289 |
+| FO4 MedTekResearch01 (interior) | 24923 | 35.4 | 28.22 ms | 17.54 ms | 8062 |
+| FO4 Dugout Inn (interior) | 9254 | 66.1 | 15.12 ms | 12.30 ms | 1401 |
 
 These are medians of three 300-frame repetitions under
-`renderer-stepped/orbit`; the full record also covers Cornell and FO4 Dugout
-Inn plus all four FSR presets. Every repetition passed the entity/TLAS/state
-fingerprint gate. Because the prior record was 1,059 commits old and scene
-populations moved, the refresh replaces stale absolute claims rather than
-attributing old-vs-new differences to individual renderer changes.
+`renderer-stepped/orbit`; the full record also covers Cornell plus all four
+FSR presets. Every repetition passed the entity/TLAS/state fingerprint gate.
+The refresh was run against a same-machine control of the previous record
+(`a3a7a43b0`), which found HEAD 1–9% slower on every scene (ROADMAP's
+R6a-regress-23); absolute figures here move with scene populations, so compare
+across records only through such a control.
 
 The CPU game-loop work itself (scheduler.run + build_render_data) stays
 well under the GPU path. The debug-UI Metrics panel breaks the per-frame

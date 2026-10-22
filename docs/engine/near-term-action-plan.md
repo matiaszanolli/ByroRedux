@@ -116,7 +116,7 @@ priority review: close from this set, don't grow it.
 
 ## Wave 4 — Measurement & housekeeping (slot when needed)
 
-- **Bench-of-record refresh** — ~300 commits stale (R6a-stale tracking).
+- **Bench-of-record refresh** — done 2026-10-22 (`d9a201c71`, same-machine control of `a3a7a43b0`); it opened R6a-regress-23 (HEAD 1–9% slower than the control), the next measurement task.
   Re-running the stepped-camera suite re-opens the renderer audit cycle per
   the 2026-05-03 moratorium gate, so this is the *gate* for any new
   renderer-audit appetite, not just hygiene. #2161 (PERF-REGRESSION-6c56e311)

@@ -30,7 +30,7 @@ bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
 Session 102 ObScript lints were fixed; `--all-targets` is not, Known Issues). All 10 847 tests
 pass (2026-10-19). The lock-order detector is clean locally on
 `-p byroredux-scripting` and `-p byroredux` there (it caught one scripting
-inversion earlier, fixed in `ac0d19f35`); the CI ABBA lane was not read. The bench-of-record below (`a3a7a43b0`) is 515 commits stale (R6a-stale-29). Its one open
+inversion earlier, fixed in `ac0d19f35`); the CI ABBA lane was not read. The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
 regression, **R6a-regress-22**, was the bench camera moving with `b9e961eeb`'s
 interior spawn ladder, not renderer code (#5128, 2026-09-30); a small residual
 stays open — the top-of-frame all-slots fence wait that dominates GPU-bound
@@ -157,45 +157,47 @@ Superseded records (R6a-stale-15 at `8a668eff` through `4c9a5b36`) are in
 [`roadmap-history.md` §2](docs/archive/roadmap-history.md#2-superseded-bench-records);
 raw rows for every matrix are in `docs/audits/BENCH_*.tsv`.
 
-### Bench-of-record (LIVE) — stepped-camera refresh (2026-10-13, HEAD `a3a7a43b0`)
+### Bench-of-record (LIVE) — stepped-camera refresh (2026-10-22, HEAD `d9a201c71`)
 
 Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
 1280×720 output, per-scene CWD set to that game's `Data/`. **75 runs, zero
-rejections**, every scene-state fingerprint gate passing. Raw rows:
-`docs/audits/BENCH_stepped-camera_a3a7a43b0.tsv`.
-Repro: `scripts/fsr-bench-matrix.sh 3 300`, harness `a4ede5fa0`.
+rejections**, every fingerprint gate passing. Raw rows:
+`docs/audits/BENCH_stepped-camera_d9a201c71.tsv`. Repro:
+`scripts/fsr-bench-matrix.sh 3 300`, harness `994620123` (the previous harness
+plus two appended timer columns the outgoing build does not emit).
 
-**Same-machine control:** the outgoing record `a37fcba3c` rebuilt in a
-worktree and run scene by scene, interleaved with HEAD, under HEAD's harness
-copied in byte-identically (its TSV header still stamps `88c23887b`; the copy
-was uncommitted there):
-`docs/audits/CONTROL_stepped-camera_a37fcba3c_under-a4ede5fa0.tsv`. Both builds
-report the same camera pose on all five scenes.
+**Same-machine control:** the outgoing record `a3a7a43b0` rebuilt in a
+worktree and run scene by scene, alternating with HEAD, under HEAD's harness
+copied in byte-identically (its TSV header still stamps `a4ede5fa0`):
+`docs/audits/CONTROL_stepped-camera_a3a7a43b0_under-994620123.tsv`. Same camera
+pose (Prospector within 1 BU) and same draw counts on all five scenes.
 
-**Run conditions:** RTX 4070 Ti, 2541 / 12282 MiB VRAM in use at 16%
-utilisation, 1-minute load average 2.5 at start, desktop apps resident;
-`BYROREDUX_SETTINGS_PATH` fresh per invocation. Not an idle machine.
+**Run conditions:** RTX 4070 Ti at 20–25% utilisation, 1-minute load 1.9–2.9 per
+launch (7.7 at Whiterun HEAD), desktop resident, settings path fresh per run. Not idle.
 
 | Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
 |---|---:|---:|---:|---:|
-| Cornell (37 ent, redistributable control) | **97.8 FPS / 10.23 ms** | 127.7 FPS / 7.83 ms | +2.40 ms (+23%) | 189.1 / 5.29 (+48%) |
-| Prospector (2359 ent) | **83.0 FPS / 12.05 ms** | 109.9 FPS / 9.10 ms | +2.95 ms (+24%) | 148.9 / 6.71 (+44%) |
-| Whiterun BanneredMare (5825 ent) | **92.4 FPS / 10.82 ms** | 148.4 FPS / 6.74 ms | +4.08 ms (+38%) | 215.5 / 4.64 (+57%) |
-| MedTek Research 01 (25667 ent) | **38.9 FPS / 25.68 ms** | 62.1 FPS / 16.10 ms | +9.58 ms (+37%) | 75.1 / 13.32 (+48%) |
-| FO4 Dugout Inn (9347 ent) | **68.8 FPS / 14.54 ms** | 90.4 FPS / 11.07 ms | +3.47 ms (+24%) | 123.5 / 8.10 (+44%) |
+| Cornell (37 ent, redistributable control) | **86.3 FPS / 11.59 ms** | 119.6 FPS / 8.36 ms | +3.23 ms (+28%) | 167.4 / 5.97 (+48%) |
+| Prospector (2359 ent) | **83.8 FPS / 11.93 ms** | 101.9 FPS / 9.81 ms | +2.12 ms (+18%) | 137.8 / 7.25 (+39%) |
+| Whiterun BanneredMare (5853 ent) | **83.7 FPS / 11.94 ms** | 135.1 FPS / 7.40 ms | +4.54 ms (+38%) | 192.1 / 5.21 (+56%) |
+| MedTek Research 01 (24923 ent) | **35.4 FPS / 28.22 ms** | 59.7 FPS / 16.75 ms | +11.47 ms (+41%) | 71.4 / 14.00 (+50%) |
+| FO4 Dugout Inn (9254 ent) | **66.1 FPS / 15.12 ms** | 93.2 FPS / 10.73 ms | +4.39 ms (+29%) | 116.8 / 8.56 (+43%) |
 
-FSR Quality is a net win on all five scenes (+23% to +38%), Performance +44%
-to +57%, and `native-aa` loses 3% to 4%. Cornell is the only content-identical
-control (37 entities, 32 draws on both builds): TAA 10.76 → 10.23 ms (−4.9%),
-Quality 8.07 → 7.83 ms, Balanced and Performance level. Every game scene's
-content moved between the records (control → HEAD entities: Prospector
-3114 → 2359, Whiterun 5777 → 5825, MedTek 39560 → 25667, Dugout 11592 → 9347,
-with draws and TLAS instances), so their frame-time drops (TAA: Prospector
-13.16 → 12.05, Whiterun 11.02 → 10.82, MedTek 48.34 → 25.68, Dugout
-22.37 → 14.54 ms) are not claimed as speed-ups. Prospector's change is the
-documented `f87490826` withholding; the MedTek and Dugout shifts are
-unattributed. **No scene mounts `--scripts-bsa`, so this record cannot see the
-Papyrus interpreter** (first Known Issue).
+FSR Quality nets +18% to +41%, Performance +39% to +56%; `native-aa` loses 2% to 5%.
+
+**Against the control (frame ms, `a3a7a43b0` → `d9a201c71`), TAA / Quality:**
+Cornell 10.60 → 11.59 (+9.3%) / 8.09 → 8.36 (+3.3%); Prospector 11.73 → 11.93
+(+1.7%) / 9.43 → 9.81 (+4.0%); Whiterun 11.17 → 11.94 (+6.9%) / 6.85 → 7.40
+(+8.0%); MedTek 26.30 → 28.22 (+7.3%) / 15.48 → 16.75 (+8.2%); Dugout
+14.78 → 15.12 (+2.3%) / 10.63 → 10.73 (+0.9%). Every scene is slower at HEAD,
+with run ranges of at most 0.7 ms. Cornell is the content-identical control
+(37 entities, 32 draws on both builds), so its +0.99 ms TAA is renderer cost
+(R6a-regress-23); the game scenes' populations moved by under 3%. The outgoing
+record's own figures differ from the control's by up to ±4% (Cornell TAA 10.23
+vs 10.60 ms), hence the control. Prospector's TAA *gpu_main* is bimodal on both
+builds (about 4–5 or 10 ms between runs) with steady wall time: use frame ms.
+**No scene mounts `--scripts-bsa`, so this record cannot see the Papyrus
+interpreter** (first Known Issue).
 
 ### Compatibility matrix
 
@@ -573,11 +575,14 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
 
 ### Performance and measurement
 
-- [ ] **R6a-stale-29 — bench-of-record 515 commits stale** (`a3a7a43b0`). The
-  window rewrote ReSTIR reservoir ownership (`c2647d468`) and its temporal
-  gate (`17e0b7464`, `6110b6078`), GI hemisphere sampling (`0b56f1133`), SVGF
-  history aging and invalidation (`1092b5b9e`, `24eb7dba8`) and ground cover
-  (which no default scene runs, R6a-groundcover-1). Re-run with a same-machine control of `a3a7a43b0`.
+- [ ] **R6a-regress-23 — HEAD is 1–9% slower than `a3a7a43b0` under a same-machine
+  control** (2026-10-22, `d9a201c71`; table under §Bench-of-record). Cornell, the
+  content-identical scene, is +0.99 ms TAA. The SVGF bracket is +0.22–0.35 ms on
+  every scene, equal to the new `gpu_shadow_filter` bracket inside it; `gpu_main`
+  is +0.5–1.2 ms on Cornell, Whiterun and MedTek, unattributed (742-commit
+  window: ReSTIR `c2647d468` / `17e0b7464` / `6110b6078`, GI sampling `0b56f1133`,
+  SVGF history `1092b5b9e` / `24eb7dba8`, cloud-shadow map `c231f5b5f`). Next:
+  bisect Cornell `gpu_main`.
 - [ ] **Papyrus interpreter: what the frame budget does not bound** (#5764).
   #5763 gave the four exclusive `Update` systems a shared 10 000-statement
   frame allowance (runaway frame 13.6 → 1.4 ms; a never-ending handler dies at
@@ -621,10 +626,6 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   once, set `scene_entity_floor` from the observed count, and add `gridcross`
   to the default set. Until then, accept no ground-cover perf claim in either
   direction.
-- [ ] **Teardown SIGSEGV** (filed 2026-09-09): all 75 `4c9a5b36` runs
-  segfaulted on exit ("outstanding references"), 0 of 30 at `e6282349`. #4187
-  (`4777908b`) fixed the staging-pool path and the demo scene exits cleanly;
-  check the game-cell matrix's exit status on the next refresh.
 - [ ] **`gpu_main` can read longer than the wall frame** (13.27 ms inside an
   11.12 ms frame), so per-pass attribution and negative "render recovery"
   cells are untrustworthy; wall and fence are unaffected. #4808 moved the
@@ -729,7 +730,7 @@ Ground-truth as of 2026-10-19, HEAD `e4810c125`: all figures re-counted at the S
 
 | Claim                                                                     | Command                                                                                                                                                                                        |
 |---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Bench-of-record (LIVE)** — the command behind every FPS/ms figure in the live bench table above (§Bench-of-record, HEAD `a3a7a43b0`, 2026-10-13). Per-scene CWD applies; scene subset via `FSR_BENCH_SCENES`, output via `FSR_BENCH_OUT`. The default set is four interiors plus Cornell — no ground cover (R6a-groundcover-1). | `scripts/fsr-bench-matrix.sh 3 300` |
+| **Bench-of-record (LIVE)** — the command behind every FPS/ms figure in the live bench table above (§Bench-of-record, HEAD `d9a201c71`, 2026-10-22). Per-scene CWD applies; scene subset via `FSR_BENCH_SCENES`, output via `FSR_BENCH_OUT`. The default set is four interiors plus Cornell — no ground cover (R6a-groundcover-1). | `scripts/fsr-bench-matrix.sh 3 300` |
 | **Papyrus interpreter cost census** — every µs/ms figure in the interpreter Known Issue (idle scan, `OnCellLoad` burst, polling, runaway cap) | `cargo test -p byroredux-scripting --release --lib -- --ignored --nocapture vm_cost` |
 | **Scripted-scene A/B** — the +0.16 ms / +1.0% figure: BleakFallsBarrow01 from Skyrim `Data/`, 3 alternating runs with and without `--scripts-bsa` (the ~70 µs per-system figures come from the log patch recorded in the audit file) | `byroredux --esm Skyrim.esm --cell BleakFallsBarrow01 --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" … --upscaler taa --bench-frames 600 --bench-mode renderer-stepped --bench-camera orbit [--scripts-bsa "Skyrim - Misc.bsa"]` |
 | **Same-machine control** (the method that makes a refresh interpretable — see **Standing methodology** under How to run a bench; used to prove PERF-REGRESSION-6c56e311 was code, and to prove R6a-stale-17's apparent regressions were not). Rebuild the prior record's commit in a worktree and bench it in the same session under the same load; the harness must be byte-identical at both commits (`diff` both scripts before trusting the comparison). | `git worktree add <dir> <prior-commit> && cd <dir> && cargo build --release && FSR_BENCH_SCENES="cornell prospector medtek" FSR_BENCH_OUT=<dir>/out <dir>/scripts/fsr-bench-matrix.sh 3 300` |

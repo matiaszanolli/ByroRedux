@@ -360,6 +360,48 @@ order: when an artifact reads as "chrome / posterized", run
 Moved verbatim from ROADMAP's bench-of-record section at the Session 99 close,
 when `a3a7a43b0` became the record.
 
+(`a3a7a43b0`'s record, below, moved 2026-10-22 when `d9a201c71` became the record.)
+
+### Superseded — stepped-camera refresh (2026-10-13, HEAD `a3a7a43b0`)
+
+Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
+1280×720 output, per-scene CWD set to that game's `Data/`. **75 runs, zero
+rejections**, every scene-state fingerprint gate passing. Raw rows:
+`docs/audits/BENCH_stepped-camera_a3a7a43b0.tsv`.
+Repro: `scripts/fsr-bench-matrix.sh 3 300`, harness `a4ede5fa0`.
+
+**Same-machine control:** the outgoing record `a37fcba3c` rebuilt in a
+worktree and run scene by scene, interleaved with HEAD, under HEAD's harness
+copied in byte-identically (its TSV header still stamps `88c23887b`; the copy
+was uncommitted there):
+`docs/audits/CONTROL_stepped-camera_a37fcba3c_under-a4ede5fa0.tsv`. Both builds
+report the same camera pose on all five scenes.
+
+**Run conditions:** RTX 4070 Ti, 2541 / 12282 MiB VRAM in use at 16%
+utilisation, 1-minute load average 2.5 at start, desktop apps resident;
+`BYROREDUX_SETTINGS_PATH` fresh per invocation. Not an idle machine.
+
+| Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
+|---|---:|---:|---:|---:|
+| Cornell (37 ent, redistributable control) | **97.8 FPS / 10.23 ms** | 127.7 FPS / 7.83 ms | +2.40 ms (+23%) | 189.1 / 5.29 (+48%) |
+| Prospector (2359 ent) | **83.0 FPS / 12.05 ms** | 109.9 FPS / 9.10 ms | +2.95 ms (+24%) | 148.9 / 6.71 (+44%) |
+| Whiterun BanneredMare (5825 ent) | **92.4 FPS / 10.82 ms** | 148.4 FPS / 6.74 ms | +4.08 ms (+38%) | 215.5 / 4.64 (+57%) |
+| MedTek Research 01 (25667 ent) | **38.9 FPS / 25.68 ms** | 62.1 FPS / 16.10 ms | +9.58 ms (+37%) | 75.1 / 13.32 (+48%) |
+| FO4 Dugout Inn (9347 ent) | **68.8 FPS / 14.54 ms** | 90.4 FPS / 11.07 ms | +3.47 ms (+24%) | 123.5 / 8.10 (+44%) |
+
+FSR Quality is a net win on all five scenes (+23% to +38%), Performance +44%
+to +57%, and `native-aa` loses 3% to 4%. Cornell is the only content-identical
+control (37 entities, 32 draws on both builds): TAA 10.76 → 10.23 ms (−4.9%),
+Quality 8.07 → 7.83 ms, Balanced and Performance level. Every game scene's
+content moved between the records (control → HEAD entities: Prospector
+3114 → 2359, Whiterun 5777 → 5825, MedTek 39560 → 25667, Dugout 11592 → 9347,
+with draws and TLAS instances), so their frame-time drops (TAA: Prospector
+13.16 → 12.05, Whiterun 11.02 → 10.82, MedTek 48.34 → 25.68, Dugout
+22.37 → 14.54 ms) are not claimed as speed-ups. Prospector's change is the
+documented `f87490826` withholding; the MedTek and Dugout shifts are
+unattributed. **No scene mounts `--scripts-bsa`, so this record cannot see the
+Papyrus interpreter** (first Known Issue).
+
 ### Superseded — stepped-camera refresh (2026-09-28, HEAD `a37fcba3c`)
 
 Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
