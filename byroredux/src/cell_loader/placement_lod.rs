@@ -497,6 +497,7 @@ fn spawn_placement_lod_cell(
                 continue;
             }
         };
+        crate::parsed_nif_cache::note_scene_health(&far, &scene);
         let mut pool = byroredux_core::string::StringPool::new();
         // #2362 / SF2D2-05 — thread the already-in-scope `tex_provider`
         // through so external-geometry `BSGeometry` LOD slots resolve

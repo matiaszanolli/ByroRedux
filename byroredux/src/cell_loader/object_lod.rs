@@ -453,6 +453,7 @@ fn spawn_object_lod_quad(
             return None;
         }
     };
+    crate::parsed_nif_cache::note_scene_health(&path, &scene);
     // Local pool — we consume only geometry + transforms, not the interned
     // texture handles (the atlas path is deterministic).
     let mut pool = byroredux_core::string::StringPool::new();

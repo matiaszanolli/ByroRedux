@@ -333,4 +333,23 @@ mod scene_health_tests {
         let recovered = NifScene { recovered_blocks: 2, ..NifScene::default() };
         assert!(note_scene_health("meshes\\health\\mod_recovered.nif", &recovered));
     }
+    /// #6300 - every production consumer that parses a NIF and keeps what it
+    /// imports reports a partial scene. A new `parse_nif` call site in these
+    /// files without a `note_scene_health` beside it goes silent for mod content.
+    #[test]
+    fn every_scene_consumer_reports_partial_scenes() {
+        use byroredux_core::source_scan::production_text_or_whole;
+        for (file, src) in [
+            ("cell_loader/precombined.rs", include_str!("cell_loader/precombined.rs")),
+            ("cell_loader/object_lod.rs", include_str!("cell_loader/object_lod.rs")),
+            ("cell_loader/terrain_lod_btr.rs", include_str!("cell_loader/terrain_lod_btr.rs")),
+            ("cell_loader/placement_lod.rs", include_str!("cell_loader/placement_lod.rs")),
+        ] {
+            let production = production_text_or_whole(src);
+            let parses = production.matches("byroredux_nif::parse_nif(").count();
+            let reports = production.matches("note_scene_health(").count();
+            assert!(parses > 0, "{file}: no parse_nif call - the scan is stale");
+            assert!(reports >= parses, "{file}: {parses} parse_nif call(s), {reports} note_scene_health call(s)");
+        }
+    }
 }

@@ -243,6 +243,7 @@ pub(crate) fn spawn_btr_block(
             return None;
         }
     };
+    crate::parsed_nif_cache::note_scene_health(&path, &scene);
     // Local pool — we consume only geometry + transforms; the diffuse path is
     // deterministic (mirrors `object_lod`'s atlas resolution).
     let mut pool = byroredux_core::string::StringPool::new();

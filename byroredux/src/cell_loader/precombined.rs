@@ -346,6 +346,9 @@ impl PrecombinedSpawnJob {
                     .then(|| byroredux_nif::parse_nif(&bytes))
                     .and_then(|parsed| match parsed {
                         Ok(scene) => {
+                            // #6300 — a truncated / recovered `_oc.nif` is cached below as a
+                            // positive entry, so name it here like every other cache feeder.
+                            crate::parsed_nif_cache::note_scene_health(&path, &scene);
                             // Which blob this `_oc.nif` reads from is stated by
                             // the geometry objects themselves, not by whoever
                             // owns the cell (#2369). Opening the CSG is its own
