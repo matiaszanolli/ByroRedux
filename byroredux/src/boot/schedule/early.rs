@@ -77,6 +77,17 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads_resource::<crate::cell_loader::LoadedCellIndex>()
             .reads_resource::<crate::cell_loader::CurrentCellContext>()
             .reads_resource::<crate::cell_loader::CurrentExteriorContext>()
+            // #6217 — `raise_death_event` → the scripting crate's `note_death`
+            // (d1b298921): the victim's kill record and the reads that name it
+            // (`entity_global_form_id`'s player check, FormID and pool). Its
+            // player-killer branch (misc stats, challenges) cannot run here:
+            // drowning has no killer.
+            .writes_resource::<byroredux_scripting::obscript_state::KillRecords>()
+            .reads::<byroredux_scripting::SceneAliasCandidate>()
+            .reads::<byroredux_core::ecs::components::CreatureActor>()
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .reads_resource::<byroredux_core::form_id::FormIdPool>()
+            .reads_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
             .reads::<Transform>()
             .writes::<Transform>()
             // `fly_camera_system` publishes its pose to `GlobalTransform`
