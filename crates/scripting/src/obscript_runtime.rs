@@ -217,6 +217,37 @@ enum StatementTerminator {
     EndIf,
 }
 
+/// The rest of an `If` whose condition is already read, for either line form (compiled
+/// SCDA lines or source tokens): `parse_sequence` reads one statement run from `cursor` at
+/// a nesting depth and reports what ended it. The nesting cap lives here, once.
+fn parse_conditional(
+    parse_sequence: &mut dyn FnMut(&mut usize, usize) -> Option<(Vec<LegacyObscriptStatement>, StatementTerminator)>,
+    cursor: &mut usize,
+    depth: usize,
+    condition: LegacyObscriptCall,
+) -> Option<LegacyObscriptStatement> {
+    if depth >= MAX_LEGACY_OBSCRIPT_NESTING {
+        return None;
+    }
+    let (then_branch, terminator) = parse_sequence(cursor, depth + 1)?;
+    let else_branch = match terminator {
+        StatementTerminator::EndIf => Vec::new(),
+        StatementTerminator::Else => {
+            let (else_branch, terminator) = parse_sequence(cursor, depth + 1)?;
+            matches!(terminator, StatementTerminator::EndIf).then_some(else_branch)?
+        }
+        StatementTerminator::ElseIf(next_condition) => {
+            vec![parse_conditional(parse_sequence, cursor, depth + 1, next_condition)?]
+        }
+        StatementTerminator::End => return None,
+    };
+    Some(LegacyObscriptStatement::If {
+        condition,
+        then_branch,
+        else_branch,
+    })
+}
+
 fn parse_compiled_statements(
     script: &ScriptRecord,
     dialect: ObscriptDialect,
@@ -241,10 +272,8 @@ fn parse_compiled_sequence(
             SET_TO => statements.push(LegacyObscriptStatement::Assignment(
                 parse_compiled_assignment(script, line.payload, dialect)?,
             )),
-            IF => statements.push(parse_compiled_conditional(
-                script,
-                dialect,
-                lines,
+            IF => statements.push(parse_conditional(
+                &mut |cursor, depth| parse_compiled_sequence(script, dialect, lines, cursor, depth),
                 cursor,
                 depth,
                 parse_compiled_condition(line.payload, dialect)?,
@@ -265,43 +294,6 @@ fn parse_compiled_sequence(
         }
     }
     Some((statements, StatementTerminator::End))
-}
-
-fn parse_compiled_conditional(
-    script: &ScriptRecord,
-    dialect: ObscriptDialect,
-    lines: &[CompiledLine<'_>],
-    cursor: &mut usize,
-    depth: usize,
-    condition: LegacyObscriptCall,
-) -> Option<LegacyObscriptStatement> {
-    if depth >= MAX_LEGACY_OBSCRIPT_NESTING {
-        return None;
-    }
-    let (then_branch, terminator) =
-        parse_compiled_sequence(script, dialect, lines, cursor, depth + 1)?;
-    let else_branch = match terminator {
-        StatementTerminator::EndIf => Vec::new(),
-        StatementTerminator::Else => {
-            let (else_branch, terminator) =
-                parse_compiled_sequence(script, dialect, lines, cursor, depth + 1)?;
-            matches!(terminator, StatementTerminator::EndIf).then_some(else_branch)?
-        }
-        StatementTerminator::ElseIf(next_condition) => vec![parse_compiled_conditional(
-            script,
-            dialect,
-            lines,
-            cursor,
-            depth + 1,
-            next_condition,
-        )?],
-        StatementTerminator::End => return None,
-    };
-    Some(LegacyObscriptStatement::If {
-        condition,
-        then_branch,
-        else_branch,
-    })
 }
 
 fn parse_compiled_condition(
@@ -460,9 +452,8 @@ fn parse_source_sequence(
         *cursor += 1;
         let keyword = tokens.first()?;
         if keyword.eq_ignore_ascii_case("if") {
-            statements.push(parse_source_conditional(
-                script,
-                lines,
+            statements.push(parse_conditional(
+                &mut |cursor, depth| parse_source_sequence(script, lines, cursor, depth),
                 cursor,
                 depth,
                 parse_source_call(&tokens[1..])?,
@@ -483,40 +474,6 @@ fn parse_source_sequence(
         }
     }
     Some((statements, StatementTerminator::End))
-}
-
-fn parse_source_conditional(
-    script: &ScriptRecord,
-    lines: &[Vec<String>],
-    cursor: &mut usize,
-    depth: usize,
-    condition: LegacyObscriptCall,
-) -> Option<LegacyObscriptStatement> {
-    if depth >= MAX_LEGACY_OBSCRIPT_NESTING {
-        return None;
-    }
-    let (then_branch, terminator) = parse_source_sequence(script, lines, cursor, depth + 1)?;
-    let else_branch = match terminator {
-        StatementTerminator::EndIf => Vec::new(),
-        StatementTerminator::Else => {
-            let (else_branch, terminator) =
-                parse_source_sequence(script, lines, cursor, depth + 1)?;
-            matches!(terminator, StatementTerminator::EndIf).then_some(else_branch)?
-        }
-        StatementTerminator::ElseIf(next_condition) => vec![parse_source_conditional(
-            script,
-            lines,
-            cursor,
-            depth + 1,
-            next_condition,
-        )?],
-        StatementTerminator::End => return None,
-    };
-    Some(LegacyObscriptStatement::If {
-        condition,
-        then_branch,
-        else_branch,
-    })
 }
 
 fn event_from_name(name: &str) -> Option<LegacyObscriptEvent> {
