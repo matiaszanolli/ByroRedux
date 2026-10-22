@@ -34,7 +34,7 @@ use super::cfg::build_cfg;
 use super::control_flow::reconstruct;
 use super::event_names::is_event_name;
 use super::lift::lift_function;
-use super::node::{Node, NodeKind};
+use super::node::{is_temp_var, Node, NodeKind};
 use super::DecompileError;
 
 /// All synthesized AST nodes share an empty span (we have no source text).
@@ -276,6 +276,11 @@ fn decompile_body(
 /// compiler's `::mangled_<name>_<n>` renaming of a local re-declared in a
 /// sibling scope is a real user local the body still assigns and reads
 /// under that name, so it is declared like any other.
+///
+/// The test is the lift's own [`is_temp_var`] (#6262): Champollion uses one
+/// predicate for both "declare it" and "keep its assignments", so a name
+/// the lift keeps as a real variable (`::TEMP1`, a bare `::temp`) must be
+/// declared here too, or the body assigns an undeclared name.
 fn lower_local_decls(func: &PexFunction) -> Vec<Spanned<Stmt>> {
     func.locals
         .iter()
@@ -291,14 +296,6 @@ fn lower_local_decls(func: &PexFunction) -> Vec<Spanned<Stmt>> {
             }))
         })
         .collect()
-}
-
-/// Champollion's `isTempVar` (PscDecompiler.cpp:20-24): `::temp*` not ending
-/// in `_var` (those are property backing variables), or `::nonevar`.
-/// Case-insensitive, as the rest of the format is.
-fn is_temp_var(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    (lower.starts_with("::temp") && !lower.ends_with("_var")) || lower == "::nonevar"
 }
 
 fn lower_params(func: &PexFunction) -> Vec<Param> {
@@ -1269,8 +1266,8 @@ mod tests {
                     type_name: "Int".into(),
                 },
                 // #5880 — the compiler's rename of a sibling-scope
-                // re-declaration is a user local and IS declared; the
-                // `::nonevar` and `::TEMP1` spellings are still temporaries.
+                // re-declaration is a user local and IS declared; `::nonevar`
+                // is still a temporary.
                 TypedName {
                     name: "::mangled_i_0".into(),
                     type_name: "Int".into(),
@@ -1279,8 +1276,15 @@ mod tests {
                     name: "::nonevar".into(),
                     type_name: "None".into(),
                 },
+                // #6262 — Champollion's `::temp` test is case-sensitive and
+                // needs a suffix, so the lift keeps `::TEMP1` and a bare
+                // `::temp` as real variables; they must be declared too.
                 TypedName {
                     name: "::TEMP1".into(),
+                    type_name: "Int".into(),
+                },
+                TypedName {
+                    name: "::temp".into(),
                     type_name: "Int".into(),
                 },
             ],
@@ -1307,10 +1311,16 @@ mod tests {
             .collect();
         assert_eq!(
             declared,
-            vec![("__temp", true), ("count", true), ("::mangled_i_0", true)]
+            vec![
+                ("__temp", true),
+                ("count", true),
+                ("::mangled_i_0", true),
+                ("::TEMP1", true),
+                ("::temp", true),
+            ]
         );
         assert!(
-            f.body[..3].iter().all(|s| matches!(s.node, Stmt::VarDecl(_))),
+            f.body[..5].iter().all(|s| matches!(s.node, Stmt::VarDecl(_))),
             "declarations lead the body"
         );
         assert!(
