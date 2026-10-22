@@ -423,6 +423,13 @@ impl PersistentCellApplyJob {
             self.logical_stub_scripts,
             self.authored_ref_count,
         );
+        // #6219 — the persistent CELL is "entered" every time the worldspace is
+        // built, so a return after `iHoursToRespawnCell` owes it a reset like any
+        // cell. Retire it now that its references have spawned, as the interior
+        // and tile jobs do (#6102): left pending, `mark_cell_reset` rescanned every
+        // frame of the stay and reset references stamped under this root later
+        // (#6076 tile-streamed persistent actors, re-spawns after eviction).
+        byroredux_scripting::obscript_state::cell_load_finished(world, self.cell_root);
         PersistentCellApplyProgress::Complete
     }
 
@@ -721,6 +728,30 @@ mod resolve_persistent_cell_tests {
     fn an_unrelated_worldspace_missing_from_the_index_resolves_to_none() {
         let index = EsmCellIndex::default();
         assert!(resolve_persistent_cell(&index, "nonexistent").is_none());
+    }
+}
+
+#[cfg(test)]
+mod cell_load_finished_tests {
+    /// #6219 / #6102 — every cell-apply job that completes retires the cell's
+    /// pending `OnReset` (`cell_load_finished`): the tile job and, since #6219,
+    /// the worldspace persistent CELL job.
+    #[test]
+    fn every_exterior_apply_job_retires_its_pending_reset_on_completion() {
+        // Test modules are interleaved with production here: strip them all.
+        let production = byroredux_core::source_scan::strip_test_modules(include_str!("exterior.rs"));
+        for (job, complete) in [
+            ("impl PersistentCellApplyJob", "PersistentCellApplyProgress::Complete\n"),
+            ("impl ExteriorCellApplyJob", "ExteriorCellApplyProgress::Complete(OneCellLoadInfo"),
+        ] {
+            let body = production.split_once(job).unwrap_or_else(|| panic!("{job} exists")).1;
+            let before_complete = body.split_once(complete).unwrap_or_else(|| panic!("{job} completes")).0;
+            let tail = &before_complete[before_complete.len().saturating_sub(1200)..];
+            assert!(
+                tail.contains("obscript_state::cell_load_finished(world, self.cell_root)"),
+                "{job} completes without retiring the cell's pending reset (#6219)"
+            );
+        }
     }
 }
 
