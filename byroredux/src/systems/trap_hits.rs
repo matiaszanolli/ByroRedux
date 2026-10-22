@@ -19,7 +19,7 @@
 //! trap object is in contact" with no stated cadence, so it is sent once, with
 //! the start, as the initial hit; the material number is 0.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use byroredux_core::ecs::components::{ActorVitals, Dead, RigidBodyData};
 use byroredux_core::ecs::resource::Resource;
@@ -34,15 +34,17 @@ const MAX_PARENT_HOPS: usize = 8;
 
 /// Which (trap, actor) pairs were in contact last tick.
 #[derive(Debug, Default)]
-pub(crate) struct TrapContacts(pub HashSet<(EntityId, EntityId)>, TrapLayerCache);
+pub(crate) struct TrapContacts(pub FxHashSet<(EntityId, EntityId)>, TrapOwnerCache);
 
-/// The Trap-layer body list is stable between `RigidBodyData` insertions and
-/// removals. `structural_generation` lets the contact pass skip its full-world
-/// discovery scan on ordinary frames.
+/// The scripted-owner map for the Trap-layer bodies (`(owner, body)` per trap).
+/// It depends only on the structure of the components in [`owner_key`], so it is
+/// derived once and reused until one of their memberships changes (#6312);
+/// before that the ancestor chains, script owners and the bare-collider
+/// lookups were rebuilt, with fresh allocations, every tick.
 #[derive(Debug, Default)]
-struct TrapLayerCache {
-    generation: Option<u64>,
-    bodies: Vec<EntityId>,
+struct TrapOwnerCache {
+    key: Option<[u64; 6]>,
+    traps: std::sync::Arc<Vec<(EntityId, byroredux_physics::RigidBodyHandle)>>,
 }
 
 impl Resource for TrapContacts {}
@@ -61,8 +63,8 @@ fn script_form(world: &World, entity: EntityId) -> Option<u32> {
 /// unnecessary.
 pub(crate) fn live_actor_bodies(
     world: &World,
-) -> HashMap<byroredux_physics::RigidBodyHandle, EntityId> {
-    let mut owners = HashMap::new();
+) -> FxHashMap<byroredux_physics::RigidBodyHandle, EntityId> {
+    let mut owners = FxHashMap::default();
     if let Some(actors) = world.query::<ActorVitals>() {
         for (actor, _) in actors.iter() {
             if world.get::<Dead>(actor).is_none() {
@@ -98,43 +100,45 @@ fn source_reference(world: &World, entity: EntityId) -> Option<u32> {
 /// #5873 — `HashSet::difference` iterates in a per-process-seeded order, so the
 /// `OnTrapHitStop` scripts used to run in a different order every run.
 fn ended_contacts(
-    previous: &HashSet<(EntityId, EntityId)>,
-    now: &HashSet<(EntityId, EntityId)>,
+    previous: &FxHashSet<(EntityId, EntityId)>,
+    now: &FxHashSet<(EntityId, EntityId)>,
 ) -> Vec<(EntityId, EntityId)> {
     let mut ended: Vec<_> = previous.difference(now).copied().collect();
     ended.sort_unstable();
     ended
 }
 
-pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
-    let cached = world
-        .try_resource::<TrapContacts>()
-        .map(|contacts| (contacts.1.generation, contacts.1.bodies.clone()));
-    // Rebuild only when RigidBodyData's structural generation changes. Havok
-    // layer is import-time data; runtime motion edits do not change membership.
-    let (generation, trap_layer, rebuilt) = {
-        let Some(bodies) = world.query::<RigidBodyData>() else { return };
-        let generation = bodies.storage().structural_generation();
-        match cached {
-            Some((Some(cached_generation), trap_layer)) if cached_generation == generation => {
-                (generation, trap_layer, false)
-            }
-            _ => (
-                generation,
-                bodies
-                    .iter()
-                    .filter(|(_, data)| data.havok_layer == LAYER_TRAP)
-                    .map(|(entity, _)| entity)
-                    .collect(),
-                true,
-            ),
-        }
-    };
-    if rebuilt {
-        if let Some(mut contacts) = world.try_resource_mut::<TrapContacts>() {
-            contacts.1 = TrapLayerCache { generation: Some(generation), bodies: trap_layer.clone() };
-        }
+/// Membership generations of everything [`derive_traps`] reads: the Trap-layer
+/// bodies, the parent links, the script holders, the physics handles, and the
+/// bare-collider path's source form and form id. Each is a tracked component
+/// (`TRACK_CHANGES`), so the generation moves on insert, overwrite and removal.
+fn owner_key(world: &World) -> [u64; 6] {
+    fn generation<T>(world: &World) -> u64
+    where
+        T: byroredux_core::ecs::Component<Storage = byroredux_core::ecs::SparseSetStorage<T>>,
+    {
+        world.query::<T>().map_or(0, |q| q.storage().structural_generation())
     }
+    use byroredux_core::ecs::components::{FormIdComponent, Parent, PhysicsSourceForm};
+    [
+        generation::<RigidBodyData>(world),
+        generation::<Parent>(world),
+        generation::<byroredux_scripting::PapyrusReferenceScripts>(world),
+        generation::<byroredux_physics::RapierHandles>(world),
+        generation::<PhysicsSourceForm>(world),
+        generation::<FormIdComponent>(world),
+    ]
+}
+
+/// Resolve every Trap-layer body to `(scripted owner, physics body)`. `None`
+/// when a storage it needs is not registered (nothing to do this tick).
+fn derive_traps(world: &World) -> Option<Vec<(EntityId, byroredux_physics::RigidBodyHandle)>> {
+    let trap_layer: Vec<EntityId> = world
+        .query::<RigidBodyData>()?
+        .iter()
+        .filter(|(_, data)| data.havok_layer == LAYER_TRAP)
+        .map(|(entity, _)| entity)
+        .collect();
     // The scripts sit on the placement root, the colliders on the root or a child
     // of it: a trap body is owned by the nearest scripted entity up its parents.
     // (One guard at a time: the ancestor chains first, then the scripts.)
@@ -160,9 +164,7 @@ pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
         log::debug!("trap contacts: {} Trap-layer bodies; ancestor chains {:?}", chains.len(), chains);
     }
     let scripted: Vec<(EntityId, EntityId)> = {
-        let Some(scripts) = world.query::<byroredux_scripting::PapyrusReferenceScripts>() else {
-            return;
-        };
+        let scripts = world.query::<byroredux_scripting::PapyrusReferenceScripts>()?;
         chains
             .into_iter()
             .filter_map(|(entity, chain)| Some((entity, chain.into_iter().find(|&at| scripts.get(at).is_some())?)))
@@ -172,7 +174,7 @@ pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
     // hierarchy (the hierarchical import of an animated prop): its
     // `PhysicsSourceForm` names the REFR, whose entity carries the scripts.
     let scripted = {
-        let mut owned: std::collections::HashSet<EntityId> = scripted.iter().map(|(entity, _)| *entity).collect();
+        let mut owned: FxHashSet<EntityId> = scripted.iter().map(|(entity, _)| *entity).collect();
         let mut scripted = scripted;
         let bare: Vec<(EntityId, u32)> = trap_layer
             .iter()
@@ -187,17 +189,36 @@ pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
         }
         scripted
     };
-    let traps: Vec<(EntityId, _)> = match world.query::<byroredux_physics::RapierHandles>() {
-        Some(handles) => scripted
-            .into_iter()
-            .filter_map(|(body_entity, owner)| Some((owner, handles.get(body_entity)?.body)))
-            .collect(),
-        None => return,
-    };
+    let handles = world.query::<byroredux_physics::RapierHandles>()?;
+    let traps: Vec<(EntityId, _)> = scripted
+        .into_iter()
+        .filter_map(|(body_entity, owner)| Some((owner, handles.get(body_entity)?.body)))
+        .collect();
     static LAST_TRAP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
     if LAST_TRAP_COUNT.swap(traps.len(), std::sync::atomic::Ordering::Relaxed) != traps.len() {
         log::debug!("trap contacts: {} scripted Trap-layer bodies", traps.len());
     }
+    Some(traps)
+}
+
+pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
+    // The owner map is invariant between structural changes (Havok layer is
+    // import-time data; runtime motion edits do not change membership).
+    let key = owner_key(world);
+    let cached = world.try_resource::<TrapContacts>().and_then(|contacts| {
+        (contacts.1.key == Some(key)).then(|| std::sync::Arc::clone(&contacts.1.traps))
+    });
+    let traps = match cached {
+        Some(traps) => traps,
+        None => {
+            let Some(traps) = derive_traps(world) else { return };
+            let traps = std::sync::Arc::new(traps);
+            if let Some(mut contacts) = world.try_resource_mut::<TrapContacts>() {
+                contacts.1 = TrapOwnerCache { key: Some(key), traps: std::sync::Arc::clone(&traps) };
+            }
+            traps
+        }
+    };
     let previous = world
         .try_resource_mut::<TrapContacts>()
         .map(|mut contacts| std::mem::take(&mut contacts.0))
@@ -227,7 +248,7 @@ pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
             })
             .collect()
     };
-    let mut now: HashSet<(EntityId, EntityId)> = HashSet::new();
+    let mut now: FxHashSet<(EntityId, EntityId)> = FxHashSet::default();
     let mut starts: Vec<(EntityId, EntityId, byroredux_physics::BodyMotion)> = Vec::new();
     for (trap, motion, others) in overlaps {
         for other in others {
@@ -332,7 +353,7 @@ mod tests {
         assert_eq!(overlaps, vec![near_body], "the broad wall overlap is filtered before shape intersection");
 
         trap_contact_system(&world, 0.0);
-        assert_eq!(world.resource::<TrapContacts>().0, HashSet::from([(trap, near)]), "only the overlapping actor");
+        assert_eq!(world.resource::<TrapContacts>().0, [(trap, near)].into_iter().collect::<FxHashSet<_>>(), "only the overlapping actor");
         trap_contact_system(&world, 0.0);
         assert_eq!(world.resource::<TrapContacts>().0.len(), 1, "a standing contact is not a new one");
         world.query_mut::<Dead>().unwrap().insert(near, Dead);
@@ -363,8 +384,38 @@ mod tests {
         trap_contact_system(&world, 0.0);
         assert_eq!(
             world.resource::<TrapContacts>().0,
-            HashSet::from([(trap, near), (added, near)]),
+            [(trap, near), (added, near)].into_iter().collect::<FxHashSet<_>>(),
             "a structural body change refreshes the cached Trap-layer subset"
+        );
+    }
+
+    /// #6312 — the trap → owner map is cached between ticks, so it must follow
+    /// the structure it was derived from: losing the scripts ends the contact,
+    /// regaining them (a cell reload re-attaches) starts it again, and a trap
+    /// reparented under a scripted root is owned by that root.
+    #[test]
+    fn the_cached_owner_map_follows_script_and_parent_changes() {
+        use byroredux_core::ecs::components::Parent;
+        let (mut world, trap, near) = trap_world();
+        world.register::<Parent>();
+        trap_contact_system(&world, 0.0);
+        assert_eq!(
+            world.resource::<TrapContacts>().0,
+            [(trap, near)].into_iter().collect::<FxHashSet<_>>()
+        );
+
+        let scripts = world.remove::<PapyrusReferenceScripts>(trap).expect("the trap had scripts");
+        trap_contact_system(&world, 0.0);
+        assert!(world.resource::<TrapContacts>().0.is_empty(), "no scripts, no trap");
+
+        let root = world.spawn();
+        world.insert(root, scripts);
+        world.insert(trap, Parent(root));
+        trap_contact_system(&world, 0.0);
+        assert_eq!(
+            world.resource::<TrapContacts>().0,
+            [(root, near)].into_iter().collect::<FxHashSet<_>>(),
+            "the scripted root now owns the body"
         );
     }
 
@@ -374,8 +425,8 @@ mod tests {
     fn ended_contacts_are_ordered() {
         let mut world = World::new();
         let ids: Vec<EntityId> = (0..16).map(|_| world.spawn()).collect();
-        let previous: HashSet<_> = ids.iter().rev().flat_map(|&t| ids.iter().rev().map(move |&a| (t, a))).collect();
-        let now: HashSet<_> = [(ids[0], ids[0])].into_iter().collect();
+        let previous: FxHashSet<_> = ids.iter().rev().flat_map(|&t| ids.iter().rev().map(move |&a| (t, a))).collect();
+        let now: FxHashSet<_> = [(ids[0], ids[0])].into_iter().collect();
         let ended = ended_contacts(&previous, &now);
         assert_eq!(ended.len(), previous.len() - 1);
         assert!(ended.windows(2).all(|w| w[0] < w[1]), "sorted and unique");
@@ -394,7 +445,7 @@ mod tests {
         world.insert(root, scripts);
         world.insert(trap, Parent(root));
         trap_contact_system(&world, 0.0);
-        assert_eq!(world.resource::<TrapContacts>().0, HashSet::from([(root, near)]));
+        assert_eq!(world.resource::<TrapContacts>().0, [(root, near)].into_iter().collect::<FxHashSet<_>>());
     }
 
     /// A body that is not on the Trap layer, or carries no scripts, is not a trap.

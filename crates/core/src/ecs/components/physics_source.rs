@@ -31,4 +31,7 @@ pub struct PhysicsSourceForm(pub FormId);
 
 impl Component for PhysicsSourceForm {
     type Storage = SparseSetStorage<Self>;
+    // The trap-owner cache re-derives when a bare collision entity gains or
+    // loses its source REFR (#6312).
+    const TRACK_CHANGES: bool = true;
 }

@@ -17,4 +17,7 @@ pub struct FormIdComponent(pub FormId);
 
 impl Component for FormIdComponent {
     type Storage = SparseSetStorage<Self>;
+    // The trap-owner cache resolves bare colliders through the form-id index,
+    // so it re-derives when a form id lands or changes (#6312).
+    const TRACK_CHANGES: bool = true;
 }

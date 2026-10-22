@@ -91,6 +91,9 @@ pub struct PapyrusReferenceScripts(pub Vec<ReferenceScript>);
 
 impl Component for PapyrusReferenceScripts {
     type Storage = SparseSetStorage<Self>;
+    // The trap-owner cache re-derives when a reference gains or loses its
+    // scripts (#6312).
+    const TRACK_CHANGES: bool = true;
 }
 
 /// FormID → entity for the references that carry [`PapyrusReferenceScripts`]
