@@ -779,15 +779,15 @@ fn select_active_package<'a>(
     // the quest-alias fill loop; every other consumer, including this one,
     // reads the committed `SceneActorBindings` table exactly as before.
     let context = ConditionContext::for_subject(actor);
-    // #6079 — PSDT's Day-of-Week is tested against the game calendar's
-    // weekday where the game's day enum is established; `None` leaves day
-    // constraints unevaluated.
-    let weekday = world
-        .try_resource::<GameTimeRes>()
-        .and_then(|time| byroredux_scripting::globals::package_weekday(world, time.day));
+    // #6079 / #6257 — PSDT's Day-of-Week and date are tested against the
+    // game calendar where the game's enum and calendar are established;
+    // `None` leaves the constraint unevaluated.
+    let day = world.try_resource::<GameTimeRes>().map(|time| time.day);
     let clock = byroredux_plugin::esm::records::PackClock {
         hour: game_hour,
-        weekday,
+        weekday: day.and_then(|day| byroredux_scripting::globals::package_weekday(world, day)),
+        day_of_month: day
+            .and_then(|day| byroredux_scripting::globals::package_day_of_month(world, day)),
     };
     byroredux_plugin::esm::records::active_package(packages, clock, |package| {
         package_conditions_pass(&package.conditions, world, &context)
@@ -1266,10 +1266,63 @@ mod tests {
         );
         assert_eq!(winner(&mut world, 7), Some(3), "the week repeats");
 
+        // #6257 — Oblivion shares the enum; its calendar starts on Morndas,
+        // so day 0 picks the MWF variant and day 6 (Sundas) the weekend one.
+        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Oblivion));
+        let week: Vec<_> = (0..7).map(|day| winner(&mut world, day)).collect();
+        assert_eq!(
+            week,
+            [Some(1), Some(2), Some(1), Some(2), Some(1), Some(3), Some(3)],
+            "Mor MWF, Tir TT, Mid MWF, Tur TT, Fre MWF, Log SS, Sun SS"
+        );
+
         // A game without an established PSDT calendar leaves the constraint
         // unevaluated: the first listed package wins every day.
         world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Skyrim));
         assert_eq!(winner(&mut world, 2), Some(1));
+    }
+
+    /// #6257 — an Oblivion package dated the Nth of the month (the
+    /// `ImpExRequest02`..`27` family) runs on that day only, counted from the
+    /// authored start date (27 Last Seed); off it the next package wins.
+    #[test]
+    fn dated_packages_select_by_the_oblivion_day_of_the_month() {
+        use byroredux_plugin::esm::reader::GameKind;
+
+        let dated = |form_id: u32, date: u8| {
+            pack(
+                form_id,
+                PROCEDURE_SANDBOX,
+                Some(PackSchedule {
+                    start_hour: Some(12),
+                    duration_minutes: 5 * 60,
+                    date,
+                    ..Default::default()
+                }),
+            )
+        };
+        let packages = [dated(0x2, 2), dated(0x1B, 27), dated(0xFF, 0)];
+        let mut world = World::new();
+        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Oblivion));
+        world.insert_resource(byroredux_scripting::globals::GameClockGlobals {
+            start_date: Some((433.0, 7.0, 27.0)),
+            ..Default::default()
+        });
+        let actor = world.spawn();
+        let winner = |world: &mut World, day: u64| {
+            let mut time = GameTimeRes::frozen_at(13.0);
+            time.day = day;
+            world.insert_resource(time);
+            select_active_package(world, actor, 13.0, packages.iter()).map(|p| p.form_id)
+        };
+        assert_eq!(winner(&mut world, 0), Some(0x1B), "27 Last Seed");
+        assert_eq!(winner(&mut world, 1), Some(0xFF), "the 28th");
+        assert_eq!(winner(&mut world, 6), Some(0x2), "2 Hearthfire (Last Seed has 31 days)");
+        assert_eq!(winner(&mut world, 6 + 25), Some(0x1B), "27 Hearthfire");
+
+        // Fallout authors no dates and has no established month table.
+        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Fallout3NV));
+        assert_eq!(winner(&mut world, 1), Some(0x2));
     }
 
     /// Real-data-shaped Skyrim+ type-19 template: a `Travel`-then-`Sandbox`

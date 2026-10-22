@@ -395,13 +395,15 @@ impl PackDays {
 }
 
 /// When a package is being asked about: the hour of day and, where the host
-/// has a calendar for the game, the weekday (0 Sunday .. 6 Saturday).
-/// `weekday = None` leaves day constraints unevaluated — a bare `f32` hour
-/// converts to that, so hour-only callers are unchanged.
+/// has a calendar for the game, the weekday (0 Sunday .. 6 Saturday) and
+/// the day of the month (1-based, #6257). `None` leaves the matching
+/// constraint unevaluated — a bare `f32` hour converts to that, so
+/// hour-only callers are unchanged.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PackClock {
     pub hour: f32,
     pub weekday: Option<u32>,
+    pub day_of_month: Option<u32>,
 }
 
 impl From<f32> for PackClock {
@@ -409,6 +411,7 @@ impl From<f32> for PackClock {
         Self {
             hour,
             weekday: None,
+            day_of_month: None,
         }
     }
 }
@@ -438,6 +441,11 @@ pub struct PackSchedule {
     /// three vanilla FNV windows that wrap (`VSpecialGSGeckoHunters…`) come
     /// as MWF/TT/SS triples that cover it either way.
     pub days: PackDays,
+    /// PSDT byte 2: the day of the month (1-based) the window applies on,
+    /// `0` = any (#6257). Only Oblivion authors one (75 packages, e.g. the
+    /// `ImpExRequest02`..`27` family); FO3/FNV author 0 on every package.
+    /// Tested like [`Self::days`], against the moment asked about.
+    pub date: u8,
 }
 
 impl PackSchedule {
@@ -488,8 +496,15 @@ impl PackSchedule {
     /// duration, so the `duration.max(0)` clamp in `parse_pack` never fires
     /// on this corpus.
     pub fn active_at(&self, clock: impl Into<PackClock>) -> bool {
-        let PackClock { hour, weekday } = clock.into();
+        let PackClock {
+            hour,
+            weekday,
+            day_of_month,
+        } = clock.into();
         if weekday.is_some_and(|weekday| !self.days.includes(weekday)) {
+            return false;
+        }
+        if self.date != 0 && day_of_month.is_some_and(|day| day != u32::from(self.date)) {
             return false;
         }
         let Some(start) = self.start_hour else {
@@ -1026,6 +1041,7 @@ pub fn parse_pack(
                     start_minute: if skyrim_era && time >= 0 && (0..60).contains(&minute) { minute as u8 } else { 0 },
                     duration_minutes: if skyrim_era { duration } else { duration.saturating_mul(60) },
                     days: PackDays::from_raw(sub.data[1] as i8),
+                    date: sub.data[2],
                 };
                 // #3352 — a `time >= 0, duration == 0` PSDT decodes to a
                 // zero-length window that `active_at` can never satisfy, so
@@ -1689,6 +1705,7 @@ mod tests {
             schedule.active_at(PackClock {
                 hour: 9.0,
                 weekday: Some(weekday),
+                day_of_month: None,
             })
         };
 
@@ -1729,9 +1746,49 @@ mod tests {
         // calendar (`weekday: None`, a bare hour) leaves the constraint alone.
         assert!(!mwf.active_at(PackClock {
             hour: 13.0,
-            weekday: Some(1)
+            weekday: Some(1),
+            day_of_month: None,
         }));
         assert!(mwf.active_at(9.0));
+    }
+
+    /// #6257 — PSDT byte 2 is the day of the month (0 = any); Oblivion's
+    /// `ImpExRequest02` authors `date 2, time 12, duration 5`. A clock with
+    /// no calendar date leaves it unevaluated.
+    #[test]
+    fn psdt_date_byte_gates_on_the_day_of_the_month() {
+        let mut data = vec![0xFF, 0xFF, 2, 12];
+        data.extend_from_slice(&5i32.to_le_bytes());
+        let schedule = parse_pack(0x1, &[sub(b"PSDT", data)], &None, GameKind::Oblivion)
+            .schedule
+            .expect("schedule decoded");
+        assert_eq!(schedule.date, 2);
+        let at = |day_of_month| {
+            schedule.active_at(PackClock {
+                hour: 13.0,
+                weekday: Some(3),
+                day_of_month,
+            })
+        };
+        assert!(at(Some(2)));
+        assert!(!at(Some(3)) && !at(Some(1)));
+        assert!(at(None), "no calendar date: unevaluated");
+        assert!(!schedule.active_at(PackClock {
+            hour: 18.0,
+            weekday: None,
+            day_of_month: Some(2),
+        }), "the hour window still applies");
+
+        let mut any = vec![0xFF, 0xFF, 0, 12];
+        any.extend_from_slice(&5i32.to_le_bytes());
+        let any = parse_pack(0x2, &[sub(b"PSDT", any)], &None, GameKind::Oblivion)
+            .schedule
+            .unwrap();
+        assert!((1..=31).all(|day| any.active_at(PackClock {
+            hour: 13.0,
+            weekday: None,
+            day_of_month: Some(day),
+        })));
     }
 
     /// #6079 — `active_package` walks past a package whose day does not match
@@ -1751,6 +1808,7 @@ mod tests {
                 PackClock {
                     hour: 9.0,
                     weekday: Some(weekday),
+                    day_of_month: None,
                 },
                 |_| true,
             )

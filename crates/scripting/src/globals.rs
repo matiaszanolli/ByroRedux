@@ -139,14 +139,53 @@ pub fn day_of_week(world: &byroredux_core::ecs::World, fallout: bool, days_elaps
 }
 
 /// The weekday package schedules test their Day-of-Week against, `days_elapsed` days into the game —
-/// only where the game's PSDT day enum and calendar are established (Fallout 3 / New Vegas, #6079); `None`
-/// elsewhere leaves day constraints unevaluated.
+/// only where the game's PSDT day enum and calendar are established: Fallout 3 / New Vegas (#6079) and
+/// Oblivion (#6257 — UESP *Mod File Format/PACK* documents the same 0 Sundas .. 6 Loredas, 7..10 group
+/// enum, and its calendar starts on Morndas). `None` elsewhere leaves day constraints unevaluated.
 pub fn package_weekday(world: &byroredux_core::ecs::World, days_elapsed: u64) -> Option<u32> {
     use byroredux_plugin::esm::reader::GameKind;
     match world.try_resource::<crate::ScriptGame>()?.0 {
         GameKind::Fallout3NV => Some(day_of_week(world, true, days_elapsed)),
+        GameKind::Oblivion => Some(day_of_week(world, false, days_elapsed)),
         _ => None,
     }
+}
+
+/// Oblivion's month lengths, `GameMonth` 0 (Morning Star) .. 11 (Evening Star): "Same # of days as"
+/// the Gregorian month, Sun's Dawn 28 (CS wiki *Special variables*). No leap year is documented.
+const OBLIVION_MONTH_DAYS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/// The day of the month (1-based, `GameDay`'s reading) `days_elapsed` days after the record-authored
+/// start date `(GameMonth 0..=11, GameDay)`. `None` for a start date outside the calendar.
+pub fn oblivion_day_of_month(start_month: u32, start_day: u32, days_elapsed: u64) -> Option<u32> {
+    let start_len = *OBLIVION_MONTH_DAYS.get(start_month as usize)?;
+    if !(1..=start_len).contains(&start_day) {
+        return None;
+    }
+    let year: u64 = OBLIVION_MONTH_DAYS.iter().map(|&days| u64::from(days)).sum();
+    let mut left = days_elapsed % year + u64::from(start_day - 1);
+    let mut month = start_month as usize;
+    loop {
+        let len = u64::from(OBLIVION_MONTH_DAYS[month]);
+        if left < len {
+            return Some(left as u32 + 1);
+        }
+        left -= len;
+        month = (month + 1) % 12;
+    }
+}
+
+/// The day of the month package schedules test their PSDT date against (#6257) — Oblivion only, the
+/// one game that authors a date (75 packages; FO3/FNV author 0 on all of theirs), advanced from the
+/// `GameMonth`/`GameDay` a new game starts on (27 Last Seed in `Oblivion.esm`). `None` leaves the
+/// constraint unevaluated.
+pub fn package_day_of_month(world: &byroredux_core::ecs::World, days_elapsed: u64) -> Option<u32> {
+    use byroredux_plugin::esm::reader::GameKind;
+    if !matches!(world.try_resource::<crate::ScriptGame>()?.0, GameKind::Oblivion) {
+        return None;
+    }
+    let (_, month, day) = world.try_resource::<GameClockGlobals>()?.start_date?;
+    oblivion_day_of_month(month as u32, day as u32, days_elapsed)
 }
 
 /// Write the game clock into the globals: the hour of day into `GameHour`, and `GameDaysPassed` as the
@@ -172,6 +211,21 @@ pub fn sync_game_clock_globals(world: &byroredux_core::ecs::World, day: u64, hou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6257 — the Oblivion day of the month advances from the authored start (27 Last Seed) through
+    /// the documented month lengths, wrapping the year.
+    #[test]
+    fn oblivion_day_of_month_walks_the_documented_months() {
+        assert_eq!(oblivion_day_of_month(7, 27, 0), Some(27));
+        assert_eq!(oblivion_day_of_month(7, 27, 4), Some(31), "Last Seed has 31 days");
+        assert_eq!(oblivion_day_of_month(7, 27, 5), Some(1));
+        assert_eq!(oblivion_day_of_month(7, 27, 5 + 30), Some(1), "Hearthfire has 30");
+        assert_eq!(oblivion_day_of_month(0, 31, 28), Some(28), "Sun's Dawn has 28");
+        assert_eq!(oblivion_day_of_month(0, 31, 29), Some(1));
+        assert_eq!(oblivion_day_of_month(7, 27, 365), Some(27), "a year later");
+        assert_eq!(oblivion_day_of_month(1, 29, 0), None);
+        assert_eq!(oblivion_day_of_month(12, 1, 0), None);
+    }
 
     #[test]
     fn the_gregorian_weekday_matches_known_dates() {
