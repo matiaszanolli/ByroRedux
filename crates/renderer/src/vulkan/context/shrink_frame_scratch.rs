@@ -115,7 +115,7 @@ mod tests {
             ),
             (
                 "terrain_tile_scratch",
-                "at most MAX_TERRAIN_TILES (1024) x 208 B",
+                "at most MAX_TERRAIN_TILES (1024) x 224 B",
             ),
         ];
         let module = include_str!("mod.rs");

@@ -334,7 +334,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**134**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**135**) grouped by
 purpose:
 
 ```
@@ -476,6 +476,8 @@ lod.coverage                → current LOD coverage diagnostics
 terrain.seams               → terrain seam diagnostics
 terrain.height [all]        → per-layer height maps under the camera: source, state, raw height; `all` tallies every resident cell (#6195)
 terrain.blend [band]        → read/set the height-based layer blend band for this session; 0 = off (#6196)
+terrain.parallax [off | <range_m> [<depth_m>]]
+                            → read/set the near-camera terrain parallax (fade-out distance, relief depth, metres) for this session; off / range 0 = off (#6197)
 render.debug                → renderer debug-mode control
 r.dbg [0xMASK|+0xB|-0xB]    → read / set / add / clear the DBG_* bit mask at runtime
 r.shadowfilter [on|off]     → read or switch the direct-shadow spatial filter

@@ -203,21 +203,23 @@ fn shares_sum_to_one_and_heightless_lanes_are_untouched() {
 #[test]
 fn glsl_blend_fades_each_lane_with_its_share() {
     let src = include_str!("../../../shaders/include/bindings.glsl");
+    // #6197 — the arithmetic moved into the core the blend and the parallax's
+    // height query share; the pins follow it there.
     let body = src
-        .split_once("void byroTerrainHeightBlend(")
-        .expect("byroTerrainHeightBlend must stay in bindings.glsl")
+        .split_once("float byroTerrainBlendCore(")
+        .expect("byroTerrainBlendCore must stay in bindings.glsl")
         .1;
     let body = &body[..body.find("\n}\n").expect("function end")];
     for line in [
         "const float fadeShare = 1.0 / float(TERRAIN_SPLAT_LAYERS + 1u);",
         "fade[i] = min(rel / fadeShare, 1.0);",
-        "h[i] = fade[i] * h[i] + rel;",
+        "h[i] = fade[i] * hRaw[i] + rel;",
         "h[i] = fade[i] * max(h[i] - floorScore, 0.0);",
         "share[i] = heightShare * h[i] / total;",
     ] {
         assert!(
             body.contains(line),
-            "byroTerrainHeightBlend lost `{line}` (#6202)"
+            "byroTerrainBlendCore lost `{line}` (#6202)"
         );
     }
 }

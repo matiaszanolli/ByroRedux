@@ -505,9 +505,9 @@ struct GpuTerrainTile {
     //
     // std430: both vec4 rows are on their 16-byte boundaries (96, 112), the
     // Tier-3 atlas uvec4 lands on its own at 144, the #4903 base affinity
-    // follows at 160, #6195's height handles at 168..204, and the struct's
-    // 16-alignment rounds the stride up to 208. `gpu_terrain_tile_field_offsets_match_shader_contract` and
-    // `gpu_terrain_tile_is_208_bytes` pin the Rust half against exactly
+    // follows at 160, #6195's height handles at 168..204, #6196's band at
+    // 204, #6197's parallax settings at 208..224. `gpu_terrain_tile_field_offsets_match_shader_contract` and
+    // `gpu_terrain_tile_is_224_bytes` pin the Rust half against exactly
     // those numbers.
     /// `cover_affinity` for LAND splat layers 0-3 and 4-7.
     vec4 coverAffinity0;
@@ -538,6 +538,16 @@ struct GpuTerrainTile {
     uint layerHeightIndex[TERRAIN_SPLAT_LAYERS];
     /// #6196 — height-blend transition band; 0 = height blending off.
     float heightBlendBand;
+    /// #6197 — near-camera parallax occlusion. Global settings, broadcast to
+    /// every live tile like the band above. `parallaxDepth` is the relief
+    /// amplitude in world units (0 = parallax off); the effect fades to plain
+    /// shading between `parallaxFadeStart` and `parallaxFadeEnd` world units
+    /// from the camera. The fourth lane pads the record to its 224-byte
+    /// std430 stride.
+    float parallaxDepth;
+    float parallaxFadeStart;
+    float parallaxFadeEnd;
+    float parallaxReserved;
 };
 
 /// #6196 — height-based blending between terrain layers.
@@ -573,14 +583,26 @@ struct GpuTerrainTile {
 /// unfaded, so the band always holds a full-strength lane and a vanishing
 /// lane can never be the only survivor. Lanes at or above `S · k` blend
 /// exactly as before.
-void byroTerrainHeightBlend(
-    inout vec4 splat0,
-    inout vec4 splat1,
+///
+/// #6197 — the share/height arithmetic lives in `byroTerrainBlendCore`, shared
+/// by `byroTerrainHeightBlend` (rewrites the splat weights) and
+/// `byroTerrainBlendedHeight` (the surface height the terrain parallax marches
+/// against), so the two can never describe different surfaces. The core
+/// returns the share-weighted height of the height-mapped lanes
+/// (`Σ share·h / Σ share`), or -1 when no lane has a height map. `blended`
+/// reports whether the band rule re-divided the shares: it is false with
+/// fewer than two height-mapped lanes or with `band <= 0`, and `share` then
+/// holds the painted shares, so a height query still works with blending off.
+float byroTerrainBlendCore(
+    vec4 splat0,
+    vec4 splat1,
     GpuTerrainTile tile,
     vec2 uv,
     vec2 dx,
     vec2 dy,
-    float band
+    float band,
+    out float share[TERRAIN_SPLAT_LAYERS + 1u],
+    out bool blended
 ) {
     float w[TERRAIN_SPLAT_LAYERS];
     for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i) {
@@ -589,7 +611,6 @@ void byroTerrainHeightBlend(
             : splat1[i - TERRAIN_SPLAT_LANES_PER_WORD];
     }
     // Shares, top lane down; `share[TERRAIN_SPLAT_LAYERS]` is the base.
-    float share[TERRAIN_SPLAT_LAYERS + 1u];
     float rest = 1.0;
     for (int i = int(TERRAIN_SPLAT_LAYERS) - 1; i >= 0; --i) {
         float wi = clamp(w[i], 0.0, 1.0);
@@ -597,34 +618,46 @@ void byroTerrainHeightBlend(
         rest *= 1.0 - wi;
     }
     share[TERRAIN_SPLAT_LAYERS] = rest;
+    blended = false;
 
-    float h[TERRAIN_SPLAT_LAYERS + 1u];
+    float hRaw[TERRAIN_SPLAT_LAYERS + 1u];
     bool hasHeight[TERRAIN_SPLAT_LAYERS + 1u];
     uint count = 0u;
     float heightShare = 0.0;
     for (uint i = 0u; i <= TERRAIN_SPLAT_LAYERS; ++i) {
         uint idx = i < TERRAIN_SPLAT_LAYERS ? tile.layerHeightIndex[i] : tile.baseHeightIndex;
         hasHeight[i] = idx != 0u && share[i] > 0.0;
-        h[i] = 0.0;
+        hRaw[i] = 0.0;
         if (hasHeight[i]) {
-            h[i] = textureGrad(textures[nonuniformEXT(idx)], uv, dx, dy).r;
+            hRaw[i] = textureGrad(textures[nonuniformEXT(idx)], uv, dx, dy).r;
             heightShare += share[i];
             ++count;
         }
     }
-    if (count < 2u || heightShare <= 1.0e-6) {
-        return;
+    if (count == 0u || heightShare <= 1.0e-6) {
+        return -1.0;
+    }
+    if (count < 2u || band <= 0.0) {
+        float painted = 0.0;
+        for (uint i = 0u; i <= TERRAIN_SPLAT_LAYERS; ++i) {
+            if (hasHeight[i]) {
+                painted += share[i] * hRaw[i];
+            }
+        }
+        return painted / heightShare;
     }
 
+    float h[TERRAIN_SPLAT_LAYERS + 1u];
     const float fadeShare = 1.0 / float(TERRAIN_SPLAT_LAYERS + 1u);
     float fade[TERRAIN_SPLAT_LAYERS + 1u];
     float top = -1.0e30;
     for (uint i = 0u; i <= TERRAIN_SPLAT_LAYERS; ++i) {
         fade[i] = 0.0;
+        h[i] = 0.0;
         if (hasHeight[i]) {
             float rel = share[i] / heightShare;
             fade[i] = min(rel / fadeShare, 1.0);
-            h[i] = fade[i] * h[i] + rel;
+            h[i] = fade[i] * hRaw[i] + rel;
             top = max(top, h[i]);
         }
     }
@@ -639,10 +672,31 @@ void byroTerrainHeightBlend(
     // `total > 0`: the top scorer sits `band` above the floor, and it is
     // never faded below 1/10 (a faded lane outscores the unfaded
     // biggest-share lane only with `fade ≥ 0.1`).
+    float blendedHeight = 0.0;
     for (uint i = 0u; i <= TERRAIN_SPLAT_LAYERS; ++i) {
         if (hasHeight[i]) {
             share[i] = heightShare * h[i] / total;
+            blendedHeight += share[i] * hRaw[i];
         }
+    }
+    blended = true;
+    return blendedHeight / heightShare;
+}
+
+void byroTerrainHeightBlend(
+    inout vec4 splat0,
+    inout vec4 splat1,
+    GpuTerrainTile tile,
+    vec2 uv,
+    vec2 dx,
+    vec2 dy,
+    float band
+) {
+    float share[TERRAIN_SPLAT_LAYERS + 1u];
+    bool blended;
+    byroTerrainBlendCore(splat0, splat1, tile, uv, dx, dy, band, share, blended);
+    if (!blended) {
+        return;
     }
 
     // Back to ordered-`mix` weights: lane i keeps share_i of what has been
@@ -658,6 +712,23 @@ void byroTerrainHeightBlend(
             splat1[i - TERRAIN_SPLAT_LANES_PER_WORD] = wi;
         }
     }
+}
+
+/// #6197 — the blended layer height at `uv` for the fragment's painted
+/// weights, in `[0, 1]`, or -1 where no layer in play has a height map.
+/// `band <= 0` queries the painted (un-blended) surface.
+float byroTerrainBlendedHeight(
+    vec4 splat0,
+    vec4 splat1,
+    GpuTerrainTile tile,
+    vec2 uv,
+    vec2 dx,
+    vec2 dy,
+    float band
+) {
+    float share[TERRAIN_SPLAT_LAYERS + 1u];
+    bool blended;
+    return byroTerrainBlendCore(splat0, splat1, tile, uv, dx, dy, band, share, blended);
 }
 
 /// The terrain's splat colour composition (#4907): start from the BTXT base

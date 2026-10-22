@@ -344,6 +344,21 @@ void main() {
         // must evaluate the field the scatter places blades from (#6203).
         // Band 0 (the setting at 0, or a tile spawned this frame before the
         // broadcast) leaves the weights untouched.
+        //
+        // #6197 — near-camera parallax first: the displaced `sampleUV` is the
+        // one the blend and every splat loop below read, so the relief and
+        // the layer composition describe the same surface. The painted
+        // weights drive it (the blend has not run yet). Depth 0 — the
+        // setting off, or a tile spawned before the broadcast — skips it.
+        if (terrainTile.parallaxDepth > 0.0 && (dbgFlags & DBG_BYPASS_POM) == 0u) {
+            vec3 terrainView = cameraPos.xyz - fragWorldPos;
+            float terrainViewDistance = length(terrainView);
+            sampleUV = terrainParallaxDisplaceUV(
+                sampleUV, splatUVdx, splatUVdy, splatPosdx, splatPosdy,
+                terrainView / max(terrainViewDistance, 1.0e-4),
+                normalize(fragNormalEffective), terrainViewDistance,
+                terrainSplat[0], terrainSplat[1], terrainTile);
+        }
         if (terrainTile.heightBlendBand > 0.0) {
             byroTerrainHeightBlend(
                 terrainSplat[0], terrainSplat[1], terrainTile,

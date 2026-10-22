@@ -303,12 +303,12 @@ fn memory_budget_ledger_pins_the_terrain_tile_row() {
     for claim in [
         format!("{size} B"),
         format!("~{kilobytes} KB"),
-        "gpu_terrain_tile_is_208_bytes".to_string(),
+        "gpu_terrain_tile_is_224_bytes".to_string(),
     ] {
         assert!(
             row.contains(&claim),
             "the terrain-tile row must state `{claim}` ({size} B × MAX_TERRAIN_TILES, pinned \
-             by `gpu_terrain_tile_is_208_bytes`): {row}"
+             by `gpu_terrain_tile_is_224_bytes`): {row}"
         );
     }
     assert!(
@@ -448,17 +448,18 @@ fn mesh_id_format_is_r32_uint() {
 /// exterior cell. No test fails, no validation layer fires: the byte count
 /// is legal either way.
 #[test]
-fn gpu_terrain_tile_is_208_bytes() {
+fn gpu_terrain_tile_is_224_bytes() {
     assert_eq!(
         size_of::<GpuTerrainTile>(),
-        208,
-        "GpuTerrainTile must stay 208 B (3 × uint[8], then #4057's two vec4 \
+        224,
+        "GpuTerrainTile must stay 224 B (3 × uint[8], then #4057's two vec4 \
          affinity rows, the vec2+float+float canopy tail, Tier-3's atlas \
          vec4, #4903's base affinity + base diffuse, #6195's base + 8 layer \
-         height handles and a named tail pad) to match the std430 \
+         height handles, #6196's blend band and #6197's three parallax \
+         settings plus a named pad) to match the std430 \
          `struct GpuTerrainTile` in include/bindings.glsl, whose \
-         16-alignment rounds the stride up from 204. The shipped \
-         triangle.frag.spv carries `ArrayStride 208` for this type; changing \
+         16-alignment rounds the stride up from 220. The shipped \
+         triangle.frag.spv carries `ArrayStride 224` for this type; changing \
          the record means recompiling it, not just this assert."
     );
 }
@@ -488,6 +489,11 @@ fn gpu_terrain_tile_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuTerrainTile, base_height_index), 168);
     assert_eq!(offset_of!(GpuTerrainTile, layer_height_index), 172);
     assert_eq!(offset_of!(GpuTerrainTile, height_blend_band), 204);
+    // #6197 — the terrain parallax settings follow the band.
+    assert_eq!(offset_of!(GpuTerrainTile, parallax_depth), 208);
+    assert_eq!(offset_of!(GpuTerrainTile, parallax_fade_start), 212);
+    assert_eq!(offset_of!(GpuTerrainTile, parallax_fade_end), 216);
+    assert_eq!(offset_of!(GpuTerrainTile, parallax_reserved), 220);
 }
 
 /// The shipped SPIR-V is the contract's other half. A Rust-side layout change
@@ -497,7 +503,7 @@ fn gpu_terrain_tile_field_offsets_match_shader_contract() {
 fn shipped_triangle_frag_spv_carries_the_terrain_tile_stride() {
     let spv = include_bytes!("../../../shaders/triangle.frag.spv");
     // ArrayStride is `OpDecorate <id> ArrayStride <n>`: opcode 71, decoration
-    // 6. Scan the word stream for any array decorated with 208 rather than
+    // 6. Scan the word stream for any array decorated with 224 rather than
     // parsing the module — the point is only that the new stride is present
     // and the old one is not still describing this array.
     let words: Vec<u32> = spv
@@ -518,10 +524,10 @@ fn shipped_triangle_frag_spv_carries_the_terrain_tile_stride() {
         i += len;
     }
     assert!(
-        strides.contains(&208),
-        "no ArrayStride 208 in the shipped triangle.frag.spv — recompile it \
-         after changing GpuTerrainTile (#6195's height handles grew the \
-         record 176 → 208). Found: {strides:?}"
+        strides.contains(&224),
+        "no ArrayStride 224 in the shipped triangle.frag.spv — recompile it \
+         after changing GpuTerrainTile (#6197's parallax settings grew the \
+         record 208 → 224). Found: {strides:?}"
     );
 }
 

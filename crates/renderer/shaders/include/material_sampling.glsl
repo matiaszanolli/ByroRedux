@@ -147,6 +147,111 @@ vec2 parallaxDisplaceUV(
     return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));
 }
 
+// ── Terrain parallax occlusion (#6197) ──────────────────────────────
+//
+// Near-camera relief for LAND: the surface is the blended layer height
+// (`byroTerrainBlendedHeight`, the same shares the Phase-2 blend composes
+// the colour from), marched along the view ray the way `parallaxDisplaceUV`
+// does for a material, and the displaced UV then feeds every terrain
+// sample. Heights are `[0, 1]` with 1 at the top; the surface sits
+// `(1 - h) · parallaxDepth` world units below it.
+//
+// The ray's slide is read off the screen-space Jacobian instead of a built
+// tangent frame: the in-plane offset of the view ray per unit of depth is
+// expressed in the basis (dP/dx, dP/dy) of the fragment's own quad, and the
+// same coefficients applied to (dUV/dx, dUV/dy) give the UV shift. That is
+// orientation-agnostic — no handedness or mirrored-UV question to get wrong —
+// and needs no per-tile UV scale. Every derivative arrives as a parameter,
+// captured in quad-uniform flow by the caller (#4016); the layer-height reads
+// use those gradients, so the march is well-defined under its data-dependent
+// `break`.
+//
+// Geometry is NOT displaced. Ray-traced shadows, reflections and GI hits
+// keep the flat terrain (`ray_hit.glsl` never sees this UV): a known,
+// accepted mismatch at this amplitude (centimetres), the reason the effect
+// is confined to a short range. Motion vectors stay valid because only the
+// texture coordinate moves.
+vec2 terrainParallaxDisplaceUV(
+    vec2 uv,
+    vec2 dUVdx,
+    vec2 dUVdy,
+    vec3 dPdx,
+    vec3 dPdy,
+    vec3 viewWorld,
+    vec3 N,
+    float cameraDistance,
+    vec4 splat0,
+    vec4 splat1,
+    GpuTerrainTile tile
+) {
+    // Smooth fade to plain shading with distance. A degenerate range
+    // (`end <= start`) is a hard cut at `end`, never an undefined smoothstep.
+    float fade = tile.parallaxFadeEnd > tile.parallaxFadeStart
+        ? 1.0 - smoothstep(tile.parallaxFadeStart, tile.parallaxFadeEnd, cameraDistance)
+        : (cameraDistance < tile.parallaxFadeEnd ? 1.0 : 0.0);
+    float relief = tile.parallaxDepth * fade;
+    if (relief <= 0.0) {
+        return uv;
+    }
+
+    vec3 frameN = dot(viewWorld, N) >= 0.0 ? N : -N;
+    float vz = dot(viewWorld, frameN);
+    // In-plane offset of the view ray per unit of depth (world units).
+    vec3 lateral = (viewWorld - vz * frameN) / max(vz, 0.05);
+
+    float g11 = dot(dPdx, dPdx);
+    float g12 = dot(dPdx, dPdy);
+    float g22 = dot(dPdy, dPdy);
+    float det = g11 * g22 - g12 * g12;
+    if (det <= 1.0e-6 * g11 * g22 || g11 * g22 <= 1.0e-12) {
+        return uv;  // degenerate quad (silhouette / extreme grazing)
+    }
+    float r1 = dot(lateral, dPdx);
+    float r2 = dot(lateral, dPdy);
+    vec2 planarSlide =
+        ((g22 * r1 - g12 * r2) * dUVdx + (g11 * r2 - g12 * r1) * dUVdy) / det * relief;
+
+    // More layers at grazing angles, where displacement changes fastest:
+    // 6 looking straight down, 20 at the grazing limit.
+    const float minSteps = 6.0;
+    const float maxSteps = 20.0;
+    int steps = int(mix(maxSteps, minSteps, clamp(vz, 0.0, 1.0)) + 0.5);
+    float layerDepth = 1.0 / float(steps);
+    vec2 deltaUV = planarSlide / float(steps);
+
+    float band = tile.heightBlendBand;
+    float h0 = byroTerrainBlendedHeight(splat0, splat1, tile, uv, dUVdx, dUVdy, band);
+    if (h0 < 0.0) {
+        return uv;  // no height-mapped layer in play here
+    }
+    vec2 currentUV = uv;
+    float currentDepth = 0.0;
+    float surfaceDepth = 1.0 - h0;
+    float prevSurface = surfaceDepth;
+    int taken = 0;
+    for (int i = 0; i < steps; ++i) {
+        if (currentDepth >= surfaceDepth) {
+            break;
+        }
+        prevSurface = surfaceDepth;
+        currentUV -= deltaUV;
+        currentDepth += layerDepth;
+        surfaceDepth = 1.0 - max(
+            byroTerrainBlendedHeight(splat0, splat1, tile, currentUV, dUVdx, dUVdy, band), 0.0);
+        ++taken;
+    }
+    if (taken == 0) {
+        return uv;  // the entry point is already on the surface
+    }
+
+    // Interpolate between the last two layers, as `parallaxDisplaceUV` does.
+    vec2 prevUV = currentUV + deltaUV;
+    float afterDepth = surfaceDepth - currentDepth;
+    float beforeDepth = prevSurface - (currentDepth - layerDepth);
+    float weight = afterDepth / (afterDepth - beforeDepth + 1.0e-6);
+    return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));
+}
+
 // ── Normal mapping ──────────────────────────────────────────────────
 //
 // Samples the per-fragment normal map and rotates the tangent-space

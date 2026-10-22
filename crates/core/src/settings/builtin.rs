@@ -37,6 +37,18 @@ pub const TERRAIN_HEIGHT_BLEND_BAND_SETTING_ID: &str = "render.terrain_height_bl
 /// listing uses `depth = 0.2`). A starting point to tune by eye, not a
 /// measured property of any game's data.
 pub const TERRAIN_HEIGHT_BLEND_BAND_DEFAULT: f32 = 0.2;
+/// #6197 — relief amplitude of the near-camera terrain parallax, in metres
+/// (the renderer works in world units; the host converts once, where the
+/// setting is broadcast). 0 disables the effect.
+pub const TERRAIN_PARALLAX_DEPTH_SETTING_ID: &str = "render.terrain_parallax_depth_m";
+/// A few centimetres of relief: stones standing proud of the dirt between
+/// them without reading as geometry. A starting point to tune by eye — the
+/// source height maps are normalised per texture, so no game's data fixes it.
+pub const TERRAIN_PARALLAX_DEPTH_DEFAULT_M: f32 = 0.08;
+/// #6197 — camera distance, in metres, where terrain parallax has faded to
+/// plain shading (it starts fading at half of it). 0 disables the effect.
+pub const TERRAIN_PARALLAX_RANGE_SETTING_ID: &str = "render.terrain_parallax_range_m";
+pub const TERRAIN_PARALLAX_RANGE_DEFAULT_M: f32 = 20.0;
 
 /// Register settings owned by the overlay itself. The binary calls this while
 /// assembling the universal [`SettingsRegistry`]; renderer, audio, input, and
@@ -127,5 +139,32 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
         1.0,
         0.01,
         "",
+    ))?;
+    registry.register(SettingEntry::slider(
+        TERRAIN_PARALLAX_DEPTH_SETTING_ID,
+        "Rendering",
+        "Terrain parallax depth",
+        "Relief amplitude of the near-camera terrain parallax, in metres: how \
+         far the lowest parts of the ground sink below the highest. The \
+         surface is only shifted per pixel, not displaced, so ray-traced \
+         shadows and reflections keep the flat ground. 0 turns it off.",
+        TERRAIN_PARALLAX_DEPTH_DEFAULT_M,
+        0.0,
+        0.3,
+        0.005,
+        " m",
+    ))?;
+    registry.register(SettingEntry::slider(
+        TERRAIN_PARALLAX_RANGE_SETTING_ID,
+        "Rendering",
+        "Terrain parallax range",
+        "Camera distance at which terrain parallax has faded to plain \
+         shading; it starts fading at half this distance. Shorter is \
+         cheaper. 0 turns it off.",
+        TERRAIN_PARALLAX_RANGE_DEFAULT_M,
+        0.0,
+        60.0,
+        1.0,
+        " m",
     ))
 }

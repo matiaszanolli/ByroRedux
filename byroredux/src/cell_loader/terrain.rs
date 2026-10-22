@@ -1397,6 +1397,12 @@ pub(super) fn spawn_terrain_mesh(
             // Set from the live setting every frame
             // (`set_terrain_height_blend_band`) before this tile is drawn.
             height_blend_band: 0.0,
+            // #6197 — likewise set every frame (`set_terrain_parallax`);
+            // depth 0 keeps a tile spawned this frame flat until then.
+            parallax_depth: 0.0,
+            parallax_fade_start: 0.0,
+            parallax_fade_end: 0.0,
+            parallax_reserved: 0.0,
         })
     } else {
         crate::terrain_height::request_heights(world, tex_provider, game, &height_lanes);

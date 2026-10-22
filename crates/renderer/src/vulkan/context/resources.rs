@@ -210,6 +210,26 @@ impl VulkanContext {
         self.terrain_tiles_dirty |= changed;
     }
 
+    /// #6197 — publish the terrain parallax settings to every live LAND
+    /// tile, in world units: relief amplitude (0 = off) and the camera
+    /// distances where the effect starts and finishes fading out. Called
+    /// every frame; marks the SSBO dirty only on a real change.
+    pub fn set_terrain_parallax(&mut self, depth: f32, fade_start: f32, fade_end: f32) {
+        let mut changed = false;
+        for tile in self.terrain_tiles.iter_mut().flatten() {
+            if tile.parallax_depth != depth
+                || tile.parallax_fade_start != fade_start
+                || tile.parallax_fade_end != fade_end
+            {
+                tile.parallax_depth = depth;
+                tile.parallax_fade_start = fade_start;
+                tile.parallax_fade_end = fade_end;
+                changed = true;
+            }
+        }
+        self.terrain_tiles_dirty |= changed;
+    }
+
     /// Release a terrain tile slot back to the free list and schedule
     /// the SSBO to be reuploaded to every frame-in-flight. Must be
     /// called from `unload_cell` before the mesh / BLAS drop so a late

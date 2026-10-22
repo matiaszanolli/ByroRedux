@@ -35,6 +35,37 @@ fn host_method_diagnostic_key(menu_name: &str, method: &str) -> (String, String)
     (menu_name.to_owned(), method.to_owned())
 }
 
+/// #6197 — publish the terrain parallax settings to every live LAND tile:
+/// the metre settings, converted to world units here and nowhere else.
+/// Either setting at 0 turns the effect off (depth 0 on the GPU). Extracted
+/// from `render_one_frame` per the #5096 size-pin discipline.
+fn push_terrain_parallax(
+    world: &byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::VulkanContext,
+) {
+    use byroredux_core::lighting::BETHESDA_UNITS_PER_METER as UNITS_PER_M;
+    use byroredux_debug_ui::{
+        TERRAIN_PARALLAX_DEPTH_DEFAULT_M, TERRAIN_PARALLAX_DEPTH_SETTING_ID,
+        TERRAIN_PARALLAX_RANGE_DEFAULT_M, TERRAIN_PARALLAX_RANGE_SETTING_ID,
+    };
+    let depth_m = crate::setting_number(
+        world,
+        TERRAIN_PARALLAX_DEPTH_SETTING_ID,
+        TERRAIN_PARALLAX_DEPTH_DEFAULT_M,
+    );
+    let range_m = crate::setting_number(
+        world,
+        TERRAIN_PARALLAX_RANGE_SETTING_ID,
+        TERRAIN_PARALLAX_RANGE_DEFAULT_M,
+    );
+    let on = depth_m > 0.0 && range_m > 0.0;
+    ctx.set_terrain_parallax(
+        if on { depth_m * UNITS_PER_M } else { 0.0 },
+        0.5 * range_m * UNITS_PER_M,
+        range_m * UNITS_PER_M,
+    );
+}
+
 /// Ensure the terrain-side Tier-3 detail atlas represents the active engine
 /// blade palette. It is a persistent bindless allocation whose image is
 /// replaced in place when a worldspace changes palette; terrain tiles receive
@@ -553,6 +584,8 @@ impl App {
                 byroredux_debug_ui::TERRAIN_HEIGHT_BLEND_BAND_SETTING_ID,
                 byroredux_debug_ui::TERRAIN_HEIGHT_BLEND_BAND_DEFAULT,
             ));
+            // #6197 — terrain parallax settings onto every live tile.
+            push_terrain_parallax(&self.world, ctx);
             // Stage 1 — same push pattern for the color pipeline
             // (ExposureTuning, mutated by `exposure` / `tonemap`). Absent
             // resource → renderer keeps its config-seeded state.

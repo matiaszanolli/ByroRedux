@@ -99,7 +99,7 @@ impl ConsoleCommand for TerrainBlendCommand {
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
-        use byroredux_core::settings::{SettingValue, SettingsRegistry};
+        use byroredux_core::settings::SettingsRegistry;
         use byroredux_debug_ui::TERRAIN_HEIGHT_BLEND_BAND_SETTING_ID as ID;
         if world.try_resource::<SettingsRegistry>().is_none() {
             return CommandOutput::line("terrain.blend: no settings registry in this session");
@@ -109,27 +109,89 @@ impl ConsoleCommand for TerrainBlendCommand {
             let Ok(band) = arg.parse::<f32>() else {
                 return CommandOutput::line(format!("terrain.blend: '{arg}' is not a number"));
             };
-            let mut result = Ok(false);
-            crate::helpers::world_resource_set::<SettingsRegistry>(world, |registry| {
-                result = registry.set(ID, SettingValue::Number(band));
-            });
-            if let Err(error) = result {
+            if let Err(error) = set_session_number(world, ID, band) {
                 return CommandOutput::line(format!("terrain.blend: {error}"));
-            }
-            // #6204 — session-only for real: `settings_io::save` writes every
-            // entry that moved, so without the pin the next unrelated settings
-            // save would persist this A/B value. A menu edit of the slider
-            // releases it (`apply_debug_ui_outputs`).
-            if let Some(mut persistence) =
-                world.try_resource_mut::<crate::settings_io::SettingsPersistence>()
-            {
-                persistence.pin_stored(ID);
             }
         }
         let band = crate::setting_number(world, ID, f32::NAN);
         CommandOutput::line(format!(
             "terrain.blend: band={band:.3}{}",
             if band > 0.0 { "" } else { " (height blending off)" }
+        ))
+    }
+}
+
+/// Set a numeric setting through the universal registry for this session
+/// only — the shared tail of the `terrain.*` A/B switches. #6204: `settings_io::
+/// save` writes every entry that moved, so without the pin the next unrelated
+/// settings save would persist this A/B value. A menu edit of the slider
+/// releases it (`apply_debug_ui_outputs`).
+fn set_session_number(world: &World, id: &str, value: f32) -> Result<(), String> {
+    use byroredux_core::settings::{SettingValue, SettingsRegistry};
+    let mut result = Ok(false);
+    crate::helpers::world_resource_set::<SettingsRegistry>(world, |registry| {
+        result = registry.set(id, SettingValue::Number(value));
+    });
+    result.map_err(|error| error.to_string())?;
+    if let Some(mut persistence) = world.try_resource_mut::<crate::settings_io::SettingsPersistence>()
+    {
+        persistence.pin_stored(id);
+    }
+    Ok(())
+}
+
+/// `terrain.parallax [off | <range_m> [<depth_m>]]` — read or set the
+/// near-camera terrain parallax (#6197) for this session: the same two
+/// settings the debug-UI "Terrain parallax range / depth" sliders edit,
+/// without saving them. `off` (or a range of 0) is the one-binary A/B
+/// switch; the range is the camera distance in metres where the effect has
+/// faded out, the depth the relief amplitude in metres.
+pub(crate) struct TerrainParallaxCommand;
+impl ConsoleCommand for TerrainParallaxCommand {
+    fn name(&self) -> &str {
+        "terrain.parallax"
+    }
+
+    fn description(&self) -> &str {
+        "Terrain parallax: terrain.parallax [off | <range_m> [<depth_m>]] (0 range = off; #6197)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use byroredux_core::settings::SettingsRegistry;
+        use byroredux_debug_ui::{
+            TERRAIN_PARALLAX_DEPTH_SETTING_ID as DEPTH, TERRAIN_PARALLAX_RANGE_SETTING_ID as RANGE,
+        };
+        if world.try_resource::<SettingsRegistry>().is_none() {
+            return CommandOutput::line("terrain.parallax: no settings registry in this session");
+        }
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let usage = "usage: terrain.parallax [off | <range_m> [<depth_m>]]";
+        let parse = |word: &str| word.parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 0.0);
+        let (range, depth) = match words.as_slice() {
+            [] => (None, None),
+            ["off"] => (Some(0.0), None),
+            [range] => match parse(range) {
+                Some(range) => (Some(range), None),
+                None => return CommandOutput::line(format!("terrain.parallax: bad range\n{usage}")),
+            },
+            [range, depth] => match (parse(range), parse(depth)) {
+                (Some(range), Some(depth)) => (Some(range), Some(depth)),
+                _ => return CommandOutput::line(format!("terrain.parallax: bad number\n{usage}")),
+            },
+            _ => return CommandOutput::line(usage),
+        };
+        for (id, value) in [(RANGE, range), (DEPTH, depth)] {
+            if let Some(value) = value {
+                if let Err(error) = set_session_number(world, id, value) {
+                    return CommandOutput::line(format!("terrain.parallax: {error}"));
+                }
+            }
+        }
+        let range = crate::setting_number(world, RANGE, f32::NAN);
+        let depth = crate::setting_number(world, DEPTH, f32::NAN);
+        CommandOutput::line(format!(
+            "terrain.parallax: range={range:.1} m depth={depth:.3} m{}",
+            if range > 0.0 && depth > 0.0 { "" } else { " (off)" }
         ))
     }
 }

@@ -80,6 +80,19 @@ pub struct GpuTerrainTile {
     /// was the std430 tail pad (the stride stays 208) rather than growing the
     /// camera UBO and its five mirrors.
     pub height_blend_band: f32,
+    /// #6197 — near-camera terrain parallax occlusion, three more global
+    /// settings broadcast like the band above by
+    /// `VulkanContext::set_terrain_parallax`. `parallax_depth` is the relief
+    /// amplitude in **world units** (the host converts the metre setting
+    /// through `BETHESDA_UNITS_PER_METER`, once, there); 0 disables the
+    /// effect. It fades to plain shading between `parallax_fade_start` and
+    /// `parallax_fade_end` world units from the camera. The fourth lane pads
+    /// the record to its 224-byte std430 stride (named, not implicit, so the
+    /// byte view stays padding-free).
+    pub parallax_depth: f32,
+    pub parallax_fade_start: f32,
+    pub parallax_fade_end: f32,
+    pub parallax_reserved: f32,
 }
 
 impl GpuTerrainTile {

@@ -23,7 +23,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | File | Role |
 |------|------|
 | `triangle.vert` | Main geometry vertex shader — model transform, skinned-vertex read, motion-vector output, tangent-space setup, terrain splat-weight passthrough |
-| `triangle.frag` | Main PBR fragment shader — Disney BSDF, RT ray-query shadows / reflections / bounded material-aware path-traced GI, glass RT refraction, terrain splatting, terrain blend |
+| `triangle.frag` | Main PBR fragment shader — Disney BSDF, RT ray-query shadows / reflections / bounded material-aware path-traced GI, glass RT refraction, terrain splatting, terrain blend, near-camera terrain parallax |
 | `water.vert` | Water quad vertex — flat local-space mesh (no per-frame BLAS rebuild) |
 | `water.frag` | Water surface — RT reflection/refraction, Fresnel mix, caustic accumulator `imageAtomicAdd`, shoreline foam RT ray |
 | `groundcover_blade.vert` | EXAL blade ribbon vertex — consumes the scatter's indirect list + blade buffer (step 6) |
@@ -706,7 +706,7 @@ ReSTIR invalid-selection sentinel and is never occupied by a real light.
 | 56 | `visibility_mask` | Exact f32 encoding of `VisibilityMask` bits; decoded to the ray-query cull mask by `decodeVisibilityMask` |
 | 60 | `attenuation_model` | `ATTENUATION_MODEL_*` discriminant encoded as f32 |
 
-### `GpuTerrainTile` — 208 bytes, SSBO (Set 1, Binding 10)
+### `GpuTerrainTile` — 224 bytes, SSBO (Set 1, Binding 10)
 
 One record per LAND tile slot (`MAX_TERRAIN_TILES`), indexed by the slot in
 `GpuInstance.flags` bits 16–31. The full field list lives on the struct
@@ -719,6 +719,10 @@ One record per LAND tile slot (`MAX_TERRAIN_TILES`), indexed by the slot in
 | 168 | `base_height_index` | Bindless BC4 height map of the BTXT base (0 = none yet) |
 | 172–203 | `layer_height_index[8]` | Same, per splat lane |
 | 204 | `height_blend_band` | Transition band of `byroTerrainHeightBlend`; 0 = blending off |
+| 208 | `parallax_depth` | Terrain parallax relief amplitude in world units (#6197); 0 = off |
+| 212 | `parallax_fade_start` | Camera distance (world units) where the parallax starts to fade |
+| 216 | `parallax_fade_end` | Camera distance where it reaches plain shading |
+| 220 | `parallax_reserved` | Named pad to the 224-byte stride |
 
 `height_blend_band` is not per-cell data: the `render.terrain_height_blend_band`
 setting (debug-UI slider, `terrain.blend`) is broadcast into every tile by
@@ -731,6 +735,35 @@ re-divides the painted shares of the height-mapped lanes by `height + share`
 lane fades out with its own painted share (#6202). The ground-cover density
 sites keep the painted weights, the field the scatter places blades from
 (#6203).
+
+#### Terrain parallax (#6197)
+
+`terrainParallaxDisplaceUV` (`include/material_sampling.glsl`) shifts the
+terrain's texture coordinate per pixel, within a short range of the camera,
+by marching the view ray against the blended layer height
+(`byroTerrainBlendedHeight`, the same shares `byroTerrainHeightBlend` composes
+the colour from — both go through `byroTerrainBlendCore`). The displaced
+`sampleUV` is what the height blend and every splat loop then read.
+
+- **Settings** (debug UI "Terrain parallax depth / range", `terrain.parallax`):
+  relief depth in metres and the camera distance at which the effect has
+  faded out (it fades from half of it); either at 0 turns it off. The host
+  converts metres to world units once, in the per-frame broadcast
+  (`VulkanContext::set_terrain_parallax`), into the tile's
+  `parallax_depth` / `parallax_fade_start` / `parallax_fade_end`.
+- **Slide** is read off the screen-space Jacobian (the view ray's in-plane
+  offset expressed in the quad's `dP/dx, dP/dy` basis, applied to
+  `dUV/dx, dUV/dy`), so it needs no tangent frame and is correct for
+  mirrored or swapped UV mappings. Every derivative is a parameter, captured
+  in quad-uniform flow (#4016); the march uses explicit-gradient reads only.
+- **Steps** scale with the view angle: 6 looking straight down, 20 at the
+  grazing limit. `DBG_BYPASS_POM` bypasses it like the material POM.
+- **Not displaced:** geometry. Ray-traced shadows, reflections and GI hits on
+  terrain keep sampling the flat surface — a known, accepted mismatch at
+  centimetre amplitudes. Motion vectors stay valid (only the texture
+  coordinate moves). The ground-cover blades' ground-colour coupling also
+  samples the undisplaced terrain UV.
+- **Not implemented:** the optional sun self-shadowing toggle.
 
 ---
 
@@ -747,7 +780,7 @@ sites keep the painted weights, the field the scatter places blades from
 | `MAX_MATERIALS` | 16 384 | 432 B each; deduplicated per frame |
 | `MAX_TOTAL_BONES` | 196 608 | `floor(196 608 / 144)` = 1 365 palette slots, minus reserved slot 0 → **1 364 allocatable** skinned meshes (M29.6). Not an exact product: 1 365 × 144 = 196 560 leaves a 48-bone unused tail |
 | `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` | 1 364 | First-sight bind-inverse upload cap; equals `MAX_SKIN_SLOTS` by construction |
-| `MAX_TERRAIN_TILES` | 1 024 | 208 B each (`GpuTerrainTile`) |
+| `MAX_TERRAIN_TILES` | 1 024 | 224 B each (`GpuTerrainTile`) |
 | `IDENTITY_BONE_SLOT` | 0 | Slot 0 is always the identity matrix |
 
 ---
