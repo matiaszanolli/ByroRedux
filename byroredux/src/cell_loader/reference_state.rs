@@ -1184,27 +1184,14 @@ mod script_kill_tests {
     #[test]
     #[ignore = "needs FO3/FNV game data on disk"]
     fn fo3_fnv_script_killed_corpses_match_the_measured_census() {
-        for (env, default, master, linked, self_killed) in [
-            (
-                "BYROREDUX_FO3_DATA",
-                "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
-                "Fallout3.esm",
-                85,
-                3,
-            ),
-            (
-                "BYROREDUX_FNV_DATA",
-                "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
-                "FalloutNV.esm",
-                10,
-                2,
-            ),
+        use byroredux_plugin::esm::test_paths;
+        for (data_dir, master, linked, self_killed) in [
+            (test_paths::fo3_data_dir as fn() -> std::path::PathBuf, "Fallout3.esm", 85, 3),
+            (test_paths::fnv_data_dir as fn() -> std::path::PathBuf, "FalloutNV.esm", 10, 2),
         ] {
-            let dir = std::env::var(env)
-                .map(std::path::PathBuf::from)
-                .unwrap_or(std::path::PathBuf::from(default));
+            let dir = data_dir();
             if !dir.is_dir() {
-                eprintln!("[script kills] skipping {master}: game data unavailable");
+                test_paths::require_or_skip(&format!("{master}'s game data {dir:?}"));
                 continue;
             }
             let bytes = std::fs::read(dir.join(master)).expect("read master");

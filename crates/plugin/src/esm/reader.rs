@@ -1689,8 +1689,7 @@ mod tests {
     #[test]
     #[ignore = "needs Starfield game data on disk"]
     fn installed_starfield_small_masters_do_not_collide() {
-        let data = std::env::var("BYROREDUX_STARFIELD_DATA")
-            .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data".to_string());
+        let data = crate::esm::test_paths::starfield_data_dir();
         let parse = |file: &str, slot: GlobalSlot, masters: Vec<GlobalSlot>| {
             let bytes = std::fs::read(std::path::Path::new(&data).join(file)).ok()?;
             let remap = starfield(slot, masters);
@@ -1701,7 +1700,7 @@ mod tests {
             parse("Constellation.esm", GlobalSlot::Light(0), vec![GlobalSlot::Regular(0)]),
             parse("SFBGS004.esm", GlobalSlot::Light(1), vec![GlobalSlot::Regular(0)]),
         ) else {
-            eprintln!("skipping: Starfield small masters not available");
+            crate::esm::test_paths::require_or_skip("Starfield small masters");
             return;
         };
         eprintln!("Constellation {} ids, SFBGS004 {} ids", constellation.len(), sfbgs004.len());

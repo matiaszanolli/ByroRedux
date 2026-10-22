@@ -621,11 +621,9 @@ fn expand_pkin_template_children_carry_their_own_material_swaps() {
 #[test]
 #[ignore = "needs Starfield game data on disk"]
 fn starfield_cydonia_pack_ins_instance_their_template_cells() {
-    let data = std::env::var("BYROREDUX_STARFIELD_DATA")
-        .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data".into());
-    let path = std::path::Path::new(&data).join("Starfield.esm");
+    let path = byroredux_plugin::esm::test_paths::starfield_esm();
     let Ok(bytes) = std::fs::read(&path) else {
-        eprintln!("[Starfield PKIN] skipping: {path:?} unavailable");
+        byroredux_plugin::esm::test_paths::require_or_skip(&format!("{path:?}"));
         return;
     };
     let index = byroredux_plugin::esm::records::parse_esm(&bytes).expect("parse Starfield.esm");

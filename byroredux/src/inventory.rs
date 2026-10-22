@@ -2125,11 +2125,10 @@ mod tests {
         use byroredux_core::character::Perks;
         use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, TimedRestorations};
         use byroredux_core::ecs::resources::HardcoreMode;
-        for (directory, master, nv) in [
-            ("Fallout 3 goty", "Fallout3.esm", false),
-            ("Fallout New Vegas", "FalloutNV.esm", true),
+        for (path, master, nv) in [
+            (byroredux_plugin::esm::test_paths::fo3_esm(), "Fallout3.esm", false),
+            (byroredux_plugin::esm::test_paths::fnv_esm(), "FalloutNV.esm", true),
         ] {
-            let path = format!("/mnt/data/SteamLibrary/steamapps/common/{directory}/Data/{master}");
             let index = byroredux_plugin::esm::parse_esm(&std::fs::read(path).unwrap()).unwrap();
             let health = index.health_actor_value_key().unwrap();
             let medicine = index.actor_value_form_id("Medicine").unwrap();
@@ -2523,7 +2522,7 @@ mod tests {
     #[ignore = "requires installed Skyrim SE master"]
     fn real_skyrim_healing_potion_runs_through_native_action() {
         use byroredux_core::ecs::components::ActorValues;
-        let path = "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim.esm";
+        let path = byroredux_plugin::esm::test_paths::skyrim_se_esm();
         let index =
             byroredux_plugin::esm::parse_esm(&std::fs::read(path).expect("Skyrim master required"))
                 .unwrap();
@@ -2552,7 +2551,7 @@ mod tests {
     fn real_fallout3_bloodpack_selects_live_perk_bonus() {
         use byroredux_core::character::Perks;
         use byroredux_core::ecs::components::{ActorValues, ActorVitals};
-        let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
+        let path = byroredux_plugin::esm::test_paths::fo3_esm();
         let index = byroredux_plugin::esm::parse_esm(
             &std::fs::read(path).expect("Fallout 3 master required"),
         )
@@ -3903,19 +3902,12 @@ mod tests {
     #[test]
     #[ignore = "needs FNV game data on disk; parses the whole master (~850 MB resident)"]
     fn installed_fnv_player_base_builds_a_nonempty_template() {
-        let data = std::env::var_os("BYROREDUX_FNV_DATA")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(
-                    "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
-                )
-            });
-        let esm = data.join("FalloutNV.esm");
+        let esm = byroredux_plugin::esm::test_paths::fnv_esm();
         let Ok(bytes) = std::fs::read(&esm) else {
-            eprintln!(
-                "skipping real-data #3099 regression: {} absent",
+            byroredux_plugin::esm::test_paths::require_or_skip(&format!(
+                "real-data #3099 regression: {}",
                 esm.display()
-            );
+            ));
             return;
         };
         let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse FalloutNV.esm");
@@ -4091,7 +4083,7 @@ mod tests {
     #[test]
     #[ignore = "requires installed Fallout 4 and New Vegas masters"]
     fn real_master_player_seed_evaluates_the_player_only_rows() {
-        let fo4 = "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/Fallout4.esm";
+        let fo4 = byroredux_plugin::esm::test_paths::fo4_esm();
         let index = byroredux_plugin::esm::parse_esm(&std::fs::read(fo4).unwrap()).unwrap();
         let template = build_player_character_template(&index);
         let values = template.values.expect("FO4 player seed");
@@ -4110,8 +4102,7 @@ mod tests {
              not the NPC-baked 100"
         );
 
-        let fnv =
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/FalloutNV.esm";
+        let fnv = byroredux_plugin::esm::test_paths::fnv_esm();
         let index = byroredux_plugin::esm::parse_esm(&std::fs::read(fnv).unwrap()).unwrap();
         let template = build_player_character_template(&index);
         let values = template.values.expect("FNV player seed");

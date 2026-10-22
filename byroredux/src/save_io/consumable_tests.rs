@@ -551,7 +551,7 @@ fn timed_consumable_midpoint_and_absence_survive_disk_overlay() {
 #[test]
 #[ignore = "requires installed Fallout New Vegas master"]
 fn real_new_vegas_timed_restoratives_survive_disk_overlay() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/FalloutNV.esm";
+    let path = byroredux_plugin::esm::test_paths::fnv_esm();
     let index = byroredux_plugin::esm::parse_esm(&std::fs::read(path).unwrap()).unwrap();
     timed_disk_round_trip(&index, 0x1613BD, 0.0, 2.0, 18.0, None, false);
     timed_disk_round_trip(&index, 0x34051, 1.0, 4.0, 5.0, Some(0x3131), false);
@@ -572,11 +572,10 @@ fn seed_restoration_values(values: &mut ActorValues, index: &EsmIndex) {
 #[test]
 #[ignore = "requires installed Fallout 3 and New Vegas masters"]
 fn real_stimpaks_survive_disk_overlay_in_normal_and_hardcore_modes() {
-    for (directory, master, nv) in [
-        ("Fallout 3 goty", "Fallout3.esm", false),
-        ("Fallout New Vegas", "FalloutNV.esm", true),
+    for (path, nv) in [
+        (byroredux_plugin::esm::test_paths::fo3_esm(), false),
+        (byroredux_plugin::esm::test_paths::fnv_esm(), true),
     ] {
-        let path = format!("/mnt/data/SteamLibrary/steamapps/common/{directory}/Data/{master}");
         let index = byroredux_plugin::esm::parse_esm(&std::fs::read(path).unwrap()).unwrap();
         disk_round_trip(&index, 0x15169, 30.0);
         disk_round_trip_with_perk(&index, 0x15169, 36.0, Some(0x94ebf));
@@ -590,7 +589,7 @@ fn real_stimpaks_survive_disk_overlay_in_normal_and_hardcore_modes() {
 #[test]
 #[ignore = "requires installed Skyrim SE master"]
 fn real_skyrim_potion_survives_disk_load_overlay() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim.esm";
+    let path = byroredux_plugin::esm::test_paths::skyrim_se_esm();
     let index =
         byroredux_plugin::esm::parse_esm(&std::fs::read(path).expect("Skyrim master required"))
             .unwrap();
@@ -600,7 +599,7 @@ fn real_skyrim_potion_survives_disk_load_overlay() {
 #[test]
 #[ignore = "requires installed Fallout 3 master"]
 fn real_fallout3_water_survives_disk_load_overlay() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
+    let path = byroredux_plugin::esm::test_paths::fo3_esm();
     let index =
         byroredux_plugin::esm::parse_esm(&std::fs::read(path).expect("Fallout 3 master required"))
             .unwrap();

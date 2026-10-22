@@ -1348,15 +1348,9 @@ mod tests {
     #[test]
     #[ignore = "needs Skyrim SE game data on disk"]
     fn real_skyrim_load_order_preserves_categories_and_resolves_archive_strings() {
-        let data = std::env::var("BYROREDUX_SKYRIMSE_DATA")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| {
-                std::path::PathBuf::from(
-                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
-                )
-            });
+        let data = byroredux_plugin::esm::test_paths::skyrim_se_data_dir();
         if !data.is_dir() {
-            eprintln!("[Skyrim load-order] skipping: game data unavailable");
+            byroredux_plugin::esm::test_paths::require_or_skip(&format!("Skyrim SE game data {data:?}"));
             return;
         }
         let master = data.join("Skyrim.esm");

@@ -235,25 +235,22 @@ mod tests {
     #[test]
     #[ignore = "requires installed Fallout 3 and New Vegas masters"]
     fn real_stimpak_conditions_stay_attached_to_their_authored_effects() {
-        for (game_dir, master, magnitudes, durations, predicates) in [
+        for (path, magnitudes, durations, predicates) in [
             (
-                "Fallout 3 goty",
-                "Fallout3.esm",
+                crate::esm::test_paths::fo3_esm(),
                 vec![30.0, 36.0],
                 vec![0, 0],
                 1,
             ),
             (
-                "Fallout New Vegas",
-                "FalloutNV.esm",
+                crate::esm::test_paths::fnv_esm(),
                 vec![5.0, 6.0, 30.0, 36.0],
                 vec![6, 6, 0, 0],
                 2,
             ),
         ] {
-            let path = format!("/mnt/data/SteamLibrary/steamapps/common/{game_dir}/Data/{master}");
             let index =
-                crate::esm::parse_esm(&std::fs::read(path).expect("installed master required"))
+                crate::esm::parse_esm(&std::fs::read(&path).expect("installed master required"))
                     .unwrap();
             let ItemKind::Aid {
                 authored_effects: Some(effects),
@@ -261,7 +258,7 @@ mod tests {
                 ..
             } = &index.items[&0x15169].kind
             else {
-                panic!("missing Stimpak effects in {master}")
+                panic!("missing Stimpak effects in {path:?}")
             };
             assert!(immediate_effects.is_none());
             assert_eq!(

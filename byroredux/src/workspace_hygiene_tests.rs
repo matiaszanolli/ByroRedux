@@ -1290,3 +1290,114 @@ fn zup_swap_scanner_recognises_both_spellings() {
     let lines: Vec<usize> = hand_rolled_zup_swaps(src).into_iter().map(|(n, _)| n).collect();
     assert_eq!(lines, vec![1, 2, 4]);
 }
+
+/// Test files that still hold the dev machine's Steam library root. Every other
+/// test region resolves a game through `byroredux_plugin::esm::test_paths`
+/// (`*_data_dir()` + `require_or_skip`, #6184), which makes an explicit
+/// `BYROREDUX_*_DATA` binding win and lets the strict lane's
+/// `BYROREDUX_REQUIRE_GAME_DATA` fail an absent install instead of reporting `ok`.
+/// A ratchet: it only shrinks. The crates below `plugin` (`pex`, `audio`, `bsa`,
+/// `spt`, …) cannot reach `test_paths` without a new dev-dependency edge, so
+/// their files wait here until that is decided.
+const HARDCODED_GAME_PATH_ALLOWLIST: &[&str] = &[
+    "byroredux/src/asset_provider/animation.rs",
+    "byroredux/src/asset_provider/material/cdb.rs",
+    "byroredux/src/asset_provider/tests/archive_precedence.rs",
+    "byroredux/src/asset_provider/tests/facegen_texture_fallback.rs",
+    "byroredux/src/asset_provider/tests/fo4_palette_corpus.rs",
+    "byroredux/src/asset_provider/tests/loose_override.rs",
+    "byroredux/src/cell_loader/lod_support.rs",
+    "byroredux/src/cell_loader/precombined.rs",
+    "byroredux/src/cell_loader/reference_enable_gate_tests.rs",
+    "byroredux/src/cell_loader/references/attach.rs",
+    "byroredux/src/cell_loader/references/import_tests.rs",
+    "byroredux/src/cell_loader/terrain.rs",
+    "byroredux/src/cell_loader/tree_lod_tests.rs",
+    "byroredux/src/cell_loader/water.rs",
+    "byroredux/src/env_translate/water.rs",
+    "byroredux/src/groundcover_translate_tests.rs",
+    "byroredux/src/npc_spawn/ai_package.rs",
+    "byroredux/src/npc_spawn/tests.rs",
+    "byroredux/src/ragdoll_installed_tests.rs",
+    "byroredux/src/ragdoll_pose_tests.rs",
+    "byroredux/src/systems/animation.rs",
+    "byroredux/src/systems/combat_anim.rs",
+    "byroredux/src/systems/dialogue_voice.rs",
+    "byroredux/tests/m41_phase1bx_skinning.rs",
+    "byroredux/tests/skinning_e2e.rs",
+    "crates/audio/src/fuz.rs",
+    "crates/audio/src/tests.rs",
+    "crates/bgsm/tests/parse_all.rs",
+    "crates/bsa/src/archive/tests.rs",
+    "crates/bsa/tests/ba2_real.rs",
+    "crates/bsa/tests/bsa_real.rs",
+    "crates/bsa/tests/csg_real.rs",
+    "crates/facegen/tests/parse_real_facegen.rs",
+    "crates/game-detect/src/vdf.rs",
+    "crates/menuxml/tests/fnv_corpus.rs",
+    "crates/menuxml/tests/fo3_corpus.rs",
+    "crates/menuxml/tests/vanilla_corpus.rs",
+    "crates/nif/src/import/mesh/sse_skin_index_space_tests.rs",
+    "crates/nif/tests/common/mod.rs",
+    "crates/pex/tests/r5_fidelity.rs",
+    "crates/scripting/tests/extender_compat_e2e.rs",
+    "crates/scripting/tests/pex_recognize_e2e.rs",
+    "crates/sfmaterial/tests/real_cdb.rs",
+    "crates/spt/tests/parse_real_spt.rs",
+    "crates/ui/src/avm1_host/tests.rs",
+    "crates/ui/src/avm2_host.rs",
+    "crates/ui/src/host/tests.rs",
+    "crates/ui/tests/fallout4_hudmenu_protocol.rs",
+    "crates/ui/tests/hudmenu_protocol.rs",
+];
+
+/// #6184 — no test region may embed the dev machine's Steam library root: ~35 real-data
+/// tests re-inlined it, so a typo'd `BYROREDUX_*_DATA` skipped silently and the
+/// strict lane saw `ok` for an absent install (#3850's false green, re-grown).
+#[test]
+fn no_test_region_hardcodes_the_dev_machine_game_path() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let needle = ["/mnt/data/", "SteamLibrary"].concat();
+    let mut offenders = std::collections::BTreeSet::new();
+    for scan_root in [root.join("crates"), root.join("byroredux")] {
+        visit_workspace_rs_files(&scan_root, &mut |path, contents| {
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap_or(path)
+                .components()
+                .filter(|c| !matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
+                .collect::<std::path::PathBuf>();
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            // `test_paths` owns the literals; examples are dev tools, not tests.
+            if rel.ends_with("esm/test_paths.rs") || rel.contains("/examples/") {
+                return;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let in_test_dir = path.components().any(|c| c.as_os_str() == "tests");
+            let test_region = if name.ends_with("_tests.rs") || name == "tests.rs" || in_test_dir {
+                contents.to_owned()
+            } else {
+                byroredux_core::source_scan::test_module_text(contents)
+            };
+            if test_region.contains(&needle) {
+                offenders.insert(rel);
+            }
+        });
+    }
+    let allowed: std::collections::BTreeSet<String> =
+        HARDCODED_GAME_PATH_ALLOWLIST.iter().map(|s| s.to_string()).collect();
+    let new: Vec<_> = offenders.difference(&allowed).collect();
+    let stale: Vec<_> = allowed.difference(&offenders).collect();
+    assert!(
+        new.is_empty(),
+        "test code hardcodes the dev machine's game path — resolve it with \
+         `byroredux_plugin::esm::test_paths::{{fnv,fo3,skyrim_se,…}}_data_dir()` and report a \
+         missing install with `test_paths::require_or_skip` (#6184):\n{}",
+        new.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n"),
+    );
+    assert!(
+        stale.is_empty(),
+        "these files no longer hardcode the path — drop them from HARDCODED_GAME_PATH_ALLOWLIST:\n{}",
+        stale.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n"),
+    );
+}

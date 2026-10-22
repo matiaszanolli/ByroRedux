@@ -109,6 +109,28 @@ pub fn starfield_data_dir() -> PathBuf {
     data_dir(STARFIELD_ENV, STARFIELD_DEFAULT)
 }
 
+/// The env var that turns a missing install from a skip into a failure: the strict real-data
+/// lanes set it so an absent game cannot report `ok` (the shape the nif / hkx / menuxml /
+/// scripting `tests/common` helpers already share, #3850).
+pub const REQUIRE_GAME_DATA_ENV: &str = "BYROREDUX_REQUIRE_GAME_DATA";
+
+/// Whether [`REQUIRE_GAME_DATA_ENV`] is set (and not `0`).
+pub fn game_data_required() -> bool {
+    std::env::var(REQUIRE_GAME_DATA_ENV).is_ok_and(|v| v != "0")
+}
+
+/// A real-data test found `what` missing: fail when the strict lane asked for game data,
+/// otherwise say so on stderr so the caller can `return` / `continue`. Tests that open a master
+/// resolve it with `*_data_dir()` above and call this where they used to `eprintln!("skipping")`
+/// and fall through to a silent `ok`.
+#[track_caller]
+pub fn require_or_skip(what: &str) {
+    if game_data_required() {
+        panic!("{REQUIRE_GAME_DATA_ENV} is set, but {what} is unavailable");
+    }
+    eprintln!("skipping: {what} unavailable");
+}
+
 // ── ESM convenience accessors (the actual hot-path callers) ──────────
 
 pub fn oblivion_esm() -> PathBuf {
@@ -206,6 +228,37 @@ mod tests {
             }
             assert_eq!(accessor(), PathBuf::from(default));
         }
+    }
+
+    /// #6184 — a missing install is a skip by default and a failure on the strict
+    /// lane. Only this test touches `BYROREDUX_REQUIRE_GAME_DATA` in this crate's
+    /// (non-ignored) test process, and it restores the variable.
+    #[test]
+    fn require_or_skip_fails_only_when_the_strict_lane_asks_for_game_data() {
+        let saved = std::env::var_os(REQUIRE_GAME_DATA_ENV);
+        // SAFETY: see `data_dir_accessors_fall_back_to_their_documented_default_when_unset`.
+        unsafe {
+            std::env::remove_var(REQUIRE_GAME_DATA_ENV);
+        }
+        assert!(!game_data_required());
+        require_or_skip("a missing master"); // skips: must not panic
+        unsafe {
+            std::env::set_var(REQUIRE_GAME_DATA_ENV, "0");
+        }
+        assert!(!game_data_required(), "`0` means not required");
+        unsafe {
+            std::env::set_var(REQUIRE_GAME_DATA_ENV, "1");
+        }
+        assert!(game_data_required());
+        let strict = std::panic::catch_unwind(|| require_or_skip("a missing master"));
+        // SAFETY: restoring the caller's value.
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var(REQUIRE_GAME_DATA_ENV, v),
+                None => std::env::remove_var(REQUIRE_GAME_DATA_ENV),
+            }
+        }
+        assert!(strict.is_err(), "the strict lane must fail an absent install");
     }
 
     /// #3850 — an explicitly-set override is BINDING.

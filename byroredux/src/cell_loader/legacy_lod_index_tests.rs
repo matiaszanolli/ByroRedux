@@ -13,14 +13,7 @@ use super::lod_bands::{quad_min_chebyshev, select_authored_lod_quads, LodBandLad
 use super::LegacyLodQuadIndex;
 use byroredux_plugin::esm::reader::GameKind;
 
-fn fo3_data_dir() -> std::path::PathBuf {
-    if let Some(v) = std::env::var_os("BYROREDUX_FO3_DATA").filter(|s| !s.is_empty()) {
-        let p = std::path::PathBuf::from(v);
-        assert!(p.is_dir(), "BYROREDUX_FO3_DATA points to {p:?}, which is not a directory");
-        return p;
-    }
-    std::path::PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data")
-}
+use byroredux_plugin::esm::test_paths::{self, fo3_data_dir};
 
 /// The audit's headline population, on real data: `dcworld03`'s level-8
 /// quads sit on the (0, 6) residue — unreachable from any origin the old
@@ -35,7 +28,7 @@ fn dcworld03_level8_quads_select_near_the_worldspace_centre() {
     let data = fo3_data_dir();
     let meshes = data.join("Fallout - Meshes.bsa");
     if !meshes.is_file() {
-        eprintln!("[FO3/LOD] skipping: {meshes:?} not found");
+        test_paths::require_or_skip(&format!("{meshes:?}"));
         return;
     }
     let provider = crate::asset_provider::build_texture_provider(&[
@@ -94,7 +87,7 @@ fn dcworld03_terrain_diffuse_quads_index_off_lattice() {
     let meshes = data.join("Fallout - Meshes.bsa");
     let textures = data.join("Fallout - Textures.bsa");
     if !meshes.is_file() || !textures.is_file() {
-        eprintln!("[FO3/LOD] skipping: archives not found");
+        test_paths::require_or_skip("the FO3 LOD archives");
         return;
     }
     let provider = crate::asset_provider::build_texture_provider(&[
@@ -129,7 +122,7 @@ fn washmontop_level8_spans_multiple_residues_and_all_select() {
     let data = fo3_data_dir();
     let meshes = data.join("Fallout - Meshes.bsa");
     if !meshes.is_file() {
-        eprintln!("[FO3/LOD] skipping: {meshes:?} not found");
+        test_paths::require_or_skip(&format!("{meshes:?}"));
         return;
     }
     let provider = crate::asset_provider::build_texture_provider(&[

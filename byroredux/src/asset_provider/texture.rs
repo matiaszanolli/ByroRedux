@@ -1226,32 +1226,12 @@ mod tests {
         use super::super::audio::build_sound_archive_provider;
         use std::path::PathBuf;
 
-        const STEAM: &str = "/mnt/data/SteamLibrary/steamapps/common";
-        let games: [(&str, &str, String, &str); 4] = [
-            (
-                "fnv",
-                "BYROREDUX_FNV_DATA",
-                format!("{STEAM}/Fallout New Vegas/Data"),
-                "Fallout - Sound.bsa",
-            ),
-            (
-                "fo3",
-                "BYROREDUX_FO3_DATA",
-                format!("{STEAM}/Fallout 3 goty/Data"),
-                "Fallout - Sound.bsa",
-            ),
-            (
-                "skyrimse",
-                "BYROREDUX_SKYRIMSE_DATA",
-                format!("{STEAM}/Skyrim Special Edition/Data"),
-                "Skyrim - Sounds.bsa",
-            ),
-            (
-                "oblivion",
-                "BYROREDUX_OBLIVION_DATA",
-                format!("{STEAM}/Oblivion/Data"),
-                "Oblivion - Sounds.bsa",
-            ),
+        use byroredux_plugin::esm::test_paths;
+        let games: [(&str, fn() -> PathBuf, &str); 4] = [
+            ("fnv", test_paths::fnv_data_dir, "Fallout - Sound.bsa"),
+            ("fo3", test_paths::fo3_data_dir, "Fallout - Sound.bsa"),
+            ("skyrimse", test_paths::skyrim_se_data_dir, "Skyrim - Sounds.bsa"),
+            ("oblivion", test_paths::oblivion_data_dir, "Oblivion - Sounds.bsa"),
         ];
         let tables = [
             ("FOOTSTEP_CANDIDATES", FOOTSTEP_CANDIDATES),
@@ -1259,13 +1239,10 @@ mod tests {
         ];
 
         let mut checked = 0usize;
-        for (game, env_var, default_dir, archive_name) in games {
-            let dir = std::env::var(env_var)
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(default_dir));
-            let archive = dir.join(archive_name);
+        for (game, data_dir, archive_name) in games {
+            let archive = data_dir().join(archive_name);
             if !archive.is_file() {
-                eprintln!("skipping {game}: {} not found", archive.display());
+                test_paths::require_or_skip(&format!("{game}: {}", archive.display()));
                 continue;
             }
             let provider = build_sound_archive_provider(&[

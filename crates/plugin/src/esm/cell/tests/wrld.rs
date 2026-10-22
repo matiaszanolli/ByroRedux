@@ -1090,18 +1090,9 @@ fn oblivion_child_gets_the_inherit_all_stamp_and_eras_stay_real() {
 #[test]
 #[ignore = "needs Oblivion game data on disk"]
 fn oblivion_children_inherit_their_parents_land() {
-    let path = std::env::var("BYROREDUX_OBLIVION_DATA")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data".into())
-        .join("Oblivion.esm");
+    let path = crate::esm::test_paths::oblivion_esm();
     if !path.is_file() {
-        assert!(
-            std::env::var("BYROREDUX_REQUIRE_GAME_DATA").map_or(true, |v| v == "0"),
-            "BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file"
-        );
-        eprintln!("skipping: {path:?} not found");
+        crate::esm::test_paths::require_or_skip(&format!("{path:?}"));
         return;
     }
     let data = std::fs::read(&path).unwrap();

@@ -2467,10 +2467,8 @@ fn fact_extracts_vendor_data() {
 #[test]
 #[ignore = "needs FO4 game data on disk; parses the whole master"]
 fn installed_fo4_races_resolve_their_own_skeletons() {
-    let data = std::env::var("BYROREDUX_FO4_DATA")
-        .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".to_string());
-    let Ok(bytes) = std::fs::read(std::path::Path::new(&data).join("Fallout4.esm")) else {
-        eprintln!("skipping: Fallout4.esm not available");
+    let Ok(bytes) = std::fs::read(crate::esm::test_paths::fo4_esm()) else {
+        crate::esm::test_paths::require_or_skip("Fallout4.esm");
         return;
     };
     let index = crate::esm::records::parse_esm(&bytes).expect("parse Fallout4.esm");
@@ -2504,10 +2502,8 @@ fn installed_fo4_races_resolve_their_own_skeletons() {
 #[test]
 #[ignore = "needs Starfield game data on disk; parses the whole master (~3.4 GB peak)"]
 fn installed_starfield_npcs_and_races_decode_acbs_and_skeletons() {
-    let data = std::env::var("BYROREDUX_STARFIELD_DATA")
-        .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data".to_string());
-    let Ok(bytes) = std::fs::read(std::path::Path::new(&data).join("Starfield.esm")) else {
-        eprintln!("skipping: Starfield.esm not available");
+    let Ok(bytes) = std::fs::read(crate::esm::test_paths::starfield_esm()) else {
+        crate::esm::test_paths::require_or_skip("Starfield.esm");
         return;
     };
     let index = crate::esm::records::parse_esm(&bytes).expect("parse Starfield.esm");
