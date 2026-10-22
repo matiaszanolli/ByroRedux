@@ -91,18 +91,26 @@ fn knock_down(world: &World, actor: EntityId, request: PushActorRequest) -> Resu
     if world.has::<Dead>(actor) {
         return Err("it is dead".into());
     }
+    // #6230 — the player's visual body is built without a ragdoll, and its idle and controls have no
+    // get-up path to come back through.
+    if world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) == Some(actor) {
+        return Err("it is the player".into());
+    }
     let root = skeleton_root(world, actor);
     let positions = (
         world.get::<GlobalTransform>(request.from).map(|t| t.translation),
         world.get::<GlobalTransform>(actor).map(|t| t.translation),
     );
     let (Some(from), Some(at)) = positions else { return Err("the pusher or the actor is not placed".into()) };
-    // The animation and the AI that would fight the simulation stop, as they do for a death.
-    let fighting = world.get::<byroredux_scripting::AiCombatState>(actor).map(|state| state.target);
-    release_actor_for_ragdoll(world, actor, root);
+    // #6230 — the ragdoll first: an actor it cannot be built for (no template, a refused seed pose)
+    // keeps its animation, package and fight, since only a get-up would give them back. Activation seeds
+    // from the current pose, which the release below does not touch.
     if world.get::<crate::ragdoll::RagdollActive>(root).is_none() {
         crate::ragdoll::activate_ragdoll(world, root)?;
     }
+    // The animation and the AI that would fight the simulation stop, as they do for a death.
+    let fighting = world.get::<byroredux_scripting::AiCombatState>(actor).map(|state| state.target);
+    release_actor_for_ragdoll(world, actor, root);
     let cap = world.try_resource::<KnockbackForceMax>().map_or(DEFAULT_FORCE_MAX, |max| max.0);
     let speed = request.force.abs().min(cap);
     let direction = push_direction(from, at, request.force);
@@ -223,5 +231,42 @@ mod tests {
         assert!(toward.x < 0.0 && toward.y > 0.0);
         // Standing on the pusher still goes somewhere.
         assert!(push_direction(pusher, pusher, 5.0).length() > 0.99);
+    }
+
+    /// An actor and a pusher a short way apart; the actor animates and is fighting `target`.
+    fn placed_pair() -> (World, EntityId, EntityId, EntityId) {
+        use byroredux_core::animation::AnimationPlayer;
+        let mut world = World::new();
+        let (pusher, actor, target) = (world.spawn(), world.spawn(), world.spawn());
+        world.insert(pusher, GlobalTransform::new(Vec3::ZERO, Default::default(), 1.0));
+        world.insert(actor, GlobalTransform::new(Vec3::new(100.0, 0.0, 0.0), Default::default(), 1.0));
+        world.insert(actor, AnimationPlayer::new(0));
+        world.insert(actor, byroredux_scripting::AiCombatState { target, attack_cooldown_remaining: 0.0 });
+        (world, pusher, actor, target)
+    }
+
+    fn assert_untouched(world: &World, actor: EntityId, target: EntityId) {
+        assert!(world.has::<byroredux_core::animation::AnimationPlayer>(actor), "the idle must survive");
+        assert_eq!(world.get::<byroredux_scripting::AiCombatState>(actor).map(|state| state.target), Some(target));
+        assert!(!world.has::<KnockedDown>(actor) && !world.has::<byroredux_scripting::AiSuspended>(actor));
+    }
+
+    /// #6230 — an actor with no ragdoll to fall into keeps its animation and its fight.
+    #[test]
+    fn a_push_on_an_actor_without_a_ragdoll_releases_nothing() {
+        let (world, pusher, actor, target) = placed_pair();
+        let error = knock_down(&world, actor, PushActorRequest { from: pusher, force: 100.0 }).unwrap_err();
+        assert!(error.contains("RagdollTemplate"), "{error}");
+        assert_untouched(&world, actor, target);
+    }
+
+    /// #6230 — the player is refused outright.
+    #[test]
+    fn a_push_on_the_player_is_refused() {
+        let (mut world, pusher, actor, target) = placed_pair();
+        world.insert_resource(crate::systems::PlayerEntity(Some(actor)));
+        let error = knock_down(&world, actor, PushActorRequest { from: pusher, force: 100.0 }).unwrap_err();
+        assert!(error.contains("player"), "{error}");
+        assert_untouched(&world, actor, target);
     }
 }
