@@ -178,3 +178,33 @@ fn the_shape_cull_gate_is_spelled_once() {
         "the definition plus four node arms route through node_is_culled"
     );
 }
+
+/// #6301 — the satellite walkers (lights, texture effects, particle emitters)
+/// are part of the same one-gate rule: they route their NiNode and switch-node
+/// arms through `node_is_culled` and never re-spell the APP_CULLED / editor-marker
+/// test. The emitter walker had spelled only the first half.
+#[test]
+fn the_satellite_walkers_use_the_one_node_gate() {
+    for (file, src) in [
+        ("lights.rs", include_str!("../walk/lights.rs")),
+        ("texture_effect.rs", include_str!("../walk/texture_effect.rs")),
+        ("emitter.rs", include_str!("../walk/emitter.rs")),
+    ] {
+        let production = byroredux_core::source_scan::production_text_or_whole(src);
+        assert_eq!(
+            production.matches("0x01 != 0").count(),
+            0,
+            "{file}: APP_CULLED bit tests live only in walk/mod.rs"
+        );
+        assert_eq!(
+            production.matches("is_editor_marker(").count(),
+            0,
+            "{file}: editor-marker tests live only in walk/mod.rs"
+        );
+        assert_eq!(
+            production.matches("node_is_culled(&node.av)").count(),
+            2,
+            "{file}: the node and switch-node arms route through node_is_culled"
+        );
+    }
+}

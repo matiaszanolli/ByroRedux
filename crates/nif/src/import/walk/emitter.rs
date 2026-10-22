@@ -11,7 +11,7 @@ use crate::types::{BlockRef, NiTransform};
 
 use super::super::coord::{zup_matrix_to_yup_quat, zup_point_to_yup};
 use super::super::transform::compose_transforms;
-use super::{as_ni_node, switch_active_children};
+use super::{as_ni_node, node_is_culled, switch_active_children};
 use byroredux_core::string::StringPool;
 
 /// Extract the sprite texture, blend factors and `BSEffectShaderProperty`
@@ -795,7 +795,7 @@ pub(crate) fn walk_node_particle_emitters_flat(
 
     // NiSwitchNode / NiLODNode: only walk the active children (#718).
     if let Some((node, active_children)) = switch_active_children(block) {
-        if node.av.flags & 0x01 != 0 {
+        if node_is_culled(&node.av) {
             return;
         }
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
@@ -820,7 +820,7 @@ pub(crate) fn walk_node_particle_emitters_flat(
     }
 
     if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x01 != 0 {
+        if node_is_culled(&node.av) {
             return;
         }
         let world_transform = compose_transforms(parent_transform, &node.av.transform);

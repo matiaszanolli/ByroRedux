@@ -10,8 +10,7 @@ use crate::types::NiTransform;
 use super::super::coord::zup_point_to_yup;
 use super::super::transform::compose_transforms;
 use super::super::{ImportedLight, LightKind};
-use super::node_attrs::is_editor_marker;
-use super::{as_ni_node, resolve_affected_node_names, revisit_guard, switch_active_children};
+use super::{as_ni_node, node_is_culled, resolve_affected_node_names, revisit_guard, switch_active_children};
 
 /// Recursively walk the scene graph accumulating world-space transforms
 /// and collecting any NiLight subclass encountered.
@@ -37,10 +36,7 @@ pub(crate) fn walk_node_lights(
 
     // NiSwitchNode / NiLODNode: only walk the active children (#718).
     if let Some((node, active_children)) = switch_active_children(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        if is_editor_marker(node.av.net.name.as_deref()) {
+        if node_is_culled(&node.av) {
             return;
         }
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
@@ -51,10 +47,7 @@ pub(crate) fn walk_node_lights(
     }
 
     if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        if is_editor_marker(node.av.net.name.as_deref()) {
+        if node_is_culled(&node.av) {
             return;
         }
         let world_transform = compose_transforms(parent_transform, &node.av.transform);

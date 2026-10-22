@@ -598,6 +598,22 @@ fn culled_or_marker_particle_systems_are_not_imported_by_either_walker() {
     }
 }
 
+/// #6301 — the flat emitter walker used the node gate's APP_CULLED half only: it
+/// descended into an editor-marker helper node that every other walker skips and
+/// imported the particle system under it.
+#[test]
+fn flat_walker_does_not_descend_into_an_editor_marker_node() {
+    let mut root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
+    root.av.net.name = Some(std::sync::Arc::from("EditorMarker_Helper"));
+    let scene = scene_from_blocks(vec![Box::new(root), synthetic_particle_block("NiParticleSystem")]);
+    assert!(import_nif_particle_emitters(&scene).is_empty());
+
+    let mut visible = make_ni_node(identity_transform(), vec![BlockRef(1)]);
+    visible.av.net.name = Some(std::sync::Arc::from("TorchNode"));
+    let scene = scene_from_blocks(vec![Box::new(visible), synthetic_particle_block("NiParticleSystem")]);
+    assert_eq!(import_nif_particle_emitters(&scene).len(), 1, "an ordinary host still imports");
+}
+
 /// #4561 — a culled emitter that a `NiVisController` will un-hide must
 /// still be imported, or the controller has nothing to toggle. Particle
 /// chains usually open with opaque `NiPSys*` markers that stop the chain
