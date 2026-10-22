@@ -49,7 +49,7 @@ fn find_head(world: &World, root: EntityId) -> Option<EntityId> {
 /// `root` is among its ancestors. Cheap (a name read and a few parent hops), so a cached head is
 /// re-proved every frame rather than trusted across a despawn / entity-id reuse.
 fn is_head_of(world: &World, candidate: EntityId, root: EntityId, symbol: byroredux_core::string::FixedString) -> bool {
-    if !world.get::<Name>(candidate).is_some_and(|name| name.0 == symbol) {
+    if world.get::<Name>(candidate).is_none_or(|name| name.0 != symbol) {
         return false;
     }
     let mut at = candidate;
