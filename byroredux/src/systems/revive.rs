@@ -11,7 +11,7 @@
 //!   again on its first frame);
 //! * the simulated ragdoll is freed and the bones' keyframed collision bodies are put back, so the actor
 //!   is hittable and the animation drives the skeleton again;
-//! * the actor's generic idle plays again, and its AI package stack is re-armed (the ambient AI picks the
+//! * the idle the actor was spawned with plays again (`SpawnIdle`, #6231), and its AI package stack is re-armed (the ambient AI picks the
 //!   winning package on its next pass, as it does for a fresh spawn).
 //!
 //! Not modelled: the get-up animation the animate flag asks for (the actor stands at once, whatever the
@@ -63,7 +63,7 @@ pub(crate) fn revive_actor(world: &World, actor: EntityId) -> String {
 }
 
 /// Put an actor whose ragdoll is down back on its feet, in place: the simulated ragdoll is freed, the bones'
-/// keyframed collision bodies are put back, its generic idle drives the skeleton again, and its AI package
+/// keyframed collision bodies are put back, the idle it was spawned with drives the skeleton again, and its AI package
 /// stack is re-armed. What revive and the end of a knockdown share; the notes say what was done.
 pub(crate) fn stand_up(world: &World, actor: EntityId) -> Vec<String> {
     // The ragdoll lives on the skeleton root, as does the template it was built from.
@@ -92,15 +92,14 @@ pub(crate) fn stand_up(world: &World, actor: EntityId) -> Vec<String> {
     }
     notes.push(format!("{} bone bodies restored", retired.len()));
 
-    // The generic idle, on the actor, driving its skeleton.
-    let idle = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|index| index.0.game).and_then(|game| {
-        crate::npc_spawn::humanoid_default_idle_kf_path(game).and_then(|path| {
-            world.try_resource::<byroredux_core::animation::AnimationClipRegistry>().and_then(|clips| clips.get_by_path(path))
-        })
-    });
-    if let (Some(handle), Some(mut players)) = (idle, world.query_mut::<byroredux_core::animation::AnimationPlayer>()) {
-        players.insert(actor, byroredux_core::animation::AnimationPlayer::new(handle).with_root(root));
-        notes.push("idle restored".to_owned());
+    // The idle it was spawned with, on the actor, driving its skeleton (#6231): a creature's own clip, not
+    // the humanoid one, whose bones its rig does not have. An actor spawned with none stands unanimated.
+    if let Some(idle) = world.get::<crate::npc_spawn::SpawnIdle>(actor).map(|idle| *idle) {
+        let player = crate::npc_spawn::desynced_idle_player(world, idle.clip, idle.desync_key, root);
+        if let Some(mut players) = world.query_mut::<byroredux_core::animation::AnimationPlayer>() {
+            players.insert(actor, player);
+            notes.push("idle restored".to_owned());
+        }
     }
 
     // The package stack, re-armed: the ambient AI installs the winner on its next pass.
@@ -132,4 +131,39 @@ fn rearm_ai(world: &World, actor: EntityId) -> bool {
         },
     );
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::animation::AnimationPlayer;
+
+    fn actor_on_skeleton(world: &mut World) -> (EntityId, EntityId) {
+        let (actor, root) = (world.spawn(), world.spawn());
+        world.insert(actor, AnimationTarget { skeleton_root: root, consumed_idle_serial: 0 });
+        world.register::<AnimationPlayer>();
+        (actor, root)
+    }
+
+    /// #6231 — getting up replays the actor's own spawn idle (a creature's clip, not the humanoid one),
+    /// desynced exactly as at spawn.
+    #[test]
+    fn stand_up_replays_the_spawn_idle_on_the_skeleton() {
+        let mut world = World::new();
+        let (actor, root) = actor_on_skeleton(&mut world);
+        world.insert(actor, crate::npc_spawn::SpawnIdle { clip: 7, desync_key: 0x0001_2345 });
+        stand_up(&world, actor);
+        let player = world.get::<AnimationPlayer>(actor).expect("the idle is restored");
+        assert_eq!((player.clip_handle, player.root_entity), (7, Some(root)));
+        assert_eq!(player.speed, crate::npc_spawn::idle_desync(0x0001_2345, 0.0).1);
+    }
+
+    /// An actor spawned with no idle gets up with none, rather than a clip its rig may not bind.
+    #[test]
+    fn stand_up_without_a_spawn_idle_inserts_none() {
+        let mut world = World::new();
+        let (actor, _) = actor_on_skeleton(&mut world);
+        assert!(!stand_up(&world, actor).iter().any(|note| note == "idle restored"));
+        assert!(!world.has::<AnimationPlayer>(actor));
+    }
 }

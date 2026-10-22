@@ -1016,17 +1016,12 @@ pub(super) fn advance_runtime_unit(
                     pick_idle_handle(idle_pool, npc.form_id)
                 };
                 if let Some(handle) = idle_handle {
-                    let duration = world
-                        .resource::<AnimationClipRegistry>()
-                        .get(handle)
-                        .map(|clip| clip.duration)
-                        .unwrap_or(0.0);
-                    let (start_time, speed) = idle_desync(npc.form_id, duration);
-                    let mut player = AnimationPlayer::new(handle).with_root(skeleton);
-                    player.local_time = start_time;
-                    player.prev_time = start_time;
-                    player.speed = speed;
+                    let player = crate::npc_spawn::desynced_idle_player(world, handle, npc.form_id, skeleton);
                     world.insert(state.placement_root, player);
+                    world.insert(
+                        state.placement_root,
+                        crate::npc_spawn::SpawnIdle { clip: handle, desync_key: npc.form_id },
+                    );
                 }
             }
             // M42.10/M42.11 — resolve the walk clip: creatures use their

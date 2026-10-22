@@ -1149,6 +1149,39 @@ pub fn idle_desync(form_id: u32, duration: f32) -> (f32, f32) {
     (start_time, speed)
 }
 
+/// An idle player on `clip` driving `skeleton`, started at the phase and speed
+/// [`idle_desync`] gives `desync_key`. The one constructor every idle
+/// (re-)insert goes through — spawn, the player body, the FO4 archetype idle
+/// and [`stand_up`](crate::systems::revive::stand_up) — so a re-inserted idle
+/// cannot drift from the spawned one (#6231).
+pub(crate) fn desynced_idle_player(world: &World, clip: u32, desync_key: u32, skeleton: EntityId) -> AnimationPlayer {
+    let duration = world
+        .try_resource::<AnimationClipRegistry>()
+        .and_then(|registry| registry.get(clip).map(|clip| clip.duration))
+        .unwrap_or(0.0);
+    let (start_time, speed) = idle_desync(desync_key, duration);
+    let mut player = AnimationPlayer::new(clip).with_root(skeleton);
+    player.local_time = start_time;
+    player.prev_time = start_time;
+    player.speed = speed;
+    player
+}
+
+/// The idle an actor was spawned with: its own clip (a creature's beside its
+/// skeleton, a humanoid's from the shared pool) and the key its phase was
+/// desynced by. Getting up after a revive or a knockdown plays it again
+/// (#6231) — a creature's rig binds none of the humanoid idle's bones.
+/// `NOT_SAVED_BY_DESIGN`: spawn-derived, re-recorded when the actor respawns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SpawnIdle {
+    pub(crate) clip: u32,
+    pub(crate) desync_key: u32,
+}
+
+impl byroredux_core::ecs::Component for SpawnIdle {
+    type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
+}
+
 /// Deterministically pick one idle-clip handle from the shared per-cell
 /// pool for an NPC, keyed by its stable FormId. `None` when the pool is
 /// empty (Havok-animation game, or the KF wasn't archived). The choice

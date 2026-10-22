@@ -9,7 +9,7 @@
 
 use crate::asset_provider::ArchetypeIdleClips;
 use crate::components::AnimationTarget;
-use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer, AnimationStack};
+use byroredux_core::animation::{AnimationPlayer, AnimationStack};
 use byroredux_core::ecs::components::Dead;
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
@@ -96,16 +96,8 @@ pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
             log::debug!("archetype idle: {actor} keeps clip {clip}");
             continue;
         }
-        let duration = world
-            .try_resource::<AnimationClipRegistry>()
-            .and_then(|registry| registry.get(clip).map(|clip| clip.duration))
-            .unwrap_or(0.0);
         let base = byroredux_scripting::relationships::actor_base(world, actor).unwrap_or(actor);
-        let (start, speed) = crate::npc_spawn::idle_desync(base, duration);
-        let mut player = AnimationPlayer::new(clip).with_root(skeleton_root);
-        player.local_time = start;
-        player.prev_time = start;
-        player.speed = speed;
+        let player = crate::npc_spawn::desynced_idle_player(world, clip, base, skeleton_root);
         log::debug!("archetype idle: {actor} -> clip {clip} ({:?})", entry.animation_paths.first());
         // The actor's behavior graph for this entry takes over its animation: events sent
         // to the actor (`PlayAnimation`) move it (`asset_provider::actor_graph`).
@@ -156,7 +148,7 @@ mod tests {
         world.register::<AnimationPlayer>();
         world.register::<ArchetypeIdle>();
         world.register::<Dead>();
-        world.insert_resource(AnimationClipRegistry::new());
+        world.insert_resource(byroredux_core::animation::AnimationClipRegistry::new());
         world.insert_resource(ArchetypeIdleSeen::default());
         let mut index = EsmIndex::default();
         for (form_id, name) in [(CONFIDENT, "AnimArchetypeConfident"), (SCARED, "AnimArchetypeScared")] {

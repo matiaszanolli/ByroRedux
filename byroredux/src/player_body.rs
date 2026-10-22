@@ -388,16 +388,7 @@ fn attach_player_locomotion_animation(
     // actors also spawn with no player at all, and the walk system's stop
     // path removes the player it inserted, restoring the standing shape).
     if let Some(handle) = crate::npc_spawn::load_idle_clip(world, tex_provider, game) {
-        let duration = world
-            .resource::<AnimationClipRegistry>()
-            .get(handle)
-            .map(|clip| clip.duration)
-            .unwrap_or(0.0);
-        let (start_time, speed) = crate::npc_spawn::idle_desync(npc.form_id, duration);
-        let mut idle = AnimationPlayer::new(handle).with_root(skeleton);
-        idle.local_time = start_time;
-        idle.prev_time = start_time;
-        idle.speed = speed;
+        let idle = crate::npc_spawn::desynced_idle_player(world, handle, npc.form_id, skeleton);
         world.insert(player, idle);
     }
 
