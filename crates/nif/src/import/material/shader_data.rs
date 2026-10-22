@@ -204,8 +204,13 @@ pub(crate) fn capture_shader_type_fields(data: &ShaderTypeData) -> ShaderTypeFie
             right_eye_reflection_center,
         } => {
             f.eye_cubemap_scale = Some(eye_cubemap_scale);
-            f.eye_left_reflection_center = Some(left_eye_reflection_center);
-            f.eye_right_reflection_center = Some(right_eye_reflection_center);
+            // #6214 — the centres are positions in the eye shape's Z-up local
+            // space (nif.xml Left/Right Eye Reflection Center); like every other
+            // authored position they cross this boundary Y-up, so the shader's
+            // Y-up instance matrix places them where the iris is.
+            let to_yup = byroredux_core::math::coord::zup_to_yup_pos;
+            f.eye_left_reflection_center = Some(to_yup(left_eye_reflection_center));
+            f.eye_right_reflection_center = Some(to_yup(right_eye_reflection_center));
         }
     }
     f

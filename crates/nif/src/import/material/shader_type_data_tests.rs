@@ -309,20 +309,23 @@ fn sparkle_snow_writes_all_four_parameters() {
     assert_eq!(info.sparkle_parameters, Some([1.0, 0.5, 0.25, 2.0]));
 }
 
+/// #6214 — the centres cross the import boundary Y-up, `(x, y, z) → (x, z, -y)`,
+/// like every other authored position. Values: Skyrim `eyesmale.nif`'s authored
+/// left / right centres (block 7, `BSLightingShaderProperty` type 0x10).
 #[test]
-fn eye_envmap_writes_scale_and_both_reflection_centers() {
+fn eye_envmap_writes_scale_and_both_reflection_centers_y_up() {
     let mut info = MaterialInfo::default();
     apply_shader_type_data(
         &mut info,
         &ShaderTypeData::EyeEnvmap {
-            eye_cubemap_scale: 1.5,
-            left_eye_reflection_center: [-0.03, 0.05, 0.0],
-            right_eye_reflection_center: [0.03, 0.05, 0.0],
+            eye_cubemap_scale: 1.3,
+            left_eye_reflection_center: [-2.397, 7.572, 3.750],
+            right_eye_reflection_center: [2.398, 7.572, 3.750],
         },
     );
-    assert_eq!(info.eye_cubemap_scale, Some(1.5));
-    assert_eq!(info.eye_left_reflection_center, Some([-0.03, 0.05, 0.0]));
-    assert_eq!(info.eye_right_reflection_center, Some([0.03, 0.05, 0.0]));
+    assert_eq!(info.eye_cubemap_scale, Some(1.3));
+    assert_eq!(info.eye_left_reflection_center, Some([-2.397, 3.750, -7.572]));
+    assert_eq!(info.eye_right_reflection_center, Some([2.398, 3.750, -7.572]));
 }
 
 #[test]

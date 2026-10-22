@@ -189,14 +189,16 @@ fn bs_tri_shape_captures_eye_envmap_centers() {
             .material
             .shader_type_fields
             .eye_left_reflection_center,
-        Some([0.1, 0.2, 0.3])
+        Some([0.1, 0.3, -0.2]),
+        "#6214: the centre arrives Y-up"
     );
     assert_eq!(
         imported
             .material
             .shader_type_fields
             .eye_right_reflection_center,
-        Some([0.4, 0.5, 0.6])
+        Some([0.4, 0.6, -0.5]),
+        "#6214: the centre arrives Y-up"
     );
 }
 

@@ -872,9 +872,10 @@ pub(super) struct MaterialInfo {
     pub hair_tint_color: Option<[f32; 3]>,
     /// EyeEnvmap (type 16) — cubemap reflection strength on eye shapes.
     pub eye_cubemap_scale: Option<f32>,
-    /// EyeEnvmap left-eye reflection center, world-space.
+    /// EyeEnvmap left-eye reflection center, in the eye shape's local space,
+    /// Y-up (converted from the authored Z-up at import, #6214).
     pub eye_left_reflection_center: Option<[f32; 3]>,
-    /// EyeEnvmap right-eye reflection center, world-space.
+    /// EyeEnvmap right-eye reflection center, shape-local Y-up (#6214).
     pub eye_right_reflection_center: Option<[f32; 3]>,
     /// ParallaxOcc (type 7) — height-sample passes (stepping quality).
     pub parallax_max_passes: Option<f32>,
