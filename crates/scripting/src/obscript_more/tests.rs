@@ -134,35 +134,30 @@ fn fallout_enemy_of_faction_flag_and_its_clear() {
 }
 
 #[test]
-fn mod_disposition_accumulates_for_the_caller() {
-    let (world, ..) = world(GameKind::Oblivion);
-    run(&world, 0x1053, &nums(&[5.0]), &ctx(Some(ACTOR)));
-    run(&world, 0x1053, &nums(&[3.0]), &ctx(Some(ACTOR)));
-    assert_eq!(world.try_resource::<ObScriptLedger>().unwrap().disposition_mod(ACTOR), 8);
+fn state_nothing_reads_back_declines_instead_of_reporting_done() {
+    // AddTopic / ModDisposition / SetQuestObject / SetItemValue have no consumer in the engine; the
+    // decline-on-unmodeled rule keeps them from reporting a stored no-op as handled.
+    let (fnv_world, ..) = world(GameKind::Fallout3NV);
+    let c = ctx(Some(ACTOR));
+    assert_eq!(run(&fnv_world, 0x1058, &refs(&[0x0005_0001]), &c), Action::Declined, "AddTopic");
+    let (oblivion_world, ..) = world(GameKind::Oblivion);
+    assert_eq!(run(&oblivion_world, 0x1053, &nums(&[5.0]), &c), Action::Declined, "ModDisposition");
+    assert_eq!(
+        run(&fnv_world, 0x110d, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(1.0)], &c),
+        Action::Declined,
+        "SetQuestObject"
+    );
+    assert_eq!(run(&fnv_world, 0x1155, &nums(&[100.0]), &c), Action::Declined, "SetItemValue");
 }
 
 #[test]
-fn crime_gold_and_disposition_saturate_instead_of_overflowing() {
+fn crime_gold_saturates_instead_of_overflowing() {
     let (world, ..) = world(GameKind::Oblivion);
     let c = ctx(Some(ACTOR));
     for _ in 0..2 {
         run(&world, 0x1076, &nums(&[i32::MAX as f32]), &c);
-        run(&world, 0x1053, &nums(&[i32::MAX as f32]), &c);
     }
-    let ledger = world.try_resource::<ObScriptLedger>().unwrap();
-    assert_eq!(ledger.crime_gold, i32::MAX);
-    assert_eq!(ledger.disposition_mod(ACTOR), i32::MAX);
-}
-
-#[test]
-fn topics_and_quest_objects_are_kept() {
-    let (world, ..) = world(GameKind::Fallout3NV);
-    let c = ctx(None);
-    assert!(is_done(&run(&world, 0x1058, &refs(&[0x0005_0001]), &c)));
-    assert!(world.try_resource::<ObScriptLedger>().unwrap().knows_topic(0x0005_0001));
-    run(&world, 0x110d, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(1.0)], &c);
-    assert!(world.try_resource::<ObScriptLedger>().unwrap().is_quest_object(ITEM));
-    assert_eq!(run(&world, 0x1058, &[], &c), Action::Declined, "no topic named");
+    assert_eq!(world.try_resource::<ObScriptLedger>().unwrap().crime_gold, i32::MAX);
 }
 
 #[test]

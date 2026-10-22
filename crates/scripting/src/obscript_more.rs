@@ -394,14 +394,9 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], ctx: &Context
             }
             None => Action::Declined,
         },
-        // GECK *AddTopic*: "adds a topic to the Player's list of known topics".
-        0x1058 => match form_arg(args, 0) {
-            Some(topic) => {
-                ledger_mut(world, |l| l.add_topic(topic));
-                done(format!("AddTopic {topic:08X}"))
-            }
-            None => Action::Declined,
-        },
+        // GECK *AddTopic* declines: the topic list is built from the topics' own conditions when a
+        // conversation opens, and nothing gates a topic on the player's "known topics".
+        0x1058 => Action::Declined,
         // GECK *GetPlayerControlsDisabled [movement pipboy fighting pov looking rollover sneaking]*: 1 when
         // any of the named controls (every control when none is named) is disabled.
         0x1062 => {

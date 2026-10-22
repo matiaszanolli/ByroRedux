@@ -106,27 +106,16 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         // a crime-tracking faction sets on a major crime, and a trespass is not one. Accepted, no effect.
         0x115c => done("SendTrespassAlarm"),
 
-        // ── disposition (Oblivion): ModDisposition keeps its mod; GetDisposition needs the personality
-        // and race terms Oblivion's actor values do not give the engine ────────────────────────────
-        0x1053 => match caller(world, ctx) {
-            Some((form, _)) => {
-                ledger_mut(world, |l| l.mod_disposition(form, num(args, 1).max(num(args, 0)) as i32));
-                done(format!("ModDisposition {form:08X}"))
-            }
-            None => Action::Declined,
-        },
+        // ── disposition (Oblivion): *ModDisposition* declines — nothing in the engine reads an NPC's
+        // disposition towards the player, so a stored mod would be written and never consulted ────────
+        0x1053 => Action::Declined,
 
         // ── topics, talking, quest objects ─────────────────────────────────────────────────────────
         // CS *RefreshTopicList*: the topic list is built when a conversation opens; nothing is cached.
         0x1145 => done("RefreshTopicList"),
-        0x110d => match form_arg(args, 0) {
-            Some(object) => {
-                let on = num(args, 1) != 0.0;
-                ledger_mut(world, |l| l.set_quest_object(object, on));
-                done(format!("SetQuestObject {object:08X} {on}"))
-            }
-            None => Action::Declined,
-        },
+        // *SetQuestObject* declines: nothing models the quest-item flag (no drop / sell / container-take
+        // guard reads it), so storing it would only be saved.
+        0x110d => Action::Declined,
         // CS *SetShowQuestItems <flag>* (a global).
         0x114e => store(world, cmd, 0, num(args, 0)),
 
@@ -189,20 +178,9 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
             }
             None => Action::Declined,
         },
-        // GECK *SetItemValue <caps>*: "sets the item's base value"; "the changes made by this function will be
-        // saved to save games".
-        0x1155 => match caller(world, ctx) {
-            Some((_, entity)) => match crate::relationships::actor_base(world, entity).or_else(|| {
-                world.get::<crate::scene::SceneAliasCandidate>(entity).map(|c| c.base_form_id).filter(|&b| b != 0)
-            }) {
-                Some(base) => {
-                    ledger_mut(world, |l| l.set_item_value(base, num(args, 0) as i32));
-                    done(format!("SetItemValue {base:08X} {}", num(args, 0)))
-                }
-                None => Action::Declined,
-            },
-            None => Action::Declined,
-        },
+        // GECK *SetItemValue <caps>* declines: the base value is read straight from the record by barter,
+        // repair and the inventory weight/value totals, and nothing overlays a script's override.
+        0x1155 => Action::Declined,
         // GECK *SetActorAlpha <0..1>* (SAA): the app's alpha system reads it back from the ledger.
         0x1129 => match caller(world, ctx) {
             Some((form, _)) => store(world, cmd, form, num(args, 0).clamp(0.0, 1.0)),

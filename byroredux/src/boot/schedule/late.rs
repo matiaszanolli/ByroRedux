@@ -686,7 +686,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // (the cell kind: an exterior root's worldspace, the player's
             // published kind).
             .reads_resource::<byroredux_scripting::obscript_more::PlayableRaces>()
-            .reads_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()
+            // #6190 — read by the gate functions, and written by `apply_selection`
+            // (`note_talked_to_player`: the speaker has now talked to the player).
+            .writes_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()
             .reads_resource::<byroredux_scripting::ActorBaseTraits>()
             .reads_resource::<byroredux_scripting::cell_kind::PlayerCellKind>()
             .reads::<byroredux_scripting::cell_kind::ExteriorCell>()

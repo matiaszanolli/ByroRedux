@@ -343,6 +343,12 @@ fn open_conversation<'a>(
 /// spoken when another replaces it), then the selected line's OnBegin.
 /// Shared by the activation path and the UI's re-selection door.
 fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record: &DialRecord) {
+    // #6190 — the NPC has now spoken to the player: `GetTalkedToPC` reads this.
+    if let Some(form) = byroredux_scripting::condition::entity_global_form_id(world, npc) {
+        if let Some(mut ledger) = world.try_resource_mut::<byroredux_scripting::obscript_ledger::ObScriptLedger>() {
+            ledger.note_talked_to_player(form);
+        }
+    }
     // The outgoing line ends before the new one begins (vanilla's OnEnd
     // ordering). One live selection (#5038) means every existing stamp IS
     // the outgoing line.
@@ -1273,6 +1279,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![GREETING_TOPIC]
         );
+    }
+
+    /// #6190 — a selection is the NPC speaking to the player, which is what
+    /// `GetTalkedToPC` reads; before this nothing ever set the flag outside a test.
+    #[test]
+    fn a_selection_notes_the_speaker_as_having_talked_to_the_player() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        use byroredux_scripting::obscript_ledger::ObScriptLedger;
+        let mut world = World::new();
+        world.register::<ActivateEvent>();
+        world.register::<NpcDialogueTopic>();
+        world.register::<SceneAliasCandidate>();
+        world.register::<Dead>();
+        world.register::<FormIdComponent>();
+        world.insert_resource(DialogueRegistry::default());
+        world.insert_resource(DialogueSurfaceState::default());
+        world.insert_resource(ObScriptLedger::default());
+        let player = spawn_player(&mut world);
+        let patron = spawn_actor(&mut world, 0xAB_0001, 0x97_0001);
+        let mut pool = FormIdPool::default();
+        let pair = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(0xAB_0001),
+        });
+        world.insert_resource(pool);
+        world.insert(patron, FormIdComponent(pair));
+        world.insert_resource(greeting_index(false));
+        assert!(!world.resource::<ObScriptLedger>().talked_to_player(0xAB_0001));
+
+        world.insert(patron, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+
+        assert!(selected(&world, patron).is_some(), "the greeting selects");
+        assert!(world.resource::<ObScriptLedger>().talked_to_player(0xAB_0001));
     }
 
     /// #5642 — two greeters in radius on the same tick: the first opens

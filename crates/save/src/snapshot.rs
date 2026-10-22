@@ -575,7 +575,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// collision entities the live load can never resolve, one per resident
 /// collider) and the `ReferenceMotionTypeState` resource joined, so a
 /// script's `SetMotionType` survives a load; the registry schema changed.
-pub const FORMAT_MAJOR: u16 = 116;
+///
+/// v116 -> v117 (#6190): `ObScriptLedger` lost the `known_topics`, `quest_objects`,
+/// `disposition_mods` and `item_values` columns (their commands now decline; nothing read them back),
+/// so a v116 ledger no longer decodes.
+pub const FORMAT_MAJOR: u16 = 117;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

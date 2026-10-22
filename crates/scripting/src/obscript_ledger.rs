@@ -1,7 +1,6 @@
 //! The saved state of the ObScript commands that keep a value nothing else in the engine owns:
-//! the player's fame and infamy, bounty, the per-faction "the player did this to them" flags, the
-//! topics the player knows, who has talked to the player, the quest-object flags, the dispositions
-//! scripts changed, and the flags a `Set...` command stores for its `Get...`.
+//! the player's fame and infamy, bounty, the per-faction "the player did this to them" flags, who has
+//! talked to the player, and the flags a `Set...` command stores for its `Get...`.
 //!
 //! One resource, [`ObScriptLedger`], saved whole (`FORMAT_MAJOR` 112): every field is plain data keyed
 //! by FormIDs, so no entity ids or interned strings ride in a save.
@@ -16,9 +15,12 @@
 //!   *SetPCExpelled*: "expels the player from the specified faction, and sets the expelled flag";
 //!   *SetPCEnemyOfFaction* / *ClearFactionPlayerEnemyFlag*: the enemy flag a major crime sets on a
 //!   crime-tracking faction.
-//! * **Topics** — *AddTopic*: "adds a topic to the player's list of known topics".
-//! * **Disposition** — *ModDisposition* changes how much an NPC likes the player; the change is
-//!   remembered ("NPCs remember their disposition towards you from one conversation to the next").
+//! * **Talked to the player** — *GetTalkedToPC*: "1 if the NPC has ever spoken to the player"; the
+//!   dialogue selection notes the speaker.
+//!
+//! A command whose value nothing in the engine would read back is not stored here: it declines
+//! (*AddTopic*, *ModDisposition*, *SetQuestObject*, *SetItemValue* — no topic gate, disposition
+//! term, quest-item marker or barter value consumes one) rather than report a no-op as done.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -47,20 +49,13 @@ pub struct ObScriptLedger {
     /// "The total value of stolen goods that the player has sold."
     pub amount_sold_stolen: i32,
     faction_flags: BTreeSet<(FactionFlag, u32)>,
-    known_topics: BTreeSet<u32>,
     /// Actors that have spoken to the player (`GetTalkedToPC`).
     talked_to_player: BTreeSet<u32>,
-    /// Objects flagged as quest items (`SetQuestObject`).
-    quest_objects: BTreeSet<u32>,
-    /// Dispositions towards the player scripts changed, by actor reference.
-    disposition_mods: BTreeMap<u32, i32>,
     /// `Set...` commands' values for their getters, keyed by `(command id, subject reference)`; a
     /// global one uses subject `0`.
     values: BTreeMap<(u16, u32), f32>,
     /// A form argument stored the same way (the combat style of an actor, a talking activator's actor).
     forms: BTreeMap<(u16, u32), u32>,
-    /// Base-record value overrides (`SetItemValue`), by item base.
-    item_values: BTreeMap<u32, i32>,
     /// Per `(holder reference, weapon base)` condition percent (`ModWeaponHealthPerc`,
     /// `AddItemHealthPercent`).
     weapon_condition: BTreeMap<(u32, u32), f32>,
@@ -95,14 +90,6 @@ impl ObScriptLedger {
         factions.iter().any(|&faction| self.flag(flag, faction))
     }
 
-    pub fn knows_topic(&self, topic: u32) -> bool {
-        self.known_topics.contains(&topic)
-    }
-
-    pub fn add_topic(&mut self, topic: u32) -> bool {
-        self.known_topics.insert(topic)
-    }
-
     pub fn talked_to_player(&self, actor: u32) -> bool {
         self.talked_to_player.contains(&actor)
     }
@@ -111,30 +98,9 @@ impl ObScriptLedger {
         self.talked_to_player.insert(actor);
     }
 
-    pub fn is_quest_object(&self, form: u32) -> bool {
-        self.quest_objects.contains(&form)
-    }
-
-    pub fn set_quest_object(&mut self, form: u32, on: bool) {
-        if on {
-            self.quest_objects.insert(form);
-        } else {
-            self.quest_objects.remove(&form);
-        }
-    }
-
     /// `ModCrimeGold`: saturating, so mod-supplied bytecode cannot wrap the bounty negative.
     pub fn mod_crime_gold(&mut self, delta: i32) {
         self.crime_gold = self.crime_gold.saturating_add(delta);
-    }
-
-    pub fn disposition_mod(&self, actor: u32) -> i32 {
-        self.disposition_mods.get(&actor).copied().unwrap_or(0)
-    }
-
-    pub fn mod_disposition(&mut self, actor: u32, delta: i32) {
-        let slot = self.disposition_mods.entry(actor).or_default();
-        *slot = slot.saturating_add(delta);
     }
 
     pub fn value(&self, key: u16, subject: u32) -> Option<f32> {
@@ -156,14 +122,6 @@ impl ObScriptLedger {
 
     pub fn set_form(&mut self, key: u16, subject: u32, form: u32) {
         self.forms.insert((key, subject), form);
-    }
-
-    pub fn item_value(&self, item: u32) -> Option<i32> {
-        self.item_values.get(&item).copied()
-    }
-
-    pub fn set_item_value(&mut self, item: u32, value: i32) {
-        self.item_values.insert(item, value);
     }
 
     /// The condition percent of `weapon` held by `holder`; 100 when no script changed it.
@@ -188,11 +146,6 @@ impl ObScriptLedger {
 
     pub fn set_reaction(&mut self, faction: u32, other: u32, value: f32) {
         self.reactions.insert((faction, other), value);
-    }
-
-    /// The skill (actor-value code) tagged in `slot`.
-    pub fn tag_skill(&self, slot: u8) -> Option<u8> {
-        self.tag_skills.get(&slot).copied()
     }
 
     pub fn set_tag_skill(&mut self, slot: u8, skill: u8) -> Option<u8> {
@@ -237,17 +190,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn flags_topics_dispositions_and_values_round_trip_through_their_accessors() {
+    fn flags_values_and_talkers_round_trip_through_their_accessors() {
         let mut ledger = ObScriptLedger::default();
         ledger.set_flag(FactionFlag::Murder, 0x10, true);
         assert!(ledger.flag(FactionFlag::Murder, 0x10) && !ledger.flag(FactionFlag::Steal, 0x10));
         assert!(ledger.flagged_with_any(FactionFlag::Murder, &[0x11, 0x10]));
         ledger.set_flag(FactionFlag::Murder, 0x10, false);
         assert!(!ledger.flag(FactionFlag::Murder, 0x10));
-        assert!(ledger.add_topic(0x20) && !ledger.add_topic(0x20), "a topic is added once");
-        ledger.mod_disposition(0x30, 5);
-        ledger.mod_disposition(0x30, -2);
-        assert_eq!(ledger.disposition_mod(0x30), 3);
+        assert!(!ledger.talked_to_player(0x20));
+        ledger.note_talked_to_player(0x20);
+        assert!(ledger.talked_to_player(0x20));
         ledger.set_value(0x10d3, 0x40, 1.0);
         assert_eq!((ledger.value(0x10d3, 0x40), ledger.value(0x10d3, 0x41)), (Some(1.0), None));
         ledger.set_weapon_condition(0x50, 0x60, 150.0);

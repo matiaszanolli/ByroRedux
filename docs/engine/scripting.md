@@ -2626,7 +2626,7 @@ smoke gate drives them.
 | `PickIdle`'s idle *tree*, `GetKillingBlowLimb` ... | the IDLE tree's conditions and parents are not parsed (PickIdle restarts the generic idle instead) |
 | `EnableLinkedPathPoints` / `DisableLinkedPathPoints` (Oblivion, 71 / 69 scripts) | Oblivion path grids: the engine paths on navmeshes |
 | `GetPCFame` / `GetPCInfamy` / `ModPCFame` / `GetCrimeGold` / `ModCrimeGold` / `SetPCExpelled` / `SetPCEnemyOfFaction` / `SetFactionReaction` | a bounty / fame ledger and faction expulsion (only per-faction crime gold exists) |
-| `GetDisposition` / `ModDisposition`, `AddTopic` | a per-NPC disposition value and a topic-known ledger |
+| `GetDisposition` / `ModDisposition`, `AddTopic`, `SetQuestObject`, `SetItemValue` | a per-NPC disposition value, a topic-known gate on the opening menu (#5350), a quest-item flag and a script-overridable base value — each has no reader in the engine, so it declines rather than store a value nothing consults |
 | `GetDayOfWeek` | the game calendar's epoch: the weekday of day 0 is in no record |
 | `EnableFastTravel`, `UnlockChallenge`, `SetReputation` (no GECK page) | no fast-travel or challenge UI exists to honour them |
 | `PushActorAway`, `UseWeapon` / `FireWeapon`, `OnGrab` / `OnRelease` / `OnFire` | a knockdown cycle (the ragdoll teardown above is the first half), a scripted attack, and a player grab |
