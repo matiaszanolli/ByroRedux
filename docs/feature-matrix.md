@@ -20,7 +20,7 @@ run the engine, what do you see?
 | **Exterior grid (7×7)** | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | **LAND heightmap + splatting** | parse ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | **World streaming (M40)** | — | ✓ | ✓ | ✓ | ✓ | — | ✓ |
-| **Confirmed bench** | 6 043 ent · 2 355 draws (#2368) | device check pending | 3 146 ent · 74.0 FPS TAA | 5 765 ent · 89.9 FPS TAA | 39 537 ent · 27.1 FPS TAA | — | Cydonia walkable |
+| **Confirmed bench** | 6 043 ent · 2 355 draws (#2368) | device check pending | 2 359 ent · 83.8 FPS TAA | 5 853 ent · 83.7 FPS TAA | 24 923 ent · 35.4 FPS TAA (MedTek; bench of record `d9a201c71`) | — | Cydonia walkable |
 
 **Oblivion exterior**: TES4 worldspace + LAND parse + load ✓ — closed by
 #2368 (2026-08-12): Tamriel `(0,0)` radius 1 on-device, 6,043 entities /
@@ -212,8 +212,9 @@ separate integration gap. See the gaps table below.
 | Scene (`SCEN`) playback + PACK scene-package actions | ✓ MQ101 vertical slice |
 | Console observability — `quest.show`, `quest.aliases`, `quest.start`/`stop`/`setstage` | ✓ M43.1 |
 | Story Manager event payload / search | ✓ Phases 0–4 (SMBN/SMEN/SMQN decode, dispatcher, R1/R2/L1/L2 payload slots, policy bits, KILL/CLOC/AHEL producers, `sm1-story-manager.sh`); SCPT/LEVL/SKIL producers remain |
-| Reference collections; true LCTN / unloaded-world alias queries | ✗ |
-| Created-object spawning from aliases | ✗ |
+| Reference collections filled by scripts (`AddRef` / `AddArray` / `RemoveRef` / `GetCount` / `GetAt` / `Find`) | ✓ `crates/scripting/src/alias_collections.rs` |
+| Reference collections filled by conditions or a fill type; true LCTN / unloaded-world alias queries | ✗ |
+| Created-object spawning from aliases ("Create Reference to Object" At another alias; `PlaceAtMe`) | ✓ `crates/scripting/src/created_references.rs` (`eeb6793b7`, `3299c7dcb`) |
 | Dialogue tree + dialogue UI integration | ~ single-level topic selection + native response surface (P4, ab31cfefe/766e1746e — live in MarkarthWarrens); full tree + dialogue UI open |
 
 Smoke test: [`docs/smoke-tests/m43-quest-runtime.sh`](smoke-tests/m43-quest-runtime.sh)
@@ -235,7 +236,7 @@ capability on this route takes precedence over renderer polish.
 | P1 — reliable character control | ✓ Closed 2026-10-01 | Movement/jump/sprint consumers share one once-per-frame `ActionState` snapshot; native Escape menu owns pause/focus/cursor transfer; settings-backed key rebinding. Closed by the live traversal gates; gamepad physical sources are a named follow-on (ROADMAP), not a closure blocker. Smoke: [`p1-character-traversal.sh`](smoke-tests/p1-character-traversal.sh) |
 | P2 — melee combat core | ✓ Landed 2026-08-16, closed 2026-10-01 | Skyrim race Health + signed ACBS offset → actor-owned bone ray hit → bound Attack edge → canonical `HitEvent` → layered Health damage → one `Dead`/AI-disable transition → the existing 18-body ragdoll. Deterministic weapon selection (highest authored damage, FormID tie-break); explicit 8-damage unarmed fallback. Closed by the live combat gates; the Skyrim-route rapier multi-SAP panic is tracked as #5161, not a P2 blocker. Smoke: [`p2-melee-core.sh`](smoke-tests/p2-melee-core.sh) |
 | NPC combat AI (MQ101 slice) | ~ Landed 2026-09-13 | `Faction.SetEnemy` / `Actor.StartCombat` arm `AiCombatState`; `npc_combat_ai_system` chases its target in a straight line and strikes on cooldown through the same `HitEvent` → `combat_damage_system` pipeline as the player, with creature damage from `CreatureAttack`. Ambient hostility (#4414, `systems/faction_hostility.rs`): an NPC with decoded `AIDT` aggression starts combat against the nearest actor it sees within `fSneakMaxDistance` whose faction reaction (scripted `SetEnemy` override, then authored `XNAM`, then Neutral) its aggression attacks; `FactionRelations` is directed, `FormRef`-keyed and saved. Not yet: detection meter (sound/light/sneak), warn radii, crime hostility, Oblivion's 0–100 aggression, ranged/magic attacks, attack animation |
-| Authored attack/hit/death animation + sound | ✗ | Open — combat sound tracked as #4747 (re-confirmed by the 2026-10-05 audio audit) |
+| Authored attack/hit/death animation + sound | ~ Draugr family | `byroredux/src/systems/combat_anim.rs` (`ec3a18d2f`): attack / hit / death one-shot takes for Draugr-family actors plus the spatial swing / impact / death-voice sound family (fixture `docs/engine/p2-combat-anim-sound-fixture.md`). Other races and creatures play no combat takes yet |
 | Corpse interaction / loot transfer | ✓ Closed 2026-09-30 | Corpse = container: lethal-combat-then-physical activation loots a corpse through its collider (`lethal_combat_then_physical_activation_loots_corpse_through_its_collider`), `is_loot_source` gates container counts, loot-appearance import carries the outfit (`npc_spawn/loot_appearance.rs`); live Skyrim corpse-loot validation 2026-09-17 |
 | P3 — inventory and native game UI | ✓ Closed 2026-10-01 | Native HUD bars / crosshair / interaction prompts / notifications / objective text from canonical ECS state; container / corpse / pickup interaction with an inventory screen; equip through `Inventory` + `EquipmentSlots` + mesh attachment; pause / menu routing and settings-backed rebinding. Smoke: [`p3-hud.sh`](smoke-tests/p3-hud.sh), [`p3-player-body.sh`](smoke-tests/p3-player-body.sh) |
 | P4 — authored objective and dialogue loop | ✓ Closed 2026-09-30 | MS01 "The Forsworn Conspiracy" in MarkarthWarrens: NPC activation → dialogue selection → presented response → objective-chain transitions over real QUST/DIAL/INFO/PACK data, with TIF_ fragments and journal announcements. Smoke: [`p4-quest-route.sh`](smoke-tests/p4-quest-route.sh) |
@@ -338,7 +339,7 @@ the scheduler at all.
 
 ---
 
-## What Doesn't Work Yet (live gaps as of 2026-08-19)
+## What Doesn't Work Yet (live gaps as of 2026-10-22)
 
 <!-- TD3-002: Save/load (M45/M45.1) removed — shipped 2026-06-21. The M47.2
      row below is the *full* transpiler, which is genuinely still deferred;
@@ -347,7 +348,6 @@ the scheduler at all.
 
 | Gap | Blocking what | Milestone |
 |---|---|---|
-| Oblivion exterior (TES4 worldspace + LAND) | Oblivion exterior render | M32.5 follow-up |
 | Starfield Havok `.hkx` loader | Starfield animation | M41.x follow-up |
 | General NPC locomotion from `.hkx` / behavior graphs | Skyrim actors animating outside the MQ101 cart-idle catalog; FO4 ambient NPC walking | M41.x follow-up |
 | `.btr` terrain normal maps | distant-terrain normal detail on Skyrim SE/FO4. Distance-based multi-band selection is **no longer a gap** — the four-level ladder shipped in #2371 and runs on every quad-based scheme, FO3/FNV included (#3508) | M35 |
@@ -355,7 +355,6 @@ the scheduler at all.
 | Full Papyrus transpiler (M47.2) + VM | Arbitrary script execution on real content — the recognizer slice ships the static path and the bounded VM (`fragment/vm.rs`) runs the scripts the lowering declines | M47.2 (Tier 3) |
 | Script-extender compatibility layer verified against real mods | Confidence that SKSE-family mod scripts (StorageUtil / JContainers / ModEvent consumers) actually run. The layer *exists* — ~23.9k LOC, six provider families, tested in-crate — but no audit pass has exercised it against shipped mod content, so its real-world coverage is unmeasured, not zero and not proven (#3953) | M47.2 follow-up |
 | Full Scaleform menus | In-game UI (method behavior / `_global.gfx`; native menu covers Pause/Settings/Inventory in parallel) | M48 / R4 decision |
-| UV scroll animated materials | Animated terminals / displays | audited, not prioritised |
 | Per-material footsteps (FOOT) | Correct surface audio | M44 follow-up |
 | CHARAL: player actor-value seed | The player body carries `ActorValues` seeded from the base Player `NPC_` (#4458), with the ruleset's PlayerOnly rows (FO4/FO3/FNV Health + AP) evaluated for the player at stamping (#4674). Games: FO3/FNV/FO4/Skyrim yes, Oblivion no, FO76/Starfield no (NPC stat wire layout uncaptured, #4453) | CHARAL (charal.md §7) |
 | CHARAL: Oblivion ruleset built but unwired; regen + affliction ticks inert everywhere | Derived Health/leveling formulas on Oblivion; passive Fatigue/Magicka regen (the built tick's only pools — Health deliberately unmodelled per charal.md §4.7, Stamina rates unsourced/with no row, #4463) and radiation/disease/addiction on all seven games | CHARAL (charal.md §8) |
