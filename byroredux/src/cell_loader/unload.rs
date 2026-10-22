@@ -800,12 +800,16 @@ pub(crate) fn collect_victim_gpu_handles(
     // SparseSet header. The per-victim inner cost is unchanged (one hash
     // lookup per component), but the SparseSet header walk happens once.
     //
-    // Holding the read locks across the walk is safe — they're
-    // independent SparseSets (different component TypeIds) and the caller
-    // holds `&mut World`, so no concurrent writer can exist. The
-    // TypeId-sort lock-order invariant (CLAUDE.md #4) is about combined
-    // read+write multi-component queries where a mixed acquire order
-    // could deadlock; pure reads have no such risk.
+    // The caller holds `&mut World`, so no concurrent writer can exist and
+    // this walk cannot deadlock. But read guards held together are still
+    // lock-order edges (std's RwLock queues a reader behind a waiting
+    // writer, and the lock-order detector records read→read edges): each
+    // guard taken while the earlier ones are held records `earlier → it`.
+    // #6209 — `ParticleEmitter` closed cycles that way (the particle render
+    // pass takes `ParticleEmitter → TextureHandle`), so its LUT is
+    // collected in a pass of its own below, under that guard alone. A new
+    // storage joins the joint walk only if nothing takes it before one of
+    // these seven elsewhere.
     let mq = world.query::<MeshHandle>();
     let tq = world.query::<TextureHandle>();
     let nq = world.query::<NormalMapHandle>();
@@ -813,7 +817,6 @@ pub(crate) fn collect_victim_gpu_handles(
     let mtq = world.query::<MaterialTextureHandles>();
     let ttq = world.query::<TerrainTileSlot>();
     let ftq = world.query::<AnimatedTextureFlip>();
-    let peq = world.query::<ParticleEmitter>();
     for &eid in victims {
         if let Some(mq) = &mq {
             if let Some(mh) = mq.get(eid) {
@@ -856,23 +859,27 @@ pub(crate) fn collect_victim_gpu_handles(
                 }
             }
         }
-        // #6109 — an emitter's greyscale palette LUT is a `resolve_texture` ref
-        // the spawn took and stored in a plain `u32`; without this the ref was
-        // never given back (`0`, its "no LUT" sentinel, is skipped by
-        // `push_tex_drop`). The sprite is the entity's `TextureHandle`, above.
-        if let Some(peq) = &peq {
-            if let Some(emitter) = peq.get(eid) {
-                push_tex_drop(emitter.greyscale_lut_index, &mut texture_drops);
-            }
-        }
         if let Some(ttq) = &ttq {
             if let Some(slot) = ttq.get(eid) {
                 terrain_tile_slots.insert(slot.0);
             }
         }
     }
-    // Query guards drop here at fn return — before the caller's GPU
-    // registry mutations — keeping the lock-hold window scoped to the walk.
+    drop((mq, tq, nq, wnq, mtq, ttq, ftq));
+    // #6109 — an emitter's greyscale palette LUT is a `resolve_texture` ref
+    // the spawn took and stored in a plain `u32`; without this the ref was
+    // never given back (`0`, its "no LUT" sentinel, is skipped by
+    // `push_tex_drop`). The sprite is the entity's `TextureHandle`, above.
+    // #6209 — its own pass, under the `ParticleEmitter` guard alone.
+    if let Some(peq) = world.query::<ParticleEmitter>() {
+        for &eid in victims {
+            if let Some(emitter) = peq.get(eid) {
+                push_tex_drop(emitter.greyscale_lut_index, &mut texture_drops);
+            }
+        }
+    }
+    // Every query guard has dropped before the caller's GPU registry
+    // mutations, keeping the lock-hold window scoped to the walks.
     (mesh_drops, texture_drops, terrain_tile_slots)
 }
 
