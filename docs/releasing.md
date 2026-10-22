@@ -24,8 +24,9 @@ No game data is included or ever will be.
 
 ## Cutting a release
 
-1. Close the session (`/session-close`) and push; wait for CI on the final commit
-   to go green. The release workflow refuses a commit whose CI has not succeeded.
+1. Close the session (`/session-close`) and push. You may tag right behind the
+   push: the release workflow waits (up to 90 minutes) for CI on the commit to
+   finish, and refuses to publish if it does not succeed.
 2. Tag that commit and push the tag:
 
    ```bash

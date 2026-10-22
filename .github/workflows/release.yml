@@ -57,19 +57,38 @@ jobs:
           fetch-depth: 0
 
       # A release is a statement that this commit works. Refuse to publish from
-      # one CI has not passed (or has not finished) rather than ship a red build.
+      # one CI has not passed rather than ship a red build. A tag is normally
+      # pushed right behind the commit, while its CI run is still queued or
+      # running (every tag since this workflow was added, #6331), so wait for
+      # that run to finish instead of reading its conclusion once.
       - name: Require a green CI run on this commit
         if: github.event_name == 'push' || inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
+          CI_WAIT_MINUTES: "90"
         run: |
-          conclusion="$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" \
-            --json conclusion,status --jq 'map(select(.status=="completed")) | .[0].conclusion // "none"')"
-          echo "CI conclusion for $GITHUB_SHA: $conclusion"
-          if [ "$conclusion" != "success" ]; then
-            echo "::error::CI has not succeeded on $GITHUB_SHA ($conclusion). Wait for it, then re-run this workflow."
-            exit 1
-          fi
+          deadline=$(( $(date +%s) + CI_WAIT_MINUTES * 60 ))
+          while :; do
+            runs="$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --json conclusion,status)"
+            # success: any completed green run. fail: runs exist and every one
+            # completed without success. wait: no run yet, or one still in flight.
+            verdict="$(jq -r '
+              if any(.[]; .status == "completed" and .conclusion == "success") then "success"
+              elif length > 0 and all(.[]; .status == "completed") then "failure"
+              else "wait" end' <<<"$runs")"
+            echo "CI on $GITHUB_SHA: $verdict ($(jq -c 'map(.conclusion // .status)' <<<"$runs"))"
+            case "$verdict" in
+              success) break ;;
+              failure)
+                echo "::error::CI did not succeed on $GITHUB_SHA. Fix it, then re-run this workflow."
+                exit 1 ;;
+            esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::CI on $GITHUB_SHA did not finish within $CI_WAIT_MINUTES minutes."
+              exit 1
+            fi
+            sleep 30
+          done
 
       - name: Require the tagged commit to be on main
         if: github.event_name == 'push'
