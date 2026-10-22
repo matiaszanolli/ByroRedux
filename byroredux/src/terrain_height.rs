@@ -87,15 +87,29 @@ impl TerrainHeightService {
             archives: tex_provider.texture_archive_snapshot(),
             cache_dir: self.cache_dir.clone(),
         };
+        self.spawn_guarded(sources.clone(), move || run_job(&job));
+        None
+    }
+
+    /// Run `job` on the pool and push its result for [`Self::drain`]. The body
+    /// runs under `catch_unwind` (#6233): the pool has no panic handler, and
+    /// rayon aborts the process on an unhandled job panic. The job extracts
+    /// and decodes archive bytes, the class #6119 guards in the pre-parse, so
+    /// a panic must land as a `Failed` layer that renders without height.
+    fn spawn_guarded(
+        &self,
+        sources: LayerHeightSources,
+        job: impl FnOnce() -> Result<CachedHeight, String> + Send + 'static,
+    ) {
         let finished = Arc::clone(&self.finished);
         self.pool.spawn(move || {
-            let result = run_job(&job);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job))
+                .unwrap_or_else(|_| Err("height job panicked".to_string()));
             finished
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .push((job.sources, result));
+                .push((sources, result));
         });
-        None
     }
 
     /// Fold finished jobs into the state map; returns the ones now ready.
@@ -274,5 +288,34 @@ pub(crate) fn apply_ready_heights(world: &World, ctx: &mut VulkanContext) {
     if patched > 0 {
         crate::scene::flush_pending_loose_textures(ctx);
         log::debug!(target: "engine::terrain_height", "patched {patched} terrain height lanes");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #6233 - a panicking job completes its slot as `Failed` instead of
+    /// aborting the process through rayon's missing panic handler.
+    #[test]
+    fn a_panicking_height_job_is_reported_failed() {
+        let dir = std::env::temp_dir().join("byro-terrain-height-panic-test");
+        let mut service = TerrainHeightService::new(dir);
+        let sources = LayerHeightSources::new(None, None, Some("textures\\a.dds")).unwrap();
+        service.states.insert(sources.clone(), HeightState::Pending);
+        service.spawn_guarded(sources.clone(), || panic!("decoder blew up"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while matches!(service.state(&sources), Some(HeightState::Pending)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the job never reported"
+            );
+            assert!(service.drain().is_empty());
+            std::thread::yield_now();
+        }
+        match service.state(&sources) {
+            Some(HeightState::Failed(reason)) => assert_eq!(reason, "height job panicked"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 }
