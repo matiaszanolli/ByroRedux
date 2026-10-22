@@ -97,10 +97,15 @@ pub(crate) fn character_rules_profile(game: GameKind, hedr_version: f32) -> Char
 /// `remap` rewrites every record's FormID top byte into the global
 /// load order so maps in [`EsmIndex`] stay collision-free across
 /// plugins. Pass `None` for single-plugin loads (the default today);
-/// pass `Some(FormIdRemap { plugin_slot, master_slots })` when
+/// pass `Some(FormIdRemap { plugin_slot, master_slots, scheme })` when
 /// loading a DLC or mod in a multi-plugin stack so Anchorage's new
 /// form 0x01012345 doesn't collide with BrokenSteel's 0x01012345 in
-/// the same map. See #445.
+/// the same map. See #445. Do not build the remap by hand: `scheme` is
+/// per game (`FormIdScheme::Starfield` addresses small / medium masters in
+/// their own `0xFE` / `0xFD` spaces, #6118), and a caller that leaves it at the
+/// positional default mis-resolves every Starfield master reference. The
+/// production constructor is `build_remap_for_plugin` in
+/// `byroredux/src/cell_loader/load_order.rs`.
 ///
 /// Multi-plugin loading is live since M46.0: `--master` is repeatable
 /// on the CLI, and `byroredux/src/cell_loader/load_order.rs` builds a

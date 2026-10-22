@@ -434,9 +434,11 @@ fn parse_wrld_children_inner(
                             ]);
                             grid = Some((grid_x, grid_y));
                             // #6043 — `wbCellGrid`'s third field: the Land
-                            // Flags byte. FO3/FNV's trailing dword is
-                            // padding with a zero low byte, so the read is
-                            // safe on every game.
+                            // Flags byte. xEdit's common `wbCellGrid`
+                            // (`wbDefinitionsCommon.pas`) carries it for FO3
+                            // and FNV too, so the read is the same on every
+                            // game (FalloutNV.esm authors a non-zero one: one
+                            // cell, `4` = Hide Quad 3).
                             land_flags = sub.data.get(8).copied().unwrap_or(0);
                         }
                         // Everything walker-shared falls through to
