@@ -256,12 +256,7 @@ pub fn distance_event_system(world: &World, _dt: f32) {
             continue;
         }
         let vmad = owners.vmad(world, watch.owner, &watch.script);
-        let effect = Effect::Interpret {
-            script: watch.script.clone(),
-            function: event.to_owned(),
-            args: vec![VmStored::Form(form_a), VmStored::Form(form_b), VmStored::Float(distance)],
-            resume: None,
-        };
+        let effect = Effect::interpret(watch.script.clone(), event.to_owned(), vec![VmStored::Form(form_a), VmStored::Form(form_b), VmStored::Float(distance)]);
         log::debug!("{:08X}: {}.{event}({form_a:08X}, {form_b:08X}, {distance})", watch.owner, watch.script);
         advances.extend(run_papyrus_call(world, owner, vmad.as_ref(), effect));
     }

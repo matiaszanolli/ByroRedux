@@ -61,6 +61,7 @@ pub mod ownership;
 pub mod weather_state;
 pub mod location_keyword_data;
 pub mod messages;
+pub mod name_table;
 pub mod scanning;
 pub mod skills;
 pub mod speechcraft;

@@ -24,6 +24,7 @@ use crate::vulkan::descriptors::compute_binding;
 // line at or below its original length, so the move introduces no
 // reformatting and stays diffable against the original.
 use super::super::{descriptors, pipeline, texture};
+use crate::vulkan::descriptors::{general_sampled_image_info, sampled_image_info, storage_image_info};
 
 pub(in crate::vulkan) fn volumetrics_inject_layout_bindings(
 ) -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
@@ -585,41 +586,16 @@ impl VolumetricsPipeline {
         // ── 6. Write descriptor sets ──────────────────────────────────
         for f in 0..MAX_FRAMES_IN_FLIGHT {
             let previous = (f + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
-            let lighting_info = [vk::DescriptorImageInfo::default()
-                .image_view(partial.lighting_volumes[f].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let history_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.history_sampler)
-                .image_view(partial.lighting_volumes[previous].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let emission_history_write_info = [vk::DescriptorImageInfo::default()
-                .image_view(partial.emission_history_volumes[f].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let previous_emission_history_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.history_sampler)
-                .image_view(partial.emission_history_volumes[previous].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let combustion_state_write_info = [vk::DescriptorImageInfo::default()
-                .image_view(partial.combustion_state_volumes[f].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let previous_combustion_state_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.transport_sampler)
-                .image_view(partial.combustion_state_volumes[previous].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let combustion_dynamics_write_info = [vk::DescriptorImageInfo::default()
-                .image_view(partial.combustion_dynamics_volumes[f].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let previous_combustion_dynamics_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.transport_sampler)
-                .image_view(partial.combustion_dynamics_volumes[previous].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let combustion_optical_write_info = [vk::DescriptorImageInfo::default()
-                .image_view(partial.combustion_optical_volumes[f].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let previous_combustion_optical_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.transport_sampler)
-                .image_view(partial.combustion_optical_volumes[previous].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
+            let lighting_info = [storage_image_info(partial.lighting_volumes[f].view)];
+            let history_info = [general_sampled_image_info(partial.history_sampler, partial.lighting_volumes[previous].view)];
+            let emission_history_write_info = [storage_image_info(partial.emission_history_volumes[f].view)];
+            let previous_emission_history_info = [general_sampled_image_info(partial.history_sampler, partial.emission_history_volumes[previous].view)];
+            let combustion_state_write_info = [storage_image_info(partial.combustion_state_volumes[f].view)];
+            let previous_combustion_state_info = [general_sampled_image_info(partial.transport_sampler, partial.combustion_state_volumes[previous].view)];
+            let combustion_dynamics_write_info = [storage_image_info(partial.combustion_dynamics_volumes[f].view)];
+            let previous_combustion_dynamics_info = [general_sampled_image_info(partial.transport_sampler, partial.combustion_dynamics_volumes[previous].view)];
+            let combustion_optical_write_info = [storage_image_info(partial.combustion_optical_volumes[f].view)];
+            let previous_combustion_optical_info = [general_sampled_image_info(partial.transport_sampler, partial.combustion_optical_volumes[previous].view)];
             let params_info = [vk::DescriptorBufferInfo {
                 buffer: partial.param_buffers[f].buffer,
                 offset: 0,
@@ -660,20 +636,12 @@ impl VolumetricsPipeline {
                 range: occupancy_range,
             }];
             let set = partial.descriptor_sets[f];
-            let base_noise_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.density_noise_sampler)
-                .image_view(partial.base_noise_volume.as_ref().expect("base noise").view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let detail_noise_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.density_noise_sampler)
-                .image_view(
-                    partial
+            let base_noise_info = [sampled_image_info(partial.density_noise_sampler, partial.base_noise_volume.as_ref().expect("base noise").view)];
+            let detail_noise_info = [sampled_image_info(partial.density_noise_sampler, partial
                         .detail_noise_volume
                         .as_ref()
                         .expect("detail noise")
-                        .view,
-                )
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                        .view,)];
             let writes = [
                 write_storage_image(set, 0, &lighting_info),
                 write_uniform_buffer(set, 1, &params_info),
@@ -830,12 +798,8 @@ impl VolumetricsPipeline {
 
         // ── 11. Write integration descriptor sets ─────────────────────
         for f in 0..MAX_FRAMES_IN_FLIGHT {
-            let inj_info = [vk::DescriptorImageInfo::default()
-                .image_view(partial.lighting_volumes[f].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let int_info = [vk::DescriptorImageInfo::default()
-                .image_view(partial.integrated_volumes[f].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
+            let inj_info = [storage_image_info(partial.lighting_volumes[f].view)];
+            let int_info = [storage_image_info(partial.integrated_volumes[f].view)];
             let ubo_info = [vk::DescriptorBufferInfo {
                 buffer: partial.integration_param_buffers[f].buffer,
                 offset: 0,

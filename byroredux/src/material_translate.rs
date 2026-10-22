@@ -2837,67 +2837,14 @@ mod tests {
     /// `pub(super)`: also used by the `canonical_completeness_harness`
     /// module's pin guard (#4411).
     pub(super) fn strip_inline_test_modules(src: &str) -> String {
-        const ATTR: &str = "\n#[cfg(test)]\nmod ";
-        let mut out = String::with_capacity(src.len());
-        let mut rest = src;
-        while let Some(start) = rest.find(ATTR) {
-            let header = &rest[start + ATTR.len()..];
-            // Decide the module form from the header terminator before
-            // stripping anything: `{` opens an inline block, `;` ends an
-            // out-of-line declaration.
-            let terminator = header.find(['{', ';']);
-            match terminator.map(|at| header.as_bytes()[at]) {
-                Some(b'{') => {
-                    out.push_str(&rest[..start]);
-                    let after = &rest[start + 1..];
-                    match after.find("\n}\n") {
-                        Some(end) => rest = &after[end + 3..],
-                        None => return out,
-                    }
-                }
-                Some(b';') => {
-                    // Keep the declaration (it is cfg(test) and spawns
-                    // nothing) and, critically, the production code after
-                    // it — the scan must continue past the `;`, not jump to
-                    // the next column-0 `}`.
-                    let through = start + ATTR.len() + terminator.unwrap() + 1;
-                    out.push_str(&rest[..through]);
-                    rest = &rest[through..];
-                }
-                _ => {
-                    out.push_str(rest);
-                    return out;
-                }
-            }
-        }
-        out.push_str(rest);
-        out
+        // #6149 — the one home of the cut (brace-matched, `mod x;` kept).
+        byroredux_core::source_scan::strip_test_modules(src)
     }
 
-    /// The inverse of [`strip_inline_test_modules`]: concatenate the bodies
-    /// of every top-level `#[cfg(test)] mod … { … }` block, so a scan that
-    /// should only see test code cannot be satisfied by production between
-    /// the modules (#4411 — this file has four of them).
-    ///
-    /// Same block-end rule as its inverse: the first `}` in column 0, which
-    /// holds for rustfmt-formatted top-level items.
+    /// The inverse of [`strip_inline_test_modules`] (#4411): every top-level
+    /// test module's body, from `core::source_scan` (#6149).
     pub(super) fn test_module_bodies(src: &str) -> String {
-        let mut out = String::with_capacity(src.len());
-        let mut rest = src;
-        while let Some(start) = rest.find("\n#[cfg(test)]\nmod ") {
-            let after = &rest[start + 1..];
-            match after.find("\n}\n") {
-                Some(end) => {
-                    out.push_str(&after[..end]);
-                    rest = &after[end + 3..];
-                }
-                None => {
-                    out.push_str(after);
-                    return out;
-                }
-            }
-        }
-        out
+        byroredux_core::source_scan::test_module_text(src)
     }
 
     /// Blank out `//`-line, `///`-doc and `/*…*/` comments plus the contents

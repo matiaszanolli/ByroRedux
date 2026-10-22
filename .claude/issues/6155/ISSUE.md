@@ -1,7 +1,6 @@
-# TD2-2026-10-19-10: Residue of #5809 and #5823: three clamp samplers and eight macro-shaped `GpuUploadCtx` literals are still hand-built (prior-partial: TD2-2026-10-15-08, -22)
-
-Labels: low,renderer,vulkan,tech-debt,bug
-Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
+# #6155: TD2-2026-10-19-10: Residue of #5809 and #5823: three clamp samplers and eight macro-shaped `GpuUploadCtx` literals are still hand-built (prior-partial: TD2-2026-10-15-08, -22)
+STATE: OPEN
+LABELS: bug,renderer,low,vulkan,tech-debt
 
 - **Severity**: LOW
 - **Dimension**: 2 - Logic Duplication
@@ -18,3 +17,4 @@ Related: #5809, #5823 (closed; residue).
 - [ ] **TESTS**: A regression test / source-scan guard pins this specific fix (or the finding is a pure move/delete covered by existing tests)
 
 _Source: `docs/audits/AUDIT_TECH_DEBT_2026-10-19.md` (HEAD 12677d718). Fix with `/fix-issue <number>`._
+

@@ -86,3 +86,23 @@ pub(crate) use combat_anim::*;
 pub(crate) use wander::*;
 pub(crate) use water::*;
 pub(crate) use weather::*;
+
+/// Drain this frame's one-shot `T` requests (#6150): every `(entity, request)` the storage holds, removed
+/// from it, one read lock and one write lock. The request-driven systems (`ForceFlee`, `PushActorAway`,
+/// `Resurrect`, `UseWeapon`, `ResetInventory`, `PickIdle`, `SetMotionType`, `ApplyHavokImpulse`) open
+/// with it; empty when nothing was asked or the storage is not registered.
+pub(crate) fn take_requests<T>(world: &byroredux_core::ecs::World) -> Vec<(byroredux_core::ecs::EntityId, T)>
+where
+    T: byroredux_core::ecs::storage::Component + Copy,
+{
+    let asked: Vec<_> = match world.query::<T>() {
+        Some(requests) if !requests.is_empty() => requests.iter().map(|(entity, request)| (entity, *request)).collect(),
+        _ => return Vec::new(),
+    };
+    if let Some(mut requests) = world.query_mut::<T>() {
+        for (entity, _) in &asked {
+            requests.remove(*entity);
+        }
+    }
+    asked
+}

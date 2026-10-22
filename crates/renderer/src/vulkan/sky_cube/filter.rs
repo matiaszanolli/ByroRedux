@@ -1,7 +1,7 @@
 //! Per-mip GGX convolution. Reads a base-only cube view while writing
 //! disjoint mip views, then exposes the complete chain to fragment shaders.
 use super::*;
-use crate::vulkan::descriptors::compute_binding;
+use crate::vulkan::descriptors::{compute_binding, sampled_image_info, storage_image_info};
 
 const SPV: &[u8] = include_bytes!("../../../shaders/sky_prefilter.comp.spv");
 
@@ -95,13 +95,8 @@ impl SkyFilter {
             for mip in 1..SKY_CUBE_MIP_LEVELS {
                 let target =
                     self.view(device, cube.image, mip, vk::ImageViewType::TYPE_2D_ARRAY)?;
-                let input = [vk::DescriptorImageInfo::default()
-                    .sampler(sampler)
-                    .image_view(source)
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-                let output = [vk::DescriptorImageInfo::default()
-                    .image_view(target)
-                    .image_layout(vk::ImageLayout::GENERAL)];
+                let input = [sampled_image_info(sampler, source)];
+                let output = [storage_image_info(target)];
                 let set = self.sets[frame * (SKY_CUBE_MIP_LEVELS - 1) as usize + mip as usize - 1];
                 // SAFETY: private sets are not yet referenced by command buffers;
                 // source and target views cover disjoint subresources.

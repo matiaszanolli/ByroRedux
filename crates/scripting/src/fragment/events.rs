@@ -254,12 +254,7 @@ pub(super) fn enqueue(
         let vmad = owners.vmad(world, registration.owner, &registration.script);
         let mut handler_args = vec![VmStored::Form(sender_form)];
         handler_args.extend_from_slice(args);
-        let effect = Effect::Interpret {
-            script: registration.script.clone(),
-            function: handler,
-            args: handler_args,
-            resume: None,
-        };
+        let effect = Effect::interpret(registration.script.clone(), handler, handler_args);
         if super::budget::defer(world, owner, vmad.as_ref(), vec![effect]).is_err() {
             log::debug!("event delivery dropped: FragmentExecutionQueue is unavailable");
         }

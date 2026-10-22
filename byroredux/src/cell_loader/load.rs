@@ -1073,14 +1073,8 @@ mod tests {
     /// world setup.
     #[test]
     fn every_animation_route_installs_the_combat_family_too() {
-        // #5824 — the strong shared cut (asserts the test module shape).
-        let production = |name: &str, src: &'static str| -> &'static str {
-            src.split_once("\n#[cfg(test)]\nmod ")
-                .map(|(prod, _)| prod)
-                .unwrap_or_else(|| {
-                    panic!("{name} lost its `#[cfg(test)]` cut point — the meta-guard needs it")
-                })
-        };
+        // #5824 — the strong shared cut; `production_text` panics if a file
+        // lost its test-module cut point (#6149: no inline needle).
         for (name, whole_file, floor) in [
             ("cell_loader/load.rs", include_str!("load.rs"), 1),
             (
@@ -1089,7 +1083,7 @@ mod tests {
                 1,
             ),
         ] {
-            let source = production(name, whole_file);
+            let source = byroredux_core::source_scan::production_text(whole_file);
             let walk = source.matches("populate_skyrim_walk_clip").count();
             let combat = source.matches("populate_draugr_combat_clips").count();
             assert_eq!(

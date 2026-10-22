@@ -58,6 +58,7 @@ use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
 use std::sync::atomic::{AtomicBool, Ordering};
+use crate::vulkan::descriptors::{sampled_image_info, storage_image_info};
 
 pub(super) const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_splat.comp.spv");
 
@@ -631,14 +632,8 @@ impl CausticPipeline {
                 .sampler(self.point_sampler)
                 .image_view(depth_view)
                 .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
-            let normal_info = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(normal_views[f])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let mesh_id_info = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(mesh_id_views[f])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let normal_info = [sampled_image_info(self.point_sampler, normal_views[f])];
+            let mesh_id_info = [sampled_image_info(self.point_sampler, mesh_id_views[f])];
             let light_info = [vk::DescriptorBufferInfo {
                 buffer: light_buffers[f].buffer,
                 offset: 0,
@@ -654,9 +649,7 @@ impl CausticPipeline {
                 offset: 0,
                 range: instance_buffer_sizes[f],
             }];
-            let caustic_info = [vk::DescriptorImageInfo::default()
-                .image_view(self.slots[f].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
+            let caustic_info = [storage_image_info(self.slots[f].view)];
             let params_info = [vk::DescriptorBufferInfo {
                 buffer: self.param_buffers[f].buffer,
                 offset: 0,

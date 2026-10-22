@@ -3144,10 +3144,7 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
     // fixture, unrelated to the production call sites below) must not
     // inflate the count — split it off the way the other four files don't
     // need to, since they have no test-module call of these functions.
-    let actor_value_derive_production = ACTOR_VALUE_DERIVE_RS
-        .split_once("#[cfg(test)]\nmod tests {")
-        .map(|(production, _)| production)
-        .expect("actor_value_derive.rs must still carry a #[cfg(test)] mod tests block");
+    let actor_value_derive_production = byroredux_core::source_scan::production_text(ACTOR_VALUE_DERIVE_RS);
 
     // #6113 — a field read straight off the shell (`npc.form_id`,
     // `npc.face_morphs`) is invisible to the call counts above: the pre-baked

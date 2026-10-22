@@ -909,6 +909,14 @@ pub enum ActorRef {
 }
 
 impl Effect {
+    /// A fresh [`Effect::Interpret`] run of `script.function(args)` — `resume: None`, the shape every
+    /// fragment / event dispatcher starts a VM run with (#6154).
+    pub fn interpret(script: impl Into<String>, function: impl Into<String>, args: Vec<VmStored>) -> Self {
+        Effect::Interpret { script: script.into(), function: function.into(), args, resume: None }
+    }
+}
+
+impl Effect {
     /// #5807 — the variant-name table the two conformance harnesses
     /// (`mq101_conformance.rs`, `fragment_coverage.rs`) each pasted as a
     /// ~99-line match, edited by hand on every new variant (a missed copy

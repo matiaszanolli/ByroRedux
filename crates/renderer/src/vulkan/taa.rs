@@ -51,6 +51,7 @@ use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
+use crate::vulkan::descriptors::{general_sampled_image_info, sampled_image_info, storage_image_info};
 
 // #918 / REN-D10-NEW-04 — TAA's read-previous / write-current ping-pong
 // (`prev` in `write_descriptor_sets`, history-slot indexing throughout)
@@ -454,45 +455,19 @@ impl TaaPipeline {
             // colour first, or skip the dispatch for frame 0.
             let prev = (f + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
 
-            let curr_hdr = [vk::DescriptorImageInfo::default()
-                .sampler(self.linear_sampler)
-                .image_view(src_color_views[f])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let motion = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(motion_views[f])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let curr_mid = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(mesh_id_views[f])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let prev_mid = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(mesh_id_views[prev])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let curr_normal = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(normal_views[f])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let prev_normal = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(normal_views[prev])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let curr_hdr = [sampled_image_info(self.linear_sampler, src_color_views[f])];
+            let motion = [sampled_image_info(self.point_sampler, motion_views[f])];
+            let curr_mid = [sampled_image_info(self.point_sampler, mesh_id_views[f])];
+            let prev_mid = [sampled_image_info(self.point_sampler, mesh_id_views[prev])];
+            let curr_normal = [sampled_image_info(self.point_sampler, normal_views[f])];
+            let prev_normal = [sampled_image_info(self.point_sampler, normal_views[prev])];
             // #4944 — current frame only; the main render pass leaves every
             // colour attachment (this one included) in SHADER_READ_ONLY_OPTIMAL
             // behind its COMPUTE_SHADER / SHADER_READ outgoing dependency, the
             // same path the normal and mesh-ID reads above rely on.
-            let reactive = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(reactive_views[f])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let prev_hist = [vk::DescriptorImageInfo::default()
-                .sampler(self.linear_sampler)
-                .image_view(self.history[prev].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let out_taa = [vk::DescriptorImageInfo::default()
-                .image_view(self.history[f].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
+            let reactive = [sampled_image_info(self.point_sampler, reactive_views[f])];
+            let prev_hist = [general_sampled_image_info(self.linear_sampler, self.history[prev].view)];
+            let out_taa = [storage_image_info(self.history[f].view)];
             let params = [vk::DescriptorBufferInfo {
                 buffer: self.param_buffers[f].buffer,
                 offset: 0,

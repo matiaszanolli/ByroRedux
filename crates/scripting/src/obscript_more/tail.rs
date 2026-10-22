@@ -398,17 +398,8 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         0x123b => match (form_arg(args, 0), player(world)) {
             (Some(repu), Some(player)) => {
                 let points = num(args, 2).clamp(0.0, f32::from(u16::MAX)) as u16;
-                let Some(mut standings) = world.query_mut::<byroredux_core::character::FactionReputation>() else {
+                if crate::obscript_effects::adjust_standing(world, player, repu, num(args, 1) as i32 == 1, points, false).is_none() {
                     return Action::Declined;
-                };
-                if standings.get_mut(player).is_none() {
-                    standings.insert(player, Default::default());
-                }
-                let standing = standings.get_mut(player).expect("present or inserted");
-                if num(args, 1) as i32 == 1 {
-                    standing.add_fame(repu, points);
-                } else {
-                    standing.add_infamy(repu, points);
                 }
                 done(format!("AddReputationExact {repu:08X} +{points}"))
             }

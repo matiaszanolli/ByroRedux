@@ -2664,9 +2664,7 @@ mod tick_documentation_tests {
     #[test]
     fn register_newcomers_parallel_section_holds_no_world_guard() {
         let src = include_str!("sync.rs");
-        let production = &src[..src
-            .find("\n#[cfg(test)]\nmod ")
-            .expect("sync.rs has test modules")];
+        let production = crate::source_scan::production_text(src);
         let start = production
             .find("fn register_newcomers(")
             .expect("register_newcomers exists");

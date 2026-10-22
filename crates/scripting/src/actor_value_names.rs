@@ -8,26 +8,27 @@
 //! not resolve, and the effect skips. `NOT_SAVED_BY_DESIGN`: rebuilt from the
 //! load order every boot.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::EsmIndex;
 
 #[derive(Debug, Default, Clone)]
-pub struct ActorValueNames(HashMap<String, u32>, HashSet<u32>);
+pub struct ActorValueNames(crate::name_table::EditorIdTable<u32>, HashSet<u32>);
 
 impl Resource for ActorValueNames {}
 
 impl ActorValueNames {
     pub fn from_index(index: &EsmIndex) -> Self {
-        let mut names = HashMap::new();
+        let mut names = crate::name_table::EditorIdTable::default();
         let mut forms = HashSet::new();
         for avif in index.actor_values.values() {
             forms.insert(avif.form_id);
-            let editor_id = avif.editor_id.to_ascii_lowercase();
-            if let Some(name) = editor_id.strip_prefix("av") {
-                names.entry(name.to_string()).or_insert(avif.form_id);
+            // The Papyrus spelling: the editor ID less its `AV` prefix, yielding to a record's own name.
+            let editor_id = avif.editor_id.as_str();
+            if editor_id.get(..2).is_some_and(|prefix| prefix.eq_ignore_ascii_case("av")) {
+                names.insert_if_absent(&editor_id[2..], avif.form_id);
             }
             names.insert(editor_id, avif.form_id);
         }
@@ -41,7 +42,7 @@ impl ActorValueNames {
 
     /// The AVIF FormID `name` spells, if any.
     pub fn resolve(&self, name: &str) -> Option<u32> {
-        self.0.get(&name.to_ascii_lowercase()).copied()
+        self.0.get(name).copied()
     }
 }
 

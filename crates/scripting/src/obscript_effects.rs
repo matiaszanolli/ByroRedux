@@ -247,6 +247,24 @@ impl Binder {
 }
 
 /// The form a reference argument resolved to; `None` for an absent or null one.
+/// The player's `FactionReputation` standing with `repu` on one axis (`fame`, else infamy), raised by
+/// `points` or (`set`) set to them — what `AddReputation`, `AddReputationExact` and `SetReputation`
+/// share (#6151); the standing is created on first use. `None` when the storage is not registered.
+pub(crate) fn adjust_standing(world: &World, player: EntityId, repu: u32, fame: bool, points: u16, set: bool) -> Option<()> {
+    let mut standings = world.query_mut::<byroredux_core::character::FactionReputation>()?;
+    if standings.get_mut(player).is_none() {
+        standings.insert(player, Default::default());
+    }
+    let standing = standings.get_mut(player).expect("present or inserted");
+    match (fame, set) {
+        (true, false) => standing.add_fame(repu, points),
+        (false, false) => standing.add_infamy(repu, points),
+        (true, true) => standing.set_fame(repu, points),
+        (false, true) => standing.set_infamy(repu, points),
+    }
+    Some(())
+}
+
 pub(crate) fn form_arg(args: &[ObScriptValue], i: usize) -> Option<u32> {
     match args.get(i) {
         Some(ObScriptValue::Ref(form)) if *form != 0 => Some(*form),
@@ -969,17 +987,8 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
                 return Action::Declined;
             }
             let points = u16::from(byroredux_core::character::reputation_bump_points(amount as u8));
-            let Some(mut standings) = world.query_mut::<byroredux_core::character::FactionReputation>() else {
+            if adjust_standing(world, player, repu, num(args, 1) as i32 == 1, points, false).is_none() {
                 return Action::Declined;
-            };
-            if standings.get_mut(player).is_none() {
-                standings.insert(player, Default::default());
-            }
-            let standing = standings.get_mut(player).expect("present or inserted");
-            if num(args, 1) as i32 == 1 {
-                standing.add_fame(repu, points);
-            } else {
-                standing.add_infamy(repu, points);
             }
             return Action::Done { value: None, effect: format!("AddReputation {repu:08X} +{points}") };
         }

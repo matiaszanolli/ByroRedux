@@ -288,12 +288,7 @@ pub fn package_fragment_system(world: &World, dt: f32) {
         };
         for (_, script, function) in set.fragments.iter().filter(|(on, _, _)| *on == event) {
             log::debug!("package {package:08X} {event:?} on {actor:08X}: {script}.{function}");
-            let effect = Effect::Interpret {
-                script: script.clone(),
-                function: function.clone(),
-                args: vec![VmStored::Form(actor)],
-                resume: None,
-            };
+            let effect = Effect::interpret(script.clone(), function.clone(), vec![VmStored::Form(actor)]);
             advances.extend(run_papyrus_call(
                 world,
                 QuestFormId(package),

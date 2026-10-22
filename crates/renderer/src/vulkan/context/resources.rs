@@ -845,9 +845,7 @@ mod tests {
     #[test]
     fn static_blas_recovery_covers_both_sources_and_protects_current_draws() {
         let source = include_str!("resources.rs");
-        let production = &source[..source
-            .find("#[cfg(test)]\nmod tests")
-            .expect("resources.rs must retain its test module")];
+        let production = crate::source_scan::production_text(source);
         let start = production
             .find("pub fn restore_missing_static_blas_for_draws(")
             .expect("pre-TLAS static BLAS recovery entry point must exist");
@@ -896,9 +894,7 @@ mod tests {
     #[test]
     fn static_blas_recovery_is_bounded_per_frame() {
         let source = include_str!("resources.rs");
-        let production = &source[..source
-            .find("#[cfg(test)]\nmod tests")
-            .expect("resources.rs must retain its test module")];
+        let production = crate::source_scan::production_text(source);
         let start = production
             .find("pub fn restore_missing_static_blas_for_draws(")
             .expect("pre-TLAS static BLAS recovery entry point must exist");
@@ -941,9 +937,7 @@ mod tests {
     #[test]
     fn static_blas_recovery_honours_the_callers_deadline() {
         let source = include_str!("resources.rs");
-        let production = &source[..source
-            .find("#[cfg(test)]\nmod tests")
-            .expect("resources.rs must retain its test module")];
+        let production = crate::source_scan::production_text(source);
         let start = production
             .find("pub fn restore_missing_static_blas_for_draws(")
             .expect("pre-TLAS static BLAS recovery entry point must exist");

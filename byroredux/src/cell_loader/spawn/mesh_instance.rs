@@ -1754,9 +1754,7 @@ mod tests {
     #[test]
     fn morph_spawn_uses_mesh_handle_shared_delta_cache() {
         let source = include_str!("mesh_instance.rs");
-        let production = &source[..source
-            .find("\n#[cfg(test)]")
-            .expect("mesh_instance.rs must retain its test module")];
+        let production = byroredux_core::source_scan::production_text(source);
         assert!(
             production.contains("ctx.create_morph_slot_for_mesh("),
             "spawn must route morph creation through the mesh-keyed cache"
@@ -1785,9 +1783,7 @@ mod tests {
     #[test]
     fn morph_slot_creation_is_reachable_end_to_end() {
         let here = include_str!("mesh_instance.rs");
-        let production = &here[..here
-            .find("\n#[cfg(test)]")
-            .expect("mesh_instance.rs must retain its test module")];
+        let production = byroredux_core::source_scan::production_text(here);
         let nif_loader = include_str!("../../scene/nif_loader.rs");
 
         assert_eq!(
@@ -1836,9 +1832,7 @@ mod tests {
         // Production-only: this test's own prose quotes the forbidden
         // literal, and the split at the test module keeps it out of the
         // scanned half.
-        let production = &here[..here
-            .find("\n#[cfg(test)]")
-            .expect("mesh_instance.rs must retain its test module")];
+        let production = byroredux_core::source_scan::production_text(here);
         let spawn = include_str!("../spawn.rs");
         let synth = include_str!("../references/synth_child.rs");
 
@@ -1939,9 +1933,7 @@ mod tests {
         // Production-only: this test's own source quotes the scanned
         // literals, and the split at the test module keeps them out of the
         // scanned half.
-        let production = &here[..here
-            .find("\n#[cfg(test)]")
-            .expect("mesh_instance.rs must retain its test module")];
+        let production = byroredux_core::source_scan::production_text(here);
         let nif_loader = include_str!("../../scene/nif_loader.rs");
         let producer = include_str!("../../asset_provider/texture.rs");
 

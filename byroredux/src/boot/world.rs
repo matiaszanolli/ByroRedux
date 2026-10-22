@@ -567,9 +567,7 @@ mod ai_storage_registration_tests {
             .split("pub(crate) fn build_world")
             .nth(1)
             .expect("build_world must exist in boot/world.rs");
-        let build_world = after_fn
-            .split_once("\n#[cfg(test)]\nmod ")
-            .map_or(after_fn, |(body, _)| body);
+        let build_world = byroredux_core::source_scan::production_text_or_whole(after_fn);
 
         // Collect the *actual* `register::<Path::To::T>()` calls and reduce
         // each to its final path segment. Substring matching is not good

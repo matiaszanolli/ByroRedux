@@ -3,6 +3,7 @@ use super::*;
 use crate::shader_constants::SKY_SH_COEFFICIENTS;
 use crate::vulkan::descriptors::compute_binding;
 use crate::vulkan::descriptors::write_storage_buffer;
+use crate::vulkan::descriptors::{sampled_image_info};
 
 const SPV: &[u8] = include_bytes!("../../../shaders/sky_irradiance.comp.spv");
 /// `SKY_SH_COEFFICIENTS` RGB `vec4` coefficients.
@@ -112,10 +113,7 @@ impl SkyIrradiance {
                 )?
             };
             self.views.push(view);
-            let input = [vk::DescriptorImageInfo::default()
-                .sampler(sampler)
-                .image_view(view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let input = [sampled_image_info(sampler, view)];
             let output = [vk::DescriptorBufferInfo::default()
                 .buffer(self.buffers[frame].buffer)
                 .range(SH_BYTES)];

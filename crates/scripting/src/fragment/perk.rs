@@ -62,12 +62,7 @@ pub fn perk_fragment_system(world: &World, _dt: f32) {
         };
         for (_, script, function) in set.fragments.iter().filter(|(entry, _, _)| entry.0 == run.entry) {
             log::debug!("perk {:08X} entry {}: {script}.{function}", run.perk, run.entry);
-            let effect = Effect::Interpret {
-                script: script.clone(),
-                function: function.clone(),
-                args: vec![run.target.map_or(VmStored::None, VmStored::Form), VmStored::Form(run.owner)],
-                resume: None,
-            };
+            let effect = Effect::interpret(script.clone(), function.clone(), vec![run.target.map_or(VmStored::None, VmStored::Form), VmStored::Form(run.owner)]);
             advances.extend(run_papyrus_call(
                 world,
                 QuestFormId(run.perk),

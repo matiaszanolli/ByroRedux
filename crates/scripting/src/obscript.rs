@@ -11,10 +11,62 @@
 
 use byroredux_sdk::compatibility::LegacyObscriptLoadOrderCall;
 
-const SET_TO: u16 = 0x15;
-const IF: u16 = 0x16;
-const ELSE_IF: u16 = 0x18;
-const REFERENCE_FUNCTION: u16 = 0x1c;
+/// The compiled statement opcodes (xNVSE `ScriptAnalyzer`), one home for the three readers of the
+/// statement stream: this diagnostic scan, the conservative lowerer (`obscript_runtime`) and the VM
+/// (`obscript_vm`) (#6147).
+pub(crate) mod opcode {
+    pub(crate) const BEGIN: u16 = 0x10;
+    pub(crate) const END: u16 = 0x11;
+    pub(crate) const SHORT: u16 = 0x12;
+    pub(crate) const LONG: u16 = 0x13;
+    pub(crate) const FLOAT: u16 = 0x14;
+    pub(crate) const SET_TO: u16 = 0x15;
+    pub(crate) const IF: u16 = 0x16;
+    pub(crate) const ELSE: u16 = 0x17;
+    pub(crate) const ELSE_IF: u16 = 0x18;
+    pub(crate) const END_IF: u16 = 0x19;
+    /// The reference-function escape: `[1c][caller ref u16][command u16][len u16][args]`.
+    pub(crate) const REFERENCE_FUNCTION: u16 = 0x1c;
+    pub(crate) const SCRIPT_NAME: u16 = 0x1d;
+    pub(crate) const RETURN: u16 = 0x1e;
+    pub(crate) const REF: u16 = 0x1f;
+}
+use opcode::{ELSE_IF, IF, REFERENCE_FUNCTION, SET_TO};
+
+/// One framed statement of the compiled stream (#6147): `[op u16][len u16][payload]`, or for the
+/// reference-function escape `[0x1c][caller ref u16][command u16][len u16][payload]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StatementFrame {
+    /// The statement's opcode — for the escape, the command it calls.
+    pub(crate) opcode: u16,
+    /// Where that opcode sits (`offset + 4` for the escape).
+    pub(crate) command_offset: usize,
+    /// The payload, bounded by the compiled bytes.
+    pub(crate) payload: std::ops::Range<usize>,
+    /// The offset of the statement after this one (`payload.end`).
+    pub(crate) next: usize,
+}
+
+/// Frame the statement at `offset`, or say why the stream is malformed there.
+pub(crate) fn statement_frame(bytes: &[u8], offset: usize) -> Result<StatementFrame, &'static str> {
+    let opcode = byroredux_core::bytes::le_u16_at(bytes, offset).ok_or("truncated SCDA statement opcode")?;
+    let (opcode, command_offset, length_offset) = if opcode == REFERENCE_FUNCTION {
+        let command_offset = offset + 4;
+        let command = byroredux_core::bytes::le_u16_at(bytes, command_offset).ok_or("truncated SCDA reference-function header")?;
+        (command, command_offset, offset + 6)
+    } else {
+        (opcode, offset, offset + 2)
+    };
+    let payload_len = byroredux_core::bytes::le_u16_at(bytes, length_offset)
+        .map(usize::from)
+        .ok_or("truncated SCDA statement length")?;
+    let payload_start = length_offset + 2;
+    let payload_end = payload_start.checked_add(payload_len).ok_or("overflowing SCDA statement length")?;
+    if payload_end > bytes.len() {
+        return Err("SCDA statement payload exceeds compiled bytecode");
+    }
+    Ok(StatementFrame { opcode, command_offset, payload: payload_start..payload_end, next: payload_end })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObscriptDialect {
@@ -87,42 +139,16 @@ pub fn decode_extender_calls(bytes: &[u8], dialect: ObscriptDialect) -> Obscript
     let mut decoded = ObscriptDecode::default();
     let mut offset = 0usize;
     while offset < bytes.len() {
-        let Some(opcode) = byroredux_core::bytes::le_u16_at(bytes, offset) else {
-            malformed(&mut decoded, offset, "truncated SCDA statement opcode");
-            break;
+        let frame = match statement_frame(bytes, offset) {
+            Ok(frame) => frame,
+            Err(why) => {
+                malformed(&mut decoded, offset, why);
+                break;
+            }
         };
-        let (actual_opcode, length_offset, payload_offset, command_offset) =
-            if opcode == REFERENCE_FUNCTION {
-                let Some(actual_opcode) = byroredux_core::bytes::le_u16_at(bytes, offset + 4) else {
-                    malformed(
-                        &mut decoded,
-                        offset,
-                        "truncated SCDA reference-function header",
-                    );
-                    break;
-                };
-                (actual_opcode, offset + 6, offset + 8, offset + 4)
-            } else {
-                (opcode, offset + 2, offset + 4, offset)
-            };
-        let Some(payload_len) = byroredux_core::bytes::le_u16_at(bytes, length_offset).map(usize::from) else {
-            malformed(&mut decoded, offset, "truncated SCDA statement length");
-            break;
-        };
-        let Some(payload_end) = payload_offset.checked_add(payload_len) else {
-            malformed(&mut decoded, offset, "overflowing SCDA statement length");
-            break;
-        };
-        if payload_end > bytes.len() {
-            malformed(
-                &mut decoded,
-                offset,
-                "SCDA statement payload exceeds compiled bytecode",
-            );
-            break;
-        }
-
-        let payload = &bytes[payload_offset..payload_end];
+        let (actual_opcode, command_offset, payload_offset, payload_end) =
+            (frame.opcode, frame.command_offset, frame.payload.start, frame.next);
+        let payload = &bytes[frame.payload];
         push_known_call(
             &mut decoded,
             dialect,

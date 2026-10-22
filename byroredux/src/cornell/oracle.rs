@@ -430,12 +430,7 @@ pub(crate) fn setup_cornell_oracle_scene(
             .ctx
             .texture_registry
             .register_rgba(
-                GpuUploadCtx {
-                    device: &builder.ctx.device,
-                    allocator: builder.ctx.allocator.as_ref().unwrap(),
-                    queue: &builder.ctx.graphics_queue,
-                    command_pool: builder.ctx.transfer_pool,
-                },
+                byroredux_renderer::upload_ctx!(builder.ctx),
                 // register_rgba uses an sRGB view; encode 0.5 as 188 so the
                 // sampled vector is +X (normal DDS views normally use UNORM).
                 1,

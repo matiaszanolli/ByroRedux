@@ -29,16 +29,7 @@ use crate::ragdoll::{RagdollActive, RetiredBodyRows};
 
 /// Revive the actors `Resurrect` was called on this frame.
 pub(crate) fn revive_system(world: &World, _dt: f32) {
-    let requested: Vec<EntityId> = match world.query::<ReviveRequest>() {
-        Some(requests) if !requests.is_empty() => requests.iter().map(|(actor, _)| actor).collect(),
-        _ => return,
-    };
-    if let Some(mut requests) = world.query_mut::<ReviveRequest>() {
-        for actor in &requested {
-            requests.remove(*actor);
-        }
-    }
-    for actor in requested {
+    for (actor, _) in super::take_requests::<ReviveRequest>(world) {
         log::info!("actor {actor}: {}", revive_actor(world, actor));
     }
 }

@@ -976,16 +976,12 @@ mod tests {
 
         // Everything from the fn signature to the next item at column 0.
         fn body<'a>(source: &'a str, signature: &str) -> &'a str {
+            let source = byroredux_core::source_scan::production_text_or_whole(source);
             let start = source
                 .find(signature)
                 .unwrap_or_else(|| panic!("{signature} not found — was it renamed?"));
             let rest = &source[start + signature.len()..];
-            let end = rest
-                .find("\nfn ")
-                .into_iter()
-                .chain(rest.find("\n#[cfg(test)]"))
-                .min()
-                .unwrap_or(rest.len());
+            let end = rest.find("\nfn ").unwrap_or(rest.len());
             &rest[..end]
         }
 

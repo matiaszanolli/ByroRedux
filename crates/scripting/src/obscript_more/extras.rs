@@ -34,7 +34,8 @@ pub struct MusicTrack {
 /// records at every content load.
 #[derive(Debug, Default, Clone)]
 pub struct MusicTracks {
-    by_editor_id: HashMap<String, MusicTrack>,
+    by_editor_id: crate::name_table::EditorIdTable<MusicTrack>,
+    /// FormID → its editor ID, for `by_form`.
     by_form: HashMap<u32, String>,
 }
 
@@ -44,15 +45,14 @@ impl MusicTracks {
     pub fn from_index(index: &EsmIndex) -> Self {
         let mut out = Self::default();
         for musc in index.music_types.values().filter(|musc| !musc.file.is_empty() && !musc.editor_id.is_empty()) {
-            let key = musc.editor_id.to_ascii_lowercase();
-            out.by_form.insert(musc.form_id, key.clone());
-            out.by_editor_id.insert(key, MusicTrack { form_id: musc.form_id, file: musc.file.clone(), looping: musc.looping(), decibels: musc.decibels });
+            out.by_form.insert(musc.form_id, musc.editor_id.clone());
+            out.by_editor_id.insert(&musc.editor_id, MusicTrack { form_id: musc.form_id, file: musc.file.clone(), looping: musc.looping(), decibels: musc.decibels });
         }
         out
     }
 
     pub fn by_editor_id(&self, name: &str) -> Option<&MusicTrack> {
-        self.by_editor_id.get(&name.to_ascii_lowercase())
+        self.by_editor_id.get(name)
     }
 
     pub fn by_form(&self, form: u32) -> Option<&MusicTrack> {

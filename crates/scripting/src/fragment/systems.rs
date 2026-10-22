@@ -156,14 +156,7 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
         ));
     }
 
-    if emitted.is_empty() {
-        return;
-    }
-    let Some(player_entity) = crate::papyrus_demo::PapyrusPlayerEntity::get(world)
-    else {
-        return;
-    };
-    crate::quest_stages::push_quest_stage_advances(world, player_entity, emitted);
+    super::flush_advances(world, emitted);
 }
 
 /// Maximum stage-fragment cascade depth in one dispatch pass — a fragment
@@ -248,22 +241,8 @@ pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
             fragment.vmad.as_ref(),
         ));
     }
-    if advances.is_empty() {
-        return;
-    }
-
-    // #3580 — copy the entity out and DROP the `PapyrusPlayerEntity` guard before
-    // `push_quest_stage_advances` acquires the `QuestStageAdvancedBatch`
-    // storage. Binding the guard to a `let ... else` local kept it alive
-    // across that call, recording `PapyrusPlayerEntity -> QuestStageAdvancedBatch`
-    // and closing a ring with the other two edges the quest systems record.
-    // Every other `PapyrusPlayerEntity` site in the crate already copies the id out
-    // of a statement-scoped temporary; this one did not.
-    let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world)
-    else {
-        return;
-    };
-    crate::quest_stages::push_quest_stage_advances(world, player, advances);
+    // #3580's lock-order rule lives with the epilogue (`dispatch::flush_advances`).
+    super::flush_advances(world, advances);
 }
 
 /// Execute one spoken `INFO` line's fragment from the dialogue path — the

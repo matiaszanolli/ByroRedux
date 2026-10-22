@@ -309,12 +309,7 @@ fn interpret_fallback(
     for needed in scripts {
         install(needed);
     }
-    Some(vec![Effect::Interpret {
-        script: script.name.node.0.clone(),
-        function: function.to_owned(),
-        args: Vec::new(),
-        resume: None,
-    }])
+    Some(vec![Effect::interpret(script.name.node.0.clone(), function.to_owned(), Vec::new())])
 }
 
 /// Provider-aware quest-fragment lowering attributed to the archive package

@@ -807,8 +807,7 @@ mod system_access_declaration_tests {
     /// `systems/animation.rs` sits at line 21 and would hide the entire
     /// file, so the scan would silently find nothing.
     fn production(src: &str) -> &str {
-        src.split_once("#[cfg(test)]\nmod ")
-            .map_or(src, |(before, _)| before)
+        byroredux_core::source_scan::production_text_or_whole(src)
     }
 
     /// `boot.rs` up to this module, so the module's own mentions of a system

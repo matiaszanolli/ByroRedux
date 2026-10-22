@@ -405,12 +405,7 @@ pub fn run_quest_script_function(world: &World, script: &str, function: &str, ar
             .map(|(quest, vmad)| (*quest, vmad.clone()))
             .ok_or_else(|| format!("no quest carries a script named {script}"))?
     };
-    let effect = Effect::Interpret {
-        script: script.to_owned(),
-        function: function.to_owned(),
-        args,
-        resume: None,
-    };
+    let effect = Effect::interpret(script, function, args);
     let advances = apply_fragment_guard_free(world, std::slice::from_ref(&effect), quest, Some(&vmad));
     flush_advances(world, advances);
     Ok(quest.0)
@@ -431,12 +426,7 @@ pub fn run_debug_statement(world: &World, statement: &str) -> Result<(), String>
             .ok_or_else(|| "no quest fragments resource".to_owned())?;
         fragments.insert_vm_script(Arc::new(script));
     }
-    let effect = Effect::Interpret {
-        script: "DebugExec".to_owned(),
-        function: "Run".to_owned(),
-        args: Vec::new(),
-        resume: None,
-    };
+    let effect = Effect::interpret("DebugExec", "Run", Vec::new());
     apply_fragment_guard_free(world, std::slice::from_ref(&effect), QuestFormId(0), None);
     Ok(())
 }
@@ -493,12 +483,7 @@ fn run_deliveries(world: &World, deliveries: Vec<Delivery>) {
             delivery.script,
             delivery.event
         );
-        let effect = Effect::Interpret {
-            script: delivery.script.clone(),
-            function: delivery.event.to_owned(),
-            args: delivery.args,
-            resume: None,
-        };
+        let effect = Effect::interpret(delivery.script.clone(), delivery.event.to_owned(), delivery.args);
         // The frame-budget gate and the advance flush live in one place
         // (`dispatch`) — this used to be a hand-copied 25-line tail.
         advances.extend(run_papyrus_call(world, owner, Some(&delivery.vmad), effect));

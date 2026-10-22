@@ -664,15 +664,7 @@ impl VulkanContext {
         // images to GENERAL.
         if let Some(ref mut svgf) = self.post.svgf {
             svgf.recreate_on_resize(
-                crate::vulkan::GpuUploadCtx {
-                    device: &self.device,
-                    allocator: self
-                        .allocator
-                        .as_ref()
-                        .expect("allocator missing during resize"),
-                    queue: &self.graphics_queue,
-                    command_pool: self.transfer_pool,
-                },
+                crate::upload_ctx!(self),
                 crate::vulkan::svgf::SvgfInputViews {
                     raw_indirect_views: &raw_indirect_views,
                     motion_views: &motion_views_in,
@@ -715,12 +707,7 @@ impl VulkanContext {
             // failed recreate drops the pass (composite then reads no
             // correction) rather than failing the resize.
             if let Some(ref mut filter) = self.post.shadow_filter {
-                let upload = super::super::GpuUploadCtx {
-                    device: &self.device,
-                    allocator,
-                    queue: &self.graphics_queue,
-                    command_pool: self.transfer_pool,
-                };
+                let upload = crate::upload_ctx!(self);
                 // Two stages so the failure class is known: recreating the
                 // images submits nothing, the layout walk does (#6063).
                 let outcome = filter
@@ -1281,15 +1268,7 @@ impl VulkanContext {
         // `recreate_on_resize` (#1031).
         if let Some(ref mut taa) = self.post.taa {
             taa.recreate_on_resize(
-                crate::vulkan::GpuUploadCtx {
-                    device: &self.device,
-                    allocator: self
-                        .allocator
-                        .as_ref()
-                        .expect("allocator missing during resize"),
-                    queue: &self.graphics_queue,
-                    command_pool: self.transfer_pool,
-                },
+                crate::upload_ctx!(self),
                 crate::vulkan::taa::TaaInputViews {
                     src_color_views: &views.scene_views,
                     motion_views: &views.motion_views,

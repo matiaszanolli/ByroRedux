@@ -40,16 +40,8 @@ pub(crate) fn facing(dx: f32, dz: f32) -> Quat {
 /// target's place) are not modelled: the actor fires from where it stands.
 pub(crate) fn use_weapon_system(world: &World, dt: f32) {
     // Start the volleys the scripts asked for.
-    let asked: Vec<(EntityId, UseWeaponRequest)> = match world.query::<UseWeaponRequest>() {
-        Some(requests) if !requests.is_empty() => requests.iter().map(|(actor, request)| (actor, *request)).collect(),
-        _ => Vec::new(),
-    };
+    let asked = super::take_requests::<UseWeaponRequest>(world);
     if !asked.is_empty() {
-        if let Some(mut requests) = world.query_mut::<UseWeaponRequest>() {
-            for (actor, _) in &asked {
-                requests.remove(*actor);
-            }
-        }
         if let Some(mut runs) = world.query_mut::<UseWeaponRun>() {
             for (actor, request) in asked {
                 log::info!("UseWeapon: actor {actor} uses {:08X} on {:08X} x{}", request.weapon, request.target, request.shots);
@@ -171,14 +163,9 @@ fn end_run(world: &World, actor: EntityId) {
 /// actor's carried stacks are tied to its equipment slots, which a reset would orphan, so an actor is
 /// left as it is.
 pub(crate) fn reset_inventory_system(world: &World, _dt: f32) {
-    let asked: Vec<EntityId> = match world.query::<ResetInventoryRequest>() {
-        Some(requests) if !requests.is_empty() => requests.iter().map(|(entity, _)| entity).collect(),
-        _ => return,
-    };
-    if let Some(mut requests) = world.query_mut::<ResetInventoryRequest>() {
-        for entity in &asked {
-            requests.remove(*entity);
-        }
+    let asked: Vec<EntityId> = super::take_requests::<ResetInventoryRequest>(world).into_iter().map(|(entity, _)| entity).collect();
+    if asked.is_empty() {
+        return;
     }
     let Some(index) = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|index| index.0.clone()) else {
         return;

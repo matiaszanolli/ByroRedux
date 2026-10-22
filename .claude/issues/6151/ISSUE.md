@@ -1,7 +1,6 @@
-# TD2-2026-10-19-06: `AddReputation`, `SetReputation` and `AddReputationExact` each carry the same 12-line "get-or-insert the player's `FactionReputation` standing, branch on the fame/infamy axis" block, one per sibling file
-
-Labels: low,scripting,tech-debt,bug
-Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
+# #6151: TD2-2026-10-19-06: `AddReputation`, `SetReputation` and `AddReputationExact` each carry the same 12-line "get-or-insert the player's `FactionReputation` standing, branch on the fame/infamy axis" block, one per sibling file
+STATE: OPEN
+LABELS: bug,low,tech-debt,scripting
 
 - **Severity**: LOW
 - **Dimension**: 2 - Logic Duplication
@@ -16,3 +15,4 @@ Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
 - [ ] **TESTS**: A regression test / source-scan guard pins this specific fix (or the finding is a pure move/delete covered by existing tests)
 
 _Source: `docs/audits/AUDIT_TECH_DEBT_2026-10-19.md` (HEAD 12677d718). Fix with `/fix-issue <number>`._
+

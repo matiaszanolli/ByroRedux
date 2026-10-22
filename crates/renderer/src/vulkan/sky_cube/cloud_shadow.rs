@@ -11,6 +11,7 @@
 use super::*;
 use crate::shader_constants::CLOUD_SHADOW_MAP_SIZE;
 use crate::vulkan::descriptors::write_storage_buffer;
+use crate::vulkan::descriptors::{sampled_image_info, storage_image_info};
 
 const SPV: &[u8] = include_bytes!("../../../shaders/cloud_shadow.comp.spv");
 
@@ -150,20 +151,12 @@ impl CloudShadow {
             // A clear sky until the first bake in this slot lands, so the
             // first read never sees uninitialised memory.
             self.readbacks[frame].mapped_slice_mut()?[..4].copy_from_slice(&1.0f32.to_ne_bytes());
-            let image_info = [vk::DescriptorImageInfo::default()
-                .image_view(self.maps[frame].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
+            let image_info = [storage_image_info(self.maps[frame].view)];
             let param_info = [vk::DescriptorBufferInfo::default()
                 .buffer(param.buffer)
                 .range(std::mem::size_of::<SkyCubeParams>() as vk::DeviceSize)];
-            let base_info = [vk::DescriptorImageInfo::default()
-                .sampler(noise.sampler)
-                .image_view(noise.base)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let detail_info = [vk::DescriptorImageInfo::default()
-                .sampler(noise.sampler)
-                .image_view(noise.detail)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let base_info = [sampled_image_info(noise.sampler, noise.base)];
+            let detail_info = [sampled_image_info(noise.sampler, noise.detail)];
             let readback_info = [vk::DescriptorBufferInfo::default()
                 .buffer(self.readbacks[frame].buffer)
                 .range(READBACK_BYTES)];

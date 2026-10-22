@@ -70,6 +70,7 @@ use super::reflect::{validate_set_layout, ReflectedShader};
 use crate::vertex::Vertex;
 use anyhow::{Context, Result};
 use ash::vk;
+use crate::vulkan::descriptors::{storage_image_info};
 
 // `pub(crate)` so the scene-descriptor validation in `scene_buffer::buffers`
 // can pin the water shaders against the shared set=1 layout (#1561 STARTUP-
@@ -596,9 +597,7 @@ impl WaterPipeline {
             "accum_views must be per-FIF",
         );
         for (frame, &view) in accum_views.iter().enumerate() {
-            let img_info = [vk::DescriptorImageInfo::default()
-                .image_view(view)
-                .image_layout(vk::ImageLayout::GENERAL)];
+            let img_info = [storage_image_info(view)];
             let write =
                 write_storage_image(self.water_caustic_descriptor_sets[frame], 0, &img_info);
             // SAFETY: descriptor set / binding / type all match the

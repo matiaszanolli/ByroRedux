@@ -61,12 +61,7 @@ pub fn terminal_fragment_system(world: &World, _dt: f32) {
         };
         for (_, script, function) in set.fragments.iter().filter(|(item, _, _)| item.0 == selection.item) {
             log::debug!("terminal {:08X} item {}: {script}.{function}", selection.terminal, selection.item);
-            let effect = Effect::Interpret {
-                script: script.clone(),
-                function: function.clone(),
-                args: vec![VmStored::Form(selection.terminal)],
-                resume: None,
-            };
+            let effect = Effect::interpret(script.clone(), function.clone(), vec![VmStored::Form(selection.terminal)]);
             advances.extend(run_papyrus_call(
                 world,
                 QuestFormId(selection.base),

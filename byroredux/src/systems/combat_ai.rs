@@ -685,10 +685,8 @@ mod tests {
         let body = SRC
             .split_once("fn npc_combat_ai_system_inner(")
             .expect("npc_combat_ai_system_inner definition")
-            .1
-            .split_once("\n#[cfg(test)]\nmod ")
-            .expect("test module marker")
-            .0;
+            .1;
+        let body = byroredux_core::source_scan::production_text(body);
         let last_read = body.rfind("world.query::<").expect("the storage read pass");
         let physics = body
             .find("world.try_resource::<byroredux_physics::PhysicsWorld>()")

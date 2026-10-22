@@ -4,31 +4,24 @@
 //! converted formID" (GECK): the compiled argument is a length-prefixed string. The VM asks the host
 //! which form the name stands for, and this resource answers it from the load order's IDLE records.
 
-use std::collections::HashMap;
-
 use byroredux_core::ecs::{Resource, World};
 use byroredux_plugin::esm::records::EsmIndex;
 
 /// Lowercased IDLE editor ID → its FormID. `NOT_SAVED_BY_DESIGN`: rebuilt from the load order.
 #[derive(Debug, Default)]
-pub struct IdleNames(HashMap<String, u32>);
+pub struct IdleNames(crate::name_table::EditorIdTable<u32>);
 
 impl Resource for IdleNames {}
 
 impl IdleNames {
     pub fn from_index(index: &EsmIndex) -> Self {
-        Self(
-            index
-                .idle_animations
-                .values()
-                .filter(|idle| !idle.editor_id.is_empty())
-                .map(|idle| (idle.editor_id.to_ascii_lowercase(), idle.form_id))
-                .collect(),
-        )
+        Self(crate::name_table::EditorIdTable::from_records(
+            index.idle_animations.values().map(|idle| (idle.editor_id.as_str(), idle.form_id)),
+        ))
     }
 
     pub fn resolve(&self, name: &str) -> Option<u32> {
-        self.0.get(&name.to_ascii_lowercase()).copied()
+        self.0.get(name).copied()
     }
 }
 

@@ -69,6 +69,7 @@ use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
+use crate::vulkan::descriptors::{general_sampled_image_info, sampled_image_info, storage_image_info};
 
 // #918 / REN-D10-NEW-04 — SVGF's read-previous / write-current ping-pong
 // silently aliases to the same slot if the constant is ever lowered to 1
@@ -754,46 +755,18 @@ impl SvgfPipeline {
         for f in 0..MAX_FRAMES_IN_FLIGHT {
             let prev = (f + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
 
-            let curr_indirect = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(raw_indirect_views[f])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let motion = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(motion_views[f])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let curr_mid = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(mesh_id_views[f])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let prev_mid = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(mesh_id_views[prev])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let curr_indirect = [sampled_image_info(self.point_sampler, raw_indirect_views[f])];
+            let motion = [sampled_image_info(self.point_sampler, motion_views[f])];
+            let curr_mid = [sampled_image_info(self.point_sampler, mesh_id_views[f])];
+            let prev_mid = [sampled_image_info(self.point_sampler, mesh_id_views[prev])];
             // #650 / SH-5 — curr / prev normal taps for the bilinear
             // consistency loop. Same ping-pong source as mesh_id.
-            let curr_norm = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(normal_views[f])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let prev_norm = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(normal_views[prev])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let prev_ind = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(self.indirect_history[prev].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let prev_mom = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(self.moments_history[prev].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let out_ind = [vk::DescriptorImageInfo::default()
-                .image_view(self.indirect_history[f].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let out_mom = [vk::DescriptorImageInfo::default()
-                .image_view(self.moments_history[f].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
+            let curr_norm = [sampled_image_info(self.point_sampler, normal_views[f])];
+            let prev_norm = [sampled_image_info(self.point_sampler, normal_views[prev])];
+            let prev_ind = [general_sampled_image_info(self.point_sampler, self.indirect_history[prev].view)];
+            let prev_mom = [general_sampled_image_info(self.point_sampler, self.moments_history[prev].view)];
+            let out_ind = [storage_image_info(self.indirect_history[f].view)];
+            let out_mom = [storage_image_info(self.moments_history[f].view)];
             let params = [vk::DescriptorBufferInfo {
                 buffer: self.param_buffers[f].buffer,
                 offset: 0,
@@ -938,29 +911,12 @@ impl SvgfPipeline {
                 };
                 let out_color_view = self.atrous_color[f * 2 + atrous_dst_pp(k)].view;
 
-                let in_color = [vk::DescriptorImageInfo::default()
-                    .sampler(self.point_sampler)
-                    .image_view(in_color_view)
-                    .image_layout(vk::ImageLayout::GENERAL)];
-                let moments = [vk::DescriptorImageInfo::default()
-                    .sampler(self.point_sampler)
-                    .image_view(self.moments_history[f].view)
-                    .image_layout(vk::ImageLayout::GENERAL)];
-                let normal = [vk::DescriptorImageInfo::default()
-                    .sampler(self.point_sampler)
-                    .image_view(normal_views[f])
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-                let mesh_id = [vk::DescriptorImageInfo::default()
-                    .sampler(self.point_sampler)
-                    .image_view(mesh_id_views[f])
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-                let out_color = [vk::DescriptorImageInfo::default()
-                    .image_view(out_color_view)
-                    .image_layout(vk::ImageLayout::GENERAL)];
-                let albedo = [vk::DescriptorImageInfo::default()
-                    .sampler(self.point_sampler)
-                    .image_view(albedo_views[f])
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let in_color = [general_sampled_image_info(self.point_sampler, in_color_view)];
+                let moments = [general_sampled_image_info(self.point_sampler, self.moments_history[f].view)];
+                let normal = [sampled_image_info(self.point_sampler, normal_views[f])];
+                let mesh_id = [sampled_image_info(self.point_sampler, mesh_id_views[f])];
+                let out_color = [storage_image_info(out_color_view)];
+                let albedo = [sampled_image_info(self.point_sampler, albedo_views[f])];
                 let depth = [vk::DescriptorImageInfo::default()
                     .sampler(self.point_sampler)
                     .image_view(depth_view)

@@ -1,7 +1,6 @@
-# TD2-2026-10-19-03: `vk::DescriptorImageInfo::default().sampler(..).image_view(..).image_layout(..)` is hand-spelled 92 times across 15 renderer files, after #5593 consolidated everything around it
-
-Labels: low,renderer,vulkan,tech-debt,bug
-Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
+# #6148: TD2-2026-10-19-03: `vk::DescriptorImageInfo::default().sampler(..).image_view(..).image_layout(..)` is hand-spelled 92 times across 15 renderer files, after #5593 consolidated everything around it
+STATE: OPEN
+LABELS: bug,renderer,low,vulkan,tech-debt
 
 - **Severity**: LOW
 - **Dimension**: 2 - Logic Duplication
@@ -17,3 +16,4 @@ Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
 - [ ] **TESTS**: A regression test / source-scan guard pins this specific fix (or the finding is a pure move/delete covered by existing tests)
 
 _Source: `docs/audits/AUDIT_TECH_DEBT_2026-10-19.md` (HEAD 12677d718). Fix with `/fix-issue <number>`._
+

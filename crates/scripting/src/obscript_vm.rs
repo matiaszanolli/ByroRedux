@@ -39,6 +39,7 @@
 //! (`crate::obscript_quests`) supplies the real quest-state host.
 
 use byroredux_plugin::esm::records::{ScriptRecord, ScriptRef};
+use crate::obscript::opcode;
 
 /// Synthetic host command for global reads — real global accesses arrive
 /// as `' G<n>'` escapes, never as bytecode command ids.
@@ -64,9 +65,6 @@ pub const CMD_GET_REMOTE_VARIABLE: u16 = u16::MAX - 3;
 /// value (already narrowed for a `short` / `long`).
 pub const CMD_SET_REMOTE_VARIABLE: u16 = u16::MAX - 4;
 
-/// The `Set` statement opcode, reported as the declined id for an
-/// unmodeled remote-variable assignment.
-const OP_SET: u16 = 0x15;
 
 /// Block type of `Begin GameMode` in the compiled block enum (empirical:
 /// every quest-script GameMode block carries `0x0000`).
@@ -313,7 +311,7 @@ impl<'a> ObScriptProgram<'a> {
         let mut blocks = Vec::new();
         let mut offset = 0usize;
         while let Some(op) = byroredux_core::bytes::le_u16_at(bytes, offset) {
-            if op == 0x10 {
+            if op == opcode::BEGIN {
                 let (payload_start, payload_end) = payload_span(bytes, offset)?;
                 let block_type = byroredux_core::bytes::le_u16_at(bytes, payload_start)?;
                 // `[block_type u16][body_len u32]`, then — for a block written
@@ -334,7 +332,7 @@ impl<'a> ObScriptProgram<'a> {
                 blocks.push(BlockInfo { block_type, filter, body: payload_end });
                 offset = vm.skip_to_block_end(payload_end)?;
             } else {
-                offset = next_statement(bytes, offset, op)?;
+                offset = next_statement(bytes, offset)?;
             }
         }
         Some(blocks)
@@ -386,7 +384,7 @@ impl<'a> ObScriptProgram<'a> {
                 // only scripts, or a later block type) — nothing to run.
                 return BlockOutcome::Completed;
             };
-            if op == 0x10 {
+            if op == opcode::BEGIN {
                 let Some((payload_start, payload_end)) = payload_span(bytes, offset) else {
                     return BlockOutcome::Malformed(offset);
                 };
@@ -407,7 +405,7 @@ impl<'a> ObScriptProgram<'a> {
                 offset = after;
                 continue;
             }
-            offset = match next_statement(bytes, offset, op) {
+            offset = match next_statement(bytes, offset) {
                 Some(o) => o,
                 None => return BlockOutcome::Malformed(offset),
             };
@@ -430,29 +428,20 @@ struct Vm<'a> {
     returned: bool,
 }
 
-/// Offset of the statement following the one at `offset`.
-fn next_statement(bytes: &[u8], offset: usize, op: u16) -> Option<usize> {
-    if op == 0x1c {
-        // [1c][ref u16][cmd u16][len u16][args]
-        let end = offset + 8 + byroredux_core::bytes::le_u16_at(bytes, offset + 6)? as usize;
-        return (end <= bytes.len()).then_some(end);
-    }
-    let len = byroredux_core::bytes::le_u16_at(bytes, offset + 2)? as usize;
-    let end = offset + 4 + len;
-    (end <= bytes.len()).then_some(end)
+/// Offset of the statement following the one at `offset` (the shared frame, #6147).
+fn next_statement(bytes: &[u8], offset: usize) -> Option<usize> {
+    crate::obscript::statement_frame(bytes, offset).ok().map(|frame| frame.next)
 }
 
+/// The payload of the statement at `offset`, bounded by the compiled bytes.
 fn payload_span(bytes: &[u8], offset: usize) -> Option<(usize, usize)> {
-    let len = byroredux_core::bytes::le_u16_at(bytes, offset + 2)? as usize;
-    let start = offset + 4;
-    let end = start.checked_add(len)?;
-    (end <= bytes.len()).then_some((start, end))
+    crate::obscript::statement_frame(bytes, offset).ok().map(|frame| (frame.payload.start, frame.payload.end))
 }
 
 fn is_flow_op(op: u16) -> bool {
     matches!(
         op,
-        0x10 | 0x11 | 0x12 | 0x13 | 0x14 | 0x16 | 0x17 | 0x18 | 0x19 | 0x1d | 0x1e
+        opcode::BEGIN | opcode::END | opcode::SHORT | opcode::LONG | opcode::FLOAT | opcode::IF | opcode::ELSE | opcode::ELSE_IF | opcode::END_IF | opcode::SCRIPT_NAME | opcode::RETURN
     )
 }
 
@@ -476,12 +465,12 @@ impl<'a> Vm<'a> {
                 return BlockOutcome::Malformed(offset);
             };
             match op {
-                0x11 => return BlockOutcome::Completed,
-                0x1e => {
+                opcode::END => return BlockOutcome::Completed,
+                opcode::RETURN => {
                     self.returned = true;
                     return BlockOutcome::Returned;
                 }
-                0x16 => {
+                opcode::IF => {
                     let Some(after) = self.exec_if_chain(offset, 1) else {
                         return BlockOutcome::Malformed(offset);
                     };
@@ -499,15 +488,10 @@ impl<'a> Vm<'a> {
 
     /// Run (`run`) or step over one statement. Returns the next offset.
     fn run_or_skip_statement(&mut self, op: u16, offset: usize, run: bool) -> Option<usize> {
-        if op == 0x1c {
+        if op == opcode::REFERENCE_FUNCTION {
             let caller_ref = byroredux_core::bytes::le_u16_at(self.bytes, offset + 2)?;
-            let cmd = byroredux_core::bytes::le_u16_at(self.bytes, offset + 4)?;
-            let len = byroredux_core::bytes::le_u16_at(self.bytes, offset + 6)? as usize;
-            let args_start = offset + 8;
-            let args_end = args_start.checked_add(len)?;
-            if args_end > self.bytes.len() {
-                return None;
-            }
+            let frame = crate::obscript::statement_frame(self.bytes, offset).ok()?;
+            let (cmd, args_start, args_end) = (frame.opcode, frame.payload.start, frame.payload.end);
             if run {
                 // An explicit caller that does not resolve (a reference
                 // variable the VM never assigns, or an out-of-range slot)
@@ -530,7 +514,7 @@ impl<'a> Vm<'a> {
         let (start, end) = payload_span(self.bytes, offset)?;
         if run {
             match op {
-                0x15 => self.exec_set(start, end),
+                opcode::SET_TO => self.exec_set(start, end),
                 CMD_MESSAGE | CMD_MESSAGE_BOX => match self.decode_message(start, end, op) {
                     Some(message) => self.host.message(message),
                     // Fallout's `ShowMessage <MESG> [values]` shares `0x1059` with Oblivion's
@@ -573,7 +557,7 @@ impl<'a> Vm<'a> {
         loop {
             let op = byroredux_core::bytes::le_u16_at(self.bytes, offset)?;
             match op {
-                0x16 | 0x18 => {
+                opcode::IF | opcode::ELSE_IF => {
                     // Arm header: [op][len][u16][u16 expr_len][expr].
                     // #6016 — the condition must lie inside this statement's
                     // declared payload, like every other payload read (#5655);
@@ -587,19 +571,19 @@ impl<'a> Vm<'a> {
                         return None;
                     }
                     let taken = self.eval_expr(cond_start, cond_end) != 0.0;
-                    let after = next_statement(self.bytes, offset, op)?;
+                    let after = next_statement(self.bytes, offset)?;
                     if taken {
                         return self.run_arm_body(after, depth);
                     }
                     offset = self.skip_to_next_arm(after)?;
                 }
-                0x17 => {
+                opcode::ELSE => {
                     // Else — its body is the arm that runs when nothing
                     // before it matched.
-                    let after = next_statement(self.bytes, offset, op)?;
+                    let after = next_statement(self.bytes, offset)?;
                     return self.run_arm_body(after, depth);
                 }
-                0x19 => return next_statement(self.bytes, offset, op),
+                opcode::END_IF => return next_statement(self.bytes, offset),
                 _ => return None,
             }
         }
@@ -617,16 +601,16 @@ impl<'a> Vm<'a> {
             }
             let op = byroredux_core::bytes::le_u16_at(self.bytes, offset)?;
             match op {
-                0x19 => return next_statement(self.bytes, offset, op),
-                0x17 | 0x18 => return self.skip_to_chain_end(offset),
-                0x16 => {
+                opcode::END_IF => return next_statement(self.bytes, offset),
+                opcode::ELSE | opcode::ELSE_IF => return self.skip_to_chain_end(offset),
+                opcode::IF => {
                     offset = self.exec_if_chain(offset, depth + 1)?;
                 }
-                0x1e => {
+                opcode::RETURN => {
                     self.returned = true;
-                    return self.skip_to_chain_end(next_statement(self.bytes, offset, op)?);
+                    return self.skip_to_chain_end(next_statement(self.bytes, offset)?);
                 }
-                0x11 => return None, // End cannot appear inside an arm
+                opcode::END => return None, // End cannot appear inside an arm
                 _ => offset = self.run_or_skip_statement(op, offset, true)?,
             }
         }
@@ -639,9 +623,9 @@ impl<'a> Vm<'a> {
         loop {
             let op = byroredux_core::bytes::le_u16_at(self.bytes, offset)?;
             match op {
-                0x16 => depth += 1,
-                0x17 | 0x18 if depth == 0 => return Some(offset),
-                0x19 => {
+                opcode::IF => depth += 1,
+                opcode::ELSE | opcode::ELSE_IF if depth == 0 => return Some(offset),
+                opcode::END_IF => {
                     if depth == 0 {
                         return Some(offset);
                     }
@@ -660,10 +644,10 @@ impl<'a> Vm<'a> {
         loop {
             let op = byroredux_core::bytes::le_u16_at(self.bytes, offset)?;
             match op {
-                0x16 => depth += 1,
-                0x19 => {
+                opcode::IF => depth += 1,
+                opcode::END_IF => {
                     if depth == 0 {
-                        return next_statement(self.bytes, offset, op);
+                        return next_statement(self.bytes, offset);
                     }
                     depth -= 1;
                 }
@@ -679,11 +663,11 @@ impl<'a> Vm<'a> {
         loop {
             let op = byroredux_core::bytes::le_u16_at(self.bytes, offset)?;
             match op {
-                0x10 => depth += 1,
-                0x11 => {
+                opcode::BEGIN => depth += 1,
+                opcode::END => {
                     depth -= 1;
                     if depth == 0 {
-                        return next_statement(self.bytes, offset, op);
+                        return next_statement(self.bytes, offset);
                     }
                 }
                 _ => {}
@@ -695,7 +679,7 @@ impl<'a> Vm<'a> {
     /// `set <ref>.var to expr`: `[r ref u16][s|f ordinal u16][u16 expr_len][expr]`.
     fn exec_remote_set(&mut self, start: usize, end: usize) {
         let declined = |vm: &mut Self| {
-            vm.host.call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(OP_SET))], None);
+            vm.host.call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(opcode::SET_TO))], None);
         };
         let (Some(ref_index), Some(&kind), Some(ordinal), Some(expr_len)) = (
             byroredux_core::bytes::le_u16_at(self.bytes, start + 1),

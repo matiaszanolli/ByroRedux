@@ -62,7 +62,6 @@ use byroredux_core::ecs::{
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
 use byroredux_nif::import::ImportedMaterial;
-use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{
     MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS, RenderDebugMode, SceneMeshUpload,
     VulkanContext, box_vertices_colored, uv_sphere,

@@ -29,6 +29,7 @@ use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
+use crate::vulkan::descriptors::{sampled_image_info, storage_image_info};
 
 mod cloud_shadow;
 mod filter;
@@ -402,9 +403,7 @@ impl SkyCubePipeline {
 
         for i in 0..max_frames {
             // The bake writes through the `TYPE_2D_ARRAY` view, in GENERAL.
-            let image_info = [vk::DescriptorImageInfo::default()
-                .image_view(partial.cubes[i].view)
-                .image_layout(vk::ImageLayout::GENERAL)];
+            let image_info = [storage_image_info(partial.cubes[i].view)];
             let param_info = [vk::DescriptorBufferInfo {
                 buffer: partial.param_buffers[i].buffer,
                 offset: 0,
@@ -413,14 +412,8 @@ impl SkyCubePipeline {
             // The shared cloud density volumes (`CloudNoiseVolumes`). Not
             // owned here: composite binds the same views, and the volumes
             // must outlive both pipelines.
-            let base_info = [vk::DescriptorImageInfo::default()
-                .sampler(noise.sampler)
-                .image_view(noise.base)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let detail_info = [vk::DescriptorImageInfo::default()
-                .sampler(noise.sampler)
-                .image_view(noise.detail)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let base_info = [sampled_image_info(noise.sampler, noise.base)];
+            let detail_info = [sampled_image_info(noise.sampler, noise.detail)];
             let set = partial.descriptor_sets[i];
             let writes = [
                 write_storage_image(set, 0, &image_info),

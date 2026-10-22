@@ -1129,14 +1129,7 @@ pub fn quest_alias_readiness_stage_system(world: &World, _dt: f32) {
             });
         }
     }
-    if emitted.is_empty() {
-        return;
-    }
-    let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world)
-    else {
-        return;
-    };
-    push_quest_stage_advances(world, player, emitted);
+    crate::fragment::flush_advances(world, emitted);
 }
 
 /// Refresh the static startup list from the merged plugin index. Runtime quest

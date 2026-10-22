@@ -1,7 +1,6 @@
-# TD2-2026-10-19-04: The weak `#[cfg(test)]` cut is back at 9 sites the guard cannot see, and ~11 more re-spell `production_text` inline (prior-partial: TD2-2026-10-15-23, closed #5824) (regression of #5824)
-
-Labels: low,tech-debt,bug
-Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
+# #6149: TD2-2026-10-19-04: The weak `#[cfg(test)]` cut is back at 9 sites the guard cannot see, and ~11 more re-spell `production_text` inline (prior-partial: TD2-2026-10-15-23, closed #5824) (regression of #5824)
+STATE: OPEN
+LABELS: bug,low,tech-debt
 
 - **Severity**: LOW (second recurrence, carried)
 - **Dimension**: 2 - Logic Duplication
@@ -16,3 +15,4 @@ Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
 - [ ] **TESTS**: A regression test / source-scan guard pins this specific fix (or the finding is a pure move/delete covered by existing tests)
 
 _Source: `docs/audits/AUDIT_TECH_DEBT_2026-10-19.md` (HEAD 12677d718). Fix with `/fix-issue <number>`._
+

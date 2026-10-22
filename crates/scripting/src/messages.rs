@@ -42,7 +42,7 @@ pub struct MessageCatalog {
     /// Base / location FormID → `FULL` name.
     display_names: HashMap<u32, String>,
     /// Lowercased `GLOB` editor ID → (FormID, float-typed).
-    globals: HashMap<String, (u32, bool)>,
+    globals: crate::name_table::EditorIdTable<(u32, bool)>,
 }
 
 impl Resource for MessageCatalog {}
@@ -82,16 +82,9 @@ impl MessageCatalog {
                 display_names.insert(location.form_id, location.full_name.clone());
             }
         }
-        let globals = index
-            .globals
-            .values()
-            .map(|global| {
-                (
-                    global.editor_id.to_ascii_lowercase(),
-                    (global.form_id, matches!(global.value, SettingValue::Float(_))),
-                )
-            })
-            .collect();
+        let globals = crate::name_table::EditorIdTable::from_records(index.globals.values().map(|global| {
+            (global.editor_id.as_str(), (global.form_id, matches!(global.value, SettingValue::Float(_))))
+        }));
         Self {
             messages,
             display_names,
@@ -432,7 +425,7 @@ fn global_text(world: &World, name: &str) -> Option<String> {
     let (form_id, float) = world
         .try_resource::<MessageCatalog>()?
         .globals
-        .get(&name.to_ascii_lowercase())
+        .get(name)
         .copied()?;
     let value = world
         .try_resource::<crate::Globals>()

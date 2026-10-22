@@ -70,17 +70,12 @@ pub(crate) fn flee_system(world: &World, dt: f32) {
 }
 
 fn start_flights(world: &World) {
-    let asked: Vec<EntityId> = match world.query::<FleeRequest>() {
-        Some(requests) if !requests.is_empty() => requests.iter().map(|(actor, _)| actor).collect(),
-        _ => return,
-    };
-    if let Some(mut requests) = world.query_mut::<FleeRequest>() {
-        for actor in &asked {
-            requests.remove(*actor);
-        }
+    let asked = super::take_requests::<FleeRequest>(world);
+    if asked.is_empty() {
+        return;
     }
     let reach = range(world);
-    for actor in asked {
+    for (actor, _) in asked {
         let Some(at) = world.get::<GlobalTransform>(actor).map(|t| t.translation) else { continue };
         if world.has::<Dead>(actor) {
             continue;
@@ -105,8 +100,7 @@ fn start_flights(world: &World) {
 
 /// The horizontal point `FLEE_LEG` away from `threat`, level with `at`.
 pub(crate) fn flight_target(at: Vec3, threat: Vec3) -> Vec3 {
-    let away = Vec3::new(at.x - threat.x, 0.0, at.z - threat.z).normalize_or_zero();
-    let away = if away == Vec3::ZERO { Vec3::X } else { away };
+    let away = super::level_away(threat, at);
     Vec3::new(at.x + away.x * FLEE_LEG, at.y, at.z + away.z * FLEE_LEG)
 }
 

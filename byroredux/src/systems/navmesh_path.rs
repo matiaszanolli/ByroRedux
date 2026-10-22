@@ -998,11 +998,7 @@ mod tests {
     /// source.
     #[test]
     fn walk_movers_share_one_pass_two_write_back() {
-        let production = |src: &'static str| {
-            src.split("#[cfg(test)]\nmod tests")
-                .next()
-                .expect("split always yields a first segment")
-        };
+        let production = byroredux_core::source_scan::production_text_or_whole;
         for (label, src) in [
             ("wander.rs", include_str!("wander.rs")),
             ("travel.rs", include_str!("travel.rs")),

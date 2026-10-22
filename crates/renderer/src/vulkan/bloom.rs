@@ -68,6 +68,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
+use crate::vulkan::descriptors::{general_sampled_image_info, sampled_image_info, storage_image_info};
 
 pub(super) const BLOOM_DOWNSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_downsample.comp.spv");
 pub(super) const BLOOM_UPSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_upsample.comp.spv");
@@ -660,10 +661,7 @@ impl BloomPipeline {
         // output so it cannot move to the pre-barrier upload phase.
         let f = &mut self.frames[frame];
 
-        let scene_info = [vk::DescriptorImageInfo::default()
-            .sampler(self.sampler)
-            .image_view(input_view)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let scene_info = [sampled_image_info(self.sampler, input_view)];
         let scene_write = write_combined_image_sampler(f.down_descriptor_sets[0], 0, &scene_info);
         device.update_descriptor_sets(&[scene_write], &[]);
 
@@ -823,9 +821,7 @@ impl BloomPipeline {
         // not stable across `BloomPipeline` construction. Same reasoning
         // as `dispatch`'s per-frame rewrite of `down_descriptor_sets[0]`
         // binding 0.
-        let scene_info = [vk::DescriptorImageInfo::default()
-            .image_view(scene_view)
-            .image_layout(vk::ImageLayout::GENERAL)];
+        let scene_info = [storage_image_info(scene_view)];
         let scene_write = write_storage_image(f.apply_descriptor_set, 0, &scene_info);
         // SAFETY: `f.apply_descriptor_set` was allocated at construction and
         // is not in use by any pending command buffer at this point in the
@@ -1076,9 +1072,7 @@ impl BloomFrame {
         // down[0] binding 0, which is the scene HDR — written each
         // frame from `dispatch`).
         for i in 0..BLOOM_MIP_COUNT {
-            let dst_info = [vk::DescriptorImageInfo::default()
-                .image_view(down_mips[i].gpu.view)
-                .image_layout(vk::ImageLayout::GENERAL)];
+            let dst_info = [storage_image_info(down_mips[i].gpu.view)];
             let ubo_info = [vk::DescriptorBufferInfo {
                 buffer: down_param_buffers[i].buffer,
                 offset: 0,
@@ -1089,10 +1083,7 @@ impl BloomFrame {
             // known. For i >= 1, src is down_mips[i-1].
             let mut writes: Vec<vk::WriteDescriptorSet> = Vec::with_capacity(3);
             let src_info = if i >= 1 {
-                Some([vk::DescriptorImageInfo::default()
-                    .sampler(sampler)
-                    .image_view(down_mips[i - 1].gpu.view)
-                    .image_layout(vk::ImageLayout::GENERAL)])
+                Some([general_sampled_image_info(sampler, down_mips[i - 1].gpu.view)])
             } else {
                 None
             };
@@ -1119,17 +1110,9 @@ impl BloomFrame {
             } else {
                 down_mips[BLOOM_MIP_COUNT - 1].gpu.view
             };
-            let smaller_info = [vk::DescriptorImageInfo::default()
-                .sampler(sampler)
-                .image_view(smaller_view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let same_info = [vk::DescriptorImageInfo::default()
-                .sampler(sampler)
-                .image_view(down_mips[i].gpu.view)
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let dst_info = [vk::DescriptorImageInfo::default()
-                .image_view(up_mips[i].gpu.view)
-                .image_layout(vk::ImageLayout::GENERAL)];
+            let smaller_info = [general_sampled_image_info(sampler, smaller_view)];
+            let same_info = [general_sampled_image_info(sampler, down_mips[i].gpu.view)];
+            let dst_info = [storage_image_info(up_mips[i].gpu.view)];
             let ubo_info = [vk::DescriptorBufferInfo {
                 buffer: up_param_buffers[i].buffer,
                 offset: 0,
@@ -1163,10 +1146,7 @@ impl BloomFrame {
                 )
                 .context("bloom apply descriptor set")?[0]
         };
-        let bloom_result_info = [vk::DescriptorImageInfo::default()
-            .sampler(sampler)
-            .image_view(up_mips[0].gpu.view)
-            .image_layout(vk::ImageLayout::GENERAL)];
+        let bloom_result_info = [general_sampled_image_info(sampler, up_mips[0].gpu.view)];
         let apply_write = write_combined_image_sampler(apply_descriptor_set, 1, &bloom_result_info);
         // SAFETY: the written set and `up_mips[0]`'s view are both freshly
         // created and not yet bound by any in-flight frame.

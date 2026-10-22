@@ -25,19 +25,7 @@ use crate::events::{ActivateEvent, OnCellLoadEvent};
 use crate::obscript::{decode_exact_load_order_expression, ObscriptDialect};
 use crate::vm_state::ScriptVariables;
 
-const BEGIN: u16 = 0x10;
-const END: u16 = 0x11;
-const SHORT: u16 = 0x12;
-const LONG: u16 = 0x13;
-const FLOAT: u16 = 0x14;
-const SET_TO: u16 = 0x15;
-const IF: u16 = 0x16;
-const ELSE: u16 = 0x17;
-const ELSE_IF: u16 = 0x18;
-const END_IF: u16 = 0x19;
-const REFERENCE_FUNCTION: u16 = 0x1c;
-const SCRIPT_NAME: u16 = 0x1d;
-const REF: u16 = 0x1f;
+use crate::obscript::opcode::{BEGIN, ELSE, ELSE_IF, END, END_IF, FLOAT, IF, LONG, REF, SCRIPT_NAME, SET_TO, SHORT};
 const MAX_LEGACY_OBSCRIPT_NESTING: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -329,19 +317,8 @@ fn parse_compiled_condition(
 }
 
 fn compiled_line(bytes: &[u8], offset: usize) -> Option<(u16, &[u8], usize)> {
-    let opcode = byroredux_core::bytes::le_u16_at(bytes, offset)?;
-    let (actual_opcode, length_offset, payload_offset) = if opcode == REFERENCE_FUNCTION {
-        (byroredux_core::bytes::le_u16_at(bytes, offset + 4)?, offset + 6, offset + 8)
-    } else {
-        (opcode, offset + 2, offset + 4)
-    };
-    let payload_len = usize::from(byroredux_core::bytes::le_u16_at(bytes, length_offset)?);
-    let payload_end = payload_offset.checked_add(payload_len)?;
-    Some((
-        actual_opcode,
-        bytes.get(payload_offset..payload_end)?,
-        payload_end,
-    ))
+    let frame = crate::obscript::statement_frame(bytes, offset).ok()?;
+    Some((frame.opcode, &bytes[frame.payload], frame.next))
 }
 
 fn compiled_event(opcode: u16) -> Option<LegacyObscriptEvent> {

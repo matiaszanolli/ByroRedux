@@ -11,6 +11,7 @@ use super::ray_budget::AdaptiveRayBudget;
 use super::*;
 use anyhow::Result;
 use ash::vk;
+use crate::vulkan::descriptors::{sampled_image_info};
 
 impl super::buffers::SceneBuffers {
     /// Write the SSAO texture into the scene descriptor set for a given frame.
@@ -21,10 +22,7 @@ impl super::buffers::SceneBuffers {
         ao_image_view: vk::ImageView,
         ao_sampler: vk::Sampler,
     ) {
-        let image_info = [vk::DescriptorImageInfo::default()
-            .sampler(ao_sampler)
-            .image_view(ao_image_view)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let image_info = [sampled_image_info(ao_sampler, ao_image_view)];
         let write = write_combined_image_sampler(self.descriptor_sets[frame_index], 7, &image_info);
         unsafe {
             // SAFETY: `device` is live; `descriptor_sets[frame_index]` is device-allocated
@@ -51,20 +49,14 @@ impl super::buffers::SceneBuffers {
         irradiance_buffer: vk::Buffer,
         cloud_shadow: (vk::ImageView, vk::Sampler),
     ) {
-        let image_info = [vk::DescriptorImageInfo::default()
-            .sampler(sampler)
-            .image_view(cube_view)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let image_info = [sampled_image_info(sampler, cube_view)];
         let write =
             write_combined_image_sampler(self.descriptor_sets[frame_index], 20, &image_info);
         let sh_info = [vk::DescriptorBufferInfo::default()
             .buffer(irradiance_buffer)
             .range(crate::vulkan::sky_cube::SKY_IRRADIANCE_BYTES)];
         let sh_write = write_storage_buffer(self.descriptor_sets[frame_index], 21, &sh_info);
-        let shadow_info = [vk::DescriptorImageInfo::default()
-            .sampler(cloud_shadow.1)
-            .image_view(cloud_shadow.0)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let shadow_info = [sampled_image_info(cloud_shadow.1, cloud_shadow.0)];
         let shadow_write =
             write_combined_image_sampler(self.descriptor_sets[frame_index], 24, &shadow_info);
         unsafe {
@@ -88,10 +80,7 @@ impl super::buffers::SceneBuffers {
         depth_history_view: vk::ImageView,
         depth_history_sampler: vk::Sampler,
     ) {
-        let image_info = [vk::DescriptorImageInfo::default()
-            .sampler(depth_history_sampler)
-            .image_view(depth_history_view)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let image_info = [sampled_image_info(depth_history_sampler, depth_history_view)];
         let write =
             write_combined_image_sampler(self.descriptor_sets[frame_index], 15, &image_info);
         unsafe {

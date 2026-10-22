@@ -245,10 +245,10 @@ pub fn hit_event_system(world: &World, _dt: f32) {
             .as_ref()
             .and_then(|q| q.get(hit.aggressor))
             .map_or(VmStored::None, |weapon| VmStored::Form(weapon.base_form_id));
-        let effect = Effect::Interpret {
-            script: registration.script.clone(),
-            function: "OnHit".to_owned(),
-            args: vec![
+        let effect = Effect::interpret(
+            registration.script.clone(),
+            "OnHit".to_owned(),
+            vec![
                 form(victim),
                 form(hit.aggressor),
                 source,
@@ -261,8 +261,7 @@ pub fn hit_event_system(world: &World, _dt: f32) {
                 // The material the hit landed on is not modelled.
                 VmStored::Str(String::new()),
             ],
-            resume: None,
-        };
+        );
         log::debug!("{:08X}: {}.OnHit", registration.owner, registration.script);
         let effect = if defer {
             match super::budget::defer(world, owner, vmad.as_ref(), vec![effect]) {

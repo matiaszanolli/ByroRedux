@@ -24,7 +24,6 @@ use byroredux_plugin::esm;
 use byroredux_plugin::esm::cell::TextureSet;
 use byroredux_renderer::shader_constants::{TERRAIN_SPLAT_LANES_PER_WORD, TERRAIN_SPLAT_LAYERS};
 use byroredux_renderer::vulkan::scene_buffer::GpuTerrainTile;
-use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{
@@ -1173,12 +1172,7 @@ pub(super) fn spawn_terrain_mesh(
         release_splat_layer_textures(ctx, &splat_tex_indices);
         return None;
     }
-    let upload_ctx = GpuUploadCtx {
-        device: &ctx.device,
-        allocator: ctx.allocator.as_ref().unwrap(), // non-None checked just above
-        queue: &ctx.graphics_queue,
-        command_pool: ctx.transfer_pool,
-    };
+    let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
         upload_ctx,
         &vertices,

@@ -383,14 +383,8 @@ impl<'a> MeshBuilder<'a> {
     }
 
     pub(super) fn upload(&mut self, verts: &[byroredux_renderer::Vertex], idxs: &[u32]) -> MeshHandle {
-        let alloc = self.ctx.allocator.as_ref().unwrap();
         let rt = self.ctx.device_caps.ray_query_supported;
-        let upload_ctx = GpuUploadCtx {
-            device: &self.ctx.device,
-            allocator: alloc,
-            queue: &self.ctx.graphics_queue,
-            command_pool: self.ctx.transfer_pool,
-        };
+        let upload_ctx = byroredux_renderer::upload_ctx!(self.ctx);
         // Cornell geometry participates in ordinary scene rendering, even
         // when a real NIF is loaded beside it. Register it in the global
         // geometry pool as well as retaining its per-mesh buffers for BLAS.
@@ -418,7 +412,6 @@ impl<'a> MeshBuilder<'a> {
         verts: &[byroredux_renderer::Vertex],
         idxs: &[u32],
     ) -> (MeshHandle, MeshHandle) {
-        let alloc = self.ctx.allocator.as_ref().unwrap();
         let rt = self.ctx.device_caps.ray_query_supported;
         let probe = SceneMeshUpload {
             vertices: verts,
@@ -431,12 +424,7 @@ impl<'a> MeshBuilder<'a> {
         let first = match matching {
             Some(handle) => handle,
             None => {
-                let upload_ctx = GpuUploadCtx {
-                    device: &self.ctx.device,
-                    allocator: alloc,
-                    queue: &self.ctx.graphics_queue,
-                    command_pool: self.ctx.transfer_pool,
-                };
+                let upload_ctx = byroredux_renderer::upload_ctx!(self.ctx);
                 let handle = self
                     .ctx
                     .mesh_registry

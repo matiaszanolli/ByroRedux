@@ -105,6 +105,23 @@ pub(crate) fn voice_path_candidates(
     if quest_edid.is_empty() || topic_edid.is_empty() {
         return Vec::new();
     }
+    vec![truncated_voice_path(plugin, voice_type, quest_edid, topic_edid, local_id, response, "ogg")]
+}
+
+/// The FO3/FNV-shaped voice file path both `.ogg` and `.fuz` builders share (#6156):
+/// `sound\voice\<plugin>\<voice type>\<quest>_<topic>_<local id 8-hex>_<response>.<ext>`,
+/// EDIDs lowercased and, when quest + topic run over [`VOICE_NAME_CHARS`], cut to
+/// [`VOICE_QUEST_CHARS`] of quest and the rest of topic (#5395, #5521). The callers own
+/// their empty-EDID guard and extension.
+fn truncated_voice_path(
+    plugin: &str,
+    voice_type: &str,
+    quest_edid: &str,
+    topic_edid: &str,
+    local_id: u32,
+    response: u8,
+    extension: &str,
+) -> String {
     let quest = quest_edid.to_ascii_lowercase();
     let topic = topic_edid.to_ascii_lowercase();
     let (quest, topic) = if quest.chars().count() + topic.chars().count() > VOICE_NAME_CHARS {
@@ -117,10 +134,10 @@ pub(crate) fn voice_path_candidates(
     } else {
         (quest, topic)
     };
-    vec![format!(
-        "sound\\voice\\{plugin}\\{voice_type}\\{quest}_{topic}_{:08x}_{response}.ogg",
+    format!(
+        "sound\\voice\\{plugin}\\{voice_type}\\{quest}_{topic}_{:08x}_{response}.{extension}",
         local_id & 0x00FF_FFFF
-    )]
+    )
 }
 
 /// Candidate archive paths for one Skyrim / FO4 / FO76 response segment
@@ -144,22 +161,7 @@ pub(crate) fn fuz_voice_path_candidates(
     if quest_edid.is_empty() && topic_edid.is_empty() {
         return Vec::new();
     }
-    let quest = quest_edid.to_ascii_lowercase();
-    let topic = topic_edid.to_ascii_lowercase();
-    let (quest, topic) = if quest.chars().count() + topic.chars().count() > VOICE_NAME_CHARS {
-        let quest_cut: String = quest.chars().take(VOICE_QUEST_CHARS).collect();
-        let topic_cut: String = topic
-            .chars()
-            .take(VOICE_NAME_CHARS.saturating_sub(quest_cut.len()))
-            .collect();
-        (quest_cut, topic_cut)
-    } else {
-        (quest, topic)
-    };
-    vec![format!(
-        "sound\\voice\\{plugin}\\{voice_type}\\{quest}_{topic}_{:08x}_{response}.fuz",
-        local_id & 0x00FF_FFFF
-    )]
+    vec![truncated_voice_path(plugin, voice_type, quest_edid, topic_edid, local_id, response, "fuz")]
 }
 
 /// Candidate archive paths for one Oblivion response segment (#5526):

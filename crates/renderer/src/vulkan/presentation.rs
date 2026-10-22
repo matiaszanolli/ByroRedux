@@ -18,6 +18,7 @@ use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::layout_binding;
 use anyhow::{Context, Result};
 use ash::vk;
+use crate::vulkan::descriptors::{sampled_image_info};
 
 const PRESENTATION_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
 const PRESENTATION_FRAG_SPV: &[u8] = include_bytes!("../../shaders/presentation.frag.spv");
@@ -547,14 +548,8 @@ impl PresentationPipeline {
         for (frame, (&view, &exposure_view)) in
             upscaled_views.iter().zip(exposure_views.iter()).enumerate()
         {
-            let info = [vk::DescriptorImageInfo::default()
-                .sampler(self.sampler)
-                .image_view(view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let exposure_info = [vk::DescriptorImageInfo::default()
-                .sampler(self.sampler)
-                .image_view(exposure_view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let info = [sampled_image_info(self.sampler, view)];
+            let exposure_info = [sampled_image_info(self.sampler, exposure_view)];
             let buffer_info = [vk::DescriptorBufferInfo::default()
                 .buffer(self.health_buffers[frame])
                 .offset(0)

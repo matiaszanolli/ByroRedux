@@ -2136,9 +2136,7 @@ mod svgf_scene_static_signal_tests {
 #[cfg(test)]
 mod instance_capacity_growth_pin {
     fn production(src: &'static str) -> &'static str {
-        src.split("\n#[cfg(test)]")
-            .next()
-            .expect("split always yields a first segment")
+        crate::source_scan::production_text_or_whole(src)
     }
 
     #[test]

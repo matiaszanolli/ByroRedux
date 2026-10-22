@@ -169,6 +169,17 @@ pub(crate) fn step_toward(
     (new_pos, rotation)
 }
 
+/// The unit horizontal direction from `from` to `to`, level (no Y); `+X` when the two stand on one
+/// spot, so a push or a flight always goes somewhere. What fleeing and a knockdown push share (#6150).
+pub(crate) fn level_away(from: Vec3, to: Vec3) -> Vec3 {
+    let away = Vec3::new(to.x - from.x, 0.0, to.z - from.z).normalize_or_zero();
+    if away == Vec3::ZERO {
+        Vec3::X
+    } else {
+        away
+    }
+}
+
 /// [`step_toward`], plus a `blocked` flag: `true` when the tick asked for
 /// meaningful horizontal motion and the KCC delivered less than
 /// [`LOCOMOTION_BLOCKED_FRACTION`] of it. `step_toward` discards the flag;

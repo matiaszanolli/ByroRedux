@@ -1,7 +1,6 @@
-# TD2-2026-10-19-05: Eight request-drain systems open with the same query-collect / query_mut-remove preamble, and `flight_target` / `push_direction` are the same "level away vector" twice
-
-Labels: low,gameplay,ai,tech-debt,bug
-Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
+# #6150: TD2-2026-10-19-05: Eight request-drain systems open with the same query-collect / query_mut-remove preamble, and `flight_target` / `push_direction` are the same "level away vector" twice
+STATE: OPEN
+LABELS: bug,low,tech-debt,gameplay,ai
 
 - **Severity**: LOW
 - **Dimension**: 2 - Logic Duplication
@@ -17,3 +16,4 @@ Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
 - [ ] **TESTS**: A regression test / source-scan guard pins this specific fix (or the finding is a pure move/delete covered by existing tests)
 
 _Source: `docs/audits/AUDIT_TECH_DEBT_2026-10-19.md` (HEAD 12677d718). Fix with `/fix-issue <number>`._
+

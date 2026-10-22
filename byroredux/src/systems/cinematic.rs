@@ -142,36 +142,29 @@ pub(crate) fn idle_clip_playback_system(world: &World, _dt: f32) {
     }
 }
 
-/// ObScript `PickIdle`: the actor picks a new idle. The engine's actor idle choice is the per-game
-/// generic standing idle (`humanoid_default_idle_kf_path`, the pool `pick_idle_handle` draws from); the
-/// actor starts it again from the first key, unless a scripted one-shot idle is running (which hands
-/// the idle back itself when it ends). An actor with no animation to restart is left alone.
+/// ObScript `PickIdle`: the actor picks a new idle. The engine's actor idle choice is the one it was
+/// spawned with (`SpawnIdle`: a creature's own clip, a humanoid's from the generic pool — #6231's rule,
+/// since a creature's rig binds none of the humanoid idle's bones); the actor starts it again from the
+/// first key, unless a scripted one-shot idle is running (which hands the idle back itself when it
+/// ends). An actor with no spawn idle or no animation to restart is left alone.
 pub(crate) fn pick_idle_system(world: &World, _dt: f32) {
-    let requested: Vec<EntityId> = match world.query::<byroredux_scripting::PickIdleRequest>() {
-        Some(requests) if !requests.is_empty() => requests.iter().map(|(actor, _)| actor).collect(),
-        _ => return,
-    };
-    if let Some(mut requests) = world.query_mut::<byroredux_scripting::PickIdleRequest>() {
-        for actor in &requested {
-            requests.remove(*actor);
-        }
+    let requested: Vec<EntityId> =
+        super::take_requests::<byroredux_scripting::PickIdleRequest>(world).into_iter().map(|(actor, _)| actor).collect();
+    if requested.is_empty() {
+        return;
     }
-    let Some(game) = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|index| index.0.game) else {
-        return;
-    };
-    let Some(handle) = crate::npc_spawn::humanoid_default_idle_kf_path(game).and_then(|path| {
-        world.try_resource::<byroredux_core::animation::AnimationClipRegistry>().and_then(|clips| clips.get_by_path(path))
-    }) else {
-        return;
-    };
     let resting: Vec<EntityId> = match world.query::<crate::components::IdleResume>() {
         Some(running) => requested.into_iter().filter(|actor| running.get(*actor).is_none()).collect(),
         None => requested,
     };
+    let resting: Vec<(EntityId, u32)> = resting
+        .into_iter()
+        .filter_map(|actor| Some((actor, world.get::<crate::npc_spawn::SpawnIdle>(actor)?.clip)))
+        .collect();
     let Some(mut players) = world.query_mut::<AnimationPlayer>() else { return };
-    for actor in resting {
+    for (actor, clip) in resting {
         if let Some(player) = players.get_mut(actor) {
-            player.clip_handle = handle;
+            player.clip_handle = clip;
             player.local_time = 0.0;
             player.prev_time = 0.0;
             player.playing = true;
@@ -421,10 +414,7 @@ pub(crate) fn reference_body_entities(world: &World, root: EntityId) -> Vec<Enti
 /// Apply Papyrus `SetMotionType` requests to both canonical ECS body data and
 /// an already-live Rapier body, then drain the one-shot request.
 pub(crate) fn scripted_motion_type_system(world: &World, _dt: f32) {
-    let asked: Vec<(EntityId, MotionTypeChangeRequest)> = match world.query::<MotionTypeChangeRequest>() {
-        Some(request_q) => request_q.iter().map(|(entity, request)| (entity, *request)).collect(),
-        None => return,
-    };
+    let asked = super::take_requests::<MotionTypeChangeRequest>(world);
     if asked.is_empty() {
         return;
     }
@@ -464,12 +454,6 @@ pub(crate) fn scripted_motion_type_system(world: &World, _dt: f32) {
             }
         }
     }
-
-    if let Some(mut request_q) = world.query_mut::<MotionTypeChangeRequest>() {
-        for (entity, _) in asked {
-            request_q.remove(entity);
-        }
-    }
 }
 
 /// Skyrim's Havok scale (Bethesda units per Havok metre), as the NIF importer
@@ -483,27 +467,14 @@ const SKYRIM_HAVOK_SCALE: f32 = 69.99125;
 /// — Y-up, in Bethesda units. A reference with no live dynamic body is the CK's
 /// "no 3D" failure: the request is dropped. One-shot, drained here.
 pub(crate) fn scripted_havok_impulse_system(world: &World, _dt: f32) {
-    let asked: Vec<(EntityId, byroredux_scripting::HavokImpulseRequest)> = {
-        let Some(request_q) = world.query::<byroredux_scripting::HavokImpulseRequest>() else {
-            return;
-        };
-        request_q.iter().map(|(entity, request)| (entity, *request)).collect()
-    };
+    let asked = super::take_requests::<byroredux_scripting::HavokImpulseRequest>(world);
     if asked.is_empty() {
         return;
     }
-    let drain_asked = |asked: Vec<(EntityId, byroredux_scripting::HavokImpulseRequest)>| {
-        if let Some(mut request_q) = world.query_mut::<byroredux_scripting::HavokImpulseRequest>() {
-            for (entity, _) in asked {
-                request_q.remove(entity);
-            }
-        }
-    };
     // Without the rules there is no engine factor to apply: the requests are
     // dropped, not left to be re-resolved against every rigid body each frame
     // until the resource appears (#6009).
     let Some(rules) = world.try_resource::<byroredux_scripting::HavokImpulseRules>().map(|rules| *rules) else {
-        drain_asked(asked);
         return;
     };
     // The impulse acts on each body of the reference's collision.
@@ -540,7 +511,6 @@ pub(crate) fn scripted_havok_impulse_system(world: &World, _dt: f32) {
             physics.apply_impulse(handles.body, impulse);
         }
     }
-    drain_asked(asked);
 }
 
 /// Drive a native Skyrim cart tether along the horse reference's authored
@@ -1511,6 +1481,27 @@ mod tests {
     use byroredux_core::ecs::components::{Children, MotionType};
     use byroredux_scripting::AnimationTextKeyEvent;
 
+    /// `PickIdle` restarts the idle the actor was spawned with (a creature's own clip, not the humanoid
+    /// one — #6231's rule), and leaves an actor with no spawn idle alone. The request drains either way.
+    #[test]
+    fn pick_idle_restarts_the_actors_own_spawn_idle() {
+        let mut world = World::new();
+        let (creature, unrecorded) = (world.spawn(), world.spawn());
+        for actor in [creature, unrecorded] {
+            let mut player = AnimationPlayer::new(3);
+            player.local_time = 1.5;
+            world.insert(actor, player);
+            world.insert(actor, byroredux_scripting::PickIdleRequest);
+        }
+        world.insert(creature, crate::npc_spawn::SpawnIdle { clip: 7, desync_key: 1 });
+        pick_idle_system(&world, 0.0);
+        let restarted = world.get::<AnimationPlayer>(creature).unwrap();
+        assert_eq!((restarted.clip_handle, restarted.local_time), (7, 0.0));
+        drop(restarted);
+        assert_eq!(world.get::<AnimationPlayer>(unrecorded).unwrap().clip_handle, 3);
+        assert!(world.query::<byroredux_scripting::PickIdleRequest>().unwrap().is_empty());
+    }
+
     /// #6008 — the scene-trigger router holds `QuestStageState` for the whole
     /// `targets` match; `evaluate_condition_list` re-reads it for the `GetStage`
     /// family, a recursive read. The conditions are evaluated in a pre-pass
@@ -2376,10 +2367,8 @@ mod tests {
         let body = CINEMATIC_RS
             .split_once("fn scene_trigger_actor_approach_system_inner")
             .expect("scene_trigger_actor_approach_system_inner definition")
-            .1
-            .split_once("\n#[cfg(test)]\nmod ")
-            .expect("test module marker")
-            .0;
+            .1;
+        let body = byroredux_core::source_scan::production_text(body);
         assert!(
             body.contains("byroredux_scripting::base_form_advance_is_eligible("),
             "the between-scenes router must call the gate's shared predicate (#4333)"

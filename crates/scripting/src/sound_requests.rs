@@ -26,28 +26,23 @@ impl Resource for PendingSoundPlays {}
 /// `SoundPlay.<name>` notifies an animation graph raises. `NOT_SAVED_BY_DESIGN`:
 /// rebuilt from the records every boot.
 #[derive(Debug, Default, Clone)]
-pub struct SoundEditorIds(std::collections::HashMap<String, u32>);
+pub struct SoundEditorIds(crate::name_table::EditorIdTable<u32>);
 
 impl Resource for SoundEditorIds {}
 
 impl SoundEditorIds {
     pub fn from_index(index: &byroredux_plugin::esm::records::EsmIndex) -> Self {
-        Self(
-            index
-                .sounds
-                .values()
-                .filter(|sound| !sound.editor_id.is_empty())
-                .map(|sound| (sound.editor_id.to_ascii_lowercase(), sound.form_id))
-                .collect(),
-        )
+        Self(crate::name_table::EditorIdTable::from_records(
+            index.sounds.values().map(|sound| (sound.editor_id.as_str(), sound.form_id)),
+        ))
     }
 
     /// The sound a `SoundPlay.<name>` graph event names (the prefix matched
     /// ignoring case; the node-attached `SoundPlayAt.<name>.<node>` form is not
     /// one).
     pub fn of_graph_event(&self, event: &str) -> Option<u32> {
-        let lower = event.to_ascii_lowercase();
-        let name = lower.strip_prefix("soundplay.")?;
+        let prefix = "soundplay.".len();
+        let name = event.get(prefix..).filter(|_| event[..prefix].eq_ignore_ascii_case("soundplay."))?;
         self.0.get(name).copied()
     }
 }

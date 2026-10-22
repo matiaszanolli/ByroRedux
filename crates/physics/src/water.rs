@@ -4031,7 +4031,7 @@ mod ragdoll_stale_contact_tests {
     #[test]
     fn wet_link_angular_drag_uses_the_shared_inertia_torque() {
         let src = include_str!("water.rs");
-        let production = src.split("\n#[cfg(test)]").next().unwrap();
+        let production = crate::source_scan::production_text(src);
         assert_eq!(
             production.matches("PhysicsWorld::angular_damping_torque(").count(),
             2,

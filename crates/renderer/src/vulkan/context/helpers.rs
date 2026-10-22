@@ -609,21 +609,10 @@ pub(super) fn depth_subresource_range() -> vk::ImageSubresourceRange {
 /// depth-history image. No mips, no comparison — the effect-shader branch
 /// reads raw non-linear depth and reconstructs world position itself.
 pub(super) fn create_depth_history_sampler(device: &ash::Device) -> Result<vk::Sampler> {
-    let info = vk::SamplerCreateInfo::default()
-        .mag_filter(vk::Filter::NEAREST)
-        .min_filter(vk::Filter::NEAREST)
-        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
-        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-        .min_lod(0.0)
-        .max_lod(0.0);
-    unsafe {
-        // SAFETY: `device` is the live logical device; `info` is a local,
-        // self-contained SamplerCreateInfo that outlives the call.
-        device.create_sampler(&info, None)
-    }
-    .context("Failed to create depth-history sampler")
+    // SAFETY: `device` is the live logical device; the caller owns the sampler
+    // (#6155: the shared clamp sampler — its zero LOD range is the image's one mip).
+    unsafe { crate::vulkan::descriptors::clamp_sampler(device, vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST) }
+        .context("Failed to create depth-history sampler")
 }
 
 /// One-time init of the depth-history image: UNDEFINED → clear to far depth

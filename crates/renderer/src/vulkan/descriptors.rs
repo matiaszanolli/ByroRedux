@@ -85,6 +85,36 @@ pub fn write_storage_image<'a>(
         .image_info(info)
 }
 
+// ── DescriptorImageInfo helpers (#6148) ─────────────────────────────
+
+/// A sampled image in `SHADER_READ_ONLY_OPTIMAL` — the `COMBINED_IMAGE_SAMPLER`
+/// element of a pass that reads an attachment or texture.
+#[inline]
+pub fn sampled_image_info(sampler: vk::Sampler, view: vk::ImageView) -> vk::DescriptorImageInfo {
+    vk::DescriptorImageInfo::default()
+        .sampler(sampler)
+        .image_view(view)
+        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+}
+
+/// A sampled image that lives in `GENERAL` (a compute pass's storage target
+/// read back through a sampler: history, mip chains, froxels).
+#[inline]
+pub fn general_sampled_image_info(sampler: vk::Sampler, view: vk::ImageView) -> vk::DescriptorImageInfo {
+    vk::DescriptorImageInfo::default()
+        .sampler(sampler)
+        .image_view(view)
+        .image_layout(vk::ImageLayout::GENERAL)
+}
+
+/// A `STORAGE_IMAGE` element: view in `GENERAL`, no sampler.
+#[inline]
+pub fn storage_image_info(view: vk::ImageView) -> vk::DescriptorImageInfo {
+    vk::DescriptorImageInfo::default()
+        .image_view(view)
+        .image_layout(vk::ImageLayout::GENERAL)
+}
+
 // ── DescriptorSetLayoutBinding helpers ───────────────────────────────
 
 /// One single-descriptor layout binding: `binding` of type `ty`, visible to
@@ -212,7 +242,8 @@ pub fn color_subresource_mips_layers(
 /// mode for history/transport textures); a sampler policy change
 /// (anisotropy, debug names, unnormalised coordinates) is now one edit.
 /// The two genuinely different samplers (helpers.rs's shadow sampler,
-/// texture_registry's wrap/repeat sampler) stay hand-built.
+/// texture_registry's wrap/repeat sampler) stay hand-built; the depth-history,
+/// placeholder-AO and ground-cover bench samplers are clamp samplers too (#6155).
 ///
 /// # Safety
 /// `device` must be a live logical device. The caller owns the returned
@@ -997,6 +1028,8 @@ mod hand_rolled_descriptor_code_tests {
         let layout = format!("{}{}", "DescriptorSetLayoutBinding::", "default()");
         let write = format!("{}{}", "WriteDescriptorSet::", "default()");
         let macro_def = format!("{}{}", "macro_rules! try_or_", "cleanup");
+        let raw_image_info = format!("{}{}", "DescriptorImageInfo::", "default()");
+        let mut raw_image_infos = 0;
         for (path, text) in renderer_sources() {
             let production = crate::source_scan::production_text_or_whole(&text);
             let is_descriptors = path.ends_with("vulkan/descriptors.rs");
@@ -1018,6 +1051,9 @@ mod hand_rolled_descriptor_code_tests {
                      helpers (#5595)"
                 );
             }
+            if !is_descriptors {
+                raw_image_infos += production.matches(raw_image_info.as_str()).count();
+            }
             if !path.ends_with("vulkan/mod.rs") {
                 assert!(
                     !production.contains(&macro_def),
@@ -1037,8 +1073,6 @@ mod hand_rolled_descriptor_code_tests {
                     || p.ends_with("vulkan/sky_cube.rs")
                     || p.ends_with("vulkan/cloud_noise.rs")
                     || p.ends_with("vulkan/volumetrics/init.rs")
-                    || p.ends_with("vulkan/placeholder.rs")
-                    || p.ends_with("vulkan/groundcover_bench.rs")
                     || p.ends_with("sky_cube/filter/tests.rs")
             );
             if !is_descriptors && !sampler_exempt {
@@ -1050,6 +1084,17 @@ mod hand_rolled_descriptor_code_tests {
                 );
             }
         }
+        // #6148 — the three standard image-info shapes go through
+        // sampled_image_info / general_sampled_image_info / storage_image_info.
+        // What is left hand-built is the depth (DEPTH_STENCIL_READ_ONLY) and
+        // runtime-layout elements (composite's indirect / shadow correction)
+        // and the bindless texture array's sampler-less elements; a new
+        // standard-shape chain raises the count.
+        assert!(
+            raw_image_infos <= 11,
+            "{raw_image_infos} hand-built DescriptorImageInfo chains (11 recorded non-standard ones) — \
+             use descriptors::sampled_image_info / general_sampled_image_info / storage_image_info (#6148)"
+        );
     }
 
     /// #6064 — an attribute directly after a doc line, with another doc line

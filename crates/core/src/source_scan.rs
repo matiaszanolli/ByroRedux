@@ -38,6 +38,30 @@ pub fn production_text_or_whole(src: &str) -> &str {
         .map_or(src, |(production, _)| production)
 }
 
+/// The inverse of [`strip_test_modules`]: the bodies of every top-level
+/// `#[cfg(test)] mod … { … }` block, concatenated, so a scan that must only see
+/// test code cannot be satisfied by production code between the modules
+/// (#4411; moved here from `material_translate` by #6149). A block ends at the
+/// first `}` in column 0, which holds for rustfmt-formatted top-level items.
+pub fn test_module_text(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut rest = src;
+    while let Some(start) = rest.find("\n#[cfg(test)]\nmod ") {
+        let after = &rest[start + 1..];
+        match after.find("\n}\n") {
+            Some(end) => {
+                out.push_str(&after[..end]);
+                rest = &after[end + 3..];
+            }
+            None => {
+                out.push_str(after);
+                return out;
+            }
+        }
+    }
+    out
+}
+
 /// Occurrences of `ident` in `src` as a whole identifier — not as part of a
 /// longer one (`temp_path` does not match `temp_path_2` or `my_temp_path`).
 pub fn count_identifier(src: &str, ident: &str) -> usize {

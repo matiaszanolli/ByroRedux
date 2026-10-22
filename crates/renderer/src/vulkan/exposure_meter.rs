@@ -25,6 +25,7 @@ use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
+use crate::vulkan::descriptors::{sampled_image_info, storage_image_info};
 
 pub(super) const EXPOSURE_METER_COMP_SPV: &[u8] = include_bytes!("../../shaders/exposure_meter.comp.spv");
 
@@ -218,13 +219,8 @@ impl ExposureMeterPipeline {
         exposure_view: vk::ImageView,
     ) {
         let set = self.descriptor_sets[frame];
-        let scene_info = [vk::DescriptorImageInfo::default()
-            .sampler(self.sampler)
-            .image_view(scene_view)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-        let dst_info = [vk::DescriptorImageInfo::default()
-            .image_view(exposure_view)
-            .image_layout(vk::ImageLayout::GENERAL)];
+        let scene_info = [sampled_image_info(self.sampler, scene_view)];
+        let dst_info = [storage_image_info(exposure_view)];
         let writes = [
             write_combined_image_sampler(set, 0, &scene_info),
             write_storage_image(set, 1, &dst_info),

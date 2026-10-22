@@ -412,15 +412,14 @@ pub fn script_update_system(world: &World, dt: f32, game_hours: Option<f64>) {
             continue;
         }
         let vmad = owners.vmad(world, registration.owner, &registration.script);
-        let effect = Effect::Interpret {
-            script: registration.script.clone(),
-            function: event.to_owned(),
-            args: registration
+        let effect = Effect::interpret(
+            registration.script.clone(),
+            event.to_owned(),
+            registration
                 .timer
                 .map(|id| vec![crate::translate::effects::VmStored::Int(id)])
                 .unwrap_or_default(),
-            resume: None,
-        };
+        );
         log::debug!("{:08X}: {}.{event}", registration.owner, registration.script);
         // The frame-budget gate and the advance flush live in one place
         // (`dispatch`) — this used to be a hand-copied 25-line tail.

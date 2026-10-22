@@ -103,20 +103,15 @@ impl PlaceholderImage {
             return Err(e);
         }
 
-        let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::NEAREST)
-            .min_filter(vk::Filter::NEAREST)
-            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE);
-        // SAFETY: `device` is live; `sampler_info` is fully populated and
-        // outlives the call. Handle ownership moves into `p`.
-        p.sampler = match unsafe { device.create_sampler(&sampler_info, None) } {
+        // SAFETY: `device` is live; handle ownership moves into `p` (#6155: the shared clamp sampler).
+        p.sampler = match unsafe {
+            crate::vulkan::descriptors::clamp_sampler(device, vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST)
+        } {
             Ok(s) => s,
             Err(e) => {
                 // SAFETY: as above — nothing has referenced these handles.
                 unsafe { p.destroy(device, allocator) };
-                return Err(anyhow::anyhow!(e)).context("placeholder AO sampler");
+                return Err(e).context("placeholder AO sampler");
             }
         };
         Ok(p)

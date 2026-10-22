@@ -1,7 +1,6 @@
-# TD2-2026-10-19-07: Five scripting resources each hand-build a lowercased-EDID -> FormID table with their own `from_index`, lookup and `install_*`
-
-Labels: low,scripting,tech-debt,bug
-Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
+# #6152: TD2-2026-10-19-07: Five scripting resources each hand-build a lowercased-EDID -> FormID table with their own `from_index`, lookup and `install_*`
+STATE: OPEN
+LABELS: bug,low,tech-debt,scripting
 
 - **Severity**: LOW
 - **Dimension**: 2 - Logic Duplication
@@ -16,3 +15,4 @@ Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
 - [ ] **TESTS**: A regression test / source-scan guard pins this specific fix (or the finding is a pure move/delete covered by existing tests)
 
 _Source: `docs/audits/AUDIT_TECH_DEBT_2026-10-19.md` (HEAD 12677d718). Fix with `/fix-issue <number>`._
+

@@ -1,7 +1,6 @@
-# TD2-2026-10-19-09: Three fragment dispatchers still hand-roll `flush_advances`, and `Effect::Interpret { .., resume: None }` is built by hand at 11 sites (prior-partial: TD2-2026-10-15-06 tail)
-
-Labels: low,scripting,tech-debt,bug
-Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
+# #6154: TD2-2026-10-19-09: Three fragment dispatchers still hand-roll `flush_advances`, and `Effect::Interpret { .., resume: None }` is built by hand at 11 sites (prior-partial: TD2-2026-10-15-06 tail)
+STATE: OPEN
+LABELS: bug,low,tech-debt,scripting
 
 - **Severity**: LOW
 - **Dimension**: 2 - Logic Duplication
@@ -18,3 +17,4 @@ Related: #5797 (closed; fixed the dispatch tails, three epilogues remain).
 - [ ] **TESTS**: A regression test / source-scan guard pins this specific fix (or the finding is a pure move/delete covered by existing tests)
 
 _Source: `docs/audits/AUDIT_TECH_DEBT_2026-10-19.md` (HEAD 12677d718). Fix with `/fix-issue <number>`._
+

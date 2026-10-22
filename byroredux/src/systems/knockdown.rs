@@ -62,16 +62,7 @@ fn skeleton_root(world: &World, actor: EntityId) -> EntityId {
 
 /// Knock down the actors a script pushed this frame.
 pub(crate) fn push_actor_system(world: &World, _dt: f32) {
-    let asked: Vec<(EntityId, PushActorRequest)> = match world.query::<PushActorRequest>() {
-        Some(requests) if !requests.is_empty() => requests.iter().map(|(actor, request)| (actor, *request)).collect(),
-        _ => return,
-    };
-    if let Some(mut requests) = world.query_mut::<PushActorRequest>() {
-        for (actor, _) in &asked {
-            requests.remove(*actor);
-        }
-    }
-    for (actor, request) in asked {
+    for (actor, request) in super::take_requests::<PushActorRequest>(world) {
         match knock_down(world, actor, request) {
             Ok(note) => log::info!("PushActorAway: actor {actor}: {note}"),
             Err(why) => log::warn!("PushActorAway: actor {actor} not pushed: {why}"),
@@ -81,8 +72,7 @@ pub(crate) fn push_actor_system(world: &World, _dt: f32) {
 
 /// The horizontal direction from `from` to `actor` (a negative force flips it), lifted by [`LIFT`].
 fn push_direction(from: Vec3, actor: Vec3, force: f32) -> Vec3 {
-    let away = Vec3::new(actor.x - from.x, 0.0, actor.z - from.z).normalize_or_zero();
-    let away = if away == Vec3::ZERO { Vec3::X } else { away };
+    let away = super::level_away(from, actor);
     let sign = if force < 0.0 { -1.0 } else { 1.0 };
     (away * sign + Vec3::Y * LIFT).normalize()
 }

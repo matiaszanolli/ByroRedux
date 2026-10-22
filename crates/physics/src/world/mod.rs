@@ -1768,7 +1768,7 @@ mod tests {
         // Production now spans three files (#5311) — scan them all, so a
         // per-call `SharedShape::capsule_y` cannot hide in a split-out module.
         fn production(src: &str) -> &str {
-            src.split_once("#[cfg(test)]\nmod ").map_or(src, |(head, _)| head)
+            byroredux_core::source_scan::production_text_or_whole(src)
         }
         for file in [include_str!("mod.rs"), include_str!("queries.rs"), include_str!("recovery.rs")] {
             assert!(

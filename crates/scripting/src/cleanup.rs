@@ -234,16 +234,17 @@ mod contract_tests {
                 include_str!("fragment/reference.rs"),
                 "drain::<crate::OnDeathEvent>",
             ),
-            // The two physics markers' consumers live in the binary crate.
+            // The two physics markers' consumers live in the binary crate. The binary's request
+            // systems drain through `systems::take_requests` (#6150), which removes what it returns.
             (
                 "HavokImpulseRequest",
                 include_str!("../../../byroredux/src/systems/cinematic.rs"),
-                "query_mut::<byroredux_scripting::HavokImpulseRequest>",
+                "take_requests::<byroredux_scripting::HavokImpulseRequest>(world)",
             ),
             (
                 "MotionTypeChangeRequest",
                 include_str!("../../../byroredux/src/systems/cinematic.rs"),
-                "query_mut::<MotionTypeChangeRequest>",
+                "take_requests::<MotionTypeChangeRequest>(world)",
             ),
             // #6267 — the ObScript request markers.
             (
@@ -254,32 +255,32 @@ mod contract_tests {
             (
                 "PickIdleRequest",
                 include_str!("../../../byroredux/src/systems/cinematic.rs"),
-                "query_mut::<byroredux_scripting::PickIdleRequest>",
+                "take_requests::<byroredux_scripting::PickIdleRequest>(world)",
             ),
             (
                 "FleeRequest",
                 include_str!("../../../byroredux/src/systems/flee.rs"),
-                "query_mut::<FleeRequest>",
+                "take_requests::<FleeRequest>(world)",
             ),
             (
                 "PushActorRequest",
                 include_str!("../../../byroredux/src/systems/knockdown.rs"),
-                "query_mut::<PushActorRequest>",
+                "take_requests::<PushActorRequest>(world)",
             ),
             (
                 "ReviveRequest",
                 include_str!("../../../byroredux/src/systems/revive.rs"),
-                "query_mut::<ReviveRequest>",
+                "take_requests::<ReviveRequest>(world)",
             ),
             (
                 "UseWeaponRequest",
                 include_str!("../../../byroredux/src/systems/script_requests.rs"),
-                "query_mut::<UseWeaponRequest>",
+                "take_requests::<UseWeaponRequest>(world)",
             ),
             (
                 "ResetInventoryRequest",
                 include_str!("../../../byroredux/src/systems/script_requests.rs"),
-                "query_mut::<ResetInventoryRequest>",
+                "take_requests::<ResetInventoryRequest>(world)",
             ),
         ] {
             // Production code only: a test module that merely mentions the

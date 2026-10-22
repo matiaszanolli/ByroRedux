@@ -1,7 +1,6 @@
-# TD2-2026-10-19-11: The Skyrim `.fuz` voice-path builder copies the truncation block of the FO3/FNV one, written one day after #5521 changed it
-
-Labels: low,dialogue,tech-debt,bug
-Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
+# #6156: TD2-2026-10-19-11: The Skyrim `.fuz` voice-path builder copies the truncation block of the FO3/FNV one, written one day after #5521 changed it
+STATE: OPEN
+LABELS: bug,low,tech-debt,dialogue
 
 - **Severity**: LOW
 - **Dimension**: 2 - Logic Duplication
@@ -16,3 +15,4 @@ Source: docs/audits/AUDIT_TECH_DEBT_2026-10-19.md
 - [ ] **TESTS**: A regression test / source-scan guard pins this specific fix (or the finding is a pure move/delete covered by existing tests)
 
 _Source: `docs/audits/AUDIT_TECH_DEBT_2026-10-19.md` (HEAD 12677d718). Fix with `/fix-issue <number>`._
+

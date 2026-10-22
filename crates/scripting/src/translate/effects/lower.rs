@@ -68,15 +68,8 @@ pub fn lower_fragment_with_script_metadata(
     per_instance_actor_property_names: &HashSet<String>,
     providers: Option<&PapyrusProviderCatalog>,
 ) -> Option<Vec<Effect>> {
-    let mut scope = Scope {
-        known_quest_properties: quest_property_names.clone(),
-        own_argless_functions: own_argless_function_names.clone(),
-        per_instance_actor_properties: per_instance_actor_property_names.clone(),
-        ..Scope::default()
-    };
-    lower_statements(body, &mut scope, providers, 0)
-        .map(prune_unread_locals)
-        .filter(|effects| locals_never_suspend(effects) && provider_barriers_fit(effects))
+    let mut scope = scope_from(quest_property_names, own_argless_function_names, per_instance_actor_property_names, None);
+    lower_with(body, &mut scope, providers)
 }
 
 /// [`lower_fragment_with_script_metadata`] for a quest-stage fragment, with a
@@ -89,17 +82,8 @@ pub fn lower_quest_fragment(
     providers: Option<&PapyrusProviderCatalog>,
     library: Option<&dyn ScriptLibrary>,
 ) -> Option<Vec<Effect>> {
-    let mut scope = Scope {
-        library,
-        vmad_is_quest: true,
-        known_quest_properties: quest_property_names.clone(),
-        own_argless_functions: own_argless_function_names.clone(),
-        per_instance_actor_properties: per_instance_actor_property_names.clone(),
-        ..Scope::default()
-    };
-    lower_statements(body, &mut scope, providers, 0)
-        .map(prune_unread_locals)
-        .filter(|effects| locals_never_suspend(effects) && provider_barriers_fit(effects))
+    let mut scope = Scope { vmad_is_quest: true, ..scope_from(quest_property_names, own_argless_function_names, per_instance_actor_property_names, library) };
+    lower_with(body, &mut scope, providers)
 }
 
 /// M47.2 — [`lower_fragment_with_script_metadata`] for a scene (`SF_…`)
@@ -113,16 +97,8 @@ pub fn lower_scene_fragment(
     providers: Option<&PapyrusProviderCatalog>,
     library: Option<&dyn ScriptLibrary>,
 ) -> Option<Vec<Effect>> {
-    let mut scope = Scope {
-        library,
-        known_quest_properties: quest_property_names.clone(),
-        own_argless_functions: own_argless_function_names.clone(),
-        per_instance_actor_properties: per_instance_actor_property_names.clone(),
-        ..Scope::default()
-    };
-    lower_statements(body, &mut scope, providers, 0)
-        .map(prune_unread_locals)
-        .filter(|effects| locals_never_suspend(effects) && provider_barriers_fit(effects))
+    let mut scope = scope_from(quest_property_names, own_argless_function_names, per_instance_actor_property_names, library);
+    lower_with(body, &mut scope, providers)
 }
 
 /// M47.2 — `(<reference> as Script).<Variable> = literal`, a variable of a
@@ -219,25 +195,48 @@ pub fn lower_info_fragment(
     providers: Option<&PapyrusProviderCatalog>,
     library: Option<&dyn ScriptLibrary>,
 ) -> Option<Vec<Effect>> {
-    let mut scope = Scope {
-        library,
-        known_quest_properties: quest_property_names.clone(),
-        own_argless_functions: own_argless_function_names.clone(),
-        per_instance_actor_properties: per_instance_actor_property_names.clone(),
-        ..Scope::default()
-    };
+    let mut scope = scope_from(quest_property_names, own_argless_function_names, per_instance_actor_property_names, library);
     for param in params {
         if param.name.node.0.eq_ignore_ascii_case(INFO_SPEAKER_PARAMETER) {
             scope.speaker_locals.insert(param.name.node.0.to_ascii_lowercase());
         }
     }
-    let effects = lower_statements(body, &mut scope, providers, 0)
-        .map(prune_unread_locals)
-        .filter(|effects| locals_never_suspend(effects) && provider_barriers_fit(effects))?;
+    let effects = lower_with(body, &mut scope, providers)?;
     if scope.uses_speaker.get() && effects.iter().any(has_latent_tail) {
         return None;
     }
     Some(effects)
+}
+
+/// The [`Scope`] every fragment entry point starts from (#6153): the script's
+/// quest properties, own argless functions and per-instance actor properties,
+/// and the library calls inline from. Each entry point sets what else it needs.
+fn scope_from<'lib>(
+    quest_property_names: &HashSet<String>,
+    own_argless_function_names: &HashSet<String>,
+    per_instance_actor_property_names: &HashSet<String>,
+    library: Option<&'lib dyn ScriptLibrary>,
+) -> Scope<'lib> {
+    Scope {
+        library,
+        known_quest_properties: quest_property_names.clone(),
+        own_argless_functions: own_argless_function_names.clone(),
+        per_instance_actor_properties: per_instance_actor_property_names.clone(),
+        ..Scope::default()
+    }
+}
+
+/// Lower a fragment body in `scope` through the pipeline every entry point
+/// shares (#6153): unread locals pruned, and declined when a local would
+/// have to survive a suspension or a provider barrier does not fit.
+fn lower_with(
+    body: &[Spanned<Stmt>],
+    scope: &mut Scope,
+    providers: Option<&PapyrusProviderCatalog>,
+) -> Option<Vec<Effect>> {
+    lower_statements(body, scope, providers, 0)
+        .map(prune_unread_locals)
+        .filter(|effects| locals_never_suspend(effects) && provider_barriers_fit(effects))
 }
 
 /// M47.2 — drop the [`Effect::SetLocal`]s no [`ValueExpr::Local`] reads (a

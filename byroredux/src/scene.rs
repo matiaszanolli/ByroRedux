@@ -5,7 +5,6 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{ActiveCamera, Camera, GlobalTransform, MeshHandle, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
-use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, VulkanContext};
 use byroredux_ui::UiManager;
 use std::sync::Arc;
@@ -776,17 +775,9 @@ fn start_cli_animation(
 fn spawn_demo_primitives(world: &mut World, ctx: &mut VulkanContext, has_nif_content: bool) {
     // Only spawn demo primitives when no NIF content was loaded.
     if !has_nif_content {
-        let alloc = ctx.allocator.as_ref().unwrap();
         let (verts, idxs) = cube_vertices();
-        let queue = &ctx.graphics_queue;
-        let pool = ctx.transfer_pool;
         let rt = ctx.device_caps.ray_query_supported;
-        let upload_ctx = GpuUploadCtx {
-            device: &ctx.device,
-            allocator: alloc,
-            queue,
-            command_pool: pool,
-        };
+        let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
         // #5261 (CONC-D2-2026-10-05-01) — the demo primitives go through
         // `upload_scene_mesh` (per-mesh buffers PLUS the global geometry
         // pool), not per-mesh-only `upload`. #5188's geometry-dead arm drops

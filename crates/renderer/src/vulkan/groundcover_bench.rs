@@ -83,6 +83,7 @@ use crate::shader_constants::{
     GROUNDCOVER_BENCH_BLADE_VERTS, GROUNDCOVER_BENCH_WORKGROUP, GROUNDCOVER_CHUNKS_PER_CELL_SIDE,
     GROUNDCOVER_CHUNK_UNITS, LAND_GRID_VERTS, WORKGROUP_X, WORKGROUP_Y,
 };
+use crate::vulkan::descriptors::{sampled_image_info, storage_image_info};
 
 const BENCH_COMP_SPV: &[u8] = include_bytes!("../../shaders/groundcover_bench.comp.spv");
 const BENCH_VERT_SPV: &[u8] = include_bytes!("../../shaders/groundcover_bench.vert.spv");
@@ -555,18 +556,10 @@ impl GroundcoverBench {
         // makes path B reproduce path A's bilinear blend exactly, and the
         // clamp never engages because both paths reject out-of-cell queries
         // before they get here.
-        let info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
-            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE);
-        // SAFETY: `info` is fully populated; the sampler is owned by this
-        // struct and destroyed in `destroy`.
+        // SAFETY: `device` is live; the sampler is owned by this struct and
+        // destroyed in `destroy` (#6155: the shared clamp sampler).
         self.sampler = unsafe {
-            device
-                .create_sampler(&info, None)
+            crate::vulkan::descriptors::clamp_sampler(device, vk::Filter::LINEAR, vk::SamplerMipmapMode::NEAREST)
                 .context("create groundcover bench sampler")?
         };
         Ok(())
@@ -1054,10 +1047,7 @@ impl GroundcoverBench {
             .buffer(result_buffer.buffer)
             .range(vk::WHOLE_SIZE)];
         let sampled = |view: vk::ImageView| {
-            [vk::DescriptorImageInfo::default()
-                .sampler(self.sampler)
-                .image_view(view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)]
+            [sampled_image_info(self.sampler, view)]
         };
         let attr_info = sampled(
             self.attr_image
@@ -1078,9 +1068,7 @@ impl GroundcoverBench {
                 .view,
         );
         let storage = |view: vk::ImageView| {
-            [vk::DescriptorImageInfo::default()
-                .image_view(view)
-                .image_layout(vk::ImageLayout::GENERAL)]
+            [storage_image_info(view)]
         };
         let attr_storage = storage(
             self.attr_image

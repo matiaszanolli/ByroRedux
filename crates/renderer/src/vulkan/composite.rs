@@ -38,6 +38,7 @@ use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::layout_binding;
 use anyhow::{Context, Result};
 use ash::vk;
+use crate::vulkan::descriptors::{general_sampled_image_info, sampled_image_info};
 
 /// Composite binding 11's source: the direct-shadow spatial filter's
 /// per-frame correction views in `GENERAL`, or — with the filter absent —
@@ -865,20 +866,14 @@ impl CompositePipeline {
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
         };
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let hdr_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.hdr_sampler)
-                .image_view(partial.hdr[i].view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let hdr_info = [sampled_image_info(partial.hdr_sampler, partial.hdr[i].view)];
             // NEAREST: preserves per-pixel denoised values; LINEAR would add
             // a second spatial-blur pass on top of what SVGF already applied.
             let indirect_info = [vk::DescriptorImageInfo::default()
                 .sampler(partial.nearest_sampler)
                 .image_view(indirect_views[i])
                 .image_layout(indirect_layout)];
-            let albedo_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.hdr_sampler)
-                .image_view(albedo_views[i])
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let albedo_info = [sampled_image_info(partial.hdr_sampler, albedo_views[i])];
             let params_info = [vk::DescriptorBufferInfo {
                 buffer: partial.param_buffers[i].buffer,
                 offset: 0,
@@ -891,32 +886,14 @@ impl CompositePipeline {
                 .sampler(partial.hdr_sampler)
                 .image_view(depth_view)
                 .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
-            let caustic_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.nearest_sampler)
-                .image_view(caustic_views[i])
-                .image_layout(vk::ImageLayout::GENERAL)];
+            let caustic_info = [general_sampled_image_info(partial.nearest_sampler, caustic_views[i])];
             // #1257 / Phase E of #1210 — water-side caustic sibling.
             // Same R32_UINT sampler (NEAREST) as the binding-5 caustic.
-            let water_caustic_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.nearest_sampler)
-                .image_view(water_caustic_views[i])
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let volumetric_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.hdr_sampler)
-                .image_view(volumetric_views[i])
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let bloom_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.hdr_sampler)
-                .image_view(bloom_views[i])
-                .image_layout(vk::ImageLayout::GENERAL)];
-            let cloud_base_info = [vk::DescriptorImageInfo::default()
-                .sampler(cloud_noise.sampler)
-                .image_view(cloud_noise.base)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let cloud_detail_info = [vk::DescriptorImageInfo::default()
-                .sampler(cloud_noise.sampler)
-                .image_view(cloud_noise.detail)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let water_caustic_info = [general_sampled_image_info(partial.nearest_sampler, water_caustic_views[i])];
+            let volumetric_info = [general_sampled_image_info(partial.hdr_sampler, volumetric_views[i])];
+            let bloom_info = [general_sampled_image_info(partial.hdr_sampler, bloom_views[i])];
+            let cloud_base_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.base)];
+            let cloud_detail_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.detail)];
             let shadow_correction_info = [vk::DescriptorImageInfo::default()
                 .sampler(partial.nearest_sampler)
                 .image_view(shadow_correction.views[i])
@@ -1243,19 +1220,13 @@ impl CompositePipeline {
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
             };
             for i in 0..MAX_FRAMES_IN_FLIGHT {
-                let hdr_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.hdr_sampler)
-                    .image_view(self.hdr[i].view)
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let hdr_info = [sampled_image_info(self.hdr_sampler, self.hdr[i].view)];
                 // NEAREST: preserves per-pixel SVGF denoised values.
                 let indirect_info = [vk::DescriptorImageInfo::default()
                     .sampler(self.nearest_sampler)
                     .image_view(indirect_views[i])
                     .image_layout(indirect_layout)];
-                let albedo_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.hdr_sampler)
-                    .image_view(albedo_views[i])
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let albedo_info = [sampled_image_info(self.hdr_sampler, albedo_views[i])];
                 let params_info = [vk::DescriptorBufferInfo {
                     buffer: self.param_buffers[i].buffer,
                     offset: 0,
@@ -1265,36 +1236,18 @@ impl CompositePipeline {
                     .sampler(self.hdr_sampler)
                     .image_view(depth_view)
                     .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
-                let caustic_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.nearest_sampler)
-                    .image_view(caustic_views[i])
-                    .image_layout(vk::ImageLayout::GENERAL)];
+                let caustic_info = [general_sampled_image_info(self.nearest_sampler, caustic_views[i])];
                 // #1257 / Phase E of #1210 — water-side caustic sibling.
-                let water_caustic_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.nearest_sampler)
-                    .image_view(water_caustic_views[i])
-                    .image_layout(vk::ImageLayout::GENERAL)];
-                let volumetric_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.hdr_sampler)
-                    .image_view(volumetric_views[i])
-                    .image_layout(vk::ImageLayout::GENERAL)];
-                let bloom_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.hdr_sampler)
-                    .image_view(bloom_views[i])
-                    .image_layout(vk::ImageLayout::GENERAL)];
+                let water_caustic_info = [general_sampled_image_info(self.nearest_sampler, water_caustic_views[i])];
+                let volumetric_info = [general_sampled_image_info(self.hdr_sampler, volumetric_views[i])];
+                let bloom_info = [general_sampled_image_info(self.hdr_sampler, bloom_views[i])];
                 // Typed [_; 12] array (was [_; 8] pre-#1257, [_; 9] pre-SKYAL
                 // clouds, [_; 11] pre-shadow-filter) — compile catches
                 // divergence from the 12-binding layout. Init
                 // path at the post-`new()` writer above mirrors this
                 // exact shape.
-                let cloud_base_info = [vk::DescriptorImageInfo::default()
-                    .sampler(cloud_noise.sampler)
-                    .image_view(cloud_noise.base)
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-                let cloud_detail_info = [vk::DescriptorImageInfo::default()
-                    .sampler(cloud_noise.sampler)
-                    .image_view(cloud_noise.detail)
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let cloud_base_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.base)];
+                let cloud_detail_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.detail)];
                 let shadow_correction_info = [vk::DescriptorImageInfo::default()
                     .sampler(self.nearest_sampler)
                     .image_view(shadow_correction.views[i])

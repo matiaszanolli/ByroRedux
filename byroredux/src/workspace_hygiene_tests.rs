@@ -720,6 +720,13 @@ fn no_source_scan_cuts_with_the_weak_cfg_test_needle() {
         // too, which is the hazard the strong needle exists to avoid.
         format!("split_once(\"{attr}\")"),
         format!("split_once(\"\\n{attr}\")"),
+        // #6149 — the newline-prefixed weak spellings (9 sites the list above missed).
+        format!("split(\"\\n{attr}\")"),
+        format!("find(\"\\n{attr}\")"),
+        // #6149 — the strong needle spelled inline instead of calling
+        // `production_text` / `production_text_or_whole` (one home, #5100).
+        format!("(\"\\n{attr}\\nmod "),
+        format!("(\"{attr}\\nmod "),
     ]
     .to_vec();
     const ALLOWED: &[&str] = &[
@@ -729,6 +736,9 @@ fn no_source_scan_cuts_with_the_weak_cfg_test_needle() {
         "crates/renderer/src/texture_registry/dynamic_rgba.rs",
         "crates/pex/src/decompile/boolean.rs",
         "crates/facegen/src/lib.rs",
+        // `byroredux-ui` does not depend on `byroredux-core`; its one scan
+        // spells the strong needle itself (#6149).
+        "crates/ui/src/prepare.rs",
     ];
     let mut found = Vec::new();
     visit_workspace_rs_files(&workspace_root, &mut |path, contents| {

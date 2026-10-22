@@ -1759,10 +1759,7 @@ mod bench_subject_distance_tests {
     #[test]
     fn static_blas_recovery_runs_between_frames_not_in_the_render_driver() {
         let frame = include_str!("app_frame.rs");
-        let frame_production = frame
-            .split("\n#[cfg(test)]")
-            .next()
-            .expect("split always yields a first segment");
+        let frame_production = byroredux_core::source_scan::production_text_or_whole(frame);
         assert!(
             !frame_production.contains("restore_missing_static_blas_for_draws("),
             "the render driver must not rebuild static BLAS synchronously (#4180)"
@@ -1782,10 +1779,7 @@ mod bench_subject_distance_tests {
         );
 
         // Production half only: this test's own literals live in this file.
-        let step = include_str!("app_step.rs")
-            .split("\n#[cfg(test)]")
-            .next()
-            .expect("split always yields a first segment");
+        let step = byroredux_core::source_scan::production_text(include_str!("app_step.rs"));
         assert!(
             step.contains("self.frame_work_deadline = Some(streaming_deadline);")
                 && step.contains("ctx.restore_missing_static_blas_for_draws(&self.draw_commands, Some(deadline));"),
