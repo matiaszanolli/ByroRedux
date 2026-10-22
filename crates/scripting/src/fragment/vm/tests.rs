@@ -376,6 +376,78 @@ fn waits_past_the_shared_cap_stop_the_run() {
     }
 }
 
+/// #6216 — Int-declared natives read as Int and typed locals keep their type, so
+/// integer division truncates as in Papyrus: `GetValueInt()` of 12.5 is 12,
+/// `12 / 5` is 2 (not 2.4), `GetStage() / 4` at stage 10 is 2, `Float f = 3`
+/// divides as a float, and `Int j = 7` assigned 7.9 holds 7.
+#[test]
+fn int_natives_and_typed_locals_divide_as_papyrus_does() {
+    const CLOCK: u32 = 0x0001_0F10;
+    const OUT: [u32; 3] = [0x0001_0F11, 0x0001_0F12, 0x0001_0F13];
+    const SOURCE: &str = "ScriptName QF_VmInts extends Quest\n\
+        GlobalVariable Property Clock Auto\n\
+        GlobalVariable Property OutA Auto\n\
+        GlobalVariable Property OutB Auto\n\
+        GlobalVariable Property OutC Auto\n\
+        Function Fragment_1()\n\
+          Int i = Clock.GetValueInt()\n\
+          OutA.SetValue(i / 5)\n\
+          OutB.SetValue(Self.GetStage() / 4)\n\
+          Float f = 3\n\
+          Int j = 7\n\
+          j = 7.9\n\
+          OutC.SetValue(f / 2 + j)\n\
+        EndFunction\n";
+    let (script, errors) = byroredux_papyrus::parse_script(SOURCE).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let script = Arc::new(script);
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    let mut globals = crate::Globals::default();
+    globals.set(CLOCK, 12.5);
+    for out in OUT {
+        globals.set(out, -1.0);
+    }
+    world.insert_resource(globals);
+    let property = |name: &str, form_id: u32| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_VmInts".into(),
+                    status: 0,
+                    properties: vec![
+                        property("Clock", CLOCK),
+                        property("OutA", OUT[0]),
+                        property("OutB", OUT[1]),
+                        property("OutC", OUT[2]),
+                    ],
+                }],
+            },
+        );
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(Q, 10, vec![Effect::interpret("QF_VmInts", "Fragment_1", Vec::new())]);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let globals = world.resource::<crate::Globals>();
+    assert_eq!(globals.get(OUT[0]), Some(2.0), "GetValueInt truncates, then Int / Int");
+    assert_eq!(globals.get(OUT[1]), Some(2.0), "GetStage is an Int");
+    assert_eq!(globals.get(OUT[2]), Some(8.5), "Float f / 2 + Int j(7)");
+}
+
 /// `Global.Value = n` is `Global.SetValue(n)`; with `+=` it counts from the
 /// global's current value.
 #[test]

@@ -104,7 +104,15 @@ pub fn classify_native_effect(e: &Expr, bindings: &NativeBindings) -> Option<Eff
 
 /// M47.2 — a native numeric read with VM-bound values as a [`ValueExpr`].
 pub fn classify_native_value(e: &Expr, bindings: &NativeBindings) -> Option<ValueExpr> {
-    classify_value(e, &bindings.scope())
+    classify_native_number(e, bindings).map(|(value, _)| value)
+}
+
+/// #6216 — a native numeric read and whether the CK declares it `Int` (the VM
+/// truncates the evaluated number then, so `IDiv`, `%` and string text behave
+/// as in Papyrus). `GetValueInt()` reads the global's stored float, truncated
+/// — the lowering declines it (#6215), the VM runs it.
+pub fn classify_native_number(e: &Expr, bindings: &NativeBindings) -> Option<(ValueExpr, bool)> {
+    native_number(e, &bindings.scope())
 }
 
 /// M47.2 — a native Bool read with VM-bound values as guards that hold

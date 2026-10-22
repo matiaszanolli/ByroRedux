@@ -456,6 +456,11 @@ impl Vm<'_> {
                     Some(init) => self.eval(frame, &init.node)?,
                     None => Value::default_for(&variable.ty.node),
                 };
+                // #6216 — a typed local holds its type: `Int i = 2.7` is 2, `Float f = 3` is 3.0.
+                let value = match &variable.ty.node {
+                    ty @ (Type::Int | Type::Float) => cast(value, ty),
+                    _ => value,
+                };
                 frame
                     .locals
                     .insert(variable.name.node.0.to_ascii_lowercase(), value);
@@ -522,7 +527,14 @@ impl Vm<'_> {
             Expr::Ident(name) => {
                 let key = name.0.to_ascii_lowercase();
                 if let Some(slot) = frame.locals.get_mut(&key) {
-                    *slot = value;
+                    // #6216 — the declaration made an Int / Float local hold that
+                    // variant (and a resumed frame restores it), so the slot's own
+                    // variant is its declared type: an assignment keeps it.
+                    *slot = match (&*slot, value) {
+                        (Value::Int(_), value @ Value::Float(_)) => cast(value, &Type::Int),
+                        (Value::Float(_), value @ Value::Int(_)) => cast(value, &Type::Float),
+                        (_, value) => value,
+                    };
                     return Ok(());
                 }
                 if is_state_variable(&name.0) {
@@ -1131,9 +1143,12 @@ impl Vm<'_> {
             return Ok(Value::Str(self.script_state(frame.owner, &script)));
         }
         let (call, bindings, vmad) = self.synthesize(frame, callee, args)?;
-        if let Some(value) = classify_native_value(&call, &bindings) {
+        if let Some((value, int)) = classify_native_number(&call, &bindings) {
             let number = evaluate_value(&value, self.context, Some(&vmad), self.world, self.stages, self.deferred);
             return match number {
+                // #6216 — an `Int` native is an Int value (truncated, as Papyrus's
+                // Float → Int is), so `/` divides as integers and text has no ".000000".
+                Some(number) if int => Ok(Value::Int(number as i32)),
                 Some(number) => Ok(Value::Float(number)),
                 None => stop("a numeric read could not be resolved"),
             };

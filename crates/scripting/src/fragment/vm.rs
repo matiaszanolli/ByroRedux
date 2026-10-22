@@ -80,7 +80,7 @@ use crate::papyrus_provider::MAX_PROVIDER_WAIT_SECONDS;
 use crate::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageState};
 use crate::translate::compose::vmad_property_name;
 use crate::translate::effects::{
-    classify_native_effect, classify_native_guard, classify_native_value, NativeBindings, VmFrame,
+    classify_native_effect, classify_native_guard, classify_native_number, classify_native_value, NativeBindings, VmFrame,
     VmResume, VmStep, VmStored,
 };
 

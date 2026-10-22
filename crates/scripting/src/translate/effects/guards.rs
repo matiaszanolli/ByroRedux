@@ -193,6 +193,26 @@ pub(super) fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
     })
 }
 
+/// #6216 — [`classify_value`] for the VM's single native reads, with whether the
+/// read is `Int`-typed: a truncated global (`GetValueInt`) and the readings the
+/// CK declares `Int` (`GetStage`, `GetItemCount`, `GetRelationshipRank`,
+/// `GetLevel`, `Utility.RandomInt`).
+pub(super) fn native_number(e: &Expr, scope: &Scope) -> Option<(ValueExpr, bool)> {
+    if let Some(GuardReading::GlobalInt(global)) = guard_reading(e, scope) {
+        return Some((ValueExpr::Global(global), true));
+    }
+    let value = classify_value(e, scope)?;
+    let int = matches!(
+        value,
+        ValueExpr::Stage(_)
+            | ValueExpr::ItemCount(..)
+            | ValueExpr::RelationshipRank(..)
+            | ValueExpr::Level(_)
+            | ValueExpr::RandomInt(..)
+    );
+    Some((value, int))
+}
+
 /// What a guard atom reads, before its comparison is attached.
 enum GuardReading {
     StageDone(QuestRef, u16),
