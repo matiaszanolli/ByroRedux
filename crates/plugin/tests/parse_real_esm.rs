@@ -1309,12 +1309,14 @@ fn starfield_stored_avif_outputs_resolve_on_shipped_master() {
 /// material byte lands inside its game's Havok material enum (xEdit:
 /// Oblivion 0..=30, FO3/FNV 0..=31), and Skyrim names its material by
 /// `MATT` form instead. Counts measured 2026-10-21 (11 Oblivion LTEXs
-/// author no `HNAM`, though xEdit marks it required).
+/// author no `HNAM`, though xEdit marks it required; all 51 FO3 LTEXs carry
+/// one, #6329).
 #[test]
-#[ignore = "needs Oblivion, FNV and Skyrim SE game data on disk"]
+#[ignore = "needs Oblivion, FO3, FNV and Skyrim SE game data on disk"]
 fn ltex_havok_data_decodes_on_shipped_masters() {
     for (env, default, master, max_material, expected) in [
         (test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT, "Oblivion.esm", Some(30u8), 218),
+        (test_paths::FO3_ENV, test_paths::FO3_DEFAULT, "Fallout3.esm", Some(31), 51),
         (test_paths::FNV_ENV, test_paths::FNV_DEFAULT, "FalloutNV.esm", Some(31), 89),
         (test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT, "Skyrim.esm", None, 68),
     ] {
