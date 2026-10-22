@@ -31,6 +31,9 @@ name: Real-data corpus gates
 # quest scripts, silently `return`ed green without Oblivion.esm even under
 # `BYROREDUX_REQUIRE_GAME_DATA=1`, and no lane ever built the crate.
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:

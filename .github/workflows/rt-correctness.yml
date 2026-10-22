@@ -7,6 +7,9 @@ name: RT Correctness Gates
 # queue only grew (#6182). Run the gates locally on the RT dev box — `/audit-runtime`
 # lists the exact commands — and re-add a `schedule:` only after a runner is
 # registered.
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:
