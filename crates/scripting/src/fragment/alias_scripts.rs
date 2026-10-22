@@ -28,26 +28,22 @@ use byroredux_plugin::esm::records::script_instance::ScriptInstance;
 /// (#5988), and the engine's own forms (`0xFF` created references) sit above it.
 pub const ALIAS_OWNER_BASE: u32 = 0xFC00_0000;
 
-/// The events an alias script receives that the engine raises: its own
-/// lifecycle, and the events of the reference the alias is filled with.
-pub const DELIVERED_ALIAS_EVENTS: [&str; 16] = [
-    "OnInit",
-    "OnAliasInit",
-    "OnAliasShutdown",
-    "OnCellAttach",
-    "OnLoad",
-    "OnCellLoad",
-    "OnActivate",
-    "OnTriggerEnter",
-    "OnHit",
-    "OnEnterBleedout",
-    "OnCombatStateChanged",
-    "OnLocationChange",
-    "OnDying",
-    "OnDeath",
-    "OnCellDetach",
-    "OnUnload",
-];
+/// The events an alias script receives that the engine raises: `OnInit`, its own lifecycle
+/// (`OnAliasInit`, `OnAliasShutdown`), then the rest of the events of the reference the
+/// alias is filled with ([`SHARED_REFERENCE_EVENTS`](super::reference::SHARED_REFERENCE_EVENTS)).
+pub const DELIVERED_ALIAS_EVENTS: [&str; 16] = {
+    let shared = super::reference::SHARED_REFERENCE_EVENTS;
+    let mut out = [""; 16];
+    out[0] = shared[0];
+    out[1] = "OnAliasInit";
+    out[2] = "OnAliasShutdown";
+    let mut i = 1;
+    while i < shared.len() {
+        out[i + 2] = shared[i];
+        i += 1;
+    }
+    out
+};
 
 pub use super::vm::check_alias_script;
 

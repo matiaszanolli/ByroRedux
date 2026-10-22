@@ -30,10 +30,13 @@ use byroredux_core::ecs::storage::Component;
 use byroredux_plugin::esm::records::condition::ConditionStringId;
 use byroredux_plugin::esm::records::script_instance::ScriptInstance;
 
-/// The events reference scripts receive, in the order one cell load
-/// delivers the first four (CK *OnCellAttach*: "reliably called before
-/// OnCellLoad"; attach and load are one moment here).
-pub const DELIVERED_EVENTS: [&str; 18] = [
+/// The engine-raised events a reference script *and* an alias script receive (an alias
+/// script hears the events of the reference it is filled with), in the order one cell load
+/// delivers the first four (CK *OnCellAttach*: "reliably called before OnCellLoad"; attach
+/// and load are one moment here). [`DELIVERED_EVENTS`] and
+/// [`DELIVERED_ALIAS_EVENTS`](super::alias_scripts::DELIVERED_ALIAS_EVENTS) are built from
+/// it, so a new shared event is added once.
+pub(super) const SHARED_REFERENCE_EVENTS: [&str; 14] = [
     "OnInit",
     "OnCellAttach",
     "OnLoad",
@@ -48,13 +51,29 @@ pub const DELIVERED_EVENTS: [&str; 18] = [
     "OnDeath",
     "OnCellDetach",
     "OnUnload",
-    // Raised outside a script run, by `raise_reference_event`: a destructible
-    // object's stage worsening, and a trap body touching a live actor.
-    "OnDestructionStageChanged",
-    "OnTrapHit",
-    "OnTrapHitStart",
-    "OnTrapHitStop",
 ];
+
+/// Raised outside a script run, by `raise_reference_event`: a destructible object's stage
+/// worsening, and a trap body touching a live actor. Reference-only by design —
+/// `raise_reference_event` reaches `PapyrusReferenceScripts`, never an alias script.
+const REFERENCE_ONLY_EVENTS: [&str; 4] = ["OnDestructionStageChanged", "OnTrapHit", "OnTrapHitStart", "OnTrapHitStop"];
+
+/// The events reference scripts receive: [`SHARED_REFERENCE_EVENTS`], then the
+/// reference-only ones.
+pub const DELIVERED_EVENTS: [&str; 18] = {
+    let mut out = [""; 18];
+    let mut i = 0;
+    while i < SHARED_REFERENCE_EVENTS.len() {
+        out[i] = SHARED_REFERENCE_EVENTS[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < REFERENCE_ONLY_EVENTS.len() {
+        out[SHARED_REFERENCE_EVENTS.len() + j] = REFERENCE_ONLY_EVENTS[j];
+        j += 1;
+    }
+    out
+};
 
 /// An event the runtime delivers — to a reference, or an update to the
 /// script that registered for it. One the script does not handle in its
@@ -943,5 +962,33 @@ fn relay_engine_events(world: &World, markers: Markers) {
     }
     for (sender, event, args) in relays {
         super::events::relay_remote(world, sender, event, &args);
+    }
+}
+
+#[cfg(test)]
+mod delivered_event_list_tests {
+    use super::*;
+
+    /// #6158 — both public lists are built from the shared table; pin that the build kept
+    /// their content and order (the checker walks them in order, so order is observable).
+    #[test]
+    fn the_reference_and_alias_lists_keep_their_order_and_differ_only_where_documented() {
+        assert_eq!(
+            DELIVERED_EVENTS,
+            [
+                "OnInit", "OnCellAttach", "OnLoad", "OnCellLoad", "OnActivate", "OnTriggerEnter", "OnHit",
+                "OnEnterBleedout", "OnCombatStateChanged", "OnLocationChange", "OnDying", "OnDeath",
+                "OnCellDetach", "OnUnload", "OnDestructionStageChanged", "OnTrapHit", "OnTrapHitStart",
+                "OnTrapHitStop",
+            ]
+        );
+        assert_eq!(
+            crate::DELIVERED_ALIAS_EVENTS,
+            [
+                "OnInit", "OnAliasInit", "OnAliasShutdown", "OnCellAttach", "OnLoad", "OnCellLoad",
+                "OnActivate", "OnTriggerEnter", "OnHit", "OnEnterBleedout", "OnCombatStateChanged",
+                "OnLocationChange", "OnDying", "OnDeath", "OnCellDetach", "OnUnload",
+            ]
+        );
     }
 }
