@@ -43,6 +43,7 @@ impl GroundCoverPipeline {
             field_previous: None,
             field_write_half: 0,
             frame_field_state: GpuGroundCoverFieldState::default(),
+            pending_field_commit: false,
             frame_disturber_count: 0,
             bound_vertex_buffer: vk::Buffer::null(),
             pending_chunks: [0; MAX_FRAMES_IN_FLIGHT],

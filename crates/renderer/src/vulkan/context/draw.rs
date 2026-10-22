@@ -1215,6 +1215,36 @@ mod skin_dispatch_ran_ordering_tests {
         );
     }
 
+    /// #6291 — the ground-cover interaction field's ping-pong flip is staged at
+    /// record time and committed only after `queue_submit` returns `Ok`, through
+    /// the same two hooks as the skip-clear latches. Committing it when the dispatch
+    /// was recorded let a discarded command buffer leave `field_previous` marking a
+    /// half the GPU never wrote as valid.
+    #[test]
+    fn the_groundcover_field_flip_is_promoted_after_submit_not_at_record_time() {
+        let post_passes = crate::source_scan::production_text(include_str!("post_passes.rs"));
+        assert!(
+            post_passes.contains("gc.discard_pending_field_commit();")
+                && post_passes.contains("gc.promote_field_commit();"),
+            "the field flip rides discard_/promote_skip_clear_latches (#6291)"
+        );
+        let frame = crate::source_scan::production_text_or_whole(include_str!("../groundcover/frame.rs"));
+        let record_scatter = frame
+            .split("pub fn record_scatter(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n    pub fn ").next())
+            .expect("record_scatter must exist");
+        assert!(
+            !record_scatter.contains("commit_field_state("),
+            "record_scatter must stage the flip in `pending_field_commit`, not commit it (#6291)"
+        );
+        assert_eq!(
+            frame.matches("commit_field_state(").count(),
+            2,
+            "the definition and its one caller, promote_field_commit"
+        );
+    }
+
     /// The record-time latch and the submit-time flag must both be reset at the
     /// top of `draw_frame`, or a bailed frame reports the previous frame's
     /// outcome (#1796 for the first, #3991 for the second).

@@ -414,6 +414,12 @@ pub struct GroundCoverPipeline {
     field_previous: Option<[f32; 2]>,
     field_write_half: u32,
     frame_field_state: GpuGroundCoverFieldState,
+    /// This frame recorded an interaction dispatch whose ping-pong flip has not
+    /// been committed. Staged at record time and promoted once `queue_submit`
+    /// has returned `Ok`, like the skip-clear latches (#5956) and the skin chain
+    /// (#3991): a discarded command buffer wrote no half, so the next frame
+    /// must not reproject from one (#6291).
+    pending_field_commit: bool,
     frame_disturber_count: u32,
 
     bound_vertex_buffer: vk::Buffer,

@@ -117,6 +117,11 @@ impl VulkanContext {
     pub(super) fn discard_pending_skip_clear_latches(&mut self) {
         self.pending_caustic_cleared_on_skip = None;
         self.pending_volumetrics_cleared_on_skip = None;
+        // #6291 — the ground-cover interaction field's ping-pong flip is the
+        // same class of record-time decision about GPU work.
+        if let Some(gc) = self.groundcover.as_mut() {
+            gc.discard_pending_field_commit();
+        }
     }
 
     /// #5956 — commit the staged volumetrics / caustic skip-clear latches. Runs
@@ -124,6 +129,9 @@ impl VulkanContext {
     /// they vouch for is on the queue. A tail `Err` site returns first, with the
     /// staged values dropped, so the retry decides (and clears) again.
     pub(super) fn promote_skip_clear_latches(&mut self, frame: usize) {
+        if let Some(gc) = self.groundcover.as_mut() {
+            gc.promote_field_commit(); // #6291
+        }
         if let Some(latch) = self.pending_caustic_cleared_on_skip.take() {
             self.caustic_cleared_on_skip[frame] = latch;
         }

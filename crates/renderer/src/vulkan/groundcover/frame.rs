@@ -163,6 +163,26 @@ impl GroundCoverPipeline {
         )
     }
 
+    /// #6291 — drop the flip staged by the previous frame's recording. Called at
+    /// the top of `draw_frame`, so a frame that bails or whose submit failed
+    /// never commits a half the GPU did not write.
+    pub(crate) fn discard_pending_field_commit(&mut self) {
+        self.pending_field_commit = false;
+    }
+
+    /// #6291 — commit the staged ping-pong flip: this frame's dispatch is on the
+    /// queue, so its write half now holds a field at its origin. Runs once
+    /// `queue_submit` has returned `Ok`.
+    pub(crate) fn promote_field_commit(&mut self) {
+        if std::mem::take(&mut self.pending_field_commit) {
+            commit_field_state(
+                &self.frame_field_state,
+                &mut self.field_previous,
+                &mut self.field_write_half,
+            );
+        }
+    }
+
     fn harvest(&mut self, device: &ash::Device, frame: usize) {
         let truncated = std::mem::take(&mut self.pending_truncated[frame]);
         let dispatched = std::mem::take(&mut self.pending_chunks[frame]);
@@ -314,13 +334,9 @@ impl GroundCoverPipeline {
         if let Some(timers) = timers.as_deref_mut() {
             timers.cmd_groundcover_scatter_start(device, cmd, frame);
         }
-        if self.record_interaction(device, cmd, frame) {
-            commit_field_state(
-                &self.frame_field_state,
-                &mut self.field_previous,
-                &mut self.field_write_half,
-            );
-        }
+        // Staged, not committed: the flip is promoted after the submit succeeds
+        // (`promote_field_commit`, #6291).
+        self.pending_field_commit = self.record_interaction(device, cmd, frame);
         let counters = self.counter_buffer.as_ref().expect("created in new()");
         // SAFETY: `cmd` is recording; every handle below is live and owned by
         // this pipeline. The barriers order the clear against the dispatch and
