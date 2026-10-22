@@ -1171,9 +1171,9 @@ pub(crate) fn crate_visible_ignored() {}
 /// `Vec3::new(x, z, -y)` copies that a future change to the canonical
 /// conversion would miss. Matches the field form (`x, z, -y`, `p.x, p.z,
 /// -p.y`) and the index form (`p[0], p[2], -p[1]`) in production code: files
-/// named `*_tests.rs` / `tests.rs`, `tests/` directories and everything after a
-/// file's first `#[cfg(test)]` are skipped, since fixtures may spell the swap
-/// out on purpose.
+/// named `*_tests.rs` / `tests.rs`, `tests/` directories and `#[cfg(test)]`
+/// modules (`source_scan::strip_test_modules`) are skipped, since fixtures may
+/// spell the swap out on purpose.
 #[test]
 fn no_production_vec3_hand_rolls_the_zup_to_yup_swap() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1193,9 +1193,10 @@ fn no_production_vec3_hand_rolls_the_zup_to_yup_swap() {
             if name.ends_with("_tests.rs") || name == "tests.rs" || in_tests_dir {
                 return;
             }
-            let production = contents.split("#[cfg(test)]").next().unwrap_or("");
-            for (line_no, line) in hand_rolled_zup_swaps(production) {
-                found.push(format!("{}:{line_no}: {}", path.display(), line.trim()));
+            // Line numbers would be of the stripped text, so name the line.
+            let production = byroredux_core::source_scan::strip_test_modules(contents);
+            for (_, line) in hand_rolled_zup_swaps(&production) {
+                found.push(format!("{}: {}", path.display(), line.trim()));
             }
         });
     }
