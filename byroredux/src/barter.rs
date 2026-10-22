@@ -199,9 +199,10 @@ struct BarterSession {
     stand_in: bool,
 }
 
-/// The barter session in progress. `NOT_SAVED_BY_DESIGN`: the menu pauses
-/// the game and every page-leave path ends the session (parking a stand-in's
-/// stock) before a save can run.
+/// The barter session in progress. `NOT_SAVED_BY_DESIGN`: player save
+/// ingresses are blocked while the page is open; a console save taken then
+/// captures the stand-in merchant container, which loads back as an unresolved
+/// row that `park_unresolved_snapshot_rows` parks (#5054).
 #[derive(Debug, Default)]
 pub(crate) struct ActiveBarter(Option<BarterSession>);
 

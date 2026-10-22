@@ -509,7 +509,6 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingScriptStoryEvents", "script-raised story events queued for the Story Manager dispatcher, drained the frame they are raised"),
         ("AuthoredMapMarkers", "map markers' REFR FNAM visibility / travel flags; rebuilt from the load order by install_map_markers every boot"),
         ("ActorBaseTraits", "M47.2 — each NPC_ base's sex bit and VTCK voice type, installed from the load order every boot"),
-        ("CrimeFactions", "M47.2 — each NPC_ base's authored CRIF, installed from the load order every boot"),
         ("ScriptGame", "the load order's game kind, set by install_actor_value_names every boot"),
         ("ActorValueNames", "Papyrus actor-value names to AVIF FormIDs; rebuilt from the load order by install_actor_value_names every boot"),
         ("ExperienceRules", "Fallout kill-experience bands and health share; rebuilt from the load order's GMSTs by install_experience_rules every boot"),
@@ -540,7 +539,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("KeywordTable", "base objects' keywords (an actor's with its race's); rebuilt from the records by install_keyword_table every boot"),
         ("PendingBarterMenu", "a script's ShowBarterMenu request, consumed by the app the frame it is raised"),
         ("BarterRules", "the load order's vendor factions, merchant containers, buy/sell lists and barter GMSTs; rebuilt by install_barter_rules every boot"),
-        ("ActiveBarter", "the open barter session; the menu pauses the game and every page-leave path ends it (parking a stand-in chest's stock) before a save can run"),
+        ("ActiveBarter", "the open barter session; player save ingresses are blocked while the page is open. A remote / overlay-console save can still run then and captures the stand-in merchant container, which loads back as an unresolved row that park_unresolved_snapshot_rows parks (#5054)"),
         ("ButtonPresses", "an ObScript quest's answered message-box button until its GetButtonPressed reads it; UI state, gone with the box"),
         ("PendingScriptMessages", "script Message.Show / Debug.Notification output, routed to notifications and the message-box queue the frame it is raised"),
         ("QuestScriptInstances", "every quest's VMAD, for quest-script bodies inlined into INFO and scene fragments; rebuilt from the QUST records by install_quest_script_instances every boot"),
@@ -1043,6 +1042,18 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         .collect();
     let allowlisted: std::collections::HashSet<&str> =
         NOT_SAVED_BY_DESIGN.iter().map(|(name, _)| *name).collect();
+    // #6295 — a duplicate row collapses silently into the set above, and the
+    // reason that "wins" is whichever the set kept. One row per name.
+    assert_eq!(
+        allowlisted.len(),
+        NOT_SAVED_BY_DESIGN.len(),
+        "NOT_SAVED_BY_DESIGN has a duplicate name: {:?}",
+        NOT_SAVED_BY_DESIGN
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| NOT_SAVED_BY_DESIGN.iter().filter(|(other, _)| other == name).count() > 1)
+            .collect::<std::collections::BTreeSet<_>>(),
+    );
 
     // #3710 (ECS-P2-07) — pin that the two same-purpose PlayerEntity-shaped
     // resources (byroredux's own `PlayerEntity`, `Option<EntityId>`, and
