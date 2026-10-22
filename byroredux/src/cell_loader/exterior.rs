@@ -390,7 +390,7 @@ impl PersistentCellApplyJob {
             // a persistent quest actor's own SCRI/VMAD was silently absent for
             // as long as it was stub-only. The paired helper is now the only
             // way to spawn one of these, so the two cannot drift apart again.
-            let (_, attached) = super::references::spawn_logical_quest_reference_with_scripts(
+            let (stub, attached) = super::references::spawn_logical_quest_reference_with_scripts(
                 world,
                 placed,
                 &wctx.load_order,
@@ -399,6 +399,8 @@ impl PersistentCellApplyJob {
                 super::transition::rotation_zup_to_yup_quat(placed.rotation),
                 placed.scale,
             );
+            // #6220 — its home cell is not loaded: its script runs no `GameMode`.
+            world.insert(stub, byroredux_scripting::obscript_objects::UnloadedReferenceStub);
             if attached {
                 self.logical_stub_scripts += 1;
             }

@@ -118,6 +118,19 @@ impl Component for ObScriptInstance {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// An identity-only entity standing for a reference whose home cell is not loaded — a remote or
+/// spawn-less persistent actor the worldspace loader keeps as a logical stub (#6220). Its object
+/// script keeps its identity but runs no per-frame block: CS *GameMode*, "Not all scripts run every
+/// frame, e.g, Quest scripts … and scripts on references not loaded". (A disabled reference in a loaded
+/// cell still runs: CS / GECK *Disable*.) `RemoteSceneActorStub` is the scene path's twin and is treated
+/// the same. `NOT_SAVED_BY_DESIGN`: stamped by the loader with the stub.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UnloadedReferenceStub;
+
+impl Component for UnloadedReferenceStub {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Marks an actor whose combat the script has been told about: it has run
 /// `OnStartCombat` for the fight it is in. `NOT_SAVED_BY_DESIGN`: after a load an
 /// actor that is still in combat is told again, as the original does on a load.
@@ -277,6 +290,11 @@ fn collect_due(world: &World) -> Vec<Due> {
     }
     let entities_with = |events: Option<Vec<EntityId>>| -> HashSet<EntityId> { events.unwrap_or_default().into_iter().collect() };
     let loaded = entities_with(world.query::<OnCellLoadEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
+    // #6220 — stand-ins for references in unloaded cells run no `GameMode`.
+    let mut not_loaded = entities_with(world.query::<UnloadedReferenceStub>().map(|m| m.iter().map(|(entity, _)| entity).collect()));
+    not_loaded.extend(entities_with(
+        world.query::<crate::RemoteSceneActorStub>().map(|m| m.iter().map(|(entity, _)| entity).collect()),
+    ));
     // Read, not drained: `reference_script_event_system` owns the marker.
     let died = entities_with(world.query::<OnDeathEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
     // Activations, minus the native-only ones: "no OnActivate event will be sent
@@ -345,7 +363,7 @@ fn collect_due(world: &World) -> Vec<Due> {
                     }
                 }
                 BLOCK_ON_DEATH if died.contains(&entity) => runs.push(Run { block, who: None }),
-                BLOCK_GAME_MODE => runs.push(Run { block, who: None }),
+                BLOCK_GAME_MODE if !not_loaded.contains(&entity) => runs.push(Run { block, who: None }),
                 _ => {}
             }
         }
@@ -953,6 +971,26 @@ mod tests {
             obscript_object_system(&world, 0.016);
         }
         assert_eq!(counter(&world, entity), 3.0);
+    }
+
+    /// #6220 — a stand-in for a reference whose cell is not loaded runs no `GameMode` (CS *GameMode*:
+    /// "scripts on references not loaded" do not run), whether the persistent loader or the scene path
+    /// stamped it; its event blocks still answer their events.
+    #[test]
+    fn game_mode_skips_stubs_for_references_in_unloaded_cells() {
+        for marker in 0..2 {
+            let (mut world, entity) = world_with(&[BLOCK_GAME_MODE, BLOCK_ON_DEATH]);
+            if marker == 0 {
+                world.insert(entity, UnloadedReferenceStub);
+            } else {
+                world.insert(entity, crate::RemoteSceneActorStub);
+            }
+            obscript_object_system(&world, 0.016);
+            assert_eq!(counter(&world, entity), 0.0, "no GameMode on a stub");
+            world.insert(entity, OnDeathEvent { killer: None });
+            obscript_object_system(&world, 0.016);
+            assert_eq!(counter(&world, entity), 1.0, "OnDeath still runs");
+        }
     }
 
     /// `OnLoad` runs only on the frame the cell-load marker is there, `OnDeath`
