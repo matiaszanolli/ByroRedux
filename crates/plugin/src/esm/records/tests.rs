@@ -331,6 +331,31 @@ fn loading_screen_dispatch_preserves_flags_remap_override_and_deletion() {
     assert!(index.load_screens.is_empty());
 }
 
+/// #6298 — CHAL is the FNV layout; a Starfield CHAL (no `DATA`) is not decoded into a zeroed record.
+#[test]
+fn chal_is_decoded_only_with_the_fnv_layout() {
+    let plugin = |hedr_version: f32| {
+        let mut hedr = Vec::new();
+        hedr.extend_from_slice(&hedr_version.to_le_bytes());
+        hedr.extend_from_slice(&0u32.to_le_bytes());
+        hedr.extend_from_slice(&0u32.to_le_bytes());
+        let mut data = build_record(b"TES4", 0, &[(b"HEDR", hedr)]);
+        let mut chal_data = Vec::new();
+        for word in [11u32, 3, 0, 1, 0, 0] {
+            chal_data.extend_from_slice(&word.to_le_bytes());
+        }
+        let record = build_record(b"CHAL", 0x0000_0123, &[
+            (b"EDID", b"Challenge\0".to_vec()),
+            (b"DATA", chal_data),
+        ]);
+        data.extend_from_slice(&wrap_group(b"CHAL", &record));
+        parse_esm_with_load_order(&data, Some(FormIdRemap::regular(0, vec![]))).unwrap()
+    };
+    let fnv = plugin(1.34);
+    assert_eq!(fnv.challenges.get(&0x123).map(|chal| chal.threshold), Some(3));
+    assert!(plugin(0.96).challenges.is_empty(), "Starfield's CHAL has a different layout");
+}
+
 #[test]
 fn extract_records_walks_one_group() {
     let mut subs: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();

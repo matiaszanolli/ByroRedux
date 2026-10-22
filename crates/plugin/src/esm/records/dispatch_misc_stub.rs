@@ -221,8 +221,14 @@ pub(super) fn dispatch_misc_stub_group(
                 .caravan_decks
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
+        // #6298 — `parse_chal` is the FNV layout (`DATA` / `SNAM`). Starfield's CHAL is
+        // `EDID` + `wbBaseFormComponents` (`DNAM` / `CITC` / `ATAN` / `ATAV` / `CTDA`, no `DATA`),
+        // so its 8 records were zeroed `ChalRecord`s; like `parse_musc`, only the layout this
+        // decoder knows is read.
         b"CHAL" => extract_records(reader, end, b"CHAL", &mut |fid, subs| {
-            index.challenges.insert(fid, parse_chal(fid, subs, &remap));
+            if game == GameKind::Fallout3NV {
+                index.challenges.insert(fid, parse_chal(fid, subs, &remap));
+            }
         })?,
         b"CHIP" => extract_records(reader, end, b"CHIP", &mut |fid, subs| {
             index
