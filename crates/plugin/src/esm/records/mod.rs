@@ -85,7 +85,6 @@ pub use items::{
 pub use misc::{
     parse_musc, MuscRecord,
     challenge_kind, parse_chal, ChalRecord, FLAG_RECURRING as CHALLENGE_FLAG_RECURRING,
-    FLAG_SHOW_ZERO_PROGRESS as CHALLENGE_FLAG_SHOW_ZERO_PROGRESS,
     FLAG_START_DISABLED as CHALLENGE_FLAG_START_DISABLED,
     active_package, parse_acti, parse_arma, parse_avif, ActorValueRef, MagicArchetype, SpellType,
     MGEF_FLAG_DETRIMENTAL, MGEF_FLAG_RECOVER, parse_bptd, parse_cobj, parse_csty,

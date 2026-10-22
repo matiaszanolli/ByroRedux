@@ -281,10 +281,8 @@ pub fn compute_block_fragmentation(report: &gpu_allocator::AllocatorReport) -> V
     out
 }
 
-/// Format a fragmentation report into log-ready lines. Used both by
-/// the `mem.frag` console command and by the explicit
-/// [`log_fragmentation_report`] entry point. Pure formatting — no log
-/// emit, no side effects.
+/// Format a fragmentation report into log-ready lines for the `mem.frag`
+/// console command. Pure formatting — no log emit, no side effects.
 ///
 /// Empty `frags` (no allocator blocks yet) returns a single
 /// "no blocks" line so the caller's output isn't blank.
@@ -331,20 +329,6 @@ pub fn fragmentation_report_lines(frags: &[BlockFragInfo]) -> Vec<String> {
         ));
     }
     lines
-}
-
-/// Compute + emit a fragmentation report to the log. Explicit-call
-/// only — never wire into `log_memory_usage` or any per-frame path.
-/// The `mem.frag` console command surfaces the same data without
-/// going through the log.
-pub fn log_fragmentation_report(allocator: &SharedAllocator) {
-    let alloc = allocator.lock().expect("allocator lock poisoned");
-    let report = alloc.generate_report();
-    let frags = compute_block_fragmentation(&report);
-    drop(alloc);
-    for line in fragmentation_report_lines(&frags) {
-        log::info!("{}", line);
-    }
 }
 
 /// Create the GPU allocator. Call after logical device creation.
@@ -718,13 +702,13 @@ mod tests {
         // (path under src/vulkan, expected `.expect("allocator lock poisoned")`,
         //  expected `.lock().unwrap()`) — all remaining occurrences must be
         // allocation-side or read-only:
-        // - allocator.rs ×2: log_fragmentation_report / log_memory_usage
+        // - allocator.rs ×1: log_memory_usage
         // - buffer.rs ×1: create_bound_buffer's allocate
         // - texture.rs ×1: the DDS image allocate
         // - context/resources.rs ×1: fragmentation_report_lines
         // - screenshot/depth_capture ×1 each: staging *allocate*
         let allowlist: &[(&str, usize, usize)] = &[
-            ("allocator.rs", 2, 0),
+            ("allocator.rs", 1, 0),
             ("buffer.rs", 1, 0),
             ("texture.rs", 1, 0),
             ("context/resources.rs", 1, 0),

@@ -627,12 +627,6 @@ impl AudioWorld {
         self.manager.is_some()
     }
 
-    /// Borrow the inner `AudioManager` mutably. Returns `None` if
-    /// audio init failed; callers must handle that case.
-    pub fn manager_mut(&mut self) -> Option<&mut AudioManager<DefaultBackend>> {
-        self.manager.as_mut()
-    }
-
     /// Number of one-shot sounds currently tracked as active. Useful
     /// for telemetry — a runaway count signals a pruning regression.
     pub fn active_sound_count(&self) -> usize {
@@ -1402,7 +1396,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
 
     // Snapshot the (entity, sound, attenuation, volume, position) tuple
     // for every new one-shot before mutating storages. Locks held
-    // across `manager_mut().add_spatial_sub_track` would otherwise
+    // across `manager.add_spatial_sub_track` would otherwise
     // collide with the per-emitter component reads.
     struct Pending {
         entity: EntityId,

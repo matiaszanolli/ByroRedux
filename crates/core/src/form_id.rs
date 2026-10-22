@@ -100,7 +100,9 @@ impl PluginId {
         Self(uuid.as_u128())
     }
 
-    /// Convert back to a [`Uuid`] for serialization or display.
+    /// Convert back to a [`Uuid`]. Test-only — pins the `from_uuid`
+    /// round trip (#6192).
+    #[cfg(test)]
     pub fn as_uuid(&self) -> Uuid {
         Uuid::from_u128(self.0)
     }

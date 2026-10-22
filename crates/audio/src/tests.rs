@@ -36,7 +36,6 @@ fn test_sound() -> Arc<StaticSoundData> {
 fn explicit_headless_world_discards_playback_without_retaining_sound() {
     let mut audio = AudioWorld::headless();
     assert!(!audio.is_active());
-    assert!(audio.manager_mut().is_none());
     assert_eq!(audio.reverb_send_db(), f32::NEG_INFINITY);
     let sound = Arc::new(StaticSoundData {
         sample_rate: 44_100,

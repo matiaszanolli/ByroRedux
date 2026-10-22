@@ -97,12 +97,14 @@ impl SceneFlags {
         }
     }
 
-    /// Check if this is a node (vs leaf geometry).
+    /// Check if this is a node (vs leaf geometry). Test-only (#6192).
+    #[cfg(test)]
     pub fn is_node(self) -> bool {
         self.0 & Self::IS_NODE != 0
     }
 
-    /// Check if sorting is disabled.
+    /// Check if sorting is disabled. Test-only (#6192).
+    #[cfg(test)]
     pub fn sorting_disabled(self) -> bool {
         self.0 & Self::DISABLE_SORTING != 0
     }

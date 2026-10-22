@@ -964,7 +964,7 @@ impl<'l> Checker<'l> {
                     .is_some_and(|script| is_engine_class(&script))
             {
                 let result =
-                    self.check_native(receiver.clone(), Kind::None, &name, &arg_kinds, statement);
+                    self.check_native(receiver.clone(), &name, &arg_kinds, statement);
                 if result.is_none() {
                     return self.fail(|| format!("static native {name}/{}", arg_kinds.len()));
                 }
@@ -1075,7 +1075,7 @@ impl<'l> Checker<'l> {
         let Some(placeholder) = spanned_placeholder(receiver_kind) else {
             return self.fail(|| format!("{name} on {receiver_kind:?}"));
         };
-        let result = self.check_native(placeholder, receiver_kind, &name, &arg_kinds, statement);
+        let result = self.check_native(placeholder, &name, &arg_kinds, statement);
         if result.is_none() {
             return self.fail(|| {
                 let shapes: Vec<String> = arg_kinds
@@ -1160,7 +1160,6 @@ impl<'l> Checker<'l> {
     pub(super) fn check_native(
         &mut self,
         receiver: Expr,
-        _receiver_kind: Kind,
         name: &str,
         arg_kinds: &[Arg],
         statement: bool,

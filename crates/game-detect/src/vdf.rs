@@ -26,8 +26,6 @@
 //! `Vec` rather than a map; [`Value::get`] returns the first match, which is
 //! the same precedence Steam's own reader applies.
 
-use std::collections::BTreeMap;
-
 /// One parsed KeyValues node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
@@ -64,7 +62,9 @@ impl Value {
     }
 
     /// Flatten a `"key" "value"` block into a map, skipping nested objects.
-    pub fn string_map(&self) -> BTreeMap<String, String> {
+    /// Test-only (#6192).
+    #[cfg(test)]
+    pub fn string_map(&self) -> std::collections::BTreeMap<String, String> {
         self.entries()
             .iter()
             .filter_map(|(key, value)| match value {

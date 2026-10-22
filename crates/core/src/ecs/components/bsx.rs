@@ -50,6 +50,8 @@ impl BSXFlags {
         self.0 & Self::ANIMATED != 0
     }
 
+    // Test-only: no runtime consumer reads this bit (#6192).
+    #[cfg(test)]
     pub fn contains_marker_children(self) -> bool {
         self.0 & Self::MARKER_CHILDREN_PRESENT != 0
     }
