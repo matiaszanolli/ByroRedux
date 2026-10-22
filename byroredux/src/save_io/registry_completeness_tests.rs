@@ -1318,3 +1318,26 @@ fn every_delta_column_is_parked_or_explicitly_not() {
         );
     }
 }
+
+/// #6296 — the schema fingerprint hashes the registered column names in
+/// registration order, but the snapshot itself is a name-keyed map: a pure
+/// reorder (which #5802's registration-row moves risk with every slice)
+/// changes the fingerprint and makes every existing save fail with
+/// `SchemaMismatch`, with no data change to explain it. Pinning the value
+/// makes that reorder fail here instead of on a player's next load.
+///
+/// A deliberate column add / remove / rename moves it too: refresh the value
+/// in the same change and say why. A move with no column change is an order
+/// regression — put the row back where it was.
+#[test]
+fn the_schema_fingerprint_is_pinned() {
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xc008_06b4_d7b3_7cf8;
+    let actual = build_save_registry().schema_fingerprint();
+    assert_eq!(
+        actual, BASELINE_SCHEMA_FINGERPRINT,
+        "the save schema fingerprint moved (actual={actual:#018x}). If a column was added, \
+         removed or renamed, refresh BASELINE_SCHEMA_FINGERPRINT with the reason; if not, a \
+         registration row changed position (#5802) and every existing save would be rejected \
+         with SchemaMismatch — restore the order"
+    );
+}
