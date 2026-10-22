@@ -121,12 +121,14 @@ pub(crate) fn encumbrance_system(world: &World, _dt: f32) {
     else {
         return;
     };
+    // Weigh the stacks under the read guards rather than cloning the inventory
+    // each frame (#6313). Safe to nest: this is an exclusive system and both are
+    // read locks (its declared access is `reads` for each).
     let weight = {
-        let Some(inventory) = world.get::<Inventory>(player).map(|inventory| inventory.clone())
-        else {
+        let Some(catalog) = world.try_resource::<crate::inventory::InventoryCatalog>() else {
             return;
         };
-        let Some(catalog) = world.try_resource::<crate::inventory::InventoryCatalog>() else {
+        let Some(inventory) = world.get::<Inventory>(player) else {
             return;
         };
         catalog.inventory_weight(&inventory)

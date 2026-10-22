@@ -33,6 +33,9 @@ pub struct HeadLook {
     pub target: EntityId,
     pub yaw: f32,
     pub pitch: f32,
+    /// The actor's head bone once the head-look system has found it, so the skeleton is
+    /// not re-walked every frame (#6313). The system re-validates it on use.
+    pub head: Option<EntityId>,
 }
 
 impl byroredux_core::ecs::storage::Component for HeadLook {
@@ -42,7 +45,7 @@ impl byroredux_core::ecs::storage::Component for HeadLook {
 /// Make `actor` head-track `target`; `false` when the actor cannot hold the component.
 pub fn start_look(world: &World, actor: EntityId, target: EntityId) -> bool {
     let Some(mut looks) = world.query_mut::<HeadLook>() else { return false };
-    looks.insert(actor, HeadLook { target, yaw: 0.0, pitch: 0.0 });
+    looks.insert(actor, HeadLook { target, yaw: 0.0, pitch: 0.0, head: None });
     true
 }
 

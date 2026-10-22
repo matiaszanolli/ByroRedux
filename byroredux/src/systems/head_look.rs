@@ -32,6 +32,8 @@ const TURN_RATE: f32 = 3.0;
 const FORWARD: Vec3 = Vec3::NEG_Z;
 /// The head bone of the humanoid and creature skeletons the games ship.
 const HEAD_BONE: &str = "bip01 head";
+/// How far down a skeleton the head bone can sit; deeper than any shipped rig.
+const MAX_HEAD_DEPTH: usize = 32;
 
 fn find_head(world: &World, root: EntityId) -> Option<EntityId> {
     let symbol = world.try_resource::<StringPool>()?.get(HEAD_BONE)?;
@@ -41,6 +43,35 @@ fn find_head(world: &World, root: EntityId) -> Option<EntityId> {
     let subtree = collect_subtree(world, root);
     let names = world.query::<Name>()?;
     subtree.into_iter().find(|&entity| names.get(entity).is_some_and(|name| name.0 == symbol))
+}
+
+/// Whether `candidate` is still the head bone of `root`'s skeleton: it carries the head name and
+/// `root` is among its ancestors. Cheap (a name read and a few parent hops), so a cached head is
+/// re-proved every frame rather than trusted across a despawn / entity-id reuse.
+fn is_head_of(world: &World, candidate: EntityId, root: EntityId, symbol: byroredux_core::string::FixedString) -> bool {
+    if !world.get::<Name>(candidate).is_some_and(|name| name.0 == symbol) {
+        return false;
+    }
+    let mut at = candidate;
+    for _ in 0..MAX_HEAD_DEPTH {
+        match world.get::<Parent>(at).map(|parent| parent.0) {
+            Some(parent) if parent == root => return true,
+            Some(parent) => at = parent,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// The head bone for `root`: the one `HeadLook` cached if it is still valid, else a subtree walk.
+fn head_bone(world: &World, root: EntityId, cached: Option<EntityId>) -> Option<EntityId> {
+    if let Some(candidate) = cached {
+        let symbol = world.try_resource::<StringPool>()?.get(HEAD_BONE)?;
+        if is_head_of(world, candidate, root, symbol) {
+            return Some(candidate);
+        }
+    }
+    find_head(world, root)
 }
 
 fn signed_angle(from: f32, to: f32) -> f32 {
@@ -70,7 +101,7 @@ pub(crate) fn head_look_system(world: &World, dt: f32) {
         };
         let Some(actor_global) = world.get::<GlobalTransform>(actor).map(|t| *t) else { continue };
         let root = world.get::<AnimationTarget>(actor).map_or(actor, |target| target.skeleton_root);
-        let Some(head) = find_head(world, root) else { continue };
+        let Some(head) = head_bone(world, root, look.head) else { continue };
         let Some(parent) = world.get::<Parent>(head).map(|parent| parent.0) else { continue };
         let Some(parent_global) = world.get::<GlobalTransform>(parent).map(|t| *t) else { continue };
         let Some(local) = world.get::<Transform>(head).map(|t| *t) else { continue };
@@ -98,6 +129,7 @@ pub(crate) fn head_look_system(world: &World, dt: f32) {
             if let Some(stored) = looks.get_mut(actor) {
                 stored.yaw = yaw;
                 stored.pitch = pitch;
+                stored.head = Some(head);
             }
         }
         // Turn about the vertical by the yaw, nod about the body's (turned) right axis by the pitch.
@@ -150,12 +182,27 @@ mod tests {
         let actor = bone(&mut world, None, "Actor", Vec3::ZERO);
         let head = bone(&mut world, Some(actor), "Bip01 Head", Vec3::new(0.0, 1.7, 0.0));
         let target = bone(&mut world, None, "Target", target_at);
-        world.insert(actor, HeadLook { target, yaw: 0.0, pitch: 0.0 });
+        world.insert(actor, HeadLook { target, yaw: 0.0, pitch: 0.0, head: None });
         (world, actor, head, target)
     }
 
     fn head_forward(world: &World, head: EntityId) -> Vec3 {
         world.get::<Transform>(head).unwrap().rotation * FORWARD
+    }
+
+    /// #6313 — the head bone is found once and cached on the look; a cached bone that stops being
+    /// the skeleton's head (renamed, despawned, id reused elsewhere) is replaced by a fresh walk.
+    #[test]
+    fn the_head_bone_is_cached_and_revalidated() {
+        let (mut world, actor, head, _target) = fixture(Vec3::new(-10.0, 1.7, -10.0));
+        head_look_system(&world, 0.016);
+        assert_eq!(world.get::<HeadLook>(actor).unwrap().head, Some(head), "found once, kept");
+
+        // The skeleton is rebuilt: the old bone loses its name, a new head takes its place.
+        world.query_mut::<Name>().unwrap().remove(head);
+        let replacement = bone(&mut world, Some(actor), "Bip01 Head", Vec3::new(0.0, 1.7, 0.0));
+        head_look_system(&world, 0.016);
+        assert_eq!(world.get::<HeadLook>(actor).unwrap().head, Some(replacement), "stale cache re-found");
     }
 
     /// The body faces -Z. A target to its left (-X) turns the head toward -X at a steady rate, a target
