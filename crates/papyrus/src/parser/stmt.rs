@@ -186,7 +186,7 @@ impl Parser {
     /// type keyword. `Int x = 5`, `Float[] f`, `Bool flag = True`.
     /// Caller has already confirmed the lookahead.
     fn parse_var_decl_stmt(&mut self) -> Result<Spanned<Stmt>, ParseError> {
-        let var = self.parse_variable_body()?;
+        let var = self.parse_variable_body(false)?;
         let span = var.ty.span.merge(
             var.initial_value
                 .as_ref()
@@ -244,11 +244,19 @@ impl Parser {
     /// Parse a `Variable` body starting from the type. Used by both
     /// the local var path (after the type-keyword dispatch) and the
     /// top-level var path in `parser/script.rs`. Does NOT consume
-    /// the trailing newline — caller's responsibility.
-    pub(super) fn parse_variable_body(&mut self) -> Result<Variable, ParseError> {
+    /// the trailing newline — caller's responsibility. `struct_member`
+    /// admits `Parent` as the name (#5888 / #6263).
+    pub(super) fn parse_variable_body(
+        &mut self,
+        struct_member: bool,
+    ) -> Result<Variable, ParseError> {
         let ty = self.parse_type()?;
         // #5021 — raw: `Int` ⏎ `x = 5` is not a declaration of x.
-        let name = self.expect_ident_raw("variable name")?;
+        let name = if struct_member {
+            self.expect_member_name("variable name", true)?
+        } else {
+            self.expect_ident_raw("variable name")?
+        };
         // #4763 — raw: `Int x` ⏎ `= 5` must not glue. Backs both the local
         // keyword-typed declaration and the `Struct` member paths.
         let initial_value = if matches!(self.peek_raw(), Some(Token::Eq)) {

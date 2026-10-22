@@ -419,14 +419,40 @@ impl Parser {
             Token::KwNative => Some("Native".to_string()),
             Token::KwConst => Some("Const".to_string()),
             Token::KwGlobal => Some("Global".to_string()),
-            // #5888 — F4SE's `ObjectReference.psc` declares
-            // `struct ConnectPoint { string parent }`. `Parent` is a keyword
-            // only in expression-primary position (`parse_prefix` dispatches
-            // on it before ever reaching an identifier), so declaration
-            // names and `.member` names may use it.
-            Token::KwParent => Some("Parent".to_string()),
+            // `Parent` is deliberately absent (#6263): unlike the keywords
+            // above it means something in expression position, so a local or
+            // parameter named `Parent` would be declared and then never
+            // referable — every use parses as `ParentAccess`. See
+            // [`expect_member_name`](Self::expect_member_name).
             _ => None,
         }
+    }
+
+    /// [`expect_ident_raw`](Self::expect_ident_raw) for a struct-member
+    /// name, or [`expect_ident`](Self::expect_ident) (`raw == false`) for
+    /// the name after `.`. These are the two positions where `Parent` is a
+    /// name (#5888 — F4SE's `ObjectReference.psc` declares
+    /// `struct ConnectPoint { string parent }`): a member is only ever read
+    /// through `x.parent`, which never reaches `parse_prefix`, so it cannot
+    /// be shadowed by `ParentAccess` the way a local could (#6263).
+    pub fn expect_member_name(
+        &mut self,
+        context: &str,
+        raw: bool,
+    ) -> Result<Spanned<Identifier>, ParseError> {
+        if raw {
+            self.expect_same_line(&format!("identifier ({context})"))?;
+        } else {
+            self.skip_newlines();
+        }
+        if let Some(tok) = self.tokens.get(self.pos) {
+            if tok.token == Token::KwParent {
+                let span = tok.span;
+                self.pos += 1;
+                return Ok(Spanned::new(Identifier::new("Parent".to_string()), span));
+            }
+        }
+        self.expect_ident(context)
     }
 
     /// Parse a possibly namespace-qualified identifier: `A:B:C`

@@ -745,7 +745,7 @@ impl Parser {
                     // #2125 — recover per-member rather than propagating
                     // via `?`, which would discard the whole Struct
                     // (including members parsed fine before/after it).
-                    let mut var = match self.parse_variable_body() {
+                    let mut var = match self.parse_variable_body(true) {
                         Ok(var) => var,
                         Err(e) => {
                             self.push_error(e);
@@ -2137,6 +2137,24 @@ EndProperty
         };
         let names: Vec<_> = st.members.iter().map(|m| m.name.node.0.as_str()).collect();
         assert_eq!(names, ["Parent", "name"]);
+    }
+
+    /// #6263 — outside a struct member or `.member`, `Parent` is not a
+    /// name: a local or parameter so named could never be referred to
+    /// (every use parses as `ParentAccess`), so declaring one is an error
+    /// rather than a silently wrong tree.
+    #[test]
+    fn parent_is_not_a_local_or_parameter_name() {
+        for src in [
+            "ScriptName T\nFunction F()\nInt Parent = 1\nParent = 2\nEndFunction\n",
+            "ScriptName T\nFunction F()\nActor Parent\nEndFunction\n",
+            "ScriptName T\nFunction F(Actor Parent)\nParent.Kill()\nEndFunction\n",
+            "ScriptName T\nInt Parent\n",
+            "ScriptName T\nInt Property Parent Auto\n",
+        ] {
+            let (_, errors) = parse_counting_errors(src);
+            assert!(errors > 0, "{src:?} must not declare `Parent`");
+        }
     }
 
     /// #5890 — there is no leading-doc form: a top-level `{lead}` before a

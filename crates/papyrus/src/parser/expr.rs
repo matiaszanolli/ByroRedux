@@ -267,7 +267,7 @@ impl Parser {
     /// Parse `.member` access after an expression.
     fn parse_member_access(&mut self, lhs: Spanned<Expr>) -> Result<Spanned<Expr>, ParseError> {
         self.advance(); // consume '.'
-        let member = self.expect_ident("member name")?;
+        let member = self.expect_member_name("member name", false)?;
         let span = lhs.span.merge(member.span);
         Ok(Spanned::new(
             Expr::MemberAccess {
