@@ -725,6 +725,20 @@ impl StateMachine {
 /// How many sub-behaviors [`BehaviorGraph::inline_references`] pulls in before it stops
 /// (a graph can refer to the same few behaviors from many states).
 const MAX_INLINED_REFERENCES: usize = 64;
+/// #6212 — the total weight ([`machine_weight`]: states, transitions, clips, modifiers) every
+/// sub-behavior inlined into one graph may add, together. [`MAX_GRAPH_STEPS`] bounds one decode
+/// and every unit weighed here cost at least one step to decode, so the inlined volume stays
+/// within one maximal graph's worth however the references repeat.
+const MAX_INLINED_WEIGHT: usize = MAX_GRAPH_STEPS;
+
+/// What inlining may still spend (#6212): resolves and weight, shared by the whole recursion,
+/// and the references being inlined above the current one (a reference already on that stack
+/// is a cycle, which can never fit the nesting limit).
+struct InlineBudget {
+    references: usize,
+    weight: usize,
+    stack: Vec<String>,
+}
 /// Machines nested in machines, through the generators of their states: the 32 levels of
 /// generator nesting a decoded file can reach below the root machine, plus the root. A sub-behavior
 /// inlined under a state counts against the same limit, so every recursive walk over the
@@ -835,6 +849,30 @@ fn offset_machine_modifier_ids(machine: &mut StateMachine, offset: u32) {
     }
 }
 
+/// A machine's size for [`MAX_INLINED_WEIGHT`]: its states, transitions, clips, sequences and
+/// modifiers, nested machines included (a machine a generator holds is counted through both the
+/// generator and the flattened list: an over-count, never an under-count).
+fn machine_weight(machine: &mut StateMachine) -> usize {
+    let mut weight = 1 + machine.wildcard.len();
+    for state in &mut machine.states {
+        weight += 1
+            + state.transitions.len()
+            + usize::from(state.clip.is_some())
+            + state.content.blended_clips.len()
+            + state.content.sequences.len();
+        if let Some(generator) = &mut state.content.generator {
+            let mut nodes = 0usize;
+            generator.for_each_clip_mut(&mut |_| nodes += 1);
+            generator.for_each_modifier_mut(&mut |_| nodes += 1);
+            weight += nodes;
+        }
+        for inner in &mut state.content.machines {
+            weight += machine_weight(inner);
+        }
+    }
+    weight
+}
+
 /// How many machines deep `machine` goes: itself and the longest chain of machines nested in
 /// the states below it.
 fn machine_height(machine: &StateMachine) -> usize {
@@ -935,7 +973,7 @@ impl BehaviorGraph {
     /// transitions. `resolve` loads a referenced behavior by the path it names; a
     /// reference it cannot load is left as it was.
     pub fn inline_references(&mut self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>) {
-        let mut budget = MAX_INLINED_REFERENCES;
+        let mut budget = InlineBudget { references: MAX_INLINED_REFERENCES, weight: MAX_INLINED_WEIGHT, stack: Vec::new() };
         self.inline_references_with(resolve, &mut budget);
     }
 
@@ -943,7 +981,7 @@ impl BehaviorGraph {
         &mut self,
         machine: &mut StateMachine,
         resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>,
-        budget: &mut usize,
+        budget: &mut InlineBudget,
         ids: &mut u32,
         names: &mut Interned,
         depth: usize,
@@ -955,14 +993,37 @@ impl BehaviorGraph {
                 if state.content.reference_machines[ordinal].is_some() {
                     continue;
                 }
-                if *budget == 0 {
+                if budget.references == 0 || budget.weight == 0 {
                     break;
                 }
-                *budget -= 1;
                 let reference = state.content.behavior_references[ordinal].clone();
+                let key = reference.to_ascii_lowercase();
+                // #6212 — a graph being inlined above this one (itself, or a cycle through
+                // others) nests without end: it can never fit, so it is not loaded at all.
+                if budget.stack.contains(&key) {
+                    continue;
+                }
+                budget.references -= 1;
                 let Some(mut inner) = resolve(&reference) else { continue };
+                // #6212 — charge the loaded graph before anything recurses into it, against one
+                // weight budget for the whole inline: every resolve is a full copy, and the
+                // copies a recursion holds are live at once.
+                let weight = inner.machine.as_mut().map_or(0, machine_weight);
+                let Some(left) = budget.weight.checked_sub(weight) else {
+                    budget.weight = 0;
+                    break;
+                };
+                budget.weight = left;
+                // Nested under this machine it sits one level down: it must still fit the limit a
+                // decoded file keeps to. Checked before the recursion (which only adds height) and
+                // again after it.
+                if inner.machine.as_ref().is_none_or(|inner_machine| depth + machine_height(inner_machine) > MAX_MACHINE_NESTING) {
+                    continue;
+                }
                 // The referenced graph's own references first (its events are its own).
+                budget.stack.push(key);
                 inner.inline_references_with(resolve, budget);
+                budget.stack.pop();
                 let Some(inner_machine) = inner.machine.as_ref() else { continue };
                 // Nested under this machine it sits one level down: it must still fit the limit
                 // a decoded file keeps to (a graph that refers to itself would otherwise stack
@@ -971,24 +1032,40 @@ impl BehaviorGraph {
                     continue;
                 }
                 let inner_bound = machine_modifier_id_bound(inner_machine);
+                // #6212 — modifier ids are file-offset-derived: a sum past `u32` would wrap into
+                // colliding ids. A sub-behavior that does not fit is left out.
+                let Some(next_ids) = ids.checked_add(inner_bound) else { continue };
                 let Some(mut inner_machine) = inner.machine.take() else { continue };
                 let map: Vec<i32> = inner.events.iter().map(|name| self.intern_event(names, name)).collect();
                 remap_machine_events(&mut inner_machine, &map);
                 let variable_map: Vec<usize> = inner.variables.iter().map(|variable| self.intern_variable(names, variable)).collect();
                 remap_machine_variables(&mut inner_machine, &variable_map);
                 // Keep the sub-behavior's modifier ids apart from everything inlined so far.
+                // Every id is below `inner_bound`, so `id + *ids` stays below `next_ids`.
                 offset_machine_modifier_ids(&mut inner_machine, *ids);
-                *ids += inner_bound;
+                *ids = next_ids;
                 state.content.machines.push(inner_machine);
                 state.content.reference_machines[ordinal] = Some(state.content.machines.len() - 1);
             }
-            for inner in &mut state.content.machines {
+            // A machine inlined from a reference is walked with that reference on the stack, so
+            // the cycles its own inline cut stay cut here (#6212).
+            let origins: Vec<Option<String>> = (0..state.content.machines.len())
+                .map(|index| {
+                    let ordinal = state.content.reference_machines.iter().position(|machine| *machine == Some(index))?;
+                    Some(state.content.behavior_references[ordinal].to_ascii_lowercase())
+                })
+                .collect();
+            for (inner, origin) in state.content.machines.iter_mut().zip(origins) {
+                let pushed = origin.map(|key| budget.stack.push(key)).is_some();
                 self.inline_machine(inner, resolve, budget, ids, names, depth + 1);
+                if pushed {
+                    budget.stack.pop();
+                }
             }
         }
     }
 
-    fn inline_references_with(&mut self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>, budget: &mut usize) {
+    fn inline_references_with(&mut self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>, budget: &mut InlineBudget) {
         let Some(mut machine) = self.machine.take() else { return };
         let mut ids = machine_modifier_id_bound(&machine);
         let mut names = Interned::of(self);
@@ -2100,7 +2177,63 @@ mod tests {
         let height = machine_height(graph.machine.as_ref().unwrap());
         assert!(height > 1, "the first levels still inline");
         assert!(height <= MAX_MACHINE_NESTING, "{height} machines deep");
-        assert!(resolved <= MAX_INLINED_REFERENCES);
+        // #6212 — the copy that refers to itself again is never loaded: each resolve is a full
+        // copy, and the recursion used to hold up to 64 of them at once.
+        assert_eq!(resolved, 1, "the cycle is cut at the first repeat");
+    }
+
+    /// #6212 — two behaviors that name each other: each is loaded once on the way down, and
+    /// the repeat is cut before it is resolved, not after its whole subtree was built.
+    #[test]
+    fn mutually_referencing_behaviors_are_each_loaded_once() {
+        let naming = |other: &str| BehaviorGraph {
+            variables: Vec::new(),
+            events: Vec::new(),
+            machine: Some(machine_of(
+                0,
+                vec![state_of(0, None, StateContent { behavior_references: vec![other.into()], ..Default::default() })],
+            )),
+        };
+        let (a, b) = (naming("B.hkx"), naming("A.hkx"));
+        let mut graph = a.clone();
+        let mut resolved = Vec::new();
+        graph.inline_references(&mut |path| {
+            resolved.push(path.to_owned());
+            Some(if path == "A.hkx" { a.clone() } else { b.clone() })
+        });
+        assert_eq!(resolved, ["B.hkx", "A.hkx"]);
+    }
+
+    /// #6212 — every inlined sub-behavior is charged against one weight budget for the whole
+    /// graph, before it is recursed into: 64 distinct references to a heavy behavior stop at
+    /// the budget instead of holding 64 copies.
+    #[test]
+    fn inlined_volume_is_bounded_by_one_shared_weight_budget() {
+        let transition = Transition { event: 0, to_state: 0, priority: 0, flags: 0, ..Default::default() };
+        let mut heavy_state = state_of(0, None, StateContent::default());
+        heavy_state.transitions = vec![transition; MAX_INLINED_WEIGHT / 10];
+        let heavy = BehaviorGraph {
+            variables: Vec::new(),
+            events: vec!["E".into()],
+            machine: Some(machine_of(0, vec![heavy_state])),
+        };
+        let references: Vec<String> = (0..MAX_INLINED_REFERENCES).map(|index| format!("Heavy{index}.hkx")).collect();
+        let mut parent = BehaviorGraph {
+            variables: Vec::new(),
+            events: Vec::new(),
+            machine: Some(machine_of(
+                0,
+                vec![state_of(0, None, StateContent { behavior_references: references, ..Default::default() })],
+            )),
+        };
+        let mut resolved = 0;
+        parent.inline_references(&mut |_| {
+            resolved += 1;
+            Some(heavy.clone())
+        });
+        let inlined = parent.machine.unwrap().states[0].content.reference_machines.iter().flatten().count();
+        assert!(inlined < 10, "{inlined} heavy behaviors inlined past the weight budget");
+        assert!(resolved <= inlined + 1, "{resolved} resolves: loading stops once the budget is spent");
     }
 
     /// Event and variable names join the parent's table case-insensitively, the first spelling
