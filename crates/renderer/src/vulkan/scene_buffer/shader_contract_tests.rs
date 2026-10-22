@@ -818,6 +818,32 @@ fn eye_envmap_measures_its_relative_centres_against_the_relative_position() {
     }
 }
 
+/// #6261 — the eye cube is the eye's reflection, sampled at mip 0. Vanilla
+/// eyes carry no roughness signal, so a `roughness`-driven LOD reads the
+/// classifier's no-signal neutral (0.85 → LOD 6.8), which clamps the 32²
+/// vanilla `eyecubemap.dds` to its 1×1 mip. Static source check: the
+/// block's cube sample takes no `roughness` term.
+#[test]
+fn eye_envmap_samples_its_cube_at_mip_zero() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let start = frag
+        .find("if (isEyeEnvmap) {")
+        .expect("the EyeEnvmap block must exist");
+    let block = &frag[start..];
+    let block = &block[..block
+        .find("Lo += eyeEnv")
+        .expect("the EyeEnvmap block must accumulate into Lo")];
+    let sample = &block[block
+        .find("textureLod(")
+        .expect("the EyeEnvmap block samples its cube with textureLod")..];
+    let sample = &sample[..sample.find(';').expect("statement end")];
+    assert!(
+        !sample.contains("roughness"),
+        "the eye cube LOD must not come from `roughness` (#6261): {sample}"
+    );
+    assert!(sample.contains("0.0\n"), "the eye cube is sampled at LOD 0: {sample}");
+}
+
 /// Pin the scale-aware offset and its zero-tMin shadow traversal together.
 /// Reintroducing a fixed world epsilon at either layer recreates acne at
 /// large coordinates and light leaks at small/detail scale.

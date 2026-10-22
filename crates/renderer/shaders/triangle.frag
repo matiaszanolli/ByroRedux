@@ -3164,10 +3164,14 @@ void main() {
         // Renderer world space is Y-up; authored cubemaps are Z-up — the
         // same (x, z, -y) face selection the generic cube path uses.
         vec3 cubeDirection = normalize(vec3(eyeR.x, -eyeR.z, eyeR.y));
+        // #6261 — mip 0, never `roughness`: vanilla eyes author no
+        // roughness signal, so `roughness` here is the classifier's
+        // no-signal neutral (0.85), and `0.85 * 8` clamped the 32² vanilla
+        // `eyecubemap.dds` to its 1×1 mip — one flat colour per face.
         vec3 eyeEnv = textureLod(
             cubemaps[nonuniformEXT(mat.envMapIndex)],
             cubeDirection,
-            roughness * 8.0
+            0.0
         ).rgb * clamp(mat.eyeCubemapScale, 0.0, 4.0);
         // Fresnel-weighted like every other env reflection (grazing
         // stronger), modulated by the authored eye environment mask
