@@ -497,28 +497,8 @@ fn populate_quest_fragments_from_script_internal(
 /// Decompile and lower the lifecycle fragments for one authored scene.
 /// Scene fragments use the same conservative effect vocabulary and property
 /// resolution as quest-stage fragments; any function containing an unknown
-/// operation is declined as a whole.
-pub fn populate_scene_fragments_from_pex(
-    frags: &mut SceneFragments,
-    scene_form_id: u32,
-    context: QuestFormId,
-    vmad: Option<&ScriptInstanceData>,
-    pex_bytes: &[u8],
-    bindings: &[(SceneFragmentEvent, &str)],
-) -> usize {
-    populate_scene_fragments_from_pex_detailed(
-        frags,
-        scene_form_id,
-        context,
-        vmad,
-        pex_bytes,
-        bindings,
-    )
-    .inserted
-}
-
-/// Detailed scene-fragment result, retaining compatibility evidence from the
-/// same PEX parse used for lowering.
+/// operation is declined as a whole. The result retains compatibility
+/// evidence from the same PEX parse used for lowering.
 pub fn populate_scene_fragments_from_pex_detailed(
     frags: &mut SceneFragments,
     scene_form_id: u32,

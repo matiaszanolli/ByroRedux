@@ -103,7 +103,7 @@ pub use scene::{
     SCENE_STOP_QUEST_ON_END,
 };
 pub use story_manager::{parse_sm_node, SmNodeKind, SmNodePolicies, SmNodeRecord, SmQuestLink};
-pub use water::{parse_watr, watr_to_params, WaterParams, WatrRecord};
+pub use water::{parse_watr, WaterParams, WatrRecord};
 pub use world::{
     parse_acti, parse_cndf, parse_kywd, parse_eczn, parse_imgs, parse_lgtm, parse_navi, parse_navm, parse_regn, parse_term,
     select_active_region_sound, ActiRecord, CndfRecord, KywdRecord, EcznRecord, ImgsRecord, LgtmRecord, NaviRecord,

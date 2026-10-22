@@ -249,13 +249,6 @@ impl AliasScriptOwners {
     pub fn mark_stopped(&mut self, quest: QuestFormId) {
         self.started.remove(&quest.0);
     }
-
-    /// The quests whose alias scripts have started.
-    pub fn started_quests(&self) -> Vec<QuestFormId> {
-        let mut quests: Vec<QuestFormId> = self.started.iter().map(|&quest| QuestFormId(quest)).collect();
-        quests.sort_unstable_by_key(|quest| quest.0);
-        quests
-    }
 }
 
 /// Whether `owner` is an alias script owner id.

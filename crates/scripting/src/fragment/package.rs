@@ -32,9 +32,6 @@ pub struct FragmentSet<E> {
     pub fragments: Vec<(E, String, String)>,
 }
 
-/// One package's installed fragments.
-pub type PackageFragmentSet = FragmentSet<PackageFragmentEvent>;
-
 /// Every record's installed fragments, by record FormID.
 #[derive(Debug, Clone)]
 pub struct FragmentTable<E> {

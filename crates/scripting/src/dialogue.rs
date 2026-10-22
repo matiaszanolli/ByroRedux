@@ -149,13 +149,8 @@ impl DialogueQuestConditions {
         Self { conditions }
     }
 
-    /// The quest's authored quest-level list, `None` when it authors none.
-    pub fn conditions_of(&self, quest: u32) -> Option<&ConditionList> {
-        self.conditions.get(&quest).map(Arc::as_ref)
-    }
-
-    /// The quest's list as a shared handle, so a caller can evaluate it
-    /// after releasing this resource's guard.
+    /// The quest's authored quest-level list as a shared handle (`None` when it authors none), so a
+    /// caller can evaluate it after releasing this resource's guard.
     pub fn shared_conditions_of(&self, quest: u32) -> Option<Arc<ConditionList>> {
         self.conditions.get(&quest).cloned()
     }

@@ -1497,13 +1497,6 @@ pub fn parse_watr(
     out
 }
 
-/// Adapter from a parsed `WatrRecord` onto a `WaterParams` view.
-/// The per-game decode happens inside `parse_watr`; this helper just returns
-/// the structured view.
-pub fn watr_to_params(record: &WatrRecord) -> WaterParams {
-    record.params
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
