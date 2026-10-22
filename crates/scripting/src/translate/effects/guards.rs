@@ -76,7 +76,12 @@ pub(super) fn int_store_is_exact(value: &Expr) -> bool {
 /// arithmetic, as in Papyrus); an unknown or integer division declines.
 pub(super) fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
     let mut e = e;
-    while let Expr::Cast { expr, .. } = e {
+    while let Expr::Cast { expr, target_type } = e {
+        // #6215 — `x as Int` truncates and `ValueExpr` is `f32` arithmetic with
+        // no truncation: only an operand that is already integral casts exactly.
+        if matches!(target_type.node, byroredux_papyrus::ast::Type::Int) && !provably_int_valued(&expr.node) {
+            return None;
+        }
         e = &expr.node;
     }
     if let Some(value) = as_num(e) {
@@ -178,6 +183,8 @@ pub(super) fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
     Some(match guard_reading(e, scope)? {
         GuardReading::Stage(quest) => ValueExpr::Stage(quest),
         GuardReading::Global(global) => ValueExpr::Global(global),
+        // #6215 — a truncated global has no exact `ValueExpr`: the VM runs it.
+        GuardReading::GlobalInt(_) => return None,
         GuardReading::QuestVariable(quest, variable) => ValueExpr::QuestVariable(quest, variable),
         GuardReading::ItemCount(container, item) => ValueExpr::ItemCount(container, item),
         GuardReading::Distance(from, to) => ValueExpr::Distance(from, to),
@@ -197,6 +204,9 @@ enum GuardReading {
     ObjectiveDisplayed(QuestRef, i32),
     ObjectiveCompleted(QuestRef, i32),
     Global(ObjectRef),
+    /// #6215 — `<global>.GetValueInt()` / `<global>.GetValue() as Int`: the
+    /// stored float truncated toward zero.
+    GlobalInt(ObjectRef),
     QuestVariable(QuestRef, String),
     ActorDead(ActorRef),
     HasPerk(ActorRef, ObjectRef),
@@ -355,8 +365,19 @@ fn classify_comparison(atom: &Expr, scope: &Scope) -> Option<(GuardReading, Guar
 }
 
 fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
-    if let Expr::Cast { expr, .. } = e {
-        return guard_reading(&expr.node, scope);
+    if let Expr::Cast { expr, target_type } = e {
+        let inner = guard_reading(&expr.node, scope)?;
+        if !matches!(target_type.node, byroredux_papyrus::ast::Type::Int) {
+            return Some(inner);
+        }
+        // #6215 — `as Int` truncates: a global becomes its truncated reading, an
+        // integral or boolean reading is unchanged, and a float reading of no
+        // known integral type (a quest variable, a distance) declines.
+        return match inner {
+            GuardReading::Global(global) | GuardReading::GlobalInt(global) => Some(GuardReading::GlobalInt(global)),
+            GuardReading::QuestVariable(..) | GuardReading::Distance(..) => None,
+            integral => Some(integral),
+        };
     }
     let quest = |object: &Expr| -> Option<QuestRef> {
         if matches!(object, Expr::Ident(name) if name.0.eq_ignore_ascii_case("self")) {
@@ -404,12 +425,16 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
         let objective = i32::try_from(int(args)?).ok()?;
         return Some(GuardReading::ObjectiveCompleted(quest(object)?, objective));
     }
-    for name in ["GetValue", "GetValueInt"] {
+    for (name, reading) in [
+        ("GetValue", GuardReading::Global as fn(ObjectRef) -> GuardReading),
+        // #6215 — "returns the value of the global as an int": truncated.
+        ("GetValueInt", GuardReading::GlobalInt),
+    ] {
         if let Some((object, args)) = method_call(e, name) {
             if !args.is_empty() {
                 return None;
             }
-            return global_receiver(object, scope).map(GuardReading::Global);
+            return global_receiver(object, scope).map(reading);
         }
     }
     // M47.2 — actor, quest, scene and location reads.
@@ -602,6 +627,37 @@ pub(super) fn global_receiver(object: &Expr, scope: &Scope) -> Option<ObjectRef>
     receiver_object(object, scope)
 }
 
+/// #6215 — `trunc(G) <op> c` as guards on the stored float `G` itself, exactly:
+/// Papyrus's `Float → Int` truncates toward zero, so for an integer `c`
+/// `trunc(G) >= c` is `G >= c` when `c > 0` and `G > c - 1` otherwise, and
+/// `trunc(G) <= c` is `G < c + 1` when `c >= 0` and `G <= c` otherwise; `>` /
+/// `<` shift `c` by one, `==` is both bounds and `!=` either outside one. A
+/// non-integral `c` declines (the run is left to the VM).
+fn truncated_global_guard(global: ObjectRef, comparison: GuardComparison, value: f32) -> Option<FragmentGuard> {
+    if value.fract() != 0.0 || !value.is_finite() {
+        return None;
+    }
+    let c = value;
+    let at_least = |c: f32| if c > 0.0 { (GuardComparison::Ge, c) } else { (GuardComparison::Gt, c - 1.0) };
+    let at_most = |c: f32| if c >= 0.0 { (GuardComparison::Lt, c + 1.0) } else { (GuardComparison::Le, c) };
+    let alternatives: Vec<Vec<(GuardComparison, f32)>> = match comparison {
+        GuardComparison::Ge => vec![vec![at_least(c)]],
+        GuardComparison::Gt => vec![vec![at_least(c + 1.0)]],
+        GuardComparison::Le => vec![vec![at_most(c)]],
+        GuardComparison::Lt => vec![vec![at_most(c - 1.0)]],
+        GuardComparison::Eq => vec![vec![at_least(c), at_most(c)]],
+        GuardComparison::Ne => vec![vec![at_most(c - 1.0)], vec![at_least(c + 1.0)]],
+    };
+    let atom = |(comparison, value): (GuardComparison, f32)| FragmentGuard::Global { global: global.clone(), comparison, value };
+    Some(match <[_; 1]>::try_from(alternatives) {
+        Ok([alternative]) if alternative.len() == 1 => atom(alternative[0]),
+        Ok([alternative]) => FragmentGuard::Any(vec![alternative.into_iter().map(atom).collect()]),
+        Err(alternatives) => FragmentGuard::Any(
+            alternatives.into_iter().map(|alternative| alternative.into_iter().map(atom).collect()).collect(),
+        ),
+    })
+}
+
 /// A boolean reading compared with a literal becomes the bool it must equal;
 /// a comparison every bool satisfies, or none does, declines.
 fn bool_expectation(comparison: GuardComparison, value: f32) -> Option<bool> {
@@ -645,6 +701,7 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
             comparison,
             value,
         },
+        GuardReading::GlobalInt(global) => truncated_global_guard(global, comparison, value)?,
         GuardReading::QuestVariable(quest, variable) => FragmentGuard::QuestVariable {
             quest,
             variable,
@@ -744,4 +801,38 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
             expected: bool_expectation(comparison, value)?,
         },
     })
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::*;
+
+    fn holds(guard: &FragmentGuard, x: f32) -> bool {
+        match guard {
+            FragmentGuard::Global { comparison, value, .. } => comparison.apply(x, *value),
+            FragmentGuard::Any(alternatives) => alternatives.iter().any(|all| all.iter().all(|guard| holds(guard, x))),
+            other => panic!("unexpected guard {other:?}"),
+        }
+    }
+
+    /// #6215 — the rewrite agrees with Papyrus's truncate-then-compare for every
+    /// comparison, integral literal and value, negatives and fractions included.
+    #[test]
+    fn truncated_global_guard_matches_truncate_then_compare() {
+        use GuardComparison::*;
+        for comparison in [Eq, Ne, Lt, Le, Gt, Ge] {
+            for c in -3..=3 {
+                let guard = truncated_global_guard(ObjectRef::Property("G".into()), comparison, c as f32).unwrap();
+                for step in -20..=20 {
+                    let x = step as f32 * 0.25;
+                    assert_eq!(
+                        holds(&guard, x),
+                        comparison.apply(x.trunc(), c as f32),
+                        "trunc({x}) {comparison:?} {c}"
+                    );
+                }
+            }
+        }
+        assert!(truncated_global_guard(ObjectRef::Property("G".into()), Eq, 0.5).is_none());
+    }
 }

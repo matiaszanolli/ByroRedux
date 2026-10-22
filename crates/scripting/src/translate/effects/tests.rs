@@ -1277,10 +1277,6 @@ fn relative_global_writes_lower() {
             ),
         ),
         (
-            "Counter.SetValue(Counter.GetValueInt() - 2)",
-            set("Counter", ValueExpr::Arith(global("Counter"), ArithOp::Sub, literal(2.0))),
-        ),
-        (
             "Counter.SetValue(Counter.GetValue() * 2.0)",
             set("Counter", ValueExpr::Arith(global("Counter"), ArithOp::Mul, literal(2.0))),
         ),
@@ -1295,6 +1291,11 @@ fn relative_global_writes_lower() {
         ));
         assert_eq!(lower_fragment(&body), Some(vec![expected]), "{call}");
     }
+    // #6215 — `GetValueInt` truncates, which `ValueExpr` cannot: the write is left to the VM.
+    let body = first_fn_body(
+        "ScriptName QF extends Quest\nFunction Fragment_8()\nCounter.SetValue(Counter.GetValueInt() - 2)\n EndFunction\n",
+    );
+    assert_eq!(lower_fragment(&body), None);
     let call =
         "Counter.SetValue(Counter.GetValue() * Game.GetPlayer().GetEquippedWeapon().GetBaseDamage())";
     let body = first_fn_body(&format!(
@@ -4015,8 +4016,13 @@ fn integer_division_and_non_integral_int_stores_decline() {
     assert!(lowers("G.SetValue(Self.GetStage() / 2.0)"));
     // SetValueInt stores an Int: integral-by-construction values keep lowering.
     assert!(lowers("G.SetValueInt(5)"));
-    assert!(lowers("G.SetValueInt(H.GetValueInt() + 1)"));
+    assert!(lowers("G.SetValueInt(Self.GetStage() + 1)"));
     assert!(lowers("G.SetValueInt(Self.GetStage() * 2)"));
+    // #6215 — `GetValueInt` truncates the stored float, which `ValueExpr` cannot:
+    // `Counter.SetValueInt(Clock.GetValueInt())` would store 3.7. Left to the VM.
+    assert!(!lowers("G.SetValueInt(H.GetValueInt())"));
+    assert!(!lowers("G.SetValueInt(H.GetValueInt() + 1)"));
+    assert!(!lowers("G.SetValue(H.GetValueInt())"));
     // …a float value (or a `Float as Int` truncation the lowering strips) declines.
     assert!(!lowers("G.SetValueInt(H.GetValue() * 1.5)"));
     assert!(!lowers("G.SetValueInt(H.GetValue() as Int)"));
@@ -4050,6 +4056,38 @@ fn integer_division_in_a_guard_declines() {
         ));
         assert!(lower_fragment(&control).is_some(), "{expression}");
     }
+}
+
+/// #6215 — a guard on a truncated global reads the stored float through exact
+/// bounds: `G.GetValueInt() == 12` holds for 12 <= G < 13 (GameHour 12.5
+/// included, which an untruncated `12.5 == 12` refused), and a cast of a
+/// float reading the lowering cannot bound declines.
+#[test]
+fn a_truncated_global_guard_lowers_to_exact_float_bounds() {
+    let guards = |condition: &str| {
+        let body = first_fn_body(&format!(
+            "ScriptName QF extends Quest\n\
+             GlobalVariable Property G Auto\n\
+             Function Fragment_0()\n\
+             If {condition}\n\
+             Self.SetStage(40)\n\
+             EndIf\n\
+             EndFunction\n"
+        ));
+        lower_fragment(&body)
+    };
+    let global = |comparison, value| FragmentGuard::Global { global: ObjectRef::Property("G".into()), comparison, value };
+    for condition in ["G.GetValueInt() == 12", "(G.GetValue() as Int) == 12", "(G.Value as Int) == 12"] {
+        let effects = guards(condition).unwrap_or_else(|| panic!("{condition} lowers"));
+        let text = format!("{effects:?}");
+        let expected = format!(
+            "{:?}",
+            FragmentGuard::Any(vec![vec![global(GuardComparison::Ge, 12.0), global(GuardComparison::Lt, 13.0)]])
+        );
+        assert!(text.contains(&expected), "{condition}: {text}");
+    }
+    // A non-integral literal against an Int has no exact float bound here.
+    assert_eq!(guards("G.GetValueInt() == 12.5"), None);
 }
 
 /// #5976: a compound assignment to a declared local is not a re-bind to the
@@ -4547,11 +4585,19 @@ fn lowers_the_widened_guard_atoms() {
             },
             Effect::Conditional {
                 guards: vec![
-                    FragmentGuard::Global {
-                        global: ObjectRef::Property("Ransom".into()),
-                        comparison: GuardComparison::Eq,
-                        value: 3.0,
-                    },
+                    // #6215 — `GetValueInt() == 3` is `3 <= Ransom < 4` on the stored float.
+                    FragmentGuard::Any(vec![vec![
+                        FragmentGuard::Global {
+                            global: ObjectRef::Property("Ransom".into()),
+                            comparison: GuardComparison::Ge,
+                            value: 3.0,
+                        },
+                        FragmentGuard::Global {
+                            global: ObjectRef::Property("Ransom".into()),
+                            comparison: GuardComparison::Lt,
+                            value: 4.0,
+                        },
+                    ]]),
                     FragmentGuard::Global {
                         global: ObjectRef::Property("Ransom".into()),
                         comparison: GuardComparison::Lt,

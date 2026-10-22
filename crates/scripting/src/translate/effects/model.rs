@@ -104,7 +104,9 @@ pub enum FragmentGuard {
         objective: i32,
         expected: bool,
     },
-    /// `<global>.GetValue() / GetValueInt() / .Value <op> value`.
+    /// `<global>.GetValue() / .Value <op> value` on the stored float. A
+    /// truncated read (`GetValueInt()`, `as Int`) lowers to exact bounds on it
+    /// (#6215): `GetValueInt() == 12` is `>= 12` and `< 13`.
     Global {
         global: ObjectRef,
         comparison: GuardComparison,
