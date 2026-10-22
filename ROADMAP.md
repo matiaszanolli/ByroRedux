@@ -445,13 +445,12 @@ single file crosses 3 500 lines, a struct crosses 50 fields, or a context
 struct crosses 60 fields, treat it as a signal to investigate before adding,
 not a stat to report.
 
-**Tripwire today** (re-measured 2026-10-15; counts include inline test
-modules, not dedicated test files). Over the line:
-`crates/scripting/src/translate/effects.rs` 10 117, `crates/scripting/src/fragment/vm.rs` 6 215,
-`crates/physics/src/world/mod.rs` 5 209 (#5311's split left `mod.rs` larger than the old `world.rs`),
-`byroredux/src/material_translate.rs` 4 422, `byroredux/src/inventory.rs` 4 202,
-`crates/renderer/src/vulkan/volumetrics.rs` 4 168, `crates/physics/src/water.rs` 3 963,
-`crates/scripting/src/condition.rs` 3 691, `crates/plugin/src/esm/records/misc/world.rs` 3 508.
+**Tripwire today** (re-measured 2026-10-22 with `git ls-files '*.rs' | xargs wc -l`;
+counts include inline test modules, not dedicated test files). Over the line:
+`crates/physics/src/world/mod.rs` 5 617, `byroredux/src/inventory.rs` 4 442,
+`byroredux/src/material_translate.rs` 4 415, `crates/renderer/src/vulkan/volumetrics.rs` 4 281,
+`crates/physics/src/water.rs` 4 208, `crates/plugin/src/esm/records/misc/world.rs` 3 508.
+`translate/effects.rs`, `fragment/vm.rs` and `condition.rs` are now hub directories (#5800–#5804).
 Before splitting one, grep for `include_str!` source-shape tests that read it.
 
 ### Pacing discipline
@@ -644,14 +643,6 @@ performance finding. The measured knob table is in
   total size`, ~20 times in multi-minute `--bench-hold` sessions and 0 in
   short ones. Suspected cause: a `dds::mip_size` rounding gap. Needs a
   targeted repro plus an allocation assert.
-- [ ] **The ReSTIR reservoir claim reads a `writeonly` binding** (#5765, HIGH):
-  `c2647d468`'s nearer-surface claim loads `reservoirsCurr` (SPIR-V
-  `NonReadable`) with no memory dependency. Correct on the dev NVIDIA card,
-  undefined elsewhere; `BYRO_VALIDATION=1` cannot see it.
-- [ ] **FO76 `GeneratedMeshes` truncation tail** (2026-08-29): `02` 0.00%
-  clean (all 2 049 truncate), `01` 95.03%, all recoverable. The suspected
-  gap (#3461) has closed but the sweep was not re-run; then raise the `0.0`
-  floor and regenerate baselines.
 - [ ] **Fire lighting is on by default and never had its visual check.**
   `2325c1de` replaced `render/fire_lights.rs` (and its reach canary) with
   `append_combustion_surface_lights` from the transported field, which flipped
@@ -718,7 +709,7 @@ Ground-truth as of 2026-10-22, HEAD `460c720cb`: all figures re-counted at the S
 | Tests                                   | **11 137 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-22; 364 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
 | Open issue directories                  | 6292 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
-| Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-09-29). |
+| Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-10-03, #4628). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
 
 ### Repro commands for every bench claim
