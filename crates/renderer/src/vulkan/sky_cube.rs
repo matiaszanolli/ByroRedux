@@ -1004,10 +1004,12 @@ mod tests {
         ] {
             assert!(clouds.contains(term), "clouds.glsl lost `{term}`");
         }
-        assert!(
-            crate::shader_constants::CLOUD_MOOD_CHROMA_WEIGHT > 0.5,
-            "the authored mood must dominate the puffs' chroma"
-        );
+        const {
+            assert!(
+                crate::shader_constants::CLOUD_MOOD_CHROMA_WEIGHT > 0.5,
+                "the authored mood must dominate the puffs' chroma"
+            )
+        };
     }
 
     /// The terms the march is built from — shape from Schneider & Vos 2015,

@@ -618,7 +618,7 @@ impl FormIdRemap {
         // resolved to that master's global slot - or this plugin's own when it
         // is equal to the count.
         let resolve = |ordinal: usize, is_kind: fn(&GlobalSlot) -> bool| -> Option<GlobalSlot> {
-            let mut of_kind = self.master_slots.iter().copied().filter(|slot| is_kind(slot));
+            let mut of_kind = self.master_slots.iter().copied().filter(&is_kind);
             let count = of_kind.clone().count();
             if ordinal == count {
                 Some(self.plugin_slot)
@@ -2286,7 +2286,8 @@ mod tests {
         // `Some(b"QUST")` yields exactly the two QUST records — the outer
         // one first, the nested one second — with their sub-record payloads.
         let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
-        let mut seen: Vec<(u32, Vec<([u8; 4], Vec<u8>)>)> = Vec::new();
+        type Subs = Vec<([u8; 4], Vec<u8>)>;
+        let mut seen: Vec<(u32, Subs)> = Vec::new();
         reader
             .for_each_record(data.len(), Some(b"QUST"), |header, subs| {
                 seen.push((

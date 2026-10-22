@@ -204,8 +204,7 @@ fn authored_get_actor_value_index_translates_to_the_loaded_avif() {
     use byroredux_plugin::esm::records::{AvifRecord, EsmIndex};
 
     let install = |game: GameKind, avifs: &[(u32, &str)]| {
-        let mut index = EsmIndex::default();
-        index.game = game;
+        let mut index = EsmIndex { game, ..Default::default() };
         for &(form_id, editor_id) in avifs {
             index.actor_values.insert(
                 form_id,

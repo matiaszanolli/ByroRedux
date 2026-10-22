@@ -257,7 +257,7 @@ pub(crate) fn populate_object_graphs(world: &mut World, provider: &TextureProvid
                         .stuck
                         .keys()
                         .copied()
-                        .filter(|stuck| !refs.as_ref().is_some_and(|refs| refs.get(*stuck).is_some()))
+                        .filter(|stuck| refs.as_ref().is_none_or(|refs| refs.get(*stuck).is_none()))
                         .collect()
                 } else {
                     Vec::new()

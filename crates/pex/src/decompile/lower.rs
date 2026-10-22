@@ -862,7 +862,6 @@ mod tests {
                 user_flags: 0b11,
                 ..StructMember::default()
             }],
-            ..StructInfo::default()
         }];
         let script = decompile_script(&pex).expect("decompiles");
         let member = script

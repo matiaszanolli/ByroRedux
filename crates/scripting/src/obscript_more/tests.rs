@@ -107,7 +107,7 @@ fn oblivion_faction_crime_flags_are_set_and_read_per_faction() {
         (0x10c1, 0x10c2, FactionFlag::Expelled),
         (0x10c3, 0x10c4, FactionFlag::Murder),
         (0x10c5, 0x10c6, FactionFlag::Steal),
-        (0x10c7, 0x10c7 + 0, FactionFlag::Attack),
+        (0x10c7, 0x10c7, FactionFlag::Attack),
     ] {
         if get == set {
             continue;

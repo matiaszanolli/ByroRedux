@@ -673,7 +673,7 @@ impl InteriorCellApplyJob {
             mat_provider,
             &self.cell_editor_id,
             &self.load_order,
-            &absorbed,
+            absorbed,
             self.references.take(),
             budget,
         );

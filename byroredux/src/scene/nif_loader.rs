@@ -31,6 +31,9 @@ use crate::components::{
 };
 use crate::helpers::add_child;
 
+/// Spawned node entities keyed by NIF node name.
+type NodeByName = std::collections::HashMap<std::sync::Arc<str>, EntityId>;
+
 /// Canonical `BSLightingShaderType::FaceTint` — the numbering
 /// `Material.material_kind` carries after `canonical_shader_type` (FO76 /
 /// Starfield's `BSShaderType155` FaceTint 3 is normalized to this value).
@@ -467,7 +470,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     label: &str,
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
-    external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
+    external_skeleton: Option<&NodeByName>,
     // M41.0 Phase 4.x — per-call diffuse override (#2095 / SKY-D3-NEW-03).
     // Wins over the SkinTint submesh's NIF-authored diffuse when present.
     // Used by the pre-baked FaceGen path to bind the per-NPC face-tint DDS
@@ -486,7 +489,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
 ) -> (
     usize,
     Option<EntityId>,
-    std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+    NodeByName,
 ) {
     load_nif_with_skeleton_from(
         world,
@@ -513,14 +516,10 @@ pub(crate) fn load_nif_extracting_with_skeleton(
     label: &str,
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
-    external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
+    external_skeleton: Option<&NodeByName>,
     diffuse_override: Option<&str>,
     pre_spawn_hook: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)>,
-) -> Option<(
-    usize,
-    Option<EntityId>,
-    std::collections::HashMap<std::sync::Arc<str>, EntityId>,
-)> {
+) -> Option<(usize, Option<EntityId>, NodeByName)> {
     let mut missing = false;
     let loaded = load_nif_with_skeleton_from(
         world,
@@ -548,7 +547,7 @@ fn load_nif_with_skeleton_from<'a>(
     label: &str,
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
-    external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
+    external_skeleton: Option<&NodeByName>,
     // M41.0 Phase 4.x — per-call diffuse override (#2095 / SKY-D3-NEW-03).
     // Wins over the SkinTint submesh's NIF-authored diffuse when present.
     // Used by the pre-baked FaceGen path to bind the per-NPC face-tint DDS
@@ -567,7 +566,7 @@ fn load_nif_with_skeleton_from<'a>(
 ) -> (
     usize,
     Option<EntityId>,
-    std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+    NodeByName,
 ) {
     let is_spt = label.to_ascii_lowercase().ends_with(".spt");
     let Some(cached) = cached_scene_lazy(world, label, extract, tex_provider, mat_provider) else {
@@ -1049,10 +1048,10 @@ fn spawn_nif_mesh(
     mesh: &byroredux_nif::import::ImportedMesh,
     tex_provider: &TextureProvider,
     diffuse_override: Option<&str>,
-    external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
+    external_skeleton: Option<&NodeByName>,
     is_spt: bool,
     node_entities: &[EntityId],
-    node_by_name: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+    node_by_name: &NodeByName,
     phantom_bounds: Option<([f32; 3], [f32; 3])>,
     blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> bool {
@@ -1651,7 +1650,7 @@ fn spawn_nif_nodes(
     is_spt: bool,
 ) -> (
     Vec<EntityId>,
-    std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+    NodeByName,
     std::collections::HashMap<std::sync::Arc<str>, GlobalTransform>,
 ) {
     // Phase 1: Spawn node entities (NiNode hierarchy).
@@ -1662,7 +1661,7 @@ fn spawn_nif_nodes(
     // (multiple nodes sharing a name) are rare; on collision we keep the
     // first spawn (root-most in depth-first order).
     let mut node_entities: Vec<EntityId> = Vec::with_capacity(imported.nodes.len());
-    let mut node_by_name: std::collections::HashMap<std::sync::Arc<str>, EntityId> =
+    let mut node_by_name: NodeByName =
         std::collections::HashMap::with_capacity(imported.nodes.len());
     let mut node_rest_poses: Vec<GlobalTransform> = Vec::with_capacity(imported.nodes.len());
     let mut rest_pose_by_name: std::collections::HashMap<std::sync::Arc<str>, GlobalTransform> =
@@ -1929,8 +1928,8 @@ fn attach_nif_skin_binding(
     world: &mut World,
     entity: EntityId,
     mesh: &byroredux_nif::import::ImportedMesh,
-    external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
-    node_by_name: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+    external_skeleton: Option<&NodeByName>,
+    node_by_name: &NodeByName,
 ) -> bool {
     // Attach skinning binding if present. Resolves each bone name to
     // the entity spawned for that node in Phase 1. Missing bones are

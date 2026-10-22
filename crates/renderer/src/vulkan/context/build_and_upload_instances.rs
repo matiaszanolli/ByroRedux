@@ -154,7 +154,10 @@ fn svgf_continuous_inputs_jumped(
 ) -> bool {
     previous.iter().zip(current).any(|(&a, &b)| {
         let tolerance = SVGF_CONTINUOUS_JUMP * a.abs().max(b.abs()).max(1.0);
-        !((a - b).abs() <= tolerance)
+        // Negated on purpose: a NaN difference fails `<=` and counts as a jump.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        let jumped = !((a - b).abs() <= tolerance);
+        jumped
     })
 }
 
@@ -2407,10 +2410,11 @@ mod svgf_scene_input_key_tests {
     fn continuous_sky_and_fog_reset_history_on_a_jump_not_on_drift() {
         let fog = [0.4, 0.5, 0.6, 500.0, 90000.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
         let parked = || {
-            let mut sky = SkyParams::default();
-            sky.sun_direction = [0.0, 0.8, 0.6];
-            sky.sun_illuminance = [90000.0, 85000.0, 80000.0];
-            sky
+            SkyParams {
+                sun_direction: [0.0, 0.8, 0.6],
+                sun_illuminance: [90000.0, 85000.0, 80000.0],
+                ..SkyParams::default()
+            }
         };
         let sky = parked();
         let base = svgf_continuous_inputs(&fog, &sky);

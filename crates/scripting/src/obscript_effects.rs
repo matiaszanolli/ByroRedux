@@ -1561,8 +1561,7 @@ mod tests {
         let actor = spawn(&mut world, ACTOR);
         let other = spawn(&mut world, OTHER);
         world.insert_resource(pool);
-        let mut index = EsmIndex::default();
-        index.game = GameKind::Fallout3NV;
+        let mut index = EsmIndex { game: GameKind::Fallout3NV, ..Default::default() };
         for (form_id, editor_id) in [(STRENGTH, "AVStrength"), (HEALTH, "AVHealth")] {
             index.actor_values.insert(form_id, AvifRecord { form_id, editor_id: editor_id.into(), ..Default::default() });
         }

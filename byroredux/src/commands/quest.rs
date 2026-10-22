@@ -1251,151 +1251,6 @@ impl ConsoleCommand for SmEventCommand {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use byroredux_plugin::esm::records::{
-        AliasInjectedData, QuestAlias, QuestObjective, QuestStage, QustRecord, ScenRecord,
-    };
-    use byroredux_scripting::{
-        install_scene_quest_aliases, install_scene_records, install_start_game_quests,
-    };
-
-    const QUEST: u32 = 0x1234;
-
-    fn fixture() -> (World, EntityId) {
-        let mut world = World::new();
-        byroredux_scripting::register(&mut world);
-        world.insert_resource(QuestStageState::default());
-        let record = QustRecord {
-            form_id: QUEST,
-            editor_id: "DebugQuest".to_string(),
-            full_name: "A Diagnostic Quest".to_string(),
-            start_up_stage: Some(5),
-            shut_down_stage: Some(90),
-            stages: vec![
-                QuestStage {
-                    index: 5,
-                    ..Default::default()
-                },
-                QuestStage {
-                    index: 10,
-                    ..Default::default()
-                },
-                QuestStage {
-                    index: 90,
-                    ..Default::default()
-                },
-            ],
-            objectives: vec![QuestObjective {
-                index: 10,
-                text: "Inspect the quest runtime".to_string(),
-                ..Default::default()
-            }],
-            aliases: vec![QuestAlias {
-                alias_id: 1,
-                name: "Target".to_string(),
-                fill_type: Some(AliasFillType::ForcedReference(0xA1)),
-                injected: AliasInjectedData {
-                    inventory: vec![(0xC1, 1)],
-                    ..Default::default()
-                },
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        install_start_game_quests(&mut world, [record.clone()]);
-        install_scene_quest_aliases(&mut world, [record]);
-        let actor = world.spawn();
-        world.insert(
-            actor,
-            SceneAliasCandidate {
-                reference_form_id: 0xA1,
-                base_form_id: 0xB1,
-                linked_refs: Vec::new(),
-                location_ref_types: Vec::new(),
-            },
-        );
-        (world, actor)
-    }
-
-    #[test]
-    fn show_reports_static_and_not_started_state_without_refreshing_aliases() {
-        let (world, _) = fixture();
-        let output = QuestShowCommand.execute(&world, "0x1234").lines.join("\n");
-        assert!(output.contains("Quest 0x00001234 (DebugQuest — A Diagnostic Quest)"));
-        assert!(output.contains("state: not-started"));
-        assert!(output.contains("startup/shutdown: 5/90"));
-        assert!(output.contains("10: displayed=false completed=false failed=false"));
-        assert!(output.contains("aliases: 0/1 bound (refresh=pending)"));
-    }
-
-    #[test]
-    fn controls_share_lifecycle_semantics_and_refresh_aliases() {
-        let (world, actor) = fixture();
-
-        let started = QuestStartCommand.execute(&world, "0x1234").lines.join("\n");
-        assert!(
-            started.contains("result: started state=running stage=5"),
-            "unexpected start output: {started}"
-        );
-
-        let aliases = QuestAliasesCommand
-            .execute(&world, "0x1234")
-            .lines
-            .join("\n");
-        assert!(aliases.contains("1/1 bound refresh=current"));
-        assert!(aliases.contains(&format!("bound entity={actor}")));
-        assert!(aliases.contains("inventory:1"));
-
-        let set = QuestSetStageCommand
-            .execute(&world, "0x1234 10")
-            .lines
-            .join("\n");
-        assert!(set.contains("result: set stage=10 previous=5 state=running"));
-
-        let stopped = QuestStopCommand.execute(&world, "0x1234").lines.join("\n");
-        assert!(stopped.contains("result: stopped state=stopped stage=90"));
-        let aliases = QuestAliasesCommand
-            .execute(&world, "0x1234")
-            .lines
-            .join("\n");
-        assert!(aliases.contains("0/1 bound refresh=current"));
-        assert!(aliases.contains("reason=quest-not-running"));
-    }
-
-    #[test]
-    fn controls_reject_unknown_quests_and_bad_arguments() {
-        let (world, _) = fixture();
-        assert!(QuestStartCommand.execute(&world, "nope").lines[0].contains("bad quest FormID"));
-        assert!(QuestStartCommand.execute(&world, "0xDEAD").lines[0].contains("unknown quest"));
-        assert!(
-            QuestSetStageCommand.execute(&world, "0x1234 70000").lines[0]
-                .contains("bad quest stage")
-        );
-    }
-
-    #[test]
-    fn scene_show_reports_live_playback_state() {
-        let (mut world, _) = fixture();
-        install_scene_records(
-            &mut world,
-            [ScenRecord {
-                form_id: 0x5678,
-                editor_id: "DebugScene".to_string(),
-                quest_form_id: Some(QUEST),
-                ..Default::default()
-            }],
-        );
-
-        let output = SceneShowCommand.execute(&world, "0x5678").lines.join("\n");
-        assert!(output.contains("Scene 0x00005678 'DebugScene'"));
-        assert!(output.contains("quest: 0x00001234"));
-        assert!(output.contains("playback: Dormant phase=0"));
-        assert!(output.contains("package-actions: 0"));
-    }
-}
-
 /// `weather.force <WTHR formid | none> [lock]` — what ObScript `ForceWeather` / `SetWeather` /
 /// `ReleaseWeatherOverride` do, from the console: record the forced weather (saved), which the exterior
 /// streaming step then installs as the sky; `none` releases it. `weather.force` alone reports it.
@@ -1580,5 +1435,150 @@ impl ConsoleCommand for ScriptRequestsCommand {
             return CommandOutput::line("no menu or video requests");
         }
         CommandOutput::lines(log.0.iter().cloned().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_plugin::esm::records::{
+        AliasInjectedData, QuestAlias, QuestObjective, QuestStage, QustRecord, ScenRecord,
+    };
+    use byroredux_scripting::{
+        install_scene_quest_aliases, install_scene_records, install_start_game_quests,
+    };
+
+    const QUEST: u32 = 0x1234;
+
+    fn fixture() -> (World, EntityId) {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(QuestStageState::default());
+        let record = QustRecord {
+            form_id: QUEST,
+            editor_id: "DebugQuest".to_string(),
+            full_name: "A Diagnostic Quest".to_string(),
+            start_up_stage: Some(5),
+            shut_down_stage: Some(90),
+            stages: vec![
+                QuestStage {
+                    index: 5,
+                    ..Default::default()
+                },
+                QuestStage {
+                    index: 10,
+                    ..Default::default()
+                },
+                QuestStage {
+                    index: 90,
+                    ..Default::default()
+                },
+            ],
+            objectives: vec![QuestObjective {
+                index: 10,
+                text: "Inspect the quest runtime".to_string(),
+                ..Default::default()
+            }],
+            aliases: vec![QuestAlias {
+                alias_id: 1,
+                name: "Target".to_string(),
+                fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                injected: AliasInjectedData {
+                    inventory: vec![(0xC1, 1)],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        install_start_game_quests(&mut world, [record.clone()]);
+        install_scene_quest_aliases(&mut world, [record]);
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            SceneAliasCandidate {
+                reference_form_id: 0xA1,
+                base_form_id: 0xB1,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        (world, actor)
+    }
+
+    #[test]
+    fn show_reports_static_and_not_started_state_without_refreshing_aliases() {
+        let (world, _) = fixture();
+        let output = QuestShowCommand.execute(&world, "0x1234").lines.join("\n");
+        assert!(output.contains("Quest 0x00001234 (DebugQuest — A Diagnostic Quest)"));
+        assert!(output.contains("state: not-started"));
+        assert!(output.contains("startup/shutdown: 5/90"));
+        assert!(output.contains("10: displayed=false completed=false failed=false"));
+        assert!(output.contains("aliases: 0/1 bound (refresh=pending)"));
+    }
+
+    #[test]
+    fn controls_share_lifecycle_semantics_and_refresh_aliases() {
+        let (world, actor) = fixture();
+
+        let started = QuestStartCommand.execute(&world, "0x1234").lines.join("\n");
+        assert!(
+            started.contains("result: started state=running stage=5"),
+            "unexpected start output: {started}"
+        );
+
+        let aliases = QuestAliasesCommand
+            .execute(&world, "0x1234")
+            .lines
+            .join("\n");
+        assert!(aliases.contains("1/1 bound refresh=current"));
+        assert!(aliases.contains(&format!("bound entity={actor}")));
+        assert!(aliases.contains("inventory:1"));
+
+        let set = QuestSetStageCommand
+            .execute(&world, "0x1234 10")
+            .lines
+            .join("\n");
+        assert!(set.contains("result: set stage=10 previous=5 state=running"));
+
+        let stopped = QuestStopCommand.execute(&world, "0x1234").lines.join("\n");
+        assert!(stopped.contains("result: stopped state=stopped stage=90"));
+        let aliases = QuestAliasesCommand
+            .execute(&world, "0x1234")
+            .lines
+            .join("\n");
+        assert!(aliases.contains("0/1 bound refresh=current"));
+        assert!(aliases.contains("reason=quest-not-running"));
+    }
+
+    #[test]
+    fn controls_reject_unknown_quests_and_bad_arguments() {
+        let (world, _) = fixture();
+        assert!(QuestStartCommand.execute(&world, "nope").lines[0].contains("bad quest FormID"));
+        assert!(QuestStartCommand.execute(&world, "0xDEAD").lines[0].contains("unknown quest"));
+        assert!(
+            QuestSetStageCommand.execute(&world, "0x1234 70000").lines[0]
+                .contains("bad quest stage")
+        );
+    }
+
+    #[test]
+    fn scene_show_reports_live_playback_state() {
+        let (mut world, _) = fixture();
+        install_scene_records(
+            &mut world,
+            [ScenRecord {
+                form_id: 0x5678,
+                editor_id: "DebugScene".to_string(),
+                quest_form_id: Some(QUEST),
+                ..Default::default()
+            }],
+        );
+
+        let output = SceneShowCommand.execute(&world, "0x5678").lines.join("\n");
+        assert!(output.contains("Scene 0x00005678 'DebugScene'"));
+        assert!(output.contains("quest: 0x00001234"));
+        assert!(output.contains("playback: Dormant phase=0"));
+        assert!(output.contains("package-actions: 0"));
     }
 }

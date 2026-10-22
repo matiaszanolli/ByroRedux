@@ -98,7 +98,7 @@ fn skyrim_npc_decodes_aidt_responsibility_for_morality() {
         aidt[0] = 1; // Aggressive
         aidt[1] = 2; // Average confidence
         aidt[3] = raw;
-        let npc = parse_npc(0x1234, &[sub(b"AIDT", &aidt)], GameKind::Skyrim, &None);
+        let npc = parse_npc(0x1234, &[sub(b"AIDT", aidt)], GameKind::Skyrim, &None);
         assert_eq!(
             npc.ai_data.and_then(|data| data.responsibility),
             Some(expected),
@@ -110,7 +110,7 @@ fn skyrim_npc_decodes_aidt_responsibility_for_morality() {
     aidt[0] = 1;
     aidt[1] = 2;
     aidt[3] = 3;
-    let fallout = parse_npc(0x1234, &[sub(b"AIDT", &aidt)], GameKind::Fallout3NV, &None);
+    let fallout = parse_npc(0x1234, &[sub(b"AIDT", aidt)], GameKind::Fallout3NV, &None);
     assert_eq!(
         fallout.ai_data.and_then(|data| data.responsibility),
         None,
@@ -2509,12 +2509,12 @@ fn acbs_essential_and_protected_decode_per_game() {
         data[..4].copy_from_slice(&flags.to_le_bytes());
         data
     };
-    let fnv = parse_npc(1, &[sub(b"ACBS", &acbs(0x802))], GameKind::Fallout3NV, &None);
+    let fnv = parse_npc(1, &[sub(b"ACBS", acbs(0x802))], GameKind::Fallout3NV, &None);
     assert!(fnv.essential);
     assert!(!fnv.protected, "bit 11 is No Blood Spray on FO3/FNV");
-    let skyrim = parse_npc(2, &[sub(b"ACBS", &acbs(0x800))], GameKind::Skyrim, &None);
+    let skyrim = parse_npc(2, &[sub(b"ACBS", acbs(0x800))], GameKind::Skyrim, &None);
     assert!(!skyrim.essential);
     assert!(skyrim.protected);
-    let plain = parse_npc(3, &[sub(b"ACBS", &acbs(0x1))], GameKind::Skyrim, &None);
+    let plain = parse_npc(3, &[sub(b"ACBS", acbs(0x1))], GameKind::Skyrim, &None);
     assert!(!plain.essential && !plain.protected);
 }

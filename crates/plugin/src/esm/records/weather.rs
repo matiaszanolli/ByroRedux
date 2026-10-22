@@ -8,11 +8,11 @@
 //!   10 color groups × 6 (or 4) time-of-day slots × 4 bytes (RGB u8 +
 //!   one unused byte, xEdit `wbByteColors`).
 //!   Groups, per xEdit `wbWeatherColors`:
-//!     0 sky_upper, 1 fog, 2 *, 3 ambient, 4 sunlight, 5 sun,
-//!     6 stars, 7 sky_lower, 8 horizon, 9 **.
-//!   *  group 2: Oblivion `Clouds-Lower`; FO3 / FNV `Unused`.
-//!   ** group 9: Oblivion `Clouds-Upper`; FO3 `Clouds (Unused)`; FNV
-//!      `Effect Lighting`.
+//!     0 sky_upper, 1 fog, 2 †, 3 ambient, 4 sunlight, 5 sun,
+//!     6 stars, 7 sky_lower, 8 horizon, 9 ‡.
+//!   † group 2: Oblivion `Clouds-Lower`; FO3 / FNV `Unused`.
+//!   ‡ group 9: Oblivion `Clouds-Upper`; FO3 `Clouds (Unused)`; FNV
+//!     `Effect Lighting`.
 //!   Slots: sunrise, day, sunset, night, high_noon, midnight.
 //!
 //! Oblivion authors no `PNAM`, so its cloud tints are those two NAM0
@@ -825,7 +825,7 @@ fn skyrim_nam0_groups(size: usize) -> Option<usize> {
     let groups = size / (SKYRIM_NAM0_TOD_SLOTS * 4);
     match groups {
         _ if size >= SKYRIM_NAM0_GROUPS * SKYRIM_NAM0_TOD_SLOTS * 4 => Some(SKYRIM_NAM0_GROUPS),
-        10 | 13 | 14 if size % (SKYRIM_NAM0_TOD_SLOTS * 4) == 0 => Some(groups),
+        10 | 13 | 14 if size.is_multiple_of(SKYRIM_NAM0_TOD_SLOTS * 4) => Some(groups),
         _ => None,
     }
 }
@@ -1544,7 +1544,7 @@ mod tests {
     /// four ENABLED, textured layers, carrying their own PNAM colours.
     #[test]
     fn creation_cloud_slots_skip_layers_disabled_by_nam1() {
-        let mut subs = vec![sub(b"NAM1", 0xEF9E_F0FFu32.to_le_bytes().to_vec())];
+        let mut subs = vec![sub(b"NAM1", 0xEF9E_F0FFu32.to_le_bytes())];
         for (fourcc, path) in [
             (b"00TX", "Sky\\OblivionCloudCloudyUpper01.dds\0"),
             (b"10TX", "Sky\\WastelandCloudHorizon01.dds\0"),

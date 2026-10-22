@@ -36,7 +36,6 @@ fn skyrim_index() -> Option<EsmIndex> {
 /// world) hold a location that passes their conditions.
 #[test]
 #[ignore = "needs Skyrim SE game data on disk"]
-
 fn skyrim_location_aliases_fill_against_the_real_hierarchy() {
     use byroredux_scripting::condition::{evaluate, ConditionContext};
     let Some(index) = skyrim_index() else {

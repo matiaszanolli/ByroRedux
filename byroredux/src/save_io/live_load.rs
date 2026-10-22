@@ -246,27 +246,6 @@ fn exterior_reload_overlay_is_safe(pending_after_bootstrap: usize) -> bool {
     pending_after_bootstrap == 0
 }
 
-#[cfg(test)]
-mod exterior_reload_overlay_tests {
-    use super::exterior_reload_overlay_is_safe;
-
-    /// The common case: `stream_initial_radius`'s wait loop drained
-    /// `pending` normally, so the overlay is safe to run.
-    #[test]
-    fn zero_pending_is_safe() {
-        assert!(exterior_reload_overlay_is_safe(0));
-    }
-
-    /// #3499's regression case: the worker-disconnect `break` can exit the
-    /// wait loop with cells still pending — the overlay must be refused,
-    /// not silently applied against an incomplete world.
-    #[test]
-    fn nonzero_pending_is_unsafe() {
-        assert!(!exterior_reload_overlay_is_safe(1));
-        assert!(!exterior_reload_overlay_is_safe(48));
-    }
-}
-
 fn reload_exterior_session(
     world: &mut World,
     ctx: &mut byroredux_renderer::VulkanContext,
@@ -845,5 +824,26 @@ pub fn execute_pending_save_loads(
         log::warn!(
             "load slot {loaded_slot} completed, but its extension lifecycle event was not queued: {error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod exterior_reload_overlay_tests {
+    use super::exterior_reload_overlay_is_safe;
+
+    /// The common case: `stream_initial_radius`'s wait loop drained
+    /// `pending` normally, so the overlay is safe to run.
+    #[test]
+    fn zero_pending_is_safe() {
+        assert!(exterior_reload_overlay_is_safe(0));
+    }
+
+    /// #3499's regression case: the worker-disconnect `break` can exit the
+    /// wait loop with cells still pending — the overlay must be refused,
+    /// not silently applied against an incomplete world.
+    #[test]
+    fn nonzero_pending_is_unsafe() {
+        assert!(!exterior_reload_overlay_is_safe(1));
+        assert!(!exterior_reload_overlay_is_safe(48));
     }
 }

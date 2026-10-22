@@ -1063,7 +1063,7 @@ mod tests {
     fn every_created_resource_is_pushed_before_anything_else_runs() {
         let source = crate::source_scan::production_text(include_str!("init.rs"));
         let mut bindings = 0;
-        let mut rest: &str = &source;
+        let mut rest: &str = source;
         while let Some(at) = rest.find("= try_or_cleanup!(") {
             let head = &rest[..at];
             let name = head.trim_end().rsplit(char::is_whitespace).next().unwrap();

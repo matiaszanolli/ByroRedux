@@ -275,8 +275,7 @@ mod tests {
 
     #[test]
     fn fill_unset_is_first_writer_wins() {
-        let mut out = crate::CdbMaterial::default();
-        out.is_glass = Some(false);
+        let mut out = crate::CdbMaterial { is_glass: Some(false), ..Default::default() };
         SettingsCapture {
             is_glass: Some(true),
             blending_mode: Some("AlphaBlend".into()),

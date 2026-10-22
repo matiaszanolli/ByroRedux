@@ -149,8 +149,7 @@ mod tests {
     use byroredux_plugin::esm::records::{AvifRecord, EsmIndex};
 
     fn world_with(game: GameKind, avifs: &[(u32, &str)]) -> World {
-        let mut index = EsmIndex::default();
-        index.game = game;
+        let mut index = EsmIndex { game, ..Default::default() };
         for &(form_id, editor_id) in avifs {
             index.actor_values.insert(
                 form_id,

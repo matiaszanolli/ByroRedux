@@ -331,7 +331,9 @@ mod tests {
     /// with tombstones stops paying for the step every frame.
     #[test]
     fn the_step_gate_changes_only_with_the_records_or_the_loaded_cells() {
-        let grids = |cells: &[(i32, i32)]| cells.to_vec().into_iter();
+        fn grids(cells: &[(i32, i32)]) -> impl Iterator<Item = (i32, i32)> + '_ {
+            cells.iter().copied()
+        }
         let mut world = World::new();
         assert_eq!(created_work(&world, None, grids(&[])), CreatedWork::Idle, "no resource");
         world.insert_resource(CreatedReferences::default());

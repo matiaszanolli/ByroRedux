@@ -54,7 +54,7 @@ fn main() -> anyhow::Result<()> {
             .map(|s| read_zstring(&s.data))
             .unwrap_or_default();
         if filters.iter().any(|f| edid.contains(f.as_str())) {
-            print_npc(&h, &edid, &subs);
+            print_npc(h, &edid, &subs);
         }
     })?;
     Ok(())

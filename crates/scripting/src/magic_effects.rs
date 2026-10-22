@@ -446,8 +446,7 @@ mod tests {
     }
 
     fn index_with_value_effect(flags: u32, magnitude: f32, duration: u32) -> EsmIndex {
-        let mut index = EsmIndex::default();
-        index.game = GameKind::Fallout3NV;
+        let mut index = EsmIndex { game: GameKind::Fallout3NV, ..Default::default() };
         index.actor_values.insert(HEALTH, AvifRecord { form_id: HEALTH, editor_id: "AVHealth".into(), ..Default::default() });
         index.magic_effects.insert(
             0x77,
@@ -589,8 +588,7 @@ mod tests {
 
     #[test]
     fn a_script_effect_runs_start_once_update_each_frame_and_finish_at_the_end() {
-        let mut index = EsmIndex::default();
-        index.game = GameKind::Fallout3NV;
+        let mut index = EsmIndex { game: GameKind::Fallout3NV, ..Default::default() };
         // An effect whose script the spell names (Oblivion's SCIT shape).
         index.spells.insert(
             0x501,

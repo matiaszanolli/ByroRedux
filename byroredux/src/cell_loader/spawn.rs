@@ -402,6 +402,7 @@ fn synthesize_static_trimesh(
 /// `surface_material` is the authored Havok material when the source names
 /// one the geometry itself cannot carry — a LAND tile's ground texture
 /// (#6048); `None` keeps the static default.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_trimesh_collider_ghost(
     world: &mut World,
     positions: &[[f32; 3]],

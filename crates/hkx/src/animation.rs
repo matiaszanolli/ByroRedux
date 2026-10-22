@@ -2883,7 +2883,8 @@ mod tests {
     #[test]
     fn a_lossless_clip_with_a_descriptor_or_array_it_cannot_read_is_refused() {
         let layout = LosslessLayout::new(8);
-        let cases: Vec<(&str, Box<dyn Fn(&mut PackfileBuilder)>)> = vec![
+        type Perturb = Box<dyn Fn(&mut PackfileBuilder)>;
+        let cases: Vec<(&str, Perturb)> = vec![
             ("descriptor code 3", Box::new(|b| put_u16(&mut b.data, T_CH, &[3]))),
             ("code 0 with an index", Box::new(|b| put_u16(&mut b.data, T_CH, &[4]))),
             ("a rotation index past the series", Box::new(|b| put_u16(&mut b.data, R_CH, &[(2 << 2) | 2]))),

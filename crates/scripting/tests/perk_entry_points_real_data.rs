@@ -44,7 +44,6 @@ fn actor_with(index: &EsmIndex, owned: &[(u32, u8)]) -> (World, byroredux_core::
 
 #[test]
 #[ignore = "needs FalloutNV.esm on disk"]
-
 fn vanilla_fnv_perks_compose_as_their_descriptions_say() {
     let Some(index) = fnv_index() else {
         common::require_or_skip("FalloutNV.esm", &"fnv_index()");

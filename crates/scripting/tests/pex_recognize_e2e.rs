@@ -37,7 +37,6 @@ fn extract_pex(stem: &str) -> Option<Vec<u8>> {
 
 #[test]
 #[ignore = "needs Skyrim SE game data on disk"]
-
 fn da10_pex_is_recognized_as_a_quest_stage_gate() {
     let Some(bytes) = extract_pex("DA10MainDoorScript") else {
         common::require_or_skip("the Skyrim pex archive", &"extract_pex()");

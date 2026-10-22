@@ -712,8 +712,8 @@ impl EsmCellIndex {
                 cell.references.retain(|r| {
                     r.form_id == 0
                         || (!tombstones.contains(&r.form_id)
-                            && !(authored_ids.contains(&r.form_id)
-                                && !authored_in.contains(&(r.form_id, cell_id))))
+                            && (!authored_ids.contains(&r.form_id)
+                                || authored_in.contains(&(r.form_id, cell_id))))
                 });
             }
         }

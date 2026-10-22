@@ -29,6 +29,9 @@ use crate::components::{TerrainLayerHeights, TerrainTileSlot};
 /// parallel stages; a layer that misses still renders, only without height.
 const WORKER_THREADS: usize = 2;
 
+/// One finished generation job: the sources it ran for and its outcome.
+type FinishedJob = (LayerHeightSources, Result<CachedHeight, String>);
+
 /// Where a layer's map stands this session.
 #[derive(Debug, Clone)]
 pub(crate) enum HeightState {
@@ -44,7 +47,7 @@ pub(crate) struct TerrainHeightService {
     cache_dir: std::path::PathBuf,
     states: HashMap<LayerHeightSources, HeightState>,
     /// Finished jobs, filled by the pool and emptied by [`Self::drain`].
-    finished: Arc<Mutex<Vec<(LayerHeightSources, Result<CachedHeight, String>)>>>,
+    finished: Arc<Mutex<Vec<FinishedJob>>>,
 }
 impl Resource for TerrainHeightService {}
 

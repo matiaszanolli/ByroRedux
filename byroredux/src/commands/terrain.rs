@@ -14,12 +14,10 @@ use byroredux_core::math::coord::{EXTERIOR_CELL_UNITS, LAND_TEXTURE_TILES_PER_CE
 pub(crate) fn land_uv_at(origin_xz: [f32; 2], xz: [f32; 2]) -> Option<[f32; 2]> {
     let fc = (xz[0] - origin_xz[0]) / EXTERIOR_CELL_UNITS;
     let fr = (origin_xz[1] - xz[1]) / EXTERIOR_CELL_UNITS;
-    ((0.0..=1.0).contains(&fc) && (0.0..=1.0).contains(&fr)).then(|| {
-        [
-            fc * LAND_TEXTURE_TILES_PER_CELL,
-            (1.0 - fr) * LAND_TEXTURE_TILES_PER_CELL,
-        ]
-    })
+    ((0.0..=1.0).contains(&fc) && (0.0..=1.0).contains(&fr)).then_some([
+        fc * LAND_TEXTURE_TILES_PER_CELL,
+        (1.0 - fr) * LAND_TEXTURE_TILES_PER_CELL,
+    ])
 }
 
 /// `terrain.height` — for the terrain cell under the camera, every layer's

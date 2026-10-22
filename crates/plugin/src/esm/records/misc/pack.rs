@@ -1530,7 +1530,7 @@ mod tests {
     fn zero_duration_window_is_unsatisfiable_at_every_hour() {
         let schedule = PackSchedule {
             start_hour: Some(7),
-            duration_minutes: 0 * 60,
+            duration_minutes: 0,
             ..Default::default()
         };
         assert!(schedule.is_unsatisfiable());
@@ -1543,7 +1543,7 @@ mod tests {
         // `VChupacabraNightkinMoveToPen` — start_hour 0 takes the same arm.
         assert!(!PackSchedule {
             start_hour: Some(0),
-            duration_minutes: 0 * 60,
+            duration_minutes: 0,
             ..Default::default()
         }
         .active_at(0.0));
@@ -2027,7 +2027,7 @@ mod tests {
         assert!(!sleep.active_at(10.0));
         let any = PackSchedule {
             start_hour: None,
-            duration_minutes: 0 * 60,
+            duration_minutes: 0,
             ..Default::default()
         };
         assert!(any.active_at(0.0) && any.active_at(15.0));
