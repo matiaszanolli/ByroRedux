@@ -123,12 +123,18 @@ impl ObScriptLedger {
         }
     }
 
+    /// `ModCrimeGold`: saturating, so mod-supplied bytecode cannot wrap the bounty negative.
+    pub fn mod_crime_gold(&mut self, delta: i32) {
+        self.crime_gold = self.crime_gold.saturating_add(delta);
+    }
+
     pub fn disposition_mod(&self, actor: u32) -> i32 {
         self.disposition_mods.get(&actor).copied().unwrap_or(0)
     }
 
     pub fn mod_disposition(&mut self, actor: u32, delta: i32) {
-        *self.disposition_mods.entry(actor).or_default() += delta;
+        let slot = self.disposition_mods.entry(actor).or_default();
+        *slot = slot.saturating_add(delta);
     }
 
     pub fn value(&self, key: u16, subject: u32) -> Option<f32> {

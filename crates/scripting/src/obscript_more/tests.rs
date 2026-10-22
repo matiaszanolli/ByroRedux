@@ -142,6 +142,19 @@ fn mod_disposition_accumulates_for_the_caller() {
 }
 
 #[test]
+fn crime_gold_and_disposition_saturate_instead_of_overflowing() {
+    let (world, ..) = world(GameKind::Oblivion);
+    let c = ctx(Some(ACTOR));
+    for _ in 0..2 {
+        run(&world, 0x1076, &nums(&[i32::MAX as f32]), &c);
+        run(&world, 0x1053, &nums(&[i32::MAX as f32]), &c);
+    }
+    let ledger = world.try_resource::<ObScriptLedger>().unwrap();
+    assert_eq!(ledger.crime_gold, i32::MAX);
+    assert_eq!(ledger.disposition_mod(ACTOR), i32::MAX);
+}
+
+#[test]
 fn topics_and_quest_objects_are_kept() {
     let (world, ..) = world(GameKind::Fallout3NV);
     let c = ctx(None);

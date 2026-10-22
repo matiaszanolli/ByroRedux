@@ -34,7 +34,7 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
             done(format!("SetCrimeGold {}", num(args, 0)))
         }
         0x1076 => {
-            ledger_mut(world, |l| l.crime_gold += num(args, 0) as i32);
+            ledger_mut(world, |l| l.mod_crime_gold(num(args, 0) as i32));
             done(format!("ModCrimeGold {}", num(args, 0)))
         }
         // CS *GetAmountSoldStolen*: "the total value of stolen goods that the player has sold" — no sale
