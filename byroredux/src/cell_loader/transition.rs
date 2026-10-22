@@ -182,6 +182,7 @@ impl Resource for CurrentExteriorContext {}
 /// between a teardown and its following rebuild — same as `CurrentCellRoot`
 /// briefly reading `None` mid-transition today.
 pub(crate) fn clear_current_exterior_identity(world: &mut byroredux_core::ecs::World) {
+    crate::systems::script_requests::stop_script_music(world);
     world.remove_resource::<CurrentExteriorContext>();
 }
 
@@ -446,6 +447,8 @@ pub fn unload_current_interior(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
 ) {
+    // #6226 — a scripted `PlayMusic` track belongs to the cell it was played in.
+    crate::systems::script_requests::stop_script_music(world);
     let prev_root = world.try_resource::<CurrentCellRoot>().and_then(|r| r.0);
     if let Some(prev) = prev_root {
         log::info!("Transition: unloading prior interior cell (root {prev})");

@@ -6,7 +6,7 @@ use byroredux_core::ecs::components::{ActorVitals, Dead, GlobalTransform, Invent
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{EntityId, World};
-use byroredux_core::math::{Quat, Vec3};
+use byroredux_core::math::Quat;
 use byroredux_plugin::esm::records::ItemKind;
 use byroredux_scripting::obscript_more::{PendingMusic, PendingSleep, ReloadRequest, ResetInventoryRequest, UseWeaponRequest};
 
@@ -216,48 +216,60 @@ pub(crate) fn sleep_system(world: &World, _dt: f32) {
 
 // ── PlayMusic ──────────────────────────────────────────────────────────────────────────────────────
 
-/// A level no listener can be farther from: a music one-shot is not placed in the world.
-const MUSIC_RANGE: f32 = 1.0e9;
+/// The crossfade a scripted track starts and stops with.
+const SCRIPT_MUSIC_FADE_SECS: f32 = 1.0;
 
 /// `PlayMusic`: play the named music type's track over what the cell is already playing (GECK: "will not
-/// stop the currently playing music of the cell"), from the sound archives. Looping tracks (a positive
-/// dB) are not looped: a one-shot cannot.
+/// stop the currently playing music of the cell"), from the sound archives. #6226 — on the audio world's
+/// scripted music layer: streamed (a stinger is tens of MB of PCM decoded whole), non-spatial on the
+/// main track like the cell's music, looping when its positive dB marks it so, and replaced by the next
+/// `PlayMusic`. A cell change or a load ends it ([`stop_script_music`]).
 pub(crate) fn music_system(world: &World, _dt: f32) {
     let tracks: Vec<_> = match world.try_resource_mut::<PendingMusic>() {
         Some(mut pending) if !pending.0.is_empty() => std::mem::take(&mut pending.0),
         _ => return,
     };
-    let listener = world
-        .query::<byroredux_audio::AudioListener>()
-        .and_then(|listeners| listeners.iter().next().map(|(entity, _)| entity))
-        .and_then(|entity| world.get::<GlobalTransform>(entity).map(|t| t.translation))
-        .unwrap_or(Vec3::ZERO);
-    for track in tracks {
-        let key = format!("music\\{}", track.file.replace('/', "\\").to_ascii_lowercase());
-        // The music is loose in `Data\Music` on Fallout 3 / New Vegas; an archive is tried first.
-        let from_archive = world.try_resource::<crate::asset_provider::SoundArchiveProvider>().and_then(|provider| provider.extract(&key));
-        let bytes = from_archive.or_else(|| {
-            let (_, data) = crate::cli_args::esm_discovery_root(&crate::cli_args::effective_args()).ok()?;
-            let path = find_case_insensitive(&data, &format!("Music\\{}", track.file))?;
-            std::fs::read(path).ok()
-        });
-        let Some(bytes) = bytes else {
-            log::warn!("PlayMusic: '{key}' is in no sound archive and not under the data folder's Music");
-            continue;
-        };
-        let sound = match byroredux_audio::load_sound_from_bytes(bytes) {
-            Ok(sound) => std::sync::Arc::new(sound),
-            Err(error) => {
-                log::warn!("PlayMusic: '{key}' failed to decode: {error}");
-                continue;
-            }
-        };
-        // Only a negative level attenuates; a positive one is the loop marker, not a gain.
-        let volume = if track.decibels < 0.0 { 10f32.powf(track.decibels / 20.0) } else { 1.0 };
-        if let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() {
-            audio.play_oneshot(sound, listener, byroredux_audio::Attenuation { min_distance: MUSIC_RANGE, max_distance: MUSIC_RANGE }, volume);
-            log::info!("PlayMusic: playing '{key}' at {volume:.2}");
+    // One layer: of several asked for in a frame, the last is what would be left playing.
+    let Some(track) = tracks.into_iter().last() else { return };
+    // A headless session has nothing to play it on: no archive read, no decode.
+    if !world.try_resource::<byroredux_audio::AudioWorld>().is_some_and(|audio| audio.is_active()) {
+        return;
+    }
+    let key = format!("music\\{}", track.file.replace('/', "\\").to_ascii_lowercase());
+    // The music is loose in `Data\Music` on Fallout 3 / New Vegas; an archive is tried first.
+    let from_archive = world
+        .try_resource::<crate::asset_provider::SoundArchiveProvider>()
+        .and_then(|provider| provider.extract(&key))
+        .map(byroredux_audio::load_streaming_sound_from_bytes);
+    let sound = from_archive.or_else(|| {
+        let (_, data) = crate::cli_args::esm_discovery_root(&crate::cli_args::effective_args()).ok()?;
+        let path = find_case_insensitive(&data, &format!("Music\\{}", track.file))?;
+        Some(byroredux_audio::load_streaming_sound_from_file(path))
+    });
+    let sound = match sound {
+        Some(Ok(sound)) => sound,
+        Some(Err(error)) => {
+            log::warn!("PlayMusic: '{key}' failed to decode: {error}");
+            return;
         }
+        None => {
+            log::warn!("PlayMusic: '{key}' is in no sound archive and not under the data folder's Music");
+            return;
+        }
+    };
+    // Only a negative level attenuates; a positive one is the loop marker, not a gain.
+    let volume = if track.decibels < 0.0 { 10f32.powf(track.decibels / 20.0) } else { 1.0 };
+    if let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() {
+        audio.play_script_music(sound, volume, SCRIPT_MUSIC_FADE_SECS, track.looping);
+        log::info!("PlayMusic: playing '{key}' at {volume:.2}{}", if track.looping { " (looping)" } else { "" });
+    }
+}
+
+/// #6226 — end the scripted music layer: called where a cell is left (an interior unloaded, an exterior
+/// session drained), which every door transition and every load passes through.
+pub(crate) fn stop_script_music(world: &World) {
+    if let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() {
+        audio.stop_script_music(SCRIPT_MUSIC_FADE_SECS);
     }
 }
 
@@ -385,6 +397,7 @@ pub(crate) fn reload_system(world: &World, _dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::math::Vec3;
 
     #[test]
     fn facing_points_the_forward_axis_at_the_target() {
@@ -392,6 +405,33 @@ mod tests {
             let forward = facing(dx, dz) * -Vec3::Z;
             let want = Vec3::new(dx, 0.0, dz).normalize();
             assert!((forward - want).length() < 1e-5, "({dx},{dz}) -> {forward:?}");
+        }
+    }
+
+    /// #6226 — `PlayMusic` goes nowhere near the one-shot pool (no spatial sub-track, no
+    /// `oneshots_requested` count), and a headless session drains the request without touching the
+    /// archives or decoding anything.
+    #[test]
+    fn play_music_is_no_one_shot_and_a_headless_session_only_drains_it() {
+        use byroredux_scripting::obscript_more::MusicTrack;
+        let mut world = World::new();
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
+        let track = |file: &str| MusicTrack { form_id: 1, file: file.into(), looping: false, decibels: -6.0 };
+        world.insert_resource(PendingMusic(vec![track("a.mp3"), track("b.mp3")]));
+        music_system(&world, 0.0);
+        assert!(world.resource::<PendingMusic>().0.is_empty());
+        let audio = world.resource::<byroredux_audio::AudioWorld>();
+        assert_eq!(audio.oneshots_requested(), 0);
+        assert!(!audio.is_script_music_active());
+    }
+
+    /// #6226 — the scripted layer ends where a cell is left: both teardown choke points stop it.
+    #[test]
+    fn leaving_a_cell_stops_the_scripted_music() {
+        let source = include_str!("../cell_loader/transition.rs");
+        for teardown in ["pub fn unload_current_interior(", "pub(crate) fn clear_current_exterior_identity("] {
+            let body = source.split_once(teardown).and_then(|(_, rest)| rest.split_once("\n}\n")).map(|(body, _)| body).unwrap();
+            assert!(body.contains("stop_script_music(world)"), "{teardown} must stop the scripted music");
         }
     }
 }

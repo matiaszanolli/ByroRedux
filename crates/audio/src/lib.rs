@@ -490,6 +490,11 @@ pub struct AudioWorld {
     /// Calling `play_music` while a track is already playing fades
     /// the old one out and the new one in (crossfade).
     music: Option<StreamingSoundHandle<FromFileError>>,
+    /// #6226 — the scripted music layer (`PlayMusic`): non-spatial on the
+    /// main track like [`Self::music`], but a slot of its own, since a
+    /// scripted track "will not stop the currently playing music of the
+    /// cell" (GECK *PlayMusic*). A second scripted track replaces the first.
+    script_music: Option<StreamingSoundHandle<FromFileError>>,
     /// Reverb send track (Phase 6). Created on manager init when
     /// the audio device is available. Each spatial sub-track opts
     /// into routing signal here via `with_send` at construction
@@ -605,6 +610,7 @@ impl AudioWorld {
             pending_oneshots: VecDeque::new(),
             oneshots_requested: 0,
             music: None,
+            script_music: None,
             reverb_send: None,
             reverb_send_db: f32::NEG_INFINITY,
             listener: None,
@@ -807,50 +813,45 @@ impl AudioWorld {
         let Some(mgr) = self.manager.as_mut() else {
             return;
         };
-        let fade = Tween {
-            start_time: kira::StartTime::Immediate,
-            duration: Duration::from_secs_f32(fade_in_secs.max(0.0)),
-            easing: kira::Easing::Linear,
-        };
-        // Fade out any current track over the same duration so the
-        // two overlap into a crossfade.
-        if let Some(existing) = self.music.as_mut() {
-            existing.stop(fade);
-        }
-        let db = linear_volume_to_db(volume);
-        let configured = streaming_sound.volume(db).fade_in_tween(Some(fade));
-        let configured = if looping {
-            configured.loop_region(0.0..)
-        } else {
-            configured
-        };
-        match mgr.play(configured) {
-            Ok(handle) => {
-                self.music = Some(handle);
-            }
-            Err(e) => {
-                log::warn!("M44 Phase 5: play_music failed: {e}");
-                self.music = None;
-            }
-        }
+        play_main_track(mgr, &mut self.music, streaming_sound, volume, fade_in_secs, looping);
     }
 
     /// **Phase 5**: stop the currently-playing music with a fade-out.
     /// No-op when nothing is playing or when the manager is inactive.
     pub fn stop_music(&mut self, fade_out_secs: f32) {
-        let Some(handle) = self.music.as_mut() else {
+        stop_main_track(&mut self.music, fade_out_secs);
+    }
+
+    /// #6226 — play a scripted track (`PlayMusic`) on its own main-track
+    /// layer, over the cell's music rather than in place of it: streamed,
+    /// non-spatial, with no reverb send or underwater filter, exactly as
+    /// [`Self::play_music`] plays the cell's. A scripted track already
+    /// playing crossfades out. No-op when the manager is inactive.
+    pub fn play_script_music(
+        &mut self,
+        streaming_sound: StreamingSoundData<FromFileError>,
+        volume: f32,
+        fade_in_secs: f32,
+        looping: bool,
+    ) {
+        let Some(mgr) = self.manager.as_mut() else {
             return;
         };
-        let fade = Tween {
-            start_time: kira::StartTime::Immediate,
-            duration: Duration::from_secs_f32(fade_out_secs.max(0.0)),
-            easing: kira::Easing::Linear,
-        };
-        handle.stop(fade);
-        // Drop the handle so a future play_music call doesn't see
-        // a stale reference. Kira keeps the sound alive internally
-        // until the fade completes.
-        self.music = None;
+        play_main_track(mgr, &mut self.script_music, streaming_sound, volume, fade_in_secs, looping);
+    }
+
+    /// #6226 — stop the scripted music layer (a cell change or a load ends
+    /// it). No-op when nothing is playing.
+    pub fn stop_script_music(&mut self, fade_out_secs: f32) {
+        stop_main_track(&mut self.script_music, fade_out_secs);
+    }
+
+    /// Whether a scripted track is installed and not yet stopped (see
+    /// [`Self::is_music_active`] for the fade-tail caveat).
+    pub fn is_script_music_active(&self) -> bool {
+        self.script_music
+            .as_ref()
+            .is_some_and(|h| !matches!(h.state(), PlaybackState::Stopped))
     }
 
     /// True while a music handle is installed and its state has not
@@ -1743,14 +1744,64 @@ pub fn load_streaming_sound_from_bytes(
     StreamingSoundData::from_cursor(cursor)
 }
 
+/// Play a streaming sound into one main-track music slot, fading out
+/// whatever the slot held over the same duration so the two overlap into a
+/// crossfade. Shared by the cell music and the scripted layer (#6226).
+fn play_main_track(
+    mgr: &mut AudioManager<DefaultBackend>,
+    slot: &mut Option<StreamingSoundHandle<FromFileError>>,
+    streaming_sound: StreamingSoundData<FromFileError>,
+    volume: f32,
+    fade_in_secs: f32,
+    looping: bool,
+) {
+    let fade = Tween {
+        start_time: kira::StartTime::Immediate,
+        duration: Duration::from_secs_f32(fade_in_secs.max(0.0)),
+        easing: kira::Easing::Linear,
+    };
+    if let Some(existing) = slot.as_mut() {
+        existing.stop(fade);
+    }
+    let db = linear_volume_to_db(volume);
+    let configured = streaming_sound.volume(db).fade_in_tween(Some(fade));
+    let configured = if looping {
+        configured.loop_region(0.0..)
+    } else {
+        configured
+    };
+    match mgr.play(configured) {
+        Ok(handle) => *slot = Some(handle),
+        Err(e) => {
+            log::warn!("M44 Phase 5: play_music failed: {e}");
+            *slot = None;
+        }
+    }
+}
+
+/// Fade one main-track music slot out and empty it. Kira keeps the sound
+/// alive internally until the fade completes; the slot is cleared at once
+/// so a later play never sees a stale handle.
+fn stop_main_track(slot: &mut Option<StreamingSoundHandle<FromFileError>>, fade_out_secs: f32) {
+    let Some(handle) = slot.as_mut() else {
+        return;
+    };
+    handle.stop(Tween {
+        start_time: kira::StartTime::Immediate,
+        duration: Duration::from_secs_f32(fade_out_secs.max(0.0)),
+        easing: kira::Easing::Linear,
+    });
+    *slot = None;
+}
+
 /// **Phase 5**: streaming variant of [`load_streaming_sound_from_bytes`]
 /// that opens the file lazily — kira holds an `std::fs::File` and
 /// pulls decoded frames as the playback head advances. Use this for
 /// loose `Data/Music/*.mp3` / `*.wav` files that aren't archived.
 ///
-/// No engine caller yet: archive-extracted music streams through
-/// [`load_streaming_sound_from_bytes`] (`asset_provider/audio.rs`). Kept
-/// for a loose-file music path.
+/// Scripted `PlayMusic` uses it for the loose `Data\Music` files Fallout 3
+/// / New Vegas ship (#6226); archive-extracted music streams through
+/// [`load_streaming_sound_from_bytes`].
 pub fn load_streaming_sound_from_file(
     path: impl AsRef<std::path::Path>,
 ) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
