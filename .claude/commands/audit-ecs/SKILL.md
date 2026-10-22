@@ -92,7 +92,7 @@ First step: `grep -rn 'type Storage = PackedStorage' crates byroredux --include=
   #3836), `CollisionShape` (`crates/core/src/ecs/components/collision.rs`) + `RapierHandles`
   (`crates/physics`), both since 88c23887b, and `RigidBodyData` (same file, #5943 `44f3a4f35`). The sparse ones get only a `structural_generation` bump and no dirty set — #3836's `SceneEffectSoftCache`,
   the incremental world-bound propagation, `physics_sync_system`'s unregistered-shape absence
-  cache (`sync.rs`) and `trap_contact_system`'s Trap-layer body list (`TrapLayerCache`,
+  cache (`sync.rs`) and `trap_contact_system`'s Trap-layer body list (`TrapOwnerCache`,
   `byroredux/src/systems/trap_hits.rs`) consume them. The generation moves on insert (overwrite included) and
   remove, never on `get_mut` — a cache keyed on a field (the trap list on `havok_layer`) goes stale if that
   field is ever edited in place.
