@@ -20,15 +20,15 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 102, 2026-10-19. Workspace
+**Last session close:** Session 103, 2026-10-22. Workspace
 numbers (tests, LOC, files, issue dirs) live in [Project Stats](#project-stats)
 only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
 bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
---workspace -- -D warnings` was **clean** at the last run (2026-10-19, after the
-Session 102 ObScript lints were fixed; `--all-targets` is not, Known Issues). All 10 847 tests
-pass (2026-10-19). The lock-order detector is clean locally on
+--workspace -- -D warnings` was **clean** at the last run (2026-10-22, after the
+Session 103 `head_look` lint was fixed; `--all-targets` is not, Known Issues). All 11 137 tests
+pass (2026-10-22). The lock-order detector is clean locally on
 `-p byroredux-scripting` and `-p byroredux` there (it caught one scripting
 inversion earlier, fixed in `ac0d19f35`); the CI ABBA lane was not read. The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
 regression, **R6a-regress-22**, was the bench camera moving with `b9e961eeb`'s
@@ -707,16 +707,16 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-19, HEAD `e4810c125`: all figures re-counted at the Session 102 close.
+Ground-truth as of 2026-10-22, HEAD `460c720cb`: all figures re-counted at the Session 103 close.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | 826 509                       |
-| Rust total lines (all `.rs`, excl. `target/`) | 881 536                  |
-| Source files (`.rs`, excl. `target/`)   | 1503 total · 1406 outside `tests/` dirs (+37 / +35 since the Session 101 close) |
-| Workspace members                       | 34 (count the `[workspace] members` block only; 29 crates + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **10 847 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-19; 343 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 6100 (`.claude/issues/`)     |
+| Rust source lines (`src/` dirs)         | 845 629                       |
+| Rust total lines (all `.rs`, excl. `target/`) | 902 067                  |
+| Source files (`.rs`, excl. `target/`)   | 1521 total · 1420 outside `tests/` dirs (+18 / +14 since the Session 102 close) |
+| Workspace members                       | 35 (count the `[workspace] members` block only; 30 crates — `terrain-height` joined in Session 103 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
+| Tests                                   | **11 137 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-22; 364 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 6292 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-09-29). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
