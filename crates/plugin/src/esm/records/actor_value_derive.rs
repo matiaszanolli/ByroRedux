@@ -410,15 +410,22 @@ const SKYRIM_SKILL_CAP: i32 = 100;
 /// The points a class's skill `weights` distribute among its skills for an NPC of `level`
 /// (UESP *CLAS*, Weight Calculations / Skills): first every complete set,
 /// `floor(8 x (level - 1) / sum of weights) x weight`; then the leftover points one at a
-/// time, looping over the skills ordered by weight (higher first) then actor-value index
-/// (higher first), a skill taking no more leftovers than its weight. The page says the
+/// time (`distribute_by_weight`). The page says the
 /// assignment changes once a skill reaches 100 and does not give how; the result is capped
 /// at the skill maximum instead.
 pub fn skyrim_class_skill_points(weights: &[u8; 18], level: i32) -> [i32; 18] {
-    let mut points = [0i32; 18];
-    let total = SKYRIM_SKILL_POINTS_PER_LEVEL * (level - 1).max(0);
+    distribute_by_weight(weights, SKYRIM_SKILL_POINTS_PER_LEVEL * (level - 1).max(0))
+}
+
+/// UESP *CLAS* Weight Calculations, shared by skills and pools: `total` points split over
+/// `weights`, first every complete set (`floor(total / sum of weights) × weight`), then the
+/// leftovers one at a time over the slots ordered by weight (higher first) and, for equal
+/// weights, by **descending** actor-value index — confirmed against Skyrim.esm's NPC `DNAM`
+/// values (91d5e8d5c) — a slot taking no more leftovers than its weight.
+fn distribute_by_weight<const N: usize>(weights: &[u8; N], total: i32) -> [i32; N] {
+    let mut points = [0i32; N];
     let sum: i32 = weights.iter().map(|&w| i32::from(w)).sum();
-    if total == 0 || sum == 0 {
+    if total <= 0 || sum == 0 {
         return points;
     }
     let sets = total / sum;
@@ -426,11 +433,9 @@ pub fn skyrim_class_skill_points(weights: &[u8; 18], level: i32) -> [i32; 18] {
         *slot = sets * i32::from(weight);
     }
     let mut leftover = total - sets * sum;
-    let mut order: Vec<usize> = (0..18).filter(|&i| weights[i] > 0).collect();
-    // Skyrim's class-skill allocation breaks equal weights by descending
-    // actor-value index, as confirmed against Skyrim.esm's NPC DNAM values.
+    let mut order: Vec<usize> = (0..N).filter(|&i| weights[i] > 0).collect();
     order.sort_by_key(|&i| (std::cmp::Reverse(weights[i]), std::cmp::Reverse(i)));
-    let mut taken = [0i32; 18];
+    let mut taken = [0i32; N];
     while leftover > 0 {
         let mut progressed = false;
         for &i in &order {
@@ -462,43 +467,12 @@ const SKYRIM_HEALTH_PER_LEVEL: i32 = 5;
 
 /// The points a class's attribute `weights` (Health, Magicka, Stamina) add to an NPC of
 /// `level` (UESP *CLAS*, Weight Calculations / Attributes): `5·(level−1)` Health on top, then
-/// `10·(level−1)` points distributed exactly like the skills — first every complete set,
-/// `floor(10·(level−1) / sum of weights)·weight`, then the leftovers one at a time over the
-/// pools ordered by weight (higher first) and, for equal weights, in **reverse** actor-value
-/// order (Stamina, Magicka, Health), a pool taking no more leftovers than its weight.
+/// `10·(level−1)` points distributed exactly like the skills (`distribute_by_weight`; for
+/// equal weights that is reverse actor-value order: Stamina, Magicka, Health).
 pub fn skyrim_class_pool_points(weights: &[u8; 3], level: i32) -> [i32; 3] {
     let levels = (level - 1).max(0);
-    let mut points = [SKYRIM_HEALTH_PER_LEVEL * levels, 0, 0];
-    let total = SKYRIM_POOL_POINTS_PER_LEVEL * levels;
-    let sum: i32 = weights.iter().map(|&w| i32::from(w)).sum();
-    if total == 0 || sum == 0 {
-        return points;
-    }
-    let sets = total / sum;
-    for (slot, &weight) in points.iter_mut().zip(weights) {
-        *slot += sets * i32::from(weight);
-    }
-    let mut leftover = total - sets * sum;
-    let mut order: Vec<usize> = (0..3).filter(|&i| weights[i] > 0).collect();
-    order.sort_by_key(|&i| (std::cmp::Reverse(weights[i]), std::cmp::Reverse(i)));
-    let mut taken = [0i32; 3];
-    while leftover > 0 {
-        let mut progressed = false;
-        for &i in &order {
-            if leftover == 0 {
-                break;
-            }
-            if taken[i] < i32::from(weights[i]) {
-                points[i] += 1;
-                taken[i] += 1;
-                leftover -= 1;
-                progressed = true;
-            }
-        }
-        if !progressed {
-            break;
-        }
-    }
+    let mut points = distribute_by_weight(weights, SKYRIM_POOL_POINTS_PER_LEVEL * levels);
+    points[0] += SKYRIM_HEALTH_PER_LEVEL * levels;
     points
 }
 
