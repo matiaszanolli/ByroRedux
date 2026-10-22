@@ -95,18 +95,10 @@ pub(super) fn parse_and_import_nif(
     };
     let lights = byroredux_nif::import::import_nif_lights(&scene);
     let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
-    // #3602 — `import_embedded_animations` alone never looks at
-    // `NiControllerSequence`, so every animated Oblivion static spawned
-    // frozen (423 files / 792 sequences in `Oblivion - Meshes.bsa` alone).
-    let (embedded_clip, skipped_sequences) =
-        byroredux_nif::anim::import_embedded_animations_with_sequences(&scene);
-    if skipped_sequences > 0 {
-        log::debug!(
-            "NIF '{label}': {skipped_sequences} further NiControllerSequence \
-             animation(s) present; playing the first, matching the loose-NIF \
-             `.kf` path. Selecting among them needs a trigger system (#3602)."
-        );
-    }
+    // The standalone controllers only. The NIF's `NiControllerSequence`s
+    // (#3602) ride `SceneSatellites::object_sequences`, and spawn plays the
+    // first on a player of its own (#6253).
+    let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
     // The clip is registered once per unique NIF in `partial.rs` /
     // `load_references` and bound to each placement by `spawn.rs`'s #544
     // `AnimationPlayer` insert, whose `root_entity` is the placement root.
@@ -132,11 +124,14 @@ pub(super) fn parse_and_import_nif(
     // returned as empty `CachedNifImport` entries and the operator
     // hit a "props in a void" symptom downstream with no log clue.
     // The fix is observability-only — cache invariants unchanged.
+    let satellites =
+        super::super::nif_import_registry::scene_satellites(&scene, &meshes, &collisions);
     if meshes.is_empty()
         && collisions.is_empty()
         && lights.is_empty()
         && particle_emitters.is_empty()
         && embedded_clip.is_none()
+        && satellites.object_sequences.is_empty()
     {
         log::warn!(
             "NIF '{}' imported with zero meshes / collisions / lights / \
@@ -145,8 +140,6 @@ pub(super) fn parse_and_import_nif(
             label,
         );
     }
-    let satellites =
-        super::super::nif_import_registry::scene_satellites(&scene, &meshes, &collisions);
     let mut cached = CachedNifImport::from_scene(
         meshes,
         collisions,

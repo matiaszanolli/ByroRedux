@@ -68,15 +68,34 @@ pub fn group_name(world: &World, index: f32) -> Option<&'static str> {
     GROUPS.get(index as usize).filter(|_| (index as usize) < limit).copied()
 }
 
+/// The player that runs `object`'s sequences: the one scoped to it whose clip is one of its named
+/// sequences, else the one scoped to it. A model with standalone controllers as well as sequences has
+/// a player for each (#6253); the script commands drive the sequence one and leave the ambient
+/// controllers (a flag's wave, a gate's glow) running.
+fn sequence_player(world: &World, object: EntityId) -> Option<EntityId> {
+    let sequences = world.get::<NamedSequences>(object).map(|sequences| sequences.clone());
+    let players = world.query::<AnimationPlayer>()?;
+    let scoped: Vec<(EntityId, u32)> = players
+        .iter()
+        .filter(|(_, player)| player.root_entity == Some(object))
+        .map(|(entity, player)| (entity, player.clip_handle))
+        .collect();
+    let runs_sequence = |clip: u32| sequences.as_ref().is_some_and(|sequences| sequences.name_of(clip).is_some());
+    scoped.iter().find(|(_, clip)| runs_sequence(*clip)).or(scoped.first()).map(|(entity, _)| *entity)
+}
+
 /// Start `group` on `object`. `false` when the object has no such sequence or no player to run it.
 pub fn play_group(world: &World, object: EntityId, group: &str) -> bool {
     let Some(handle) = world.get::<NamedSequences>(object).and_then(|sequences| sequences.handle(group)) else {
         return false;
     };
+    let Some(entity) = sequence_player(world, object) else {
+        return false;
+    };
     let Some(mut players) = world.query_mut::<AnimationPlayer>() else {
         return false;
     };
-    let Some((_, player)) = players.iter_mut().find(|(_, player)| player.root_entity == Some(object)) else {
+    let Some(player) = players.get_mut(entity) else {
         return false;
     };
     player.clip_handle = handle;
@@ -92,10 +111,13 @@ pub fn play_group(world: &World, object: EntityId, group: &str) -> bool {
 /// at the first frame. The object's player rewinds; what it was playing and whether it runs are kept.
 /// `false` when the object has no player to rewind.
 pub fn reset_animation(world: &World, object: EntityId) -> bool {
+    let Some(entity) = sequence_player(world, object) else {
+        return false;
+    };
     let Some(mut players) = world.query_mut::<AnimationPlayer>() else {
         return false;
     };
-    let Some((_, player)) = players.iter_mut().find(|(_, player)| player.root_entity == Some(object)) else {
+    let Some(player) = players.get_mut(entity) else {
         return false;
     };
     player.local_time = 0.0;
@@ -107,9 +129,10 @@ pub fn reset_animation(world: &World, object: EntityId) -> bool {
 /// Whether `object` is animating — and, with `group`, running that group's sequence. `None` when the
 /// object has no player to ask.
 pub fn is_anim_playing(world: &World, object: EntityId, group: Option<&str>) -> Option<bool> {
+    let entity = sequence_player(world, object)?;
     let (clip_handle, playing, local_time) = {
         let players = world.query::<AnimationPlayer>()?;
-        let (_, player) = players.iter().find(|(_, player)| player.root_entity == Some(object))?;
+        let player = players.get(entity)?;
         (player.clip_handle, player.playing, player.local_time)
     };
     let clips = world.try_resource::<AnimationClipRegistry>()?;
@@ -196,6 +219,33 @@ mod tests {
         // A group the object has no sequence of, and an object with no sequences, decline.
         assert!(!play_group(&world, object, "Left"));
         assert!(!play_group(&world, 12345, "Forward"));
+    }
+
+    /// #6253 — beside the sequence player, a model with standalone controllers runs a second player
+    /// on the same object. The script commands drive the sequence one; the ambient one keeps running.
+    #[test]
+    fn the_script_commands_drive_the_sequence_player_not_the_ambient_controllers() {
+        let (mut world, object, forward, backward) = object(GameKind::Fallout3NV);
+        let ambient_clip = world.resource_mut::<AnimationClipRegistry>().add(clip("Ambient", 1.0, CycleType::Loop));
+        // The ambient player spawns first, as the cell loader does.
+        let ambient = world.spawn();
+        let mut ambient_player = AnimationPlayer::new(ambient_clip);
+        ambient_player.root_entity = Some(object);
+        ambient_player.local_time = 0.5;
+        world.insert(ambient, ambient_player);
+        let clip_of = |world: &World, entity| world.get::<AnimationPlayer>(entity).map(|p| (p.clip_handle, p.local_time));
+
+        assert_eq!(is_anim_playing(&world, object, Some("Forward")), Some(true));
+        assert!(play_group(&world, object, "Backward"));
+        assert_eq!(clip_of(&world, ambient), Some((ambient_clip, 0.5)), "the ambient player is untouched");
+        let sequence = sequence_player(&world, object).unwrap();
+        assert_ne!(sequence, ambient);
+        assert_eq!(clip_of(&world, sequence), Some((backward, 0.0)));
+        world.get_mut::<AnimationPlayer>(sequence).unwrap().local_time = 1.0;
+        assert!(reset_animation(&world, object));
+        assert_eq!(clip_of(&world, sequence), Some((backward, 0.0)));
+        assert_eq!(clip_of(&world, ambient), Some((ambient_clip, 0.5)));
+        assert_ne!(forward, ambient_clip);
     }
 
     #[test]

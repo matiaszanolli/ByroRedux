@@ -319,17 +319,10 @@ pub(crate) fn parse_one_nif(
         let root_flags = byroredux_nif::import::extract_root_flags(&scene);
         let lights = byroredux_nif::import::import_nif_lights(&scene);
         let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
-        // #3602 — see `references::import`: the sequence half was missing
-        // here too, and the exterior streaming path is where Oblivion's
-        // animated landmarks (the gates) actually live.
-        let (embedded_clip, skipped_sequences) =
-            byroredux_nif::anim::import_embedded_animations_with_sequences(&scene);
-        if skipped_sequences > 0 {
-            log::debug!(
-                "[stream-worker] '{path}': {skipped_sequences} further \
-                 NiControllerSequence animation(s) present; playing the first."
-            );
-        }
+        // Standalone controllers only; the sequences ride the scene
+        // satellites the main thread extracts (see `references::import`,
+        // #3602 / #6253).
+        let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
         let mut worker_pool = StringPool::new();
         let (meshes, collisions) =
             byroredux_nif::import::import_nif_with_collision_and_resolver(

@@ -267,10 +267,12 @@ fn import_sequence_carries_authored_phase() {
 /// yields one in 72 of 8,032. Oblivion's animated statics — gates,
 /// machinery, banners — imported perfectly and spawned frozen.
 ///
-/// `import_embedded_animations_with_sequences` is what the cell loader
-/// calls now. These pin that it sees the sequences.
+/// The cell loader plays `import_kf`'s first sequence on a player of its
+/// own beside the standalone-controller clip (#6253: merged, the sequence's
+/// envelope and non-transform channels were lost). These pin the two
+/// sources staying apart and the sequence order spawn picks the first from.
 #[test]
-fn embedded_import_with_sequences_picks_up_a_nicontrollersequence() {
+fn standalone_controllers_and_sequences_import_as_separate_clips() {
     use crate::blocks::controller::NiTimeControllerBase;
     use crate::blocks::controller::{NiControllerManager, NiControllerSequence};
     use crate::types::{BlockRef, NiPoint3, NiQuatTransform};
@@ -345,23 +347,17 @@ fn embedded_import_with_sequences_picks_up_a_nicontrollersequence() {
          it is the one the cell loader used to call alone (#3602)"
     );
 
-    let (clip, extra) = import_embedded_animations_with_sequences(&scene);
-    let clip = clip.expect("a NIF with embedded sequences must yield a clip");
+    let sequences = import_kf(&scene);
+    let names: Vec<&str> = sequences.iter().map(|clip| clip.name.as_str()).collect();
+    assert_eq!(names, ["GateOpen", "GateClose"], "authored order: spawn plays the first");
     assert!(
-        clip.channels.contains_key("GateOpen"),
-        "the first sequence's transform channels must reach the clip"
-    );
-    assert_eq!(
-        extra, 1,
-        "the remaining sequences must be reported, not silently dropped — \
-         selecting among them needs a trigger system that does not exist yet"
+        sequences[0].channels.contains_key("GateOpen"),
+        "the first sequence's transform channels must reach its clip"
     );
 
-    // A scene with no sequences must behave exactly as before.
     let bare = NifScene::default();
-    let (clip, extra) = import_embedded_animations_with_sequences(&bare);
-    assert!(clip.is_none());
-    assert_eq!(extra, 0);
+    assert!(import_embedded_animations(&bare).is_none());
+    assert!(import_kf(&bare).is_empty());
 }
 
 /// #5575 — only a finite, forward sequence span may clamp B-spline

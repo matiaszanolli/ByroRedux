@@ -918,7 +918,22 @@ pub(super) fn spawn_placed_instances(
     // emissive pulses / torch visibility flickers / fade-in alphas
     // all stay frozen on cell-rendered REFRs, while loose-NIF
     // imports of the same models animate correctly.
-    if let Some(handle) = clip_handle {
+    //
+    // M47.3 — the model's named animation sequences, for an object script's
+    // `PlayGroup`. #3602 — the first plays from spawn (Oblivion's gates and
+    // machinery, FNV's flags spawned frozen without it), on a player of its
+    // own (#6253): the standalone controllers and the sequence each keep
+    // their own cycle type, frequency and phase. Merged into one clip, the
+    // standalone envelope won (a looping flag played once) and the
+    // sequence's non-transform channels were dropped (a gate's idle showed
+    // the emitters it hides).
+    let first_sequence = mesh_cache_key.and_then(|key| {
+        let sequences = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences)?;
+        let first = sequences.0.first().map(|(_, handle)| *handle);
+        world.insert(placement_root, sequences);
+        first
+    });
+    for handle in clip_handle.into_iter().chain(first_sequence) {
         // #2221 — attach the `Animated*` sinks this clip's non-transform
         // channels write into, BEFORE the player starts ticking.
         // `animation_system` can only write into components that already
@@ -928,20 +943,7 @@ pub(super) fn spawn_placed_instances(
         // Channels are cloned out so the registry guard drops before
         // `attach_animation_sinks` takes `&mut World`.
         crate::anim_convert::attach_clip_sinks(world, handle, ctx, tex_provider, placement_root);
-
-        let player_entity = world.spawn();
-        // #3345 — start at the clip's authored phase offset.
-        let phase = crate::anim_convert::clip_start_phase(world, handle);
-        let mut player = byroredux_core::animation::AnimationPlayer::new(handle).with_phase(phase);
-        player.root_entity = Some(placement_root);
-        world.insert(player_entity, player);
-    }
-
-    // M47.3 — the model's named animation sequences, for an object script's `PlayGroup`.
-    if let Some(key) = mesh_cache_key {
-        if let Some(sequences) = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences) {
-            world.insert(placement_root, sequences);
-        }
+        spawn_placement_player(world, placement_root, handle);
     }
 
     // M47.0 Phase 3b — return the placement_root alongside the
@@ -970,6 +972,22 @@ pub(super) fn spawn_placed_instances(
             blas_built,
         },
     )
+}
+
+/// One `AnimationPlayer` for `handle`, on an entity of its own, scoped to
+/// `placement_root`'s subtree and started at the clip's authored phase
+/// offset (#3345). A placement runs one per clip source (#6253).
+pub(super) fn spawn_placement_player(
+    world: &mut World,
+    placement_root: byroredux_core::ecs::EntityId,
+    handle: u32,
+) -> byroredux_core::ecs::EntityId {
+    let player_entity = world.spawn();
+    let phase = crate::anim_convert::clip_start_phase(world, handle);
+    let mut player = byroredux_core::animation::AnimationPlayer::new(handle).with_phase(phase);
+    player.root_entity = Some(placement_root);
+    world.insert(player_entity, player);
+    player_entity
 }
 
 /// Spawn the per-REFR placement root entity and stamp every
@@ -1763,5 +1781,62 @@ mod blas_batch_log_scope_tests {
                 && synth.contains("accum.blas_requested += spawn_stats.blas_requested;"),
             "every placement's batch must be summed into the cell accumulator (#4198)"
         );
+    }
+}
+
+/// #6253 — a placement whose model authors standalone controllers and a
+/// `NiControllerSequence` runs one player per clip, each scoped to the
+/// placement and started at its own clip's phase; driving the spawn itself
+/// needs a `VulkanContext`, so the shared player constructor is pinned here
+/// and the call that feeds it both handles at source level.
+#[cfg(test)]
+mod placement_player_tests {
+    use super::spawn_placement_player;
+    use byroredux_core::animation::{AnimationClip, AnimationClipRegistry, AnimationPlayer, CycleType};
+    use byroredux_core::ecs::World;
+
+    fn clip(cycle_type: CycleType, phase: f32) -> AnimationClip {
+        AnimationClip {
+            name: String::new(),
+            duration: 5.0,
+            cycle_type,
+            frequency: 1.0,
+            phase,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: Default::default(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+            root_yaw: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn each_clip_source_gets_its_own_player_with_its_own_envelope() {
+        let mut world = World::new();
+        let mut registry = AnimationClipRegistry::new();
+        let standalone = registry.add(clip(CycleType::Clamp, 0.0));
+        let sequence = registry.add(clip(CycleType::Loop, 1.5));
+        world.insert_resource(registry);
+        let root = world.spawn();
+        let a = spawn_placement_player(&mut world, root, standalone);
+        let b = spawn_placement_player(&mut world, root, sequence);
+        assert_ne!(a, b);
+        let player = |entity| {
+            let p = world.get::<AnimationPlayer>(entity).unwrap();
+            (p.clip_handle, p.root_entity, p.local_time)
+        };
+        assert_eq!(player(a), (standalone, Some(root), 0.0));
+        assert_eq!(player(b), (sequence, Some(root), 1.5));
+    }
+
+    #[test]
+    fn spawn_plays_the_first_named_sequence_beside_the_standalone_clip() {
+        let spawn = include_str!("spawn.rs");
+        assert!(spawn.contains("for handle in clip_handle.into_iter().chain(first_sequence) {"));
+        assert!(spawn.contains("let first = sequences.0.first().map(|(_, handle)| *handle);"));
     }
 }

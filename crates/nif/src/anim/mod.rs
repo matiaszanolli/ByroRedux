@@ -37,7 +37,7 @@ mod types;
 // that here so the test file can keep its concise import block.
 
 pub use bspline::BsplineSampling;
-pub use entry::{import_embedded_animations, import_embedded_animations_with_sequences, import_kf};
+pub use entry::{import_embedded_animations, import_kf};
 // #3231 — reused by `import::mesh::extract_mesh` / `extract_bs_tri_shape`
 // to find a shape's `NiGeomMorpherController` without duplicating the
 // controller-chain type-dispatch ladder.

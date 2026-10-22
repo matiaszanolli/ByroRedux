@@ -242,14 +242,16 @@ pub(crate) struct CachedNifImport {
     ///
     /// Read at spawn: `synth_child.rs` converts it once into a clip handle
     /// (kept in `clip_handles`, #544) and attaches an `AnimationPlayer` per
-    /// placement.
+    /// placement. Standalone controllers only: the NIF's sequences are
+    /// [`Self::object_sequences`], played on a player of their own (#6253).
     pub(super) embedded_clip: Option<byroredux_nif::anim::AnimationClip>,
     /// Every `NiControllerSequence` of a NIF that names a behavior graph: the
     /// clips the graph's Gamebryo sequence generators play, by sequence name.
     pub(super) graph_sequences: Vec<byroredux_nif::anim::AnimationClip>,
     /// Every `NiControllerSequence` of the NIF, by name: the animation groups an object's script
-    /// can start (`PlayGroup Forward`, M47.3). The first is also the embedded clip played at
-    /// spawn; the registry keeps these one level apart so playing one by name never disturbs it.
+    /// can start (`PlayGroup Forward`, M47.3). The first also plays from spawn, on its own player
+    /// beside the `embedded_clip` one (#3602 / #6253); `PlayGroup` retargets that player only, so
+    /// the standalone controllers keep running.
     pub(super) object_sequences: Vec<byroredux_nif::anim::AnimationClip>,
     /// Billboard mode to attach to the spawned placement root entity —
     /// a seam for a future `NiBillboardNode`-rooted NIF producer, not a
