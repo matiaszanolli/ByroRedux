@@ -72,10 +72,9 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
             // `source`, for correct per-archive cache-key and log
             // attribution.
             //
-            // Not fixed here (documented, LOW, same site per the issue): a
-            // loose `Data\materials\materialsbeta.cdb` — the natural
-            // mod-override shape — is never discovered by any path in this
-            // function; every source scanned here is an archive.
+            // A loose `Data\materials\materialsbeta.cdb` — the natural
+            // mod-override shape — is discovered after this loop, from the
+            // loose tier itself (#6330).
             "--bsa" => {
                 if let Some(path) = args.get(i + 1) {
                     for candidate in
@@ -101,6 +100,10 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
     // #6200 — loose `Data\materials` files override every material archive.
     if let Some(loose) = loose_data_dir(args).and_then(|dir| Archive::open_loose(&dir)) {
         log_opened_archive("loose materials", loose.path(), &loose, &provider.archives, false);
+        // #6330 — registered last, so a loose CDB overlays the archived ones
+        // (`lookup_cdb_material` is last-registered-wins).
+        let source = loose.path().to_owned();
+        discover_starfield_cdbs(&loose, &source, &mut provider);
         provider.push_archive(loose);
     }
     provider

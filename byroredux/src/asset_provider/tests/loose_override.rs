@@ -124,6 +124,43 @@ fn providers_serve_loose_assets() {
     );
 }
 
+/// #6330 — Starfield's `geometries\<hash>.mesh` external mesh data is a loose
+/// asset root too, and the mesh provider serves it unprefixed.
+#[test]
+fn loose_tier_serves_starfield_geometries() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "Geometries/ab12/cd34.mesh", b"mesh body");
+    let loose = Archive::open_loose(tmp.path()).expect("loose assets present");
+    assert!(loose.contains(r"geometries\ab12\cd34.mesh"));
+
+    let textures = build_texture_provider(&esm_args(tmp.path()));
+    assert_eq!(textures.extract_mesh(r"geometries\ab12\cd34.mesh").unwrap(), b"mesh body");
+}
+
+/// #6330 — a loose `materials\materialsbeta.cdb` (and a Creation-namespaced one)
+/// is discovered and registered by the material provider, and a directory
+/// source re-opens as the loose tier so its index can be built.
+#[test]
+fn a_loose_cdb_is_discovered_and_reopens_by_its_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cdb = super::starfield_mat::minimal_cdb_bytes();
+    write(tmp.path(), "Materials/materialsbeta.cdb", &cdb);
+    write(tmp.path(), "materials/creations/mymod/materialsbeta.cdb", &cdb);
+
+    let materials = build_material_provider(&esm_args(tmp.path()));
+    let mut sources: Vec<&str> = materials.sf_cdb_sources.iter().map(|(_, inner)| inner.as_str()).collect();
+    sources.sort_unstable();
+    assert_eq!(
+        sources,
+        [r"materials\creations\mymod\materialsbeta.cdb", r"materials\materialsbeta.cdb"],
+        "both loose CDBs register"
+    );
+
+    let (source, _) = &materials.sf_cdb_sources[0];
+    let (reopened, _) = Archive::open_shared(source).expect("a directory source re-opens as the loose tier");
+    assert_eq!(reopened.extract(r"materials\materialsbeta.cdb").unwrap(), cdb);
+}
+
 /// A loose copy of a path the vanilla texture archive also carries wins over
 /// the archive, whatever order the archives were listed in.
 #[test]

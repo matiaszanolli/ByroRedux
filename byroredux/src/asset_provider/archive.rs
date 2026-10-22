@@ -44,7 +44,10 @@ enum Backend {
 
 /// The asset folders a game's `Data` directory can carry loose overrides in:
 /// the same top-level roots the archives store their entries under.
-const LOOSE_ASSET_ROOTS: [&str; 3] = ["textures", "meshes", "materials"];
+/// `geometries` is Starfield's external `.mesh` data (`geometries\<hash>.mesh`,
+/// no `meshes\` prefix — see [`normalize_mesh_path`]); without it a loose NIF
+/// override that names new `.mesh` bodies resolves none of them (#6330).
+const LOOSE_ASSET_ROOTS: [&str; 4] = ["textures", "meshes", "materials", "geometries"];
 
 /// How many directory levels below an asset root the loose index descends.
 /// Archive paths are shallow (vanilla nests a handful deep), so this only
@@ -237,6 +240,15 @@ impl Archive {
     /// re-read rather than served stale. The lock is held for map access
     /// only, never across the open itself.
     pub(crate) fn open_shared(path: &str) -> Result<(Self, bool), String> {
+        // A source that names a directory is the loose tier (its `path()` is the
+        // game `Data` directory): re-opening it by path, as the Starfield CDB index
+        // build does, must hand back that tier, not try to sniff a directory's
+        // magic (#6330). `open_loose` keeps its own per-directory registry.
+        if std::path::Path::new(path).is_dir() {
+            return Self::open_loose(std::path::Path::new(path))
+                .map(|loose| (loose, true))
+                .ok_or_else(|| format!("'{path}' holds no loose assets"));
+        }
         let stamp = ArchiveStamp::of(path);
         if let Some(stamp) = stamp {
             let registry = shared_archives().lock().unwrap_or_else(|e| e.into_inner());

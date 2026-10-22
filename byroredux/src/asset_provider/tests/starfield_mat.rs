@@ -81,7 +81,7 @@ fn register_indexed_with(bytes: Vec<u8>, source: &str, provider: &mut MaterialPr
 /// instead, after unrelated edits moved `index_chunks` further down the
 /// file. Named by function only now, not by line number, so a future
 /// edit can't silently point this at the wrong function again.
-fn minimal_cdb_bytes() -> Vec<u8> {
+pub(super) fn minimal_cdb_bytes() -> Vec<u8> {
     let mut buf = Vec::with_capacity(40);
     // 16-byte header: magic + headerSize + fileVersion + chunkCount=3.
     buf.extend_from_slice(&0x48544542u32.to_le_bytes()); // BETH
