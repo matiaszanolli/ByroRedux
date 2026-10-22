@@ -72,6 +72,10 @@ pub fn emit_equipment_changes(
 /// (see [`ItemEventBatch`], #4713). Same extend-or-insert shape as
 /// [`emit_equipment_changes`] so several same-frame producers (a looted
 /// stack pass, a consumption, a pickup) merge instead of overwriting.
+///
+/// Every inventory add announces itself here, so this is also where the
+/// player's acquisitions reach the New Vegas *Acquire Item* challenges
+/// (#6266).
 pub fn emit_item_transfers(
     world: &World,
     wearer: byroredux_core::ecs::EntityId,
@@ -81,13 +85,30 @@ pub fn emit_item_transfers(
     if transfers.is_empty() {
         return;
     }
-    let Some(mut events) = world.query_mut::<ItemEventBatch>() else {
-        return;
-    };
-    if let Some(batch) = events.get_mut(wearer) {
-        batch.0.extend(transfers);
-    } else {
-        events.insert(wearer, ItemEventBatch(transfers));
+    let acquired: Vec<(u32, u32)> =
+        if crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(wearer) {
+            transfers
+                .iter()
+                .filter(|transfer| transfer.added && transfer.count > 0)
+                .map(|transfer| (transfer.item_form_id, transfer.count))
+                .collect()
+        } else {
+            Vec::new()
+        };
+    if let Some(mut events) = world.query_mut::<ItemEventBatch>() {
+        if let Some(batch) = events.get_mut(wearer) {
+            batch.0.extend(transfers);
+        } else {
+            events.insert(wearer, ItemEventBatch(transfers));
+        }
+    }
+    // After the batch guard drops: a completed challenge starts its reward
+    // script.
+    for (item, count) in acquired {
+        crate::challenges::note(
+            world,
+            crate::challenges::ChallengeEvent::ItemAcquired { item, count },
+        );
     }
 }
 

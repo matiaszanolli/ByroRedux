@@ -9,7 +9,8 @@
 //! increases" — so their progress is the stat's rise since the challenge was enabled (or restarted).
 //!
 //! Progress sources the engine has: the misc stats (scripts' `ModPCMiscStat`, plus the kills the death
-//! funnel counts), items consumed, map markers discovered, and a kill of a specific form or one in a
+//! funnel counts), items consumed, items the player acquires (every inventory add announces itself
+//! through `emit_item_transfers`), map markers discovered, and a kill of a specific form or one in a
 //! list. The types whose progress needs a weapon category, a hit location or a crit (*Do Damage*, *Hit
 //! an Enemy*, *Use a Skill*, *Craft*, and the weapon-keyed kill challenges) have no source to count
 //! from — the combat model carries neither — so they stay at zero rather than progress on a guess.
@@ -452,6 +453,25 @@ mod tests {
         assert_eq!((progress(&world, 0x20), completed(&world, 0x20)), (Some(1), Some(false)));
         note(&world, ChallengeEvent::ItemUsed { item: TURBO });
         assert_eq!(completed(&world, 0x20), Some(true));
+    }
+
+    /// #6266 — an add to the player's inventory, through the funnel every add announces itself on,
+    /// counts its stack size towards *Acquire Item*; an add to anyone else does not.
+    #[test]
+    fn the_player_acquiring_an_item_counts_its_stack_for_its_challenge() {
+        const CAPS: u32 = 0x0000_000f;
+        let mut world = world(vec![chal(0x30, kind::ACQUIRE_ITEM, 100, 0, 0, CAPS)]);
+        let player = world.spawn();
+        let other = world.spawn();
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        let caps = |count, added| crate::ItemTransfer { item_form_id: CAPS, count, added, stolen: false };
+        crate::emit_item_transfers(&world, other, [caps(500, true)]);
+        crate::emit_item_transfers(&world, player, [caps(40, false)]);
+        assert_eq!(progress(&world, 0x30), Some(0), "not the player's, or not an add");
+        crate::emit_item_transfers(&world, player, [caps(60, true), caps(1, false)]);
+        assert_eq!((progress(&world, 0x30), completed(&world, 0x30)), (Some(60), Some(false)));
+        crate::emit_item_transfers(&world, player, [caps(40, true)]);
+        assert_eq!(completed(&world, 0x30), Some(true));
     }
 
     /// #6265 — challenges finished by the same event complete, and start their reward scripts, in
