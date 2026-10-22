@@ -724,7 +724,8 @@ fn sort_key_is_deterministic_for_full_tuple_ties() {
 /// the threshold is calibration, not a constant with a principled value.
 ///
 /// `#[ignore]` because the timings are environment-dependent — this is
-/// a one-shot measurement gate, not a regression test. Run with
+/// a one-shot measurement gate. The timings are only printed; the serial /
+/// parallel order equality (#6186) is asserted. Run with
 /// `cargo test -p byroredux --release manual_bench_draw_sort_serial_vs_parallel -- --ignored --nocapture`.
 #[test]
 #[ignore = "manual timing bench, environment-dependent"]
@@ -757,6 +758,18 @@ fn manual_bench_draw_sort_serial_vs_parallel() {
     for &n in &[
         400usize, 800, 1500, 2000, 2250, 2500, 2750, 3000, 5000, 10_000,
     ] {
+        // The deterministic half (#6186): `entity_id` closes the key, so the
+        // order is total and the parallel sort must reproduce the serial one
+        // exactly — a regression here is the only thing this bench can fail on.
+        let mut serial_order = make_inputs(n);
+        serial_order.sort_unstable_by_key(draw_sort_key);
+        let mut parallel_order = make_inputs(n);
+        parallel_order.par_sort_unstable_by_key(draw_sort_key);
+        assert_eq!(
+            serial_order.iter().map(|c| c.entity_id).collect::<Vec<_>>(),
+            parallel_order.iter().map(|c| c.entity_id).collect::<Vec<_>>(),
+            "N={n}: parallel sort order diverged from serial"
+        );
         let mut serial_ns = 0u128;
         for _ in 0..ITERS {
             // Rebuild each iteration — DrawCommand isn't Clone, and
