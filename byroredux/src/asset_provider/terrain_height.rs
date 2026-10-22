@@ -123,12 +123,18 @@ pub(crate) fn run_job(job: &HeightJob) -> Result<CachedHeight, String> {
             skipped.push(format!("{path}: not in any archive"));
             continue;
         };
+        // The key hashes the raw source bytes, so a warm cache is answered
+        // before the (up to 2048² BC → RGBA8) decode (#6314).
+        let key = cache_key(source, job.green, &bytes);
+        if let Some(hit) = cached(job, &key, path) {
+            return Ok(hit);
+        }
         let Some(image) = Rgba8::decode_dds(&bytes) else {
             // BC6H/BC7 and exotic formats: fall through to the next tier.
             skipped.push(format!("{path}: undecodable DDS"));
             continue;
         };
-        return cached_or_generate(job, source, path, &bytes, &image);
+        return generate_and_store(job, source, path, &key, &image);
     }
     Err(format!("no usable height source ({})", skipped.join("; ")))
 }
@@ -153,49 +159,56 @@ fn cache_key(source: th::HeightSource, green: Option<th::GreenConvention>, bytes
     format!("{:016x}", hasher.finish())
 }
 
-fn cached_or_generate(
-    job: &HeightJob,
-    source: th::HeightSource,
-    source_path: &str,
-    bytes: &[u8],
-    image: &Rgba8,
-) -> Result<CachedHeight, String> {
-    let key = cache_key(source, job.green, bytes);
+/// The cache entry for `key`, if both files are present and current.
+fn cached(job: &HeightJob, key: &str, source_path: &str) -> Option<CachedHeight> {
     let dds_path = job.cache_dir.join(format!("{key}.dds"));
     let meta_path = job.cache_dir.join(format!("{key}.json"));
-    let cached = || -> Option<th::HeightMeta> {
-        let meta: th::HeightMeta = serde_json::from_slice(&std::fs::read(&meta_path).ok()?).ok()?;
-        (dds_path.is_file() && meta.generator_version == th::GENERATOR_VERSION).then_some(meta)
-    };
-    let meta = match cached() {
-        Some(meta) => meta,
-        None => {
-            let view = th::Rgba {
-                width: image.width as usize,
-                height: image.height as usize,
-                pixels: &image.pixels,
-            };
-            let generated = match source {
-                th::HeightSource::Authored => th::from_authored(&view),
-                th::HeightSource::Normals => th::from_normal_map(&view, job.green),
-                th::HeightSource::Brightness => th::from_brightness(&view),
-            };
-            std::fs::create_dir_all(&job.cache_dir)
-                .map_err(|e| format!("create {}: {e}", job.cache_dir.display()))?;
-            // Data first, then metadata, each through a rename: a reader that
-            // finds the `.json` can rely on the `.dds` beside it being whole.
-            write_atomic(&dds_path, &generated.dds)?;
-            let json = serde_json::to_vec_pretty(&generated.meta).map_err(|e| e.to_string())?;
-            write_atomic(&meta_path, &json)?;
-            generated.meta
-        }
-    };
-    Ok(CachedHeight {
+    let meta: th::HeightMeta = serde_json::from_slice(&std::fs::read(&meta_path).ok()?).ok()?;
+    (dds_path.is_file() && meta.generator_version == th::GENERATOR_VERSION)
+        .then(|| cached_height(key, dds_path, source_path, meta))
+}
+
+fn cached_height(
+    key: &str,
+    dds_path: PathBuf,
+    source_path: &str,
+    meta: th::HeightMeta,
+) -> CachedHeight {
+    CachedHeight {
         registry_key: format!("byro-generated\\terrain-height\\{key}.dds"),
         dds_path,
         source_path: source_path.to_string(),
         meta,
-    })
+    }
+}
+
+fn generate_and_store(
+    job: &HeightJob,
+    source: th::HeightSource,
+    source_path: &str,
+    key: &str,
+    image: &Rgba8,
+) -> Result<CachedHeight, String> {
+    let dds_path = job.cache_dir.join(format!("{key}.dds"));
+    let meta_path = job.cache_dir.join(format!("{key}.json"));
+    let view = th::Rgba {
+        width: image.width as usize,
+        height: image.height as usize,
+        pixels: &image.pixels,
+    };
+    let generated = match source {
+        th::HeightSource::Authored => th::from_authored(&view),
+        th::HeightSource::Normals => th::from_normal_map(&view, job.green),
+        th::HeightSource::Brightness => th::from_brightness(&view),
+    };
+    std::fs::create_dir_all(&job.cache_dir)
+        .map_err(|e| format!("create {}: {e}", job.cache_dir.display()))?;
+    // Data first, then metadata, each through a rename: a reader that
+    // finds the `.json` can rely on the `.dds` beside it being whole.
+    write_atomic(&dds_path, &generated.dds)?;
+    let json = serde_json::to_vec_pretty(&generated.meta).map_err(|e| e.to_string())?;
+    write_atomic(&meta_path, &json)?;
+    Ok(cached_height(key, dds_path, source_path, generated.meta))
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -295,6 +308,59 @@ mod tests {
         let out = run_job(&job(tmp.path(), archive, diffuse_only)).unwrap();
         assert_eq!(out.meta.source, th::HeightSource::Brightness);
         assert!(LayerHeightSources::new(None, None, None).is_none());
+    }
+
+    /// #6314 — a warm cache answers from the source bytes alone: the entry is
+    /// served for a source the decoder cannot read, which a cache lookup that
+    /// ran after `decode_dds` would have skipped as "undecodable".
+    #[test]
+    fn warm_cache_hit_does_not_decode_the_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let garbage = b"not a dds, so decode_dds would reject it".to_vec();
+        let archive = loose_archive(tmp.path(), &[("textures/a_n.dds", garbage.clone())]);
+        let sources = LayerHeightSources::new(None, Some(r"textures\a_n.dds"), None).unwrap();
+        let job = job(tmp.path(), archive, sources);
+        assert!(
+            run_job(&job).is_err(),
+            "cold: the garbage source is undecodable"
+        );
+
+        // Seed the entry the key names, from a real generation.
+        let other = tempfile::tempdir().unwrap();
+        let real = loose_archive(
+            other.path(),
+            &[(
+                "textures/b_n.dds",
+                bgra_dds(8, 8, |x, _| [100 + x as u8 * 8, 128, 255, 255]),
+            )],
+        );
+        let seed_sources = LayerHeightSources::new(None, Some(r"textures\b_n.dds"), None).unwrap();
+        let seeded = run_job(&HeightJob {
+            sources: seed_sources,
+            archives: vec![real],
+            ..clone_job(&job)
+        })
+        .unwrap();
+        let key = cache_key(th::HeightSource::Normals, job.green, &garbage);
+        std::fs::copy(&seeded.dds_path, job.cache_dir.join(format!("{key}.dds"))).unwrap();
+        let meta_path = seeded.dds_path.with_extension("json");
+        std::fs::copy(meta_path, job.cache_dir.join(format!("{key}.json"))).unwrap();
+
+        let hit = run_job(&job).expect("warm: served from the cache, no decode");
+        assert_eq!(
+            hit.registry_key,
+            format!("byro-generated\\terrain-height\\{key}.dds")
+        );
+        assert_eq!(hit.source_path, r"textures\a_n.dds");
+    }
+
+    fn clone_job(job: &HeightJob) -> HeightJob {
+        HeightJob {
+            sources: job.sources.clone(),
+            green: job.green,
+            archives: job.archives.clone(),
+            cache_dir: job.cache_dir.clone(),
+        }
     }
 
     /// Generation runs once per source: the second run reads the cache, and

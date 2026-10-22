@@ -844,6 +844,21 @@ free-list gated on a deferred-destroy fence proving no live
 `GpuInstance.texture_index` still references the slot) is tracked as
 tech debt — not yet implemented.
 
+### Terrain per-layer height maps (#6195, #6314)
+
+[`crates/terrain-height/`](../../crates/terrain-height/) /
+[`asset_provider/terrain_height.rs`](../../byroredux/src/asset_provider/terrain_height.rs)
+
+| Item | Value |
+|---|---|
+| Resident map (one per distinct terrain layer) | BC4 `.dds` (0.5 B/texel) with a full mip chain, edge capped at `MAX_EDGE` = 1 024: 1 024² × 0.5 B × 4/3 = **0.67 MiB** |
+| Resident total | a resident exterior carries a few dozen distinct layers → **~20–30 MiB** VRAM, one bindless texture slot each (the `base_height_index` + 8 layer handles of `GpuTerrainTile`) |
+| Disk cache | `terrain-height/` next to the executable (`BYRO_CACHE_DIR` overrides the parent), one `.dds` + `.json` per source, keyed on the generator version, tier, green convention and the raw source bytes |
+| Transient decode (cache **miss** only) | the source texture decoded to RGBA8 on one of the two `byro-terrain-height` pool threads: up to 2 048² × 4 B = **16 MiB** per thread. A warm-cache job returns before the decode (#6314) |
+
+The maps are a texture class of their own, separate from the authored
+terrain diffuse/normal layers they are derived from.
+
 ---
 
 ## Mesh Registry
