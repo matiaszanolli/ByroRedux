@@ -244,8 +244,12 @@ pub struct CharacterRulesProfile {
     kill_experience: bool,
     /// #5921 — the engine's `fEssentialDeathTime` default (seconds an
     /// essential actor stays down), read from each executable's setting
-    /// table; `None` where the executable carries no such setting, so the
-    /// game has no bleedout recovery.
+    /// table; `None` where the executable carries no such setting. That is
+    /// not "the game has no bleedout recovery" (#6259): Starfield drops the
+    /// setting but authors recovery data instead (RACE `DAT2` / `NPC_`
+    /// `ONA2` bleedout times, `fEssentialHostileDeathTimeMult`,
+    /// `OnRecoverFromBleedout`), and how those combine is unsourced — so a
+    /// `None` game keeps its downed essentials down until scripted.
     essential_death_time_secs: Option<f32>,
     /// #5921 — the barter price model, where one is sourced.
     barter: Option<BarterModel>,
@@ -459,7 +463,10 @@ impl CharacterRulesProfile {
         ruleset: RulesetBuilder::None,
         over_encumbered: OverEncumberedRule::None,
         kill_experience: false,
-        // Starfield's executable carries no `fEssentialDeathTime`.
+        // Starfield's executable carries no `fEssentialDeathTime`; its
+        // recovery is data-driven (RACE `DAT2` bleedout Time Min/Max,
+        // Recover Chance — captured on `RaceRecord::bleedout`, #6259) by a
+        // rule no source states yet, so none is modelled.
         essential_death_time_secs: None,
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,

@@ -1466,6 +1466,7 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
         subgraph_template: None,
         subgraph_additive: None,
         subgraph_data: Vec::new(),
+        bleedout: None,
     };
     race.default_skin = Some(SKIN);
 
@@ -1812,6 +1813,7 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
         subgraph_template: None,
         subgraph_additive: None,
         subgraph_data: Vec::new(),
+        bleedout: None,
     };
     let mut npc = test_npc(0x0100_0045, "PartialSkinDisplacementNpc");
     npc.race_form_id = RACE;
@@ -1896,6 +1898,7 @@ fn prebaked_equip_state_keeps_zero_mask_race_skin() {
         subgraph_template: None,
         subgraph_additive: None,
         subgraph_data: Vec::new(),
+        bleedout: None,
     };
     race.default_skin = Some(SKIN);
 
@@ -1978,6 +1981,7 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
         subgraph_template: None,
         subgraph_additive: None,
         subgraph_data: Vec::new(),
+        bleedout: None,
     };
     race.default_skin = Some(SKIN);
 
@@ -2064,6 +2068,7 @@ fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
         subgraph_template: None,
         subgraph_additive: None,
         subgraph_data: Vec::new(),
+        bleedout: None,
     };
     race.default_skin = Some(SKIN);
 
@@ -2192,6 +2197,7 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
         subgraph_template: None,
         subgraph_additive: None,
         subgraph_data: Vec::new(),
+        bleedout: None,
     };
     race.default_skin = Some(SKIN);
 

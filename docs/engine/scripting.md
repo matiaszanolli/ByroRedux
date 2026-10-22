@@ -619,8 +619,12 @@ consumer (no AI, no combat, no conversation). It gets back up after
 GECK page: "the time … an NPC marked essential will remain unconscious before
 getting back up"). Skyrim.esm and Fallout4.esm author a 20 s death time. The
 other values are the executables' defaults: 10 s on Oblivion and FO3/FNV, 30 s
-on Skyrim and FO4, and 0.3 everywhere. Starfield has no such setting and
-does not recover. The player is never spared.
+on Skyrim and FO4, and 0.3 everywhere. Starfield has no such setting, so
+its downed essentials stay down until a script `Resurrect`s them — a gap, not
+the game's rule (#6259): it authors per-race RACE `DAT2` and per-NPC `ONA2`
+bleedout times (captured on `RaceRecord::bleedout` /
+`NpcRecord::bleedout_override`), but how they combine is unsourced, so the
+engine warns once instead of inventing a recovery. The player is never spared.
 Conditions `IsEssential` (354), `IsProtected` (476) and `IsBleedingOut` (580)
 read the state, and fragments lower `IsEssential()` / `IsBleedingOut()`
 guards. `<actor>.GetActorBase().SetEssential([b])` / `SetProtected([b])` (or

@@ -174,7 +174,44 @@ pub struct RaceRecord {
     pub subgraph_additive: Option<u32>,
     /// FO4+ subgraph data (`SAKD`/`SGNM`/`SAPT`/`STKD`/`SRAF` groups).
     pub subgraph_data: Vec<SubgraphData>,
+    /// #6259 — Starfield `DAT2` +160..+184, the race's bleedout block (xEdit
+    /// `wbDefinitionsSF1` RACE `DAT2` *Bleedout*). `None` on every other
+    /// game and on a shorter `DAT2`. Captured, not yet consumed: how these
+    /// combine into recovery is unsourced (see `bleedout.rs`).
+    pub bleedout: Option<BleedoutData>,
 }
+
+/// Starfield's authored bleedout parameters, six `f32` in xEdit order —
+/// the RACE `DAT2` *Bleedout* struct and the `NPC_` `ONA2` *Bleedout Data*
+/// override share it (#6259). `Starfield.esm`: `HumanRace` authors
+/// (0.25, 0.25, 0.25, 8, 12, 0.01); 15 of its 31 races author all zeros.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BleedoutData {
+    pub health_pct: f32,
+    pub chance: f32,
+    pub recover_chance: f32,
+    pub time_min: f32,
+    pub time_max: f32,
+    pub health_drain_rate: f32,
+}
+
+impl BleedoutData {
+    /// The six floats at the head of `data`; `None` when it is shorter.
+    pub fn from_le_bytes(data: &[u8]) -> Option<Self> {
+        let mut r = SubReader::new(data.get(..24)?);
+        Some(Self {
+            health_pct: r.f32_or_default(),
+            chance: r.f32_or_default(),
+            recover_chance: r.f32_or_default(),
+            time_min: r.f32_or_default(),
+            time_max: r.f32_or_default(),
+            health_drain_rate: r.f32_or_default(),
+        })
+    }
+}
+
+/// Starfield RACE `DAT2` offset of the *Bleedout* struct (xEdit SF1 `{160}`).
+const SF_DAT2_BLEEDOUT_OFFSET: usize = 160;
 
 /// The role of a subgraph entry: when its behavior graph and animations load
 /// (xEdit `wbRACE` `SRAF` role enum; CK *Subgraphs* page).
@@ -379,6 +416,7 @@ pub fn parse_race(
         subgraph_template: None,
         subgraph_additive: None,
         subgraph_data: Vec::new(),
+        bleedout: None,
     };
     // The entry being read. xEdit: an entry's fields come unordered and its
     // `SRAF` "closes" it, so the flags arm pushes it.
@@ -622,6 +660,14 @@ pub fn parse_race(
                 if let Some(gender) = gender_section {
                     record.skeleton_models[gender as usize] = read_zstring(&sub.data);
                 }
+            }
+            // #6259 — Starfield's bleedout block (layout verified over all 31
+            // `Starfield.esm` RACE records, every `DAT2` >= 184 bytes).
+            b"DAT2" if matches!(game, GameKind::Starfield) => {
+                record.bleedout = sub
+                    .data
+                    .get(SF_DAT2_BLEEDOUT_OFFSET..)
+                    .and_then(BleedoutData::from_le_bytes);
             }
             b"NAM3" => {
                 in_skeleton_section = false;

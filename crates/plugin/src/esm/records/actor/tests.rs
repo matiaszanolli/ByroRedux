@@ -234,6 +234,69 @@ fn starfield_16byte_acbs_parses_gender_level_and_template_flags() {
     assert_eq!((fo4.acbs_flags, fo4.template_flags), (0, 0));
 }
 
+fn f32_bytes(values: &[f32]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// #6259 — Starfield RACE `DAT2` carries the race's bleedout block at +160
+/// (xEdit SF1; `HumanRace` authors 0.25 / 0.25 / 0.25 / 8 / 12 / 0.01). Other
+/// games' DAT2 is not this layout and decodes nothing.
+#[test]
+fn starfield_race_dat2_decodes_the_bleedout_block() {
+    let mut dat2 = vec![0u8; 160];
+    dat2.extend(f32_bytes(&[0.25, 0.25, 0.25, 8.0, 12.0, 0.01]));
+    dat2.extend([0u8; 24]);
+    let r = parse_race(0x0A, &[sub(b"DAT2", &dat2)], GameKind::Starfield, &None);
+    assert_eq!(
+        r.bleedout,
+        Some(BleedoutData {
+            health_pct: 0.25,
+            chance: 0.25,
+            recover_chance: 0.25,
+            time_min: 8.0,
+            time_max: 12.0,
+            health_drain_rate: 0.01,
+        })
+    );
+    assert_eq!(parse_race(0x0B, &[sub(b"DAT2", &dat2[..170])], GameKind::Starfield, &None).bleedout, None);
+    assert_eq!(parse_race(0x0C, &[sub(b"DAT2", &dat2)], GameKind::Fallout4, &None).bleedout, None);
+}
+
+/// #6259 — Starfield `NPC_` `ONA2` flag 5 is the per-NPC bleedout override,
+/// after one fixed-size struct per lower set flag (Size 1, Movement 16,
+/// Flight 4, Unarmed 8, Flag Overrides 16). Vanilla's common shape is 0xEF
+/// (`CCT_Template_RaceOverride_Bleedout_FastRecovery`: 4..6 s, recover 0.9).
+#[test]
+fn starfield_npc_ona2_decodes_the_bleedout_override() {
+    let override_block = [0.25, 0.5, 0.9, 4.0, 6.0, 0.01];
+    let ona2 = |flags: u32, before: usize| {
+        let mut data = flags.to_le_bytes().to_vec();
+        data.extend(vec![0xEEu8; before]);
+        data.extend(f32_bytes(&override_block));
+        data.extend([0u8; 12]); // the General struct that follows
+        data
+    };
+    let parse = |data: Vec<u8>| {
+        parse_npc(0x0002_0001, &[sub(b"ONA2", data)], GameKind::Starfield, &None).bleedout_override
+    };
+    let expected = Some(BleedoutData {
+        health_pct: 0.25,
+        chance: 0.5,
+        recover_chance: 0.9,
+        time_min: 4.0,
+        time_max: 6.0,
+        health_drain_rate: 0.01,
+    });
+    // 0xEF = Size | Movement | Flight | Unarmed | Bleedout | General | EM.
+    assert_eq!(parse(ona2(0xEF, 1 + 16 + 4 + 8)), expected);
+    // 0xFF adds Flag Overrides (16 bytes) ahead of it.
+    assert_eq!(parse(ona2(0xFF, 1 + 16 + 4 + 8 + 16)), expected);
+    // Bit 5 clear: no override, whatever follows.
+    assert_eq!(parse(ona2(0xCD, 1 + 4 + 8 + 16)), None);
+    let fo4 = parse_npc(0x0002_0002, &[sub(b"ONA2", ona2(0x20, 0))], GameKind::Fallout4, &None);
+    assert_eq!(fo4.bleedout_override, None);
+}
+
 /// #6240 — Fallout 76's ACBS is the FO4 20-byte layout (`wbDefinitionsFO76.pas`;
 /// every `SeventySix.esm` NPC_ ACBS is 20 bytes). It matched no arm, so every FO76
 /// actor parsed as male, level 1, with no template flags.

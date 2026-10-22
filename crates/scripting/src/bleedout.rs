@@ -15,6 +15,14 @@
 //! getting back up", with `fEssentialHealthPercentReGain` of its health (the
 //! CK *Settings* table). [`install_bleedout_rules`] reads both settings from
 //! the load order, else the engine defaults.
+//!
+//! A game whose profile has no death time (Starfield, FO76) installs no
+//! rules, so a downed essential stays down until a script `Resurrect`s it.
+//! For Starfield that is a gap, not the game's behaviour (#6259): it authors
+//! per-race and per-NPC bleedout data (`RaceRecord::bleedout`,
+//! `NpcRecord::bleedout_override`: Time Min/Max, Recover Chance, Health
+//! Drain Rate) and `fEssentialHostileDeathTimeMult`, but how they combine is
+//! unsourced, so no recovery is invented. [`spare_from_death`] warns once.
 
 use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead};
 use byroredux_core::ecs::storage::EntityId;
@@ -108,8 +116,9 @@ fn base_protection(world: &World, entity: EntityId) -> ActorProtection {
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bleedout {
     /// `None` when the game has no [`BleedoutRules`] (Starfield, FO76): the
-    /// actor stays down. #5858 — this was `f32::INFINITY`, which a save
-    /// writes as JSON `null` and the load then rejects.
+    /// actor stays down — for Starfield an unsourced recovery rule, not an
+    /// absent one (#6259, module doc). #5858 — this was `f32::INFINITY`,
+    /// which a save writes as JSON `null` and the load then rejects.
     pub remaining_secs: Option<f32>,
 }
 
@@ -132,7 +141,8 @@ impl Resource for BleedoutRules {}
 /// agree with the GECK (10 s) and the Skyrim CK *Settings* table (0.3).
 /// The per-game death time is the character profile's row (#5921); a
 /// profile without one (Starfield's executable carries no
-/// `fEssentialDeathTime`) has no rules and never recovers.
+/// `fEssentialDeathTime`) has no rules, so its downed essentials do not
+/// recover — see the module doc for why that is a gap on Starfield (#6259).
 fn engine_defaults(profile: CharacterRulesProfile) -> Option<BleedoutRules> {
     Some(BleedoutRules {
         death_time_secs: profile.essential_death_time_secs()?,
@@ -208,9 +218,26 @@ pub fn spare_from_death(world: &World, victim: EntityId, killer: Option<EntityId
     bleedouts.insert(victim, Bleedout { remaining_secs });
     match remaining_secs {
         Some(secs) => log::info!("Actor {victim} enters bleedout for {secs} s"),
-        None => log::info!("Actor {victim} enters bleedout with no recovery time"),
+        None => {
+            log::info!("Actor {victim} enters bleedout with no recovery time");
+            warn_unsourced_recovery_once();
+        }
     }
     true
+}
+
+/// #6259 — say once per run that a recovery-less bleedout is this engine's
+/// gap, not the game's rule: the actor stays down until a script
+/// `Resurrect`s it.
+fn warn_unsourced_recovery_once() {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        log::warn!(
+            "bleedout: this game's recovery rule is not sourced (Starfield authors per-race \
+             DAT2 / per-NPC ONA2 bleedout times, how they combine is undocumented — #6259); \
+             downed essential actors stay down until a script Resurrects them"
+        );
+    });
 }
 
 /// Count every bleedout down and get the actor back up when it runs out,

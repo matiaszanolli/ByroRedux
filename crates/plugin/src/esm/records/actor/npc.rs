@@ -302,6 +302,13 @@ pub struct NpcRecord {
     /// FO3/FNV use the bit for "No Blood Spray" (xEdit), so it is `false`
     /// on Oblivion / FO3 / FNV whatever the bit holds.
     pub protected: bool,
+    /// #6259 — Starfield `ONA2` *Race Overrides* flag 5, the per-NPC
+    /// *Bleedout Data* override of the race's `DAT2` block (48 vanilla
+    /// NPCs, e.g. the `CCT_Template_RaceOverride_Bleedout_*` templates).
+    /// The per-field *Active Overrides* mask that follows it (inside the
+    /// variable-size *General* struct) is not decoded. Captured, not yet
+    /// consumed — see [`super::RaceRecord::bleedout`].
+    pub bleedout_override: Option<super::BleedoutData>,
     /// Skyrim `DNAM` base skill values (18 bytes, One-handed to Enchanting in actor-value
     /// index order): what a Skyrim NPC without the auto-calc flag stores (UESP *NPC_*).
     /// `None` outside Skyrim and when the record carries no `DNAM`.
@@ -500,6 +507,7 @@ pub fn parse_npc(
         acbs_flags: 0,
         essential: false,
         protected: false,
+        bleedout_override: None,
         skill_values: None,
         skyrim_calculated_pools: None,
         has_script: common.has_script,
@@ -778,6 +786,27 @@ fn parse_npc_core(
         b"TPTA" => {
             for (slot, raw) in sub.data.as_chunks::<4>().0.iter().take(13).enumerate() {
                 record.template_actors[slot] = remap_fid(u32::from_le_bytes(*raw), remap);
+            }
+        }
+        // #6259 — Starfield ONA2: a u32 flag word, then one struct per set
+        // flag in bit order (xEdit `wbDefinitionsSF1` NPC_ `ONA2`). The
+        // five ahead of Bleedout (bit 5) are fixed-size: Size s8, Movement
+        // 4 f32, Flight f32, Unarmed Weapon f32 + FormID, Flag Overrides
+        // 2 u64. Verified over `Starfield.esm`: every bit-5 override lands
+        // on six plausible floats (times 3..12 s).
+        b"ONA2" if matches!(game, GameKind::Starfield) && sub.data.len() >= 4 => {
+            const BLEEDOUT_BIT: u32 = 5;
+            const SIZES_BEFORE_BLEEDOUT: [usize; 5] = [1, 16, 4, 8, 16];
+            let flags = u32::from_le_bytes(sub.data[0..4].try_into().unwrap());
+            if flags & (1 << BLEEDOUT_BIT) != 0 {
+                let offset = 4 + SIZES_BEFORE_BLEEDOUT
+                    .iter()
+                    .enumerate()
+                    .filter(|(bit, _)| flags & (1 << bit) != 0)
+                    .map(|(_, size)| size)
+                    .sum::<usize>();
+                record.bleedout_override =
+                    sub.data.get(offset..).and_then(super::BleedoutData::from_le_bytes);
             }
         }
         // Oblivion ACBS (NPC_ / CREA Configuration) is a fixed
