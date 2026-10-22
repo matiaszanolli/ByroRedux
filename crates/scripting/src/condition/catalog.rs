@@ -268,6 +268,48 @@ pub enum ConditionFunction {
     /// reference is in one of `param_1`'s exterior cells, 0.0 in an interior
     /// ([`crate::cell_kind::in_worldspace`]). Index **310** in every game.
     GetInWorldspace,
+    /// `GetDisabled → f32` (#6251): 1.0 while the Run-On reference is disabled,
+    /// by a script or its authored initially-disabled flag through its enable
+    /// parent ([`crate::fragment::reference_enabled`]). Index **35** in every game.
+    GetDisabled,
+    /// `GetItemCount(item) → f32` (#6251): how many of `param_1` the Run-On's
+    /// inventory holds, every member of a form list counted
+    /// ([`item_count`](super::eval::item_count)). Index **47** in every game.
+    GetItemCount,
+    /// `GetIsCreature → f32` (#6251): 1.0 when the Run-On actor is a creature
+    /// (`CreatureActor`). Index **64** in every game.
+    GetIsCreature,
+    /// `GetDeadCount(actor_base) → f32` (#6251): how many actors of base
+    /// `param_1` have died this game ([`crate::obscript_state::KillRecords`]).
+    /// Reads no Run-On. Index **84** in every game.
+    GetDeadCount,
+    /// `GetPCIsSex(sex) → f32` (#6251): as [`GetIsSex`](Self::GetIsSex), on the
+    /// player whatever the Run-On. Index **131** on Oblivion / FO3 / FNV /
+    /// Skyrim; FO4 onward author 131 as `GetSceneActionPercent`
+    /// ([`FOREIGN_INDICES`]).
+    GetPCIsSex,
+    /// `IsInCombat → f32` (#6251): 1.0 while the Run-On actor is in combat
+    /// ([`crate::is_in_combat`]). Index **289** in every game.
+    IsInCombat,
+    /// `GetObjectiveCompleted(quest, objective) → f32` (#6251): the quest's
+    /// objective `param_2` is completed ([`crate::quest_stages::QuestObjectiveState`]).
+    /// Reads no Run-On. **FNV** index **420** (xEdit lists it in no other game).
+    GetObjectiveCompleted,
+    /// `GetObjectiveDisplayed(quest, objective) → f32` (#6251): as
+    /// [`GetObjectiveCompleted`](Self::GetObjectiveCompleted), for displayed.
+    /// **FNV** index **421**.
+    GetObjectiveDisplayed,
+    /// `GetHealthPercentage → f32` (#6251): the Run-On actor's current Health
+    /// over its undamaged ceiling, 0 to 1
+    /// ([`health_percentage`](super::eval::health_percentage)). FO3 / FNV index
+    /// **431** (Skyrim / FO4 moved it to 430, not catalogued here); Starfield
+    /// authors 431 as `GetActiveBoostDuration` ([`FOREIGN_INDICES`]).
+    GetHealthPercentage,
+    /// `GetQuestCompleted(quest) → f32` (#6251): the quest has completed —
+    /// GECK: "does not require the quest to be running". Reads no Run-On.
+    /// FO3 / FNV index **546** (Skyrim / FO4 moved it to 543, not catalogued
+    /// here).
+    GetQuestCompleted,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -371,6 +413,20 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::GetPlayerInSEWorld, indices: &[365], name: "GetPlayerInSEWorld", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetIsSex, indices: &[70], name: "GetIsSex", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetInWorldspace, indices: &[310], name: "GetInWorldspace", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    // #6251 — the getters the ObScript VM already answers (its command id is
+    // `0x1000 +` the index), catalogued so the fail-closed dialogue and
+    // objective gates can read them too. Indices and parameter types from
+    // xEdit `wbDefinitions{TES4,FO3,FNV,TES5,FO4,FO76,SF1}.pas`.
+    Row { func: ConditionFunction::GetDisabled, indices: &[35], name: "GetDisabled", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetItemCount, indices: &[47], name: "GetItemCount", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetIsCreature, indices: &[64], name: "GetIsCreature", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetDeadCount, indices: &[84], name: "GetDeadCount", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetPCIsSex, indices: &[131], name: "GetPCIsSex", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::IsInCombat, indices: &[289], name: "IsInCombat", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetObjectiveCompleted, indices: &[420], name: "GetObjectiveCompleted", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetObjectiveDisplayed, indices: &[421], name: "GetObjectiveDisplayed", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetHealthPercentage, indices: &[431], name: "GetHealthPercentage", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetQuestCompleted, indices: &[546], name: "GetQuestCompleted", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
 ];
 
 /// CTDA function indices that are a *different* function in some games than
@@ -387,11 +443,13 @@ const ROWS: &[Row] = &[
 /// | 555 | `HasLoaded3D` (Skyrim/FO4) | FO3/FNV: `GetSpellUsageNum` |
 /// | 630 | `GetVMScriptVariable` (Skyrim) | FO4: `GetCombatAudioDetection` |
 /// | 365 | `GetPlayerInSEWorld` (Oblivion) | FO3/FNV, Skyrim, FO4, FO76, Starfield: `IsChild` |
+/// | 131 | `GetPCIsSex` (Oblivion, FO3/FNV, Skyrim) | FO4, FO76, Starfield: `GetSceneActionPercent` |
+/// | 431 | `GetHealthPercentage` (FO3/FNV) | Starfield: `GetActiveBoostDuration` |
 ///
 /// Index 79 (`GetQuestVariable`) is the opposite shape — valid only on the
 /// pre-Papyrus games — and keeps its own check in the evaluator. A game not
-/// named in a row is left as it was: for every row but 365 no FO76 or
-/// Starfield definition has been read, so nothing claims the index is
+/// named in a row is left as it was: for every row but 365, 131 and 431 no
+/// FO76 or Starfield definition has been read, so nothing claims the index is
 /// foreign there.
 const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
     (403, &[GameKind::Fallout3NV]),
@@ -400,6 +458,8 @@ const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
     (550, &[GameKind::Fallout3NV]),
     (555, &[GameKind::Fallout3NV]),
     (630, &[GameKind::Fallout4]),
+    (131, &[GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield]),
+    (431, &[GameKind::Starfield]),
     (
         365,
         &[
@@ -453,7 +513,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 52] = [
+    pub const CATALOG: [ConditionFunction; 62] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -506,6 +566,16 @@ impl ConditionFunction {
         Self::GetPlayerInSEWorld,
         Self::GetIsSex,
         Self::GetInWorldspace,
+        Self::GetDisabled,
+        Self::GetItemCount,
+        Self::GetIsCreature,
+        Self::GetDeadCount,
+        Self::GetPCIsSex,
+        Self::IsInCombat,
+        Self::GetObjectiveCompleted,
+        Self::GetObjectiveDisplayed,
+        Self::GetHealthPercentage,
+        Self::GetQuestCompleted,
     ];
 
     /// This function's [`ROWS`] row. `Unknown` has none — the panicking
@@ -701,7 +771,17 @@ mod tests {
                 ConditionFunction::GetIsPlayableRace |
                 ConditionFunction::GetPlayerInSEWorld |
                 ConditionFunction::GetIsSex |
-                ConditionFunction::GetInWorldspace => {
+                ConditionFunction::GetInWorldspace |
+                ConditionFunction::GetDisabled |
+                ConditionFunction::GetItemCount |
+                ConditionFunction::GetIsCreature |
+                ConditionFunction::GetDeadCount |
+                ConditionFunction::GetPCIsSex |
+                ConditionFunction::IsInCombat |
+                ConditionFunction::GetObjectiveCompleted |
+                ConditionFunction::GetObjectiveDisplayed |
+                ConditionFunction::GetHealthPercentage |
+                ConditionFunction::GetQuestCompleted => {
                     assert_eq!(
                         rows_of(function),
                         1,

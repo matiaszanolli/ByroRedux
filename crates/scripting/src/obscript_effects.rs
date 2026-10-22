@@ -1300,25 +1300,11 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
             .map_or(Getter::Declined, |holds| Getter::Value(f32::from(u8::from(holds))))
     };
     match cmd {
-        CMD_GET_ITEM_COUNT => {
-            let Some(item) = form_arg(args, 0) else { return Getter::Declined };
-            // A form list counts every one of its members.
-            let items = crate::form_lists::forms_of(world, item, &[]).unwrap_or_else(|| vec![item]);
-            let mut total = 0.0;
-            for item in items {
-                let item = bind.object(item);
-                match crate::fragment::evaluate_value_guard_free(
-                    world,
-                    &ValueExpr::ItemCount(me.clone(), item),
-                    owner,
-                    Some(&bind.vmad()),
-                ) {
-                    Some(count) => total += count,
-                    None => return Getter::Declined,
-                }
-            }
-            Getter::Value(total)
-        }
+        // The count the CTDA `GetItemCount` reads (#6251); a form list sums its members.
+        CMD_GET_ITEM_COUNT => match form_arg(args, 0) {
+            Some(item) => Getter::Value(crate::condition::item_count(world, subject, item)),
+            None => Getter::Declined,
+        },
         CMD_IS_IN_COMBAT => guard(crate::translate::effects::FragmentGuard::ActorInCombat { actor: me, expected: true }, bind),
         CMD_GET_IS_REFERENCE => {
             let Some(other) = form_arg(args, 0) else { return Getter::Declined };
@@ -1379,13 +1365,9 @@ pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &
         }
         // GECK *GetHealthPercentage*: "how injured an actor is ... a value from 0 to 1.0" — the
         // current Health over the undamaged ceiling. Fallout only: `0x11af` is another command in Oblivion.
+        // Shared with the CTDA of the same index (#6251).
         CMD_GET_HEALTH_PERCENTAGE if crate::ScriptGame::is_fallout3_nv(world) => {
-            let Some(health) = world.get::<byroredux_core::ecs::components::ActorVitals>(subject).map(|vitals| vitals.health) else {
-                return Getter::Declined;
-            };
-            let current = actor_value_view(world, subject, health, ActorValueView::Current);
-            let ceiling = actor_value_view(world, subject, health, ActorValueView::Undamaged);
-            Getter::Value(if ceiling > 0.0 { (current / ceiling).clamp(0.0, 1.0) } else { 0.0 })
+            crate::condition::health_percentage(world, subject).map_or(Getter::Declined, Getter::Value)
         }
         CMD_GET_HEALTH_PERCENTAGE => Getter::Unhandled,
         // GECK *GetPos*: "the position of the calling object relative to the world on the specified

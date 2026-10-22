@@ -155,3 +155,25 @@ pub(super) fn get_vm_quest_variable(condition: &Condition, world: &World) -> f32
     crate::quest_variables::quest_variable(world, QuestFormId(condition.param_1), variable)
         .unwrap_or(0.0)
 }
+
+/// `GetObjectiveCompleted` / `GetObjectiveDisplayed` (FNV CTDA 420 / 421,
+/// #6251): objective `param_2` of quest `param_1`, from the same
+/// [`QuestObjectiveState`](crate::quest_stages::QuestObjectiveState) the
+/// ObScript setters write.
+pub(super) fn get_objective_flag(
+    function: super::ConditionFunction,
+    condition: &Condition,
+    world: &World,
+) -> f32 {
+    use crate::quest_stages::QuestObjectiveState;
+    let status = world
+        .try_resource::<QuestObjectiveState>()
+        .map(|objectives| objectives.get(QuestFormId(condition.param_1), condition.param_2 as i32))
+        .unwrap_or_default();
+    let flag = if function == super::ConditionFunction::GetObjectiveCompleted {
+        status.completed
+    } else {
+        status.displayed
+    };
+    if flag { 1.0 } else { 0.0 }
+}

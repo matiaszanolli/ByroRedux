@@ -15,6 +15,8 @@ mod actor;
 mod global;
 mod reference;
 
+pub(crate) use actor::{health_percentage, item_count};
+
 use super::catalog::{
     index_is_foreign_in, ConditionFunction,
 };
@@ -607,6 +609,35 @@ pub fn evaluate_function(
         ConditionFunction::GetKeywordDataForLocation => {
             crate::location_keyword_data(world, condition.param_1, condition.param_2)
         }
+        // #6251 — the state the ObScript getters of the same index read.
+        ConditionFunction::GetDisabled => truth(
+            entity_global_form_id(world, entity)
+                .is_some_and(|form| !crate::fragment::reference_enabled(world, form)),
+        ),
+        ConditionFunction::GetItemCount => actor::item_count(world, entity, condition.param_1),
+        ConditionFunction::GetIsCreature => {
+            truth(world.has::<byroredux_core::ecs::components::CreatureActor>(entity))
+        }
+        ConditionFunction::GetDeadCount => world
+            .try_resource::<crate::obscript_state::KillRecords>()
+            .map_or(0.0, |kills| kills.dead_count(condition.param_1) as f32),
+        ConditionFunction::GetPCIsSex => truth(
+            crate::papyrus_demo::PapyrusPlayerEntity::get(world)
+                .and_then(|player| crate::actor_base_traits::is_female(world, player))
+                .is_some_and(|female| female == (condition.param_1 == 1)),
+        ),
+        ConditionFunction::IsInCombat => truth(crate::is_in_combat(world, entity)),
+        ConditionFunction::GetObjectiveCompleted | ConditionFunction::GetObjectiveDisplayed => {
+            global::get_objective_flag(function, condition, world)
+        }
+        ConditionFunction::GetHealthPercentage => {
+            actor::health_percentage(world, entity).unwrap_or(0.0)
+        }
+        ConditionFunction::GetQuestCompleted => truth(
+            world
+                .try_resource::<crate::quest_stages::QuestStageState>()
+                .is_some_and(|stages| stages.is_completed(crate::quest_stages::QuestFormId(condition.param_1))),
+        ),
         ConditionFunction::Unknown(index) => {
             log::trace!(
                 "M47.1: condition function index {index} not in M47.1 catalog — \

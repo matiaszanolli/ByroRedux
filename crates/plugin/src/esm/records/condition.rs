@@ -558,6 +558,11 @@ pub fn param1_is_form_id(function_index: u32) -> bool {
         | 606 // GetKeywordDataForLocation — LCTN FormID (param_2 = the keyword)
         | 651 // GetKeywordDataForCurrentLocation — KYWD FormID (Skyrim/FO4)
         | 310 // GetInWorldspace — WRLD FormID (every game)
+        | 47  // GetItemCount — inventory object FormID (every game)
+        | 84  // GetDeadCount — actor base FormID (every game)
+        | 420 // GetObjectiveCompleted — quest FormID (param_2 = objective index), FNV
+        | 421 // GetObjectiveDisplayed — quest FormID (param_2 = objective index), FNV
+        | 546 // GetQuestCompleted — quest FormID, FO3/FNV
     )
 }
 

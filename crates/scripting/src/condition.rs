@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **52 functions** at their canonical CTDA
+//! lineage. This catalog ships **62 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -81,6 +81,16 @@
 //! | 365   | GetPlayerInSEWorld     | ObScript ledger (Oblivion)  |
 //! | 70    | GetIsSex               | `ActorBaseTraits` (ACBS)    |
 //! | 310   | GetInWorldspace        | `cell_kind` (ExteriorCell)  |
+//! | 35    | GetDisabled            | `reference_enabled`         |
+//! | 47    | GetItemCount           | `Inventory` (+ `FormLists`) |
+//! | 64    | GetIsCreature          | `CreatureActor`             |
+//! | 84    | GetDeadCount           | `KillRecords`               |
+//! | 131   | GetPCIsSex             | `ActorBaseTraits` (player)  |
+//! | 289   | IsInCombat             | `is_in_combat`              |
+//! | 420   | GetObjectiveCompleted  | `QuestObjectiveState` (FNV) |
+//! | 421   | GetObjectiveDisplayed  | `QuestObjectiveState` (FNV) |
+//! | 431   | GetHealthPercentage    | `ActorValues` Health (FO3/FNV) |
+//! | 546   | GetQuestCompleted      | `QuestStageState` (FO3/FNV) |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
 //! function → safe-default" contract) and are logged at debug for
@@ -112,6 +122,7 @@ pub use eval::{
     evaluate_script_getter, is_modeled, resolve_entity_by_global_form_id,
     uses_obscript_quest_variables, ActorValueView,
 };
+pub(crate) use eval::{health_percentage, item_count};
 pub use requirement::{subject_requirement, IdentityTest, SubjectRequirement};
 
 #[cfg(test)]

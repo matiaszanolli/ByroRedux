@@ -84,21 +84,13 @@ pub(in crate::fragment) fn evaluate_value(
                 .or_else(|| crate::quest_variable(world, quest, key))
                 .unwrap_or(0.0)
         }
+        // CK *GetItemCount*: a form list "will count how many of each item in
+        // the form list is in the container and sum it all up" — the one
+        // count the CTDA and ObScript getter share (#6251).
         ValueExpr::ItemCount(container, item) => {
             let container = guard_actor(container, context, vmad, world, deferred)?;
             let item = resolve_property_form_id(vmad, item.property_name())?;
-            let count: u32 = world
-                .get::<Inventory>(container)
-                .map(|inventory| {
-                    inventory
-                        .items
-                        .iter()
-                        .filter(|stack| stack.base_form_id == item)
-                        .map(|stack| stack.count)
-                        .sum()
-                })
-                .unwrap_or(0);
-            count as f32
+            crate::condition::item_count(world, container, item)
         }
         ValueExpr::Distance(from, to) => {
             use byroredux_core::ecs::components::GlobalTransform;

@@ -189,3 +189,34 @@ pub(super) fn get_reputation_threshold(condition: &Condition, entity: EntityId, 
     fnv_faction_thresholds::thresholds_for(condition.param_1)
         .map_or(0.0, |t| f32::from(t.range(u32::from(points))))
 }
+
+/// `GetItemCount` (CTDA 47, ObScript `0x102f`): how many of `item` the
+/// container's inventory holds. A form list counts every one of its members.
+/// The one implementation the condition and the legacy getter share (#6251).
+pub(crate) fn item_count(world: &World, container: EntityId, item: u32) -> f32 {
+    use byroredux_core::ecs::components::Inventory;
+    let items = crate::form_lists::forms_of(world, item, &[]).unwrap_or_else(|| vec![item]);
+    let Some(inventory) = world.get::<Inventory>(container) else {
+        return 0.0;
+    };
+    let count: u32 = inventory
+        .items
+        .iter()
+        .filter(|stack| items.contains(&stack.base_form_id))
+        .map(|stack| stack.count)
+        .sum();
+    count as f32
+}
+
+/// `GetHealthPercentage` (FO3/FNV CTDA 431, ObScript `0x11af`): GECK "how
+/// injured an actor is ... a value from 0 to 1.0" — current Health over the
+/// undamaged ceiling. `None` for an actor with no Health stat. Shared by the
+/// condition and the legacy getter (#6251).
+pub(crate) fn health_percentage(world: &World, actor: EntityId) -> Option<f32> {
+    use super::{actor_value_view, ActorValueView};
+    use byroredux_core::ecs::components::ActorVitals;
+    let health = world.get::<ActorVitals>(actor).map(|vitals| vitals.health)?;
+    let current = actor_value_view(world, actor, health, ActorValueView::Current);
+    let ceiling = actor_value_view(world, actor, health, ActorValueView::Undamaged);
+    Some(if ceiling > 0.0 { (current / ceiling).clamp(0.0, 1.0) } else { 0.0 })
+}

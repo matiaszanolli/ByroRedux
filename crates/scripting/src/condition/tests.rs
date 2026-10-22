@@ -2068,3 +2068,141 @@ fn oblivion_quest_level_dialogue_gates_census() {
         "quests / INFOs / GREETING INFOs the quest gate still declines"
     );
 }
+
+/// #6251 — a world with the ObScript state the legacy getters read, and an
+/// actor with a placed-reference FormID.
+fn getter_world() -> (World, EntityId) {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Fallout3NV));
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("FalloutNV.esm"),
+        local: LocalFormId(0x0001_6251),
+    });
+    world.insert_resource(pool);
+    let actor = world.spawn();
+    world.insert(actor, FormIdComponent(id));
+    (world, actor)
+}
+
+fn cond_params(function_index: u32, param_1: u32, param_2: u32, comparand: f32) -> Condition {
+    Condition { param_1, param_2, ..cond(function_index, ComparisonOp::Eq, comparand, false) }
+}
+
+/// #6251 — the getters the ObScript VM answered are catalogued, so the
+/// fail-closed dialogue / objective gates read them rather than decline.
+#[test]
+fn the_obscript_getters_are_catalogued_and_modeled_on_fnv() {
+    let (world, _) = getter_world();
+    for index in [35, 47, 64, 84, 131, 289, 420, 421, 431, 546] {
+        assert!(
+            !matches!(ConditionFunction::from_index(index), ConditionFunction::Unknown(_)),
+            "CTDA {index} is catalogued"
+        );
+        assert!(is_modeled(&world, &cond(index, ComparisonOp::Eq, 1.0, false)), "CTDA {index} is modeled on FNV");
+    }
+}
+
+/// #6251 — xEdit: 131 is `GetSceneActionPercent` from FO4 on, 431
+/// `GetActiveBoostDuration` on Starfield.
+#[test]
+fn get_pc_is_sex_and_get_health_percentage_are_foreign_where_xedit_renames_them() {
+    use super::catalog::index_is_foreign_in;
+    use byroredux_plugin::esm::reader::GameKind;
+    for game in [GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield] {
+        assert!(index_is_foreign_in(131, game), "131 is GetSceneActionPercent on {game:?}");
+    }
+    for game in [GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Skyrim] {
+        assert!(!index_is_foreign_in(131, game), "131 is GetPCIsSex on {game:?}");
+    }
+    assert!(index_is_foreign_in(431, GameKind::Starfield));
+    assert!(!index_is_foreign_in(431, GameKind::Fallout3NV));
+}
+
+#[test]
+fn get_item_count_sums_the_inventory_and_a_form_lists_members() {
+    use byroredux_core::ecs::components::{Inventory, ItemStack};
+    let (mut world, actor) = getter_world();
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(0x0F, 120)); // caps
+    inventory.push(ItemStack::new(0x15000, 2));
+    inventory.push(ItemStack::new(0x15001, 3));
+    world.insert(actor, inventory);
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.form_lists.insert(
+        0x9000,
+        byroredux_plugin::esm::records::FlstRecord {
+            form_id: 0x9000,
+            entries: vec![0x15000, 0x15001, 0x15002],
+            ..Default::default()
+        },
+    );
+    crate::form_lists::install_form_lists(&mut world, &index);
+    assert!(evaluate_condition(&cond_params(47, 0x0F, 0, 120.0), &world, &ctx(actor)));
+    assert!(evaluate_condition(&cond_params(47, 0x9000, 0, 5.0), &world, &ctx(actor)), "a form list sums its members");
+    assert!(evaluate_condition(&cond_params(47, 0x15002, 0, 0.0), &world, &ctx(actor)));
+}
+
+#[test]
+fn get_disabled_get_is_creature_and_is_in_combat_read_the_run_on() {
+    let (mut world, actor) = getter_world();
+    assert!(evaluate_condition(&cond_params(35, 0, 0, 0.0), &world, &ctx(actor)));
+    world.resource_mut::<crate::fragment::ReferenceEnableState>().set_enabled(0x0001_6251, false);
+    assert!(evaluate_condition(&cond_params(35, 0, 0, 1.0), &world, &ctx(actor)), "a scripted Disable");
+
+    assert!(evaluate_condition(&cond_params(64, 0, 0, 0.0), &world, &ctx(actor)));
+    world.insert(actor, byroredux_core::ecs::components::CreatureActor);
+    assert!(evaluate_condition(&cond_params(64, 0, 0, 1.0), &world, &ctx(actor)));
+
+    assert!(evaluate_condition(&cond_params(289, 0, 0, 0.0), &world, &ctx(actor)));
+    let foe = world.spawn();
+    world.insert(actor, crate::AiCombatState { target: foe, attack_cooldown_remaining: 0.0 });
+    assert!(evaluate_condition(&cond_params(289, 0, 0, 1.0), &world, &ctx(actor)));
+}
+
+#[test]
+fn get_health_percentage_is_current_over_the_undamaged_ceiling() {
+    use byroredux_core::ecs::components::{ActorValues, ActorVitals};
+    const HEALTH: u32 = 0x2D4;
+    let (mut world, actor) = getter_world();
+    world.insert(actor, ActorVitals { health: HEALTH });
+    let mut values = ActorValues::from_pairs([(HEALTH, 200.0)]);
+    values.apply_damage(HEALTH, 50.0);
+    world.insert(actor, values);
+    assert_eq!(
+        evaluate_function(ConditionFunction::GetHealthPercentage, &cond_params(431, 0, 0, 0.0), actor, &world),
+        0.75
+    );
+}
+
+#[test]
+fn quest_objective_dead_count_and_player_sex_getters_read_game_state() {
+    use crate::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageState};
+    let (mut world, actor) = getter_world();
+    const QUEST: u32 = 0x0001_0A00;
+    world.insert_resource(QuestObjectiveState::default());
+    world.insert_resource(QuestStageState::default());
+    assert!(evaluate_condition(&cond_params(421, QUEST, 10, 0.0), &world, &ctx(actor)));
+    world.resource_mut::<QuestObjectiveState>().set_displayed(QuestFormId(QUEST), 10, true);
+    world.resource_mut::<QuestObjectiveState>().set_completed(QuestFormId(QUEST), 20, true);
+    assert!(evaluate_condition(&cond_params(421, QUEST, 10, 1.0), &world, &ctx(actor)));
+    assert!(evaluate_condition(&cond_params(420, QUEST, 10, 0.0), &world, &ctx(actor)));
+    assert!(evaluate_condition(&cond_params(420, QUEST, 20, 1.0), &world, &ctx(actor)));
+
+    assert!(evaluate_condition(&cond_params(546, QUEST, 0, 0.0), &world, &ctx(actor)));
+    world.resource_mut::<QuestStageState>().start_quest(QuestFormId(QUEST), None);
+    world.resource_mut::<QuestStageState>().complete(QuestFormId(QUEST));
+    assert!(evaluate_condition(&cond_params(546, QUEST, 0, 1.0), &world, &ctx(actor)));
+
+    const GECKO: u32 = 0x0002_0B00;
+    world.resource_mut::<crate::obscript_state::KillRecords>().record(0x0003_0001, GECKO, None);
+    world.resource_mut::<crate::obscript_state::KillRecords>().record(0x0003_0002, GECKO, None);
+    assert!(evaluate_condition(&cond_params(84, GECKO, 0, 2.0), &world, &ctx(actor)));
+
+    // GetPCIsSex asks about the player whatever the Run-On; no player, no match.
+    assert!(evaluate_condition(&cond_params(131, 1, 0, 0.0), &world, &ctx(actor)));
+}
