@@ -1165,18 +1165,27 @@ mod tests {
     /// single capsule on every FO4 actor.
     #[test]
     fn the_stand_in_ragdoll_template_never_replaces_a_decoded_one() {
-        let source = include_str!("mod.rs");
+        // Production text only: this module's own needles below would otherwise
+        // satisfy the scan whether or not the production code still exists (#6327).
+        let source = byroredux_core::source_scan::production_text(include_str!("mod.rs"));
         let start = source
             .find("fn spawn_skeleton_unit(")
             .expect("the skeleton unit must exist");
         let body = &source[start..];
-        let install = body
-            .find("install_fallback_ragdoll_template(world, root, collider)")
-            .expect("the stand-in template install must exist");
-        let guard = body
-            .find("world.get::<crate::ragdoll::RagdollTemplate>(root).is_none()")
+        let call = "install_fallback_ragdoll_template(world, root, collider)";
+        let guard = "world.get::<crate::ragdoll::RagdollTemplate>(root).is_none()";
+        let install = body.find(call).expect("the stand-in template install must exist");
+        let guard_at = body
+            .find(guard)
             .expect("the install must be guarded by the absence of a decoded template (#6070)");
-        assert!(guard < install, "the guard precedes the install");
+        assert!(guard_at < install, "the guard precedes the install");
+        // The guard must wrap the call, not merely precede it: only the `) {`
+        // that closes the `if` condition may sit between them.
+        let between: String = body[guard_at + guard.len()..install]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert_eq!(between, "{", "the install is the guarded block's body");
     }
 
     /// #6080 (CHAR-SD-01) — the Female flag is a Use-Traits field. A female
