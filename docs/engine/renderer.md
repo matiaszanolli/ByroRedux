@@ -692,8 +692,9 @@ GLSL-PathTracer (MIT) Disney implementation, gated on `MAT_FLAG_PBR_BSDF`
 - **Input-domain clamps** (#1253/#1254) — defensive clamps on the IOR and
   anisotropy inputs so out-of-range authored values can't produce
   black/undefined fragments.
-- A documented Disney material preset table (#1251) provides canonical
-  values for common surface classes.
+- A documented Disney material reference table (#1251, a comment in
+  `vulkan/material.rs`) records canonical values for common surface classes.
+  It is reference data only — no runtime path selects a preset (#6191).
 
 These follow the project's no-guessing rule: the math + canonical values
 come from the GLSL-PathTracer reference, not invented constants.

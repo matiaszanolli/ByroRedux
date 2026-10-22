@@ -29,7 +29,7 @@
 use super::scene_buffer::MAX_MATERIALS;
 use byroredux_core::ecs::components::material::{
     DEFAULT_DIELECTRIC_IOR, DEFAULT_GLASS_BLUR_SCALE, DEFAULT_GLASS_REFRACTION_SCALE,
-    DEFAULT_PARALLAX_HEIGHT_SCALE, DEFAULT_PARALLAX_MAX_PASSES, GLASS_SURFACE_BEHAVIOR,
+    DEFAULT_PARALLAX_HEIGHT_SCALE, DEFAULT_PARALLAX_MAX_PASSES,
 };
 use rustc_hash::FxHashMap;
 use std::sync::Once;
@@ -810,250 +810,25 @@ impl PartialEq for GpuMaterial {
 
 impl Eq for GpuMaterial {}
 
-/// Documented Disney-BSDF material presets sourced from
-/// `knightcrawler25/GLSL-PathTracer` (MIT) —
-/// `assets/hyperion_rect_lights.scene`.
-///
-/// **Citation is not verifiable offline** (#2811 / REN-D17-09): the
-/// `reference_glsl_pathtracer` note records this repo as cloned to
-/// `/mnt/data/src/reference/`, but it is not present there (that
-/// directory holds Champollion, Gibbed.Starfield, Material-Editor,
-/// gamebryo-v26/v32, havok-20070919/2013, nifly, nifxml, openmw — no
-/// GLSL-PathTracer). Every scalar below is therefore *citable but
-/// unconfirmed* against the named source, and the Dim-17 audit
-/// checklist item "Disney preset constructors match documented values
-/// (cross-ref GLSL-PathTracer)" cannot be executed until the repo is
-/// re-cloned. The same caveat applies to `pbr.glsl`'s four references
-/// into `disney.glsl` line ranges. Treat the values as pinned by the
-/// per-preset tests below, not by a live cross-reference.
-///
-/// **These are test fixtures / reference values only — NOT a runtime
-/// fallback.** An earlier version of this doc described them as "the
-/// fallback when authored BGSM is absent"; no such fallback exists or
-/// should. `translate_material` never consults this module, and its
-/// only callers are the tests below. Wiring these into the runtime
-/// would put per-material selection in the renderer, bypassing the
-/// NIFAL parser→`Material` single boundary — see
-/// `feedback_format_translation` and `docs/engine/nifal.md`. The
-/// canonical no-authored-data path is `Material::resolve_pbr`'s
-/// NaN-sentinel keyword classifier, CPU-side.
-///
-/// Pre-#1251 the synthetic-material path picked
-/// `roughness=0.5, metallic=0.0, F0=0.04` from thin air — the
-/// `feedback_no_guessing` memory wants citable references for every
-/// physical constant, and the Hyperion preset table is the canonical
-/// Disney-BSDF reference.
-///
-/// Each preset returns a fully-populated `GpuMaterial`. The base
-/// `Default::default()` values cover every field this audit's
-/// table doesn't override (texture handles, alpha, UV transform,
-/// effect-shader payloads, etc.) — so e.g. `polished_metal()`
-/// keeps every default neutral and only sets the PBR scalars +
-/// IOR that the reference table specifies.
-///
-/// **Field-shape pin** (#1251): each preset enumerates the audit's
-/// authoritative `roughness / metallic / IOR / [optional Disney
-/// extension]` fields explicitly. If a future GpuMaterial growth
-/// changes the default of any field the presets touch, the
-/// per-preset tests pin the expected output.
-pub mod presets {
-    use super::{GpuMaterial, GLASS_SURFACE_BEHAVIOR};
-
-    /// Silver-class polished metal. Hyperion table:
-    /// `color = (0.9, 0.9, 0.9)`, `roughness = 0.001`,
-    /// `metallic = 1.0`. Tightest highlight lobe → mirror-like
-    /// micro-roughness suitable for chrome / silver / polished
-    /// steel hero props.
-    pub fn polished_metal() -> GpuMaterial {
-        GpuMaterial {
-            roughness: 0.001,
-            metalness: 1.0,
-            diffuse_r: 0.9,
-            diffuse_g: 0.9,
-            diffuse_b: 0.9,
-            // Metals: F0 comes from the per-channel albedo via the
-            // shader's `mix(dielectricF0, albedo, metalness)` branch.
-            // IOR default 1.5 is irrelevant for metals (the mix lands
-            // ~100% albedo at metalness = 1).
-            ..Default::default()
-        }
-    }
-
-    /// Generic glass — η = 1.45 (soda-lime / window glass authored at the
-    /// Hyperion-table edge of the typical glass range). The canonical shared
-    /// behavior uses a small `roughness = 0.10` anti-aliasing floor and
-    /// `metalness = 0`. A reference preset (its
-    /// canonical values are pinned by the Hyperion-table + caustic-source
-    /// tests); `spec_trans = 1.0` is a Disney-BSDF transmission extension not
-    /// yet on `GpuMaterial`, so it renders as a smooth dielectric until that
-    /// lobe is plumbed in.
-    pub fn glass() -> GpuMaterial {
-        GpuMaterial {
-            roughness: GLASS_SURFACE_BEHAVIOR.roughness,
-            metalness: GLASS_SURFACE_BEHAVIOR.metalness,
-            ior: GLASS_SURFACE_BEHAVIOR.ior,
-            diffuse_r: 1.0,
-            diffuse_g: 1.0,
-            diffuse_b: 1.0,
-            ..Default::default()
-        }
-    }
-
-    /// Two-coat car paint. Hyperion table: base = green tint
-    /// `(0.026, 0.147, 0.075)`, `roughness = 0.01`. Clearcoat
-    /// (`clearcoat = 1.0, clearcoat_gloss = 1.0` in Disney 2012) is a Disney
-    /// extension not yet on our GpuMaterial — when that lobe is plumbed in,
-    /// this preset should set those alongside.
-    ///
-    /// `base` argument lets the caller override the green default
-    /// (Hyperion ships green as the demo colour; real car-paint
-    /// authoring picks per-vehicle).
-    pub fn car_paint(base: [f32; 3]) -> GpuMaterial {
-        GpuMaterial {
-            roughness: 0.01,
-            metalness: 0.0,
-            diffuse_r: base[0],
-            diffuse_g: base[1],
-            diffuse_b: base[2],
-            ..Default::default()
-        }
-    }
-
-    /// Lacquered plastic (Hyperion: orange `(1.0, 0.186, 0.0)`).
-    /// Same `roughness = 0.001` mirror-class clearcoat as car
-    /// paint, but `metallic = 0` — the smooth-plastic look (toy
-    /// cars, painted machinery, glossy lacquered wood).
-    pub fn lacquered_plastic(base: [f32; 3]) -> GpuMaterial {
-        GpuMaterial {
-            roughness: 0.001,
-            metalness: 0.0,
-            diffuse_r: base[0],
-            diffuse_g: base[1],
-            diffuse_b: base[2],
-            ..Default::default()
-        }
-    }
-
-    /// Painted matte (Hyperion red base, mild metal sheen):
-    /// `roughness = 0.5`, `metallic = 0.2`. Half-rough surface
-    /// with a sub-pure-dielectric Fresnel — covers worn paint,
-    /// powder-coat finishes, anodised metals that are neither
-    /// flat-matte nor mirror.
-    pub fn painted_matte(base: [f32; 3]) -> GpuMaterial {
-        GpuMaterial {
-            roughness: 0.5,
-            metalness: 0.2,
-            diffuse_r: base[0],
-            diffuse_g: base[1],
-            diffuse_b: base[2],
-            ..Default::default()
-        }
-    }
-
-    /// Skin / wax / marble — the Hanrahan-Krueger fake-SSS preset
-    /// (#1249). Hyperion: `color = (0.93, 0.89, 0.85)` (warm
-    /// flesh / wax tone), `roughness = 1.0` (Disney's "fully
-    /// rough"), `metallic = 0.0`, `subsurface = 1.0` (full
-    /// HK fake-SSS contribution).
-    pub fn skin_wax_marble(base: [f32; 3]) -> GpuMaterial {
-        GpuMaterial {
-            roughness: 1.0,
-            metalness: 0.0,
-            subsurface: 1.0,
-            diffuse_r: base[0],
-            diffuse_g: base[1],
-            diffuse_b: base[2],
-            // PBR flag so the Disney-diffuse branch fires at the
-            // shader (#1249 gates on `MAT_FLAG_PBR_BSDF`).
-            material_flags: super::material_flag::PBR_BSDF,
-            ..Default::default()
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn polished_metal_matches_hyperion_table() {
-            let m = polished_metal();
-            assert_eq!(m.roughness, 0.001);
-            assert_eq!(m.metalness, 1.0);
-            assert_eq!(m.diffuse_r, 0.9);
-            assert_eq!(m.diffuse_g, 0.9);
-            assert_eq!(m.diffuse_b, 0.9);
-        }
-
-        #[test]
-        fn glass_matches_hyperion_table() {
-            let m = glass();
-            assert_eq!(m.roughness, GLASS_SURFACE_BEHAVIOR.roughness);
-            assert_eq!(m.metalness, GLASS_SURFACE_BEHAVIOR.metalness);
-            assert_eq!(m.ior, GLASS_SURFACE_BEHAVIOR.ior);
-        }
-
-        #[test]
-        fn car_paint_matches_hyperion_table() {
-            let m = car_paint([0.026, 0.147, 0.075]);
-            assert_eq!(m.roughness, 0.01);
-            assert_eq!(m.metalness, 0.0);
-            assert_eq!(m.diffuse_r, 0.026);
-            assert_eq!(m.diffuse_g, 0.147);
-            assert_eq!(m.diffuse_b, 0.075);
-        }
-
-        #[test]
-        fn lacquered_plastic_matches_hyperion_table() {
-            let m = lacquered_plastic([1.0, 0.186, 0.0]);
-            assert_eq!(m.roughness, 0.001);
-            assert_eq!(m.metalness, 0.0);
-            assert_eq!(m.diffuse_r, 1.0);
-            assert_eq!(m.diffuse_g, 0.186);
-            assert_eq!(m.diffuse_b, 0.0);
-        }
-
-        #[test]
-        fn painted_matte_matches_hyperion_table() {
-            let m = painted_matte([1.0, 0.0, 0.0]);
-            assert_eq!(m.roughness, 0.5);
-            assert_eq!(m.metalness, 0.2);
-        }
-
-        #[test]
-        fn skin_wax_marble_matches_hyperion_table_and_fires_pbr_gate() {
-            let m = skin_wax_marble([0.93, 0.89, 0.85]);
-            assert_eq!(m.roughness, 1.0);
-            assert_eq!(m.metalness, 0.0);
-            assert_eq!(m.subsurface, 1.0);
-            assert_eq!(m.diffuse_r, 0.93);
-            // PBR_BSDF flag must be set so the shader's Disney-
-            // diffuse branch consumes `subsurface`.
-            assert_ne!(
-                m.material_flags & super::super::material_flag::PBR_BSDF,
-                0,
-                "skin_wax_marble must set PBR_BSDF so the shader's \
-                 disneyDiffuseTerm branch fires and consumes subsurface = 1.0"
-            );
-        }
-
-        /// Every preset must inherit the GpuMaterial::default() shape
-        /// for fields it doesn't override. Future field additions that
-        /// drift a preset's default away from the audit's Hyperion
-        /// table values would fail this pin.
-        #[test]
-        fn presets_inherit_defaults_for_unset_fields() {
-            let m = polished_metal();
-            // Default `ior = 1.5` is left untouched by polished_metal
-            // (metals don't care about dielectric IOR per the docstring).
-            assert_eq!(m.ior, 1.5);
-            // Default `anisotropic = 0` — polished metal stays isotropic
-            // (brushed metal would override).
-            assert_eq!(m.anisotropic, 0.0);
-            // Default `sheen = 0` — metal doesn't get fabric edge brighten.
-            assert_eq!(m.sheen, 0.0);
-        }
-    }
-}
+// Disney-BSDF reference values (#1251), from `knightcrawler25/GLSL-PathTracer`
+// (MIT) `assets/hyperion_rect_lights.scene`. Kept as a citable table for
+// `feedback_no_guessing`; the `presets` constructors that once built these as
+// `GpuMaterial`s had no consumer outside their own tests and were removed
+// (#6191). Nothing at runtime selects a preset: per-material choice belongs to
+// the NIFAL parser→`Material` boundary (`docs/engine/nifal.md`), and the
+// no-authored-data path is `Material::resolve_pbr`'s CPU-side classifier.
+//
+// The citation is not verifiable offline (#2811 / REN-D17-09): the repo is not
+// present under `/mnt/data/src/reference/`, so the values are citable but
+// unconfirmed against the source.
+//
+//   class               base colour             roughness  metallic  extension
+//   polished metal      (0.9, 0.9, 0.9)         0.001      1.0       —
+//   glass               (1.0, 1.0, 1.0)         GLASS_SURFACE_BEHAVIOR (η 1.45)  spec_trans 1.0
+//   car paint           (0.026, 0.147, 0.075)   0.01       0.0       clearcoat 1.0, gloss 1.0
+//   lacquered plastic   (1.0, 0.186, 0.0)       0.001      0.0       —
+//   painted matte       red                     0.5        0.2       —
+//   skin / wax / marble (0.93, 0.89, 0.85)      1.0        0.0       subsurface 1.0 (PBR_BSDF)
 
 /// Canonical material hash: one FxHash bulk pass over every byte of
 /// [`GpuMaterial`]. Used by [`MaterialTable::intern_by_hash`] as the dedup key.
