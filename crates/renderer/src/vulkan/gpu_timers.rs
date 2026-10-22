@@ -2,16 +2,17 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, `QUERIES_PER_FRAME` (58) TIMESTAMP queries
-//! each — 29 start/end brackets, bumped from 32/16 by #4052's
+//! per frame-in-flight slot, `QUERIES_PER_FRAME` (60) TIMESTAMP queries
+//! each — 30 start/end brackets, bumped from 32/16 by #4052's
 //! ground-cover-bench bracket (#4210), again from 34/17 by the SKYAL
 //! sky-cubemap bake, again from 36/18 by the production ground-cover
 //! scatter (#4315), again from 38/19 by the exposure meter (#4618), again
 //! from 40/20 to 46/23 by the ground-cover model tier and the split
 //! volumetrics inject / integrate brackets (`88c23887b`), again from
-//! 46/23 by the five main-pass geometry phases (`0925f7926`), and again
+//! 46/23 by the five main-pass geometry phases (`0925f7926`), again
 //! from 56/28 by the direct-shadow filter nested in the SVGF bracket
-//! (#5959):
+//! (#5959), and again from 58/29 by the cloud-shadow bake nested in the
+//! sky-cube bracket (#6316):
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -63,16 +64,18 @@
 //! | 45   | volumetrics integrate — end                          |
 //! | 46   | direct-shadow filter (inside SVGF) — start           |
 //! | 47   | direct-shadow filter (inside SVGF) — end             |
-//! | 48   | main pass, opaque phase (profile only) — start       |
-//! | 49   | main pass, opaque phase (profile only) — end         |
-//! | 50   | main pass, blended phase (profile only) — start      |
-//! | 51   | main pass, blended phase (profile only) — end        |
-//! | 52   | main pass, water phase (profile only) — start        |
-//! | 53   | main pass, water phase (profile only) — end          |
-//! | 54   | main pass, ground-cover model draw (profile only) — start |
-//! | 55   | main pass, ground-cover model draw (profile only) — end   |
-//! | 56   | main pass, ground-cover blade draw (profile only) — start |
-//! | 57   | main pass, ground-cover blade draw (profile only) — end   |
+//! | 48   | cloud-shadow bake (inside sky cube) — start          |
+//! | 49   | cloud-shadow bake (inside sky cube) — end            |
+//! | 50   | main pass, opaque phase (profile only) — start       |
+//! | 51   | main pass, opaque phase (profile only) — end         |
+//! | 52   | main pass, blended phase (profile only) — start      |
+//! | 53   | main pass, blended phase (profile only) — end        |
+//! | 54   | main pass, water phase (profile only) — start        |
+//! | 55   | main pass, water phase (profile only) — end          |
+//! | 56   | main pass, ground-cover model draw (profile only) — start |
+//! | 57   | main pass, ground-cover model draw (profile only) — end   |
+//! | 58   | main pass, ground-cover blade draw (profile only) — start |
+//! | 59   | main pass, ground-cover blade draw (profile only) — end   |
 //!
 //! The original three brackets (skin dispatch / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work; the skin-palette bracket (slots 28/29)
@@ -132,7 +135,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 
 /// Two TIMESTAMP queries per bracket (start, end); the module doc's table is
 /// the one place that counts them.
-const QUERIES_PER_FRAME: u32 = 58;
+const QUERIES_PER_FRAME: u32 = 60;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -204,6 +207,10 @@ const Q_VOLUMETRICS_INTEGRATE_END: u32 = 45;
 /// bracket (it is dispatched there, so `svgf_ms` keeps including it).
 const Q_SHADOW_FILTER_START: u32 = 46;
 const Q_SHADOW_FILTER_END: u32 = 47;
+/// #6316 — the cloud-shadow bake, nested inside the sky-cube bracket (it is
+/// recorded there, so `sky_cube_ms` keeps including it).
+const Q_CLOUD_SHADOW_START: u32 = 48;
+const Q_CLOUD_SHADOW_END: u32 = 49;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -342,6 +349,12 @@ pub struct GpuTimerSnapshot {
     /// `COMPUTE_SHADER`. Inactive on any frame the filter is off or failed
     /// to initialise.
     pub shadow_filter_ms: f32,
+    /// #6316 — the SKYAL cloud-shadow bake (`cloud_shadow.comp`, one
+    /// invocation per texel of the camera-centred map, marching the cloud
+    /// column toward the sun). Recorded inside the sky-cube bracket, so it
+    /// is nested in `sky_cube_ms`: never sum the two. Starts at
+    /// `COMPUTE_SHADER`. Inactive when the bake failed to initialise.
+    pub cloud_shadow_ms: f32,
     // Main-pass phase fields (`0925f7926`): BOTTOM_OF_PIPE phase-completion
     // intervals inside `main_render_ms`, one per `GeometryTimerPhase`. GPU
     // overlap can move work across boundaries; these are not isolated shader
@@ -393,6 +406,7 @@ pub struct GpuTimerSnapshot {
     pub volumetrics_inject_active: bool,
     pub volumetrics_integrate_active: bool,
     pub shadow_filter_active: bool,
+    pub cloud_shadow_active: bool,
     pub main_opaque_active: bool,
     pub main_blended_active: bool,
     pub main_water_active: bool,
@@ -460,6 +474,7 @@ const BIT_GROUNDCOVER_MODELS: u32 = 1 << 20;
 const BIT_VOLUMETRICS_INJECT: u32 = 1 << 21;
 const BIT_VOLUMETRICS_INTEGRATE: u32 = 1 << 22;
 const BIT_SHADOW_FILTER: u32 = 1 << 23;
+const BIT_CLOUD_SHADOW: u32 = 1 << 24;
 
 /// Consecutive raster phases inside the inclusive main-render bracket.
 ///
@@ -481,8 +496,8 @@ pub(crate) enum GeometryTimerPhase {
 /// constants so a new named bracket must move these bases rather than
 /// silently aliasing `MainOpaque`'s slot and bit; the `const` asserts below
 /// and `every_timer_slot_and_active_bit_is_unique_and_in_range` pin the rest.
-const Q_GEOMETRY_PHASE_BASE: u32 = Q_SHADOW_FILTER_END + 1;
-const GEOMETRY_PHASE_BIT_BASE: u32 = BIT_SHADOW_FILTER.trailing_zeros() + 1;
+const Q_GEOMETRY_PHASE_BASE: u32 = Q_CLOUD_SHADOW_END + 1;
+const GEOMETRY_PHASE_BIT_BASE: u32 = BIT_CLOUD_SHADOW.trailing_zeros() + 1;
 const GEOMETRY_TIMER_PHASE_COUNT: u32 = 5;
 const _: () = assert!(
     Q_GEOMETRY_PHASE_BASE + 2 * GEOMETRY_TIMER_PHASE_COUNT == QUERIES_PER_FRAME,
@@ -633,6 +648,10 @@ fn snapshot_from_bits_with_valid_bits(
     snap.shadow_filter_active = bits & BIT_SHADOW_FILTER != 0;
     if snap.shadow_filter_active {
         snap.shadow_filter_ms = bracket_ms(Q_SHADOW_FILTER_START);
+    }
+    snap.cloud_shadow_active = bits & BIT_CLOUD_SHADOW != 0;
+    if snap.cloud_shadow_active {
+        snap.cloud_shadow_ms = bracket_ms(Q_CLOUD_SHADOW_START);
     }
     snap.main_opaque_active = bits & GeometryTimerPhase::MainOpaque.active_bit() != 0;
     if snap.main_opaque_active {
@@ -1813,6 +1832,42 @@ impl GpuPerFrameTimers {
         self.active_bits[frame] |= BIT_SHADOW_FILTER;
     }
 
+    /// #6316 — open the cloud-shadow bake's bracket, inside the sky-cube one.
+    pub fn cmd_cloud_shadow_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_CLOUD_SHADOW_START,
+            );
+        }
+    }
+
+    pub fn cmd_cloud_shadow_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_CLOUD_SHADOW_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_CLOUD_SHADOW;
+    }
+
     pub fn cmd_volumetrics_integrate_start(
         &mut self,
         device: &ash::Device,
@@ -2127,6 +2182,26 @@ mod tests {
         assert_eq!(snap.shadow_filter_ms, 0.0);
     }
 
+    /// #6316 — the cloud-shadow bake reads back on its own bit, nested in
+    /// the sky-cube bracket, which keeps reading its own (inclusive) span.
+    #[test]
+    fn cloud_shadow_bracket_reports_measured_duration_inside_sky_cube() {
+        let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_SKY_CUBE_START as usize] = 1_000;
+        ticks[Q_CLOUD_SHADOW_START as usize] = 5_000;
+        ticks[Q_CLOUD_SHADOW_END as usize] = 8_000;
+        ticks[Q_SKY_CUBE_END as usize] = 9_000;
+
+        let snap = snapshot_from_bits(BIT_SKY_CUBE | BIT_CLOUD_SHADOW, &ticks, 0.5);
+        assert!(snap.cloud_shadow_active && snap.sky_cube_active);
+        assert_eq!(snap.cloud_shadow_ms, 3_000.0 * 0.5);
+        assert_eq!(snap.sky_cube_ms, 8_000.0 * 0.5, "the sky cube stays inclusive of the bake");
+
+        let snap = snapshot_from_bits(BIT_SKY_CUBE, &ticks, 0.5);
+        assert!(!snap.cloud_shadow_active, "no cloud-shadow pipeline: its bit never set");
+        assert_eq!(snap.cloud_shadow_ms, 0.0);
+    }
+
     #[test]
     fn volumetrics_integrate_bracket_reports_measured_duration() {
         let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
@@ -2290,7 +2365,8 @@ mod tests {
     /// bracket addition has one number to move. The stale spellings are
     /// assembled from fragments below so this test's own source can't match
     /// them. Each bump adds the spellings it retires (#4618 added 38/19's;
-    /// #4981 added 40/20's and 46/23's; #5959 added 56/28's).
+    /// #4981 added 40/20's and 46/23's; #5959 added 56/28's; #6316 added
+    /// 58/29's).
     #[test]
     fn prose_outside_the_module_header_carries_no_bracket_counts() {
         let src = include_str!("gpu_timers.rs");
@@ -2312,6 +2388,9 @@ mod tests {
             format!("currently {}", 28),
             format!("{}-query", 56),
             format!("full {}", 56),
+            format!("currently {}", 29),
+            format!("{}-query", 58),
+            format!("full {}", 58),
         ];
         for pattern in &rotted {
             assert!(

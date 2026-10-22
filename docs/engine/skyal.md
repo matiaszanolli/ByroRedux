@@ -247,7 +247,11 @@ LDR-authored WTHR sky.
 
 **Cost** at 1280×720 render: `gpu_composite` ~1.2 ms on a cloud-filled
 view and 0.7-1.2 ms over terrain (large run-to-run variance);
-`gpu_sky_cube` ~0.1 ms. The march scales with pixel count, so the worst
+`gpu_sky_cube` ~0.1 ms before the cloud-shadow bake existed. With it
+(2026-10-21, RTX 4070 Ti, TAA, FNV, sun up, coverage 0.4): `gpu_sky_cube`
+0.21-0.23 ms inclusive, of which the nested `gpu_cloud_shadow` bracket is
+0.034 ms, the same in an interior as in an exterior since the map is fixed
+size (#6316). The march scales with pixel count, so the worst
 view at 4K is roughly 10 ms.
 
 Still open:

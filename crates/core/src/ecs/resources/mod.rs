@@ -793,6 +793,9 @@ pub struct SkinCoverageStats {
     /// #5959 — the direct-shadow filter, nested inside `gpu_svgf_ms` when
     /// SVGF runs (never sum the two).
     pub gpu_shadow_filter_ms: f32,
+    /// #6316 — the cloud-shadow bake, nested inside `gpu_sky_cube_ms`
+    /// (never sum the two).
+    pub gpu_cloud_shadow_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2513 / REN-D20-NEW-03) ───
     //
@@ -826,6 +829,7 @@ pub struct SkinCoverageStats {
     pub gpu_volumetrics_inject_active: bool,
     pub gpu_volumetrics_integrate_active: bool,
     pub gpu_shadow_filter_active: bool,
+    pub gpu_cloud_shadow_active: bool,
 }
 
 /// CPU-side per-frame wall-clock breakdown — populated by the

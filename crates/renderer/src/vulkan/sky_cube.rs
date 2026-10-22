@@ -566,9 +566,33 @@ impl SkyCubePipeline {
         if let Some(irradiance) = &self.irradiance {
             irradiance.record(device, cmd, frame);
         }
+    }
+
+    /// Record the cloud-shadow bake, when its pipeline exists ([`Self::has_cloud_shadow`]).
+    /// Separate from [`Self::record_bake`] so the caller can time it in its
+    /// own bracket nested in the sky-cube one (#6316); the caller records it
+    /// right after the bake, inside that bracket. Owns its own layout
+    /// transitions and readback barrier.
+    ///
+    /// # Safety
+    ///
+    /// As [`Self::record_bake`], for this slot's cloud-shadow map and
+    /// readback buffer.
+    pub unsafe fn record_cloud_shadow(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        bindless_set: vk::DescriptorSet,
+    ) {
         if let Some(cloud_shadow) = &self.cloud_shadow {
             cloud_shadow.record(device, cmd, frame, bindless_set);
         }
+    }
+
+    /// Whether the cloud-shadow bake exists (its pipeline initialised).
+    pub fn has_cloud_shadow(&self) -> bool {
+        self.cloud_shadow.is_some()
     }
 
     /// Record the bake.

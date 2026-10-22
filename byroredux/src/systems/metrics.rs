@@ -332,6 +332,10 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
             "shadow_filter".to_string(),
             gpu_bracket_ms(cov.gpu_shadow_filter_ms, cov.gpu_shadow_filter_active),
         );
+        gpu_pass_ms.insert(
+            "cloud_shadow".to_string(),
+            gpu_bracket_ms(cov.gpu_cloud_shadow_ms, cov.gpu_cloud_shadow_active),
+        );
     }
 
     let mut cpu_pass_ms: BTreeMap<String, f32> = BTreeMap::new();

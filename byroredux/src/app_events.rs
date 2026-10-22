@@ -1334,6 +1334,7 @@ impl ApplicationHandler for App {
                                     s.gpu_volumetrics_inject_ms,
                                     s.gpu_volumetrics_integrate_ms,
                                     s.gpu_shadow_filter_ms,
+                                    s.gpu_cloud_shadow_ms,
                                 ],
                                 [
                                     s.gpu_skin_dispatch_active,
@@ -1359,6 +1360,7 @@ impl ApplicationHandler for App {
                                     s.gpu_volumetrics_inject_active,
                                     s.gpu_volumetrics_integrate_active,
                                     s.gpu_shadow_filter_active,
+                                    s.gpu_cloud_shadow_active,
                                 ],
                             )
                         })
@@ -1410,7 +1412,7 @@ impl ApplicationHandler for App {
                          gpu_presentation={:.3} gpu_tlas_build={:.3} \
                          gpu_caustic_splat={:.3} gpu_skin_palette={:.3} \
                          gpu_depth_history_copy={:.3} gpu_sky_cube={:.3} \
-                         gpu_groundcover_scatter={:.3} gpu_exposure_meter={:.3} gpu_groundcover_models={:.3} gpu_volumetrics_inject={:.3} gpu_volumetrics_integrate={:.3} gpu_shadow_filter={:.3}] \
+                         gpu_groundcover_scatter={:.3} gpu_exposure_meter={:.3} gpu_groundcover_models={:.3} gpu_volumetrics_inject={:.3} gpu_volumetrics_integrate={:.3} gpu_shadow_filter={:.3} gpu_cloud_shadow={:.3}] \
                          gpu_inactive={} \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
@@ -1470,6 +1472,7 @@ impl ApplicationHandler for App {
                         gpu[20],
                         gpu[21],
                         gpu[22],
+                        gpu[23],
                         gpu_inactive,
                         systems_ms,
                         ticks_per_frame,

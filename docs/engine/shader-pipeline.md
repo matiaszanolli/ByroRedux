@@ -208,6 +208,11 @@ is not named here.
                            with, then GENERAL → SHADER_READ_ONLY_OPTIMAL,
                            then the GGX prefilter mips and the SH irradiance
                            projection. Owns its own layout transitions.
+                           Then cloud_shadow.comp (`record_cloud_shadow`,
+                           when that pipeline exists) bakes the camera-centred
+                           cloud-shadow map and the camera column's readback,
+                           in its own `cloud_shadow_ms` bracket nested in
+                           `sky_cube_ms` (#6316).
                            Recorded before step 6 because the main pass
                            samples it (Set 1 bindings 20/21); its
                            `exteriorSkyTint.w` ready flag is what makes the

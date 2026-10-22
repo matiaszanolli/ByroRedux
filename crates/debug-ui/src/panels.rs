@@ -1886,14 +1886,16 @@ fn setting_matches(entry: &SettingEntry, filter: &str) -> bool {
 /// `(child, parent)` `gpu_pass_ms` rows whose GPU bracket is recorded
 /// *inside* the parent's, so the parent's time already includes theirs
 /// (#4977): `record_volumetrics_pass` wraps `VolumetricsPipeline::dispatch`,
-/// which stamps the inject and integrate brackets, and the direct-shadow
-/// filter is dispatched inside the SVGF bracket (#5959). Shown as rows,
+/// which stamps the inject and integrate brackets, the direct-shadow
+/// filter is dispatched inside the SVGF bracket (#5959), and the
+/// cloud-shadow bake is recorded inside the sky-cube one (#6316). Shown as rows,
 /// summed only on a cycle the parent did not run (the filter still runs
 /// without SVGF).
 const NESTED_GPU_BRACKETS: &[(&str, &str)] = &[
     ("volumetrics_inject", "volumetrics"),
     ("volumetrics_integrate", "volumetrics"),
     ("shadow_filter", "svgf"),
+    ("cloud_shadow", "sky_cube"),
 ];
 
 /// The overlay's "GPU passes Σ": every bracket that ran this cycle (#2513),
@@ -2458,6 +2460,20 @@ mod tests {
             gpu_pass_upper_bound_ms(&rows),
             gpu_pass_upper_bound_ms(&parents_only)
         );
+    }
+
+    /// #6316 — the cloud-shadow bake is recorded inside the sky-cube bracket,
+    /// so the overlay's Σ counts the sky cube alone.
+    #[test]
+    fn cloud_shadow_is_not_summed_with_the_sky_cube_that_contains_it() {
+        let rows: std::collections::BTreeMap<String, Option<f32>> = [
+            ("sky_cube".to_string(), Some(0.4)),
+            ("cloud_shadow".to_string(), Some(0.3)),
+            ("composite".to_string(), Some(0.25)),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(gpu_pass_upper_bound_ms(&rows), 0.4 + 0.25);
     }
 
     /// #5959 — the shadow filter is nested in SVGF when SVGF runs; with SVGF

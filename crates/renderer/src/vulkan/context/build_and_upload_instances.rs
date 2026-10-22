@@ -1214,6 +1214,18 @@ impl VulkanContext {
                 // whose previous use was fenced by the frame-in-flight wait
                 // that preceded this recording.
                 unsafe { sky_cube.record_bake(&self.device, cmd, frame, bindless_set) };
+                // #6316 — the cloud-shadow bake, in its own bracket nested in
+                // the sky-cube one (which keeps including it).
+                if sky_cube.has_cloud_shadow() {
+                    if let Some(ref mut timers) = self.gpu_timers {
+                        timers.cmd_cloud_shadow_start(&self.device, cmd, frame);
+                    }
+                    // SAFETY: as `record_bake` above, for this slot's map.
+                    unsafe { sky_cube.record_cloud_shadow(&self.device, cmd, frame, bindless_set) };
+                    if let Some(ref mut timers) = self.gpu_timers {
+                        timers.cmd_cloud_shadow_end(&self.device, cmd, frame);
+                    }
+                }
                 if let Some(ref mut timers) = self.gpu_timers {
                     timers.cmd_sky_cube_end(&self.device, cmd, frame);
                 }
