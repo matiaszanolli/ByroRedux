@@ -1052,8 +1052,8 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     // players. Left in place, the graph step, `graph_locomotion_system` (which
     // sends `moveStop` for a parked corpse) and the lazy-clip restart in
     // `resolve_wanted` (every actor sharing the graph) all put a clip back on
-    // it through `apply_playback_for`; FO4 ragdolls do not activate yet, so
-    // nothing overrides the restored pose and the corpse stands and idles.
+    // it through `apply_playback_for`. While the graph lives its clips fight
+    // the ragdoll writeback on every rig, so it goes at death.
     remove_component::<byroredux_scripting::ObjectAnimationGraph>(world, actor);
     remove_component::<crate::systems::GraphLocomotion>(world, actor);
     remove_component::<crate::systems::ConsoleWalk>(world, actor);

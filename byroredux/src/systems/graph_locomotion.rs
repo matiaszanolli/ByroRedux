@@ -500,7 +500,7 @@ mod tests {
 
     /// #5861 — death takes the behavior-graph runtime with the animation
     /// players: left behind, the graph step and `moveStop` put a clip back on
-    /// the corpse (FO4 ragdolls do not activate yet to override the pose).
+    /// the corpse, fighting the ragdoll writeback.
     #[test]
     fn a_dead_actor_loses_its_graph_and_locomotion_state() {
         let (mut world, actor) = world_with_actor();
