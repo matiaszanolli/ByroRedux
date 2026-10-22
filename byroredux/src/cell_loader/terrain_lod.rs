@@ -38,13 +38,14 @@ use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{
     resolve_linear_texture_with_clamp, resolve_texture, resolve_texture_with_clamp,
-    TextureProvider,
+    MaterialProvider, TextureProvider,
 };
 use crate::components::{IsLodTerrain, MaterialTextureHandles};
 use crate::env_translate::translate_terrain_lod_textures;
 use crate::streaming::LodBlock;
 
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
+use super::terrain::LandscapeLayerTextures;
 use super::lod_support::{
     combined_lod_supported, legacy_landscape_lod_supported, lod_source_cell_exists,
     retain_resident, worldspace_cell_bounds,
@@ -432,10 +433,16 @@ fn desired_lod_quads(
 /// invalidations happen immediately; entering/regenerated blocks consume
 /// [`LodWorkBudget`] units and may be deferred. Returns `true` once every
 /// desired coordinate is either resident or recorded in `missing_blocks`.
+///
+/// `mat_provider` fills a synth block's base layer from its LTEX texture
+/// set's BGSM (an FO4 MNAM-only TXST authors no TX00), the same resolver
+/// full-detail terrain uses (#6199 / #6246).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn stream_lod_blocks(
     world: &mut World,
     ctx: &mut VulkanContext,
     input: &LodReconcileInput<'_>,
+    mat_provider: Option<&mut MaterialProvider>,
     lod_blocks: &mut HashMap<(i32, i32, i32), LodBlock>,
     missing_blocks: &mut HashMap<(i32, i32, i32), u16>,
     available_cache: &mut rustc_hash::FxHashMap<(i32, i32, i32), bool>,
@@ -448,6 +455,11 @@ pub(crate) fn stream_lod_blocks(
     let index = &wctx.record_index.cells;
     let Some(cells_map) = index.exterior_cells.get(&wctx.worldspace_key) else {
         return true;
+    };
+    let mut layer_textures = LandscapeLayerTextures {
+        landscape_textures: &index.landscape_textures,
+        landscape_texture_sets: &index.landscape_texture_sets,
+        mat_provider,
     };
     // Combined `.btr` distant terrain is a Skyrim/FO4 scheme. Legacy games
     // keep the heightmap-synth geometry, but EXAL can now supply their
@@ -660,7 +672,7 @@ pub(crate) fn stream_lod_blocks(
                 world,
                 ctx,
                 tex_provider,
-                &index.landscape_textures,
+                &mut layer_textures,
                 cells_map,
                 qx,
                 qy,
@@ -733,6 +745,19 @@ pub(crate) fn unload_lod_block(world: &mut World, ctx: &mut VulkanContext, block
     world.despawn(block.entity);
 }
 
+/// A synth block's base diffuse for its first base LTEX, through the
+/// full-detail layer resolver (#6246). An MNAM-only LTEX is absent from
+/// `landscape_textures`, so a direct lookup dropped every boundary block
+/// whose base it was: synth-only on Combined games, so recorded as a real
+/// miss and never retried.
+fn synth_base_texture_path(
+    layer_textures: &mut LandscapeLayerTextures<'_>,
+    base_ltex: Option<u32>,
+) -> Option<String> {
+    let ltex = base_ltex.filter(|&ltex| ltex != 0)?;
+    layer_textures.texture_set(ltex)?.diffuse
+}
+
 /// Build + spawn one finest-band LOD block whose SW-corner cell is
 /// `(bx0, by0)`. Returns `None`
 /// (nothing spawned) when the block is entirely holes — every cell either
@@ -743,7 +768,7 @@ fn spawn_lod_block(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
-    landscape_textures: &HashMap<u32, String>,
+    layer_textures: &mut LandscapeLayerTextures<'_>,
     cells_map: &HashMap<(i32, i32), CellData>,
     bx0: i32,
     by0: i32,
@@ -933,15 +958,9 @@ fn spawn_lod_block(
                     .and_then(|cell| cell.landscape.as_ref())
                     .and_then(|land| land.quadrants.iter().find_map(|q| q.base))
             });
-        match base_ltex {
-            Some(ltex_id) if ltex_id != 0 => match landscape_textures.get(&ltex_id) {
-                Some(path) => (
-                    resolve_texture(ctx, tex_provider, Some(path.as_str())),
-                    Some(path.clone()),
-                ),
-                None => (0, None),
-            },
-            _ => (0, None),
+        match synth_base_texture_path(layer_textures, base_ltex) {
+            Some(path) => (resolve_texture(ctx, tex_provider, Some(path.as_str())), Some(path)),
+            None => (0, None),
         }
     };
     if tex_handle == 0 {
@@ -1125,6 +1144,51 @@ mod tests {
         assert!((t - east).length() < 1e-6, "T {t:?} is not world east {east:?}");
         let b = sign * up.cross(t);
         assert!((b - north).length() < 1e-6, "B {b:?} is not world north {north:?}");
+    }
+
+    /// #6246 — an FO4 MNAM-only base LTEX (no TX00, so absent from
+    /// `landscape_textures`) resolves its synth-block diffuse from the BGSM,
+    /// like full-detail terrain; an ICON path still resolves directly.
+    #[test]
+    fn synth_block_base_resolves_an_mnam_only_ltex_through_its_bgsm() {
+        use byroredux_bgsm::template::ResolvedMaterial;
+        use byroredux_bgsm::BgsmFile;
+        use byroredux_plugin::esm::cell::TextureSet;
+
+        let bgsm = r"landscape\ground\lcwdefault01grass.bgsm";
+        let mut provider = MaterialProvider::new();
+        provider.insert_bgsm_for_test(
+            bgsm,
+            ResolvedMaterial {
+                file: BgsmFile {
+                    diffuse_texture: "Landscape/Ground/LCWDefault01Grass_d.dds".into(),
+                    ..Default::default()
+                },
+                parent: None,
+            },
+        );
+        const MNAM_ONLY: u32 = 0x0001_0001;
+        const ICON_ONLY: u32 = 0x0001_0002;
+        let sets = HashMap::from([(
+            MNAM_ONLY,
+            TextureSet { material_path: Some(bgsm.into()), ..TextureSet::default() },
+        )]);
+        let paths = HashMap::from([(ICON_ONLY, r"landscape\dirt01.dds".to_string())]);
+        let mut layers = LandscapeLayerTextures {
+            landscape_textures: &paths,
+            landscape_texture_sets: &sets,
+            mat_provider: Some(&mut provider),
+        };
+        assert_eq!(
+            synth_base_texture_path(&mut layers, Some(MNAM_ONLY)).as_deref(),
+            Some("Landscape/Ground/LCWDefault01Grass_d.dds")
+        );
+        assert_eq!(
+            synth_base_texture_path(&mut layers, Some(ICON_ONLY)).as_deref(),
+            Some(r"landscape\dirt01.dds")
+        );
+        assert_eq!(synth_base_texture_path(&mut layers, Some(0)), None);
+        assert_eq!(synth_base_texture_path(&mut layers, None), None);
     }
 
     /// `sample_to_cell` walks cleanly across cell boundaries and maps the

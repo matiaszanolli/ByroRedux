@@ -454,7 +454,7 @@ pub(super) struct LandscapeLayerTextures<'a> {
 
 impl LandscapeLayerTextures<'_> {
     /// `None` when the LTEX has neither a texture set nor a direct path.
-    fn texture_set(&mut self, ltex: u32) -> Option<TextureSet> {
+    pub(super) fn texture_set(&mut self, ltex: u32) -> Option<TextureSet> {
         let direct = self.landscape_textures.get(&ltex);
         let mut set = match (self.landscape_texture_sets.get(&ltex), direct) {
             (Some(set), _) => set.clone(),

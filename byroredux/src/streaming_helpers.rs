@@ -212,6 +212,7 @@ pub(crate) fn reconcile_lod_rings(
         world,
         ctx,
         &input,
+        Some(&mut state.mat_provider),
         &mut state.lod_blocks,
         &mut state.lod_missing_blocks,
         &mut state.lod_terrain_available,
