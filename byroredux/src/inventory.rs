@@ -504,28 +504,68 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
     }
 }
 
+/// The effects an ingestible starts on its user through the caster runtime: every authored effect of
+/// an item the restoration plan does not cover, or only the scripted ones of an item it does (`planned`).
+/// `None` refuses the whole item (#6229), with the restoration plan's all-or-nothing rule: the caster
+/// runtime evaluates no effect condition, delivers only to self, and plays no poison, addiction or
+/// withdrawal, so a header that is not simple consumption, an effect-local CTDA, a touch/target delivery,
+/// an area, or an effect the runtime does not model makes the item unavailable rather than partial.
+fn caster_effects(
+    index: &EsmIndex,
+    form_id: u32,
+    planned: bool,
+) -> Option<Vec<byroredux_scripting::magic_effects::CastEffect>> {
+    let ItemKind::Aid {
+        authored_effects: Some(authored),
+        simple_consumption_header: true,
+        ..
+    } = &index.items.get(&form_id)?.kind
+    else {
+        return None;
+    };
+    let cast = byroredux_scripting::magic_effects::consumable_cast_effects(index, form_id);
+    let mut effects = Vec::new();
+    for (entry, effect) in authored.iter().zip(cast) {
+        if planned && effect.script == 0 {
+            continue; // the plan applies it
+        }
+        if !effect.is_modelled()
+            || !entry.conditions.is_empty()
+            || entry.delivery.is_some_and(|delivery| delivery != 0)
+            || entry.effect.area != 0
+        {
+            return None;
+        }
+        effects.push(effect);
+    }
+    Some(effects)
+}
+
 /// Rebuild item presentation metadata and the base player's starting loadout
 /// from the resolved plugin index.
 pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
-    let restorations: FxHashMap<_, _> = index
+    let mut restorations: FxHashMap<_, _> = index
         .items
         .keys()
         .filter_map(|&id| {
             byroredux_plugin::consumables::restoration_plan(index, id).map(|effects| (id, effects))
         })
         .collect();
-    let script_effects: FxHashMap<_, _> = index
-        .items
-        .keys()
-        .filter_map(|&id| {
-            let planned = restorations.contains_key(&id);
-            let effects: Vec<_> = byroredux_scripting::magic_effects::consumable_cast_effects(index, id)
-                .into_iter()
-                .filter(|effect| effect.is_modelled() && (!planned || effect.script != 0))
-                .collect();
-            (!effects.is_empty()).then_some((id, effects))
-        })
-        .collect();
+    let mut script_effects: FxHashMap<_, _> = FxHashMap::default();
+    for &id in index.items.keys() {
+        let planned = restorations.contains_key(&id);
+        match caster_effects(index, id, planned) {
+            Some(effects) if !effects.is_empty() => {
+                script_effects.insert(id, effects);
+            }
+            Some(_) => {}
+            // A planned item whose scripted effect is refused is refused whole, never half-drunk.
+            None if planned => {
+                restorations.remove(&id);
+            }
+            None => {}
+        }
+    }
     let entries = index
         .items
         .iter()
@@ -549,6 +589,8 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                     } else {
                         "Restores vital resources immediately".to_owned()
                     }
+                } else if script_effects.contains_key(&form_id) {
+                    "Applies its effects when used".to_owned()
                 } else {
                     "Consumable (effects unavailable)".to_owned()
                 };
@@ -4334,5 +4376,76 @@ mod tests {
             batch.0.iter().any(|change| change.item_form_id == 0x1234 && change.equipped),
             "the canonical batch is what the mid-life gear detection reads"
         );
+    }
+
+    /// One ALCH (form 10) of scripted effects (script 0x500 each), header and per-effect shape varied.
+    fn scripted_potion(simple_header: bool, effects: Vec<byroredux_plugin::esm::records::items::ConsumableEffect>) -> EsmIndex {
+        let mut index = EsmIndex { game: byroredux_plugin::esm::reader::GameKind::Fallout3NV, ..Default::default() };
+        index.items.insert(
+            10,
+            byroredux_plugin::esm::records::ItemRecord {
+                form_id: 10,
+                common: Default::default(),
+                kind: ItemKind::Aid {
+                    magic_effects: Vec::new(),
+                    addiction_chance: 0.0,
+                    immediate_effects: None,
+                    authored_effects: Some(effects),
+                    simple_consumption_header: simple_header,
+                    medicine: false,
+                },
+            },
+        );
+        index
+    }
+
+    fn effect(script: u32) -> byroredux_plugin::esm::records::items::ConsumableEffect {
+        byroredux_plugin::esm::records::items::ConsumableEffect {
+            effect: byroredux_plugin::esm::records::MagicEffectItem {
+                effect_form_id: 20,
+                magnitude: 5.0,
+                script_form_id: script,
+                ..Default::default()
+            },
+            delivery: Some(0),
+            actor_value_cache: None,
+            conditions: Vec::new(),
+            condition_flags: Vec::new(),
+        }
+    }
+
+    /// #6229 — the caster path keeps the restoration plan's all-or-nothing rule: a poison/addiction
+    /// header, an effect-local CTDA, a non-self delivery, or one unmodelled sibling refuses the item.
+    #[test]
+    fn caster_effects_refuse_what_the_runtime_cannot_play_whole() {
+        let ok = scripted_potion(true, vec![effect(0x500), effect(0x501)]);
+        assert_eq!(caster_effects(&ok, 10, false).map(|effects| effects.len()), Some(2));
+
+        let poison = scripted_potion(false, vec![effect(0x500)]);
+        assert!(caster_effects(&poison, 10, false).is_none(), "a non-simple header is refused");
+
+        let mut gated = effect(0x500);
+        gated.conditions.push(Default::default());
+        gated.condition_flags.push(0);
+        assert!(caster_effects(&scripted_potion(true, vec![gated]), 10, false).is_none(), "a CTDA is refused");
+
+        let mut touch = effect(0x500);
+        touch.delivery = Some(1);
+        assert!(caster_effects(&scripted_potion(true, vec![touch]), 10, false).is_none(), "touch is refused");
+
+        let partial = scripted_potion(true, vec![effect(0x500), effect(0)]);
+        assert!(caster_effects(&partial, 10, false).is_none(), "an unmodelled sibling refuses the item");
+        // Planned: the plan applies the non-scripted effect, the caster runs only the script.
+        assert_eq!(caster_effects(&partial, 10, true).map(|effects| effects.len()), Some(1));
+    }
+
+    /// #6229 — an installed catalog lists a refused item as neither consumable nor described as usable.
+    #[test]
+    fn a_refused_caster_item_is_unavailable_in_the_catalog() {
+        let mut world = World::new();
+        install_catalog(&mut world, &scripted_potion(false, vec![effect(0x500)]));
+        let catalog = world.resource::<InventoryCatalog>();
+        assert!(!catalog.script_effects.contains_key(&10) && !catalog.restorations.contains_key(&10));
+        assert_eq!(catalog.entries[&10].details, "Consumable (effects unavailable)");
     }
 }
