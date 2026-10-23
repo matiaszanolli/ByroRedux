@@ -509,11 +509,19 @@ mod tests {
         );
         // The gust advection was already correct: the noise field sampled
         // at `base.xz - windDir·v·t` makes wave crests travel +windDir.
-        // Pin it so a future "fix" cannot invert the pair's agreement.
+        // Pin it so a future "fix" cannot invert the pair's agreement. It
+        // lives in the shared evaluation (#4921), which the blades call.
+        let wind = include_str!("../../shaders/include/groundcover_wind.glsl");
         assert!(
-            blade.contains("base.xz - windDir"),
+            wind.contains("baseXZ - windDir"),
             "gust advection must keep sampling at base - windDir·v·t so \
              crests travel along +windDir (the lean's sense)"
+        );
+        assert!(
+            blade.contains("byroGcWindBendFraction(")
+                && blade.contains("#include \"include/groundcover_wind.glsl\""),
+            "the blades must bend through the shared wind evaluation, not a \
+             private copy the authored-model tier could drift from (#4921)"
         );
     }
 
@@ -939,9 +947,19 @@ mod tests {
             .split_once("void byroGcControlPoints")
             .expect("wind function must end before control-point construction")
             .0;
+        // The harmonic and its weight moved into the shared evaluation (#4921).
+        let shared = include_str!("../../shaders/include/groundcover_wind.glsl");
         for token in [
             "GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER",
             "GROUNDCOVER_WIND_SECONDARY_AMPLITUDE",
+        ] {
+            assert!(shared.contains(token), "wind polish must retain {token}");
+        }
+        assert!(
+            wind.contains("byroGcWindBendFraction("),
+            "byroGcWindBend must evaluate the bend through the shared function"
+        );
+        for token in [
             "GROUNDCOVER_WIND_LATERAL_FRACTION",
             "vec3 lateralDir",
             "float lateralBend",

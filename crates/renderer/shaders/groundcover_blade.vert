@@ -105,6 +105,7 @@ layout(push_constant) uniform GcBladePush {
 
 #include "include/terrain_sample.glsl"
 #include "include/groundcover_density.glsl"
+#include "include/groundcover_wind.glsl"
 #include "include/groundcover_lod.glsl"
 #include "include/groundcover_interaction.glsl"
 
@@ -245,22 +246,10 @@ vec3 byroGcWindBend(
     float timeS
 ) {
     vec2 windDir = pc.wind.xy;
-    float windSpeed = pc.wind.z;
-    vec2 advected = base.xz - windDir
-        * (windSpeed * GROUNDCOVER_WIND_ADVECTION_SCALE * timeS);
-    float flow = byroGcFbm(advected / GROUNDCOVER_WIND_NOISE_UNITS);
     float phase = gcSeedStream(seed, 3u) * GROUNDCOVER_TWO_PI;
-    float gustClock = timeS * GC_GUST_FREQUENCY * GROUNDCOVER_TWO_PI;
-    float primaryWave = sin(gustClock + phase);
-    float secondaryWave = sin(
-        gustClock * GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER
-        + phase * GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER);
-    float gust = 1.0 + pc.wind.w * (
-        primaryWave + GROUNDCOVER_WIND_SECONDARY_AMPLITUDE * secondaryWave);
-    float bendFraction = clamp(windSpeed / GROUNDCOVER_MAX_WIND_SPEED, 0.0, 1.0)
-        * mix(GROUNDCOVER_WIND_FLOW_FLOOR, 1.0, clamp(flow, 0.0, 1.0))
-        * gust * (1.0 - GROUNDCOVER_WIND_STIFFNESS_ATTENUATION * stiffness);
-    bendFraction = clamp(bendFraction, 0.0, 1.0) * GROUNDCOVER_WIND_MAX_BEND;
+    float secondaryWave;
+    float bendFraction = byroGcWindBendFraction(
+        pc.wind, GC_GUST_FREQUENCY, base.xz, phase, stiffness, timeS, secondaryWave);
     // #4729 — the lean follows WindField's declared "blows toward" sense:
     // blades tip along +windDir in engine XZ, the same direction their §8
     // gust waves roll (the advection above already moves +windDir). The

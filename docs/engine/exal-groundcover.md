@@ -1718,16 +1718,25 @@ Phases:
   `DebugStats::groundcover_model_{demanded,emitted}`. A worldspace with more
   than `GROUNDCOVER_MODEL_MAX_RECORDS` (128) placeable records draws the
   first 128 in FormID order and logs the rest.
-- **Rigid, by decision** (#4921). Placed models do not sway: nothing in the
-  tier reads the `WindField` or the §12.4 interaction field, and each
-  instance's previous-frame transform is its current one, so the motion
-  vectors are consistent with a static plant. Authored clumps therefore stand
-  still beside swaying blades and SpeedTree crowns. That is accepted for now:
-  the tier's content is mostly rocks, decals, and cards whose authored mesh
-  has no bend weights to drive. If sway is wanted, the way to do it is the
-  §8 bend applied per instance in EMIT, with the previous frame's wind
-  written into `gcPreviousModels` so the motion vectors stay honest
-  (the #4729 lean-sense contract applies unchanged).
+- **Foliage leans in the wind; rocks stay rigid** (#4921). A placed plant is
+  one rigid instance, so wind tilts it as a whole: EMIT rotates it about its
+  root, downwind, by the §8 bend the blades use. Both evaluate the one
+  `byroGcWindBendFraction` (`include/groundcover_wind.glsl`), so a fern and the
+  blades around it follow the same gust front, and the lean takes the #4729
+  "blows toward" sense. The lateral term is the blades' (a third of the
+  downwind bend, on the harmonic). There is no rest lean and no stiffness, so
+  calm air returns the identity and a game without wind renders as the rigid
+  tier did. `gcPreviousModels` carries the lean at the previous wind-clock
+  sample, so the motion vectors describe the sway.
+  Which records lean is decided by their own geometry, not their names: the
+  host sets `GROUNDCOVER_MODEL_RECORD_FLAG_SWAYS` on a record that draws an
+  alpha-tested, non-decal shape (`is_foliage_shape` in
+  `byroredux/src/render/groundcover.rs`) — every card, frond and clump is
+  cutout, a rock is opaque, and a flat ground decal has no height to lean.
+  Nothing below the water plane leans. This is a whole-plant tilt, not a
+  bend: a model has no per-vertex weights to drive, and the lean is bounded by
+  the same `GROUNDCOVER_WIND_MAX_BEND`. It does not read the §12.4 interaction
+  field, so a walker still does not push a fern aside.
 
 **Sourced values and interpretations (§12.12 register).**
 

@@ -676,9 +676,14 @@ pub const GROUNDCOVER_MODEL_PHASE_EMIT: u32 = 2;
 /// the pick's lane-weighted union (`GcLocalPick.accept`) is that same value, so
 /// the placement field must not multiply the affinity in a second time (#6027).
 pub const GROUNDCOVER_MODEL_FLAG_AFFINITY_IN_PICK: u32 = 1;
-/// Record flag bits: scale all three axes / tilt onto the terrain normal.
+/// Record flag bits: scale all three axes / tilt onto the terrain normal /
+/// lean in the wind. The last is set by the host from the record's own
+/// geometry — it draws an alpha-tested, non-decal shape, which is how every
+/// card, frond and blade clump is authored and no rock or boulder is — never
+/// from the model's name (#4921).
 pub const GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING: u32 = 1;
 pub const GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE: u32 = 2;
+pub const GROUNDCOVER_MODEL_RECORD_FLAG_SWAYS: u32 = 4;
 /// Shape flag bit: the shape's own local transform scales non-uniformly.
 pub const GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM: u32 = 1;
 /// Low bits of `GcModelPoint.meta.x` that hold the record index; the candidate
@@ -2582,6 +2587,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint GROUNDCOVER_MODEL_FLAG_AFFINITY_IN_PICK),
     shader_define!(Uint GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING),
     shader_define!(Uint GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE),
+    shader_define!(Uint GROUNDCOVER_MODEL_RECORD_FLAG_SWAYS),
     shader_define!(Uint GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM),
     shader_define!(Uint GROUNDCOVER_MODEL_RECORD_BITS),
     shader_define!(Uint GROUNDCOVER_WATER_RULE_ABOVE_AT_LEAST),

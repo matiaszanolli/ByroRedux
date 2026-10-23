@@ -138,9 +138,16 @@ struct ModelPush {
     grid_spacing: f32,
     /// `GROUNDCOVER_MODEL_FLAG_*` bits.
     flags: u32,
+    /// `WindField` as the blade pass pushes it: xy = unit direction, z =
+    /// speed, w = gust amplitude. The foliage lean (#4921) reads it.
+    wind: [f32; 4],
+    /// x = gust frequency, y = the shared wind-clock sample, z = the
+    /// preceding sample.
+    gust_timing: [f32; 4],
 }
-// SAFETY: `#[repr(C)]` over 4-byte scalars, 64 bytes, no padding word
-// (`flags` is the last scalar) initialised by every constructor; `host_mirrors_match_
+// SAFETY: `#[repr(C)]` over 4-byte scalars and two `[f32; 4]` (the vec4s sit at
+// the 16-byte offset 64 the push block's std430 layout puts them at), 96 bytes,
+// no padding word (`gust_timing` is the last field) initialised by every constructor; `host_mirrors_match_
 // the_shader_strides` pins the size. Adding a field that breaks the tiling
 // now fails the `NoUninit` gate here instead of pushing uninitialised bytes
 // into `vkCmdPushConstants` (#5122).
@@ -783,6 +790,13 @@ impl GroundCoverModelTier {
             tail_capacity: tail_capacity.min(GROUNDCOVER_MODEL_MAX_INSTANCES),
             grid_spacing: self.frame_grid_spacing,
             flags: self.frame_flags,
+            wind: scatter.wind,
+            gust_timing: [
+                scatter.gust_timing[0],
+                scatter.gust_timing[1],
+                scatter.gust_timing[2],
+                0.0,
+            ],
         };
         if let Some(timers) = timers.as_deref_mut() {
             timers.cmd_groundcover_models_start(device, cmd, frame);
@@ -935,6 +949,11 @@ pub struct ModelScatterInputs {
     pub camera_pos: [f32; 3],
     pub render_origin: [f32; 3],
     pub tlas: Option<vk::AccelerationStructureKHR>,
+    /// The blade pass's wind for this frame (`[dir.x, dir.y, speed, gust
+    /// amplitude]`), so a placed fern leans with the blades around it (#4921).
+    pub wind: [f32; 4],
+    /// `[gust frequency, wind-clock sample, preceding sample]`.
+    pub gust_timing: [f32; 3],
 }
 
 /// The rasterizer flags a main-pass instance of `draw` would carry that do
@@ -1299,6 +1318,67 @@ mod tests {
         }
     }
 
+    /// #4921 — the model tier's foliage lean. The invariants a GPU-side change
+    /// could quietly break: the lean comes from the blades' own wind evaluation
+    /// (one gust front for fern and blade), follows `WindField`'s "blows toward"
+    /// sense (#4729), is gated to foliage above the water plane, and the
+    /// previous-frame matrix carries the previous wind-clock sample so the motion
+    /// vectors describe the sway instead of a plant standing still.
+    #[test]
+    fn foliage_lean_uses_the_shared_wind_and_keeps_motion_vectors_honest() {
+        let src = include_str!("../../shaders/groundcover_models.comp");
+        assert!(
+            src.contains("byroGcWindBendFraction(")
+                && src.contains("#include \"include/groundcover_wind.glsl\""),
+            "the lean must evaluate the shared §8 bend, not a private copy"
+        );
+        assert!(
+            src.contains("normalize(vec3(windDir.x, 0.0, windDir.y))") && !src.contains("-windDir.y"),
+            "the lean must follow the +windDir sense the blades and trees use (#4729)"
+        );
+        assert!(
+            src.contains("GROUNDCOVER_MODEL_RECORD_FLAG_SWAYS")
+                && src.contains("point.position.y < waterY"),
+            "only flagged foliage above the water plane may lean"
+        );
+        assert!(
+            src.contains("pc.gustTiming.y") && src.contains("pc.gustTiming.z"),
+            "the lean must be sampled at both the current and the previous wind-clock sample"
+        );
+        assert!(
+            src.contains("gcPreviousModels[slot] = placementPrev * shape.local;"),
+            "the previous-frame transform must carry the previous lean"
+        );
+        // A calm sky must be the identity so a game without wind renders exactly
+        // as the rigid tier did.
+        assert!(
+            src.contains("GROUNDCOVER_BLADE_VECTOR_EPSILON) {\n        return mat3(1.0);"),
+            "no wind direction must return the identity lean"
+        );
+    }
+
+    /// #4921 — the push block is the blade pass's wind, field for field, and the
+    /// host maps the previous sample to `GC_PREV_TIME`'s source.
+    #[test]
+    fn model_push_wind_block_mirrors_the_blade_pass() {
+        let shader = include_str!("../../shaders/groundcover_models.comp");
+        assert!(
+            shader.contains("vec4 wind;") && shader.contains("vec4 gustTiming;"),
+            "GcModelPush must end with the wind and gustTiming vec4s"
+        );
+        let frame = include_str!("groundcover/frame.rs");
+        let mapping = frame
+            .split_once("wind: self.frame_push.wind,")
+            .expect("model_scatter_inputs must forward the blade pass's wind")
+            .1;
+        assert!(
+            mapping.contains("self.frame_push.gust_and_timing[0],")
+                && mapping.contains("self.frame_push.origin_time[3],")
+                && mapping.contains("self.frame_push.gust_and_timing[1],"),
+            "gust_timing is [frequency, clock sample, preceding sample], in that order"
+        );
+    }
+
     #[test]
     fn host_mirrors_match_the_shader_strides() {
         assert_eq!(std::mem::size_of::<GpuGroundCoverModelRecord>(), 48);
@@ -1306,7 +1386,7 @@ mod tests {
         // Sizes the placement slab, which `docs/engine/memory-budget.md`
         // ledgers — a change here is a budget change.
         assert_eq!(std::mem::size_of::<GpuGroundCoverModelPoint>(), 32);
-        assert_eq!(std::mem::size_of::<ModelPush>(), 64);
+        assert_eq!(std::mem::size_of::<ModelPush>(), 96);
     }
 
     /// #6027 — the model tier's placement field applies the authored density

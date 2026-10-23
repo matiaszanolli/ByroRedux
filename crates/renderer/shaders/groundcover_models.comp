@@ -37,6 +37,17 @@
 //   C EMIT    one workgroup per chunk. Write every accepted point's instance
 //             for each of its record's shapes at the slot phase B assigned.
 //
+// ## Wind (#4921)
+//
+// A placed plant is one rigid instance, so wind leans it as a whole: EMIT
+// rotates the plant about its root, downwind, by the §8 bend the blades use
+// (`byroGcWindBendFraction` — one evaluation, so a fern and the blades around
+// it follow the same gust front). The previous frame's lean, from the previous
+// wind-clock sample, goes into `gcPreviousModels`, so the motion vectors
+// describe the sway rather than a plant standing still. Only records the host
+// flags `GROUNDCOVER_MODEL_RECORD_FLAG_SWAYS` (alpha-tested foliage; rocks are
+// rigid) lean, and nothing leans below the water plane.
+//
 // ## The density field, without moisture
 //
 // §3's field is the product of five factors. Its moisture term is zero below
@@ -193,10 +204,17 @@ layout(push_constant) uniform GcModelPush {
     float gridSpacing;
     /// GROUNDCOVER_MODEL_FLAG_* bits.
     uint flags;
+    /// `WindField`, packed as the blade pass pushes it: xy = unit direction
+    /// the wind blows toward, z = speed, w = gust amplitude.
+    vec4 wind;
+    /// x = gust frequency, y = the shared wind-clock sample, z = the
+    /// preceding sample (the blades' `GC_PREV_TIME`).
+    vec4 gustTiming;
 } pc;
 
 #include "include/terrain_sample.glsl"
 #include "include/groundcover_density.glsl"
+#include "include/groundcover_wind.glsl"
 #define renderOrigin pc.renderOriginEnable
 #include "include/ray_origin.glsl"
 
@@ -564,19 +582,54 @@ void layoutShapes(uint lane) {
     }
 }
 
-/// Rotation taking +Y onto `n` (Rodrigues), for "fit to slope".
+/// Rotation by the angle whose cosine and sine are `c` and `s` about the unit
+/// `axis` (Rodrigues).
+mat3 gcRodrigues(vec3 axis, float c, float s) {
+    float t = 1.0 - c;
+    return mat3(
+        t * axis.x * axis.x + c,          t * axis.x * axis.y + s * axis.z, t * axis.x * axis.z - s * axis.y,
+        t * axis.x * axis.y - s * axis.z, t * axis.y * axis.y + c,          t * axis.y * axis.z + s * axis.x,
+        t * axis.x * axis.z + s * axis.y, t * axis.y * axis.z - s * axis.x, t * axis.z * axis.z + c);
+}
+
+/// Rotation taking +Y onto `n`, for "fit to slope".
 mat3 gcAlignUp(vec3 n) {
     float c = n.y;
     if (c > 0.9999) {
         return mat3(1.0);
     }
     vec3 axis = normalize(vec3(n.z, 0.0, -n.x)); // cross(+Y, n)
-    float s = sqrt(max(1.0 - c * c, 0.0));
-    float t = 1.0 - c;
-    return mat3(
-        t * axis.x * axis.x + c,          t * axis.x * axis.y + s * axis.z, t * axis.x * axis.z - s * axis.y,
-        t * axis.x * axis.y - s * axis.z, t * axis.y * axis.y + c,          t * axis.y * axis.z + s * axis.x,
-        t * axis.x * axis.z + s * axis.y, t * axis.y * axis.z - s * axis.x, t * axis.z * axis.z + c);
+    return gcRodrigues(axis, c, sqrt(max(1.0 - c * c, 0.0)));
+}
+
+/// #4921 — the wind's lean of the plant rooted at `root`, as a rotation about
+/// the root taking +Y toward the downwind lean, at wind-clock sample `timeS`.
+///
+/// The bend fraction is the blades' own: tip displacement over height, so the
+/// tilt's tangent. The lateral term is the blades' too (a third of the
+/// downwind bend, riding the harmonic), which keeps a gust from only ever
+/// pushing one way. No rest lean and no stiffness: a calm sky returns the
+/// identity, so a game with no wind renders exactly as the rigid tier did, and
+/// a card clump has no authored stiffness to ask for.
+mat3 gcWindLean(vec3 root, uint h, float timeS) {
+    vec2 windDir = pc.wind.xy;
+    if (dot(windDir, windDir) <= GROUNDCOVER_BLADE_VECTOR_EPSILON) {
+        return mat3(1.0);
+    }
+    float phase = gcUnit(gcModelHash(h, 7u)) * GROUNDCOVER_TWO_PI;
+    float secondaryWave;
+    float bend = byroGcWindBendFraction(
+        pc.wind, pc.gustTiming.x, root.xz, phase, 0.0, timeS, secondaryWave);
+    vec3 leanDir = normalize(vec3(windDir.x, 0.0, windDir.y));
+    vec3 lateralDir = vec3(-leanDir.z, 0.0, leanDir.x);
+    vec3 tilt = leanDir * bend
+        + lateralDir * (bend * GROUNDCOVER_WIND_LATERAL_FRACTION * secondaryWave);
+    float tangent = length(tilt);
+    if (tangent <= GROUNDCOVER_BLADE_VECTOR_EPSILON) {
+        return mat3(1.0);
+    }
+    float c = inversesqrt(1.0 + tangent * tangent);
+    return gcRodrigues(vec3(tilt.z, 0.0, -tilt.x) / tangent, c, tangent * c);
 }
 
 void emit(uint chunkIdx, uint lane) {
@@ -603,13 +656,22 @@ void emit(uint chunkIdx, uint lane) {
             rot = gcAlignUp(normalize(n)) * rot;
         }
         mat3 basis = mat3(rot[0] * scale3.x, rot[1] * scale3.y, rot[2] * scale3.z);
+        // #4921 — foliage leans in the wind, about its root, outside the
+        // plant's own yaw / slope / scale. Plants under the water plane feel no
+        // atmospheric wind.
+        float waterY = gcCells[chunk.cellIndex].waterY;
+        bool submerged = waterY > GROUNDCOVER_NO_WATER && point.position.y < waterY;
+        bool sways = (rec.flags & GROUNDCOVER_MODEL_RECORD_FLAG_SWAYS) != 0u && !submerged;
+        // Rebased like every rigid instance: `viewProj` is render-origin
+        // relative (#markarth-precision).
+        vec3 rebased = point.position.xyz - pc.renderOriginEnable.xyz;
+        mat3 leaned = sways ? gcWindLean(point.position.xyz, h, pc.gustTiming.y) * basis : basis;
+        mat3 leanedPrev = sways ? gcWindLean(point.position.xyz, h, pc.gustTiming.z) * basis : basis;
         mat4 placement = mat4(
-            vec4(basis[0], 0.0),
-            vec4(basis[1], 0.0),
-            vec4(basis[2], 0.0),
-            // Rebased like every rigid instance: `viewProj` is render-origin
-            // relative (#markarth-precision).
-            vec4(point.position.xyz - pc.renderOriginEnable.xyz, 1.0));
+            vec4(leaned[0], 0.0), vec4(leaned[1], 0.0), vec4(leaned[2], 0.0), vec4(rebased, 1.0));
+        mat4 placementPrev = mat4(
+            vec4(leanedPrev[0], 0.0), vec4(leanedPrev[1], 0.0), vec4(leanedPrev[2], 0.0),
+            vec4(rebased, 1.0));
 
         for (uint k = 0u; k < rec.shapeCount; ++k) {
             uint s = rec.shapeFirst + k;
@@ -651,8 +713,9 @@ void emit(uint chunkIdx, uint lane) {
             inst._reserved2b = 0u;
             inst._reserved2c = 0u;
             gcInstances[slot] = inst;
-            // Placed plants do not move: the previous transform is this one.
-            gcPreviousModels[slot] = model;
+            // The previous frame's lean (identical to this one when the plant
+            // does not sway), so the motion vectors carry the sway.
+            gcPreviousModels[slot] = placementPrev * shape.local;
         }
     }
 }

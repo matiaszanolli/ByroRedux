@@ -1028,6 +1028,10 @@ pub(crate) struct GroundCoverModelRecordsKey {
     /// model failing to load) must re-derive the table, not just a new
     /// cover generation.
     placeable: u128,
+    /// #4921 — which records draw foliage (and so lean in the wind), one exact
+    /// bit per record like `placeable`. Derived from the same draws, so it
+    /// moves with them; keyed on its own so the flags can never go stale.
+    foliage: u128,
 }
 
 // #5175 — the placeable key holds one bit per record the model tier can draw.
@@ -1041,6 +1045,27 @@ fn placeable_record_bits(records: impl IntoIterator<Item = u32>, count: usize) -
         .into_iter()
         .filter(|&record| (record as usize) < count)
         .fold(0, |bits, record| bits | 1u128 << record)
+}
+
+/// #4921 — whether a template shape is foliage: alpha-tested, and not a decal.
+///
+/// Cutout is how every card, frond and clump of grass is authored; a rock, a
+/// boulder or a log is opaque. The flag comes from the shape's own render state
+/// rather than the model's name, so a mod's plant is classified like a vanilla
+/// one. A flat decal (a leaf litter patch, laid on the ground) is cutout too but
+/// has no height to lean: tilting it about its root would lift one edge off the
+/// ground, so it stays put.
+fn is_foliage_shape(alpha_threshold: f32, is_decal: bool) -> bool {
+    alpha_threshold > 0.0 && !is_decal
+}
+
+/// #4921 — bit `r` set when any template shape of record `r` (< `count`) is
+/// foliage. Same shape as [`placeable_record_bits`]: exact, allocation-free.
+fn foliage_record_bits(shapes: impl IntoIterator<Item = (u32, bool)>, count: usize) -> u128 {
+    shapes
+        .into_iter()
+        .filter(|&(record, foliage)| foliage && (record as usize) < count)
+        .fold(0, |bits, (record, _)| bits | 1u128 << record)
 }
 
 /// #4413 — the authored-model tier's records and record-selection table for
@@ -1069,7 +1094,8 @@ pub(crate) fn collect_groundcover_model_records(
 ) -> Option<f32> {
     use byroredux_core::ecs::components::groundcover::AuthoredCover;
     use byroredux_renderer::shader_constants::{
-        GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE, GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING,
+        GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE, GROUNDCOVER_MODEL_RECORD_FLAG_SWAYS,
+        GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING,
     };
     use byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord;
     let Some(cover) = world.try_resource::<AuthoredCover>() else {
@@ -1096,10 +1122,17 @@ pub(crate) fn collect_groundcover_model_records(
         byroredux_renderer::shader_constants::GROUNDCOVER_MODEL_MAX_RECORDS as usize,
     );
     let placeable = placeable_record_bits(draws.iter().map(|(record, _)| *record), count_ahead);
+    let foliage = foliage_record_bits(
+        draws
+            .iter()
+            .map(|(record, draw)| (*record, is_foliage_shape(draw.alpha_threshold, draw.is_decal))),
+        count_ahead,
+    );
     let current = GroundCoverModelRecordsKey {
         generation: cover.generation,
         blade_reach_bits: blade_reach.to_bits(),
         placeable,
+        foliage,
     };
     if *key == Some(current) {
         return Some(cover.grid_spacing);
@@ -1117,8 +1150,11 @@ pub(crate) fn collect_groundcover_model_records(
         );
     }
     let used = &cover.records[..count];
-    records.extend(used.iter().map(|record| {
+    records.extend(used.iter().enumerate().map(|(index, record)| {
         let mut flags = 0;
+        if foliage >> index & 1 != 0 {
+            flags |= GROUNDCOVER_MODEL_RECORD_FLAG_SWAYS;
+        }
         if record.uniform_scaling {
             flags |= GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING;
         }
@@ -1299,6 +1335,22 @@ mod tests {
         assign_nearest_first_layout_order(&mut chunks, &mut order);
         let visit: Vec<u32> = chunks.iter().map(|chunk| chunk.layout_order).collect();
         assert_eq!(visit, vec![2, 0, 4, 3, 1]);
+    }
+
+    /// #4921 — the lean flag follows the shape's own render state: a cutout,
+    /// non-decal shape is foliage; an opaque rock and a cutout ground decal are not.
+    #[test]
+    fn foliage_is_alpha_tested_and_not_a_decal() {
+        assert!(is_foliage_shape(0.5, false), "a cutout card sways");
+        assert!(!is_foliage_shape(0.0, false), "an opaque rock stays rigid");
+        assert!(!is_foliage_shape(0.5, true), "a ground decal has no height to lean");
+        // One foliage shape makes the record foliage; other shapes of it do not unmake it.
+        assert_eq!(
+            foliage_record_bits([(2, true), (2, false), (5, false), (7, true)], 6),
+            1 << 2,
+            "record 7 is past the count, record 5 has no foliage shape"
+        );
+        assert_eq!(foliage_record_bits([], 6), 0);
     }
 
     /// #5175 — the records key is exact: records k and k+64 flipping

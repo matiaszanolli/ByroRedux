@@ -668,6 +668,12 @@ impl GroundCoverPipeline {
                 self.frame_push.origin_time[2],
             ],
             tlas,
+            wind: self.frame_push.wind,
+            gust_timing: [
+                self.frame_push.gust_and_timing[0],
+                self.frame_push.origin_time[3],
+                self.frame_push.gust_and_timing[1],
+            ],
         })
     }
 
