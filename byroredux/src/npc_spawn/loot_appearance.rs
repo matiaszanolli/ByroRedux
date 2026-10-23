@@ -604,7 +604,7 @@ fn queue_midlife_imports(
 /// root-less equipped forms imports them one per frame, the same cadence
 /// the runtime event path gives a multi-equip burst.
 pub(crate) fn reconcile_worn_gear(world: &World, wearer: EntityId) {
-    reconcile_worn_gear_excluding(world, wearer, None);
+    reconcile_worn_gear_excluding(world, wearer, &[]);
 }
 
 /// The forms `wearer` is wearing right now: every occupied biped slot
@@ -629,11 +629,16 @@ fn equipped_forms(world: &World, wearer: EntityId) -> Option<Vec<u32>> {
     Some(forms)
 }
 
-/// [`reconcile_worn_gear`] with one form held out of the import half — the
-/// form whose import just failed at the file level. Without the exclusion
-/// the reconcile would re-queue the same dead end every frame; with it, the
-/// forms *behind* the failure still get their turn (#5031).
-fn reconcile_worn_gear_excluding(world: &World, wearer: EntityId, failed_form: Option<u32>) {
+/// [`reconcile_worn_gear`] with the forms whose import already failed held out
+/// of the import half. Without the exclusion the reconcile would re-queue the
+/// same dead end every frame; with it, the forms *behind* the failures still get
+/// their turn (#5031).
+///
+/// `failed_forms` is the wearer's **whole** failed set, not just the latest
+/// failure (#5721): with two failing forms A and B, excluding only the one that
+/// just failed re-queued the other, and the two alternated one attempt per frame
+/// for as long as the wearer held both. [`GearImportLoader`] owns that set.
+fn reconcile_worn_gear_excluding(world: &World, wearer: EntityId, failed_forms: &[u32]) {
     if world.get::<Dead>(wearer).is_some() {
         return;
     }
@@ -700,7 +705,7 @@ fn reconcile_worn_gear_excluding(world: &World, wearer: EntityId, failed_form: O
     let missing: Vec<byroredux_scripting::EquipmentChange> = equipped_forms
         .iter()
         .filter(|form_id| !roots.iter().any(|&(_, form)| form == **form_id))
-        .filter(|form_id| Some(**form_id) != failed_form)
+        .filter(|form_id| !failed_forms.contains(form_id))
         .map(|&form_id| byroredux_scripting::EquipmentChange {
             item_form_id: form_id,
             equipped: true,
@@ -987,9 +992,56 @@ fn player_gear_parent(world: &World, wearer: EntityId) -> Option<EntityId> {
 /// into their cell's release range; the player has no `CellRoot` — their
 /// gear outlives cells exactly like the body it hangs from.
 #[derive(Default)]
-pub(crate) struct GearImportLoader {}
+pub(crate) struct GearImportLoader {
+    /// #5721 — per wearer, the equipped forms whose mid-life import already
+    /// failed (the mesh is missing from every loaded archive, or the NIF did not
+    /// import). The reconcile chain holds all of them out, so a dead end is
+    /// tried once instead of being re-queued behind the next failure. Runtime
+    /// scratch like the queue it guards: never serialised, and rebuilt empty on
+    /// load.
+    failed_forms: std::collections::HashMap<EntityId, Vec<u32>>,
+}
 
 impl GearImportLoader {
+    /// Record that `form_id`'s import just failed on `wearer` and return the
+    /// wearer's whole failed set to hold out of the next reconcile.
+    ///
+    /// The set is pruned to forms still worn before it is returned: an item that
+    /// was unequipped is no longer a dead end that needs holding out, and a
+    /// wearer whose slots cannot be read (despawned, or a bare actor) drops its
+    /// entry entirely. A fresh equip event queues its import directly rather than
+    /// through the reconcile, so a re-equipped item is attempted again even if it
+    /// failed earlier.
+    fn hold_out(&mut self, world: &World, wearer: EntityId, form_id: u32) -> Vec<u32> {
+        let entry = self.failed_forms.entry(wearer).or_default();
+        if !entry.contains(&form_id) {
+            entry.push(form_id);
+        }
+        self.failed_set(world, wearer)
+    }
+
+    /// The wearer's failed set, pruned to the forms still worn (see
+    /// [`Self::hold_out`]). Empty when nothing has failed.
+    fn failed_set(&mut self, world: &World, wearer: EntityId) -> Vec<u32> {
+        match equipped_forms(world, wearer) {
+            Some(worn) => {
+                let Some(entry) = self.failed_forms.get_mut(&wearer) else {
+                    return Vec::new();
+                };
+                entry.retain(|form| worn.contains(form));
+                if entry.is_empty() {
+                    self.failed_forms.remove(&wearer);
+                    return Vec::new();
+                }
+                entry.clone()
+            }
+            None => {
+                self.failed_forms.remove(&wearer);
+                Vec::new()
+            }
+        }
+    }
+
     pub(crate) fn step(
         &mut self,
         world: &mut World,
@@ -1081,7 +1133,8 @@ impl GearImportLoader {
                 "mid-life gear: {:08X} no longer equipped on {wearer}; dropping its import",
                 import.form_id,
             );
-            reconcile_worn_gear(world, wearer);
+            let failed = self.failed_set(world, wearer);
+            reconcile_worn_gear_excluding(world, wearer, &failed);
             return;
         }
         let Some(bones) = world
@@ -1101,7 +1154,8 @@ impl GearImportLoader {
         let Some(bytes) = textures.extract_mesh(&path) else {
             world.remove::<PendingGearImport>(wearer);
             log::warn!("mid-life gear: missing {path}; item {wearer} wears no mesh for it");
-            reconcile_worn_gear_excluding(world, wearer, Some(import.form_id));
+            let failed = self.hold_out(world, wearer, import.form_id);
+            reconcile_worn_gear_excluding(world, wearer, &failed);
             return;
         };
         let first = world.next_entity_id();
@@ -1143,7 +1197,8 @@ impl GearImportLoader {
             // Chained with the failed form excluded (#5031): a plain re-run
             // would re-queue this same dead end every frame, but the forms
             // behind it must not stall on it.
-            reconcile_worn_gear_excluding(world, wearer, Some(import.form_id));
+            let failed = self.hold_out(world, wearer, import.form_id);
+            reconcile_worn_gear_excluding(world, wearer, &failed);
             return;
         };
 
@@ -1217,8 +1272,11 @@ impl GearImportLoader {
         // root, but the pending slot takes one import at a time. Re-running
         // the reconcile now (root exists, slots unchanged) queues the next
         // root-less form for the following frame — the same one-per-frame
-        // cadence a multi-equip burst gets from the runtime event path.
-        reconcile_worn_gear(world, wearer);
+        // cadence a multi-equip burst gets from the runtime event path. The
+        // failed set still applies (#5721): without it each success re-queued
+        // every earlier dead end for one more attempt.
+        let failed = self.failed_set(world, wearer);
+        reconcile_worn_gear_excluding(world, wearer, &failed);
     }
 }
 
@@ -1964,13 +2022,70 @@ mod tests {
 
         let (world, wearer) = wearer_with_slots(&[0xAAA, 0xBBB]);
 
-        reconcile_worn_gear_excluding(&world, wearer, Some(0xAAA));
+        reconcile_worn_gear_excluding(&world, wearer, &[0xAAA]);
         assert_eq!(world.get::<PendingGearImport>(wearer).unwrap().form_id, 0xBBB);
 
         // With only the failed form left, nothing queues.
         let (world, wearer) = wearer_with_slots(&[0xAAA]);
-        reconcile_worn_gear_excluding(&world, wearer, Some(0xAAA));
+        reconcile_worn_gear_excluding(&world, wearer, &[0xAAA]);
         assert!(world.get::<PendingGearImport>(wearer).is_none());
+    }
+
+    /// #5721 — two forms that both fail must not ping-pong. Excluding only the
+    /// latest failure re-queued the earlier one, so A, B, A, B… ran one attempt
+    /// per frame for as long as the wearer held both. Drives the loader's own
+    /// bookkeeping through the same sequence `step_imports` runs: fail, chain,
+    /// fail, chain — and asserts the queue empties.
+    #[test]
+    fn two_failing_forms_empty_the_queue_instead_of_alternating() {
+        use super::super::PendingGearImport;
+
+        let (mut world, wearer) = wearer_with_slots(&[0xAAA, 0xBBB]);
+        let mut loader = GearImportLoader::default();
+
+        // The reconcile queues the first root-less form.
+        reconcile_worn_gear(&world, wearer);
+        assert_eq!(world.get::<PendingGearImport>(wearer).unwrap().form_id, 0xAAA);
+
+        // A fails: the request is removed and the chain holds A out → B queues.
+        world.remove::<PendingGearImport>(wearer);
+        let failed = loader.hold_out(&world, wearer, 0xAAA);
+        reconcile_worn_gear_excluding(&world, wearer, &failed);
+        assert_eq!(world.get::<PendingGearImport>(wearer).unwrap().form_id, 0xBBB);
+
+        // B fails: the chain must hold out BOTH, so nothing re-queues.
+        world.remove::<PendingGearImport>(wearer);
+        let failed = loader.hold_out(&world, wearer, 0xBBB);
+        assert_eq!(failed, vec![0xAAA, 0xBBB]);
+        reconcile_worn_gear_excluding(&world, wearer, &failed);
+        assert!(
+            world.get::<PendingGearImport>(wearer).is_none(),
+            "the earlier failure re-entered the queue: the cycle has no terminus"
+        );
+
+        // Later chains (a success elsewhere, an unequip re-check) keep honouring it.
+        let again = loader.failed_set(&world, wearer);
+        reconcile_worn_gear_excluding(&world, wearer, &again);
+        assert!(world.get::<PendingGearImport>(wearer).is_none());
+    }
+
+    /// #5721 — the failed set follows the slots: an unequipped form leaves it
+    /// (it is no longer a dead end to hold out), and a wearer whose slots cannot
+    /// be read drops the entry rather than leaking it.
+    #[test]
+    fn the_failed_set_is_pruned_to_forms_still_worn() {
+        let (mut world, wearer) = wearer_with_slots(&[0xAAA, 0xBBB]);
+        let mut loader = GearImportLoader::default();
+        loader.hold_out(&world, wearer, 0xAAA);
+        assert_eq!(loader.hold_out(&world, wearer, 0xBBB), vec![0xAAA, 0xBBB]);
+
+        // Slot 1 holds the first form (as in `equipped_forms_reads_live_slots…`).
+        world.get_mut::<EquipmentSlots>(wearer).unwrap().unequip(1);
+        assert_eq!(loader.failed_set(&world, wearer), vec![0xBBB]);
+
+        let bare = world.spawn();
+        assert!(loader.hold_out(&world, bare, 0xCCC).is_empty());
+        assert!(!loader.failed_forms.contains_key(&bare), "an unreadable wearer keeps no entry");
     }
 
     /// #5031 — the loader's mid-drain re-check reads the live slots:
