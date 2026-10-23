@@ -23,6 +23,9 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 ![Prospector Saloon exterior with procedural clouds (Fallout: New Vegas)](docs/screenshots/prospector-saloon-exterior.png)
 *Outside Prospector Saloon in Goodsprings, Fallout: New Vegas — procedural clouds fill the sky.*
 
+![Cyrodiil wilderness with ruins under a maple canopy (Oblivion)](docs/screenshots/oblivion-cyrodiil-ruins.png)
+*Cyrodiil wilderness from `Oblivion.esm` — SpeedTree foliage, ground-cover grass and weathered ruins in the distance.*
+
 ## At a glance
 
 | | |
