@@ -25,7 +25,6 @@ use crate::condition::{evaluate, resolve_entity_by_global_form_id, ConditionCont
 use crate::quest_stages::QuestFormId;
 use crate::scene::{
     append_scene_completions, drain, snapshot, SceneActorBindings, SceneEvent, SceneEventBatch,
-    ScenePlayer,
 };
 
 const MOVE_SPEED_UNITS_PER_SECOND: f32 = 140.0;
@@ -667,15 +666,7 @@ pub fn scene_package_system(world: &World, dt: f32) {
     drain::<EvaluatePackageRequest>(world);
     let scene_events = snapshot::<SceneEventBatch>(world);
     let mut playbacks = snapshot::<ScenePackagePlayback>(world);
-    let scene_form_ids: HashMap<EntityId, u32> = world
-        .query::<ScenePlayer>()
-        .map(|query| {
-            query
-                .iter()
-                .map(|(entity, player)| (entity, player.scene_form_id))
-                .collect()
-        })
-        .unwrap_or_default();
+    let scene_form_ids = crate::scene::scene_form_ids(world);
     let packages = world
         .try_resource::<PackageRegistry>()
         .map(|registry| registry.packages.clone())
@@ -859,7 +850,7 @@ pub fn scene_package_system(world: &World, dt: f32) {
 mod tests {
     use crate::papyrus_demo::PapyrusPlayerEntity;
     use super::*;
-    use crate::scene::SceneActionCompletionBatch;
+    use crate::scene::{SceneActionCompletionBatch, ScenePlayer};
     use byroredux_core::math::Vec3;
     use byroredux_plugin::esm::records::{
         PackDataTarget, PackLocation, ScenRecord, SceneAction, SceneActionType, ScenePhase,

@@ -22,7 +22,6 @@ use crate::condition::{evaluate, ConditionContext};
 use crate::quest_stages::{QuestFormId, QuestStageState};
 use crate::scene::{
     append_scene_completions, drain, snapshot, SceneAliasCandidate, SceneEvent, SceneEventBatch,
-    ScenePlayer,
 };
 
 /// #5271 — authored quest priorities (QUST `priority`), for ordering a
@@ -584,15 +583,7 @@ pub fn scene_dialogue_system(world: &World, dt: f32) {
     drain::<DialogueLineCompletionBatch>(world);
     let scene_events = snapshot::<SceneEventBatch>(world);
     let mut playbacks = snapshot::<DialoguePlayback>(world);
-    let scene_form_ids: HashMap<EntityId, u32> = world
-        .query::<ScenePlayer>()
-        .map(|query| {
-            query
-                .iter()
-                .map(|(entity, player)| (entity, player.scene_form_id))
-                .collect()
-        })
-        .unwrap_or_default();
+    let scene_form_ids = crate::scene::scene_form_ids(world);
     let topics = world
         .try_resource::<DialogueRegistry>()
         .map(|registry| registry.topics.clone())
@@ -787,7 +778,7 @@ impl Resource for DialogueSurfaceState {}
 mod tests {
     use crate::papyrus_demo::PapyrusPlayerEntity;
     use super::*;
-    use crate::scene::SceneActionCompletionBatch;
+    use crate::scene::{SceneActionCompletionBatch, ScenePlayer};
     use byroredux_plugin::esm::records::{ScenRecord, SceneAction, ScenePhase};
 
     const SCENE: u32 = 0x100;
