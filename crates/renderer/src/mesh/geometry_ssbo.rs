@@ -681,17 +681,7 @@ impl MeshRegistry {
                 GeometryRebuildStep::CopyVertices { start, end } => {
                     let dst_offset = (start * std::mem::size_of::<Vertex>()) as vk::DeviceSize;
                     let slice = &self.pending_vertices[start..end];
-                    // SAFETY: `Vertex` is `Copy` / no padding concerns
-                    // relevant to a byte-wise copy (mirrors
-                    // `create_device_local_buffer`'s identical cast);
-                    // `slice` is a valid, live sub-slice of
-                    // `self.pending_vertices` for the duration of this call.
-                    let bytes: &[u8] = unsafe {
-                        std::slice::from_raw_parts(
-                            slice.as_ptr() as *const u8,
-                            std::mem::size_of_val(slice),
-                        )
-                    };
+                    let bytes = crate::vulkan::buffer::byte_view(slice);
                     job.new_vertex_buffer.copy_bytes_range(
                         GpuUploadCtx {
                             device,
@@ -713,15 +703,7 @@ impl MeshRegistry {
                 GeometryRebuildStep::CopyIndices { start, end } => {
                     let dst_offset = (start * std::mem::size_of::<u32>()) as vk::DeviceSize;
                     let slice = &self.pending_indices[start..end];
-                    // SAFETY: `u32` is `Copy` with no padding; `slice` is a
-                    // valid, live sub-slice of `self.pending_indices` for
-                    // the duration of this call.
-                    let bytes: &[u8] = unsafe {
-                        std::slice::from_raw_parts(
-                            slice.as_ptr() as *const u8,
-                            std::mem::size_of_val(slice),
-                        )
-                    };
+                    let bytes = crate::vulkan::buffer::byte_view(slice);
                     job.new_index_buffer.copy_bytes_range(
                         GpuUploadCtx {
                             device,

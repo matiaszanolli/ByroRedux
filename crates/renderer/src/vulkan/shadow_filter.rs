@@ -52,6 +52,11 @@ struct Push {
     flags: u32,
 }
 
+// SAFETY: `#[repr(C)]`, all-`u32` fields tiling the 16-byte block with no
+// padding. Mirrors the GLSL `Push` block in `shadow_filter.comp`, which
+// `name_diverging_glsl_rust_mirrors_stay_in_lockstep` compares field for field.
+unsafe impl super::buffer::NoUninit for Push {}
+
 struct FrameImages {
     ratio_a: GpuImage,
     ratio_b: GpuImage,
@@ -374,10 +379,7 @@ impl ShadowFilterPipeline {
                     self.pipeline_layout,
                     vk::ShaderStageFlags::COMPUTE,
                     0,
-                    std::slice::from_raw_parts(
-                        (&push as *const Push).cast::<u8>(),
-                        std::mem::size_of::<Push>(),
-                    ),
+                    super::buffer::byte_view(std::slice::from_ref(&push)),
                 );
                 device.cmd_dispatch(cmd, groups[0], groups[1], 1);
                 let written = if last {

@@ -256,14 +256,7 @@ impl MorphSlot {
             return Ok(());
         }
         let weights = &self.pending_weights;
-        // SAFETY: `weights` is a live contiguous f32 slice, and the byte view
-        // is used only for this copy without outliving the slice.
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                weights.as_ptr() as *const u8,
-                std::mem::size_of_val(weights),
-            )
-        };
+        let bytes = super::buffer::byte_view(weights);
         self.weight_buffer.mapped_slice_mut()?[..bytes.len()].copy_from_slice(bytes);
         self.weight_buffer.flush_if_needed(device)?;
         self.pending_weights_dirty = false;

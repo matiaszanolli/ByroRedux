@@ -206,6 +206,9 @@ pub struct WaterPush {
     pub _reserved: [u32; 3],
 }
 
+// SAFETY: `#[repr(C)]`, `u32` + `[u32; 3]`, no padding.
+unsafe impl super::buffer::NoUninit for WaterPush {}
+
 // 16 B is the range `WaterPipeline::new` declares and `record_draw` pushes;
 // it upper-bounds the shaders' 4-byte selector block rather than mirroring
 // it (`push_constant_block_tests` pins the compiled block against this).
@@ -784,11 +787,7 @@ impl WaterPipeline {
             water_index,
             _reserved: [0; 3],
         };
-        // SAFETY: WaterPush is #[repr(C)] + Copy and contains only u32 values.
-        let bytes = std::slice::from_raw_parts(
-            (&push as *const WaterPush) as *const u8,
-            std::mem::size_of::<WaterPush>(),
-        );
+        let bytes = super::buffer::byte_view(std::slice::from_ref(&push));
         device.cmd_push_constants(
             cmd,
             self.pipeline_layout,

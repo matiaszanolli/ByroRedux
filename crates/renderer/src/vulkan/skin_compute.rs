@@ -77,6 +77,11 @@ pub struct SkinPushConstants {
     pub morph_target_count: u32,
 }
 
+// SAFETY: `#[repr(C)]` with six fields (u64, u64, u32, u32, u32, u32), 32 bytes,
+// no interior padding (#3231). Mirrors `PushConstants` in `skin_vertices.comp`
+// (compared by `name_diverging_glsl_rust_mirrors_stay_in_lockstep`).
+unsafe impl super::buffer::NoUninit for SkinPushConstants {}
+
 const PUSH_CONSTANTS_SIZE: u32 = std::mem::size_of::<SkinPushConstants>() as u32;
 
 /// Per-skinned-mesh output buffer + descriptor sets. Allocated lazily
@@ -790,16 +795,10 @@ impl SkinComputePipeline {
             &[descriptor_set],
             &[],
         );
-        // SAFETY: `SkinPushConstants` is `repr(C)` with six fields
-        // (u64, u64, u32, u32, u32, u32), 32 bytes, no interior padding
-        // (#3231). The slice is contiguous + aligned
-        // (`size_of::<SkinPushConstants>()` matches the shader-side
+        // `size_of::<SkinPushConstants>()` matches the shader-side
         // `PushConstants` block byte-for-byte; mismatched shape is caught
-        // by the `push_constants_size_is_32_bytes` test).
-        let bytes = std::slice::from_raw_parts(
-            (&push as *const SkinPushConstants) as *const u8,
-            PUSH_CONSTANTS_SIZE as usize,
-        );
+        // by the `push_constants_size_is_32_bytes` test.
+        let bytes = super::buffer::byte_view(std::slice::from_ref(&push));
         device.cmd_push_constants(
             cmd,
             self.pipeline_layout,
@@ -864,6 +863,10 @@ pub struct SkinPalettePushConstants {
     /// One past the last palette slot this dispatch writes.
     pub bone_end: u32,
 }
+
+// SAFETY: `#[repr(C)]` with two `u32` fields, 8 bytes, no padding. Mirrors
+// `PushConstants` in `skin_palette.comp`.
+unsafe impl super::buffer::NoUninit for SkinPalettePushConstants {}
 
 impl SkinPalettePushConstants {
     fn workgroups(self) -> u32 {
@@ -1256,13 +1259,9 @@ impl SkinPaletteComputePipeline {
             &[],
         );
         for push in ranges {
-            // SAFETY: `SkinPalettePushConstants` is `repr(C)` with two u32
-            // fields, 8 bytes, no interior padding. Push-constant size pinned
-            // by `skin_palette_push_constants_size_is_8_bytes`.
-            let bytes = std::slice::from_raw_parts(
-                (push as *const SkinPalettePushConstants) as *const u8,
-                SKIN_PALETTE_PUSH_CONSTANTS_SIZE as usize,
-            );
+            // Push-constant size pinned by
+            // `skin_palette_push_constants_size_is_8_bytes`.
+            let bytes = super::buffer::byte_view(std::slice::from_ref(push));
             device.cmd_push_constants(
                 cmd,
                 self.pipeline_layout,

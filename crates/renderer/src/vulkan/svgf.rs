@@ -117,6 +117,11 @@ struct AtrousPush {
     dbg_flags: u32,
 }
 
+// SAFETY: `#[repr(C)]`, `[u32; 2]` + 2×`u32`, no padding. Mirrors the GLSL
+// `Push` block in `svgf_atrous.comp` (compared by
+// `name_diverging_glsl_rust_mirrors_stay_in_lockstep`).
+unsafe impl super::buffer::NoUninit for AtrousPush {}
+
 /// Accumulated indirect light format. R11G11B10F saves 50% vs RGBA16F
 /// (4B vs 8B/pixel). Alpha is always 1.0 and never read. Storage image
 /// support for R11G11B10 is required on all desktop GPUs since 2014
@@ -1183,15 +1188,9 @@ impl SvgfPipeline {
                 step: 1u32 << k,
                 dbg_flags,
             };
-            // SAFETY: AtrousPush is #[repr(C)], all-u32, no padding — a
-            // valid byte view for the COMPUTE push-constant range declared
-            // in the à-trous pipeline layout.
-            let push_bytes = unsafe {
-                std::slice::from_raw_parts(
-                    &push as *const AtrousPush as *const u8,
-                    std::mem::size_of::<AtrousPush>(),
-                )
-            };
+            // The byte view of the COMPUTE push-constant range declared in the
+            // à-trous pipeline layout.
+            let push_bytes = super::buffer::byte_view(std::slice::from_ref(&push));
             device.cmd_push_constants(
                 cmd,
                 self.atrous_pipeline_layout,

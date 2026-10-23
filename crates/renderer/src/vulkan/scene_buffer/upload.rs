@@ -741,17 +741,11 @@ impl super::buffers::SceneBuffers {
         for _ in 0..MAX_BONES_PER_MESH {
             payload.push(identity);
         }
-        // SAFETY: `[[f32; 4]; 4]` is repr(C); the byte slice has the
-        // same layout the GPU reads as `mat4`. Size pinned at
-        // MBPM × 64 = 9216 B, well within the 65536 B
-        // `vkCmdUpdateBuffer` limit. Inline-written from the
-        // command buffer; no staging buffer to manage.
-        let payload_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                payload.as_ptr() as *const u8,
-                payload.len() * std::mem::size_of::<[[f32; 4]; 4]>(),
-            )
-        };
+        // The byte slice has the same layout the GPU reads as `mat4`. Size
+        // pinned at MBPM × 64 = 9216 B, well within the 65536 B
+        // `vkCmdUpdateBuffer` limit. Inline-written from the command
+        // buffer; no staging buffer to manage.
+        let payload_bytes = super::super::buffer::byte_view(&payload);
         let dst = self.bind_inverses_persistent.buffer;
         super::super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
             unsafe {

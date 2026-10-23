@@ -1883,6 +1883,16 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
     let groundcover_bench_rs = include_str!("../groundcover_bench.rs");
     let groundcover_bench_glsl = include_str!("../../../shaders/include/groundcover_bench.glsl");
     let groundcover_bench_bake = include_str!("../../../shaders/groundcover_bench_bake.comp");
+    // #6270 — the remaining push-constant blocks.
+    let shadow_filter_comp = include_str!("../../../shaders/shadow_filter.comp");
+    let shadow_filter_rs = include_str!("../shadow_filter.rs");
+    let svgf_atrous_comp = include_str!("../../../shaders/svgf_atrous.comp");
+    let svgf_rs = include_str!("../svgf.rs");
+    let presentation_frag = include_str!("../../../shaders/presentation.frag");
+    let presentation_rs = include_str!("../presentation.rs");
+    let skin_vertices_comp = include_str!("../../../shaders/skin_vertices.comp");
+    let skin_palette_comp = include_str!("../../../shaders/skin_palette.comp");
+    let skin_compute_rs = include_str!("../skin_compute.rs");
 
     const NO_ALIASES: &[NameAlias] = &[];
     for (label, glsl_src, glsl_decl, rust_src, rust_decl, aliases) in [
@@ -2061,6 +2071,59 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct BenchPush",
             NO_ALIASES,
         ),
+        (
+            "BakePush",
+            groundcover_bench_bake,
+            "uniform BakePush",
+            groundcover_bench_rs,
+            "struct BakePush",
+            NO_ALIASES,
+        ),
+        // #6270 — every other push block with a Rust struct behind it: the
+        // shadow filter, the à-trous denoiser, presentation and both skinning
+        // dispatches. `WaterDrawPush` is a bare 4-byte selector the host pads
+        // to 16 B, so it is pinned by reflection instead
+        // (`water_push_constant_blocks_stay_inside_the_declared_16_byte_range`).
+        (
+            "Push (shadow_filter.comp)",
+            shadow_filter_comp,
+            "uniform Push",
+            shadow_filter_rs,
+            "struct Push",
+            NO_ALIASES,
+        ),
+        (
+            "Push (svgf_atrous.comp)",
+            svgf_atrous_comp,
+            "uniform Push",
+            svgf_rs,
+            "struct AtrousPush",
+            NO_ALIASES,
+        ),
+        (
+            "PresentationParams",
+            presentation_frag,
+            "uniform PresentationParams",
+            presentation_rs,
+            "struct PresentationPushConstants",
+            NO_ALIASES,
+        ),
+        (
+            "PushConstants (skin_vertices.comp)",
+            skin_vertices_comp,
+            "uniform PushConstants",
+            skin_compute_rs,
+            "struct SkinPushConstants",
+            NO_ALIASES,
+        ),
+        (
+            "PushConstants (skin_palette.comp)",
+            skin_palette_comp,
+            "uniform PushConstants",
+            skin_compute_rs,
+            "struct SkinPalettePushConstants",
+            NO_ALIASES,
+        ),
     ] {
         assert_glsl_matches_rust(
             label,
@@ -2152,10 +2215,9 @@ enum MirrorClass {
     /// A Rust counterpart exists and a named test compares the two.
     Guarded(&'static str),
     /// A Rust counterpart exists, but no field-level comparison yet. Carries
-    /// the specific blocker, not a shrug. Empty since `Reservoir` got its
-    /// guard (#6317); kept as the place the next unguarded mirror goes, so
-    /// classifying one never means inventing the bucket under deadline.
-    #[allow(dead_code)]
+    /// the specific blocker, not a shrug. Holds the two push blocks the host
+    /// builds as raw bytes (#6270); also the place the next unguarded mirror
+    /// goes, so classifying one never means inventing the bucket under deadline.
     MirroredPendingGuard(&'static str),
     /// No Rust counterpart — a GLSL-local working type. A byte-stride constant
     /// the host sizes a buffer from IS a counterpart, though the
@@ -2259,6 +2321,58 @@ fn every_shader_struct_is_classified() {
             "Reservoir",
             Guarded("reservoir_glsl_copies_stay_in_lockstep"),
         ),
+        // #6270 — the push-constant blocks. The walk below reads
+        // `layout(push_constant) uniform <Name>` as well as `struct`: they are
+        // the same CPU/GPU contract and were invisible to it.
+        (
+            "BakePush",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        (
+            "BenchPush",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        (
+            "GcBladePush",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        (
+            "GcModelPush",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        (
+            "GcScatterPush",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        // `shadow_filter.comp` and `svgf_atrous.comp` each declare a `Push`.
+        (
+            "Push",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        (
+            "PresentationParams",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        // `skin_vertices.comp` and `skin_palette.comp` each declare one.
+        (
+            "PushConstants",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        (
+            "WaterDrawPush",
+            Guarded("water_push_constant_blocks_stay_inside_the_declared_16_byte_range"),
+        ),
+        // Pushed as explicitly built bytes (`caustic.rs` `push_bytes`, the
+        // sky-cube filter's single `f32`), not a struct cast, so there is no
+        // Rust struct to compare field for field.
+        (
+            "CausticPush",
+            MirroredPendingGuard("pushed as hand-built bytes (caustic.rs push_bytes); no Rust struct"),
+        ),
+        (
+            "FilterParams",
+            MirroredPendingGuard("pushed as one hand-built f32 (sky_cube/filter.rs); no Rust struct"),
+        ),
         ("GroundCoverFactors", ShaderLocal),
         (
             "GroundCoverBlade",
@@ -2331,7 +2445,10 @@ fn every_shader_struct_is_classified() {
                 continue;
             };
             for line in src.lines() {
-                if let Some(rest) = line.strip_prefix("struct ") {
+                if let Some(rest) = line
+                    .strip_prefix("struct ")
+                    .or_else(|| line.strip_prefix("layout(push_constant) uniform "))
+                {
                     let name: String = rest
                         .chars()
                         .take_while(|c| c.is_alphanumeric() || *c == '_')

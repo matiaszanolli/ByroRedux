@@ -96,6 +96,11 @@ struct PresentationPushConstants {
     fade_color: [f32; 4],
 }
 
+// SAFETY: `#[repr(C)]`, only `[f32; 4]` / `u32` fields, each 4-byte aligned and
+// tiling the 128-byte block with no padding. Mirrors `PresentationParams` in
+// `presentation.frag` (compared by `name_diverging_glsl_rust_mirrors_stay_in_lockstep`).
+unsafe impl super::buffer::NoUninit for PresentationPushConstants {}
+
 /// #3861 — `ImageSpaceModifier` was an identical twin of the scripting
 /// crate's `ImageSpaceModifierFrame`, bridged by a field-by-field copy in
 /// `app_frame.rs`. One definition now lives in `byroredux-core`; the copy is
@@ -635,14 +640,7 @@ impl PresentationPipeline {
             tint_color: input.image_space.tint_color,
             fade_color: input.image_space.fade_color,
         };
-        let constant_bytes = unsafe {
-            // SAFETY: `PresentationPushConstants` is repr(C), contains only
-            // plain floats, and this byte slice is consumed synchronously.
-            std::slice::from_raw_parts(
-                (&constants as *const PresentationPushConstants).cast::<u8>(),
-                std::mem::size_of::<PresentationPushConstants>(),
-            )
-        };
+        let constant_bytes = super::buffer::byte_view(std::slice::from_ref(&constants));
         unsafe {
             // SAFETY: caller contract guarantees recording state and valid
             // indices; all pipeline resources are live.

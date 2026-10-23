@@ -44,6 +44,11 @@ pub unsafe trait NoUninit: Copy {}
 /// `GpuMaterial::as_bytes` / `hash_material_slice`) obtain their `&[u8]`,
 /// so the safety argument lives once rather than once per entry point.
 ///
+/// #6270 — the push-constant blocks (shadow filter, à-trous, presentation,
+/// water, both skinning dispatches) and the bulk geometry / morph-weight /
+/// bind-inverse uploads route through here too, so the "no hand-rolled
+/// `from_raw_parts`" claim holds crate-wide bar the exemption below.
+///
 /// #4521 — the scene_buffer dirty-gate hash views (`hash_instance_slice` /
 /// `hash_previous_model_slice` / `hash_light_upload`) also route through
 /// here. One documented exemption keeps this claim true:

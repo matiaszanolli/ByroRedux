@@ -1285,22 +1285,11 @@ impl MeshRegistry {
 }
 
 fn vertex_slice_bytes(values: &[Vertex]) -> &[u8] {
-    unsafe {
-        // SAFETY: `Vertex` is `#[repr(C)]` and its scalar/array fields occupy
-        // the complete 104-byte shader contract without padding. Every byte
-        // is initialized by construction, and the returned view cannot
-        // outlive the source slice.
-        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
-    }
+    crate::vulkan::buffer::byte_view(values)
 }
 
 fn index_slice_bytes(values: &[u32]) -> &[u8] {
-    unsafe {
-        // SAFETY: every bit pattern in a `u32` is initialized and valid; the
-        // returned byte view covers exactly the borrowed slice and cannot
-        // outlive it.
-        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
-    }
+    crate::vulkan::buffer::byte_view(values)
 }
 
 /// Colored cube geometry: 24 vertices (4 per face), 36 indices, with UVs and normals.
