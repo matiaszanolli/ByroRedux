@@ -155,7 +155,43 @@ fn cdb_material_index(source: &str, inner: &str) -> Option<Arc<MaterialIndex>> {
 
 fn build_cdb_material_index_serialized(source: &str, inner: &str) -> Option<Arc<MaterialIndex>> {
     let _gate = CDB_BUILD_GATE.lock().unwrap_or_else(|e| e.into_inner());
-    build_cdb_material_index(source, inner)
+    contain_cdb_build_panic(source, inner, || build_cdb_material_index(source, inner))
+}
+
+/// #5665 — run one CDB index build, turning a panic into the same warned `None`
+/// every other build failure already is.
+///
+/// A `OnceLock` whose initializer panics is left **uninitialised**, so the slot
+/// that exists to memoise "this CDB cannot be built" memoised nothing for a
+/// panic: the `sf-cdb-index` prefetch thread died with the slot still empty, and
+/// the first lookup that reached the CDB re-ran the whole extract + build on the
+/// calling thread (a streaming apply slice that `FrameTimeBudget` cannot
+/// preempt), panicking again, once per lookup. Containing the panic inside the
+/// initializer makes it a result the slot keeps, so a malformed CDB costs one
+/// build, one warning and a PBR fallback — the outcome of its sibling failures.
+///
+/// `build` runs with the build gate held by the caller; catching here, before
+/// the unwind can cross the guard, also keeps the gate from being poisoned.
+fn contain_cdb_build_panic(
+    source: &str,
+    inner: &str,
+    build: impl FnOnce() -> Option<Arc<MaterialIndex>>,
+) -> Option<Arc<MaterialIndex>> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)) {
+        Ok(index) => index,
+        Err(payload) => {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic payload".to_owned());
+            log::warn!(
+                "Starfield CDB '{inner}' in '{source}': material index build \
+                 panicked ({detail}) — .mat lookups fall back to PBR routing only"
+            );
+            None
+        }
+    }
 }
 
 /// The un-memoised build behind [`cdb_material_index`]'s slot.
@@ -450,6 +486,47 @@ pub(super) fn apply_cdb_pbr_fallback(material: &mut ImportedMaterial, path: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5665 — a panicking build is memoised like any other failed one: the
+    /// slot keeps `None`, the build ran exactly once, and a second lookup does
+    /// not run it again. (A bare `OnceLock` is left empty by a panicking
+    /// initializer, so without the containment every lookup re-ran the build.)
+    #[test]
+    fn a_panicking_cdb_build_is_memoised_and_runs_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let builds = AtomicUsize::new(0);
+        let slot = CdbIndexSlot::default();
+        for _ in 0..3 {
+            let got = slot
+                .get_or_init(|| {
+                    contain_cdb_build_panic("test-source", "test.cdb", || {
+                        builds.fetch_add(1, Ordering::SeqCst);
+                        panic!("malformed CDB chunk")
+                    })
+                })
+                .clone();
+            assert!(got.is_none(), "a panic resolves to the PBR fallback, not an index");
+        }
+        assert_eq!(
+            builds.load(Ordering::SeqCst),
+            1,
+            "the failed build must be memoised, not retried per lookup"
+        );
+        assert!(
+            matches!(slot.get(), Some(None)),
+            "the slot holds the memoised failure"
+        );
+    }
+
+    /// #5665 — containment passes an ordinary `None` through unchanged and turns
+    /// a panic into `None` rather than unwinding into the caller (the prefetch
+    /// thread, or a lookup on the main thread).
+    #[test]
+    fn a_contained_build_never_unwinds_into_its_caller() {
+        assert!(contain_cdb_build_panic("s", "i", || None).is_none());
+        assert!(contain_cdb_build_panic("s", "i", || panic!("boom")).is_none());
+        assert!(contain_cdb_build_panic("s", "i", || panic!("{}", String::from("owned"))).is_none());
+    }
 
     /// #5319 (PAR-D2-2026-10-05-01) — the lazy build's open/extract arms
     /// used to be raw `.ok()?` (the shape #4658 removed elsewhere): a CDB
