@@ -3,15 +3,19 @@
 # saves. Failures: panic/crash, stuck transition, unbounded memory growth,
 # or lost player control.
 #
-# Cycle design (FNV reference fixture, ~1-2 min per cycle):
-#   1. Control check: bound-input walk out and back (≥10 BU each way) —
-#      proves the body still answers input every cycle.
-#   2. F5 quicksave at the interior standoff.
-#   3. One bound-input E edge opens the authored door; the exterior
+# Cycle design (FNV reference fixture, ~20-40 s per cycle):
+#   1. F5 quicksave at the interior standoff (waits for the ring slot).
+#   2. Control check: a bound-input walk-out of ≥10 BU — proves the body
+#      still answers input every cycle (another direction if an NPC blocks).
+#   3. F9 quickload back to the standoff (in-cell session replacement).
+#   4. One bound-input E edge opens the authored door; the exterior
 #      arrival must land within the transition timeout (stuck-transition
 #      detector).
-#   4. F9 quickload performs the full exterior→interior session
-#      replacement; the restored pose must match the standoff (≤1 unit).
+#   5. F9 quickload performs the full exterior→interior session
+#      replacement; the restored pose must match the engine's logged
+#      restore pose (≤2 units) and the F5-time poll (≤5 units).
+# The quickloads, not walks back, keep every cycle at the same standoff: a
+# frame-counted walk back drifted with the frame rate and NPC traffic.
 # Every cycle samples VmRSS; after a 3-cycle warmup, growth beyond 1.5× the
 # warmup-end RSS fails as unbounded memory growth. The full curve is
 # retained in the artifacts.
@@ -121,6 +125,50 @@ launch() {
     smoke_answer_message_boxes "$LOG_DIR/answer.log"
 }
 
+# F9 the newest quicksave and require the body back at this cycle's
+# standoff. Restore-fidelity reference: the engine's OWN restore line is the
+# pose it saved at F5-drain time; compare the settled body against it (≤2
+# units) and loosely against the pre-F5 poll (≤5 units, still catches a
+# wrong-slot restore — a poll can be seconds stale on the sloped porch,
+# observed 2026-10-01).
+quickload_to_standoff() { # <cycle> <label>
+    local cycle="$1" label="$2" rc=0
+    debug_command 'input.press quickload' "$LOG_DIR/c$cycle.$label.f9.log" \
+        || fail "cycle $cycle: quickload press rejected ($label)"
+    grep -Fq 'action=Quickload binding=F9' "$LOG_DIR/c$cycle.$label.f9.log" \
+        || fail "cycle $cycle: F9 edge not recognized ($label)"
+    local restore_deadline=$((SECONDS + TIMEOUT))
+    until tail -c +"$((stderr_mark + 1))" "$LOG_DIR/session.stderr" \
+          | grep -Fq 'save load: restored player pose'; do
+        kill -0 "$engine_pid" 2>/dev/null \
+            || fail "cycle $cycle: engine died during quickload ($label; see artifacts)"
+        (( SECONDS < restore_deadline )) || fail "cycle $cycle: quickload restore stuck >${TIMEOUT}s ($label)"
+        sleep 0.5
+    done
+    stderr_mark=$(stat -c %s "$LOG_DIR/session.stderr")
+    wait_grounded "$LOG_DIR/c$cycle.$label.restored.status" || rc=$?
+    if (( rc != 0 )); then
+        debug_command phys.stats "$LOG_DIR/c$cycle.$label.failed.phys.stats" 2>/dev/null || true
+        debug_command phys.census "$LOG_DIR/c$cycle.$label.failed.phys.census" 2>/dev/null || true
+        if (( rc == 2 )); then
+            fail "cycle $cycle: player status unresponsive after quickload ($label; lost control)"
+        else
+            fail "cycle $cycle: body never re-grounded after quickload ($label; see samples + phys census)"
+        fi
+    fi
+    grep 'save load: restored player pose' "$LOG_DIR/session.stderr" | tail -1 \
+        | sed -nE 's/.*restored player pose at \(([-0-9.]+), ([-0-9.]+), ([-0-9.]+)\).*/\1 \2 \3/p' \
+        >"$LOG_DIR/c$cycle.$label.restored.pose"
+    [[ -s "$LOG_DIR/c$cycle.$label.restored.pose" ]] \
+        || fail "cycle $cycle: no restored-pose line for this quickload ($label)"
+    awk -v a="$(pose "$LOG_DIR/c$cycle.$label.restored.status")" \
+        -v b="$(cat "$LOG_DIR/c$cycle.$label.restored.pose")" \
+        'BEGIN { split(a,x); split(b,y); if(length(x)!=3 || length(y)!=3) exit 1; for(i=1;i<=3;i++) if((x[i]-y[i])^2>4) exit 1 }' \
+        || fail "cycle $cycle: restored body ≠ engine-logged restore pose (>2 units — #5155 class; $label)"
+    pose_close "$LOG_DIR/c$cycle.$label.restored.status" "$LOG_DIR/c$cycle.pre.status" 25 \
+        || fail "cycle $cycle: restored pose is far from the F5-time pose (>5 units — wrong-slot restore? $label)"
+}
+
 echo "═══════════════════════════════════════════════════════════════"
 echo "  smoke[p5-soak]: $SOAK_MINUTES-minute transition/save soak ($FIXTURE_LABEL)"
 echo "═══════════════════════════════════════════════════════════════"
@@ -139,69 +187,47 @@ applied_count=0
 while (( SECONDS < deadline_s )); do
     cycle=$((cycle + 1))
 
-    # 1 — control: walk away and back, ≥10 BU each way. Displacement is
-    # measured against THIS cycle's starting pose, not the original spawn —
-    # after the first F9 the body lives at the previous cycle's quicksave
-    # point, which is near but not exactly the standoff.
+    # 1 — F5 quicksave at the interior standoff, before anything moves the
+    # body. The quicksave is deferred: wait for its ring slot to land so the
+    # walk below cannot reach the saved pose.
     if ! wait_grounded "$LOG_DIR/c$cycle.pre.status"; then
-        fail "cycle $cycle: player status unresponsive before the walk (lost control)"
+        fail "cycle $cycle: player status unresponsive before the quicksave (lost control)"
     fi
-    debug_command "input.hold backward 90" "$LOG_DIR/c$cycle.walk1.log" \
-        || fail "cycle $cycle: walk-out input rejected"
-    walk_deadline=$((SECONDS + TIMEOUT))
-    while true; do
-        wait_grounded "$LOG_DIR/c$cycle.walked.status" || fail "cycle $cycle: lost control during walk-out"
-        pose_apart "$LOG_DIR/c$cycle.walked.status" "$LOG_DIR/c$cycle.pre.status" 100 && break
-        (( SECONDS < walk_deadline )) || fail "cycle $cycle: walk-out did not displace the body ≥10 units (lost control)"
-        sleep 0.25
-    done
-    # Walk back in short pulses until the body is within ~12 units of this
-    # cycle's start, so every cycle quicksaves at the same standoff. A fixed
-    # 90-frame return does not cancel the 90-frame walk-out: backward and
-    # forward speeds differ, and the distance a frame count covers scales
-    # with the frame rate (~4.6x at Xvfb's ~31 FPS against the desktop's
-    # ~140), so the standoff drifted a little each cycle — headless, out of
-    # the door's reach by cycle 12.
-    debug_command "input.hold forward 4" "$LOG_DIR/c$cycle.walk2.log" \
-        || fail "cycle $cycle: walk-back input rejected"
-    walk_deadline=$((SECONDS + TIMEOUT))
-    pulses=0
-    cp "$LOG_DIR/c$cycle.walked.status" "$LOG_DIR/c$cycle.last.status"
-    while true; do
-        wait_grounded "$LOG_DIR/c$cycle.back.status" || fail "cycle $cycle: lost control during walk-back"
-        pose_close "$LOG_DIR/c$cycle.back.status" "$LOG_DIR/c$cycle.pre.status" 144 && break
-        # A pulse that moved nothing is blocked (an NPC crossing the aisle):
-        # standing there is fine if the door is still in reach — the return
-        # exists to keep the standoff — and a drift if it is not.
-        if pose_close "$LOG_DIR/c$cycle.back.status" "$LOG_DIR/c$cycle.last.status" 0.25; then
-            debug_command 'interaction.status' "$LOG_DIR/c$cycle.blocked.log" || true
-            grep -Fq "$P0_PROMPT" "$LOG_DIR/c$cycle.blocked.log" && break
-            fail "cycle $cycle: walk-back blocked out of the door's reach (world state drifted?)"
-        fi
-        cp "$LOG_DIR/c$cycle.back.status" "$LOG_DIR/c$cycle.last.status"
-        pulses=$((pulses + 1))
-        (( pulses < 400 && SECONDS < walk_deadline )) \
-            || fail "cycle $cycle: walk-back did not return to the cycle's start (lost control)"
-        # ~2 units a frame forward: long pulses while far, short ones near the
-        # start so the last one cannot step over the 12-unit window.
-        remaining=$(awk -v a="$(pose "$LOG_DIR/c$cycle.back.status")" -v b="$(pose "$LOG_DIR/c$cycle.pre.status")" \
-            'BEGIN { split(a,x); split(b,y); printf "%d", sqrt((x[1]-y[1])^2+(x[3]-y[3])^2) }')
-        frames=4
-        (( remaining > 100 )) && frames=30
-        debug_command "input.hold forward $frames" "$LOG_DIR/c$cycle.walk2.log" \
-            || fail "cycle $cycle: walk-back input rejected"
-    done
-    pose_apart "$LOG_DIR/c$cycle.back.status" "$LOG_DIR/c$cycle.walked.status" 100 \
-        || fail "cycle $cycle: walk-back did not return ≥10 units (lost control)"
-
-    # 2 — F5 quicksave at the interior standoff (before the door).
+    touch "$LOG_DIR/c$cycle.f5.mark"
     debug_command 'input.press quicksave' "$LOG_DIR/c$cycle.f5.log" \
         || fail "cycle $cycle: quicksave press rejected"
     grep -Fq 'action=Quicksave binding=F5' "$LOG_DIR/c$cycle.f5.log" \
         || fail "cycle $cycle: F5 edge not recognized"
+    save_deadline=$((SECONDS + TIMEOUT))
+    until [[ -n "$(find "$LOG_DIR/saves" -name '*.ess' -newer "$LOG_DIR/c$cycle.f5.mark" 2>/dev/null)" ]]; do
+        (( SECONDS < save_deadline )) || fail "cycle $cycle: the F5 quicksave never wrote its slot"
+        sleep 0.25
+    done
     quicksaves=$((quicksaves + 1))
 
-    # 3 — the door out: prompt → E edge → authored exterior arrival.
+    # 2 — control: a bound-input walk-out of ≥10 units. An NPC crossing the
+    # aisle by the door (the saloon's own traffic) can block one direction
+    # for a moment; control is lost only when no direction moves the body.
+    walked_out=0
+    for direction in backward left right forward; do
+        debug_command "input.hold $direction 90" "$LOG_DIR/c$cycle.walk.log" \
+            || fail "cycle $cycle: walk-out input rejected"
+        wait_grounded "$LOG_DIR/c$cycle.walked.status" || fail "cycle $cycle: lost control during walk-out"
+        if pose_apart "$LOG_DIR/c$cycle.walked.status" "$LOG_DIR/c$cycle.pre.status" 100; then
+            walked_out=1
+            break
+        fi
+        echo "smoke[p5-soak]: cycle $cycle: walk-out $direction blocked; retrying another way"
+    done
+    (( walked_out )) || fail "cycle $cycle: walk-out did not displace the body ≥10 units in any direction (lost control)"
+
+    # 3 — F9 back to the standoff: an in-cell session replacement. The
+    # quickload, not a walk back, returns the body — a frame-counted walk
+    # back drifts with the frame rate (headless ~31 FPS vs the desktop's
+    # ~140) and with whatever crossed the aisle, out of the door's reach.
+    quickload_to_standoff "$cycle" walked
+
+    # 4 — the door out: prompt → E edge → authored exterior arrival.
     debug_command 'interaction.status' "$LOG_DIR/c$cycle.prompt.log" \
         || fail "cycle $cycle: interaction status unavailable"
     grep -Fq "$P0_PROMPT" "$LOG_DIR/c$cycle.prompt.log" \
@@ -228,53 +254,11 @@ while (( SECONDS < deadline_s )); do
         sleep 1
     done
 
-    # 4 — F9 back inside: full session replacement, pose back at the standoff.
-    debug_command 'input.press quickload' "$LOG_DIR/c$cycle.f9.log" \
-        || fail "cycle $cycle: quickload press rejected"
-    grep -Fq 'action=Quickload binding=F9' "$LOG_DIR/c$cycle.f9.log" \
-        || fail "cycle $cycle: F9 edge not recognized"
-    restore_deadline=$((SECONDS + TIMEOUT))
-    until tail -c +"$((stderr_mark + 1))" "$LOG_DIR/session.stderr" \
-          | grep -Fq 'save load: restored player pose'; do
-        kill -0 "$engine_pid" 2>/dev/null \
-            || fail "cycle $cycle: engine died during quickload (see artifacts)"
-        (( SECONDS < restore_deadline )) || fail "cycle $cycle: quickload restore stuck >${TIMEOUT}s"
-        sleep 0.5
-    done
-    stderr_mark=$(stat -c %s "$LOG_DIR/session.stderr")
-    rc=0
-    wait_grounded "$LOG_DIR/c$cycle.restored.status" || rc=$?
-    if (( rc != 0 )); then
-        debug_command phys.stats "$LOG_DIR/c$cycle.failed.phys.stats" 2>/dev/null || true
-        debug_command phys.census "$LOG_DIR/c$cycle.failed.phys.census" 2>/dev/null || true
-        if (( rc == 2 )); then
-            fail "cycle $cycle: player status unresponsive after quickload (lost control)"
-        else
-            fail "cycle $cycle: body never re-grounded after quickload (see c$cycle.restored.status.* samples + phys census)"
-        fi
-    fi
-    # Restore-fidelity reference: the engine's OWN restore line is the pose it
-    # saved at F5-drain time. A player.status poll taken before the F5 press
-    # can be seconds stale — on the sloped porch the grounded body slides a
-    # few units between the poll and the quicksave (observed cycle 20 of the
-    # 2026-10-01 gate run: poll (102.05,…,827.08) vs saved+restored
-    # (104.6,…,824.3)), which is harness skew, not a restore defect. Compare
-    # the sampled body against the logged restore pose (≤2 units, settling
-    # allowance) and only loosely against the pre-F5 poll (≤5 units, still
-    # catches a wrong-slot restore).
-    grep 'save load: restored player pose' "$LOG_DIR/session.stderr" | tail -1 \
-        | sed -nE 's/.*restored player pose at \(([-0-9.]+), ([-0-9.]+), ([-0-9.]+)\).*/\1 \2 \3/p' \
-        >"$LOG_DIR/c$cycle.restored.pose"
-    [[ -s "$LOG_DIR/c$cycle.restored.pose" ]] \
-        || fail "cycle $cycle: no restored-pose line for this cycle's quickload"
-    awk -v a="$(pose "$LOG_DIR/c$cycle.restored.status")" \
-        -v b="$(cat "$LOG_DIR/c$cycle.restored.pose")" \
-        'BEGIN { split(a,x); split(b,y); if(length(x)!=3 || length(y)!=3) exit 1; for(i=1;i<=3;i++) if((x[i]-y[i])^2>4) exit 1 }' \
-        || fail "cycle $cycle: restored body ≠ engine-logged restore pose (>2 units — #5155 class)"
-    pose_close "$LOG_DIR/c$cycle.restored.status" "$LOG_DIR/c$cycle.back.status" 25 \
-        || fail "cycle $cycle: restored pose is far from the F5-time pose (>5 units — wrong-slot restore?)"
+    # 5 — F9 back inside from the exterior: the full cross-cell session
+    # replacement, pose back at the standoff.
+    quickload_to_standoff "$cycle" exterior
 
-    # 5 — memory sample.
+    # 6 — memory sample.
     sample_rss="$(rss_kb)"
     (( sample_rss > max_rss )) && max_rss=$sample_rss
     if (( cycle == 3 )); then

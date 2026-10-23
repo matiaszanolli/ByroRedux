@@ -68,7 +68,7 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
   Native HUD vitals and objective text. Native F5/F9 quicksave/quickload
   through the deferred player-save queue, with quest state, cross-cell door
   saves, graceful quit and a validation-clean 30-minute soak all gated
-  (P5, 2026-10-01; soak's intermittent restore defect tracked in #5155).
+  (P5, 2026-10-01; the soak's restore defect #5155 fixed 2026-10-22).
 - **Scripting.** ECS-native event hooks and condition evaluator
   (M47.0/M47.1). Compiled `.pex` is decompiled and lowered through a
   recognizer chain (QUST fragments, aliases, SCEN/PACK scenes; MQ101 plays
@@ -243,8 +243,7 @@ evidence is in
 [`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md),
 and the one-liner is under [Completed Milestones](#completed-milestones).
 Open follow-ons, none of them a slice blocker:
-- #5155: the soak intermittently restores `grounded=false` after its 10th
-  F5 → door → F9 cycle.
+- #5155 (soak restores pinned `grounded=false`) fixed 2026-10-22: a blocked fall asks the walkable probe.
 - Skyrim `p2-melee-core.sh` passes end to end since #5161 (`5ae7f8ad4`) and
   #5246 contained the ragdoll solver explosion. #5352 closed the
   recovery-substep gap in that clamp (`1efdfda4a`), and rapier 0.36's BVH

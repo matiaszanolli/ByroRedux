@@ -235,8 +235,11 @@ docs/smoke-tests/p2-melee-core.sh fnv`. The exception is
 "align with saloon entrance" leg overshoots the door — run P1 on a display.
 `p5-soak.sh` had the same dependence (a fixed 90-frame walk back did not cancel
 the walk out, so the standoff drifted out of the door's reach by cycle 12
-headless); its walk back now pulses toward the cycle's starting pose, so it
-runs headless.
+headless, and NPC traffic crossing the door aisle — Sunny now goes about her
+day instead of re-greeting — made it worse). Each cycle now quicksaves at the
+standoff first and returns there by F9 (an in-cell quickload) instead of a
+walk back, so it runs headless; a walk-out an NPC blocks retries another
+direction, and control counts as lost only when no direction moves the body.
 
 ## Procedure shape
 

@@ -1740,9 +1740,12 @@ over 60 5.56mm rounds and displays 50 — captures show the HUD banners and the
 presented lines); `p5-fnv-quest-persistence` PASS (F9 reverts to stage 10,
 the meeting variable survives, no stage script re-runs, restart keeps stage
 45); `p2-melee-core` PASS; `p5-save-restart` PASS; `p5-f5-f9-quicksave` PASS
-(validation clean); `p5-door-transition` PASS. P0 PASS (this session's
-display baseline and headless). P1 runs on a display (its frame-counted route
-overshoots at Xvfb's ~31 FPS; see the smoke README).
+(validation clean); `p5-door-transition` PASS; `p0-door-interaction` PASS;
+`p5-soak` PASS — 30 min, 57 cycles, 57 quicksaves, 57 door transitions, 114
+quickload restores (none pinned ungrounded: the #5155 signature), peak RSS
+2817 MiB (restructured: each cycle returns to the standoff by F9, not a
+frame-counted walk back — see the smoke README). `p1-character-traversal`
+PASS on a display (its frame-counted route overshoots at Xvfb's ~31 FPS).
 
 **Open follow-ups.** In third person the FNV player's outfit and hair cap
 render as the checkerboard although every material slot resolves a present,
