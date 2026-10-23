@@ -282,3 +282,63 @@ fn every_content_provider_resolves_collisions_last_wins() {
          longer guarding anything"
     );
 }
+
+/// Write `files` (archive-style relative paths) under a fresh loose directory
+/// and open it as an archive tier.
+fn loose_pool_member(files: &[&str]) -> (tempfile::TempDir, Archive) {
+    let dir = tempfile::tempdir().unwrap();
+    for f in files {
+        let path = dir.path().join(f);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"x").unwrap();
+    }
+    let archive = Archive::open_loose(dir.path()).expect("loose assets present");
+    (dir, archive)
+}
+
+/// #5664 — a reused handle must still report the override count for the pool it
+/// joins. The registry is keyed by path, not pool: the same archive opened for
+/// the mesh pool and then the texture pool is one handle, but its shadow count
+/// differs between the two chains.
+#[test]
+fn a_reused_handle_reports_its_shadow_count_for_the_pool_it_joins() {
+    let (_a, mesh_base) = loose_pool_member(&["meshes/a.nif", "meshes/b.nif"]);
+    let (_b, tex_base) = loose_pool_member(&["textures/t.dds"]);
+    let (_c, shared) = loose_pool_member(&["meshes/b.nif", "textures/t.dds", "textures/u.dds"]);
+
+    let mesh_pool = std::slice::from_ref(&mesh_base);
+    let tex_pool = std::slice::from_ref(&tex_base);
+    assert_eq!(shadow_count_for_open(&shared, mesh_pool, false), 1, "b.nif");
+    // The same handle, reused, joining a different chain: its own count, not the
+    // mesh pool's.
+    assert_eq!(
+        shadow_count_for_open(&shared, tex_pool, true),
+        1,
+        "t.dds — computed for the texture pool, not suppressed or borrowed from the mesh pool"
+    );
+    let (_d, unrelated) = loose_pool_member(&["materials/m.bgsm"]);
+    assert_eq!(
+        shadow_count_for_open(&shared, std::slice::from_ref(&unrelated), true),
+        0,
+        "a pool sharing nothing reports 0, whatever another pool cached for this archive"
+    );
+}
+
+/// #5288's saving survives: rebuilding the same pool in the same order is served
+/// from the memo and does not walk the file tables again.
+#[test]
+fn rebuilding_the_same_pool_does_not_rewalk_the_file_tables() {
+    use std::sync::atomic::Ordering;
+    let (_a, base) = loose_pool_member(&["meshes/only_here_5664.nif"]);
+    let (_b, shared) = loose_pool_member(&["meshes/only_here_5664.nif"]);
+    let pool = std::slice::from_ref(&base);
+
+    assert_eq!(shadow_count_for_open(&shared, pool, false), 1);
+    let walks = SHADOW_COUNT_WALKS.load(Ordering::Relaxed);
+    assert_eq!(shadow_count_for_open(&shared, pool, true), 1);
+    assert_eq!(
+        SHADOW_COUNT_WALKS.load(Ordering::Relaxed),
+        walks,
+        "a reused handle in an already-counted pool must come from the memo (#5288)"
+    );
+}

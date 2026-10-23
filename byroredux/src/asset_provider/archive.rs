@@ -879,12 +879,72 @@ pub(crate) fn open_with_numeric_siblings(
     }
 }
 
+/// Upper bound on [`shadow_count_cache`]: one entry per distinct (archive,
+/// preceding-pool) pair a process has built. A game boots a handful of pools
+/// and each provider rebuild repeats them, so this is never approached in
+/// practice; past it the cache simply restarts rather than growing.
+const SHADOW_COUNT_CACHE_MAX: usize = 512;
+
+fn shadow_count_cache() -> &'static Mutex<HashMap<String, usize>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Times [`shadow_count_for_open`] actually walked the file tables (not served
+/// from the cache) — the observable behind the #5288 cost guarantee.
+#[cfg(test)]
+pub(crate) static SHADOW_COUNT_WALKS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// #5664 — how many of `new`'s entries an earlier archive in `archives` also
+/// carries, memoised per **(archive, the ordered pool that precedes it)**.
+///
+/// The count is a function of both. #5288 skipped it whenever the shared
+/// registry handed back a reused handle, on the reasoning that it "was already
+/// reported when this archive was first opened" — true within one pool, but the
+/// registry is keyed by path and the mesh, texture and sound pools differ: the
+/// `--bsa P` open computed it against the mesh chain, and the `--textures-bsa P`
+/// open was then a registry hit that never computed it against the textures
+/// chain (Oblivion `DLCShiveringIsles - Textures.bsa`: 0 against meshes, 5
+/// against textures). The memo keeps #5288's saving — a rebuild of the same
+/// pool in the same order is a cache hit, not an O(entries × archives) walk —
+/// while a different pool, or a replaced file (which is never `reused`),
+/// recomputes.
+pub(crate) fn shadow_count_for_open(new: &Archive, archives: &[Archive], reused: bool) -> usize {
+    let mut key = String::from(new.path());
+    for a in archives {
+        key.push('\0');
+        key.push_str(a.path());
+    }
+    if reused {
+        if let Some(&n) = shadow_count_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+        {
+            return n;
+        }
+    }
+    #[cfg(test)]
+    SHADOW_COUNT_WALKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let n = count_shadowed_entries(new, archives);
+    let mut cache = shadow_count_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= SHADOW_COUNT_CACHE_MAX {
+        cache.clear();
+    }
+    cache.insert(key, n);
+    n
+}
+
 /// #3637 — the "Opened … archive" log line, upgraded to name how many of
 /// the newly-opened archive's entries collide with (and, since later-listed
 /// archives win, now override) content already opened earlier in `archives`.
 /// Called before the new archive is pushed, so `archives` is exactly "every
 /// archive opened before this one" — the precedence group `new` is about to
 /// join and start outranking.
+///
+/// A `reused` handle still reports its count for *this* pool (#5664) — from
+/// the memo when the pool was seen before, by a walk when it was not.
 pub(crate) fn log_opened_archive(
     kind: &str,
     path: &str,
@@ -892,21 +952,15 @@ pub(crate) fn log_opened_archive(
     archives: &[Archive],
     reused: bool,
 ) {
-    if reused {
-        // #5288 — the shadow count is an O(entries × archives) file-table
-        // walk; it was already reported when this archive was first opened,
-        // and the answer for a repeat open in the same order is the same.
-        log::info!("Opened {kind} archive: '{path}' (shared handle)");
-        return;
-    }
-    let shadow_count = count_shadowed_entries(new, archives);
+    let shadow_count = shadow_count_for_open(new, archives, reused);
+    let shared = if reused { " (shared handle)" } else { "" };
     if shadow_count > 0 {
         log::info!(
-            "Opened {kind} archive: '{path}' — overrides {shadow_count} entries also \
+            "Opened {kind} archive: '{path}'{shared} — overrides {shadow_count} entries also \
              present in an earlier-opened {kind} archive (last-listed wins, #3637)"
         );
     } else {
-        log::info!("Opened {kind} archive: '{path}'");
+        log::info!("Opened {kind} archive: '{path}'{shared}");
     }
 }
 
