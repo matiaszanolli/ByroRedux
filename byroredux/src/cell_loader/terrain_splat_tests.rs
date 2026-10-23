@@ -7,7 +7,7 @@
 //! handling. Pure-Rust, no GPU.
 use super::terrain::{
     authored_grass_for_splat_layers, base_transition_alpha, base_transition_layers_for_bases,
-    cover_affinity_key, quadrant_samples_for_vertex, splat_weight_for_vertex, CellSplatLayer,
+    cover_affinity_key, layer_cover_key, normalize_base_ltex, quadrant_samples_for_vertex, splat_weight_for_vertex, CellSplatLayer, DefaultLandTexture,
 };
 
 fn mk_layer(per_quadrant_alpha: [Option<Vec<f32>>; 4]) -> CellSplatLayer {
@@ -252,4 +252,32 @@ fn cover_affinity_is_keyed_on_the_ltex_editor_id_not_the_shared_path() {
     assert_eq!(cover_affinity_key(Some(0x0000_0A03), &names, Some(shared_path)), shared_path);
     assert_eq!(cover_affinity_key(None, &names, Some(shared_path)), shared_path);
     assert_eq!(cover_affinity_key(None, &names, None), "");
+}
+
+/// #6256 — an ATXT layer naming LTEX form 0 is the engine's default land texture,
+/// as BTXT form 0 is (xEdit's `wbLANDTextureToStr` is attached to both fields).
+/// It must resolve to the per-game default diffuse rather than texture index 0
+/// (which the shader skips), and be classified by the default LTEX's editor ID —
+/// FO4's is a grass layer.
+#[test]
+fn atxt_form_zero_resolves_the_default_land_texture() {
+    use crate::groundcover_translate::layer_affinity;
+    use byroredux_plugin::esm::reader::GameKind;
+    assert_eq!(normalize_base_ltex(Some(0)), None);
+    assert_eq!(normalize_base_ltex(Some(0x0000_0A01)), Some(0x0000_0A01));
+
+    let names = std::collections::HashMap::new();
+    for game in [GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Skyrim, GameKind::Fallout4] {
+        let default = DefaultLandTexture::for_game(game).expect("LAND-bearing game has a default");
+        assert!(!default.diffuse.is_empty(), "{game:?}: the layer gets a non-skipped diffuse");
+        assert_eq!(layer_cover_key(None, Some(default), &names, Some(default.diffuse)), default.editor_id);
+    }
+    let fo4 = DefaultLandTexture::for_game(GameKind::Fallout4).unwrap();
+    assert_eq!(fo4.editor_id, "LCWDefault01Grass01");
+    assert!(layer_affinity(fo4.editor_id) > 0.5, "FO4's default land texture is a grass layer");
+
+    // An authored LTEX keeps its own editor ID; no per-game default falls back to the path.
+    let named = std::collections::HashMap::from([(0x0000_0A01_u32, "LDirt01".to_string())]);
+    assert_eq!(layer_cover_key(Some(0x0000_0A01), Some(fo4), &named, Some("p")), "LDirt01");
+    assert_eq!(layer_cover_key(None, None, &named, Some("p")), "p");
 }

@@ -211,7 +211,7 @@ pub(super) fn build_cell_splat_layers(
             tex_provider,
             layer_textures,
             landscape_texture_names,
-            Some(ltex),
+            normalize_base_ltex(Some(ltex)),
             default_land,
             per_quadrant_alpha,
         ));
@@ -220,9 +220,11 @@ pub(super) fn build_cell_splat_layers(
     CellSplatLayers { layers }
 }
 
-/// `None` is the executable's default LAND texture: both an absent BTXT and
-/// BTXT form ID zero mean that same built-in material.
-fn normalize_base_ltex(ltex: Option<u32>) -> Option<u32> {
+/// `None` is the executable's default LAND texture: an absent BTXT, BTXT form
+/// ID zero and ATXT form ID zero (#6256) all mean that same built-in material
+/// (xEdit's shared `wbLANDTextureToStr` renders form 0 as the default LTEX on
+/// both fields).
+pub(super) fn normalize_base_ltex(ltex: Option<u32>) -> Option<u32> {
     match ltex {
         Some(0) | None => None,
         Some(ltex) => Some(ltex),
@@ -348,8 +350,9 @@ fn resolve_cell_splat_layer(
     );
     CellSplatLayer {
         ltex_form_id: ltex,
-        cover_affinity: crate::groundcover_translate::layer_affinity(cover_affinity_key(
+        cover_affinity: crate::groundcover_translate::layer_affinity(layer_cover_key(
             ltex,
+            default_land,
             landscape_texture_names,
             texture_path,
         )),
@@ -378,6 +381,22 @@ pub(super) fn cover_affinity_key<'a>(
         .map(String::as_str)
         .or(texture_path)
         .unwrap_or("")
+}
+
+/// [`cover_affinity_key`] for a normalized layer LTEX (`None` = the engine's
+/// default land texture, see [`normalize_base_ltex`]): the default texture is
+/// classified by its own editor ID, which is a *grass* layer on FO4 (#6256).
+/// Without a per-game default it falls through to the path.
+pub(super) fn layer_cover_key<'a>(
+    ltex: Option<u32>,
+    default_land: Option<DefaultLandTexture>,
+    landscape_texture_names: &'a HashMap<u32, String>,
+    texture_path: Option<&'a str>,
+) -> &'a str {
+    match (ltex, default_land) {
+        (None, Some(land)) => land.editor_id,
+        _ => cover_affinity_key(ltex, landscape_texture_names, texture_path),
+    }
 }
 
 /// Resolve the authored `LTEX.GNAM` grass association in GPU splat-lane
@@ -820,6 +839,9 @@ pub(super) struct TerrainSpawnCtx<'a> {
 /// FO76 and Starfield ship no LAND records, so they have no entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct DefaultLandTexture {
+    /// The default LTEX's editor ID (xEdit `wbLANDTextureToStr`), which the
+    /// ground-cover affinity table classifies — FO4's default is a *grass* layer.
+    pub editor_id: &'static str,
     pub diffuse: &'static str,
     pub normal: Option<&'static str>,
     pub specular: Option<&'static str>,
@@ -828,23 +850,27 @@ pub(super) struct DefaultLandTexture {
 impl DefaultLandTexture {
     pub(super) fn for_game(game: esm::reader::GameKind) -> Option<Self> {
         use esm::reader::GameKind;
-        let (diffuse, normal, specular) = match game {
+        let (editor_id, diffuse, normal, specular) = match game {
             GameKind::Oblivion => (
+                "TerrainHDDirt01dds",
                 "textures\\landscape\\default.dds",
                 Some("textures\\landscape\\default_n.dds"),
                 None,
             ),
             GameKind::Fallout3NV => (
+                "LDirtWasteland01",
                 "textures\\landscape\\dirtwasteland01.dds",
                 Some("textures\\landscape\\dirtwasteland01_n.dds"),
                 None,
             ),
             GameKind::Skyrim => (
+                "LDirt02",
                 "textures\\landscape\\dirt02.dds",
                 Some("textures\\landscape\\dirt02_n.dds"),
                 None,
             ),
             GameKind::Fallout4 => (
+                "LCWDefault01Grass01",
                 "textures\\landscape\\ground\\commonwealthdefault01_d.dds",
                 Some("textures\\landscape\\ground\\commonwealthdefault01_n.dds"),
                 Some("textures\\landscape\\ground\\commonwealthdefault01_s.dds"),
@@ -852,6 +878,7 @@ impl DefaultLandTexture {
             GameKind::Fallout76 | GameKind::Starfield => return None,
         };
         Some(Self {
+            editor_id,
             diffuse,
             normal,
             specular,
@@ -1293,8 +1320,9 @@ pub(super) fn spawn_terrain_mesh(
     // authored value (the audit measured 43.8% of Skyrim terrain vertices
     // unpainted on the base) and the same texture keeps one affinity whether
     // or not it happens to be the canonical quadrant base.
-    let base_affinity = crate::groundcover_translate::layer_affinity(cover_affinity_key(
-        base_ltex,
+    let base_affinity = crate::groundcover_translate::layer_affinity(layer_cover_key(
+        normalize_base_ltex(base_ltex),
+        default_land,
         landscape_texture_names,
         base_texture_path,
     ));
