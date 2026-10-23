@@ -175,7 +175,7 @@ separate integration gap. See the gaps table below.
 | Kinematic character controller (gravity, collide-and-slide, jump, autostep) | ✓ |
 | NPC / creature physics | ~ NPC locomotion through the Rapier KCC (M42.10/M42.11); no NPC dynamics |
 | Weapon / item physics | ✗ |
-| Ragdoll (Havok constraint mapping) | ~ Classic constraint chain (Oblivion/FO3/FNV/Skyrim) on Rapier; FO4+ blocked on BhkSystemBinary |
+| Ragdoll (Havok constraint mapping) | ~ Classic constraint chain (Oblivion/FO3/FNV/Skyrim) on Rapier; FO4 decoded `bhkRagdollSystem` articulation (#6070); FO76/SF tagfile payloads open |
 
 ---
 

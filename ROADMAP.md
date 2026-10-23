@@ -100,7 +100,7 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
   covers the five pre-FO4 games including cross-tile joins (#3802); FO4's
   compressed `NVNM` body is still undecoded.
 - FO76/Starfield actors have no walk-clip source (FO4's run through its Havok
-  2014 behavior graphs); FO4+ ragdolls wait on the `BhkSystemBinary` decoder.
+  2014 behavior graphs).
 - Dialogue: Skyrim+ `.fuz` voice (#5912). The greeting, line-lifetime, force-greet
   and FO3/FNV voice layers are live (#5367,
   [`dialogue-trees.md`](docs/engine/dialogue-trees.md)). Story Manager
