@@ -269,6 +269,8 @@ fn vital_color(label: &str) -> Color32 {
         "stamina" | "fatigue" => Color32::from_rgb(74, 168, 88),
         "hp" | "health" => Color32::from_rgb(198, 58, 48),
         "ap" | "actionpoints" | "o2" => Color32::from_rgb(212, 176, 62),
+        // The FO3 / FNV rad meter: a radiation-sign green, distinct from AP's gold.
+        "rad" | "rads" => Color32::from_rgb(132, 204, 54),
         _ => Color32::from_rgb(170, 170, 170),
     }
 }

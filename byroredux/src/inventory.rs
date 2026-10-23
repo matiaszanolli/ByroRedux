@@ -316,6 +316,12 @@ pub(crate) struct PlayerVitals {
     /// were fallout.rs's unit-test fixture ids, not real AVIFs) and
     /// resolve through this once per lookup instead of embedding ids.
     by_editor_id: FxHashMap<&'static str, u32>,
+    /// The rad meter (FO3 / FNV): `(label, AVIF FormID, full scale)`. The
+    /// scale is the highest authored radiation sickness stage (`RADS`
+    /// threshold — 1000 rads in `FalloutNV.esm`'s `Rad5`), so the gauge
+    /// fills as the player nears the last stage. `None` when the profile
+    /// names no radiation value or the master authors no stages.
+    radiation: Option<(&'static str, u32, f32)>,
 }
 
 impl PlayerVitals {
@@ -344,7 +350,15 @@ fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
             Some((label, avif))
         })
         .collect();
-    PlayerVitals { bars, by_editor_id }
+    let radiation = index.character_rules.radiation_gauge().and_then(|(label, editor_id)| {
+        let avif = index.actor_value_form_id(editor_id)?;
+        let scale = index.radiation_stages.values().map(|stage| stage.threshold).max()?;
+        (scale > 0).then(|| {
+            by_editor_id.insert(editor_id, avif);
+            (label, avif, scale as f32)
+        })
+    });
+    PlayerVitals { bars, by_editor_id, radiation }
 }
 
 /// Compose the player's vitals bars from canonical `ActorValues`. Returns
@@ -361,7 +375,7 @@ pub(crate) fn vitals_snapshot(
     let player = world.try_resource::<PlayerEntity>().and_then(|r| r.0)?;
     let vitals = world.try_resource::<PlayerVitals>()?;
     let values = world.get::<ActorValues>(player)?;
-    let bars: Vec<byroredux_debug_ui::VitalBarView> = vitals
+    let mut bars: Vec<byroredux_debug_ui::VitalBarView> = vitals
         .bars
         .iter()
         .filter_map(|&(label, avif)| {
@@ -377,6 +391,16 @@ pub(crate) fn vitals_snapshot(
             })
         })
         .collect();
+    // The rad meter accumulates rather than depletes: it shows the current
+    // rads (none yet is an empty gauge, not a missing one) against the
+    // last sickness stage, and is drawn only beside real pools.
+    if let (Some((label, avif, scale)), false) = (vitals.radiation, bars.is_empty()) {
+        bars.push(byroredux_debug_ui::VitalBarView {
+            label,
+            current: values.current(avif).clamp(0.0, scale),
+            max: scale,
+        });
+    }
     (!bars.is_empty()).then_some(bars)
 }
 
@@ -3941,6 +3965,7 @@ mod tests {
                 ("Magicka", 1001),
                 ("Fatigue", 1002),
             ]),
+            radiation: None,
         });
         let mut values = byroredux_core::ecs::components::ActorValues::new();
         values.set_base(1000, 100.0);
@@ -3981,6 +4006,7 @@ mod tests {
         world.insert_resource(PlayerVitals {
             bars: vec![("Health", 1000)],
             by_editor_id: FxHashMap::from_iter([("Health", 1000)]),
+            radiation: None,
         });
         let mut values = byroredux_core::ecs::components::ActorValues::new();
         values.set_base(1000, 105.0);
@@ -3997,6 +4023,34 @@ mod tests {
                 max: 605.0
             }],
         );
+    }
+
+    /// The FO3 / FNV rad meter accumulates: it reads the current rads
+    /// against the last sickness stage, shows an empty gauge before any rads
+    /// land (no `RadiationRads` entry yet), and pins at the full scale.
+    #[test]
+    fn vitals_snapshot_appends_the_rad_gauge_after_the_pools() {
+        let mut world = World::new();
+        world.register::<byroredux_core::ecs::components::ActorValues>();
+        let player = world.spawn();
+        world.insert_resource(PlayerEntity(Some(player)));
+        world.insert_resource(PlayerVitals {
+            bars: vec![("HP", 1000), ("AP", 1001)],
+            by_editor_id: FxHashMap::from_iter([("Health", 1000), ("ActionPoints", 1001), ("RadiationRads", 0x5E4)]),
+            radiation: Some(("RAD", 0x5E4, 1000.0)),
+        });
+        let mut values = byroredux_core::ecs::components::ActorValues::new();
+        values.set_base(1000, 200.0);
+        values.set_base(1001, 70.0);
+        world.insert(player, values);
+        let rad = |world: &World| vitals_snapshot(world).unwrap().pop().unwrap();
+        assert_eq!(rad(&world), byroredux_debug_ui::VitalBarView { label: "RAD", current: 0.0, max: 1000.0 });
+
+        world.get_mut::<byroredux_core::ecs::components::ActorValues>(player).unwrap().mod_temporary(0x5E4, 250.0);
+        assert_eq!(rad(&world).current, 250.0);
+        world.get_mut::<byroredux_core::ecs::components::ActorValues>(player).unwrap().mod_temporary(0x5E4, 5000.0);
+        assert_eq!(rad(&world).current, 1000.0, "pinned at the fatal stage");
+        assert_eq!(vitals_snapshot(&world).unwrap().len(), 3, "HP, AP, RAD");
     }
 
     #[test]

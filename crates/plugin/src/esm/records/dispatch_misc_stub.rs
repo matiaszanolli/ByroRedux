@@ -198,7 +198,7 @@ pub(super) fn dispatch_misc_stub_group(
         b"RADS" => extract_records(reader, end, b"RADS", &mut |fid, subs| {
             index
                 .radiation_stages
-                .insert(fid, parse_minimal_esm_record(fid, subs));
+                .insert(fid, parse_rads(fid, subs, &remap));
         })?,
         b"SLPD" => extract_records(reader, end, b"SLPD", &mut |fid, subs| {
             index

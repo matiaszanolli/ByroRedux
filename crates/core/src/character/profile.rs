@@ -235,6 +235,13 @@ pub struct CharacterRulesProfile {
     /// (or a profile with no resolver yet, Oblivion pre-#3768) drops out
     /// per candidate rather than erroring.
     vital_pools: &'static [(&'static str, &'static str)],
+    /// The radiation gauge as `(HUD label, AVIF editor id)`: an accumulating
+    /// value drawn against the master's highest radiation sickness stage
+    /// (`RADS` threshold), not a depleting pool. FO3 / FNV meter the
+    /// player's `RadiationRads` (GECK *Actor Value Codes* 54; *GetRadiationLevel*:
+    /// "the current radiation value of an actor use GetAV radiationrads").
+    /// `None` on games with no rad meter.
+    radiation_gauge: Option<(&'static str, &'static str)>,
     ruleset: RulesetBuilder,
     /// #5921 — what over-encumbrance does.
     over_encumbered: OverEncumberedRule,
@@ -274,6 +281,7 @@ impl CharacterRulesProfile {
         creature_stats: NpcStatModel::None,
         body_condition_base: None,
         vital_pools: &[],
+        radiation_gauge: None,
         ruleset: RulesetBuilder::None,
         over_encumbered: OverEncumberedRule::None,
         kill_experience: false,
@@ -293,6 +301,7 @@ impl CharacterRulesProfile {
         // at resolution until #3768's pre-AVIF resolver lands — the
         // roster states the intent, the resolver gates reality.
         vital_pools: &[("Health", "Health"), ("Magicka", "Magicka"), ("Fatigue", "Fatigue")],
+        radiation_gauge: None,
         ruleset: RulesetBuilder::None,
         over_encumbered: OverEncumberedRule::None,
         kill_experience: false,
@@ -322,6 +331,7 @@ impl CharacterRulesProfile {
         creature_stats: NpcStatModel::CreatureData,
         body_condition_base: Some(100.0),
         vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
+        radiation_gauge: Some(("RAD", "RadiationRads")),
         ruleset: RulesetBuilder::Fallout3,
         over_encumbered: OverEncumberedRule::SpeedMult,
         kill_experience: true,
@@ -349,6 +359,7 @@ impl CharacterRulesProfile {
         creature_stats: NpcStatModel::CreatureData,
         body_condition_base: Some(100.0),
         vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
+        radiation_gauge: Some(("RAD", "RadiationRads")),
         ruleset: RulesetBuilder::FalloutNewVegas,
         over_encumbered: OverEncumberedRule::SpeedMult,
         kill_experience: true,
@@ -384,6 +395,7 @@ impl CharacterRulesProfile {
         // executed only inside its own unit test.
         body_condition_base: None,
         vital_pools: &[("Health", "Health"), ("Magicka", "Magicka"), ("Stamina", "Stamina")],
+        radiation_gauge: None,
         ruleset: RulesetBuilder::Skyrim,
         over_encumbered: OverEncumberedRule::NoSprint,
         kill_experience: false,
@@ -412,6 +424,8 @@ impl CharacterRulesProfile {
         creature_stats: NpcStatModel::None,
         body_condition_base: None,
         vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
+        // FO4 / FO76 radiation lowers max HP instead of filling a meter.
+        radiation_gauge: None,
         ruleset: RulesetBuilder::Fallout4,
         // No sourced FO4 over-encumbrance effect is wired (#5921 capture
         // note: intended, not an oversight).
@@ -450,6 +464,8 @@ impl CharacterRulesProfile {
         creature_stats: NpcStatModel::None,
         body_condition_base: None,
         vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
+        // FO4 / FO76 radiation lowers max HP instead of filling a meter.
+        radiation_gauge: None,
         ruleset: RulesetBuilder::None,
         over_encumbered: OverEncumberedRule::None,
         kill_experience: false,
@@ -477,6 +493,7 @@ impl CharacterRulesProfile {
         // dropped out of every candidate (`actor_value_form_id` drops
         // unknown editor ids rather than erroring).
         vital_pools: &[("HP", "Health"), ("O2", "Oxygen")],
+        radiation_gauge: None,
         ruleset: RulesetBuilder::None,
         over_encumbered: OverEncumberedRule::None,
         kill_experience: false,
@@ -500,6 +517,12 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn vital_pools(self) -> &'static [(&'static str, &'static str)] {
         self.vital_pools
+    }
+
+    /// See the field doc: `(HUD label, AVIF editor id)` of the rad meter.
+    #[must_use]
+    pub const fn radiation_gauge(self) -> Option<(&'static str, &'static str)> {
+        self.radiation_gauge
     }
 
     #[must_use]

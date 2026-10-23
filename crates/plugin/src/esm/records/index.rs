@@ -16,7 +16,7 @@ use super::{
     HdptRecord,
     IdleRecord, ImadRecord, LctnRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
     LeveledList, LgtmRecord, LoadScreenRecord, LoadScreenTransform, MesgRecord, MgefRecord,
-    MinimalEsmRecord, MuscRecord, ResolvedLoadScreenModel,
+    MinimalEsmRecord, MuscRecord, RadiationStageRecord, ResolvedLoadScreenModel,
     NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
     RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SmNodeRecord, SounRecord, SpelRecord,
@@ -639,7 +639,7 @@ pub struct EsmIndex {
     /// `HUNG` hunger stages (FNV hardcore).
     pub hunger_stages: HashMap<u32, MinimalEsmRecord>,
     /// `RADS` radiation stages.
-    pub radiation_stages: HashMap<u32, MinimalEsmRecord>,
+    pub radiation_stages: HashMap<u32, RadiationStageRecord>,
     /// `SLPD` sleep deprivation stages (FNV hardcore).
     pub sleep_deprivation_stages: HashMap<u32, MinimalEsmRecord>,
     // FNV Caravan + Casino (6):

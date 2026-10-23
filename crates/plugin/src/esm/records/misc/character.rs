@@ -1,4 +1,5 @@
-//! Character appearance records — head parts, eyes, hair.
+//! Character records — head parts, eyes, hair, combat styles, idles, and the
+//! FO3 / FNV radiation sickness stages.
 
 use super::super::common::{read_zstring, remap_fid, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, SubRecord};
@@ -323,4 +324,53 @@ mod tests {
     }
 
     // ── AI / dialogue / effect stubs (#446, #447) ──────────────────
+}
+
+/// FO3 / FNV radiation sickness stage (`RADS`, the GECK *Radiation Levels*
+/// dialog: "Rads: Radiation level (integer). Sickness: the Actor Effect
+/// associated with the radiation"). `DATA` is that pair: a `u32` rads
+/// threshold, then the sickness `SPEL` FormID. `FalloutNV.esm` authors five,
+/// `Rad1`..`Rad5` at 200 / 400 / 600 / 800 / 1000 rads.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RadiationStageRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// The rads at which this stage's sickness applies.
+    pub threshold: u32,
+    /// The stage's sickness Actor Effect (global space; `0` if unauthored).
+    pub sickness_effect: u32,
+}
+
+pub fn parse_rads(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> RadiationStageRecord {
+    let mut out = RadiationStageRecord {
+        form_id,
+        editor_id: CommonNamedFields::from_subs_with_remap(subs, remap).editor_id,
+        ..Default::default()
+    };
+    if let Some(data) = subs.iter().find(|sub| &sub.sub_type == b"DATA") {
+        let mut r = SubReader::new(&data.data);
+        out.threshold = r.u32_or_default();
+        out.sickness_effect = remap_fid(r.u32_or_default(), remap);
+    }
+    out
+}
+
+#[cfg(test)]
+mod rads_tests {
+    use super::*;
+    use crate::esm::records::test_support::sub;
+
+    /// `FalloutNV.esm` `Rad5` (`000335A0`), `DATA` bytes verbatim: the fatal
+    /// 1000-rad stage and its sickness effect `00033597`.
+    #[test]
+    fn parse_rads_reads_the_threshold_and_sickness() {
+        let subs = vec![
+            sub(b"EDID", b"Rad5\0"),
+            sub(b"DATA", [0xe8u8, 0x03, 0x00, 0x00, 0x97, 0x35, 0x03, 0x00]),
+        ];
+        let stage = parse_rads(0x0003_35A0, &subs, &None);
+        assert_eq!(stage.editor_id, "Rad5");
+        assert_eq!(stage.threshold, 1000);
+        assert_eq!(stage.sickness_effect, 0x0003_3597);
+    }
 }

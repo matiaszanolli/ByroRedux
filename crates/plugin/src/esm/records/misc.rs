@@ -51,8 +51,8 @@ mod world;
 
 pub use challenge::{kind as challenge_kind, parse_chal, ChalRecord, FLAG_RECURRING, FLAG_SHOW_ZERO_PROGRESS, FLAG_START_DISABLED};
 pub use character::{
-    parse_csty, parse_eyes, parse_hair, parse_hdpt, parse_idle, CstyRecord, EyesRecord, HairRecord,
-    HdptRecord, IdleRecord,
+    parse_csty, parse_eyes, parse_hair, parse_hdpt, parse_idle, parse_rads, CstyRecord, EyesRecord,
+    HairRecord, HdptRecord, IdleRecord, RadiationStageRecord,
 };
 pub use dialogue::{
     build_conversation_tree, parse_dial, parse_dlbr, parse_info, parse_mesg, ConversationTree,
