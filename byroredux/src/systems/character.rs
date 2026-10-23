@@ -528,6 +528,33 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         filter_groups: None,
         kcc_offset_bu: kcc_offset,
     });
+    // #5155 — a fall the KCC blocked without calling it ground. The support
+    // probe above only runs for a capsule that was grounded last frame, and a
+    // teleport (save restore, door arrival) hands over an ungrounded capsule:
+    // standing on support the KCC's own verdict does not call ground but the
+    // walkable probe does (the same split #5560 records for walking), every
+    // gravity request is swept to zero and the capsule hangs at the restore
+    // pose with its fall velocity at the clamp, forever. Ask the probe once,
+    // where it stands now.
+    if !probe_enabled
+        && swim.is_none()
+        && !jump_fired
+        && !result.grounded
+        && fall_blocked(desired_vertical, result.translation.y)
+    {
+        let blocked_at = current_pos + result.translation;
+        probe_found_support = pw
+            .cast_capsule_down_surface_and_normal(
+                blocked_at,
+                controller.half_height,
+                controller.radius,
+                controller.step_height + kcc_offset.max(0.0),
+                body_handle,
+            )
+            .is_some_and(|(_, normal_y)| {
+                normal_y.abs() >= crate::scene::min_walkable_normal_y(controller)
+            });
+    }
     drop(pw);
 
     let new_pos = current_pos + result.translation;
@@ -1717,6 +1744,14 @@ pub(crate) fn support_probe_enabled(swimming: bool, was_grounded: bool, jump_fir
     !swimming && was_grounded && !jump_fired
 }
 
+/// #5155 — whether the KCC swept a downward request (`desired_vertical`) to no
+/// descent at all (`moved_vertical`): the capsule is standing on something,
+/// whatever the KCC's grounded bit says. A real fall always descends, so this
+/// never fires mid-air.
+pub(crate) fn fall_blocked(desired_vertical: f32, moved_vertical: f32) -> bool {
+    desired_vertical < -0.01 && moved_vertical > -0.01
+}
+
 /// `swimming` is a hard veto on both outputs, not a third input to the OR.
 ///
 /// Reference (OpenMW `movementsolver.cpp:379`): the ground test runs only
@@ -1752,6 +1787,18 @@ pub(crate) fn resolve_ground_contact(
 mod tests {
     use super::*;
     use byroredux_core::ecs::components::water::WaterKind;
+
+    /// #5155 — only a downward request swept to no descent counts as a
+    /// blocked fall: a fall that moves, a rise, and an idle frame do not.
+    #[test]
+    fn a_fall_is_blocked_only_when_a_descent_was_swept_to_nothing() {
+        assert!(fall_blocked(-66.7, 0.0), "the restore signature: v=-2000 at 30 fps, no travel");
+        assert!(fall_blocked(-1.35, 0.0001));
+        assert!(!fall_blocked(-66.7, -66.7), "a real fall descends");
+        assert!(!fall_blocked(-66.7, -0.5), "a partial descent onto support is a landing the KCC sees");
+        assert!(!fall_blocked(0.0, 0.0), "idle");
+        assert!(!fall_blocked(5.0, 0.0), "a jump request");
+    }
 
     /// #5591 — every teleport path goes through `place_character_body`: the
     /// body lands on `Transform` and `GlobalTransform`, its stale free-fall
