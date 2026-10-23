@@ -2409,6 +2409,254 @@ mod tests {
             .is_some());
     }
 
+    // ---- #6273 — drift guard: every parked component, through every pass.
+    //
+    // Adding a parked component edits the row struct, `capture`, `restore`,
+    // `park_unresolved_snapshot_rows`, its keep rule and the completeness
+    // table. The partition test proves the table; THESE prove that each pass
+    // actually carries every field, so a field added to the struct and to one
+    // pass but missed in another fails here instead of silently dropping that
+    // state on a save load. The destructures below name every field with no
+    // `..`: a new field does not compile until it is accounted for.
+
+    /// Insert every component a [`ReferenceState`] / [`ScriptState`] row parks.
+    fn register_parked_components(world: &mut World) {
+        use byroredux_scripting::magic_effects::ActiveMagicEffects;
+        use byroredux_scripting::obscript_state::{IgnoreCrime, WeaponDrawn};
+        use byroredux_scripting::papyrus_demo::RumbleOnActivate;
+        use byroredux_scripting::script_packages::ScriptPackage;
+        use byroredux_scripting::{
+            ActorControlState, Bleedout, ScriptTimer, ScriptVariables, SpellList, TwoStateActivator,
+        };
+        world.register::<byroredux_core::character::Perks>();
+        world.register::<ActorControlState>();
+        world.register::<Bleedout>();
+        world.register::<ScriptPackage>();
+        world.register::<ActiveMagicEffects>();
+        world.register::<WeaponDrawn>();
+        world.register::<IgnoreCrime>();
+        world.register::<SpellList>();
+        world.register::<TwoStateActivator>();
+        world.register::<ScriptVariables>();
+        world.register::<ScriptTimer>();
+        world.register::<RumbleOnActivate>();
+        world.register::<crate::inventory::PickedUp>();
+        world.register::<EquipmentSlots>();
+        world.register::<EquippedWeapon>();
+        world.register::<ActorValues>();
+        world.register::<Dead>();
+        world.register::<byroredux_core::ecs::Transform>();
+        world.insert_resource(byroredux_core::string::StringPool::new());
+    }
+
+    /// Give `actor` every component the actor row parks, each non-default.
+    fn populate_actor(world: &mut World, actor: EntityId) {
+        use byroredux_scripting::magic_effects::{ActiveEffect, ActiveMagicEffects};
+        use byroredux_scripting::obscript_state::{IgnoreCrime, WeaponDrawn};
+        use byroredux_scripting::script_packages::ScriptPackage;
+        use byroredux_scripting::{ActorControlState, Bleedout, SpellList};
+        world.insert(actor, Inventory { items: vec![ItemStack::new(0xAAAA, 2)] });
+        let mut slots = EquipmentSlots::default();
+        slots.occupants[3] = Some(InventoryIndex(0));
+        world.insert(actor, slots);
+        world.insert(
+            actor,
+            EquippedWeapon { inventory_index: InventoryIndex(0), base_form_id: 0xAAAA, damage: 7.0, reach: 1.0, speed: 1.0 },
+        );
+        world.insert(actor, ActorValues::from_pairs([(0x2D4, 12.0)]));
+        world.insert(actor, SpellList(vec![0x10, 0xAB]));
+        let mut perks = byroredux_core::character::Perks::default();
+        perks.set_rank(0xBEEF, 2);
+        world.insert(actor, perks);
+        let mut control = ActorControlState::default();
+        control.set_unconscious(true);
+        world.insert(actor, control);
+        world.insert(actor, Bleedout { remaining_secs: Some(5.0) });
+        world.insert(actor, ScriptPackage { package: 0x0012_3456, constrained: true, running_secs: Some(4.0) });
+        world.insert(actor, Dead);
+        world.insert(
+            actor,
+            byroredux_core::ecs::Transform::new(
+                byroredux_core::math::Vec3::new(5.0, 6.0, 7.0),
+                byroredux_core::math::Quat::IDENTITY,
+                1.0,
+            ),
+        );
+        world.insert(
+            actor,
+            ActiveMagicEffects(vec![ActiveEffect {
+                source: 1,
+                mgef: 2,
+                caster: 0,
+                script: 0,
+                duration: 30.0,
+                indefinite: false,
+                elapsed: 4.0,
+                started: true,
+                ending: false,
+                value: None,
+                ticks: 0,
+                locals: Vec::new(),
+                ref_locals: Vec::new(),
+            }]),
+        );
+        world.insert(actor, WeaponDrawn);
+        world.insert(actor, IgnoreCrime);
+    }
+
+    /// Give `object` every component the script row parks.
+    fn populate_scripted_object(world: &mut World, object: EntityId) {
+        use byroredux_scripting::papyrus_demo::{RumbleOnActivate, RumbleState};
+        use byroredux_scripting::{ScriptTimer, ScriptVariables, TwoStateActivator};
+        world.insert(
+            object,
+            TwoStateActivator { is_open: true, is_animating: false, do_once: true, activated_once: true },
+        );
+        let mut locals = ScriptVariables::default();
+        locals.set_by_name("bDone", 1.0);
+        world.insert(object, locals);
+        world.insert(object, ScriptTimer { id: 7, remaining: 3.5 });
+        world.insert(
+            object,
+            RumbleOnActivate {
+                camera_intensity: 0.5,
+                duration: 2.0,
+                repeatable: false,
+                shake_left: 0.1,
+                shake_right: 0.2,
+                state: RumbleState::Busy { wait_remaining_secs: 1.25 },
+            },
+        );
+    }
+
+    /// Every field of an actor row carries state. `picked_up` is the pickup
+    /// tombstone: eviction captures it, a save-load park never sets it.
+    fn assert_actor_row_is_complete(row: &ReferenceState, expect_picked_up: bool, via: &str) {
+        let ReferenceState {
+            inventory,
+            equipment,
+            weapon,
+            actor_values,
+            spells,
+            perks,
+            control,
+            bleedout,
+            script_package,
+            dead,
+            corpse_pose,
+            picked_up,
+            magic_effects,
+            weapon_drawn,
+            ignore_crime,
+        } = row;
+        assert!(inventory.as_ref().is_some_and(|items| items.len() == 1), "{via}: inventory");
+        assert!(equipment.is_some(), "{via}: equipment");
+        assert!(weapon.is_some(), "{via}: weapon");
+        assert!(actor_values.is_some(), "{via}: actor_values");
+        assert_eq!(spells.as_deref(), Some(&[0x10, 0xAB][..]), "{via}: spells");
+        assert_eq!(perks.as_ref().map(|p| p.rank(0xBEEF)), Some(2), "{via}: perks");
+        assert!(control.is_some_and(|c| c.unconscious), "{via}: control");
+        assert!(bleedout.is_some(), "{via}: bleedout");
+        assert!(script_package.is_some(), "{via}: script_package");
+        assert!(*dead, "{via}: dead");
+        assert!(corpse_pose.is_some(), "{via}: corpse_pose");
+        assert_eq!(*picked_up, expect_picked_up, "{via}: picked_up");
+        assert!(magic_effects.as_ref().is_some_and(|e| e.0.len() == 1), "{via}: magic_effects");
+        assert!(*weapon_drawn, "{via}: weapon_drawn");
+        assert!(*ignore_crime, "{via}: ignore_crime");
+    }
+
+    fn assert_script_row_is_complete(row: &ScriptState, via: &str) {
+        let ScriptState { two_state, variables, timer, rumble } = row;
+        assert!(two_state.is_some_and(|s| s.is_open), "{via}: two_state");
+        assert!(variables.as_ref().is_some_and(|v| v.get_by_name("bDone") == Some(1.0)), "{via}: variables");
+        assert!(timer.is_some_and(|t| t.id == 7), "{via}: timer");
+        assert!(rumble.is_some(), "{via}: rumble");
+    }
+
+    /// Eviction: `capture` records every field, and `restore` puts every
+    /// component back on a respawned reference.
+    #[test]
+    fn eviction_captures_and_restores_every_parked_component() {
+        use byroredux_scripting::magic_effects::ActiveMagicEffects;
+        use byroredux_scripting::obscript_state::{IgnoreCrime, WeaponDrawn};
+        use byroredux_scripting::papyrus_demo::RumbleOnActivate;
+        use byroredux_scripting::script_packages::ScriptPackage;
+        use byroredux_scripting::{
+            ActorControlState, Bleedout, ScriptTimer, ScriptVariables, SpellList, TwoStateActivator,
+        };
+        let mut world = world();
+        register_parked_components(&mut world);
+        let actor = reference(&mut world, "Band.esm", 0x700);
+        populate_actor(&mut world, actor);
+        world.insert(actor, crate::inventory::PickedUp);
+        let object = reference(&mut world, "Band.esm", 0x701);
+        populate_scripted_object(&mut world, object);
+        evict(&mut world, &[actor, object]);
+
+        {
+            let store = world.resource::<PersistentReferenceStates>();
+            let actor_pair = FormIdPair { plugin: PluginId::from_filename("Band.esm"), local: LocalFormId(0x700) };
+            let object_pair = FormIdPair { plugin: PluginId::from_filename("Band.esm"), local: LocalFormId(0x701) };
+            assert_actor_row_is_complete(store.rows.get(&actor_pair).expect("actor row"), true, "capture");
+            assert_script_row_is_complete(store.scripts.get(&object_pair).expect("script row"), "capture");
+        }
+
+        // The respawn: a bare reference, then restore.
+        let actor = reference(&mut world, "Band.esm", 0x700);
+        world.insert(actor, Inventory::new());
+        assert!(restore(&mut world, actor));
+        assert!(world.get::<Inventory>(actor).is_some_and(|inv| inv.items.len() == 1), "inventory");
+        assert!(world.has::<EquipmentSlots>(actor), "equipment");
+        assert!(world.has::<EquippedWeapon>(actor), "weapon");
+        assert!(world.has::<ActorValues>(actor), "actor_values");
+        assert!(world.has::<SpellList>(actor), "spells");
+        assert!(world.has::<byroredux_core::character::Perks>(actor), "perks");
+        assert!(world.has::<ActorControlState>(actor), "control");
+        assert!(world.has::<Bleedout>(actor), "bleedout");
+        assert!(world.has::<ScriptPackage>(actor), "script_package");
+        assert!(world.has::<Dead>(actor), "dead");
+        assert!(world.has::<ActiveMagicEffects>(actor), "magic_effects");
+        assert!(world.has::<WeaponDrawn>(actor), "weapon_drawn");
+        assert!(world.has::<IgnoreCrime>(actor), "ignore_crime");
+        let object = reference(&mut world, "Band.esm", 0x701);
+        assert!(restore_script_state(&mut world, object));
+        assert!(world.has::<TwoStateActivator>(object), "two_state");
+        assert!(world.has::<ScriptVariables>(object), "variables");
+        assert!(world.has::<ScriptTimer>(object), "timer");
+        assert!(world.has::<RumbleOnActivate>(object), "rumble");
+    }
+
+    /// The save-reload ring: `park_unresolved_snapshot_rows` builds, from the
+    /// snapshot's own columns, the same complete row eviction would have.
+    #[test]
+    fn save_reload_parking_records_every_parked_component() {
+        let mut src = world();
+        register_parked_components(&mut src);
+        let actor = reference(&mut src, "Band.esm", 0x710);
+        populate_actor(&mut src, actor);
+        let object = reference(&mut src, "Band.esm", 0x711);
+        populate_scripted_object(&mut src, object);
+        let registry = crate::save_io::build_save_registry();
+        let snapshot = byroredux_save::save_world(&src, &registry).unwrap();
+        let bytes = byroredux_save::encode(&snapshot, registry.schema_fingerprint()).unwrap();
+        let decoded = byroredux_save::decode(&bytes, registry.schema_fingerprint()).unwrap();
+
+        let mut dst = world();
+        register_parked_components(&mut dst);
+        byroredux_save::restore_resources(&mut dst, &registry, &decoded).unwrap();
+        let remap = byroredux_save::build_form_id_remap(&dst, &registry, &decoded);
+        let unresolved = byroredux_save::unresolved_form_id_pairs(&registry, &decoded, &remap);
+        assert_eq!(unresolved.len(), 2);
+        assert_eq!(park_unresolved_snapshot_rows(&mut dst, &decoded, &unresolved), 2);
+
+        let store = dst.resource::<PersistentReferenceStates>();
+        let actor_pair = FormIdPair { plugin: PluginId::from_filename("Band.esm"), local: LocalFormId(0x710) };
+        let object_pair = FormIdPair { plugin: PluginId::from_filename("Band.esm"), local: LocalFormId(0x711) };
+        assert_actor_row_is_complete(store.rows.get(&actor_pair).expect("actor row"), false, "park");
+        assert_script_row_is_complete(store.scripts.get(&object_pair).expect("script row"), "park");
+    }
+
     /// #4695 — the save-reload window. A pickup tombstone parked while the
     /// placement is resident is saved in `PersistentReferenceStates` whole,
     /// but the load path runs its cell reload inside `without_parked_state`
