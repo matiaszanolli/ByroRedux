@@ -1018,32 +1018,16 @@ fn spawn_land_collider(
     }
 }
 
-/// Generate a terrain mesh from LAND heightmap data and spawn it as an
-/// entity. The mesh participates in the global geometry SSBO so RT
-/// reflection / GI rays sample the right vertex data — using
-/// `upload_scene_mesh` (not plain `upload`) is mandatory; see #371.
-pub(super) fn spawn_terrain_mesh(
-    world: &mut World,
-    spawn: TerrainSpawnCtx,
+/// The 33×33 vertex grid of one LAND tile: position (Z-up → Y-up), VNML
+/// normal, VCLR colour, tiled UV and the packed splat weights of
+/// `splat_layers`. Anomalous heights / normals are counted and summarised in
+/// one log line, not per vertex.
+fn build_terrain_vertices(
+    land: &esm::cell::LandscapeData,
+    splat_layers: &CellSplatLayers,
     grid_x: i32,
     grid_y: i32,
-    land: &esm::cell::LandscapeData,
-) -> Option<usize> {
-    let TerrainSpawnCtx {
-        ctx,
-        tex_provider,
-        landscape_textures,
-        landscape_texture_sets,
-        mat_provider,
-        landscape_grasses,
-        landscape_texture_names,
-        landscape_texture_havok,
-        blas_specs,
-        water_y,
-        game,
-        hidden_quadrants,
-    } = spawn;
-    let surface_material = land_surface_material(land, landscape_texture_havok);
+) -> Vec<Vertex> {
     // #4052 — both promoted to `byroredux_core::math::coord` so the
     // ground-cover scatter shader reads the same numbers through
     // `shader_constants.glsl` instead of a second hand-typed copy.
@@ -1052,40 +1036,6 @@ pub(super) fn spawn_terrain_mesh(
 
     let origin_x = grid_x as f32 * EXTERIOR_CELL_UNITS;
     let origin_y = grid_y as f32 * EXTERIOR_CELL_UNITS;
-
-    // Collect cell-global splat layers before the vertex loop — we need
-    // all 8 resolved before we can pack per-vertex weights. #470.
-    let mut layer_textures = LandscapeLayerTextures {
-        landscape_textures,
-        landscape_texture_sets,
-        mat_provider,
-    };
-    let splat_layers = build_cell_splat_layers(
-        ctx,
-        tex_provider,
-        &mut layer_textures,
-        landscape_texture_names,
-        land,
-        land.quadrants.iter().find_map(|q| q.base),
-        DefaultLandTexture::for_game(game),
-    );
-    // #1343 — `build_cell_splat_layers` acquired (refcounted) one texture per
-    // splat layer above, but those handles only reach an unload-droppable
-    // owner at `allocate_terrain_tile` below. If we bail before that (no
-    // allocator / mesh-upload failure), release them here so the refcount +
-    // bindless slot don't leak. Snapshot the indices now so the release
-    // doesn't re-borrow `splat_layers` (still needed by the vertex loop).
-    let mut splat_tex_indices: Vec<u32> = splat_layers
-        .layers
-        .iter()
-        .flat_map(|layer| {
-            [
-                layer.diffuse_index,
-                layer.normal_index,
-                layer.specular_index,
-            ]
-        })
-        .collect();
 
     // Build vertices (33×33 = 1089).
     let mut vertices = Vec::with_capacity(GRID * GRID);
@@ -1180,6 +1130,155 @@ pub(super) fn spawn_terrain_mesh(
              degenerate VNML normal(s) (raw magnitude < {VNML_DEGENERATE_RAW_MAGNITUDE})"
         );
     }
+    vertices
+}
+
+/// The ground-cover density field's per-cell inputs from the tile's resolved
+/// splat layers: each lane's affinity and authored grass list, and the same for
+/// the BTXT base.
+struct CoverDensityInputs {
+    layer_affinity: [f32; TERRAIN_SPLAT_LAYERS as usize],
+    base_affinity: f32,
+    authored_grass: [Vec<u32>; TERRAIN_SPLAT_LAYERS as usize],
+    base_authored_grass: Vec<u32>,
+}
+
+fn cover_density_inputs(
+    world: &World,
+    splat_layers: &CellSplatLayers,
+    base_ltex: Option<u32>,
+    default_land: Option<DefaultLandTexture>,
+    landscape_texture_names: &HashMap<u32, String>,
+    landscape_grasses: &HashMap<u32, Vec<u32>>,
+    base_texture_path: Option<&str>,
+) -> CoverDensityInputs {
+    // #4054 — the density field's two per-cell inputs. Resolved here because
+    // this is the only place that has both: the resolved `LTEX` layer order
+    // (which the shader's splat lanes are indexed by) and the caller's water
+    // height. Unfilled affinity slots keep the default fill; under #4903's
+    // ordered mix a zero-weight lane cannot affect the composed affinity
+    // either way, so the fill is uniformity, not correctness.
+    // #5173 — sized from the splat constant like every other per-lane array
+    // in this chain: a `zip` fill over a hard-coded 8 would silently drop
+    // lanes 8+ the moment `TERRAIN_SPLAT_LAYERS` grew.
+    let mut layer_affinity =
+        [crate::groundcover_translate::DEFAULT_AFFINITY; TERRAIN_SPLAT_LAYERS as usize];
+    for (affinity, layer) in layer_affinity.iter_mut().zip(splat_layers.layers.iter()) {
+        *affinity = layer.cover_affinity;
+    }
+    // #4903 — the BTXT base is a real LTEX with its own affinity. It starts
+    // the density field's ordered mix, so an unpainted vertex reads its
+    // authored value (the audit measured 43.8% of Skyrim terrain vertices
+    // unpainted on the base) and the same texture keeps one affinity whether
+    // or not it happens to be the canonical quadrant base.
+    let base_affinity = crate::groundcover_translate::layer_affinity(layer_cover_key(
+        normalize_base_ltex(base_ltex),
+        default_land,
+        landscape_texture_names,
+        base_texture_path,
+    ));
+    let authored_grass = authored_grass_for_splat_layers(&splat_layers.layers, landscape_grasses);
+    // #4906 — the base LTEX's grass list, so unpainted ground grows what its
+    // own texture lists.
+    let base_authored_grass = base_ltex
+        .and_then(|ltex_id| landscape_grasses.get(&ltex_id))
+        .cloned()
+        .unwrap_or_default();
+    // The procedural blade tier's density comes from the AUTHORED vegetation
+    // data wherever a load order carries it: each landscape texture's affinity
+    // is the union density of the GRAS records it lists (`LTEX.GNAM`), so a
+    // landscape mod that links a texture to a grass grows blades there and an
+    // authored "no grass" texture grows none. The keyword table (an
+    // editor-ID heuristic) stays only as the fallback for a load order with no
+    // texture->grass links at all (`AuthoredCover::localised` false), so games
+    // without that data are unchanged. The same lane rate the authored-model
+    // tier uses, so both read one authored truth.
+    let (mut layer_affinity, mut base_affinity) = (layer_affinity, base_affinity);
+    if let Some(cover) = world
+        .try_resource::<byroredux_core::ecs::components::groundcover::AuthoredCover>()
+        .filter(|cover| cover.localised)
+    {
+        for (affinity, grasses) in layer_affinity
+            .iter_mut()
+            .zip(authored_grass.iter())
+            .take(splat_layers.layers.len())
+        {
+            *affinity = cover.union_density(grasses);
+        }
+        base_affinity = cover.union_density(&base_authored_grass);
+    }
+    CoverDensityInputs {
+        layer_affinity,
+        base_affinity,
+        authored_grass,
+        base_authored_grass,
+    }
+}
+
+/// Generate a terrain mesh from LAND heightmap data and spawn it as an
+/// entity. The mesh participates in the global geometry SSBO so RT
+/// reflection / GI rays sample the right vertex data — using
+/// `upload_scene_mesh` (not plain `upload`) is mandatory; see #371.
+pub(super) fn spawn_terrain_mesh(
+    world: &mut World,
+    spawn: TerrainSpawnCtx,
+    grid_x: i32,
+    grid_y: i32,
+    land: &esm::cell::LandscapeData,
+) -> Option<usize> {
+    let TerrainSpawnCtx {
+        ctx,
+        tex_provider,
+        landscape_textures,
+        landscape_texture_sets,
+        mat_provider,
+        landscape_grasses,
+        landscape_texture_names,
+        landscape_texture_havok,
+        blas_specs,
+        water_y,
+        game,
+        hidden_quadrants,
+    } = spawn;
+    let surface_material = land_surface_material(land, landscape_texture_havok);
+    let origin_x = grid_x as f32 * EXTERIOR_CELL_UNITS;
+    let origin_y = grid_y as f32 * EXTERIOR_CELL_UNITS;
+
+    // Collect cell-global splat layers before the vertex loop — we need
+    // all 8 resolved before we can pack per-vertex weights. #470.
+    let mut layer_textures = LandscapeLayerTextures {
+        landscape_textures,
+        landscape_texture_sets,
+        mat_provider,
+    };
+    let splat_layers = build_cell_splat_layers(
+        ctx,
+        tex_provider,
+        &mut layer_textures,
+        landscape_texture_names,
+        land,
+        land.quadrants.iter().find_map(|q| q.base),
+        DefaultLandTexture::for_game(game),
+    );
+    // #1343 — `build_cell_splat_layers` acquired (refcounted) one texture per
+    // splat layer above, but those handles only reach an unload-droppable
+    // owner at `allocate_terrain_tile` below. If we bail before that (no
+    // allocator / mesh-upload failure), release them here so the refcount +
+    // bindless slot don't leak. Snapshot the indices now so the release
+    // doesn't re-borrow `splat_layers` (still needed by the vertex loop).
+    let mut splat_tex_indices: Vec<u32> = splat_layers
+        .layers
+        .iter()
+        .flat_map(|layer| {
+            [
+                layer.diffuse_index,
+                layer.normal_index,
+                layer.specular_index,
+            ]
+        })
+        .collect();
+
+    let vertices = build_terrain_vertices(land, &splat_layers, grid_x, grid_y);
 
     let indices = land_tile_indices(hidden_quadrants);
     let positions: Vec<[f32; 3]> = vertices.iter().map(|v| v.position).collect();
@@ -1297,65 +1396,20 @@ pub(super) fn spawn_terrain_mesh(
         }),
     };
 
-    // Allocate a terrain tile slot only when the cell actually has splat
-    // layers. BTXT-only cells skip this and render with the pre-#470
-    // single-texture path for free. The slot is freed in `unload_cell`
-    // via `VulkanContext::free_terrain_tile_slot`.
-    // #4054 — the density field's two per-cell inputs. Resolved here because
-    // this is the only place that has both: the resolved `LTEX` layer order
-    // (which the shader's splat lanes are indexed by) and the caller's water
-    // height. Unfilled affinity slots keep the default fill; under #4903's
-    // ordered mix a zero-weight lane cannot affect the composed affinity
-    // either way, so the fill is uniformity, not correctness.
-    // #5173 — sized from the splat constant like every other per-lane array
-    // in this chain: a `zip` fill over a hard-coded 8 would silently drop
-    // lanes 8+ the moment `TERRAIN_SPLAT_LAYERS` grew.
-    let mut layer_affinity =
-        [crate::groundcover_translate::DEFAULT_AFFINITY; TERRAIN_SPLAT_LAYERS as usize];
-    for (affinity, layer) in layer_affinity.iter_mut().zip(splat_layers.layers.iter()) {
-        *affinity = layer.cover_affinity;
-    }
-    // #4903 — the BTXT base is a real LTEX with its own affinity. It starts
-    // the density field's ordered mix, so an unpainted vertex reads its
-    // authored value (the audit measured 43.8% of Skyrim terrain vertices
-    // unpainted on the base) and the same texture keeps one affinity whether
-    // or not it happens to be the canonical quadrant base.
-    let base_affinity = crate::groundcover_translate::layer_affinity(layer_cover_key(
-        normalize_base_ltex(base_ltex),
+    let CoverDensityInputs {
+        layer_affinity,
+        base_affinity,
+        authored_grass,
+        base_authored_grass,
+    } = cover_density_inputs(
+        world,
+        &splat_layers,
+        base_ltex,
         default_land,
         landscape_texture_names,
+        landscape_grasses,
         base_texture_path,
-    ));
-    let authored_grass = authored_grass_for_splat_layers(&splat_layers.layers, landscape_grasses);
-    // #4906 — the base LTEX's grass list, so unpainted ground grows what its
-    // own texture lists.
-    let base_authored_grass = base_ltex
-        .and_then(|ltex_id| landscape_grasses.get(&ltex_id))
-        .cloned()
-        .unwrap_or_default();
-    // The procedural blade tier's density comes from the AUTHORED vegetation
-    // data wherever a load order carries it: each landscape texture's affinity
-    // is the union density of the GRAS records it lists (`LTEX.GNAM`), so a
-    // landscape mod that links a texture to a grass grows blades there and an
-    // authored "no grass" texture grows none. The keyword table (an
-    // editor-ID heuristic) stays only as the fallback for a load order with no
-    // texture->grass links at all (`AuthoredCover::localised` false), so games
-    // without that data are unchanged. The same lane rate the authored-model
-    // tier uses, so both read one authored truth.
-    let (mut layer_affinity, mut base_affinity) = (layer_affinity, base_affinity);
-    if let Some(cover) = world
-        .try_resource::<byroredux_core::ecs::components::groundcover::AuthoredCover>()
-        .filter(|cover| cover.localised)
-    {
-        for (affinity, grasses) in layer_affinity
-            .iter_mut()
-            .zip(authored_grass.iter())
-            .take(splat_layers.layers.len())
-        {
-            *affinity = cover.union_density(grasses);
-        }
-        base_affinity = cover.union_density(&base_authored_grass);
-    }
+    );
     let cover_water_y =
         water_y.unwrap_or(byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT);
     // #4057 — §12.5's canopy slab thickness for this tile: the resolved
@@ -1368,6 +1422,10 @@ pub(super) fn spawn_terrain_mesh(
     // per-cell constants; a per-frame path would be a second upload of a
     // number that cannot change while the cell is resident.
     let canopy_height = mean_palette_blade_height(world);
+    // Allocate a terrain tile slot only when the cell actually has splat
+    // layers. BTXT-only cells skip this and render with the pre-#470
+    // single-texture path for free. The slot is freed in `unload_cell`
+    // via `VulkanContext::free_terrain_tile_slot`.
     let terrain_tile_index = if !splat_layers.layers.is_empty() {
         let mut diffuse_indices = [0u32; TERRAIN_SPLAT_LAYERS as usize];
         let mut normal_indices = [0u32; TERRAIN_SPLAT_LAYERS as usize];
