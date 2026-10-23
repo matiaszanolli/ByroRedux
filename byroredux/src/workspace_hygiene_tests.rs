@@ -955,7 +955,10 @@ fn example_targets_hold_their_per_crate_ceilings() {
         ("nif", 38, 4289),
         ("pex", 3, 1215),
         ("plugin", 64, 7788),
-        ("scripting", 13, 4853),
+        // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
+        // misc-stat codes and `live` names the quests a script advanced
+        // (no new target; the existing triage tool grew).
+        ("scripting", 13, 4875),
         ("sfmaterial", 2, 1094),
         ("spt", 6, 1561),
         // #6195 — `layer_census.rs`, the real-data check that measured each

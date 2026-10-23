@@ -16,14 +16,17 @@
 #              world target or none — never the player itself — because the
 #              body registers no bone colliders beside the capsule
 #
-# Skyrim-only today: the reference slice route and its race-skin content.
+# The fixture carries the cell and pose (P3_CELL, P3_CAMERA_*); the body is
+# the game's own Player NPC_ and race.
 #
-#   docs/smoke-tests/p3-player-body.sh    # needs Skyrim SE data on disk
+#   docs/smoke-tests/p3-player-body.sh        # Skyrim SE
+#   docs/smoke-tests/p3-player-body.sh fnv    # Fallout New Vegas
 
 set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fixture.sh"
 smoke_load_fixture p3-player-body "$@"
+smoke_require_fixture_fields P3_CELL P3_CAMERA_POS P3_CAMERA_FORWARD
 
 ROOT_DIR="$SMOKE_ROOT_DIR"
 ENGINE_BIN="$ROOT_DIR/target/release/byroredux"
@@ -33,7 +36,7 @@ TIMEOUT="${BYROREDUX_SMOKE_TIMEOUT:-360}"
 
 LOG_DIR="$(mktemp -d /tmp/byro-p3-player-body.XXXXXX)"
 engine_pid=""
-keep_artifacts=0
+keep_artifacts=${BYROREDUX_KEEP_ARTIFACTS:-0}
 cleanup() {
     if [[ -n "$engine_pid" ]]; then
         kill -TERM "$engine_pid" 2>/dev/null || true
@@ -65,9 +68,11 @@ if [[ ! -x "$ENGINE_BIN" || ! -x "$DEBUG_BIN" ]]; then
     (cd "$ROOT_DIR" && cargo build --release --quiet -p byroredux -p byro-dbg)
 fi
 
+# `debug_command <command> [logfile]` — stdout, or the file when given (the
+# shape the fixture library's helpers call it with).
 debug_command() {
-    local command="$1"
-    env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" <<EOF
+    local command="$1" out="${2:-/dev/stdout}"
+    env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" >"$out" <<EOF
 $command
 .quit
 EOF
@@ -98,12 +103,12 @@ echo "smoke[p3-player-body]: $FIXTURE_LABEL -- player body attach + view toggle"
 cd "$SMOKE_DATA"
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     RUST_LOG="error,byroredux=info" \
-    xvfb-run -a "$ENGINE_BIN" \
+    "${SMOKE_HEADLESS[@]}" "$ENGINE_BIN" \
     "${SMOKE_ENGINE_ARGS[@]}" \
-    --cell WhiterunBanneredMare \
+    --cell "$P3_CELL" \
     --player \
-    --camera-pos -116,226,982 \
-    --camera-forward 0,-0.29,0.96 \
+    --camera-pos "$P3_CAMERA_POS" \
+    --camera-forward "$P3_CAMERA_FORWARD" \
     --radius 1 \
     --bench-frames 30 \
     --bench-hold \
@@ -115,6 +120,10 @@ wait_for_engine_log "bench-hold:" "engine reached the held interactive state"
 # player's body off NPC_ 0x7 and the post-pass parented it.
 wait_for_engine_log "Player body: assembled from NPC_ 00000007" \
     "player body assembly completed at spawn"
+# A boot-time force-greet (FNV: Sunny Smiles) holds the modal dialogue page
+# over the captures, and a tutorial box pauses the world (#6052).
+smoke_end_boot_conversation "$LOG_DIR/dialogue-end.log"
+smoke_answer_message_boxes "$LOG_DIR/answer.log"
 
 # Body: assembled, meshed, skeleton-targeted, parts owned by the player.
 body="$(debug_command "player.body")"
@@ -187,7 +196,7 @@ debug_command "player.view third" >"$LOG_DIR/view-third.txt"
 grep -Fq "ThirdPerson" "$LOG_DIR/view-third.txt" \
     || fail "player.view third did not switch (got: $(cat "$LOG_DIR/view-third.txt"))"
 body="$(debug_command "player.body")"
-grep -Fq "hidden_first_person=0 view=ThirdPerson" <<<"$body" \
+grep -Fq "hidden_first_person=0 " <<<"$body" && grep -Fq "view=ThirdPerson" <<<"$body" \
     || fail "third person did not reveal the body meshes (got: $body)"
 sleep 3
 capture_screenshot "player-third-person.png" \
@@ -198,7 +207,7 @@ debug_command "player.view first" >"$LOG_DIR/view-first.txt"
 grep -Fq "FirstPerson" "$LOG_DIR/view-first.txt" \
     || fail "player.view first did not switch back (got: $(cat "$LOG_DIR/view-first.txt"))"
 body="$(debug_command "player.body")"
-grep -Fq "hidden_first_person=$mesh_count view=FirstPerson" <<<"$body" \
+grep -Fq "hidden_first_person=$mesh_count " <<<"$body" && grep -Fq "view=FirstPerson" <<<"$body" \
     || fail "first person did not re-hide the body meshes (got: $body)"
 
 echo "smoke[p3-player-body]: PASS -- body attached, view toggle verified, no self-targeting"

@@ -171,6 +171,16 @@ pub trait ObScriptHost {
     /// buttons (M47.3 phase 2). A host without a message surface ignores it.
     fn message(&mut self, _message: ObScriptMessage) {}
 
+    /// How many calls this host has declined so far. A declined getter
+    /// answers `0` so an expression can still be evaluated, but an `If`
+    /// whose condition read one is not taken *or* skipped on that guess: the
+    /// VM compares this count across the condition and, when it moved, runs
+    /// none of the chain's arms (the fail-closed rule the condition evaluator
+    /// applies, #5993). A host that never declines keeps the default.
+    fn declined_calls(&self) -> u32 {
+        0
+    }
+
     /// The value of the one text argument of a command that writes it as a string (`PlayIdle <idle
     /// editor ID>`, `GetGS <setting name>`, `ShowWarning "text"`): the form the name stands for, the
     /// setting's value, ... — whatever the command then receives as its argument. `None` when the host
@@ -194,7 +204,10 @@ pub trait ObScriptHost {
 
 /// Commands whose one argument is a string, not a form index or a number: `PlayIdle` (GECK: "takes the
 /// actual editorID string of the idle as parameter"), `GetGS <setting>` and `ShowWarning "text"`.
-const STRING_FORM_COMMANDS: [u16; 8] = [0x1190, 0x1100, 0x11b9, 0x1137, 0x1138, 0x11ff, 0x114d, 0x1114];
+/// `GetPCMiscStat` / `ModPCMiscStat` are not among them: their quoted name compiles to a stat code
+/// (`01 00 0a 00` for `"Times Addicted"`) on every game, measured over every vanilla call by
+/// `obscript_tools avcodes`.
+const STRING_FORM_COMMANDS: [u16; 6] = [0x1190, 0x1100, 0x11b9, 0x11ff, 0x114d, 0x1114];
 
 /// Commands that take a reference and then strings (`SwapTexture <ref> "<slot>" "<texture>"`), the
 /// strings handed to the host through [`ObScriptHost::text_arguments`].
@@ -361,6 +374,26 @@ impl<'a> ObScriptProgram<'a> {
         }
     }
 
+    /// Run this script as a *result script*: the bare statement stream a
+    /// quest stage item or an INFO compiles to (no `ScriptName`, no
+    /// `Begin`/`End`), from its first statement to its last.
+    pub fn run_result_script(&self, state: &mut VmState, host: &mut dyn ObScriptHost) -> BlockOutcome {
+        let mut vm = Vm {
+            bytes: &self.script.compiled,
+            refs: &self.script.refs,
+            locals: &self.script.locals,
+            state,
+            host,
+            returned: false,
+        };
+        let outcome = vm.exec_body(0, true);
+        if vm.returned {
+            BlockOutcome::Returned
+        } else {
+            outcome
+        }
+    }
+
     /// Run one named block; blocks of any other type are skipped whole.
     pub fn run_block(
         &self,
@@ -456,13 +489,25 @@ fn is_escape_tag(b: u8) -> bool {
 
 impl<'a> Vm<'a> {
     /// Execute statements until this block's `End`.
-    fn exec_block_body(&mut self, mut offset: usize) -> BlockOutcome {
+    fn exec_block_body(&mut self, offset: usize) -> BlockOutcome {
+        self.exec_body(offset, false)
+    }
+
+    /// Run statements from `offset` until the block's `End`, a `Return`, or —
+    /// when `to_stream_end` (a result script, which has no `Begin`/`End`
+    /// framing) — the end of the bytecode. A block body that runs off the end
+    /// of its stream is malformed.
+    fn exec_body(&mut self, mut offset: usize, to_stream_end: bool) -> BlockOutcome {
         loop {
             if self.returned {
                 return BlockOutcome::Returned;
             }
             let Some(op) = byroredux_core::bytes::le_u16_at(self.bytes, offset) else {
-                return BlockOutcome::Malformed(offset);
+                return if to_stream_end && offset == self.bytes.len() {
+                    BlockOutcome::Completed
+                } else {
+                    BlockOutcome::Malformed(offset)
+                };
             };
             match op {
                 opcode::END => return BlockOutcome::Completed,
@@ -570,8 +615,17 @@ impl<'a> Vm<'a> {
                     if cond_end > payload_end {
                         return None;
                     }
+                    let declined_before = self.host.declined_calls();
                     let taken = self.eval_expr(cond_start, cond_end) != 0.0;
                     let after = next_statement(self.bytes, offset)?;
+                    if self.host.declined_calls() != declined_before {
+                        // The condition read a value the host could not give:
+                        // neither this arm nor a later one runs on its `0`
+                        // stand-in (CGTutorial's `player.GetWeaponHealthPerc
+                        // < 25` with no weapon equipped raised the repair
+                        // tutorial at every boot).
+                        return self.skip_to_chain_end(after);
+                    }
                     if taken {
                         return self.run_arm_body(after, depth);
                     }
@@ -990,7 +1044,7 @@ impl<'a> Vm<'a> {
         if count == 0 || text_end > end {
             return self.decode_args_at_depth(start, end, 0);
         }
-        // The arguments after the string (`ModPCMiscStat "Locks Picked" 1`): ordinary ones.
+        // The arguments after the string: ordinary ones.
         let mut rest = Vec::new();
         let mut offset = text_end;
         for _ in 1..count {
@@ -2297,5 +2351,74 @@ mod tests {
                 },
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod declined_condition_tests {
+    use super::*;
+    use byroredux_plugin::esm::records::{ScriptRecord, ScriptRef};
+
+    /// Answers `GetWeaponHealthPerc` (`0x11f4`) when it has a value and
+    /// declines it otherwise; records every `SetStage`.
+    struct Host {
+        weapon_health: Option<f32>,
+        declined: u32,
+        stages: Vec<f32>,
+    }
+
+    impl ObScriptHost for Host {
+        fn call(&mut self, cmd: u16, args: &[ObScriptValue], _: Option<u32>) -> Option<ObScriptValue> {
+            match cmd {
+                0x11f4 => Some(ObScriptValue::Num(self.weapon_health.unwrap_or_else(|| {
+                    self.declined += 1;
+                    0.0
+                }))),
+                0x1039 => {
+                    self.stages.push(args.get(1).map_or(0.0, |v| v.as_num()));
+                    None
+                }
+                _ => Some(ObScriptValue::Num(0.0)),
+            }
+        }
+        fn declined_calls(&self) -> u32 {
+            self.declined
+        }
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        let s: String = s.split_whitespace().collect();
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    /// `if player.GetWeaponHealthPerc < 25 / SetStage CGTutorial 218 / else /
+    /// SetStage CGTutorial 1 / endif` — CGTutorial's repair check (the
+    /// `player` caller dropped; the VM test host ignores callers).
+    fn repair_check() -> ScriptRecord {
+        // `[0x16][len 15][u16][expr_len 11]` + ` X <0x11f4, no args>`, ` 25`, ` <`.
+        let mut b = hex("1600 0f00 0100 0b00 2058 f411 0000 2032 3520 3c");
+        b.extend(hex("3910 0a00 0200 7201 006e da00 0000"));
+        b.extend(hex("1700 0000"));
+        b.extend(hex("3910 0a00 0200 7201 006e 0100 0000"));
+        b.extend(hex("1900 0000"));
+        ScriptRecord { compiled: b, refs: vec![ScriptRef::Object(0x59C85)], ..Default::default() }
+    }
+
+    fn run(weapon_health: Option<f32>) -> Vec<f32> {
+        let mut host = Host { weapon_health, declined: 0, stages: Vec::new() };
+        let outcome = ObScriptProgram::new(&repair_check()).run_result_script(&mut VmState::default(), &mut host);
+        assert_eq!(outcome, BlockOutcome::Completed);
+        host.stages
+    }
+
+    #[test]
+    fn a_condition_that_read_a_declined_value_runs_no_arm() {
+        assert_eq!(run(None), Vec::<f32>::new(), "neither the If nor the Else arm");
+    }
+
+    #[test]
+    fn the_same_condition_with_a_value_picks_its_arm() {
+        assert_eq!(run(Some(10.0)), vec![218.0]);
+        assert_eq!(run(Some(80.0)), vec![1.0]);
     }
 }

@@ -68,6 +68,13 @@ pub(crate) fn route_script_messages(world: &World) -> bool {
         .is_some_and(|boxes| !boxes.0.is_empty())
 }
 
+/// Whether a message box is waiting for an answer.
+pub(crate) fn message_box_waiting(world: &World) -> bool {
+    world
+        .try_resource::<MessageBoxQueue>()
+        .is_some_and(|boxes| !boxes.0.is_empty())
+}
+
 /// The box the message-box page shows.
 pub(crate) fn front_message_box(world: &World) -> Option<byroredux_debug_ui::MessageBoxView> {
     let boxes = world.try_resource::<MessageBoxQueue>()?;

@@ -584,6 +584,10 @@ mod live {
         let stages = world.resource::<QuestStageState>();
         let staged = scripted.iter().filter(|q| stages.get_stage(QuestFormId(**q)) != 0).count();
         println!("quests advanced past stage 0 by a script: {staged}");
+        for q in scripted.iter().filter(|q| stages.get_stage(QuestFormId(**q)) != 0) {
+            let name = index.quests.get(q).map_or("?", |quest| quest.editor_id.as_str());
+            println!("  {q:08X} {name} stage {}", stages.get_stage(QuestFormId(*q)));
+        }
         Ok(())
     }
 
@@ -673,7 +677,20 @@ mod avcodes {
         (0x100e, "getav"), (0x100f, "setav"), (0x1010, "modav"), (0x110e, "forceav"),
         (0x1181, "damageav"), (0x1182, "restoreav"), (0x11ef, "getpermanentactorvalue"),
         (0x1100, "getgs"),
+        // Fallout compiles the quoted misc-stat name to a stat code; the
+        // table pairs each code with the quoted name instead of a word.
+        (0x1138, "getpcmiscstat"), (0x1137, "modpcmiscstat"),
     ];
+
+    /// The quoted text after the `nth` occurrence of `name` in `line`
+    /// (`GetPCMiscStat "Times Addicted"` → `times addicted`).
+    fn quoted_after(line: &str, name: &str, nth: usize) -> Option<String> {
+        let lower = line.to_ascii_lowercase();
+        let at = lower.match_indices(name).nth(nth)?.0 + name.len();
+        let open = at + lower[at..].find('"')?;
+        let close = open + 1 + lower[open + 1..].find('"')?;
+        Some(lower[open + 1..close].to_owned())
+    }
 
     fn u16_at(b: &[u8], at: usize) -> Option<u16> {
         Some(u16::from_le_bytes([*b.get(at)?, *b.get(at + 1)?]))
@@ -760,7 +777,12 @@ mod avcodes {
                 for (k, (cmd, code)) in found.iter().enumerate() {
                     let Some(&(i, name)) = occ.get(k) else { continue };
                     if COMMANDS.iter().find(|c| c.0 == *cmd).map(|c| c.1) != Some(name) { continue; }
-                    let word = words.get(i + 1).cloned().unwrap_or_default();
+                    let word = if name.ends_with("miscstat") {
+                        let nth = occ[..k].iter().filter(|(_, n)| *n == name).count();
+                        quoted_after(line, name, nth).unwrap_or_default()
+                    } else {
+                        words.get(i + 1).cloned().unwrap_or_default()
+                    };
                     *table.entry((*cmd, *code)).or_default().entry(word).or_insert(0) += 1;
                 }
             }

@@ -81,6 +81,7 @@ pub mod obscript_anim;
 pub mod obscript_speech;
 pub mod obscript_objects;
 pub mod obscript_quests;
+pub mod obscript_results;
 #[cfg(feature = "save")]
 pub mod serde_pairs;
 pub mod obscript_state;

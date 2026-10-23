@@ -458,6 +458,7 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
 /// dialogue is inert flavor, and 3 773 of vanilla's 5 257 bound INFOs are
 /// OnEnd-only.
 fn speak_info_begin_fragment(world: &World, topic: &NpcDialogueTopic, speaker: EntityId) {
+    run_spoken_result_script(world, topic, speaker, true);
     let Some((effects, context, vmad)) = spoken_fragment_effects(world, topic.info_form_id, true)
     else {
         return;
@@ -469,11 +470,46 @@ fn speak_info_begin_fragment(world: &World, topic: &NpcDialogueTopic, speaker: E
 /// another selection replaces it ([`apply_selection`]) and when the
 /// conversation surface closes ([`end_open_conversation`]).
 fn speak_info_end_fragment(world: &World, topic: &NpcDialogueTopic, speaker: EntityId) {
+    run_spoken_result_script(world, topic, speaker, false);
     let Some((effects, context, vmad)) = spoken_fragment_effects(world, topic.info_form_id, false)
     else {
         return;
     };
     dispatch_spoken_fragment(world, &effects, context, vmad.as_ref(), speaker);
+}
+
+/// M47.3 — the Oblivion / FO3 / FNV form of a spoken line's script: the
+/// INFO's compiled Begin (`begin`) or End result script, run with the speaker
+/// as its implicit reference. Skyrim+ INFOs carry none (their lines run the
+/// `TIF_` fragments above), so this is a lookup and a return there.
+fn run_spoken_result_script(world: &World, topic: &NpcDialogueTopic, speaker: EntityId, begin: bool) {
+    // Scope the guard to the clone, as every `LoadedCellIndex` reader here
+    // does (#5066): the script's commands take world resources.
+    let index = {
+        let Some(index) = world.try_resource::<LoadedCellIndex>() else {
+            return;
+        };
+        index.0.clone()
+    };
+    let Some(info) = index
+        .dialogues
+        .get(&topic.topic_form_id)
+        .and_then(|record| record.infos.iter().find(|info| info.form_id == topic.info_form_id))
+    else {
+        return;
+    };
+    let script = if begin { &info.result_script_begin } else { &info.result_script_end };
+    if script.is_none() {
+        return;
+    }
+    let Some(speaker_form) = byroredux_scripting::condition::entity_global_form_id(world, speaker) else {
+        log::warn!(
+            "npc dialogue: INFO {:#08X}'s result script has no speaker reference to run on",
+            info.form_id
+        );
+        return;
+    };
+    byroredux_scripting::obscript_results::run_info_result_script(world, info, begin, speaker, speaker_form);
 }
 
 /// One resource read for the fragment binding + context + property table.
@@ -803,7 +839,7 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
 /// re-checked against the live bindings); the INFO gate is the evaluator.
 /// Returns a user-facing message either way.
 pub(crate) fn select_topic_by_form_id(
-    world: &mut World,
+    world: &World,
     npc: EntityId,
     topic_form_id: u32,
 ) -> Result<String, String> {
@@ -835,19 +871,6 @@ pub(crate) fn select_topic_by_form_id(
     let Some(record) = index.dialogues.get(&topic_form_id) else {
         return Err(format!("no topic {topic_form_id:08X} in the loaded plugins"));
     };
-    let owned_quests = running_quests_binding_entity(world, npc);
-    let owned = owned_topic_records(&index, &owned_quests);
-    if !owned.iter().any(|owned| owned.form_id == topic_form_id) {
-        return Err(format!(
-            "NPC {npc} owns no topic {topic_form_id:08X} through a running quest"
-        ));
-    }
-    let player = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
-        .ok_or_else(|| "no player".to_string())?;
-    // After this line, its links become the list; a line that links nowhere
-    // returns to the Top-Level topics (#5037).
     // #6007 — the line the open menu offered for this entry, if the NPC is
     // mid-conversation and the entry is in its list: the menu pass already
     // evaluated (and, for a stochastic gate, drew) that INFO's conditions. Only
@@ -863,6 +886,24 @@ pub(crate) fn select_topic_by_form_id(
                 .map(|entry| entry.info_form_id)
         })
         .and_then(|info_form_id| record.infos.iter().find(|info| info.form_id == info_form_id));
+    // A topic is selectable when a running quest the NPC is bound to owns it,
+    // or when the open menu offers it: the menu is the spoken line's `TCLT`
+    // links, and on Oblivion / FO3 / FNV — whose quests bind no aliases, so
+    // the NPC owns nothing — the links are the only way a quest topic is ever
+    // reached (Sunny Smiles's greeting links "Back in the Saddle"'s opener).
+    let owned_quests = running_quests_binding_entity(world, npc);
+    let owned = owned_topic_records(&index, &owned_quests);
+    if offered.is_none() && !owned.iter().any(|owned| owned.form_id == topic_form_id) {
+        return Err(format!(
+            "NPC {npc} neither offers nor owns topic {topic_form_id:08X} through a running quest"
+        ));
+    }
+    let player = world
+        .try_resource::<PlayerEntity>()
+        .and_then(|player| player.0)
+        .ok_or_else(|| "no player".to_string())?;
+    // After this line, its links become the list; a line that links nowhere
+    // returns to the Top-Level topics (#5037).
     let Some(info) = offered.or_else(|| select_first_info(record, world, Some(npc), Some(player)))
     else {
         return Err(format!(

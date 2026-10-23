@@ -4,6 +4,7 @@ use super::super::common::{
     read_lstring_or_zstring, read_zstring, remap_fid, remap_fid_or_sentinel, CommonNamedFields,
 };
 use super::super::condition::{push_ctda, ComparisonOp, ConditionList, ConditionValue, RunOn};
+use super::super::script::{embedded_script_at, ScriptRecord};
 use super::super::script_instance::{
     parse_info_fragments, InfoScriptFragment, ScriptInstanceData,
 };
@@ -369,6 +370,15 @@ pub struct InfoRecord {
     /// separate derivation). Vanilla Skyrim: 5 257 of 31 465 INFOs carry
     /// bindings — see the decoder's doc for the census.
     pub script_fragments: Vec<InfoScriptFragment>,
+    /// Oblivion / FO3 / FNV compiled *result scripts*: `begin` runs when the
+    /// line is spoken, `end` when it finishes (xEdit `wbINFO`: `Result Script
+    /// (Begin)`, the `NEXT` marker, `Result Script (End)`; Oblivion authors
+    /// only the one, which is its Begin). Dialogue result scripts are
+    /// *reference* scripts (GECK *Reference functions*): the speaker is their
+    /// implicit reference. `None` when the slot compiled nothing. Skyrim+ runs
+    /// [`Self::script_fragments`] instead.
+    pub result_script_begin: Option<std::sync::Arc<ScriptRecord>>,
+    pub result_script_end: Option<std::sync::Arc<ScriptRecord>>,
 }
 
 /// The TES4 / FO3 / FNV `INFO` `DATA` header, typed per xEdit's layout
@@ -551,6 +561,38 @@ pub fn parse_dial(
         }
     }
     out
+}
+
+/// The INFO's embedded Begin / End result scripts: the first `SCHR` run is
+/// the Begin script, and one after the `NEXT` marker the End script. Done as
+/// its own walk because each script spans several sub-records.
+fn attach_info_result_scripts(
+    out: &mut InfoRecord,
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) {
+    let mut after_next = false;
+    let mut at = 0;
+    while at < subs.len() {
+        match &subs[at].sub_type {
+            b"NEXT" => after_next = true,
+            b"SCHR" => {
+                let (script, end) = embedded_script_at(out.form_id, subs, at, remap);
+                let slot = if after_next {
+                    &mut out.result_script_end
+                } else {
+                    &mut out.result_script_begin
+                };
+                if slot.is_none() {
+                    *slot = script.map(std::sync::Arc::new);
+                }
+                at = end;
+                continue;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
 }
 
 pub fn parse_info(
@@ -757,6 +799,7 @@ pub fn parse_info(
     if let Some(finished) = current_response.take() {
         out.responses.push(finished);
     }
+    attach_info_result_scripts(&mut out, subs, remap);
     // #3616 — derive the flat convenience fields from the full sequence
     // rather than dropping everything but the last segment. `join("\n")`
     // rather than concatenation so a multi-segment response reads as
@@ -1369,6 +1412,35 @@ mod tests {
     /// the parse+push shape mirrors `parse_info_remaps_formids_with_remap`
     /// below, but pins the two new fields specifically rather than
     /// TCLT/PNAM/ANAM again.
+    /// FO3/FNV INFOs embed a Begin result script, the `NEXT` marker, then an
+    /// End one (xEdit `wbINFO`); an end slot that compiled nothing stays empty.
+    #[test]
+    fn parse_info_splits_begin_and_end_result_scripts_at_next() {
+        let schr = |compiled: u32| {
+            let mut d = vec![0u8; 20];
+            d[8..12].copy_from_slice(&compiled.to_le_bytes());
+            d
+        };
+        let subs = vec![
+            sub(b"SCHR", schr(2)),
+            sub(b"SCDA", [0x36u8, 0x10]),
+            sub(b"SCTX", b"StartQuest VCG02\0"),
+            sub(b"SCRO", 0x0010_A214u32.to_le_bytes()),
+            sub(b"NEXT", []),
+            sub(b"SCHR", schr(2)),
+            sub(b"SCDA", [0x39u8, 0x10]),
+        ];
+        let info = parse_info(0x0010_A1E4, &subs, &None, GameKind::Fallout3NV);
+        let begin = info.result_script_begin.as_ref().expect("begin script");
+        assert_eq!(begin.compiled, vec![0x36, 0x10]);
+        assert_eq!(begin.ref_form_ids, vec![0x0010_A214]);
+        assert_eq!(info.result_script_end.as_ref().expect("end script").compiled, vec![0x39, 0x10]);
+
+        let begin_only = parse_info(0x1, &subs[..5], &None, GameKind::Fallout3NV);
+        assert!(begin_only.result_script_begin.is_some());
+        assert!(begin_only.result_script_end.is_none());
+    }
+
     #[test]
     fn parse_info_tclf_and_name_are_not_dropped() {
         let subs = vec![

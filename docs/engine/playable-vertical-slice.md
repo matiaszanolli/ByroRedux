@@ -1663,6 +1663,96 @@ later, so a quicksave deferred alongside the quit still executes).
 With these gates, every P5 requirement from the list above has live
 coverage on real data; the phase closes per the work rules.
 
+## Second route — Fallout: New Vegas (2026-10-22)
+
+The work rules end on "once the slice closes, add a second game route to
+expose false Skyrim-specific assumptions." FNV is that route: the project's
+reference title, already the fixture of most P0/P1/P2/P5 gates, and the one
+whose quests run on a different machine (ObScript result scripts, no quest
+aliases) from Skyrim's (Papyrus fragments, alias-bound speakers). The P3 and
+P4 gates were Skyrim-only, and building their FNV twins found the
+assumptions the rule was written for.
+
+**The route.** Boot `GSProspectorSaloonInterior` in Character mode. Sunny
+Smiles force-greets the player and offers "Back in the Saddle" (VCG02); her
+"teach me" line starts the quest and sets its first stage; the stages the
+world sets later (the geckos at the well) display, complete and advance its
+objectives; the HUD shows HP / AP / RAD and the objective; the player door,
+traversal, melee kill + loot, F5/F9, door saves and restart all hold.
+
+**What the route found** (each fixed, each now gated):
+
+- **Result scripts never ran.** FO3/FNV quests display objectives and set
+  stages from the scripts a `QUST` stage item and an `INFO` carry inline;
+  the parser kept a `has_script` flag only, so no Fallout-era quest moved on
+  its own. Parsed and run now
+  ([`scripting.md` §M47.3 — result scripts](scripting.md#m473--result-scripts-2026-10-22)).
+- **A force-greet loop.** Sunny's greeting records the meeting in its End
+  script (`set VFreeformGoodsprings.bMetSunny to 1`), the variable her
+  force-greet package is gated on. With the script never running she greeted
+  again after every boot and every reload — the #6052 `dialogue.end`
+  workaround in the gates was masking it. Her approach after a restore is
+  one candidate for the restored-pose drift the P5 FNV gates showed in this
+  session's first baseline; the other is that those gates' windows sat on
+  the desktop session and took its input (see "Headless runs" in the
+  [smoke README](../smoke-tests/README.md)). Neither was isolated; both are
+  gone from the gates of record below.
+- **Topics reached only by link were unselectable.** Topic selection
+  accepted only a topic an alias-bound running quest owns; FNV quests bind
+  no aliases, so every quest topic (reached through the spoken line's
+  `TCLT` links) was refused. A topic the open menu offers is selectable now.
+- **Two VM defects** that had been setting tutorial stages at every boot,
+  invisibly until the stage items ran: `GetPCMiscStat` read its stat code as
+  the count, and a condition that read a declined getter took its branch on
+  the `0` stand-in. Fixed (stat-code table; fail-closed `If`).
+- **Saves broke on the first scripted relation.** Stage 10's `SetAlly` put a
+  row in `ObScriptLedger`'s `(faction, faction)` map, and JSON cannot key an
+  object by a tuple: every later quicksave failed. Nine tuple-keyed saved
+  maps now write `[key, value]` pairs (`serde_pairs`; old saves read
+  unchanged — they could only hold the maps empty).
+- **#5155 made deterministic, then fixed.** With Sunny no longer nudging
+  the capsule after a load, every FNV save → `--load` restore pinned the
+  body at the saved pose with `grounded=false` and the fall velocity at the
+  clamp — the soak's 1-in-52 signature, now on every restore. The issue's
+  "both authorities read no support" was not quite it: the walkable support
+  probe only runs for a capsule grounded last frame, a restore hands over an
+  ungrounded one, and on that saloon floor the KCC alone sweeps every
+  gravity request to zero without calling it ground (on a flat cuboid it
+  does, measured). A fall swept to no descent now asks the walkable probe
+  once (`fall_blocked`, `systems/character.rs`); the restored capsule is
+  grounded on its first frame.
+- **A headless FNV player.** `player.body` counted only the pre-baked
+  (Skyrim+) path's head parts; the runtime path's race head is marked too.
+- **The HUD's Fallout vitals.** HP and AP were drawn; the radiation gauge
+  joins them — `RadiationRads` against the master's last `RADS` sickness
+  stage (1000 rads on FNV), an accumulating gauge rather than a pool.
+- **Tutorials are real.** CGTutorial's items raise the vanilla boxes (first
+  rads → "Radiation"), each pausing the world until answered; `ui.answer`
+  and `smoke_answer_message_boxes` answer them.
+
+**Gates of record (2026-10-22, headless — `env -u WAYLAND_DISPLAY -u
+XDG_SESSION_TYPE xvfb-run -a <gate> fnv`):** `p3-hud` PASS (HP 200/200, AP
+80/80, RAD 250/1000 pixel-verified; the objective from VCG02's stage-5 item);
+`p3-player-body` PASS (35 meshes, `head_parts=1 face_parts=1`, view toggle);
+`p4-fnv-quest-route` PASS (force-greet → "teach me" → result scripts start
+VCG02 → stages 45/50 → Sunny's follow-up greet completes 40 → the reply hands
+over 60 5.56mm rounds and displays 50 — captures show the HUD banners and the
+presented lines); `p5-fnv-quest-persistence` PASS (F9 reverts to stage 10,
+the meeting variable survives, no stage script re-runs, restart keeps stage
+45); `p2-melee-core` PASS; `p5-save-restart` PASS; `p5-f5-f9-quicksave` PASS
+(validation clean); `p5-door-transition` PASS. P0 PASS (this session's
+display baseline and headless). P1 runs on a display (its frame-counted route
+overshoots at Xvfb's ~31 FPS; see the smoke README).
+
+**Open follow-ups.** In third person the FNV player's outfit and hair cap
+render as the checkerboard although every material slot resolves a present,
+correctly decoding texture (`mat.dump`: `underwearm.dds`, `upperbodymale.dds`,
+`hairwavy.dds` at handles 327-332; `tex.missing` clean); the head and hands,
+on low handles shared with NPCs, render correctly. Not yet isolated. The
+dialogue page heads FO3/FNV lines with the topic's editor ID rather than
+its player prompt. The vanilla MenuXml `RadiationMeter` (`--hud`) is
+code-driven and not wired; the native HUD's RAD gauge is.
+
 ## Work rules
 
 - Capability beats visual polish until P5 closes, unless a rendering defect

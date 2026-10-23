@@ -1095,6 +1095,9 @@ pub(crate) fn populate_scene_runtime(
         &index.quests,
         &index.scripts,
     );
+    // M47.3 — the result scripts embedded in their stage items, run when the
+    // stage is set (the Fallout-era quests' objectives live there).
+    byroredux_scripting::obscript_results::install_stage_result_scripts(world, &index.quests);
     // M47.3 — ObScript object scripts (the `SCRI` scripts on placed references).
     // Empty on Skyrim+, whose records carry VMAD instead.
     byroredux_scripting::obscript_objects::install_object_scripts(world, &index.scripts);

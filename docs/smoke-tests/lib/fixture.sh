@@ -88,6 +88,13 @@ smoke_load_fixture() {
     done
 }
 
+# The headless display prefix for a gate that renders off-screen. `xvfb-run`
+# alone still opens the window on the user's Wayland session (winit prefers
+# Wayland when WAYLAND_DISPLAY is set): the capture then follows the
+# compositor's sizing, and the user's real mouse and keyboard reach the gate's
+# engine — a click on a dialogue topic or a held key moves the route.
+SMOKE_HEADLESS=(env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE xvfb-run -a)
+
 # Hard SKIP (exit 77) when the selected game's data is not installed. Never a
 # pass — `scripts/check-playable-smoke-contracts.sh` pins that distinction.
 smoke_require_data() {
@@ -120,13 +127,20 @@ smoke_require_fixture_fields() {
 # `input.press` would be cleared and the character would never move.
 #
 # Needs the caller's `debug_command <commands> <logfile>` (every gate defines
-# its own over byro-dbg). Call it once the engine reports `bench-hold:`; the
-# greeting opens on the first frame, so the first call normally ends it. A
+# its own over byro-dbg). Call it once the engine reports `bench-hold:`. A
 # fixture whose boot opens nothing costs ~1.5 s of retries and no failure.
 #   $1  scratch log file
+#   $2  `restored` for a session loaded from a save: the meeting the greeting
+#       records is saved state, so a restored session greets no one and only
+#       the short check runs
 smoke_end_boot_conversation() {
-    local log="$1" attempt
-    for attempt in 1 2 3; do
+    local log="$1" mode="${2:-boot}" attempt attempts=3
+    # A fixture whose boot is known to open one (FIXTURE_BOOT_CONVERSATION=1)
+    # waits for it: the greeter walks to the player first, so it can open
+    # seconds after `bench-hold:`. Ended once, it stays satisfied — Sunny's
+    # greeting records the meeting in its End result script.
+    [[ "${FIXTURE_BOOT_CONVERSATION:-0}" == 1 && "$mode" != restored ]] && attempts=60
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
         debug_command 'dialogue.end' "$log" >/dev/null 2>&1 || true
         if grep -Fq 'dialogue.end: ended' "$log" 2>/dev/null; then
             echo "smoke[${SMOKE_GATE:-gate}]: ended the boot-time conversation (#6052)"
@@ -134,5 +148,32 @@ smoke_end_boot_conversation() {
         fi
         sleep 0.5
     done
+    if [[ "${FIXTURE_BOOT_CONVERSATION:-0}" == 1 && "$mode" != restored ]]; then
+        echo "smoke[${SMOKE_GATE:-gate}]: FAIL -- the fixture's boot-time conversation never opened" >&2
+        exit 1
+    fi
     return 0
 }
+
+# Answer every message box the route raised (`ui.answer`), so the simulation
+# the box paused resumes. Vanilla tutorials open them on their own — FNV's
+# CGTutorial shows "Radiation" the first time the player takes rads — and a
+# gate that drives such a state must answer as a player would. Same
+# `debug_command <commands> <logfile>` contract as above; a route that raised
+# none costs one call.
+#   $1  scratch log file
+smoke_answer_message_boxes() {
+    local log="$1" attempt
+    for attempt in 1 2 3 4 5 6; do
+        debug_command 'ui.answer' "$log" >/dev/null 2>&1 || true
+        if grep -Fq 'no message box is waiting' "$log" 2>/dev/null; then
+            return 0
+        fi
+        if grep -Fq "ui.answer: answered" "$log" 2>/dev/null; then
+            echo "smoke[${SMOKE_GATE:-gate}]: answered a message box: $(grep -o "answered '[^']*'" "$log" | head -1)"
+        fi
+        sleep 0.5
+    done
+    return 0
+}
+

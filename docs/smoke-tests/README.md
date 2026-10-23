@@ -34,7 +34,7 @@ matrix below on a runner carrying both `byroredux-rt` and
 
 `p0-door-interaction.sh`, `p1-character-traversal.sh`, `p2-melee-core.sh`,
 `p5-save-restart.sh`, `p5-f5-f9-quicksave.sh`, `p5-door-transition.sh`,
-`p5-soak.sh` and
+`p5-soak.sh`, `p3-hud.sh`, `p3-player-body.sh` and
 `w1-water-traversal.sh` take the title as their first argument (or
 `BYROREDUX_SMOKE_GAME`), defaulting to `skyrim_se`:
 
@@ -48,6 +48,10 @@ docs/smoke-tests/p2-melee-core.sh fo3            # Fallout 3: Moriarty's Saloon 
 docs/smoke-tests/p0-door-interaction.sh fo4      # Fallout 4: Med-Tek Research exit
 docs/smoke-tests/p2-melee-core.sh fo4            # Fallout 4: Med-Tek feral-ghoul corpse save/restart
 docs/smoke-tests/p3-player-body.sh               # Skyrim SE: player body attach + view toggle
+docs/smoke-tests/p3-player-body.sh fnv           # FNV: the runtime-path player body + race head
+docs/smoke-tests/p3-hud.sh fnv                   # FNV: HP / AP / RAD + an objective from a stage result script
+docs/smoke-tests/p4-fnv-quest-route.sh           # FNV: Sunny's force-greet -> linked topic -> result scripts start VCG02 -> objective chain
+docs/smoke-tests/p5-fnv-quest-persistence.sh     # FNV: VCG02 + the meeting variable vs F9 + process restart
 docs/smoke-tests/p5-f5-f9-quicksave.sh fnv       # F5/F9 bound-input quicksave/quickload + graceful quit + validation
 docs/smoke-tests/p5-quest-persistence.sh         # Skyrim SE: MS01 objective state vs F9 + process restart
 docs/smoke-tests/p5-door-transition.sh fnv       # save/reload both sides of the P0 door route
@@ -204,6 +208,36 @@ placement within the fixture's 512-unit bound. This catches the previous
 million-unit corpse explosion that `GetDead = 1` alone missed. It is not an
 exact-pose comparison or a long soak. Logs are `corpse.restored.<sample>`.
 
+## The second route: Fallout: New Vegas (2026-10-22)
+
+The playable slice's second title runs the whole P0–P5 set on the FNV fixture
+(`fixtures/fnv.env`): the P0–P2 and P5 scripts with `fnv`, plus the FNV-only
+`p4-fnv-quest-route.sh` and `p5-fnv-quest-persistence.sh` — VCG02 "Back in the
+Saddle" moves on ObScript result scripts, a different shape from Skyrim's MS01
+route. Two fixture fields carry what the title does on its own at boot:
+
+- `FIXTURE_BOOT_CONVERSATION=1` — Sunny Smiles force-greets the player in the
+  saloon. `smoke_end_boot_conversation` waits for the greeting (the greeter
+  walks first) and ends it; the line's End result script records the meeting,
+  so a session restored from a save (`restored` mode) is not greeted again.
+- Vanilla tutorial boxes — CGTutorial shows "Radiation" on the first rads, and a
+  box pauses the world until answered. `smoke_answer_message_boxes` answers them
+  through `ui.answer`, as a player would.
+
+**Headless runs.** `xvfb-run` alone still opens the window on a Wayland session
+(winit prefers Wayland), so the user's real input reaches the gate's engine.
+`SMOKE_HEADLESS` (`env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE xvfb-run -a`) is
+the prefix the P3 / P4-FNV / P5-quest scripts launch with, and any gate can run
+headless whole: `env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE xvfb-run -a
+docs/smoke-tests/p2-melee-core.sh fnv`. The exception is
+`p1-character-traversal.sh`, whose route is frame-counted input holds: at Xvfb's
+~31 FPS each hold travels ~4.6× as far as at the desktop's ~140, and the
+"align with saloon entrance" leg overshoots the door — run P1 on a display.
+`p5-soak.sh` had the same dependence (a fixed 90-frame walk back did not cancel
+the walk out, so the standoff drifted out of the door's reach by cycle 12
+headless); its walk back now pulses toward the cycle's starting pose, so it
+runs headless.
+
 ## Procedure shape
 
 All smoke tests follow the same workflow:
@@ -262,6 +296,8 @@ Inventory` returned nothing.
 | `cargo run --release -p byroredux-scripting --example mq101_conformance` | MQ101 intro vertical-slice preflight | Production ESM/BSA/PEX paths recover the `MQ101` quest plus its typed `SCEN` timelines, aliases, phases, dialogue/package/timer actions, stage/scene-fragment bindings, attached properties, critical intro scripts, cart HKX files, and localized FUZ dialogue. Hard checks verify every scene actor, phase range, DIAL/PACK reference, SCEN-bound PEX asset, and construction of the live `SceneRegistry`/`ScenePlayer` shape. Also reports the exact share of bound quest fragments the current effect lowerer understands. This does not need Vulkan; it proves data ingress and orchestration-plan construction, not actor-alias spawning or dialogue/package execution. Pass a data-directory argument or set `BYROREDUX_SKYRIMSE_DATA` to override the default install path. |
 | [`r6a_stale_15_bench.sh`](r6a_stale_15_bench.sh) | R6a-stale-15 bench-of-record refresh | Canonical three-cell benchmark suite: Prospector Saloon (FNV synthesized collision), Whiterun (Skyrim control), MedTek (FO4 precombined). Collects FPS / wall_ms / fence_ms / brd_ms / entities / draws / IsCollisionOnly counts. Formats output for ROADMAP.md copy-paste. Enforces CWD rule (run from each game's `Data/` directory). |
 | [`p4-quest-route.sh`](p4-quest-route.sh) | P4 authored-objective loop (MS01 in `MarkarthWarrens`) | Activation → owned-topic selection → presented response on the frozen fixture, plus the objective chain's live transitions: stage 15 displays objective 10, 35 displays 35, and 36's conditional pair completes 20 and displays 22 — the completed→next-objective HUD transition. Gates the M47.2 TIF populate telemetry and the string-table resolution of the presented text (caught the bare-relative-`--esm` strings-discovery miss live). Runs under TAA with a fresh settings file; the force-greet blocking branch is a documented WARN. |
+| [`p4-fnv-quest-route.sh`](p4-fnv-quest-route.sh) | P4 second route (FNV VCG02 in `GSProspectorSaloonInterior`) | Sunny Smiles's authored force-greet opens her GREETING with no activation; `dialogue.select` takes the line's linked "teach me" topic through the page's selection; the greeting's End result script records the meeting and the opener's Begin result script starts VCG02, completes objective 3, displays 5 and sets stage 10, whose item script runs — no console stage set. Stages 45 / 50 (the world-action stages) then display 30, complete it and display 40. Tutorial boxes are answered; headless. |
+| [`p5-fnv-quest-persistence.sh`](p5-fnv-quest-persistence.sh) | P5 quest persistence, second route (FNV VCG02) | The P4-FNV opener, F5, stages 45 / 50, F9: the quest reverts to stage 10 with objective 5 only, the meeting variable survives (Sunny does not greet again) and no stage result script re-runs; stage 45 re-advances live; F5, graceful quit, `--load` restart keeps stage 45 and objective 30. Headless. |
 | [`p6-loading-model.sh`](p6-loading-model.sh) | P6 Creation-era LSCR model loading cover (Skyrim SE + FO4) | Drives each title's P0 door route: `loadscreen.census` reports eligible screens with a resolvable model pick; the transition begins and presents the cover (`loading.screen: begin`, `model stage … meshes=N`, N ≥ 1) before teardown; a screenshot taken while it is up clears a rendered-frame size floor; the cover dismisses after one coherent destination frame. Skyrim exercises the inline SNAM/RNAM/XNAM pose lane, FO4 the TNAM → TRNS lane. |
 | [`m41-ragdoll.sh`](m41-ragdoll.sh) | M41.x Havok ragdoll parse → build → activate (FNV, Doc Mitchell in `GSDocMitchellHouse`) | The FNV `_male/skeleton.nif` ragdoll (18 bodies + 17 joints) attaches a `RagdollTemplate` at cell load; the `ragdoll <id>` command builds the Rapier multibody and reports ≥ `MIN_BODIES` simulating; the bench summary is present, so the solver did not blow up. The visual payoff is watched live. |
 | [`m41-equip.sh`](m41-equip.sh) | M41 Phase 2 close-out | Skyrim+ / FO4 NPCs spawn with their default outfit (LVLI dispatch via OTFT walks resolves to base ARMO refs; `Inventory` + `EquipmentSlots` are populated; armor meshes load without `tex.missing` overflow). |

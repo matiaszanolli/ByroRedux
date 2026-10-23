@@ -924,6 +924,16 @@ impl App {
     /// frame's player feedback; a message box waits for whatever page is
     /// open to close, then opens the message-box page until answered.
     fn present_script_messages(&mut self) {
+        // The last box was answered somewhere other than the page's own
+        // buttons (`ui.answer`): close the page as its button would have.
+        if self
+            .debug_ui
+            .as_ref()
+            .is_some_and(byroredux_debug_ui::DebugUiState::message_box_menu_visible)
+            && !crate::notifications::message_box_waiting(&self.world)
+        {
+            self.resume_from_game_menu();
+        }
         if !crate::notifications::route_script_messages(&self.world) {
             return;
         }

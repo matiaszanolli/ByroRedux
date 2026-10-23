@@ -114,8 +114,10 @@ done
 # #5427 — the dialogue / Story Manager / M42 live gates added in the
 # #5366/#5367 window (and the M47.3 FNV gate, #6057) honour the same
 # SKIP != PASS contract, so a dataless runner measures nothing instead
-# of reporting them red (the reason #4724 kept gates out of CI).
-for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript fo4-ragdoll; do
+# of reporting them red (the reason #4724 kept gates out of CI). The FNV
+# second-route P4 / P5-quest gates (2026-10-22) joined the same list.
+for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript fo4-ragdoll \
+    p4-fnv-quest-route p5-fnv-quest-persistence; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"

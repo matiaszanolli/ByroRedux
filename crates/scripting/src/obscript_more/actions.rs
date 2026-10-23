@@ -250,12 +250,30 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
             None => Action::Declined,
         },
 
-        // ── `Get/ModPCMiscStat`: the VM resolved the stat name and handed the value (see `text_argument`) ─
-        0x1138 if fallout => match args.first() {
-            Some(ObScriptValue::Num(count)) => answer(*count),
-            _ => Action::Declined,
+        // ── GECK *GetPCMiscStat* / *ModPCMiscStat* `"name"`: the name compiles to its stat code, the
+        // index into xEdit's `wbMiscStatEnum` (`challenges::MISC_STAT_NAMES`; every vanilla FO3 / FNV
+        // call checked by `obscript_tools avcodes`). The pre-fix arm took the code for the count, so
+        // CGTutorial's `GetPCMiscStat "Times Addicted" > 0` read 10 and raised the addiction tutorial
+        // at every boot. ─
+        0x1138 if fallout => match fallout_misc_stat(args) {
+            Some(name) => answer(super::misc_stat(world, name) as f32),
+            None => Action::Declined,
         },
-        0x1137 if fallout => done("ModPCMiscStat"),
+        0x1137 if fallout => match fallout_misc_stat(args) {
+            Some(name) => {
+                super::mod_misc_stat(world, name, num(args, 1) as i32);
+                done(format!("ModPCMiscStat {name}"))
+            }
+            None => Action::Declined,
+        },
         _ => super::extras::run(world, fallout, cmd, args, ctx),
     }
+}
+
+/// The Fallout misc stat the first argument's code names (see the `0x1138` arm).
+fn fallout_misc_stat(args: &[ObScriptValue]) -> Option<&'static str> {
+    let code = num(args, 0);
+    (code >= 0.0 && code.fract() == 0.0)
+        .then(|| crate::challenges::misc_stat_name(code as u16))
+        .flatten()
 }

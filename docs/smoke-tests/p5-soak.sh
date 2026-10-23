@@ -115,6 +115,10 @@ launch() {
         >"$LOG_DIR/session.stdout" 2>"$LOG_DIR/session.stderr" &
     engine_pid=$!
     wait_log "$LOG_DIR/session.stderr" 'bench-hold:'
+    # A boot-time force-greet holds the dialogue page and clears injected
+    # input every frame; end it before the first control walk (#6052).
+    smoke_end_boot_conversation "$LOG_DIR/dialogue-end.log"
+    smoke_answer_message_boxes "$LOG_DIR/answer.log"
 }
 
 echo "═══════════════════════════════════════════════════════════════"
@@ -151,15 +155,44 @@ while (( SECONDS < deadline_s )); do
         (( SECONDS < walk_deadline )) || fail "cycle $cycle: walk-out did not displace the body ≥10 units (lost control)"
         sleep 0.25
     done
-    debug_command "input.hold forward 90" "$LOG_DIR/c$cycle.walk2.log" \
+    # Walk back in short pulses until the body is within ~12 units of this
+    # cycle's start, so every cycle quicksaves at the same standoff. A fixed
+    # 90-frame return does not cancel the 90-frame walk-out: backward and
+    # forward speeds differ, and the distance a frame count covers scales
+    # with the frame rate (~4.6x at Xvfb's ~31 FPS against the desktop's
+    # ~140), so the standoff drifted a little each cycle — headless, out of
+    # the door's reach by cycle 12.
+    debug_command "input.hold forward 4" "$LOG_DIR/c$cycle.walk2.log" \
         || fail "cycle $cycle: walk-back input rejected"
     walk_deadline=$((SECONDS + TIMEOUT))
+    pulses=0
+    cp "$LOG_DIR/c$cycle.walked.status" "$LOG_DIR/c$cycle.last.status"
     while true; do
         wait_grounded "$LOG_DIR/c$cycle.back.status" || fail "cycle $cycle: lost control during walk-back"
-        pose_apart "$LOG_DIR/c$cycle.back.status" "$LOG_DIR/c$cycle.walked.status" 100 && break
-        (( SECONDS < walk_deadline )) || fail "cycle $cycle: walk-back did not return ≥10 units (lost control)"
-        sleep 0.25
+        pose_close "$LOG_DIR/c$cycle.back.status" "$LOG_DIR/c$cycle.pre.status" 144 && break
+        # A pulse that moved nothing is blocked (an NPC crossing the aisle):
+        # standing there is fine if the door is still in reach — the return
+        # exists to keep the standoff — and a drift if it is not.
+        if pose_close "$LOG_DIR/c$cycle.back.status" "$LOG_DIR/c$cycle.last.status" 0.25; then
+            debug_command 'interaction.status' "$LOG_DIR/c$cycle.blocked.log" || true
+            grep -Fq "$P0_PROMPT" "$LOG_DIR/c$cycle.blocked.log" && break
+            fail "cycle $cycle: walk-back blocked out of the door's reach (world state drifted?)"
+        fi
+        cp "$LOG_DIR/c$cycle.back.status" "$LOG_DIR/c$cycle.last.status"
+        pulses=$((pulses + 1))
+        (( pulses < 400 && SECONDS < walk_deadline )) \
+            || fail "cycle $cycle: walk-back did not return to the cycle's start (lost control)"
+        # ~2 units a frame forward: long pulses while far, short ones near the
+        # start so the last one cannot step over the 12-unit window.
+        remaining=$(awk -v a="$(pose "$LOG_DIR/c$cycle.back.status")" -v b="$(pose "$LOG_DIR/c$cycle.pre.status")" \
+            'BEGIN { split(a,x); split(b,y); printf "%d", sqrt((x[1]-y[1])^2+(x[3]-y[3])^2) }')
+        frames=4
+        (( remaining > 100 )) && frames=30
+        debug_command "input.hold forward $frames" "$LOG_DIR/c$cycle.walk2.log" \
+            || fail "cycle $cycle: walk-back input rejected"
     done
+    pose_apart "$LOG_DIR/c$cycle.back.status" "$LOG_DIR/c$cycle.walked.status" 100 \
+        || fail "cycle $cycle: walk-back did not return ≥10 units (lost control)"
 
     # 2 — F5 quicksave at the interior standoff (before the door).
     debug_command 'input.press quicksave' "$LOG_DIR/c$cycle.f5.log" \

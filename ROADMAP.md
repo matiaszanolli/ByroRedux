@@ -251,8 +251,14 @@ Open follow-ons, none of them a slice blocker:
   broad phase removed the multi-SAP panic class outright (#5488).
 - P1: Skyrim's W1 water leg is skipped (land-side KCC wedge). P4's
   greeting / line-lifetime / force-greet layers landed with #5367
-  (Skyrim force-greet and voice remain). Gamepad sources and a second
-  game route are not started.
+  (Skyrim force-greet and voice remain). Gamepad sources are not started.
+
+**Second route: Fallout: New Vegas (2026-10-22).** P0–P5 run on the FNV fixture, with
+FNV P3/P4 twins (`p4-fnv-quest-route.sh`, `p5-fnv-quest-persistence.sh`): VCG02 opened by
+Sunny's force-greet and moved by ObScript result scripts. Found and fixed: stage/dialogue
+result scripts never ran, a force-greet loop behind #6052, link-only topics refused, two VM
+defects, tuple-keyed maps failing JSON saves, #5155. HUD gains the rad gauge. Detail:
+[`playable-vertical-slice.md` §Second route](docs/engine/playable-vertical-slice.md#second-route--fallout-new-vegas-2026-10-22).
 
 ### Milestone tiers
 

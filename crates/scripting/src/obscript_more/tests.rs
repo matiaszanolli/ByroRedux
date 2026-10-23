@@ -627,6 +627,20 @@ fn oblivion_stat_commands_read_and_set_the_players_standing() {
     assert_eq!(value(run(&world, 0x10c7, &refs(&[FACTION]), &c)), 1.0);
 }
 
+/// Fallout compiles `GetPCMiscStat "Times Addicted"` to stat code 10 (CGTutorial's addiction
+/// check): the command answers that stat's count, never the code itself, and `ModPCMiscStat` adds to
+/// the named stat.
+#[test]
+fn fallout_misc_stat_commands_read_the_stat_their_code_names() {
+    let (world, ..) = world(GameKind::Fallout3NV);
+    let c = ctx(None);
+    assert_eq!(value(run(&world, 0x1138, &nums(&[10.0]), &c)), 0.0, "no addiction yet");
+    run(&world, 0x1137, &nums(&[16.0, 2.0]), &c);
+    assert_eq!(value(run(&world, 0x1138, &nums(&[16.0]), &c)), 2.0, "Bobbleheads Found");
+    assert_eq!(misc_stat(&world, "Bobbleheads Found"), 2);
+    assert_eq!(run(&world, 0x1138, &nums(&[99.0]), &c), Action::Declined, "past wbMiscStatEnum");
+}
+
 #[test]
 fn mod_faction_reaction_builds_on_what_scripts_set() {
     let (mut world, ..) = world(GameKind::Oblivion);

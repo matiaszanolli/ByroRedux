@@ -77,6 +77,13 @@ pub struct QuestStageLogEntry {
     pub has_script: bool,
     pub conditions: ConditionList,
     pub next_quest: Option<u32>,
+    /// The stage item's compiled *result script* (Oblivion / FO3 / FNV),
+    /// run when the stage is set and [`Self::conditions`] pass (GECK *Quest
+    /// Stages Tab*: "each quest stage item whose conditions evaluate to true
+    /// runs its result script"). `None` when the item compiled none — the
+    /// editor writes an empty `SCHR` for most items. Skyrim+ stages run
+    /// `VMAD` fragments instead ([`QustRecord::fragments`]).
+    pub result_script: Option<std::sync::Arc<crate::esm::records::ScriptRecord>>,
 }
 
 /// One objective of a quest, defined by a `QOBJ` block. Objectives
@@ -509,8 +516,61 @@ pub fn parse_qust(
 
     // Flush whichever block was open at the end of the stream.
     flush_block(&mut out, block);
+    if !skyrim_plus {
+        attach_stage_result_scripts(&mut out, subs, remap);
+    }
 
     out
+}
+
+/// Attach each Oblivion / FO3 / FNV stage item's embedded result script to
+/// its log entry. A stage item is `QSDT` (opening the item), its conditions
+/// and log text, then the script's `SCHR`.. run (xEdit `wbQUSTStage`), so the
+/// script belongs to the stage's most recent `QSDT`. Done as its own walk over
+/// the sub-records because the script spans several of them.
+fn attach_stage_result_scripts(
+    out: &mut QustRecord,
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) {
+    let mut stage: Option<usize> = None;
+    let mut item: Option<usize> = None;
+    let mut at = 0;
+    while at < subs.len() {
+        let sub = &subs[at];
+        match &sub.sub_type {
+            // The same openers `parse_qust_stage` and `parse_qust_objective`
+            // honour, so the ordinal matches `out.stages`.
+            b"INDX" if sub.data.len() >= 2 => {
+                stage = Some(stage.map_or(0, |s| s + 1));
+                item = None;
+            }
+            b"QOBJ" => {
+                // An objective block ends the stage list's reach.
+                item = None;
+            }
+            b"QSDT" if !sub.data.is_empty() && stage.is_some() => {
+                item = Some(item.map_or(0, |i| i + 1));
+            }
+            b"SCHR" => {
+                let (script, end) =
+                    crate::esm::records::script::embedded_script_at(out.form_id, subs, at, remap);
+                if let (Some(script), Some(stage), Some(item)) = (script, stage, item) {
+                    if let Some(entry) = out
+                        .stages
+                        .get_mut(stage)
+                        .and_then(|stage| stage.log_entries.get_mut(item))
+                    {
+                        entry.result_script = Some(std::sync::Arc::new(script));
+                    }
+                }
+                at = end;
+                continue;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
 }
 
 /// Record-level QUST fields: identity, flags, the priority /
@@ -1366,6 +1426,48 @@ mod tests {
             QuestObjectiveTargetKind::Alias(7)
         );
         assert_eq!(q.objectives[0].targets[0].flags, 1);
+    }
+
+    /// Each FO3/FNV stage item's embedded result script lands on its own log
+    /// entry, with its `SCRO` table (here VCG02 stage 5's shape); an item whose
+    /// `SCHR` compiled nothing (the editor writes one for every item) has none,
+    /// and an objective block after the stages takes no script.
+    #[test]
+    fn parse_qust_attaches_each_stage_items_result_script() {
+        let schr = |compiled: u32| {
+            let mut d = vec![0u8; 20];
+            d[8..12].copy_from_slice(&compiled.to_le_bytes());
+            d
+        };
+        let subs = vec![
+            sub(b"EDID", b"VCG02\0"),
+            sub(b"DATA", [0u8, 75, 0, 0, 0, 0, 0, 0]),
+            sub(b"INDX", 5u16.to_le_bytes()),
+            sub(b"QSDT", [0u8]),
+            sub(b"SCHR", schr(4)),
+            sub(b"SCDA", [0xAAu8, 0xBB, 0xCC, 0xDD]),
+            sub(b"SCTX", b"ForceActiveQuest VCG02\0"),
+            sub(b"SCRO", 0x0010_A214u32.to_le_bytes()),
+            sub(b"QSDT", [0u8]),
+            sub(b"SCHR", schr(0)),
+            sub(b"INDX", 20u16.to_le_bytes()),
+            sub(b"QSDT", [0u8]),
+            sub(b"SCHR", schr(0)),
+            sub(b"SCTX", b"; a comment only\0"),
+            sub(b"QOBJ", 10i32.to_le_bytes()),
+            sub(b"NNAM", b"Shoot 3 bottles.\0"),
+        ];
+        let quest = parse_qust(0x0010_A214, &subs, &None);
+        assert_eq!(quest.stages.len(), 2);
+        let stage5 = &quest.stages[0];
+        assert_eq!(stage5.log_entries.len(), 2);
+        let script = stage5.log_entries[0].result_script.as_ref().expect("item 0 has a script");
+        assert_eq!(script.compiled, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(script.ref_form_ids, vec![0x0010_A214]);
+        assert_eq!(script.source.as_deref(), Some("ForceActiveQuest VCG02"));
+        assert!(stage5.log_entries[1].result_script.is_none(), "an empty SCHR compiles nothing");
+        assert!(quest.stages[1].log_entries[0].result_script.is_none(), "comment-only source");
+        assert_eq!(quest.objectives.len(), 1);
     }
 
     #[test]

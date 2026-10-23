@@ -944,6 +944,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("NpcDialogueTopic", "P4 blocker 1: the activation-driven dialogue topic selection stamped on an NPC — re-derives from the authored DIAL/INFO records + running quests on the next activation, same posture as InteractionTrace"),
         ("PendingInventoryActions", "P3: the inv.equip command's handoff queue, drained through apply_action each frame — runtime plumbing, same posture as InjectedKeyPulse"),
         ("QuestScriptTable", "built once per load order from ESM QUST script_ref resolution (M47.3) — same posture as PackageRegistry, process-lifetime statics"),
+        ("QuestStageResultScripts", "built once per load order from the QUST stage items' embedded result scripts (M47.3) — static records plus a diagnostics run counter; the stages they already ran are the saved QuestStageState"),
         ("ObScriptEffectLog", "bounded diagnostic ring of recent script side effects (M47.3), runtime observability only"),
         ("ObScriptQuestTimers", "per-quest 5 s tick accumulators + execution counters (M47.3) — cadence restarts on load; script locals persist in the saved ObScriptQuestLocals"),
         ("SaveState", "save-slot directory + ring cursor, resumed from disk at startup (SaveState::new) — save/load plumbing itself, not part of the world snapshot"),

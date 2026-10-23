@@ -200,6 +200,11 @@ done
 echo "smoke[p2-melee-core]: PASS -- frozen reference resolved to entity $target"
 
 wait_for_pattern "player.status" "mode=Character" "$command_log" "Character mode is active"
+# A boot-time force-greet (FNV: Sunny Smiles) holds the dialogue page, which
+# releases injected input every frame (#6052); a tutorial box pauses the world.
+debug_command() { debug_commands "$@"; }
+smoke_end_boot_conversation "$command_log"
+smoke_answer_message_boxes "$command_log"
 wait_for_pattern "combat.status" "attacks=0 hits=0 kills=0" "$status_log" "combat state starts clean"
 
 # #2976 — a swing thrown while holding Block must land (counted, traced) but

@@ -115,6 +115,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(QuestAliasesCommand);
     registry.register(DialogueStatusCommand);
     registry.register(DialogueEndCommand);
+    registry.register(DialogueSelectCommand);
+    registry.register(UiAnswerCommand);
     registry.register(DialogueForceGreetCommand);
     registry.register(SmEventCommand);
     registry.register(SceneShowCommand);

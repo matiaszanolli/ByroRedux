@@ -2632,6 +2632,69 @@ smoke gate drives them.
 | `PushActorAway`, `UseWeapon` / `FireWeapon`, `OnGrab` / `OnRelease` / `OnFire` | a knockdown cycle (the ragdoll teardown above is the first half), a scripted attack, and a player grab |
 | `SetCombatStyle`, `SetTalkingActivatorActor`, `PlayMusic`, `SetVATSTarget`, `ShowMap` ... | each its own missing state; none is an ObScript-layer gap |
 
+### M47.3 — result scripts (2026-10-22)
+
+The second playable route (FNV, [`playable-vertical-slice.md`](playable-vertical-slice.md))
+found that the Fallout-era quests had never moved on their own: their stages and
+objectives live in *result scripts*, the compiled statement streams a `QUST` stage
+item and a dialogue `INFO` carry inline, and the parser kept only a `has_script`
+flag. They are now parsed and run
+([`obscript_results.rs`](../../crates/scripting/src/obscript_results.rs)):
+
+- **Parsing.** Each stage item's `SCHR`/`SCDA`/`SCTX`/`SLSD`+`SCVR`/`SCRO`/`SCRV`
+  run becomes `QuestStageLogEntry::result_script`, and an INFO's runs before and
+  after its `NEXT` marker become `InfoRecord::result_script_begin` / `_end`
+  (xEdit `wbEmbeddedScript`), through the same `parse_scpt` a standalone `SCPT`
+  takes (`script::embedded_script_at`). FalloutNV.esm: 682 stages carry one.
+- **Stage items.** `obscript_stage_result_system` (Update, beside the quest tick)
+  polls its own quest-event journal subscriber and runs every item of every stage
+  set since its last run whose conditions pass (GECK *Quest Stages Tab*: "each
+  stage item whose conditions evaluate to true runs its result script"), then the
+  stages those scripts set, bounded at 16 rounds a frame. They are non-reference
+  scripts: the quest owns them, no implicit reference. The one deviation from the
+  original: `SetStage` there runs the stage's items inside the calling statement;
+  here the caller finishes first.
+- **Dialogue lines.** The Begin script runs when the line is spoken and the End
+  script when it is replaced or the conversation closes — the hooks the Skyrim
+  `TIF_` fragments use — with the speaker as the implicit reference (GECK
+  *Reference functions*: "dialogue result scripts can use implicit reference
+  syntax").
+- **Topic links are selectable.** `select_topic_by_form_id` used to accept only a
+  topic an alias-bound running quest owns; FO3 / FNV quests bind no aliases, so
+  their topics are reached only through the spoken line's `TCLT` links, and a
+  topic the open menu offers is now selectable (`dialogue.select <topic>` is the
+  console door to the same selection).
+
+What it fixed live, on VCG02 "Back in the Saddle": Sunny Smiles's force-greet
+(`SunnyMeetPlayerDialoguePackage`, gated on `VFreeformGoodsprings.bMetSunny == 0`)
+re-opened after every boot and every reload, because her greeting's End script
+`set VFreeformGoodsprings.bMetSunny to 1` never ran — the #6052 workaround in the
+gates was masking it. Her "teach me" line's Begin script now starts the quest,
+completes objective 3, displays 5 and sets stage 10, and each later stage's items
+display and complete the rest.
+
+Two VM defects running these scripts exposed (both had been setting stages at every
+FNV boot, invisibly, since the stage's items never ran):
+
+- **`GetPCMiscStat` / `ModPCMiscStat` take a stat *code*.** The quoted name compiles
+  to a `u16` index into xEdit's `wbMiscStatEnum` (`challenges::MISC_STAT_NAMES`;
+  CGTutorial's `GetPCMiscStat "Times Addicted"` is `01 00 0a 00`), measured over
+  every vanilla FO3 / FNV call by `obscript_tools avcodes`. The VM decoded it as a
+  string and the host answered the code as the count, so `> 0` held and the
+  addiction tutorial fired at boot.
+- **A condition that read a declined value runs no arm.** A declined getter answers
+  `0` so the expression can be evaluated, but the `If` chain it gates is now skipped
+  whole (`ObScriptHost::declined_calls`), the fail-closed rule the condition
+  evaluator already applies (#5993). Before, `player.GetWeaponHealthPerc < 25` with
+  no weapon equipped read `0 < 25`. On a bare world (`obscript_tools live`) this
+  removed exactly the bogus advances — CGTutorial 210 / 218 on FO3 / FNV, and
+  Oblivion's MQ01 at stage 76, MS13, SQ07, MS06 and SE13 mid-quest — and kept the
+  boot quests (CG00 95, Charactergen 5, E3 5, MQDragonArmor 20).
+
+Vanilla tutorial boxes are real now: CGTutorial's items `ShowMessage` the
+radiation, addiction and other tutorials, and a box pauses the world until it is
+answered (`ui.answer` is the console door; gates call `smoke_answer_message_boxes`).
+
 ### The R5 demo translations (`papyrus_demo/`)
 
 The proof-of-concept hand-translations that closed R5. Each is a faithful

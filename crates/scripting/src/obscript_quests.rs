@@ -436,23 +436,20 @@ fn world_music(world: &World, name: &str) -> Option<u32> {
 }
 
 impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
+    fn declined_calls(&self) -> u32 {
+        self.declined.get()
+    }
+
     fn ends_script(&mut self) -> bool {
         self.ends.replace(false)
     }
 
-    fn text_argument(&mut self, cmd: u16, text: &str, rest: &[ObScriptValue]) -> Option<ObScriptValue> {
+    fn text_argument(&mut self, cmd: u16, text: &str, _rest: &[ObScriptValue]) -> Option<ObScriptValue> {
         match cmd {
             // `PlayIdle <idle>`: the IDLE the editor ID names.
             0x1190 => crate::idle_names::idle_by_editor_id(self.world, text).map(ObScriptValue::Ref),
             // `GetGS <setting>`: the game setting's value.
             0x1100 => crate::obscript_state::game_setting(self.world, text).map(ObScriptValue::Num),
-            // `GetPCMiscStat "name"`: the player's count of that stat (the command then answers it).
-            0x1138 => Some(ObScriptValue::Num(crate::obscript_more::misc_stat(self.world, text) as f32)),
-            // `ModPCMiscStat "name" <amount>`: add to that stat.
-            0x1137 => {
-                crate::obscript_more::mod_misc_stat(self.world, text, rest.first().map_or(0.0, |v| v.as_num()) as i32);
-                Some(ObScriptValue::Num(0.0))
-            }
             // `PlayMusic <music>`: the music type (MUSC) the editor ID names.
             0x11ff => world_music(self.world, text).map(ObScriptValue::Ref),
             // `EssentialDeathReload "message"` / `PlayBink "file"`: the string is the command's own argument.

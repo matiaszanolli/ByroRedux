@@ -70,7 +70,7 @@ pub enum ScriptRef {
 }
 
 /// Per-script local variable metadata — one per `SCVR` sub-record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ScriptLocalVar {
     /// Index within the script's local table (from `SLSD.index`).
     pub index: u32,
@@ -85,7 +85,7 @@ pub struct ScriptLocalVar {
 /// Raw bytecode is retained verbatim because the ECS-native runtime
 /// lands later; the parse just needs structural integrity so
 /// `SCRI` / quest / dialogue / terminal references stop dangling.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ScriptRecord {
     pub form_id: u32,
     pub editor_id: String,
@@ -238,6 +238,38 @@ pub fn parse_scpt(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     }
 
     record
+}
+
+/// Whether `sub_type` is one of the sub-records an embedded script is made of.
+fn is_embedded_script_sub(sub_type: &[u8; 4]) -> bool {
+    matches!(
+        sub_type,
+        b"SCHR" | b"SCDA" | b"SCTX" | b"SLSD" | b"SCVR" | b"SCRO" | b"SCRV"
+    )
+}
+
+/// The embedded script that opens at `subs[start]` (a `SCHR`): the quest-stage
+/// and dialogue *result scripts* Oblivion, FO3 and FNV author inline in a
+/// `QUST` stage item or an `INFO`, in the same `SCHR`/`SCDA`/`SCTX`/`SLSD`+`SCVR`/
+/// `SCRO`/`SCRV` layout a standalone `SCPT` uses (xEdit `wbEmbeddedScript`), so
+/// it parses through [`parse_scpt`] under the owning record's FormID.
+///
+/// Returns the script and the index just past its last sub-record. The script
+/// is `None` when it compiled to nothing (an empty `SCDA`, or none): the editor
+/// writes a bare `SCHR` for every stage item and every INFO's unused End script.
+pub fn embedded_script_at(
+    owner: u32,
+    subs: &[SubRecord],
+    start: usize,
+    remap: &Option<FormIdRemap>,
+) -> (Option<ScriptRecord>, usize) {
+    let end = start
+        + subs[start..]
+            .iter()
+            .take_while(|sub| is_embedded_script_sub(&sub.sub_type))
+            .count();
+    let script = parse_scpt(owner, &subs[start..end], remap);
+    ((!script.compiled.is_empty()).then_some(script), end)
 }
 
 #[cfg(test)]

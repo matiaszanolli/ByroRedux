@@ -59,7 +59,9 @@ launch() {
     wait_log "$LOG_DIR/$phase.stderr" 'bench-hold:'
     # A boot-time force-greet holds the dialogue page and clears injected
     # input every frame; end it before any input.hold/press (#6052).
-    smoke_end_boot_conversation "$LOG_DIR/$phase.dialogue-end.log"
+    local boot=boot
+    [[ " $* " == *" --load "* ]] && boot=restored
+    smoke_end_boot_conversation "$LOG_DIR/$phase.dialogue-end.log" "$boot"
 }
 wait_grounded() {
     local output="$1" deadline=$((SECONDS + TIMEOUT))

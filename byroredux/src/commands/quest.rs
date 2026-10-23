@@ -993,6 +993,14 @@ impl ConsoleCommand for DialogueStatusCommand {
                     .unwrap_or_else(|| "none".to_string()),
                 topic.speaker_text.replace('\n', " / "),
             ));
+            // The menu the line leaves the player: what `dialogue.select`
+            // (or a click on the page) can pick next.
+            for entry in &topic.topics {
+                lines.push(format!(
+                    "  offers topic {:#08X} '{}' (info {:#08X})",
+                    entry.topic_form_id, entry.name, entry.info_form_id
+                ));
+            }
         }
         if count == 0 {
             return CommandOutput::line(
@@ -1035,6 +1043,77 @@ impl ConsoleCommand for DialogueEndCommand {
             surface.close_requested = true;
         }
         CommandOutput::line(format!("dialogue.end: ended the conversation with npc {npc}"))
+    }
+}
+
+/// `dialogue.select <topic_formid>` — pick a topic on the open conversation,
+/// through the same selection the dialogue page's topic click lowers to
+/// (`select_topic_by_form_id`): the canonical boundary, so a route gate can
+/// follow an authored conversation (a greeting's linked topics, then theirs)
+/// without the page's mouse input.
+pub(crate) struct DialogueSelectCommand;
+
+impl ConsoleCommand for DialogueSelectCommand {
+    fn name(&self) -> &str {
+        "dialogue.select"
+    }
+
+    fn description(&self) -> &str {
+        "Select a topic in the open conversation (as a click on the dialogue page)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use byroredux_scripting::DialogueSurfaceState;
+        let Some(topic) = args.split_whitespace().next().and_then(parse_console_u32) else {
+            return CommandOutput::error("usage: dialogue.select <topic_formid>");
+        };
+        let Some(npc) = world
+            .try_resource::<DialogueSurfaceState>()
+            .and_then(|surface| surface.npc)
+        else {
+            return CommandOutput::error("dialogue.select: no open conversation");
+        };
+        match crate::systems::npc_dialogue::select_topic_by_form_id(world, npc, topic) {
+            Ok(message) => CommandOutput::line(format!("dialogue.select: npc {npc} {message}")),
+            Err(error) => CommandOutput::error(format!("dialogue.select: {error}")),
+        }
+    }
+}
+
+/// `ui.answer [button]` — answer the front message box (`ShowMessage`,
+/// `MessageBox`) with `button` (default 0, the first) through the same
+/// `answer_message_box` the message-box page's buttons reach. A box pauses
+/// the simulation until answered — the vanilla tutorials (FNV's first-rads
+/// "Radiation" box) open them on their own — so a route gate needs a
+/// drivable answer. The page closes once no box is left.
+pub(crate) struct UiAnswerCommand;
+
+impl ConsoleCommand for UiAnswerCommand {
+    fn name(&self) -> &str {
+        "ui.answer"
+    }
+
+    fn description(&self) -> &str {
+        "Answer the front message box: ui.answer [button index, default 0]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let button = match args.split_whitespace().next() {
+            None => 0,
+            Some(token) => match token.parse::<usize>() {
+                Ok(button) => button,
+                Err(_) => return CommandOutput::error("usage: ui.answer [button index]"),
+            },
+        };
+        let Some(front) = crate::notifications::front_message_box(world) else {
+            return CommandOutput::line("ui.answer: no message box is waiting");
+        };
+        let more = crate::notifications::answer_message_box(world, Some(button));
+        CommandOutput::line(format!(
+            "ui.answer: answered '{}' with button {button}; {}",
+            front.title,
+            if more { "another box waits" } else { "no box left" }
+        ))
     }
 }
 

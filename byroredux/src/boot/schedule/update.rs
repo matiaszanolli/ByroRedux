@@ -492,6 +492,13 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         byroredux_scripting::obscript_quests::obscript_quest_tick_system,
     );
+    // M47.3 — the result scripts of the stage items set since the last run
+    // (by a quest script above, a dialogue line's script last frame, or the
+    // console), then of the stages they set. Its own quest-event subscriber.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::obscript_results::obscript_stage_result_system,
+    );
     // PACK actions resolve their Skyrim PKCU template/data inputs, move actors
     // toward authored invisible-marker coordinates for Travel-family leaves,
     // and queue Done completions for scene playback's next tick.

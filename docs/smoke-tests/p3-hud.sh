@@ -11,16 +11,20 @@
 #
 # The gate is pixel-deterministic: it scans the captures for the exact
 # bar-fill and title colors `crates/debug-ui/src/panels.rs` paints, so a
-# washed-out or misplaced HUD fails rather than passes. Skyrim-only today:
-# the vitals vocabulary and the MS01 stage-15 fragment are Skyrim content,
-# and the fixture system carries the data paths.
+# washed-out or misplaced HUD fails rather than passes. The fixture carries
+# the route: cell + pose, the quest stage whose script displays an objective
+# (Skyrim: MS01's stage-15 fragment; FNV: VCG02's stage-5 result script), and
+# the game's vital pools with the colors panels.rs paints for them.
 #
-#   docs/smoke-tests/p3-hud.sh            # needs Skyrim SE data on disk
+#   docs/smoke-tests/p3-hud.sh            # Skyrim SE
+#   docs/smoke-tests/p3-hud.sh fnv        # Fallout New Vegas
 
 set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fixture.sh"
 smoke_load_fixture p3-hud "$@"
+smoke_require_fixture_fields P3_CELL P3_CAMERA_POS P3_CAMERA_FORWARD \
+    P3_QUEST P3_QUEST_LABEL P3_QUEST_STAGE P3_QUEST_OBJECTIVE_LINE P3_VITAL_COLORS P3_MODAV
 
 ROOT_DIR="$SMOKE_ROOT_DIR"
 ENGINE_BIN="$ROOT_DIR/target/release/byroredux"
@@ -28,19 +32,9 @@ DEBUG_BIN="$ROOT_DIR/target/release/byro-dbg"
 PORT="${BYRO_DEBUG_PORT:-9876}"
 TIMEOUT="${BYROREDUX_SMOKE_TIMEOUT:-360}"
 
-# MS01 "The Forsworn Conspiracy" (0x00018B4B): stage 15's fragment lowers to
-# SetObjectiveDisplayed(objective 10) — derived with
-# `cargo run -p byroredux-scripting --example dump_stage_fragment_effects`
-# against the installed master, not guessed. Stage 10 does NOT display an
-# objective (it only pokes the MS01MiscObjectives helper quest), which the
-# first capture asserts the hard way.
-P3_QUEST=0x18B4B
-P3_QUEST_STAGE=15
-P3_QUEST_OBJECTIVE_LINE='10: displayed=true'
-
 LOG_DIR="$(mktemp -d /tmp/byro-p3-hud.XXXXXX)"
 engine_pid=""
-keep_artifacts=0
+keep_artifacts=${BYROREDUX_KEEP_ARTIFACTS:-0}
 cleanup() {
     if [[ -n "$engine_pid" ]]; then
         kill -TERM "$engine_pid" 2>/dev/null || true
@@ -75,9 +69,11 @@ if [[ ! -x "$ENGINE_BIN" || ! -x "$DEBUG_BIN" ]]; then
     (cd "$ROOT_DIR" && cargo build --release --quiet -p byroredux -p byro-dbg)
 fi
 
+# `debug_command <command> [logfile]` — stdout, or the file when given (the
+# shape `smoke_end_boot_conversation` calls it with).
 debug_command() {
-    local command="$1"
-    env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" <<EOF
+    local command="$1" out="${2:-/dev/stdout}"
+    env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" >"$out" <<EOF
 $command
 .quit
 EOF
@@ -99,8 +95,8 @@ wait_for_engine_log() {
 
 echo "smoke[p3-hud]: $FIXTURE_LABEL -- native vitals + objective HUD"
 
-# The P1 spawn pose: character mode at the Bannered Mare threshold. The
-# camera override fixes the capsule's XZ column (see plan_character_spawn).
+# The fixture's spawn pose, in character mode. The camera override fixes the
+# capsule's XZ column (see plan_character_spawn).
 # Launch from the game data dir (like the m48 HUD smokes) so the engine's
 # exit-time default save lands beside the game files instead of in the repo.
 cd "$SMOKE_DATA"
@@ -109,12 +105,12 @@ cd "$SMOKE_DATA"
 # can never attach.
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     RUST_LOG="error" \
-    xvfb-run -a "$ENGINE_BIN" \
+    "${SMOKE_HEADLESS[@]}" "$ENGINE_BIN" \
     "${SMOKE_ENGINE_ARGS[@]}" \
-    --cell WhiterunBanneredMare \
+    --cell "$P3_CELL" \
     --player \
-    --camera-pos -116,226,982 \
-    --camera-forward 0,-0.29,0.96 \
+    --camera-pos "$P3_CAMERA_POS" \
+    --camera-forward "$P3_CAMERA_FORWARD" \
     --radius 1 \
     --bench-frames 30 \
     --bench-hold \
@@ -122,6 +118,9 @@ env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
 engine_pid=$!
 
 wait_for_engine_log "bench-hold:" "engine reached the held interactive state"
+# A boot-time force-greet (FNV: Sunny Smiles) holds the modal dialogue page,
+# which would sit over the HUD in both captures (#6052).
+smoke_end_boot_conversation "$LOG_DIR/dialogue-end.log"
 
 status="$(debug_command "player.status")"
 grep -Fq "mode=Character" <<<"$status" || fail "Character mode is not active"
@@ -129,8 +128,17 @@ player_id="$(grep -o 'player=[0-9]*' <<<"$status" | head -1 | cut -d= -f2)"
 [[ -n "$player_id" ]] || fail "player.status did not report a player entity"
 # The vitals bars are unreachable without ActorValues on the body; modav is
 # also the probe that proved the pre-fix HUD gap was a probe artifact.
-debug_command "modav $player_id 0x3E8 5" >"$LOG_DIR/modav.txt"
-grep -Fq "modav" "$LOG_DIR/modav.txt" || fail "modav probe did not answer"
+# The fixture's `<AVIF> <delta>` probes: one per value the captures need
+# live (FNV also puts rads on the player, or the rad gauge has no fill).
+for probe in "${P3_MODAV[@]}"; do
+    debug_command "modav $player_id $probe" >"$LOG_DIR/modav.txt"
+    grep -Fq "modav" "$LOG_DIR/modav.txt" || fail "modav probe '$probe' did not answer"
+done
+# The probes can raise a vanilla tutorial box (FNV: the first rads open
+# CGTutorial's "Radiation"); it pauses the world and hides the HUD until
+# answered.
+sleep 2
+smoke_answer_message_boxes "$LOG_DIR/answer.log"
 
 # Capture 1 — bars present, no objective yet (the quest is untouched).
 # The screenshot round-trip (request → present → PNG encode → response) can
@@ -159,15 +167,16 @@ capture_screenshot() {
 capture_screenshot "hud-vitals.png" \
     || fail "vitals capture was not written"
 
-# Advance MS01 through the canonical fragment path; its stage-15 fragment
-# displays objective 10.
+# Advance the quest through the canonical stage path; the stage's script
+# (fragment or result script) displays the fixture's objective.
 setstage="$(debug_command "quest.setstage $P3_QUEST $P3_QUEST_STAGE")"
 grep -Fq "result: set stage=$P3_QUEST_STAGE" <<<"$setstage" \
-    || fail "quest.setstage did not advance MS01 (got: $setstage)"
+    || fail "quest.setstage did not advance $P3_QUEST (got: $setstage)"
 sleep 2
+smoke_answer_message_boxes "$LOG_DIR/answer.log"
 quest="$(debug_command "quest.show $P3_QUEST")"
 grep -Fq "$P3_QUEST_OBJECTIVE_LINE" <<<"$quest" \
-    || fail "stage $P3_QUEST_STAGE fragment did not display objective 10"
+    || fail "$P3_QUEST_LABEL did not display the objective ($P3_QUEST_OBJECTIVE_LINE)"
 
 # Capture 2 — bars + the new objective line.
 capture_screenshot "hud-full.png" \
@@ -176,12 +185,17 @@ capture_screenshot "hud-full.png" \
 # Pixel verification — the exact colors panels.rs paints. python3 + PIL are
 # also used by the shader-parity tooling; absence is a smoke-environment
 # failure, not a SKIP.
-python3 - "$LOG_DIR" <<'EOF' || fail "HUD pixel verification did not pass"
+python3 - "$LOG_DIR" "${P3_VITAL_COLORS[@]}" <<'EOF' || fail "HUD pixel verification did not pass"
 import collections
 import sys
 from PIL import Image
 
 log = sys.argv[1]
+# `label:r,g,b` per vital pool, from the fixture.
+vitals = {}
+for spec in sys.argv[2:]:
+    label, rgb = spec.split(":")
+    vitals[label] = tuple(int(c) for c in rgb.split(","))
 
 def hud_counts(path):
     img = Image.open(path).convert("RGB")
@@ -196,23 +210,20 @@ def hud_counts(path):
             for (r, g, b), count in counter.items()
             if abs(r - rgb[0]) <= tol and abs(g - rgb[1]) <= tol and abs(b - rgb[2]) <= tol
         )
-    return {
-        "health": near(bottom_left, (198, 58, 48)),
-        "magicka": near(bottom_left, (72, 110, 220)),
-        "stamina": near(bottom_left, (74, 168, 88)),
-        "objective": near(top_left, (235, 220, 160)),
-    }
+    counts = {label: near(bottom_left, rgb) for label, rgb in vitals.items()}
+    counts["objective"] = near(top_left, (235, 220, 160))
+    return counts
 
 bars = hud_counts(f"{log}/hud-vitals.png")
 full = hud_counts(f"{log}/hud-full.png")
 
-for key in ("health", "magicka", "stamina"):
+for key in vitals:
     assert bars[key] > 200, f"vitals capture is missing the {key} bar fill: {bars}"
 assert bars["objective"] == 0, f"objective line appeared before the quest advanced: {bars}"
 assert full["objective"] > 0, f"objective line did not appear after quest.setstage: {full}"
-for key in ("health", "magicka", "stamina"):
+for key in vitals:
     assert full[key] > 200, f"full capture lost the {key} bar: {full}"
 print("hud pixel verification: bars present; objective appears only after the stage fragment")
 EOF
 
-echo "smoke[p3-hud]: PASS -- vitals bars live from ActorValues; objective text live from the MS01 stage-15 fragment"
+echo "smoke[p3-hud]: PASS -- vitals bars live from ActorValues; objective text live from the $P3_QUEST_LABEL"

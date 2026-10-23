@@ -669,7 +669,7 @@ pub const QUEST_EVENT_RETENTION: usize = 16_384;
 /// Stable identity for one journal consumer.
 ///
 /// #3892 — subscriber IDs are compile-time constants, not allocated. The
-/// three below are the complete set; each satellite system holds one and
+/// four below are the complete set; each satellite system holds one and
 /// polls on its own cadence, with no registration step. An ID's cursor is
 /// recorded by its first [`QuestStageState::poll_quest_events`] under the
 /// same write lock as the cursor update, so polling stays race-free.
@@ -687,6 +687,9 @@ pub struct QuestEventSubscriberId(pub u64);
 pub const SCENE_QUEST_EVENT_SUBSCRIBER: QuestEventSubscriberId = QuestEventSubscriberId(1);
 pub const FRAGMENT_QUEST_EVENT_SUBSCRIBER: QuestEventSubscriberId = QuestEventSubscriberId(2);
 pub const TERMINAL_QUEST_EVENT_SUBSCRIBER: QuestEventSubscriberId = QuestEventSubscriberId(3);
+/// M47.3 — the Oblivion / FO3 / FNV stage result scripts
+/// ([`crate::obscript_results::obscript_stage_result_system`]).
+pub const OBSCRIPT_STAGE_QUEST_EVENT_SUBSCRIBER: QuestEventSubscriberId = QuestEventSubscriberId(4);
 
 /// One transition in commit order. Sequence numbers are monotonic within the
 /// running process and let slower subsystems preserve order and deduplicate.
