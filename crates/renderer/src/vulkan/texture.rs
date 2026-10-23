@@ -735,6 +735,55 @@ where
     with_one_time_commands_inner(device, queue, pool, None, f).map_err(anyhow::Error::from)
 }
 
+/// One fenced one-time submit of a pass's initial layout walk (#6146): every barrier in
+/// `barriers` from stage NONE — an UNDEFINED source discards prior content, so there are no
+/// previous writes to expose; NONE is the Vulkan 1.3 replacement for TOP_OF_PIPE as a source
+/// stage (#949 / #1100 / #1122) — to `dst_stage`, the pass's first consumer. The per-pass
+/// `initialize_layouts` methods differ only in their barrier list and that stage.
+///
+/// A failure is a [`OneTimeCommandError`]; release the pass with
+/// [`release_after_failed_submit`], never a bare `destroy`.
+///
+/// # Safety
+/// `device`, `queue` and `pool` must be valid, the queue must support the barrier's stages,
+/// and every barrier's image must be owned by the caller and unused by any submission.
+pub(crate) unsafe fn submit_initial_layouts(
+    device: &ash::Device,
+    queue: &std::sync::Mutex<vk::Queue>,
+    pool: vk::CommandPool,
+    barriers: &[vk::ImageMemoryBarrier<'_>],
+    dst_stage: vk::PipelineStageFlags,
+) -> Result<()> {
+    with_one_time_commands(device, queue, pool, |cmd| {
+        // SAFETY: `cmd` is the recording one-time buffer `with_one_time_commands` hands
+        // over; the caller guarantees the barrier images are its own and unused.
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::NONE,
+                dst_stage,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                barriers,
+            );
+        }
+        Ok(())
+    })
+}
+
+/// Release a pass whose one-time submit (its [`submit_initial_layouts`] walk, say) failed:
+/// `destroy` it when the submit never reached the queue, and leak it when it may still be
+/// executing against the pass's images — a host-side destroy could race it (#4891, #5947,
+/// #6063, #6146). An error that is not a [`OneTimeCommandError`] counts as in flight.
+pub(crate) fn release_after_failed_submit<T>(pass: T, error: &anyhow::Error, destroy: impl FnOnce(T)) {
+    if OneTimeCommandError::may_be_in_flight(error) {
+        std::mem::forget(pass);
+    } else {
+        destroy(pass);
+    }
+}
+
 /// Variant of [`with_one_time_commands`] that reuses a persistent fence
 /// instead of creating and destroying a new fence per submission.
 ///
@@ -1513,5 +1562,119 @@ mod dds_upload_guard_tests {
             "can_update_rgba must check the upload against the texture's \
              stored creation extent (#4515)",
         );
+    }
+}
+
+#[cfg(test)]
+mod initial_layout_submit_tests {
+    /// #6146 — the per-pass layout walks share `submit_initial_layouts`, so the
+    /// in-flight policy has one home; a pass that hand-rolls its barrier
+    /// submit again re-opens the divergence #6063 fixed for one copy only.
+    #[test]
+    fn every_initialize_layouts_body_uses_the_shared_submit() {
+        for (name, src) in [
+            ("bloom.rs", include_str!("bloom.rs")),
+            ("taa.rs", include_str!("taa.rs")),
+            ("svgf.rs", include_str!("svgf.rs")),
+            ("water_caustic.rs", include_str!("water_caustic.rs")),
+            ("caustic.rs", include_str!("caustic.rs")),
+            ("gbuffer.rs", include_str!("gbuffer.rs")),
+            ("shadow_filter.rs", include_str!("shadow_filter.rs")),
+        ] {
+            let own = crate::source_scan::production_text_or_whole(src);
+            let start = own.find("fn initialize_layouts(").unwrap_or_else(|| panic!("{name}: initialize_layouts"));
+            let body = &own[start..start + own[start..].find("\n    }\n").expect("fn end")];
+            assert!(body.contains("submit_initial_layouts("), "{name}: initialize_layouts must submit through submit_initial_layouts");
+            assert!(!body.contains("cmd_pipeline_barrier"), "{name}: no hand-rolled layout barrier submit");
+        }
+    }
+
+    /// The scanner sees the arm, not the code after it: a bare destroy inside the arm is
+    /// found, a guarded one passes, and a destroy past the arm's closing brace is ignored.
+    #[test]
+    fn the_failure_arm_scanner_finds_a_bare_destroy() {
+        let bare = ".initialize_layouts(&device, &queue, pool)\n            } {\n                log::warn!(\"x\");\n                pipe.destroy(&device, &alloc);\n            }\n            other.destroy(&device, &alloc);";
+        let arm = failure_arm(bare).expect("arm");
+        assert!(arm.contains("pipe.destroy(") && !arm.contains("other.destroy("));
+        let guarded = ".initialize_layouts(&device, &queue, pool) {\n    release_after_failed_submit(pipe, &e, |mut p| p.destroy(&device, &alloc));\n}";
+        let arm = failure_arm(guarded).expect("arm");
+        assert!(arm.find("release_after_failed_submit(").unwrap() < arm.find(".destroy(").unwrap());
+        assert!(failure_arm(".initialize_layouts(upload).map_err(|e| e)").is_none());
+    }
+
+    /// The `{ … }` block an `if let Err(..) = …initialize_layouts(..)` runs on failure: past
+    /// the call's closing paren and an enclosing `unsafe { … }`'s `}`, the next `{`, brace-
+    /// matched. `None` for a call whose result is chained instead (`.map_err(..)`).
+    fn failure_arm(from_call: &str) -> Option<&str> {
+        let bytes = from_call.as_bytes();
+        let mut i = from_call.find('(')?;
+        let mut depth = 0i32;
+        loop {
+            match bytes.get(i)? {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        let mut rest = from_call[i + 1..].trim_start();
+        if let Some(after_unsafe) = rest.strip_prefix('}') {
+            rest = after_unsafe.trim_start();
+        }
+        if !rest.starts_with('{') {
+            return None;
+        }
+        let mut depth = 0i32;
+        for (at, ch) in rest.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&rest[..=at]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// #6146 — a failed `initialize_layouts` submit may still be executing
+    /// against the pass's images (#6063), so no caller may destroy the pass
+    /// before consulting the in-flight class: through
+    /// `release_after_failed_submit`, or `may_be_in_flight` directly.
+    #[test]
+    fn no_initialize_layouts_caller_destroys_without_the_in_flight_check() {
+        for (name, src) in [
+            ("context/init.rs", include_str!("context/init.rs")),
+            ("context/resize.rs", include_str!("context/resize.rs")),
+        ] {
+            let own = crate::source_scan::production_text_or_whole(src);
+            let mut checked = 0;
+            for (at, _) in own.match_indices(".initialize_layouts(") {
+                let Some(arm) = failure_arm(&own[at..]) else { continue };
+                let Some(destroy) = arm.find(".destroy(") else {
+                    checked += 1;
+                    continue;
+                };
+                let guarded = ["release_after_failed_submit(", "may_be_in_flight"]
+                    .iter()
+                    .filter_map(|guard| arm.find(guard))
+                    .any(|guard| guard < destroy);
+                assert!(
+                    guarded,
+                    "{name}: a failed initialize_layouts arm destroys its pass without consulting \
+                     the in-flight class (#6063 / #6146):\n{arm}"
+                );
+                checked += 1;
+            }
+            assert!(checked > 0, "{name}: no initialize_layouts failure arm was found to check");
+        }
     }
 }

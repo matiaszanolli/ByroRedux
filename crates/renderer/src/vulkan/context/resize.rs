@@ -812,8 +812,14 @@ impl VulkanContext {
                     log::warn!(
                         "Water-caustic initialize_layouts after resize failed: {e} — disabling for the rest of the session"
                     );
-                    wca.destroy(&self.device, allocator);
-                    self.post.water_caustic_accum = None;
+                    if let Some(wca) = self.post.water_caustic_accum.take() {
+                        // Inside the block's `unsafe`: the resize path waited both
+                        // frames in flight, and the helper only destroys when the
+                        // layout submit never reached the queue (#6146).
+                        crate::vulkan::texture::release_after_failed_submit(wca, &e, |mut wca| {
+                            wca.destroy(&self.device, allocator)
+                        });
+                    }
                 }
             }
         }
@@ -1627,7 +1633,7 @@ impl VulkanContext {
             .expect("allocator missing during upscaler switch")
             .clone();
 
-        let mut taa = match super::super::taa::TaaPipeline::new(
+        let taa = match super::super::taa::TaaPipeline::new(
             &self.device,
             &allocator,
             self.pipeline_cache,
@@ -1653,8 +1659,11 @@ impl VulkanContext {
             taa.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
         } {
             log::warn!("TAA layout init failed: {error} — disabling TAA");
-            // SAFETY: same as above — nothing has referenced these images.
-            unsafe { taa.destroy(&self.device, &allocator) };
+            crate::vulkan::texture::release_after_failed_submit(taa, &error, |mut taa| unsafe {
+                // SAFETY: the pipeline's images were just created and no frame has
+                // referenced them; the layout submit never reached the queue (#6146).
+                taa.destroy(&self.device, &allocator)
+            });
             return;
         }
         self.post.taa = Some(taa);

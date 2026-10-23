@@ -850,13 +850,12 @@ impl VulkanContext {
                     log::warn!(
                         "Water-caustic initialize_layouts failed: {e} — disabling for the rest of the session"
                     );
-                    let mut a_mut = a;
-                    unsafe {
-                        // SAFETY: `a_mut`'s images/buffers were made by `device`
-                        // and are destroyed on this init-failure path before any
-                        // frame command buffer could reference them.
-                        a_mut.destroy(&device, &gpu_allocator)
-                    };
+                    crate::vulkan::texture::release_after_failed_submit(a, &e, |mut a| unsafe {
+                        // SAFETY: the layout submit never reached the queue (the
+                        // helper leaks the accumulator otherwise, #6146) and no frame
+                        // command buffer has referenced its images.
+                        a.destroy(&device, &gpu_allocator)
+                    });
                     None
                 } else {
                     Some(a)
@@ -1224,14 +1223,13 @@ impl VulkanContext {
                 s.initialize_layouts(&device, &graphics_queue, transfer_pool)
             } {
                 log::warn!("SVGF layout init failed: {e} — disabling SVGF");
-                // Destroy partially-initialized pipeline.
-                if let Some(mut pipe) = svgf.take() {
-                    unsafe {
-                        // SAFETY: `pipe` was just created by `device`; on this
-                        // init-failure path no frame command buffer has yet
-                        // referenced its images, so destroying it is sound.
+                if let Some(pipe) = svgf.take() {
+                    crate::vulkan::texture::release_after_failed_submit(pipe, &e, |mut pipe| unsafe {
+                        // SAFETY: `pipe` was just created by `device`; the layout
+                        // submit never reached the queue (the helper leaks the pass
+                        // otherwise, #6146) and no frame has referenced its images.
                         pipe.destroy(&device, &gpu_allocator)
-                    };
+                    });
                 }
             }
         }
@@ -1320,13 +1318,13 @@ impl VulkanContext {
                 // is sound.
                 c.initialize_layouts(&device, &graphics_queue, transfer_pool)
             } {
-                if let Some(mut pipe) = caustic.take() {
-                    unsafe {
-                        // SAFETY: `pipe` was just created by `device`; on this
-                        // init-failure path no frame command buffer has yet
-                        // referenced its images, so destroying it is sound.
+                if let Some(pipe) = caustic.take() {
+                    crate::vulkan::texture::release_after_failed_submit(pipe, &e, |mut pipe| unsafe {
+                        // SAFETY: `pipe` was just created by `device`; the layout
+                        // submit never reached the queue (the helper leaks the pass
+                        // otherwise, #6146) and no frame has referenced its images.
                         pipe.destroy(&device, &gpu_allocator)
-                    };
+                    });
                 }
                 return Err(anyhow::anyhow!(
                     "Caustic layout init failed: {e} — composite binding 5 requires the RGB array"
@@ -1527,13 +1525,13 @@ impl VulkanContext {
                 t.initialize_layouts(&device, &graphics_queue, transfer_pool)
             } {
                 log::warn!("TAA layout init failed: {e} — disabling TAA");
-                if let Some(mut pipe) = taa.take() {
-                    unsafe {
-                        // SAFETY: `pipe` was just created by `device`; on this
-                        // init-failure path no frame command buffer has yet
-                        // referenced its images, so destroying it is sound.
+                if let Some(pipe) = taa.take() {
+                    crate::vulkan::texture::release_after_failed_submit(pipe, &e, |mut pipe| unsafe {
+                        // SAFETY: `pipe` was just created by `device`; the layout
+                        // submit never reached the queue (the helper leaks the pass
+                        // otherwise, #6146) and no frame has referenced its images.
                         pipe.destroy(&device, &gpu_allocator)
-                    };
+                    });
                 }
             }
         }
