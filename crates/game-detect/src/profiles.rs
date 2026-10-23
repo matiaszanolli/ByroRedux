@@ -305,19 +305,10 @@ pub fn load_default() -> GameProfileRegistry {
 fn load_default_from(user_path: Option<&std::path::Path>) -> GameProfileRegistry {
     let mut out: BTreeMap<String, GameProfileEntry> = BTreeMap::new();
 
-    // Shipped defaults: try CWD-relative first (cargo run from
-    // repo root), then binary-parent-relative (release ships).
-    for shipped in [
-        PathBuf::from(DEFAULT_PROFILES_PATH),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join(DEFAULT_PROFILES_PATH)))
-            .unwrap_or_default(),
-    ] {
-        if shipped.exists() {
-            merge_from(&shipped, &mut out);
-            break;
-        }
+    // Shipped defaults: CWD-relative first (cargo run from repo root), then
+    // binary-parent-relative (release ships) — `byroredux_core::paths`.
+    if let Some(shipped) = byroredux_core::paths::shipped_asset(DEFAULT_PROFILES_PATH) {
+        merge_from(&shipped, &mut out);
     }
 
     // Per-user override (#5294 — $BYRO_PROFILES when the launcher pointed
@@ -402,18 +393,7 @@ fn merge_from(path: &Path, out: &mut BTreeMap<String, GameProfileEntry>) {
 /// `selected_user_path().as_deref()`).
 fn ordered_config_paths_with(user_path: Option<&std::path::Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    for shipped in [
-        PathBuf::from(DEFAULT_PROFILES_PATH),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join(DEFAULT_PROFILES_PATH)))
-            .unwrap_or_default(),
-    ] {
-        if shipped.exists() {
-            paths.push(shipped);
-            break;
-        }
-    }
+    paths.extend(byroredux_core::paths::shipped_asset(DEFAULT_PROFILES_PATH));
     if let Some(user_path) = user_path {
         if user_path.exists() {
             paths.push(user_path.to_path_buf());

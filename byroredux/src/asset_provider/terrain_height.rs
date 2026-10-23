@@ -86,16 +86,7 @@ pub(crate) struct CachedHeight {
 /// beside the Vulkan pipeline cache, so it survives working-directory changes.
 /// `BYRO_CACHE_DIR` overrides the parent (tests, read-only installs).
 pub(crate) fn default_cache_dir() -> PathBuf {
-    let root = std::env::var_os("BYRO_CACHE_DIR")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.parent().map(Path::to_path_buf))
-        })
-        .unwrap_or_else(|| PathBuf::from("."));
-    root.join("terrain-height")
+    byroredux_core::paths::cache_dir("terrain-height")
 }
 
 /// One unit of background work: everything [`run_job`] needs, owned, so it

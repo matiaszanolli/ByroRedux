@@ -38,8 +38,7 @@ pub fn locate_engine(exe_dir: &Path) -> Option<PathBuf> {
 
 /// [`locate_engine`] against the running executable's own directory.
 pub fn locate_engine_beside_self() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    locate_engine(exe.parent()?)
+    locate_engine(&byroredux_core::paths::exe_dir()?)
 }
 
 /// A running engine, plus the tail of what it has said.

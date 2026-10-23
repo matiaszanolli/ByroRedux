@@ -23,6 +23,7 @@ pub mod form_id;
 pub mod imagespace;
 pub mod lighting;
 pub mod math;
+pub mod paths;
 pub mod radiometry;
 pub mod settings;
 pub mod source_scan;

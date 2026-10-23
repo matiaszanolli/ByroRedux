@@ -796,11 +796,9 @@ pub(super) fn allocate_command_buffers(
 
 fn pipeline_cache_path() -> std::path::PathBuf {
     // Resolve next to the executable so the cache persists across working-directory
-    // changes (launcher, read-only cwd, packaged distribution).
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("pipeline_cache.bin")))
-        .unwrap_or_else(|| std::path::PathBuf::from("pipeline_cache.bin"))
+    // changes (launcher, read-only cwd, packaged distribution) — the shared
+    // cache-root rule, so `BYRO_CACHE_DIR` redirects it with the other caches.
+    byroredux_core::paths::cache_file("pipeline_cache.bin")
 }
 
 /// Validate a Vulkan pipeline cache header against the running

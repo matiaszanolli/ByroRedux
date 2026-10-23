@@ -79,18 +79,13 @@ impl PresetFile {
     }
 
     /// The shipped file, tried relative to the working directory and then to
-    /// the running executable — the same two-step the profile loader uses, so a
-    /// release build beside its `assets/` works without a working-directory
-    /// convention.
+    /// the running executable ([`byroredux_core::paths`]), so a release build
+    /// beside its `assets/` works without a working-directory convention.
     pub fn load_default() -> Self {
-        let cwd = Self::load(DEFAULT_PRESETS_PATH);
-        if !cwd.presets.is_empty() {
-            return cwd;
-        }
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|dir| dir.join(DEFAULT_PRESETS_PATH)))
+        byroredux_core::paths::shipped_asset_candidates(DEFAULT_PRESETS_PATH)
+            .into_iter()
             .map(Self::load)
+            .find(|loaded| !loaded.presets.is_empty())
             .unwrap_or_default()
     }
 
