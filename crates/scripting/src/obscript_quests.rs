@@ -58,6 +58,7 @@ use byroredux_plugin::esm::records::{QustRecord, ScriptRecord};
 use crate::condition::{evaluate_script_getter, resolve_entity_by_global_form_id, ConditionFunction};
 use crate::globals::Globals;
 use crate::obscript_actions::Action;
+use crate::obscript_effects::num;
 use crate::obscript_vm::{form_from_halves, form_halves, BlockOutcome, ObScriptHost, ObScriptProgram, ObScriptValue, VmState};
 use crate::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageState, QuestStatus};
 
@@ -412,6 +413,18 @@ pub struct ItemScriptContext {
 }
 
 impl<'a> ObScriptCommandHost<'a> {
+    /// The action context a command runs under: `caller` (already defaulted to the owner for
+    /// an object script), the owner and its entity, the action reference and the elapsed time.
+    fn context(&self, caller: Option<u32>) -> crate::obscript_actions::Context {
+        crate::obscript_actions::Context {
+            caller,
+            known: self.reference.map(|entity| (self.owner, entity)),
+            action_ref: self.action_ref,
+            owner: self.owner,
+            elapsed: self.elapsed,
+        }
+    }
+
     pub fn new(world: &'a World, owner: u32, reference: Option<byroredux_core::ecs::storage::EntityId>, elapsed: f32, script: &'a ScriptRecord) -> Self {
         Self { world, owner, reference, elapsed, script, action_ref: None, declined: std::cell::Cell::new(0), item: None, ends: std::cell::Cell::new(false) }
     }
@@ -487,7 +500,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
         // A command written with no calling reference acts on the reference an
         // object script is attached to; a quest script has none.
         let caller = caller.or_else(|| self.reference.map(|_| self.owner));
-        let num = |i: usize| args.get(i).map(|v| v.as_num()).unwrap_or(0.0);
+        let num = |i: usize| num(args, i);
         let ref_arg = |i: usize| match args.get(i) {
             Some(ObScriptValue::Ref(r)) => Some(*r),
             Some(ObScriptValue::Num(n)) if *n > 0.0 => Some(*n as u32),
@@ -590,7 +603,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     self.world,
                     cmd,
                     args,
-                    &crate::obscript_actions::Context { caller, known: None, action_ref: None, owner: self.owner, elapsed: self.elapsed },
+                    &crate::obscript_actions::Context { known: None, action_ref: None, ..self.context(caller) },
                 ) {
                     Action::Done { .. } => None,
                     _ => self.decline(cmd),
@@ -734,13 +747,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     self.world,
                     cmd,
                     args,
-                    &crate::obscript_actions::Context {
-                        caller,
-                        known: self.reference.map(|entity| (self.owner, entity)),
-                        action_ref: self.action_ref,
-                        owner: self.owner,
-                        elapsed: self.elapsed,
-                    },
+                    &self.context(caller),
                 ) {
                     Action::Done { value, effect: text } => {
                         if !text.is_empty() {
@@ -756,13 +763,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     self.world,
                     cmd,
                     args,
-                    &crate::obscript_actions::Context {
-                        caller,
-                        known: self.reference.map(|entity| (self.owner, entity)),
-                        action_ref: self.action_ref,
-                        owner: self.owner,
-                        elapsed: self.elapsed,
-                    },
+                    &self.context(caller),
                 ) {
                     crate::obscript_effects::Getter::Value(value) => Some(ObScriptValue::Num(value)),
                     crate::obscript_effects::Getter::Ref(form) => Some(ObScriptValue::Ref(form)),
@@ -809,13 +810,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                 self.world,
                 cmd,
                 args,
-                &crate::obscript_actions::Context {
-                    caller,
-                    known: self.reference.map(|entity| (self.owner, entity)),
-                    action_ref: self.action_ref,
-                    owner: self.owner,
-                    elapsed: self.elapsed,
-                },
+                &self.context(caller),
             ) {
                 Action::Done { value, effect: text } => {
                     if !text.is_empty() {
@@ -860,7 +855,7 @@ impl ObScriptCommandHost<'_> {
         quest: QuestFormId,
         args: &[ObScriptValue],
     ) -> Option<ObScriptValue> {
-        let num = |i: usize| args.get(i).map(|v| v.as_num()).unwrap_or(0.0);
+        let num = |i: usize| num(args, i);
         let objective = num(1) as i32;
         let log = |text: String| {
             if let Some(mut log) = self.world.try_resource_mut::<ObScriptEffectLog>() {
