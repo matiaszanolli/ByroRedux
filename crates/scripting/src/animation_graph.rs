@@ -1571,6 +1571,20 @@ impl AnimArchetypeOverrides {
     }
 }
 
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: `Actor.ChangeAnimArchetype` assignments (saved).
+pub fn install(world: &mut World) {
+    world.init_resource::<AnimArchetypeOverrides>();
+}
+
+/// #5802 — this subsystem's saved column. Called by the binary's
+/// `build_save_registry` at its place in the row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<AnimArchetypeOverrides>("AnimArchetypeOverrides");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

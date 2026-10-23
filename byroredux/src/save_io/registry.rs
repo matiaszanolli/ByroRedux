@@ -460,9 +460,10 @@ pub fn build_save_registry() -> SaveRegistry {
         // M47.2 — Game.IncrementStat misc stats.
         .register_resource::<byroredux_scripting::MiscStats>("MiscStats")
         // M47.2 — Game.AddAchievement awards.
-        .register_resource::<byroredux_scripting::Achievements>("Achievements")
-        // M47.2 — ObjectReference.SetLinkedRef links.
-        .register_resource::<byroredux_scripting::LinkedRefOverrides>("LinkedRefOverrides")
+        .register_resource::<byroredux_scripting::Achievements>("Achievements");
+    // M47.2 — ObjectReference.SetLinkedRef links.
+    byroredux_scripting::linked_refs::register_saved(&mut r);
+    r
         // M47.3 — the ObScript quest scripts' local variables.
         .register_resource::<byroredux_scripting::obscript_quests::ObScriptQuestLocals>("ObScriptQuestLocals");
     // M47.2 — SetActorOwner / SetFactionOwner, faction crime gold and
@@ -481,13 +482,12 @@ pub fn build_save_registry() -> SaveRegistry {
     byroredux_scripting::magic_effects::register_saved(&mut r);
     // M47.2 — Actor.SetBribed / SetIntimidated flags.
     byroredux_scripting::speechcraft::register_saved(&mut r);
-    r
-        // M47.2 — Actor.ChangeAnimArchetype assignments.
-        .register_resource::<byroredux_scripting::AnimArchetypeOverrides>("AnimArchetypeOverrides")
-        // M47.2 — Starfield SetScanned / AddToMapScanned flags.
-        .register_resource::<byroredux_scripting::ScannedReferences>("ScannedReferences")
-        // M47.2 — FormList.AddForm / RemoveAddedForm / Revert.
-        .register_resource::<byroredux_scripting::FormListAdditions>("FormListAdditions");
+    // M47.2 — Actor.ChangeAnimArchetype assignments.
+    byroredux_scripting::animation_graph::register_saved(&mut r);
+    // M47.2 — Starfield SetScanned / AddToMapScanned flags.
+    byroredux_scripting::scanning::register_saved(&mut r);
+    // M47.2 — FormList.AddForm / RemoveAddedForm / Revert.
+    byroredux_scripting::form_lists::register_saved(&mut r);
     // M47.2 — ObjectReference.SetLocRefType assignments.
     byroredux_scripting::loc_ref_types::register_saved(&mut r);
     r

@@ -96,6 +96,20 @@ pub fn linked_ref_children(world: &World, target: u32, keyword: u32) -> Vec<u32>
         .collect()
 }
 
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: `ObjectReference.SetLinkedRef` links (saved).
+pub fn install(world: &mut World) {
+    world.init_resource::<LinkedRefOverrides>();
+}
+
+/// #5802 — this subsystem's saved column. Called by the binary's
+/// `build_save_registry` at its place in the row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<LinkedRefOverrides>("LinkedRefOverrides");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

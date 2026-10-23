@@ -107,6 +107,21 @@ pub fn install_form_lists(world: &mut World, index: &EsmIndex) -> usize {
     count
 }
 
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: the form lists scripts read (derived from the load order) and the forms scripts added to them (saved).
+pub fn install(world: &mut World) {
+    world.init_resource::<FormLists>();
+    world.init_resource::<FormListAdditions>();
+}
+
+/// #5802 — this subsystem's saved column. Called by the binary's
+/// `build_save_registry` at its place in the row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<FormListAdditions>("FormListAdditions");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

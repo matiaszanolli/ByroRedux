@@ -58,8 +58,9 @@ pub fn register(world: &mut World) {
     crate::magic_effects::install(world);
     crate::magic_shaders::install(world);
     world.register::<crate::obscript_anim::HeadLook>();
-    // M47.2 — form lists scripts read (derived).
-    world.init_resource::<FormLists>();
+    // M47.2 — form lists scripts read (derived) and the forms scripts added to
+    // them (saved): `form_lists` installs both (#5802).
+    form_lists::install(world);
     // M47.2 — the weather scripts can ask about (derived).
     world.init_resource::<CurrentWeather>();
     world.init_resource::<WeatherClassifications>();
@@ -76,14 +77,12 @@ pub fn register(world: &mut World) {
     world.init_resource::<AnimationEventRegistrations>();
     // M47.2 — Papyrus hit event registrations (saved).
     world.init_resource::<HitRegistrations>();
-    // M47.2 — scripted SetLinkedRef links (saved).
-    world.init_resource::<LinkedRefOverrides>();
-    // M47.2 — ChangeAnimArchetype assignments (saved).
-    world.init_resource::<AnimArchetypeOverrides>();
-    // M47.2 — Starfield SetScanned / AddToMapScanned flags (saved).
-    world.init_resource::<ScannedReferences>();
-    // M47.2 — forms scripts added to form lists (saved).
-    world.init_resource::<FormListAdditions>();
+    // M47.2 — scripted SetLinkedRef links, ChangeAnimArchetype assignments and
+    // Starfield SetScanned / AddToMapScanned flags: each subsystem installs its
+    // own resources (#5802). The form-list additions come with `form_lists`.
+    linked_refs::install(world);
+    animation_graph::install(world);
+    scanning::install(world);
     // M47.2 — script-filled reference-collection alias members (saved).
     world.init_resource::<AliasCollections>();
     // M47.2 — scripted SetPlayerTeammate / SetDoingFavor flags (saved).
