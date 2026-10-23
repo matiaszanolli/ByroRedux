@@ -31,6 +31,7 @@ impl Resource for CollectionAliasKinds {}
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct AliasCollections {
+    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
     members: HashMap<(u32, i16), Vec<u32>>,
 }
 

@@ -53,20 +53,25 @@ pub struct ObScriptLedger {
     talked_to_player: BTreeSet<u32>,
     /// `Set...` commands' values for their getters, keyed by `(command id, subject reference)`; a
     /// global one uses subject `0`.
+    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
     values: BTreeMap<(u16, u32), f32>,
     /// A form argument stored the same way (the combat style of an actor, a talking activator's actor).
+    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
     forms: BTreeMap<(u16, u32), u32>,
     /// Per `(holder reference, weapon base)` condition percent (`ModWeaponHealthPerc`,
     /// `AddItemHealthPercent`).
+    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
     weapon_condition: BTreeMap<(u32, u32), f32>,
     /// The last actor each actor hit (`GetOwnerLastTarget`), by reference.
     last_targets: BTreeMap<u32, u32>,
     /// The numeric faction reactions scripts set (`SetFactionReaction`, `ModFactionReaction`), by
     /// `(faction, other faction)`.
+    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
     reactions: BTreeMap<(u32, u32), f32>,
     /// The player's tagged skills: slot (0..=2) to the skill's actor-value code.
     tag_skills: BTreeMap<u8, u8>,
     /// Friendly hits taken, by `(victim, attacker)` reference (`GetFriendHit`).
+    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
     friend_hits: BTreeMap<(u32, u32), u32>,
 }
 
@@ -205,5 +210,21 @@ mod tests {
         ledger.set_weapon_condition(0x50, 0x60, 150.0);
         assert_eq!(ledger.weapon_condition(0x50, 0x60), 100.0, "clamped");
         assert_eq!(ledger.weapon_condition(0x50, 0x61), 100.0, "untouched weapons are whole");
+    }
+
+    /// Every pair-keyed ledger map holding an entry still makes a JSON save:
+    /// VCG02's stage-10 `SetAlly` put the first row in one, and the derived
+    /// object form failed every quicksave after it ("key must be a string").
+    #[cfg(feature = "save")]
+    #[test]
+    fn a_populated_ledger_survives_a_json_save() {
+        let mut ledger = ObScriptLedger::default();
+        ledger.set_value(0x1159, 0x14, 3.0);
+        ledger.set_form(0x10a3, 0x0010_4E85, 0x0002_C5F2);
+        ledger.set_weapon_condition(0x14, 0x0008_ED0B, 40.0);
+        ledger.set_reaction(0x0010_4C5F, 0x0001_B2A4, 1.0);
+        ledger.note_friend_hit(0x0010_4E85, 0x14);
+        let json = serde_json::to_value(&ledger).expect("a populated ledger serializes");
+        assert_eq!(serde_json::from_value::<ObScriptLedger>(json).unwrap(), ledger);
     }
 }

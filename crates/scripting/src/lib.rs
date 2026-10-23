@@ -81,6 +81,8 @@ pub mod obscript_anim;
 pub mod obscript_speech;
 pub mod obscript_objects;
 pub mod obscript_quests;
+#[cfg(feature = "save")]
+pub mod serde_pairs;
 pub mod obscript_state;
 pub use obscript_state::{PlayingScriptedIdle, SightQuery, SwimQuery};
 pub mod obscript_runtime;

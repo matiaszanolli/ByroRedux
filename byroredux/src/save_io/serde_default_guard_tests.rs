@@ -1144,7 +1144,15 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `known_topics`, `quest_objects`, `disposition_mods` and `item_values`
     // columns (AddTopic / SetQuestObject / ModDisposition / SetItemValue now
     // decline, nothing read the stored values back).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x08dd_df4b_2c74_32d7;
+    // M47.3 result scripts — refreshed WITHOUT a major bump: the nine
+    // tuple-keyed saved maps (`ObScriptLedger`'s five, `ScriptedRelationships`,
+    // `LocationKeywordData`, `LinkedRefOverrides`, `AliasCollections`) take
+    // `serde(with = "crate::serde_pairs")` and write `[key, value]` pairs. The
+    // derived object form failed the whole JSON snapshot ("key must be a
+    // string") once one held an entry — the FNV route's first `SetAlly` broke
+    // every later quicksave — so every existing save holds them as empty
+    // objects, and the adapter reads an empty object as the empty map.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x44ed_5125_4365_c952;
     // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
     // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
     // keys each shape by its file, so the move alone shifted it; a dump of

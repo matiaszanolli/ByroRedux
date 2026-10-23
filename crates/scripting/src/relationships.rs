@@ -33,7 +33,10 @@ impl Resource for AuthoredRelationships {}
 /// Script `SetRelationshipRank` changes, by base pair. Saved.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct ScriptedRelationships(pub HashMap<(u32, u32), i8>);
+pub struct ScriptedRelationships(
+    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
+    pub HashMap<(u32, u32), i8>,
+);
 
 impl Resource for ScriptedRelationships {}
 

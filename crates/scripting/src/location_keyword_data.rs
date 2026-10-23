@@ -15,6 +15,7 @@ use byroredux_core::ecs::world::World;
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct LocationKeywordData {
+    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
     data: HashMap<(u32, u32), f32>,
 }
 

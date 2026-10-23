@@ -21,6 +21,7 @@ const NO_KEYWORD: u32 = 0xFFFF_FFFF;
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct LinkedRefOverrides {
+    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
     links: HashMap<(u32, u32), u32>,
 }
 

@@ -39,6 +39,7 @@ log = { workspace = true }
 rustc-hash = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 # Opt-in end-to-end test: extract a real vanilla `.pex` from a game archive
 # and run it through decompile → recognize.
 byroredux-bsa = { workspace = true }
