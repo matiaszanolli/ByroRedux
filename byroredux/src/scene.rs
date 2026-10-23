@@ -157,7 +157,8 @@ pub(crate) fn yaw_pitch_from_forward(forward: Vec3) -> (f32, f32) {
 }
 
 /// Drain the queued DDS uploads left by a loose-NIF / mesh / tree load
-/// (#2383).
+/// (#2383), or by the player-body spawn job that runs after the cell load's
+/// own batch.
 ///
 /// Mirrors `flush_pending_cell_textures_inner`'s body rather than calling it:
 /// that one lives on the cell-loader path and carries a `force` / threshold

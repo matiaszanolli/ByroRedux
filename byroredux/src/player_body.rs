@@ -215,6 +215,13 @@ pub(crate) fn attach_player_body(
         log::warn!("Player body: assembly produced no placement root — staying a bare capsule");
         return;
     };
+    // The job's NIF imports only queue their DDS data: each material points
+    // at a reserved bindless slot whose descriptor stays the checkerboard
+    // until a flush uploads it. The cell load's batch ran before this job,
+    // so the outfit and hair textures it queued (FNV: handles 327-332, past
+    // the cell's 325) drew as the placeholder; only the head and hands,
+    // already uploaded for the cell's own NPCs, were right.
+    crate::scene::flush_pending_loose_textures(ctx);
 
     attach_assembled_root(world, player, root, feet_offset);
     attach_player_locomotion_animation(
@@ -712,6 +719,24 @@ mod tests {
             mesh,
             bone,
         }
+    }
+
+    /// The spawn job only queues its DDS data; with no flush the outfit and
+    /// hair materials drew the checkerboard placeholder in third person.
+    /// Needs a GPU, so the guard is the call's presence and its position
+    /// (after the job ran, before the root is attached).
+    #[test]
+    fn attach_player_body_flushes_the_textures_the_job_queued() {
+        let source = include_str!("player_body.rs");
+        let production = &source[..source.find("#[cfg(test)]").unwrap()];
+        let advance = production.find("job.advance(").expect("the job runs here");
+        let flush = production
+            .find("flush_pending_loose_textures(ctx)")
+            .expect("attach_player_body must flush the textures its job queued");
+        let attach = production
+            .find("attach_assembled_root(world, player, root, feet_offset)")
+            .expect("the root is attached here");
+        assert!(advance < flush && flush < attach);
     }
 
     #[test]
