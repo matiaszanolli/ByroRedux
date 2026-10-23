@@ -264,6 +264,27 @@ pub enum ConditionFunction {
     /// ([`crate::actor_base_traits::is_female`]); 0.0 without an actor base.
     /// Index **70** in every game.
     GetIsSex,
+    /// `GetIsVoiceType(voice_type_or_list) → f32` (#5750): 1.0 when the Run-On
+    /// actor's voice type — its leveled base's `VTCK`
+    /// ([`crate::actor_base_traits::voice_type`]) — is `param_1`, a `VTYP`, or
+    /// any member of `param_1` when that is a `FLST` of voice types (CK wiki:
+    /// "will also accept a FormList ... and will return true if the calling
+    /// actor's voicelist appears in the supplied formlist"); 0.0 for an actor
+    /// with no voice type. Index **426** on Skyrim / FO4 but **427** on FO3 / FNV
+    /// — measured from the masters (the only function whose first parameter is a
+    /// `VTYP`: Skyrim 4,728 / FO4 204 uses at 426, FO3 774 / FNV 16,982 at 427),
+    /// so each index is foreign in the other family ([`FOREIGN_INDICES`]).
+    GetIsVoiceType,
+    /// `IsCommandedActor → f32` (#5750; Skyrim / FO4 index **700**, xEdit
+    /// `wbDefinitionsTES5` / `FO4`): CK wiki, "Returns 1 if the subject has been
+    /// raised as a zombie or was summoned by a summoning spell". The engine has
+    /// no summon or reanimate mechanic, so no actor can be commanded and this
+    /// answers 0.0 for every subject — a fact of the engine's state, not a
+    /// default: the day a summon exists, this is where it is read. Catalogued
+    /// because `DialogueGeneric`'s quest-level gate (the quest every generic
+    /// greeting hangs off) is `GetIsVoiceType` and `IsCommandedActor == 0`, and a
+    /// fail-closed gate with an unmodeled term declines the whole quest.
+    IsCommandedActor,
     /// `GetInWorldspace(worldspace) → f32` (#5778): 1.0 when the Run-On
     /// reference is in one of `param_1`'s exterior cells, 0.0 in an interior
     /// ([`crate::cell_kind::in_worldspace`]). Index **310** in every game.
@@ -411,6 +432,11 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::GetIsGhost, indices: &[237], name: "GetIsGhost", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetIsPlayableRace, indices: &[254], name: "GetIsPlayableRace", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetPlayerInSEWorld, indices: &[365], name: "GetPlayerInSEWorld", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    // #5750 — 426 Skyrim / FO4, 427 FO3 / FNV: the game-variant pair shape
+    // `HasPerk` already has (both map to the same behaviour; each is foreign
+    // in the other family, see `FOREIGN_INDICES`).
+    Row { func: ConditionFunction::GetIsVoiceType, indices: &[426, 427], name: "GetIsVoiceType", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::IsCommandedActor, indices: &[700], name: "IsCommandedActor", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetIsSex, indices: &[70], name: "GetIsSex", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetInWorldspace, indices: &[310], name: "GetInWorldspace", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     // #6251 — the getters the ObScript VM already answers (its command id is
@@ -444,6 +470,8 @@ const ROWS: &[Row] = &[
 /// | 630 | `GetVMScriptVariable` (Skyrim) | FO4: `GetCombatAudioDetection` |
 /// | 365 | `GetPlayerInSEWorld` (Oblivion) | FO3/FNV, Skyrim, FO4, FO76, Starfield: `IsChild` |
 /// | 131 | `GetPCIsSex` (Oblivion, FO3/FNV, Skyrim) | FO4, FO76, Starfield: `GetSceneActionPercent` |
+/// | 426 | `GetIsVoiceType` (Skyrim/FO4) | FO3/FNV: a different function (theirs is 427) |
+/// | 427 | `GetIsVoiceType` (FO3/FNV) | Skyrim, FO4: a different function (theirs is 426) |
 /// | 431 | `GetHealthPercentage` (FO3/FNV) | Starfield: `GetActiveBoostDuration` |
 ///
 /// Index 79 (`GetQuestVariable`) is the opposite shape — valid only on the
@@ -453,6 +481,8 @@ const ROWS: &[Row] = &[
 /// foreign there.
 const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
     (403, &[GameKind::Fallout3NV]),
+    (426, &[GameKind::Fallout3NV]),
+    (427, &[GameKind::Skyrim, GameKind::Fallout4]),
     (449, &[GameKind::Skyrim, GameKind::Fallout4]),
     (533, &[GameKind::Skyrim, GameKind::Fallout4]),
     (550, &[GameKind::Fallout3NV]),
@@ -513,7 +543,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 62] = [
+    pub const CATALOG: [ConditionFunction; 64] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -564,6 +594,8 @@ impl ConditionFunction {
         Self::GetIsGhost,
         Self::GetIsPlayableRace,
         Self::GetPlayerInSEWorld,
+        Self::GetIsVoiceType,
+        Self::IsCommandedActor,
         Self::GetIsSex,
         Self::GetInWorldspace,
         Self::GetDisabled,
@@ -770,6 +802,8 @@ mod tests {
                 ConditionFunction::GetIsGhost |
                 ConditionFunction::GetIsPlayableRace |
                 ConditionFunction::GetPlayerInSEWorld |
+                ConditionFunction::GetIsVoiceType |
+                ConditionFunction::IsCommandedActor |
                 ConditionFunction::GetIsSex |
                 ConditionFunction::GetInWorldspace |
                 ConditionFunction::GetDisabled |
@@ -839,8 +873,9 @@ mod tests {
                 );
             }
         }
-        // CATALOG plus HasPerk's game-variant twin (448 on Skyrim).
-        assert_eq!(seen.len(), ConditionFunction::CATALOG.len() + 1);
+        // CATALOG plus the two game-variant twins: HasPerk's 448 (Skyrim) and
+        // GetIsVoiceType's 427 (FO3/FNV, #5750).
+        assert_eq!(seen.len(), ConditionFunction::CATALOG.len() + 2);
 
         // Unknown keeps its hardcoded classifications — no ROWS row.
         let unknown = ConditionFunction::Unknown(u32::MAX);

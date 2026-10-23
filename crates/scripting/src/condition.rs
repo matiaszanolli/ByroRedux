@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **62 functions** at their canonical CTDA
+//! lineage. This catalog ships **64 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -80,6 +80,8 @@
 //! | 254   | GetIsPlayableRace      | `PlayableRaces` (RACE flag) |
 //! | 365   | GetPlayerInSEWorld     | ObScript ledger (Oblivion)  |
 //! | 70    | GetIsSex               | `ActorBaseTraits` (ACBS)    |
+//! | 426 / 427 | GetIsVoiceType     | `ActorBaseTraits` (VTCK) + `FormLists` |
+//! | 700   | IsCommandedActor       | none (no summon mechanic)   |
 //! | 310   | GetInWorldspace        | `cell_kind` (ExteriorCell)  |
 //! | 35    | GetDisabled            | `reference_enabled`         |
 //! | 47    | GetItemCount           | `Inventory` (+ `FormLists`) |

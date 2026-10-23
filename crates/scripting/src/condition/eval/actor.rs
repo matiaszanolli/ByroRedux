@@ -190,6 +190,33 @@ pub(super) fn get_reputation_threshold(condition: &Condition, entity: EntityId, 
         .map_or(0.0, |t| f32::from(t.range(u32::from(points))))
 }
 
+/// `GetIsVoiceType` (CTDA 426 Skyrim / FO4, 427 FO3 / FNV; #5750): whether the
+/// actor's voice type is `param_1`, or a member of it when `param_1` is a
+/// `FLST` of voice types — the form `DialogueGenericHello`'s 124 conditions use
+/// (`DefaultNPCVoiceTypes`, `GuardVoiceTypes`, ...). 0.0 for an actor with no
+/// voice type. The voice is the leveled base's `VTCK` (#6228), the same lookup
+/// the dialogue voice resolver and `ActorBase.GetVoiceType` use.
+pub(super) fn get_is_voice_type(condition: &Condition, entity: EntityId, world: &World) -> f32 {
+    let Some(voice) = crate::actor_base_traits::voice_type(world, entity) else {
+        return 0.0;
+    };
+    let wanted =
+        crate::form_lists::forms_of(world, condition.param_1, &[]).unwrap_or_else(|| vec![condition.param_1]);
+    if wanted.contains(&voice) {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// `IsCommandedActor` (CTDA 700 Skyrim / FO4; #5750): whether the actor was
+/// raised as a zombie or summoned by a summoning spell. The engine has no
+/// summon or reanimate mechanic — nothing can make an actor commanded — so the
+/// answer is always 0.0. When one exists, its marker is read here.
+pub(super) fn is_commanded_actor(_entity: EntityId, _world: &World) -> f32 {
+    0.0
+}
+
 /// `GetItemCount` (CTDA 47, ObScript `0x102f`): how many of `item` the
 /// container's inventory holds. A form list counts every one of its members.
 /// The one implementation the condition and the legacy getter share (#6251).

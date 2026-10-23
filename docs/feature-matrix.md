@@ -186,7 +186,7 @@ separate integration gap. See the gaps table below.
 | ESM SCPT record parse (FO3, 1 257 records; FNV, 2 576 records) | ✓ |
 | Papyrus `.psc` → full AST (M30.2) | ✓ |
 | ECS-native event hooks (M47.0) — `OnCellLoad`, `OnActivate`, `OnHit` | ✓ |
-| CTDA condition evaluation with OR-precedence (M47.1) | ✓ 62 functions |
+| CTDA condition evaluation with OR-precedence (M47.1) | ✓ 64 functions |
 | `script.activate` console command wired | ✓ |
 | Full Papyrus transpiler (M47.2) | ✓ `.pex` recognizer slice (CFG→lift→short-circuit→control-flow→lower); full transpiler deferred | 
 | Papyrus VM (bounded interpreter, decline-fallback) | ✓ reference/alias/update/event + quest-fragment scripts run what the static lowering declines, under a per-frame budget (#5763); structs + array methods |

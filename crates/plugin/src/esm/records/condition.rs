@@ -538,6 +538,7 @@ pub fn param1_is_form_id(function_index: u32) -> bool {
         | 68  // GetIsClass    — CLAS FormID
         | 69  // GetIsRace     — RACE FormID
         | 72  // GetIsID       — base FormID
+        | 426 | 427 // GetIsVoiceType — VTYP or FLST FormID (426 Skyrim/FO4, 427 FO3/FNV)
         | 71  // GetInFaction  — faction FormID
         | 73  // GetFactionRank — faction FormID
         | 74  // GetGlobalValue — GLOB FormID

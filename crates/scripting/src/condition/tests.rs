@@ -926,6 +926,108 @@ fn get_is_sex_and_get_in_worldspace_read_the_shared_helpers() {
     assert!(!evaluate(&elsewhere, &world, &ctx(outdoors_female)));
 }
 
+/// #5750 — `GetIsVoiceType` is catalogued at 426 (Skyrim / FO4) and 427 (FO3 /
+/// FNV): true for the actor's `VTCK` voice type or for a `FLST` of voice types
+/// that holds it, false for another voice or an actor with none. Each index is
+/// foreign — and so not run — in the other family, which is what
+/// `DialogueGenericHello`'s 124 uncatalogued conditions needed.
+#[test]
+fn get_is_voice_type_matches_a_voice_or_a_list_of_them() {
+    use byroredux_plugin::esm::reader::GameKind;
+    use byroredux_plugin::esm::records::{EsmIndex, FlstRecord, NpcRecord};
+    const NORD_FEMALE: u32 = 0x0001_3AE7;
+    const ORC_MALE: u32 = 0x0001_3AE8;
+    const SPEAKER_BASE: u32 = 0x0002_0001;
+    const BARE_BASE: u32 = 0x0002_0002;
+    const NORD_LIST: u32 = 0x0009_0001;
+    const ORC_LIST: u32 = 0x0009_0002;
+
+    let mut index = EsmIndex::default();
+    index.npcs.insert(
+        SPEAKER_BASE,
+        NpcRecord { form_id: SPEAKER_BASE, voice_form_id: NORD_FEMALE, ..Default::default() },
+    );
+    index.npcs.insert(BARE_BASE, NpcRecord { form_id: BARE_BASE, ..Default::default() });
+    index.form_lists.insert(
+        NORD_LIST,
+        FlstRecord { form_id: NORD_LIST, entries: vec![NORD_FEMALE, 0x0001_3AE9], ..Default::default() },
+    );
+    index.form_lists.insert(
+        ORC_LIST,
+        FlstRecord { form_id: ORC_LIST, entries: vec![ORC_MALE], ..Default::default() },
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(GameKind::Skyrim));
+    crate::actor_base_traits::install_actor_base_traits(&mut world, &index);
+    crate::form_lists::install_form_lists(&mut world, &index);
+    let actor = |world: &mut World, base_form_id| {
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            crate::scene::SceneAliasCandidate { base_form_id, ..Default::default() },
+        );
+        actor
+    };
+    let speaker = actor(&mut world, SPEAKER_BASE);
+    let bare = actor(&mut world, BARE_BASE);
+    let is_voice = |world: &World, who, index_, param| {
+        evaluate_condition(&cond_params(index_, param, 0, 1.0), world, &ctx(who))
+    };
+    // A voice that matches nothing: false when the index is answered as
+    // `GetIsVoiceType`, true when it is foreign and passed.
+    let answered_as_voice_type = |world: &World, who, index_| !is_voice(world, who, index_, ORC_MALE);
+
+    // Skyrim authors 426.
+    assert!(is_modeled(&world, &cond(426, ComparisonOp::Eq, 1.0, false)), "426 is modeled on Skyrim");
+    assert!(is_voice(&world, speaker, 426, NORD_FEMALE), "the actor's own voice type");
+    assert!(!is_voice(&world, speaker, 426, ORC_MALE), "another voice type");
+    assert!(is_voice(&world, speaker, 426, NORD_LIST), "a FLST of voice types holding it");
+    assert!(!is_voice(&world, speaker, 426, ORC_LIST), "a FLST that does not");
+    assert!(!is_voice(&world, bare, 426, NORD_FEMALE), "an actor with no voice type");
+    assert!(!is_voice(&world, bare, 426, NORD_LIST));
+    // `== 0` reads the negation, as the Hello topic's gates do.
+    assert!(evaluate_condition(
+        &cond_params(426, ORC_LIST, 0, 0.0),
+        &world,
+        &ctx(speaker)
+    ));
+
+    // On Skyrim 427 is another function: not modeled, and passed like any
+    // uncatalogued one rather than answered as this one. A voice that does NOT
+    // match would read false if it were evaluated as `GetIsVoiceType`.
+    assert!(!is_modeled(&world, &cond(427, ComparisonOp::Eq, 1.0, false)), "427 is foreign on Skyrim");
+    assert!(
+        is_voice(&world, speaker, 427, ORC_MALE),
+        "a foreign index passes; it must not be answered as GetIsVoiceType"
+    );
+
+    // FO3 / FNV author 427 — the mirror image.
+    world.insert_resource(crate::ScriptGame(GameKind::Fallout3NV));
+    assert!(is_modeled(&world, &cond(427, ComparisonOp::Eq, 1.0, false)), "427 is modeled on FNV");
+    assert!(is_voice(&world, speaker, 427, NORD_FEMALE));
+    assert!(is_voice(&world, speaker, 427, NORD_LIST));
+    assert!(answered_as_voice_type(&world, speaker, 427), "427 is answered as GetIsVoiceType on FNV");
+    assert!(!is_modeled(&world, &cond(426, ComparisonOp::Eq, 1.0, false)), "426 is foreign on FNV");
+    assert!(is_voice(&world, speaker, 426, ORC_MALE), "a foreign index passes on FNV too");
+}
+
+/// #5750 — `IsCommandedActor` (Skyrim / FO4 700) is modeled, and answers 0.0 for
+/// every subject because the engine has no summon or reanimate mechanic. That is
+/// what lets `DialogueGeneric`'s quest-level gate (`... IsCommandedActor == 0`)
+/// be evaluated instead of declining the whole quest.
+#[test]
+fn is_commanded_actor_is_modeled_and_reads_false_without_a_summon_mechanic() {
+    use byroredux_plugin::esm::reader::GameKind;
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(GameKind::Skyrim));
+    let actor = world.spawn();
+    assert!(is_modeled(&world, &cond(700, ComparisonOp::Eq, 0.0, false)));
+    assert!(evaluate_condition(&cond(700, ComparisonOp::Eq, 0.0, false), &world, &ctx(actor)));
+    assert!(!evaluate_condition(&cond(700, ComparisonOp::Eq, 1.0, false), &world, &ctx(actor)));
+}
+
 #[test]
 fn get_is_class_and_race_match_background() {
     use byroredux_core::character::Background;
@@ -1491,8 +1593,9 @@ fn param1_form_id_table_matches_the_condition_catalog() {
             function.name()
         );
     }
-    // Every catalog entry, plus HasPerk's second index.
-    assert_eq!(covered, ConditionFunction::CATALOG.len() + 1);
+    // Every catalog entry, plus the two second indices: HasPerk's 448 and
+    // GetIsVoiceType's 427 (#5750).
+    assert_eq!(covered, ConditionFunction::CATALOG.len() + 2);
 }
 
 // ── GetQuestRunning (#5636) ────────────────────────────────────────

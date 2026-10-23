@@ -550,6 +550,8 @@ pub fn evaluate_function(
             crate::actor_base_traits::is_female(world, entity)
                 .is_some_and(|female| female == (condition.param_1 == 1)),
         ),
+        ConditionFunction::GetIsVoiceType => actor::get_is_voice_type(condition, entity, world),
+        ConditionFunction::IsCommandedActor => actor::is_commanded_actor(entity, world),
         ConditionFunction::GetInWorldspace => truth(
             crate::cell_kind::in_worldspace(world, entity, condition.param_1).unwrap_or(false),
         ),
