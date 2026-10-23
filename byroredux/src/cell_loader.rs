@@ -179,7 +179,9 @@ pub(crate) use load_order::parse_record_indexes_in_load_order;
 pub(crate) use lod_coverage::{
     find_full_detail_overlaps, find_overlaps, find_terrain_full_detail_overlaps, ChurnTracker,
 };
-pub(crate) use lod_support::{resolve_lod_grid_origin, LodReconcileInput, LodWorkBudget};
+pub(crate) use lod_support::{
+    lod_should_rearm_after_starvation, resolve_lod_grid_origin, LodReconcileInput, LodWorkBudget,
+};
 pub(crate) use object_lod::{
     object_lod_scheme, stream_object_lod_blocks, unload_object_lod_block, ObjectLodBlock,
     ObjectLodScheme,

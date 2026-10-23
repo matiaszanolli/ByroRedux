@@ -835,3 +835,156 @@ fn lod_water_rebuild_defer_is_bounded_and_spaced() {
     assert!(!lod_water_rebuild_due(true, Some(floor - Duration::from_millis(1)), max));
     assert!(lod_water_rebuild_due(true, Some(floor), Duration::ZERO));
 }
+
+/// #6093 — a `Starved` LOD reconcile clears `lod_reconcile_pending`, so no later
+/// frame reaches the settle arm. The boundary must close as its own terminal
+/// state, or `boundary_in_progress()` stays true until the next crossing and the
+/// `grid-cross` / `grid-soak` bench clock (which holds while one is active)
+/// never advances.
+#[test]
+fn a_starved_lod_boundary_closes_instead_of_freezing_the_bench_clock() {
+    let mut telemetry = StreamingTelemetry::default();
+    let start = Instant::now();
+    telemetry.begin_boundary((4, 2), start);
+    telemetry.settle_full_detail(start + Duration::from_millis(5));
+    assert!(telemetry.boundary_in_progress(), "LOD is still outstanding");
+
+    assert_eq!(telemetry.starve_lod(), Some((4, 2)));
+    assert!(
+        !telemetry.boundary_in_progress(),
+        "the starved boundary must release the bench clock"
+    );
+    assert_eq!(telemetry.starved_lod, 1);
+    assert_eq!(
+        telemetry.lod.samples, 0,
+        "a reconcile that did not finish the work must not add a settle latency"
+    );
+
+    let line = telemetry.bench_line();
+    assert!(line.contains("unsettled_lod=0"), "{line}");
+    assert!(line.contains("lod_starved=1"), "{line}");
+    assert_eq!(
+        telemetry.superseded_lod, 0,
+        "a closed starved boundary is not superseded by the next crossing"
+    );
+    telemetry.begin_boundary((5, 2), start + Duration::from_millis(50));
+    assert_eq!(telemetry.superseded_lod, 0);
+}
+
+/// #6093 — the retry (#6092) that later settles the same ring finds no active
+/// boundary and stays silent; a starve with nothing active is a no-op too.
+#[test]
+fn starving_or_settling_an_already_closed_lod_phase_is_a_noop() {
+    let mut telemetry = StreamingTelemetry::default();
+    assert_eq!(telemetry.starve_lod(), None, "nothing active");
+    let start = Instant::now();
+    telemetry.begin_boundary((0, 0), start);
+    telemetry.settle_full_detail(start);
+    assert!(telemetry.starve_lod().is_some());
+    assert_eq!(telemetry.starve_lod(), None, "already closed");
+    assert_eq!(telemetry.settle_lod(start), None, "the retry's settle is silent");
+    assert_eq!(telemetry.starved_lod, 1);
+}
+
+/// #6093 — a boundary whose full-detail half is still working stays active
+/// after a starve: starving closes only the LOD phase.
+#[test]
+fn starving_lod_leaves_an_unsettled_full_detail_phase_open() {
+    let mut telemetry = StreamingTelemetry::default();
+    let start = Instant::now();
+    telemetry.begin_boundary((1, 1), start);
+    telemetry.starve_lod();
+    assert!(telemetry.boundary_in_progress());
+    assert!(telemetry.bench_line().contains("unsettled_full=1"));
+    telemetry.settle_full_detail(start + Duration::from_millis(9));
+    assert!(!telemetry.boundary_in_progress());
+}
+
+/// #6093 — the gate reads the held-back count: a ring that lost quads is a
+/// FAIL even though it reads as complete, and the machine line carries the
+/// count for `m-exteriors.sh`-style gates to fail on.
+#[test]
+fn lod_coverage_with_held_back_quads_fails_its_verdict() {
+    use byroredux_core::ecs::LodCoverageStats;
+    let clean = LodCoverageStats {
+        sampled: true,
+        settled: true,
+        ..Default::default()
+    };
+    assert_eq!(clean.verdict(), "PASS");
+    assert!(clean.machine_line().contains("held_back=0"));
+
+    let starved = LodCoverageStats {
+        held_back: 352,
+        ..clean
+    };
+    assert_eq!(
+        starved.verdict(),
+        "FAIL",
+        "352 quads lost at a closed pool must not read as a passing horizon"
+    );
+    assert!(starved.machine_line().contains("held_back=352"));
+}
+
+/// #6093 / #6092 — the caller's handling of `Starved`, which no verdict test
+/// reaches: it must close the boundary, flag the retry, and the reconcile must
+/// fold held-back quads out of `settled`.
+#[test]
+fn the_starved_arm_closes_the_boundary_and_arms_the_retry() {
+    let step = include_str!("app_step.rs");
+    let arm = step
+        .split_once("LodSettleVerdict::Starved(held_back) => {")
+        .expect("step_streaming must handle the Starved verdict")
+        .1
+        .split_once("\n            }\n")
+        .expect("the Starved arm ends before the match does")
+        .0;
+    for needle in [
+        "state.lod_reconcile_pending = false;",
+        "state.lod_starved = true;",
+        "state.telemetry.starve_lod()",
+    ] {
+        assert!(arm.contains(needle), "the Starved arm lost `{needle}`");
+    }
+    assert!(
+        step.contains("cell_loader::lod_should_rearm_after_starvation("),
+        "step_streaming must re-arm the reconcile when the pool reopens"
+    );
+
+    let helpers = include_str!("streaming_helpers.rs");
+    assert!(
+        helpers.contains("let settled = complete && held_back == 0;"),
+        "a ring held back at a closed pool must not report `settled`"
+    );
+}
+
+/// #6092 — every distant-LOD ring gates on the pool and classifies a
+/// no-block attempt before caching it. A ring that reads `None` as a miss again
+/// would permanently drop a refused quad.
+#[test]
+fn every_lod_ring_gates_on_admission_and_never_caches_a_refusal() {
+    for (name, src) in [
+        ("terrain_lod", include_str!("cell_loader/terrain_lod.rs")),
+        ("object_lod", include_str!("cell_loader/object_lod.rs")),
+        ("placement_lod", include_str!("cell_loader/placement_lod.rs")),
+        ("tree_lod", include_str!("cell_loader/tree_lod.rs")),
+    ] {
+        let production = byroredux_core::source_scan::production_text_or_whole(src);
+        assert!(
+            production.contains("scene_geometry_admission_open()"),
+            "{name}: the ring must check pool admission before an attempt (#6092)"
+        );
+        assert!(
+            production.contains("classify_lod_attempt("),
+            "{name}: a no-block attempt must be classified, not cached as a miss (#6092)"
+        );
+        assert!(
+            production.contains("note_held_back("),
+            "{name}: held-back quads must be reported to the reconcile (#6092)"
+        );
+        assert!(
+            production.contains("starved ||"),
+            "{name}: a starved ring must report complete so it stops (#6092)"
+        );
+    }
+}

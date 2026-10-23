@@ -134,6 +134,17 @@ impl App {
             player_grid,
             &mut state.applied_region_ambient,
         );
+        // #6092 — a starved LOD reconcile stopped because the geometry pool was
+        // closed; nothing else tells the rings it reopened (a compaction after a
+        // cell unload does it), so this is the edge that restarts them.
+        if cell_loader::lod_should_rearm_after_starvation(
+            state.lod_starved,
+            ctx.mesh_registry.scene_geometry_admission_open(),
+        ) {
+            state.lod_starved = false;
+            state.lod_reconcile_pending = true;
+            log::info!("Geometry pool admission reopened — retrying the held-back LOD quads");
+        }
         let grid_changed = state.last_player_grid != Some(player_grid);
         if grid_changed {
             let dispatch_started = Instant::now();
@@ -379,13 +390,28 @@ impl App {
             // #6054 — nothing is left to retry (admission stays latched closed
             // until a cell unload compacts the pool), but part of the distant
             // ring was turned away: say so instead of "settled".
-            LodSettleVerdict::Starved(rejected) => {
+            //
+            // #6092 — the quads are held back, not cached as misses: the
+            // reconcile is armed again the frame the pool reopens (top of this
+            // step), so the horizon fills in once a cell unload frees space.
+            // #6093 — and the boundary closes as starved, so the bench clock
+            // and the settled/unsettled telemetry do not wait on a reconcile
+            // that will not run.
+            LodSettleVerdict::Starved(held_back) => {
                 state.lod_reconcile_pending = false;
+                state.lod_starved = true;
+                if let Some(grid) = state.telemetry.starve_lod() {
+                    log::warn!(
+                        "Exterior LOD boundary ({}, {}) closed starved ({held_back} quad(s) held back)",
+                        grid.0,
+                        grid.1,
+                    );
+                }
                 log::warn!(
                     "Exterior LOD rings stopped around ({},{}) with the geometry pool at \
-                     capacity: {rejected} distant-LOD upload(s) refused; the horizon is \
-                     incomplete until a cell unload frees pool space. Lower the exterior \
-                     radius to leave room for the LOD rings.",
+                     capacity: {held_back} distant-LOD quad(s) held back; the horizon is \
+                     incomplete until a cell unload frees pool space, when the rings retry. \
+                     Lower the exterior radius to leave room for the LOD rings.",
                     player_grid.0,
                     player_grid.1,
                 );

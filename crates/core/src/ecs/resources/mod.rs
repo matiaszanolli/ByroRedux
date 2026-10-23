@@ -1182,6 +1182,11 @@ pub struct LodCoverageStats {
     pub terrain_resident: u32,
     /// Resident object LOD quad count at the last sample.
     pub object_resident: u32,
+    /// #6093 — distant-LOD quads the last reconcile held back because the
+    /// geometry pool was closed to uploads (#6092). The ring has nothing left
+    /// it can try, so it reads as complete, but the horizon lost these quads:
+    /// a non-zero count is a failing verdict, not a settled ring.
+    pub held_back: u32,
 }
 
 impl LodCoverageStats {
@@ -1195,6 +1200,7 @@ impl LodCoverageStats {
             && self.full_detail_overlaps == 0
             && self.vwd_full_model_overlaps == 0
             && self.settled
+            && self.held_back == 0
             && self.terrain_churn == 0
             && self.object_churn == 0
         {
@@ -1211,7 +1217,7 @@ impl LodCoverageStats {
         format!(
             "lod-coverage: sampled={} settled={} overlaps={} full_detail_overlaps={} \
              vwd_full_model_overlaps={} terrain_churn={} object_churn={} terrain_resident={} \
-             object_resident={} verdict={}",
+             object_resident={} held_back={} verdict={}",
             u8::from(self.sampled),
             u8::from(self.settled),
             self.overlaps,
@@ -1221,6 +1227,7 @@ impl LodCoverageStats {
             self.object_churn,
             self.terrain_resident,
             self.object_resident,
+            self.held_back,
             self.verdict(),
         )
     }

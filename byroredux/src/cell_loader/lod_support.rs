@@ -283,6 +283,9 @@ pub(crate) struct LodWorkBudget {
     remaining: usize,
     spent: usize,
     deadline: Option<Instant>,
+    /// #6092 — candidates this ring left unresolved because the geometry pool
+    /// refused admission (see [`LodAttemptVerdict::HeldBack`]).
+    held_back: usize,
 }
 
 impl LodWorkBudget {
@@ -293,6 +296,7 @@ impl LodWorkBudget {
             remaining: max_attempts,
             spent: 0,
             deadline: None,
+            held_back: 0,
         }
     }
 
@@ -304,6 +308,7 @@ impl LodWorkBudget {
             remaining: max_attempts,
             spent: 0,
             deadline: Some(deadline),
+            held_back: 0,
         }
     }
 
@@ -353,6 +358,61 @@ impl LodWorkBudget {
     pub(crate) fn spent(self) -> usize {
         self.spent
     }
+
+    /// #6092 — record `n` candidates the ring could not resolve because the
+    /// geometry pool is at capacity. They are neither resident nor a known
+    /// miss: the ring stops (nothing it can try now) and a later reconcile
+    /// retries them once admission reopens.
+    pub(crate) fn note_held_back(&mut self, n: usize) {
+        self.held_back = self.held_back.saturating_add(n);
+    }
+
+    /// Candidates held back by a closed geometry pool this reconcile.
+    pub(crate) fn held_back(self) -> usize {
+        self.held_back
+    }
+}
+
+/// What a distant-LOD attempt that produced no block means (#6092).
+///
+/// Every ring used to read `None` as "this quad has no asset" and cache that:
+/// terrain in `missing_blocks`, the others as an empty sentinel. But
+/// `upload_scene_mesh_global_only` also returns `Err` once the pool hits its
+/// hard cap, and that refusal says nothing about the asset. The pool's
+/// admission flag is latched closed until a compaction reopens it, so it is the
+/// discriminator: it was open when the attempt began (every ring checks), so
+/// finding it closed afterwards means the attempt tripped it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LodAttemptVerdict {
+    /// The attempt produced a block: keep it.
+    Keep,
+    /// No asset, or an unusable one, with the pool still open: a real miss,
+    /// safe to remember so the ring does not re-extract it every crossing.
+    Miss,
+    /// The pool refused the upload. Remember nothing; the quad is retried when
+    /// admission reopens.
+    HeldBack,
+}
+
+/// Classify a finished attempt from whether it produced a block and whether
+/// the pool still admits uploads *after* it ran.
+pub(crate) fn classify_lod_attempt(produced: bool, admission_open_after: bool) -> LodAttemptVerdict {
+    match (produced, admission_open_after) {
+        (true, _) => LodAttemptVerdict::Keep,
+        (false, true) => LodAttemptVerdict::Miss,
+        (false, false) => LodAttemptVerdict::HeldBack,
+    }
+}
+
+/// Whether a starved LOD reconcile should be armed again (#6092).
+///
+/// A `Starved` verdict stops the reconcile because retrying against a closed
+/// pool only re-decodes and re-rejects. The pool reopens at the next
+/// compaction after a cell unload, and nothing else tells the rings, so this is
+/// the edge that restarts them. One level-triggered flag is enough: it is set
+/// by the starved arm and cleared by the first frame that finds the pool open.
+pub(crate) fn lod_should_rearm_after_starvation(starved: bool, admission_open: bool) -> bool {
+    starved && admission_open
 }
 
 /// Apply the shared closest-first ordering used by every LOD provider.
@@ -681,6 +741,81 @@ mod tests {
         assert!(budget.try_take());
         assert!(budget.try_take());
         assert!(!budget.try_take(), "attempt cap must still apply");
+    }
+
+    /// #6092 — a refused upload is not a miss. A pool-refused attempt must never
+    /// be remembered (the old rings cached it for good), and a real miss with the
+    /// pool open still is.
+    #[test]
+    fn a_capacity_refusal_is_held_back_not_cached_as_a_miss() {
+        use LodAttemptVerdict::*;
+        assert_eq!(classify_lod_attempt(true, true), Keep);
+        // A block that fit and then closed the pool is still a block.
+        assert_eq!(classify_lod_attempt(true, false), Keep);
+        assert_eq!(classify_lod_attempt(false, true), Miss);
+        assert_eq!(classify_lod_attempt(false, false), HeldBack);
+    }
+
+    /// #6092 — two reconciles against a fake admission state: the first, with
+    /// the pool closed, holds the quad back and records nothing; the second,
+    /// after the pool reopens, finds it still a candidate and resolves it.
+    #[test]
+    fn a_held_back_quad_is_retried_after_admission_reopens() {
+        use std::collections::HashMap;
+        let key = (4, 0, 0);
+        // One reconcile over a single quad: skipped when cached as a known miss,
+        // otherwise attempted, with a miss remembered exactly as the rings do.
+        fn reconcile(
+            missing: &mut HashMap<(i32, i32, i32), u16>,
+            key: (i32, i32, i32),
+            admission_open: bool,
+            asset_exists: bool,
+        ) -> Option<LodAttemptVerdict> {
+            if missing.contains_key(&key) {
+                return None;
+            }
+            let verdict = classify_lod_attempt(asset_exists && admission_open, admission_open);
+            if verdict == LodAttemptVerdict::Miss {
+                missing.insert(key, 0);
+            }
+            Some(verdict)
+        }
+        let mut missing = HashMap::new();
+        assert_eq!(
+            reconcile(&mut missing, key, false, true),
+            Some(LodAttemptVerdict::HeldBack)
+        );
+        assert!(missing.is_empty(), "a refused attempt must leave no cache entry");
+        assert_eq!(
+            reconcile(&mut missing, key, true, true),
+            Some(LodAttemptVerdict::Keep),
+            "the retry must run, not be skipped as a known miss"
+        );
+        // A genuine miss with the pool open is still remembered and skipped.
+        assert_eq!(
+            reconcile(&mut missing, (4, 4, 0), true, false),
+            Some(LodAttemptVerdict::Miss)
+        );
+        assert_eq!(reconcile(&mut missing, (4, 4, 0), true, false), None);
+    }
+
+    #[test]
+    fn held_back_candidates_accumulate_on_the_budget() {
+        let mut budget = LodWorkBudget::new(8);
+        assert_eq!(budget.held_back(), 0);
+        budget.note_held_back(3);
+        budget.note_held_back(2);
+        assert_eq!(budget.held_back(), 5);
+        assert_eq!(budget.spent(), 0, "held-back candidates are not attempts");
+    }
+
+    /// #6092 — the starved arm re-arms the reconcile on the closed→open edge,
+    /// and only then.
+    #[test]
+    fn starvation_rearms_only_once_admission_reopens() {
+        assert!(!lod_should_rearm_after_starvation(true, false), "still closed");
+        assert!(lod_should_rearm_after_starvation(true, true), "reopened");
+        assert!(!lod_should_rearm_after_starvation(false, true), "never starved");
     }
 
     #[test]
@@ -1018,18 +1153,22 @@ mod tests {
 
     #[test]
     fn empty_lod_spawns_release_acquired_gpu_resources_before_returning() {
-        for (name, src) in [
-            ("object_lod.rs", include_str!("object_lod.rs")),
-            ("placement_lod.rs", include_str!("placement_lod.rs")),
+        // #6092 — the rollback now also covers a quad the pool refused part of,
+        // and releases through the block's own unload so a half-uploaded quad
+        // leaves nothing resident. The unload (checked below) is what frees the
+        // GPU resources, so the branch must route through it.
+        for (name, src, rollback) in [
+            ("object_lod.rs", include_str!("object_lod.rs"), "unload_object_lod_block("),
+            ("placement_lod.rs", include_str!("placement_lod.rs"), "unload_placement_lod_block("),
         ] {
             let empty_branch = src
-                .split("if entities.is_empty() {")
+                .split("if refused || block.entities.is_empty() {")
                 .nth(1)
                 .and_then(|rest| rest.split("return None;").next())
                 .unwrap_or_else(|| panic!("{name}: expected empty-entity rollback branch"));
             assert!(
-                empty_branch.contains("release_lod_gpu_resources"),
-                "{name}: acquired mesh/texture handles must be released before an empty spawn returns"
+                empty_branch.contains(rollback),
+                "{name}: acquired mesh/texture handles must be released (via {rollback}) before an empty or refused spawn returns"
             );
 
             let unload = src

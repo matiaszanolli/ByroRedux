@@ -34,6 +34,11 @@ pub(crate) struct LodReconcileProgress {
     /// while part of it was turned away, so completeness alone is not
     /// "settled": see [`lod_settle_verdict`].
     pub rejected_for_capacity: u64,
+    /// #6092 — distant-LOD candidates the rings held back because the pool was
+    /// closed to uploads: refused attempts and the quads never attempted
+    /// behind them. They are not resident and not misses (nothing was cached),
+    /// so a later reconcile retries them once admission reopens.
+    pub held_back: u64,
 }
 
 /// How a finished LOD reconcile should be reported (#6054).
@@ -43,20 +48,22 @@ pub(crate) enum LodSettleVerdict {
     Pending,
     /// Every desired quad is resident or a known asset miss.
     Settled,
-    /// Nothing is left to try, but `n` uploads were refused because the
-    /// geometry pool is at capacity: the distant ring is incomplete.
+    /// Nothing is left to try, but `n` quads were refused or held back because
+    /// the geometry pool is at capacity: the distant ring is incomplete.
     Starved(u64),
 }
 
-/// Fold completeness and capacity rejections into one verdict. A starved
+/// Fold completeness and capacity refusals into one verdict. A starved
 /// ring still stops reconciling (`complete`: admission is latched closed until
 /// a cell unload compacts the pool, so retrying every idle frame would only
-/// re-decode and re-reject), but it must not be announced as settled.
+/// re-decode and re-reject), but it must not be announced as settled. The
+/// reconcile is armed again when the pool reopens (#6092,
+/// [`crate::cell_loader::lod_should_rearm_after_starvation`]).
 pub(crate) fn lod_settle_verdict(progress: &LodReconcileProgress) -> LodSettleVerdict {
     if !progress.complete {
         LodSettleVerdict::Pending
-    } else if progress.rejected_for_capacity > 0 {
-        LodSettleVerdict::Starved(progress.rejected_for_capacity)
+    } else if progress.held_back > 0 || progress.rejected_for_capacity > 0 {
+        LodSettleVerdict::Starved(progress.held_back.max(progress.rejected_for_capacity))
     } else {
         LodSettleVerdict::Settled
     }
@@ -252,6 +259,10 @@ pub(crate) fn reconcile_lod_rings(
         + object_budget.spent()
         + placement_budget.spent()
         + tree_budget.spent();
+    let held_back = (terrain_budget.held_back()
+        + object_budget.held_back()
+        + placement_budget.held_back()
+        + tree_budget.held_back()) as u64;
     if attempted > 0 {
         flush_pending_lod_textures(ctx);
     }
@@ -267,19 +278,25 @@ pub(crate) fn reconcile_lod_rings(
     let coverage_sampled = world
         .resource::<byroredux_core::ecs::LodCoverageStats>()
         .sampled;
+    // #6093 — a ring held back at a closed pool is `complete` (nothing left to
+    // try) but its horizon lost quads, so it is not "settled" for the gate.
+    let settled = complete && held_back == 0;
     if should_resample_lod_diagnostics(
         lod_ring_changed,
         state.loaded_residency_changed,
         coverage_sampled,
     ) {
-        update_lod_coverage(world, state, complete);
+        update_lod_coverage(world, state, settled);
     } else {
         // `settled` still needs the per-frame write — it tracks whether
         // *this* reconcile call left outstanding work, independent of
         // whether residency changed.
         let mut coverage = world.resource_mut::<byroredux_core::ecs::LodCoverageStats>();
-        coverage.settled = complete;
+        coverage.settled = settled;
     }
+    world
+        .resource_mut::<byroredux_core::ecs::LodCoverageStats>()
+        .held_back = u32::try_from(held_back).unwrap_or(u32::MAX);
     let seam_sampled = world
         .resource::<byroredux_core::ecs::TerrainSeamStats>()
         .sampled;
@@ -295,6 +312,7 @@ pub(crate) fn reconcile_lod_rings(
             .mesh_registry
             .scene_geometry_admission_rejections()
             .saturating_sub(rejections_before),
+        held_back,
     }
 }
 
@@ -1206,6 +1224,7 @@ mod tests {
             complete,
             attempted: 5,
             rejected_for_capacity,
+            held_back: 0,
         };
         assert_eq!(lod_settle_verdict(&progress(true, 0)), LodSettleVerdict::Settled);
         assert_eq!(
@@ -1216,6 +1235,20 @@ mod tests {
         // Work still outstanding stays pending whether or not some uploads bounced.
         assert_eq!(lod_settle_verdict(&progress(false, 0)), LodSettleVerdict::Pending);
         assert_eq!(lod_settle_verdict(&progress(false, 9)), LodSettleVerdict::Pending);
+    }
+
+    /// #6092 — a ring that was held back at a closed pool without a single
+    /// refusal this call (admission was already closed on entry, so nothing was
+    /// attempted) is still starved, not settled.
+    #[test]
+    fn a_held_back_ring_is_starved_even_with_no_fresh_rejection() {
+        let progress = LodReconcileProgress {
+            complete: true,
+            attempted: 0,
+            rejected_for_capacity: 0,
+            held_back: 12,
+        };
+        assert_eq!(lod_settle_verdict(&progress), LodSettleVerdict::Starved(12));
     }
 
     use super::*;

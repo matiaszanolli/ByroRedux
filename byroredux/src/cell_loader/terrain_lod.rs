@@ -47,8 +47,8 @@ use crate::streaming::LodBlock;
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
 use super::terrain::LandscapeLayerTextures;
 use super::lod_support::{
-    combined_lod_supported, legacy_landscape_lod_supported, lod_source_cell_exists,
-    retain_resident, worldspace_cell_bounds,
+    classify_lod_attempt, combined_lod_supported, legacy_landscape_lod_supported,
+    lod_source_cell_exists, retain_resident, worldspace_cell_bounds, LodAttemptVerdict,
     LodReconcileInput, LodWorkBudget,
 };
 
@@ -619,7 +619,18 @@ pub(crate) fn stream_lod_blocks(
 
     let candidate_count = candidates.len();
     let mut attempted = 0usize;
+    // #6092 — set when the geometry pool stops admitting uploads. The rest of
+    // the ring is then held back rather than attempted or cached as a miss.
+    let mut starved = false;
     for (level, qx, qy, mask) in candidates {
+        // #6092 — a closed pool refuses every upload, so decoding and
+        // rejecting each remaining quad is wasted work (an archive read, a
+        // parse, a texture resolve) for a certain refusal.
+        if !ctx.mesh_registry.scene_geometry_admission_open() {
+            budget.note_held_back(candidate_count - attempted);
+            starved = true;
+            break;
+        }
         if !budget.try_take() {
             break;
         }
@@ -691,13 +702,31 @@ pub(crate) fn stream_lod_blocks(
                 btr_spawned += 1;
             }
         } else {
-            // Remember a real miss at this exact hole mask so a budgeted
-            // reconcile can continue outward instead of retrying forever.
-            missing_blocks.insert((level, qx, qy), mask);
+            match classify_lod_attempt(
+                false,
+                ctx.mesh_registry.scene_geometry_admission_open(),
+            ) {
+                // Remember a real miss at this exact hole mask so a budgeted
+                // reconcile can continue outward instead of retrying forever.
+                LodAttemptVerdict::Miss => {
+                    missing_blocks.insert((level, qx, qy), mask);
+                }
+                // #6092 — the pool refused this quad. It says nothing about
+                // the asset, so nothing is remembered: this quad and the rest
+                // of the ring wait for admission to reopen.
+                LodAttemptVerdict::HeldBack => {
+                    budget.note_held_back(candidate_count - attempted + 1);
+                    starved = true;
+                    break;
+                }
+                LodAttemptVerdict::Keep => unreachable!("no block was produced"),
+            }
         }
     }
 
-    let complete = attempted == candidate_count;
+    // A starved ring has nothing left it can try: report it complete, and let
+    // the caller's verdict say it was held back rather than settled.
+    let complete = starved || attempted == candidate_count;
     if complete && spawned + invalidated + unloaded > 0 {
         let reach_cells = lod_ring_reach_cells(game);
         log::info!(

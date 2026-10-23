@@ -437,6 +437,11 @@ pub struct WorldStreamingState {
     /// work. Foreground-first bootstrap and cell-boundary movement set this;
     /// idle frames clear it progressively through the shared LOD budget.
     pub lod_reconcile_pending: bool,
+    /// #6092 — the last LOD reconcile ended `Starved`: the geometry pool was
+    /// closed, so quads were held back (not cached as misses) and the reconcile
+    /// stopped. Cleared, and `lod_reconcile_pending` re-armed, the first frame
+    /// the pool admits uploads again.
+    pub lod_starved: bool,
     /// Set whenever `loaded` gains or loses an entry since the diagnostics
     /// in `reconcile_lod_rings` last sampled it — a boundary-crossing unload
     /// (`app_step.rs`) or a full-detail cell finishing its apply
@@ -563,6 +568,7 @@ impl WorldStreamingState {
             applied_forced_weather: None,
             applied_region_ambient: None,
             lod_reconcile_pending: false,
+            lod_starved: false,
             loaded_residency_changed: false,
             lod_water_dirty: false,
             lod_water_dirty_since: None,

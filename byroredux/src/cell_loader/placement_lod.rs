@@ -66,8 +66,8 @@ use crate::components::IsLodTerrain;
 use super::euler::euler_zup_to_quat_yup_refr;
 use super::exterior::ExteriorWorldContext;
 use super::lod_support::{
-    release_lod_gpu_resources, retain_resident, sort_lod_coords_nearest, LodReconcileInput,
-    LodWorkBudget,
+    classify_lod_attempt, release_lod_gpu_resources, retain_resident, sort_lod_coords_nearest,
+    LodAttemptVerdict, LodReconcileInput, LodWorkBudget,
 };
 
 /// Object-LOD ring radius in **cells** (Chebyshev) for the placement
@@ -375,7 +375,15 @@ pub(crate) fn stream_placement_lod_blocks(
     let mut attempted = 0usize;
 
     // Load entering cells.
+    // #6092 — set when the geometry pool stops admitting uploads; see the
+    // terrain ring's twin of this flag.
+    let mut starved = false;
     for (cx, cy) in candidates {
+        if !ctx.mesh_registry.scene_geometry_admission_open() {
+            budget.note_held_back(candidate_count - attempted);
+            starved = true;
+            break;
+        }
         if !budget.try_take() {
             break;
         }
@@ -387,13 +395,26 @@ pub(crate) fn stream_placement_lod_blocks(
                 }
                 blocks.insert((cx, cy), blk);
             }
-            None => {
-                blocks.insert((cx, cy), PlacementLodBlock::empty());
-            }
+            None => match classify_lod_attempt(
+                false,
+                ctx.mesh_registry.scene_geometry_admission_open(),
+            ) {
+                LodAttemptVerdict::Miss => {
+                    blocks.insert((cx, cy), PlacementLodBlock::empty());
+                }
+                // #6092 — pool refusal, not an empty cell: no sentinel, and the
+                // cell was abandoned whole by `spawn_placement_lod_cell`.
+                LodAttemptVerdict::HeldBack => {
+                    budget.note_held_back(candidate_count - attempted + 1);
+                    starved = true;
+                    break;
+                }
+                LodAttemptVerdict::Keep => unreachable!("no block was produced"),
+            },
         }
     }
 
-    let complete = attempted == candidate_count;
+    let complete = starved || attempted == candidate_count;
     if complete && spawned + unloaded > 0 {
         log::info!(
             "Placement-LOD ring @cell ({},{}): +{} cells loaded, -{} unloaded ({} tracked)",
@@ -461,8 +482,12 @@ fn spawn_placement_lod_cell(
     let mut entities = Vec::new();
     let mut mesh_handles = Vec::new();
     let mut texture_handles = Vec::new();
+    // #6092 — the pool refused a sub-mesh. A cell with some groups missing
+    // would be kept as a normal resident block with no record of the gap, so
+    // the whole cell is abandoned and retried when admission reopens.
+    let mut refused = false;
 
-    for group in &groups {
+    'groups: for group in &groups {
         // base FormID → STAT model (the same statics table the REFR spawn
         // path reads).
         let Some(stat) = wctx.record_index.cells.statics.get(&group.base_form_id) else {
@@ -528,6 +553,10 @@ fn spawn_placement_lod_cell(
                 Ok(h) => h,
                 Err(e) => {
                     log::warn!("Placement-LOD '{far}' mesh upload failed: {e}");
+                    if !ctx.mesh_registry.scene_geometry_admission_open() {
+                        refused = true;
+                        break;
+                    }
                     continue;
                 }
             };
@@ -603,6 +632,10 @@ fn spawn_placement_lod_cell(
             });
         }
 
+        if refused {
+            break 'groups;
+        }
+
         // Instance each sub-mesh at every placement (placement ∘ local TRS).
         for placement in &group.placements {
             let (p_pos, p_rot, p_scale) = placement_world_transform(placement);
@@ -650,15 +683,18 @@ fn spawn_placement_lod_cell(
         }
     }
 
-    if entities.is_empty() {
-        release_lod_gpu_resources(ctx, &mesh_handles, &texture_handles);
-        return None;
-    }
-    Some(PlacementLodBlock {
+    let block = PlacementLodBlock {
         entities,
         mesh_handles,
         texture_handles,
-    })
+    };
+    if refused || block.entities.is_empty() {
+        // The same release a resident block gets on unload: its meshes, its
+        // textures and any entities of the groups that did spawn (#6092).
+        unload_placement_lod_block(world, ctx, &block);
+        return None;
+    }
+    Some(block)
 }
 
 /// Free one placement-LOD cell: drop each sub-mesh's global-SSBO range,

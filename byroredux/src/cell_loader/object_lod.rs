@@ -68,7 +68,8 @@ use crate::components::IsLodTerrain;
 use super::exterior::ExteriorWorldContext;
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
 use super::lod_support::{
-    lod_source_cell_exists, release_lod_gpu_resources, retain_resident, worldspace_cell_bounds, LodReconcileInput, LodWorkBudget,
+    classify_lod_attempt, lod_source_cell_exists, release_lod_gpu_resources, retain_resident,
+    worldspace_cell_bounds, LodAttemptVerdict, LodReconcileInput, LodWorkBudget,
 };
 
 /// One streamed object-LOD quad: the `.bto` macro-mesh imports to several
@@ -284,7 +285,15 @@ pub(crate) fn stream_object_lod_blocks(
     let mut attempted = 0usize;
 
     // Load entering quads.
+    // #6092 — set when the geometry pool stops admitting uploads; see the
+    // terrain ring's twin of this flag.
+    let mut starved = false;
     for (level, qx, qy) in candidates {
+        if !ctx.mesh_registry.scene_geometry_admission_open() {
+            budget.note_held_back(candidate_count - attempted);
+            starved = true;
+            break;
+        }
         if !budget.try_take() {
             break;
         }
@@ -302,15 +311,29 @@ pub(crate) fn stream_object_lod_blocks(
                 }
                 blocks.insert((level, qx, qy), blk);
             }
-            None => {
+            None => match classify_lod_attempt(
+                false,
+                ctx.mesh_registry.scene_geometry_admission_open(),
+            ) {
                 // No baked mesh for this quad — remember so we don't
                 // re-extract on every boundary crossing.
-                blocks.insert((level, qx, qy), ObjectLodBlock::empty());
-            }
+                LodAttemptVerdict::Miss => {
+                    blocks.insert((level, qx, qy), ObjectLodBlock::empty());
+                }
+                // #6092 — the pool refused it (the quad was abandoned whole by
+                // `spawn_object_lod_quad`). Not a miss: no sentinel, retried
+                // when admission reopens.
+                LodAttemptVerdict::HeldBack => {
+                    budget.note_held_back(candidate_count - attempted + 1);
+                    starved = true;
+                    break;
+                }
+                LodAttemptVerdict::Keep => unreachable!("no block was produced"),
+            },
         }
     }
 
-    let complete = attempted == candidate_count;
+    let complete = starved || attempted == candidate_count;
     if complete && spawned + unloaded > 0 {
         log::info!(
             "Object-LOD bands @cell ({},{}): +{} quads loaded, -{} unloaded \
@@ -504,6 +527,11 @@ fn spawn_object_lod_quad(
 
     let mut entities = Vec::new();
     let mut mesh_handles = Vec::new();
+    // #6092 — the pool refused a sub-mesh. A quad missing some of its
+    // sub-meshes would be stored as a normal resident block with no record
+    // that parts are absent, so the whole quad is abandoned and retried when
+    // admission reopens.
+    let mut refused = false;
 
     for mesh in &imported.meshes {
         if mesh.positions.is_empty() || mesh.indices.is_empty() {
@@ -521,6 +549,10 @@ fn spawn_object_lod_quad(
             Ok(h) => h,
             Err(e) => {
                 log::warn!("Object-LOD '{}' mesh upload failed: {}", path, e);
+                if !ctx.mesh_registry.scene_geometry_admission_open() {
+                    refused = true;
+                    break;
+                }
                 continue;
             }
         };
@@ -635,22 +667,24 @@ fn spawn_object_lod_quad(
         mesh_handles.push(handle);
     }
 
-    if entities.is_empty() {
-        // #4253 — release every distinct non-atlas handle resolved above,
-        // not just the atlas: mesh uploads may have failed for every
-        // sub-mesh (the `continue` on upload error above) after textures
-        // were already resolved, and this path abandons the whole quad
-        // without keeping a block around to release them later.
-        let textures = object_lod_release_texture_set(atlas, &extra_texture_handles);
-        release_lod_gpu_resources(ctx, &mesh_handles, &textures);
-        return None;
-    }
-    Some(ObjectLodBlock {
+    let block = ObjectLodBlock {
         entities,
         mesh_handles,
         texture_handle: atlas,
         extra_texture_handles,
-    })
+    };
+    if refused || block.entities.is_empty() {
+        // #4253 — release every distinct non-atlas handle resolved above,
+        // not just the atlas: mesh uploads may have failed for every
+        // sub-mesh (the `continue` on upload error above) after textures
+        // were already resolved, and this path abandons the whole quad
+        // without keeping a block around to release them later. #6092 — the
+        // same release also unwinds the sub-meshes of a refused quad that did
+        // upload (their entities and meshes), so none is left half-resident.
+        unload_object_lod_block(world, ctx, &block);
+        return None;
+    }
+    Some(block)
 }
 
 /// Free one object-LOD quad: drop each sub-mesh's global-SSBO range and

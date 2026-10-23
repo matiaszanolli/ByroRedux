@@ -1211,6 +1211,12 @@ pub(crate) fn stream_initial_radius(
                 "unlimited LOD bootstrap must settle every provider"
             );
             state.lod_reconcile_pending = false;
+            // #6092 — a bootstrap that filled the pool still owes the held-back
+            // quads: leave the re-arm flag for the per-frame step to clear.
+            state.lod_starved = matches!(
+                crate::streaming_helpers::lod_settle_verdict(&progress),
+                crate::streaming_helpers::LodSettleVerdict::Starved(_)
+            );
         }
     }
 

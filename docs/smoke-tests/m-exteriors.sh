@@ -776,7 +776,7 @@ EOF
         if [[ -z "$coverage_line" ]]; then
             echo "exterior-smoke[$label]: WARN - lod.coverage reported nothing (pre-#2371 binary, or an interior-only profile)"
         else
-            local cov_sampled cov_overlaps cov_full_overlaps cov_vwd_overlaps cov_terrain_churn cov_object_churn
+            local cov_sampled cov_overlaps cov_full_overlaps cov_vwd_overlaps cov_terrain_churn cov_object_churn cov_held_back
             cov_sampled="$(grep -oE 'sampled=[01]' <<< "$coverage_line" | cut -d= -f2 || true)"
             cov_overlaps="$(grep -oE 'overlaps=[0-9]+' <<< "$coverage_line" | head -1 | cut -d= -f2 || true)"
             cov_full_overlaps="$(grep -oE 'full_detail_overlaps=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
@@ -786,15 +786,21 @@ EOF
             cov_vwd_overlaps="$(grep -oE 'vwd_full_model_overlaps=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
             cov_terrain_churn="$(grep -oE 'terrain_churn=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
             cov_object_churn="$(grep -oE 'object_churn=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
+            # #6093 — quads the LOD rings held back at a closed geometry pool
+            # (#6092). The ring reads as complete (nothing left to try), so
+            # `settled` alone cannot tell a horizon that lost quads from one
+            # that filled in.
+            cov_held_back="$(grep -oE 'held_back=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
             if [[ "$cov_sampled" != "1" ]]; then
                 echo "exterior-smoke[$label]: WARN - lod.coverage never sampled (no LOD reconcile ran this traversal)"
             elif [[ ! "$cov_overlaps" =~ ^[0-9]+$ || ! "$cov_full_overlaps" =~ ^[0-9]+$ \
                     || ! "$cov_vwd_overlaps" =~ ^[0-9]+$ \
-                    || ! "$cov_terrain_churn" =~ ^[0-9]+$ || ! "$cov_object_churn" =~ ^[0-9]+$ ]]; then
+                    || ! "$cov_terrain_churn" =~ ^[0-9]+$ || ! "$cov_object_churn" =~ ^[0-9]+$ \
+                    || ! "$cov_held_back" =~ ^[0-9]+$ ]]; then
                 echo "exterior-smoke[$label]: HARD FAIL - incomplete lod.coverage line: $coverage_line"
                 hard_fail=1
             elif (( cov_overlaps != 0 || cov_full_overlaps != 0 || cov_vwd_overlaps != 0 \
-                    || cov_terrain_churn != 0 || cov_object_churn != 0 )); then
+                    || cov_terrain_churn != 0 || cov_object_churn != 0 || cov_held_back != 0 )); then
                 echo "exterior-smoke[$label]: HARD FAIL - LOD coverage violation: $coverage_line"
                 hard_fail=1
             else

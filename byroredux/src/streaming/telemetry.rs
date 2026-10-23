@@ -172,6 +172,11 @@ pub struct StreamingTelemetry {
     pub lod_slices: StreamingLatencySummary,
     pub superseded_full_detail: u64,
     pub superseded_lod: u64,
+    /// #6093 — boundaries whose distant-LOD reconcile ended `Starved`: the
+    /// geometry pool was closed, so part of the horizon was held back (#6092)
+    /// instead of settled. Its own terminal state, so the bench clock moves on
+    /// and the run reports the loss instead of hanging on it.
+    pub starved_lod: u64,
     pub queued_cells: u64,
     pub unloaded_cells: u64,
     pub worker_payloads: u64,
@@ -304,6 +309,28 @@ impl StreamingTelemetry {
         Some((grid, elapsed))
     }
 
+    /// Close the active boundary's LOD phase as **starved** (#6093): the rings
+    /// stopped at a closed geometry pool, so no later frame reaches the settle
+    /// arm and `lod_settled` would stay false until the next crossing replaced
+    /// it — freezing the `grid-cross` / `grid-soak` bench clock, which holds
+    /// while a boundary is in progress. No latency sample: a starved reconcile
+    /// did not finish the work, and its elapsed time would flatter the settle
+    /// distribution. Returns the boundary's grid, or `None` when there was
+    /// nothing active (or LOD was already closed).
+    pub(crate) fn starve_lod(&mut self) -> Option<(i32, i32)> {
+        let grid = {
+            let active = self.active.as_mut()?;
+            if active.lod_settled {
+                return None;
+            }
+            active.lod_settled = true;
+            active.grid
+        };
+        self.starved_lod = self.starved_lod.saturating_add(1);
+        self.clear_completed_boundary();
+        Some(grid)
+    }
+
     pub(crate) fn settle_lod(&mut self, now: Instant) -> Option<((i32, i32), Duration)> {
         let (grid, elapsed) = {
             let active = self.active.as_mut()?;
@@ -353,7 +380,7 @@ impl StreamingTelemetry {
              tex_prefetch_queued={} tex_prefetch_peak_mib={:.1} tex_prefetch_dropped={} \
              tex_prefetch_withdrawn={} tex_prefetch_unused={} \
              lod_slice_avg_ms={:.2} lod_slice_max_ms={:.2} peak_pending={} \
-             unsettled_full={} unsettled_lod={} {} {} {} {} {} {} {}",
+             unsettled_full={} unsettled_lod={} lod_starved={} {} {} {} {} {} {} {}",
             self.boundary_crossings,
             self.full_detail.samples,
             self.full_detail.average_ms(),
@@ -402,6 +429,7 @@ impl StreamingTelemetry {
             self.peak_pending,
             u8::from(unsettled_full),
             u8::from(unsettled_lod),
+            self.starved_lod,
             // EX-06 per-phase distributions. An average cannot show the tail
             // a streaming deadline exists to bound, so every phase the plan
             // names reports p50/p95/max alongside it. Whole-frame p50/p95/max
