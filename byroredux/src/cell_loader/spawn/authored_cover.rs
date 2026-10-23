@@ -32,7 +32,12 @@ use byroredux_core::math::{Quat, Vec3};
 use byroredux_renderer::VulkanContext;
 
 /// Spawn every record's model as a hidden template and return the pseudo
-/// cell root that owns them, or `None` when no record's model loaded.
+/// cell root that owns them.
+///
+/// Always `Some` with the root: it is allocated and registered before any model
+/// is tried, so a cover where no record's model loaded still returns an empty
+/// root (each failure is warned per record, and the loaded/total count is
+/// logged), never `None`. The `Option` is the signature's, not a signal.
 pub(crate) fn spawn_authored_cover_templates(
     world: &mut World,
     ctx: &mut VulkanContext,

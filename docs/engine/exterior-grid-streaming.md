@@ -162,6 +162,31 @@ footprints without the steady-state attempt/deadline cap before the next frame
 is presented. The last frame therefore shows the outgoing full cells and the
 next shows their LOD replacement; no intermediate empty band is rendered.
 
+Band selection is keyed to the larger `radius_unload` bound, though, not to the
+resident set: a coarse terrain quad whose nearest cell is within it subdivides
+down to the finest band (#6094). The band thresholds measure to a quad's centre
+and were tuned against a ~6-cell radius; at the default 12 an undivided level-8
+quad still reached ~10 cells out, over resident full-detail terrain, and as a
+baked coarse mesh it carries no hole mask. The finest band is the one that is
+holed against actual residency, so the one-cell-moat rule above still holds.
+
+**A closed geometry pool stops the rings; it does not fill them with misses.**
+Every distant-LOD upload goes through the global geometry pool, which refuses
+once it reaches its hard cap and stays closed until a compaction after a cell
+unload (`scene_geometry_admission_open`). Each ring checks the pool before an
+attempt, so nothing is decoded for a certain refusal, and a refused quad is
+*held back*: no `missing_blocks` entry, no empty sentinel, and a quad or cell
+the pool refused part of is abandoned whole rather than kept half-resident
+(#6092). A reconcile that ends this way reports the `Starved` verdict (#6054)
+rather than `Settled`: the boundary telemetry closes as `lod_starved` so the
+`grid-cross` / `grid-soak` bench clock is not held by a reconcile that will not
+run, and `lod.coverage` carries `held_back=N` and a `FAIL` verdict
+(`m-exteriors.sh` fails on it) instead of reading `settled=1` (#6093). The
+frame the pool admits uploads again re-arms the reconcile
+(`lod_should_rearm_after_starvation`), so the horizon fills in after a cell
+unload frees space. At radius 12 on FNV the pool saturates during the cold
+load (live `lod.coverage`: `held_back=240`); lowering the radius leaves it room.
+
 ## 5. Streaming Phase 2: door teleport
 
 The interior↔exterior (and interior↔interior) cell swap is triggered by

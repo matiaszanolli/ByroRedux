@@ -361,20 +361,6 @@ fn resolve_cell_splat_layer(
     }
 }
 
-/// Resolve the authored `LTEX.GNAM` grass association in GPU splat-lane
-/// order.
-///
-/// The terrain shader sees only the texture/weight lanes, while the future
-/// authored-card tier needs the originating vegetation form. Keeping this as
-/// a pure mapping makes that order explicit and testable without a Vulkan
-/// context or an on-disk archive.
-///
-/// #4642 — `GNAM` is an *array*: 151 of 184 grass-bearing vanilla LTEXs
-/// author 2–4 grasses, so each lane carries the full authored species
-/// list in authored order (empty = no `LTEX.GNAM` link, or the
-/// executable's default land texture). The authored-card consumer tier
-/// (#4413) picks its species mix per lane from this list instead of the
-/// single last-wins grass the pre-fix map kept.
 /// The name a splat layer's ground-cover affinity is classified from.
 ///
 /// #4899 — the LTEX editor ID, which is what the keyword table was derived
@@ -394,6 +380,20 @@ pub(super) fn cover_affinity_key<'a>(
         .unwrap_or("")
 }
 
+/// Resolve the authored `LTEX.GNAM` grass association in GPU splat-lane
+/// order.
+///
+/// The terrain shader sees only the texture/weight lanes, while the future
+/// authored-card tier needs the originating vegetation form. Keeping this as
+/// a pure mapping makes that order explicit and testable without a Vulkan
+/// context or an on-disk archive.
+///
+/// #4642 — `GNAM` is an *array*: 151 of 184 grass-bearing vanilla LTEXs
+/// author 2–4 grasses, so each lane carries the full authored species
+/// list in authored order (empty = no `LTEX.GNAM` link, or the
+/// executable's default land texture). The authored-card consumer tier
+/// (#4413) picks its species mix per lane from this list instead of the
+/// single last-wins grass the pre-fix map kept.
 pub(super) fn authored_grass_for_splat_layers(
     layers: &[CellSplatLayer],
     landscape_grasses: &HashMap<u32, Vec<u32>>,
@@ -623,11 +623,6 @@ pub(super) fn splat_weight_for_vertex(layer: &CellSplatLayer, row: usize, col: u
     (best.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// Generate a terrain mesh from LAND heightmap data and spawn it as an
-/// entity. The mesh participates in the global geometry SSBO so RT
-/// reflection / GI rays sample the right vertex data — using
-/// `upload_scene_mesh` (not plain `upload`) is mandatory; see #371.
-#[allow(clippy::too_many_arguments)]
 /// Which splat-layer texture indices [`release_splat_layer_textures`] drops:
 /// skips `0` (LTEX not resolved → never acquired) and the registry
 /// `fallback` slot (shared placeholder, never per-cell refcounted) — the
@@ -996,6 +991,10 @@ fn spawn_land_collider(
     }
 }
 
+/// Generate a terrain mesh from LAND heightmap data and spawn it as an
+/// entity. The mesh participates in the global geometry SSBO so RT
+/// reflection / GI rays sample the right vertex data — using
+/// `upload_scene_mesh` (not plain `upload`) is mandatory; see #371.
 pub(super) fn spawn_terrain_mesh(
     world: &mut World,
     spawn: TerrainSpawnCtx,

@@ -60,9 +60,11 @@ use super::lod_support::{
 pub(crate) const LOD_BLOCK_CELLS: i32 = 4;
 
 /// LOD ring radius in blocks (Chebyshev). 12 blocks × 4 cells × 4096 BU =
-/// ~196 K BU of distant terrain in every direction — ~9.6× the default
-/// full-detail radius-5 view (20 480 BU). Tunable; the camera far plane
-/// (`Camera::default`) is sized to cover the resulting far-corner diagonal.
+/// ~196 K BU of distant terrain in every direction — 4× the default
+/// full-detail view (`DEFAULT_EXTERIOR_RADIUS` 12 cells = 49 152 BU; the
+/// ratio was ~9.6× against the radius-5 default this comment was written for).
+/// Tunable; the camera far plane (`Camera::default`) is sized to cover the
+/// resulting far-corner diagonal.
 pub(crate) const LOD_RADIUS_BLOCKS: i32 = 12;
 
 /// Heightmap sample stride within a cell's 33-vertex grid. 8 → 4 quads per

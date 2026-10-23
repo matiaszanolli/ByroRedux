@@ -24,9 +24,11 @@
 //!   cells stream full-detail.
 //! * **Coarse bands (8 / 16 / 32).** `.btr` only. The band descent proposes
 //!   a coarse quad exclusively where one is baked — a missing `.btr`
-//!   subdivides into finer children instead of holing the horizon — and
-//!   those quads sit far outside the streaming radius, so their hole mask is
-//!   always 0.
+//!   subdivides into finer children instead of holing the horizon. Selection
+//!   also subdivides any coarse quad whose nearest cell is within the unload
+//!   radius (#6094) — the band thresholds were tuned against a ~6-cell radius
+//!   and the default is 12 — so those quads stay outside the resident ring and
+//!   their hole mask is always 0.
 //!
 //! The synth path stays the geometry fallback for Oblivion / FO3 / FNV. Those
 //! games do ship older NIF terrain quadtrees (confirmed in #3100); they are not
