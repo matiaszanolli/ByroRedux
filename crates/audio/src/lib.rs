@@ -702,16 +702,7 @@ impl AudioWorld {
         attenuation: Attenuation,
         volume: f32,
     ) {
-        if !self.oneshot_slot_ready() {
-            return;
-        }
-        self.pending_oneshots.push_back(PendingOneShot {
-            sound,
-            position,
-            attenuation,
-            volume,
-            source: SoundSource::Detached,
-        });
+        self.queue_oneshot(SoundSource::Detached, sound, position, attenuation, volume);
     }
 
     /// #5410 — as [`Self::play_oneshot`], but the dispatched sound is
@@ -733,16 +724,23 @@ impl AudioWorld {
         attenuation: Attenuation,
         volume: f32,
     ) {
+        self.queue_oneshot(SoundSource::Anchored(entity), sound, position, attenuation, volume);
+    }
+
+    /// The shared tail of [`Self::play_oneshot`] / [`Self::play_oneshot_following`]: claim a
+    /// queue slot (dropping the oldest at the cap) and queue the play from `source`.
+    fn queue_oneshot(
+        &mut self,
+        source: SoundSource,
+        sound: Arc<StaticSoundData>,
+        position: Vec3,
+        attenuation: Attenuation,
+        volume: f32,
+    ) {
         if !self.oneshot_slot_ready() {
             return;
         }
-        self.pending_oneshots.push_back(PendingOneShot {
-            sound,
-            position,
-            attenuation,
-            volume,
-            source: SoundSource::Anchored(entity),
-        });
+        self.pending_oneshots.push_back(PendingOneShot { sound, position, attenuation, volume, source });
     }
 
     /// #5410 — fade out every active sound coupled to `entity` (both the
