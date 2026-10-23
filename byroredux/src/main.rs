@@ -1837,6 +1837,7 @@ mod dialogue_page_leave_tests {
             NpcDialogueTopic {
                 topic_form_id: 0x0001,
                 topic_editor_id: "GREETING".to_owned(),
+                topic_name: "GREETING".to_owned(),
                 info_form_id: 0x0002,
                 owning_quest: None,
                 speaker_text: "Hey there.".to_owned(),

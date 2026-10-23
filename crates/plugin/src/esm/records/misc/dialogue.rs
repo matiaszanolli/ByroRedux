@@ -315,6 +315,10 @@ pub struct InfoRecord {
     /// [`Self::emotion_type`] / [`Self::response_number`] above are
     /// derived from this for callers that don't need per-segment detail.
     pub responses: Vec<ResponseSegment>,
+    /// `RNAM` — the player's prompt for this line, overriding the topic's own
+    /// `FULL` when the menu lists it (xEdit INFO `Prompt`; 1,411 of FNV's
+    /// 23,247 INFOs author one). Empty when none.
+    pub prompt: String,
     /// `TCLT` topic-link ref — IDs of other DIAL topics that this
     /// branch routes the conversation to. Multiple TCLTs are
     /// concatenated.
@@ -615,6 +619,7 @@ pub fn parse_info(
         match &sub.sub_type {
             // #5367 Phase V — kept verbatim for the voice-file naming.
             b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"RNAM" => out.prompt = read_lstring_or_zstring(&sub.data),
             b"NAM1" => {
                 current_response.get_or_insert_with(Default::default).text =
                     read_lstring_or_zstring(&sub.data);
@@ -1439,6 +1444,15 @@ mod tests {
         let begin_only = parse_info(0x1, &subs[..5], &None, GameKind::Fallout3NV);
         assert!(begin_only.result_script_begin.is_some());
         assert!(begin_only.result_script_end.is_none());
+    }
+
+    /// `RNAM` is the player's prompt for the line, not response text.
+    #[test]
+    fn parse_info_reads_the_rnam_prompt() {
+        let subs = vec![sub(b"RNAM", b"Okay, I'm in.\0"), sub(b"NAM1", b"Follow me.\0")];
+        let info = parse_info(0x1, &subs, &None, GameKind::default());
+        assert_eq!(info.prompt, "Okay, I'm in.");
+        assert_eq!(info.response_text, "Follow me.");
     }
 
     #[test]

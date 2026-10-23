@@ -91,6 +91,9 @@ pub(crate) struct DialogueTopicEntry {
 pub(crate) struct NpcDialogueTopic {
     pub(crate) topic_form_id: u32,
     pub(crate) topic_editor_id: String,
+    /// What the player would have clicked: the INFO's `RNAM` prompt, else the
+    /// topic's `FULL`, else its editor ID — the page's header.
+    pub(crate) topic_name: String,
     pub(crate) info_form_id: u32,
     pub(crate) owning_quest: Option<u32>,
     pub(crate) speaker_text: String,
@@ -216,16 +219,23 @@ fn linked_menu<'a>(
         .collect()
 }
 
+/// The player-facing label of a topic's selected line: the INFO's own prompt
+/// wins over the topic's `FULL`, and the editor ID is the last resort (many
+/// FO3/FNV topics author neither).
+fn prompt_label(record: &DialRecord, info: &InfoRecord) -> String {
+    [&info.prompt, &record.full_name, &record.editor_id]
+        .into_iter()
+        .find(|label| !label.is_empty())
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn topic_entries(records: &[(&DialRecord, &InfoRecord)]) -> Vec<DialogueTopicEntry> {
     records
         .iter()
         .map(|(record, info)| DialogueTopicEntry {
             topic_form_id: record.form_id,
-            name: if record.full_name.is_empty() {
-                record.editor_id.clone()
-            } else {
-                record.full_name.clone()
-            },
+            name: prompt_label(record, info),
             info_form_id: info.form_id,
         })
         .collect()
@@ -256,6 +266,7 @@ fn select_on_topic<'a>(
         NpcDialogueTopic {
             topic_form_id: record.form_id,
             topic_editor_id: record.editor_id.clone(),
+            topic_name: prompt_label(record, info),
             info_form_id: info.form_id,
             // #5271 — name the quest that actually owns the SPOKEN line
             // (its QSTI), not the topic's first listed owner: on a
@@ -937,22 +948,10 @@ pub(crate) fn dialogue_snapshot(
 ) -> Option<byroredux_debug_ui::DialogueTopicSnapshot> {
     let npc = world.try_resource::<DialogueSurfaceState>()?.npc?;
     let topic = world.get::<NpcDialogueTopic>(npc)?.clone();
-    // Many quest DIALs ship no EDID; the selected entry's authored FULL (the
-    // player-facing prompt) is the surface's header then.
-    let topic_name = if topic.topic_editor_id.is_empty() {
-        topic
-            .topics
-            .iter()
-            .find(|entry| entry.topic_form_id == topic.topic_form_id)
-            .map(|entry| entry.name.clone())
-            .unwrap_or_default()
-    } else {
-        topic.topic_editor_id.clone()
-    };
     Some(byroredux_debug_ui::DialogueTopicSnapshot {
         npc,
         topic_form_id: topic.topic_form_id,
-        topic_name,
+        topic_name: topic.topic_name.clone(),
         info_form_id: topic.info_form_id,
         response_text: topic.speaker_text.clone(),
         topics: topic
@@ -1060,6 +1059,27 @@ mod tests {
             actor_form_id: speaker,
             ..Default::default()
         }
+    }
+
+    /// The page's header is what the player would click: the line's own
+    /// prompt, then the topic's FULL, and the editor ID only when a topic
+    /// authors neither (a FNV quest topic's editor ID is `VCG02GSSunnySmilesTopic000`).
+    #[test]
+    fn prompt_label_prefers_the_prompt_then_full_then_the_editor_id() {
+        let topic = DialRecord {
+            editor_id: "VCG02GSSunnySmilesTopic000".to_string(),
+            full_name: "Okay, I'm in.".to_string(),
+            ..Default::default()
+        };
+        let mut line = info(1, 0, "Follow me.");
+        assert_eq!(prompt_label(&topic, &line), "Okay, I'm in.");
+        line.prompt = "Count me in.".to_string();
+        assert_eq!(prompt_label(&topic, &line), "Count me in.");
+        let bare = DialRecord {
+            editor_id: "GREETING".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(prompt_label(&bare, &info(2, 0, "Hello.")), "GREETING");
     }
 
     fn fixture_topic() -> DialRecord {
