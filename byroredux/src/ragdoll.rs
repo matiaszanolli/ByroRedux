@@ -542,6 +542,23 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
         .ok_or("RagdollActive storage not registered")?
         .insert(actor, RagdollActive);
 
+    // 3.5. #6255 — every body answers to its actor. Classic rigs were owner-
+    //    marked at spawn (their bones carried shapes); a decoded FO4 articulation
+    //    brings bodies on bones that were not, and the stand-in capsule that WAS
+    //    the actor's only owner-marked collider is retired below. Without the
+    //    marker a ray hit on the corpse resolves to the bone, so it cannot be
+    //    targeted or looted, and occludes its own line of sight.
+    let owner = world.get::<Parent>(actor).map(|parent| parent.0);
+    if let (Some(owner), Some(mut owners)) =
+        (owner, world.query_mut::<byroredux_physics::ActorColliderOwner>())
+    {
+        for body in &spec.bodies {
+            if owners.get(body.entity).is_none() {
+                owners.insert(body.entity, byroredux_physics::ActorColliderOwner(owner));
+            }
+        }
+    }
+
     // 4. #1772 — tear down each ragdolled bone's pre-existing keyframed
     //    collision body. At NPC spawn every ragdoll bone got a Keyframed
     //    `RigidBodyData` → kinematic Rapier follower body (`RapierHandles`,
@@ -2056,6 +2073,14 @@ mod tests {
         assert_eq!(world.resource::<PhysicsWorld>().body_count(), 1);
 
         assert_eq!(activate_ragdoll(&world, actor).unwrap(), 2);
+        // #6255 — the shape-less bones now map back to the actor, as the retired
+        // capsule did.
+        {
+            let owners = world.query::<ActorColliderOwner>().unwrap();
+            for bone in &bones {
+                assert_eq!(owners.get(*bone).map(|o| o.0), Some(placement), "bone {bone} must resolve to the actor");
+            }
+        }
         assert!(world.query::<RapierHandles>().unwrap().get(capsule).is_none());
         assert!(world.query::<RigidBodyData>().unwrap().get(capsule).is_none());
         assert_eq!(
