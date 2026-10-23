@@ -1324,10 +1324,8 @@ impl<'a> Vm<'a> {
 
     /// Resolve a 1-based reference index against the script's reference
     /// list (`SCRO` and `SCRV` interleaved, #5629). An object entry yields
-    /// its form; a reference-variable entry yields `None` — the VM models
-    /// no ref-valued command, so a ref local is never assigned a real
-    /// reference and resolving it to anything would be a guess. So does an
-    /// out-of-range index. Callers decline or read the null reference.
+    /// its form; an out-of-range index yields `None`. Callers decline or
+    /// read the null reference.
     ///
     /// A reference variable resolves to the reference its slot was last assigned
     /// ([`VmState::ref_locals`]); one never assigned (or assigned none) is `None`,

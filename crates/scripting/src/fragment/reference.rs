@@ -633,10 +633,6 @@ fn alias_script_targets(world: &World) -> HashMap<EntityId, Vec<(u32, AliasScrip
     targets
 }
 
-/// The deliveries this frame's markers make, snapshotted before any runs:
-/// a run takes the quest guards and may write the marker storages. A marker
-/// on a reference reaches the scripts attached to it and the alias scripts of
-/// the aliases it fills.
 /// Whether this frame raised any `T` marker.
 fn raised<T: byroredux_core::ecs::Component>(
     marker: &Option<byroredux_core::ecs::QueryRead<'_, T>>,
@@ -644,6 +640,10 @@ fn raised<T: byroredux_core::ecs::Component>(
     marker.as_ref().is_some_and(|q| !q.is_empty())
 }
 
+/// The deliveries this frame's markers make, snapshotted before any runs:
+/// a run takes the quest guards and may write the marker storages. A marker
+/// on a reference reaches the scripts attached to it and the alias scripts of
+/// the aliases it fills.
 fn collect_deliveries(world: &World, markers: Markers) -> Vec<Delivery> {
     let frame = markers == Markers::Frame;
     // Pattern B: the frame pass owns `OnDeathEvent`; drain it first, whatever
