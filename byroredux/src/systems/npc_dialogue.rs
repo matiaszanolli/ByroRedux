@@ -1202,14 +1202,14 @@ mod tests {
 
         // Between the menu and the click the gate stops holding.
         world.resource_mut::<byroredux_scripting::Globals>().set(GLOBAL, 0.0);
-        select_topic_by_form_id(&mut world, eltrys, TOPIC_RUMORS)
+        select_topic_by_form_id(&world, eltrys, TOPIC_RUMORS)
             .expect("the entry the player clicked answers with the INFO the menu offered");
         assert_eq!(selected(&world, eltrys).expect("selected").info_form_id, INFO_RUMORS);
 
         // A topic the NPC's menu does not list is still evaluated fresh.
         world.remove::<NpcDialogueTopic>(eltrys);
         assert!(
-            select_topic_by_form_id(&mut world, eltrys, TOPIC_RUMORS).is_err(),
+            select_topic_by_form_id(&world, eltrys, TOPIC_RUMORS).is_err(),
             "with no open menu the gate is evaluated, and it no longer holds"
         );
     }
@@ -1589,7 +1589,7 @@ mod tests {
 
         // Blocker 2 — the surface's topic click lowers through the same
         // selection: another owned topic re-selects and bumps the serial.
-        let message = select_topic_by_form_id(&mut world, eltrys, TOPIC_RUMORS)
+        let message = select_topic_by_form_id(&world, eltrys, TOPIC_RUMORS)
             .expect("the second owned topic re-selects");
         assert!(message.contains(&format!("topic {TOPIC_RUMORS:#08X}")), "{message}");
         let topic = selected(&world, eltrys).expect("selection refreshed");
@@ -1603,7 +1603,7 @@ mod tests {
 
         // A topic the NPC does not own is refused at the ownership gate.
         assert!(
-            select_topic_by_form_id(&mut world, eltrys, 0xDEAD_BEEF).is_err(),
+            select_topic_by_form_id(&world, eltrys, 0xDEAD_BEEF).is_err(),
             "unowned topic must not re-select"
         );
     }
@@ -1770,7 +1770,7 @@ mod tests {
         npc_dialogue_selection_system(&world);
         assert!(selected(&world, eltrys).is_none(), "scripted activation");
         assert!(
-            select_topic_by_form_id(&mut world, eltrys, TOPIC).is_err(),
+            select_topic_by_form_id(&world, eltrys, TOPIC).is_err(),
             "topic click on an open surface"
         );
         assert_eq!(world.resource::<DialogueSurfaceState>().serial, 0);
@@ -1792,7 +1792,7 @@ mod tests {
         world.insert(eltrys, ActivateEvent { activator: player });
         npc_dialogue_selection_system(&world);
         assert!(selected(&world, eltrys).is_none(), "activation mid-fight");
-        let err = select_topic_by_form_id(&mut world, eltrys, TOPIC).unwrap_err();
+        let err = select_topic_by_form_id(&world, eltrys, TOPIC).unwrap_err();
         assert!(err.contains("combat"), "{err}");
 
         // Out of combat, the same NPC talks again.
@@ -1918,7 +1918,7 @@ mod tests {
         // Closing the conversation runs the open line's... nothing (no
         // end binding on INFO_ELTRYS), but selects the rumors topic whose
         // END binding carries stage 82 — the close path fires it.
-        select_topic_by_form_id(&mut world, eltrys, TOPIC_RUMORS)
+        select_topic_by_form_id(&world, eltrys, TOPIC_RUMORS)
             .expect("the second owned topic re-selects");
         end_open_conversation(&world);
         let advances = world
@@ -1990,7 +1990,7 @@ mod tests {
         assert!(!stage_reached(&world, 77), "no OnEnd before any line was replaced");
 
         // The same topic (hence the same INFO) selected again.
-        select_topic_by_form_id(&mut world, eltrys, TOPIC)
+        select_topic_by_form_id(&world, eltrys, TOPIC)
             .expect("the open topic re-selects");
         assert!(
             stage_reached(&world, 77),
@@ -2011,7 +2011,7 @@ mod tests {
         world.insert(eltrys, ActivateEvent { activator: player });
         npc_dialogue_selection_system(&world);
         assert!(selected(&world, eltrys).is_none());
-        let err = select_topic_by_form_id(&mut world, eltrys, TOPIC).unwrap_err();
+        let err = select_topic_by_form_id(&world, eltrys, TOPIC).unwrap_err();
         assert!(err.contains("unconscious"), "{err}");
 
         byroredux_scripting::update_actor_control(&world, eltrys, |state| {
@@ -2166,12 +2166,12 @@ mod tests {
         /// outright.
         #[test]
         fn clicking_a_link_answers_it_then_returns_to_the_top_level_list() {
-            let (mut world, eltrys) = activate(SPEAKER_BASE);
-            select_topic_by_form_id(&mut world, eltrys, CHILD).expect("the link answers");
+            let (world, eltrys) = activate(SPEAKER_BASE);
+            select_topic_by_form_id(&world, eltrys, CHILD).expect("the link answers");
             let topic = selected(&world, eltrys).unwrap();
             assert_eq!(topic.speaker_text, "Mid-branch answer.");
             assert_eq!(listed(&topic), vec![TOP_ENTRY]);
-            assert!(select_topic_by_form_id(&mut world, eltrys, SCENE).is_err());
+            assert!(select_topic_by_form_id(&world, eltrys, SCENE).is_err());
         }
     }
 

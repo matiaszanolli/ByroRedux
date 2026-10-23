@@ -728,7 +728,7 @@ mod tests {
     #[test]
     fn attach_player_body_flushes_the_textures_the_job_queued() {
         let source = include_str!("player_body.rs");
-        let production = &source[..source.find("#[cfg(test)]").unwrap()];
+        let production = byroredux_core::source_scan::production_text(source);
         let advance = production.find("job.advance(").expect("the job runs here");
         let flush = production
             .find("flush_pending_loose_textures(ctx)")

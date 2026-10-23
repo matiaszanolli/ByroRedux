@@ -1747,14 +1747,27 @@ quickload restores (none pinned ungrounded: the #5155 signature), peak RSS
 frame-counted walk back — see the smoke README). `p1-character-traversal`
 PASS on a display (its frame-counted route overshoots at Xvfb's ~31 FPS).
 
-**Open follow-ups.** In third person the FNV player's outfit and hair cap
-render as the checkerboard although every material slot resolves a present,
-correctly decoding texture (`mat.dump`: `underwearm.dds`, `upperbodymale.dds`,
-`hairwavy.dds` at handles 327-332; `tex.missing` clean); the head and hands,
-on low handles shared with NPCs, render correctly. Not yet isolated. The
-dialogue page heads FO3/FNV lines with the topic's editor ID rather than
-its player prompt. The vanilla MenuXml `RadiationMeter` (`--hud`) is
-code-driven and not wired; the native HUD's RAD gauge is.
+**Closed after the gates of record (2026-10-23).** The third-person
+checkerboard on the FNV player's outfit and hair was an unflushed texture
+batch: the body spawn job's NIF imports only *queue* their DDS data (each
+material points at a reserved bindless slot whose descriptor stays the
+checkerboard), the cell load's `flush_pending_uploads` had already run, and the
+queued handles (327-332, past the cell's 325) were never uploaded. The head and
+hands rendered only because the cell's own NPCs had uploaded them.
+`attach_player_body` now calls `flush_pending_loose_textures` after the job
+(`p3-player-body` capture: hair, shirt and shorts textured). The dialogue page
+now heads a line with what the player would click — the INFO's `RNAM` prompt
+(1,411 FNV INFOs author one; now parsed as `InfoRecord::prompt`), else the
+topic's `FULL`, else its editor ID — instead of
+`VCG02GSSunnySmilesTopic000`.
+
+**Open follow-up.** The vanilla MenuXml `RadiationMeter` (`--hud`) is not
+wired; the native HUD's RAD gauge is. `hud_main_menu.xml` authors only the
+visuals (a bracket image, a pointer arrow at `y=25`, two empty text fields, all
+`alpha 0`) and a `_RadiationLevel` trait defaulting to 0; the code that maps
+rads to the pointer position, the fade-in and the label strings is not in the
+XML, and none of the local GECK/UESP references describes it. It stays unwired
+until that mapping is sourced.
 
 ## Work rules
 
