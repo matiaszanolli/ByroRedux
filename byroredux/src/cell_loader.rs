@@ -160,6 +160,9 @@ pub(crate) use exterior::{
     PersistentCellApplyJob, PersistentCellApplyProgress, PersistentCellWindow,
 };
 pub use exterior::{build_exterior_world_context, load_one_exterior_cell, ExteriorWorldContext};
+// The exterior loader's production text across its files, for source-pin tests elsewhere.
+#[cfg(test)]
+pub(crate) use exterior::production_source as exterior_production_source;
 pub(crate) use load::apply_interior_cell_lighting;
 // Load-bearing for `cell_loader/lgtm_fallback_tests.rs`, which reaches it
 // through `use super::*`.

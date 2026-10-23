@@ -734,9 +734,7 @@ mod default_weather_rule_tests {
         // stand-in pick (`default_weather_by_edid`) — the re-inlining
         // that #5424 fixed. `strip_test_modules` because exterior.rs
         // interleaves test modules with production code.
-        let exterior_src = byroredux_core::source_scan::strip_test_modules(include_str!(
-            "../cell_loader/exterior.rs"
-        ));
+        let exterior_src = crate::cell_loader::exterior_production_source();
         let world_setup_src = byroredux_core::source_scan::strip_test_modules(include_str!(
             "../scene/world_setup.rs"
         ));

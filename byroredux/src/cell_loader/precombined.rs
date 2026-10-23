@@ -1739,7 +1739,7 @@ mod tests {
     /// real thing does not exist in `cargo test`.
     #[test]
     fn exterior_apply_advances_precombine_at_zero_origin() {
-        let source = include_str!("exterior.rs");
+        let source = include_str!("exterior/apply_job.rs");
         // `exterior.rs` has two `job.advance(` sites — the outer
         // `ExteriorCellApplyJob` loop and the precombine cursor inside it.
         // Anchor on the progress type only the inner call consumes.
