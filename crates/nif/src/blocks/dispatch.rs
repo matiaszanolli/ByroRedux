@@ -11,8 +11,12 @@ use super::*;
 /// name it owns propagates exactly as the single `match`'s `?` did.
 pub(super) type Dispatched = io::Result<Option<Box<dyn NiObject>>>;
 
+/// One family dispatcher: the RTTI name, the stream at the block's payload, and the block's
+/// size when the header records one.
+pub(super) type Family = fn(&str, &mut NifStream, Option<u32>) -> Dispatched;
+
 /// The families, in dispatch order.
-pub(super) const FAMILIES: [fn(&str, &mut NifStream, Option<u32>) -> Dispatched; 9] =
+pub(super) const FAMILIES: [Family; 9] =
     [nodes, legacy_particle, geometry, shader, extra_data, controllers, interpolators, particle, havok];
 
 /// Lights, scene-graph nodes and their LOD / bound / weak-reference variants, the embedded

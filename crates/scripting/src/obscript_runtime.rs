@@ -217,11 +217,14 @@ enum StatementTerminator {
     EndIf,
 }
 
+/// One statement run and what ended it.
+type ParsedSequence = (Vec<LegacyObscriptStatement>, StatementTerminator);
+
 /// The rest of an `If` whose condition is already read, for either line form (compiled
 /// SCDA lines or source tokens): `parse_sequence` reads one statement run from `cursor` at
 /// a nesting depth and reports what ended it. The nesting cap lives here, once.
 fn parse_conditional(
-    parse_sequence: &mut dyn FnMut(&mut usize, usize) -> Option<(Vec<LegacyObscriptStatement>, StatementTerminator)>,
+    parse_sequence: &mut dyn FnMut(&mut usize, usize) -> Option<ParsedSequence>,
     cursor: &mut usize,
     depth: usize,
     condition: LegacyObscriptCall,
