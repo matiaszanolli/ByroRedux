@@ -964,36 +964,24 @@ impl SvgfPipeline {
         queue: &std::sync::Mutex<vk::Queue>,
         pool: vk::CommandPool,
     ) -> Result<()> {
-        super::texture::with_one_time_commands(device, queue, pool, |cmd| {
-            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 4);
-            for slot in self
-                .indirect_history
-                .iter()
-                .chain(self.moments_history.iter())
-                .chain(self.atrous_color.iter())
-            {
-                barriers.push(image_barrier_undef_to_general(slot.image));
-            }
-            // NONE as srcStageMask: UNDEFINED → GENERAL on the SVGF
-            // history images has no prior writes to expose; NONE is the
-            // Vulkan 1.3 idiom post-#949 / #1100 / #1122.
-            // SAFETY: caller of `initialize_layouts` (unsafe fn)
-            // guarantees device/queue/pool validity; `cmd` is the
-            // recording buffer from `with_one_time_commands`. Each
-            // barrier targets a history image we own.
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::NONE,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &barriers,
-                );
-            }
-            Ok(())
-        })
+        let barriers: Vec<_> = self
+            .indirect_history
+            .iter()
+            .chain(self.moments_history.iter())
+            .chain(self.atrous_color.iter())
+            .map(|slot| image_barrier_undef_to_general(slot.image))
+            .collect();
+        // SAFETY: the caller's contract above; each barrier targets a history image this pass
+        // owns.
+        unsafe {
+            super::texture::submit_initial_layouts(
+                device,
+                queue,
+                pool,
+                &barriers,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+            )
+        }
     }
 
     /// Upload the per-frame temporal params UBO (host write only).

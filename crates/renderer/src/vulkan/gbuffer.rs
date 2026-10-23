@@ -334,43 +334,32 @@ impl GBuffer {
         queue: &std::sync::Mutex<vk::Queue>,
         pool: vk::CommandPool,
     ) -> anyhow::Result<()> {
-        super::texture::with_one_time_commands(device, queue, pool, |cmd| {
-            let attachments = [
-                &self.normal,
-                &self.motion,
-                &self.mesh_id,
-                &self.raw_indirect,
-                &self.albedo,
-                &self.reactive,
-                &self.transparency,
-            ];
-            let mut barriers = Vec::with_capacity(attachments.len() * MAX_FRAMES_IN_FLIGHT);
-            for att in &attachments {
-                for &img in att.slots.iter().map(|s| &s.image) {
-                    // #4221 — field-for-field identical to the shared
-                    // helper; use it instead of a hand-rolled copy.
-                    barriers.push(super::descriptors::image_barrier_undef_to_shader_read(img));
-                }
-            }
-            // NONE as srcStageMask: UNDEFINED → SHADER_READ_ONLY transitions
-            // discard prior content so there are no previous writes to expose.
-            // NONE is the Vulkan 1.3 replacement for the deprecated use of
-            // TOP_OF_PIPE as a source stage in memory barriers (#949 / #1100).
-            // SAFETY: barriers are well-formed, device and cmd are valid.
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::NONE,
-                    vk::PipelineStageFlags::FRAGMENT_SHADER
-                        | vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &barriers,
-                );
-            }
-            Ok(())
-        })
+        let attachments = [
+            &self.normal,
+            &self.motion,
+            &self.mesh_id,
+            &self.raw_indirect,
+            &self.albedo,
+            &self.reactive,
+            &self.transparency,
+        ];
+        // #4221 — UNDEFINED → SHADER_READ_ONLY through the shared helper.
+        let barriers: Vec<_> = attachments
+            .iter()
+            .flat_map(|att| att.slots.iter())
+            .map(|slot| super::descriptors::image_barrier_undef_to_shader_read(slot.image))
+            .collect();
+        // SAFETY: the caller's contract above; every barrier targets an attachment image this
+        // G-buffer owns.
+        unsafe {
+            super::texture::submit_initial_layouts(
+                device,
+                queue,
+                pool,
+                &barriers,
+                vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
+            )
+        }
     }
 
     /// Recreate all attachments at a new extent (called on swapchain resize).

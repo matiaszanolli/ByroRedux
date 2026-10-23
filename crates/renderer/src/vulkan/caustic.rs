@@ -802,43 +802,26 @@ impl CausticPipeline {
         queue: &std::sync::Mutex<vk::Queue>,
         pool: vk::CommandPool,
     ) -> Result<()> {
-        super::texture::with_one_time_commands(device, queue, pool, |cmd| {
-            let mut barriers = Vec::with_capacity(self.slots.len());
-            for slot in &self.slots {
-                barriers.push(
-                    vk::ImageMemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::empty())
-                        .dst_access_mask(
-                            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
-                        )
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .new_layout(vk::ImageLayout::GENERAL)
-                        .image(slot.image)
-                        .subresource_range(caustic_subresource_range()),
-                );
-            }
-            // SAFETY: caller of `initialize_layouts` (unsafe fn) guarantees
-            // device/queue/pool validity; `cmd` is the recording buffer
-            // from `with_one_time_commands`. Each barrier targets a slot
-            // image we own.
-            // NONE as srcStageMask on UNDEFINED → GENERAL transitions: there
-            // are no previous writes to make visible (the prior contents are
-            // discarded), so TOP_OF_PIPE and NONE are semantically equivalent.
-            // NONE is the Vulkan 1.3 replacement for the deprecated use of
-            // TOP_OF_PIPE as a source stage in memory barriers (#949 / #1100).
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::NONE,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &barriers,
-                );
-            }
-            Ok(())
-        })
+        // The slots are layered images, so the barrier carries the caustic array range rather
+        // than `image_barrier_undef_to_general`'s single-layer one.
+        let barriers: Vec<_> = self
+            .slots
+            .iter()
+            .map(|slot| {
+                super::descriptors::image_barrier_undef_to_general(slot.image)
+                    .subresource_range(caustic_subresource_range())
+            })
+            .collect();
+        // SAFETY: the caller's contract above; each barrier targets a slot image this pass owns.
+        unsafe {
+            super::texture::submit_initial_layouts(
+                device,
+                queue,
+                pool,
+                &barriers,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+            )
+        }
     }
 
     /// Clear + dispatch. Call after the main render pass ends (gbuffer is

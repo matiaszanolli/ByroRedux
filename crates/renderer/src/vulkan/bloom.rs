@@ -540,35 +540,24 @@ impl BloomPipeline {
         queue: &std::sync::Mutex<vk::Queue>,
         pool: vk::CommandPool,
     ) -> Result<()> {
-        super::texture::with_one_time_commands(device, queue, pool, |cmd| {
-            let total = MAX_FRAMES_IN_FLIGHT * (BLOOM_MIP_COUNT + (BLOOM_MIP_COUNT - 1));
-            let mut barriers = Vec::with_capacity(total);
-            for frame in &self.frames {
-                for mip in frame.down_mips.iter().chain(frame.up_mips.iter()) {
-                    barriers.push(image_barrier_undef_to_general(mip.gpu.image));
-                }
+        let mut barriers =
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * (BLOOM_MIP_COUNT + (BLOOM_MIP_COUNT - 1)));
+        for frame in &self.frames {
+            for mip in frame.down_mips.iter().chain(frame.up_mips.iter()) {
+                barriers.push(image_barrier_undef_to_general(mip.gpu.image));
             }
-            // NONE as srcStageMask: UNDEFINED → GENERAL on the bloom
-            // pyramid mips has no prior writes to expose; NONE is the
-            // Vulkan 1.3 idiom post-#949 / #1100 / #1122.
-            // SAFETY: `cmd` is the recording one-time command buffer supplied
-            // by `with_one_time_commands`; every barrier image is a bloom mip
-            // created above and not yet accessed, so the UNDEFINED->GENERAL
-            // transition with srcStage=NONE has no prior writes to make visible
-            // and no concurrent use.
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::NONE,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &barriers,
-                );
-            }
-            Ok(())
-        })
+        }
+        // SAFETY: the caller's contract above; every barrier image is a bloom mip this pass
+        // created and nothing has accessed yet.
+        unsafe {
+            super::texture::submit_initial_layouts(
+                device,
+                queue,
+                pool,
+                &barriers,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+            )
+        }
     }
 
     /// Run the bloom pyramid for `frame`. Reads `input_view` (the

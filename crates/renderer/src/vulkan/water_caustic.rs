@@ -154,29 +154,20 @@ impl WaterCausticAccum {
         queue: &std::sync::Mutex<vk::Queue>,
         pool: vk::CommandPool,
     ) -> Result<()> {
-        super::texture::with_one_time_commands(device, queue, pool, |cmd| {
-            let mut barriers = Vec::with_capacity(self.slots.len());
-            for slot in &self.slots {
-                barriers.push(image_barrier_undef_to_general(slot.image));
-            }
-            // SAFETY: caller's unsafe-fn contract. NONE as srcStageMask
-            // on UNDEFINED → GENERAL transitions: there are no prior
-            // writes to make visible. dstStage = FRAGMENT_SHADER because
-            // water.frag is the first reader/writer (not COMPUTE_SHADER
-            // like the caustic version — different consumer pipeline).
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::NONE,
-                    vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &barriers,
-                );
-            }
-            Ok(())
-        })
+        let barriers: Vec<_> =
+            self.slots.iter().map(|slot| image_barrier_undef_to_general(slot.image)).collect();
+        // SAFETY: the caller's contract above. dstStage = FRAGMENT_SHADER because water.frag is
+        // the first reader/writer (not COMPUTE_SHADER like the caustic version — different
+        // consumer pipeline).
+        unsafe {
+            super::texture::submit_initial_layouts(
+                device,
+                queue,
+                pool,
+                &barriers,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+            )
+        }
     }
 
     /// Clear the per-FIF accumulator + sequence the barriers so

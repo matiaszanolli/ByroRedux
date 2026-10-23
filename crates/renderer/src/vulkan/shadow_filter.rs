@@ -277,28 +277,23 @@ impl ShadowFilterPipeline {
     /// `OneTimeCommandError::may_be_in_flight` (`texture.rs`)
     /// before freeing them (#6063).
     pub(crate) fn initialize_layouts(&self, ctx: GpuUploadCtx) -> Result<()> {
-        super::texture::with_one_time_commands(ctx.device, ctx.queue, ctx.command_pool, |cmd| {
-            let barriers: Vec<_> = self
-                .frames
-                .iter()
-                .flat_map(|f| [f.ratio_a.image, f.ratio_b.image, f.delta.image])
-                .map(image_barrier_undef_to_general)
-                .collect();
-            // SAFETY: `cmd` is the recording one-time buffer; every image is
-            // owned here and unused by any submission yet.
-            unsafe {
-                ctx.device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::NONE,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &barriers,
-                );
-            }
-            Ok(())
-        })
+        let barriers: Vec<_> = self
+            .frames
+            .iter()
+            .flat_map(|f| [f.ratio_a.image, f.ratio_b.image, f.delta.image])
+            .map(image_barrier_undef_to_general)
+            .collect();
+        // SAFETY: every image is owned here and unused by any submission yet; `ctx` carries
+        // the live device, queue and pool.
+        unsafe {
+            super::texture::submit_initial_layouts(
+                ctx.device,
+                ctx.queue,
+                ctx.command_pool,
+                &barriers,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+            )
+        }
     }
 
     /// The correction image composite adds to direct light this frame.
