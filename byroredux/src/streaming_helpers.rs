@@ -804,6 +804,13 @@ fn finish_streaming_import(
 /// repairs the memo's stated premise (see `pre_parse.rs`: the memo is
 /// cleared when the queue empties, which under a sustained backlog it
 /// never does).
+///
+/// This is the **synchronous** primitive: it finishes every entry before it
+/// returns. The frame loop never calls it with a whole payload (#5715) — it
+/// queues the entries and finishes them one budget unit at a time through
+/// [`salvage_one_queued_import`]. It stays whole for the untimed paths:
+/// [`consume_streaming_payload`], the deterministic bootstrap that has no frame
+/// to protect.
 fn salvage_stale_imports<I>(
     world: &mut byroredux_core::ecs::World,
     mat_provider: &mut crate::asset_provider::MaterialProvider,
@@ -825,25 +832,46 @@ where
     salvaged
 }
 
+/// `salvage` is whether a cancel mid-FinishImports still owes the registry the
+/// payload's remaining imports. A boundary cancel on the frame loop does (the
+/// worker lives on); a worldspace drain does not — the state, worker and its
+/// skip filters die with it, so there is nothing left whose premise a salvage
+/// would repair (#5715).
+/// Finish at most ONE import from the owed-salvage queue (#5715), returning
+/// whether it did. The unit of work the frame budget charges: the caller yields
+/// between calls, so a stale payload's hundreds of imports spread across frames
+/// instead of running back to back inside one.
+fn salvage_one_queued_import(
+    world: &mut byroredux_core::ecs::World,
+    mat_provider: &mut crate::asset_provider::MaterialProvider,
+    has_texture: &dyn Fn(&str) -> bool,
+    telemetry: &mut streaming::StreamingTelemetry,
+    queue: &mut std::collections::VecDeque<(String, Option<streaming::PartialNifImport>)>,
+) -> bool {
+    let Some(entry) = queue.pop_front() else {
+        return false;
+    };
+    salvage_stale_imports(world, mat_provider, has_texture, telemetry, [entry]);
+    true
+}
+
 fn cancel_streaming_apply_job(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
     state: &mut streaming::WorldStreamingState,
     job: streaming::StreamingCellApplyJob,
+    salvage: bool,
 ) {
     // #5512 — a cancel mid-FinishImports still owes the registry the
     // payload's remaining imports (the skip-filter residency premise);
     // only the cell spawn is cancelled. A mid-Spawn cancel cannot lose
-    // imports — they all finished before BeginExterior ran.
+    // imports — they all finished before BeginExterior ran. #5715 — queued, so
+    // they finish under the frame budget rather than in this call.
     match job.phase {
         streaming::StreamingCellApplyPhase::FinishImports(imports) => {
-            salvage_stale_imports(
-                world,
-                &mut state.mat_provider,
-                &|p| state.tex_provider.has_texture(p),
-                &mut state.telemetry,
-                imports,
-            );
+            if salvage {
+                state.stale_salvage.extend(imports);
+            }
         }
         streaming::StreamingCellApplyPhase::Spawn(cell_job) => {
             cell_job.cancel(world, ctx);
@@ -872,7 +900,8 @@ pub(crate) fn cancel_active_streaming_apply(
 ) {
     if let Some(job) = state.active_apply.take() {
         state.pending.remove(&job.coord);
-        cancel_streaming_apply_job(world, ctx, state, job);
+        // The worldspace drain: the state is about to be thrown away (#5715).
+        cancel_streaming_apply_job(world, ctx, state, job, false);
         end_apply_texture_prefetch(state);
     }
 }
@@ -955,6 +984,20 @@ pub(crate) fn advance_streaming_apply(
             return budget.completed_units() > 0;
         }
 
+        // #5715 — one owed salvage import per iteration, ahead of the next
+        // payload: the registry owes these keys to requests already in flight,
+        // and a unit at a time lets the yield check above bound the frame.
+        if salvage_one_queued_import(
+            world,
+            &mut state.mat_provider,
+            &|p| state.tex_provider.has_texture(p),
+            &mut state.telemetry,
+            &mut state.stale_salvage,
+        ) {
+            budget.complete_unit();
+            continue;
+        }
+
         if state.active_apply.is_none() {
             let payload = loop {
                 let Ok(payload) = state.payload_rx.try_recv() else {
@@ -973,20 +1016,14 @@ pub(crate) fn advance_streaming_apply(
                             payload.generation
                         );
                         // #5512 — the payload's imports are valid work even
-                        // though its cell spawn is dead; finish them so the
-                        // worker's skip filters keep their residency
-                        // premise. Charged to the frame budget like any
-                        // other import finish.
-                        let salvaged = salvage_stale_imports(
-                            world,
-                            &mut state.mat_provider,
-                            &|p| state.tex_provider.has_texture(p),
-                            &mut state.telemetry,
-                            payload.parsed,
-                        );
-                        for _ in 0..salvaged {
-                            budget.complete_unit();
-                        }
+                        // though its cell spawn is dead; they must still be
+                        // finished so the worker's skip filters keep their
+                        // residency premise. #5715 — queued and finished one
+                        // per budget unit at the top of this loop: finishing
+                        // them here ran every import of the payload before the
+                        // yield check could see the clock, and only charged
+                        // the frame afterwards.
+                        state.stale_salvage.extend(payload.parsed);
                     }
                 }
             };
@@ -1007,7 +1044,7 @@ pub(crate) fn advance_streaming_apply(
                 job.coord.1,
                 job.generation,
             );
-            cancel_streaming_apply_job(world, ctx, state, job);
+            cancel_streaming_apply_job(world, ctx, state, job, true);
             end_apply_texture_prefetch(state);
             continue;
         }
@@ -1316,6 +1353,80 @@ mod tests {
             "a later request's BatchDuplicate skip must find the salvaged key"
         );
         assert!(reg.get("meshes\\clutter\\rooted.nif").is_some());
+    }
+
+    /// #5715 — the owed salvage drains ONE import per call, so the frame loop's
+    /// yield check sits between imports instead of after all of them.
+    #[test]
+    fn queued_salvage_finishes_one_import_per_call() {
+        let mut world = byroredux_core::ecs::World::new();
+        world.insert_resource(cell_loader::NifImportRegistry::new());
+        let mut mat_provider = crate::asset_provider::build_material_provider(&[]);
+        let mut telemetry = streaming::StreamingTelemetry::default();
+        let mut queue: std::collections::VecDeque<_> = (0..5)
+            .map(|i| (format!("clutter\\queued_5715_{i}.nif"), None))
+            .collect();
+
+        for done in 1..=5u64 {
+            assert!(salvage_one_queued_import(
+                &mut world,
+                &mut mat_provider,
+                &|_| false,
+                &mut telemetry,
+                &mut queue,
+            ));
+            assert_eq!(telemetry.worker_stale_salvaged_imports, done, "one import per call");
+            assert_eq!(queue.len() as u64, 5 - done);
+        }
+        assert!(
+            !salvage_one_queued_import(&mut world, &mut mat_provider, &|_| false, &mut telemetry, &mut queue),
+            "an empty queue does no work and charges no unit"
+        );
+        let reg = world.resource::<cell_loader::NifImportRegistry>();
+        for i in 0..5 {
+            assert!(
+                reg.get(&format!("meshes\\clutter\\queued_5715_{i}.nif")).is_some(),
+                "every queued key must still land in the registry (#5512)"
+            );
+        }
+    }
+
+    /// #5715 — the frame-loop sites queue; they never finish a payload inline.
+    /// Only the untimed bootstrap (`consume_streaming_payload`) keeps the
+    /// synchronous primitive, and the worldspace drain skips salvage outright.
+    #[test]
+    fn frame_loop_salvage_is_queued_not_synchronous() {
+        let src = include_str!("streaming_helpers.rs");
+        let production = byroredux_core::source_scan::production_text_or_whole(src);
+        let advance = production
+            .split_once("pub(crate) fn advance_streaming_apply(")
+            .expect("advance_streaming_apply exists")
+            .1
+            .split_once("pub fn consume_streaming_payload(")
+            .map(|(body, _)| body)
+            .unwrap_or("");
+        assert!(
+            advance.contains("state.stale_salvage.extend(payload.parsed)"),
+            "the stale-payload arm must queue its imports"
+        );
+        assert!(
+            !advance.contains("salvage_stale_imports("),
+            "advance_streaming_apply must not finish a payload's imports inline"
+        );
+        assert!(advance.contains("salvage_one_queued_import("), "the loop drains the queue");
+        let cancel = production
+            .split_once("fn cancel_streaming_apply_job(")
+            .expect("cancel exists")
+            .1
+            .split_once("/// Cancel and reclaim the partially-applied cell")
+            .expect("cancel is followed by cancel_active_streaming_apply")
+            .0;
+        assert!(cancel.contains("state.stale_salvage.extend(imports)"));
+        assert!(!cancel.contains("salvage_stale_imports("));
+        assert!(
+            production.contains("cancel_streaming_apply_job(world, ctx, state, job, false)"),
+            "the worldspace drain skips salvage"
+        );
     }
 
     fn lod(entity: u32, mesh: u32) -> LodBlock {

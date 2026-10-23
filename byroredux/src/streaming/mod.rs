@@ -491,6 +491,14 @@ pub struct WorldStreamingState {
     /// live until this completes, suppressing duplicate requests and making a
     /// boundary-crossing removal an immediate cancellation signal.
     pub(crate) active_apply: Option<StreamingCellApplyJob>,
+    /// #5715 — parsed imports of stale-dropped payloads and cancelled applies
+    /// still owed to the `NifImportRegistry` (#5512's residency premise for the
+    /// worker's skip filters). Finished one per frame-budget unit by
+    /// `advance_streaming_apply`, not all at once at the drop: a stale payload
+    /// carries hundreds of entries, and the synchronous finish ran every one of
+    /// them past the frame budget's yield check. Runtime scratch tied to the
+    /// worker, so it dies with the state.
+    pub(crate) stale_salvage: std::collections::VecDeque<(String, Option<PartialNifImport>)>,
 }
 
 impl WorldStreamingState {
@@ -579,6 +587,7 @@ impl WorldStreamingState {
             cancel,
             payload_rx,
             active_apply: None,
+            stale_salvage: std::collections::VecDeque::new(),
         }
     }
 
