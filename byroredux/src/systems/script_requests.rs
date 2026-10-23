@@ -2,7 +2,7 @@
 //! `SetPCSleepHours`, `PlayMusic` and `EssentialDeathReload`. (`PushActorAway` and `ForceFlee` have their
 //! own systems, [`super::knockdown`] and [`super::flee`].)
 
-use byroredux_core::ecs::components::{ActorVitals, Dead, GlobalTransform, Inventory, Transform};
+use byroredux_core::ecs::components::{ActorVitals, Dead, GlobalTransform, Inventory, ItemInstanceId, Transform};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{EntityId, World};
@@ -175,12 +175,33 @@ pub(crate) fn reset_inventory_system(world: &World, _dt: f32) {
         let authored = base.and_then(|base| crate::cell_loader::references::authored_container_inventory(world, base, &index));
         match authored {
             Some(fresh) => {
-                if let Some(mut inventories) = world.query_mut::<Inventory>() {
-                    inventories.insert(entity, fresh);
-                }
+                let replaced = replace_inventory(world, entity, fresh);
+                release_instances(world, &replaced);
                 log::info!("ResetInventory: container {entity} is back to its record");
             }
             None => log::warn!("ResetInventory: {entity} is not a container with a record; left as it is"),
+        }
+    }
+}
+
+/// Swap `entity`'s [`Inventory`] for `fresh`, handing back the stacks it held (empty when it had none).
+fn replace_inventory(world: &World, entity: EntityId, fresh: Inventory) -> Vec<ItemInstanceId> {
+    let Some(mut inventories) = world.query_mut::<Inventory>() else {
+        return Vec::new();
+    };
+    let instances = inventories.get(entity).map(|old| old.items.iter().filter_map(|stack| stack.instance).collect()).unwrap_or_default();
+    inventories.insert(entity, fresh);
+    instances
+}
+
+/// Release the dropped stacks' [`ItemInstancePool`] entries, as consumption does, so a reset does not orphan them.
+fn release_instances(world: &World, instances: &[ItemInstanceId]) {
+    if instances.is_empty() {
+        return;
+    }
+    if let Some(mut pool) = world.try_resource_mut::<byroredux_core::ecs::resources::ItemInstancePool>() {
+        for &instance in instances {
+            pool.release(instance);
         }
     }
 }
@@ -393,6 +414,35 @@ mod tests {
             let want = Vec3::new(dx, 0.0, dz).normalize();
             assert!((forward - want).length() < 1e-5, "({dx},{dz}) -> {forward:?}");
         }
+    }
+
+    /// #6269 — a reset drops the old stacks, so their pool entries go back to the pool with them.
+    #[test]
+    fn resetting_an_inventory_releases_the_dropped_stacks_instances() {
+        use byroredux_core::ecs::components::ItemStack;
+        use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
+        let mut world = World::new();
+        let mut pool = ItemInstancePool::new();
+        let kept = pool.allocate(ItemInstance::default());
+        world.insert_resource(pool);
+        let container = world.spawn();
+        let mut old = Inventory::new();
+        let mut instanced = ItemStack::new(0x10, 1);
+        instanced.instance = Some(kept);
+        old.push(instanced);
+        old.push(ItemStack::new(0x11, 3));
+        world.insert(container, old);
+        let mut fresh = Inventory::new();
+        fresh.push(ItemStack::new(0x12, 1));
+
+        let dropped = replace_inventory(&world, container, fresh);
+        release_instances(&world, &dropped);
+
+        assert_eq!(dropped, vec![kept]);
+        assert_eq!(world.resource::<ItemInstancePool>().live_count(), 0);
+        let now = world.get::<Inventory>(container).unwrap();
+        assert_eq!(now.items.len(), 1);
+        assert_eq!(now.items[0].base_form_id, 0x12);
     }
 
     /// #6226 — `PlayMusic` goes nowhere near the one-shot pool (no spatial sub-track, no
