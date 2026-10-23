@@ -93,6 +93,19 @@ pub struct RaceRecord {
     /// FO3 / FNV author body textures in the head-section table instead;
     /// this list is empty there and on Skyrim+.
     pub body_part_textures: Vec<(u32, String, Option<u8>)>,
+    /// #5753 — Oblivion's per-gender **tail** model, indexed male then female
+    /// (empty = the race authors none). The body section opens each gender with
+    /// the tail `MODL` directly after its `MNAM` / `FNAM` marker (xEdit's "Tail
+    /// Model"), before the `INDX`/`ICON` skin run whose index 4 is the tail's
+    /// texture ([`Self::body_part_textures`]). Measured over `Oblivion.esm`:
+    /// only Argonian (`Characters\Argonian\Tail.NIF`) and Khajiit
+    /// (`Characters\Khajiit\KhajiitTail.NIF`) author one, for **both** genders —
+    /// the `RACE` record has no beast flag to key a rig choice on (their DATA
+    /// flags are 0x1, Playable only), so a tail is what marks a beast race.
+    /// Pre-fix the `MODL` was only appended to [`Self::body_models`], whose one
+    /// reader is the head fallback, and no tail was ever spawned. Empty on every
+    /// other game, whose body sections author a different vocabulary.
+    pub tail_models: [String; 2],
     /// Default body height per gender, from DATA — `(male, female)`.
     /// Vanilla values run ~0.8..1.2 (Skyrim `NordRace` is 1.03; FO4
     /// `HumanChildRace` is 0.825). Decoded for Oblivion / FO3 / FNV
@@ -399,6 +412,7 @@ pub fn parse_race(
         base_head_parts: Vec::new(),
         head_part_textures: Vec::new(),
         body_part_textures: Vec::new(),
+        tail_models: Default::default(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
         race_flags: 0,
@@ -712,6 +726,24 @@ pub fn parse_race(
                 if let Some(idx) = pending_indx.take() {
                     if in_head_section {
                         record.head_parts.push((idx, path.clone(), gender_section));
+                    }
+                }
+                // #5753 — Oblivion's body section authors the gender's tail as
+                // the `MODL` right after the `MNAM` / `FNAM` marker. A marker-less
+                // section (none exists in the vanilla data) is shared by both.
+                if is_oblivion && !in_head_section && !in_skeleton_section && !path.is_empty() {
+                    match gender_section {
+                        Some(gender) => {
+                            let slot = &mut record.tail_models[gender as usize];
+                            if slot.is_empty() {
+                                *slot = path.clone();
+                            }
+                        }
+                        None => {
+                            for slot in record.tail_models.iter_mut().filter(|slot| slot.is_empty()) {
+                                *slot = path.clone();
+                            }
+                        }
                     }
                 }
                 record.body_models.push(path);

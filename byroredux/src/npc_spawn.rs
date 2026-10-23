@@ -526,6 +526,49 @@ pub fn humanoid_skeleton_path(game: GameKind) -> Option<&'static str> {
     }
 }
 
+/// Oblivion's beast rig: the humanoid skeleton plus the eight `Bip01 Tail01..08`
+/// bones the Argonian and Khajiit tail meshes skin to. `skeleton.nif` carries none
+/// of them (0 `Tail0*` names against this rig's 8), so a beast actor bound to
+/// the plain humanoid rig could not pose a tail even if one were spawned (#5753).
+pub const OBLIVION_BEAST_SKELETON_PATH: &str = r"meshes\characters\_male\skeletonbeast.nif";
+
+/// The tail mesh an Oblivion race authors for `gender` (RACE body section, xEdit
+/// "Tail Model"), normalised to the archive's `meshes\…` form; `None` for every
+/// other game and for a race with no tail. Per gender because the section is: of
+/// the shipped races only Argonian and Khajiit author one, each for both genders.
+pub(crate) fn oblivion_race_tail_path(
+    game: GameKind,
+    race: Option<&RaceRecord>,
+    gender: Gender,
+) -> Option<String> {
+    if game != GameKind::Oblivion {
+        return None;
+    }
+    let slot = match gender {
+        Gender::Male => 0,
+        Gender::Female => 1,
+    };
+    let path = race?.tail_models[slot].as_str();
+    (!path.is_empty()).then(|| normalize_mesh_path(path).into_owned())
+}
+
+/// The skeleton a KF-era humanoid actor of `race` / `gender` binds to: the game's
+/// shared humanoid rig, except that an Oblivion race authoring a tail takes the
+/// beast rig ([`OBLIVION_BEAST_SKELETON_PATH`]). A tail is the discriminator
+/// because the RACE record carries no beast flag (Argonian and Khajiit author
+/// DATA flags `0x1`, Playable only) — and a race that authors a tail is exactly
+/// one that needs the tail bones.
+pub(crate) fn humanoid_actor_skeleton_path(
+    game: GameKind,
+    race: Option<&RaceRecord>,
+    gender: Gender,
+) -> Option<String> {
+    if oblivion_race_tail_path(game, race, gender).is_some() {
+        return Some(OBLIVION_BEAST_SKELETON_PATH.to_owned());
+    }
+    humanoid_skeleton_path(game).map(str::to_owned)
+}
+
 /// Prefer the race's gender-specific skeleton over the game's humanoid
 /// convention. The caller supplies the resolved traits record, so templated
 /// creatures and female actors select the same race/gender as their skin.
@@ -724,13 +767,15 @@ fn humanoid_body_path_biped_mask(game: GameKind, path: &str) -> u32 {
         GameKind::Oblivion if path.ends_with("hand.nif") => 1 << 4,
         GameKind::Oblivion if path.ends_with("lowerbody.nif") => 1 << 3,
         GameKind::Oblivion if path.ends_with("foot.nif") => 1 << 5,
+        // #5753 — TES4 BMDT bit 15, the "Tail" slot armor can claim.
+        GameKind::Oblivion if path.ends_with("tail.nif") => 1 << 15,
         _ => 0,
     }
 }
 
 /// #5487 — the RACE body-section `ICON` index a loose body mesh takes
-/// its skin from (0 UpperBody, 1 Leg, 2 Hand, 3 Foot; 4 Tail has no
-/// mesh in the arm). `None` for the FO3/FNV paths, whose body ICONs
+/// its skin from (0 UpperBody, 1 Leg, 2 Hand, 3 Foot, 4 Tail — the tail mesh is
+/// the race's own, [`oblivion_race_tail_path`], #5753). `None` for the FO3/FNV paths, whose body ICONs
 /// ride the head-section table instead and whose naked meshes keep
 /// their own NIF-authored skin.
 pub(crate) fn humanoid_body_path_icon_index(game: GameKind, path: &str) -> Option<u32> {
@@ -745,6 +790,9 @@ pub(crate) fn humanoid_body_path_icon_index(game: GameKind, path: &str) -> Optio
         Some(2)
     } else if path.ends_with("foot.nif") {
         Some(3)
+    } else if path.ends_with("tail.nif") {
+        // Argonian `tail.nif` and Khajiit `khajiittail.nif`.
+        Some(4)
     } else {
         None
     }

@@ -1888,6 +1888,92 @@ fn race_body_part_textures_follow_body_section_gender_and_index() {
     );
 }
 
+/// #5753 — Oblivion's body section opens each gender with the tail `MODL`
+/// directly after the `MNAM` / `FNAM` marker (Argonian authors one for both
+/// genders; the layout is the measured `Oblivion.esm` one). It lands in
+/// `tail_models` per gender and still in the flat `body_models`, and its `ICON`
+/// 4 skin keeps flowing through `body_part_textures`.
+#[test]
+fn oblivion_race_tail_model_follows_the_body_section_gender() {
+    let subs = vec![
+        sub(b"NAM0", b""),
+        sub(b"INDX", 0u32.to_le_bytes()),
+        sub(b"MODL", b"Characters\\Head\\HeadArgonian.NIF\0"),
+        sub(b"NAM1", b""),
+        sub(b"MNAM", b""),
+        sub(b"MODL", b"Characters\\Argonian\\Tail.NIF\0"),
+        sub(b"INDX", 0u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Argonian\\Male\\UpperBodyMale.dds\0"),
+        sub(b"INDX", 4u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Argonian\\Male\\Tail.dds\0"),
+        sub(b"FNAM", b""),
+        sub(b"MODL", b"Characters\\Argonian\\Tail.NIF\0"),
+        sub(b"INDX", 4u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Argonian\\Female\\Tail.dds\0"),
+    ];
+    let race = parse_race(0x0000_0001, &subs, GameKind::Oblivion, &None);
+    assert_eq!(
+        race.tail_models,
+        ["Characters\\Argonian\\Tail.NIF".to_string(), "Characters\\Argonian\\Tail.NIF".to_string()],
+        "both genders author the tail"
+    );
+    assert!(
+        race.body_models.iter().any(|m| m.ends_with("Tail.NIF")),
+        "the flat every-MODL list keeps it, as it always has"
+    );
+    assert_eq!(
+        race.head_parts.len(),
+        1,
+        "the tail is a body-section MODL and must not reach the head table"
+    );
+    assert!(
+        race.body_part_textures.iter().any(|(idx, path, section)| {
+            *idx == 4 && path.ends_with("Male\\Tail.dds") && *section == Some(0)
+        }),
+        "INDX 4 stays the tail's skin"
+    );
+
+    // A race with no tail MODL (every non-beast race) has none.
+    let plain = vec![
+        sub(b"NAM1", b""),
+        sub(b"MNAM", b""),
+        sub(b"INDX", 0u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Imperial\\Male\\UpperBodyMale.dds\0"),
+    ];
+    let race = parse_race(0x0000_0002, &plain, GameKind::Oblivion, &None);
+    assert_eq!(race.tail_models, [String::new(), String::new()]);
+
+    // One gender authoring a tail leaves the other empty.
+    let male_only = vec![
+        sub(b"NAM1", b""),
+        sub(b"MNAM", b""),
+        sub(b"MODL", b"Characters\\Khajiit\\KhajiitTail.NIF\0"),
+        sub(b"FNAM", b""),
+        sub(b"INDX", 0u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Khajiit\\Female\\UpperBodyFemale.dds\0"),
+    ];
+    let race = parse_race(0x0000_0003, &male_only, GameKind::Oblivion, &None);
+    assert_eq!(race.tail_models[0], "Characters\\Khajiit\\KhajiitTail.NIF");
+    assert!(race.tail_models[1].is_empty());
+}
+
+/// #5753 — only Oblivion's body section authors a tail. FO3 / FNV's body section
+/// is a different vocabulary (`INDX` + `MODL` upper body / hands / `.egt`), and
+/// its first `MODL` after `MNAM` must not be read as one.
+#[test]
+fn only_oblivion_body_sections_author_a_tail() {
+    let subs = vec![
+        sub(b"NAM1", b""),
+        sub(b"MNAM", b""),
+        sub(b"INDX", 0u32.to_le_bytes()),
+        sub(b"MODL", b"characters\\_Male\\UpperBody.nif\0"),
+    ];
+    for game in [GameKind::Fallout3NV, GameKind::Skyrim, GameKind::Fallout4] {
+        let race = parse_race(0x0000_0001, &subs, game, &None);
+        assert_eq!(race.tail_models, [String::new(), String::new()], "{game:?}");
+    }
+}
+
 /// Each head part's `ICON` follows its `MODL` under the same `INDX`, per
 /// gender section, and an ear slot may author an `ICON` with no `MODL`.
 /// Layout from FO3 `Caucasian` (`INDX 0` → `MODL HeadHuman.NIF` →

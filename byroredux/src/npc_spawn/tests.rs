@@ -911,6 +911,179 @@ fn installed_oblivion_body_paths_exist_in_the_meshes_archive() {
     }
 }
 
+/// A RACE with the given per-gender tail models (male, female).
+fn race_with_tails(male: &str, female: &str) -> RaceRecord {
+    RaceRecord {
+        tail_models: [male.to_owned(), female.to_owned()],
+        ..RaceRecord::default()
+    }
+}
+
+/// #5753 — an Oblivion race that authors a tail gets it as a body piece for the
+/// matching gender, normalised to the archive's `meshes\` form; every other race
+/// and every other game gets none.
+#[test]
+fn oblivion_race_tail_path_follows_the_authored_gender_and_game() {
+    use crate::npc_spawn::oblivion_race_tail_path;
+    let argonian = race_with_tails(
+        r"Characters\Argonian\Tail.NIF",
+        r"Characters\Argonian\Tail.NIF",
+    );
+    // Case is left as authored (the archive lowercases on lookup).
+    let male = oblivion_race_tail_path(GameKind::Oblivion, Some(&argonian), Gender::Male)
+        .expect("the male tail");
+    assert!(
+        male.eq_ignore_ascii_case(r"meshes\characters\argonian\tail.nif"),
+        "{male}"
+    );
+    assert!(oblivion_race_tail_path(GameKind::Oblivion, Some(&argonian), Gender::Female).is_some());
+
+    // One gender authoring a tail leaves the other without.
+    let male_only = race_with_tails(r"Characters\Khajiit\KhajiitTail.NIF", "");
+    assert!(oblivion_race_tail_path(GameKind::Oblivion, Some(&male_only), Gender::Male).is_some());
+    assert_eq!(
+        oblivion_race_tail_path(GameKind::Oblivion, Some(&male_only), Gender::Female),
+        None
+    );
+    // No race, no tail race, and any other game: nothing.
+    assert_eq!(oblivion_race_tail_path(GameKind::Oblivion, None, Gender::Male), None);
+    assert_eq!(
+        oblivion_race_tail_path(GameKind::Oblivion, Some(&RaceRecord::default()), Gender::Male),
+        None
+    );
+    assert_eq!(
+        oblivion_race_tail_path(GameKind::Fallout3NV, Some(&argonian), Gender::Male),
+        None
+    );
+}
+
+/// #5753 — a tail piece is skinned from the body section's ICON 4 and claims the
+/// TES4 Tail slot (bit 15) so armor that covers it hides it; both Argonian
+/// `tail.nif` and Khajiit `khajiittail.nif` resolve.
+#[test]
+fn tail_pieces_take_the_icon_4_skin_and_the_tail_biped_bit() {
+    use crate::npc_spawn::humanoid_body_path_icon_index;
+    for path in [
+        r"meshes\characters\argonian\tail.nif",
+        r"meshes\characters\khajiit\khajiittail.nif",
+    ] {
+        assert_eq!(humanoid_body_path_icon_index(GameKind::Oblivion, path), Some(4), "{path}");
+        assert_eq!(humanoid_body_path_biped_mask(GameKind::Oblivion, path), 1 << 15, "{path}");
+    }
+    assert_eq!(
+        humanoid_body_path_icon_index(GameKind::Fallout3NV, r"x\tail.nif"),
+        None,
+        "FO3/FNV body skins ride the head table"
+    );
+}
+
+/// #5753 — a race that authors a tail binds to the beast rig, which carries the
+/// `Bip01 Tail*` bones; every other race keeps the shared humanoid skeleton.
+#[test]
+fn a_tail_race_selects_the_beast_skeleton() {
+    use crate::npc_spawn::{humanoid_actor_skeleton_path, OBLIVION_BEAST_SKELETON_PATH};
+    let argonian = race_with_tails("Characters\\Argonian\\Tail.NIF", "Characters\\Argonian\\Tail.NIF");
+    for gender in [Gender::Male, Gender::Female] {
+        assert_eq!(
+            humanoid_actor_skeleton_path(GameKind::Oblivion, Some(&argonian), gender).as_deref(),
+            Some(OBLIVION_BEAST_SKELETON_PATH)
+        );
+    }
+    let imperial = RaceRecord::default();
+    assert_eq!(
+        humanoid_actor_skeleton_path(GameKind::Oblivion, Some(&imperial), Gender::Male).as_deref(),
+        Some(r"meshes\characters\_male\skeleton.nif")
+    );
+    assert_eq!(
+        humanoid_actor_skeleton_path(GameKind::Oblivion, None, Gender::Male).as_deref(),
+        Some(r"meshes\characters\_male\skeleton.nif"),
+        "an unresolved race keeps the humanoid rig"
+    );
+    // A male-only tail: the female actor stays on the humanoid rig.
+    let male_only = race_with_tails("Characters\\Khajiit\\KhajiitTail.NIF", "");
+    assert_eq!(
+        humanoid_actor_skeleton_path(GameKind::Oblivion, Some(&male_only), Gender::Female).as_deref(),
+        Some(r"meshes\characters\_male\skeleton.nif")
+    );
+    // The other KF-era game is untouched by a stray tail field.
+    assert_eq!(
+        humanoid_actor_skeleton_path(GameKind::Fallout3NV, Some(&argonian), Gender::Male).as_deref(),
+        Some(r"meshes\characters\_male\skeleton.nif")
+    );
+}
+
+/// #5753 — real-data pin, the archive-presence guard #5487 added for the body
+/// table: the tails Oblivion.esm authors, and the beast rig that carries their
+/// bones, exist in `Oblivion - Meshes.bsa`; `skeleton.nif` carries no tail bone
+/// and `skeletonbeast.nif` all eight; and only Argonian and Khajiit author a tail.
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn installed_oblivion_tails_and_beast_rig_exist_and_only_beasts_have_tails() {
+    let data = std::env::var("BYROREDUX_OBLIVION_DATA")
+        .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data".to_string());
+    let data = std::path::Path::new(&data);
+    let bsa_path = data.join("Oblivion - Meshes.bsa");
+    let Ok(archive) = byroredux_bsa::BsaArchive::open(&bsa_path) else {
+        require_game_data("BYROREDUX_OBLIVION_DATA", &bsa_path);
+        eprintln!("skipping #5753 archive pin: {bsa_path:?} not available");
+        return;
+    };
+    let Ok(esm) = std::fs::read(data.join("Oblivion.esm")) else {
+        require_game_data("BYROREDUX_OBLIVION_DATA", &data.join("Oblivion.esm"));
+        return;
+    };
+    let index = byroredux_plugin::esm::parse_esm(&esm).expect("parse Oblivion.esm");
+    let names: std::collections::HashSet<String> = archive
+        .list_files()
+        .into_iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+
+    let mut tail_races: Vec<String> = Vec::new();
+    for race in index.races.values() {
+        for gender in [Gender::Male, Gender::Female] {
+            if let Some(path) =
+                crate::npc_spawn::oblivion_race_tail_path(GameKind::Oblivion, Some(race), gender)
+            {
+                assert!(
+                    names.contains(&path.to_ascii_lowercase()),
+                    "#5753: {} {gender:?} tail {path} is not in the archive",
+                    race.editor_id
+                );
+                if !tail_races.contains(&race.editor_id) {
+                    tail_races.push(race.editor_id.clone());
+                }
+            }
+        }
+    }
+    tail_races.sort();
+    assert_eq!(
+        tail_races,
+        ["Argonian", "Khajiit"],
+        "only the two beast races author a tail (measured 2026-10-23 over Oblivion.esm)"
+    );
+    // Both genders of both races, as authored.
+    for edid in ["Argonian", "Khajiit"] {
+        let race = index.races.values().find(|r| r.editor_id == edid).unwrap();
+        assert!(
+            race.tail_models.iter().all(|path| !path.is_empty()),
+            "{edid} authors a tail for both genders"
+        );
+    }
+
+    let has_tail_bones = |path: &str| {
+        let bytes = archive.extract(path).unwrap_or_else(|e| panic!("extract {path}: {e}"));
+        (1..=8).filter(|n| {
+            let name = format!("Bip01 Tail0{n}");
+            bytes.windows(name.len()).any(|w| w == name.as_bytes())
+        })
+        .count()
+    };
+    assert!(names.contains(&crate::npc_spawn::OBLIVION_BEAST_SKELETON_PATH.to_ascii_lowercase()));
+    assert_eq!(has_tail_bones(crate::npc_spawn::OBLIVION_BEAST_SKELETON_PATH), 8);
+    assert_eq!(has_tail_bones(r"meshes\characters\_male\skeleton.nif"), 0);
+}
+
 /// #6100 - the default idle clip of each kf-era game must exist in its meshes
 /// archive. The Oblivion arm shared FNV's `locomotion\mtidle.kf`, a file
 /// Oblivion does not ship, so every standing Oblivion humanoid had an empty
@@ -1447,6 +1620,7 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
         body_part_textures: Vec::new(),
+        tail_models: Default::default(),
         head_parts: Vec::new(),
         base_head_parts: Vec::new(),
         base_height: (1.0, 1.0),
@@ -1794,6 +1968,7 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
         body_part_textures: Vec::new(),
+        tail_models: Default::default(),
         head_parts: Vec::new(),
         base_head_parts: Vec::new(),
         base_height: (1.0, 1.0),
@@ -1879,6 +2054,7 @@ fn prebaked_equip_state_keeps_zero_mask_race_skin() {
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
         body_part_textures: Vec::new(),
+        tail_models: Default::default(),
         head_parts: Vec::new(),
         base_head_parts: Vec::new(),
         base_height: (1.0, 1.0),
@@ -1962,6 +2138,7 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
         body_part_textures: Vec::new(),
+        tail_models: Default::default(),
         head_parts: Vec::new(),
         base_head_parts: Vec::new(),
         base_height: (1.0, 1.0),
@@ -2049,6 +2226,7 @@ fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
         body_part_textures: Vec::new(),
+        tail_models: Default::default(),
         head_parts: Vec::new(),
         base_head_parts: Vec::new(),
         base_height: (1.0, 1.0),
@@ -2178,6 +2356,7 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
         body_part_textures: Vec::new(),
+        tail_models: Default::default(),
         head_parts: Vec::new(),
         base_head_parts: Vec::new(),
         base_height: (1.0, 1.0),

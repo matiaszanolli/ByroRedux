@@ -268,13 +268,21 @@ pub(super) fn prepare_runtime_state(
         .collect();
     // #5487 — pair each mesh with the race's body-section ICON skin for
     // its slot (Oblivion only; FO3/FNV body skins ride the head table).
+    // #5753 — an Oblivion race that authors a tail (Argonian, Khajiit) gets it as a
+    // fifth body piece, skinned from the same body-section ICON run (index 4) and
+    // covered by armor's Tail slot like the other pieces.
+    let mut body_mesh_paths: Vec<String> = humanoid_body_paths(game, gender, is_child)
+        .iter()
+        .map(|path| (*path).to_owned())
+        .collect();
+    body_mesh_paths.extend(crate::npc_spawn::oblivion_race_tail_path(game, race, gender));
     let (body_paths, body_textures): (Vec<String>, Vec<Option<String>>) =
-        humanoid_body_paths(game, gender, is_child)
-            .iter()
+        body_mesh_paths
+            .into_iter()
             .map(|path| {
-                let texture = crate::npc_spawn::humanoid_body_path_icon_index(game, path)
+                let texture = crate::npc_spawn::humanoid_body_path_icon_index(game, &path)
                     .and_then(|icon_idx| race_body_texture(race, icon_idx, want_gender_tag));
-                ((*path).to_owned(), texture)
+                (path, texture)
             })
             .filter(|(path, texture)| {
                 let body_piece_mask = humanoid_body_path_biped_mask(game, path);
@@ -391,7 +399,9 @@ pub(super) fn prepare_runtime_state(
         skel_map: HashMap::new(),
         gender,
         is_child,
-        skeleton_path: humanoid_skeleton_path(game).unwrap_or_default().to_owned(),
+        // #5753 — a race that authors a tail binds to the beast rig.
+        skeleton_path: crate::npc_spawn::humanoid_actor_skeleton_path(game, race, gender)
+            .unwrap_or_default(),
         idle_kf_paths: Vec::new(),
         walk_kf_paths: Vec::new(),
         body_paths,
