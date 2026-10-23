@@ -1,5 +1,5 @@
 //! WTHS instance-value decode (#5627) — the value half of the BGS
-//! reflection container that [`super::weather_settings`] walks the
+//! reflection container that [`super::reflection`] walks the
 //! schema of. The grammar below was recovered from `Starfield.esm`
 //! itself (xEdit has no shipped reader for the instance chunks), by
 //! decoding `WeatherClearTemplate`'s REFL by hand against its own CLAS
@@ -40,7 +40,7 @@
 //! than guess — `BgsReflection::root_instance` stays `None` and the
 //! record carries the chunk census only, exactly the pre-#5627 state.
 
-use super::weather_settings::{
+use super::reflection::{
     builtin, builtin_entry, ReflectionClass, ReflectionField, InlineValue, CLASS_FLAG_USER,
     MAX_NESTING_DEPTH,
 };

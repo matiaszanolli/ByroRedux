@@ -29,7 +29,7 @@
 //! consumer and are not decoded into the record.
 
 use super::common::read_zstring;
-use super::weather_settings::parse_bgs_reflection_with_remap;
+use super::reflection::parse_bgs_reflection_with_remap;
 use super::weather_settings_instance::{ReflectionObject, ReflectionValue};
 use crate::esm::reader::{FormIdRemap, SubRecord};
 

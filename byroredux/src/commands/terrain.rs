@@ -259,7 +259,14 @@ fn describe_lane(
         Some(HeightState::Ready(cached)) => {
             let raw = std::fs::read(&cached.dds_path)
                 .ok()
-                .and_then(|dds| byroredux_terrain_height::decode_top_mip(&dds))
+                .and_then(|dds| byroredux_menuxml::tex::Rgba8::decode_dds(&dds))
+                .map(|image| {
+                    byroredux_terrain_height::HeightField::from_red_channel(
+                        image.width as usize,
+                        image.height as usize,
+                        &image.pixels,
+                    )
+                })
                 .map(|field| {
                     let x = (uv[0].rem_euclid(1.0) * field.width as f32) as isize;
                     let y = (uv[1].rem_euclid(1.0) * field.height as f32) as isize;

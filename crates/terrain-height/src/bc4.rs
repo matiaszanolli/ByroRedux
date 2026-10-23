@@ -1,4 +1,6 @@
-//! BC4 encoding and the DX10 DDS container for a height-map mip chain.
+//! BC4 encoding and the DX10 DDS container for a height-map mip chain. Decoding
+//! is `menuxml::tex`'s (the workspace's CPU DDS codec) — see
+//! [`crate::HeightField::from_red_channel`].
 
 use crate::field::HeightField;
 
@@ -107,44 +109,31 @@ pub fn write_dds(mips: &[HeightField]) -> Vec<u8> {
     out
 }
 
-/// Decode a BC4 block back to `[0, 255]` values — the inverse used by the
-/// round-trip test and by the debugger's CPU-side sample of a cached map.
-pub fn decode_block(block: &[u8]) -> [u8; 16] {
-    let (a0, a1) = (block[0] as u16, block[1] as u16);
-    let mut bits = 0u64;
-    for (i, &b) in block[2..8].iter().enumerate() {
-        bits |= (b as u64) << (i * 8);
-    }
-    let mut out = [0u8; 16];
-    for (i, v) in out.iter_mut().enumerate() {
-        let s = ((bits >> (i * 3)) & 7) as u16;
-        *v = match s {
-            0 => a0,
-            1 => a1,
-            _ if a0 > a1 => (a0 * (8 - s) + a1 * (s - 1)) / 7,
-            _ if s < 6 => (a0 * (6 - s) + a1 * (s - 1)) / 5,
-            6 => 0,
-            _ => 255,
-        } as u8;
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Decode one block through the workspace's CPU DDS codec (`menuxml::tex`),
+    /// wrapped in a 4×4 single-mip BC4 file: this crate keeps only the encoder.
+    fn decode_block(block: [u8; 8]) -> [u8; 16] {
+        let dds = write_dds(&[HeightField::new(4, 4)]);
+        let mut dds = dds[..148].to_vec();
+        dds.extend_from_slice(&block);
+        let image = byroredux_menuxml::tex::Rgba8::decode_dds(&dds).expect("a 4x4 BC4 file decodes");
+        std::array::from_fn(|i| image.pixels[i * 4])
+    }
+
     #[test]
     fn block_round_trip_error_is_within_one_palette_step() {
         let values: [f32; 16] = std::array::from_fn(|i| (i as f32 * 0.37).sin() * 0.4 + 0.5);
-        let decoded = decode_block(&encode_block(&values));
+        let decoded = decode_block(encode_block(&values));
         let lo = values.iter().copied().fold(1.0f32, f32::min);
         let hi = values.iter().copied().fold(0.0f32, f32::max);
         let step = (hi - lo) * 255.0 / 7.0;
         for (v, d) in values.iter().zip(decoded) {
             assert!((v * 255.0 - d as f32).abs() <= step / 2.0 + 1.0);
         }
-        let flat = decode_block(&encode_block(&[0.25; 16]));
+        let flat = decode_block(encode_block(&[0.25; 16]));
         assert!(flat.iter().all(|&v| v == 64));
     }
 

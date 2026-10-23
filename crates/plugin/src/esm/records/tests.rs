@@ -3019,7 +3019,7 @@ const EXEMPT_JUSTIFIED: &[(&str, &str, &str)] = &[
         "GRAS DATA's u32 is `water_distance_application`, an enum tag.",
     ),
     (
-        "weather_settings.rs",
+        "reflection.rs",
         "parse_bgs_reflection",
         "The BGS reflection container's u32s are the BETH version/chunk \
          count and per-chunk payload sizes — container framing, not \

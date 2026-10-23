@@ -157,11 +157,10 @@ fn meta(source: HeightSource) -> HeightMeta {
 /// height there), rescaled to `[0, 1]`.
 pub fn from_authored(img: &Rgba) -> Generated {
     with_budget(img, |img| {
-        let mut field = HeightField::new(img.width, img.height);
-        for (dst, px) in field.data.iter_mut().zip(img.pixels.chunks_exact(4)) {
-            *dst = px[0] as f32 / 255.0;
-        }
-        finish(field, meta(HeightSource::Authored))
+        finish(
+            HeightField::from_red_channel(img.width, img.height, img.pixels),
+            meta(HeightSource::Authored),
+        )
     })
 }
 
@@ -192,38 +191,16 @@ pub fn from_brightness(img: &Rgba) -> Generated {
     })
 }
 
-/// Decode the top mip of a BC4 `.dds` written by [`bc4::write_dds`] back to
-/// `[0, 1]` heights — the debugger's CPU-side view of a cached map.
-pub fn decode_top_mip(dds: &[u8]) -> Option<HeightField> {
-    if dds.len() < 148 || &dds[0..4] != b"DDS " || &dds[84..88] != b"DX10" {
-        return None;
-    }
-    let rd = |o: usize| u32::from_le_bytes(dds[o..o + 4].try_into().unwrap()) as usize;
-    let (height, width) = (rd(12), rd(16));
-    if rd(128) != 80 || width == 0 || height == 0 {
-        return None;
-    }
-    let (bw, bh) = (width.div_ceil(4), height.div_ceil(4));
-    let payload = dds.get(148..148 + bw * bh * 8)?;
-    let mut field = HeightField::new(width, height);
-    for by in 0..bh {
-        for bx in 0..bw {
-            let o = (by * bw + bx) * 8;
-            let values = bc4::decode_block(&payload[o..o + 8]);
-            for (i, v) in values.iter().enumerate() {
-                let (x, y) = (bx * 4 + i % 4, by * 4 + i / 4);
-                if x < width && y < height {
-                    field.data[y * width + x] = *v as f32 / 255.0;
-                }
-            }
-        }
-    }
-    Some(field)
-}
-
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
+
+    /// The top mip of a generated BC4 `.dds` as `[0, 1]` heights, decoded by
+    /// `menuxml::tex` like every other consumer.
+    pub fn decode_top_mip(dds: &[u8]) -> Option<HeightField> {
+        let image = byroredux_menuxml::tex::Rgba8::decode_dds(dds)?;
+        Some(HeightField::from_red_channel(image.width as usize, image.height as usize, &image.pixels))
+    }
 
     pub struct OwnedRgba {
         pub width: usize,

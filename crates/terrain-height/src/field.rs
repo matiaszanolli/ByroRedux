@@ -36,6 +36,18 @@ impl HeightField {
         }
     }
 
+    /// The red channel of tightly packed RGBA8 `pixels`, rescaled to `[0, 1]`:
+    /// how a grey or BC4 map carries its height (a BC4 map decodes to
+    /// `(r, 0, 0, 255)`). The caller owns the DDS decode — `menuxml::tex` is
+    /// the workspace's CPU codec — so there is one BC4 decoder, not two.
+    pub fn from_red_channel(width: usize, height: usize, pixels: &[u8]) -> Self {
+        let mut field = Self::new(width, height);
+        for (dst, px) in field.data.iter_mut().zip(pixels.chunks_exact(4)) {
+            *dst = px[0] as f32 / 255.0;
+        }
+        field
+    }
+
     /// Texel `(x, y)` with wrap addressing, so derivatives and filters read
     /// across the tiling seam exactly as the GPU sampler will.
     #[inline]

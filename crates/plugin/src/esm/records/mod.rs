@@ -41,6 +41,7 @@ pub mod soun;
 pub(crate) mod test_support;
 pub mod tree;
 pub mod weather;
+pub mod reflection;
 pub mod weather_settings;
 pub mod weather_settings_instance;
 
@@ -122,10 +123,8 @@ pub use misc::{
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptRef, ScriptType};
 pub use tree::{parse_tree, TreeRecord};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
-pub use weather_settings::{
-    parse_bgs_reflection, parse_wths, BgsReflection, ReflectionClass, ReflectionField,
-    WeatherSettingsRecord,
-};
+pub use reflection::{parse_bgs_reflection, BgsReflection, ReflectionClass, ReflectionField};
+pub use weather_settings::{parse_wths, WeatherSettingsRecord};
 pub use weather_settings_instance::{DiffOverride, ReflectionObject, ReflectionValue};
 
 use super::cell::StaticObject;

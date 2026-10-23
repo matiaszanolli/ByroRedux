@@ -97,7 +97,9 @@ fn main() {
             _ => None,
         };
         let generated = th::from_normal_map(&view(&normal), green);
-        let height = th::decode_top_mip(&generated.dds).unwrap();
+        let height = Rgba8::decode_dds(&generated.dds)
+            .map(|image| th::HeightField::from_red_channel(image.width as usize, image.height as usize, &image.pixels))
+            .unwrap();
         let bright = th::brightness::highpass_luminance(&view(&diffuse));
         let r = correlation(&resample(&height, 256, 256), &resample(&bright, 256, 256));
         let meta = generated.meta;
