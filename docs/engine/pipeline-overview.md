@@ -79,8 +79,8 @@ See [Archives](archives.md) for the BSA/BA2 format details.
 `byroredux_nif::parse_nif` (`crates/nif/src/lib.rs`) wraps
 `parse_nif_with_options`, which runs exactly three phases:
 `parse_header()` (header decode + endianness validation),
-`dispatch_blocks()` (the ~254-arm block-type dispatch table in
-`crates/nif/src/blocks/mod.rs`), and `finalize_scene()` (post-link scene
+`dispatch_blocks()` (the ~254-arm block-type dispatch, per family in
+`crates/nif/src/blocks/dispatch.rs`), and `finalize_scene()` (post-link scene
 assembly, folding truncation/recovery telemetry into the returned
 `NifScene`). See [NIF Parser](nif-parser.md).
 

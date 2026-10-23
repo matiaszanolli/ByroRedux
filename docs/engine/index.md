@@ -27,7 +27,7 @@ a working checkout and want to understand or change engine internals.
 | [FSR 3.1 Integration Plan](fsr3-upscaler-integration-plan.md) | renderer, fsr3-sys | Render/output extent split, temporal input contracts, mask policy, phase-by-phase execution record |
 | [FSR 3.1 Troubleshooting](fsr3-troubleshooting.md) | renderer, fsr3-sys | Symptom→cause guide for the upscaler path: silent blit fallbacks, smearing, ghosting, FP16/FP32, bench gotchas |
 | [Procedural Volumetric Fog](procedural-volumetric-fog.md) | renderer, plugin, nif | Froxel V-buffer, hybrid Z, temporal reprojection, TLAS/BLAS visibility, FSR masks, runtime knobs, and measurement table |
-| [NIF Parser](nif-parser.md) | nif | Block-type dispatch (~254 arms, source of truth: `blocks/mod.rs`), version handling, robustness |
+| [NIF Parser](nif-parser.md) | nif | Block-type dispatch (~254 arms, source of truth: `blocks/dispatch.rs`), version handling, robustness |
 | [NIFAL — NIF Abstraction Layer](nifal.md) | nif, byroredux | `Imported*` → canonical ECS translation boundary; material, particle, collision, LOD slices |
 | [EXAL — Exterior Abstraction Layer](exal.md) | byroredux, renderer | NIFAL mirror for outdoor rendering: terrain, sky, sun, weather, water, LOD |
 | [EXAL — Ground Cover (procedural grass)](exal-groundcover.md) | byroredux, renderer | EXAL sub-doc. Deliberate divergence from the CE grass model: engine-authored density field + GPU scatter + vertex-shader blades; per-game `GRAS`/`LTEX` demoted to a palette hint |

@@ -232,7 +232,7 @@ mod light_dispatch_coverage_tests {
     //! `LightKind` resolution is the same shape as `resolve_shape_inner`: a
     //! `downcast_ref::<…>` chain over block types the parser dispatches. It
     //! has the same failure mode too — a light block that is parse-dispatched
-    //! in `blocks/mod.rs` but has no arm here parses for byte correctness and
+    //! in `blocks/dispatch.rs` but has no arm here parses for byte correctness and
     //! is then silently dropped, with no warning and no missing-block
     //! diagnostic. One of the six translate-boundary bugs a prior sweep cited
     //! as evidence this guard was needed was in Lights, and it was found by
@@ -252,9 +252,9 @@ mod light_dispatch_coverage_tests {
         // #4411 — scan the production prefix only. The whole-file scan used
         // to let a test module (or a comment) naming a `"Ni…Light"` arm with
         // a nearby `Box::new(` satisfy this extractor even if the production
-        // arm were deleted. All `#[cfg(test)]` blocks in `blocks/mod.rs` are
-        // file-terminal, so the prefix is the whole production half.
-        let src = include_str!("../../blocks/mod.rs");
+        // arm were deleted. `blocks/dispatch.rs` (#6144) carries no test
+        // module today; the cut keeps any future one out of the scan.
+        let src = include_str!("../../blocks/dispatch.rs");
         let src = byroredux_core::source_scan::production_text_or_whole(src);
         let lines: Vec<&str> = src.lines().collect();
         let mut out = HashSet::new();

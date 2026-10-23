@@ -17,7 +17,7 @@ Source: [`crates/nif/src/`](../../crates/nif/src/)
 
 | | |
 |---|---|
-| Dispatch table       | hand-written `match type_name` in [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) `parse_block_inner` — **the live arm count is the source of truth; count fresh, this figure drifts.** 255 top-level arms (incl. the `_` fallback) covering 314 distinct block-type-name literals (2026-09-12 recount, #4162 — a naive `grep -c '=>'` over the same range returns a higher number since it also counts arms in four small nested `match` blocks used internally to re-derive `&'static str`s; don't recount that way). |
+| Dispatch table       | nine per-family `match type_name` dispatchers in [`blocks/dispatch.rs`](../../crates/nif/src/blocks/dispatch.rs) (nodes, legacy particles, geometry, shaders, extra data, controllers, interpolators, particle systems, Havok — #6144), tried in order by `parse_block_inner` in [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs), whose own tail is the unknown-block fallback — **the live arm count is the source of truth; count fresh, this figure drifts.** 255 top-level arms (incl. the `_` fallback) covering 314 distinct block-type-name literals (2026-09-12 recount, #4162 — a naive `grep -c '=>'` over the same range returns a higher number since it also counts arms in four small nested `match` blocks used internally to re-derive `&'static str`s; don't recount that way). |
 | Game variants supported | 8 (Morrowind → Starfield) via the [`NifVariant`](../../crates/nif/src/version.rs) enum |
 | Tests (unit)         | ~738 in-crate `#[test]`s with synthetic byte streams (per-parser regressions + the 67-test `dispatch_tests` suite + per-category `*_tests.rs` siblings) |
 | Integration sweeps   | 7 games, 100% recoverable each ([`tests/parse_real_nifs.rs`](../../crates/nif/tests/parse_real_nifs.rs) + per-block-baseline / heap-bound / translation-completeness siblings) |
@@ -136,8 +136,8 @@ runs three phases:
    array (when the format has one), the global string table, and the
    group count.
 2. **Block walk** — for each block index, look up its type in the header's
-   block-type table, dispatch to the per-block parser in
-   [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) via
+   block-type table, dispatch to the per-block parser through
+   [`blocks/dispatch.rs`](../../crates/nif/src/blocks/dispatch.rs) via
    `parse_block_with_name_arc`, and append the parsed block to the scene.
 3. **Root identification** — find the first `NiNode` in the result and
    record it as the scene root.
@@ -306,9 +306,9 @@ regression.
 
 ## Block coverage
 
-Block types fall into a handful of families. The dispatch table in
-[`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) `parse_block_inner`
-carries 255 top-level match arms (incl. the `_` fallback) covering 314
+Block types fall into a handful of families, one dispatcher each in
+[`blocks/dispatch.rs`](../../crates/nif/src/blocks/dispatch.rs) (#6144). Together
+they carry 255 top-level match arms (incl. the `_` fallback) covering 314
 distinct type-name literals (2026-09-12 recount, #4162 — verify the live
 count from source; it grows. Count top-level arms only — four small nested
 `match` blocks re-deriving `&'static str`s inflate a naive `grep -c '=>'`

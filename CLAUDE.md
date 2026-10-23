@@ -437,7 +437,7 @@ Detailed analysis in `docs/legacy/`.
 eviction, instanced draw batching, landscape terrain + splatting, exterior sun,
 TAA, SVGF, Papyrus parser, GPU skinning, water + volumetrics + bloom. NIF parser
 spans Oblivion → Starfield; the live block-dispatcher arm count lives in
-`crates/nif/src/blocks/mod.rs`. Archives: BSA v103–v105 + BA2 v1–v8.
+`crates/nif/src/blocks/dispatch.rs` (per-family dispatchers, #6144). Archives: BSA v103–v105 + BA2 v1–v8.
 
 **Authoritative sources — do not duplicate state into this file:**
 - [ROADMAP.md](ROADMAP.md) — milestones, known issues, per-game **compat matrix +

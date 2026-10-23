@@ -758,7 +758,7 @@ mod dispatch_coverage_tests {
     //! Regression for #1360 / #1361 (and the #1329 migration that left
     //! `BhkConvexSweepShape` + `BhkMeshShape` parse-dispatched but unresolved).
     //!
-    //! A `bhk*Shape` block that is dispatched in `blocks/mod.rs` but has no
+    //! A `bhk*Shape` block that is dispatched in `blocks/dispatch.rs` but has no
     //! `downcast_ref::<…>` arm in `resolve_shape_inner` parses for byte
     //! correctness and then silently drops the authored collision at the
     //! unsupported-shape fallback — the NIFAL "parsed then dropped" leak class.
@@ -783,9 +783,9 @@ mod dispatch_coverage_tests {
     /// objects, constraints). Handles the 2-line `bhkTransformShape |
     /// bhkConvexTransformShape` alias arm by probing the following lines.
     fn dispatched_shape_structs() -> HashSet<String> {
-        // #4411 — production prefix only: `blocks/mod.rs`'s `#[cfg(test)]`
+        // #4411 — production prefix only: `blocks/dispatch.rs`'s `#[cfg(test)]`
         // modules (and comments) must not be able to satisfy this scan.
-        let src = include_str!("../../blocks/mod.rs");
+        let src = include_str!("../../blocks/dispatch.rs");
         let src = byroredux_core::source_scan::production_text_or_whole(src);
         let lines: Vec<&str> = src.lines().collect();
         let mut out = HashSet::new();

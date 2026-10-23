@@ -153,7 +153,7 @@ First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/ve
 **Output**: `/tmp/audit/nif/dim_2.md`
 
 ### Dimension 3: Block Dispatch Coverage
-Paths: `crates/nif/src/blocks/mod.rs`, `crates/nif/tests/{per_block,block_coverage}_baselines.rs`, `crates/nif/tests/data/`, `crates/nif/src/corpus.rs`, `crates/nif/src/kfm.rs`
+Paths: `crates/nif/src/blocks/mod.rs` + `blocks/dispatch.rs` (the per-family dispatchers, #6144), `crates/nif/tests/{per_block,block_coverage}_baselines.rs`, `crates/nif/tests/data/`, `crates/nif/src/corpus.rs`, `crates/nif/src/kfm.rs`
 First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archive-or-dir> --tsv` — but do **not** diff it directly against `tests/data/per_block_baselines/<game>.tsv`: the two TSVs use different keys (#4265 — `nif_stats` keys `parsed` on the dispatched Rust struct name, the baselines on the header-advertised wire name), so they legitimately disagree on alias-collapsed families. Use `nif_stats --tsv` for the unknown/parsed split per struct, and the `per_block_baselines` gate itself (`--unknown-only` for the short view) for wire-name comparison against the checked-in baselines
 **Checklist**:
 - Dispatch is a hand-written `match type_name` in `parse_block_inner` (the `impl_ni_object!`
