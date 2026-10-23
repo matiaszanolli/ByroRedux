@@ -262,28 +262,14 @@ pub struct LimitedHingeCInfo {
 impl LimitedHingeCInfo {
     /// 8 × Vec4 + 3 × f32 = 140 bytes (matches the FNV LimitedHinge
     /// prefix in [`BhkBreakableConstraint::fnv_motor_prefix_size`]).
+    /// The eight Vector4s are the plain hinge's, in the same order ([`Self::parse_hinge_fo3`]);
+    /// the limited hinge appends the three authored limits.
     fn parse_fo3(stream: &mut NifStream) -> io::Result<Self> {
-        let axis_a = super::read_vec4(stream)?;
-        let perp_axis_in_a1 = super::read_vec4(stream)?;
-        let perp_axis_in_a2 = super::read_vec4(stream)?;
-        let pivot_a = super::read_vec4(stream)?;
-        let axis_b = super::read_vec4(stream)?;
-        let perp_axis_in_b1 = super::read_vec4(stream)?;
-        let perp_axis_in_b2 = super::read_vec4(stream)?;
-        let pivot_b = super::read_vec4(stream)?;
-        Ok(Self {
-            axis_a,
-            perp_axis_in_a1,
-            perp_axis_in_a2,
-            pivot_a,
-            axis_b,
-            perp_axis_in_b1,
-            perp_axis_in_b2,
-            pivot_b,
-            min_angle: stream.read_f32_le()?,
-            max_angle: stream.read_f32_le()?,
-            max_friction: stream.read_f32_le()?,
-        })
+        let mut info = Self::parse_hinge_fo3(stream)?;
+        info.min_angle = stream.read_f32_le()?;
+        info.max_angle = stream.read_f32_le()?;
+        info.max_friction = stream.read_f32_le()?;
+        Ok(info)
     }
 
     /// `bhkHingeConstraintCInfo`, FO3/FNV (`!#NI_BS_LTE_16#`) layout from
