@@ -1173,6 +1173,8 @@ pub(super) fn spawn_runtime_head(
     };
     if let Some(root) = root {
         parent_part(world, state.placement_root, root);
+        // The race head carries the face the FaceGen morphs shape.
+        world.insert(root, crate::npc_spawn::HeadPartRoot { is_face: true });
     }
 }
 

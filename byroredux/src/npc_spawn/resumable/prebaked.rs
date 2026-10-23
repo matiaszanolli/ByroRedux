@@ -381,7 +381,7 @@ pub(super) fn advance_prebaked_unit(
                         parent_part(world, state.placement_root, root);
                         // #5095 — mark the fallback head so player.body can
                         // count it (the P3 head gate).
-                        world.insert(root, crate::npc_spawn::PrebakedHeadPart { is_face });
+                        world.insert(root, crate::npc_spawn::HeadPartRoot { is_face });
                         if hidden_biped_mask != 0 {
                             state.appearance.original_roots.push(root);
                             state.appearance.parts.push(RestorePart {

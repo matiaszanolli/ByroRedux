@@ -1264,18 +1264,21 @@ impl byroredux_core::ecs::Component for NpcSkeletonBones {
     type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
 }
 
-/// #5095 — a mesh root the pre-baked spawn's head-part fallback
-/// loaded (`PrebakedPhase::HeadParts`): the head a facegeom-less NPC gets
-/// instead of none. Carried so `player.body` can report `head_parts=N` /
-/// `face_parts=N` and the P3 smoke can gate that the third-person player has
-/// a face (#5408), not just a hair shell. Spawn-derived, never serialized.
+/// #5095 — a head mesh root a spawn loaded: the pre-baked path's head-part
+/// fallback (`PrebakedPhase::HeadParts`, the head a facegeom-less NPC gets
+/// instead of none) and the runtime path's race head (`RuntimePhase::Head`,
+/// the Oblivion / FO3 / FNV head NIF the FaceGen morphs shape). Carried so
+/// `player.body` can report `head_parts=N` / `face_parts=N` and the P3 smoke
+/// can gate that the third-person player has a face (#5408), not just a hair
+/// shell — on either path. Spawn-derived, never serialized.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct PrebakedHeadPart {
-    /// The part is the `Face` head-part type (`HDPT.PNAM` 1).
+pub(crate) struct HeadPartRoot {
+    /// The part carries the face: the `Face` head-part type (`HDPT.PNAM` 1)
+    /// on the pre-baked path, the race head itself on the runtime path.
     pub(crate) is_face: bool,
 }
 
-impl byroredux_core::ecs::Component for PrebakedHeadPart {
+impl byroredux_core::ecs::Component for HeadPartRoot {
     type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
 }
 

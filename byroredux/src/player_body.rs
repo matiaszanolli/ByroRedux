@@ -610,13 +610,14 @@ pub(crate) fn status_line(world: &World) -> String {
         .try_resource::<PlayerCameraView>()
         .map(|view| format!("{:?}", *view))
         .unwrap_or_else(|| "unset".to_string());
-    // #5095 / #5408 — the pre-baked head-part fallback's loaded roots under
-    // THIS body (the head a facegeom-less NPC — vanilla Skyrim's player —
-    // gets), and how many of them are the Face type. The P3 smoke gates on
+    // #5095 / #5408 — the head roots under THIS body (the pre-baked
+    // head-part fallback a facegeom-less NPC — vanilla Skyrim's player —
+    // gets, or the runtime race head on Oblivion / FO3 / FNV), and how many
+    // of them carry the face. The P3 smoke gates on
     // `face_parts>0`: `head_parts` alone is satisfied by a hair shell over
     // an empty neck, and the count used to span every NPC in the world.
     let (head_parts, face_parts) = world
-        .query::<crate::npc_spawn::PrebakedHeadPart>()
+        .query::<crate::npc_spawn::HeadPartRoot>()
         .map(|heads| {
             heads
                 .iter()
