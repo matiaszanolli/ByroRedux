@@ -63,6 +63,11 @@ pub(crate) struct LodReconcileInput<'a> {
     /// The unload radius is only a possible residency bound, not a promise
     /// that every cell inside it has been populated.
     pub(crate) resident_full_cells: &'a HashSet<(i32, i32)>,
+    /// Chebyshev radius (`radius_unload`) within which a full-detail cell may be
+    /// resident. The terrain bands subdivide to the finest level wherever a
+    /// coarse quad would reach it (#6094): their refine thresholds were tuned
+    /// against a ~6-cell streaming radius, not the default 12.
+    pub(crate) full_detail_radius: i32,
 }
 
 /// Whether `game` ships Bethesda's prebaked **combined** distant LOD — the

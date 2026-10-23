@@ -286,6 +286,18 @@ pub(crate) struct LodBandSelection<'a> {
     /// emitted only when it lies **entirely** beyond this, so baked LOD can
     /// never overlap a still-resident full-detail cell (#1866 / #1871).
     pub(crate) exclude_within: i32,
+    /// #6094 — a quad above the finest level whose nearest cell is within this
+    /// Chebyshev radius **subdivides** instead of being emitted, however far
+    /// its centre sits.
+    ///
+    /// Band thresholds (`refine_threshold`) measure to the quad *centre* and
+    /// were tuned against a ~6-cell streaming radius; at the default radius 12 a
+    /// level-8 quad whose centre clears 15 cells still reaches 10 cells out,
+    /// inside the resident ring. Unlike `exclude_within` this does not drop the
+    /// quad (that would leave a moat of missing distant ground): it descends to
+    /// finer quads, down to the finest band, which the caller holes against
+    /// actual residency. `-1` disables it (every cell is at distance ≥ 0).
+    pub(crate) refine_within: i32,
     /// Inclusive cell bounds of the worldspace, when known. Quads that miss
     /// the worldspace entirely are pruned — without this, the
     /// subdivide-on-missing-asset rule below would recurse open ocean all
@@ -391,7 +403,10 @@ pub(crate) fn select_lod_quads(
             let dc = quad_center_chebyshev_halves(qx, qy, level, sel.player);
             let too_near = ladder
                 .refine_threshold(level)
-                .is_some_and(|t| dc <= 2 * (t + sticky));
+                .is_some_and(|t| dc <= 2 * (t + sticky))
+                // #6094 — reaching the resident region is "too near" whatever
+                // the centre says.
+                || d <= sel.refine_within;
             if too_near || !available(level, qx, qy) {
                 // #3502 — the coarsen escape. Only reachable when this quad
                 // is itself available (an unavailable parent has nothing to
@@ -553,6 +568,22 @@ pub(crate) fn select_authored_lod_quads(
     world_bounds: Option<((i32, i32), (i32, i32))>,
     cell_exists: &dyn Fn(i32, i32) -> bool,
 ) -> Vec<(i32, i32, i32)> {
+    select_authored_lod_quads_refining(authored, ladder, player, world_bounds, cell_exists, -1)
+}
+
+/// [`select_authored_lod_quads`] that also skips every quad above the finest
+/// level whose nearest cell is within `refine_within` (#6094) — the authored
+/// counterpart of [`LodBandSelection::refine_within`]. A skipped quad is not a
+/// hole: the finer authored quads beneath it stay selected, and the terrain
+/// ring's level-4 synth completion tiles any ground none of them cover.
+pub(crate) fn select_authored_lod_quads_refining(
+    authored: &[(i32, i32, i32)],
+    ladder: &LodBandLadder,
+    player: (i32, i32),
+    world_bounds: Option<((i32, i32), (i32, i32))>,
+    cell_exists: &dyn Fn(i32, i32) -> bool,
+    refine_within: i32,
+) -> Vec<(i32, i32, i32)> {
     let authored = prune_same_level_overlaps(authored, cell_exists);
     let levels: Vec<i32> = {
         let mut ls: Vec<i32> = authored.iter().map(|&(l, _, _)| l).collect();
@@ -573,6 +604,14 @@ pub(crate) fn select_authored_lod_quads(
                 continue;
             }
             if quad_min_chebyshev(qx, qy, level, player) > ladder.max_cells() {
+                continue;
+            }
+            // #6094 — a coarse quad reaching the resident region is skipped
+            // however far its centre is; finer quads and the caller's synth
+            // completion cover the ground instead.
+            if level > LOD_LEVELS[0]
+                && quad_min_chebyshev(qx, qy, level, player) <= refine_within
+            {
                 continue;
             }
             if let (Some(threshold), true) = (ladder.refine_threshold(level), any_finer) {
@@ -737,6 +776,7 @@ mod tests {
             player,
             grid_origin: (0, 0),
             exclude_within: 0,
+            refine_within: -1,
             world_bounds: None,
             coarsen_to_available: false,
         }
@@ -1187,6 +1227,7 @@ mod tests {
             player: (0, 0),
             grid_origin: (0, 0),
             exclude_within: 0,
+            refine_within: -1,
             world_bounds: Some(bounds),
             coarsen_to_available: false,
         };
@@ -1211,6 +1252,7 @@ mod tests {
             player: (-49, -49),
             grid_origin: origin,
             exclude_within: 0,
+            refine_within: -1,
             world_bounds: None,
             coarsen_to_available: false,
         };
@@ -1268,6 +1310,7 @@ mod tests {
             player: (0, 0),
             grid_origin: (0, 0),
             exclude_within: 4,
+            refine_within: -1,
             world_bounds: None,
             coarsen_to_available: true,
         };
@@ -1324,6 +1367,7 @@ mod tests {
             player: (0, 0),
             grid_origin: (0, 0),
             exclude_within: 4,
+            refine_within: -1,
             world_bounds: None,
             coarsen_to_available: false,
         };
@@ -1345,6 +1389,7 @@ mod tests {
             player: (0, 0),
             grid_origin: (0, 0),
             exclude_within: 4,
+            refine_within: -1,
             world_bounds: None,
             coarsen_to_available: true,
         };
@@ -1377,6 +1422,7 @@ mod tests {
                 player: (0, 0),
                 grid_origin: (0, 0),
                 exclude_within,
+                refine_within: -1,
                 world_bounds: None,
                 coarsen_to_available: true,
             };
@@ -1401,6 +1447,7 @@ mod tests {
             player: (0, 0),
             grid_origin: (0, 0),
             exclude_within: 4,
+            refine_within: -1,
             world_bounds: None,
             coarsen_to_available: true,
         };

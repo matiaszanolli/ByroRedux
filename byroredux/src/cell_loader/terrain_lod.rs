@@ -186,11 +186,13 @@ fn all_holed_mask() -> u16 {
 /// [`LodBlock`] so a boundary
 /// block is regenerated only when its pattern actually changes.
 ///
-/// Only the finest band needs this. Coarser bands are selected only far
-/// beyond the near ring (their refine thresholds start at 15 cells
-/// against a ~6-cell streaming radius) and are drawn from prebaked `.btr`
-/// meshes that already bake in the game's own coverage, so their mask is
-/// always 0 — see [`stream_lod_blocks`].
+/// Only the finest band needs this. Coarser bands are kept out of the
+/// resident ring by selection — a coarse quad whose nearest cell is within
+/// `radius_unload` subdivides to the finest band (#6094), which this masks — and
+/// are drawn from prebaked `.btr` meshes (or authored quads) that already bake in
+/// the game's own coverage, so their mask is always 0 — see [`stream_lod_blocks`].
+/// The band thresholds alone do not guarantee that: they were tuned against a
+/// ~6-cell streaming radius, and the default is 12.
 fn block_hole_mask(
     cells_map: &HashMap<(i32, i32), CellData>,
     bx0: i32,
@@ -273,19 +275,26 @@ pub(crate) fn lod_ring_reach_cells(game: GameKind) -> i32 {
 /// same posture as the object ring's empty sentinel. Vanilla's LOD
 /// generator bakes full per-worldspace coverage, so the completion is a
 /// safety net for worldspace edges and modded gaps, not the normal path.
+///
+/// #6094 — `full_detail_radius` is the Chebyshev radius within which a
+/// full-detail cell may be resident. A coarse authored quad reaching it is not
+/// selected; the finer authored quads and this completion tile its ground
+/// instead, and the finest band is holed against actual residency.
 fn legacy_desired_lod_quads(
     authored: &[(i32, i32, i32)],
     ladder: &super::lod_bands::LodBandLadder,
     player: (i32, i32),
     world_bounds: Option<((i32, i32), (i32, i32))>,
     cell_exists: &dyn Fn(i32, i32) -> bool,
+    full_detail_radius: i32,
 ) -> Vec<(i32, i32, i32)> {
-    let selected = super::lod_bands::select_authored_lod_quads(
+    let selected = super::lod_bands::select_authored_lod_quads_refining(
         authored,
         ladder,
         player,
         world_bounds,
         cell_exists,
+        full_detail_radius,
     );
     // Cell-coverage window around the player, padded one finest tile so
     // boundary tiles are evaluated whole. max_cells is 64 and the tile is
@@ -365,12 +374,39 @@ fn legacy_desired_lod_quads(
     out
 }
 
-#[allow(clippy::too_many_arguments)]
+/// [`desired_lod_quads_refining`] without the forced subdivision — the pre-#6094
+/// shape, kept for the tests that pin the ladder's own behaviour.
+#[cfg(test)]
 fn desired_lod_quads(
     ladder: Option<&LodBandLadder>,
     player_grid: (i32, i32),
     grid_origin: (i32, i32),
     max_full_cell_radius: i32,
+    world_bounds: Option<((i32, i32), (i32, i32))>,
+    resident: impl Fn(i32, i32, i32) -> bool,
+    has_btr: impl FnMut(i32, i32, i32) -> bool,
+) -> Vec<(i32, i32, i32)> {
+    desired_lod_quads_refining(
+        ladder,
+        player_grid,
+        grid_origin,
+        max_full_cell_radius,
+        -1,
+        world_bounds,
+        resident,
+        has_btr,
+    )
+}
+
+/// `full_detail_radius` is #6094's forced subdivision (see
+/// [`LodBandSelection::refine_within`]); `-1` disables it.
+#[allow(clippy::too_many_arguments)]
+fn desired_lod_quads_refining(
+    ladder: Option<&LodBandLadder>,
+    player_grid: (i32, i32),
+    grid_origin: (i32, i32),
+    max_full_cell_radius: i32,
+    full_detail_radius: i32,
     world_bounds: Option<((i32, i32), (i32, i32))>,
     resident: impl Fn(i32, i32, i32) -> bool,
     mut has_btr: impl FnMut(i32, i32, i32) -> bool,
@@ -383,6 +419,7 @@ fn desired_lod_quads(
                 player: player_grid,
                 grid_origin,
                 exclude_within: max_full_cell_radius,
+                refine_within: full_detail_radius,
                 world_bounds,
                 // Terrain has no use for the #3502 coarsen escape: the
                 // predicate below reports the finest level available
@@ -512,17 +549,21 @@ pub(crate) fn stream_lod_blocks(
                     player_grid,
                     worldspace_cell_bounds(wctx),
                     &lod_source_cell_exists(wctx),
+                    input.full_detail_radius,
                 )
             })
             .unwrap_or_default()
     } else {
-        desired_lod_quads(
+        desired_lod_quads_refining(
             ladder.as_ref(),
             player_grid,
             grid_origin,
             // Boundary quads must be selected so their per-cell mask can fill
             // every coordinate that is not actually resident at full detail.
             -1,
+            // #6094 — and any coarse quad reaching the resident region
+            // subdivides to that finest, hole-masked band.
+            input.full_detail_radius,
             worldspace_cell_bounds(wctx),
             |level, qx, qy| lod_blocks.contains_key(&(level, qx, qy)),
             // #3385 — memoised: the probe allocates several `String`s and hashes
@@ -575,7 +616,9 @@ pub(crate) fn stream_lod_blocks(
     // replacement geometry waits for an idle frame.
     for &(level, qx, qy) in &desired {
         // Only the finest band can touch the full-detail region or need
-        // per-cell holes; coarse bands are baked meshes far outside it.
+        // per-cell holes: selection subdivides any coarse quad that would
+        // reach the resident ring (`LodReconcileInput::full_detail_radius`,
+        // #6094), so the baked coarse meshes stay outside it.
         let mask = if level == k {
             block_hole_mask(cells_map, qx, qy, resident_full_cells)
         } else {
@@ -1465,9 +1508,11 @@ mod tests {
         );
     }
 
-    /// Only the finest band can ever need a hole mask. Coarse bands are
-    /// selected far outside the streaming radius, so `stream_lod_blocks` is
-    /// entitled to hardcode their mask to 0 — this pins the premise.
+    /// The ladder honours `exclude_within`: nothing is emitted inside it. The
+    /// production ring passes `-1` there (the finest band is holed, not
+    /// dropped) and keeps coarse bands out through `refine_within` instead, which
+    /// `coarse_btr_bands_stay_out_of_the_default_streaming_radius` and its legacy
+    /// twin pin at the default radius (#6094).
     #[test]
     fn coarse_terrain_bands_never_reach_the_full_detail_region() {
         let radius_unload = 6;
@@ -1525,6 +1570,160 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// How many selected quads claim each cell of the window `±reach` around
+    /// `player`, as `(cell, count)` for every cell not claimed exactly once.
+    fn cells_not_covered_exactly_once(
+        quads: &[(i32, i32, i32)],
+        player: (i32, i32),
+        reach: i32,
+    ) -> Vec<((i32, i32), usize)> {
+        let mut bad = Vec::new();
+        for cy in (player.1 - reach)..=(player.1 + reach) {
+            for cx in (player.0 - reach)..=(player.0 + reach) {
+                let claims = quads
+                    .iter()
+                    .filter(|&&(level, qx, qy)| {
+                        cx >= qx && cx < qx + level && cy >= qy && cy < qy + level
+                    })
+                    .count();
+                if claims != 1 {
+                    bad.push(((cx, cy), claims));
+                }
+            }
+        }
+        bad
+    }
+
+    /// #6094 — the band thresholds measure to a quad's centre and were tuned
+    /// against a ~6-cell streaming radius. At the default radius 12
+    /// (`radius_unload` 13) a coarse `.btr` quad whose centre clears its
+    /// threshold still reaches into the resident ring, where it is drawn over
+    /// full-detail terrain and — its hole mask being 0 — never holed. The
+    /// forced subdivision must keep every coarse band out of the region and
+    /// still tile the ground exactly once (no moat, no double draw).
+    #[test]
+    fn coarse_btr_bands_stay_out_of_the_default_streaming_radius() {
+        let radius_unload = 13;
+        for game in [GameKind::Skyrim, GameKind::Fallout4] {
+            let ladder = LodBandLadder::for_game(game).unwrap();
+            let mut reached_before_fix = false;
+            for py in 0..16 {
+                for px in 0..16 {
+                    let player = (px, py);
+                    let desired = |refine: i32| {
+                        desired_lod_quads_refining(
+                            Some(&ladder),
+                            player,
+                            (0, 0),
+                            -1,
+                            refine,
+                            None,
+                            |_, _, _| false,
+                            |_, _, _| true,
+                        )
+                    };
+                    // The premise: without the forced subdivision some position
+                    // really does emit a coarse quad inside the ring.
+                    reached_before_fix |= desired(-1).iter().any(|&(level, qx, qy)| {
+                        level > LOD_BLOCK_CELLS
+                            && quad_min_chebyshev(qx, qy, level, player) <= radius_unload
+                    });
+
+                    let quads = desired(radius_unload);
+                    for &(level, qx, qy) in &quads {
+                        assert!(
+                            level == LOD_BLOCK_CELLS
+                                || quad_min_chebyshev(qx, qy, level, player) > radius_unload,
+                            "{game:?} level-{level} quad ({qx}, {qy}) reaches inside \
+                             radius_unload {radius_unload} from {player:?}"
+                        );
+                    }
+                    let bad = cells_not_covered_exactly_once(&quads, player, radius_unload + 10);
+                    assert!(
+                        bad.is_empty(),
+                        "{game:?} from {player:?}: cells not tiled exactly once \
+                         (moat or double draw): {:?}",
+                        &bad[..bad.len().min(6)]
+                    );
+                }
+            }
+            assert!(
+                reached_before_fix,
+                "{game:?}: the radius-13 premise is gone — without the fix no coarse \
+                 quad reaches the ring, so this test no longer exercises #6094"
+            );
+        }
+    }
+
+    /// #6094 — the FO3 / FNV authored ladder has no hysteresis and no
+    /// full-detail exclusion, so a level-8 quad was selected once its centre was
+    /// 12+ cells away while its nearest cell sat ~10 away. A coarse authored quad
+    /// reaching the ring must be skipped and its ground tiled by the finer
+    /// authored quads, with the level-4 synth completion as the net.
+    #[test]
+    fn coarse_authored_bands_stay_out_of_the_default_streaming_radius() {
+        let radius_unload = 13;
+        let ladder = LodBandLadder::for_terrain_game(GameKind::Fallout3NV).unwrap();
+        // A full authored tiling at every level, on the (0,0) lattice.
+        let mut authored = Vec::new();
+        for level in [4, 8, 16, 32] {
+            let span = 96 / level;
+            for j in -span..span {
+                for i in -span..span {
+                    authored.push((level, i * level, j * level));
+                }
+            }
+        }
+        let mut reached_before_fix = false;
+        for py in [0, 3, 5, 7, 11] {
+            for px in [0, 2, 6, 9, 13] {
+                let player = (px, py);
+                let select = |refine: i32| {
+                    legacy_desired_lod_quads(&authored, &ladder, player, None, &|_, _| false, refine)
+                };
+                reached_before_fix |= select(-1).iter().any(|&(level, qx, qy)| {
+                    level > LOD_BLOCK_CELLS
+                        && quad_min_chebyshev(qx, qy, level, player) <= radius_unload
+                });
+                let quads = select(radius_unload);
+                for &(level, qx, qy) in &quads {
+                    assert!(
+                        level == LOD_BLOCK_CELLS
+                            || quad_min_chebyshev(qx, qy, level, player) > radius_unload,
+                        "legacy level-{level} quad ({qx}, {qy}) reaches inside \
+                         radius_unload {radius_unload} from {player:?}"
+                    );
+                }
+                // The ring itself is tiled exactly once, and nothing just past it
+                // is left bare (a moat). The legacy selection also double-covers
+                // ground from ~14 cells out, with or without this fix (#6053, its
+                // immediate-parent seam test), so exactness is asserted only where
+                // this change acts.
+                let ring = cells_not_covered_exactly_once(&quads, player, radius_unload);
+                assert!(
+                    ring.is_empty(),
+                    "legacy from {player:?}: ring cells not tiled exactly once: {:?}",
+                    &ring[..ring.len().min(6)]
+                );
+                let moat: Vec<_> =
+                    cells_not_covered_exactly_once(&quads, player, radius_unload + 6)
+                        .into_iter()
+                        .filter(|&(_, claims)| claims == 0)
+                        .collect();
+                assert!(
+                    moat.is_empty(),
+                    "legacy from {player:?}: ground left bare past the ring: {:?}",
+                    &moat[..moat.len().min(6)]
+                );
+            }
+        }
+        assert!(
+            reached_before_fix,
+            "the radius-13 premise is gone: without the fix no coarse authored quad \
+             reaches the ring, so this test no longer exercises #6094"
+        );
     }
 
     /// #1373 — a boundary block's hole mask shifts as the player crosses
@@ -1591,7 +1790,7 @@ mod tests {
         // One authored level-16 quad well east of the player, on an
         // off-(0,0) lattice position for good measure.
         let authored = vec![(16, 20, 4)];
-        let selected = legacy_desired_lod_quads(&authored, &ladder, player, None, &|_, _| false);
+        let selected = legacy_desired_lod_quads(&authored, &ladder, player, None, &|_, _| false, -1);
 
         assert!(selected.contains(&(16, 20, 4)), "the authored quad is selected");
         // The player's own ground is served by a completion tile at the
@@ -1624,7 +1823,7 @@ mod tests {
                 full.push((4, qx * 4, qy * 4));
             }
         }
-        let selected_full = legacy_desired_lod_quads(&full, &ladder, player, None, &|_, _| false);
+        let selected_full = legacy_desired_lod_quads(&full, &ladder, player, None, &|_, _| false, -1);
         assert!(
             selected_full.iter().all(|q| full.contains(q)),
             "a complete authored tiling needs no invented completion tiles"

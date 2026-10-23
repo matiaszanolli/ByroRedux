@@ -194,6 +194,7 @@ pub(crate) fn reconcile_lod_rings(
         lod_grid_origin,
         legacy_lod_quads: state.legacy_lod_quads.as_ref(),
         resident_full_cells: &resident_full_cells,
+        full_detail_radius: state.radius_unload,
     };
     // Every provider draws on its own attempt allowance (so a large terrain
     // ring cannot starve the active object scheme) but shares ONE wall-clock

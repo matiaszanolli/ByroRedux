@@ -186,6 +186,7 @@ pub(crate) fn stream_object_lod_blocks(
         // Build the whole authored partition. Actual full-detail residency,
         // not the larger possible hysteresis area, is filtered below.
         exclude_within: -1,
+        refine_within: -1,
         world_bounds: worldspace_cell_bounds(wctx),
         // #3502 — the object ring's only fallback for a missing quad is the
         // `ObjectLodBlock::empty()` sentinel below, so subdividing into an
@@ -1150,6 +1151,7 @@ mod tests {
             player,
             grid_origin: (0, 0),
             exclude_within,
+            refine_within: -1,
             world_bounds: None,
             // The object ring's production policy (#3502); inert here since
             // every quad is available.
@@ -1249,6 +1251,7 @@ mod tests {
             player: (-49, -49),
             grid_origin: origin,
             exclude_within: 0,
+            refine_within: -1,
             world_bounds: None,
             coarsen_to_available: true,
         };
@@ -1401,6 +1404,7 @@ mod tests {
             player: (0, 0),
             grid_origin: (0, 0),
             exclude_within: 6,
+            refine_within: -1,
             world_bounds: None,
             coarsen_to_available: true,
         };
