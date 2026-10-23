@@ -306,6 +306,53 @@ fn attach_esm_light(
 /// LIGH, marker/FX skip, or the main static-mesh spawn — accumulating its
 /// telemetry into `accum`. Split verbatim out of [`load_references`] (#2058);
 /// each former `continue` (skip this child) is now an early `return`.
+/// A synthetic child that draws nothing (no statics row, an editor marker, a disabled or
+/// mesh-less light): it is still the outer REFR's logical reference — identity (#2026) and
+/// the base record's scripts — and counts as one loaded entity. Callers gate it to the
+/// primary synthetic child.
+#[allow(clippy::too_many_arguments)]
+fn spawn_logical_synth_child(
+    accum: &mut RefLoadAccum,
+    world: &mut World,
+    placed_ref: &esm::cell::PlacedRef,
+    load_order: &LoadOrder,
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+    child_form_id: u32,
+    record_index: &byroredux_plugin::esm::records::EsmIndex,
+    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+) {
+    let entity = spawn_logical_quest_reference(world, placed_ref, load_order, ref_pos, ref_rot, ref_scale);
+    attach_identity_reference_script(world, entity, child_form_id, record_index, refr_script_instance, accum);
+    accum.entity_count += 1;
+}
+
+/// The script half of a light synthetic child that spawned its `LightSource` entity (#3016):
+/// `stamp_quest_reference` (the outer-REFR identity, #2026) stays on the first synthetic
+/// child, but the script attach is NOT gated — `child_form_id`'s own base-record SCRI/VMAD
+/// belongs to *this* child, and every synthetic child spawns a real entity here.
+/// `refr_script_instance` is already pre-gated to `None` past the first child by
+/// `refr_script_instance_for_synth_child`, so the outer-REFR-VMAD half still binds once.
+#[allow(clippy::too_many_arguments)]
+fn finish_light_synth_child(
+    accum: &mut RefLoadAccum,
+    world: &mut World,
+    entity: EntityId,
+    placed_ref: &esm::cell::PlacedRef,
+    load_order: &LoadOrder,
+    is_primary_synth: bool,
+    child_form_id: u32,
+    record_index: &byroredux_plugin::esm::records::EsmIndex,
+    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+) {
+    if is_primary_synth {
+        stamp_quest_reference(world, entity, placed_ref, load_order);
+    }
+    attach_quest_reference_script(world, entity, child_form_id, record_index, refr_script_instance, accum);
+    accum.entity_count += 1;
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_synth_child(
     accum: &mut RefLoadAccum,
@@ -430,18 +477,10 @@ pub(super) fn spawn_synth_child(
             }
             log::debug!("REFR base {:08X} not in statics table", child_form_id);
             if is_primary_synth {
-                let entity = spawn_logical_quest_reference(
-                    world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+                spawn_logical_synth_child(
+                    accum, world, placed_ref, load_order, ref_pos, ref_rot, ref_scale, child_form_id,
+                    record_index, refr_script_instance,
                 );
-                attach_identity_reference_script(
-                    world,
-                    entity,
-                    child_form_id,
-                    record_index,
-                    refr_script_instance,
-                    accum,
-                );
-                accum.entity_count += 1;
                 accum.bounds_min = accum.bounds_min.min(ref_pos);
                 accum.bounds_max = accum.bounds_max.max(ref_pos);
             }
@@ -462,42 +501,18 @@ pub(super) fn spawn_synth_child(
             world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
             world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
             attach_esm_light(world, entity, ld, game, ref_pos, ref_rot);
-            // #3016 — `stamp_quest_reference` (outer-REFR identity, #2026)
-            // stays gated to the first synthetic child, but the script
-            // attach below is NOT: `child_form_id`'s own base-record
-            // SCRI/VMAD belongs to *this* child's base record, and this
-            // branch spawns a real entity for every synthetic child, not
-            // just the first. `refr_script_instance` is already pre-gated
-            // to `None` past the first child by `refr_script_instance_for_
-            // synth_child`, so the outer-REFR-VMAD half of #2026 still only
-            // binds once — only the base-record half now runs per child,
-            // matching the trigger-volume / main-static-mesh / actor
-            // branches below and in `mod.rs`.
-            if is_primary_synth {
-                stamp_quest_reference(world, entity, placed_ref, load_order);
-            }
-            attach_quest_reference_script(
-                world,
-                entity,
-                child_form_id,
-                record_index,
-                refr_script_instance,
-                accum,
+            // #3016 — identity on the primary child only, the base record's scripts on
+            // every child, matching the trigger-volume / main-static-mesh / actor
+            // branches below and in `mod.rs` (see `finish_light_synth_child`).
+            finish_light_synth_child(
+                accum, world, entity, placed_ref, load_order, is_primary_synth, child_form_id,
+                record_index, refr_script_instance,
             );
-            accum.entity_count += 1;
         } else if is_primary_synth {
-            let entity = spawn_logical_quest_reference(
-                world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+            spawn_logical_synth_child(
+                accum, world, placed_ref, load_order, ref_pos, ref_rot, ref_scale, child_form_id,
+                record_index, refr_script_instance,
             );
-            attach_identity_reference_script(
-                world,
-                entity,
-                child_form_id,
-                record_index,
-                refr_script_instance,
-                accum,
-            );
-            accum.entity_count += 1;
         }
         return;
     }
@@ -525,18 +540,10 @@ pub(super) fn spawn_synth_child(
         || filename.starts_with("vatsmarker")
     {
         if is_primary_synth {
-            let entity = spawn_logical_quest_reference(
-                world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+            spawn_logical_synth_child(
+                accum, world, placed_ref, load_order, ref_pos, ref_rot, ref_scale, child_form_id,
+                record_index, refr_script_instance,
             );
-            attach_identity_reference_script(
-                world,
-                entity,
-                child_form_id,
-                record_index,
-                refr_script_instance,
-                accum,
-            );
-            accum.entity_count += 1;
         }
         return;
     }
@@ -552,34 +559,16 @@ pub(super) fn spawn_synth_child(
             // cone direction follows the authored placement rotation
             // regardless of how the visual effect sprite is oriented.
             attach_esm_light(world, entity, ld, game, ref_pos, ref_rot);
-            // #3016 — same split as the LIGH-only branch above: outer-REFR
-            // identity stays gated to the first synthetic child, the
-            // per-child base-record script attach does not.
-            if is_primary_synth {
-                stamp_quest_reference(world, entity, placed_ref, load_order);
-            }
-            attach_quest_reference_script(
-                world,
-                entity,
-                child_form_id,
-                record_index,
-                refr_script_instance,
-                accum,
+            // #3016 — same split as the LIGH-only branch above.
+            finish_light_synth_child(
+                accum, world, entity, placed_ref, load_order, is_primary_synth, child_form_id,
+                record_index, refr_script_instance,
             );
-            accum.entity_count += 1;
         } else if is_primary_synth {
-            let entity = spawn_logical_quest_reference(
-                world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+            spawn_logical_synth_child(
+                accum, world, placed_ref, load_order, ref_pos, ref_rot, ref_scale, child_form_id,
+                record_index, refr_script_instance,
             );
-            attach_identity_reference_script(
-                world,
-                entity,
-                child_form_id,
-                record_index,
-                refr_script_instance,
-                accum,
-            );
-            accum.entity_count += 1;
         }
         return;
     }
@@ -770,18 +759,10 @@ pub(super) fn spawn_synth_child(
     };
     let Some(cached) = cached else {
         if is_primary_synth {
-            let entity = spawn_logical_quest_reference(
-                world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+            spawn_logical_synth_child(
+                accum, world, placed_ref, load_order, ref_pos, ref_rot, ref_scale, child_form_id,
+                record_index, refr_script_instance,
             );
-            attach_identity_reference_script(
-                world,
-                entity,
-                child_form_id,
-                record_index,
-                refr_script_instance,
-                accum,
-            );
-            accum.entity_count += 1;
         }
         return;
     };

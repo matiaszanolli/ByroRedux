@@ -457,9 +457,19 @@ fn is_primary_synth_gates_every_identity_stamp_call_site() {
         .expect("trigger_volume_should_spawn_for_synth_child must still follow spawn_synth_child");
     let body = &src[start..start + end];
 
+    // #6160 — the logical-child and light-child tails are helpers now:
+    // `spawn_logical_synth_child` (identity + scripts, no gate of its own, so
+    // every call must be gated here) and `finish_light_synth_child` (gates its
+    // own `stamp_quest_reference` on the `is_primary_synth` it is handed).
     let stamp_calls = body.matches("stamp_quest_reference(").count();
-    let spawn_logical_calls = body.matches("spawn_logical_quest_reference(").count();
-    let total_call_sites = stamp_calls + spawn_logical_calls;
+    let logical_calls = body.matches("spawn_logical_synth_child(").count();
+    let light_calls = body.matches("finish_light_synth_child(").count();
+    assert_eq!(
+        body.matches("spawn_logical_quest_reference(").count(),
+        0,
+        "spawn_synth_child spawns logical references only through spawn_logical_synth_child"
+    );
+    let total_call_sites = stamp_calls + logical_calls;
 
     let direct_gates = body.matches("if is_primary_synth {").count();
     // The trigger-volume branch's `stamp_quest_reference` isn't behind a
@@ -471,20 +481,41 @@ fn is_primary_synth_gates_every_identity_stamp_call_site() {
     let total_gates = direct_gates + composed_gates;
 
     assert_eq!(
-        (stamp_calls, spawn_logical_calls),
-        (4, 5),
-        "expected 4 stamp_quest_reference + 5 spawn_logical_quest_reference \
-         call sites in spawn_synth_child; a changed count means a branch \
-         was added/removed — re-verify its is_primary_synth gate before \
-         updating this baseline",
+        (stamp_calls, logical_calls, light_calls),
+        (2, 5, 2),
+        "expected 2 stamp_quest_reference + 5 spawn_logical_synth_child + 2 \
+         finish_light_synth_child call sites in spawn_synth_child; a changed \
+         count means a branch was added/removed — re-verify its \
+         is_primary_synth gate before updating this baseline",
     );
     assert_eq!(
         total_gates, total_call_sites,
-        "every stamp_quest_reference/spawn_logical_quest_reference call site \
+        "every stamp_quest_reference/spawn_logical_synth_child call site \
          in spawn_synth_child must be gated by is_primary_synth (directly or, \
          for the trigger-volume branch, via trigger_volume_should_spawn_for_\
          synth_child) — a mismatch means some call site lost its gate",
     );
+    // The light helper's own gate, and every call handing it the real flag.
+    let light_fn = src
+        .split("fn finish_light_synth_child(")
+        .nth(1)
+        .expect("finish_light_synth_child");
+    let light_fn = &light_fn[..light_fn.find("\n}\n").expect("function end")];
+    assert!(
+        light_fn.contains("if is_primary_synth {\n        stamp_quest_reference("),
+        "finish_light_synth_child must stamp the outer-REFR identity only on the primary child"
+    );
+    assert_eq!(
+        body.matches("finish_light_synth_child(\n                accum, world, entity, placed_ref, load_order, is_primary_synth,").count(),
+        light_calls,
+        "every finish_light_synth_child call must pass spawn_synth_child's own is_primary_synth"
+    );
+    let logical_fn = src
+        .split("fn spawn_logical_synth_child(")
+        .nth(1)
+        .expect("spawn_logical_synth_child");
+    let logical_fn = &logical_fn[..logical_fn.find("\n}\n").expect("function end")];
+    assert!(logical_fn.contains("spawn_logical_quest_reference(") && !logical_fn.contains("stamp_quest_reference("));
 }
 
 /// #4112 / #4331 — both logical-actor-stub paths spawned an identity and
