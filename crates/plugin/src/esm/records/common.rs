@@ -285,19 +285,11 @@ pub fn read_string_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<String> {
 /// that appears at every FULL / DESC / RNAM site. Use this instead of the
 /// open-coded pair. See TD3-007 / #1045.
 pub fn read_u32_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<u32> {
-    let data = find_sub(subs, code)?;
-    if data.len() < 4 {
-        return None;
-    }
-    Some(u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+    byroredux_core::bytes::le_u32_at(find_sub(subs, code)?, 0)
 }
 
 pub fn read_f32_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<f32> {
-    let data = find_sub(subs, code)?;
-    if data.len() < 4 {
-        return None;
-    }
-    Some(f32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+    byroredux_core::bytes::le_f32_at(find_sub(subs, code)?, 0)
 }
 
 /// Universal EDID / FULL / MODL / ICON / SCRI / VMAD fields that appear on

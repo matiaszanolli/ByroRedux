@@ -6,6 +6,8 @@ use super::helpers::{read_form_id, read_zstring};
 use super::walkers::parse_refr_group;
 use super::*;
 use crate::esm::reader::GameKind;
+use crate::esm::sub_reader::SubReader;
+use byroredux_core::bytes::{le_f32_at, le_u16_at};
 
 /// Walk the WRLD group hierarchy to find exterior cells and their placed references.
 ///
@@ -111,11 +113,8 @@ pub(crate) fn parse_wrld_group(
                         // 2 bytes). Read the available prefix as a
                         // u16; pre-FO3 omits the sub-record entirely.
                         b"PNAM" if !sub.data.is_empty() => {
-                            record.parent_flags = if sub.data.len() >= 2 {
-                                u16::from_le_bytes([sub.data[0], sub.data[1]])
-                            } else {
-                                sub.data[0] as u16
-                            };
+                            record.parent_flags = le_u16_at(&sub.data, 0)
+                                .unwrap_or_else(|| u16::from(sub.data[0]));
                         }
                         // NAM0 / NAM9 — object-bounds SW / NE
                         // corners (2 × f32 in Bethesda world units,
@@ -124,35 +123,15 @@ pub(crate) fn parse_wrld_group(
                         // wire form; OpenMW reads as i32 but never
                         // consumes the value so it doesn't notice.
                         // See WorldspaceRecord::usable_cell_bounds.
-                        b"NAM0" if sub.data.len() >= 8 => {
-                            let x = f32::from_le_bytes([
-                                sub.data[0],
-                                sub.data[1],
-                                sub.data[2],
-                                sub.data[3],
-                            ]);
-                            let y = f32::from_le_bytes([
-                                sub.data[4],
-                                sub.data[5],
-                                sub.data[6],
-                                sub.data[7],
-                            ]);
-                            record.usable_min = (x, y);
+                        b"NAM0" => {
+                            if let (Some(x), Some(y)) = (le_f32_at(&sub.data, 0), le_f32_at(&sub.data, 4)) {
+                                record.usable_min = (x, y);
+                            }
                         }
-                        b"NAM9" if sub.data.len() >= 8 => {
-                            let x = f32::from_le_bytes([
-                                sub.data[0],
-                                sub.data[1],
-                                sub.data[2],
-                                sub.data[3],
-                            ]);
-                            let y = f32::from_le_bytes([
-                                sub.data[4],
-                                sub.data[5],
-                                sub.data[6],
-                                sub.data[7],
-                            ]);
-                            record.usable_max = (x, y);
+                        b"NAM9" => {
+                            if let (Some(x), Some(y)) = (le_f32_at(&sub.data, 0), le_f32_at(&sub.data, 4)) {
+                                record.usable_max = (x, y);
+                            }
                         }
                         // NAM2 — default water FormID.
                         b"NAM2" if sub.data.len() >= 4 => {
@@ -420,18 +399,8 @@ fn parse_wrld_children_inner(
                 for sub in &subs {
                     match &sub.sub_type {
                         b"XCLC" if sub.data.len() >= 8 => {
-                            let grid_x = i32::from_le_bytes([
-                                sub.data[0],
-                                sub.data[1],
-                                sub.data[2],
-                                sub.data[3],
-                            ]);
-                            let grid_y = i32::from_le_bytes([
-                                sub.data[4],
-                                sub.data[5],
-                                sub.data[6],
-                                sub.data[7],
-                            ]);
+                            let mut r = SubReader::new(&sub.data);
+                            let (grid_x, grid_y) = (r.i32_or_default(), r.i32_or_default());
                             grid = Some((grid_x, grid_y));
                             // #6043 — `wbCellGrid`'s third field: the Land
                             // Flags byte. xEdit's common `wbCellGrid`
