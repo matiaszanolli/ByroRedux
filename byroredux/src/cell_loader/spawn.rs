@@ -928,12 +928,23 @@ pub(super) fn spawn_placed_instances(
     // standalone envelope won (a looping flag played once) and the
     // sequence's non-transform channels were dropped (a gate's idle showed
     // the emitters it hides).
-    let first_sequence = mesh_cache_key.and_then(|key| {
-        let sequences = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences)?;
-        let first = sequences.0.first().map(|(_, handle)| *handle);
-        world.insert(placement_root, sequences);
-        first
-    });
+    //
+    // #6254 — `PlayGroup` swaps the sequence player onto ANY of the model's
+    // sequences, and a sequence can animate a target or channel kind the first
+    // one doesn't (an Oblivion gate's flash-plane alpha and blade visibility, a
+    // terminal pod's monitor UV scroll), so every sequence's sinks are attached
+    // here, not only the one that plays from spawn. Sinks are insert-if-missing.
+    let mut first_sequence = None;
+    if let Some(key) = mesh_cache_key {
+        if let Some(sequences) = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences) {
+            let handles: Vec<u32> = sequences.0.iter().map(|(_, handle)| *handle).collect();
+            first_sequence = handles.first().copied();
+            world.insert(placement_root, sequences);
+            for handle in handles.into_iter().skip(1) {
+                crate::anim_convert::attach_clip_sinks(world, handle, ctx, tex_provider, placement_root);
+            }
+        }
+    }
     for handle in clip_handle.into_iter().chain(first_sequence) {
         // #2221 — attach the `Animated*` sinks this clip's non-transform
         // channels write into, BEFORE the player starts ticking.
