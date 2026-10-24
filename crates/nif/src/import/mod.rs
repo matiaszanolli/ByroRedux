@@ -367,6 +367,11 @@ pub fn extract_furniture_markers(scene: &NifScene) -> Vec<ImportedFurnitureMarke
     out
 }
 
+/// The `furnituremarkerXX` numbers of a bed (CS *GetFurnitureMarkerID*: "1 - 10 for beds").
+const LEGACY_BED_MARKERS: std::ops::RangeInclusive<u8> = 1..=10;
+/// Skyrim+ `AnimationType` for sleeping (`1` Sit, `2` Sleep, `3` Lean).
+const ANIMATION_TYPE_SLEEP: u16 = 2;
+
 /// Convert one parsed `FurniturePosition` to an [`ImportedFurnitureMarker`]:
 /// offset Gamebryo Z-up → renderer Y-up, and the version-split
 /// heading/animation fields to the canonical shape. Split out so the
@@ -385,9 +390,18 @@ fn imported_furniture_marker(
             ..
         } => (Some(heading), animation_type),
         // Oblivion/FO3/FNV: ushort `Orientation` has no verified radian
-        // mapping (indexes a `furnituremarkerXX.nif`), and there is no
-        // AnimationType field — defer both to Phase C.
-        FurniturePositionData::Legacy { .. } => (None, 0),
+        // mapping (indexes a `furnituremarkerXX.nif`), so the heading stays
+        // deferred. There is no AnimationType field either; what a position
+        // is comes from the `furnituremarkerXX` it refers to: the CS
+        // *GetFurnitureMarkerID* page — "0 for invalid, 1 - 10 for beds, and
+        // 11 - 20 for chairs" — and every vanilla furniture NIF agrees (75 in
+        // Oblivion.esm's archive: each bed 1-4, each chair, bench, stool and
+        // throne 11-14; FO3 / FNV the same, with 15-22 for stools, floor
+        // sitting and work markers). Only the beds are told apart; every other
+        // position stays 0, the v0 Sit default.
+        FurniturePositionData::Legacy { position_ref_1, .. } => {
+            (None, if (LEGACY_BED_MARKERS).contains(&position_ref_1) { ANIMATION_TYPE_SLEEP } else { 0 })
+        }
     };
     ImportedFurnitureMarker {
         offset: zup_to_yup_pos(pos.offset),

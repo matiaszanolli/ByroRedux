@@ -40,7 +40,29 @@ fn imported_furniture_marker_legacy_defers_heading() {
     assert_eq!(m.offset, [0.0, 0.0, 4.0]);
     // Legacy ushort orientation has no verified radian mapping → deferred.
     assert_eq!(m.heading_z_radians, None);
-    assert_eq!(m.animation_type, 0);
+    // `furnituremarker01` is a bed: 1 - 10 are beds (CS GetFurnitureMarkerID).
+    assert_eq!(m.animation_type, 2);
+}
+
+/// Oblivion / FO3 / FNV tell a bed from a chair by the `furnituremarkerXX`
+/// a position refers to: 1 - 10 beds, 11 - 20 chairs. Only the beds are
+/// told apart; a chair or any other marker keeps the v0 Sit default (0).
+#[test]
+fn legacy_markers_one_to_ten_are_beds_and_the_rest_are_not() {
+    use crate::blocks::extra_data::{FurniturePosition, FurniturePositionData};
+    let kind = |position_ref: u8| {
+        imported_furniture_marker(&FurniturePosition {
+            offset: [0.0; 3],
+            data: FurniturePositionData::Legacy { orientation: 0, position_ref_1: position_ref, position_ref_2: position_ref },
+        })
+        .animation_type
+    };
+    for bed in [1, 2, 3, 4, 5, 6, 10] {
+        assert_eq!(kind(bed), 2, "furnituremarker{bed:02} is a bed");
+    }
+    for other in [0, 11, 12, 14, 15, 20, 22] {
+        assert_eq!(kind(other), 0, "furnituremarker{other:02} is not");
+    }
 }
 
 #[test]

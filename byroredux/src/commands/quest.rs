@@ -1446,7 +1446,7 @@ impl ConsoleCommand for ObScriptCmdCommand {
 }
 
 /// `jail.serve` — the player rests out their jail sentence: the clock runs the sentence's days and the
-/// player is sent to the jail's exit. Stands in for sleeping in the cell bed until that interaction exists.
+/// player is sent to the jail's exit. The same call as resting in the cell bed (`crime::jail_bed_system`), without the walk.
 pub(crate) struct JailServeCommand;
 
 impl ConsoleCommand for JailServeCommand {
@@ -1455,7 +1455,7 @@ impl ConsoleCommand for JailServeCommand {
     }
 
     fn description(&self) -> &str {
-        "Serve the current jail sentence (stand-in for resting in the cell bed): runs the clock and releases at the exit"
+        "Serve the current jail sentence (the same as resting in the cell bed): runs the clock and releases at the exit"
     }
 
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {

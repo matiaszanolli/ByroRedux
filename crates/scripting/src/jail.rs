@@ -20,11 +20,13 @@
 //! indoors, or in a worldspace without a jail, gets none and the command is
 //! declined whole (no half-paid fine).
 //!
+//! Resting in the cell's bed ends the sentence: the app's bed interaction
+//! (`crime::jail_bed_system`) calls [`serve_sentence`]; the `jail.serve`
+//! console command is the same call without the walk.
+//!
 //! Not modelled: the `StolenGoods` chest is not restocked (the confiscated goods
-//! wait in the ledger's evidence), the skill loss for time served (UESP gives no
-//! rule for which skill), and the player resting in the cell bed — the trigger
-//! that ends the sentence is [`serve_sentence`], which a bed interaction will
-//! call and the `jail.serve` console command stands in for.
+//! wait in the ledger's evidence), and the skill loss for time served (UESP
+//! gives no rule for which skill).
 
 use std::sync::Arc;
 
@@ -231,8 +233,8 @@ pub fn player_in_jail(world: &World) -> bool {
 
 /// The player has rested out their sentence: the clock runs the sentence's days,
 /// the player is sent to the exit, and the sentence ends. `false` when none is
-/// being served. The trigger is the player resting in the cell bed; until that
-/// interaction exists the `jail.serve` console command calls it.
+/// being served. The trigger is the player resting in the cell bed
+/// (`crime::jail_bed_system`); the `jail.serve` console command calls it too.
 pub fn serve_sentence(world: &World) -> bool {
     let Some(sentence) = world.try_resource::<ObScriptLedger>().and_then(|ledger| ledger.jail) else {
         return false;

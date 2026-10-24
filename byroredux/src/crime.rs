@@ -182,3 +182,103 @@ pub(crate) fn report_strike(world: &World, player: EntityId, victim: EntityId, k
         charge(world, model, model.attack_gold, "assaulting someone")
     }
 }
+
+/// The placed furniture with a sleeping position (a bed).
+pub(crate) fn bed_entities(world: &World) -> Vec<EntityId> {
+    use byroredux_core::ecs::components::{Furniture, FurnitureMarkerKind};
+    world
+        .query::<Furniture>()
+        .map(|furniture| {
+            furniture
+                .iter()
+                .filter(|(_, furniture)| furniture.markers.iter().any(|marker| marker.kind == FurnitureMarkerKind::Sleep))
+                .map(|(entity, _)| entity)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Resting in a bed while serving a jail sentence ends it: the player activated a bed (the
+/// canonical `ActivateEvent`), so the clock runs the sentence and the player leaves by the exit
+/// ([`byroredux_scripting::jail::serve_sentence`]). Outside a sentence a bed is just furniture.
+pub(crate) fn jail_bed_system(world: &World, _dt: f32) {
+    if !byroredux_scripting::jail::player_in_jail(world) {
+        return;
+    }
+    let Some(player) = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) else {
+        return;
+    };
+    let beds = bed_entities(world);
+    let rested = world
+        .query::<byroredux_scripting::ActivateEvent>()
+        .is_some_and(|events| events.iter().any(|(target, event)| event.activator == player && beds.contains(&target)));
+    if rested && byroredux_scripting::jail::serve_sentence(world) {
+        crate::notifications::push(world, "You have served your sentence");
+    }
+}
+
+#[cfg(test)]
+mod bed_tests {
+    use super::*;
+    use byroredux_core::ecs::components::{Furniture, FurnitureMarker, FurnitureMarkerKind};
+    use byroredux_scripting::obscript_ledger::JailSentence;
+    use byroredux_scripting::{ActivateEvent, PlayerMoveRequest};
+
+    fn marker(kind: FurnitureMarkerKind) -> FurnitureMarker {
+        FurnitureMarker { local_offset: [0.0; 3], heading_z_radians: None, animation_type: 0, kind }
+    }
+
+    /// A player serving a sentence, a bed and a chair.
+    fn cell() -> (World, EntityId, EntityId, EntityId) {
+        let mut world = World::new();
+        world.register::<Furniture>();
+        world.register::<ActivateEvent>();
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
+        world.insert_resource(PlayerMoveRequest::default());
+        world.insert_resource(byroredux_scripting::obscript_more::PendingSleep::default());
+        let mut ledger = ObScriptLedger::default();
+        ledger.jail = Some(JailSentence { exit_marker: 0xE1, days: 2.0 });
+        world.insert_resource(ledger);
+        let bed = world.spawn();
+        world.insert(bed, Furniture { markers: vec![marker(FurnitureMarkerKind::Sleep)] });
+        let chair = world.spawn();
+        world.insert(chair, Furniture { markers: vec![marker(FurnitureMarkerKind::Sit)] });
+        (world, player, bed, chair)
+    }
+
+    #[test]
+    fn only_furniture_with_a_sleeping_position_is_a_bed() {
+        let (world, _player, bed, chair) = cell();
+        assert_eq!(bed_entities(&world), vec![bed]);
+        assert!(!bed_entities(&world).contains(&chair));
+    }
+
+    #[test]
+    fn resting_in_a_bed_ends_the_sentence() {
+        let (mut world, player, bed, _chair) = cell();
+        world.insert(bed, ActivateEvent { activator: player });
+        jail_bed_system(&world, 0.0);
+        assert!(!byroredux_scripting::jail::player_in_jail(&world));
+        assert_eq!(world.resource::<PlayerMoveRequest>().0, Some(0xE1), "released at the exit");
+        assert_eq!(world.resource::<byroredux_scripting::obscript_more::PendingSleep>().0, 48.0, "two days");
+        assert_eq!(crate::notifications::drain(&world), vec!["You have served your sentence".to_owned()]);
+    }
+
+    #[test]
+    fn a_chair_another_activator_or_no_sentence_end_nothing() {
+        let (mut world, player, bed, chair) = cell();
+        world.insert(chair, ActivateEvent { activator: player });
+        let other = world.spawn();
+        world.insert(bed, ActivateEvent { activator: other });
+        jail_bed_system(&world, 0.0);
+        assert!(byroredux_scripting::jail::player_in_jail(&world), "neither counts as the player resting in a bed");
+
+        let (mut world, player, bed, _chair) = cell();
+        world.resource_mut::<ObScriptLedger>().jail = None;
+        world.insert(bed, ActivateEvent { activator: player });
+        jail_bed_system(&world, 0.0);
+        assert_eq!(world.resource::<PlayerMoveRequest>().0, None, "a bed is only furniture outside a sentence");
+    }
+}

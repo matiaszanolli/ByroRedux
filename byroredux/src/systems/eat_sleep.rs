@@ -17,16 +17,16 @@
 //! entry position is the documented v0 approximation for the lie-down
 //! clip no archive this engine reads carries.
 //!
-//! #5390 — the Sleep-marker preference is only reachable on Skyrim+:
-//! `FurnitureMarkerKind::Sleep` resolves from `animation_type == 2`,
-//! a Skyrim+ `BSFurnitureMarker` field, and legacy Oblivion/FO3/FNV
-//! markers author `animation_type = 0` (the documented v0 `Sit`
-//! over-match, which includes beds and lean markers — Phase C's
-//! `furnituremarkerNN.nif` decode is the real fix). On FO3/FNV the sit
-//! fallback IS the sleep path: every sleeper takes the nearest sit
-//! marker, chairs included, and an Eat actor can symmetrically take a
-//! bed's marker. The fallback logs at debug so a live session can see
-//! which arm fired.
+//! #5390 — the Sleep-marker preference used to be reachable on Skyrim+ only:
+//! `FurnitureMarkerKind::Sleep` resolves from `animation_type == 2`, a
+//! Skyrim+ `BSFurnitureMarker` field, and legacy Oblivion/FO3/FNV markers
+//! author no such field. The NIF importer now reads it from the
+//! `furnituremarkerXX` a legacy position refers to (1 - 10 are beds, CS
+//! *GetFurnitureMarkerID*), so a cell's beds author sleep markers on every
+//! game and a sleeper takes a bed. The sit fallback below remains for a cell
+//! whose beds author none (and for legacy markers outside 1 - 10, which
+//! stay on the v0 Sit default, so an Eat actor can still take such a marker).
+//! The fallback logs at debug so a live session can see which arm fired.
 //!
 //! The walk is the shared KCC-backed locomotion step the other frozen-goal
 //! movers use (#5452): `navmesh_path::cached_walk_step` routes it along the

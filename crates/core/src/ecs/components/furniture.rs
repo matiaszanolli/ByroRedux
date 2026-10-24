@@ -62,9 +62,10 @@ pub struct FurnitureMarker {
     /// against real data then, not guessed here.
     pub heading_z_radians: Option<f32>,
     /// Skyrim+ `AnimationType`: `1` = Sit, `2` = Sleep, `3` = Lean.
-    /// `0` on the Oblivion/FO3/FNV path, which carries no AnimationType
-    /// field (the position kind is implied by the referenced
-    /// `furnituremarkerXX.nif`). Kept as the raw source value alongside
+    /// The Oblivion/FO3/FNV path carries no AnimationType field (the
+    /// position kind is implied by the referenced `furnituremarkerXX.nif`),
+    /// so the importer reads it from that number: `2` for a bed (1 - 10),
+    /// `0` for everything else. Kept as the raw source value alongside
     /// the resolved [`kind`](Self::kind) field.
     pub animation_type: u16,
     /// Resolved sit/sleep/lean discriminant — see [`FurnitureMarkerKind`].

@@ -734,6 +734,9 @@ pub(crate) enum InteractionKind {
     /// are candidates (a patron owned by no running quest has no authored
     /// dialogue route yet).
     Npc,
+    /// A bed the player can rest in to serve a jail sentence
+    /// ([`crate::crime::jail_bed_system`]); offered only while serving one.
+    Sleep,
 }
 
 impl InteractionKind {
@@ -744,6 +747,7 @@ impl InteractionKind {
             Self::Container | Self::Corpse => "Take all",
             Self::Pickup => "Take",
             Self::Npc => "Talk",
+            Self::Sleep => "Sleep",
         }
     }
 }
@@ -1324,6 +1328,12 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
             candidates.entry(entity).or_insert(InteractionKind::Npc);
         }
     }
+    // A jail cell's bed: resting in it is how a sentence ends, so a bed is offered only then.
+    if byroredux_scripting::jail::player_in_jail(world) {
+        for entity in crate::crime::bed_entities(world) {
+            candidates.entry(entity).or_insert(InteractionKind::Sleep);
+        }
+    }
     if let Some(query) = world.query::<byroredux_scripting::papyrus_demo::RumbleOnActivate>() {
         for (entity, script) in query.iter() {
             if matches!(
@@ -1653,6 +1663,31 @@ mod tests {
         world.insert_resource(InteractionState::default());
         world.insert_resource(InteractionTrace::default());
         world
+    }
+
+    /// A jail cell's bed is offered ("Sleep") only while the player serves a sentence; a chair never is.
+    #[test]
+    fn a_bed_is_an_interaction_candidate_only_during_a_jail_sentence() {
+        use byroredux_core::ecs::components::{Furniture, FurnitureMarker, FurnitureMarkerKind};
+        use byroredux_scripting::obscript_ledger::{JailSentence, ObScriptLedger};
+        let marker = |kind| FurnitureMarker { local_offset: [0.0; 3], heading_z_radians: None, animation_type: 0, kind };
+        let mut world = input_fixture();
+        world.register::<Furniture>();
+        world.insert_resource(ObScriptLedger::default());
+        let bed = world.spawn();
+        world.insert(bed, Furniture { markers: vec![marker(FurnitureMarkerKind::Sleep)] });
+        let chair = world.spawn();
+        world.insert(chair, Furniture { markers: vec![marker(FurnitureMarkerKind::Sit)] });
+
+        let mut candidates = FxHashMap::default();
+        populate_candidates(&world, &mut candidates);
+        assert!(!candidates.contains_key(&bed), "a free player's bed is just furniture");
+
+        world.resource_mut::<ObScriptLedger>().jail = Some(JailSentence { exit_marker: 1, days: 1.0 });
+        populate_candidates(&world, &mut candidates);
+        assert_eq!(candidates.get(&bed), Some(&InteractionKind::Sleep));
+        assert!(!candidates.contains_key(&chair));
+        assert_eq!(InteractionKind::Sleep.verb(), "Sleep");
     }
 
     #[test]

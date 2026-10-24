@@ -291,6 +291,19 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads_resource::<crate::systems::faction_hostility::DetectionConfig>()
             .reads_resource::<crate::components::CellLightingRes>(),
     );
+    // Resting in a jail cell's bed ends the sentence; after the activation flush like every consumer.
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::crime::jail_bed_system,
+        Access::new()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads::<byroredux_scripting::ActivateEvent>()
+            .reads::<byroredux_core::ecs::components::Furniture>()
+            .writes_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()
+            .writes_resource::<byroredux_scripting::obscript_more::PendingSleep>()
+            .writes_resource::<byroredux_scripting::PlayerMoveRequest>()
+            .writes_resource::<crate::notifications::PlayerNotifications>(),
+    );
     // Combat follows the same producer-before-consumer event contract as
     // activation: physical Attack emits HitEvent, then health/death resolves
     // before script consumers and Late-stage transient cleanup.

@@ -839,15 +839,15 @@ GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
   `PayFineThief` (the bounty's gold leaves, the bounty is wiped), `PayFine`
   (that, the stolen goods confiscated, and the player sent to the exit of the
   nearest jail) and `GoToJail` (bounty wiped for free, goods confiscated,
-  the player sent to the cell to serve `bounty / iCrimeDaysInPrisonMod` days).
+  the player sent to the cell to serve `bounty / iCrimeDaysInPrisonMod` days,
+  ended by resting in a bed there: `InteractionKind::Sleep`, offered only during
+  a sentence).
   Jails are the load order's linked `PrisonMarker` door pairs (14 in
   Oblivion.esm); "nearest" is the closest exit in the player's worldspace, and
   a player indoors or somewhere with no jail gets a declined command with
   nothing half done. Not built: the `StolenGoods` chest is not restocked (the
   confiscated goods wait in the ledger's `evidence`), the skill loss for time
-  served (UESP names no rule for which skill), resting in the cell bed to end
-  the sentence (`jail.serve` stands in; a bed interaction will call
-  `serve_sentence`), `GetCrime` (who knows which crime), and whatever sends a
+  served (UESP names no rule for which skill), `GetCrime` (who knows which crime), and whatever sends a
   guard to the criminal.
 - Assault is charged once per victim (the original turns the victim
   hostile; a hostile victim is self-defence). A kill in one blow is only a
@@ -857,3 +857,10 @@ GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
   incurs a bounty with no witness, hostile spell effects as assault,
   creatures as victims, the victim's disposition drop.
 - Shivering Isles tracks a separate bounty; one value is kept.
+- Beds are told from chairs by the `furnituremarkerXX` a legacy position
+  refers to: 1 - 10 beds, 11 - 20 chairs (CS *GetFurnitureMarkerID*), checked
+  against all 75 furniture NIFs in Oblivion's meshes archive (every bed 1 - 4,
+  every chair, bench, stool and throne 11 - 14) and FO3 / FNV's (beds 1 - 6,
+  seats 11 - 20, work and lean markers 22). Only beds are told apart; everything
+  else keeps the Sit default. This also makes NPC Sleep take beds on Oblivion,
+  FO3 and FNV (#5390).

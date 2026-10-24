@@ -516,7 +516,7 @@ actor.revive <entity|.>      → bring a dead or unconscious actor back like ObS
 magic.effects [entity]       → list the magic effects running on a reference (script effects, timed value changes)
 weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
 obscript.cmd <caller|none> <id> [args] → run one ObScript command through the real host and print its answer (M47.3)
-jail.serve                  → serve the jail sentence GoToJail started (stand-in for resting in the cell bed)
+jail.serve                  → serve the jail sentence GoToJail started (the same as resting in the cell bed)
 obscript.objects [limit]    → ObScript object scripts attached to placed references: blocks, run counts, declines (M47.3)
 script.requests             → the menus and videos ObScript commands asked for (no UI shows them yet)
 misc.stat <name> [delta]    → read or change a misc stat (`_` for spaces in the name)
