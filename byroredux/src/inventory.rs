@@ -3036,6 +3036,7 @@ mod tests {
                 ranks: Vec::new(),
                 reputation: None,
                 vendor: None,
+                crime: None,
             },
         );
         byroredux_scripting::install_owner_kinds(&mut world, &index);

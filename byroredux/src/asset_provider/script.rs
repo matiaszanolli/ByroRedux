@@ -1201,6 +1201,8 @@ pub(crate) fn populate_scene_runtime(
     byroredux_scripting::jail::install_jail_table(world, index);
     // M47.2 — Actor.GetCrimeFaction.
     byroredux_scripting::install_crime_factions(world, index);
+    // The factions' Crime tabs (Skyrim, FO4): what each tracks, ignores and fines.
+    byroredux_scripting::crime_faction::install_crime_faction_data(world, index);
     // M47.2 — ActorBase.GetSex / GetVoiceType.
     byroredux_scripting::install_actor_base_traits(world, index);
     // M47.2 — the scripts quests attach to their aliases, checked when their

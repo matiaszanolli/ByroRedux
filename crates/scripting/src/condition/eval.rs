@@ -670,6 +670,20 @@ pub fn evaluate_function(
                 .is_some_and(|ledger| ledger.flag(crate::obscript_ledger::FactionFlag::Expelled, condition.param_1)),
         ),
         ConditionFunction::IsPlayerInJail => truth(crate::jail::player_in_jail(world)),
+        ConditionFunction::GetCrimeGoldFaction
+        | ConditionFunction::GetCrimeGoldViolent
+        | ConditionFunction::GetCrimeGoldNonviolent => {
+            let (nonviolent, violent) = crate::guards::faction_bounty(world, entity, condition.param_1);
+            (match function {
+                ConditionFunction::GetCrimeGoldViolent => violent,
+                ConditionFunction::GetCrimeGoldNonviolent => nonviolent,
+                _ => nonviolent.saturating_add(violent),
+            }) as f32
+        }
+        ConditionFunction::CanPayCrimeGoldFaction => {
+            let (nonviolent, violent) = crate::guards::faction_bounty(world, entity, condition.param_1);
+            truth(crate::guards::player_gold(world) >= i64::from(nonviolent) + i64::from(violent))
+        }
         ConditionFunction::Unknown(index) => {
             log::trace!(
                 "M47.1: condition function index {index} not in M47.1 catalog — \

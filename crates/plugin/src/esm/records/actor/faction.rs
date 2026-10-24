@@ -80,6 +80,56 @@ pub struct VendorData {
     pub everything_not_in_list: bool,
 }
 
+/// `FACT` `DATA` flag bits (Skyrim / FO4, xEdit `wbDefinitionsTES5` / `FO4`) the crime tab uses.
+pub mod crime_flags {
+    pub const TRACK_CRIME: u32 = 1 << 6;
+    pub const IGNORE_MURDER: u32 = 1 << 7;
+    pub const IGNORE_ASSAULT: u32 = 1 << 8;
+    pub const IGNORE_STEALING: u32 = 1 << 9;
+    pub const IGNORE_TRESPASS: u32 = 1 << 10;
+    pub const DO_NOT_REPORT_CRIMES_AGAINST_MEMBERS: u32 = 1 << 11;
+    pub const USE_DEFAULT_CRIME_GOLD: u32 = 1 << 12;
+    pub const IGNORE_PICKPOCKET: u32 = 1 << 13;
+}
+
+/// The Crime tab of a Skyrim / FO4 faction: whether it tracks crime, which crimes it ignores, what
+/// each is fined, and where its jail and evidence chests are (CK *Faction*, *Creating a Custom
+/// Crime Faction*). A faction with no such data has `None` on [`FactionRecord::crime`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FactionCrime {
+    /// `DATA` flags (see [`crime_flags`]).
+    pub flags: u32,
+    /// `JAIL` "Exterior Jail Marker": where the player is released, a `PrisonMarker` reference.
+    pub exterior_jail_marker: u32,
+    /// `WAIT` "Follower Wait Marker".
+    pub follower_wait_marker: u32,
+    /// `STOL` "Stolen Goods Container": an evidence chest reference.
+    pub stolen_goods_container: u32,
+    /// `PLCN` "Player Inventory Container": holds the player's gear in jail.
+    pub player_inventory_container: u32,
+    /// `CRGR` "Shared Crime Faction List".
+    pub shared_crime_factions: u32,
+    /// `JOUT` "Jail Outfit".
+    pub jail_outfit: u32,
+    /// `CRVA` "Crime Values", when authored.
+    pub values: Option<CrimeValues>,
+}
+
+/// `CRVA`: what the faction does about, and fines for, each crime (used when `USE_DEFAULT_CRIME_GOLD`
+/// is not set; "Arrest" and "Attack On Sight" apply either way).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CrimeValues {
+    pub arrest: bool,
+    pub attack_on_sight: bool,
+    pub murder: u16,
+    pub assault: u16,
+    pub trespass: u16,
+    pub pickpocket: u16,
+    pub steal_multiplier: f32,
+    pub escape: u16,
+    pub werewolf: u16,
+}
+
 #[derive(Debug, Clone)]
 pub struct FactionRecord {
     pub form_id: u32,
@@ -114,6 +164,8 @@ pub struct FactionRecord {
     /// Merchant data, `None` for a faction that authors none of `VEND` /
     /// `VENC` / `VENV`.
     pub vendor: Option<VendorData>,
+    /// The Crime tab, on the games that author one (Skyrim, FO4); `None` elsewhere.
+    pub crime: Option<FactionCrime>,
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────
@@ -129,6 +181,7 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         ranks: Vec::new(),
         reputation: None,
         vendor: None,
+        crime: None,
     };
 
     for sub in subs {
@@ -250,4 +303,52 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     }
 
     record
+}
+
+/// The Crime tab of a Skyrim / FO4 `FACT`. Split from [`parse_fact`] because the game decides the
+/// `DATA` width (a full `u32` here, one byte on FO3 / FNV) and `parse_fact` does not know it.
+/// `None` when the record authors none of the crime sub-records.
+pub fn parse_fact_crime(subs: &[SubRecord], remap: &Option<FormIdRemap>) -> Option<FactionCrime> {
+    let mut crime = FactionCrime::default();
+    let mut any = false;
+    for sub in subs {
+        let form = |sub: &SubRecord| remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+        match &sub.sub_type {
+            b"DATA" if sub.data.len() >= 4 => {
+                crime.flags = SubReader::new(&sub.data).u32_or_default();
+                any = true;
+            }
+            b"JAIL" if sub.data.len() >= 4 => crime.exterior_jail_marker = form(sub),
+            b"WAIT" if sub.data.len() >= 4 => crime.follower_wait_marker = form(sub),
+            b"STOL" if sub.data.len() >= 4 => crime.stolen_goods_container = form(sub),
+            b"PLCN" if sub.data.len() >= 4 => crime.player_inventory_container = form(sub),
+            b"CRGR" if sub.data.len() >= 4 => crime.shared_crime_factions = form(sub),
+            b"JOUT" if sub.data.len() >= 4 => crime.jail_outfit = form(sub),
+            // CRVA: arrest u8, attack on sight u8, murder, assault, trespass, pickpocket, unknown (u16 each),
+            // steal multiplier f32, escape u16, werewolf u16. The tail after `unknown` is optional.
+            b"CRVA" if sub.data.len() >= 14 => {
+                let mut r = SubReader::new(&sub.data);
+                let arrest = r.u8_or_default() != 0;
+                let attack_on_sight = r.u8_or_default() != 0;
+                let (murder, assault, trespass, pickpocket) =
+                    (r.u16_or_default(), r.u16_or_default(), r.u16_or_default(), r.u16_or_default());
+                let _unknown = r.u16_or_default();
+                let tail = sub.data.len() >= 20;
+                crime.values = Some(CrimeValues {
+                    arrest,
+                    attack_on_sight,
+                    murder,
+                    assault,
+                    trespass,
+                    pickpocket,
+                    steal_multiplier: if tail { r.f32_or_default() } else { 0.0 },
+                    escape: if tail { r.u16_or_default() } else { 0 },
+                    werewolf: if tail { r.u16_or_default() } else { 0 },
+                });
+                any = true;
+            }
+            _ => {}
+        }
+    }
+    any.then_some(crime)
 }

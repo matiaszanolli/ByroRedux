@@ -105,9 +105,13 @@ pub(super) fn dispatch_actor_group(
         b"FACT" => {
             let fact_remap = reader.get_form_id_remap();
             extract_records(reader, end, b"FACT", &mut |fid, subs| {
-                index
-                    .factions
-                    .insert(fid, parse_fact(fid, subs, &fact_remap));
+                let mut faction = parse_fact(fid, subs, &fact_remap);
+                // Skyrim and FO4 author a Crime tab (a full-width `DATA` among it); FO3 / FNV's
+                // one-byte `DATA` is read by `parse_fact` alone.
+                if matches!(game, GameKind::Skyrim | GameKind::Fallout4) {
+                    faction.crime = parse_fact_crime(subs, &fact_remap);
+                }
+                index.factions.insert(fid, faction);
             })?
         }
         _ => unreachable!("dispatch_actor_group: unexpected label {label:?}"),

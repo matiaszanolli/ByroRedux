@@ -553,6 +553,7 @@ pub fn param1_is_form_id(function_index: u32) -> bool {
         | 72  // GetIsID       — base FormID
         | 426 | 427 // GetIsVoiceType — VTYP or FLST FormID (426 Skyrim/FO4, 427 FO3/FNV)
         | 71  // GetInFaction  — faction FormID
+        | 459 | 375 | 376 | 497 // GetCrimeGold / Violent / Nonviolent / CanPayCrimeGold — a faction FormID (Skyrim and later; 0 = none)
         | 122 // GetCrime — the criminal's actor FormID (param_2 = crime type, a literal)
         | 193 // GetPCExpelled — faction FormID (the same function in TES4 / FO3 / FNV / TES5)
         | 73  // GetFactionRank — faction FormID

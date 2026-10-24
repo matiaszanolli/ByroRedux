@@ -61,10 +61,10 @@ pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
 pub use soun::{parse_sndr, parse_soun, SounRecord};
 
 pub use actor::{
-    decode_ai_data, effective_actor_level, parse_clas, parse_fact, parse_npc, parse_race,
+    crime_flags, decode_ai_data, effective_actor_level, parse_clas, parse_fact, parse_fact_crime, parse_npc, parse_race,
     ActorAiData, ActorResponsibility, Aggression, ClassRecord, Confidence, CreatureStats,
     FactionMembership,
-    FactionRecord, FactionRelation, NpcFaceMorphs, NpcInventoryEntry, NpcRecord, RaceRecord, SubgraphData, SubgraphRole,
+    CrimeValues, FactionCrime, FactionRecord, FactionRelation, NpcFaceMorphs, NpcInventoryEntry, NpcRecord, RaceRecord, SubgraphData, SubgraphRole,
     VendorData, ACBS_PC_LEVEL_MULT, CREATURE_DATA_LEN,
 };
 pub use actor_value_derive::{derive_npc_actor_values, derive_resolved_actor_values};

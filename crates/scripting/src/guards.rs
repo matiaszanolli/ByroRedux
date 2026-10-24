@@ -83,6 +83,28 @@ pub fn knows_crime_against(world: &World, actor: EntityId, criminal: u32, kind: 
         .is_some_and(|knowledge| knowledge.knows_against_any(knower, criminal, kind, &[knower, base]))
 }
 
+/// The player's `(non-violent, violent)` bounty with `faction`, or with `actor`'s crime faction when
+/// `faction` is 0 (CK *GetCrimeGold*: "uses the crime gold from the calling actor's crime
+/// faction unless the factionID is specified"); `(0, 0)` for an actor with none.
+pub fn faction_bounty(world: &World, actor: EntityId, faction: u32) -> (i32, i32) {
+    let faction = if faction != 0 {
+        faction
+    } else {
+        let Some(reference) = crate::obscript_state::reference_form(world, actor) else { return (0, 0) };
+        let Some(faction) = crate::crime_faction::crime_faction(world, actor, reference) else { return (0, 0) };
+        faction
+    };
+    world.try_resource::<crate::FactionCrimeGold>().map_or((0, 0), |gold| gold.of(faction))
+}
+
+/// The gold the player holds.
+pub fn player_gold(world: &World) -> i64 {
+    let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world) else { return 0 };
+    world.get::<Inventory>(player).map_or(0, |inventory| {
+        inventory.items.iter().filter(|stack| stack.base_form_id == CURRENCY_FORM).map(|stack| i64::from(stack.count)).sum()
+    })
+}
+
 /// CS *CanPayCrimeGold*: whether `actor` holds at least as much gold as their
 /// bounty.
 pub fn can_pay_bounty(world: &World, actor: EntityId) -> bool {

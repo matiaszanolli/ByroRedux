@@ -421,7 +421,7 @@ impl CharacterRulesProfile {
         }),
         perk_entry_points: PerkEntryPointDialect::Skyrim,
         level_cap_raises: &[],
-        crime: None,
+        crime: Some(CrimeModel::SKYRIM),
     };
 
     pub const FALLOUT4: Self = Self {

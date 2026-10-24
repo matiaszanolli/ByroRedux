@@ -2653,3 +2653,45 @@ fn acbs_essential_and_protected_decode_per_game() {
     let plain = parse_npc(3, &[sub(b"ACBS", acbs(0x1))], GameKind::Skyrim, &None);
     assert!(!plain.essential && !plain.protected);
 }
+
+/// A Skyrim crime faction's Crime tab: flags (`DATA` is a full `u32` there), the jail and chest
+/// references, and the 20-byte `CRVA`.
+#[test]
+fn fact_crime_tab_round_trips_for_skyrim() {
+    use super::crime_flags::*;
+    let flags = TRACK_CRIME | USE_DEFAULT_CRIME_GOLD | IGNORE_PICKPOCKET;
+    let mut crva = vec![1u8, 1]; // arrest, attack on sight
+    for value in [1000u16, 40, 5, 25, 0] {
+        crva.extend_from_slice(&value.to_le_bytes()); // murder, assault, trespass, pickpocket, unknown
+    }
+    crva.extend_from_slice(&0.5f32.to_le_bytes());
+    crva.extend_from_slice(&100u16.to_le_bytes()); // escape
+    crva.extend_from_slice(&1000u16.to_le_bytes()); // werewolf
+    assert_eq!(crva.len(), 20);
+    let subs = vec![
+        sub(b"EDID", b"CrimeFactionWhiterun\0"),
+        sub(b"DATA", &flags.to_le_bytes()),
+        sub(b"JAIL", &0x0001_AAAAu32.to_le_bytes()),
+        sub(b"STOL", &0x0001_BBBBu32.to_le_bytes()),
+        sub(b"PLCN", &0x0001_CCCCu32.to_le_bytes()),
+        sub(b"JOUT", &0x0001_DDDDu32.to_le_bytes()),
+        sub(b"CRVA", &crva),
+    ];
+    let crime = parse_fact_crime(&subs, &None).expect("a crime faction");
+    assert_eq!(crime.flags, flags);
+    assert_eq!(
+        (crime.exterior_jail_marker, crime.stolen_goods_container, crime.player_inventory_container, crime.jail_outfit),
+        (0x0001_AAAA, 0x0001_BBBB, 0x0001_CCCC, 0x0001_DDDD)
+    );
+    let values = crime.values.expect("CRVA");
+    assert!(values.arrest && values.attack_on_sight);
+    assert_eq!((values.murder, values.assault, values.trespass, values.pickpocket), (1000, 40, 5, 25));
+    assert_eq!((values.steal_multiplier, values.escape, values.werewolf), (0.5, 100, 1000));
+
+    // A faction that authors no crime data has none.
+    assert!(parse_fact_crime(&[sub(b"EDID", b"Plain\0")], &None).is_none());
+    // The optional tail of CRVA (Skyrim lets it end after `unknown`).
+    let short = [sub(b"CRVA", &crva[..14])];
+    let values = parse_fact_crime(&short, &None).unwrap().values.unwrap();
+    assert_eq!((values.murder, values.steal_multiplier), (1000, 0.0));
+}

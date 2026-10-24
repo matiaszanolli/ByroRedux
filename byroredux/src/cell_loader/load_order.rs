@@ -1033,6 +1033,7 @@ mod tests {
             ranks: Vec::new(),
             reputation: None,
             vendor: None,
+            crime: None,
         };
         let factions = HashMap::from([
             (

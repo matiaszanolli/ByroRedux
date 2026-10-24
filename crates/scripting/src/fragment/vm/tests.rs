@@ -1718,6 +1718,7 @@ fn faction_owner_is_the_explicit_owner() {
             ranks: Vec::new(),
             reputation: None,
             vendor: None,
+            crime: None,
         },
     );
     crate::install_owner_kinds(&mut world, &index);
@@ -4352,6 +4353,7 @@ fn owners_and_crime_gold_follow_their_setters() {
             ranks: Vec::new(),
             reputation: None,
             vendor: None,
+            crime: None,
         },
     );
     crate::install_owner_kinds(&mut world, &index);

@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **73 functions** at their canonical CTDA
+//! lineage. This catalog ships **77 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -96,6 +96,10 @@
 //! | 116   | GetCrimeGold           | `ObScriptLedger` bounty (Oblivion dialect) |
 //! | 125   | IsGuard                | `GuardClasses`, the `CLAS` Guard flag (Oblivion / FO3 / FNV) |
 //! | 122   | GetCrime               | `CrimeKnowledge` (every game) |
+//! | 459   | GetCrimeGold (faction) | `FactionCrimeGold` (Skyrim and later) |
+//! | 375   | GetCrimeGoldViolent    | `FactionCrimeGold` (Skyrim and later) |
+//! | 376   | GetCrimeGoldNonviolent | `FactionCrimeGold` (Skyrim and later) |
+//! | 497   | CanPayCrimeGold (faction) | the player's gold vs `FactionCrimeGold` (Skyrim and later) |
 //! | 127   | CanPayCrimeGold        | gold held vs the bounty (Oblivion dialect) |
 //! | 249   | GetPCFame              | `ObScriptLedger` fame (Oblivion dialect) |
 //! | 251   | GetPCInfamy            | `ObScriptLedger` infamy (Oblivion dialect) |

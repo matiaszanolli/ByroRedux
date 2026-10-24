@@ -154,6 +154,7 @@ mod tests {
                 ranks: Vec::new(),
                 reputation: None,
                 vendor: None,
+                crime: None,
             },
         );
         index.npcs.insert(0xA, NpcRecord::default());

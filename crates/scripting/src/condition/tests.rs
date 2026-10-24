@@ -2480,3 +2480,55 @@ fn get_crime_reads_what_the_caller_knows_of_a_crime_against_them() {
     let murder = Condition { param_2: 4, ..attack.clone() };
     assert!(!evaluate_condition(&murder, &world, &context), "another crime type");
 }
+
+/// Skyrim's crime-gold family: a faction's bounty, the faction the parameter or — with none — the
+/// calling actor's crime faction (CK *GetCrimeGold*).
+#[test]
+fn skyrim_crime_gold_conditions_read_the_faction_bounty() {
+    use crate::crime_faction::CrimeFactionOverrides;
+    use crate::{CrimeGoldChange, FactionCrimeGold};
+    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Skyrim};
+    const WHITERUN: u32 = 0xAA01;
+    const RIFTEN: u32 = 0xAA02;
+    let (mut world, guard, player) = guard_and_player(Skyrim);
+    world.register::<byroredux_core::ecs::components::FormIdComponent>();
+    let mut pool = byroredux_core::form_id::FormIdPool::default();
+    let id = pool.intern(byroredux_core::form_id::FormIdPair {
+        plugin: byroredux_core::form_id::PluginId::from_filename("Skyrim.esm"),
+        local: byroredux_core::form_id::LocalFormId(0xB0B),
+    });
+    world.insert_resource(pool);
+    world.insert(guard, byroredux_core::ecs::components::FormIdComponent(id));
+    let mut overrides = CrimeFactionOverrides::default();
+    overrides.set(0xB0B, WHITERUN);
+    world.insert_resource(overrides);
+    let mut gold = FactionCrimeGold::default();
+    gold.apply(CrimeGoldChange::Mod { faction: WHITERUN, violent: false, amount: 25 });
+    gold.apply(CrimeGoldChange::Mod { faction: WHITERUN, violent: true, amount: 40 });
+    gold.apply(CrimeGoldChange::Mod { faction: RIFTEN, violent: false, amount: 5 });
+    world.insert_resource(gold);
+    let mut context = ctx(guard);
+    context.target = Some(player);
+    let value = |index: u32, faction: u32| {
+        let condition = Condition { param_1: faction, ..cond(index, ComparisonOp::Eq, 0.0, false) };
+        // Equal to zero is true exactly when the function reads zero.
+        !evaluate_condition(&condition, &world, &context)
+    };
+    // The guard's own crime faction (no parameter): Whiterun's 25 + 40.
+    assert!(value(459, 0) && value(375, 0) && value(376, 0));
+    let read = |index: u32, faction: u32, expected: f32| {
+        let condition = Condition { param_1: faction, ..cond(index, ComparisonOp::Eq, expected, false) };
+        evaluate_condition(&condition, &world, &context)
+    };
+    assert!(read(459, 0, 65.0) && read(375, 0, 40.0) && read(376, 0, 25.0), "the guard's own faction");
+    assert!(read(459, RIFTEN, 5.0) && read(375, RIFTEN, 0.0), "a named faction, whoever asks");
+    assert!(read(459, 0xDEAD, 0.0), "a faction with no bounty");
+    // The player's purse (100 gold) against Whiterun's 65.
+    assert!(read(497, 0, 1.0));
+    world.resource_mut::<FactionCrimeGold>().apply(CrimeGoldChange::Mod { faction: WHITERUN, violent: true, amount: 100 });
+    assert!(read(497, 0, 0.0), "165 owed against 100 held");
+    // 459 is another function on FO3 / FNV.
+    let condition = cond(459, ComparisonOp::Eq, 1.0, false);
+    let (fnv, ..) = guard_and_player(Fallout3NV);
+    assert!(!is_modeled(&fnv, &condition) && is_modeled(&world, &condition));
+}

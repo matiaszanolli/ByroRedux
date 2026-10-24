@@ -41,6 +41,16 @@ impl CrimeKind {
     }
 }
 
+/// Where a game keeps the bounty a crime earns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BountyScope {
+    /// One bounty on the player (Oblivion's `GetCrimeGold`), guards, jails and all.
+    Player,
+    /// A bounty per crime faction (Skyrim's holds): a witness reports to its own crime faction,
+    /// and the faction's authored Crime tab decides what is tracked, ignored and fined.
+    CrimeFaction,
+}
+
 /// A game's crime fines (the defaults of the settings the masters may
 /// author).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -80,13 +90,49 @@ pub struct CrimeModel {
     /// to immediately arrest you"). The higher figures the wiki quotes (arrest at about 1000,
     /// attack at about 4000) are not settings: they are conditions in the guards' authored dialogue.
     pub rush_bounty: i32,
+    /// Where the bounty is kept (see [`BountyScope`]).
+    pub scope: BountyScope,
+    /// Whether the fine for theft rounds up (Oblivion: "bounties always round up when the value is
+    /// a decimal") or down (Skyrim: "half of the stolen item's value, rounded down").
+    pub theft_rounds_up: bool,
+    /// Whether animals witness a crime (Skyrim: "most living creatures can witness crimes"; Oblivion's
+    /// witnesses are NPCs).
+    pub creatures_witness: bool,
 }
 
 impl Resource for CrimeModel {}
 
 impl CrimeModel {
     /// Oblivion's defaults (CS wiki *fCrimeGoldSteal*, UESP *Crime*).
-    pub const OBLIVION: Self = Self { steal_value_mult: 0.5, attack_gold: 40, murder_gold: 1000, infamy_bounty_step: 1000, prison_days_divisor: 100, alarm_distance: 4000.0, guards_responding: 4, rush_bounty: 500 };
+    pub const OBLIVION: Self = Self {
+        steal_value_mult: 0.5,
+        attack_gold: 40,
+        murder_gold: 1000,
+        infamy_bounty_step: 1000,
+        prison_days_divisor: 100,
+        alarm_distance: 4000.0,
+        guards_responding: 4,
+        rush_bounty: 500,
+        scope: BountyScope::Player,
+        theft_rounds_up: true,
+        creatures_witness: false,
+    };
+
+    /// Skyrim's defaults: what a crime faction that ticks "Crime Gold - Use Defaults" fines (UESP
+    /// *Skyrim:Crime*: theft half the item's value rounded down, trespass 5, pickpocket 25, assault
+    /// 40, murder 1000). The bounty is per crime faction, and animals witness. The guards and jail
+    /// settings below are Oblivion's and unused here: Skyrim's guards are an AI package.
+    pub const SKYRIM: Self = Self {
+        scope: BountyScope::CrimeFaction,
+        theft_rounds_up: false,
+        creatures_witness: true,
+        ..Self::OBLIVION
+    };
+
+    /// The fine for a trespass (5) and a pickpocket (25), the only two the Oblivion defaults do not
+    /// already carry as fields; the same in both games (UESP *Crime* pages).
+    pub const TRESPASS_GOLD: i32 = 5;
+    pub const PICKPOCKET_GOLD: i32 = 25;
 
     /// The model with each setting the load order authors replacing its
     /// default. A non-finite or negative authored value is ignored.
@@ -106,6 +152,9 @@ impl CrimeModel {
             // Zero is a real setting here (no guard appears), unlike the divisor.
             guards_responding: Self::authored_gold(&gmst, "iNumberGuardsCrimeResponse", self.guards_responding as i32) as u32,
             rush_bounty: Self::authored_gold(&gmst, "iCrimeGoldAttackMin", self.rush_bounty),
+            scope: self.scope,
+            theft_rounds_up: self.theft_rounds_up,
+            creatures_witness: self.creatures_witness,
         }
     }
 
@@ -132,9 +181,13 @@ impl CrimeModel {
     /// septim".
     #[must_use]
     pub fn theft_bounty(self, value: u64) -> i32 {
-        let fine = (value as f64 * f64::from(self.steal_value_mult)).ceil();
-        // `as` saturates, so a mod-supplied absurd value cannot wrap.
-        (fine as i32).max(1)
+        let raw = value as f64 * f64::from(self.steal_value_mult);
+        let fine = if self.theft_rounds_up { raw.ceil() } else { raw.floor() };
+        // `as` saturates, so a mod-supplied absurd value cannot wrap. Oblivion fines at least a
+        // septim ("if the value is zero, it will always be at least one"); Skyrim's rounded-down
+        // half of a 1-gold item is nothing.
+        let minimum = i32::from(self.theft_rounds_up);
+        (fine as i32).max(minimum)
     }
 }
 
@@ -149,6 +202,17 @@ mod tests {
         assert_eq!(model.theft_bounty(5), 3, "2.5 rounds up");
         assert_eq!(model.theft_bounty(1), 1, "0.5 rounds up");
         assert_eq!(model.theft_bounty(0), 1, "a worthless item still costs a septim");
+    }
+
+    #[test]
+    fn skyrim_rounds_a_theft_down_and_keeps_the_bounty_per_crime_faction() {
+        let model = CrimeModel::SKYRIM;
+        assert_eq!(model.theft_bounty(5), 2, "half of 5, rounded down");
+        assert_eq!(model.theft_bounty(1), 0);
+        assert_eq!(model.theft_bounty(100), 50);
+        assert_eq!(model.scope, BountyScope::CrimeFaction);
+        assert!(model.creatures_witness && !CrimeModel::OBLIVION.creatures_witness);
+        assert_eq!((model.attack_gold, model.murder_gold), (40, 1000));
     }
 
     #[test]

@@ -777,3 +777,38 @@ Leveling](https://en.uesp.net/wiki/Skyrim:Leveling). Implemented as
 `skyrim_skill_xp_to_next` / `skyrim_skill_xp_between` /
 `SKYRIM_SKILL_USE_CURVE` (`crates/core/src/character/skyrim.rs`), pinned by
 `skill_xp_cost_matches_uesp_lockpicking`.
+
+## Crime — fines per crime faction (built), guards and jail (not built)
+
+Sources: CK *Crime*, *Faction* (Crime Tab), *Creating a Custom Crime Faction*,
+*GetCrimeGold*; UESP *Skyrim:Crime*; xEdit `wbDefinitionsTES5` (`FACT`).
+Built as `CrimeModel::SKYRIM` (`BountyScope::CrimeFaction`) on the Skyrim rules
+profile, `FactionCrime` parsed from the `FACT` Crime tab
+(`parse_fact_crime`, Skyrim and FO4), and `crime.rs::charge_crime_factions`.
+
+- **Where the bounty goes.** "Crimes are reported to an Actor's Crime Faction":
+  every witness's own crime faction (the base `NPC_`'s `CRIF`, or a script's
+  `SetCrimeFaction`) gets the fine, once, into the existing
+  `FactionCrimeGold` (non-violent: theft, trespass, pickpocket; violent:
+  assault, murder). Animals witness too (`creatures_witness`). The CK's note
+  that a witness reports to the *victim's* crime faction when the victim has
+  one, and the "Ignore crimes against non-members" flag, are not modelled.
+- **What a faction fines.** `Track Crime` (DATA bit 6) is required; the
+  `Ignore Crimes: Murder / Assault / Stealing / Trespass / Pickpocket` bits
+  drop a kind; `Crime Gold - Use Defaults` (bit 12) uses the model's defaults
+  (theft half the item value **rounded down**, trespass 5, pickpocket 25,
+  assault 40, murder 1000: UESP *Skyrim:Crime*), otherwise the `CRVA` values
+  (theft is the item value times the faction's own steal multiplier). In
+  Skyrim.esm 58 factions track crime: 10 use the defaults and 48 author their
+  own values, many of them zero (a hold's crime faction fines nothing for a
+  kind it authors as 0).
+- **Conditions.** `GetCrimeGold` (459), `GetCrimeGoldViolent` (375),
+  `GetCrimeGoldNonviolent` (376) and `CanPayCrimeGold` (497) read that bounty;
+  the faction is the parameter or, with none, the calling actor's crime
+  faction. 459 is `GetActorCrimePlayerEnemy` on FO3 / FNV and stays unmodeled
+  there. `GetIsCrimeFaction` (152) has no documented meaning and is not built.
+- **Not built.** Skyrim's guards (the `IsGuardFaction` arrest / kill AI and
+  `GuardDialogueFaction` dialogue), jail (`JAIL` / `STOL` / `PLCN` / `JOUT` are
+  parsed and unused), the Papyrus `PayCrimeGold` / `SendPlayerToJail` natives'
+  engine side, bounty collectors, trespass warnings, and removing a bounty
+  when the last witness dies.

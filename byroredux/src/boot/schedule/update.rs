@@ -290,6 +290,12 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::guards::GuardClasses>()
             .reads::<byroredux_core::character::Background>()
             .writes::<crate::systems::forcegreet::ForceGreetDirective>()
+            // `crime::charge_crime_factions` — Skyrim's per-hold bounty: the witnesses' crime factions.
+            .reads_resource::<byroredux_scripting::crime_faction::CrimeFactionData>()
+            .reads_resource::<byroredux_scripting::CrimeFactions>()
+            .reads_resource::<byroredux_scripting::CrimeFactionOverrides>()
+            .writes_resource::<byroredux_scripting::FactionCrimeGold>()
+            .reads_resource::<crate::cell_loader::LoadedCellIndex>()
             .reads::<byroredux_scripting::AiCombatState>()
             .reads::<crate::systems::faction_hostility::CombatDisposition>()
             .reads::<byroredux_core::ecs::components::CreatureActor>()
@@ -403,7 +409,7 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::CreatureActor>()
             .reads::<byroredux_core::ecs::components::GlobalTransform>()
             .reads::<byroredux_scripting::AiCombatState>()
-            .writes::<crate::systems::forcegreet::ForceGreetDirective>(),
+            .writes::<crate::systems::forcegreet::ForceGreetDirective>()
     );
     // MQ101's dragon-attack/keep-escape combat gate (stages 270+, ROADMAP.md
     // "MQ101 end-to-end playability"): `Effect::StartCombat` arms
@@ -761,6 +767,12 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::guards::GuardClasses>()
             .reads::<byroredux_core::character::Background>()
             .writes::<crate::systems::forcegreet::ForceGreetDirective>()
+            // `crime::charge_crime_factions` — Skyrim's per-hold bounty: the witnesses' crime factions.
+            .reads_resource::<byroredux_scripting::crime_faction::CrimeFactionData>()
+            .reads_resource::<byroredux_scripting::CrimeFactions>()
+            .reads_resource::<byroredux_scripting::CrimeFactionOverrides>()
+            .writes_resource::<byroredux_scripting::FactionCrimeGold>()
+            .reads_resource::<crate::cell_loader::LoadedCellIndex>()
             .reads::<byroredux_scripting::AiCombatState>()
             .reads::<byroredux_core::ecs::components::FormIdComponent>()
             .reads_resource::<byroredux_core::form_id::FormIdPool>()

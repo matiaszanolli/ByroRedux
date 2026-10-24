@@ -368,6 +368,19 @@ pub enum ConditionFunction {
     /// Oblivion's `IsPlayerInJail` (CTDA **171**; not a function of the later
     /// games). 1 while the player is serving a sentence ([`crate::jail`]).
     IsPlayerInJail,
+    /// Skyrim-era `GetCrimeGold(faction)` (CTDA **459**; FO3 / FNV author 459 as
+    /// `GetActorCrimePlayerEnemy`): "the player's current crime gold ... uses the crime gold from the
+    /// calling actor's crime faction unless the factionID is specified" — the violent and
+    /// non-violent parts together ([`crate::FactionCrimeGold`]). A zero `param_1` is "no faction".
+    GetCrimeGoldFaction,
+    /// `GetCrimeGoldViolent(faction)` (CTDA **375**): the part of the bounty from murder and assault.
+    GetCrimeGoldViolent,
+    /// `GetCrimeGoldNonviolent(faction)` (CTDA **376**): the part from every other crime.
+    GetCrimeGoldNonviolent,
+    /// Skyrim-era `CanPayCrimeGold(faction)` (CTDA **497**): whether the player holds the gold the
+    /// faction's bounty asks (the Papyrus `Faction.CanPayCrimeGold`: "whether the player can pay the
+    /// crime gold for this faction").
+    CanPayCrimeGoldFaction,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -503,6 +516,13 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::IsTurnArrest, indices: &[], name: "IsTurnArrest", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetPCExpelled, indices: &[], name: "GetPCExpelled", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::IsPlayerInJail, indices: &[], name: "IsPlayerInJail", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    // The Papyrus-era crime-gold family: a faction's bounty, the faction being the parameter or, with
+    // none, the calling actor's crime faction. 375 / 376 / 497 are authored by Skyrim and later only;
+    // 459 is `GetActorCrimePlayerEnemy` on FO3 / FNV (see `FOREIGN_INDICES`).
+    Row { func: ConditionFunction::GetCrimeGoldFaction, indices: &[459], name: "GetCrimeGoldFaction", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetCrimeGoldViolent, indices: &[375], name: "GetCrimeGoldViolent", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetCrimeGoldNonviolent, indices: &[376], name: "GetCrimeGoldNonviolent", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::CanPayCrimeGoldFaction, indices: &[497], name: "CanPayCrimeGoldFaction", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
 ];
 
 /// The CTDA indices whose meaning is Oblivion's own, with the function each
@@ -546,6 +566,8 @@ const OBLIVION_DIALECT: &[(u32, ConditionFunction)] = &[
 /// FO76 or Starfield definition has been read, so nothing claims the index is
 /// foreign there.
 const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
+    // `GetCrimeGold(faction)` is 459 on Skyrim and later; FO3 / FNV author it as `GetActorCrimePlayerEnemy`.
+    (459, &[GameKind::Fallout3NV]),
     // `IsGuard` is the same function in every game, but only Oblivion, FO3 and FNV
     // author the class flag it reads; the later games' guards are not told that way.
     (125, &[GameKind::Skyrim, GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield]),
@@ -629,7 +651,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 73] = [
+    pub const CATALOG: [ConditionFunction; 77] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -703,6 +725,10 @@ impl ConditionFunction {
         Self::IsTurnArrest,
         Self::GetPCExpelled,
         Self::IsPlayerInJail,
+        Self::GetCrimeGoldFaction,
+        Self::GetCrimeGoldViolent,
+        Self::GetCrimeGoldNonviolent,
+        Self::CanPayCrimeGoldFaction,
     ];
 
     /// This function's [`ROWS`] row. `Unknown` has none — the panicking
@@ -919,7 +945,11 @@ mod tests {
                 ConditionFunction::GetCrime |
                 ConditionFunction::IsTurnArrest |
                 ConditionFunction::GetPCExpelled |
-                ConditionFunction::IsPlayerInJail => {
+                ConditionFunction::IsPlayerInJail |
+                ConditionFunction::GetCrimeGoldFaction |
+                ConditionFunction::GetCrimeGoldViolent |
+                ConditionFunction::GetCrimeGoldNonviolent |
+                ConditionFunction::CanPayCrimeGoldFaction => {
                     assert_eq!(
                         rows_of(function),
                         1,

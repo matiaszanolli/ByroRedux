@@ -2,9 +2,11 @@
 //!
 //! Two layers. **Every game** classifies a crime (theft from an owner, a strike on someone
 //! who is not fighting you) and records who saw it in the saved `CrimeKnowledge`, which
-//! `GetCrime` / `GetCrimeKnown` read. **A game with a [`CrimeModel`]** (Oblivion so far;
-//! the profile row says so) then fines it, flags the factions and sends guards. Theft,
-//! assault and murder are wired. The rules are Oblivion's (CS wiki
+//! `GetCrime` / `GetCrimeKnown` read. **A game with a [`CrimeModel`]** (Oblivion and Skyrim so
+//! far; the profile row says so) then fines it, by its [`BountyScope`]: Oblivion keeps one bounty
+//! on the player (flags the factions, sends guards, jails); Skyrim reports to each witness's crime
+//! faction and fines what that faction's Crime tab says ([`charge_crime_factions`]). Theft,
+//! assault and murder are wired. The Oblivion rules below are the CS wiki's (CS wiki
 //! *Crime Overview*, *fCrimeGoldSteal*, *iCrimeGoldXX*; UESP
 //! *Oblivion:Crime*, *Oblivion:Infamy*):
 //!
@@ -45,7 +47,7 @@
 //! (`faction_hostility::actor_would_attack`) plus not already fighting the player; "NPC" is
 //! an actor without [`CreatureActor`].
 
-use byroredux_core::character::{CrimeKind, CrimeModel};
+use byroredux_core::character::{BountyScope, CrimeKind, CrimeModel};
 use byroredux_core::ecs::components::{CreatureActor, Dead, FactionRanks, GlobalTransform};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
@@ -65,9 +67,10 @@ pub(crate) fn install_crime_model(world: &mut World, index: &EsmIndex) {
     }
 }
 
-/// The living NPCs who can see the player: the people a crime is reported by. Creatures do not
-/// report crimes here.
+/// The living actors who can see the player: the people a crime is reported by. Creatures
+/// witness only where the game's model says they do (Skyrim's animals do, Oblivion's NPCs only).
 fn witnesses(world: &World, player: EntityId) -> Vec<EntityId> {
+    let creatures = world.try_resource::<CrimeModel>().is_some_and(|model| model.creatures_witness);
     let observers: Vec<EntityId> = world
         .query::<crate::systems::faction_hostility::CombatDisposition>()
         .map(|q| q.iter().map(|(entity, _)| entity).collect())
@@ -77,10 +80,53 @@ fn witnesses(world: &World, player: EntityId) -> Vec<EntityId> {
         .filter(|&observer| {
             observer != player
                 && world.get::<Dead>(observer).is_none()
-                && world.get::<CreatureActor>(observer).is_none()
+                && (creatures || world.get::<CreatureActor>(observer).is_none())
                 && crate::systems::faction_hostility::actor_detects(world, observer, player)
         })
         .collect()
+}
+
+/// The crime factions the `witnesses` report to: each witness's own (CK *Crime*: "crimes are
+/// reported to an Actor's Crime Faction"), once.
+fn reported_to(world: &World, witnesses: &[EntityId]) -> Vec<u32> {
+    let mut factions: Vec<u32> = witnesses
+        .iter()
+        .filter_map(|&witness| {
+            let reference = byroredux_scripting::obscript_state::reference_form(world, witness)?;
+            byroredux_scripting::crime_faction(world, witness, reference)
+        })
+        .collect();
+    factions.sort_unstable();
+    factions.dedup();
+    factions
+}
+
+/// Add what `kind` fines (a theft of `theft_value` gold) to the bounty of every crime faction a
+/// witness reports to — Skyrim's per-hold bounty — and say so. Returns the gold added in total.
+fn charge_crime_factions(world: &World, model: CrimeModel, kind: CrimeKind, witnesses: &[EntityId], theft_value: u64) -> i32 {
+    use byroredux_scripting::{CrimeGoldChange, FactionCrimeGold};
+    let mut total = 0;
+    for faction in reported_to(world, witnesses) {
+        let Some((violent, amount)) = world
+            .try_resource::<byroredux_scripting::crime_faction::CrimeFactionData>()
+            .and_then(|data| data.get(faction).and_then(|crime| byroredux_scripting::crime_faction::faction_fine(crime, &model, kind, theft_value)))
+        else {
+            continue;
+        };
+        if amount <= 0 {
+            continue;
+        }
+        if let Some(mut gold) = world.try_resource_mut::<FactionCrimeGold>() {
+            gold.apply(CrimeGoldChange::Mod { faction, violent, amount });
+        }
+        total += amount;
+        let name = world
+            .try_resource::<crate::cell_loader::LoadedCellIndex>()
+            .and_then(|index| index.0.factions.get(&faction).map(|record| record.full_name.clone()))
+            .filter(|name| !name.is_empty());
+        crate::notifications::push(world, format!("{amount} Gold added to {}", name.as_deref().unwrap_or("your bounty")));
+    }
+    total
 }
 
 /// The player committed a `kind` crime against `victim` in sight of `witnesses`: each of them
@@ -105,6 +151,10 @@ fn reference_of(world: &World, entity: EntityId) -> u32 {
 /// up and opens its generic greeting, which an arrest greeting (`IsTurnArrest`) answers.
 fn raise_alarm(world: &World, model: CrimeModel, player: EntityId, kind: CrimeKind, victim: u32, witnesses: &[EntityId]) {
     use crate::systems::forcegreet::{ForceGreetDirective, FORCE_GREET_RADIUS};
+    // Skyrim's guards are an AI package keyed on `IsGuardFaction`, not this class-flag response.
+    if model.scope != BountyScope::Player {
+        return;
+    }
     let position = |entity: EntityId| world.get::<GlobalTransform>(entity).map(|t| t.translation);
     let (Some(at_player), true) = (position(player), model.guards_responding > 0) else {
         return;
@@ -149,6 +199,18 @@ pub(crate) fn report_theft(world: &World, player: EntityId, owner: u32, rows: &[
     let Some(model) = world.try_resource::<CrimeModel>().map(|model| *model) else {
         return 0;
     };
+    let value: u64 = {
+        let catalog = world.try_resource::<crate::inventory::InventoryCatalog>();
+        rows.iter()
+            .map(|&(base, count)| {
+                let each = catalog.as_ref().map_or(0, |catalog| catalog.item_value(base));
+                u64::from(each) * u64::from(count)
+            })
+            .sum()
+    };
+    if model.scope == BountyScope::CrimeFaction {
+        return charge_crime_factions(world, model, CrimeKind::Steal, &seen_by, value);
+    }
     // The player now holds these stolen: `PayFine` / `GoToJail` take them back.
     if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
         for &(base, count) in rows {
@@ -164,15 +226,6 @@ pub(crate) fn report_theft(world: &World, player: EntityId, owner: u32, rows: &[
     if seen_by.is_empty() {
         return 0;
     }
-    let value: u64 = {
-        let catalog = world.try_resource::<crate::inventory::InventoryCatalog>();
-        rows.iter()
-            .map(|&(base, count)| {
-                let each = catalog.as_ref().map_or(0, |catalog| catalog.item_value(base));
-                u64::from(each) * u64::from(count)
-            })
-            .sum()
-    };
     let bounty = charge(world, model, model.theft_bounty(value), "stealing");
     raise_alarm(world, model, player, CrimeKind::Steal, owner, &seen_by);
     bounty
@@ -233,6 +286,9 @@ pub(crate) fn report_strike(world: &World, player: EntityId, victim: EntityId, k
         if let Some(mut marks) = world.query_mut::<AssaultedByPlayer>() {
             marks.insert(victim, AssaultedByPlayer);
         }
+    }
+    if model.scope == BountyScope::CrimeFaction {
+        return charge_crime_factions(world, model, kind, &seen_by, 0);
     }
     let victim_factions: Vec<u32> = world
         .get::<FactionRanks>(victim)
@@ -515,6 +571,88 @@ mod alarm_tests {
         assert!(town.world.try_resource::<ObScriptLedger>().is_none_or(|ledger| ledger.crime_gold == 0));
     }
 
+    /// Skyrim: the bounty is kept per crime faction, reported to by whoever saw the crime.
+    mod skyrim {
+        use super::*;
+        use byroredux_plugin::esm::records::crime_flags::*;
+        use byroredux_plugin::esm::records::FactionCrime;
+        use byroredux_scripting::{CrimeFactionOverrides, FactionCrimeGold};
+
+        const WHITERUN: u32 = 0x00_0AA1;
+        const RIFTEN: u32 = 0x00_0AA2;
+
+        /// The town with Skyrim's model, the citizen reporting to Whiterun's tracking crime faction.
+        fn hold(flags: u32) -> Town {
+            let mut town = town(Some(CrimeModel::SKYRIM));
+            let mut data = std::collections::HashMap::new();
+            data.insert(WHITERUN, FactionCrime { flags, ..Default::default() });
+            data.insert(RIFTEN, FactionCrime { flags: TRACK_CRIME | USE_DEFAULT_CRIME_GOLD, ..Default::default() });
+            town.world.insert_resource(byroredux_scripting::crime_faction::CrimeFactionData::from_map(data));
+            town.world.insert_resource(FactionCrimeGold::default());
+            let mut overrides = CrimeFactionOverrides::default();
+            let witness_ref = byroredux_scripting::obscript_state::reference_form(&town.world, town.witness).unwrap();
+            overrides.set(witness_ref, WHITERUN);
+            town.world.insert_resource(overrides);
+            town
+        }
+
+        #[test]
+        fn a_witnessed_theft_is_a_nonviolent_bounty_on_the_witnesses_crime_faction() {
+            let town = hold(TRACK_CRIME | USE_DEFAULT_CRIME_GOLD);
+            let added = charge_crime_factions(&town.world, CrimeModel::SKYRIM, CrimeKind::Steal, &[town.witness], 101);
+            assert_eq!(added, 50);
+            assert_eq!(town.world.resource::<FactionCrimeGold>().of(WHITERUN), (50, 0), "(non-violent, violent): half of 101, rounded down");
+            report_theft(&town.world, town.player, OWNER, &[]);
+            assert_eq!(town.world.resource::<FactionCrimeGold>().of(WHITERUN), (50, 0), "a worthless item adds nothing");
+            assert_eq!(town.world.resource::<FactionCrimeGold>().of(RIFTEN), (0, 0), "another hold is untouched");
+            assert!(town.world.try_resource::<ObScriptLedger>().is_none_or(|ledger| ledger.crime_gold == 0), "no player-wide bounty");
+            assert!(!summoned(&town, town.nearer_guard), "Skyrim's guards are not this response");
+        }
+
+        #[test]
+        fn assault_and_murder_are_violent_and_land_on_the_same_faction() {
+            let mut town = hold(TRACK_CRIME | USE_DEFAULT_CRIME_GOLD);
+            report_strike(&town.world, town.player, town.far_guard, false);
+            assert_eq!(town.world.resource::<FactionCrimeGold>().of(WHITERUN), (0, 40), "(non-violent, violent)");
+            town.world.register::<Dead>();
+            town.world.insert(town.far_guard, Dead);
+            report_strike(&town.world, town.player, town.far_guard, true);
+            assert_eq!(town.world.resource::<FactionCrimeGold>().of(WHITERUN), (0, 1040), "assault, then the murder");
+        }
+
+        #[test]
+        fn a_faction_that_ignores_the_crime_or_does_not_track_hears_nothing() {
+            let town = hold(TRACK_CRIME | USE_DEFAULT_CRIME_GOLD | IGNORE_ASSAULT);
+            report_strike(&town.world, town.player, town.far_guard, false);
+            assert_eq!(town.world.resource::<FactionCrimeGold>().of(WHITERUN), (0, 0));
+            let town = hold(USE_DEFAULT_CRIME_GOLD);
+            report_strike(&town.world, town.player, town.far_guard, false);
+            assert_eq!(town.world.resource::<FactionCrimeGold>().of(WHITERUN), (0, 0), "not tracking");
+        }
+
+        #[test]
+        fn an_actor_with_no_crime_faction_reports_nothing_but_still_knows() {
+            let mut town = hold(TRACK_CRIME | USE_DEFAULT_CRIME_GOLD);
+            town.world.insert_resource(CrimeFactionOverrides::default()); // the citizen's faction is gone
+            report_strike(&town.world, town.player, town.far_guard, false);
+            assert_eq!(town.world.resource::<FactionCrimeGold>().of(WHITERUN), (0, 0));
+            assert!(knows(&town, town.witness, CrimeKind::Attack), "it saw the assault");
+        }
+
+        #[test]
+        fn animals_witness_crimes_in_skyrim_but_not_in_oblivion() {
+            for (model, expected) in [(CrimeModel::SKYRIM, true), (CrimeModel::OBLIVION, false)] {
+                let mut town = town(Some(model));
+                town.world.register::<CreatureActor>();
+                town.world.insert(town.witness, CreatureActor);
+                // Only the (now creature) citizen is in sight.
+                town.world.insert_resource(DetectionConfig { max_distance: 350.0, exterior_mult: 1.0 });
+                report_theft(&town.world, town.player, OWNER, &[(0x5678, 3)]);
+                assert_eq!(knows(&town, town.witness, CrimeKind::Steal), expected);
+            }
+        }
+    }
+
     #[test]
     fn a_witnessed_murder_is_known_with_its_victim_and_calls_the_guards() {
         let mut town = town(Some(CrimeModel::OBLIVION));
@@ -595,7 +733,7 @@ pub(crate) fn make_guard_rush_system() -> impl FnMut(&World, f32) + Send + Sync 
 
 fn rush_wanted_player(world: &World, waiting: &mut std::collections::HashMap<EntityId, f32>) {
     use crate::systems::forcegreet::{ForceGreetDirective, FORCE_GREET_RADIUS};
-    let Some(model) = world.try_resource::<CrimeModel>().map(|model| *model) else { return };
+    let Some(model) = world.try_resource::<CrimeModel>().map(|model| *model).filter(|model| model.scope == BountyScope::Player) else { return };
     let bounty = byroredux_scripting::guards::player_bounty(world);
     if bounty <= 0 || bounty < model.rush_bounty || byroredux_scripting::jail::player_in_jail(world) {
         return;
