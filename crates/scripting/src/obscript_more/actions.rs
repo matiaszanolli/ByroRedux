@@ -60,7 +60,7 @@ fn cmd_116c(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
         Some((form, entity)) => match crate::destruction::damage_object(world, entity, form, num(args, 0)) {
             Some(outcome) => {
                 if outcome.disable {
-                    crate::obscript_actions::run(world, 0x1022, &[], &Context { caller: Some(form), ..*ctx });
+                    crate::obscript_cmd::run(world, 0x1022, &[], &Context { caller: Some(form), ..*ctx });
                 }
                 done(format!("DamageObject {form:08X} {}", num(args, 0)))
             }
@@ -288,7 +288,7 @@ fn cmd_1212(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx
         Some((form, _)) => {
             let stage = num(args, 0);
             if matches!(stage as i32, 2 | 4) {
-                crate::obscript_actions::run(world, 0x1022, &[], &Context { caller: Some(form), ..*ctx });
+                crate::obscript_cmd::run(world, 0x1022, &[], &Context { caller: Some(form), ..*ctx });
             }
             store(world, cmd, form, stage)
         }

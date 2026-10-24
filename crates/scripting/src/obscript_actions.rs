@@ -40,6 +40,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 
 use crate::actor_value_names::ScriptGame;
+use crate::obscript_cmd::{Command, Games};
 use crate::condition::resolve_entity_by_global_form_id;
 use crate::fragment::{apply_move_to_effect, reference_enabled, PlayerMoveRequest, ReferenceEnableState};
 use crate::obscript_vm::ObScriptValue;
@@ -93,81 +94,86 @@ pub(crate) struct Context {
     pub elapsed: f32,
 }
 
-/// Every command [`run`] answers itself.
-pub(crate) fn handles(cmd: u16) -> bool {
-    matches!(
-        cmd,
-        CMD_ENABLE
-            | CMD_DISABLE
-            | CMD_GET_DISABLED
-            | CMD_EVALUATE_PACKAGE
-            | CMD_MOVE_TO
-            | CMD_MOVE_TO_FADE
-            | CMD_ADD_SCRIPT_PACKAGE
-            | CMD_REMOVE_SCRIPT_PACKAGE
-            | CMD_PLAY_SOUND
-            | CMD_ACTIVATE
-    )
+/// The calling reference of a row with `needs_caller`: the command table has already declined a call
+/// with none.
+fn caller_of(context: &Context) -> u32 {
+    context.caller.filter(|&form| form != 0).unwrap_or(0)
 }
 
-/// Run `cmd` if it is a reference-bound action.
-pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let Context { caller, known, action_ref, .. } = *context;
-    // `0x124f` is a New Vegas command only.
-    if !handles(cmd) || (cmd == CMD_MOVE_TO_FADE && !ScriptGame::is_fallout3_nv(world)) {
-        return crate::obscript_effects::run(world, cmd, args, context);
-    }
-    if cmd == CMD_PLAY_SOUND {
-        return play_sound(world, args);
-    }
-    let Some(caller) = caller.filter(|&form| form != 0) else {
+fn done(value: Option<ObScriptValue>, effect: String) -> Action {
+    Action::Done { value, effect }
+}
+
+fn enable_or_disable(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let enabled = cmd == CMD_ENABLE;
+    let Some(mut state) = world.try_resource_mut::<ReferenceEnableState>() else {
         return Action::Declined;
     };
-    let done = |value: Option<ObScriptValue>, effect: String| Action::Done { value, effect };
-    match cmd {
-        CMD_ENABLE | CMD_DISABLE => {
-            let enabled = cmd == CMD_ENABLE;
-            let Some(mut state) = world.try_resource_mut::<ReferenceEnableState>() else {
-                return Action::Declined;
-            };
-            state.set_enabled(caller, enabled);
-            done(None, format!("{} {caller:08X}", if enabled { "Enable" } else { "Disable" }))
-        }
-        CMD_GET_DISABLED => {
-            let disabled = !reference_enabled(world, caller);
-            done(Some(ObScriptValue::Num(disabled as i32 as f32)), String::new())
-        }
-        CMD_EVALUATE_PACKAGE => {
-            match entity_of(world, caller, known) {
-                Some(actor) if request_package_evaluation(world, actor) => {
-                    done(None, format!("EvaluatePackage {caller:08X}"))
-                }
-                _ => Action::Declined,
-            }
-        }
-        CMD_ADD_SCRIPT_PACKAGE | CMD_REMOVE_SCRIPT_PACKAGE => {
-            let Some(actor) = entity_of(world, caller, known) else {
-                return Action::Declined;
-            };
-            if cmd == CMD_REMOVE_SCRIPT_PACKAGE {
-                // "Removes any currently running script package": none is not an error.
-                remove_script_package(world, actor);
-                return done(None, format!("RemoveScriptPackage {caller:08X}"));
-            }
-            // A null package (`Ref(0)`, the unresolved-slot or `Z` null tag) names none.
-            let Some(ObScriptValue::Ref(package)) = args.first().copied().filter(|v| *v != ObScriptValue::Ref(0)) else {
-                return Action::Declined;
-            };
-            if add_script_package(world, actor, package) {
-                done(None, format!("AddScriptPackage {caller:08X} {package:08X}"))
-            } else {
-                Action::Declined
-            }
-        }
-        CMD_ACTIVATE => activate(world, args, caller, known, action_ref),
-        _ => move_to(world, args, caller, known),
+    state.set_enabled(caller, enabled);
+    done(None, format!("{} {caller:08X}", if enabled { "Enable" } else { "Disable" }))
+}
+
+fn get_disabled(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let disabled = !reference_enabled(world, caller_of(context));
+    done(Some(ObScriptValue::Num(disabled as i32 as f32)), String::new())
+}
+
+fn evaluate_package(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    match entity_of(world, caller, context.known) {
+        Some(actor) if request_package_evaluation(world, actor) => done(None, format!("EvaluatePackage {caller:08X}")),
+        _ => Action::Declined,
     }
 }
+
+fn add_or_remove_script_package(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(actor) = entity_of(world, caller, context.known) else {
+        return Action::Declined;
+    };
+    if cmd == CMD_REMOVE_SCRIPT_PACKAGE {
+        // "Removes any currently running script package": none is not an error.
+        remove_script_package(world, actor);
+        return done(None, format!("RemoveScriptPackage {caller:08X}"));
+    }
+    // A null package (`Ref(0)`, the unresolved-slot or `Z` null tag) names none.
+    let Some(ObScriptValue::Ref(package)) = args.first().copied().filter(|v| *v != ObScriptValue::Ref(0)) else {
+        return Action::Declined;
+    };
+    if add_script_package(world, actor, package) {
+        done(None, format!("AddScriptPackage {caller:08X} {package:08X}"))
+    } else {
+        Action::Declined
+    }
+}
+
+fn activate_command(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    activate(world, args, caller_of(context), context.known, context.action_ref)
+}
+
+fn move_to_command(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    move_to(world, args, caller_of(context), context.known)
+}
+
+fn play_sound_command(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _context: &Context) -> Action {
+    play_sound(world, args)
+}
+
+/// The reference-bound actions (#6139). Every row but `PlaySound` acts on the calling reference, so
+/// the table declines it without one. `MoveToFade` is a New Vegas command only.
+pub(crate) const ACTION_COMMANDS: &[Command] = &[
+    Command { id: CMD_ENABLE, games: Games::Any, needs_caller: true, handler: enable_or_disable },
+    Command { id: CMD_DISABLE, games: Games::Any, needs_caller: true, handler: enable_or_disable },
+    Command { id: CMD_GET_DISABLED, games: Games::Any, needs_caller: true, handler: get_disabled },
+    Command { id: CMD_EVALUATE_PACKAGE, games: Games::Any, needs_caller: true, handler: evaluate_package },
+    Command { id: CMD_MOVE_TO, games: Games::Any, needs_caller: true, handler: move_to_command },
+    Command { id: CMD_MOVE_TO_FADE, games: Games::Fallout, needs_caller: true, handler: move_to_command },
+    Command { id: CMD_ADD_SCRIPT_PACKAGE, games: Games::Any, needs_caller: true, handler: add_or_remove_script_package },
+    Command { id: CMD_REMOVE_SCRIPT_PACKAGE, games: Games::Any, needs_caller: true, handler: add_or_remove_script_package },
+    Command { id: CMD_PLAY_SOUND, games: Games::Any, needs_caller: false, handler: play_sound_command },
+    Command { id: CMD_ACTIVATE, games: Games::Any, needs_caller: true, handler: activate_command },
+];
 
 /// The entity of reference `form`: `known`'s when it is that reference, else a
 /// scan of the placed references.
@@ -285,9 +291,9 @@ mod tests {
     const MARKER: u32 = 0x0001_0002;
     const PLAYER_REF: u32 = 0x14;
 
-    /// [`super::run`] with no known caller entity: the callers are found by form id.
+    /// The command table's `run` with no known caller entity: the callers are found by form id.
     fn run(world: &World, cmd: u16, args: &[ObScriptValue], caller: Option<u32>) -> Action {
-        super::run(world, cmd, args, &Context { caller, ..Context::default() })
+        crate::obscript_cmd::run(world, cmd, args, &Context { caller, ..Context::default() })
     }
 
     fn done(effect: &str) -> Action {
@@ -482,7 +488,7 @@ mod tests {
         world.insert_resource(crate::PendingFragmentActivations::default());
         let queued = |world: &World| world.resource::<crate::PendingFragmentActivations>().1.clone();
         let activate = |world: &World, args: &[ObScriptValue], action_ref: Option<u32>| {
-            super::run(world, CMD_ACTIVATE, args, &Context { caller: Some(MOVED), action_ref, ..Context::default() })
+            crate::obscript_cmd::run(world, CMD_ACTIVATE, args, &Context { caller: Some(MOVED), action_ref, ..Context::default() })
         };
         assert_eq!(activate(&world, &[ObScriptValue::Ref(MARKER)], None), done("Activate 00010001 by 00010002"));
         assert_eq!(queued(&world), vec![(moved, marker)]);

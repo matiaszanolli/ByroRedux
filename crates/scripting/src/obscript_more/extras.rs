@@ -308,7 +308,7 @@ fn cmd_1263(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
 fn disable_all_mines(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
     let mines = mines_in_player_cell(world);
     for &mine in &mines {
-        crate::obscript_actions::run(world, 0x1022, &[], &Context { caller: Some(mine), ..*ctx });
+        crate::obscript_cmd::run(world, 0x1022, &[], &Context { caller: Some(mine), ..*ctx });
     }
     done(format!("DisableAllMines {}", mines.len()))
 }

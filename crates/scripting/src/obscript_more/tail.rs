@@ -646,7 +646,7 @@ fn delete_full_actor_copy(world: &World, _fallout: bool, _cmd: u16, _args: &[ObS
             if let Some(mut created) = world.try_resource_mut::<crate::CreatedReferences>() {
                 created.mark_deleted(form);
             }
-            crate::obscript_actions::run(world, 0x1022, &[], ctx);
+            crate::obscript_cmd::run(world, 0x1022, &[], ctx);
             done(format!("DeleteFullActorCopy {form:08X}"))
         }
         None => Action::Declined,

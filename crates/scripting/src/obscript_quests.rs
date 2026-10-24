@@ -130,8 +130,7 @@ pub fn command_is_modeled(cmd: u16, fallout: bool) -> bool {
     if !fallout && matches!(cmd, 0x124f | 0x116b | 0x11af) {
         return false;
     }
-    if crate::obscript_actions::handles(cmd)
-        || crate::obscript_effects::handles(cmd)
+    if crate::obscript_effects::handles(cmd)
         || crate::obscript_effects::is_getter(cmd)
     {
         return true;
@@ -798,7 +797,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     None => self.decline(cmd),
                 }
             }
-            _ => match crate::obscript_actions::run(
+            _ => match crate::obscript_effects::run(
                 self.world,
                 cmd,
                 args,

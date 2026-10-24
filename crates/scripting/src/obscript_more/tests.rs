@@ -389,7 +389,7 @@ fn no_id_is_claimed_twice_in_a_family() {
             if !fallout && cmd == 0x116b {
                 continue;
             }
-            let other = crate::obscript_actions::handles(cmd) || crate::obscript_effects::handles(cmd) || crate::obscript_effects::is_getter(cmd);
+            let other = crate::obscript_effects::handles(cmd) || crate::obscript_effects::is_getter(cmd);
             if other {
                 clashes.push(format!("{cmd:#06x} ({})", if fallout { "Fallout" } else { "Oblivion" }));
             }
