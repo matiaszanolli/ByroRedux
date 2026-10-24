@@ -121,7 +121,12 @@ feral ghouls) and ShamrockTaphouse01 (human) lie posed (18 bones) on an
 18-body ragdoll, a feral ghoul and a raider killed by real swings activate
 finite ragdolls, and a starts-dead molerat holds a stable 20-body one, every
 session under `BYRO_VALIDATION=1` (corpses whose reference carries a large X/Y
-tilt are not covered: their pose composition is not established).
+tilt are not covered: their pose composition is not established). 
+[`m42-package-procedures.sh`](docs/smoke-tests/m42-package-procedures.sh)
+gates two M42 package fixes live on FNV: creatures stay out of furniture
+(#5495 — Vault11a's mantises carry `CreatureActor`, nothing is `Seated`) and
+UseWeapon packages install and keep firing (ULKitchen's two White Glove
+torchers; Flee has no unconditional placement and is unit-gated only).
 
 ### Shader Compilation
 ```bash
