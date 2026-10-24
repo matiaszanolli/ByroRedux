@@ -513,77 +513,14 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
             }
         };
         match cmd {
-            // SetStage <quest> <stage> — statement form (0x1039). The caller
-            // slot may carry the quest when authored as `<quest>.SetStage`;
-            // the first ref argument is the quest in the flat form.
-            0x1039 => {
+            // The quest commands of all three games, on the quest named by the reference argument (or the
+            // script's own): see `quest_command`. SetStage's caller slot may carry the quest when authored as
+            // `<quest>.SetStage`; the first ref argument is the quest in the flat form.
+            0x1039 | 0x1036 | 0x1037 | 0x103a | 0x103b | 0x1038 | CMD_COMPLETE_QUEST => {
                 let Some(target) = quest_target(0) else {
                     return self.decline(cmd);
                 };
-                let stage = num(1) as u16;
-                if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
-                    stages.set_stage(QuestFormId(target), stage);
-                }
-                effect(self, format!("SetStage {:08X} {}", target, stage));
-                None
-            }
-            // StartQuest / StopQuest
-            0x1036 => {
-                let Some(target) = quest_target(0) else {
-                    return self.decline(cmd);
-                };
-                if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
-                    stages.start_quest(QuestFormId(target), None);
-                }
-                effect(self, format!("StartQuest {:08X}", target));
-                Some(ObScriptValue::Num(1.0))
-            }
-            0x1037 => {
-                let Some(target) = quest_target(0) else {
-                    return self.decline(cmd);
-                };
-                if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
-                    stages.stop(QuestFormId(target));
-                }
-                effect(self, format!("StopQuest {:08X}", target));
-                None
-            }
-            // GetStage <quest>
-            0x103a => {
-                let Some(target) = quest_target(0) else {
-                    return self.decline(cmd);
-                };
-                let stage = self
-                    .world
-                    .try_resource::<QuestStageState>()
-                    .map(|s| s.get_stage(QuestFormId(target)))
-                    .unwrap_or(0);
-                Some(ObScriptValue::Num(stage as f32))
-            }
-            // GetStageDone <quest> <stage>
-            0x103b => {
-                let Some(target) = quest_target(0) else {
-                    return self.decline(cmd);
-                };
-                let stage = num(1) as u16;
-                let done = self
-                    .world
-                    .try_resource::<QuestStageState>()
-                    .map(|s| s.get_stage_done(QuestFormId(target), stage))
-                    .unwrap_or(false);
-                Some(ObScriptValue::Num(done as i32 as f32))
-            }
-            // GetQuestRunning <quest>
-            0x1038 => {
-                let Some(target) = quest_target(0) else {
-                    return self.decline(cmd);
-                };
-                let running = self
-                    .world
-                    .try_resource::<QuestStageState>()
-                    .map(|s| s.is_running(QuestFormId(target)))
-                    .unwrap_or(false);
-                Some(ObScriptValue::Num(running as i32 as f32))
+                self.quest_command(cmd, QuestFormId(target), args)
             }
             // Message / MessageBox arrive through `message` once decoded; a
             // payload the VM could not decode lands here and is logged.
@@ -704,18 +641,6 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                 }
                 None
             }
-            // CompleteQuest <quest> — `QuestStageState::complete`, as Papyrus's
-            // `Quest.CompleteQuest()` does (a command in all three games).
-            CMD_COMPLETE_QUEST => {
-                let Some(target) = quest_target(0) else {
-                    return self.decline(cmd);
-                };
-                if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
-                    stages.complete(QuestFormId(target));
-                }
-                effect(self, format!("CompleteQuest {:08X}", target));
-                None
-            }
             // The FO3/FNV quest commands. Their ids exist only in that opcode
             // table (found by source alignment on FalloutNV.esm and
             // Fallout3.esm), so another game's number is never read as one.
@@ -746,42 +671,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
             }
             // `GetHealthPercentage` is Fallout's; `0x11af` is another command in Oblivion, which answers none.
             0x11af if !crate::ScriptGame::is_fallout3_nv(self.world) => self.decline(cmd),
-            _ if self.script_getter(cmd).is_some() => {
-                let function_index = u32::from(cmd) - 0x1000;
-                // A form-id first parameter that did not resolve (`Ref(0)`) is
-                // not a question the evaluator can answer.
-                let unresolved = ConditionFunction::from_index(function_index).first_param_is_form_id()
-                    && matches!(args.first(), Some(ObScriptValue::Ref(0)));
-                let param = |i: usize| match args.get(i) {
-                    Some(ObScriptValue::Ref(form)) => *form,
-                    Some(ObScriptValue::Num(n)) => *n as u32,
-                    None => 0,
-                };
-                let subject = caller
-                    .and_then(|form| self.entity_of(form))
-                    .or_else(|| {
-                        // The reputation getters are about the player (GECK
-                        // *GetReputationThreshold*: "Returns 1 if the player is
-                        // currently on the good axis with the ... faction"), so
-                        // written with no reference they ask about the player.
-                        // Every other getter has no such default.
-                        matches!(
-                            ConditionFunction::from_index(function_index),
-                            ConditionFunction::GetReputation | ConditionFunction::GetReputationThreshold
-                        )
-                        .then(|| crate::papyrus_demo::PapyrusPlayerEntity::get(self.world))
-                        .flatten()
-                    });
-                let answered = if unresolved {
-                    None
-                } else {
-                    evaluate_script_getter(self.world, function_index, param(0), param(1), subject)
-                };
-                match answered {
-                    Some(value) => Some(ObScriptValue::Num(value)),
-                    None => self.decline(cmd),
-                }
-            }
+            _ if self.script_getter(cmd).is_some() => self.condition_getter(cmd, args, caller),
             _ => {
                 // Traced no-op. The census counter keeps phase-1 honest about
                 // coverage instead of silently faking behavior.
@@ -803,6 +693,107 @@ impl ObScriptCommandHost<'_> {
         match self.reference {
             Some(entity) if form == self.owner => Some(entity),
             _ => resolve_entity_by_global_form_id(self.world, form),
+        }
+    }
+
+    /// A condition-function getter the scripts call by its CTDA index (`GetReputation`, `GetIsRace`, ...),
+    /// answered by the shared evaluator on the calling reference.
+    fn condition_getter(&mut self, cmd: u16, args: &[ObScriptValue], caller: Option<u32>) -> Option<ObScriptValue> {
+        let function_index = u32::from(cmd) - 0x1000;
+        // A form-id first parameter that did not resolve (`Ref(0)`) is
+        // not a question the evaluator can answer.
+        let unresolved = ConditionFunction::from_index(function_index).first_param_is_form_id()
+            && matches!(args.first(), Some(ObScriptValue::Ref(0)));
+        let param = |i: usize| match args.get(i) {
+            Some(ObScriptValue::Ref(form)) => *form,
+            Some(ObScriptValue::Num(n)) => *n as u32,
+            None => 0,
+        };
+        let subject = caller
+            .and_then(|form| self.entity_of(form))
+            .or_else(|| {
+                // The reputation getters are about the player (GECK
+                // *GetReputationThreshold*: "Returns 1 if the player is
+                // currently on the good axis with the ... faction"), so
+                // written with no reference they ask about the player.
+                // Every other getter has no such default.
+                matches!(
+                    ConditionFunction::from_index(function_index),
+                    ConditionFunction::GetReputation | ConditionFunction::GetReputationThreshold
+                )
+                .then(|| crate::papyrus_demo::PapyrusPlayerEntity::get(self.world))
+                .flatten()
+            });
+        let answered = if unresolved {
+            None
+        } else {
+            evaluate_script_getter(self.world, function_index, param(0), param(1), subject)
+        };
+        match answered {
+            Some(value) => Some(ObScriptValue::Num(value)),
+            None => self.decline(cmd),
+        }
+    }
+
+    /// The stage, start / stop and read commands of a quest (`SetStage`, `StartQuest`, `StopQuest`,
+    /// `GetStage`, `GetStageDone`, `GetQuestRunning`, `CompleteQuest`), on the already-resolved `quest`.
+    /// `CompleteQuest` is `QuestStageState::complete`, as Papyrus's `Quest.CompleteQuest()` does (a command
+    /// in all three games).
+    fn quest_command(&mut self, cmd: u16, quest: QuestFormId, args: &[ObScriptValue]) -> Option<ObScriptValue> {
+        let target = quest.0;
+        let stage = num(args, 1) as u16;
+        let log = |host: &mut Self, text: String| {
+            if let Some(mut log) = host.world.try_resource_mut::<ObScriptEffectLog>() {
+                log.push(format!("{:08X}", host.owner), text);
+            }
+        };
+        match cmd {
+            // SetStage <quest> <stage>
+            0x1039 => {
+                if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
+                    stages.set_stage(quest, stage);
+                }
+                log(self, format!("SetStage {target:08X} {stage}"));
+                None
+            }
+            // StartQuest / StopQuest
+            0x1036 => {
+                if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
+                    stages.start_quest(quest, None);
+                }
+                log(self, format!("StartQuest {target:08X}"));
+                Some(ObScriptValue::Num(1.0))
+            }
+            0x1037 => {
+                if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
+                    stages.stop(quest);
+                }
+                log(self, format!("StopQuest {target:08X}"));
+                None
+            }
+            // GetStage <quest>
+            0x103a => {
+                let stage = self.world.try_resource::<QuestStageState>().map(|s| s.get_stage(quest)).unwrap_or(0);
+                Some(ObScriptValue::Num(stage as f32))
+            }
+            // GetStageDone <quest> <stage>
+            0x103b => {
+                let done = self.world.try_resource::<QuestStageState>().map(|s| s.get_stage_done(quest, stage)).unwrap_or(false);
+                Some(ObScriptValue::Num(done as i32 as f32))
+            }
+            // GetQuestRunning <quest>
+            0x1038 => {
+                let running = self.world.try_resource::<QuestStageState>().map(|s| s.is_running(quest)).unwrap_or(false);
+                Some(ObScriptValue::Num(running as i32 as f32))
+            }
+            // CompleteQuest <quest>
+            _ => {
+                if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
+                    stages.complete(quest);
+                }
+                log(self, format!("CompleteQuest {target:08X}"));
+                None
+            }
         }
     }
 
