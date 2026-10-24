@@ -211,6 +211,32 @@ pub(crate) fn placement_lod_archive_path(worldspace_key: &str, cx: i32, cy: i32)
     format!("distantlod\\{w}_{cx}_{cy}.lod")
 }
 
+/// The `.lod` that draws cell `(cx, cy)` in a worldspace: its own file when it
+/// ships one, else the LOD-source worldspace's (#6098).
+///
+/// Oblivion's child worldspaces (cities, the Imperial City districts, the
+/// Shivering Isles' sub-worlds) ship `distantlod\<child>_x_y.lod` for their own
+/// landmarks only; the countryside around them is inherited terrain
+/// ([`ExteriorWorldContext::lod_worldspace_key`], #5496) and its statics live in
+/// the parent's files. A cell that has its own file is drawn from it alone: the
+/// parent's would repeat the same landmarks. `None` when neither exists.
+pub(crate) fn placement_lod_cell_path(
+    own_key: &str,
+    lod_key: &str,
+    cx: i32,
+    cy: i32,
+    exists: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let own = placement_lod_archive_path(own_key, cx, cy);
+    if exists(&own) {
+        return Some(own);
+    }
+    if lod_key.eq_ignore_ascii_case(own_key) {
+        return None;
+    }
+    Some(placement_lod_archive_path(lod_key, cx, cy)).filter(|inherited| exists(inherited))
+}
+
 /// Derive the `_far.nif` low-poly mesh archive path for a base record's
 /// `model_path`. The distant variant is the model with its `.nif`
 /// extension replaced by `_far.nif` (verified: 130 `*_far.nif` entries in
@@ -468,7 +494,13 @@ fn spawn_placement_lod_cell(
     cx: i32,
     cy: i32,
 ) -> Option<PlacementLodBlock> {
-    let lod_path = placement_lod_archive_path(&wctx.worldspace_key, cx, cy);
+    let lod_path = placement_lod_cell_path(
+        &wctx.worldspace_key,
+        wctx.lod_worldspace_key(),
+        cx,
+        cy,
+        |path| tex_provider.has_mesh(path),
+    )?;
     let bytes = tex_provider.extract_mesh(&lod_path)?;
     let groups = match parse_placement_lod(&bytes) {
         Ok(g) => g,
@@ -897,6 +929,44 @@ mod tests {
         assert_eq!(
             placement_lod_archive_path("Tamriel", 0, 0),
             "distantlod\\tamriel_0_0.lod"
+        );
+    }
+
+    /// #6098 - a city worldspace draws a cell from its own `.lod` when it ships
+    /// one and from the inherited terrain's worldspace otherwise, never both.
+    #[test]
+    fn a_child_cell_prefers_its_own_lod_and_inherits_the_rest() {
+        let own = placement_lod_archive_path("chorrolworld", 1, 2);
+        let parent = placement_lod_archive_path("tamriel", 1, 2);
+        let parent_only = |path: &str| path == parent;
+        let both = |path: &str| path == own || path == parent;
+        assert_eq!(
+            placement_lod_cell_path("chorrolworld", "tamriel", 1, 2, both),
+            Some(own.clone()),
+            "the child's own file wins, and the parent's is not loaded beside it"
+        );
+        assert_eq!(
+            placement_lod_cell_path("chorrolworld", "tamriel", 1, 2, parent_only),
+            Some(parent),
+            "a cell without its own file takes the inherited worldspace's"
+        );
+        assert_eq!(placement_lod_cell_path("chorrolworld", "tamriel", 1, 2, |_| false), None);
+    }
+
+    /// A worldspace that is its own LOD source has no second file to fall back to,
+    /// and a differently-cased key is the same worldspace.
+    #[test]
+    fn a_lod_source_worldspace_does_not_probe_itself_twice() {
+        let probes = std::cell::RefCell::new(Vec::new());
+        let missing = |path: &str| {
+            probes.borrow_mut().push(path.to_owned());
+            false
+        };
+        assert_eq!(placement_lod_cell_path("Tamriel", "tamriel", 0, 0, missing), None);
+        assert_eq!(probes.borrow().len(), 1);
+        assert_eq!(
+            placement_lod_cell_path("tamriel", "tamriel", 0, 0, |path| path == "distantlod\\tamriel_0_0.lod"),
+            Some("distantlod\\tamriel_0_0.lod".to_owned())
         );
     }
 
