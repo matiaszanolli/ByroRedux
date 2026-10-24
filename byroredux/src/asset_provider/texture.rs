@@ -1047,6 +1047,14 @@ fn displaced_texture(previous: Option<u32>, fallback: u32) -> Option<u32> {
     previous.filter(|&handle| handle != 0 && handle != fallback)
 }
 
+/// Record a runtime base-colour swap on a mesh's provenance oracle: `mat.dump` and
+/// `tex.*` would otherwise keep reporting the pre-swap path under the NIF slot's
+/// `nif-texture-set` label (#6305).
+fn mark_base_color_swapped(info: &mut crate::components::MaterialTextureDebugInfo, path: &str) {
+    info.paths.base_color = Some(path.to_owned());
+    info.sources.base_color = crate::components::MaterialTextureSource::RuntimeOverride;
+}
+
 /// Give every mesh under `swap.target` whose material texture is named `swap.slot` the texture
 /// `swap.texture`. Returns how many meshes changed.
 pub(crate) fn apply_texture_swap(
@@ -1076,7 +1084,12 @@ pub(crate) fn apply_texture_swap(
         // per `TextureHandle` holder, so each matched mesh acquires its own;
         // sharing one ref across M meshes released M-1 refs it never took
         // (freeing a texture other meshes still bind, or underflowing).
-        let handle = resolve_texture(ctx, tex_provider, Some(&path));
+        // #6305 — and with the mesh's own authored clamp mode, as the spawn
+        // path does: a CLAMP slide or decal must not sample as REPEAT.
+        let clamp_mode = world
+            .get::<Material>(mesh)
+            .map_or(3, |material| material.texture_clamp_mode);
+        let handle = resolve_texture_with_clamp(ctx, tex_provider, Some(&path), clamp_mode);
         let previous = world.get::<TextureHandle>(mesh).map(|held| held.0);
         if let Some(mut handles) = world.query_mut::<TextureHandle>() {
             handles.insert(mesh, TextureHandle(handle));
@@ -1089,6 +1102,11 @@ pub(crate) fn apply_texture_swap(
         if let Some(mut materials) = world.query_mut::<Material>() {
             if let Some(material) = materials.get_mut(mesh) {
                 material.texture_path = Some(path.clone());
+            }
+        }
+        if let Some(mut infos) = world.query_mut::<crate::components::MaterialTextureDebugInfo>() {
+            if let Some(info) = infos.get_mut(mesh) {
+                mark_base_color_swapped(info, &path);
             }
         }
     }
@@ -1108,6 +1126,26 @@ mod tests {
         assert_eq!(displaced_texture(Some(3), 3), None);
     }
 
+    /// #6305 - a swapped base colour is reported as a runtime override on the
+    /// new path, not as the NIF slot's pre-swap texture.
+    #[test]
+    fn a_swap_rewrites_the_base_color_provenance() {
+        use crate::components::{MaterialTextureDebugInfo, MaterialTextureSource};
+        let mut info = MaterialTextureDebugInfo {
+            paths: Default::default(),
+            sources: Default::default(),
+            clamp_mode: 0,
+        };
+        info.paths.base_color = Some("textures/old.dds".to_string());
+        info.sources.base_color = MaterialTextureSource::NifTextureSet;
+        info.paths.normal = Some("textures/old_n.dds".to_string());
+        super::mark_base_color_swapped(&mut info, "textures/interface/endgame/endscrn_1.dds");
+        assert_eq!(info.paths.base_color.as_deref(), Some("textures/interface/endgame/endscrn_1.dds"));
+        assert_eq!(info.sources.base_color, MaterialTextureSource::RuntimeOverride);
+        assert_eq!(info.paths.normal.as_deref(), Some("textures/old_n.dds"), "other roles are untouched");
+        assert_eq!(info.clamp_mode, 0);
+    }
+
     /// #6110 - the swap acquires one ref per matched mesh (inside the loop), not
     /// one shared across them: unload releases one per holder. `apply_texture_swap`
     /// needs a Vulkan device, so the placement is pinned on the source.
@@ -1120,8 +1158,12 @@ mod tests {
             .expect("apply_texture_swap must exist");
         let body = body.split_once("\n}\n").map(|(body, _)| body).unwrap_or(body);
         let loop_start = body.find("for &mesh in &meshes").expect("the per-mesh loop");
-        let resolve = body.find("resolve_texture(").expect("the resolve call");
-        assert_eq!(body.matches("resolve_texture(").count(), 1);
+        // #6305 — the per-role clamp variant; a bare `resolve_texture(` would
+        // hard-code WRAP and drop the mesh's authored clamp mode.
+        let resolve = body.find("resolve_texture_with_clamp(").expect("the resolve call");
+        assert_eq!(body.matches("resolve_texture_with_clamp(").count(), 1);
+        assert_eq!(body.matches("resolve_texture(").count(), 0, "a swap must not resolve with the WRAP default (#6305)");
+        assert!(body.contains("texture_clamp_mode"), "the swap resolves with the mesh's own clamp mode (#6305)");
         assert!(resolve > loop_start, "resolve_texture must be inside the per-mesh loop (#6110)");
         assert!(body.contains("drop_texture(&ctx.device, displaced)"), "the displaced original is released");
     }
