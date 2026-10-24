@@ -93,7 +93,10 @@ pub(crate) struct Command {
 
 /// Every family's rows. A family file adds its `COMMANDS` slice here when its
 /// commands move out of a chain link.
-const FAMILIES: &[&[Command]] = &[crate::obscript_more::EXTRAS_COMMANDS];
+const FAMILIES: &[&[Command]] = &[
+    crate::obscript_more::ACTIONS_COMMANDS,
+    crate::obscript_more::EXTRAS_COMMANDS,
+];
 
 /// `(id, game)` pairs claimed by more than one row of `families`.
 #[cfg_attr(not(test), allow(dead_code))] // read by the table's tests
