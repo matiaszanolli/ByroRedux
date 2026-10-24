@@ -662,6 +662,33 @@ pub(crate) fn pre_parse_model_skip_reason(
 /// Returns a [`LoadCellPayload`] with an empty `parsed` map when the cell is
 /// absent, has no references, or every model was cached. The main-thread drain
 /// still consumes that empty payload so its pending entry is cleared.
+/// The refs a cell's loaded bakes absorb, as the main thread's reference pass
+/// will see them (#6097).
+///
+/// `hashes` / `keys` are the cell's precombine hashes and their `_oc.nif`
+/// archive keys, in the same order ([`precombine_oc_nif_paths`]); a bake counts
+/// when `bake_exists` finds its `_oc.nif`, so a missing one un-skips exactly its
+/// own refs, as [`effective_absorbed_refs`] does for a bake that did not load.
+/// A bake that is present but fails to decode is not seen here: its refs lose
+/// the prefetch and take the main thread's synchronous parse instead.
+///
+/// [`precombine_oc_nif_paths`]: crate::cell_loader::precombined::precombine_oc_nif_paths
+/// [`effective_absorbed_refs`]: crate::cell_loader::precombined::effective_absorbed_refs
+fn bake_absorbed_refs(
+    bakes: &[(u32, u32)],
+    hashes: &[u32],
+    keys: &[String],
+    bake_exists: impl Fn(&str) -> bool,
+) -> HashSet<u32> {
+    let present: Vec<u32> = hashes
+        .iter()
+        .zip(keys)
+        .filter(|(_, key)| bake_exists(key))
+        .map(|(&hash, _)| hash)
+        .collect();
+    crate::cell_loader::precombined::effective_absorbed_refs(bakes, &present)
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(
     name = "pre_parse_cell",
@@ -718,18 +745,40 @@ pub(crate) fn pre_parse_cell(
     let mut model_paths: HashSet<String> = HashSet::new();
     let mut skipped_cached = 0usize;
     let mut skipped_batch_duplicates = 0usize;
+    // M49 — the cell's FO4 precombine `_oc.nif`s, keyed exactly as
+    // `PrecombinedSpawnJob` looks them up (the path is already canonical).
+    let load_order_paths: Vec<&str> = wctx.plugin_paths.iter().map(String::as_str).collect();
+    let precombine_keys = if cell.precombined_mesh_hashes.is_empty() {
+        Vec::new()
+    } else {
+        crate::cell_loader::precombined::precombine_oc_nif_paths(cell, &wctx.plugin_path, &load_order_paths)
+    };
+    // #6097 — the refs whose geometry a bake present in the archives absorbs.
+    // The main thread's reference pass drops them before any model lookup, so
+    // their models are never spawned; parsing them here (95% of an FO4
+    // exterior's STAT/SCOL placements) is pure worker and drain cost.
+    let absorbed_refs = bake_absorbed_refs(
+        &cell.absorbed_ref_bakes,
+        &cell.precombined_mesh_hashes,
+        &precombine_keys,
+        |key| tex_provider.has_mesh(key),
+    );
+    let mut skipped_absorbed = 0usize;
     let mut decisions: std::collections::HashMap<&str, PreflightDecision> = HashMap::new();
     for refr in &cell.references {
-        let Some(model_path) = wctx
-            .record_index
-            .cells
-            .statics
-            .get(&refr.base_form_id)
-            .map(|s| s.model_path.as_str())
-            .filter(|s| !s.is_empty())
-        else {
+        let Some(object) = wctx.record_index.cells.statics.get(&refr.base_form_id) else {
             continue;
         };
+        let model_path = object.model_path.as_str();
+        if model_path.is_empty() {
+            continue;
+        }
+        if absorbed_refs.contains(&refr.form_id)
+            && crate::cell_loader::references::precombine_can_replace_record(Some(object.record_type))
+        {
+            skipped_absorbed += 1;
+            continue;
+        }
         // #3735 — SpeedTree `.spt` binaries are not NIFs and are not
         // resolved through `extract_mesh`'s `meshes\` rooting; the sync REFR
         // loader owns their archive-key resolution
@@ -781,21 +830,14 @@ pub(crate) fn pre_parse_cell(
             None => unreachable!("just inserted"),
         }
     }
-    // M49 — the cell's FO4 precombine `_oc.nif`s, keyed exactly as
-    // `PrecombinedSpawnJob` looks them up (the path is already canonical).
-    // Pre-parsing them here moves their read, parse and CSG decode off the
+    // Pre-parsing the precombines moves their read, parse and CSG decode off the
     // main thread; the drain's precombine merge and the job's cache hit do
     // the rest. They go first: CSG decode is the heaviest task per input.
     let mut precombine_paths: Vec<String> = Vec::new();
     let mut csg_blobs = HashMap::new();
-    if !cell.precombined_mesh_hashes.is_empty() {
-        let load_order_paths: Vec<&str> = wctx.plugin_paths.iter().map(String::as_str).collect();
+    if !precombine_keys.is_empty() {
         let mut seen = HashSet::new();
-        for key in crate::cell_loader::precombined::precombine_oc_nif_paths(
-            cell,
-            &wctx.plugin_path,
-            &load_order_paths,
-        ) {
+        for key in precombine_keys {
             match pre_parse_model_skip_reason(&key, cached_keys, batch_keys) {
                 Some(PreParseModelSkip::Cached) => skipped_cached += 1,
                 Some(PreParseModelSkip::BatchDuplicate) => skipped_batch_duplicates += 1,
@@ -808,13 +850,15 @@ pub(crate) fn pre_parse_cell(
                 csg_handles.blobs_for_cell(cell.form_id, &wctx.plugin_path, &load_order_paths);
         }
     }
-    if skipped_cached > 0 || skipped_batch_duplicates > 0 {
+    if skipped_cached > 0 || skipped_batch_duplicates > 0 || skipped_absorbed > 0 {
         log::debug!(
-            "[stream-worker] cell ({},{}): {} cached models skipped, {} batch duplicates skipped, {} unique to parse",
+            "[stream-worker] cell ({},{}): {} cached models skipped, {} batch duplicates skipped, \
+             {} precombine-absorbed refs skipped, {} unique to parse",
             gx,
             gy,
             skipped_cached,
             skipped_batch_duplicates,
+            skipped_absorbed,
             model_paths.len() + precombine_paths.len(),
         );
     }
@@ -1010,5 +1054,58 @@ mod parse_input_budget_tests {
         assert!(outcome.is_err());
         assert_eq!(usage(&budget), (0, 0), "the unwind released the permit");
         assert!(admitted_within(&budget, 1, ADMITTED), "so the next task is admitted");
+    }
+}
+
+/// #6097 - which refs the worker may leave unparsed.
+#[cfg(test)]
+mod absorbed_ref_tests {
+    use super::bake_absorbed_refs;
+
+    fn keys(hashes: &[u32]) -> Vec<String> {
+        hashes.iter().map(|hash| format!("meshes/precombined/{hash:08x}_oc.nif")).collect()
+    }
+
+    #[test]
+    fn a_present_bake_absorbs_exactly_its_own_refs() {
+        let bakes = [(1, 0xA), (2, 0xA), (3, 0xB)];
+        let absorbed = bake_absorbed_refs(&bakes, &[0xA, 0xB], &keys(&[0xA, 0xB]), |_| true);
+        assert_eq!(absorbed, [1, 2, 3].into_iter().collect());
+    }
+
+    /// A bake whose `_oc.nif` is not in the archives drew nothing, so its refs
+    /// render per-REFR and their models must still be parsed.
+    #[test]
+    fn a_missing_bake_leaves_its_refs_to_their_models() {
+        let bakes = [(1, 0xA), (2, 0xB)];
+        let missing_a = keys(&[0xA]).remove(0);
+        let absorbed =
+            bake_absorbed_refs(&bakes, &[0xA, 0xB], &keys(&[0xA, 0xB]), |key| key != missing_a);
+        assert_eq!(absorbed, [2].into_iter().collect());
+    }
+
+    /// An XCRI ref naming a hash the cell does not list has no bake to absorb it.
+    #[test]
+    fn a_cell_without_precombines_absorbs_nothing() {
+        assert!(bake_absorbed_refs(&[(1, 0xA)], &[], &[], |_| true).is_empty());
+        assert!(bake_absorbed_refs(&[(1, 0xC)], &[0xA], &keys(&[0xA]), |_| true).is_empty());
+    }
+
+    /// The loop applies the main thread's type gate, not the absorbed set alone:
+    /// an interactive record in an XCRI pair keeps its runtime identity there, so
+    /// the worker must keep its model.
+    #[test]
+    fn the_worker_uses_the_main_threads_type_gate() {
+        use byroredux_plugin::RecordType;
+        use crate::cell_loader::references::precombine_can_replace_record as gate;
+        assert!(gate(Some(RecordType::STAT)) && gate(Some(RecordType::SCOL)));
+        assert!(!gate(Some(RecordType::FURN)) && !gate(None));
+        let source = byroredux_core::source_scan::strip_test_modules(include_str!("pre_parse.rs"));
+        let loop_body = source.split_once("for refr in &cell.references").expect("the preflight loop").1;
+        assert!(
+            loop_body.contains("absorbed_refs.contains(&refr.form_id)")
+                && loop_body.contains("precombine_can_replace_record"),
+            "the preflight loop must skip a STAT/SCOL ref the bakes absorb (#6097)"
+        );
     }
 }

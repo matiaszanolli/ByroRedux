@@ -179,7 +179,7 @@ pub(crate) const RT_ABSOLUTE_PRECISION_CEILING: f32 = 1_048_576.0; // 2^20
 /// wrongly — cannot arise from this data. The type filter stays as defence
 /// in depth: a mod hand-authoring an XCRI entry for a FURN keeps its
 /// runtime identity and merely double-draws.
-fn precombine_can_replace_record(record_type: Option<byroredux_plugin::RecordType>) -> bool {
+pub(crate) fn precombine_can_replace_record(record_type: Option<byroredux_plugin::RecordType>) -> bool {
     matches!(
         record_type,
         Some(byroredux_plugin::RecordType::STAT | byroredux_plugin::RecordType::SCOL)
