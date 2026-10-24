@@ -179,6 +179,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/save_io/live_load.rs` | save, scripting | MEDIUM |
 | `byroredux/src/save_io` | save | MEDIUM |
 | `byroredux/src/{barter,encumbrance}` | gameplay Dim 1, scripting Dim 5, character Dim 1, ecs | MEDIUM |
+| `byroredux/src/crime.rs` | gameplay, character, scripting Dim 5, save Dims 1-2; oblivion, skyrim | MEDIUM |
 | `byroredux/src/combat.rs` | gameplay, character, physics Dim 6 | MEDIUM |
 | `byroredux/src/inventory.rs` | gameplay, character Dim 4 | MEDIUM |
 | `byroredux/src/interaction.rs` | gameplay, ui, scripting Dim 5, save Dim 4 | MEDIUM |

@@ -20,15 +20,15 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 103, 2026-10-22. Workspace
+**Last session close:** Session 104, 2026-10-24. Workspace
 numbers (tests, LOC, files, issue dirs) live in [Project Stats](#project-stats)
 only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
 bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
 --workspace -- -D warnings` was **clean** at the last run (2026-10-22, after the
-Session 103 `head_look` lint was fixed; `--all-targets` is not, Known Issues). All 11 137 tests
-pass (2026-10-22). The lock-order detector is clean locally on
+Session 103 `head_look` lint was fixed; `--all-targets` is not, Known Issues). All 11 303 tests
+pass (2026-10-24). The lock-order detector is clean locally on
 `-p byroredux-scripting` and `-p byroredux` there (it caught one scripting
 inversion earlier, fixed in `ac0d19f35`); the CI ABBA lane was not read. The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
 regression, **R6a-regress-22**, was the bench camera moving with `b9e961eeb`'s
@@ -57,8 +57,9 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
   Exposure is auto-metered by default (`a070baaad`), with ACES or AgX. BLAS
   compaction and LRU eviction, TLAS refit, GPU skinning.
 - **Actors.** NPCs spawn with skeleton, body, FaceGen head and outfit (M41).
-  Ten AI package procedures run by default (locomotion seven + Eat/Sleep +
-  Dialogue + graph locomotion), with authored walk clips and
+  Fourteen AI package procedures run by default (locomotion seven + Eat/Sleep +
+  Dialogue + graph locomotion + Flee, UseWeapon, UseItemAt and Find; Accompany
+  and Ambush ride Follow and Guard), with authored walk clips and
   KCC-backed steps (M42). Faction hostility starts combat on sight and
   disengages after a grace period (#4414, #4816). FNV-era ragdolls run on
   Rapier (M41.x).
@@ -586,7 +587,10 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   is +0.5–1.2 ms on Cornell, Whiterun and MedTek, unattributed (742-commit
   window: ReSTIR `c2647d468` / `17e0b7464` / `6110b6078`, GI sampling `0b56f1133`,
   SVGF history `1092b5b9e` / `24eb7dba8`, cloud-shadow map `c231f5b5f`). Next:
-  bisect Cornell `gpu_main`.
+  bisect Cornell `gpu_main`. The record is 80 commits old at the Session 104
+  close (6 on renderer paths: ground-cover wind `1ca5032ae`, `initialize_layouts`
+  `4cd4bacbd` / `d87246b57`, `byte_view` `dedf6c0d6`, `core::paths` `b42f802fa`,
+  LOD pool `021e1b824`); none was re-benched, so re-run before citing it.
 - [ ] **Papyrus interpreter: what the frame budget does not bound** (#5764).
   #5763 gave the four exclusive `Update` systems a shared 10 000-statement
   frame allowance (runaway frame 13.6 → 1.4 ms; a never-ending handler dies at
@@ -703,16 +707,16 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-22, HEAD `460c720cb`: all figures re-counted at the Session 103 close.
+Ground-truth as of 2026-10-24, HEAD `fcd1cce4a`: all figures re-counted at the Session 104 close.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | 845 629                       |
-| Rust total lines (all `.rs`, excl. `target/`) | 902 067                  |
-| Source files (`.rs`, excl. `target/`)   | 1521 total · 1420 outside `tests/` dirs (+18 / +14 since the Session 102 close) |
+| Rust source lines (`src/` dirs)         | 856 033                       |
+| Rust total lines (all `.rs`, excl. `target/`) | 912 672                  |
+| Source files (`.rs`, excl. `target/`)   | 1552 total · 1451 outside `tests/` dirs (+31 / +31 since the Session 103 close) |
 | Workspace members                       | 35 (count the `[workspace] members` block only; 30 crates — `terrain-height` joined in Session 103 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **11 137 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-22; 364 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 6292 (`.claude/issues/`)     |
+| Tests                                   | **11 303 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-24; 366 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 6298 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-10-03, #4628). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
