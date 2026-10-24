@@ -80,8 +80,57 @@ fn svgf_material_hash(material: &GpuMaterial) -> u64 {
 
 /// Fog lanes in [`svgf_continuous_inputs`], in the order the caller passes.
 pub(super) const SVGF_FOG_INPUTS: usize = 11;
+/// The clock-driven lanes of the cell directional light (colour rgb,
+/// direction xyz, cone angle), see [`fold_light_rig_into_scene_key`].
+pub(super) const SVGF_DIRECTIONAL_LANES: usize = 7;
 /// Every continuous input [`svgf_continuous_inputs`] lays out.
-pub(super) const SVGF_CONTINUOUS_INPUTS: usize = SVGF_FOG_INPUTS + 30 + 22;
+pub(super) const SVGF_CONTINUOUS_INPUTS: usize = SVGF_FOG_INPUTS + 30 + SVGF_DIRECTIONAL_LANES + 22;
+
+/// Fold the light rig into the caustic / SVGF scene key (#2468), and hand the
+/// clock-driven lanes of the cell directional back for the drift-tolerant
+/// comparison (#6344).
+///
+/// Every light's floats are folded bit-exactly: a lantern being carried, a
+/// light recoloured by a script, or one entering or leaving the visible set
+/// moves the caustic pool, and those changes must reset history. The one
+/// exception is the first directional light (the cell key at slot 0:
+/// `weather_system` re-interpolates the exterior sun's direction and colour
+/// from the fractional hour every frame). Folding those lanes exactly re-keyed
+/// a daytime exterior every frame, the same symptom #6247 removed from the
+/// `SkyParams` copies of the same sun. Its lanes are returned instead, to be
+/// compared against last frame through [`svgf_continuous_inputs_jumped`]; its
+/// type, position and `params` (visibility mask, attenuation model) stay in the
+/// exact fold, and so does any further directional light. A directional that
+/// appears or disappears changes `lights.len()` and re-keys as before.
+fn fold_light_rig_into_scene_key(
+    mut key: u64,
+    lights: &[scene_buffer::GpuLight],
+) -> (u64, [f32; SVGF_DIRECTIONAL_LANES]) {
+    use crate::vulkan::caustic::fold_caustic_key_f32;
+    const DIRECTIONAL: f32 = 2.0;
+    key = fold_caustic_key_f32(key, lights.len() as f32);
+    let drifting = lights.iter().position(|light| light.color_type[3] == DIRECTIONAL);
+    let mut lanes = [0.0; SVGF_DIRECTIONAL_LANES];
+    for (index, light) in lights.iter().enumerate() {
+        for v in light.position_radius {
+            key = fold_caustic_key_f32(key, v);
+        }
+        if Some(index) == drifting {
+            let [r, g, b, light_type] = light.color_type;
+            let [x, y, z, angle] = light.direction_angle;
+            lanes = [r, g, b, x, y, z, angle];
+            key = fold_caustic_key_f32(key, light_type);
+        } else {
+            for v in light.color_type.into_iter().chain(light.direction_angle) {
+                key = fold_caustic_key_f32(key, v);
+            }
+        }
+        for v in light.params {
+            key = fold_caustic_key_f32(key, v);
+        }
+    }
+    (key, lanes)
+}
 
 /// The fog and sky inputs that follow the game clock (#6247). Each is
 /// re-interpolated from the fractional hour every frame (`compute_sun_arc`,
@@ -93,6 +142,7 @@ pub(super) const SVGF_CONTINUOUS_INPUTS: usize = SVGF_FOG_INPUTS + 30 + 22;
 /// (`time.set`, a lightning flash, a cell change) needs the reset.
 fn svgf_continuous_inputs(
     fog_inputs: &[f32; SVGF_FOG_INPUTS],
+    directional: &[f32; SVGF_DIRECTIONAL_LANES],
     sky: &SkyParams,
 ) -> [f32; SVGF_CONTINUOUS_INPUTS] {
     let mut out = [0.0; SVGF_CONTINUOUS_INPUTS];
@@ -128,6 +178,7 @@ fn svgf_continuous_inputs(
         .chain(&sky.sun_illuminance)
         .chain(&sky.portal_sun_radiance)
         .chain(&sky.portal_sun_direction)
+        .chain(directional)
         .chain(dalc.iter().flatten());
     let mut written = 0;
     for (slot, value) in out.iter_mut().zip(lanes) {
@@ -840,8 +891,10 @@ impl VulkanContext {
         // dimmed by a weather or script change, or a light entering or
         // leaving the visible set all move the pool. `lights` is bounded
         // by the streaming-RIS visible set, so this is a short loop.
-        caustic_scene_key =
-            crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, lights.len() as f32);
+        // #6344 — the cell directional's clock-driven lanes are returned for
+        // the drift-tolerant comparison below instead of being folded exactly.
+        let (rig_key, directional_lanes) = fold_light_rig_into_scene_key(caustic_scene_key, lights);
+        caustic_scene_key = rig_key;
         // #5369 — the ReSTIR shadow-ratio EMA's rig key folds only the
         // floats that determine a shadow ray's GEOMETRY: position, type,
         // direction, cone angle, emitter radius (`params.y`) and
@@ -856,18 +909,6 @@ impl VulkanContext {
         // intensity-derived score, so a flicker that swaps two lights must
         // not re-key the rig.
         let restir_rig_key = crate::vulkan::caustic::light_rig_geometry_key(lights);
-        for light in lights {
-            for v in light
-                .position_radius
-                .iter()
-                .chain(light.color_type.iter())
-                .chain(light.direction_angle.iter())
-                .chain(light.params.iter())
-            {
-                caustic_scene_key =
-                    crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, *v);
-            }
-        }
         // #5767 — materials and stable ambient/fog inputs also determine
         // the filtered indirect-light image, including time-of-day changes.
         // #6247 — only their discrete parts are keyed; the continuous ones
@@ -889,6 +930,7 @@ impl VulkanContext {
                 fog_power,
                 fog_height_reference,
             ],
+            &directional_lanes,
             sky_params,
         );
         let continuous_jumped =
@@ -2359,9 +2401,16 @@ mod instance_capacity_growth_pin {
 
 #[cfg(test)]
 mod svgf_scene_input_key_tests {
-    use super::{fold_svgf_scene_inputs, svgf_continuous_inputs, svgf_continuous_inputs_jumped};
+    use super::{
+        SVGF_DIRECTIONAL_LANES, fold_light_rig_into_scene_key, fold_svgf_scene_inputs,
+        svgf_continuous_inputs, svgf_continuous_inputs_jumped,
+    };
+    use crate::vulkan::caustic::caustic_key_seed;
     use crate::vulkan::context::SkyParams;
     use crate::vulkan::material::GpuMaterial;
+    use crate::vulkan::scene_buffer::GpuLight;
+
+    const NO_DIRECTIONAL: [f32; SVGF_DIRECTIONAL_LANES] = [0.0; SVGF_DIRECTIONAL_LANES];
 
     #[test]
     fn material_and_sky_discrete_changes_rekey_progressive_history() {
@@ -2417,7 +2466,7 @@ mod svgf_scene_input_key_tests {
             }
         };
         let sky = parked();
-        let base = svgf_continuous_inputs(&fog, &sky);
+        let base = svgf_continuous_inputs(&fog, &NO_DIRECTIONAL, &sky);
         assert!(!svgf_continuous_inputs_jumped(&base, &base));
 
         // One frame of the clock: the sun moves ~0.002 degrees, colours a
@@ -2425,18 +2474,115 @@ mod svgf_scene_input_key_tests {
         let mut drifted = parked();
         drifted.sun_direction = [0.0, 0.80003, 0.59996];
         drifted.sun_illuminance = [90009.0, 85008.0, 80008.0];
-        let drifted = svgf_continuous_inputs(&fog, &drifted);
+        let drifted = svgf_continuous_inputs(&fog, &NO_DIRECTIONAL, &drifted);
         assert!(!svgf_continuous_inputs_jumped(&base, &drifted));
 
         let mut jumped = parked();
         jumped.sun_direction = [0.0, 0.6, 0.8];
-        assert!(svgf_continuous_inputs_jumped(&base, &svgf_continuous_inputs(&fog, &jumped)));
+        let jumped = svgf_continuous_inputs(&fog, &NO_DIRECTIONAL, &jumped);
+        assert!(svgf_continuous_inputs_jumped(&base, &jumped));
         let mut fogged = fog;
         fogged[4] = 30000.0;
-        assert!(svgf_continuous_inputs_jumped(&base, &svgf_continuous_inputs(&fogged, &sky)));
+        let fogged = svgf_continuous_inputs(&fogged, &NO_DIRECTIONAL, &sky);
+        assert!(svgf_continuous_inputs_jumped(&base, &fogged));
         let mut broken = fog;
         broken[0] = f32::NAN;
-        assert!(svgf_continuous_inputs_jumped(&base, &svgf_continuous_inputs(&broken, &sky)));
+        let broken = svgf_continuous_inputs(&broken, &NO_DIRECTIONAL, &sky);
+        assert!(svgf_continuous_inputs_jumped(&base, &broken));
+    }
+
+    fn sun(color: [f32; 3], direction: [f32; 3]) -> GpuLight {
+        GpuLight {
+            position_radius: [0.0; 4],
+            color_type: [color[0], color[1], color[2], 2.0],
+            direction_angle: [direction[0], direction[1], direction[2], 0.0],
+            params: [0.0, 0.0, 7.0, 0.0],
+        }
+    }
+
+    fn lantern(position: [f32; 3], color: [f32; 3]) -> GpuLight {
+        GpuLight {
+            position_radius: [position[0], position[1], position[2], 512.0],
+            color_type: [color[0], color[1], color[2], 0.0],
+            direction_angle: [0.0, 0.0, 0.0, 0.0],
+            params: [2.0, 8.0, 7.0, 0.0],
+        }
+    }
+
+    /// What `build_and_upload_instances` does with the rig: the exact key plus
+    /// the continuous-input jump check, composed the way `caustic_key_static`
+    /// is (#6344). Returns `(key, continuous_inputs)` for the next frame.
+    fn compose(
+        lights: &[GpuLight],
+        sky: &SkyParams,
+    ) -> (u64, [f32; super::SVGF_CONTINUOUS_INPUTS]) {
+        let fog = [0.4, 0.5, 0.6, 500.0, 90000.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let (key, directional) = fold_light_rig_into_scene_key(caustic_key_seed(), lights);
+        (key, svgf_continuous_inputs(&fog, &directional, sky))
+    }
+
+    fn rig_is_static(
+        previous: &(u64, [f32; super::SVGF_CONTINUOUS_INPUTS]),
+        current: &(u64, [f32; super::SVGF_CONTINUOUS_INPUTS]),
+    ) -> bool {
+        previous.0 == current.0 && !svgf_continuous_inputs_jumped(&previous.1, &current.1)
+    }
+
+    /// #6344 — `weather_system` re-interpolates the exterior sun's direction
+    /// and colour every frame, and `collect_lights` uploads it as the cell
+    /// directional at slot 0. A frame of clock drift keeps the rig static; a
+    /// `time.set`-sized change, a moved or recoloured lantern, a changed
+    /// visibility mask and a directional appearing or vanishing do not.
+    #[test]
+    fn a_drifting_cell_sun_does_not_rekey_the_light_rig_but_a_jump_or_other_light_does() {
+        let sky = SkyParams::default();
+        let lantern_rig = |sun: GpuLight| [sun, lantern([10.0, 2.0, 0.0], [1.0, 0.6, 0.2])];
+        let base = compose(&lantern_rig(sun([0.9, 0.85, 0.8], [0.0, 0.8, 0.6])), &sky);
+
+        // One frame of the clock: the sun moves ~0.002 degrees, colour 0.01 %.
+        let drifted =
+            compose(&lantern_rig(sun([0.90009, 0.85008, 0.80008], [0.0, 0.80003, 0.59996])), &sky);
+        assert!(rig_is_static(&base, &drifted), "one frame of sun drift must not re-key");
+
+        // A time.set-sized jump of the sun still resets history.
+        let jumped = compose(&lantern_rig(sun([0.5, 0.45, 0.4], [0.0, 0.6, 0.8])), &sky);
+        assert!(!rig_is_static(&base, &jumped));
+
+        // Every other light stays in the exact fold.
+        let moved = compose(
+            &[
+                sun([0.9, 0.85, 0.8], [0.0, 0.8, 0.6]),
+                lantern([10.0, 2.0, 0.001], [1.0, 0.6, 0.2]),
+            ],
+            &sky,
+        );
+        assert!(!rig_is_static(&base, &moved), "a carried lantern re-keys");
+        let recoloured = compose(
+            &[
+                sun([0.9, 0.85, 0.8], [0.0, 0.8, 0.6]),
+                lantern([10.0, 2.0, 0.0], [1.0, 0.6, 0.2001]),
+            ],
+            &sky,
+        );
+        assert!(!rig_is_static(&base, &recoloured), "a recoloured lantern re-keys");
+
+        // The directional's non-drifting lanes stay exact.
+        let mut masked = sun([0.9, 0.85, 0.8], [0.0, 0.8, 0.6]);
+        masked.params[2] = 3.0;
+        assert!(!rig_is_static(&base, &compose(&lantern_rig(masked), &sky)));
+
+        // Dusk: the directional vanishes from the rig.
+        let night = compose(&[lantern([10.0, 2.0, 0.0], [1.0, 0.6, 0.2])], &sky);
+        assert!(!rig_is_static(&base, &night));
+
+        // A second directional light is not the cell key: it stays exact.
+        let two = |second: [f32; 3]| {
+            compose(
+                &[sun([0.9, 0.85, 0.8], [0.0, 0.8, 0.6]), sun([0.2, 0.2, 0.2], second)],
+                &sky,
+            )
+        };
+        assert!(!rig_is_static(&two([0.0, 1.0, 0.0]), &two([0.0, 0.99999, 0.0])));
     }
 
     #[test]
