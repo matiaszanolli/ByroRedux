@@ -149,7 +149,7 @@ pub fn install(world: &mut World) {
 
 /// A getter's answer as the host's `Action`.
 fn answer(value: f32) -> Action {
-    Action::Done { value: Some(ObScriptValue::Num(value)), effect: String::new() }
+    Action::number(value)
 }
 
 fn flag(value: bool) -> Action {

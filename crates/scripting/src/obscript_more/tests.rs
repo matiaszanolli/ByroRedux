@@ -377,27 +377,6 @@ fn heading_angle_is_zero_straight_ahead_and_positive_to_the_right() {
     assert!((right - 90.0).abs() < 1e-3, "{right}");
 }
 
-/// Print any id both this module and an older table run in the same family: the older arm would answer
-/// first, so a clash means one of them is dead code.
-#[test]
-fn no_id_is_claimed_twice_in_a_family() {
-    let mut clashes = Vec::new();
-    for (fallout, list) in [(true, FALLOUT), (false, OBLIVION)] {
-        for &cmd in list {
-            // `0x116b` is Fallout's `GetLinkedRef` and Oblivion's `PurgeCellBuffers`; the host asks
-            // this module first, with the loaded game, so the older table never sees it there.
-            if !fallout && cmd == 0x116b {
-                continue;
-            }
-            let other = crate::obscript_effects::is_getter(cmd);
-            if other {
-                clashes.push(format!("{cmd:#06x} ({})", if fallout { "Fallout" } else { "Oblivion" }));
-            }
-        }
-    }
-    assert!(clashes.is_empty(), "claimed by an older table too: {clashes:?}");
-}
-
 // ── the last slice (extras) ─────────────────────────────────────────────────────────────────────
 
 fn with_challenge(world: &mut World, form: u32, kind: u32, threshold: u32, flags: u32, stat: u16) {

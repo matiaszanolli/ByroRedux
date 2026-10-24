@@ -1452,19 +1452,6 @@ pub(crate) const EFFECT_COMMANDS: &[Command] = &[
 ];
 
 
-/// What a getter command made of a call.
-#[derive(Debug, PartialEq)]
-pub(crate) enum Getter {
-    /// Not a getter this module answers.
-    Unhandled,
-    /// A number.
-    Value(f32),
-    /// A reference (its FormID, `0` for none).
-    Ref(u32),
-    /// A getter whose subject, argument or value could not be read.
-    Declined,
-}
-
 const CMD_GET_ITEM_COUNT: u16 = 0x102f;
 const CMD_IS_IN_COMBAT: u16 = 0x1121;
 const CMD_GET_IS_REFERENCE: u16 = 0x1088;
@@ -1542,358 +1529,516 @@ const CMD_GET_OPEN_STATE: u16 = 0x109d;
 const CMD_GET_IN_WORLDSPACE: u16 = 0x1136;
 const CMD_IS_ANIM_PLAYING: u16 = 0x1128;
 
-/// Every getter this module answers.
-pub(crate) fn is_getter(cmd: u16) -> bool {
-    matches!(
-        cmd,
-        CMD_IS_ANIM_PLAYING
-            | CMD_GET_GS
-            | CMD_GET_DETECTION_LEVEL
-            | CMD_IS_SNEAKING
-            | CMD_IS_SWIMMING
-            | CMD_HAS_MAGIC_EFFECT
-            | CMD_SCRIPT_EFFECT_ELAPSED_SECONDS
-            | CMD_GET_IS_CURRENT_WEATHER
-            | CMD_GET_DETECTED
-            | CMD_GET_HAS_NOTE
-            | CMD_GET_DEAD_COUNT
-            | CMD_IS_KILLER
-            | CMD_IS_WEAPON_OUT
-            | CMD_GET_IGNORE_CRIME
-            | CMD_GET_OPEN_STATE
-            | CMD_IS_IN_INTERIOR
-            | CMD_GET_IN_WORLDSPACE
-            | CMD_GET_SITTING
-            | CMD_GET_ITEM_COUNT
-            | CMD_IS_IN_COMBAT
-            | CMD_GET_IS_REFERENCE
-            | CMD_GET_PLAYER_TEAMMATE
-            | CMD_GET_LOCKED
-            | CMD_GET_LOCK_LEVEL
-            | CMD_GET_AV
-            | CMD_GET_BASE_AV
-            | CMD_GET_UNCONSCIOUS
-            | CMD_GET_COMBAT_TARGET
-            | CMD_GET_PARENT_REF
-            | CMD_GET_DESTROYED
-            | CMD_GET_DESTRUCTION_STAGE
-            | CMD_GET_RESTRAINED
-            | CMD_GET_IN_SAME_CELL
-            | CMD_GET_LINKED_REF
-            | CMD_GET_IS_CURRENT_PACKAGE
-            | CMD_GET_CURRENT_TIME
-            | CMD_GET_HEALTH_PERCENTAGE
-            | CMD_GET_POS
-            | CMD_GET_STARTING_POS
-            | CMD_GET_SCALE
-            | CMD_GET_ANGLE
-            | CMD_GET_STARTING_ANGLE
-            | CMD_IS_IMAGE_SPACE_ACTIVE
+// CS *GetCurrentTime*: "the current game time, in decimal format, e.g. 4:30 am = 4.5,
+// 7:45 pm = 19.75" — the hour of the game clock the update system reports each frame.
+// No reference is involved.
+fn get_current_time(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _context: &Context) -> Action {
+    world
+        .try_resource::<crate::fragment::ScriptUpdates>()
+        .and_then(|updates| updates.game_hours())
+        .map_or(Action::Declined, |hours| Action::number(hours.rem_euclid(24.0) as f32))
+}
+
+// CS/GECK *IsImageSpaceActive*: whether the modifier is playing. Fallout only; no reference.
+fn is_image_space_active(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _context: &Context) -> Action {
+    let (true, Some(imad)) = (crate::ScriptGame::is_fallout3_nv(world), form_arg(args, 0)) else {
+        return Action::Declined;
+    };
+    world
+        .try_resource::<crate::cinematic::CinematicPresentationState>()
+        .map_or(Action::Declined, |state| Action::number(f32::from(u8::from(state.is_image_space_modifier_active(imad)))))
+}
+
+// GECK *GetGS*: the game setting's value; the VM has already looked the name up, an unknown one is
+// the null argument. No reference is involved.
+fn get_gs(_world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _context: &Context) -> Action {
+    match args.first() {
+        Some(ObScriptValue::Num(value)) => Action::number(*value),
+        _ => Action::Declined,
+    }
+}
+
+// GECK *ScriptEffectElapsedSeconds*: the seconds the running effect script has been active.
+fn script_effect_elapsed_seconds(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _context: &Context) -> Action {
+    world
+        .try_resource::<crate::magic_effects::ScriptEffectRun>()
+        .and_then(|run| run.elapsed)
+        .map_or(Action::Declined, Action::number)
+}
+
+// GECK *GetIsCurrentWeather*: 1 when the sky runs that weather. No reference is involved.
+fn get_is_current_weather(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _context: &Context) -> Action {
+    let Some(weather) = form_arg(args, 0) else { return Action::Declined };
+    world
+        .try_resource::<crate::weather_state::CurrentWeather>()
+        .and_then(|current| current.0)
+        .map_or(Action::Declined, |current| Action::number(f32::from(u8::from(current == weather))))
+}
+
+// No reference is involved in these two: the player's notes, and a count by actor base.
+fn get_has_note(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _context: &Context) -> Action {
+    let Some(note) = form_arg(args, 0) else { return Action::Declined };
+    world
+        .try_resource::<crate::obscript_state::PipBoyNotes>()
+        .map_or(Action::Declined, |notes| Action::number(f32::from(u8::from(notes.has(note)))))
+}
+
+fn get_dead_count(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _context: &Context) -> Action {
+    let Some(base) = form_arg(args, 0) else { return Action::Declined };
+    world
+        .try_resource::<crate::obscript_state::KillRecords>()
+        .map_or(Action::Declined, |kills| Action::number(kills.dead_count(base) as f32))
+}
+
+// The count the CTDA `GetItemCount` reads (#6251); a form list sums its members.
+fn get_item_count(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    match form_arg(args, 0) {
+        Some(item) => Action::number(crate::condition::item_count(world, subject, item)),
+        None => Action::Declined,
+    }
+}
+
+fn is_in_combat(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    if live(world, caller).is_none() {
+        return Action::Declined;
+    }
+    let owner = QuestFormId(context.owner);
+    let mut bind = Binder::default();
+    let me = bind.actor(caller);
+    let guard = |guard: crate::translate::effects::FragmentGuard, bind: Binder| {
+        crate::fragment::evaluate_guard_guard_free(world, &guard, owner, Some(&bind.vmad()))
+            .map_or(Action::Declined, |holds| Action::number(f32::from(u8::from(holds))))
+    };
+    guard(crate::translate::effects::FragmentGuard::ActorInCombat { actor: me, expected: true }, bind)
+}
+
+fn get_is_reference(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    if live(world, caller).is_none() {
+        return Action::Declined;
+    }
+    let owner = QuestFormId(context.owner);
+    let mut bind = Binder::default();
+    let me = bind.actor(caller);
+    let guard = |guard: crate::translate::effects::FragmentGuard, bind: Binder| {
+        crate::fragment::evaluate_guard_guard_free(world, &guard, owner, Some(&bind.vmad()))
+            .map_or(Action::Declined, |holds| Action::number(f32::from(u8::from(holds))))
+    };
+    let Some(other) = form_arg(args, 0) else { return Action::Declined };
+    let right = Some(bind.actor(other));
+    guard(crate::translate::effects::FragmentGuard::SameReference { left: me, right, expected: true }, bind)
+}
+
+fn get_player_teammate(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    if live(world, caller).is_none() {
+        return Action::Declined;
+    }
+    let owner = QuestFormId(context.owner);
+    let mut bind = Binder::default();
+    let me = bind.actor(caller);
+    let guard = |guard: crate::translate::effects::FragmentGuard, bind: Binder| {
+        crate::fragment::evaluate_guard_guard_free(world, &guard, owner, Some(&bind.vmad()))
+            .map_or(Action::Declined, |holds| Action::number(f32::from(u8::from(holds))))
+    };
+    guard(
+        crate::translate::effects::FragmentGuard::ActorFollower { actor: me, flag: crate::FollowerFlag::Teammate, expected: true },
+        bind,
     )
 }
 
-/// Answer getter `cmd` about the calling reference, from the engine's own reads:
-/// the effect model's guards and values where it has one (`GetItemCount`,
-/// `IsInCombat`, `GetIsReference`, `GetPlayerTeammate`, `GetAV`), the component
-/// the runtime keeps otherwise (`Locked`, `ActorControlState`, `AiCombatState`).
-/// A subject that is not loaded, or a read the runtime cannot make, is
-/// [`Getter::Declined`] — never a made-up `0`.
-pub(crate) fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &Context) -> Getter {
-    if !is_getter(cmd) {
-        return Getter::Unhandled;
+fn get_locked(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    Action::number(f32::from(u8::from(world.get::<byroredux_core::ecs::components::Locked>(subject).is_some())))
+}
+
+// `GetLockLevel`: an unlocked reference has no lock, so no level.
+fn get_lock_level(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    Action::number(world.get::<byroredux_core::ecs::components::Locked>(subject).map_or(0.0, |lock| f32::from(lock.lock_level)))
+}
+
+fn get_av(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    if live(world, caller).is_none() {
+        return Action::Declined;
     }
-    // CS *GetCurrentTime*: "the current game time, in decimal format, e.g. 4:30 am = 4.5,
-    // 7:45 pm = 19.75" — the hour of the game clock the update system reports each frame.
-    // No reference is involved.
-    if cmd == CMD_GET_CURRENT_TIME {
-        return world
-            .try_resource::<crate::fragment::ScriptUpdates>()
-            .and_then(|updates| updates.game_hours())
-            .map_or(Getter::Declined, |hours| Getter::Value(hours.rem_euclid(24.0) as f32));
-    }
-    // CS/GECK *IsImageSpaceActive*: whether the modifier is playing. Fallout only; no reference.
-    if cmd == CMD_IS_IMAGE_SPACE_ACTIVE {
-        let (true, Some(imad)) = (crate::ScriptGame::is_fallout3_nv(world), form_arg(args, 0)) else {
-            return Getter::Declined;
-        };
-        return world
-            .try_resource::<crate::cinematic::CinematicPresentationState>()
-            .map_or(Getter::Declined, |state| Getter::Value(f32::from(u8::from(state.is_image_space_modifier_active(imad)))));
-    }
-    // GECK *GetGS*: the game setting's value; the VM has already looked the name up, an unknown one is
-    // the null argument. No reference is involved.
-    if cmd == CMD_GET_GS {
-        return match args.first() {
-            Some(ObScriptValue::Num(value)) => Getter::Value(*value),
-            _ => Getter::Declined,
-        };
-    }
-    // GECK *ScriptEffectElapsedSeconds*: the seconds the running effect script has been active.
-    if cmd == CMD_SCRIPT_EFFECT_ELAPSED_SECONDS {
-        return world
-            .try_resource::<crate::magic_effects::ScriptEffectRun>()
-            .and_then(|run| run.elapsed)
-            .map_or(Getter::Declined, Getter::Value);
-    }
-    // GECK *GetIsCurrentWeather*: 1 when the sky runs that weather. No reference is involved.
-    if cmd == CMD_GET_IS_CURRENT_WEATHER {
-        let Some(weather) = form_arg(args, 0) else { return Getter::Declined };
-        return world
-            .try_resource::<crate::weather_state::CurrentWeather>()
-            .and_then(|current| current.0)
-            .map_or(Getter::Declined, |current| Getter::Value(f32::from(u8::from(current == weather))));
-    }
-    // No reference is involved in these two: the player's notes, and a count by actor base.
-    if cmd == CMD_GET_HAS_NOTE {
-        let Some(note) = form_arg(args, 0) else { return Getter::Declined };
-        return world
-            .try_resource::<crate::obscript_state::PipBoyNotes>()
-            .map_or(Getter::Declined, |notes| Getter::Value(f32::from(u8::from(notes.has(note)))));
-    }
-    if cmd == CMD_GET_DEAD_COUNT {
-        let Some(base) = form_arg(args, 0) else { return Getter::Declined };
-        return world
-            .try_resource::<crate::obscript_state::KillRecords>()
-            .map_or(Getter::Declined, |kills| Getter::Value(kills.dead_count(base) as f32));
-    }
-    let Some(caller) = context.caller.filter(|&form| form != 0) else {
-        return Getter::Declined;
-    };
-    let Some(subject) = live(world, caller) else {
-        return Getter::Declined;
-    };
     let owner = QuestFormId(context.owner);
     let mut bind = Binder::default();
     let me = bind.actor(caller);
     let value = |value: ValueExpr, bind: Binder| {
-        crate::fragment::evaluate_value_guard_free(world, &value, owner, Some(&bind.vmad())).map_or(Getter::Declined, Getter::Value)
+        crate::fragment::evaluate_value_guard_free(world, &value, owner, Some(&bind.vmad())).map_or(Action::Declined, Action::number)
     };
-    let guard = |guard: crate::translate::effects::FragmentGuard, bind: Binder| {
-        crate::fragment::evaluate_guard_guard_free(world, &guard, owner, Some(&bind.vmad()))
-            .map_or(Getter::Declined, |holds| Getter::Value(f32::from(u8::from(holds))))
+    let Some(avif) = crate::obscript_actor_values::actor_value_form(world, num(args, 0)) else {
+        return Action::Declined;
     };
-    match cmd {
-        // The count the CTDA `GetItemCount` reads (#6251); a form list sums its members.
-        CMD_GET_ITEM_COUNT => match form_arg(args, 0) {
-            Some(item) => Getter::Value(crate::condition::item_count(world, subject, item)),
-            None => Getter::Declined,
+    let actor_value = bind.object(avif);
+    let expr = if cmd == CMD_GET_AV {
+        ValueExpr::ActorValue(me, actor_value)
+    } else {
+        ValueExpr::ActorValueReading(crate::translate::effects::ActorValueReading::Base, me, ActorValueArg::Form(actor_value))
+    };
+    value(expr, bind)
+}
+
+fn get_unconscious(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    Action::number(f32::from(u8::from(world.get::<crate::ActorControlState>(subject).is_some_and(|state| state.unconscious))))
+}
+
+fn get_combat_target(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    match world.get::<crate::AiCombatState>(subject).map(|state| state.target) {
+        Some(target) => match crate::condition::entity_global_form_id(world, target) {
+            Some(form) => Action::reference(form),
+            None => Action::Declined,
         },
-        CMD_IS_IN_COMBAT => guard(crate::translate::effects::FragmentGuard::ActorInCombat { actor: me, expected: true }, bind),
-        CMD_GET_IS_REFERENCE => {
-            let Some(other) = form_arg(args, 0) else { return Getter::Declined };
-            let right = Some(bind.actor(other));
-            guard(crate::translate::effects::FragmentGuard::SameReference { left: me, right, expected: true }, bind)
-        }
-        CMD_GET_PLAYER_TEAMMATE => guard(
-            crate::translate::effects::FragmentGuard::ActorFollower { actor: me, flag: crate::FollowerFlag::Teammate, expected: true },
-            bind,
-        ),
-        CMD_GET_LOCKED => Getter::Value(f32::from(u8::from(world.get::<byroredux_core::ecs::components::Locked>(subject).is_some()))),
-        // `GetLockLevel`: an unlocked reference has no lock, so no level.
-        CMD_GET_LOCK_LEVEL => {
-            Getter::Value(world.get::<byroredux_core::ecs::components::Locked>(subject).map_or(0.0, |lock| f32::from(lock.lock_level)))
-        }
-        CMD_GET_AV | CMD_GET_BASE_AV => {
-            let Some(avif) = crate::obscript_actor_values::actor_value_form(world, num(args, 0)) else {
-                return Getter::Declined;
-            };
-            let actor_value = bind.object(avif);
-            let expr = if cmd == CMD_GET_AV {
-                ValueExpr::ActorValue(me, actor_value)
-            } else {
-                ValueExpr::ActorValueReading(crate::translate::effects::ActorValueReading::Base, me, ActorValueArg::Form(actor_value))
-            };
-            value(expr, bind)
-        }
-        CMD_GET_UNCONSCIOUS => {
-            Getter::Value(f32::from(u8::from(world.get::<crate::ActorControlState>(subject).is_some_and(|state| state.unconscious))))
-        }
-        CMD_GET_COMBAT_TARGET => match world.get::<crate::AiCombatState>(subject).map(|state| state.target) {
-            Some(target) => match crate::condition::entity_global_form_id(world, target) {
-                Some(form) => Getter::Ref(form),
-                None => Getter::Declined,
-            },
-            None => Getter::Ref(0),
-        },
-        // `GetLinkedRef`: the reference's linked-ref (`XLKR`) target. `0x116b` is
-        // `PurgeCellBuffers` in Oblivion, so it is only this on the Fallout pair.
-        CMD_GET_LINKED_REF if crate::ScriptGame::is_fallout3_nv(world) => {
-            Getter::Ref(crate::linked_ref(world, caller, 0).unwrap_or(0))
-        }
-        CMD_GET_LINKED_REF => Getter::Unhandled,
-        // CS *GetParentRef*: "the calling object's parent reference (0 if no
-        // parent)" — the reference in its Enable Parent tab (`XESP`).
-        CMD_GET_PARENT_REF => Getter::Ref(
-            world
-                .try_resource::<crate::AuthoredDisabledReferences>()
-                .and_then(|authored| authored.enable_parents.get(&caller).map(|parent| parent.form_id))
-                .unwrap_or(0),
-        ),
-        // "Returns 1 if the actor is currently running the specified package": the package
-        // the AI last reported for the actor.
-        CMD_GET_IS_CURRENT_PACKAGE => {
-            let Some(package) = form_arg(args, 0) else { return Getter::Declined };
-            let current = world.try_resource::<crate::fragment::ActivePackages>().and_then(|active| active.0.get(&subject).copied());
-            Getter::Value(f32::from(u8::from(current == Some(package))))
-        }
-        // GECK *GetHealthPercentage*: "how injured an actor is ... a value from 0 to 1.0" — the
-        // current Health over the undamaged ceiling. Fallout only: `0x11af` is another command in Oblivion.
-        // Shared with the CTDA of the same index (#6251).
-        CMD_GET_HEALTH_PERCENTAGE if crate::ScriptGame::is_fallout3_nv(world) => {
-            crate::condition::health_percentage(world, subject).map_or(Getter::Declined, Getter::Value)
-        }
-        CMD_GET_HEALTH_PERCENTAGE => Getter::Unhandled,
-        // GECK *GetPos*: "the position of the calling object relative to the world on the specified
-        // axis" (world axes are Z-up; the transform is Y-up). *GetStartingPos*: where the plugin
-        // placed it.
-        CMD_GET_POS | CMD_GET_STARTING_POS => {
-            let axis = num(args, 0) as usize;
-            let translation = if cmd == CMD_GET_POS {
-                world.get::<byroredux_core::ecs::components::GlobalTransform>(subject).map(|t| t.translation)
-            } else {
-                world.get::<crate::EditorLocation>(subject).map(|placed| placed.translation)
-            };
-            match translation {
-                Some(translation) if axis <= 2 => Getter::Value(byroredux_core::math::coord::yup_to_zup_pos(translation.to_array())[axis]),
-                _ => Getter::Declined,
-            }
-        }
-        // GECK *GetAngle* / *GetStartingAngle*, in degrees. The player's pitch and heading are the
-        // camera's, which is not on its body: only a non-player reference answers.
-        CMD_GET_ANGLE | CMD_GET_STARTING_ANGLE => {
-            let axis = num(args, 0) as usize;
-            let rotation = if cmd == CMD_GET_ANGLE {
-                world.get::<byroredux_core::ecs::components::GlobalTransform>(subject).map(|t| t.rotation)
-            } else {
-                world.get::<crate::EditorLocation>(subject).map(|placed| placed.rotation)
-            };
-            match rotation {
-                Some(rotation) if axis <= 2 && crate::papyrus_demo::PapyrusPlayerEntity::get(world) != Some(subject) => {
-                    let (rx, ry, rz) = byroredux_core::math::coord::quat_yup_to_euler_zup(rotation);
-                    Getter::Value(script_angle_degrees(axis, [rx, ry, rz][axis]))
-                }
-                _ => Getter::Declined,
-            }
-        }
-        // GECK *IsInInterior*: 1 in an interior cell. *GetInWorldspace <worldspace>*: 1 in one of that
-        // worldspace's exterior cells, "always 0 if the actor is in an interior cell".
-        CMD_IS_IN_INTERIOR => match crate::cell_kind::cell_kind_of(world, subject) {
-            Some(kind) => Getter::Value(f32::from(u8::from(kind == crate::cell_kind::CellKind::Interior))),
-            None => Getter::Declined,
-        },
-        CMD_GET_IN_WORLDSPACE => match form_arg(args, 0).and_then(|asked| crate::cell_kind::in_worldspace(world, subject, asked)) {
-            Some(inside) => Getter::Value(f32::from(u8::from(inside))),
-            None => Getter::Declined,
-        },
-        // GECK *HasMagicEffect*: 1 when an effect of that magic effect is running on the calling actor.
-        CMD_HAS_MAGIC_EFFECT => match form_arg(args, 0) {
-            Some(mgef) => Getter::Value(f32::from(u8::from(crate::magic_effects::has_effect(world, subject, mgef)))),
-            None => Getter::Declined,
-        },
-        // GECK *GetDetectionLevel*: 0 Lost, 1 Unseen, 2 Noticed, 3 Seen. The engine's sight test is yes or
-        // no — an actor either sees the target or does not — so the level is 3 or 0 (the GECK notes
-        // the original too answers only 0 or 3 for every target but the player).
-        CMD_GET_DETECTION_LEVEL => {
-            let Some(target) = form_arg(args, 0).and_then(|form| live(world, form)) else { return Getter::Declined };
-            match world.try_resource::<crate::SightQuery>() {
-                Some(sight) => Getter::Value(if (sight.0)(world, subject, target) { 3.0 } else { 0.0 }),
-                None => Getter::Declined,
-            }
-        }
-        // GECK *IsSneaking*: "1 if the actor is sneaking (crouched)". The engine has no sneak stance —
-        // no actor, the player included, can crouch — so nobody is.
-        CMD_IS_SNEAKING => Getter::Value(0.0),
-        // GECK *IsSwimming*: the walk/swim verdict of the character system, through the installed query.
-        CMD_IS_SWIMMING => match world.try_resource::<crate::SwimQuery>() {
-            Some(swim) => Getter::Value(f32::from(u8::from((swim.0)(world, subject)))),
-            None => Getter::Declined,
-        },
-        // GECK *GetDetected*: 1 when the calling actor currently detects the target — the sight test the
-        // engine's own hostility uses (range from the detection GMSTs, line of sight through physics),
-        // asked through the query the binary installs.
-        CMD_GET_DETECTED => {
-            let Some(target) = form_arg(args, 0).and_then(|form| live(world, form)) else { return Getter::Declined };
-            match world.try_resource::<crate::SightQuery>() {
-                Some(sight) => Getter::Value(f32::from(u8::from((sight.0)(world, subject, target)))),
-                None => Getter::Declined,
-            }
-        }
-        // GECK *IsKiller*: 1 when the calling (dead) actor was killed by the named actor.
-        CMD_IS_KILLER => match form_arg(args, 0) {
-            Some(killer) => Getter::Value(f32::from(u8::from(
-                world.try_resource::<crate::obscript_state::KillRecords>().is_some_and(|kills| kills.killer_of(caller) == Some(killer)),
-            ))),
-            None => Getter::Declined,
-        },
-        CMD_IS_WEAPON_OUT => Getter::Value(f32::from(u8::from(crate::obscript_state::is_weapon_out(world, subject)))),
-        CMD_GET_IGNORE_CRIME => Getter::Value(f32::from(u8::from(world.has::<crate::obscript_state::IgnoreCrime>(subject)))),
-        // GECK *GetOpenState*: 0 none (no open/closed states), 1 open, 2 opening, 3 closed, 4 closing —
-        // read from the two-state activator, the only open/closed state the runtime keeps; a reference
-        // without one has none.
-        CMD_GET_OPEN_STATE => Getter::Value(match world.get::<crate::vm_state::TwoStateActivator>(subject) {
-            None => 0.0,
-            Some(state) => match (state.is_open, state.is_animating) {
-                (true, false) => 1.0,
-                (true, true) => 2.0,
-                (false, false) => 3.0,
-                (false, true) => 4.0,
-            },
-        }),
-        // GECK *GetSitting*: 0 not sitting, 3 is sitting (the "getting ready to sit / stand" states 2
-        // and 4 have no runtime here: an actor is either seated on its furniture or not).
-        CMD_GET_SITTING => Getter::Value(if world.has::<byroredux_core::ecs::components::Seated>(subject) { 3.0 } else { 0.0 }),
-        CMD_IS_ANIM_PLAYING => {
-            let group = match args.first() {
-                None => None,
-                Some(_) => match crate::obscript_anim::group_name(world, num(args, 0)) {
-                    Some(name) => Some(name),
-                    None => return Getter::Declined,
-                },
-            };
-            crate::obscript_anim::is_anim_playing(world, subject, group)
-                .map_or(Getter::Declined, |playing| Getter::Value(f32::from(u8::from(playing))))
-        }
-        CMD_GET_SCALE => world
-            .get::<byroredux_core::ecs::components::Transform>(subject)
-            .map_or(Getter::Declined, |transform| Getter::Value(transform.scale)),
-        // GECK *GetDestructionStage*: the object's current Damage Stage. An object with no destruction
-        // data has none to answer.
-        CMD_GET_DESTRUCTION_STAGE => {
-            if crate::destruction::is_destructible(world, subject) {
-                // An undamaged destructible is at stage 0 (the engine's -1 is "no damage yet").
-                Getter::Value(crate::destruction::destruction_stage(world, subject, caller).max(0) as f32)
-            } else {
-                Getter::Declined
-            }
-        }
-        CMD_GET_DESTROYED => Getter::Value(f32::from(u8::from(crate::destruction::is_destroyed(world, caller)))),
-        CMD_GET_RESTRAINED => {
-            Getter::Value(f32::from(u8::from(world.get::<crate::ActorControlState>(subject).is_some_and(|state| state.restrained))))
-        }
-        // "Returns true if the calling reference is in the same cell as the target
-        // actor": two loaded references with the same, known cell.
-        CMD_GET_IN_SAME_CELL => {
-            use byroredux_core::ecs::components::{CellFormId, CellRoot};
-            let Some(other) = form_arg(args, 0).and_then(|form| live(world, form)) else {
-                return Getter::Declined;
-            };
-            let cell_of = |entity: EntityId| {
-                let root = world.get::<CellRoot>(entity).map_or(entity, |root| root.0);
-                world.get::<CellFormId>(root).map(|cell| cell.0)
-            };
-            match (cell_of(subject), cell_of(other)) {
-                (Some(a), Some(b)) => Getter::Value(f32::from(u8::from(a == b))),
-                _ => Getter::Declined,
-            }
-        }
-        _ => Getter::Unhandled,
+        None => Action::reference(0),
     }
 }
+
+// `GetLinkedRef`: the reference's linked-ref (`XLKR`) target. `0x116b` is
+// `PurgeCellBuffers` in Oblivion, so it is only this on the Fallout pair.
+fn get_linked_ref(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    if live(world, caller).is_none() {
+        return Action::Declined;
+    }
+    Action::reference(crate::linked_ref(world, caller, 0).unwrap_or(0))
+}
+
+// CS *GetParentRef*: "the calling object's parent reference (0 if no
+// parent)" — the reference in its Enable Parent tab (`XESP`).
+fn get_parent_ref(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    if live(world, caller).is_none() {
+        return Action::Declined;
+    }
+    Action::reference(
+        world
+            .try_resource::<crate::AuthoredDisabledReferences>()
+            .and_then(|authored| authored.enable_parents.get(&caller).map(|parent| parent.form_id))
+            .unwrap_or(0),
+    )
+}
+
+// "Returns 1 if the actor is currently running the specified package": the package
+// the AI last reported for the actor.
+fn get_is_current_package(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    let Some(package) = form_arg(args, 0) else { return Action::Declined };
+    let current = world.try_resource::<crate::fragment::ActivePackages>().and_then(|active| active.0.get(&subject).copied());
+    Action::number(f32::from(u8::from(current == Some(package))))
+}
+
+// GECK *GetHealthPercentage*: "how injured an actor is ... a value from 0 to 1.0" — the
+// current Health over the undamaged ceiling. Fallout only: `0x11af` is another command in Oblivion.
+// Shared with the CTDA of the same index (#6251).
+fn get_health_percentage(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    crate::condition::health_percentage(world, subject).map_or(Action::Declined, Action::number)
+}
+
+// GECK *GetPos*: "the position of the calling object relative to the world on the specified
+// axis" (world axes are Z-up; the transform is Y-up). *GetStartingPos*: where the plugin
+// placed it.
+fn get_pos(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    let axis = num(args, 0) as usize;
+    let translation = if cmd == CMD_GET_POS {
+        world.get::<byroredux_core::ecs::components::GlobalTransform>(subject).map(|t| t.translation)
+    } else {
+        world.get::<crate::EditorLocation>(subject).map(|placed| placed.translation)
+    };
+    match translation {
+        Some(translation) if axis <= 2 => Action::number(byroredux_core::math::coord::yup_to_zup_pos(translation.to_array())[axis]),
+        _ => Action::Declined,
+    }
+}
+
+// GECK *GetAngle* / *GetStartingAngle*, in degrees. The player's pitch and heading are the
+// camera's, which is not on its body: only a non-player reference answers.
+fn get_angle(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    let axis = num(args, 0) as usize;
+    let rotation = if cmd == CMD_GET_ANGLE {
+        world.get::<byroredux_core::ecs::components::GlobalTransform>(subject).map(|t| t.rotation)
+    } else {
+        world.get::<crate::EditorLocation>(subject).map(|placed| placed.rotation)
+    };
+    match rotation {
+        Some(rotation) if axis <= 2 && crate::papyrus_demo::PapyrusPlayerEntity::get(world) != Some(subject) => {
+            let (rx, ry, rz) = byroredux_core::math::coord::quat_yup_to_euler_zup(rotation);
+            Action::number(script_angle_degrees(axis, [rx, ry, rz][axis]))
+        }
+        _ => Action::Declined,
+    }
+}
+
+// GECK *IsInInterior*: 1 in an interior cell. *GetInWorldspace <worldspace>*: 1 in one of that
+// worldspace's exterior cells, "always 0 if the actor is in an interior cell".
+fn is_in_interior(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    match crate::cell_kind::cell_kind_of(world, subject) {
+        Some(kind) => Action::number(f32::from(u8::from(kind == crate::cell_kind::CellKind::Interior))),
+        None => Action::Declined,
+    }
+}
+
+fn get_in_worldspace(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    match form_arg(args, 0).and_then(|asked| crate::cell_kind::in_worldspace(world, subject, asked)) {
+        Some(inside) => Action::number(f32::from(u8::from(inside))),
+        None => Action::Declined,
+    }
+}
+
+// GECK *HasMagicEffect*: 1 when an effect of that magic effect is running on the calling actor.
+fn has_magic_effect(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    match form_arg(args, 0) {
+        Some(mgef) => Action::number(f32::from(u8::from(crate::magic_effects::has_effect(world, subject, mgef)))),
+        None => Action::Declined,
+    }
+}
+
+// GECK *GetDetectionLevel*: 0 Lost, 1 Unseen, 2 Noticed, 3 Seen. The engine's sight test is yes or
+// no — an actor either sees the target or does not — so the level is 3 or 0 (the GECK notes
+// the original too answers only 0 or 3 for every target but the player).
+fn get_detection_level(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    let Some(target) = form_arg(args, 0).and_then(|form| live(world, form)) else { return Action::Declined };
+    match world.try_resource::<crate::SightQuery>() {
+        Some(sight) => Action::number(if (sight.0)(world, subject, target) { 3.0 } else { 0.0 }),
+        None => Action::Declined,
+    }
+}
+
+// GECK *IsSneaking*: "1 if the actor is sneaking (crouched)". The engine has no sneak stance —
+// no actor, the player included, can crouch — so nobody is.
+fn is_sneaking(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    if live(world, caller).is_none() {
+        return Action::Declined;
+    }
+    Action::number(0.0)
+}
+
+// GECK *IsSwimming*: the walk/swim verdict of the character system, through the installed query.
+fn is_swimming(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    match world.try_resource::<crate::SwimQuery>() {
+        Some(swim) => Action::number(f32::from(u8::from((swim.0)(world, subject)))),
+        None => Action::Declined,
+    }
+}
+
+// GECK *GetDetected*: 1 when the calling actor currently detects the target — the sight test the
+// engine's own hostility uses (range from the detection GMSTs, line of sight through physics),
+// asked through the query the binary installs.
+fn get_detected(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    let Some(target) = form_arg(args, 0).and_then(|form| live(world, form)) else { return Action::Declined };
+    match world.try_resource::<crate::SightQuery>() {
+        Some(sight) => Action::number(f32::from(u8::from((sight.0)(world, subject, target)))),
+        None => Action::Declined,
+    }
+}
+
+// GECK *IsKiller*: 1 when the calling (dead) actor was killed by the named actor.
+fn is_killer(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    if live(world, caller).is_none() {
+        return Action::Declined;
+    }
+    match form_arg(args, 0) {
+        Some(killer) => Action::number(f32::from(u8::from(
+            world.try_resource::<crate::obscript_state::KillRecords>().is_some_and(|kills| kills.killer_of(caller) == Some(killer)),
+        ))),
+        None => Action::Declined,
+    }
+}
+
+fn is_weapon_out(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    Action::number(f32::from(u8::from(crate::obscript_state::is_weapon_out(world, subject))))
+}
+
+fn get_ignore_crime(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    Action::number(f32::from(u8::from(world.has::<crate::obscript_state::IgnoreCrime>(subject))))
+}
+
+// GECK *GetOpenState*: 0 none (no open/closed states), 1 open, 2 opening, 3 closed, 4 closing —
+// read from the two-state activator, the only open/closed state the runtime keeps; a reference
+// without one has none.
+fn get_open_state(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    Action::number(match world.get::<crate::vm_state::TwoStateActivator>(subject) {
+        None => 0.0,
+        Some(state) => match (state.is_open, state.is_animating) {
+            (true, false) => 1.0,
+            (true, true) => 2.0,
+            (false, false) => 3.0,
+            (false, true) => 4.0,
+        },
+    })
+}
+
+// GECK *GetSitting*: 0 not sitting, 3 is sitting (the "getting ready to sit / stand" states 2
+// and 4 have no runtime here: an actor is either seated on its furniture or not).
+fn get_sitting(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    Action::number(if world.has::<byroredux_core::ecs::components::Seated>(subject) { 3.0 } else { 0.0 })
+}
+
+fn is_anim_playing(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    let group = match args.first() {
+        None => None,
+        Some(_) => match crate::obscript_anim::group_name(world, num(args, 0)) {
+            Some(name) => Some(name),
+            None => return Action::Declined,
+        },
+    };
+    crate::obscript_anim::is_anim_playing(world, subject, group)
+        .map_or(Action::Declined, |playing| Action::number(f32::from(u8::from(playing))))
+}
+
+fn get_scale(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    world
+        .get::<byroredux_core::ecs::components::Transform>(subject)
+        .map_or(Action::Declined, |transform| Action::number(transform.scale))
+}
+
+// GECK *GetDestructionStage*: the object's current Damage Stage. An object with no destruction
+// data has none to answer.
+fn get_destruction_stage(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    if crate::destruction::is_destructible(world, subject) {
+        // An undamaged destructible is at stage 0 (the engine's -1 is "no damage yet").
+        Action::number(crate::destruction::destruction_stage(world, subject, caller).max(0) as f32)
+    } else {
+        Action::Declined
+    }
+}
+
+fn get_destroyed(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    if live(world, caller).is_none() {
+        return Action::Declined;
+    }
+    Action::number(f32::from(u8::from(crate::destruction::is_destroyed(world, caller))))
+}
+
+fn get_restrained(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    Action::number(f32::from(u8::from(world.get::<crate::ActorControlState>(subject).is_some_and(|state| state.restrained))))
+}
+
+// "Returns true if the calling reference is in the same cell as the target
+// actor": two loaded references with the same, known cell.
+fn get_in_same_cell(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let caller = caller_of(context);
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    use byroredux_core::ecs::components::{CellFormId, CellRoot};
+    let Some(other) = form_arg(args, 0).and_then(|form| live(world, form)) else {
+        return Action::Declined;
+    };
+    let cell_of = |entity: EntityId| {
+        let root = world.get::<CellRoot>(entity).map_or(entity, |root| root.0);
+        world.get::<CellFormId>(root).map(|cell| cell.0)
+    };
+    match (cell_of(subject), cell_of(other)) {
+        (Some(a), Some(b)) => Action::number(f32::from(u8::from(a == b))),
+        _ => Action::Declined,
+    }
+}
+
+/// The getters (#6139): they answer with a value (a number or a reference) instead of an effect. The
+/// rows that read a calling reference are declined without a live one.
+pub(crate) const GETTER_COMMANDS: &[Command] = &[
+    Command { id: CMD_GET_CURRENT_TIME, games: Games::Any, needs_caller: false, handler: get_current_time },
+    Command { id: CMD_IS_IMAGE_SPACE_ACTIVE, games: Games::Any, needs_caller: false, handler: is_image_space_active },
+    Command { id: CMD_GET_GS, games: Games::Any, needs_caller: false, handler: get_gs },
+    Command { id: CMD_SCRIPT_EFFECT_ELAPSED_SECONDS, games: Games::Any, needs_caller: false, handler: script_effect_elapsed_seconds },
+    Command { id: CMD_GET_IS_CURRENT_WEATHER, games: Games::Any, needs_caller: false, handler: get_is_current_weather },
+    Command { id: CMD_GET_HAS_NOTE, games: Games::Any, needs_caller: false, handler: get_has_note },
+    Command { id: CMD_GET_DEAD_COUNT, games: Games::Any, needs_caller: false, handler: get_dead_count },
+    Command { id: CMD_GET_ITEM_COUNT, games: Games::Any, needs_caller: true, handler: get_item_count },
+    Command { id: CMD_IS_IN_COMBAT, games: Games::Any, needs_caller: true, handler: is_in_combat },
+    Command { id: CMD_GET_IS_REFERENCE, games: Games::Any, needs_caller: true, handler: get_is_reference },
+    Command { id: CMD_GET_PLAYER_TEAMMATE, games: Games::Any, needs_caller: true, handler: get_player_teammate },
+    Command { id: CMD_GET_LOCKED, games: Games::Any, needs_caller: true, handler: get_locked },
+    Command { id: CMD_GET_LOCK_LEVEL, games: Games::Any, needs_caller: true, handler: get_lock_level },
+    Command { id: CMD_GET_AV, games: Games::Any, needs_caller: true, handler: get_av },
+    Command { id: CMD_GET_BASE_AV, games: Games::Any, needs_caller: true, handler: get_av },
+    Command { id: CMD_GET_UNCONSCIOUS, games: Games::Any, needs_caller: true, handler: get_unconscious },
+    Command { id: CMD_GET_COMBAT_TARGET, games: Games::Any, needs_caller: true, handler: get_combat_target },
+    Command { id: CMD_GET_LINKED_REF, games: Games::Fallout, needs_caller: true, handler: get_linked_ref },
+    Command { id: CMD_GET_PARENT_REF, games: Games::Any, needs_caller: true, handler: get_parent_ref },
+    Command { id: CMD_GET_IS_CURRENT_PACKAGE, games: Games::Any, needs_caller: true, handler: get_is_current_package },
+    Command { id: CMD_GET_HEALTH_PERCENTAGE, games: Games::Fallout, needs_caller: true, handler: get_health_percentage },
+    Command { id: CMD_GET_POS, games: Games::Any, needs_caller: true, handler: get_pos },
+    Command { id: CMD_GET_STARTING_POS, games: Games::Any, needs_caller: true, handler: get_pos },
+    Command { id: CMD_GET_ANGLE, games: Games::Any, needs_caller: true, handler: get_angle },
+    Command { id: CMD_GET_STARTING_ANGLE, games: Games::Any, needs_caller: true, handler: get_angle },
+    Command { id: CMD_IS_IN_INTERIOR, games: Games::Any, needs_caller: true, handler: is_in_interior },
+    Command { id: CMD_GET_IN_WORLDSPACE, games: Games::Any, needs_caller: true, handler: get_in_worldspace },
+    Command { id: CMD_HAS_MAGIC_EFFECT, games: Games::Any, needs_caller: true, handler: has_magic_effect },
+    Command { id: CMD_GET_DETECTION_LEVEL, games: Games::Any, needs_caller: true, handler: get_detection_level },
+    Command { id: CMD_IS_SNEAKING, games: Games::Any, needs_caller: true, handler: is_sneaking },
+    Command { id: CMD_IS_SWIMMING, games: Games::Any, needs_caller: true, handler: is_swimming },
+    Command { id: CMD_GET_DETECTED, games: Games::Any, needs_caller: true, handler: get_detected },
+    Command { id: CMD_IS_KILLER, games: Games::Any, needs_caller: true, handler: is_killer },
+    Command { id: CMD_IS_WEAPON_OUT, games: Games::Any, needs_caller: true, handler: is_weapon_out },
+    Command { id: CMD_GET_IGNORE_CRIME, games: Games::Any, needs_caller: true, handler: get_ignore_crime },
+    Command { id: CMD_GET_OPEN_STATE, games: Games::Any, needs_caller: true, handler: get_open_state },
+    Command { id: CMD_GET_SITTING, games: Games::Any, needs_caller: true, handler: get_sitting },
+    Command { id: CMD_IS_ANIM_PLAYING, games: Games::Any, needs_caller: true, handler: is_anim_playing },
+    Command { id: CMD_GET_SCALE, games: Games::Any, needs_caller: true, handler: get_scale },
+    Command { id: CMD_GET_DESTRUCTION_STAGE, games: Games::Any, needs_caller: true, handler: get_destruction_stage },
+    Command { id: CMD_GET_DESTROYED, games: Games::Any, needs_caller: true, handler: get_destroyed },
+    Command { id: CMD_GET_RESTRAINED, games: Games::Any, needs_caller: true, handler: get_restrained },
+    Command { id: CMD_GET_IN_SAME_CELL, games: Games::Any, needs_caller: true, handler: get_in_same_cell },
+];
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::obscript_cmd::run;
+
+    /// A getter through the command table: the number or reference it answers, or a decline.
+    fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+        run(world, cmd, args, context)
+    }
     use byroredux_core::ecs::components::{ActorValues, FormIdComponent, Inventory, Locked};
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
     use byroredux_plugin::esm::reader::GameKind;
@@ -1964,7 +2109,7 @@ mod tests {
         assert_eq!(count(&world, actor, ITEM), 3);
         assert_eq!(
             getter(&world, CMD_GET_ITEM_COUNT, &refs(&[ITEM]), &context(Some(ACTOR))),
-            Getter::Value(3.0),
+            Action::number(3.0),
             "GetItemCount reads the same stack"
         );
     }
@@ -1979,7 +2124,7 @@ mod tests {
         let args = [ObScriptValue::Ref(LIST), ObScriptValue::Num(2.0)];
         assert!(done(&run(&world, CMD_ADD_ITEM, &args, &context(Some(ACTOR)))));
         assert_eq!((count(&world, actor, ITEM), count(&world, actor, SECOND)), (2, 2));
-        assert_eq!(getter(&world, CMD_GET_ITEM_COUNT, &refs(&[LIST]), &context(Some(ACTOR))), Getter::Value(4.0));
+        assert_eq!(getter(&world, CMD_GET_ITEM_COUNT, &refs(&[LIST]), &context(Some(ACTOR))), Action::number(4.0));
     }
 
     #[test]
@@ -1988,7 +2133,7 @@ mod tests {
         let args = [ObScriptValue::Ref(ITEM), ObScriptValue::Num(1.0)];
         assert_eq!(run(&world, CMD_ADD_ITEM, &args, &context(Some(0x00FF_FFFF))), Action::Declined);
         assert_eq!(run(&world, CMD_ADD_ITEM, &args, &context(None)), Action::Declined, "a quest has no inventory");
-        assert_eq!(getter(&world, CMD_GET_ITEM_COUNT, &refs(&[ITEM]), &context(Some(0x00FF_FFFF))), Getter::Declined);
+        assert_eq!(getter(&world, CMD_GET_ITEM_COUNT, &refs(&[ITEM]), &context(Some(0x00FF_FFFF))), Action::Declined);
         // A null item names nothing.
         assert_eq!(run(&world, CMD_ADD_ITEM, &[ObScriptValue::Ref(0), ObScriptValue::Num(1.0)], &context(Some(ACTOR))), Action::Declined);
     }
@@ -1997,13 +2142,13 @@ mod tests {
     fn lock_and_unlock_set_the_lock_and_lock_zero_keeps_the_level() {
         let (world, actor, _) = world();
         assert!(done(&run(&world, CMD_LOCK, &[], &context(Some(ACTOR)))));
-        assert_eq!(getter(&world, CMD_GET_LOCKED, &[], &context(Some(ACTOR))), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_LOCKED, &[], &context(Some(ACTOR))), Action::number(1.0));
         assert!(done(&run(&world, CMD_LOCK, &[ObScriptValue::Num(75.0)], &context(Some(ACTOR)))));
         assert_eq!(world.get::<Locked>(actor).map(|lock| lock.lock_level), Some(75));
-        assert_eq!(getter(&world, CMD_GET_LOCK_LEVEL, &[], &context(Some(ACTOR))), Getter::Value(75.0));
+        assert_eq!(getter(&world, CMD_GET_LOCK_LEVEL, &[], &context(Some(ACTOR))), Action::number(75.0));
         assert!(done(&run(&world, CMD_UNLOCK, &[], &context(Some(ACTOR)))));
-        assert_eq!(getter(&world, CMD_GET_LOCKED, &[], &context(Some(ACTOR))), Getter::Value(0.0));
-        assert_eq!(getter(&world, CMD_GET_LOCK_LEVEL, &[], &context(Some(ACTOR))), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_LOCKED, &[], &context(Some(ACTOR))), Action::number(0.0));
+        assert_eq!(getter(&world, CMD_GET_LOCK_LEVEL, &[], &context(Some(ACTOR))), Action::number(0.0));
     }
 
     #[test]
@@ -2014,24 +2159,24 @@ mod tests {
         let av = |code: f32, value: f32| [ObScriptValue::Num(code), ObScriptValue::Num(value)];
         // SetAV Strength 6, ModAV Strength 2, DamageAV Strength 3, RestoreAV Strength 1.
         assert!(done(&run(&world, CMD_SET_AV, &av(5.0, 6.0), &ctx)));
-        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(5.0)], &ctx), Getter::Value(6.0));
+        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(5.0)], &ctx), Action::number(6.0));
         assert!(done(&run(&world, CMD_MOD_AV, &av(5.0, 2.0), &ctx)));
-        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(5.0)], &ctx), Getter::Value(8.0));
+        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(5.0)], &ctx), Action::number(8.0));
         assert!(done(&run(&world, CMD_DAMAGE_AV, &av(5.0, 3.0), &ctx)));
-        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(5.0)], &ctx), Getter::Value(5.0));
+        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(5.0)], &ctx), Action::number(5.0));
         assert!(done(&run(&world, CMD_RESTORE_AV, &av(5.0, 1.0), &ctx)));
-        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(5.0)], &ctx), Getter::Value(6.0));
+        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(5.0)], &ctx), Action::number(6.0));
         // GetBaseAV is the base alone: the +2 modifier and the damage are not in it.
-        assert_eq!(getter(&world, CMD_GET_BASE_AV, &[ObScriptValue::Num(5.0)], &ctx), Getter::Value(6.0));
+        assert_eq!(getter(&world, CMD_GET_BASE_AV, &[ObScriptValue::Num(5.0)], &ctx), Action::number(6.0));
         // ForceAV 10 brings the current value to 10 through a permanent modifier.
         assert!(done(&run(&world, CMD_FORCE_AV, &av(5.0, 10.0), &ctx)));
-        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(5.0)], &ctx), Getter::Value(10.0));
+        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(5.0)], &ctx), Action::number(10.0));
         // ResetHealth heals the damage on Health.
         assert!(done(&run(&world, CMD_SET_AV, &av(16.0, 50.0), &ctx)));
         assert!(done(&run(&world, CMD_DAMAGE_AV, &av(16.0, 20.0), &ctx)));
-        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(16.0)], &ctx), Getter::Value(30.0));
+        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(16.0)], &ctx), Action::number(30.0));
         assert!(done(&run(&world, CMD_RESET_HEALTH, &[], &ctx)));
-        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(16.0)], &ctx), Getter::Value(50.0));
+        assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(16.0)], &ctx), Action::number(50.0));
     }
 
     #[test]
@@ -2041,7 +2186,7 @@ mod tests {
         // 21 = SpeedMult has no AVIF; 99 is not a code.
         for code in [21.0, 99.0] {
             assert_eq!(run(&world, CMD_SET_AV, &[ObScriptValue::Num(code), ObScriptValue::Num(1.0)], &ctx), Action::Declined);
-            assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(code)], &ctx), Getter::Declined);
+            assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(code)], &ctx), Action::Declined);
         }
     }
 
@@ -2051,9 +2196,9 @@ mod tests {
         let ctx = context(Some(ACTOR));
         assert!(done(&run(&world, CMD_SET_UNCONSCIOUS, &[ObScriptValue::Num(1.0)], &ctx)));
         assert!(world.get::<crate::ActorControlState>(actor).is_some_and(|state| state.unconscious));
-        assert_eq!(getter(&world, CMD_GET_UNCONSCIOUS, &[], &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_UNCONSCIOUS, &[], &ctx), Action::number(1.0));
         assert!(done(&run(&world, CMD_SET_UNCONSCIOUS, &[ObScriptValue::Num(0.0)], &ctx)));
-        assert_eq!(getter(&world, CMD_GET_UNCONSCIOUS, &[], &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_UNCONSCIOUS, &[], &ctx), Action::number(0.0));
         assert!(done(&run(&world, CMD_SET_GHOST, &[ObScriptValue::Num(1.0)], &ctx)));
         assert!(world.get::<crate::ActorControlState>(actor).is_some_and(|state| state.ghost));
     }
@@ -2062,9 +2207,9 @@ mod tests {
     fn get_is_reference_compares_form_ids() {
         let (world, _, _) = world();
         let ctx = context(Some(ACTOR));
-        assert_eq!(getter(&world, CMD_GET_IS_REFERENCE, &refs(&[ACTOR]), &ctx), Getter::Value(1.0));
-        assert_eq!(getter(&world, CMD_GET_IS_REFERENCE, &refs(&[OTHER]), &ctx), Getter::Value(0.0));
-        assert_eq!(getter(&world, CMD_GET_IS_REFERENCE, &refs(&[0]), &ctx), Getter::Declined, "a null ref is not asked about");
+        assert_eq!(getter(&world, CMD_GET_IS_REFERENCE, &refs(&[ACTOR]), &ctx), Action::number(1.0));
+        assert_eq!(getter(&world, CMD_GET_IS_REFERENCE, &refs(&[OTHER]), &ctx), Action::number(0.0));
+        assert_eq!(getter(&world, CMD_GET_IS_REFERENCE, &refs(&[0]), &ctx), Action::Declined, "a null ref is not asked about");
     }
 
     #[test]
@@ -2075,12 +2220,12 @@ mod tests {
         // Fighting OTHER: `StopCombat <some third ref>` leaves it alone.
         assert!(done(&run(&world, CMD_STOP_COMBAT, &refs(&[0x00CC_0001]), &ctx)));
         assert!(world.get::<crate::AiCombatState>(actor).is_some());
-        assert_eq!(getter(&world, CMD_IS_IN_COMBAT, &[], &ctx), Getter::Value(1.0));
-        assert_eq!(getter(&world, CMD_GET_COMBAT_TARGET, &[], &ctx), Getter::Ref(OTHER));
+        assert_eq!(getter(&world, CMD_IS_IN_COMBAT, &[], &ctx), Action::number(1.0));
+        assert_eq!(getter(&world, CMD_GET_COMBAT_TARGET, &[], &ctx), Action::reference(OTHER));
         assert!(done(&run(&world, CMD_STOP_COMBAT, &refs(&[OTHER]), &ctx)));
         assert!(world.get::<crate::AiCombatState>(actor).is_none());
-        assert_eq!(getter(&world, CMD_IS_IN_COMBAT, &[], &ctx), Getter::Value(0.0));
-        assert_eq!(getter(&world, CMD_GET_COMBAT_TARGET, &[], &ctx), Getter::Ref(0));
+        assert_eq!(getter(&world, CMD_IS_IN_COMBAT, &[], &ctx), Action::number(0.0));
+        assert_eq!(getter(&world, CMD_GET_COMBAT_TARGET, &[], &ctx), Action::reference(0));
     }
 
     #[test]
@@ -2113,14 +2258,14 @@ mod tests {
     fn destroyed_and_restrained_are_set_and_read_back() {
         let (world, actor, _) = world();
         let ctx = context(Some(ACTOR));
-        assert_eq!(getter(&world, CMD_GET_DESTROYED, &[], &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_DESTROYED, &[], &ctx), Action::number(0.0));
         assert!(done(&run(&world, CMD_SET_DESTROYED, &[ObScriptValue::Num(1.0)], &ctx)));
-        assert_eq!(getter(&world, CMD_GET_DESTROYED, &[], &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_DESTROYED, &[], &ctx), Action::number(1.0));
         assert!(done(&run(&world, CMD_SET_DESTROYED, &[ObScriptValue::Num(0.0)], &ctx)));
-        assert_eq!(getter(&world, CMD_GET_DESTROYED, &[], &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_DESTROYED, &[], &ctx), Action::number(0.0));
         assert!(done(&run(&world, CMD_SET_RESTRAINED, &[ObScriptValue::Num(1.0)], &ctx)));
         assert!(world.get::<crate::ActorControlState>(actor).is_some_and(|state| state.restrained));
-        assert_eq!(getter(&world, CMD_GET_RESTRAINED, &[], &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_RESTRAINED, &[], &ctx), Action::number(1.0));
     }
 
     #[test]
@@ -2224,12 +2369,12 @@ mod tests {
         let (mut world, actor, other) = world();
         world.register::<CellFormId>();
         let ctx = context(Some(ACTOR));
-        assert_eq!(getter(&world, CMD_GET_IN_SAME_CELL, &refs(&[OTHER]), &ctx), Getter::Declined, "no cell is known yet");
+        assert_eq!(getter(&world, CMD_GET_IN_SAME_CELL, &refs(&[OTHER]), &ctx), Action::Declined, "no cell is known yet");
         world.insert(actor, CellFormId(0x5A));
         world.insert(other, CellFormId(0x5A));
-        assert_eq!(getter(&world, CMD_GET_IN_SAME_CELL, &refs(&[OTHER]), &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_IN_SAME_CELL, &refs(&[OTHER]), &ctx), Action::number(1.0));
         world.insert(other, CellFormId(0x5B));
-        assert_eq!(getter(&world, CMD_GET_IN_SAME_CELL, &refs(&[OTHER]), &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_IN_SAME_CELL, &refs(&[OTHER]), &ctx), Action::number(0.0));
     }
 
     #[test]
@@ -2239,8 +2384,8 @@ mod tests {
         let mut links = crate::LinkedRefOverrides::default();
         links.set(ACTOR, 0, OTHER);
         world.insert_resource(links);
-        assert_eq!(getter(&world, CMD_GET_LINKED_REF, &[], &ctx), Getter::Ref(OTHER));
-        assert_eq!(getter(&world, CMD_GET_PARENT_REF, &[], &ctx), Getter::Ref(0), "no enable parent");
+        assert_eq!(getter(&world, CMD_GET_LINKED_REF, &[], &ctx), Action::reference(OTHER));
+        assert_eq!(getter(&world, CMD_GET_PARENT_REF, &[], &ctx), Action::reference(0), "no enable parent");
         world.insert_resource(crate::AuthoredDisabledReferences {
             initially_disabled: Default::default(),
             enable_parents: [(
@@ -2249,7 +2394,7 @@ mod tests {
             )]
             .into(),
         });
-        assert_eq!(getter(&world, CMD_GET_PARENT_REF, &[], &ctx), Getter::Ref(ITEM));
+        assert_eq!(getter(&world, CMD_GET_PARENT_REF, &[], &ctx), Action::reference(ITEM));
     }
 
     #[test]
@@ -2270,10 +2415,10 @@ mod tests {
         const WALK: u32 = 0x0005_0001;
         let (world, actor, _) = world();
         let ctx = context(Some(ACTOR));
-        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK]), &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK]), &ctx), Action::number(0.0));
         crate::fragment::report_package_transition(&world, actor, None, Some(WALK));
-        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK]), &ctx), Getter::Value(1.0));
-        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK + 1]), &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK]), &ctx), Action::number(1.0));
+        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_PACKAGE, &refs(&[WALK + 1]), &ctx), Action::number(0.0));
     }
 
     #[test]
@@ -2290,17 +2435,17 @@ mod tests {
         world.insert(actor, crate::EditorLocation { translation: Vec3::new(5.0, 6.0, -7.0), rotation: Default::default() });
         let ctx = context(Some(ACTOR));
         let axis = |a: f32| [ObScriptValue::Num(a)];
-        assert_eq!(getter(&world, CMD_GET_POS, &axis(0.0), &ctx), Getter::Value(1.0));
-        assert_eq!(getter(&world, CMD_GET_POS, &axis(1.0), &ctx), Getter::Value(2.0));
-        assert_eq!(getter(&world, CMD_GET_POS, &axis(2.0), &ctx), Getter::Value(3.0));
-        assert_eq!(getter(&world, CMD_GET_STARTING_POS, &axis(2.0), &ctx), Getter::Value(6.0));
-        assert_eq!(getter(&world, CMD_GET_POS, &axis(3.0), &ctx), Getter::Declined, "not an axis");
+        assert_eq!(getter(&world, CMD_GET_POS, &axis(0.0), &ctx), Action::number(1.0));
+        assert_eq!(getter(&world, CMD_GET_POS, &axis(1.0), &ctx), Action::number(2.0));
+        assert_eq!(getter(&world, CMD_GET_POS, &axis(2.0), &ctx), Action::number(3.0));
+        assert_eq!(getter(&world, CMD_GET_STARTING_POS, &axis(2.0), &ctx), Action::number(6.0));
+        assert_eq!(getter(&world, CMD_GET_POS, &axis(3.0), &ctx), Action::Declined, "not an axis");
         // `SetPos z 10`: only the world Z moves.
         assert!(done(&run(&world, CMD_SET_POS, &[ObScriptValue::Num(2.0), ObScriptValue::Num(10.0)], &ctx)));
         assert_eq!(world.get::<Transform>(actor).unwrap().translation, Vec3::new(1.0, 10.0, -2.0));
-        assert_eq!(getter(&world, CMD_GET_SCALE, &[], &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_SCALE, &[], &ctx), Action::number(1.0));
         assert!(done(&run(&world, CMD_SET_SCALE, &[ObScriptValue::Num(0.5)], &ctx)));
-        assert_eq!(getter(&world, CMD_GET_SCALE, &[], &ctx), Getter::Value(0.5));
+        assert_eq!(getter(&world, CMD_GET_SCALE, &[], &ctx), Action::number(0.5));
     }
 
     #[test]
@@ -2335,13 +2480,13 @@ mod tests {
         world.insert(player, idle);
         let ctx = context(Some(ACTOR));
         let group = |index: f32| [ObScriptValue::Num(index), ObScriptValue::Num(0.0)];
-        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[], &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[], &ctx), Action::number(0.0));
         // `PlayGroup Forward 0`; `Backward` is a group the object has no sequence of.
         assert!(done(&run(&world, CMD_PLAY_GROUP, &group(3.0), &ctx)));
         assert!(matches!(run(&world, CMD_PLAY_GROUP, &group(4.0), &ctx), Action::Declined));
-        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[], &ctx), Getter::Value(1.0));
-        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[ObScriptValue::Num(3.0)], &ctx), Getter::Value(1.0));
-        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[ObScriptValue::Num(4.0)], &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[], &ctx), Action::number(1.0));
+        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[ObScriptValue::Num(3.0)], &ctx), Action::number(1.0));
+        assert_eq!(getter(&world, CMD_IS_ANIM_PLAYING, &[ObScriptValue::Num(4.0)], &ctx), Action::number(0.0));
     }
 
     #[test]
@@ -2363,13 +2508,13 @@ mod tests {
         world.insert(other, CellRoot(exterior));
         let indoors = context(Some(ACTOR));
         let outdoors = context(Some(OTHER));
-        assert_eq!(getter(&world, CMD_IS_IN_INTERIOR, &[], &indoors), Getter::Value(1.0));
-        assert_eq!(getter(&world, CMD_IS_IN_INTERIOR, &[], &outdoors), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_IS_IN_INTERIOR, &[], &indoors), Action::number(1.0));
+        assert_eq!(getter(&world, CMD_IS_IN_INTERIOR, &[], &outdoors), Action::number(0.0));
         let wrld = refs(&[WRLD]);
-        assert_eq!(getter(&world, CMD_GET_IN_WORLDSPACE, &wrld, &outdoors), Getter::Value(1.0));
-        assert_eq!(getter(&world, CMD_GET_IN_WORLDSPACE, &refs(&[WRLD + 1]), &outdoors), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_IN_WORLDSPACE, &wrld, &outdoors), Action::number(1.0));
+        assert_eq!(getter(&world, CMD_GET_IN_WORLDSPACE, &refs(&[WRLD + 1]), &outdoors), Action::number(0.0));
         // Always 0 in an interior.
-        assert_eq!(getter(&world, CMD_GET_IN_WORLDSPACE, &wrld, &indoors), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_IN_WORLDSPACE, &wrld, &indoors), Action::number(0.0));
     }
 
     #[test]
@@ -2378,11 +2523,11 @@ mod tests {
         let (mut world, _, _) = world();
         world.register::<TwoStateActivator>();
         let ctx = context(Some(ACTOR));
-        assert_eq!(getter(&world, CMD_GET_OPEN_STATE, &[], &ctx), Getter::Value(0.0), "no state, no open/closed");
+        assert_eq!(getter(&world, CMD_GET_OPEN_STATE, &[], &ctx), Action::number(0.0), "no state, no open/closed");
         assert!(done(&run(&world, CMD_SET_OPEN_STATE, &[ObScriptValue::Num(1.0)], &ctx)));
-        assert_eq!(getter(&world, CMD_GET_OPEN_STATE, &[], &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_OPEN_STATE, &[], &ctx), Action::number(1.0));
         assert!(done(&run(&world, CMD_SET_OPEN_STATE, &[ObScriptValue::Num(0.0)], &ctx)));
-        assert_eq!(getter(&world, CMD_GET_OPEN_STATE, &[], &ctx), Getter::Value(3.0));
+        assert_eq!(getter(&world, CMD_GET_OPEN_STATE, &[], &ctx), Action::number(3.0));
     }
 
     #[test]
@@ -2417,25 +2562,25 @@ mod tests {
         let ctx = context(Some(ACTOR));
         // Notes: no reference needed.
         let none = context(None);
-        assert_eq!(getter(&world, CMD_GET_HAS_NOTE, &refs(&[NOTE]), &none), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_HAS_NOTE, &refs(&[NOTE]), &none), Action::number(0.0));
         assert!(done(&run(&world, CMD_ADD_NOTE, &refs(&[NOTE]), &none)));
-        assert_eq!(getter(&world, CMD_GET_HAS_NOTE, &refs(&[NOTE]), &none), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_HAS_NOTE, &refs(&[NOTE]), &none), Action::number(1.0));
         assert!(done(&run(&world, CMD_REMOVE_NOTE, &refs(&[NOTE]), &none)));
-        assert_eq!(getter(&world, CMD_GET_HAS_NOTE, &refs(&[NOTE]), &none), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_HAS_NOTE, &refs(&[NOTE]), &none), Action::number(0.0));
         // Deaths: the count is per base, the killer per victim reference.
         world.resource_mut::<KillRecords>().record(ACTOR, BASE, Some(0x14));
-        assert_eq!(getter(&world, CMD_GET_DEAD_COUNT, &refs(&[BASE]), &none), Getter::Value(1.0));
-        assert_eq!(getter(&world, CMD_IS_KILLER, &refs(&[0x14]), &ctx), Getter::Value(1.0));
-        assert_eq!(getter(&world, CMD_IS_KILLER, &refs(&[OTHER]), &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_DEAD_COUNT, &refs(&[BASE]), &none), Action::number(1.0));
+        assert_eq!(getter(&world, CMD_IS_KILLER, &refs(&[0x14]), &ctx), Action::number(1.0));
+        assert_eq!(getter(&world, CMD_IS_KILLER, &refs(&[OTHER]), &ctx), Action::number(0.0));
         // The flags.
-        assert_eq!(getter(&world, CMD_IS_WEAPON_OUT, &[], &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_IS_WEAPON_OUT, &[], &ctx), Action::number(0.0));
         assert!(done(&run(&world, CMD_SET_ALERT, &[ObScriptValue::Num(1.0)], &ctx)));
-        assert_eq!(getter(&world, CMD_IS_WEAPON_OUT, &[], &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_IS_WEAPON_OUT, &[], &ctx), Action::number(1.0));
         assert!(done(&run(&world, CMD_SET_ALERT, &[ObScriptValue::Num(0.0)], &ctx)));
-        assert_eq!(getter(&world, CMD_IS_WEAPON_OUT, &[], &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_IS_WEAPON_OUT, &[], &ctx), Action::number(0.0));
         assert!(done(&run(&world, CMD_IGNORE_CRIME, &[ObScriptValue::Num(1.0)], &ctx)));
         assert!(world.has::<crate::obscript_state::IgnoreCrime>(actor));
-        assert_eq!(getter(&world, CMD_GET_IGNORE_CRIME, &[], &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_IGNORE_CRIME, &[], &ctx), Action::number(1.0));
     }
 
     #[test]
@@ -2463,11 +2608,11 @@ mod tests {
         assert!(matches!(run(&world, CMD_SEND_ASSAULT_ALARM, &[], &none), Action::Declined));
         // `GetDetected`: the installed sight test decides; with none installed it is declined.
         let ctx = context(Some(ACTOR));
-        assert_eq!(getter(&world, CMD_GET_DETECTED, &refs(&[OTHER]), &ctx), Getter::Declined);
+        assert_eq!(getter(&world, CMD_GET_DETECTED, &refs(&[OTHER]), &ctx), Action::Declined);
         world.insert_resource(crate::SightQuery(|_, _, _| true));
-        assert_eq!(getter(&world, CMD_GET_DETECTED, &refs(&[OTHER]), &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_DETECTED, &refs(&[OTHER]), &ctx), Action::number(1.0));
         world.insert_resource(crate::SightQuery(|_, _, _| false));
-        assert_eq!(getter(&world, CMD_GET_DETECTED, &refs(&[OTHER]), &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_DETECTED, &refs(&[OTHER]), &ctx), Action::number(0.0));
     }
 
     #[test]
@@ -2489,8 +2634,8 @@ mod tests {
         assert_eq!(*world.resource::<ForcedWeather>(), ForcedWeather::default());
         // `GetIsCurrentWeather` reads the sky's weather.
         world.insert_resource(crate::weather_state::CurrentWeather(Some(WTHR)));
-        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_WEATHER, &refs(&[WTHR]), &none), Getter::Value(1.0));
-        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_WEATHER, &refs(&[WTHR + 1]), &none), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_WEATHER, &refs(&[WTHR]), &none), Action::number(1.0));
+        assert_eq!(getter(&world, CMD_GET_IS_CURRENT_WEATHER, &refs(&[WTHR + 1]), &none), Action::number(0.0));
     }
 
     #[test]
@@ -2547,7 +2692,7 @@ mod tests {
         // `CastImmediateOnSelf` puts the effect on the caster; `HasMagicEffect` sees it; `Dispel` ends it.
         assert!(done(&run(&world, CMD_CAST_IMMEDIATE_ON_SELF, &refs(&[SPELL]), &ctx)));
         crate::magic_effects::magic_effect_system(&world, 0.0);
-        assert_eq!(getter(&world, CMD_HAS_MAGIC_EFFECT, &refs(&[MGEF]), &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_HAS_MAGIC_EFFECT, &refs(&[MGEF]), &ctx), Action::number(1.0));
         assert_eq!(world.get::<ActorValues>(actor).unwrap().current(HEALTH), 125.0);
         assert!(done(&run(&world, CMD_DISPEL, &refs(&[SPELL]), &ctx)));
         crate::magic_effects::magic_effect_system(&world, 0.0);
@@ -2559,9 +2704,9 @@ mod tests {
         // An unknown spell is declined, not invented.
         assert!(matches!(run(&world, CMD_CAST, &refs(&[SPELL + 9]), &ctx), Action::Declined));
         // `ScriptEffectElapsedSeconds` answers only while an effect script runs.
-        assert_eq!(getter(&world, CMD_SCRIPT_EFFECT_ELAPSED_SECONDS, &[], &none_ctx()), Getter::Declined);
+        assert_eq!(getter(&world, CMD_SCRIPT_EFFECT_ELAPSED_SECONDS, &[], &none_ctx()), Action::Declined);
         world.resource_mut::<crate::magic_effects::ScriptEffectRun>().elapsed = Some(1.25);
-        assert_eq!(getter(&world, CMD_SCRIPT_EFFECT_ELAPSED_SECONDS, &[], &none_ctx()), Getter::Value(1.25));
+        assert_eq!(getter(&world, CMD_SCRIPT_EFFECT_ELAPSED_SECONDS, &[], &none_ctx()), Action::number(1.25));
 
         // Shaders: `PlayMagicShaderVisuals` plays a known shader, `StopMagicShaderVisuals` stops it.
         let mut index = EsmIndex::default();
@@ -2600,18 +2745,18 @@ mod tests {
         let (mut world, _, _) = world();
         let ctx = context(Some(ACTOR));
         // `GetGS`: the VM looks the name up and hands the value (or the null argument).
-        assert_eq!(getter(&world, CMD_GET_GS, &[ObScriptValue::Num(2.5)], &context(None)), Getter::Value(2.5));
-        assert_eq!(getter(&world, CMD_GET_GS, &[ObScriptValue::Ref(0)], &context(None)), Getter::Declined);
+        assert_eq!(getter(&world, CMD_GET_GS, &[ObScriptValue::Num(2.5)], &context(None)), Action::number(2.5));
+        assert_eq!(getter(&world, CMD_GET_GS, &[ObScriptValue::Ref(0)], &context(None)), Action::Declined);
         // The engine has no sneak stance.
-        assert_eq!(getter(&world, CMD_IS_SNEAKING, &[], &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_IS_SNEAKING, &[], &ctx), Action::number(0.0));
         // Swimming and sight come from the queries the engine installs.
-        assert_eq!(getter(&world, CMD_IS_SWIMMING, &[], &ctx), Getter::Declined);
+        assert_eq!(getter(&world, CMD_IS_SWIMMING, &[], &ctx), Action::Declined);
         world.insert_resource(crate::SwimQuery(|_, _| true));
-        assert_eq!(getter(&world, CMD_IS_SWIMMING, &[], &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_IS_SWIMMING, &[], &ctx), Action::number(1.0));
         world.insert_resource(crate::SightQuery(|_, _, _| true));
-        assert_eq!(getter(&world, CMD_GET_DETECTION_LEVEL, &refs(&[OTHER]), &ctx), Getter::Value(3.0));
+        assert_eq!(getter(&world, CMD_GET_DETECTION_LEVEL, &refs(&[OTHER]), &ctx), Action::number(3.0));
         world.insert_resource(crate::SightQuery(|_, _, _| false));
-        assert_eq!(getter(&world, CMD_GET_DETECTION_LEVEL, &refs(&[OTHER]), &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_DETECTION_LEVEL, &refs(&[OTHER]), &ctx), Action::number(0.0));
         // `ShowWarning` has already been shown by the VM when the command arrives.
         assert!(done(&run(&world, CMD_SHOW_WARNING, &[ObScriptValue::Num(0.0)], &context(None))));
     }
@@ -2622,10 +2767,10 @@ mod tests {
         let (mut world, actor, other) = world();
         world.register::<Seated>();
         let ctx = context(Some(ACTOR));
-        assert_eq!(getter(&world, CMD_GET_SITTING, &[], &ctx), Getter::Value(0.0));
+        assert_eq!(getter(&world, CMD_GET_SITTING, &[], &ctx), Action::number(0.0));
         let restore = SeatedAnimationRestore { clip_handle: 0, local_time: 0.0, prev_time: 0.0, playing: true, speed: 1.0 };
         world.insert(actor, Seated { furniture: other, animation_restore: restore });
-        assert_eq!(getter(&world, CMD_GET_SITTING, &[], &ctx), Getter::Value(3.0));
+        assert_eq!(getter(&world, CMD_GET_SITTING, &[], &ctx), Action::number(3.0));
         // `AutoSave` names no reference.
         assert!(done(&run(&world, CMD_AUTO_SAVE, &[], &context(None))));
         assert!(done(&run(&world, CMD_FORCE_SAVE, &[], &context(None))));
@@ -2648,7 +2793,7 @@ mod tests {
             world.query_mut::<GlobalTransform>().unwrap().get_mut(actor).unwrap().rotation = rotation;
         };
         let angle = |world: &World, axis: f32| match getter(world, CMD_GET_ANGLE, &[ObScriptValue::Num(axis)], &ctx) {
-            Getter::Value(v) => v,
+            Action::Done { value: Some(ObScriptValue::Num(v)), .. } => v,
             other => panic!("{other:?}"),
         };
         // `SetAngle z 270`, then `SetAngle x 28.8`: each keeps the other component.
@@ -2668,7 +2813,7 @@ mod tests {
         assert!((angle(&world, 2.0) - 270.0).abs() < 1e-2);
         // The player's pitch and heading are the camera's: not asked of the body.
         world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(actor));
-        assert_eq!(getter(&world, CMD_GET_ANGLE, &[ObScriptValue::Num(2.0)], &ctx), Getter::Declined);
+        assert_eq!(getter(&world, CMD_GET_ANGLE, &[ObScriptValue::Num(2.0)], &ctx), Action::Declined);
         assert_eq!(run(&world, CMD_SET_ANGLE, &[ObScriptValue::Num(2.0), ObScriptValue::Num(1.0)], &ctx), Action::Declined);
     }
 
@@ -2681,17 +2826,17 @@ mod tests {
         crate::cinematic::install_image_space_modifiers(&mut world, vec![record]);
         let ctx = context(None);
         let active = |world: &World| getter(world, CMD_IS_IMAGE_SPACE_ACTIVE, &refs(&[IMAD]), &ctx);
-        assert_eq!(active(&world), Getter::Value(0.0));
+        assert_eq!(active(&world), Action::number(0.0));
         assert!(done(&run(&world, CMD_IMOD, &refs(&[IMAD]), &ctx)));
-        assert_eq!(active(&world), Getter::Value(1.0));
+        assert_eq!(active(&world), Action::number(1.0));
         assert!(done(&run(&world, CMD_RIMOD, &refs(&[IMAD]), &ctx)));
-        assert_eq!(active(&world), Getter::Value(0.0));
+        assert_eq!(active(&world), Action::number(0.0));
         // An IMAD the load order lacks is declined, not held.
         assert_eq!(run(&world, CMD_IMOD, &refs(&[IMAD + 1]), &ctx), Action::Declined);
         // The modifier plays out: its duration ends it.
         run(&world, CMD_IMOD, &refs(&[IMAD]), &ctx);
         crate::cinematic::image_space_modifier_system(&world, 3.0);
-        assert_eq!(active(&world), Getter::Value(0.0));
+        assert_eq!(active(&world), Action::number(0.0));
     }
 
     #[test]
@@ -2702,9 +2847,9 @@ mod tests {
         world.insert(actor, ActorVitals { health: HEALTH });
         let ctx = context(Some(ACTOR));
         run(&world, CMD_SET_AV, &[ObScriptValue::Num(16.0), ObScriptValue::Num(80.0)], &ctx);
-        assert_eq!(getter(&world, CMD_GET_HEALTH_PERCENTAGE, &[], &ctx), Getter::Value(1.0));
+        assert_eq!(getter(&world, CMD_GET_HEALTH_PERCENTAGE, &[], &ctx), Action::number(1.0));
         run(&world, CMD_DAMAGE_AV, &[ObScriptValue::Num(16.0), ObScriptValue::Num(20.0)], &ctx);
-        assert_eq!(getter(&world, CMD_GET_HEALTH_PERCENTAGE, &[], &ctx), Getter::Value(0.75));
+        assert_eq!(getter(&world, CMD_GET_HEALTH_PERCENTAGE, &[], &ctx), Action::number(0.75));
     }
 
     #[test]
@@ -2789,16 +2934,16 @@ mod tests {
     fn get_current_time_is_the_hour_of_the_game_clock() {
         let (world, _, _) = world();
         // No clock reported yet: nothing to read, so it is declined, not midnight.
-        assert_eq!(getter(&world, CMD_GET_CURRENT_TIME, &[], &context(None)), Getter::Declined);
+        assert_eq!(getter(&world, CMD_GET_CURRENT_TIME, &[], &context(None)), Action::Declined);
         // Day 1, 06:30 (30.5 game hours since the runtime began): "4:30 am = 4.5".
         crate::script_update_system(&world, 0.0, Some(30.5));
-        assert_eq!(getter(&world, CMD_GET_CURRENT_TIME, &[], &context(None)), Getter::Value(6.5));
+        assert_eq!(getter(&world, CMD_GET_CURRENT_TIME, &[], &context(None)), Action::number(6.5));
     }
 
     #[test]
     fn a_command_this_module_does_not_run_is_left_for_the_host() {
         let (world, _, _) = world();
         assert_eq!(run(&world, 0x1fff, &[], &context(Some(ACTOR))), Action::Unhandled);
-        assert_eq!(getter(&world, 0x1fff, &[], &context(Some(ACTOR))), Getter::Unhandled);
+        assert_eq!(getter(&world, 0x1fff, &[], &context(Some(ACTOR))), Action::Unhandled);
     }
 }

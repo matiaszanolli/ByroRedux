@@ -74,6 +74,18 @@ pub(crate) enum Action {
     Declined,
 }
 
+impl Action {
+    /// A getter's number.
+    pub(crate) fn number(value: f32) -> Self {
+        Self::Done { value: Some(ObScriptValue::Num(value)), effect: String::new() }
+    }
+
+    /// A getter's reference (its FormID, `0` for none).
+    pub(crate) fn reference(form: u32) -> Self {
+        Self::Done { value: Some(ObScriptValue::Ref(form)), effect: String::new() }
+    }
+}
+
 /// What the host knows about the call besides its command and arguments.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Context {

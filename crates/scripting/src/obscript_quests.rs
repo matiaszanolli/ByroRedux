@@ -130,9 +130,6 @@ pub fn command_is_modeled(cmd: u16, fallout: bool) -> bool {
     if !fallout && matches!(cmd, 0x124f | 0x116b | 0x11af) {
         return false;
     }
-    if crate::obscript_effects::is_getter(cmd) {
-        return true;
-    }
     cmd.checked_sub(0x1000)
         .map(|index| ConditionFunction::from_index(u32::from(index)))
         .is_some_and(|function| SCRIPT_GETTERS.contains(&function) && function != ConditionFunction::GetActorValue)
@@ -747,18 +744,8 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     _ => self.decline(cmd),
                 }
             }
-            _ if crate::obscript_effects::is_getter(cmd) => {
-                match crate::obscript_effects::getter(
-                    self.world,
-                    cmd,
-                    args,
-                    &self.context(caller),
-                ) {
-                    crate::obscript_effects::Getter::Value(value) => Some(ObScriptValue::Num(value)),
-                    crate::obscript_effects::Getter::Ref(form) => Some(ObScriptValue::Ref(form)),
-                    _ => self.decline(cmd),
-                }
-            }
+            // `GetHealthPercentage` is Fallout's; `0x11af` is another command in Oblivion, which answers none.
+            0x11af if !crate::ScriptGame::is_fallout3_nv(self.world) => self.decline(cmd),
             _ if self.script_getter(cmd).is_some() => {
                 let function_index = u32::from(cmd) - 0x1000;
                 // A form-id first parameter that did not resolve (`Ref(0)`) is
