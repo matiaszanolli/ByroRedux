@@ -123,10 +123,12 @@ finite ragdolls, and a starts-dead molerat holds a stable 20-body one, every
 session under `BYRO_VALIDATION=1` (corpses whose reference carries a large X/Y
 tilt are not covered: their pose composition is not established). 
 [`m42-package-procedures.sh`](docs/smoke-tests/m42-package-procedures.sh)
-gates two M42 package fixes live on FNV: creatures stay out of furniture
-(#5495 — Vault11a's mantises carry `CreatureActor`, nothing is `Seated`) and
+gates three M42 package fixes live on FNV: creatures stay out of furniture
+(#5495 — Vault11a's mantises carry `CreatureActor`, nothing is `Seated`),
 UseWeapon packages install and keep firing (ULKitchen's two White Glove
-torchers; Flee has no unconditional placement and is unit-gated only).
+torchers), and UseItemAt/Eat seats (vault3c's Motor-Runner sits on his
+throne; Flee, Accompany and Ambush have no unconditional placement and are
+unit-gated only).
 
 ### Shader Compilation
 ```bash

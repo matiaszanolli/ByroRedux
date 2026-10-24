@@ -593,15 +593,17 @@ animation-clip swap).
   workbench marker - so it installs `EatBehavior` from the `PLDT` location
   and sits at the nearest marker. The `PTDT` item is not read, so an item
   that is not furniture leaves the actor standing at the location (the
-  GECK's "animation, if available", with none). **Live finding
-  (2026-10-24, `vault3c`):** `V03MotorRunner`'s unconditional
-  `V03MotorRunnerSit` installs `EatBehavior` and resolves its walk
-  destination, but he never seats - his `Eat` approach walks the character
-  controller into `Throne01`'s own collision and up onto it (authored height
-  6144, seat marker 6146, standing at 6368), so the 3-D arrival test against
-  the marker is never met. That is Eat/Sleep's approach leg, which no live
-  gate has covered (`m42-eat-sleep.sh` has nothing to seat); not changed
-  here. Accompany (14 FNV / 24 FO3 packages, each
+  GECK's "animation, if available", with none). **Live (2026-10-24,
+  `vault3c`, gated by `m42-package-procedures.sh`):** `V03MotorRunner`'s
+  unconditional `V03MotorRunnerSit` installs `EatBehavior`, walks, and sits
+  on `Throne01`. The first live run exposed a bug in the shared Eat/Sleep
+  seat step, now fixed: the walk leg judged arrival on the ground plane but
+  `seat_at_marker` judged it in 3-D, and the approach climbs onto the
+  furniture's own collision (authored height 6144, seat marker 6146, standing
+  at 6368), so the pair looped "arrived, now approach the marker" and he never
+  sat. Seating snaps the root to the marker, so a height gap is not distance
+  left to walk; both tests are horizontal now. This was the first live
+  coverage of Eat/Sleep's seat step. Accompany (14 FNV / 24 FO3 packages, each
   a `PTDT` reference plus a 50-768 distance and no `PLDT`) runs as a Follow:
   the GECK calls it "similar to a Follow" but pathing to the target's
   destination, and that lead is not modelled. No vanilla FNV placement

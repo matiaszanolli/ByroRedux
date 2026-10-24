@@ -14,8 +14,17 @@
 #      give up (the runtime logs "cannot reach ... gives up" after 10 s of
 #      shots it cannot take).
 #
-# FleeNotCombat has no unconditional vanilla placement to boot into, so it
-# is unit-gated only (`systems::flee_package`, `npc_spawn::ai_package`).
+#   3. UseItemAt (PACK procedure 8) and the Eat seat step. Vault 3's
+#      Motor-Runner runs `V03MotorRunnerSit` (unconditional, always active, on
+#      `Throne01`); it installs EatBehavior and must end up `Seated`. His
+#      approach climbs onto the throne's own collision, so the seat step has
+#      to judge arrival on the ground plane: with the 3-D test it looped
+#      "arrived, now approach the marker" forever (he stood 222 units above
+#      it) and he never sat.
+#
+# FleeNotCombat, Accompany and Ambush have no unconditional vanilla placement
+# to boot into, so they are unit-gated only (`systems::flee_package`,
+# `systems::faction_hostility`, `npc_spawn::ai_package`).
 set -euo pipefail
 
 PORT="${BYRO_DEBUG_PORT:-19884}"
@@ -117,4 +126,17 @@ if grep -Fq 'gives up' "$LOG_DIR/ulkitchen.stderr"; then
     fail "a volley gave up: $(grep 'gives up' "$LOG_DIR/ulkitchen.stderr" | head -2)"
 fi
 echo "smoke[m42-package-procedures]: UseWeapon PASS — $installed packages installed, $started started, no volley gave up"
+stop_engine
+
+# ── 3. UseItemAt: the Motor-Runner sits on his throne ───────────────
+boot_cell vault3c vault3
+sleep 12   # the approach walk plus the seat step
+debug_command 'find("V03MotorRunner")' "$LOG_DIR/vault3-find.log" || fail 'find unavailable'
+runner="$(grep -oE 'Entity [0-9]+' "$LOG_DIR/vault3-find.log" | head -1 | cut -d' ' -f2 || true)"
+[[ -n "$runner" ]] || fail "V03MotorRunner not found in vault3c"
+(( $(count_entities EatBehavior vault3-eat) > 0 )) || fail "UseItemAt installed no EatBehavior: V03MotorRunnerSit is not running"
+count_entities Seated vault3-seated >/dev/null
+grep -Fq "Entity $runner" "$LOG_DIR/vault3-seated.log" \
+    || fail "the Motor-Runner never sat on Throne01 (the Eat approach/arrival regression): $(grep -a '\[m42\]' "$LOG_DIR/vault3.stderr" | head -2)"
+echo "smoke[m42-package-procedures]: UseItemAt PASS — the Motor-Runner is seated on his throne"
 echo "smoke[m42-package-procedures]: PASS; artifacts: $LOG_DIR"

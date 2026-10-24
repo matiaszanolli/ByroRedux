@@ -578,7 +578,13 @@ fn seat_at_marker(
     let Some(((furn_e, marker_idx), seat)) = seat else {
         return SeatAttempt::Retry;
     };
-    if (seat.translation - current).length() > ARRIVE_RADIUS {
+    // Horizontal, like the walk leg's own arrival test: the root snaps to the
+    // marker below, so a height gap is nothing left to walk. A 3-D test here
+    // disagreed with the walk leg for an actor that arrived on the plane but
+    // stood above the marker (it climbed the furniture on the way), and the
+    // pair looped - arrived, then "approach the marker" - and never seated.
+    let to_marker = Vec3::new(seat.translation.x - current.x, 0.0, seat.translation.z - current.z);
+    if to_marker.length() > ARRIVE_RADIUS {
         return SeatAttempt::Approach(seat.translation);
     }
     // Reserve through the shared resource so a sandboxing actor (or a
@@ -983,6 +989,51 @@ mod tests {
                     reservations.0.contains_key(&(furniture, 0))
                 }),
             "the seat is reserved against double-claim"
+        );
+    }
+
+    /// A diner that arrived on the ground plane but stands above its seat marker
+    /// (Vault 3's Motor-Runner climbed onto his own `Throne01` on the way: 6368
+    /// against a marker at 6146) must still seat. The walk leg's arrival test was
+    /// horizontal and `seat_at_marker`'s was 3-D, so the pair looped forever -
+    /// "arrived" on the plane, "approach the marker" in space - and he never sat.
+    /// Seating snaps the root to the marker, so the height gap is not a distance
+    /// left to walk.
+    #[test]
+    fn a_diner_above_its_seat_marker_still_seats() {
+        let (mut world, actor) = setup();
+        world.insert_resource(SandboxSitClip(Some((7, 0.5))));
+        let above = Vec3::new(0.0, 222.0, 0.0);
+        world.insert(actor, GlobalTransform { translation: above, ..Default::default() });
+        world.insert(actor, Transform::from_translation(above));
+        world.insert(
+            actor,
+            EatBehavior {
+                radius: None,
+                location: EatSleepLocation::NearCurrentLocation,
+                form_id: 0xAA,
+            },
+        );
+        world.insert(actor, EatSleepState { destination: Vec3::ZERO });
+        let furniture = world.spawn();
+        world.insert(
+            furniture,
+            Furniture {
+                markers: vec![FurnitureMarker {
+                    local_offset: [0.0, 0.0, 0.0],
+                    heading_z_radians: None,
+                    animation_type: 1,
+                    kind: FurnitureMarkerKind::Sit,
+                }],
+            },
+        );
+        world.insert(furniture, GlobalTransform { translation: Vec3::ZERO, ..Default::default() });
+        eat_sleep_system(&world, 1.0);
+        assert!(world.get::<Seated>(actor).is_some(), "arrived on the plane, so it seats");
+        assert_eq!(
+            world.get::<Transform>(actor).expect("transform").translation,
+            Vec3::ZERO,
+            "and the seat snaps it down onto the marker"
         );
     }
 
