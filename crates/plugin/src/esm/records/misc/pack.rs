@@ -367,6 +367,15 @@ pub const PROCEDURE_ESCORT: u32 = 2;
 /// is indefinite, like Wander) — see `systems::guard` module docs. See M42.
 pub const PROCEDURE_GUARD: u32 = 14;
 
+/// FO3/FNV procedure index for `Accompany` — stay with a `PTDT` actor at
+/// its distance (GECK *Accompany Package*: "similar to a Follow, but allows
+/// a more loose formation since the actor is pathing directly to the
+/// target's destination"). 14 FalloutNV.esm and 24 Fallout3.esm packages
+/// (2026-10-24 census), every one a `PTDT` specific reference plus a
+/// distance of 50-768 and no `PLDT`: exactly Follow's data. Runs on the
+/// Follow runtime; see `AmbientBehavior::Follow`.
+pub const PROCEDURE_ACCOMPANY: u32 = 7;
+
 /// FO3/FNV procedure index for `FleeNotCombat` — run from the `PTDT` target
 /// until `PTDT`'s distance away, or run to the `PLDT` refuge and hold there,
 /// without entering combat (GECK *Flee not Combat Package*). 15 packages in
@@ -688,6 +697,11 @@ impl PackRecord {
     /// location indefinitely, returning if displaced).
     pub fn is_guard(&self) -> bool {
         self.procedure_type == PROCEDURE_GUARD
+    }
+
+    /// True when this package's procedure is `Accompany`.
+    pub fn is_accompany(&self) -> bool {
+        self.procedure_type == PROCEDURE_ACCOMPANY
     }
 
     /// True when this package's procedure is `UseWeapon`.

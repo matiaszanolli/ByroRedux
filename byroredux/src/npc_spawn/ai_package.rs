@@ -281,7 +281,11 @@ impl AmbientBehavior {
                 target_form_id: location_reference,
                 actor_form_id,
             })
-        } else if package.is_follow() {
+        } else if package.is_follow() || package.is_accompany() {
+            // Accompany authors Follow's data (PTDT reference + distance) and
+            // the GECK calls it "similar to a Follow"; it differs by pathing
+            // to the target's destination rather than trailing it. That
+            // lead is not modelled, so it runs as the Follow it resembles.
             Some(Self::Follow {
                 target_form_id: target_reference,
                 follow_distance: target_distance,
@@ -1810,6 +1814,29 @@ mod tests {
                 assert!(world.has::<TravelBehavior>(actor));
             }
         }
+    }
+
+    /// Accompany (procedure 7) authors Follow's data - a `PTDT` reference and
+    /// a distance - and runs on the Follow runtime.
+    #[test]
+    fn an_accompany_package_runs_as_a_follow() {
+        use byroredux_plugin::esm::records::misc::pack::{PackTarget, PROCEDURE_ACCOMPANY};
+
+        // FNV `VFSKingsPatrol01FollowerPackage`: a specific reference, 50 units.
+        let mut accompany = pack(0x100, PROCEDURE_ACCOMPANY, None);
+        accompany.target = Some(PackTarget {
+            target_type: 0,
+            target: PackTargetKind::SpecificReference(0x000E_73A0),
+            count_or_distance: 50,
+        });
+        let (world, actor) = setup_actor(10.0, vec![accompany]);
+        assert_eq!(
+            world.get::<FollowBehavior>(actor).map(|behavior| *behavior),
+            Some(FollowBehavior {
+                target_form_id: Some(0x000E_73A0),
+                follow_distance: Some(50.0),
+            })
+        );
     }
 
     /// UseWeapon (procedure 16): `PTDT` is the weapon, `PTD2` the target and

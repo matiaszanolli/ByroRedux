@@ -182,8 +182,9 @@ the FO3/FNV procedure enum's values, only `PROCEDURE_SANDBOX = 12`
 modeled player-targeted Conversations only, #5376) and
 `PROCEDURE_FLEE_NOT_COMBAT = 10` (`flee_package_system`) and
 `PROCEDURE_USE_WEAPON = 16` (`use_weapon_package_system`) have a name and a
-consumer; the other 5 (Find/Accompany/UseItemAt/Ambush/CastMagic) are
-captured as a raw integer and dispatched nowhere. `active_package_is_sandbox`/
+consumer, as does `PROCEDURE_ACCOMPANY = 7` (it runs on the Follow runtime);
+the other 4 (Find/UseItemAt/Ambush/CastMagic) are captured as a raw integer
+and dispatched nowhere. `active_package_is_sandbox`/
 `active_sandbox_location`, `active_package_is_wander`/
 `active_wander_location`, `active_package_is_travel`/
 `active_travel_location`, `active_package_is_follow`/
@@ -523,7 +524,7 @@ animation-clip swap).
 
 ## What's not covered / honest state
 
-- **Twelve procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
+- **Thirteen procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
   (M42.4), Follow (M42.5), Escort (M42.6), Guard (M42.7), and Patrol
   (M42.8, which shares Wander's algorithm rather than running a
   distinct one); Eat and Sleep (2026-10-08, `eat_sleep_system` — walk to
@@ -561,7 +562,13 @@ animation-clip swap).
   When Blocked, Always Hit and the authored pause between volleys. No
   Find/Accompany/UseItemAt/Ambush/CastMagic runtime exists as a PACK
   procedure; `magic_effects` has the caster, so CastMagic is blocked on
-  its target/range policy, Find/UseItemAt on item-use animation.
+  its target/range policy, Find/UseItemAt on item-use animation, Ambush on
+  a stealth/detection definition. Accompany (14 FNV / 24 FO3 packages, each
+  a `PTDT` reference plus a 50-768 distance and no `PLDT`) runs as a Follow:
+  the GECK calls it "similar to a Follow" but pathing to the target's
+  destination, and that lead is not modelled. No vanilla FNV placement
+  reaches one at boot (5 NPC bases list them, none placed), so it is
+  unit-gated only.
 - **No general AI tick, but package selection does tick.**
   `byroredux/src/systems/` still has no `ai.rs` / `behavior.rs` /
   `npc.rs`. Superseded 2026-09-18 by M42.10: the seven *locomotion*
