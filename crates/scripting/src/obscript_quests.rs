@@ -130,9 +130,7 @@ pub fn command_is_modeled(cmd: u16, fallout: bool) -> bool {
     if !fallout && matches!(cmd, 0x124f | 0x116b | 0x11af) {
         return false;
     }
-    if crate::obscript_effects::handles(cmd)
-        || crate::obscript_effects::is_getter(cmd)
-    {
+    if crate::obscript_effects::is_getter(cmd) {
         return true;
     }
     cmd.checked_sub(0x1000)
@@ -594,7 +592,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
             // payload the VM could not decode lands here and is logged.
             // `ShowMessage <message form>` (Fallout): the effect runtime shows the record.
             0x1059 if matches!(args.first(), Some(ObScriptValue::Ref(form)) if *form != 0) && crate::ScriptGame::is_fallout3_nv(self.world) => {
-                match crate::obscript_effects::run(
+                match crate::obscript_cmd::run(
                     self.world,
                     cmd,
                     args,
@@ -797,30 +795,16 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     None => self.decline(cmd),
                 }
             }
-            _ => match crate::obscript_effects::run(
-                self.world,
-                cmd,
-                args,
-                &self.context(caller),
-            ) {
-                Action::Done { value, effect: text } => {
-                    if !text.is_empty() {
-                        effect(self, text);
-                    }
-                    value
-                }
-                Action::Declined => self.decline(cmd),
-                Action::Unhandled => {
-                    // Traced no-op. The census counter keeps phase-1 honest about
-                    // coverage instead of silently faking behavior.
-                    log::trace!(
-                        "ObScript {:08X}: unknown command {cmd:#06x} ({} args) — no-op",
-                        self.owner,
-                        args.len(),
-                    );
-                    self.decline(cmd)
-                }
-            },
+            _ => {
+                // Traced no-op. The census counter keeps phase-1 honest about
+                // coverage instead of silently faking behavior.
+                log::trace!(
+                    "ObScript {:08X}: unknown command {cmd:#06x} ({} args) — no-op",
+                    self.owner,
+                    args.len(),
+                );
+                self.decline(cmd)
+            }
         }
     }
 }

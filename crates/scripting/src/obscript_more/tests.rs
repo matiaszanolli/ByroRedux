@@ -294,7 +294,7 @@ fn container_inventory_count_sums_the_stacks() {
     let (world, ..) = world(GameKind::Fallout3NV);
     let c = ctx(Some(ACTOR));
     assert_eq!(value(run(&world, 0x127a, &[], &c)), 0.0);
-    crate::obscript_effects::run(&world, 0x1002, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(6.0)], &c);
+    crate::obscript_cmd::run(&world, 0x1002, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(6.0)], &c);
     // AddItem's id is not assumed here: whichever the effects table uses, the count follows the inventory.
     let held = world.get::<Inventory>(live(&world, ACTOR).unwrap()).map_or(0, |i| i.items.iter().map(|s| s.count).sum::<u32>());
     assert_eq!(value(run(&world, 0x127a, &[], &c)), held as f32);
@@ -389,7 +389,7 @@ fn no_id_is_claimed_twice_in_a_family() {
             if !fallout && cmd == 0x116b {
                 continue;
             }
-            let other = crate::obscript_effects::handles(cmd) || crate::obscript_effects::is_getter(cmd);
+            let other = crate::obscript_effects::is_getter(cmd);
             if other {
                 clashes.push(format!("{cmd:#06x} ({})", if fallout { "Fallout" } else { "Oblivion" }));
             }
@@ -752,7 +752,7 @@ fn drop_removes_the_item_and_leaves_a_reference_at_the_actors_feet() {
     let (mut world, actor, ..) = world(GameKind::Oblivion);
     world.insert_resource(crate::quest_stages::QuestStageState::default());
     let c = ctx(Some(ACTOR));
-    crate::obscript_effects::run(&world, 0x1002, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(5.0)], &c);
+    crate::obscript_cmd::run(&world, 0x1002, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(5.0)], &c);
     assert!(is_done(&run(&world, 0x1057, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(2.0)], &c)));
     let held = world.get::<Inventory>(actor).map_or(0, |i| i.items.iter().filter(|s| s.base_form_id == ITEM).map(|s| s.count).sum::<u32>());
     assert_eq!(held, 3, "two dropped of five");

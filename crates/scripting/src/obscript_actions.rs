@@ -96,7 +96,7 @@ pub(crate) struct Context {
 
 /// The calling reference of a row with `needs_caller`: the command table has already declined a call
 /// with none.
-fn caller_of(context: &Context) -> u32 {
+pub(crate) fn caller_of(context: &Context) -> u32 {
     context.caller.filter(|&form| form != 0).unwrap_or(0)
 }
 

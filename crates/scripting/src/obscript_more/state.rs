@@ -361,7 +361,7 @@ fn is_actor_using_a_torch(world: &World, _fallout: bool, _cmd: u16, _args: &[ObS
 // CS *ClearOwnership*: "clears the ownership from the reference it is called on" — Fallout's id for
 // the same command is lowered by the effects table.
 fn clear_ownership(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    crate::obscript_effects::run(world, 0x118c, args, ctx)
+    crate::obscript_cmd::run(world, 0x118c, args, ctx)
 }
 
 // CS *ResetFallDamageTimer*: the controller's fall is measured from where it left the ground; the

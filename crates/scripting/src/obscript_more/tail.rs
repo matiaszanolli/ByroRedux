@@ -626,7 +626,7 @@ fn cmd_1057(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
     match (caller(world, ctx), form_arg(args, 0)) {
         (Some((at, _)), Some(item)) => {
             let count = num(args, 1).max(1.0);
-            let removed = crate::obscript_effects::run(world, 0x1052, &[ObScriptValue::Ref(item), ObScriptValue::Num(count)], ctx);
+            let removed = crate::obscript_cmd::run(world, 0x1052, &[ObScriptValue::Ref(item), ObScriptValue::Num(count)], ctx);
             if !matches!(removed, Action::Done { .. }) {
                 return Action::Declined;
             }
