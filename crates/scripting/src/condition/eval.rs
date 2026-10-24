@@ -35,7 +35,7 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
     };
 
     // Run the function — returns the f32 the comparator works against.
-    let function = ConditionFunction::from_index(condition.function_index);
+    let function = function_of(world, condition.function_index);
     if function == ConditionFunction::GetQuestVariable && !uses_obscript_quest_variables(world) {
         // Index 79 is another function (or a string-named variable) outside the
         // pre-Papyrus games: pass it, as every uncatalogued function does.
@@ -59,6 +59,12 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
     condition
         .comparator
         .apply(function_result, comparand_value(condition, world))
+}
+
+/// The function CTDA `index` names in the loaded game (Oblivion's own
+/// meanings of shared numbers included, see `OBLIVION_DIALECT`).
+pub(crate) fn function_of(world: &World, index: u32) -> ConditionFunction {
+    ConditionFunction::from_index_in(loaded_game(world), index)
 }
 
 fn loaded_game(world: &World) -> Option<byroredux_plugin::esm::reader::GameKind> {
@@ -90,7 +96,7 @@ pub fn is_modeled(world: &World, condition: &Condition) -> bool {
     if index_is_foreign_in_loaded_game(world, condition.function_index) {
         return false;
     }
-    match ConditionFunction::from_index(condition.function_index) {
+    match function_of(world, condition.function_index) {
         ConditionFunction::Unknown(_) => false,
         ConditionFunction::GetQuestVariable => uses_obscript_quest_variables(world),
         // An authored enum index is readable once it translates to a loaded
@@ -640,6 +646,25 @@ pub fn evaluate_function(
                 .try_resource::<crate::quest_stages::QuestStageState>()
                 .is_some_and(|stages| stages.is_completed(crate::quest_stages::QuestFormId(condition.param_1))),
         ),
+        // Oblivion's crime vocabulary (`OBLIVION_DIALECT`): the bounty is the
+        // player's saved ledger value.
+        ConditionFunction::GetCrimeGold => crate::guards::bounty_of(world, entity) as f32,
+        ConditionFunction::CanPayCrimeGold => truth(crate::guards::can_pay_bounty(world, entity)),
+        ConditionFunction::GetPCFame => {
+            world.try_resource::<crate::obscript_ledger::ObScriptLedger>().map_or(0.0, |ledger| ledger.fame)
+        }
+        ConditionFunction::GetPCInfamy => {
+            world.try_resource::<crate::obscript_ledger::ObScriptLedger>().map_or(0.0, |ledger| ledger.infamy)
+        }
+        ConditionFunction::IsGuard => truth(crate::guards::is_guard(world, entity)),
+        ConditionFunction::IsTurnArrest => truth(crate::guards::is_guard(world, entity) && crate::guards::player_bounty(world) > 0),
+        ConditionFunction::GetPCExpelled => truth(
+            world
+                .try_resource::<crate::obscript_ledger::ObScriptLedger>()
+                .is_some_and(|ledger| ledger.flag(crate::obscript_ledger::FactionFlag::Expelled, condition.param_1)),
+        ),
+        // The engine has no jail, so the player is never in one.
+        ConditionFunction::IsPlayerInJail => 0.0,
         ConditionFunction::Unknown(index) => {
             log::trace!(
                 "M47.1: condition function index {index} not in M47.1 catalog — \

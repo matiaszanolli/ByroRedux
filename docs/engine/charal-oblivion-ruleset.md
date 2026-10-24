@@ -825,9 +825,19 @@ GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
 - A witness is any living, non-creature NPC that passes the hostility pass's
   sight test (`fSneakMaxDistance`, line of sight). The wiki's "successfully
   sneaking prevents being detected" has no stealth roll here yet.
-- Guards: bounty over 1000 means arrest on sight, over 4000 attack
-  (`Bounty`), `iCrimeGoldAttackMin` is the rush threshold; none of that reads
-  the bounty yet.
+- Guards are authored data, not engine code. A guard's arrest talk is
+  `GREETING` INFOs gated on `GetCrimeGold > 0`, `CanPayCrimeGold`, `IsGuard`
+  and `IsTurnArrest` (Oblivion.esm: 46 INFOs use them), with result scripts
+  for the choices. The thresholds the wiki describes (arrest on sight over
+  about 1000, attack over about 4000) are approximate and are not hardcoded;
+  `iCrimeGoldAttackMin` (500, authored) is a setting scripts read. Built: the
+  condition vocabulary (`ConditionFunction::from_index_in`, the Oblivion
+  dialect: 116 / 125 / 127 / 171 / 193 / 249 / 251 / 329), the CTDA "Run On
+  Target" bit, and the `CLAS` Guard flag (`guards.rs`), so 39 of those 46 INFOs
+  are now evaluable (the rest need `GetActorValue`, `GetDisposition` and
+  `IsWeaponOut` on Oblivion). Not built: `PayFine` / `GoToJail` and the jail,
+  `GetCrime` (who knows which crime), and whatever sends a guard to the
+  criminal.
 - Assault is charged once per victim (the original turns the victim
   hostile; a hostile victim is self-defence). A kill in one blow is only a
   murder. "Non-hostile" is the hostility pass's own judgement plus not

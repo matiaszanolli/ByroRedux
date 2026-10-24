@@ -720,6 +720,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("EncounterLevelRules", "M47.2 — encounter zones' level bounds + the fLeveledActorMult* difficulty settings for CalculateEncounterLevel; rebuilt from the load order every boot"),
         ("ConditionForms", "M47.2 — Starfield CNDF condition lists for ConditionForm.IsTrue; rebuilt from the load order every boot"),
         ("BribeRules", "M47.2 — Skyrim's bribe-formula settings and actor values for GetBribeAmount; rebuilt from the load order every boot"),
+        ("GuardClasses", "the load order's CLAS forms flagged Guard (Oblivion), for IsGuard / IsTurnArrest; rebuilt from the records every boot"),
         ("OwnerKinds", "M47.2 — which forms are factions and which actor bases, for GetFactionOwner / GetActorOwner; rebuilt from the records every boot"),
         ("FormLists", "M47.2 — every FLST record's forms for FormList.GetSize / GetAt / HasForm / Find, rebuilt from the records every boot"),
         ("CurrentWeather", "M47.2 — the WTHR FormID the sky system runs, published by the host when it installs a sky, for Weather.GetCurrentWeather; re-derived"),

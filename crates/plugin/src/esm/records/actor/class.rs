@@ -67,6 +67,19 @@ pub struct ClassRecord {
     pub flags_oblivion: Option<u32>,
 }
 
+/// Oblivion `CLAS` `DATA` flag bit 1: "Guard" (xEdit `wbDefinitionsTES4`,
+/// the `Flags` member after `Playable`).
+pub const OBLIVION_CLASS_FLAG_GUARD: u32 = 0x2;
+
+impl ClassRecord {
+    /// Whether this is an Oblivion class marked as a guard class (CS
+    /// *IsGuard*: "the NPC's class is marked as a Guard class"). `false`
+    /// outside Oblivion, whose `flags_oblivion` is `None`.
+    pub fn is_oblivion_guard(&self) -> bool {
+        self.flags_oblivion.is_some_and(|flags| flags & OBLIVION_CLASS_FLAG_GUARD != 0)
+    }
+}
+
 pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassRecord {
     let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     let mut record = ClassRecord {

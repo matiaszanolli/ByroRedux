@@ -440,16 +440,15 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         // CS *GetGold*: the player's gold — the count of `Gold001`.
         0x1030 => match player(world) {
             Some(player) => {
-                const GOLD: u32 = 0x0000_000F;
-                answer(world.get::<Inventory>(player).map_or(0.0, |inventory| inventory.items.iter().filter(|stack| stack.base_form_id == GOLD).map(|stack| stack.count as f32).sum()))
+                answer(world.get::<Inventory>(player).map_or(0.0, |inventory| inventory.items.iter().filter(|stack| stack.base_form_id == crate::guards::CURRENCY_FORM).map(|stack| stack.count as f32).sum()))
             }
             None => Action::Declined,
         },
         // CS *GetIsPlayerBirthsign <sign>*: the engine keeps no birthsign, so the player has none.
         0x10e0 => flag(false),
-        // CS *IsGuard*: "1 if the NPC's class is marked as a Guard class" — the engine reads no class flags.
+        // CS *IsGuard*: "1 if the NPC's class is marked as a Guard class" — the `CLAS` Guard flag (Oblivion's).
         0x107d => match caller(world, ctx) {
-            Some(_) => flag(false),
+            Some((_, actor)) => flag(crate::guards::is_guard(world, actor)),
             None => Action::Declined,
         },
         // CS *IsInDangerousWater*: whether the actor is in water that hurts (lava).

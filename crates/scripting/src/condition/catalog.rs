@@ -331,6 +331,37 @@ pub enum ConditionFunction {
     /// FO3 / FNV index **546** (Skyrim / FO4 moved it to 543, not catalogued
     /// here).
     GetQuestCompleted,
+    /// Oblivion's `GetCrimeGold` (CTDA **116**; FO3 / FNV author 116 as
+    /// `GetMinorCrimeCount`, Skyrim as `IsIntimidatedbyPlayer`, so it answers
+    /// only through [`OBLIVION_DIALECT`]). The Run-On actor's bounty: the
+    /// player's saved ledger value, 0 for anyone else.
+    GetCrimeGold,
+    /// Oblivion's `CanPayCrimeGold` (CTDA **127**; `HasBeenEaten` elsewhere):
+    /// 1 when the Run-On actor holds at least their bounty in gold.
+    CanPayCrimeGold,
+    /// Oblivion's `GetPCFame` (CTDA **249**; `IsInDialogueWithPlayer` in
+    /// Skyrim). The player's fame, whoever the Run-On is: "only the player
+    /// character has fame or infamy values".
+    GetPCFame,
+    /// Oblivion's `GetPCInfamy` (CTDA **251**).
+    GetPCInfamy,
+    /// `IsGuard` (CTDA **125**, the same name in FO3 / FNV / Skyrim; only
+    /// Oblivion's is answered, from the `CLAS` Guard flag — see
+    /// [`crate::guards`]). 1 when the Run-On actor's class is a guard class.
+    IsGuard,
+    /// Oblivion's `IsTurnArrest` (CTDA **329**; `IsFleeing` in Skyrim): "1 if
+    /// the player is speaking to a guard while he has bounty on his head"
+    /// (CS). The Run-On is the speaker; the player is the listener.
+    IsTurnArrest,
+    /// Oblivion's `GetPCExpelled(faction)` (CTDA **193**; the same function in
+    /// FO3 / FNV / Skyrim, answered only for Oblivion, whose
+    /// `SetPCExpelled` fills the flag): 1 when the player is expelled from
+    /// the faction (the saved ledger's Expelled flag).
+    GetPCExpelled,
+    /// Oblivion's `IsPlayerInJail` (CTDA **171**; not a function of the later
+    /// games). Always 0: the engine has no jail (`GoToJail` is not built), so
+    /// the player is never in one.
+    IsPlayerInJail,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -453,6 +484,35 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::GetObjectiveDisplayed, indices: &[421], name: "GetObjectiveDisplayed", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetHealthPercentage, indices: &[431], name: "GetHealthPercentage", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetQuestCompleted, indices: &[546], name: "GetQuestCompleted", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    // The Oblivion dialect: these answer to no index of their own (the same
+    // numbers are other functions in FO3 / FNV / Skyrim); `OBLIVION_DIALECT`
+    // maps the Oblivion index to them. Indices and names from xEdit
+    // `wbDefinitionsTES4.pas`.
+    Row { func: ConditionFunction::GetCrimeGold, indices: &[], name: "GetCrimeGold", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::CanPayCrimeGold, indices: &[], name: "CanPayCrimeGold", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetPCFame, indices: &[], name: "GetPCFame", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetPCInfamy, indices: &[], name: "GetPCInfamy", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::IsGuard, indices: &[], name: "IsGuard", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::IsTurnArrest, indices: &[], name: "IsTurnArrest", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetPCExpelled, indices: &[], name: "GetPCExpelled", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::IsPlayerInJail, indices: &[], name: "IsPlayerInJail", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+];
+
+/// The CTDA indices whose meaning is Oblivion's own, with the function each
+/// names there. They are the same numbers as other functions in the later
+/// games (116 `GetMinorCrimeCount`, 127 `HasBeenEaten`, 249
+/// `IsInDialogueWithPlayer`, 329 `IsFleeing`), so [`ROWS`] cannot hold them:
+/// [`ConditionFunction::from_index_in`] consults this table first when the
+/// loaded game is Oblivion.
+const OBLIVION_DIALECT: &[(u32, ConditionFunction)] = &[
+    (116, ConditionFunction::GetCrimeGold),
+    (125, ConditionFunction::IsGuard),
+    (127, ConditionFunction::CanPayCrimeGold),
+    (249, ConditionFunction::GetPCFame),
+    (251, ConditionFunction::GetPCInfamy),
+    (329, ConditionFunction::IsTurnArrest),
+    (193, ConditionFunction::GetPCExpelled),
+    (171, ConditionFunction::IsPlayerInJail),
 ];
 
 /// CTDA function indices that are a *different* function in some games than
@@ -541,9 +601,26 @@ impl ConditionFunction {
         }
     }
 
+    /// [`Self::from_index`] for the loaded game: Oblivion's own meanings of
+    /// shared numbers ([`OBLIVION_DIALECT`]) win there; every other game, and
+    /// every other index, resolves as `from_index` does.
+    pub fn from_index_in(game: Option<GameKind>, index: u32) -> Self {
+        if game == Some(GameKind::Oblivion) {
+            if let Some(&(_, function)) = OBLIVION_DIALECT.iter().find(|(dialect, _)| *dialect == index) {
+                return function;
+            }
+        }
+        Self::from_index(index)
+    }
+
+    /// Oblivion's own `(CTDA index, function)` pairs (see `OBLIVION_DIALECT`).
+    pub fn oblivion_dialect() -> &'static [(u32, ConditionFunction)] {
+        OBLIVION_DIALECT
+    }
+
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 64] = [
+    pub const CATALOG: [ConditionFunction; 72] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -608,6 +685,14 @@ impl ConditionFunction {
         Self::GetObjectiveDisplayed,
         Self::GetHealthPercentage,
         Self::GetQuestCompleted,
+        Self::GetCrimeGold,
+        Self::CanPayCrimeGold,
+        Self::GetPCFame,
+        Self::GetPCInfamy,
+        Self::IsGuard,
+        Self::IsTurnArrest,
+        Self::GetPCExpelled,
+        Self::IsPlayerInJail,
     ];
 
     /// This function's [`ROWS`] row. `Unknown` has none — the panicking
@@ -815,7 +900,15 @@ mod tests {
                 ConditionFunction::GetObjectiveCompleted |
                 ConditionFunction::GetObjectiveDisplayed |
                 ConditionFunction::GetHealthPercentage |
-                ConditionFunction::GetQuestCompleted => {
+                ConditionFunction::GetQuestCompleted |
+                ConditionFunction::GetCrimeGold |
+                ConditionFunction::CanPayCrimeGold |
+                ConditionFunction::GetPCFame |
+                ConditionFunction::GetPCInfamy |
+                ConditionFunction::IsGuard |
+                ConditionFunction::IsTurnArrest |
+                ConditionFunction::GetPCExpelled |
+                ConditionFunction::IsPlayerInJail => {
                     assert_eq!(
                         rows_of(function),
                         1,
@@ -875,7 +968,23 @@ mod tests {
         }
         // CATALOG plus the two game-variant twins: HasPerk's 448 (Skyrim) and
         // GetIsVoiceType's 427 (FO3/FNV, #5750).
-        assert_eq!(seen.len(), ConditionFunction::CATALOG.len() + 2);
+        // The dialect functions have no index of their own.
+        assert_eq!(seen.len(), ConditionFunction::CATALOG.len() + 2 - OBLIVION_DIALECT.len());
+
+        // The dialect resolves for Oblivion only, never shadows a catalogued
+        // index, and every dialect function has a row.
+        for &(index, function) in OBLIVION_DIALECT {
+            assert_eq!(ConditionFunction::from_index_in(Some(GameKind::Oblivion), index), function);
+            for other in [None, Some(GameKind::Fallout3NV), Some(GameKind::Skyrim)] {
+                assert_eq!(ConditionFunction::from_index_in(other, index), ConditionFunction::Unknown(index));
+            }
+            assert!(!seen.contains(&index), "{index} is catalogued for another function");
+        }
+        assert_eq!(
+            ConditionFunction::from_index_in(Some(GameKind::Oblivion), 58),
+            ConditionFunction::GetStage,
+            "an index outside the dialect resolves as before"
+        );
 
         // Unknown keeps its hardcoded classifications — no ROWS row.
         let unknown = ConditionFunction::Unknown(u32::MAX);

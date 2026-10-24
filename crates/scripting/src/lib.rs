@@ -58,6 +58,7 @@ pub mod projectile_requests;
 pub mod sound_requests;
 pub mod trap_hit_requests;
 pub mod ownership;
+pub mod guards;
 pub mod weather_state;
 pub mod location_keyword_data;
 pub mod messages;

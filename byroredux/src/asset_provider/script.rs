@@ -1195,6 +1195,8 @@ pub(crate) fn populate_scene_runtime(
     byroredux_scripting::install_form_lists(world, index);
     // M47.2 — GetFactionOwner / GetActorOwner.
     byroredux_scripting::install_owner_kinds(world, index);
+    // Oblivion's guard classes (the `CLAS` Guard flag): `IsGuard`, `IsTurnArrest`.
+    byroredux_scripting::guards::install_guard_classes(world, index);
     // M47.2 — Actor.GetCrimeFaction.
     byroredux_scripting::install_crime_factions(world, index);
     // M47.2 — ActorBase.GetSex / GetVoiceType.

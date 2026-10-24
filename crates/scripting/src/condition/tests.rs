@@ -1593,9 +1593,23 @@ fn param1_form_id_table_matches_the_condition_catalog() {
             function.name()
         );
     }
+    // The Oblivion dialect is the same agreement, by its own indices.
+    for &(index, function) in ConditionFunction::oblivion_dialect() {
+        assert_eq!(
+            param1_is_form_id(index),
+            function.first_param_is_form_id(),
+            "dialect fn {index} ({}): plugin remap table and catalog disagree on \
+             whether param_1 is a FormID",
+            function.name()
+        );
+    }
     // Every catalog entry, plus the two second indices: HasPerk's 448 and
-    // GetIsVoiceType's 427 (#5750).
-    assert_eq!(covered, ConditionFunction::CATALOG.len() + 2);
+    // GetIsVoiceType's 427 (#5750), less the Oblivion-dialect functions that
+    // answer to no index of their own.
+    assert_eq!(
+        covered,
+        ConditionFunction::CATALOG.len() + 2 - ConditionFunction::oblivion_dialect().len()
+    );
 }
 
 // ── GetQuestRunning (#5636) ────────────────────────────────────────
@@ -2307,4 +2321,114 @@ fn quest_objective_dead_count_and_player_sex_getters_read_game_state() {
 
     // GetPCIsSex asks about the player whatever the Run-On; no player, no match.
     assert!(evaluate_condition(&cond_params(131, 1, 0, 0.0), &world, &ctx(actor)));
+}
+
+// ── Oblivion's crime vocabulary (guard greetings) ──────────────────
+
+/// The conditions of a vanilla Oblivion guard `GREETING` for a player who owes
+/// a bounty they can pay (DIAL `GREETING` in Oblivion.esm): the player-side
+/// ones (`GetCrimeGold > 0`, `CanPayCrimeGold == 1`) run on the listener, the
+/// guard-side one (`IsGuard == 1`) on the speaker.
+fn guard_greeting() -> Vec<Condition> {
+    let on_target = |function_index, comparator, comparand| Condition {
+        run_on: RunOn::Target,
+        ..cond(function_index, comparator, comparand, false)
+    };
+    vec![
+        on_target(116, ComparisonOp::Gt, 0.0),
+        on_target(127, ComparisonOp::Eq, 1.0),
+        cond(125, ComparisonOp::Eq, 1.0, false),
+    ]
+}
+
+/// A world with a guard speaker and the player listener.
+fn guard_and_player(game: byroredux_plugin::esm::reader::GameKind) -> (World, EntityId, EntityId) {
+    use byroredux_core::character::Background;
+    use byroredux_core::ecs::components::{Inventory, ItemStack};
+    use byroredux_plugin::esm::records::{ClassRecord, EsmIndex};
+    let mut index = EsmIndex::default();
+    index.classes.insert(
+        0x77,
+        ClassRecord {
+            form_id: 0x77,
+            editor_id: String::new(),
+            full_name: String::new(),
+            description: String::new(),
+            base_attributes: [0; 7],
+            skyrim_skill_weights: None,
+            skyrim_pool_weights: None,
+            tag_skills: Vec::new(),
+            primary_attributes: None,
+            specialization: None,
+            major_skills: Vec::new(),
+            flags_oblivion: Some(0b11),
+        },
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.register::<Background>();
+    world.register::<Inventory>();
+    world.insert_resource(crate::ScriptGame(game));
+    crate::guards::install_guard_classes(&mut world, &index);
+    let guard = world.spawn();
+    world.insert(guard, Background { race_form_id: 1, class_form_id: 0x77 });
+    let player = world.spawn();
+    world.insert(player, Inventory { items: vec![ItemStack::new(crate::guards::CURRENCY_FORM, 100)] });
+    world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+    (world, guard, player)
+}
+
+#[test]
+fn an_oblivion_guard_greeting_follows_the_players_bounty() {
+    use byroredux_plugin::esm::reader::GameKind::Oblivion;
+    let (world, guard, player) = guard_and_player(Oblivion);
+    let mut context = ctx(guard);
+    context.target = Some(player);
+    let greeting = guard_greeting();
+    assert!(!evaluate(&greeting, &world, &context), "no bounty, no arrest greeting");
+
+    world.resource_mut::<crate::obscript_ledger::ObScriptLedger>().crime_gold = 40;
+    assert!(evaluate(&greeting, &world, &context), "40 owed, 100 in the purse");
+
+    world.resource_mut::<crate::obscript_ledger::ObScriptLedger>().crime_gold = 400;
+    assert!(!evaluate(&greeting, &world, &context), "400 owed is more than the player can pay");
+    let can_pay = Condition { run_on: RunOn::Target, ..cond(127, ComparisonOp::Eq, 0.0, false) };
+    assert!(evaluate(&vec![can_pay], &world, &context), "the 'cannot pay' branch is the one that opens");
+}
+
+#[test]
+fn a_citizen_is_not_a_guard_and_is_turn_arrest_needs_a_guard_and_a_bounty() {
+    use byroredux_plugin::esm::reader::GameKind::Oblivion;
+    let (mut world, guard, player) = guard_and_player(Oblivion);
+    world.resource_mut::<crate::obscript_ledger::ObScriptLedger>().crime_gold = 5;
+    let citizen = world.spawn();
+    let mut context = ctx(guard);
+    context.target = Some(player);
+    let is_guard = cond(125, ComparisonOp::Eq, 1.0, false);
+    let turn_arrest = cond(329, ComparisonOp::Eq, 1.0, false);
+    assert!(evaluate_condition(&is_guard, &world, &context));
+    assert!(evaluate_condition(&turn_arrest, &world, &context));
+    let mut citizen_context = ctx(citizen);
+    citizen_context.target = Some(player);
+    assert!(!evaluate_condition(&is_guard, &world, &citizen_context));
+    assert!(!evaluate_condition(&turn_arrest, &world, &citizen_context), "a citizen does not arrest");
+    world.resource_mut::<crate::obscript_ledger::ObScriptLedger>().crime_gold = 0;
+    assert!(!evaluate_condition(&turn_arrest, &world, &context), "a guard with nothing to arrest for");
+}
+
+/// The same numbers are other functions in the later games: they must stay
+/// unmodeled there (the fail-closed gates decline them), not read the
+/// Oblivion bounty.
+#[test]
+fn the_crime_indices_are_oblivions_alone() {
+    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Oblivion, Skyrim};
+    for index in [116, 125, 127, 249, 251, 329] {
+        let condition = cond(index, ComparisonOp::Eq, 1.0, false);
+        let (oblivion, ..) = guard_and_player(Oblivion);
+        assert!(is_modeled(&oblivion, &condition), "{index} on Oblivion");
+        for game in [Fallout3NV, Skyrim] {
+            let (world, ..) = guard_and_player(game);
+            assert!(!is_modeled(&world, &condition), "{index} on {game:?}");
+        }
+    }
 }

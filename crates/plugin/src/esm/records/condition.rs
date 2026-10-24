@@ -161,6 +161,8 @@ pub(crate) const CTDA_KNOWN_LENGTHS: [usize; 4] = [20, 24, 28, 32];
 /// payload at least [`CTDA_RUN_ON_MIN_LEN`] bytes long (the reference form
 /// id follows it, so the field is only meaningful when both fit).
 const CTDA_RUN_ON_OFFSET: usize = 20;
+/// Oblivion's "Run On Target" bit in the CTDA type byte (no run-on field exists).
+const CTDA_OBLIVION_RUN_ON_TARGET: u8 = 0x02;
 const CTDA_RUN_ON_MIN_LEN: usize = 28;
 
 /// `true` when `data` carries a Run-On value [`RunOn::from_u32`] would have
@@ -391,6 +393,9 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
     }
 
     let type_byte = data[0];
+    // The 24-byte CTDA and the legacy `CTDT` are Oblivion's (the FNV 20-byte
+    // short form is a `CTDA` and keeps its FO3+ reading).
+    let oblivion_layout = data.len() == 24 || sub.sub_type == *b"CTDT";
     let or_next = (type_byte & 0x01) != 0;
     let use_global = (type_byte & 0x04) != 0;
     let comparator = ComparisonOp::from_type_byte(type_byte);
@@ -425,6 +430,14 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
             RunOn::from_u32(run_on_raw),
             u32::from_le_bytes([data[24], data[25], data[26], data[27]]),
         )
+    } else if oblivion_layout && (type_byte & CTDA_OBLIVION_RUN_ON_TARGET) != 0 {
+        // Oblivion has no run-on field: the type byte's bit 1 is "Run On
+        // Target" (xEdit `wbDefinitionsCommon` condition flags, TES4/FO3 arm;
+        // the CS *Run On Target* checkbox). 5,124 of Oblivion.esm's 60,115
+        // 24-byte CTDAs carry it — every `GetCrimeGold` and
+        // `CanPayCrimeGold` among them — and read as the speaker's own
+        // (`Subject`) before this.
+        (RunOn::Target, 0)
     } else {
         (RunOn::from_u32(0), 0)
     };
@@ -540,6 +553,7 @@ pub fn param1_is_form_id(function_index: u32) -> bool {
         | 72  // GetIsID       — base FormID
         | 426 | 427 // GetIsVoiceType — VTYP or FLST FormID (426 Skyrim/FO4, 427 FO3/FNV)
         | 71  // GetInFaction  — faction FormID
+        | 193 // GetPCExpelled — faction FormID (the same function in TES4 / FO3 / FNV / TES5)
         | 73  // GetFactionRank — faction FormID
         | 74  // GetGlobalValue — GLOB FormID
         | 182 // GetEquipped — inventory object FormID
@@ -718,6 +732,31 @@ mod tests {
         assert_eq!(cond.param_2, 0xBEEF);
         assert_eq!(cond.run_on, RunOn::Subject);
         assert_eq!(cond.reference_form_id, 0);
+    }
+
+    /// Oblivion's type-byte bit 1 is "Run On Target" (xEdit's TES4 flag set):
+    /// vanilla `GetCrimeGold` (116) in a guard's greeting is authored with it
+    /// (type `0x42` = Greater Than | Run On Target). Without it the guard
+    /// would be asked about their own bounty. A legacy `CTDT` carries it too;
+    /// the FNV 20-byte `CTDA` keeps its FO3+ reading.
+    #[test]
+    fn oblivion_run_on_target_bit_is_decoded_on_its_layouts_only() {
+        let target = make_ctda_24(0x42, 0.0_f32.to_le_bytes(), 116, 0, 0);
+        let cond = parse_ctda(&target).unwrap();
+        assert_eq!((cond.function_index, cond.comparator, cond.run_on), (116, ComparisonOp::Gt, RunOn::Target));
+        assert!(!cond.or_next);
+
+        let subject = make_ctda_24(0x40, 0.0_f32.to_le_bytes(), 116, 0, 0);
+        assert_eq!(parse_ctda(&subject).unwrap().run_on, RunOn::Subject);
+
+        let mut ctdt = make_ctda_24(0x02, 1.0_f32.to_le_bytes(), 72, 0, 0);
+        ctdt.sub_type = *b"CTDT";
+        ctdt.data.truncate(20);
+        assert_eq!(parse_ctda(&ctdt).unwrap().run_on, RunOn::Target);
+
+        let mut fnv_short = make_ctda_24(0x02, 1.0_f32.to_le_bytes(), 72, 0, 0);
+        fnv_short.data.truncate(20);
+        assert_eq!(parse_ctda(&fnv_short).unwrap().run_on, RunOn::Subject, "FNV's short CTDA is not Oblivion's");
     }
 
     /// #1550 — an unexpected length (>= 24 but not 24/28/32) is parsed

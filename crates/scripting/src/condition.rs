@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **64 functions** at their canonical CTDA
+//! lineage. This catalog ships **72 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -93,6 +93,14 @@
 //! | 421   | GetObjectiveDisplayed  | `QuestObjectiveState` (FNV) |
 //! | 431   | GetHealthPercentage    | `ActorValues` Health (FO3/FNV) |
 //! | 546   | GetQuestCompleted      | `QuestStageState` (FO3/FNV) |
+//! | 116   | GetCrimeGold           | `ObScriptLedger` bounty (Oblivion dialect) |
+//! | 125   | IsGuard                | `GuardClasses` (Oblivion dialect) |
+//! | 127   | CanPayCrimeGold        | gold held vs the bounty (Oblivion dialect) |
+//! | 249   | GetPCFame              | `ObScriptLedger` fame (Oblivion dialect) |
+//! | 251   | GetPCInfamy            | `ObScriptLedger` infamy (Oblivion dialect) |
+//! | 329   | IsTurnArrest           | speaker is a guard and the player has a bounty (Oblivion dialect) |
+//! | 193   | GetPCExpelled          | `ObScriptLedger` Expelled flag (Oblivion dialect) |
+//! | 171   | IsPlayerInJail         | always 0, the engine has no jail (Oblivion dialect) |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
 //! function → safe-default" contract) and are logged at debug for
@@ -124,7 +132,7 @@ pub use eval::{
     evaluate_script_getter, is_modeled, resolve_entity_by_global_form_id,
     uses_obscript_quest_variables, ActorValueView,
 };
-pub(crate) use eval::{health_percentage, item_count};
+pub(crate) use eval::{function_of, health_percentage, item_count};
 pub use requirement::{subject_requirement, IdentityTest, SubjectRequirement};
 
 #[cfg(test)]

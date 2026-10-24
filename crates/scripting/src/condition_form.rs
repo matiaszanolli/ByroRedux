@@ -76,7 +76,7 @@ fn runnable_inside_a_run(world: &World, condition: &Condition) -> bool {
     is_modeled(world, condition)
         && condition.run_on != RunOn::QuestAlias
         && !matches!(
-            ConditionFunction::from_index(condition.function_index),
+            crate::condition::function_of(world, condition.function_index),
             ConditionFunction::GetStage
                 | ConditionFunction::GetStageDone
                 | ConditionFunction::GetQuestRunning

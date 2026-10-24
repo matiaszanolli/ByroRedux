@@ -53,7 +53,7 @@ pub fn subject_requirement(
         let mut tests = Vec::new();
         let mut unconstrained = false;
         for condition in &conditions[block] {
-            let function = ConditionFunction::from_index(condition.function_index);
+            let function = super::function_of(world, condition.function_index);
             if !function.is_deterministic() {
                 // #5645 — never evaluated here: one draw cannot stand for
                 // every subject's own, and evaluating would advance the
