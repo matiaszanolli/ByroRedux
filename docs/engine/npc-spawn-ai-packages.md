@@ -185,7 +185,10 @@ modeled player-targeted Conversations only, #5376) and
 consumer, as do `PROCEDURE_ACCOMPANY = 7` (it runs on the Follow runtime),
 `PROCEDURE_AMBUSH = 9` (Guard's runtime plus a hostility gate) and
 `PROCEDURE_USE_ITEM_AT = 8` (Eat's walk-and-sit runtime); the other 2
-(Find/CastMagic) are captured as a raw integer and dispatched nowhere. `active_package_is_sandbox`/
+(Find/CastMagic) are captured as a raw integer and dispatched nowhere.
+CastMagic has no vanilla FO3/FNV package to run (procedure 11 is unused in
+both masters); Find does and is a design question, not a wiring one - see
+below. `active_package_is_sandbox`/
 `active_sandbox_location`, `active_package_is_wander`/
 `active_wander_location`, `active_package_is_travel`/
 `active_travel_location`, `active_package_is_follow`/
@@ -563,7 +566,16 @@ animation-clip swap).
   When Blocked, Always Hit and the authored pause between volleys. No
   Find/Accompany/UseItemAt/Ambush/CastMagic runtime exists as a PACK
   procedure; `magic_effects` has the caster, so CastMagic is blocked on
-  its target/range policy, Find/UseItemAt on item-use animation. Ambush
+  its target/range policy (and in FO3/FNV has no data to size it against).
+  **Find** (81 FNV / 78 FO3 packages) is not a mapping onto an existing
+  runtime: the vanilla targets split between hunting the player or a named
+  actor (`DefaultFindPlayerPackage`), walking to a placed item (a strange
+  meat pie), and 49 FNV packages that *search an area* for an object type
+  (Food 18, Alchemy 17, Ammo 13, Flora 10, Furniture 11) or base object,
+  attacking what is hostile and picking up what is an item. It needs an
+  area search over loaded references, an NPC item pickup and a policy for
+  the GECK's "if a non-hostile NPC, talk to it" - decisions left open.
+  Ambush
   (`AmbushBehavior` + Guard): the actor waits at the `PLDT` wait location on
   Guard's runtime, and `faction_hostility_system` gates its fights - an
   ambusher attacks only an enemy inside the `PLD2` ambush location, a

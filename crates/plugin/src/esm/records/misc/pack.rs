@@ -27,8 +27,10 @@ pub struct PackRecord {
     /// Procedure type — the FO3/FNV package-type enum (0..=16):
     /// 0 Find, 1 Follow, 2 Escort, 3 Eat, 4 Sleep, 5 Wander, 6 Travel,
     /// 7 Accompany, 8 UseItemAt, 9 Ambush, 10 FleeNotCombat,
-    /// 11 CastMagic, 12 **Sandbox**, 13 Patrol, 14 Guard, 15 Dialogue,
-    /// 16 UseWeapon. Read as a single **byte** at PKDT offset 4.
+    /// 11 (CastMagic by name; fopdoc lists it as unknown, and **no**
+    /// FalloutNV.esm or Fallout3.esm package uses it - 2026-10-24 census),
+    /// 12 **Sandbox**, 13 Patrol, 14 Guard, 15 Dialogue, 16 UseWeapon.
+    /// Read as a single **byte** at PKDT offset 4.
     pub procedure_type: u32,
     /// Schedule from PSDT (FO3/FNV). `None` when the package has no PSDT
     /// (treated as always-active). Drives which package is *active* at a
