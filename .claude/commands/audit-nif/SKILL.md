@@ -156,10 +156,16 @@ First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/ve
 Paths: `crates/nif/src/blocks/mod.rs` + `blocks/dispatch.rs` (the per-family dispatchers, #6144), `crates/nif/tests/{per_block,block_coverage}_baselines.rs`, `crates/nif/tests/data/`, `crates/nif/src/corpus.rs`, `crates/nif/src/kfm.rs`
 First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archive-or-dir> --tsv` — but do **not** diff it directly against `tests/data/per_block_baselines/<game>.tsv`: the two TSVs use different keys (#4265 — `nif_stats` keys `parsed` on the dispatched Rust struct name, the baselines on the header-advertised wire name), so they legitimately disagree on alias-collapsed families. Use `nif_stats --tsv` for the unknown/parsed split per struct, and the `per_block_baselines` gate itself (`--unknown-only` for the short view) for wire-name comparison against the checked-in baselines
 **Checklist**:
-- Dispatch is a hand-written `match type_name` in `parse_block_inner` (the `impl_ni_object!`
-  macro only generates trait impls). Count top-level arms fresh — nested `match`es
-  (`type_name_static` RTTI arms, `type_name_arc_hint`) inflate a naive `grep -c '=>'`; never
-  quote a stale number or copy one from `docs/engine/nif-parser.md` § "Block coverage".
+- Dispatch is hand-written `match type_name` arms, split since 8b6bfc952 (#6144) into nine
+  per-family functions in `blocks/dispatch.rs` (`nodes`, `legacy_particle`, `geometry`,
+  `shader`, `extra_data`, `controllers`, `interpolators`, `particle`, `havok`; each answers
+  `Ok(None)` for a name it does not own). `parse_block_inner` (`blocks/mod.rs`) keeps the
+  groupID prologue, tries `dispatch::FAMILIES` in order and ends in the unknown-block
+  fallback; a name in two families would be shadowed by the earlier one (the arm keys are
+  unique today — verify when adding). The `impl_ni_object!` macro only generates trait impls.
+  Count arms fresh per family — nested `match`es (`type_name_static` RTTI arms,
+  `type_name_arc_hint`) inflate a naive `grep -c '=>'`; never quote a stale number or copy
+  one from `docs/engine/nif-parser.md` § "Block coverage".
 - From a corpus or archive listing, enumerate block types that fall through to `NiUnknown`;
   count per game; flag any that cascade (a missing block on Oblivion truncates the scene → Dim 1).
 - A block that parses but is dropped downstream is a Dim 4/5 finding, not coverage.
@@ -256,8 +262,11 @@ This is the *parse → ECS* handoff; per-game material classification is `/audit
   `real_archive_torch_meshes_surface_particle_emitters`). The legacy tier follows the ctlr's own
   `NiPSysEmitterCtlr.data_ref` (until 10.1.0.103, #4560); an unlinked data block is attributed
   to nobody. The geometry APP_CULLED + live-`NiVisController` gate lives once in
-  `shape_is_culled` (node arms: `node_is_culled`; ef78a0eec, #5792, source-count guard in
-  `import/tests/app_culled_visibility.rs` — a per-arm copy is the regression). Both walkers skip APP_CULLED / editor-marker particle systems
+  `shape_is_culled` (node arms: `node_is_culled`, which the light / texture-effect / particle-emitter
+  satellite walkers share too since 088821edd, #6301 — the emitter walker used to test only the
+  APP_CULLED half and descended into editor-marker helper nodes; ef78a0eec, #5792, source-count
+  guard in `import/tests/app_culled_visibility.rs` scans all three files — a per-arm copy is the
+  regression). Both walkers skip APP_CULLED / editor-marker particle systems
   (`particle_system_is_culled`, #4561) unless a `NiVisController` — found on the chain *or* by
   `target_ref` — un-hides them. Regression = a hardcoded preset replacing an authored birth
   rate, or the fallback claiming another system's ctlr.
@@ -302,7 +311,8 @@ restitution / damping from its material + motion-property rows —
   vanilla content decides it (0 `bhkRigidBody` on FO4/FO76/Starfield) — a `bsver > 130` body in
   the wild is the evidence to re-check (#4627). The PHYSAL per-game seam is only the constraint CInfo decode.
 - **Constraint CInfo**: typed decoders exist for hinge (into `LimitedHingeCInfo`), limited
-  hinge (the Oblivion layout authors no `Perp Axis In B1`; it is derived as `PerpB2 × AxisB` from
+  hinge (the FO3+ layout reads the plain hinge's eight Vec4s via `parse_hinge_fo3`, then its three
+  limits, f2814f41c #6160; the Oblivion layout authors no `Perp Axis In B1`; it is derived as `PerpB2 × AxisB` from
   nif.xml's own identity, never zeroed — 526cb07d9, #5537, pinned by
   `oblivion_limited_hinge_derives_perp_b1_from_perp_b2_cross_axis_b`), prismatic, ragdoll, ball-and-socket, stiff-spring and the ball-socket chain
   (`BhkConstraintData`; `BhkBreakableConstraint` and malleable wrappers decode the inner

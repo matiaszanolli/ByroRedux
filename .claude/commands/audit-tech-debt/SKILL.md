@@ -20,8 +20,9 @@ See `.claude/commands/_audit-common.md` for layout, crate roster, methodology, d
 format. Young code has had the fewest sweeps — find it with
 `git log --diff-filter=A --since=<last-report-date> --name-only --format= -- 'crates/*/Cargo.toml' 'tools/*/Cargo.toml'`
 plus the crates the last report never names (`for c in crates/*/; do grep -q "$c" <last-report> || echo "$c"; done`;
-the 2026-10-19 report still named none of `bgsm`, `boot-request`, `debug-protocol`, `debug-ui`, `facegen`, `fsr3-sys`,
-`mod-runtime`, `papyrus`, `settings-io` and the two placeholders — plus `terrain-height`, new on 2026-10-20 — nor three of the four `tools/`). File real findings there; do not
+the 2026-10-21 report still left 24 crate dirs and three of the four `tools/` unnamed — among them `bgsm`, `boot-request`,
+`debug-protocol`, `debug-ui`, `facegen`, `fsr3-sys`, `mod-runtime`, `papyrus` and the two placeholders; `terrain-height`,
+new on 2026-10-20, is now named). File real findings there; do not
 just note the crate is young. `crates/cxx-bridge` and `crates/platform` are deliberate placeholders owned here:
 check they have not grown a second job or silent consumers, not that they are small.
 
@@ -78,26 +79,27 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-10-21 at 1be33af66 (diff direction only, re-run, never quote): markers 26 (18 are `XXXX` false positives — three
+   Measured 2026-10-24 at dcad3669d (diff direction only, re-run, never quote): markers 26 (18 are `XXXX` false positives — three
    are the `--type XXXX` usage placeholder in `crates/plugin/examples/dump_wths_refl.rs` — 2 the
    FO4 `HACK` FourCC, 3 quoted upstream FIXMEs, 1 documented `TBD` — Dim 5; two real TODOs in `byroredux/src/loading_screen.rs`,
    which cite the open #6194 since #6181, 51f97f708),
-   `allow(dead_code)` 41 (12 of them are `cfg(test)` TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 —
-   not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 363 (352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
+   `allow(dead_code)` 43 (12 of them are `cfg(test)` TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 —
+   not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 368 (363 on 2026-10-21, 352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
    earlier reports scoped to `crates`+`byroredux` read lower; none runs on a hosted runner),
-   production >2000 LOC: **4** — `crates/renderer/src/shader_constants_data.rs` (2949, a data table, Dim 1),
-   `crates/scripting/examples/mq101_conformance.rs` (2157), `crates/audio/src/lib.rs` (2034) and
-   `crates/nif/src/import/types.rs` (2011, +10 in a day). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
+   production >2000 LOC: **4** — `crates/renderer/src/shader_constants_data.rs` (2964, a data table, Dim 1),
+   `crates/scripting/examples/mq101_conformance.rs` (2157), `crates/audio/src/lib.rs` (2086, +52 in three days) and
+   `crates/nif/src/import/types.rs` (2011). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
    `crates/scripting/src/fragment/vm.rs`, `crates/scripting/src/translate/effects.rs`, `crates/scripting/src/condition.rs`,
-   `byroredux/src/save_io.rs` and `crates/plugin/src/esm/cell/mod.rs` are now ~70–140-LOC hubs over `vm/`, `effects/`,
-   `condition/`, `save_io/` and `cell/` directories, the largest child 1538 — as did `byroredux/src/components.rs` (#5467) and
+   `byroredux/src/save_io.rs` and `crates/plugin/src/esm/cell/mod.rs` are now ~70–150-LOC hubs over `vm/`, `effects/`,
+   `condition/`, `save_io/` and `cell/` directories, the largest child ~1400 — as did `byroredux/src/components.rs` (#5467) and
    `crates/scripting/src/fragment/effects.rs` (#5468) before them. **Split-hub hazard:** a path-scoped `git log` / `grep` on a hub
    file silently sees only the hub (`git log -- byroredux/src/save_io.rs` returned 0 commits where the directory returned 24);
    scope Dim 1 deltas to the `<stem>/` directory and measure a split by its children, not by the parent shrinking. Watch-list
-   within 5%: `crates/debug-ui/src/panels.rs` (1934), `crates/renderer/src/vulkan/context/init.rs` (1921),
-   `crates/plugin/src/esm/records/misc/world.rs` (1912); fastest riser `crates/renderer/src/vulkan/gpu_timers.rs` (1874, +57 in
-   a day, fc83608d3), then `byroredux/src/inventory.rs` (1863) and `byroredux/src/asset_provider/material/merge.rs` (1860);
-   test-heavy >2000: 92.
+   within 5%: `byroredux/src/inventory.rs` (1956, +93 in three days), `crates/debug-ui/src/panels.rs` (1938),
+   `crates/renderer/src/vulkan/gpu_timers.rs` (1929, +55 since 10-21, after +57 in a day at fc83608d3),
+   `crates/renderer/src/vulkan/context/init.rs` (1920) and `crates/plugin/src/esm/records/misc/world.rs` (1912); then
+   `byroredux/src/asset_provider/material/merge.rs` (1860) and `byroredux/src/npc_spawn.rs` (1846);
+   test-heavy >2000: 93.
    A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
@@ -147,7 +149,7 @@ consolidation site (an existing helper to extend, or the new one and its callers
 **Look for**: block-parser scaffolding (header → field → fixup) repeated across `crates/nif/src/blocks/`; texture-upload
 chains (BC1/BC3/BC5/RGBA) and image-layout barrier sequences repeated per pass in `crates/renderer/src/vulkan/`
 (`vulkan/image.rs` `GpuImage` and the shared barrier helpers are the consolidation targets — a pass that still
-hand-rolls create/bind/destroy is a candidate); `vk::WriteDescriptorSet` / `DescriptorSetLayoutBinding` builder boilerplate (one home since #5593, c6d36b4e7: `descriptors::{layout_binding,compute_binding,write_*}`, `vulkan/mod.rs`'s shared `try_or_cleanup!` and `GpuBuffer::create_per_frame_uniforms`, pinned by `passes_build_layouts_writes_and_teardown_through_the_shared_helpers` — a pass that re-spells the five-line binding chain or a local cleanup macro is a regression; the bindless texture layout is the one deliberate exception; since #5809, 31f4919d5, the same guard requires `descriptors::clamp_sampler` for clamp-to-edge samplers, with the genuinely different ones allowlisted); other single homes landed by the 2026-10-15 wave — the `upload_ctx!` macro for the `GpuUploadCtx` literal (#5823), `with_extension_host` for the extension dispatch tail (#5810), `World::init_resource` for insert-if-absent (#5806), `byroredux_core::bytes` for little-endian reads in the bin (#5818, `no_production_code_reads_le_ints_by_hand`) and the `asset_provider` layer for archive access (#5009, `no_production_code_opens_archives_outside_the_provider_layer`); ESM sub-record parse loops
+hand-rolls create/bind/destroy is a candidate); `vk::WriteDescriptorSet` / `DescriptorSetLayoutBinding` builder boilerplate (one home since #5593, c6d36b4e7: `descriptors::{layout_binding,compute_binding,write_*}`, `vulkan/mod.rs`'s shared `try_or_cleanup!` and `GpuBuffer::create_per_frame_uniforms`, pinned by `passes_build_layouts_writes_and_teardown_through_the_shared_helpers` — a pass that re-spells the five-line binding chain or a local cleanup macro is a regression; the bindless texture layout is the one deliberate exception; since #5809, 31f4919d5, the same guard requires `descriptors::clamp_sampler` for clamp-to-edge samplers, with the genuinely different ones allowlisted); other single homes landed by the 2026-10-15 wave — the `upload_ctx!` macro for the `GpuUploadCtx` literal (#5823), `with_extension_host` for the extension dispatch tail (#5810), `World::init_resource` for insert-if-absent (#5806; #6136, 10360816e pinned its contract and put `insert_resource`'s doc back), `byroredux_core::bytes` for little-endian reads in the bin (#5818, `no_production_code_reads_le_ints_by_hand`) and the `asset_provider` layer for archive access (#5009, `no_production_code_opens_archives_outside_the_provider_layer`); since 2026-10-22 also `byroredux_core::paths` for exe-relative asset and cache resolution (#6274, b42f802fa — presets, profiles, the Vulkan pipeline cache, height maps and the launcher each used to re-derive it), `menuxml`'s DDS/BC4 codec for the terrain-height red-channel decode (#6272, ce5796431) and `texture::submit_initial_layouts` for the per-pass one-time UNDEFINED → GENERAL barrier submit (#6146, d87246b57; a pass that re-spells it is a regression); ESM sub-record parse loops
 across `crates/plugin/src/esm/records/`; AI-procedure systems sharing scaffolding; near-identical per-game HUD/profile
 tables; source-scan helpers (`production_text`, `production_text_or_whole`, `strip_test_modules`, `count_identifier`) have ONE
 home, `crates/core/src/source_scan.rs` (#5100, 655b317c9; #5469, 334458b3f routed the ~40 surviving inline cuts through it) — a
@@ -171,6 +173,10 @@ auto-eligible findings (trivial). Guards that already police a class — aim at 
   layout tests, never the prose:
   `grep -rn "fn gpu_.*_is_[0-9]\+_bytes\|size_of::<Gpu" crates/renderer/src/vulkan/`. A GPU-size claim found stale in
   prose is MEDIUM (severity table).
+- **Doc blocks spliced onto the wrong item**: a function inserted between another item's `///` block and its signature
+  (#5809 → #6064, `init_resource` → #6136, `raised` → #6268) leaves the contract on the wrong fn; the renderer has a
+  source-scan guard (`no_item_is_spliced_into_another_items_doc_block`), the rest of the tree has none — sweep the
+  commits' hunks that add an item directly below a doc block.
 - **Deleted `Material::classify_pbr`**: `no_source_file_frames_the_deleted_classify_pbr_as_live`
   (`byroredux/src/workspace_hygiene_tests.rs`) fails a doc that names it as live. The survivors are the free fn
   `classify_pbr_keyword` and `Material::resolve_pbr`.
@@ -279,7 +285,7 @@ cargo machete --with-metadata 2>/dev/null || echo "cargo machete not installed �
   list each failing lint and file, plus the crates it left unlinted — `--keep-going` lints every crate that still
   compiles, but a crate red under clippy leaves its dependents unchecked (a red `byroredux-nif` skips the bin).
   CI also runs `--all-targets --keep-going` as a NON-blocking step (`continue-on-error`, #5621, a3ccd68fb: test/example-target
-  lints re-accumulate on active days; both forms were re-zeroed in 9896b1cf7 / 8b0b922f5 and again by #5849 / #5850, 251d491ef) — a red non-blocking step is a
+  lints re-accumulate on active days; both forms were re-zeroed in 9896b1cf7 / 8b0b922f5 and again by #5849 / #5850, 251d491ef, and by #6193, bbda0c975, after 42 sites re-accrued — three deny-level `erasing_op`) — a red non-blocking step is a
   lower-priority bucket, not a gate failure (the workspace example build itself went red once, the #3894 class, 530c9e7aa). Check every
   `#[allow(clippy::…)]` carries a reason comment (the house style for `too_many_arguments`).
 - Each `#[allow(dead_code)]`: called now or still dead? Delete if dead. `pub fn` in a private module nobody imports (`cargo +nightly rustc -p <crate> -- -W unused`);
@@ -307,7 +313,9 @@ grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools | gr
 - **Closed-HIGH real-data pins**: `.github/real-data-pins.txt` lists the `#[ignore]`d real-data tests guarding closed
   CRITICAL/HIGH fixes; no hosted runner executes them (`scripts/run-real-data-pins.sh` is the local run). Since #6183
   (9ee74b6e7) `every_real_data_pin_names_an_ignored_test_in_its_lane` checks each row names a real ignored `fn` its lane
-  compiles. A closed-HIGH guard test that is `#[ignore]`d but absent from the list is the MEDIUM row above.
+  compiles. A closed-HIGH guard test that is `#[ignore]`d but absent from the list is the MEDIUM row above (#6224, 6adf6b5d8 appended four such rows;
+  `/fix-issue`'s completeness checklist now has a PINS line). The runner counts passes with `scripts/count-passed-tests.sh`
+  (per-binary `test result: ok. N passed` sums, #6319, 718c7b836), since counting `test NAME ... ok` lines misreads a printing test.
 - Most `#[ignore]`s gate Vulkan / game-data / audio tests — not debt. Triage the remainder: does a reason name an issue
   (`gh issue view N`), and if it guards a closed CRITICAL/HIGH fix → MEDIUM.
 - Tests with only smoke assertions (`assert!(result.is_ok())`); commented-out assertions in passing tests; tests that

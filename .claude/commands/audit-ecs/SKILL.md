@@ -86,14 +86,18 @@ First step: `grep -rn 'type Storage = PackedStorage' crates byroredux --include=
 - **PackedStorage**: `binary_search` keeps the sorted-by-entity invariant on insert/remove;
   `insert_bulk` is append + one sort and the result stays sorted AND deduplicated (#467);
   `World::insert_batch` still fires the per-item `entity < next_entity` `debug_assert`.
-- **Change tracking** (`Component::TRACK_CHANGES`, default `false`): ON for TEN
-  components — `Transform`, `GlobalTransform`, `Parent`, `Children`, plus `LocalBound`
+- **Change tracking** (`Component::TRACK_CHANGES`, default `false`): ON for SIXTEEN
+  components (`rg -c 'const TRACK_CHANGES: bool = true' crates byroredux`, minus the one `packed.rs` test type) —
+  `Transform`, `GlobalTransform`, `Parent`, `Children`, plus `LocalBound`
   (since ad012f9d6), `Material` and `ParticleEmitter` (both since 1d56758ba /
   #3836), `CollisionShape` (`crates/core/src/ecs/components/collision.rs`) + `RapierHandles`
-  (`crates/physics`), both since 88c23887b, and `RigidBodyData` (same file, #5943 `44f3a4f35`). The sparse ones get only a `structural_generation` bump and no dirty set — #3836's `SceneEffectSoftCache`,
+  (`crates/physics`), both since 88c23887b, `RigidBodyData` (same file, #5943 `44f3a4f35`),
+  `FormIdComponent`, `PhysicsSourceForm` and `PapyrusReferenceScripts` (#6312 `9290248d6`) and `AnimationPlayer`,
+  `AnimationTarget` and `ArchetypeIdle` (#6334 `86ac93e0c`). The sparse ones get only a `structural_generation` bump and no dirty set — #3836's `SceneEffectSoftCache`,
   the incremental world-bound propagation, `physics_sync_system`'s unregistered-shape absence
-  cache (`sync.rs`) and `trap_contact_system`'s Trap-layer body list (`TrapOwnerCache`,
-  `byroredux/src/systems/trap_hits.rs`) consume them. The generation moves on insert (overwrite included) and
+  cache (`sync.rs`), `trap_contact_system`'s trap → scripted-owner map (`TrapOwnerCache`,
+  `byroredux/src/systems/trap_hits.rs`, rebuilt only when the six storages it derives from change membership) and
+  `archetype_idle_system`'s settled-pass gate (`byroredux/src/systems/archetype_idle.rs`) consume them. The generation moves on insert (overwrite included) and
   remove, never on `get_mut` — a cache keyed on a field (the trap list on `havok_layer`) goes stale if that
   field is ever edited in place.
   `PackedStorage` keeps a dirty set (may hold duplicates —
@@ -123,8 +127,9 @@ First step: `grep -n 'unsafe' crates/core/src/ecs/query.rs` (expect exactly 4 de
 - `World::get` returns `ComponentRef` (owns its guard), never a raw pointer to dropped storage (the
   unsound #35 pattern = CRITICAL UAF if it returns).
 - Guard: CI job `ecs-query-miri` runs `cargo miri test -p byroredux-core --lib ecs::world::tests`
-  skipping only `resource_visible_to_system_via_scheduler` (crossbeam-epoch TLS vs Miri). Confirm the
-  skip list has not widened and that any new cached-pointer site has a test under `ecs::world::tests`.
+  skipping only `resource_visible_to_system_via_scheduler` (crossbeam-epoch TLS vs Miri); the one other exception,
+  the #6101 lock-order stress test, carries `#[cfg_attr(miri, ignore)]` in `world_tests.rs` instead of a `--skip`
+  (#6234 `5dc642ee7`). Confirm the skip list and that `cfg_attr(miri, ignore)` set have not widened and that any new cached-pointer site has a test under `ecs::world::tests`.
 - `query` / `query_mut` return `None` for never-created storage (no lazy creation); `register::<T>()`
   guarantees success before first insert.
 - `HierarchyTraversalGuard` (`crates/core/src/ecs/hierarchy.rs`) bounds every parent/children walk to
@@ -150,7 +155,9 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   `ResourceRead` / `ResourceWrite` downcast per `Deref` (not cached — not the #1367 hot path);
   `insert_resource` returns the prior value; `remove_resource` resolves poison; `init_resource::<R>()`
   inserts `R::default()` only when absent, leaving an existing (e.g. save-restored) value untouched (#5806
-  `d0572ed94` — it replaced the hand-spelled `try_resource`/`insert_resource` idiom in scripting's `register`).
+  `d0572ed94` — it replaced the hand-spelled `try_resource`/`insert_resource` idiom in scripting's `register`;
+  #6136 `10360816e` moved it below `insert_resource`, which it had split from its doc block, and pinned both with
+  `init_resource_inserts_the_default_only_when_absent` / `insert_resource_keeps_its_own_doc` in `world_tests.rs`).
 - **Resource vs. component choice**: mode flags and singleton state are `Resource`s (`HardcoreMode`,
   `SelectedRef`, the `*Bridge`/`*Telemetry` structs); per-actor state is a `SparseSetStorage`
   component (`ActorVitals`, `TimedRestorations`). A new per-entity fact modelled as a global map keyed
@@ -210,7 +217,9 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   log line. Confirm the guards are live: `rg -n '#\[ignore' byroredux/src/scheduler_access_tests.rs byroredux/src/boot/schedule/mod.rs` returns nothing, and `PARALLEL_SYSTEMS.len()` equals the
   `add_to_with_access(` count.
   The `player_controller_system` row's cross-file hops include `raise_kill_story_event` (the drowning death's
-  `StoryEvent` write + cell-context reads, #5641 `17a84f442`).
+  `StoryEvent` write + cell-context reads, #5641 `17a84f442`) and the scripting crate's `note_death`
+  (`KillRecords` write plus its `SceneAliasCandidate` / `CreatureActor` / `FormIdComponent` / `FormIdPool` /
+  `PapyrusPlayerEntity` reads, #6217 `ef48dbd03`).
   **What the guard cannot see** (audit these by hand for every parallel system and any exclusive being
   promoted to parallel): it matches only single-type turbofish `query` / `query_mut` / `resource` /
   `resource_mut` (+ `try_`), `.get` / `.get_mut` / `.has` (#4994) and the generic
@@ -237,7 +246,9 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   analyzer — see `/audit-concurrency` Dim 4 for the pinned cases and the by-hand rule. The same blind spot
   covers same-stage order against a one-frame marker: `HitEvent` producers (melee, NPC strike, force-greet,
   `Weapon.Fire` projectile flight, the VM's `ProcessTrapHit` flush inside the reference/alias script systems)
-  must register before both consumers `combat_damage_system` and `hit_event_system`, or `event_cleanup_system`
+  must register before all four consumers — `combat_damage_system`, `hit_event_system`,
+  `reference_script_hit_system` (#5991) and the ObScript `obscript_hit_system` (split out of
+  `obscript_object_system`, #6293 `6208348f7`) — or `event_cleanup_system`
   drains the hit unseen — dart-trap and projectile damage never landed until `ee6468fd1`, now pinned by
   `hit_event_consumers_run_after_every_producer`. A new producer outside that list needs a name in the test.
 
@@ -386,7 +397,11 @@ blending, root-motion split and text-key dispatch, driven by an ECS system.
 - **Root motion**: `split_root_motion` applies once per tick and is drained — an undrained
   `RootMotionDelta` integrates every frame. A blended stack's per-tick accumulation-root delta is the
   weight-averaged `sampled_root_motion_delta` across every layer whose clip carries that root, not the
-  heaviest layer's alone (`animation_stack_root_motion_is_the_weighted_mix_of_its_layers`).
+  heaviest layer's alone, and each layer is weighed with `bone_layer_weight` on the accumulation root's channel
+  (mask and `clip.weight` included — both the root pick and the average; a masked-off layer used to contribute at
+  full weight, #6235 `8c5a718e3`; `animation_stack_root_motion_is_the_weighted_mix_of_its_layers`). Havok
+  (FO4) clips also carry `root_yaw` keys, written per tick into the `RootMotionYaw` component beside
+  `RootMotionDelta` (the stack's layer-weighted mix; unsaved; #6241 `051179b7b`).
 - **Clip sinks**: the loose-NIF, KF and cell-REFR spawn sites attach a clip's non-transform channels and read
   its start phase through `anim_convert::attach_clip_sinks` / `clip_start_phase` (#5590 `d58e7dbad`, pinned by
   a source-scan test) — a hand-rolled fourth copy is the drift.

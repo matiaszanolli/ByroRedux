@@ -20,13 +20,15 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Re-measured 2026-10-21 at 1be33af66 (941 tokens / 717 blocks / 35 impls at ae557b935 on 2026-10-20; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
+only 2 real blocks). Re-measured 2026-10-24 at dcad3669d (943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 941 / 717 / 35 at ae557b935 on 2026-10-20; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
 
-- `crates/renderer/src`: **943** word tokens (952 by the substring recipe) — 716 `unsafe {`
-  blocks, 100 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~145: prose and source-scan
-  strings), 38 `unsafe impl` (newest: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, which
-  routed the ground-cover push byte views through `byte_view` and dropped three hand-rolled `from_raw_parts` blocks;
-  fc83608d3 added two in `vulkan/gpu_timers.rs` for the shadow-filter bracket), ~811 `SAFETY` mentions. Growth since 10-15 is two new
+- `crates/renderer/src`: **945** word tokens — 713 `unsafe {`
+  blocks, 102 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~145: prose and source-scan
+  strings; the newest is `texture::submit_initial_layouts`, #6146), 44 `unsafe impl` (every one a `NoUninit`, the
+  `buffer.rs` primitive macro and `[T; N]` blanket included; newest: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, then #6270
+  dedf6c0d6 added `Push` (shadow filter), `AtrousPush`, `WaterPush`, `PresentationPushConstants` and both skin push structs
+  and routed those casts plus the geometry / morph-weight / bind-inverse bulk views through `byte_view`, dropping their
+  hand-rolled `from_raw_parts` blocks; fc83608d3 added two in `vulkan/gpu_timers.rs` for the shadow-filter bracket), ~810 `SAFETY` mentions. Growth since 10-15 is two new
   passes — `vulkan/shadow_filter.rs` (9 blocks + `unsafe fn destroy`) and the SKYAL cloud-shadow bake
   `vulkan/sky_cube/cloud_shadow.rs` (5 + `unsafe fn record` / `destroy`, c231f5b5f) — plus `descriptors::clamp_sampler`
   (`unsafe fn`, #5809 31f4919d5, which first spliced it between `memory_barrier`'s doc and item, leaving the wrong fn
@@ -37,8 +39,8 @@ only 2 real blocks). Re-measured 2026-10-21 at 1be33af66 (941 tokens / 717 block
   #4599 poison-policy extraction cut `vulkan/buffer.rs` 40 → 19 blocks; #5273 (74ed66f0a) replaced the five
   `CStr::from_ptr` device/extension-name blocks in `vulkan/device.rs` with ash's bounded `*_as_c_str()` accessors
   (pinned by `device_names_read_through_bounded_accessors`); `vulkan/groundcover.rs` split into
-  `vulkan/groundcover/{construct,frame}.rs` (16 + 10 today). Densest files: `vulkan/gpu_timers.rs` (64),
-  `vulkan/acceleration/blas_static.rs` (29), `vulkan/groundcover_bench.rs` (26). Compare against the previous
+  `vulkan/groundcover/{construct,frame}.rs` (16 + 10 today). Densest files: `vulkan/gpu_timers.rs` (66),
+  `vulkan/acceleration/blas_static.rs` (29), `vulkan/context/resize.rs` (27), `vulkan/groundcover_bench.rs` (26). Compare against the previous
   report, not this text.
 - Tail: `crates/fsr3-sys` 10 blocks in `src` (one is the test-only `byro_fsr3_abi_layout` probe; Dim 1) plus 20 in the
   `examples/vulkan_context_smoke.rs` harness, `crates/nif` 1
@@ -95,7 +97,9 @@ First step: `grep -rnE 'transmute|from_raw_parts|set_len|from_utf8_unchecked|uns
   dedup hash route through `byte_view` (#4445, #3990). Every `unsafe impl NoUninit for X` must be `#[repr(C)]`
   with no padding — the layout tests in Dim 6 and in `scene_buffer/gpu_instance_layout_tests.rs` are its
   proof; a struct that gains a hole fails at hash/equality, not silently. A new byte-slice cast that
-  bypasses `byte_view` is the regression.
+  bypasses `byte_view` is the regression — push-constant blocks included (#6270, dedf6c0d6: every push struct has a
+  `NoUninit` impl and a row in the field-for-field GLSL mirror table in `scene_buffer/shader_contract_tests.rs`, whose
+  classification walk now also reads `layout(push_constant) uniform` blocks, so a new one must be classified).
 - **`#[repr(C)]` GPU structs** (`scene_buffer/gpu_types.rs`, `material.rs`): vec3 is three scalar `f32`, never
   `[f32; 3]` (std430); drift is per-instance corruption (`_audit-severity` repr(C) HIGH row) — pins in Dim 6.
 - **NIF bulk POD reads** (`NifStream::read_pod_vec`, `header::read_pod_vec_from_cursor`, single unsafe site
@@ -158,7 +162,10 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
   `NotSubmitted`, `std::mem::forget` on `OneTimeCommandError::may_be_in_flight` (`vulkan/texture.rs`), since the GPU may
   still be executing against the handles. Pass constructors and recreate paths apply it too: volumetrics / density-noise
   init (#5947, cf1a234d0), the shadow filter's construct and resize layout walk (#6063, 4a6128389,
-  `a_failed_layout_submit_leaks_instead_of_destroying`). Constructors push each created resource into the shared
+  `a_failed_layout_submit_leaks_instead_of_destroying`), and since #6146 (4cd4bacbd) the water-caustic / SVGF / caustic / TAA
+  init arms and the water-caustic and TAA resize arms through `texture::release_after_failed_submit` (destroy only on
+  `NotSubmitted`; the seven `initialize_layouts` walks share `submit_initial_layouts`; pinned by
+  `no_initialize_layouts_caller_destroys_without_the_in_flight_check`). Constructors push each created resource into the shared
   `try_or_cleanup!` partial before filling it, so a failed `write_mapped` cannot drop a buffer the cleanup never saw
   (`GpuBuffer::Drop`'s debug leak assert fires on it; #5946, 267279ac2, pinned for volumetrics by
   `every_created_resource_is_pushed_before_anything_else_runs`). Flag the reverse — an unconditional `destroy` after a submit
@@ -185,7 +192,7 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
   `cargo build` / `cargo test`. Since #5121 (530c9e7aa) the workspace step runs `--keep-going` and a dedicated step
   (`cargo clippy -p byroredux-renderer --no-deps -- -D clippy::undocumented_unsafe_blocks`) re-lints the renderer on
   its own closure, so an upstream crate's new-toolchain clippy failure can no longer disarm the gate — confirm both survive. Confirm the `deny` is
-  present and unescaped. The lint sees `unsafe {}` blocks only: `unsafe fn` bodies and the 35 renderer `unsafe impl`s
+  present and unescaped. The lint sees `unsafe {}` blocks only: `unsafe fn` bodies and the 44 renderer `unsafe impl`s
   need a justification found by reading. Crates outside the renderer have no such lint — sweep comment-less blocks
   there by hand (at 2026-10-10 all commented in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher` and `byroredux`); a
   comment-less block is MEDIUM.
@@ -226,7 +233,7 @@ First step: `cargo test -p byroredux-renderer gpu_material gpu_instance gpu_came
 
 - **Sizes are pinned by tests named for the size** (`gpu_material_size_is_432_bytes` — `GpuMaterial` is 432 B;
   `gpu_instance_is_160_bytes_std430_compatible`, `gpu_camera_is_368_bytes`, `gpu_light_is_64_bytes`,
-  `gpu_terrain_tile_is_224_bytes` in `scene_buffer/gpu_instance_layout_tests.rs`). A test-name-vs-asserted-size
+  `gpu_terrain_tile_is_224_bytes`, spread across `scene_buffer/`). A test-name-vs-asserted-size
   mismatch or a stale number in prose means the GPU reads wrong bytes. Guards that police the prose:
   `bindings_glsl_states_the_real_struct_size`, `the_pin_test_bindings_glsl_names_actually_exists` and
   `gpu_material_size_claims` (scans `crates`, `byroredux`, `tools`, `docs/engine`, `.claude/commands`, top-level
@@ -277,7 +284,7 @@ Paths: `crates/mod-runtime/src/`, `crates/sdk/src/{identity,service}.rs`, `byror
 First step: `cargo tree -p byroredux-mod-runtime | grep -i wasi` (must print nothing) and `grep -c 'require_' crates/mod-runtime/src/runtime/capabilities.rs`
 
 `crates/mod-runtime` (wasmtime component-model host, no `unsafe`) is wired into the engine: `byroredux/src/extensions/`
-(~10.8k LOC, `unsafe`-free) is reached from `main.rs` (`load_requested_extensions`, `queue_session_event`) and
+(~10.7k LOC, `unsafe`-free) is reached from `main.rs` (`load_requested_extensions`, `queue_session_event`) and
 `app_events.rs` (`shutdown_extension_host`, `extension_ui_menu_sync`). Audit it as a live path.
 
 - **Absence, not promise**: the crate doc says no WASI is linked; `wasmtime` (49.0.2 since 15a6b1d2d) is declared with

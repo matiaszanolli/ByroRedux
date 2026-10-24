@@ -124,7 +124,7 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
   jmpt inversion negates + swaps edges). A conditional-predecessor `last` (`||` shape the boolean pass should
   have collapsed) **fails closed** (`ControlFlowFailed`, #1732; `conditional_predecessor_fails_closed`) —
   a fix that resumes past the block drops statements. The module doc's "advanced past" wording is stale
-  (#4115 open, verified 2026-10-21).
+  (#4115 open, verified 2026-10-24).
 - **Bookkept Champollion departures** — `boolean.rs`'s two (plus a third, newer guard below). `lower.rs`'s `is` → object-typed
   `Cast` departure (#4477) is closed: opcode 36 lowers to `Expr::Is` (#5443 `24f199587`, `an_is_opcode_lowers_to_an_is_expression`).
   For the **`boolean.rs`** two — adjudicate benign-or-bug, evidence = corpus rate +
@@ -145,7 +145,7 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
 - **Recursion**: `MAX_REBUILD_DEPTH = 1024` in `control_flow.rs` (`boolean.rs` derives it — not restated);
   both rebuilds return `RecursionLimit` (`rebuild_rejects_excessive_recursion_depth` exists in *both* files).
   It and `MAX_EXPR_DEPTH` (256) compose additively (~1,280) and independent edits erode the margin
-  (#4113 open, verified 2026-10-21) — check any change to either constant.
+  (#4113 open, verified 2026-10-24) — check any change to either constant.
 - **`lower.rs` totality**: `lower_expr`/`lower_stmt` never panic on any `NodeKind`; intentional lossy lowerings
   matter only if a recognizer keys on the lost info: statement-shaped node as sub-expression → `NoneLit`
   (should be unreachable), `is` → `Cast`, `lower_binary_op` default arm →
@@ -154,8 +154,10 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
   **Locals**: `lower_local_decls` prepends one bare `VarDecl` per non-temp local ahead of the body
   (`0c6fe4d34` — without it every Champollion fragment prologue read as an assignment to an undeclared name and
   the #5638 fragment guard declined it; `user_locals_are_declared_ahead_of_the_body_and_temporaries_are_not`).
-  "Temp" is Champollion `isTempVar` (`::temp*` not ending `_var`, or `::nonevar`) — `lower.rs` keeps a private,
-  case-insensitive copy beside `node.rs`'s case-sensitive `is_temp_var`; check the two still agree — and is
+  "Temp" is Champollion `isTempVar` (`::temp` + a suffix, not ending `_var`, or `::nonevar`) — `lower.rs` now
+  calls `node.rs`'s `is_temp_var` (#6262 `475004d25`; the private case-insensitive copy it replaced left a local the
+  lift keeps as real, `::TEMP1` or a bare `::temp`, undeclared; a second predicate reappearing is the regression;
+  `user_locals_are_declared_ahead_of_the_body_and_temporaries_are_not`) — and is
   NOT every `::` name: the compiler's `::mangled_<name>_<n>` user locals must be declared (#5880 `32352592f`,
   ~280 vanilla functions declined under the old `::` filter).
 - **Script assembly**: FO4+ `struct_infos` lower to `ScriptItem::Struct` items first (members keep their stored
@@ -241,8 +243,11 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   `Import` are qualified idents (`DLC01:Foo`); a remote event `Event Sender.Event(…)` (#5328) is normalised to
   the compiler's `Sender_Event` spelling — what the `.pex` frontend yields and the VM's remote matcher binds,
   while a consumer matching the script's own `OnDeath` does not (#5887 `3081d23f2`,
-  `remote_event_handlers_parse_with_their_sender_in_the_name`). `Parent` is a legal declaration / `.member` name
-  (#5888, `parent_is_a_legal_member_name`; the F4SE corpus test's `KNOWN_GAPS` is now empty). Pins
+  `remote_event_handlers_parse_with_their_sender_in_the_name`). `Parent` is a legal name only as a struct-member
+  declaration or after `.` (#5888, `parent_is_a_legal_member_name`; the F4SE corpus test's `KNOWN_GAPS` is now
+  empty) — via `expect_member_name`, NOT the shared `keyword_as_ident` table: #5888 first put it there and a
+  local/parameter named `Parent` then declared fine and parsed every use as `ParentAccess` (#6263 `a87650237`,
+  `parent_is_not_a_local_or_parameter_name`; `parse_variable_body(struct_member)` carries the distinction). Pins
   `a_doc_comment_after_a_bodied_function_header_documents_it`, `namespaced_script_name_parent_and_import_keep_every_segment`.
 - **Precedence/associativity**: `BinaryOp::precedence` Or=1, And=2, comparisons=3, Add/Sub/StrCat=4,
   Mul/Div/Mod=5, unary=6, cast=7/postfix=8 (`PREC_*` in `expr.rs`); left-assoc hinges on `op_prec <= min_bp →

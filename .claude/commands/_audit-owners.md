@@ -46,10 +46,11 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/core/src/ecs/components/restoration.rs` | gameplay | MEDIUM |
 | `crates/core/src/ecs/components/inventory.rs` | gameplay | MEDIUM |
 | `crates/core/src/ecs/components/lock.rs` | gameplay | MEDIUM |
-| `crates/core/src/ecs/components/{sandbox,wander,travel,follow,escort,guard,patrol,eat_sleep}.rs` | gameplay | MEDIUM |
+| `crates/core/src/ecs/components/{sandbox,wander,travel,follow,escort,guard,patrol,eat_sleep,ambush,find_package,flee_package,use_weapon_package,creature_attack}.rs` | gameplay | MEDIUM |
 | `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs` | character, ecs, save, concurrency | HIGH |
 | `crates/core/src/lighting.rs` | renderer, nifal | MEDIUM |
 | `crates/core/src/atomic_file.rs` | save, tooling | MEDIUM |
+| `crates/core/src/paths.rs` | tooling, ecs | MEDIUM |
 | `crates/core/src/bytes.rs` | parsers, ecs | HIGH |
 | `crates/core/src/source_scan.rs` | tech-debt, tooling | LOW |
 | `crates/core/` | ecs, concurrency | HIGH |
@@ -141,7 +142,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/spawn/precombined.rs` | fo4, performance | MEDIUM |
 | `byroredux/src/cell_loader/spawn/authored_cover.rs` | exterior | MEDIUM |
 | `byroredux/src/cell_loader/unload.rs` | ecs Dim 7, save Dim 5, concurrency Dim 5, performance; per-game | HIGH |
-| `byroredux/src/cell_loader/exterior.rs` | exterior, ecs Dim 7, performance; per-game | HIGH |
+| `byroredux/src/cell_loader/exterior` | exterior, ecs Dim 7, performance; per-game | HIGH |
 | `byroredux/src/cell_loader/load.rs` | ecs Dim 7, performance; per-game | HIGH |
 | `byroredux/src/cell_loader/tree_lod.rs` | exterior, performance; skyrim | MEDIUM |
 | `byroredux/src/cell_loader/{created,graph_nodes}.rs` | scripting, gameplay, performance; per-game | MEDIUM |
@@ -159,7 +160,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/systems/audio.rs` | audio, physics Dim 2+6 | MEDIUM |
 | `byroredux/src/systems/eat_sleep.rs` | gameplay Dim 5, physics Dim 4, ecs Dim 6, concurrency Dim 5; fnv, fo3 | MEDIUM |
 | `byroredux/src/systems/navmesh_path.rs` | gameplay, physics Dim 4 | MEDIUM |
-| `byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol,walk_anim,combat_ai,faction_hostility,locomotion,restoration}.rs` | gameplay | MEDIUM |
+| `byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol,walk_anim,combat_ai,faction_hostility,locomotion,restoration,find_package,flee_package,use_weapon_package}.rs` | gameplay | MEDIUM |
 | `byroredux/src/systems/combat_anim.rs` | gameplay, ecs Dim 9, audio | MEDIUM |
 | `byroredux/src/systems/npc_dialogue.rs` | scripting Dim 5, gameplay Dim 2, concurrency Dim 3 | MEDIUM |
 | `byroredux/src/systems/cinematic.rs` | scripting, ecs Dim 7, save Dim 5 | MEDIUM |

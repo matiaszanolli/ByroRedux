@@ -55,7 +55,7 @@ Code quality, maintainability, hardening opportunities.
 | Denoiser ghosting (missing disocclusion check) | MEDIUM |
 | SSBO index mismatch (instance_custom_index vs draw index) | CRITICAL |
 | G-buffer format mismatch (shader output vs attachment) | HIGH |
-| Composite reassembly wrong order (tone map before add) | MEDIUM |
+| Composite reassembly wrong order (composite emits linear HDR; tone map before the add, or presentation out of exposure → grade → chroma compress → tonemap order, #5482) | MEDIUM |
 | Wrong/divergent `Material` out of NIFAL `translate_material` | HIGH |
 | Translatable block silently dropped by NIFAL (collision shape / particle emitter params) | MEDIUM |
 | `#[repr(C)]` GPU struct size/layout drifts from shader struct (`GpuInstance` / `GpuCamera` / `GpuLight` / `GpuMaterial`) | HIGH |

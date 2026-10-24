@@ -17,13 +17,14 @@ changes gameplay silently — no crash, no validation error, no failing test unl
 
 ## Scope
 
-- `crates/core/src/character/` (14 modules, `mod_docstring_indexes_every_sub_module` pins the count):
+- `crates/core/src/character/` (15 modules, `mod_docstring_indexes_every_sub_module` pins the count):
   `ruleset.rs` (`CharacterRuleset`, the per-game `Resource` seam), `profile.rs` (`CharacterRulesProfile` —
   the single per-game policy row: `NpcStatModel`, `creature_stats`, `body_condition_base`, `vital_pools`,
   `RulesetBuilder`, and since #5921 `3162b21b8` `OverEncumberedRule`, `awards_kill_experience`,
-  `essential_death_time_secs`, `BarterModel`, `PerkEntryPointDialect`), `derived.rs` (`DerivedStatFormula`/`DerivedInput`/`DerivedOutput`/`DerivedScope`/
+  `essential_death_time_secs`, `BarterModel`, `PerkEntryPointDialect`; later `radiation_gauge` `e9b7bcead`,
+  `level_cap_raises` #6227 `cafd3ccab`, `crime`), `derived.rs` (`DerivedStatFormula`/`DerivedInput`/`DerivedOutput`/`DerivedScope`/
   `RoundMode`), `leveling.rs`, `attribute.rs`/`skill.rs`, `fallout.rs`/`tes.rs`/`skyrim.rs` (per-family
-  ruleset builders), `regen.rs`, `affliction.rs`/`resistance.rs`, `reputation.rs`, `components.rs`.
+  ruleset builders), `regen.rs`, `affliction.rs`/`resistance.rs`, `reputation.rs`, `crime.rs` (`CrimeModel` — Oblivion and Skyrim rows; `CrimeKind`, `BountyScope`), `components.rs`.
   Substrate: `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs`.
 - CHARAL-adjacent (not submodules): `crates/core/src/combat.rs` (Oblivion damage math),
   `crates/core/src/stealth.rs` (FO3/FNV sneak detection) — consumer-less or thin today; verify anyway.
@@ -33,7 +34,8 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   `crates/plugin/src/equip.rs` (`resolve_inherited_*`), `byroredux/src/cell_loader/references/`,
   `byroredux/src/inventory.rs` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/
   `Background`/`SpellList`/`RaceSpells` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`, `grant_experience`),
-  `byroredux/src/commands/{actor_value,condition}.rs`.
+  `byroredux/src/commands/{actor_value,condition}.rs`, `byroredux/src/crime.rs` (installs the `CrimeModel` resource from
+  `index.character_rules.crime()`), `crates/scripting/src/{crime_faction,jail}.rs` (crime-faction fines, Oblivion jail).
 - Handoff: gameplay writers of `ActorValues` (consumables, restoration, combat — `byroredux/src/
   {inventory,combat}.rs`, `systems/restoration.rs`) belong to `/audit-gameplay`; CHARAL owns only whether
   they respect the layer contract (Dim 4). Save schema of `ActorValues`/`Perks` → `/audit-save`.
@@ -58,7 +60,7 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   Skyrim a perk point + a pool pick (#5916 `612bd179e`); only classic-TES `SkillUse` has no XP-driven roll.
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-10-21) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
+- Open (verified 2026-10-24) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
   #4232 (`effective_actor_level` returns 0 verbatim). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
@@ -168,7 +170,11 @@ First step: `cargo test -p byroredux-core character::leveling character::regen c
   `["iXPBumpBase","iXPBase","iMaxCharacterLevel"]` on the Fallout curves (#5915 `8791be5fe` — the cap is
   overlaid only when authored and ≥ 1, so `BrokenSteel.esm` lifts FO3's 20 to 30; pins
   `skyrim_gmst_overlay_reads_only_authored_curve_settings`, `fallout_gmst_overlay_reads_curve_and_cap`);
-  `xp_per_skill_rank` is a fixed engine coefficient *by design* (do not re-flag). Oblivion attribute-bonus banding + 10-major-skill-ups; Skyrim pool base 100, +10/level
+  `xp_per_skill_rank` is a fixed engine coefficient *by design* (do not re-flag). **Cap raises** (#6227
+  `cafd3ccab`): `CharacterRulesProfile::build_ruleset(resolve, gmst, plugin_files)` applies `LevelingModel::raise_cap` *after*
+  the GMST overlay, summing `level_cap_raises` (FNV only: `DeadMoney`/`HonestHearts`/`OldWorldBlues`/`LonesomeRoad`, +5 each, matched
+  on the loaded file's stem from `EsmIndex::plugin_files`; no master authors it — `iMaxCharacterLevel` is in `FalloutNV.esm` alone);
+  an uncapped model stays uncapped (`raise_cap_lifts_only_a_capped_curve`). Oblivion attribute-bonus banding + 10-major-skill-ups; Skyrim pool base 100, +10/level
   (`SKYRIM_POOL_BASE`, `pool_pick_gain`); `Perks::try_set_rank` rejects out-of-range rather than clamping.
 - **Regen tick**: fixed-60 Hz (`POOL_REGEN_DT`), backlog clamped (`MAX_REGEN_SUBSTEPS`), zero-dt cannot
   spin; the scheduler access declaration matches the body (`/audit-concurrency` Dim 4 owns the rule).
@@ -178,6 +184,13 @@ First step: `cargo test -p byroredux-core character::leveling character::regen c
 - **Resistance/reputation**: `damage_multiplier` clamps `[0, cap]`, never negative (no healing);
   `STANDING_GRID` axes `[infamy][fame]` (transpose = plausible wrong standing); karma/affinity clamp both
   ends; per-faction `FactionRepThresholds` rows match the capture row-for-row.
+- **Crime** (`crime.rs`): `CrimeModel::OBLIVION` / `SKYRIM` are profile rows (`crime()`; `None` on FO3/FNV/FO4/FO76/Starfield — FO3/FNV
+  crime is faction-based and unmodelled), installed as a resource by `byroredux/src/crime.rs`, never a consumer `GameKind` match. Check each
+  default against its cited CS/UESP line (`fCrimeGoldSteal` 0.5, attack 40, murder 1000, prison divisor 100, `rush_bounty` 500 =
+  Oblivion.esm's authored `iCrimeGoldAttackMin`); `theft_rounds_up` (Oblivion up, min 1 septim; Skyrim down) and the saturating
+  `as i32` casts; `with_gmst` ignores non-finite/negative values. Pins `a_theft_fines_half_the_value_rounded_up_and_never_less_than_one`,
+  `skyrim_rounds_a_theft_down_and_keeps_the_bounty_per_crime_faction`. Trespass 5 / pickpocket 25 are the associated consts, used by
+  `crates/scripting/src/crime_faction.rs::faction_fine` only where a faction's Crime tab does not author them.
 - Every constant here needs a **Source**; regen rates and band thresholds are exactly the numbers typed
   from memory.
 **Output**: `/tmp/audit/character/dim_3.md`
@@ -201,6 +214,12 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   `c20dcdb04`, which also moved the player's level/Background/outfit reads onto the Use-Stats/Use-Traits/
   Use-Inventory terminals) — a new direct call or a raw `npc.<field>` read is the recurrence
   (fix-by-addition made it worse in #4086). Verify the enumerated count moved only deliberately, and that new reads honor `template_flags` rather than overwriting inherited values (six bits still have no consumer: #4137).
+- **Base-FormID readers of Use-Traits fields** (#6228 `b76a74e45`): sex/voice/race for readers that hold a base FormID rather than a
+  spawn's `ResolvedNpc` go through `equip::traits_terminal` — the dialogue voice key (`systems/dialogue_voice.rs`), `ActorBaseTraits`
+  (`GetIsSex`/`GetSex`/`GetVoiceType`/`GetLeveledActorBase`, which is its own arm now, not an alias of `GetActorBase`), the gendered
+  animation subgraph (`crates/scripting/src/anim_subgraph.rs`). `GetActorBase().GetSex()` deliberately stays the shell's. The
+  `resolve_inherited_call_sites_are_enumerated_and_pinned` test also asserts all three call `traits_terminal(`; a new reader of
+  `NpcRecord` sex/voice/race that reads the placed shell is the recurrence.
 - **Writers vs stamps (silent no-op class)**: for every writer that gates on a component
   (`consume_item`/`restoration_system`/drowning gate on player `ActorValues`+`ActorVitals`), find a
   *production* insert of that component on the entity class the writer targets; unit tests hand-insert and
@@ -255,7 +274,8 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   only itself. The capture's class/level term is deferred and must be disclosed in place (#4454). It also
   emits the 18 skills (`7c740eca0`, `derive_skyrim_skills`): auto-calc NPCs = `SKYRIM_BASE_SKILL` 15 + race
   bonus + the class's `skyrim_skill_weights` share of 8 points/level (`skyrim_class_skill_points`, UESP *CLAS*;
-  capped at 100); a non-auto-calc NPC uses its `DNAM` `skill_values` as written (race bonus not added — the
+  capped at 100; skills and pools share one `distribute_by_weight::<N>` routine since #6157 `f520d8d77` — equal weights break by
+  descending actor-value index in both, so a divergent second copy is the regression); a non-auto-calc NPC uses its `DNAM` `skill_values` as written (race bonus not added — the
   combination is undocumented, so absent, not guessed). `SKYRIM_SKILLS` names the AVIF editor ids; Illusion is
   `AVMysticism` (`a8dc9e8e6`) — an unresolved skill name drops silently, so the all-18 check
   `vanilla_skyrim_skill_names_all_resolve_and_a_vanilla_npc_derives_them` (`#[ignore]`d) is the guard.

@@ -140,9 +140,12 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 - **Ground-cover / sky-bake compute** (pipeline semantics belong to `/audit-exterior`): sync correctness
   stays here. `groundcover/frame.rs::record_scatter` orders counter zero-fill → extrema seeds (TRANSFER→TRANSFER,
   #4293), scatter → publish incl. counter readback (#4181), and the interaction field's trailing barrier. The field's
-  ping-pong (`field_write_half` / previous-half header) advances only through `commit_field_state` after
-  `record_interaction` actually recorded the dispatch — a no-TLAS skip or failed upload must not flip it, or the next
-  frame reads an unwritten half (#6031, 21b9743e0; `a_frame_without_a_recorded_dispatch_does_not_advance_the_field`);
+  ping-pong (`field_write_half` / previous-half header) is a two-step latch: `record_scatter` only stages the flip in
+  `pending_field_commit` when `record_interaction` actually recorded the dispatch (a no-TLAS skip or failed upload must
+  not flip it, #6031, 21b9743e0; `a_frame_without_a_recorded_dispatch_does_not_advance_the_field`), and
+  `promote_field_commit` commits it through `commit_field_state` only after `queue_submit` returns `Ok`, beside
+  `promote_skip_clear_latches` (a tail `Err` that discards the command buffer must not mark a half the GPU never wrote as
+  valid, #6291, 96ab07189; `the_groundcover_field_flip_is_promoted_after_submit_not_at_record_time`);
   `sky_cube.rs::record_bake` runs mid-frame (`context/build_and_upload_instances.rs`) — check its
   publish barrier before the first consumer. Evidence is a `BYRO_VALIDATION` capture, not reading.
 - **Passes new since 2026-10-15.** The direct-shadow filter (`shadow_filter.rs`, dispatched inside
@@ -174,7 +177,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 
 ### Dimension 3: ECS Lock Ordering & Deadlock (system level)
 Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
-First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954, #6101, #6208, #6209; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
 Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
 `GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
 re-audit it here. This dimension owns how *systems* use it.
@@ -211,14 +214,20 @@ re-audit it here. This dimension owns how *systems* use it.
   other two were test bodies holding a guard across a second read (#5032 shape, fixed in 3bc60e0be). A refactor can
   re-open a closed one: #5713 routed `common_shape_rotation`'s walk through `collect_subtree` (which takes `Children`
   internally) while the `MeshHandle` guard was alive, re-recording the edge #5535 removed (#5954, 7a4f6c1a2) — a shared
-  helper that acquires internally counts as an acquisition at the call site. Attribution recipe: a temporary edge logger
+  helper that acquires internally counts as an acquisition at the call site. The same shape keeps recurring in new AI/idle
+  systems: `idle_clip_playback_system` / `idle_resume_system` took `AnimationClipRegistry` under their `AnimationPlayer` guard
+  while `animation_system_inner` holds the registry outermost (#6208, 1e37a7536 — resolve clip facts under one registry
+  read, drop it, then take the player guard); the unload walk held `ParticleEmitter` across a `TextureHandle` read (#6209,
+  a49073cc9); `find_package` held a `SceneAliasCandidate` query across `is_pickup_target` (→ `InventoryCatalog`) and
+  `flee_package` read `AiCombatState` under `Transform` (ce22fcbcf — read cross-lock state before taking the guard). Attribution recipe: a temporary edge logger
   in `record_and_check`, `--test-threads=1 --nocapture`; fix by gathering under one guard, dropping it, then composing.
 - **Two resources held nested take them TypeId-sorted** (`resource_2_mut`, or its read twin `try_resource_2`), never two
   `try_resource` calls in code order: TypeIds shift with the unified feature set, so a code-order pair agrees with the
   sorted sites in one build and closes an ABBA in another — deterministic per build configuration, so it looks
   transient (#6101, 824c620a5: the quest stage / objective pair in `evaluate_guard_guard_free`, red only in the
   multi-crate `-p byroredux-core -p byroredux-physics -p byroredux-scripting --lib` lane; pinned by
-  `try_resource_2_does_not_deadlock_against_resource_2_mut` in `crates/core/src/ecs/world_tests.rs`).
+  `try_resource_2_does_not_deadlock_against_resource_2_mut` in `crates/core/src/ecs/world_tests.rs`, which carries
+  `#[cfg_attr(miri, ignore)]` — a lock-order test, not pointer provenance, #6234 5dc642ee7).
 - **A fixture records only the edges its storages allow.** #5372 (1c15a2270) closed
   `LoadedCellIndex → StoryEvent → LoadedCellIndex` (the hello location resolved under the `StoryEvent` guard), which the
   lane never saw because the dialogue fixture lacked the Story Manager storages and `raise_hello_story_event` returned
@@ -253,8 +262,9 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   `resource_mut` (+ `try_`), `world.get` / `get_mut` / `has` and generic `remove_component` /
   `insert_component` (#4994, #4821) — not `query_2_mut`, `resource_2_mut` or inferred types; it follows calls
   within a listed file but cross-file hops only where `PARALLEL_SYSTEMS` lists them (#4994,
-  `cross_file_hops_and_get_forms_reach_their_acquisitions`); closures and macros; exclusive systems (four are
-  scanned — `npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`, and
+  `cross_file_hops_and_get_forms_reach_their_acquisitions`); closures and macros; exclusive systems (five are
+  scanned — `npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`,
+  `equipment_appearance_system` (its mid-life import surface, #5069), and
   `npc_dialogue_selection_system`, whose scan follows the spoken-INFO fragment path into the scripting crate, #5307,
   `apply_selection`'s voice / AHEL hops `play_line_voice` + `raise_hello_story_event`, #5414 9d8fd4cc9, and the condition
   evaluator `evaluate_function` — 18 acquisitions incl. the `StoryManagerRng` write, #5649 197a9e245;
@@ -263,7 +273,10 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   An under-declared parallel system makes `known_conflict_count() == 0` unsound (the same-session
   `fly_camera_system` `GlobalTransform` write is the precedent, commit ac1d44f5c; #5641, 17a84f442, was the drowning
   death in `player_controller_system` raising the KILL story event without declaring `StoryEvent` + the cell-context
-  reads — now a `raise_kill_story_event` hop in `PARALLEL_SYSTEMS`).
+  reads — now a `raise_kill_story_event` hop in `PARALLEL_SYSTEMS`; the cross-crate hop behind it, the scripting crate's
+  `note_death` — a `KillRecords` write plus `SceneAliasCandidate` / `CreatureActor` / `FormIdComponent` / `FormIdPool` /
+  `PapyrusPlayerEntity` reads — is a listed hop too, #6217 ef48dbd03; a new CTDA arm's reads must be declared on
+  `npc_dialogue_selection` the same way, 561541d6c).
 - **Cross-stage sequencing is invisible to the analyzer** (`analyze_pair` reasons within one stage). A
   consumer in an earlier stage than its single producer silently reads last frame's value while every KPI
   stays green. Pinned today: `player_wind_read_is_declared_and_weather_writer_is_exclusive` (WindField:
@@ -276,7 +289,8 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   dialogue selection), `hit_event_consumers_run_after_every_producer` (ee6468fd1: `HitEvent` is a one-frame marker
   `event_cleanup_system` drains in Late, so `combat_damage_system` / `hit_event_system` registered ahead of the
   projectile-flight and VM `ProcessTrapHit` producers dropped every dart-trap hit; a registration-order bug the
-  access analyzer cannot see), and the spoken-INFO path in Stage::Late must not claim the fragment journal cursor
+  access analyzer cannot see; the ObScript `obscript_hit_system` consumer joined the same test as a split-out system, #6293
+  6208348f7), and the spoken-INFO path in Stage::Late must not claim the fragment journal cursor
   its same-frame `QuestStageAdvancedBatch` drains unread (#5297, 68a06509a). For any NEW single-writer / multi-reader resource,
   check writer-stage ≤ reader-stage and that a test like these pins it; fix by moving the *consumer* to
   a Late exclusive after the writer, not by moving the writer.
@@ -339,6 +353,10 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
   reservoir buffers, the shadow filter and egui framebuffers are rebuilt; per-FIF history/accumulator images freed for
   every in-flight slot (`resize.rs`). The shadow filter's recreate submits nothing and its layout walk runs as a separate
   step, so a `may_be_in_flight` failure leaks the pass instead of destroying images the submit may still touch (#6063, 4a6128389).
+  Since #6146 (4cd4bacbd) every pass's `initialize_layouts` goes through the shared `texture::submit_initial_layouts`, and the
+  water-caustic / SVGF / caustic / TAA init arms plus the water-caustic and TAA resize arms release a failed pass through
+  `release_after_failed_submit` (destroy only on `NotSubmitted`, leak otherwise); two source scans pin it
+  (`every_initialize_layouts_body_uses_the_shared_submit`, `no_initialize_layouts_caller_destroys_without_the_in_flight_check`).
 - **AS cleanup on shutdown.** All `BlasEntry` buffers, `TlasState` buffers and scratch released; per-entity skin outputs kept until the entity is destroyed.
 - **Other GPU cleanup.** `scene_buffer`, `MaterialBuffer`, texture registry (incl. the `dynamic_rgba` staging
   arena), `EguiPass::destroy()` (`Option<EguiPass>` taken in `Drop`; its texture retirements are a
@@ -370,7 +388,9 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   Streamed NIFs' textures are prefetched on the stream pool (`prefetch_textures`, `PrefetchStore`): a panicking
   read must still complete its slot, and a withdrawn key must not be waited on. Terrain-layer height maps (#6195)
   generate on their own 2-thread rayon pool (`TerrainHeightService`, `terrain_height.rs`) over a cloned
-  `texture_archive_snapshot()`, returning results through an `Arc<Mutex<Vec<…>>>` that only the main thread drains — a
+  `texture_archive_snapshot()`; every job runs under `spawn_guarded` (`catch_unwind`), because rayon aborts the process on an
+  unhandled spawned-job panic — a panicking job is reported `Failed` and the layer renders without height (#6233, 04e146b1d;
+  `a_panicking_height_job_is_reported_failed`) — returning results through an `Arc<Mutex<Vec<…>>>` that only the main thread drains — a
   job must not touch the `World` or the registry, and the on-disk cache write is the shared state to check. External-material
   resolution (`merge_external_material`, which takes `&mut ImportedMaterial` + `&mut MaterialProvider` +
   `&mut StringPool`) is main-thread-only — moving it needs a real synchronisation story. The NIF import

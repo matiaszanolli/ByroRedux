@@ -60,12 +60,12 @@ done
 # title; `Dim N` qualifiers and `(…)` notes are dropped.
 games="fnv fo3 oblivion skyrim fo4 starfield"
 routed="$(git diff --name-only "$base..HEAD" | .claude/commands/_audit-route.sh | cut -f3 \
-    | sed -E 's/\([^)]*\)//g; s/Dim [0-9+]+//g; s/[;,]/\n/g' | sed -E 's/^ +| +$//g' | grep -v '^$' \
+    | sed -E 's/\([^)]*\)//g; s/Dims? [0-9+-]+//g; s/[;,]/\n/g' | sed -E 's/^ +| +$//g' | grep -v '^$' \
     | sed "s/^per-game$/${games// /\\n}/" | sort | uniq -c)"
 {
     printf 'skill\trouted_files\tcited_closed_since\n'
     for s in "${skills[@]}"; do
-        r="$(awk -v s="$s" '$2==s {print $1}' <<<"$routed")"
+        r="$(awk -v s="$s" '$2==s {n += $1} END {if (n) print n}' <<<"$routed")"
         c="$(grep -cE "(^|[: ])$s( |$)" "$scratch/cited_closed_recent_map.txt" || true)"
         printf '%s\t%s\t%s\n' "$s" "${r:-0}" "${c:-0}"
     done
