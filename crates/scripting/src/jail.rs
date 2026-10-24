@@ -190,6 +190,7 @@ fn take_payment(world: &World, player: EntityId) {
     if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
         ledger.crime_gold = 0;
     }
+    crate::crime_knowledge::forgive_player(world);
 }
 
 /// `PayFine`: `PayFineThief`, then the stolen goods are confiscated and the player
@@ -223,6 +224,7 @@ pub fn go_to_jail(world: &World) -> bool {
         ledger.crime_gold = 0;
         ledger.jail = Some(JailSentence { exit_marker: jail.exit_marker, days });
     }
+    crate::crime_knowledge::forgive_player(world);
     request_move(world, jail.cell_marker)
 }
 
@@ -396,6 +398,25 @@ mod tests {
         assert_eq!(world.resource::<PendingSleep>().0, 60.0, "2.5 days");
         assert_eq!(world.resource::<PlayerMoveRequest>().0, Some(2));
         assert!(!player_in_jail(&world));
+    }
+
+    #[test]
+    fn paying_or_serving_forgives_what_the_witnesses_knew() {
+        use crate::crime_knowledge::{CrimeEntry, CrimeKnowledge};
+        use byroredux_core::character::CrimeKind;
+        let entry = |criminal| CrimeEntry { knower: 0xA1, criminal, kind: CrimeKind::Steal, victim: 0 };
+        for go_to_jail_instead in [false, true] {
+            let (mut world, _player) = world_with_player(BRAVIL, [900.0, 0.0, 0.0], 100);
+            start(&mut world, 40, &[]);
+            let mut knowledge = CrimeKnowledge::default();
+            knowledge.record(entry(crate::PLAYER_REFERENCE));
+            knowledge.record(entry(0xEE));
+            world.insert_resource(knowledge);
+            assert!(if go_to_jail_instead { go_to_jail(&world) } else { pay_fine_thief(&world) });
+            let knowledge = world.resource::<CrimeKnowledge>();
+            assert!(!knowledge.knows(0xA1, crate::PLAYER_REFERENCE, None, None), "the player is forgiven");
+            assert!(knowledge.knows(0xA1, 0xEE, None, None), "someone else's crime is not");
+        }
     }
 
     #[test]

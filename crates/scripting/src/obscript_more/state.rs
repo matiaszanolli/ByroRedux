@@ -55,8 +55,20 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         // of stolen goods is tracked, so it is what scripts have put there (0).
         0x10be => answer(ledger(world, |l| l.amount_sold_stolen).unwrap_or(0) as f32),
         // CS *GetCrimeKnown <type> <criminal> <victim>*: "1 if the calling actor knows about the specified
-        // crime". The engine records no crime, so no actor knows of one.
-        0x1077 => flag(false),
+        // crime" — the crime record witnesses and the guards they call write. A crime type the engine
+        // does not carry is declined.
+        0x1077 => {
+            let (Some((knower, _)), Some(kind), Some(criminal), Some(victim)) =
+                (caller(world, ctx), byroredux_core::character::CrimeKind::from_wire(num(args, 0) as u32), form_arg(args, 1), form_arg(args, 2))
+            else {
+                return Action::Declined;
+            };
+            flag(
+                world
+                    .try_resource::<crate::crime_knowledge::CrimeKnowledge>()
+                    .is_some_and(|knowledge| knowledge.knows(knower, criminal, Some(kind), Some(victim))),
+            )
+        }
         // CS *Get/SetPCExpelled*, *Get/SetPCFactionMurder / Steal / Attack*.
         0x10c1..=0x10c7 if !fallout => {
             let kind = match cmd {

@@ -1454,6 +1454,31 @@ fn clas_fnv_tag_skills_and_attr_special() {
     assert!(c.flags_oblivion.is_none());
 }
 
+/// The `CLAS` `DATA` flags word (Playable 0x1, Guard 0x2) is read where the game authors it —
+/// Oblivion at offset 40, FO3 / FNV after the four tag skills — and not on Skyrim: `IsGuard`
+/// reads the class's Guard bit.
+#[test]
+fn clas_guard_flag_is_read_on_oblivion_fo3_and_fnv() {
+    // FNV / FO3: tag skills x4, then the flags word.
+    let mut fnv = vec![0u8; 16];
+    fnv.extend_from_slice(&0b10u32.to_le_bytes()); // Guard
+    fnv.extend_from_slice(&[0u8; 8]);
+    let guard = parse_clas(0x601, &[sub(b"EDID", b"NCRTrooper\0"), sub(b"DATA", &fnv)], GameKind::Fallout3NV);
+    assert_eq!(guard.class_flags, Some(0b10));
+    assert!(guard.is_guard());
+    let mut citizen = fnv.clone();
+    citizen[16] = 0b01; // Playable only
+    let citizen = parse_clas(0x602, &[sub(b"DATA", &citizen)], GameKind::Fallout3NV);
+    assert!(!citizen.is_guard());
+
+    let oblivion = oblivion_clas_data((0, 6), 0, [0x0F, 0x17, 0x12, 0x10, 0x0E, 0x20, 0x11], 0b11);
+    let guard = parse_clas(0x836, &[sub(b"DATA", &oblivion)], GameKind::Oblivion);
+    assert!(guard.is_guard() && guard.class_flags == guard.flags_oblivion);
+
+    let skyrim = parse_clas(0x603, &[sub(b"DATA", &[0xFFu8; 36])], GameKind::Skyrim);
+    assert!(skyrim.class_flags.is_none() && !skyrim.is_guard(), "Skyrim's classes carry no flags word");
+}
+
 /// FO3 splits the 7 base attributes across 7 single-byte `ATTR`
 /// subrecords; they must accumulate in order into `base_attributes`.
 #[test]

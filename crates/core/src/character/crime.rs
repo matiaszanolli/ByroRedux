@@ -13,6 +13,34 @@
 
 use crate::ecs::resource::Resource;
 
+/// The kinds of crime every Bethesda game numbers the same way (xEdit's
+/// `wbCrimeTypeEnum`, shared by Oblivion, FO3, FNV, Skyrim and FO4 for these
+/// five; the sixth value differs per game and has no consumer). A condition's
+/// `GetCrime` / `GetCrimeKnown` crime-type argument is this number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum CrimeKind {
+    Steal,
+    Pickpocket,
+    Trespass,
+    Attack,
+    Murder,
+}
+
+impl CrimeKind {
+    /// The authored crime-type number, `None` for one this enum does not carry.
+    pub fn from_wire(value: u32) -> Option<Self> {
+        Some(match value {
+            0 => Self::Steal,
+            1 => Self::Pickpocket,
+            2 => Self::Trespass,
+            3 => Self::Attack,
+            4 => Self::Murder,
+            _ => return None,
+        })
+    }
+}
+
 /// A game's crime fines (the defaults of the settings the masters may
 /// author).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,13 +66,20 @@ pub struct CrimeModel {
     /// divided by the value of this setting" (CS wiki, default 100; not
     /// authored by Oblivion.esm).
     pub prison_days_divisor: i32,
+    /// `iCrimeAlarmRecDistance`: "the distance from which a crime victim's cries
+    /// for help can be heard" (CS wiki, default 4000; Oblivion.esm authors 4000).
+    pub alarm_distance: f32,
+    /// `iNumberGuardsCrimeResponse`: "the number of guards that appear when the
+    /// player commits a crime and it has been reported. If set to 0, no guard
+    /// appears" (CS wiki, default 4; not authored).
+    pub guards_responding: u32,
 }
 
 impl Resource for CrimeModel {}
 
 impl CrimeModel {
     /// Oblivion's defaults (CS wiki *fCrimeGoldSteal*, UESP *Crime*).
-    pub const OBLIVION: Self = Self { steal_value_mult: 0.5, attack_gold: 40, murder_gold: 1000, infamy_bounty_step: 1000, prison_days_divisor: 100 };
+    pub const OBLIVION: Self = Self { steal_value_mult: 0.5, attack_gold: 40, murder_gold: 1000, infamy_bounty_step: 1000, prison_days_divisor: 100, alarm_distance: 4000.0, guards_responding: 4 };
 
     /// The model with each setting the load order authors replacing its
     /// default. A non-finite or negative authored value is ignored.
@@ -58,6 +93,11 @@ impl CrimeModel {
             murder_gold: Self::authored_gold(&gmst, "iCrimeGoldMurder", self.murder_gold),
             infamy_bounty_step: self.infamy_bounty_step,
             prison_days_divisor: Self::authored_gold(&gmst, "iCrimeDaysInPrisonMod", self.prison_days_divisor).max(1),
+            alarm_distance: gmst("iCrimeAlarmRecDistance")
+                .filter(|distance| distance.is_finite() && *distance >= 0.0)
+                .unwrap_or(self.alarm_distance),
+            // Zero is a real setting here (no guard appears), unlike the divisor.
+            guards_responding: Self::authored_gold(&gmst, "iNumberGuardsCrimeResponse", self.guards_responding as i32) as u32,
         }
     }
 
@@ -124,6 +164,27 @@ mod tests {
         assert_eq!(slow.sentence_days(250), 5.0);
         let zero = CrimeModel::OBLIVION.with_gmst(|name| (name == "iCrimeDaysInPrisonMod").then_some(0.0));
         assert_eq!(zero.sentence_days(100), 100.0, "a zero divisor reads as 1, never a division by zero");
+    }
+
+    #[test]
+    fn crime_types_carry_the_numbers_conditions_author() {
+        let kinds = [CrimeKind::Steal, CrimeKind::Pickpocket, CrimeKind::Trespass, CrimeKind::Attack, CrimeKind::Murder];
+        for (wire, kind) in kinds.into_iter().enumerate() {
+            assert_eq!(CrimeKind::from_wire(wire as u32), Some(kind));
+        }
+        assert_eq!(CrimeKind::from_wire(5), None, "the sixth value differs per game and is not carried");
+    }
+
+    #[test]
+    fn the_alarm_settings_are_data() {
+        let model = CrimeModel::OBLIVION.with_gmst(|name| match name {
+            "iCrimeAlarmRecDistance" => Some(1500.0),
+            "iNumberGuardsCrimeResponse" => Some(0.0),
+            _ => None,
+        });
+        assert_eq!((model.alarm_distance, model.guards_responding), (1500.0, 0), "0 guards is a real setting");
+        assert_eq!(CrimeModel::OBLIVION.alarm_distance, 4000.0);
+        assert_eq!(CrimeModel::OBLIVION.guards_responding, 4);
     }
 
     #[test]

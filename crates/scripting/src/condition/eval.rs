@@ -657,6 +657,12 @@ pub fn evaluate_function(
             world.try_resource::<crate::obscript_ledger::ObScriptLedger>().map_or(0.0, |ledger| ledger.infamy)
         }
         ConditionFunction::IsGuard => truth(crate::guards::is_guard(world, entity)),
+        ConditionFunction::GetCrime => truth(crate::guards::knows_crime_against(
+            world,
+            entity,
+            condition.param_1,
+            byroredux_core::character::CrimeKind::from_wire(condition.param_2),
+        )),
         ConditionFunction::IsTurnArrest => truth(crate::guards::is_guard(world, entity) && crate::guards::player_bounty(world) > 0),
         ConditionFunction::GetPCExpelled => truth(
             world

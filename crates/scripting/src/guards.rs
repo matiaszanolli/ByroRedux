@@ -2,7 +2,7 @@
 //! ObScript getters ask for them (Oblivion).
 //!
 //! CS *IsGuard*: "1 if the NPC's class is marked as a Guard class" — the
-//! `CLAS` `DATA` flags' Guard bit, so which classes are guards is the load
+//! `CLAS` `DATA` flags' Guard bit (Oblivion, FO3 and FNV author it), so which classes are guards is the load
 //! order's data ([`GuardClasses`], re-derived from the records every boot),
 //! not a list here. A mod that flags another class as a guard class makes its
 //! members guards.
@@ -33,13 +33,13 @@ pub struct GuardClasses(Arc<HashSet<u32>>);
 
 impl Resource for GuardClasses {}
 
-/// Install the load order's guard classes (empty outside Oblivion, whose
-/// `CLAS` flags carry the bit).
+/// Install the load order's guard classes (empty on Skyrim and later, whose
+/// classes carry no flags word).
 pub fn install_guard_classes(world: &mut World, index: &EsmIndex) {
     let classes = index
         .classes
         .iter()
-        .filter(|(_, class)| class.is_oblivion_guard())
+        .filter(|(_, class)| class.is_guard())
         .map(|(&form, _)| form)
         .collect();
     world.insert_resource(GuardClasses(Arc::new(classes)));
@@ -67,6 +67,20 @@ pub fn bounty_of(world: &World, actor: EntityId) -> i32 {
 /// The player's bounty (0 with no player spawned).
 pub fn player_bounty(world: &World) -> i32 {
     crate::papyrus_demo::PapyrusPlayerEntity::get(world).map_or(0, |player| bounty_of(world, player))
+}
+
+/// CS *GetCrime*: `criminal` committed a `kind` crime against `actor` and `actor` knows of it. The
+/// crime is "against the calling actor" when its victim is the actor's reference or its base (a
+/// theft from an actor's property records the base). `kind` is `None` for a crime-type number
+/// the engine does not carry, which nothing is recorded under.
+pub fn knows_crime_against(world: &World, actor: EntityId, criminal: u32, kind: Option<byroredux_core::character::CrimeKind>) -> bool {
+    let (Some(kind), Some(knower)) = (kind, crate::obscript_state::reference_form(world, actor)) else {
+        return false;
+    };
+    let base = world.get::<crate::scene::SceneAliasCandidate>(actor).map_or(0, |candidate| candidate.base_form_id);
+    world
+        .try_resource::<crate::crime_knowledge::CrimeKnowledge>()
+        .is_some_and(|knowledge| knowledge.knows_against_any(knower, criminal, kind, &[knower, base]))
 }
 
 /// CS *CanPayCrimeGold*: whether `actor` holds at least as much gold as their
@@ -103,6 +117,7 @@ mod tests {
             specialization: None,
             major_skills: Vec::new(),
             flags_oblivion: flags,
+            class_flags: flags,
         }
     }
 
@@ -111,7 +126,7 @@ mod tests {
         let mut index = EsmIndex::default();
         index.classes.insert(0x10, class(Some(0b11))); // Playable | Guard
         index.classes.insert(0x11, class(Some(0b01))); // Playable only
-        index.classes.insert(0x12, class(None)); // another game's class
+        index.classes.insert(0x12, class(None)); // Skyrim's: no flags word
         let mut world = World::new();
         world.register::<Background>();
         install_guard_classes(&mut world, &index);

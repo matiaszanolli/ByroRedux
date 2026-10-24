@@ -476,6 +476,8 @@ pub fn build_save_registry() -> SaveRegistry {
     byroredux_scripting::obscript_state::register_saved(&mut r);
     // M47.3 — fame, bounty, faction crime flags, known topics, dispositions and the `Set...` values.
     byroredux_scripting::obscript_ledger::register_saved(&mut r);
+    // Who knows of which crime (witnesses, the guards they call): GetCrime / GetCrimeKnown.
+    byroredux_scripting::crime_knowledge::register_saved(&mut r);
     // M47.3 — the New Vegas challenges' progress, unlocks and recurring flags.
     byroredux_scripting::challenges::register_saved(&mut r);
     // M47.3 — the magic effects running on an actor (script effects, timed value changes).

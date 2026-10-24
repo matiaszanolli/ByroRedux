@@ -98,7 +98,7 @@ pub use components::{
     Background, CharacterLevel, FactionReputation, FactionStanding, LevelUpPoints, PerkRank,
     Perks,
 };
-pub use crime::CrimeModel;
+pub use crime::{CrimeKind, CrimeModel};
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
 pub use fallout::{
     fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, melee_damage_config, MeleeDamageConfig,

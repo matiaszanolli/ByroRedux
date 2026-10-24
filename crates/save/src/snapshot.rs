@@ -583,7 +583,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v117 -> v118 (Oblivion jail): `ObScriptLedger` gained the required `stolen_goods` (what the player
 /// holds by theft), `evidence` (what the law confiscated) and `jail` (the sentence being served) fields,
 /// so a v117 ledger no longer decodes.
-pub const FORMAT_MAJOR: u16 = 118;
+///
+/// v118 -> v119 (crime knowledge): the `CrimeKnowledge` resource joined the registry (who knows of
+/// which crime), so a v118 save has no record of it and the schema no longer matches.
+pub const FORMAT_MAJOR: u16 = 119;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -1,6 +1,10 @@
 //! What the player's crimes cost them (CHARAL crime family).
 //!
-//! Theft, assault and murder are wired. The rules are Oblivion's (CS wiki
+//! Two layers. **Every game** classifies a crime (theft from an owner, a strike on someone
+//! who is not fighting you) and records who saw it in the saved `CrimeKnowledge`, which
+//! `GetCrime` / `GetCrimeKnown` read. **A game with a [`CrimeModel`]** (Oblivion so far;
+//! the profile row says so) then fines it, flags the factions and sends guards. Theft,
+//! assault and murder are wired. The rules are Oblivion's (CS wiki
 //! *Crime Overview*, *fCrimeGoldSteal*, *iCrimeGoldXX*; UESP
 //! *Oblivion:Crime*, *Oblivion:Infamy*):
 //!
@@ -16,6 +20,10 @@
 //!   `iCrimeGoldMurder`. The victim's factions get the Murder flag whoever
 //!   saw it (`GetPCFactionMurder`).
 //! * Any crime that adds 1000 gold earns one infamy point per 1000.
+//! * A witnessed crime **calls the guards** ([`raise_alarm`]): the guards (class Guard flag)
+//!   within `iCrimeAlarmRecDistance` of a witness, the `iNumberGuardsCrimeResponse` nearest
+//!   the player, learn of it and walk up to open a greeting — the force-greet directive the
+//!   dialogue runtime already runs — which the arrest greeting (`IsTurnArrest`) answers.
 //!
 //! Everything lands in the saved [`ObScriptLedger`] that `GetCrimeGold` /
 //! `GetPCInfamy` / `GetPCFaction*` already read, so scripts and the engine
@@ -27,8 +35,8 @@
 //!
 //! Not modelled yet: sneaking undetected (a witness is any living NPC who
 //! can see the player at detection range, with no stealth roll), the
-//! witnesses' disposition drop, guards arresting or paying the fine, a
-//! guard kill that incurs a bounty with no witness, hostile spell effects
+//! witnesses' disposition drop, a guard kill that incurs a bounty with no witness,
+//! guards that arrest on sight at a high bounty (the wiki's thresholds are approximate), hostile spell effects
 //! as assault, creatures (domestic ones are murder victims in the original)
 //! as victims, and Shivering Isles' separate bounty.
 //!
@@ -36,8 +44,8 @@
 //! (`faction_hostility::actor_would_attack`) plus not already fighting the player; "NPC" is
 //! an actor without [`CreatureActor`].
 
-use byroredux_core::character::CrimeModel;
-use byroredux_core::ecs::components::{CreatureActor, Dead, FactionRanks};
+use byroredux_core::character::{CrimeKind, CrimeModel};
+use byroredux_core::ecs::components::{CreatureActor, Dead, FactionRanks, GlobalTransform};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{EntityId, World};
@@ -56,25 +64,87 @@ pub(crate) fn install_crime_model(world: &mut World, index: &EsmIndex) {
     }
 }
 
-/// Whether any living NPC can see the player: the people a crime is
-/// reported by. Creatures do not report crimes here.
-fn witnessed(world: &World, player: EntityId) -> bool {
+/// The living NPCs who can see the player: the people a crime is reported by. Creatures do not
+/// report crimes here.
+fn witnesses(world: &World, player: EntityId) -> Vec<EntityId> {
     let observers: Vec<EntityId> = world
         .query::<crate::systems::faction_hostility::CombatDisposition>()
         .map(|q| q.iter().map(|(entity, _)| entity).collect())
         .unwrap_or_default();
-    observers.into_iter().any(|observer| {
-        observer != player
-            && world.get::<Dead>(observer).is_none()
-            && world.get::<CreatureActor>(observer).is_none()
-            && crate::systems::faction_hostility::actor_detects(world, observer, player)
-    })
+    observers
+        .into_iter()
+        .filter(|&observer| {
+            observer != player
+                && world.get::<Dead>(observer).is_none()
+                && world.get::<CreatureActor>(observer).is_none()
+                && crate::systems::faction_hostility::actor_detects(world, observer, player)
+        })
+        .collect()
 }
 
-/// Charge the player for a theft of `rows` (`(base form, count)`) from
-/// property owned by `owner`. Returns the bounty added (0 when unwitnessed
-/// or the game has no crime model).
+/// The player committed a `kind` crime against `victim` in sight of `witnesses`: each of them
+/// now knows of it (`GetCrime` / `GetCrimeKnown`). Every game records this, whatever it then
+/// does about it.
+fn record_crime(world: &World, kind: CrimeKind, victim: u32, witnesses: &[EntityId]) {
+    for &witness in witnesses {
+        byroredux_scripting::crime_knowledge::note_known(world, witness, byroredux_scripting::PLAYER_REFERENCE, kind, victim);
+    }
+}
+
+/// The reference form `entity` is known by, 0 when it has none.
+fn reference_of(world: &World, entity: EntityId) -> u32 {
+    byroredux_scripting::obscript_state::reference_form(world, entity).unwrap_or(0)
+}
+
+/// The witnesses call for guards. The guards among the NPCs within `iCrimeAlarmRecDistance` of a
+/// witness ("the distance from which a crime victim's cries for help can be heard"), the
+/// `iNumberGuardsCrimeResponse` nearest the player ("the number of guards that appear when the
+/// player commits a crime and it has been reported"), learn of the crime and come to the player:
+/// each is stamped with the force-greet directive the dialogue runtime already runs, so it walks
+/// up and opens its generic greeting, which an arrest greeting (`IsTurnArrest`) answers.
+fn raise_alarm(world: &World, model: CrimeModel, player: EntityId, kind: CrimeKind, victim: u32, witnesses: &[EntityId]) {
+    use crate::systems::forcegreet::{ForceGreetDirective, FORCE_GREET_RADIUS};
+    let position = |entity: EntityId| world.get::<GlobalTransform>(entity).map(|t| t.translation);
+    let (Some(at_player), true) = (position(player), model.guards_responding > 0) else {
+        return;
+    };
+    let heard_from: Vec<_> = witnesses.iter().filter_map(|&w| position(w)).collect();
+    let others: Vec<EntityId> = world
+        .query::<crate::systems::faction_hostility::CombatDisposition>()
+        .map(|q| q.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    let mut guards: Vec<(f32, EntityId)> = others
+        .into_iter()
+        .filter(|&actor| {
+            actor != player
+                && byroredux_scripting::guards::is_guard(world, actor)
+                && world.get::<Dead>(actor).is_none()
+                && world.get::<CreatureActor>(actor).is_none()
+                && world.get::<byroredux_scripting::AiCombatState>(actor).is_none()
+        })
+        .filter_map(|actor| {
+            let here = position(actor)?;
+            heard_from.iter().any(|w| w.distance(here) <= model.alarm_distance).then_some((here.distance(at_player), actor))
+        })
+        .collect();
+    guards.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, guard) in guards.into_iter().take(model.guards_responding as usize) {
+        byroredux_scripting::crime_knowledge::note_known(world, guard, byroredux_scripting::PLAYER_REFERENCE, kind, victim);
+        if let Some(mut directives) = world.query_mut::<ForceGreetDirective>() {
+            if directives.get(guard).is_none() {
+                directives.insert(guard, ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS });
+            }
+        }
+    }
+}
+
+/// The player took `rows` (`(base form, count)`) from property owned by `owner`. Every game
+/// records who saw the theft; where the game has a [`CrimeModel`] the goods are on record as
+/// stolen, the owner faction is marked, and a witnessed theft adds its bounty and calls the
+/// guards. Returns the bounty added (0 when unwitnessed or the game has no model).
 pub(crate) fn report_theft(world: &World, player: EntityId, owner: u32, rows: &[(u32, u32)]) -> i32 {
+    let seen_by = witnesses(world, player);
+    record_crime(world, CrimeKind::Steal, owner, &seen_by);
     let Some(model) = world.try_resource::<CrimeModel>().map(|model| *model) else {
         return 0;
     };
@@ -90,7 +160,7 @@ pub(crate) fn report_theft(world: &World, player: EntityId, owner: u32, rows: &[
             ledger.set_flag(FactionFlag::Steal, owner, true);
         }
     }
-    if !witnessed(world, player) {
+    if seen_by.is_empty() {
         return 0;
     }
     let value: u64 = {
@@ -102,7 +172,9 @@ pub(crate) fn report_theft(world: &World, player: EntityId, owner: u32, rows: &[
             })
             .sum()
     };
-    charge(world, model, model.theft_bounty(value), "stealing")
+    let bounty = charge(world, model, model.theft_bounty(value), "stealing");
+    raise_alarm(world, model, player, CrimeKind::Steal, owner, &seen_by);
+    bounty
 }
 
 /// Add `bounty` to the player's ledger with the infamy it earns, and say so.
@@ -126,13 +198,10 @@ impl Component for AssaultedByPlayer {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Whether a strike by `aggressor` on `victim` is a crime against a
-/// non-hostile NPC. Judge it **before** the strike lands: a kill clears the
-/// victim's combat state. Cheap for the common case (an NPC's own strike).
+/// Whether a strike by `aggressor` on `victim` is a crime against a non-hostile NPC (every
+/// game: striking someone who is not fighting you). Judge it **before** the strike lands: a kill
+/// clears the victim's combat state. Cheap for the common case (an NPC's own strike).
 pub(crate) fn player_strike_is_crime(world: &World, aggressor: EntityId, victim: EntityId) -> bool {
-    if world.try_resource::<CrimeModel>().is_none() {
-        return false;
-    }
     let player = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0);
     if player != Some(aggressor) || victim == aggressor || world.get::<CreatureActor>(victim).is_some() {
         return false;
@@ -143,9 +212,15 @@ pub(crate) fn player_strike_is_crime(world: &World, aggressor: EntityId, victim:
     !fighting_player && !crate::systems::faction_hostility::actor_would_attack(world, victim, aggressor)
 }
 
-/// Charge the player for a strike [`player_strike_is_crime`] judged a crime;
-/// `killed` makes it a murder. Returns the bounty added.
+/// The player struck `victim`, which [`player_strike_is_crime`] judged a crime; `killed` makes it
+/// a murder. Every game records who saw it; where the game has a [`CrimeModel`] the victim's
+/// factions are flagged, and a witnessed strike adds its bounty and calls the guards. Returns the
+/// bounty added.
 pub(crate) fn report_strike(world: &World, player: EntityId, victim: EntityId, killed: bool) -> i32 {
+    let kind = if killed { CrimeKind::Murder } else { CrimeKind::Attack };
+    let seen_by = witnesses(world, player);
+    let victim_ref = reference_of(world, victim);
+    record_crime(world, kind, victim_ref, &seen_by);
     let Some(model) = world.try_resource::<CrimeModel>().map(|model| *model) else {
         return 0;
     };
@@ -163,24 +238,26 @@ pub(crate) fn report_strike(world: &World, player: EntityId, victim: EntityId, k
         .map(|ranks| ranks.0.iter().filter(|(_, rank)| *rank >= 0).map(|(faction, _)| *faction).collect())
         .unwrap_or_default();
     if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
-        let kind = if killed { FactionFlag::Murder } else { FactionFlag::Attack };
+        let flag = if killed { FactionFlag::Murder } else { FactionFlag::Attack };
         let player_ranks = world.get::<FactionRanks>(player);
         for &faction in &victim_factions {
             // GetPCFactionAttack: "the Player must also be a member of the specified faction".
             let flagged = killed || player_ranks.as_ref().is_some_and(|ranks| ranks.rank(faction).is_some_and(|r| r >= 0));
             if flagged {
-                ledger.set_flag(kind, faction, true);
+                ledger.set_flag(flag, faction, true);
             }
         }
     }
-    if !witnessed(world, player) {
+    if seen_by.is_empty() {
         return 0;
     }
-    if killed {
+    let bounty = if killed {
         charge(world, model, model.murder_gold, "committing murder")
     } else {
         charge(world, model, model.attack_gold, "assaulting someone")
-    }
+    };
+    raise_alarm(world, model, player, kind, victim_ref, &seen_by);
+    bounty
 }
 
 /// The placed furniture with a sleeping position (a bed).
@@ -280,5 +357,164 @@ mod bed_tests {
         world.insert(bed, ActivateEvent { activator: player });
         jail_bed_system(&world, 0.0);
         assert_eq!(world.resource::<PlayerMoveRequest>().0, None, "a bed is only furniture outside a sentence");
+    }
+}
+
+#[cfg(test)]
+mod alarm_tests {
+    use super::*;
+    use crate::systems::faction_hostility::{CombatDisposition, DetectionConfig};
+    use crate::systems::forcegreet::ForceGreetDirective;
+    use byroredux_core::character::Background;
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    use byroredux_core::math::Vec3;
+    use byroredux_plugin::esm::records::{ActorAiData, Aggression, ClassRecord, Confidence};
+    use byroredux_scripting::crime_knowledge::CrimeKnowledge;
+
+    const GUARD_CLASS: u32 = 0x77;
+    const OWNER: u32 = 0xF00D;
+
+    struct Town {
+        world: World,
+        player: EntityId,
+        witness: EntityId,
+        near_guard: EntityId,
+        nearer_guard: EntityId,
+        far_guard: EntityId,
+    }
+
+    /// A player at the origin; a citizen watching from 300; two guards in earshot of the citizen
+    /// (one 500 from the player, one 900); a guard 20000 away.
+    fn town(model: Option<CrimeModel>) -> Town {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<GlobalTransform>();
+        world.register::<CombatDisposition>();
+        world.register::<Background>();
+        world.register::<FormIdComponent>();
+        world.register::<ForceGreetDirective>();
+        let mut index = EsmIndex::default();
+        index.classes.insert(
+            GUARD_CLASS,
+            ClassRecord {
+                form_id: GUARD_CLASS,
+                editor_id: String::new(),
+                full_name: String::new(),
+                description: String::new(),
+                base_attributes: [0; 7],
+                skyrim_skill_weights: None,
+                skyrim_pool_weights: None,
+                tag_skills: Vec::new(),
+                primary_attributes: None,
+                specialization: None,
+                major_skills: Vec::new(),
+                flags_oblivion: None,
+                class_flags: Some(0b10),
+            },
+        );
+        byroredux_scripting::guards::install_guard_classes(&mut world, &index);
+        if let Some(model) = model {
+            world.insert_resource(model);
+        }
+        world.insert_resource(DetectionConfig { max_distance: 5000.0, exterior_mult: 1.0 });
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
+        let mut pool = FormIdPool::default();
+        let mut next = 0xA0u32;
+        let calm = ActorAiData { aggression: Aggression::Unaggressive, confidence: Confidence::Average, responsibility: None, attack_radius: None };
+        let mut actor = |world: &mut World, z: f32, class: u32| {
+            let entity = world.spawn();
+            next += 1;
+            let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Oblivion.esm"), local: LocalFormId(next) });
+            world.insert(entity, FormIdComponent(id));
+            world.insert(entity, GlobalTransform::new(Vec3::new(0.0, 0.0, z), Default::default(), 1.0));
+            world.insert(entity, CombatDisposition(calm));
+            world.insert(entity, Background { race_form_id: 1, class_form_id: class });
+            entity
+        };
+        let witness = actor(&mut world, 300.0, 0x10);
+        let near_guard = actor(&mut world, -900.0, GUARD_CLASS);
+        let nearer_guard = actor(&mut world, 500.0, GUARD_CLASS);
+        let far_guard = actor(&mut world, 20000.0, GUARD_CLASS);
+        world.insert_resource(pool);
+        let player = world.spawn();
+        world.insert(player, GlobalTransform::new(Vec3::ZERO, Default::default(), 1.0));
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
+        Town { world, player, witness, near_guard, nearer_guard, far_guard }
+    }
+
+    fn knows(town: &Town, entity: EntityId, kind: CrimeKind) -> bool {
+        let knower = byroredux_scripting::obscript_state::reference_form(&town.world, entity).unwrap();
+        town.world.resource::<CrimeKnowledge>().knows(knower, byroredux_scripting::PLAYER_REFERENCE, Some(kind), None)
+    }
+
+    fn summoned(town: &Town, entity: EntityId) -> bool {
+        town.world.get::<ForceGreetDirective>(entity).is_some()
+    }
+
+    #[test]
+    fn a_witnessed_theft_calls_the_guards_in_earshot_nearest_the_player_first() {
+        let town = town(Some(CrimeModel { guards_responding: 2, ..CrimeModel::OBLIVION }));
+        report_theft(&town.world, town.player, OWNER, &[(0x5678, 3)]);
+        assert!(knows(&town, town.witness, CrimeKind::Steal), "the citizen saw it");
+        for guard in [town.near_guard, town.nearer_guard] {
+            assert!(summoned(&town, guard) && knows(&town, guard, CrimeKind::Steal));
+        }
+        assert!(!summoned(&town, town.far_guard) && !knows(&town, town.far_guard, CrimeKind::Steal), "out of earshot");
+        assert!(!summoned(&town, town.witness), "a citizen is not a guard");
+    }
+
+    #[test]
+    fn only_the_nearest_guards_up_to_the_setting_come() {
+        let town = town(Some(CrimeModel { guards_responding: 1, ..CrimeModel::OBLIVION }));
+        report_theft(&town.world, town.player, OWNER, &[(0x5678, 3)]);
+        assert!(summoned(&town, town.nearer_guard) && !summoned(&town, town.near_guard), "one guard, the nearer");
+        let none = super::alarm_tests::town(Some(CrimeModel { guards_responding: 0, ..CrimeModel::OBLIVION }));
+        report_theft(&none.world, none.player, OWNER, &[(0x5678, 3)]);
+        assert!(!summoned(&none, none.nearer_guard), "0 guards is a real setting");
+    }
+
+    #[test]
+    fn nobody_comes_for_an_unseen_crime() {
+        let mut town = town(Some(CrimeModel::OBLIVION));
+        // The citizen and the guards are past detection range.
+        town.world.insert_resource(DetectionConfig { max_distance: 100.0, exterior_mult: 1.0 });
+        report_theft(&town.world, town.player, OWNER, &[(0x5678, 3)]);
+        assert!(!summoned(&town, town.nearer_guard) && town.world.resource::<CrimeKnowledge>().is_empty());
+    }
+
+    /// Every game records who saw a crime; only a game with a crime model fines it and sends guards.
+    #[test]
+    fn a_game_without_a_crime_model_still_records_what_was_seen() {
+        let town = town(None);
+        report_theft(&town.world, town.player, OWNER, &[(0x5678, 3)]);
+        assert!(knows(&town, town.witness, CrimeKind::Steal));
+        assert!(!summoned(&town, town.nearer_guard), "no model, no response");
+        assert!(town.world.try_resource::<ObScriptLedger>().is_none_or(|ledger| ledger.crime_gold == 0));
+    }
+
+    #[test]
+    fn a_witnessed_murder_is_known_with_its_victim_and_calls_the_guards() {
+        let mut town = town(Some(CrimeModel::OBLIVION));
+        // The far guard is the one who dies: it stands too far off to see anything.
+        let victim = town.far_guard;
+        town.world.register::<Dead>();
+        town.world.insert(victim, Dead);
+        report_strike(&town.world, town.player, victim, true);
+        let victim_ref = byroredux_scripting::obscript_state::reference_form(&town.world, victim).unwrap();
+        let witness_ref = byroredux_scripting::obscript_state::reference_form(&town.world, town.witness).unwrap();
+        assert!(town.world.resource::<CrimeKnowledge>().knows(witness_ref, byroredux_scripting::PLAYER_REFERENCE, Some(CrimeKind::Murder), Some(victim_ref)));
+        assert!(summoned(&town, town.nearer_guard), "the guards come for a murder");
+        assert!(!summoned(&town, victim), "the dead do not");
+        assert_eq!(town.world.resource::<ObScriptLedger>().crime_gold, 1000);
+    }
+
+    #[test]
+    fn a_blow_that_does_not_kill_is_an_attack_that_is_known() {
+        let town = town(Some(CrimeModel::OBLIVION));
+        report_strike(&town.world, town.player, town.far_guard, false);
+        assert!(knows(&town, town.witness, CrimeKind::Attack) && !knows(&town, town.witness, CrimeKind::Murder));
+        assert_eq!(town.world.resource::<ObScriptLedger>().crime_gold, 40);
     }
 }

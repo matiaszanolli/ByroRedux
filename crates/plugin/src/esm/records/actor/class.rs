@@ -65,18 +65,22 @@ pub struct ClassRecord {
     /// eligibility gate). Flagged here so it reads as deliberate, not
     /// as a rediscovered "surprise" gap. See #2089 (DIM3-OBL-02).
     pub flags_oblivion: Option<u32>,
+    /// The `CLAS` `DATA` flags of the games that author them (Oblivion, FO3, FNV):
+    /// bit 0 Playable, bit 1 Guard (xEdit `wbDefinitionsTES4` / `FO3` / `FNV`). `None`
+    /// on Skyrim and later, whose classes carry no such word.
+    pub class_flags: Option<u32>,
 }
 
-/// Oblivion `CLAS` `DATA` flag bit 1: "Guard" (xEdit `wbDefinitionsTES4`,
+/// `CLAS` `DATA` flag bit 1: "Guard" (xEdit `wbDefinitionsTES4` / `FO3` / `FNV`,
 /// the `Flags` member after `Playable`).
-pub const OBLIVION_CLASS_FLAG_GUARD: u32 = 0x2;
+pub const CLASS_FLAG_GUARD: u32 = 0x2;
 
 impl ClassRecord {
-    /// Whether this is an Oblivion class marked as a guard class (CS
-    /// *IsGuard*: "the NPC's class is marked as a Guard class"). `false`
-    /// outside Oblivion, whose `flags_oblivion` is `None`.
-    pub fn is_oblivion_guard(&self) -> bool {
-        self.flags_oblivion.is_some_and(|flags| flags & OBLIVION_CLASS_FLAG_GUARD != 0)
+    /// Whether this is a class marked as a guard class (CS *IsGuard*: "the NPC's
+    /// class is marked as a Guard class"). `false` where the game's classes carry
+    /// no flags word (Skyrim and later).
+    pub fn is_guard(&self) -> bool {
+        self.class_flags.is_some_and(|flags| flags & CLASS_FLAG_GUARD != 0)
     }
 }
 
@@ -95,6 +99,7 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
         specialization: None,
         major_skills: Vec::new(),
         flags_oblivion: None,
+        class_flags: None,
     };
 
     let is_oblivion = matches!(game, GameKind::Oblivion);
@@ -140,6 +145,7 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
                     }
                 }
                 record.flags_oblivion = r.u32().ok();
+                record.class_flags = record.flags_oblivion;
             }
             // DATA layout (FNV/FO3 CLAS — 28 bytes, fopdoc `CLAS`):
             // tag1..tag4 (4 × i32 skill enum), flags (u32), buys/sells +
@@ -173,6 +179,8 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
                         }
                     }
                 }
+                // The flags word follows the four tag skills (FO3 / FNV `DATA`: tags, flags, services...).
+                record.class_flags = r.u32().ok();
             }
             // ATTR subrecord (FNV/FO3 CLAS, fopdoc): the 7 base SPECIAL
             // attributes (Str, Per, End, Cha, Int, Agi, Luck), each a u8.

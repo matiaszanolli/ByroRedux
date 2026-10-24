@@ -1337,7 +1337,9 @@ fn every_delta_column_is_parked_or_explicitly_not() {
 /// regression — put the row back where it was.
 #[test]
 fn the_schema_fingerprint_is_pinned() {
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xc008_06b4_d7b3_7cf8;
+    // Crime knowledge — `CrimeKnowledge` joined the registry as a new resource (who knows of which
+    // crime), registered after `ObScriptLedger`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x28a8_2a40_9627_56e4;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

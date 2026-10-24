@@ -2362,6 +2362,7 @@ fn guard_and_player(game: byroredux_plugin::esm::reader::GameKind) -> (World, En
             specialization: None,
             major_skills: Vec::new(),
             flags_oblivion: Some(0b11),
+            class_flags: Some(0b11),
         },
     );
     let mut world = World::new();
@@ -2420,15 +2421,62 @@ fn a_citizen_is_not_a_guard_and_is_turn_arrest_needs_a_guard_and_a_bounty() {
 /// unmodeled there (the fail-closed gates decline them), not read the
 /// Oblivion bounty.
 #[test]
-fn the_crime_indices_are_oblivions_alone() {
-    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Oblivion, Skyrim};
-    for index in [116, 125, 127, 249, 251, 329] {
+fn the_crime_dialect_indices_are_oblivions_alone() {
+    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Oblivion, Skyrim};
+    for &(index, _) in ConditionFunction::oblivion_dialect() {
         let condition = cond(index, ComparisonOp::Eq, 1.0, false);
         let (oblivion, ..) = guard_and_player(Oblivion);
         assert!(is_modeled(&oblivion, &condition), "{index} on Oblivion");
-        for game in [Fallout3NV, Skyrim] {
+        for game in [Fallout3NV, Skyrim, Fallout4] {
             let (world, ..) = guard_and_player(game);
             assert!(!is_modeled(&world, &condition), "{index} on {game:?}");
         }
     }
+}
+
+/// `GetCrime` (122) and `IsGuard` (125) are the same function in every game. `GetCrime` reads the
+/// crime record, which any game fills; `IsGuard` reads the `CLAS` Guard flag, which Oblivion, FO3
+/// and FNV author and the later games do not.
+#[test]
+fn get_crime_is_everywhere_and_is_guard_where_classes_flag_guards() {
+    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Oblivion, Skyrim};
+    let get_crime = cond(122, ComparisonOp::Eq, 1.0, false);
+    let is_guard = cond(125, ComparisonOp::Eq, 1.0, false);
+    for game in [Oblivion, Fallout3NV, Skyrim, Fallout4] {
+        let (world, ..) = guard_and_player(game);
+        assert!(is_modeled(&world, &get_crime), "GetCrime on {game:?}");
+        assert_eq!(is_modeled(&world, &is_guard), matches!(game, Oblivion | Fallout3NV), "IsGuard on {game:?}");
+    }
+}
+
+/// `GetCrime criminal, type`: true for the actor a crime was committed against, once that actor
+/// knows of it; the criminal is named by reference (the player is `0x14`).
+#[test]
+fn get_crime_reads_what_the_caller_knows_of_a_crime_against_them() {
+    use crate::crime_knowledge::{CrimeEntry, CrimeKnowledge};
+    use byroredux_core::character::CrimeKind;
+    use byroredux_plugin::esm::reader::GameKind::Fallout3NV;
+    let (mut world, guard, player) = guard_and_player(Fallout3NV);
+    world.register::<byroredux_core::ecs::components::FormIdComponent>();
+    let mut pool = byroredux_core::form_id::FormIdPool::default();
+    let id = pool.intern(byroredux_core::form_id::FormIdPair {
+        plugin: byroredux_core::form_id::PluginId::from_filename("FalloutNV.esm"),
+        local: byroredux_core::form_id::LocalFormId(0xB0B),
+    });
+    world.insert_resource(pool);
+    world.insert(guard, byroredux_core::ecs::components::FormIdComponent(id));
+    world.insert_resource(CrimeKnowledge::default());
+    let attack = Condition { param_1: crate::PLAYER_REFERENCE, param_2: 3, ..cond(122, ComparisonOp::Eq, 1.0, false) };
+    let mut context = ctx(guard);
+    context.target = Some(player);
+    assert!(!evaluate_condition(&attack, &world, &context));
+    world.resource_mut::<CrimeKnowledge>().record(CrimeEntry {
+        knower: 0xB0B,
+        criminal: crate::PLAYER_REFERENCE,
+        kind: CrimeKind::Attack,
+        victim: 0xB0B,
+    });
+    assert!(evaluate_condition(&attack, &world, &context), "the victim saw the assault");
+    let murder = Condition { param_2: 4, ..attack.clone() };
+    assert!(!evaluate_condition(&murder, &world, &context), "another crime type");
 }

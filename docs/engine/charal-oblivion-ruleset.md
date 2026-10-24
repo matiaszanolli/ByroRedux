@@ -825,6 +825,13 @@ GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
 - A witness is any living, non-creature NPC that passes the hostility pass's
   sight test (`fSneakMaxDistance`, line of sight). The wiki's "successfully
   sneaking prevents being detected" has no stealth roll here yet.
+- Witnessed crime calls the guards (`crime.rs`): the guards within
+  `iCrimeAlarmRecDistance` (authored, 4000) of a witness, the
+  `iNumberGuardsCrimeResponse` (4, not authored) nearest the player, learn of it
+  and walk up to open their greeting (the force-greet the dialogue runtime
+  already runs), which the authored arrest greeting answers. The two settings'
+  CS descriptions are the whole source; reading them as "within earshot of a
+  witness" and "nearest the player" is an interpretation.
 - Guards are authored data, not engine code. A guard's arrest talk is
   `GREETING` INFOs gated on `GetCrimeGold > 0`, `CanPayCrimeGold`, `IsGuard`
   and `IsTurnArrest` (Oblivion.esm: 46 INFOs use them), with result scripts
@@ -847,8 +854,7 @@ GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
   a player indoors or somewhere with no jail gets a declined command with
   nothing half done. Not built: the `StolenGoods` chest is not restocked (the
   confiscated goods wait in the ledger's `evidence`), the skill loss for time
-  served (UESP names no rule for which skill), `GetCrime` (who knows which crime), and whatever sends a
-  guard to the criminal.
+  served (UESP names no rule for which skill), arrest on sight at a high bounty.
 - Assault is charged once per victim (the original turns the victim
   hostile; a hostile victim is self-defence). A kill in one blow is only a
   murder. "Non-hostile" is the hostility pass's own judgement plus not

@@ -773,7 +773,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 118;
+    const BASELINE_MAJOR: u16 = 119;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1156,7 +1156,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // required `stolen_goods`, `evidence` and `jail` fields (PayFine / GoToJail
     // take the stolen goods back and start a sentence), so a v117 ledger no
     // longer decodes.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x28b1_0773_177d_66fb;
+    // Crime knowledge — v119 is a genuine bump: `CrimeKnowledge` joined the saved registry as a NEW
+    // resource (who knows of which crime: GetCrime / GetCrimeKnown, the guards a witness calls).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x966e_bf2d_f2b0_ea53;
     // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
     // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
     // keys each shape by its file, so the move alone shifted it; a dump of

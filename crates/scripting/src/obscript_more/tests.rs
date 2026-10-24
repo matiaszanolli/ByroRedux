@@ -756,3 +756,28 @@ fn the_fine_and_jail_ids_belong_to_oblivion_alone() {
         );
     }
 }
+
+/// `GetCrimeKnown <type> <criminal> <victim>` answers from the crime record: the caller knows of that
+/// crime by that criminal against that victim, or does not.
+#[test]
+fn get_crime_known_reads_what_the_caller_knows() {
+    use crate::crime_knowledge::{CrimeEntry, CrimeKnowledge};
+    use byroredux_core::character::CrimeKind;
+    let (mut world, ..) = world(GameKind::Oblivion);
+    world.insert_resource(CrimeKnowledge::default());
+    let c = ctx(Some(ACTOR));
+    let ask = |world: &World, kind: f32| {
+        run(world, 0x1077, &[ObScriptValue::Num(kind), ObScriptValue::Ref(0x14), ObScriptValue::Ref(OTHER)], &c)
+    };
+    assert_eq!(value(ask(&world, 4.0)), 0.0);
+    world.resource_mut::<CrimeKnowledge>().record(CrimeEntry { knower: ACTOR, criminal: 0x14, kind: CrimeKind::Murder, victim: OTHER });
+    assert_eq!(value(ask(&world, 4.0)), 1.0, "murder, as recorded");
+    assert_eq!(value(ask(&world, 0.0)), 0.0, "not theft");
+    assert!(matches!(ask(&world, 9.0), Action::Declined), "a crime type the engine does not carry");
+    let stranger = ctx(Some(OTHER));
+    assert_eq!(
+        value(run(&world, 0x1077, &[ObScriptValue::Num(4.0), ObScriptValue::Ref(0x14), ObScriptValue::Ref(OTHER)], &stranger)),
+        0.0,
+        "someone else does not know it"
+    );
+}
