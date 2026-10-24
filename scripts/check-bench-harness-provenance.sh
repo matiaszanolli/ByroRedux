@@ -31,6 +31,7 @@ declare -A DISPOSITION=(
   [8fdd9ae56]="by inspection: appends the camera_pos/camera_forward columns only (#5128); no run arguments, gates or arithmetic changed"
   [a4ede5fa0]="measurement-neutral by same-session A/B control (#5451): identical state_hash/entities/draws/lights/TLAS; wall_ms median 12.03 vs 12.06 over 5 interleaved runs each (docs/audits/CONTROL_prospector_update-bsa_a4ede5fa0.tsv)"
   [fc83608d3]="by inspection: appends the gpu_shadow_filter column only (#5959; a bracket nested inside gpu_svgf, which keeps its inclusive meaning); no run arguments, gates or arithmetic changed"
+  [994620123]="by inspection: appends the gpu_cloud_shadow column only (#6316; a bracket nested inside gpu_sky_cube, which keeps its inclusive meaning); no run arguments, gates or arithmetic changed; the d9a201c71 record was controlled under it (docs/audits/CONTROL_stepped-camera_a3a7a43b0_under-994620123.tsv)"
 )
 
 set -uo pipefail
