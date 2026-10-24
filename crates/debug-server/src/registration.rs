@@ -281,6 +281,7 @@ pub fn register_all(registry: &mut ComponentRegistry) {
         vec!["weapon_form_id", "target_form_id", "bursts", "volley_shots", "harmless"],
     );
     register_component::<UseWeaponPackageStarted>(registry, "UseWeaponPackageStarted", vec![]);
+    register_component::<AmbushBehavior>(registry, "AmbushBehavior", vec!["zone", "zone_radius", "target_form_id"]);
     register_component::<FleePackageBehavior>(
         registry,
         "FleePackageBehavior",

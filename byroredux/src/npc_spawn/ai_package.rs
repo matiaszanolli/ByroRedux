@@ -10,7 +10,7 @@ use super::EsmIndex;
 use crate::components::{AmbientPackageRuntime, GameTimeRes, NavPath, SeatReservations};
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
-    Dead, EatBehavior, EatSleepLocation, EatSleepState, EscortBehavior, EscortState, Escorted,
+    AmbushBehavior, Dead, EatBehavior, EatSleepLocation, EatSleepState, EscortBehavior, EscortState, Escorted,
     FollowBehavior,
     FleePackageBehavior, FollowState, GuardBehavior, GuardState, PatrolBehavior, PatrolState, SandboxBehavior, Seated,
     SleepBehavior, TravelBehavior, TravelState, Traveled, UseWeaponPackageBehavior,
@@ -22,7 +22,7 @@ use byroredux_plugin::esm::records::misc::pack::{
     PROCEDURE_DIALOGUE, PROCEDURE_EAT, PROCEDURE_SLEEP, PROCEDURE_USE_WEAPON,
 };
 use byroredux_plugin::esm::records::{
-    PackDataValue, PackLocationTarget, PackRecord, PackTargetKind,
+    PackDataValue, PackLocation, PackLocationTarget, PackRecord, PackTargetKind,
 };
 use byroredux_scripting::condition::ConditionContext;
 use byroredux_scripting::{
@@ -196,6 +196,15 @@ enum AmbientBehavior {
         min_distance: Option<f32>,
         refuge_form_id: Option<u32>,
     },
+    /// M42 — Ambush (procedure 9): wait at the `PLDT` location on Guard's
+    /// runtime, and fight only an enemy inside the `PLD2` ambush location
+    /// (the hostility pass reads `ambush`).
+    Ambush {
+        wait_form_id: Option<u32>,
+        wait_radius: Option<f32>,
+        ambush: AmbushBehavior,
+        actor_form_id: u32,
+    },
     /// M42 — UseWeapon (procedure 16): `use_weapon_package_system` raises
     /// the `UseWeaponRequest` for it once.
     UseWeapon(UseWeaponPackageBehavior),
@@ -215,7 +224,12 @@ enum AmbientBehavior {
 /// so "near editor location" followed wherever an earlier package had
 /// walked it and re-rolled after every load).
 fn eat_sleep_location(package: &PackRecord) -> EatSleepLocation {
-    match package.location {
+    location_anchor(package.location)
+}
+
+/// A `PLDT`/`PLD2` as the anchor a runtime resolves (see [`eat_sleep_location`]).
+fn location_anchor(location: Option<PackLocation>) -> EatSleepLocation {
+    match location {
         Some(location) => match location.target {
             PackLocationTarget::NearReference(form_id) => EatSleepLocation::NearReference(form_id),
             PackLocationTarget::InCell(form_id) => EatSleepLocation::InCell(form_id),
@@ -318,6 +332,19 @@ impl AmbientBehavior {
                 threat_form_id: target_reference,
                 min_distance: target_distance,
                 refuge_form_id: location_reference,
+            })
+        } else if package.is_ambush() {
+            Some(Self::Ambush {
+                wait_form_id: location_reference,
+                wait_radius: location_radius,
+                ambush: AmbushBehavior {
+                    zone: location_anchor(package.location2),
+                    zone_radius: package
+                        .location2
+                        .map_or(0.0, |zone| zone.radius.max(0) as f32),
+                    target_form_id: target_reference,
+                },
+                actor_form_id,
             })
         } else if package.is_use_weapon() {
             use_weapon_behavior(package, world).map(Self::UseWeapon)
@@ -543,6 +570,22 @@ impl AmbientBehavior {
                     },
                 );
             }
+            Self::Ambush {
+                wait_form_id,
+                wait_radius,
+                ambush,
+                actor_form_id,
+            } => {
+                world.insert(
+                    actor,
+                    GuardBehavior {
+                        anchor_form_id: wait_form_id,
+                        radius: wait_radius,
+                        form_id: actor_form_id,
+                    },
+                );
+                world.insert(actor, ambush);
+            }
             Self::UseWeapon(behavior) => {
                 world.insert(actor, behavior);
             }
@@ -682,6 +725,23 @@ impl AmbientBehavior {
                     form_id: actor_form_id,
                 },
             ),
+            Self::Ambush {
+                wait_form_id,
+                wait_radius,
+                ambush,
+                actor_form_id,
+            } => {
+                insert_component(
+                    world,
+                    actor,
+                    GuardBehavior {
+                        anchor_form_id: wait_form_id,
+                        radius: wait_radius,
+                        form_id: actor_form_id,
+                    },
+                );
+                insert_component(world, actor, ambush);
+            }
             Self::UseWeapon(behavior) => insert_component(world, actor, behavior),
             Self::Flee {
                 threat_form_id,
@@ -807,6 +867,7 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     remove_component::<GuardBehavior>(world, actor);
     remove_component::<GuardState>(world, actor);
     remove_component::<FleePackageBehavior>(world, actor);
+    remove_component::<AmbushBehavior>(world, actor);
     // A UseWeapon package's volleys stop with it. The run is only the
     // package's when the package started it: a scripted `UseWeapon` volley
     // must survive an unrelated handover.
@@ -1307,6 +1368,7 @@ mod tests {
         world.register::<GuardState>();
         world.register::<FleePackageBehavior>();
         world.register::<UseWeaponPackageBehavior>();
+        world.register::<AmbushBehavior>();
         world.register::<UseWeaponPackageStarted>();
         world.register::<PatrolBehavior>();
         world.register::<PatrolState>();
@@ -1814,6 +1876,66 @@ mod tests {
                 assert!(world.has::<TravelBehavior>(actor));
             }
         }
+    }
+
+    /// Ambush (procedure 9): wait on Guard's runtime at `PLDT`, gate the
+    /// fight on `PLD2`; a handover to another package removes the gate.
+    #[test]
+    fn an_ambush_package_installs_a_guard_wait_and_a_zone_gate() {
+        use byroredux_core::ecs::components::EatSleepLocation;
+        use byroredux_plugin::esm::records::misc::pack::PROCEDURE_AMBUSH;
+
+        // FNV `DefaultAmbushPackage1024Hide`: wait near the editor location
+        // (256), the ambush location a 1024 radius around the linked ref.
+        let mut ambush = pack(0x100, PROCEDURE_AMBUSH, None);
+        ambush.location = Some(PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 256 });
+        ambush.location2 = Some(PackLocation { location_type: 6, target: PackLocationTarget::Other(0), radius: 1024 });
+        let (world, actor) = setup_actor(10.0, vec![ambush]);
+        assert_eq!(
+            world.get::<AmbushBehavior>(actor).map(|behavior| *behavior),
+            Some(AmbushBehavior {
+                zone: EatSleepLocation::NearLinkedReference,
+                zone_radius: 1024.0,
+                target_form_id: None,
+            })
+        );
+        let guard = world.get::<GuardBehavior>(actor).map(|behavior| *behavior).expect("the wait runs on Guard");
+        assert_eq!((guard.anchor_form_id, guard.radius), (None, Some(256.0)));
+
+        // A named wait reference and target (FNV `BMRoadBlock1AmbushPackage`).
+        let mut named = pack(0x200, PROCEDURE_AMBUSH, None);
+        named.location = Some(PackLocation { location_type: 0, target: PackLocationTarget::NearReference(0xE_79CE), radius: 800 });
+        named.location2 = Some(PackLocation { location_type: 0, target: PackLocationTarget::NearReference(0xE_84B9), radius: 0 });
+        named.target = Some(byroredux_plugin::esm::records::PackTarget {
+            target_type: 0,
+            target: PackTargetKind::SpecificReference(0xE_686E),
+            count_or_distance: 0,
+        });
+        let (world, actor) = setup_actor(10.0, vec![named]);
+        let gate = world.get::<AmbushBehavior>(actor).map(|behavior| *behavior).unwrap();
+        assert_eq!(gate.zone, EatSleepLocation::NearReference(0xE_84B9));
+        assert_eq!((gate.zone_radius, gate.target_form_id), (0.0, Some(0xE_686E)), "radius 0 gates nothing");
+        assert_eq!(world.get::<GuardBehavior>(actor).map(|b| b.anchor_form_id), Some(Some(0xE_79CE)));
+
+        // Handover: a conditioned Ambush gives way and takes both parts with it.
+        let mut gated = pack(0x300, PROCEDURE_AMBUSH, None);
+        gated.location2 = Some(PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 512 });
+        gated.conditions.push(Condition {
+            function_index: 58,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(10.0),
+            param_1: 0x900,
+            run_on: RunOn::Subject,
+            ..Default::default()
+        });
+        let wander = pack(0x400, PROCEDURE_WANDER, None);
+        let (world, actor) = setup_actor(10.0, vec![gated, wander]);
+        assert!(world.has::<WanderBehavior>(actor) && !world.has::<AmbushBehavior>(actor));
+        world.resource_mut::<QuestStageState>().set_stage(QuestFormId(0x900), 10);
+        world.query_mut::<EvaluatePackageRequest>().unwrap().insert(actor, EvaluatePackageRequest);
+        ambient_ai_package_system(&world, 0.0);
+        assert!(world.has::<AmbushBehavior>(actor) && world.has::<GuardBehavior>(actor));
+        assert!(!world.has::<WanderBehavior>(actor));
     }
 
     /// Accompany (procedure 7) authors Follow's data - a `PTDT` reference and
@@ -3064,6 +3186,7 @@ mod tests {
                 || world.has::<GuardBehavior>(actor)
                 || world.has::<FleePackageBehavior>(actor)
                 || world.has::<UseWeaponPackageBehavior>(actor)
+                || world.has::<AmbushBehavior>(actor)
             {
                 resolved_any_behavior += 1;
             }

@@ -182,9 +182,10 @@ the FO3/FNV procedure enum's values, only `PROCEDURE_SANDBOX = 12`
 modeled player-targeted Conversations only, #5376) and
 `PROCEDURE_FLEE_NOT_COMBAT = 10` (`flee_package_system`) and
 `PROCEDURE_USE_WEAPON = 16` (`use_weapon_package_system`) have a name and a
-consumer, as does `PROCEDURE_ACCOMPANY = 7` (it runs on the Follow runtime);
-the other 4 (Find/UseItemAt/Ambush/CastMagic) are captured as a raw integer
-and dispatched nowhere. `active_package_is_sandbox`/
+consumer, as do `PROCEDURE_ACCOMPANY = 7` (it runs on the Follow runtime) and
+`PROCEDURE_AMBUSH = 9` (Guard's runtime plus a hostility gate); the other 3
+(Find/UseItemAt/CastMagic) are captured as a raw integer and dispatched
+nowhere. `active_package_is_sandbox`/
 `active_sandbox_location`, `active_package_is_wander`/
 `active_wander_location`, `active_package_is_travel`/
 `active_travel_location`, `active_package_is_follow`/
@@ -524,7 +525,7 @@ animation-clip swap).
 
 ## What's not covered / honest state
 
-- **Thirteen procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
+- **Fourteen procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
   (M42.4), Follow (M42.5), Escort (M42.6), Guard (M42.7), and Patrol
   (M42.8, which shares Wander's algorithm rather than running a
   distinct one); Eat and Sleep (2026-10-08, `eat_sleep_system` — walk to
@@ -562,8 +563,18 @@ animation-clip swap).
   When Blocked, Always Hit and the authored pause between volleys. No
   Find/Accompany/UseItemAt/Ambush/CastMagic runtime exists as a PACK
   procedure; `magic_effects` has the caster, so CastMagic is blocked on
-  its target/range policy, Find/UseItemAt on item-use animation, Ambush on
-  a stealth/detection definition. Accompany (14 FNV / 24 FO3 packages, each
+  its target/range policy, Find/UseItemAt on item-use animation. Ambush
+  (`AmbushBehavior` + Guard): the actor waits at the `PLDT` wait location on
+  Guard's runtime, and `faction_hostility_system` gates its fights - an
+  ambusher attacks only an enemy inside the `PLD2` ambush location, a
+  `PTDT` target filter if one is named, and the player also inside
+  `fAmbushOverRideRadiusforPlayerDetection` (the GECK's 1000; not authored
+  in either master) of where it waits. A zone with no positive radius or
+  that cannot be resolved yet gates nothing (the ordinary hostility rules
+  apply, as before). Not modelled: hiding while waiting, wandering within a
+  wait radius, Continue During Combat (combat always pre-empts the
+  package), and the stealth model. 38 FNV / 25 FO3 packages; no interior
+  placement reaches one unconditionally, so it is unit-gated only. Accompany (14 FNV / 24 FO3 packages, each
   a `PTDT` reference plus a 50-768 distance and no `PLDT`) runs as a Follow:
   the GECK calls it "similar to a Follow" but pathing to the target's
   destination, and that lead is not modelled. No vanilla FNV placement

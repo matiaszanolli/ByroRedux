@@ -54,7 +54,7 @@
 //!   behaviour itself is not modelled). A script's `StartCombat` is never
 //!   dropped this way; `StopCombat` ends it.
 
-use byroredux_core::ecs::components::{Dead, FactionRanks, GlobalTransform};
+use byroredux_core::ecs::components::{AmbushBehavior, Dead, FactionRanks, GlobalTransform};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
@@ -296,6 +296,77 @@ struct HostilityScratch {
     starts: Vec<(EntityId, EntityId)>,
 }
 
+/// Engine default for `fAmbushOverRideRadiusforPlayerDetection`: the radius
+/// around its wait location inside which an ambusher that is aggressive
+/// toward the player may aggro on it even outside the ambush location. The
+/// GECK *Ambush Package* page gives 1000; the GMST is not authored in
+/// `FalloutNV.esm` or `Fallout3.esm`, so it is read first and this applies
+/// when it is absent.
+const AMBUSH_PLAYER_OVERRIDE_RADIUS: f32 = 1000.0;
+
+/// What an ambusher (an actor with an [`AmbushBehavior`]) will aggro on
+/// (GECK *Ambush Package*): an enemy inside the ambush location, matching
+/// the optional ambush target; the player also inside the override radius of
+/// where the ambusher waits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AmbushGate {
+    centre: Vec3,
+    radius: f32,
+    wait_at: Vec3,
+    target: Option<EntityId>,
+    player_override: f32,
+}
+
+impl AmbushGate {
+    fn admits(&self, entity: EntityId, at: Vec3, is_player: bool) -> bool {
+        if self.target.is_some_and(|target| target != entity) {
+            return false;
+        }
+        at.distance(self.centre) <= self.radius
+            || (is_player && at.distance(self.wait_at) <= self.player_override)
+    }
+}
+
+/// Every ambusher's gate. An ambusher gets none — and so is judged by the
+/// ordinary hostility rules, as before the procedure ran — when its zone has
+/// no positive radius, cannot be resolved yet, or names a target that is not
+/// loaded: the gate narrows when an ambusher fights, it never makes up a
+/// reason not to.
+fn ambush_gates(world: &World) -> std::collections::HashMap<EntityId, AmbushGate> {
+    let Some(ambushers) = world.query::<AmbushBehavior>() else {
+        return Default::default();
+    };
+    let player_override = world
+        .try_resource::<crate::cell_loader::LoadedCellIndex>()
+        .and_then(|index| index.0.game_setting_float("fAmbushOverRideRadiusforPlayerDetection"))
+        .filter(|radius| radius.is_finite() && *radius > 0.0)
+        .unwrap_or(AMBUSH_PLAYER_OVERRIDE_RADIUS);
+    let mut gates = std::collections::HashMap::new();
+    for (actor, behavior) in ambushers.iter() {
+        if behavior.zone_radius <= 0.0 {
+            continue;
+        }
+        let Some(wait_at) = world.get::<GlobalTransform>(actor).map(|t| t.translation) else {
+            continue;
+        };
+        let Some(centre) = super::eat_sleep::resolve_anchor(world, actor, Some(wait_at), behavior.zone) else {
+            continue;
+        };
+        let target = match behavior.target_form_id {
+            Some(form_id) => match byroredux_scripting::condition::resolve_entity_by_global_form_id(world, form_id) {
+                Some(target) => Some(target),
+                None => continue,
+            },
+            None => None,
+        };
+        gates.insert(
+            actor,
+            AmbushGate { centre, radius: behavior.zone_radius, wait_at, target, player_override },
+        );
+    }
+    gates
+}
+
 fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut HostilityScratch) {
     if dt.is_finite() {
         scratch.elapsed += dt.max(0.0);
@@ -429,6 +500,7 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
     let mut ghosts = Vec::new();
     byroredux_scripting::collect_ghosts(world, &mut ghosts);
 
+    let ambush_gates = ambush_gates(world);
     for (perceiver_index, perceiver) in actors.iter().enumerate() {
         let Some(disposition) = perceiver.disposition else {
             continue;
@@ -450,6 +522,12 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
             let distance = perceiver.sight_point.distance(target.sight_point);
             if distance > range {
                 continue;
+            }
+            // An ambusher holds its fire until the enemy is in the ambush location.
+            if let Some(gate) = ambush_gates.get(&perceiver.entity) {
+                if !gate.admits(target.entity, target.sight_point, Some(target.entity) == player) {
+                    continue;
+                }
             }
             let standing = standing(
                 &factions[perceiver.factions.clone()],
@@ -810,6 +888,92 @@ mod tests {
 
     fn run_once(world: &World) {
         make_faction_hostility_system()(world, EVALUATION_PERIOD_SECS);
+    }
+
+    /// GECK *Ambush Package*: the ambusher waits until an enemy is inside the
+    /// ambush location - or, for the player, within the override radius of
+    /// where it waits - and an unrelated actor is judged by the ordinary rules.
+    #[test]
+    fn an_ambusher_fights_only_what_enters_its_zone() {
+        use byroredux_core::ecs::components::EatSleepLocation;
+        let ambush = |radius: f32, target_form_id| AmbushBehavior {
+            zone: EatSleepLocation::NearCurrentLocation,
+            zone_radius: radius,
+            target_form_id,
+        };
+        let very = disposition(Aggression::VeryAggressive);
+        let setup = |player_at: Vec3| {
+            let mut world = fixture();
+            world.register::<AmbushBehavior>();
+            let ambusher = spawn_actor(&mut world, Vec3::ZERO, BANDITS, Some(very));
+            let player = spawn_actor(&mut world, player_at, PLAYER_FACTION, None);
+            world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+            world.insert(ambusher, ambush(300.0, None));
+            (world, ambusher, player)
+        };
+
+        // In the zone: springs.
+        let (world, ambusher, player) = setup(Vec3::new(0.0, 0.0, 250.0));
+        run_once(&world);
+        assert_eq!(world.get::<AiCombatState>(ambusher).map(|s| s.target), Some(player));
+
+        // Past the zone but inside the player override radius (1000): still springs.
+        let (world, ambusher, player) = setup(Vec3::new(0.0, 0.0, 800.0));
+        run_once(&world);
+        assert_eq!(world.get::<AiCombatState>(ambusher).map(|s| s.target), Some(player));
+
+        // Beyond both, though well inside detection range: it keeps waiting...
+        let (world, ambusher, _) = setup(Vec3::new(0.0, 0.0, 1500.0));
+        run_once(&world);
+        assert!(world.get::<AiCombatState>(ambusher).is_none(), "the ambush is not sprung early");
+
+        // ... and the same actor with no gate (an unresolved zone) attacks on sight.
+        let (mut world, ambusher, player) = setup(Vec3::new(0.0, 0.0, 1500.0));
+        world.insert(ambusher, ambush(0.0, None));
+        run_once(&world);
+        assert_eq!(world.get::<AiCombatState>(ambusher).map(|s| s.target), Some(player), "no radius, no gate");
+    }
+
+    /// A named ambush target is the only one that springs the gate.
+    #[test]
+    fn an_ambush_gate_with_a_target_admits_only_that_target() {
+        let gate = AmbushGate {
+            centre: Vec3::ZERO,
+            radius: 300.0,
+            wait_at: Vec3::ZERO,
+            target: Some(7),
+            player_override: 1000.0,
+        };
+        assert!(gate.admits(7, Vec3::new(0.0, 0.0, 100.0), false));
+        assert!(!gate.admits(8, Vec3::new(0.0, 0.0, 100.0), false), "another enemy in the zone does not spring it");
+        assert!(!gate.admits(8, Vec3::new(0.0, 0.0, 100.0), true), "nor does the player when it is not the target");
+        assert!(!gate.admits(7, Vec3::new(0.0, 0.0, 500.0), false), "the target outside the zone does not");
+        assert!(gate.admits(7, Vec3::new(0.0, 0.0, 500.0), true), "the player target inside the override radius does");
+    }
+
+    /// The override radius belongs to the player alone.
+    #[test]
+    fn an_ambusher_s_override_radius_is_the_players_alone() {
+        use byroredux_core::ecs::components::EatSleepLocation;
+        let very = disposition(Aggression::VeryAggressive);
+        let mut world = fixture();
+        world.register::<AmbushBehavior>();
+        let ambusher = spawn_actor(&mut world, Vec3::ZERO, BANDITS, Some(very));
+        world.insert(
+            ambusher,
+            AmbushBehavior { zone: EatSleepLocation::NearCurrentLocation, zone_radius: 300.0, target_form_id: None },
+        );
+        // A guard (an enemy of the bandits) 800 away: outside the zone, and the
+        // override is the player's, so the ambusher holds.
+        world.resource_mut::<FactionRelations>().set_reaction(form(BANDITS), form(GUARDS), CombatReaction::Enemy);
+        let guard = spawn_actor(&mut world, Vec3::new(0.0, 0.0, 800.0), GUARDS, Some(disposition(Aggression::Unaggressive)));
+        run_once(&world);
+        assert!(world.get::<AiCombatState>(ambusher).is_none(), "the override radius is for the player");
+        // Closer, inside the zone: it springs on the guard.
+        world.insert(guard, Transform::new(Vec3::new(0.0, 0.0, 200.0), Default::default(), 1.0));
+        world.insert(guard, GlobalTransform::new(Vec3::new(0.0, 0.0, 200.0), Default::default(), 1.0));
+        run_once(&world);
+        assert_eq!(world.get::<AiCombatState>(ambusher).map(|s| s.target), Some(guard));
     }
 
     /// #5017 — a dormant "Starts Unconscious" sentry detects but cannot

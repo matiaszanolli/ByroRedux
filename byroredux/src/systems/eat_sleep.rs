@@ -446,7 +446,7 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
 ///
 /// `global` is the actor's world position from the frame's gather pass; an
 /// actor without a `GlobalTransform` idles, as before.
-fn resolve_anchor(
+pub(crate) fn resolve_anchor(
     world: &World,
     npc: EntityId,
     global: Option<Vec3>,

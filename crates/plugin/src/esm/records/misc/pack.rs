@@ -41,6 +41,11 @@ pub struct PackRecord {
     /// package should search around, replacing the v0 actor-position
     /// approximation in `sandbox_seat_system`.
     pub location: Option<PackLocation>,
+    /// FO3/FNV `PLD2` — the second location, the same 12-byte layout as
+    /// `PLDT`. **Ambush**'s is the *ambush* location: where an enemy has to
+    /// be for the actor to aggro (`PLDT` is the wait location). Vanilla
+    /// authors it twice, byte-identical; the first is kept.
+    pub location2: Option<PackLocation>,
     /// Target actor/object from PTDT (M42.5). `None` when the package has
     /// no PTDT — most procedures don't need one; Follow/Escort-family
     /// procedures do. On **Use Weapon** this is the *weapon* (type 1 = a
@@ -366,6 +371,12 @@ pub const PROCEDURE_ESCORT: u32 = 2;
 /// read exactly; unlike Travel it never reaches a terminal state (guarding
 /// is indefinite, like Wander) — see `systems::guard` module docs. See M42.
 pub const PROCEDURE_GUARD: u32 = 14;
+
+/// FO3/FNV procedure index for `Ambush` — wait at the `PLDT` location and
+/// aggro on an enemy that enters the `PLD2` ambush location (GECK *Ambush
+/// Package*). 38 FalloutNV.esm and 25 Fallout3.esm packages (2026-10-24
+/// census), 28 and 24 of them on NPC/CREA bases.
+pub const PROCEDURE_AMBUSH: u32 = 9;
 
 /// FO3/FNV procedure index for `Accompany` — stay with a `PTDT` actor at
 /// its distance (GECK *Accompany Package*: "similar to a Follow, but allows
@@ -697,6 +708,11 @@ impl PackRecord {
     /// location indefinitely, returning if displaced).
     pub fn is_guard(&self) -> bool {
         self.procedure_type == PROCEDURE_GUARD
+    }
+
+    /// True when this package's procedure is `Ambush`.
+    pub fn is_ambush(&self) -> bool {
+        self.procedure_type == PROCEDURE_AMBUSH
     }
 
     /// True when this package's procedure is `Accompany`.
@@ -1177,6 +1193,11 @@ pub fn parse_pack(
             b"PLDT" if sub.data.len() >= 12 => {
                 out.location = parse_location(&sub.data, remap);
             }
+            b"PLD2" if sub.data.len() >= 12 => {
+                if out.location2.is_none() {
+                    out.location2 = parse_location(&sub.data, remap);
+                }
+            }
             // FO3/FNV PTDT (M42.5): Target Type u32, Target union u32
             // (FormID or raw value depending on type), Count/Distance i32.
             // A trailing Unknown f32 (offset 12) exists but has no known
@@ -1308,6 +1329,38 @@ mod tests {
     active_package_is!(active_package_is_escort, is_escort);
     active_package_is!(active_package_is_guard, is_guard);
     active_package_is!(active_package_is_patrol, is_patrol);
+
+    /// FNV `DefaultAmbushPackage1024Hide`: PLDT is the wait location, PLD2
+    /// (authored twice, identical) the ambush location.
+    #[test]
+    fn ambush_decodes_its_wait_and_ambush_locations() {
+        let mut pkdt = Vec::new();
+        pkdt.extend_from_slice(&0x0080_0000u32.to_le_bytes());
+        pkdt.extend_from_slice(&[9, 0, 0, 0]);
+        pkdt.extend_from_slice(&[0, 0, 0, 0]);
+        let location = |kind: u32, form: u32, radius: i32| {
+            let mut v = Vec::new();
+            v.extend_from_slice(&kind.to_le_bytes());
+            v.extend_from_slice(&form.to_le_bytes());
+            v.extend_from_slice(&radius.to_le_bytes());
+            v
+        };
+        let pack = parse_pack(
+            0x1,
+            &[
+                sub(b"PKDT", &pkdt),
+                sub(b"PKAM", Vec::<u8>::new()),
+                sub(b"PLDT", location(3, 0, 256)),
+                sub(b"PLD2", location(6, 0, 1024)),
+                sub(b"PLD2", location(6, 0, 1024)),
+            ],
+            &None,
+            GameKind::default(),
+        );
+        assert!(pack.is_ambush());
+        assert_eq!(pack.location.map(|l| (l.location_type, l.radius)), Some((3, 256)));
+        assert_eq!(pack.location2.map(|l| (l.location_type, l.radius)), Some((6, 1024)));
+    }
 
     /// FNV `VHDOliverRangerSniperLeftLanePackage`, byte for byte: PTDT is
     /// the weapon (an Object ID), PTD2 the target (the player), PKW3 the

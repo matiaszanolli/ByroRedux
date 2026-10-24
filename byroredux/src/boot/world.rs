@@ -421,6 +421,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::GuardState>();
     // M42 — FleeNotCombat marker (stateless, so no companion storage).
     world.register::<byroredux_core::ecs::components::FleePackageBehavior>();
+    // M42 — Ambush's hostility gate (its wait runs on Guard's storages).
+    world.register::<byroredux_core::ecs::components::AmbushBehavior>();
     // M42 — UseWeapon marker + its one-shot guard.
     world.register::<byroredux_core::ecs::components::UseWeaponPackageBehavior>();
     world.register::<byroredux_core::ecs::components::UseWeaponPackageStarted>();
