@@ -316,6 +316,15 @@ struct GlobalGeometryMark {
     dirty: bool,
 }
 
+/// Where the scene-geometry pools and the mesh slot table stood when a group of related uploads
+/// began ([`MeshRegistry::begin_scene_geometry_group`], #6332).
+#[derive(Debug, Clone, Copy)]
+pub struct SceneGeometryGroup {
+    /// `meshes.len()` at the start: every slot at or beyond it belongs to the group.
+    mesh_slots: usize,
+    pools: GlobalGeometryMark,
+}
+
 /// Registry mapping mesh handle IDs to GPU-side geometry.
 ///
 /// Handles are stable — dropping a mesh leaves a `None` in its slot
@@ -802,6 +811,52 @@ impl MeshRegistry {
         self.pending_vertices.truncate(mark.vertices);
         self.pending_indices.truncate(mark.indices);
         self.geometry_dirty = mark.dirty;
+    }
+
+    /// Mark the start of a group of global-only scene uploads that must stand or fall together (a
+    /// distant-LOD quad's sub-meshes), for [`Self::abandon_scene_geometry_group`] (#6332).
+    pub fn begin_scene_geometry_group(&self) -> SceneGeometryGroup {
+        SceneGeometryGroup { mesh_slots: self.meshes.len(), pools: self.global_geometry_mark() }
+    }
+
+    /// Take back every mesh uploaded since `group` began, leaving the pools exactly as they were.
+    ///
+    /// A group the pool refuses part-way used to be unwound with `drop_meshes`, which strands each
+    /// uploaded span as a hole; the next geometry rebuild then compacts the pool and reopens
+    /// admission, so the same group is retried against the same free space, fails at the same
+    /// sub-mesh and unwinds again (#6332). This truncates the pools back instead — no hole, so no
+    /// compaction and no reopening until something else frees space. The slots become `None`
+    /// forever and the handles are never reused, like any dropped mesh.
+    ///
+    /// Returns `false` and changes nothing unless every slot since `group` is a live, unshared,
+    /// global-only scene mesh whose spans are exactly the pools' tails; the caller then unwinds
+    /// with `drop_meshes`.
+    pub fn abandon_scene_geometry_group(&mut self, group: SceneGeometryGroup) -> bool {
+        let Some(slots) = self.meshes.get(group.mesh_slots..) else {
+            return false;
+        };
+        let (mut vertices, mut indices) = (0usize, 0usize);
+        for (offset, slot) in slots.iter().enumerate() {
+            let Some(mesh) = slot else { return false };
+            let shared = self.mesh_ref_counts.get(group.mesh_slots + offset) != Some(&1);
+            if !mesh.is_scene_mesh || mesh.vertex_buffer.is_some() || mesh.index_buffer.is_some() || shared {
+                return false;
+            }
+            vertices += mesh.vertex_count as usize;
+            indices += mesh.index_count as usize;
+        }
+        if group.pools.vertices + vertices != self.pending_vertices.len()
+            || group.pools.indices + indices != self.pending_indices.len()
+        {
+            return false;
+        }
+        for idx in group.mesh_slots..self.meshes.len() {
+            self.meshes[idx] = None;
+            self.mesh_ref_counts[idx] = 0;
+            self.mesh_provenance.remove(&(idx as u32));
+        }
+        self.rollback_global_geometry(group.pools);
+        true
     }
 
     /// Whether fresh scene meshes may still be decoded and uploaded.

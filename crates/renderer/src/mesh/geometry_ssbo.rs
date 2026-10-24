@@ -1502,3 +1502,76 @@ mod geometry_rebuild_step_tests {
         assert_eq!(step, GeometryRebuildStep::Finished);
     }
 }
+
+/// #6332 — a refused group of global-only uploads (a distant-LOD quad's sub-meshes) is taken
+/// back without a hole, so the compaction that reopens admission has nothing to run on.
+#[cfg(test)]
+mod abandoned_group_tests {
+    use super::super::*;
+
+    fn tri(reg: &mut MeshRegistry) -> u32 {
+        let (v, i) = triangle_vertices([1.0, 0.0, 0.0]);
+        reg.upload_scene_mesh_global_only(&v, &i).unwrap()
+    }
+
+    fn quad(reg: &mut MeshRegistry) -> u32 {
+        let (v, i) = quad_vertices();
+        reg.upload_scene_mesh_global_only(&v, &i).unwrap()
+    }
+
+    /// A refused group that is abandoned leaves the registry as it found it: no hole for a
+    /// compaction to find, so nothing reopens admission behind the caller's back.
+    #[test]
+    fn an_abandoned_group_leaves_no_hole_and_admission_stays_closed() {
+        let mut reg = MeshRegistry::new();
+        tri(&mut reg);
+        let (vertices, indices) = (reg.pending_vertices.len(), reg.pending_indices.len());
+
+        let group = reg.begin_scene_geometry_group();
+        let first = tri(&mut reg);
+        let second = quad(&mut reg);
+        // The next sub-mesh trips the hard cap: admission latches closed.
+        reg.scene_geometry_admission_closed = true;
+
+        assert!(reg.abandon_scene_geometry_group(group));
+        assert_eq!((reg.pending_vertices.len(), reg.pending_indices.len()), (vertices, indices));
+        assert!(!reg.geometry_has_holes, "an abandoned group strands nothing");
+        assert!(reg.plan_geometry_compaction().is_none(), "no hole, so no compaction to reopen the gate");
+        assert!(!reg.scene_geometry_admission_open(), "admission stays closed until space is really freed");
+        for handle in [first, second] {
+            assert!(reg.get(handle).is_none(), "the slot is vacated and the handle never reused");
+            assert_eq!(reg.refcount(handle), None);
+        }
+        assert_eq!(reg.len(), 3, "handles stay stable: the slots remain, empty");
+    }
+
+    /// The unwind it replaces: the same refusal dropped with `drop_meshes` leaves a hole, and the
+    /// compaction that follows reopens admission - the retry cycle of #6332.
+    #[test]
+    fn dropping_a_refused_groups_meshes_is_what_reopened_admission() {
+        let mut reg = MeshRegistry::new();
+        let handle = tri(&mut reg);
+        reg.scene_geometry_admission_closed = true;
+        reg.drop_meshes(&[handle]);
+        assert!(reg.geometry_has_holes);
+        assert!(reg.plan_geometry_compaction().is_some());
+        assert!(reg.scene_geometry_admission_open(), "the compaction reopened the gate");
+    }
+
+    /// A group that cannot be taken back exactly is refused untouched, for the caller to unwind.
+    #[test]
+    fn a_group_with_a_shared_or_dropped_slot_is_not_abandoned() {
+        let mut reg = MeshRegistry::new();
+        let group = reg.begin_scene_geometry_group();
+        let a = tri(&mut reg);
+        let b = quad(&mut reg);
+        reg.mesh_ref_counts[b as usize] = 2;
+        let (vertices, slots) = (reg.pending_vertices.len(), reg.len());
+        assert!(!reg.abandon_scene_geometry_group(group), "a shared mesh cannot be rolled back");
+        assert_eq!((reg.pending_vertices.len(), reg.len()), (vertices, slots));
+
+        reg.mesh_ref_counts[b as usize] = 1;
+        reg.drop_meshes(&[a]);
+        assert!(!reg.abandon_scene_geometry_group(group), "a slot dropped mid-group already left a hole");
+    }
+}

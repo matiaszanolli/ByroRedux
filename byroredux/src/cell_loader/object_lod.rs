@@ -498,6 +498,9 @@ fn spawn_object_lod_quad(
     }
 
     ctx.allocator.as_ref()?;
+    // #6332 — the quad's sub-meshes stand or fall together: if the pool refuses one, the ones
+    // already uploaded are taken back without a hole (see `abandon_scene_geometry_group`).
+    let group = ctx.mesh_registry.begin_scene_geometry_group();
 
     // Shared object atlas for the worldspace (`<world>.objects.dds`). `0` /
     // fallback → the LOD draws untextured-grey, still better than no distant
@@ -668,13 +671,20 @@ fn spawn_object_lod_quad(
         mesh_handles.push(handle);
     }
 
-    let block = ObjectLodBlock {
+    let mut block = ObjectLodBlock {
         entities,
         mesh_handles,
         texture_handle: atlas,
         extra_texture_handles,
     };
     if refused || block.entities.is_empty() {
+        // #6332 — a refused quad's uploaded sub-meshes leave the pools exactly as they were, so
+        // the compaction that would otherwise reopen admission has no hole to find and the quad
+        // is not retried against the same free space. `drop_meshes` below only runs for the
+        // handles that were not taken back.
+        if refused && ctx.mesh_registry.abandon_scene_geometry_group(group) {
+            block.mesh_handles.clear();
+        }
         // #4253 — release every distinct non-atlas handle resolved above,
         // not just the atlas: mesh uploads may have failed for every
         // sub-mesh (the `continue` on upload error above) after textures

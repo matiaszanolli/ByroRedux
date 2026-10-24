@@ -478,6 +478,9 @@ fn spawn_placement_lod_cell(
         }
     };
     ctx.allocator.as_ref()?;
+    // #6332 — the cell's sub-meshes stand or fall together: if the pool refuses one, the ones
+    // already uploaded are taken back without a hole (see `abandon_scene_geometry_group`).
+    let group = ctx.mesh_registry.begin_scene_geometry_group();
 
     let mut entities = Vec::new();
     let mut mesh_handles = Vec::new();
@@ -683,12 +686,17 @@ fn spawn_placement_lod_cell(
         }
     }
 
-    let block = PlacementLodBlock {
+    let mut block = PlacementLodBlock {
         entities,
         mesh_handles,
         texture_handles,
     };
     if refused || block.entities.is_empty() {
+        // #6332 — as in `spawn_object_lod_quad`: a refused cell's uploaded sub-meshes are taken
+        // back without a hole, so no compaction reopens admission for the same cell to fail again.
+        if refused && ctx.mesh_registry.abandon_scene_geometry_group(group) {
+            block.mesh_handles.clear();
+        }
         // The same release a resident block gets on unload: its meshes, its
         // textures and any entities of the groups that did spawn (#6092).
         unload_placement_lod_block(world, ctx, &block);

@@ -761,6 +761,30 @@ mod tests {
         assert_eq!(classify_lod_attempt(false, false), HeldBack);
     }
 
+    /// #6332 — the rings that upload several sub-meshes per quad / cell take a refused group's
+    /// uploads back out of the pool instead of dropping them: the dropped spans become a hole, the
+    /// next geometry rebuild compacts and reopens admission, and the same group is re-attempted
+    /// against the same free space. The registry half is `abandoned_group_tests`; this pins the
+    /// two rings that need it (terrain and tree LOD upload one mesh per attempt and leave no
+    /// partial).
+    #[test]
+    fn multi_mesh_lod_rings_abandon_a_refused_group_instead_of_dropping_it() {
+        for (ring, src) in [
+            ("object_lod.rs", include_str!("object_lod.rs")),
+            ("placement_lod.rs", include_str!("placement_lod.rs")),
+        ] {
+            let src = byroredux_core::source_scan::production_text(src);
+            assert!(
+                src.contains("ctx.mesh_registry.begin_scene_geometry_group()"),
+                "{ring} no longer marks the start of its sub-mesh group (#6332)"
+            );
+            assert!(
+                src.contains("ctx.mesh_registry.abandon_scene_geometry_group(group)"),
+                "{ring} no longer takes a refused group back out of the pool (#6332)"
+            );
+        }
+    }
+
     /// #6092 — two reconciles against a fake admission state: the first, with
     /// the pool closed, holds the quad back and records nothing; the second,
     /// after the pool reopens, finds it still a candidate and resolves it.
