@@ -499,9 +499,9 @@ parses 14 `bhk*Shape` variants for byte-correctness:
 `hkPackedNiTriStripsData` / `bhkCompressedMeshShapeData`,
 `bhkCollisionObject` / `bhkRigidBody`, and the constraint / ragdoll /
 phantom families. The constraint family (`bhkRagdollConstraint`,
-`bhkLimitedHingeConstraint`, `bhkBreakableConstraint`, …) is parsed for
-byte-alignment but its pivot/axis/limit data has no consumer until
-physics wiring lands (#331, closed as deferred).
+`bhkLimitedHingeConstraint`, `bhkBreakableConstraint`, …) feeds
+`extract_ragdoll` and the canonical joints (#331); FO4+ skeleton blobs
+decode through `decode_np_ragdoll` (#5015).
 
 ### Spatial / palettes
 `BSMultiBound`, `BSMultiBoundAABB`, `BSMultiBoundOBB`,
@@ -928,12 +928,11 @@ every known CRITICAL / HIGH audit item. Known follow-ups:
   base so Oblivion doesn't hard-fail; their per-variant fields (sky scroll,
   etc.) are not yet extracted. `WaterShaderProperty` now reaches a
   consumer (#1243).
-- **Havok constraint data** (#331, deferred) — the constraint family parses
-  for byte-alignment but pivot/axis/limit data has no consumer until physics
-  wiring lands.
-- **`BhkNPCollisionObject` / `BhkPCollisionObject`** — FO4+ Havok-serialised
-  collision blobs need a separate decoder; phantoms need a `TriggerVolume`
-  ECS path. The cell loader falls back to synthesized static trimesh.
+- **`BhkNPCollisionObject` / `BhkPCollisionObject`** — FO4+ skeleton ragdoll
+  blobs are decoded (`decode_np_ragdoll`, #5015, #6066, #6067) and the classic
+  constraints feed `extract_ragdoll`; `hknpCompressedMeshShapeData` stays
+  undecoded and phantoms need a `TriggerVolume` ECS path. The cell loader
+  falls back to synthesized static trimesh.
 - **`BSFaceGenNiNode` morph data** (#727) — aliased as a coverage-first NiNode
   stub; FaceGen coefficient bytes are skipped via `block_size`. A dedicated
   parser is follow-up once a sample face NIF is reverse-engineered.

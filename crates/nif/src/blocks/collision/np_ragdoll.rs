@@ -185,8 +185,9 @@ pub struct NpRagdollBody {
     /// body row; two bodies may share one — the human's COM and SPINE1 are both
     /// bone 2). An `XRGD` corpse pose names its entries by this id.
     pub bone_id: u8,
-    /// `None` for a shape class this decoder does not read (compounds); the
-    /// body cannot be built.
+    /// `None` for a shape class this decoder does not read; every vanilla body
+    /// decodes one (compounds included, #6067). The body cannot be built
+    /// without it.
     pub shape: Option<NpShape>,
     /// Friction, restitution and damping from the rows the body's motion index
     /// names; `None` when the blob carries no such rows or they hold a

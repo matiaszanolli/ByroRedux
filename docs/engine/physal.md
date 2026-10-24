@@ -457,8 +457,9 @@ get-up / hit-react / partial-ragdoll. Needs the joint-limit fidelity work first.
 6. FO4+ `BhkSystemBinary` payload decode — the container and its object table
    are done (#3809) and the skeleton ragdoll payload (`bhkRagdollSystem`,
    #5015) is decoded and threaded; what is left is
-   `hknpCompressedMeshShapeData`'s field layout (precombined geometry), the
-   joint-pivot frame on off-bone bodies and the undecoded material/motion rows.
+   `hknpCompressedMeshShapeData`'s field layout (precombined geometry) and the
+   joint-pivot frame on off-bone bodies (the material and motion rows are
+   decoded, #6066).
 
 Each step ships independently behind `cargo test`; none touches the Vulkan
 render-pass / pipeline (writeback rides existing skinning).
