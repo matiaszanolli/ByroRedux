@@ -91,7 +91,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
             Some(ItemKind::Weapon { ammo_form, .. }) if *ammo_form != 0 => {
                 if crate::systems::projectiles::resolve_shot(&index, run.request.weapon, 0).is_ok() {
                     if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingProjectileLaunches>() {
-                        pending.0.push(byroredux_scripting::projectile_requests::ProjectileLaunch { source: actor_form, weapon: run.request.weapon, ammo: 0, aim_at: run.request.target });
+                        pending.0.push(byroredux_scripting::projectile_requests::ProjectileLaunch { source: actor_form, weapon: run.request.weapon, ammo: 0, aim_at: run.request.target, harmless: run.request.harmless });
                     }
                     true
                 } else if let Ok((weapon_damage, ammo_damage, ..)) = crate::systems::projectiles::resolve_ammunition(&index, run.request.weapon, 0) {
@@ -101,7 +101,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
                     let clear = crate::systems::actor_has_line_of_sight(world, actor, target);
                     if clear {
                         if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
-                            pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: weapon_damage + ammo_damage.max(0.0) });
+                            pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) } });
                         }
                     }
                     clear
@@ -115,7 +115,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
                 let near = from.distance(to) <= reach;
                 if near {
                     if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
-                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: *damage as f32 });
+                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { *damage as f32 } });
                     }
                 }
                 near

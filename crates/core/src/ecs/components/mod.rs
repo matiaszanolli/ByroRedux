@@ -22,6 +22,7 @@ pub mod global_transform;
 pub mod groundcover;
 pub mod flee_package;
 pub mod guard;
+pub mod use_weapon_package;
 pub mod hierarchy;
 pub mod inventory;
 pub mod light;
@@ -75,6 +76,7 @@ pub use owned::Owned;
 pub use global_transform::GlobalTransform;
 pub use flee_package::FleePackageBehavior;
 pub use guard::{GuardBehavior, GuardState};
+pub use use_weapon_package::{UseWeaponPackageBehavior, UseWeaponPackageStarted};
 pub use hierarchy::{Children, Parent};
 pub use inventory::{
     EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemInstanceId, ItemStack,

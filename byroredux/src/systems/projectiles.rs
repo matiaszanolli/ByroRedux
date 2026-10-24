@@ -160,7 +160,7 @@ fn launch_of(
         velocity: direction * proj.muzzle_speed,
         range_left: if proj.range > 0.0 { proj.range } else { f32::INFINITY },
         lifetime_left: (proj.lifetime > 0.0).then_some(proj.lifetime),
-        damage: weapon_damage + ammo_damage.max(0.0),
+        damage: if launch.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) },
         shooter: source,
         radius: proj.collision_radius.max(0.0),
         launcher_bodies: std::sync::Arc::from([]),
@@ -489,7 +489,7 @@ mod tests {
             port,
             GlobalTransform { translation: Vec3::new(10.0, 20.0, 30.0), ..GlobalTransform::IDENTITY },
         );
-        let launch = ProjectileLaunch { source: 0xB1, weapon: 0xA1, ammo: 0xA2, aim_at: 0 };
+        let launch = ProjectileLaunch { source: 0xB1, weapon: 0xA1, ammo: 0xA2, aim_at: 0, harmless: false };
         let flight = launch_of(&world, &index_with_dart(0.0), launch).expect("a dart flies");
         assert_eq!(flight.shooter, port);
         assert_eq!(flight.damage, 5.0, "weapon 3 + ammo 2");

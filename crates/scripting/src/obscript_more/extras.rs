@@ -90,6 +90,8 @@ pub struct UseWeaponRequest {
     /// The target's reference.
     pub target: u32,
     pub shots: u32,
+    /// The shots hit but deal no damage (the PACK's Do No Damage flag).
+    pub harmless: bool,
 }
 
 impl byroredux_core::ecs::storage::Component for UseWeaponRequest {
@@ -200,7 +202,7 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
         0x119c => match (caller(world, ctx), form_arg(args, 0), form_arg(args, 2)) {
             (Some((_, actor)), Some(weapon), Some(target)) => {
                 if let Some(mut requests) = world.query_mut::<UseWeaponRequest>() {
-                    requests.insert(actor, UseWeaponRequest { weapon, target, shots: num(args, 3).max(1.0) as u32 });
+                    requests.insert(actor, UseWeaponRequest { weapon, target, shots: num(args, 3).max(1.0) as u32, harmless: false });
                 }
                 done(format!("UseWeapon {weapon:08X} on {target:08X}"))
             }

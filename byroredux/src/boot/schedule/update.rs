@@ -464,6 +464,9 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::GuardBehavior>()
             .writes::<byroredux_core::ecs::components::GuardState>()
             .writes::<byroredux_core::ecs::components::FleePackageBehavior>()
+            .writes::<byroredux_core::ecs::components::UseWeaponPackageBehavior>()
+            .writes::<byroredux_core::ecs::components::UseWeaponPackageStarted>()
+            .writes::<crate::systems::script_requests::UseWeaponRun>()
             .writes::<byroredux_core::ecs::components::PatrolBehavior>()
             .writes::<byroredux_core::ecs::components::PatrolState>()
             // M42 Eat/Sleep + the Dialogue force-greet bridge — same
@@ -712,6 +715,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, crate::systems::knockdown::push_actor_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::knockdown::get_up_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::flee::flee_system);
+    // M42 — the UseWeapon PACK procedure raises its request first, so the volley starts this frame.
+    scheduler.add_exclusive(Stage::Update, crate::systems::use_weapon_package_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::use_weapon_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::reset_inventory_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::sleep_system);

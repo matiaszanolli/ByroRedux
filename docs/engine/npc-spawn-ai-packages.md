@@ -180,9 +180,10 @@ the FO3/FNV procedure enum's values, only `PROCEDURE_SANDBOX = 12`
 (`00f580e09`, dispatched into `eat_sleep_system`), and
 `PROCEDURE_DIALOGUE = 15` (#5367 Phase F, the force-greet bridge —
 modeled player-targeted Conversations only, #5376) and
-`PROCEDURE_FLEE_NOT_COMBAT = 10` (`flee_package_system`) have a name and a
-consumer; the other 6 (Find/Accompany/UseItemAt/Ambush/CastMagic/
-UseWeapon) are captured as a raw integer and dispatched nowhere. `active_package_is_sandbox`/
+`PROCEDURE_FLEE_NOT_COMBAT = 10` (`flee_package_system`) and
+`PROCEDURE_USE_WEAPON = 16` (`use_weapon_package_system`) have a name and a
+consumer; the other 5 (Find/Accompany/UseItemAt/Ambush/CastMagic) are
+captured as a raw integer and dispatched nowhere. `active_package_is_sandbox`/
 `active_sandbox_location`, `active_package_is_wander`/
 `active_wander_location`, `active_package_is_travel`/
 `active_travel_location`, `active_package_is_follow`/
@@ -522,7 +523,7 @@ animation-clip swap).
 
 ## What's not covered / honest state
 
-- **Eleven procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
+- **Twelve procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
   (M42.4), Follow (M42.5), Escort (M42.6), Guard (M42.7), and Patrol
   (M42.8, which shares Wander's algorithm rather than running a
   distinct one); Eat and Sleep (2026-10-08, `eat_sleep_system` — walk to
@@ -537,14 +538,30 @@ animation-clip swap).
   — the GECK's minimum distance, 256–2500 on all 23 vanilla FNV/FO3
   packages — or walk to a `NearReference` `PLDT` refuge and hold; the
   GECK's start-location-then-keep-away sequence, non-reference refuges,
-  navmesh routing and a cower animation are not modeled). No
-  Find/Accompany/UseItemAt/Ambush/CastMagic/UseWeapon runtime exists
-  as a PACK procedure. Combat (`combat_ai`), a caster runtime
-  (`magic_effects`) and `ForceFlee` do exist now, so UseWeapon and
-  CastMagic are blocked on decode and policy rather than a missing
-  subsystem: UseWeapon's `PKW3` (24 bytes) / `PTD2` / `PLD2` are not
-  decoded (82 FNV / 56 FO3 packages, mostly scripted set pieces),
-  Find/UseItemAt need item-use animation.
+  navmesh routing and a cower animation are not modeled); and UseWeapon
+  (`UseWeaponPackageBehavior` + `use_weapon_package_system`). In a
+  UseWeapon package `PTDT` is the *weapon*, `PTD2` the target to shoot and
+  `PKW3` the fire pattern (flags, fire rate, fire count, bursts, volley
+  size, pause), all decoded now. The system raises the existing ObScript
+  `UseWeaponRequest` once per install, sized from the fire count
+  (Repeat Fire = unbounded; bursts × volley midpoint, or × the weapon's
+  clip for auto fire) and carrying Do No Damage. It installs only a
+  specific weapon (`PTDT` type 1) at a specific target (`PTD2` type 0)
+  with fully modelled conditions (the #5376 fail-open rule: a fail-open
+  pass would have the Hoover Dam snipers shoot the player on cell entry).
+  60 of 82 FNV and 23 of 56 FO3 packages have a specific weapon and
+  target (2026-10-24 census); 42 and 13 of those carry conditions, and
+  the ones the evaluator cannot fully model are declined on top. Weapon *classes* (`PTDT` type 2)
+  are declined because the object-type enum's numbering is not settled:
+  by fopdoc's table Ranged is 21, Melee 22 and "NONE" 23, yet the
+  `MisfitsShootGood`/`Bad` and `VOVNVAliceHostetlerShootsBecky` packages,
+  which by name are gunfire, author 23. Unresolved, not decided, and
+  target-less packages (fire into the air) are declined too. Not modelled: the `PLDT`
+  place to stand, the `PLD2` target location, Crouch To Reload, Hold Fire
+  When Blocked, Always Hit and the authored pause between volleys. No
+  Find/Accompany/UseItemAt/Ambush/CastMagic runtime exists as a PACK
+  procedure; `magic_effects` has the caster, so CastMagic is blocked on
+  its target/range policy, Find/UseItemAt on item-use animation.
 - **No general AI tick, but package selection does tick.**
   `byroredux/src/systems/` still has no `ai.rs` / `behavior.rs` /
   `npc.rs`. Superseded 2026-09-18 by M42.10: the seven *locomotion*

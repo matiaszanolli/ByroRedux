@@ -66,7 +66,7 @@ impl Vm<'_> {
                     _ => 0,
                 };
                 if let Some(mut pending) = self.world.try_resource_mut::<crate::PendingProjectileLaunches>() {
-                    pending.0.push(crate::ProjectileLaunch { source, weapon: *weapon, ammo, aim_at: 0 });
+                    pending.0.push(crate::ProjectileLaunch { source, weapon: *weapon, ammo, aim_at: 0, harmless: false });
                 }
                 Some(Value::None)
             }

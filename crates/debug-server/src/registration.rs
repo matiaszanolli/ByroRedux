@@ -275,6 +275,12 @@ pub fn register_all(registry: &mut ComponentRegistry) {
         vec!["anchor_form_id", "radius", "form_id"],
     );
     register_component::<GuardState>(registry, "GuardState", vec!["anchor"]);
+    register_component::<UseWeaponPackageBehavior>(
+        registry,
+        "UseWeaponPackageBehavior",
+        vec!["weapon_form_id", "target_form_id", "bursts", "volley_shots", "harmless"],
+    );
+    register_component::<UseWeaponPackageStarted>(registry, "UseWeaponPackageStarted", vec![]);
     register_component::<FleePackageBehavior>(
         registry,
         "FleePackageBehavior",

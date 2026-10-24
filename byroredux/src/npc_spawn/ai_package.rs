@@ -13,12 +13,13 @@ use byroredux_core::ecs::components::{
     Dead, EatBehavior, EatSleepLocation, EatSleepState, EscortBehavior, EscortState, Escorted,
     FollowBehavior,
     FleePackageBehavior, FollowState, GuardBehavior, GuardState, PatrolBehavior, PatrolState, SandboxBehavior, Seated,
-    SleepBehavior, TravelBehavior, TravelState, Traveled, WanderBehavior, WanderState,
+    SleepBehavior, TravelBehavior, TravelState, Traveled, UseWeaponPackageBehavior,
+    UseWeaponPackageStarted, WanderBehavior, WanderState,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Component, World};
 use byroredux_plugin::esm::records::misc::pack::{
-    PROCEDURE_DIALOGUE, PROCEDURE_EAT, PROCEDURE_SLEEP,
+    PROCEDURE_DIALOGUE, PROCEDURE_EAT, PROCEDURE_SLEEP, PROCEDURE_USE_WEAPON,
 };
 use byroredux_plugin::esm::records::{
     PackDataValue, PackLocationTarget, PackRecord, PackTargetKind,
@@ -89,13 +90,53 @@ fn dialogue_installs_ambient(package: &PackRecord, world: &World) -> bool {
         && package.dialogue_type == 0
 }
 
+/// What a UseWeapon package installs, or `None` when it must not install:
+///
+/// - A package whose conditions could not all be evaluated (the same
+///   fail-open hazard as Dialogue, #5376): its gates decide *when* the actor
+///   opens fire, so a fail-open pass would have the Hoover Dam snipers
+///   shooting the player on cell entry.
+/// - A package with no specific weapon (`PTDT` type 1) or no specific
+///   target reference (`PTD2` type 0): weapon classes are not decoded (the
+///   object-type enum's numbering contradicts the vanilla data), and a
+///   target-less package fires into the air.
+fn use_weapon_behavior(package: &PackRecord, world: &World) -> Option<UseWeaponPackageBehavior> {
+    if !package_conditions_fully_modeled(&package.conditions, world) {
+        return None;
+    }
+    let fire = package.use_weapon?;
+    let PackTargetKind::ObjectId(weapon_form_id) = package.target?.target else {
+        return None;
+    };
+    let PackTargetKind::SpecificReference(target_form_id) = package.target2?.target else {
+        return None;
+    };
+    Some(UseWeaponPackageBehavior {
+        weapon_form_id,
+        target_form_id,
+        bursts: (!fire.repeat_fire).then(|| u32::from(fire.bursts).max(1)),
+        // Volley fire picks a size in [min, max] each time; the midpoint is
+        // the deterministic stand-in. Auto fire is `0`: a burst is a clip.
+        volley_shots: if fire.volley_fire {
+            (u32::from(fire.volley_min) + u32::from(fire.volley_max)).div_ceil(2).max(1)
+        } else {
+            0
+        },
+        harmless: fire.does_no_damage(),
+    })
+}
+
 /// Whether selection may pick `package`: a Dialogue-procedure package must be
-/// one the installer would take (#5499 / #5722), every other procedure passes.
-/// Shared by the schedule scan and the script-package slot so a scripted
-/// Say-To / off-target Dialogue package cannot win and then install nothing
-/// (#6051).
+/// one the installer would take (#5499 / #5722), and so must a UseWeapon one;
+/// every other procedure passes. Shared by the schedule scan and the
+/// script-package slot so a scripted Say-To / off-target Dialogue package
+/// cannot win and then install nothing (#6051).
 fn selectable_by_installer(package: &PackRecord, world: &World) -> bool {
-    package.procedure_type != PROCEDURE_DIALOGUE || dialogue_installs_ambient(package, world)
+    match package.procedure_type {
+        PROCEDURE_DIALOGUE => dialogue_installs_ambient(package, world),
+        PROCEDURE_USE_WEAPON => use_weapon_behavior(package, world).is_some(),
+        _ => true,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -155,6 +196,9 @@ enum AmbientBehavior {
         min_distance: Option<f32>,
         refuge_form_id: Option<u32>,
     },
+    /// M42 — UseWeapon (procedure 16): `use_weapon_package_system` raises
+    /// the `UseWeaponRequest` for it once.
+    UseWeapon(UseWeaponPackageBehavior),
     /// M42 + #5367 — Dialogue (procedure 15): the active package
     /// installs the force-greet bridge; `forcegreet_system` does the
     /// approach + open. Consumed on the first greet — re-installed only
@@ -271,6 +315,8 @@ impl AmbientBehavior {
                 min_distance: target_distance,
                 refuge_form_id: location_reference,
             })
+        } else if package.is_use_weapon() {
+            use_weapon_behavior(package, world).map(Self::UseWeapon)
         } else if package.is_patrol() {
             Some(Self::Patrol {
                 patrol_radius: location_radius,
@@ -493,6 +539,9 @@ impl AmbientBehavior {
                     },
                 );
             }
+            Self::UseWeapon(behavior) => {
+                world.insert(actor, behavior);
+            }
             Self::Flee {
                 threat_form_id,
                 min_distance,
@@ -629,6 +678,7 @@ impl AmbientBehavior {
                     form_id: actor_form_id,
                 },
             ),
+            Self::UseWeapon(behavior) => insert_component(world, actor, behavior),
             Self::Flee {
                 threat_form_id,
                 min_distance,
@@ -753,6 +803,14 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     remove_component::<GuardBehavior>(world, actor);
     remove_component::<GuardState>(world, actor);
     remove_component::<FleePackageBehavior>(world, actor);
+    // A UseWeapon package's volleys stop with it. The run is only the
+    // package's when the package started it: a scripted `UseWeapon` volley
+    // must survive an unrelated handover.
+    if world.has::<UseWeaponPackageStarted>(actor) {
+        remove_component::<crate::systems::script_requests::UseWeaponRun>(world, actor);
+    }
+    remove_component::<UseWeaponPackageBehavior>(world, actor);
+    remove_component::<UseWeaponPackageStarted>(world, actor);
     remove_component::<PatrolBehavior>(world, actor);
     remove_component::<PatrolState>(world, actor);
     remove_component::<EatBehavior>(world, actor);
@@ -1244,6 +1302,8 @@ mod tests {
         world.register::<GuardBehavior>();
         world.register::<GuardState>();
         world.register::<FleePackageBehavior>();
+        world.register::<UseWeaponPackageBehavior>();
+        world.register::<UseWeaponPackageStarted>();
         world.register::<PatrolBehavior>();
         world.register::<PatrolState>();
         world.register::<EatBehavior>();
@@ -1750,6 +1810,74 @@ mod tests {
                 assert!(world.has::<TravelBehavior>(actor));
             }
         }
+    }
+
+    /// UseWeapon (procedure 16): `PTDT` is the weapon, `PTD2` the target and
+    /// `PKW3` the fire pattern; a package the runtime cannot honour is not
+    /// installed and does not get selected over a lower one.
+    #[test]
+    fn a_use_weapon_package_installs_only_what_the_runtime_can_honour() {
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+        use byroredux_plugin::esm::records::misc::pack::{PackTarget, PackUseWeapon, PROCEDURE_USE_WEAPON};
+
+        let target = |target_type, target| PackTarget { target_type, target, count_or_distance: 0 };
+        let shooting = |form_id| {
+            let mut package = pack(form_id, PROCEDURE_USE_WEAPON, None);
+            package.target = Some(target(1, PackTargetKind::ObjectId(0x0017_24F2)));
+            package.target2 = Some(target(0, PackTargetKind::SpecificReference(0x14)));
+            package.use_weapon = Some(PackUseWeapon {
+                flags: PackUseWeapon::DO_NO_DAMAGE,
+                volley_fire: true,
+                repeat_fire: false,
+                bursts: 3,
+                volley_min: 3,
+                volley_max: 8,
+                ..Default::default()
+            });
+            package
+        };
+        let installed = |package: PackRecord| {
+            let (world, actor) = setup_actor(10.0, vec![package]);
+            world.get::<UseWeaponPackageBehavior>(actor).map(|behavior| *behavior)
+        };
+
+        // Volley range 3..=8 -> 6 shots (the midpoint, rounded up).
+        assert_eq!(
+            installed(shooting(0x100)),
+            Some(UseWeaponPackageBehavior {
+                weapon_form_id: 0x0017_24F2,
+                target_form_id: 0x14,
+                bursts: Some(3),
+                volley_shots: 6,
+                harmless: true,
+            })
+        );
+
+        let mut repeat = shooting(0x101);
+        repeat.use_weapon = Some(PackUseWeapon { repeat_fire: true, ..repeat.use_weapon.unwrap() });
+        let repeat = installed(repeat).expect("repeat fire installs");
+        assert_eq!(repeat.bursts, None, "repeat fire never finishes");
+
+        // A weapon class (PTDT type 2), a target-less package and a fail-open
+        // condition list are all declined.
+        let mut by_class = shooting(0x102);
+        by_class.target = Some(target(2, PackTargetKind::Other(0x16)));
+        assert_eq!(installed(by_class), None, "weapon classes are not decoded");
+        let mut into_the_air = shooting(0x103);
+        into_the_air.target2 = None;
+        assert_eq!(installed(into_the_air), None, "no target: nothing to fire at");
+        let mut unmodeled = shooting(0x104);
+        unmodeled.conditions = vec![Condition {
+            function_index: 79,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(0.0),
+            ..Default::default()
+        }];
+        assert_eq!(installed(unmodeled.clone()), None, "a fail-open pass must not arm the shooter");
+
+        // ... and a declined UseWeapon package does not shadow the next one.
+        let (world, actor) = setup_actor(10.0, vec![unmodeled, pack(0x105, PROCEDURE_GUARD, None)]);
+        assert!(world.has::<GuardBehavior>(actor), "the lower package still wins");
     }
 
     /// FleeNotCombat (procedure 10): `PTDT` becomes the threat and its
@@ -2908,6 +3036,7 @@ mod tests {
                 || world.has::<EscortBehavior>(actor)
                 || world.has::<GuardBehavior>(actor)
                 || world.has::<FleePackageBehavior>(actor)
+                || world.has::<UseWeaponPackageBehavior>(actor)
             {
                 resolved_any_behavior += 1;
             }
@@ -2953,7 +3082,10 @@ mod tests {
         world.insert_resource(PendingPackageTransitions::default());
         world.insert_resource(ActivePackages::default());
         let actor = world.spawn();
-        let packages = vec![pack(0x700, PROCEDURE_DIALOGUE + 1, None)];
+        // Ambush (9): a procedure with no runtime, so the package wins with no behavior.
+        // (This used to be `PROCEDURE_DIALOGUE + 1`, which is UseWeapon now.)
+        const AMBUSH: u32 = 9;
+        let packages = vec![pack(0x700, AMBUSH, None)];
         let npc = NpcRecord {
             form_id: 0xAA,
             ai_packages: vec![0x700],

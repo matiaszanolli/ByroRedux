@@ -5926,8 +5926,8 @@ fn weapon_fire_records_a_projectile_launch() {
     assert_eq!(
         world.resource::<crate::PendingProjectileLaunches>().0,
         [
-            crate::ProjectileLaunch { source: MARKER, weapon: WEAPON, ammo: AMMO, aim_at: 0 },
-            crate::ProjectileLaunch { source: MARKER, weapon: WEAPON, ammo: 0, aim_at: 0 },
+            crate::ProjectileLaunch { source: MARKER, weapon: WEAPON, ammo: AMMO, aim_at: 0, harmless: false },
+            crate::ProjectileLaunch { source: MARKER, weapon: WEAPON, ammo: 0, aim_at: 0, harmless: false },
         ]
     );
 }

@@ -607,6 +607,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("GlobalTransform", "recomputed every frame from saved Transform + Parent by transform_propagation_system; its own doc says \"never written by user code\""),
         ("GroundCoverPalette", "EXAL-derived (#2369): re-resolved from the worldspace identity + its GRAS records at every worldspace entry by install_ground_cover; saving it would pin a stale palette across a plugin change"),
         ("GuardBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion GuardState is registered"),
+        ("UseWeaponPackageBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; the volleys it starts are NOT_SAVED_BY_DESIGN like UseWeaponRun"),
+        ("UseWeaponPackageStarted", "one-shot guard of the active UseWeapon package; re-armed with the behavior at spawn, so a load re-requests the volleys"),
         ("FleePackageBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; stateless, so there is no companion to register"),
         ("LocalBound", "write-once at NIF import/mesh spawn, read-only thereafter to derive WorldBound"),
         // Material: FIXED — registered (#2378 / SAVE-D1-13), no longer

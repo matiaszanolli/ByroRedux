@@ -20,6 +20,8 @@ pub struct ProjectileLaunch {
     pub ammo: u32,
     /// The reference to aim at (`UseWeapon`'s target), or 0 to fire along the source's forward.
     pub aim_at: u32,
+    /// The shot hits but deals no damage (`UseWeapon`'s Do No Damage).
+    pub harmless: bool,
 }
 
 /// The `Weapon.Fire` calls awaiting the host.

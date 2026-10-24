@@ -43,10 +43,16 @@ pub struct PackRecord {
     pub location: Option<PackLocation>,
     /// Target actor/object from PTDT (M42.5). `None` when the package has
     /// no PTDT — most procedures don't need one; Follow/Escort-family
-    /// procedures do. `PTD2` (a second target, for two-target procedures
-    /// like Escort-someone-to-someone) is not decoded — no implemented
-    /// procedure needs it yet.
+    /// procedures do. On **Use Weapon** this is the *weapon* (type 1 = a
+    /// base `WEAP`, type 2 = an object-type enum: 22 ranged / 23 melee),
+    /// and the thing to shoot is [`Self::target2`].
     pub target: Option<PackTarget>,
+    /// FO3/FNV `PTD2` — the second target. Use Weapon's target to shoot
+    /// (`None` there means "fire in the air in the direction they are
+    /// facing"). Same layout as [`Self::target`].
+    pub target2: Option<PackTarget>,
+    /// FO3/FNV `PKW3` — Use Weapon data. `None` on every other procedure.
+    pub use_weapon: Option<PackUseWeapon>,
     /// FO3/FNV `PKE2` — the authored **Escort Distance** (world units), the
     /// range at which an escorting actor considers its target collected and
     /// switches from the collect phase to the lead phase.
@@ -169,6 +175,37 @@ pub struct PackTarget {
     /// per the source spec (undocumented generically); Follow interprets
     /// it as a stand-off distance.
     pub count_or_distance: i32,
+}
+
+/// FO3/FNV `PKW3` — Use Weapon Data (24 bytes). Flag bits per fopdoc:
+/// Always Hit 0x1, Do No Damage 0x100, Crouch To Reload 0x10000, Hold Fire
+/// When Blocked 0x1000000.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PackUseWeapon {
+    pub flags: u32,
+    /// Fire Rate: `false` Auto Fire (full clips), `true` Volley Fire.
+    pub volley_fire: bool,
+    /// Fire Count: `true` Repeat Fire (the package has no Done state),
+    /// `false` Number of Bursts ([`Self::bursts`]).
+    pub repeat_fire: bool,
+    pub bursts: u16,
+    /// Shots per volley, min and max (volley fire only).
+    pub volley_min: u16,
+    pub volley_max: u16,
+    /// Seconds paused between volleys, min and max.
+    pub pause_min: f32,
+    pub pause_max: f32,
+}
+
+impl PackUseWeapon {
+    pub const ALWAYS_HIT: u32 = 0x1;
+    pub const DO_NO_DAMAGE: u32 = 0x100;
+    pub const CROUCH_TO_RELOAD: u32 = 0x1_0000;
+    pub const HOLD_FIRE_WHEN_BLOCKED: u32 = 0x100_0000;
+
+    pub fn does_no_damage(&self) -> bool {
+        self.flags & Self::DO_NO_DAMAGE != 0
+    }
 }
 
 /// One sparse Skyrim+ package-template input and its concrete value.
@@ -336,6 +373,13 @@ pub const PROCEDURE_GUARD: u32 = 14;
 /// FalloutNV.esm and 8 in Fallout3.esm (2026-10-24 census), all authored
 /// with `PTDT` and/or `PLDT` only.
 pub const PROCEDURE_FLEE_NOT_COMBAT: u32 = 10;
+
+/// FO3/FNV procedure index for `UseWeapon` — stand at the `PLDT` place and
+/// fire a weapon (`PTDT`) at a target (`PTD2`) per `PKW3`'s fire rate and
+/// count. 82 FalloutNV.esm and 56 Fallout3.esm packages (2026-10-24
+/// census), mostly scripted set pieces: Securitron gunnery, the Hoover Dam
+/// snipers, Misfits target practice.
+pub const PROCEDURE_USE_WEAPON: u32 = 16;
 
 /// FO3/FNV procedure index for `Eat` — walk to the `PLDT` dining
 /// location and sit at the nearest furniture marker for the schedule
@@ -646,6 +690,11 @@ impl PackRecord {
         self.procedure_type == PROCEDURE_GUARD
     }
 
+    /// True when this package's procedure is `UseWeapon`.
+    pub fn is_use_weapon(&self) -> bool {
+        self.procedure_type == PROCEDURE_USE_WEAPON
+    }
+
     /// True when this package's procedure is `FleeNotCombat` (keep away
     /// from the `PTDT` target, or hold at the `PLDT` refuge).
     pub fn is_flee_not_combat(&self) -> bool {
@@ -704,6 +753,33 @@ pub fn active_package<'a>(
     packages
         .into_iter()
         .find(|pk| pk.scheduled_active_at(clock) && condition_met(pk))
+}
+
+/// A `PTDT` / `PTD2` body: Target Type u32, Target union u32 (FormID or raw
+/// value by type), Count/Distance i32 — see [`PackTarget`]. Only types 0
+/// (Specific Reference) and 1 (Object ID) carry a FormID that needs
+/// remapping to global space; the rest pass through raw. #5504 — Oblivion's
+/// PTDT is 12 bytes in all 1,776 records and FO3 authors 26 twelve-byte
+/// ones: the trailing f32 of the FO3/FNV layout is never read, so the gate
+/// is the three fields decoded.
+fn parse_target(data: &[u8], remap: &Option<crate::esm::reader::FormIdRemap>) -> Option<PackTarget> {
+    if data.len() < 12 {
+        return None;
+    }
+    let mut r = SubReader::new(data);
+    let target_type = r.u32_or_default();
+    let raw = r.u32_or_default();
+    let count_or_distance = r.i32_or_default();
+    let target = match target_type {
+        0 => PackTargetKind::SpecificReference(remap_fid(raw, remap)),
+        1 => PackTargetKind::ObjectId(remap_fid(raw, remap)),
+        _ => PackTargetKind::Other(raw),
+    };
+    Some(PackTarget {
+        target_type,
+        target,
+        count_or_distance,
+    })
 }
 
 fn parse_location(
@@ -1102,19 +1178,39 @@ pub fn parse_pack(
             // too. The unread f32 is the only thing past byte 12, so the
             // gate is the three fields actually decoded.
             b"PTDT" if sub.data.len() >= 12 => {
+                out.target = parse_target(&sub.data, remap);
+            }
+            // FO3/FNV PTD2 — the second target, the same 16-byte layout as
+            // PTDT. Only Use Weapon authors one in vanilla (all 82 FNV and
+            // 55 of the 56 FO3 packages): there PTDT names the *weapon* and
+            // PTD2 the thing to shoot (fopdoc "Target 2"; the Oliver
+            // Ranger snipers' PTD2 is the player, `0x14`).
+            b"PTD2" if sub.data.len() >= 12 => {
+                out.target2 = parse_target(&sub.data, remap);
+            }
+            // FO3/FNV PKW3 — Use Weapon Data, 24 bytes (fopdoc, checked
+            // against the vanilla values: the snipers carry Crouch To
+            // Reload | Hold Fire When Blocked, the scripted set pieces Do
+            // No Damage, every Repeat Fire package count 1).
+            b"PKW3" if sub.data.len() >= 20 => {
                 let mut r = SubReader::new(&sub.data);
-                let target_type = r.u32_or_default();
-                let raw = r.u32_or_default();
-                let count_or_distance = r.i32_or_default();
-                let target = match target_type {
-                    0 => PackTargetKind::SpecificReference(remap_fid(raw, remap)),
-                    1 => PackTargetKind::ObjectId(remap_fid(raw, remap)),
-                    _ => PackTargetKind::Other(raw),
-                };
-                out.target = Some(PackTarget {
-                    target_type,
-                    target,
-                    count_or_distance,
+                let flags = r.u32_or_default();
+                let fire_rate = r.u8_or_default();
+                let fire_count = r.u8_or_default();
+                let bursts = r.u16_or_default();
+                let volley_min = r.u16_or_default();
+                let volley_max = r.u16_or_default();
+                let pause_min = r.f32_or_default();
+                let pause_max = r.f32_or_default();
+                out.use_weapon = Some(PackUseWeapon {
+                    flags,
+                    volley_fire: fire_rate == 1,
+                    repeat_fire: fire_count == 1,
+                    bursts,
+                    volley_min,
+                    volley_max,
+                    pause_min,
+                    pause_max,
                 });
             }
             // PKE2 (FO3/FNV) — Escort Distance, u32 world units. #3332.
@@ -1198,6 +1294,53 @@ mod tests {
     active_package_is!(active_package_is_escort, is_escort);
     active_package_is!(active_package_is_guard, is_guard);
     active_package_is!(active_package_is_patrol, is_patrol);
+
+    /// FNV `VHDOliverRangerSniperLeftLanePackage`, byte for byte: PTDT is
+    /// the weapon (an Object ID), PTD2 the target (the player), PKW3 the
+    /// fire data (Crouch To Reload | Hold Fire When Blocked, Repeat Fire).
+    #[test]
+    fn use_weapon_decodes_its_weapon_target_and_fire_data() {
+        let mut pkdt = Vec::new();
+        pkdt.extend_from_slice(&0x0C80_3000u32.to_le_bytes());
+        pkdt.extend_from_slice(&[16, 0, 0, 0]);
+        pkdt.extend_from_slice(&[0, 0, 0, 0]);
+        let target = |kind: u32, form: u32, distance: i32| {
+            let mut v = Vec::new();
+            v.extend_from_slice(&kind.to_le_bytes());
+            v.extend_from_slice(&form.to_le_bytes());
+            v.extend_from_slice(&distance.to_le_bytes());
+            v.extend_from_slice(&0f32.to_le_bytes());
+            v
+        };
+        let mut pkw3 = Vec::new();
+        pkw3.extend_from_slice(&0x0101_0000u32.to_le_bytes());
+        pkw3.extend_from_slice(&[0, 1]);
+        pkw3.extend_from_slice(&1u16.to_le_bytes());
+        pkw3.extend_from_slice(&1u16.to_le_bytes());
+        pkw3.extend_from_slice(&6u16.to_le_bytes());
+        pkw3.extend_from_slice(&1.0f32.to_le_bytes());
+        pkw3.extend_from_slice(&2.0f32.to_le_bytes());
+        pkw3.extend_from_slice(&[0; 4]);
+        let pack = parse_pack(
+            0x1,
+            &[
+                sub(b"PKDT", &pkdt),
+                sub(b"PTDT", target(1, 0x001724F2, 0)),
+                sub(b"PKW3", &pkw3),
+                sub(b"PTD2", target(0, 0x14, 0)),
+            ],
+            &None,
+            GameKind::default(),
+        );
+        assert!(pack.is_use_weapon());
+        assert_eq!(pack.target.map(|t| t.target), Some(PackTargetKind::ObjectId(0x001724F2)));
+        assert_eq!(pack.target2.map(|t| t.target), Some(PackTargetKind::SpecificReference(0x14)));
+        let fire = pack.use_weapon.expect("PKW3 decodes");
+        assert!(fire.repeat_fire && !fire.volley_fire && !fire.does_no_damage());
+        assert_eq!(fire.flags, PackUseWeapon::CROUCH_TO_RELOAD | PackUseWeapon::HOLD_FIRE_WHEN_BLOCKED);
+        assert_eq!((fire.bursts, fire.volley_min, fire.volley_max), (1, 1, 6));
+        assert_eq!((fire.pause_min, fire.pause_max), (1.0, 2.0));
+    }
 
     #[test]
     fn parse_pack_picks_pkdt_flags_and_procedure() {
