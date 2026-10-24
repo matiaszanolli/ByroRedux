@@ -25,6 +25,7 @@ mod actions;
 mod extras;
 mod state;
 mod tail;
+pub(crate) use state::STATE_COMMANDS;
 pub(crate) use tail::TAIL_COMMANDS;
 pub use tail::{ChildRaces, CellZones, ExitGameRequest, PendingVideos, PlayableRaces};
 pub(crate) use actions::ACTIONS_COMMANDS;
@@ -529,7 +530,7 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], ctx: &Context
         // `GetFurnitureMarkerID`: its CS / GECK page is a stub ("Incomplete") and the scripts compare it with
         // ids like 26 that are no marker index the engine keeps: declined, not guessed.
         0x10a0 => Action::Declined,
-        _ => state::run(world, fallout, cmd, args, ctx),
+        _ => Action::Unhandled,
     }
 }
 
