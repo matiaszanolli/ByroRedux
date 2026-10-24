@@ -799,7 +799,7 @@ attribute receives a +1 to +5 bonus based on governed major-skill increases
 skill-use progression curve. Source: [UESP Oblivion:
 Leveling](https://en.uesp.net/wiki/Oblivion:Leveling).
 
-## Crime fines — theft built, the rest sourced and unbuilt
+## Crime fines — theft, assault and murder built, the rest sourced and unbuilt
 
 Sources: CS wiki *Crime Overview*, *iCrimeGoldXX*, *fCrimeGoldSteal*,
 *GetPCFactionSteal*; UESP *Oblivion:Crime*. Built as
@@ -813,10 +813,10 @@ GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
 | Lockpicking an owned lock | 5 | no |
 | Trespass | 5 (after a 30 s warning) | no |
 | Pickpocket | 25 | no |
-| Assault | 40 (`iCrimeGoldAttack`, authored) | no |
+| Assault | 40 (`iCrimeGoldAttack`; Oblivion.esm authors only `iCrimeGoldAttackMin` = 500) | yes — a non-hostile NPC, once per victim, witnessed only |
 | Jailbreak | 50 (`iCrimeGoldJailBreak`, authored) | no |
 | Horse theft | 250 (`iCrimeGoldStealHorse`, authored) | no |
-| Murder | 1000, plus one infamy | no |
+| Murder | 1000 (`iCrimeGoldMurder`, not authored), plus one infamy (one per 1000 gold a crime adds, UESP *Infamy*) | yes — a non-hostile NPC; the victim's factions get the Murder flag unwitnessed |
 
 - The faction Steal flag is set by any theft from a faction's property,
   witnessed or not (`GetPCFactionSteal`: "this does not have to be a crime
@@ -828,4 +828,11 @@ GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
 - Guards: bounty over 1000 means arrest on sight, over 4000 attack
   (`Bounty`), `iCrimeGoldAttackMin` is the rush threshold; none of that reads
   the bounty yet.
+- Assault is charged once per victim (the original turns the victim
+  hostile; a hostile victim is self-defence). A kill in one blow is only a
+  murder. "Non-hostile" is the hostility pass's own judgement plus not
+  already fighting the player; the Attack flag only marks factions the
+  player belongs to (`GetPCFactionAttack`). Not built: a guard kill that
+  incurs a bounty with no witness, hostile spell effects as assault,
+  creatures as victims, the victim's disposition drop.
 - Shivering Isles tracks a separate bounty; one value is kept.

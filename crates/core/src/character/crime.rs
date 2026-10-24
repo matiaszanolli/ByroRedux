@@ -1,9 +1,9 @@
 //! The crime family (CHARAL): what a crime costs the criminal.
 //!
-//! Only Oblivion's fines are sourced so far, and only theft is wired: the
-//! other fines in the CS wiki's *Crime* table (assault 40, murder 1000,
-//! pickpocket 25, trespass 5, jailbreak 50, horse theft 250) have no
-//! consumer yet, so they are not carried here. FO3 / FNV crime is
+//! Only Oblivion's fines are sourced so far, and theft, assault and murder
+//! are wired: the other fines in the CS wiki's *Crime* table (pickpocket 25,
+//! trespass 5, jailbreak 50, horse theft 250) have no consumer yet, so they
+//! are not carried here. FO3 / FNV crime is
 //! faction-based (per-faction crime values) and a different model; a game
 //! with no model here has no crime consequence, which is a profile row
 //! saying `None`, never a branch in the consumer.
@@ -22,13 +22,25 @@ pub struct CrimeModel {
     /// formula is Crime Gold = itemValue * fCrimeGoldSteal" (CS wiki,
     /// default 0.5; Oblivion.esm does not author it).
     pub steal_value_mult: f32,
+    /// `iCrimeGoldAttack`: the bounty for an assault (CS wiki, default 40;
+    /// Oblivion.esm does not author it, only `iCrimeGoldAttackMin`).
+    pub attack_gold: i32,
+    /// `iCrimeGoldMurder`: the bounty for a murder (CS wiki, default 1000;
+    /// Oblivion.esm does not author it).
+    pub murder_gold: i32,
+    /// UESP *Oblivion:Infamy*: one infamy point for "doing anything that
+    /// increases your bounty by 1000. Can be done repeatedly." Counted per
+    /// incident, so a murder is one point and a 700-gold theft none. A wiki
+    /// observation, not a setting the masters author, so it is data on the
+    /// model (a mod's rules profile can change it), not a constant.
+    pub infamy_bounty_step: i32,
 }
 
 impl Resource for CrimeModel {}
 
 impl CrimeModel {
     /// Oblivion's defaults (CS wiki *fCrimeGoldSteal*, UESP *Crime*).
-    pub const OBLIVION: Self = Self { steal_value_mult: 0.5 };
+    pub const OBLIVION: Self = Self { steal_value_mult: 0.5, attack_gold: 40, murder_gold: 1000, infamy_bounty_step: 1000 };
 
     /// The model with each setting the load order authors replacing its
     /// default. A non-finite or negative authored value is ignored.
@@ -38,7 +50,20 @@ impl CrimeModel {
             steal_value_mult: gmst("fCrimeGoldSteal")
                 .filter(|mult| mult.is_finite() && *mult >= 0.0)
                 .unwrap_or(self.steal_value_mult),
+            attack_gold: Self::authored_gold(&gmst, "iCrimeGoldAttack", self.attack_gold),
+            murder_gold: Self::authored_gold(&gmst, "iCrimeGoldMurder", self.murder_gold),
+            infamy_bounty_step: self.infamy_bounty_step,
         }
+    }
+
+    fn authored_gold(gmst: &impl Fn(&str) -> Option<f32>, name: &str, default: i32) -> i32 {
+        gmst(name).filter(|gold| gold.is_finite() && *gold >= 0.0).map_or(default, |gold| gold as i32)
+    }
+
+    /// The infamy a crime that adds `bounty` earns (see [`Self::infamy_bounty_step`]).
+    #[must_use]
+    pub fn infamy_for(self, bounty: i32) -> f32 {
+        (bounty.max(0) / self.infamy_bounty_step.max(1)) as f32
     }
 
     /// The bounty a witnessed theft of goods worth `value` adds. UESP
@@ -69,6 +94,25 @@ mod tests {
     #[test]
     fn an_absurd_value_saturates_instead_of_wrapping() {
         assert_eq!(CrimeModel::OBLIVION.theft_bounty(u64::MAX), i32::MAX);
+    }
+
+    #[test]
+    fn infamy_is_one_point_per_thousand_gold_of_a_single_crime() {
+        let model = CrimeModel::OBLIVION;
+        assert_eq!(model.infamy_for(model.murder_gold), 1.0);
+        assert_eq!(model.infamy_for(model.attack_gold), 0.0);
+        assert_eq!(model.infamy_for(2500), 2.0);
+        assert_eq!(model.infamy_for(-5), 0.0);
+    }
+
+    #[test]
+    fn authored_fines_replace_the_defaults() {
+        let model = CrimeModel::OBLIVION.with_gmst(|name| match name {
+            "iCrimeGoldAttack" => Some(60.0),
+            "iCrimeGoldMurder" => Some(f32::NAN),
+            _ => None,
+        });
+        assert_eq!((model.attack_gold, model.murder_gold), (60, 1000), "junk keeps the default");
     }
 
     #[test]

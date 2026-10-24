@@ -927,6 +927,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PlayerBodyRootEntity", "process-lifetime pointer to the player-body root (same posture as PlayerEntity); set once at attach, not gameplay state"),
         ("HiddenFirstPerson", "derived visibility marker on the player body's meshes from the PlayerCameraView toggle; restamped by set_player_view on every view switch"),
         ("PlayerCameraView", "first/third-person camera-view flag toggled live by the V key / player.view command; presentation-only, not gameplay state"),
+        ("AssaultedByPlayer", "transient marker that the player already assaulted this NPC, so its later hits are not charged again; a loaded save forgets it (the bounty it produced is the saved ObScriptLedger)"),
         ("PickedUp", "volatile pickup marker; the durable half is the saved PersistentReferenceStates tombstone row, and reference_state::restore re-stamps the marker at load"),
         ("RegionAmbientRes", "resolved REGN Sound-entry FormIDs for the resident cell/tile (EX-16 item 1 / #2372), rederived identically from the cell's XCLR list + the plugin's parsed REGN map every cell load — same posture as CellLightingRes/NavmeshTile"),
         ("SandboxSitClip", "resolved once at cell load from the archive provider, read-only afterward"),

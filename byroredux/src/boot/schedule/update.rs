@@ -693,7 +693,26 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<crate::systems::GraphLocomotion>()
             .writes::<crate::systems::ConsoleWalk>()
             .writes_resource::<byroredux_scripting::ActivePackages>()
-            .writes_resource::<byroredux_scripting::PendingPackageTransitions>(),
+            .writes_resource::<byroredux_scripting::PendingPackageTransitions>()
+            // `crime::report_strike` — the assault / murder bounty, its witnesses, and the
+            // hostility judgement of the victim.
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<byroredux_core::character::CrimeModel>()
+            .writes_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()
+            .writes_resource::<crate::notifications::PlayerNotifications>()
+            .writes::<crate::crime::AssaultedByPlayer>()
+            .reads::<byroredux_core::ecs::components::CreatureActor>()
+            .reads::<byroredux_core::ecs::components::FactionRanks>()
+            .reads::<byroredux_core::ecs::components::GlobalTransform>()
+            .reads::<byroredux_scripting::AiCombatState>()
+            .reads::<crate::systems::faction_hostility::CombatDisposition>()
+            .reads_resource::<crate::systems::faction_hostility::DetectionConfig>()
+            .reads_resource::<crate::components::CellLightingRes>()
+            .reads_resource::<byroredux_scripting::FactionRelations>()
+            .reads_resource::<byroredux_scripting::LoadOrderIdentity>()
+            .reads_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+            .reads_resource::<byroredux_physics::PhysicsWorld>()
+            .reads::<byroredux_physics::RapierHandles>(),
     );
     // Animated props' behavior graphs: clip-trigger events move their state machines on.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::object_graph_step_system);

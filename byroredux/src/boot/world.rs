@@ -293,6 +293,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // (`None`) until the storage exists. Pre-register, mirroring
     // `WaterContact`'s `query_mut::insert` note above.
     world.register::<crate::inventory::PickedUp>();
+    // `crime::report_strike` marks an assaulted NPC through a `query_mut` write guard, which no-ops on an unregistered storage.
+    world.register::<crate::crime::AssaultedByPlayer>();
     // #4991 — the third render-skip sink. Registered at boot for the same
     // reason as `PickedUp`, and so every world the render passes read has
     // the storage: an unregistered storage makes their `query` return None,

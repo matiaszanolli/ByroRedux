@@ -360,6 +360,8 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         } else {
             apply_damage_threshold(world, event.aggressor, target, event.damage.max(0.0))
         };
+        // Judged before the strike lands: a kill clears the victim's combat state.
+        let crime = crate::crime::player_strike_is_crime(world, event.aggressor, target);
         let Some((before, after)) = apply_health_damage(world, target, vitals.health, damage)
         else {
             continue;
@@ -392,6 +394,9 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             );
             outcome.push_str(&reconcile_dead_actor(world, target));
             award_kill_experience(world, target, vitals.health);
+        }
+        if crime {
+            crate::crime::report_strike(world, event.aggressor, target, killed);
         }
 
         if let Some(mut state) = world.try_resource_mut::<CombatState>() {
@@ -1452,6 +1457,137 @@ mod tests {
             },
         );
         (world, aggressor, target)
+    }
+
+    /// A player strike on a bystander NPC in an Oblivion-ruled world with one
+    /// onlooker in sight: `(world, player, victim)`.
+    fn crime_strike_fixture(health: f32, weapon_damage: f32) -> (World, EntityId, EntityId) {
+        use byroredux_core::ecs::components::{FactionRanks, GlobalTransform};
+        use byroredux_core::math::Vec3;
+        use byroredux_plugin::esm::records::{ActorAiData, Aggression, Confidence};
+        let (mut world, player, victim) = damage_fixture(health, Some(weapon_damage), false);
+        world.register::<GlobalTransform>();
+        world.register::<FactionRanks>();
+        world.register::<crate::systems::faction_hostility::CombatDisposition>();
+        world.register::<crate::crime::AssaultedByPlayer>();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert_resource(byroredux_core::character::CrimeModel::OBLIVION);
+        world.insert_resource(byroredux_scripting::obscript_ledger::ObScriptLedger::default());
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
+        world.insert_resource(crate::systems::faction_hostility::DetectionConfig { max_distance: 1000.0, exterior_mult: 1.0 });
+        world.insert(player, GlobalTransform::new(Vec3::ZERO, Default::default(), 1.0));
+        world.insert(player, FactionRanks::from_pairs([(0xAAA, 1)]));
+        world.insert(victim, GlobalTransform::new(Vec3::new(0.0, 0.0, 100.0), Default::default(), 1.0));
+        world.insert(victim, FactionRanks::from_pairs([(0xAAA, 0), (0xBBB, 0)]));
+        let calm = ActorAiData {
+            aggression: Aggression::Unaggressive,
+            confidence: Confidence::Average,
+            responsibility: None,
+            attack_radius: None,
+        };
+        world.insert(victim, crate::systems::faction_hostility::CombatDisposition(calm));
+        let witness = world.spawn();
+        world.insert(witness, GlobalTransform::new(Vec3::new(0.0, 0.0, 300.0), Default::default(), 1.0));
+        world.insert(witness, crate::systems::faction_hostility::CombatDisposition(calm));
+        (world, player, victim)
+    }
+
+    fn strike_again(world: &World, player: EntityId, victim: EntityId, damage: f32) {
+        world.query_mut::<byroredux_scripting::HitEvent>().unwrap().insert(
+            victim,
+            byroredux_scripting::HitEvent {
+                aggressor: player,
+                source: player,
+                projectile: 0,
+                damage,
+                power_attack: false,
+                sneak_attack: false,
+                bash_attack: false,
+                blocked: false,
+            },
+        );
+        combat_damage_system(world, 0.0);
+    }
+
+    /// Oblivion assault (CS *Crime Overview*): striking a non-hostile NPC adds
+    /// `iCrimeGoldAttack` once, flags the victim's factions the player belongs
+    /// to, and a later blow while the victim is still calm is not charged again.
+    #[test]
+    fn striking_a_bystander_is_an_assault_charged_once() {
+        use byroredux_scripting::obscript_ledger::{FactionFlag, ObScriptLedger};
+        let (world, player, victim) = crime_strike_fixture(100.0, 10.0);
+        combat_damage_system(&world, 0.0);
+        {
+            let ledger = world.resource::<ObScriptLedger>();
+            assert_eq!(ledger.crime_gold, 40);
+            assert_eq!(ledger.infamy, 0.0);
+            assert!(ledger.flag(FactionFlag::Attack, 0xAAA), "the player belongs to 0xAAA");
+            assert!(!ledger.flag(FactionFlag::Attack, 0xBBB), "but not to 0xBBB");
+        }
+        strike_again(&world, player, victim, 10.0);
+        assert_eq!(world.resource::<ObScriptLedger>().crime_gold, 40, "the same victim is charged once");
+    }
+
+    /// A kill in one blow is only a murder (UESP *Oblivion:Crime*): 1000 gold,
+    /// one infamy, and the Murder flag on every faction of the victim.
+    #[test]
+    fn killing_a_bystander_in_one_blow_is_a_murder_only() {
+        use byroredux_scripting::obscript_ledger::{FactionFlag, ObScriptLedger};
+        let (world, _player, _victim) = crime_strike_fixture(5.0, 10.0);
+        combat_damage_system(&world, 0.0);
+        let ledger = world.resource::<ObScriptLedger>();
+        assert_eq!(ledger.crime_gold, 1000, "no assault fine on top");
+        assert_eq!(ledger.infamy, 1.0);
+        assert!(ledger.flag(FactionFlag::Murder, 0xAAA) && ledger.flag(FactionFlag::Murder, 0xBBB));
+    }
+
+    /// An unseen murder still flags the factions but costs no bounty.
+    #[test]
+    fn an_unwitnessed_murder_flags_the_faction_but_costs_nothing() {
+        use byroredux_scripting::obscript_ledger::{FactionFlag, ObScriptLedger};
+        let (mut world, _player, victim) = crime_strike_fixture(5.0, 10.0);
+        world.insert(victim, byroredux_core::ecs::components::GlobalTransform::new(
+            byroredux_core::math::Vec3::new(0.0, 0.0, 100.0), Default::default(), 1.0));
+        // The onlooker is the only other NPC: move it out of detection range.
+        let far = byroredux_core::math::Vec3::new(0.0, 0.0, 9000.0);
+        let onlooker = world
+            .query::<crate::systems::faction_hostility::CombatDisposition>()
+            .unwrap()
+            .iter()
+            .map(|(entity, _)| entity)
+            .find(|entity| *entity != victim)
+            .unwrap();
+        world.insert(onlooker, byroredux_core::ecs::components::GlobalTransform::new(far, Default::default(), 1.0));
+        combat_damage_system(&world, 0.0);
+        let ledger = world.resource::<ObScriptLedger>();
+        assert_eq!(ledger.crime_gold, 0);
+        assert!(ledger.flag(FactionFlag::Murder, 0xAAA));
+    }
+
+    /// Self-defence is not a crime: a victim already fighting the player, a
+    /// creature, and a strike by anyone but the player cost nothing.
+    #[test]
+    fn self_defence_creatures_and_npc_strikes_are_not_crimes() {
+        use byroredux_scripting::obscript_ledger::ObScriptLedger;
+        let (mut world, player, victim) = crime_strike_fixture(100.0, 10.0);
+        world.insert(victim, byroredux_scripting::AiCombatState { target: player, attack_cooldown_remaining: 0.0 });
+        combat_damage_system(&world, 0.0);
+        assert_eq!(world.resource::<ObScriptLedger>().crime_gold, 0, "the victim was already fighting");
+
+        let (mut world, _player, victim) = crime_strike_fixture(100.0, 10.0);
+        world.register::<byroredux_core::ecs::components::CreatureActor>();
+        world.insert(victim, byroredux_core::ecs::components::CreatureActor);
+        combat_damage_system(&world, 0.0);
+        assert_eq!(world.resource::<ObScriptLedger>().crime_gold, 0, "a creature");
+
+        let (mut world, _player, victim) = crime_strike_fixture(100.0, 10.0);
+        let guard = world.spawn();
+        world.insert(victim, byroredux_scripting::HitEvent {
+            aggressor: guard, source: guard, projectile: 0, damage: 10.0,
+            power_attack: false, sneak_attack: false, bash_attack: false, blocked: false,
+        });
+        combat_damage_system(&world, 0.0);
+        assert_eq!(world.resource::<ObScriptLedger>().crime_gold, 0, "an NPC's strike");
     }
 
     /// M47.2 — a strike carries the damage the aggressor's perks compose:
