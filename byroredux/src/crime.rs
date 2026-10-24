@@ -24,6 +24,8 @@
 //!   within `iCrimeAlarmRecDistance` of a witness, the `iNumberGuardsCrimeResponse` nearest
 //!   the player, learn of it and walk up to open a greeting — the force-greet directive the
 //!   dialogue runtime already runs — which the arrest greeting (`IsTurnArrest`) answers.
+//! * A **wanted player is rushed on sight** ([`make_guard_rush_system`]): a guard who sees the
+//!   player with a bounty at or past `iCrimeGoldAttackMin` comes for them the same way.
 //!
 //! Everything lands in the saved [`ObScriptLedger`] that `GetCrimeGold` /
 //! `GetPCInfamy` / `GetPCFaction*` already read, so scripts and the engine
@@ -35,8 +37,7 @@
 //!
 //! Not modelled yet: sneaking undetected (a witness is any living NPC who
 //! can see the player at detection range, with no stealth roll), the
-//! witnesses' disposition drop, a guard kill that incurs a bounty with no witness,
-//! guards that arrest on sight at a high bounty (the wiki's thresholds are approximate), hostile spell effects
+//! witnesses' disposition drop, a guard kill that incurs a bounty with no witness, hostile spell effects
 //! as assault, creatures (domestic ones are murder victims in the original)
 //! as victims, and Shivering Isles' separate bounty.
 //!
@@ -555,5 +556,209 @@ pub(crate) fn evidence_deposit_system(world: &World, _dt: f32) {
         } else {
             log::warn!("evidence deposit: chest {:08X} cannot be reached; {} of {:08X} stay in the evidence", deposit.chest, deposit.count, deposit.item);
         }
+    }
+}
+
+/// How often the guards look for a wanted player. Engine pacing, not a game rule (the hostility pass
+/// evaluates every `EVALUATION_PERIOD_SECS` for the same reason).
+const RUSH_PERIOD_SECS: f32 = 1.0;
+
+/// How long a guard who rushed the player waits before rushing again. Engine pacing, not a game
+/// rule: the original's arrest greeting has no way out, while ours closes with the conversation
+/// page, and without the wait a guard would re-open it the moment it closed.
+const RUSH_RETRY_SECS: f32 = 30.0;
+
+/// Guards who see a wanted player come for them. `iCrimeGoldAttackMin` is "the minimum bounty level
+/// required for guards to rush a player on sight": at or past it, a guard (class Guard flag) who
+/// can see the player walks up and opens its greeting — the same force-greet directive the alarm
+/// uses — which the authored arrest greeting answers. Below it a guard waits to be spoken to.
+/// The higher figures the wiki quotes are conditions in that greeting, not code here.
+pub(crate) fn make_guard_rush_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut elapsed = 0.0f32;
+    // Seconds before each guard may rush again.
+    let mut waiting: std::collections::HashMap<EntityId, f32> = std::collections::HashMap::new();
+    move |world: &World, dt: f32| {
+        if dt.is_finite() {
+            elapsed += dt.max(0.0);
+            for wait in waiting.values_mut() {
+                *wait -= dt.max(0.0);
+            }
+            waiting.retain(|_, wait| *wait > 0.0);
+        }
+        if elapsed < RUSH_PERIOD_SECS {
+            return;
+        }
+        elapsed = 0.0;
+        rush_wanted_player(world, &mut waiting);
+    }
+}
+
+fn rush_wanted_player(world: &World, waiting: &mut std::collections::HashMap<EntityId, f32>) {
+    use crate::systems::forcegreet::{ForceGreetDirective, FORCE_GREET_RADIUS};
+    let Some(model) = world.try_resource::<CrimeModel>().map(|model| *model) else { return };
+    let bounty = byroredux_scripting::guards::player_bounty(world);
+    if bounty <= 0 || bounty < model.rush_bounty || byroredux_scripting::jail::player_in_jail(world) {
+        return;
+    }
+    let Some(player) = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) else { return };
+    // Mid-conversation, or unable to act: nobody is rushed (the dialogue runtime defers too).
+    let talking = world.try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>().is_some_and(|surface| surface.npc.is_some());
+    if talking || !crate::systems::player_can_act(world) {
+        return;
+    }
+    let actors: Vec<EntityId> = world
+        .query::<crate::systems::faction_hostility::CombatDisposition>()
+        .map(|q| q.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    for guard in actors {
+        if guard == player
+            || waiting.contains_key(&guard)
+            || !byroredux_scripting::guards::is_guard(world, guard)
+            || world.get::<Dead>(guard).is_some()
+            || world.get::<CreatureActor>(guard).is_some()
+            || world.get::<byroredux_scripting::AiCombatState>(guard).is_some()
+            || !crate::systems::faction_hostility::actor_detects(world, guard, player)
+        {
+            continue;
+        }
+        if let Some(mut directives) = world.query_mut::<ForceGreetDirective>() {
+            if directives.get(guard).is_none() {
+                directives.insert(guard, ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS });
+                waiting.insert(guard, RUSH_RETRY_SECS);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod rush_tests {
+    use super::*;
+    use crate::systems::faction_hostility::{CombatDisposition, DetectionConfig};
+    use crate::systems::forcegreet::ForceGreetDirective;
+    use byroredux_core::character::Background;
+    use byroredux_core::math::Vec3;
+    use byroredux_plugin::esm::records::{ActorAiData, Aggression, ClassRecord, Confidence, EsmIndex};
+
+    const GUARD_CLASS: u32 = 0x77;
+
+    /// A player with `bounty`, a guard 400 away who can see them, a guard 20000 away, a citizen 400 away.
+    fn street(bounty: i32) -> (World, EntityId, EntityId, EntityId, EntityId) {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<GlobalTransform>();
+        world.register::<CombatDisposition>();
+        world.register::<Background>();
+        world.register::<ForceGreetDirective>();
+        let mut index = EsmIndex::default();
+        index.classes.insert(
+            GUARD_CLASS,
+            ClassRecord {
+                form_id: GUARD_CLASS,
+                editor_id: String::new(),
+                full_name: String::new(),
+                description: String::new(),
+                base_attributes: [0; 7],
+                skyrim_skill_weights: None,
+                skyrim_pool_weights: None,
+                tag_skills: Vec::new(),
+                primary_attributes: None,
+                specialization: None,
+                major_skills: Vec::new(),
+                flags_oblivion: None,
+                class_flags: Some(0b10),
+            },
+        );
+        byroredux_scripting::guards::install_guard_classes(&mut world, &index);
+        world.insert_resource(CrimeModel::OBLIVION);
+        world.insert_resource(DetectionConfig { max_distance: 2000.0, exterior_mult: 1.0 });
+        let mut ledger = ObScriptLedger::default();
+        ledger.crime_gold = bounty;
+        world.insert_resource(ledger);
+        let calm = ActorAiData { aggression: Aggression::Unaggressive, confidence: Confidence::Average, responsibility: None, attack_radius: None };
+        let actor = |world: &mut World, z: f32, class: u32| {
+            let entity = world.spawn();
+            world.insert(entity, GlobalTransform::new(Vec3::new(0.0, 0.0, z), Default::default(), 1.0));
+            world.insert(entity, CombatDisposition(calm));
+            world.insert(entity, Background { race_form_id: 1, class_form_id: class });
+            entity
+        };
+        let near = actor(&mut world, 400.0, GUARD_CLASS);
+        let far = actor(&mut world, 20000.0, GUARD_CLASS);
+        let citizen = actor(&mut world, -400.0, 0x10);
+        let player = world.spawn();
+        world.insert(player, GlobalTransform::new(Vec3::ZERO, Default::default(), 1.0));
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
+        (world, player, near, far, citizen)
+    }
+
+    fn rushed(world: &World, entity: EntityId) -> bool {
+        world.get::<ForceGreetDirective>(entity).is_some()
+    }
+
+    fn tick(world: &World, system: &mut impl FnMut(&World, f32), secs: f32) {
+        system(world, secs);
+    }
+
+    #[test]
+    fn a_guard_who_sees_a_player_at_the_rush_bounty_comes_for_them() {
+        let (world, _player, near, far, citizen) = street(500);
+        tick(&world, &mut make_guard_rush_system(), 1.0);
+        assert!(rushed(&world, near));
+        assert!(!rushed(&world, far), "out of sight");
+        assert!(!rushed(&world, citizen), "a citizen is not a guard");
+    }
+
+    #[test]
+    fn below_the_setting_a_guard_waits_to_be_spoken_to() {
+        let (world, _player, near, ..) = street(499);
+        tick(&world, &mut make_guard_rush_system(), 1.0);
+        assert!(!rushed(&world, near));
+        let (world, _player, near, ..) = street(0);
+        tick(&world, &mut make_guard_rush_system(), 1.0);
+        assert!(!rushed(&world, near), "no bounty, no rush");
+    }
+
+    #[test]
+    fn the_threshold_is_the_load_orders_setting() {
+        let (mut world, _player, near, ..) = street(600);
+        world.insert_resource(CrimeModel { rush_bounty: 1000, ..CrimeModel::OBLIVION });
+        tick(&world, &mut make_guard_rush_system(), 1.0);
+        assert!(!rushed(&world, near), "a mod that raised iCrimeGoldAttackMin raises it");
+    }
+
+    #[test]
+    fn a_guard_does_not_rush_again_the_moment_the_conversation_closes() {
+        let (world, _player, near, ..) = street(900);
+        let mut system = make_guard_rush_system();
+        tick(&world, &mut system, 1.0);
+        assert!(rushed(&world, near));
+        // The greeting opened and consumed the directive.
+        world.query_mut::<ForceGreetDirective>().unwrap().remove(near);
+        tick(&world, &mut system, 1.0);
+        assert!(!rushed(&world, near), "still waiting out the retry");
+        tick(&world, &mut system, RUSH_RETRY_SECS);
+        assert!(rushed(&world, near), "and rushes again after it");
+    }
+
+    #[test]
+    fn nobody_is_rushed_while_the_player_is_in_a_conversation() {
+        use crate::systems::npc_dialogue::DialogueSurfaceState;
+        let (mut world, _player, near, far, _citizen) = street(900);
+        world.insert_resource(DialogueSurfaceState { npc: Some(far), ..Default::default() });
+        tick(&world, &mut make_guard_rush_system(), 1.0);
+        assert!(!rushed(&world, near), "the dialogue runtime would defer it; so do we");
+    }
+
+    #[test]
+    fn nobody_is_rushed_mid_conversation_in_jail_or_without_a_crime_model() {
+        let (mut world, _player, near, ..) = street(900);
+        world.resource_mut::<ObScriptLedger>().jail = Some(byroredux_scripting::obscript_ledger::JailSentence { exit_marker: 1, days: 1.0 });
+        tick(&world, &mut make_guard_rush_system(), 1.0);
+        assert!(!rushed(&world, near), "a prisoner is not rushed");
+        world.resource_mut::<ObScriptLedger>().jail = None;
+        world.remove_resource::<CrimeModel>();
+        tick(&world, &mut make_guard_rush_system(), 1.0);
+        assert!(!rushed(&world, near), "no model, no rule");
     }
 }

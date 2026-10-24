@@ -832,12 +832,20 @@ GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
   already runs), which the authored arrest greeting answers. The two settings'
   CS descriptions are the whole source; reading them as "within earshot of a
   witness" and "nearest the player" is an interpretation.
+- A wanted player is rushed on sight: a guard who can see the player with a
+  bounty at or past `iCrimeGoldAttackMin` ("the minimum bounty level required
+  for guards to rush a player on sight"; authored 500 in Oblivion.esm, and the
+  Gray Cowl of Nocturnal's script sets the bounty to at least that so every
+  guard comes) walks up and opens its greeting. The wiki's "arrest on sight over
+  about 1000, attack over about 4000" are not settings: they are conditions in the
+  authored greetings (`GetCrimeGold < 1000` for the lenient one, the pay-the-fine
+  topic gated on `< 5000`), so they come with the dialogue data and nothing is
+  hardcoded. A rushing guard waits 30 s before rushing again (engine pacing: the
+  original's arrest greeting has no way out, ours closes with the page).
 - Guards are authored data, not engine code. A guard's arrest talk is
   `GREETING` INFOs gated on `GetCrimeGold > 0`, `CanPayCrimeGold`, `IsGuard`
   and `IsTurnArrest` (Oblivion.esm: 46 INFOs use them), with result scripts
-  for the choices. The thresholds the wiki describes (arrest on sight over
-  about 1000, attack over about 4000) are approximate and are not hardcoded;
-  `iCrimeGoldAttackMin` (500, authored) is a setting scripts read. Built: the
+  for the choices. Built: the
   condition vocabulary (`ConditionFunction::from_index_in`, the Oblivion
   dialect: 116 / 125 / 127 / 171 / 193 / 249 / 251 / 329), the CTDA "Run On
   Target" bit, and the `CLAS` Guard flag (`guards.rs`), so 39 of those 46 INFOs
@@ -858,7 +866,7 @@ GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
   loaded chest receives them directly, an unloaded one has them added to its
   parked inventory (`reference_state::deposit_into_reference`), and the ledger's
   `evidence` holds them until they arrive. Not built: the skill loss for time
-  served (UESP names no rule for which skill), arrest on sight at a high bounty.
+  served (UESP names no rule for which skill).
 - Assault is charged once per victim (the original turns the victim
   hostile; a hostile victim is self-defence). A kill in one blow is only a
   murder. "Non-hostile" is the hostility pass's own judgement plus not

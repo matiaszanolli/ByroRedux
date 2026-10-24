@@ -73,13 +73,20 @@ pub struct CrimeModel {
     /// player commits a crime and it has been reported. If set to 0, no guard
     /// appears" (CS wiki, default 4; not authored).
     pub guards_responding: u32,
+    /// `iCrimeGoldAttackMin`: "the minimum bounty level required for guards to rush a player on
+    /// sight. This is not the level that causes guards to attack" (CS wiki). The wiki lists no
+    /// default; the default here is Oblivion.esm's authored 500, which the Gray Cowl of Nocturnal's
+    /// script uses as the bounty that makes every guard come ("wearing the cowl will prompt guards
+    /// to immediately arrest you"). The higher figures the wiki quotes (arrest at about 1000,
+    /// attack at about 4000) are not settings: they are conditions in the guards' authored dialogue.
+    pub rush_bounty: i32,
 }
 
 impl Resource for CrimeModel {}
 
 impl CrimeModel {
     /// Oblivion's defaults (CS wiki *fCrimeGoldSteal*, UESP *Crime*).
-    pub const OBLIVION: Self = Self { steal_value_mult: 0.5, attack_gold: 40, murder_gold: 1000, infamy_bounty_step: 1000, prison_days_divisor: 100, alarm_distance: 4000.0, guards_responding: 4 };
+    pub const OBLIVION: Self = Self { steal_value_mult: 0.5, attack_gold: 40, murder_gold: 1000, infamy_bounty_step: 1000, prison_days_divisor: 100, alarm_distance: 4000.0, guards_responding: 4, rush_bounty: 500 };
 
     /// The model with each setting the load order authors replacing its
     /// default. A non-finite or negative authored value is ignored.
@@ -98,6 +105,7 @@ impl CrimeModel {
                 .unwrap_or(self.alarm_distance),
             // Zero is a real setting here (no guard appears), unlike the divisor.
             guards_responding: Self::authored_gold(&gmst, "iNumberGuardsCrimeResponse", self.guards_responding as i32) as u32,
+            rush_bounty: Self::authored_gold(&gmst, "iCrimeGoldAttackMin", self.rush_bounty),
         }
     }
 
@@ -173,6 +181,13 @@ mod tests {
             assert_eq!(CrimeKind::from_wire(wire as u32), Some(kind));
         }
         assert_eq!(CrimeKind::from_wire(5), None, "the sixth value differs per game and is not carried");
+    }
+
+    #[test]
+    fn the_rush_threshold_is_the_authored_setting() {
+        assert_eq!(CrimeModel::OBLIVION.rush_bounty, 500);
+        let model = CrimeModel::OBLIVION.with_gmst(|name| (name == "iCrimeGoldAttackMin").then_some(750.0));
+        assert_eq!(model.rush_bounty, 750);
     }
 
     #[test]
