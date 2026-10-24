@@ -1289,86 +1289,17 @@ impl ApplicationHandler for App {
                     // token below names the brackets whose zero is "skipped",
                     // so a skipped pass no longer lands in the TSV as a hard
                     // 0.000 indistinguishable from a measured one.
-                    let (gpu, gpu_active) = self
+                    // #6337 — key, milliseconds and ran-flag travel as one row per
+                    // bracket (`bench_gpu_samples`), and the line's tokens and the
+                    // `gpu_inactive=` names are both read off those rows, so the three
+                    // hand-ordered lists that could silently transpose no longer exist.
+                    let gpu_samples = self
                         .world
-                        .try_resource::<byroredux_core::ecs::SkinCoverageStats>()
-                        .map(|s| {
-                            // Copy just the timing fields out from under the
-                            // resource read guard; the resource itself carries
-                            // non-Copy diagnostic state we do not need here.
-                            (
-                                [
-                                    s.gpu_skin_dispatch_ms,
-                                    s.gpu_skin_blas_refit_ms,
-                                    s.gpu_taa_ms,
-                                    s.gpu_upscale_ms,
-                                    s.gpu_main_render_ms,
-                                    s.gpu_svgf_ms,
-                                    s.gpu_composite_ms,
-                                    s.gpu_ssao_ms,
-                                    s.gpu_bloom_ms,
-                                    s.gpu_volumetrics_ms,
-                                    s.gpu_cluster_cull_ms,
-                                    s.gpu_presentation_ms,
-                                    // #3629 — appended, not inserted, so the
-                                    // four sweep harnesses' `key=<float>`
-                                    // extractors keep matching. These two
-                                    // brackets existed in `gpu_timers.rs` and
-                                    // in every other consumer (the debug-UI
-                                    // grid, `gpu_breakdown`, the
-                                    // `SkinCoverageStats` fill) but the bench
-                                    // line reported 12 of 15 before #3629 while
-                                    // its own comment claimed a "full per-pass GPU
-                                    // breakdown".
-                                    s.gpu_tlas_build_ms,
-                                    s.gpu_caustic_splat_ms,
-                                    s.gpu_skin_palette_ms,
-                                    s.gpu_depth_history_copy_ms,
-                                    // SKYAL — appended last, same #3629 rule.
-                                    s.gpu_sky_cube_ms,
-                                    // #4315 — appended last, same rule.
-                                    s.gpu_groundcover_scatter_ms,
-                                    // #4618 — appended last, same rule.
-                                    s.gpu_exposure_meter_ms,
-                                    s.gpu_groundcover_models_ms,
-                                    s.gpu_volumetrics_inject_ms,
-                                    s.gpu_volumetrics_integrate_ms,
-                                    s.gpu_shadow_filter_ms,
-                                    s.gpu_cloud_shadow_ms,
-                                ],
-                                [
-                                    s.gpu_skin_dispatch_active,
-                                    s.gpu_skin_blas_refit_active,
-                                    s.gpu_taa_active,
-                                    s.gpu_upscale_active,
-                                    s.gpu_main_render_active,
-                                    s.gpu_svgf_active,
-                                    s.gpu_composite_active,
-                                    s.gpu_ssao_active,
-                                    s.gpu_bloom_active,
-                                    s.gpu_volumetrics_active,
-                                    s.gpu_cluster_cull_active,
-                                    s.gpu_presentation_active,
-                                    s.gpu_tlas_build_active,
-                                    s.gpu_caustic_splat_active,
-                                    s.gpu_skin_palette_active,
-                                    s.gpu_depth_history_copy_active,
-                                    s.gpu_sky_cube_active,
-                                    s.gpu_groundcover_scatter_active,
-                                    s.gpu_exposure_meter_active,
-                                    s.gpu_groundcover_models_active,
-                                    s.gpu_volumetrics_inject_active,
-                                    s.gpu_volumetrics_integrate_active,
-                                    s.gpu_shadow_filter_active,
-                                    s.gpu_cloud_shadow_active,
-                                ],
-                            )
-                        })
-                        .unwrap_or((
-                            [0.0; crate::BENCH_GPU_KEYS.len()],
-                            [false; crate::BENCH_GPU_KEYS.len()],
-                        ));
-                    let gpu_inactive = bench_gpu_inactive_token(gpu_active);
+                        .try_resource::<SkinCoverageStats>()
+                        .map(|s| crate::bench_gpu_samples(&s))
+                        .unwrap_or_else(|| crate::bench_gpu_samples(&SkinCoverageStats::default()));
+                    let gpu_tokens = crate::bench_gpu_tokens(&gpu_samples);
+                    let gpu_inactive = bench_gpu_inactive_token(gpu_samples.map(|(_, _, active)| active));
                     let rt_tier = self
                         .renderer
                         .as_ref()
@@ -1405,14 +1336,7 @@ impl ApplicationHandler for App {
                          [fence={:.2} cpu_tlas_ms={:.2} ssbo={:.2} geom_rebuild={:.2} \
                          cmd={:.2} submit={:.2} pipeline_compile_ms={:.2} \
                          parameter_upload_ms={:.2} fog_cluster_ms={:.2} post_present_ms={:.2}] \
-                         [gpu_skin_disp={:.3} gpu_blas_refit={:.3} gpu_taa={:.3} \
-                         gpu_upscale={:.3} gpu_main_render={:.3} gpu_svgf={:.3} \
-                         gpu_composite={:.3} gpu_ssao={:.3} gpu_bloom={:.3} \
-                         gpu_volumetrics={:.3} gpu_cluster_cull={:.3} \
-                         gpu_presentation={:.3} gpu_tlas_build={:.3} \
-                         gpu_caustic_splat={:.3} gpu_skin_palette={:.3} \
-                         gpu_depth_history_copy={:.3} gpu_sky_cube={:.3} \
-                         gpu_groundcover_scatter={:.3} gpu_exposure_meter={:.3} gpu_groundcover_models={:.3} gpu_volumetrics_inject={:.3} gpu_volumetrics_integrate={:.3} gpu_shadow_filter={:.3} gpu_cloud_shadow={:.3}] \
+                         [{}] \
                          gpu_inactive={} \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
@@ -1449,30 +1373,7 @@ impl ApplicationHandler for App {
                         parameter_upload_ms,
                         fog_cluster_ms,
                         post_present_ms,
-                        gpu[0],
-                        gpu[1],
-                        gpu[2],
-                        gpu[3],
-                        gpu[4],
-                        gpu[5],
-                        gpu[6],
-                        gpu[7],
-                        gpu[8],
-                        gpu[9],
-                        gpu[10],
-                        gpu[11],
-                        gpu[12],
-                        gpu[13],
-                        gpu[14],
-                        gpu[15],
-                        gpu[16],
-                        gpu[17],
-                        gpu[18],
-                        gpu[19],
-                        gpu[20],
-                        gpu[21],
-                        gpu[22],
-                        gpu[23],
+                        gpu_tokens,
                         gpu_inactive,
                         systems_ms,
                         ticks_per_frame,

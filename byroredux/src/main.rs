@@ -224,6 +224,49 @@ const BENCH_GPU_KEYS: [&str; 24] = [
     "cloud_shadow",
 ];
 
+/// One bench-line GPU reading: the bracket's key, its milliseconds and whether it ran this snapshot
+/// cycle (#2821).
+type BenchGpuSample = (&'static str, f32, bool);
+
+/// The bench line's GPU brackets in [`BENCH_GPU_KEYS`] order, each row carrying its key, value and
+/// flag together (#6337) — the line's `gpu_<key>=` tokens and the `gpu_inactive=` names are both read
+/// off these rows. Append a bracket here, in `BENCH_GPU_KEYS`, and nowhere else.
+fn bench_gpu_samples(s: &byroredux_core::ecs::SkinCoverageStats) -> [BenchGpuSample; BENCH_GPU_KEYS.len()] {
+    [
+        ("skin_disp", s.gpu_skin_dispatch_ms, s.gpu_skin_dispatch_active),
+        ("blas_refit", s.gpu_skin_blas_refit_ms, s.gpu_skin_blas_refit_active),
+        ("taa", s.gpu_taa_ms, s.gpu_taa_active),
+        ("upscale", s.gpu_upscale_ms, s.gpu_upscale_active),
+        ("main_render", s.gpu_main_render_ms, s.gpu_main_render_active),
+        ("svgf", s.gpu_svgf_ms, s.gpu_svgf_active),
+        ("composite", s.gpu_composite_ms, s.gpu_composite_active),
+        ("ssao", s.gpu_ssao_ms, s.gpu_ssao_active),
+        ("bloom", s.gpu_bloom_ms, s.gpu_bloom_active),
+        ("volumetrics", s.gpu_volumetrics_ms, s.gpu_volumetrics_active),
+        ("cluster_cull", s.gpu_cluster_cull_ms, s.gpu_cluster_cull_active),
+        ("presentation", s.gpu_presentation_ms, s.gpu_presentation_active),
+        ("tlas_build", s.gpu_tlas_build_ms, s.gpu_tlas_build_active),
+        ("caustic_splat", s.gpu_caustic_splat_ms, s.gpu_caustic_splat_active),
+        ("skin_palette", s.gpu_skin_palette_ms, s.gpu_skin_palette_active),
+        ("depth_history_copy", s.gpu_depth_history_copy_ms, s.gpu_depth_history_copy_active),
+        ("sky_cube", s.gpu_sky_cube_ms, s.gpu_sky_cube_active),
+        ("groundcover_scatter", s.gpu_groundcover_scatter_ms, s.gpu_groundcover_scatter_active),
+        ("exposure_meter", s.gpu_exposure_meter_ms, s.gpu_exposure_meter_active),
+        ("groundcover_models", s.gpu_groundcover_models_ms, s.gpu_groundcover_models_active),
+        ("volumetrics_inject", s.gpu_volumetrics_inject_ms, s.gpu_volumetrics_inject_active),
+        ("volumetrics_integrate", s.gpu_volumetrics_integrate_ms, s.gpu_volumetrics_integrate_active),
+        ("shadow_filter", s.gpu_shadow_filter_ms, s.gpu_shadow_filter_active),
+        ("cloud_shadow", s.gpu_cloud_shadow_ms, s.gpu_cloud_shadow_active),
+    ]
+}
+
+/// The `gpu_<key>=<ms>` tokens of the `bench:` line, space-separated, in [`BENCH_GPU_KEYS`] order.
+/// Milliseconds print with three decimals — the `key=<float>` extractors of the four sweep harnesses
+/// match them.
+fn bench_gpu_tokens(samples: &[BenchGpuSample]) -> String {
+    samples.iter().map(|(key, ms, _)| format!("gpu_{key}={ms:.3}")).collect::<Vec<_>>().join(" ")
+}
+
 /// Value of the `bench:` line's `gpu_inactive=` token — the brackets whose
 /// `gpu_*=0.000` means "did not run this snapshot cycle" rather than "measured
 /// zero" (#2821).
@@ -359,8 +402,9 @@ mod host_call_gap_for_menu_tests {
 mod bench_frame_distribution_tests {
     use super::{
         bench_frame_distribution, bench_frame_max_over_p95, bench_gpu_inactive_token,
-        BENCH_GPU_KEYS,
+        bench_gpu_samples, bench_gpu_tokens, BENCH_GPU_KEYS,
     };
+    use byroredux_core::ecs::SkinCoverageStats;
 
     #[test]
     fn nearest_rank_reports_median_tail_and_worst_frame() {
@@ -432,15 +476,12 @@ mod bench_frame_distribution_tests {
              12 of them until #3629/#3667 while claiming a full per-pass \
              breakdown"
         );
-        assert_eq!(BENCH_GPU_KEYS[4], "main_render");
-        assert_eq!(BENCH_GPU_KEYS[11], "presentation");
-        assert_eq!(BENCH_GPU_KEYS[12], "tlas_build");
-        assert_eq!(BENCH_GPU_KEYS[13], "caustic_splat");
-        assert_eq!(BENCH_GPU_KEYS[14], "skin_palette");
-        assert_eq!(BENCH_GPU_KEYS[15], "depth_history_copy");
-        assert_eq!(BENCH_GPU_KEYS[16], "sky_cube");
-        assert_eq!(BENCH_GPU_KEYS[17], "groundcover_scatter");
-        assert_eq!(BENCH_GPU_KEYS[18], "exposure_meter");
+        // Every position: the rows of `bench_gpu_samples` carry their own key, so a transposed
+        // pair of rows (or a key list that no longer follows them) fails here (#6337).
+        let samples = bench_gpu_samples(&SkinCoverageStats::default());
+        for (index, (key, _, _)) in samples.iter().enumerate() {
+            assert_eq!(*key, BENCH_GPU_KEYS[index], "row {index} of bench_gpu_samples is out of BENCH_GPU_KEYS order");
+        }
     }
 
     /// #3629 — the key list and the printed line were free to drift, and
@@ -453,14 +494,20 @@ mod bench_frame_distribution_tests {
     fn every_bench_gpu_key_is_printed_on_the_bench_line() {
         const APP_EVENTS_RS: &str = include_str!("app_events.rs");
 
+        let line = bench_gpu_tokens(&bench_gpu_samples(&SkinCoverageStats::default()));
         for key in BENCH_GPU_KEYS {
-            let token = format!("gpu_{key}={{:.3}}");
+            let token = format!("gpu_{key}=0.000");
             assert!(
-                APP_EVENTS_RS.contains(&token),
-                "`{token}` is missing from the bench line's format string — \
+                line.contains(&token),
+                "`{token}` is missing from the bench line's GPU tokens — \
                  BENCH_GPU_KEYS names a bracket the line never prints (#3629)",
             );
         }
+        // The tokens are what `app_events` prints, not a second hand-written list beside them.
+        assert!(
+            APP_EVENTS_RS.contains("crate::bench_gpu_tokens(&gpu_samples)"),
+            "the bench line must print the generated GPU tokens (#6337)"
+        );
 
         // And the host-side TLAS number must stay distinguishable from the
         // device-side bracket now that both are on the line.
