@@ -610,6 +610,7 @@ impl InteriorCellApplyJob {
                 cell.water_type_form,
                 water_center,
                 water_half_extent,
+                true,
                 None,
                 index.game,
             )

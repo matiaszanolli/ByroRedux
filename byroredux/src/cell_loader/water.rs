@@ -65,6 +65,19 @@ const DEFAULT_INTERIOR_HALF_EXTENT: f32 = 256.0;
 /// interior plane's XZ extent.
 const DEFAULT_INTERIOR_VOLUME_DEPTH: f32 = 200.0;
 
+/// How far below its surface a cell's water volume reaches (#6135): a tight
+/// pool-sized column for an interior, the full cell width for an exterior so
+/// deep ocean cells stay detectable. The caller says which it is; the plane's
+/// half-extent cannot, because a large interior's placement clamps up to
+/// 2048 wu, the same as an exterior cell's.
+fn water_volume_depth(interior: bool) -> f32 {
+    if interior {
+        DEFAULT_INTERIOR_VOLUME_DEPTH
+    } else {
+        EXTERIOR_CELL_UNITS
+    }
+}
+
 /// Full-detail water needs enough vertices for the authored vertex waves to
 /// affect the silhouette. A four-vertex quad turns the whole 256–4096 wu
 /// surface into one broad saddle, so the displacement is effectively absent
@@ -389,6 +402,7 @@ pub(super) fn spawn_water_plane(
     xcwt_form: Option<u32>,
     cell_origin_world_xz: (f32, f32),
     half_extent: f32,
+    interior: bool,
     terrain: Option<&esm::cell::LandscapeData>,
     game: esm::reader::GameKind,
 ) -> Option<usize> {
@@ -515,17 +529,9 @@ pub(super) fn spawn_water_plane(
     if let Some(flow) = flow {
         world.insert(entity, flow);
     }
-    // Volume extends from the surface down to a per-mode floor.
-    // Interior planes get a tight 200-wu column (typical pool
-    // depth); exterior planes get the full cell-width column so deep
-    // ocean cells remain detectable. The exterior heuristic is
-    // "half-extent > 1024 = exterior" — captures the spawn caller
-    // contract without an explicit flag.
-    let volume_depth = if half_extent > 1024.0 {
-        EXTERIOR_CELL_UNITS
-    } else {
-        DEFAULT_INTERIOR_VOLUME_DEPTH
-    };
+    // Volume extends from the surface down to a per-mode floor (#6135: the
+    // caller's `interior` flag decides it, not the plane's size).
+    let volume_depth = water_volume_depth(interior);
     let volume_floor_y = xclw_height - volume_depth;
     let water_components = terrain
         .and_then(|land| terrain_water_components(land, xclw_height))
@@ -1774,6 +1780,17 @@ mod tests {
         let (center, half_extent) = interior_water_placement(positions.iter().copied());
         assert_eq!(center, (300.0, 0.0));
         assert_eq!(half_extent, 332.0); // max span 600 / 2 + 32
+    }
+
+    #[test]
+    fn water_volume_depth_follows_the_cell_kind_not_the_plane_size() {
+        // #6135 - a large interior clamps to the exterior half-extent (2048)
+        // and used to inherit the 4096-wu exterior column from that alone.
+        let positions = [[-1500.0, 0.0, 0.0], [1500.0, 0.0, 0.0]];
+        let (_, large_interior) = interior_water_placement(positions.iter().copied());
+        assert!(large_interior > 1024.0, "the fixture must be a large interior");
+        assert_eq!(water_volume_depth(true), DEFAULT_INTERIOR_VOLUME_DEPTH);
+        assert_eq!(water_volume_depth(false), EXTERIOR_CELL_UNITS);
     }
 
     #[test]

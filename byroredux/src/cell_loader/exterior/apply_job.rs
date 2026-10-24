@@ -194,6 +194,7 @@ impl ExteriorCellApplyJob {
                 cell.water_type_form.or(wctx.default_water_type_form),
                 water_center,
                 half,
+                false,
                 cell.landscape.as_ref(),
                 wctx.record_index.game,
             )
