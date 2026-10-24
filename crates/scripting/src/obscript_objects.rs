@@ -57,8 +57,10 @@
 //! **Kill switch.** `BYRO_NO_OBSCRIPT_OBJECTS` leaves the table uninstalled, so no
 //! object script attaches or runs (quest scripts are unaffected).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
+
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Component, Resource, SparseSetStorage, World};
@@ -97,10 +99,10 @@ impl ObjectScript {
 /// from the records at every content load.
 #[derive(Default)]
 pub struct ObScriptObjectTable {
-    pub scripts: HashMap<u32, ObjectScript>,
+    pub scripts: FxHashMap<u32, ObjectScript>,
     /// `(script, block)` pairs that came back malformed: reported once, then
     /// skipped — a `GameMode` block would otherwise log every frame.
-    malformed: HashSet<(u32, BlockInfo)>,
+    malformed: FxHashSet<(u32, BlockInfo)>,
     /// Block runs per reference FormID, for `obscript.objects` (diagnostics only).
     pub runs: HashMap<u32, u32>,
 }
@@ -279,7 +281,7 @@ fn collect_due(world: &World) -> Vec<Due> {
                 events.remove(*entity);
             }
         }
-        owed.into_iter().collect::<HashSet<EntityId>>()
+        owed.into_iter().collect::<FxHashSet<EntityId>>()
     };
     let instances: Vec<(EntityId, u32)> = match world.query::<ObScriptInstance>() {
         Some(query) => query.iter().map(|(entity, instance)| (entity, instance.script)).collect(),
@@ -288,13 +290,12 @@ fn collect_due(world: &World) -> Vec<Due> {
     if instances.is_empty() {
         return Vec::new();
     }
-    let entities_with = |events: Option<Vec<EntityId>>| -> HashSet<EntityId> { events.unwrap_or_default().into_iter().collect() };
+    let entities_with = |events: Option<Vec<EntityId>>| -> FxHashSet<EntityId> { events.unwrap_or_default().into_iter().collect() };
     let loaded = entities_with(world.query::<OnCellLoadEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
-    // #6220 — stand-ins for references in unloaded cells run no `GameMode`.
-    let mut not_loaded = entities_with(world.query::<UnloadedReferenceStub>().map(|m| m.iter().map(|(entity, _)| entity).collect()));
-    not_loaded.extend(entities_with(
-        world.query::<crate::RemoteSceneActorStub>().map(|m| m.iter().map(|(entity, _)| entity).collect()),
-    ));
+    // #6220 — stand-ins for references in unloaded cells run no `GameMode`. Asked per due `GameMode`
+    // instance, not gathered into a set: the stubs are every logical-only persistent actor of the
+    // worldspace (thousands), the instances with a `GameMode` block are hundreds (#6333).
+    let is_stub = |entity: EntityId| world.has::<UnloadedReferenceStub>(entity) || world.has::<crate::RemoteSceneActorStub>(entity);
     // Read, not drained: `reference_script_event_system` owns the marker.
     let died = entities_with(world.query::<OnDeathEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
     // Activations, minus the native-only ones: "no OnActivate event will be sent
@@ -363,7 +364,7 @@ fn collect_due(world: &World) -> Vec<Due> {
                     }
                 }
                 BLOCK_ON_DEATH if died.contains(&entity) => runs.push(Run { block, who: None }),
-                BLOCK_GAME_MODE if !not_loaded.contains(&entity) => runs.push(Run { block, who: None }),
+                BLOCK_GAME_MODE if !is_stub(entity) => runs.push(Run { block, who: None }),
                 _ => {}
             }
         }
@@ -875,6 +876,20 @@ mod tests {
     use crate::obscript_vm::BLOCK_ON_ACTIVATE;
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
     use byroredux_plugin::esm::records::{ScriptLocalVar, ScriptRef};
+
+    /// #6333 — `collect_due` runs every frame once any object script is attached: the table's
+    /// maps are Fx-hashed and the unloaded-stub check is asked per instance, never rebuilt into a
+    /// per-frame set over every logical-only actor.
+    #[test]
+    fn collect_due_does_not_rebuild_a_stub_set_or_use_siphash() {
+        let src = byroredux_core::source_scan::production_text(include_str!("obscript_objects.rs"));
+        for decl in ["pub scripts: FxHashMap<u32, ObjectScript>,", "malformed: FxHashSet<(u32, BlockInfo)>,"] {
+            assert!(src.contains(decl), "`{decl}` is probed per instance per block per frame (#6333)");
+        }
+        assert!(!src.contains("not_loaded"), "the per-frame unloaded-stub set is back (#6333)");
+        assert!(src.contains("BLOCK_GAME_MODE if !is_stub(entity)"));
+        assert!(!src.contains("std::collections::{HashMap, HashSet}"));
+    }
 
     const REF: u32 = 0x0002_0001;
     const SCRIPT: u32 = 0x0003_0001;
