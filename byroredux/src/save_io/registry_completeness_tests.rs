@@ -531,6 +531,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ConsoleWalk", "an actor.walk debugging aid with a lifetime of seconds"),
         ("GraphLocomotion", "an actor's smoothed speed and moveStart/moveStop state for its behavior graph; re-derived from the next frames' displacement"),
         ("ArchetypeIdleSeen", "the archetype overrides the last idle pass saw; a pass after a load runs once more"),
+        ("StoryLocationMemo", "the cell kind, LCTN and CLOC key last derived and the contexts they came from; re-derived on the first frame after a load"),
         ("ArchetypeIdleClips", "the idle clip of each MT subgraph entry; rebuilt from the archives at every world setup"),
         ("TrapContacts", "which trap/actor pairs touched last tick; re-derived from the physics world every tick"),
         ("PendingDetectionEvents", "CreateDetectionEvent calls awaiting a hearing system (capped; none exists yet)"),

@@ -23,12 +23,12 @@ use byroredux_core::ecs::world::World;
 use byroredux_scripting::SmTree;
 use std::hash::{Hash, Hasher};
 
-/// Publish the kind of cell the player occupies (`IsInInterior` / `GetInWorldspace`): interior while
-/// an interior context is installed, exterior (with the worldspace's form id) while an exterior one
-/// is, none in loose-NIF mode or mid-transition. Only written when it changes.
-fn publish_player_cell_kind(world: &World) {
-    use byroredux_scripting::cell_kind::{CellKind, PlayerCellKind};
-    let kind = if world.try_resource::<CurrentCellContext>().is_some() {
+/// The kind of cell the player occupies (`IsInInterior` / `GetInWorldspace`): interior while an
+/// interior context is installed, exterior (with the worldspace's form id) while an exterior one
+/// is, none in loose-NIF mode or mid-transition.
+fn player_cell_kind(world: &World) -> Option<byroredux_scripting::cell_kind::CellKind> {
+    use byroredux_scripting::cell_kind::CellKind;
+    if world.try_resource::<CurrentCellContext>().is_some() {
         Some(CellKind::Interior)
     } else if let Some(exterior) = world.try_resource::<CurrentExteriorContext>() {
         world
@@ -37,12 +37,72 @@ fn publish_player_cell_kind(world: &World) {
             .map(|worldspace| CellKind::Exterior { worldspace })
     } else {
         None
-    };
-    if let Some(mut published) = world.try_resource_mut::<PlayerCellKind>() {
-        if published.0 != kind {
-            published.0 = kind;
+    }
+}
+
+/// What the per-frame system derives from the session's cell contexts: the kind of cell, its LCTN
+/// and the CLOC change key.
+#[derive(Clone, Copy, Default)]
+struct DerivedLocation {
+    kind: Option<byroredux_scripting::cell_kind::CellKind>,
+    location: Option<u32>,
+    key: Option<u64>,
+}
+
+/// The last derivation and the identity of the contexts it came from (#6335).
+/// `NOT_SAVED_BY_DESIGN`: re-derived on the first frame after a load.
+#[derive(Default)]
+pub(crate) struct StoryLocationMemo {
+    identity: Option<u64>,
+    derived: DerivedLocation,
+}
+
+impl byroredux_core::ecs::resource::Resource for StoryLocationMemo {}
+
+/// A hash of everything [`derive_location`] reads, built without allocating: the loaded index (by
+/// address), and which cell context is installed with its identity fields. The contexts and the
+/// index are replaced wholesale on a transition or a content load, so this moves exactly then.
+fn context_identity(world: &World) -> u64 {
+    let mut hasher = rustc_hash::FxHasher::default();
+    world
+        .try_resource::<LoadedCellIndex>()
+        .map_or(0usize, |index| std::sync::Arc::as_ptr(&index.0) as usize)
+        .hash(&mut hasher);
+    if let Some(cell) = world.try_resource::<CurrentCellContext>() {
+        1u8.hash(&mut hasher);
+        cell.esm_path.hash(&mut hasher);
+        cell.cell_editor_id.hash(&mut hasher);
+    } else if let Some(exterior) = world.try_resource::<CurrentExteriorContext>() {
+        2u8.hash(&mut hasher);
+        exterior.esm_path.hash(&mut hasher);
+        exterior.worldspace_key.hash(&mut hasher);
+        exterior.grid.hash(&mut hasher);
+    } else {
+        3u8.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// The cell kind, LCTN and CLOC key for the session's current cell — from the memo while the
+/// contexts are unchanged, otherwise derived from the string-keyed maps (an interior lowercases its
+/// editor id into a fresh `String`) and remembered. The result changes only on a cell transition or
+/// an exterior grid step, so deriving it every frame was two allocations and several string-hash
+/// lookups for nothing (#6335). Takes no guard across the derivation: `resolve_current_lctn` reads
+/// `LoadedCellIndex` (#5372).
+fn derive_location(world: &World) -> DerivedLocation {
+    let identity = context_identity(world);
+    if let Some(memo) = world.try_resource::<StoryLocationMemo>() {
+        if memo.identity == Some(identity) {
+            return memo.derived;
         }
     }
+    let location = resolve_current_lctn(world);
+    let derived = DerivedLocation { kind: player_cell_kind(world), location, key: location_key(world, location) };
+    if let Some(mut memo) = world.try_resource_mut::<StoryLocationMemo>() {
+        memo.identity = Some(identity);
+        memo.derived = derived;
+    }
+    derived
 }
 
 /// System: raise a `CLOC` story event when the session's location
@@ -51,7 +111,13 @@ fn publish_player_cell_kind(world: &World) {
 /// No player entity (loose-NIF demo, spawn ladders): no event — a
 /// location change nobody occupies is not a story event.
 pub fn story_change_location_system(world: &World) {
-    publish_player_cell_kind(world);
+    let derived = derive_location(world);
+    // Publish the kind of cell the player occupies; only written when it changes.
+    if let Some(mut published) = world.try_resource_mut::<byroredux_scripting::cell_kind::PlayerCellKind>() {
+        if published.0 != derived.kind {
+            published.0 = derived.kind;
+        }
+    }
     // M47.2 — publish the player's current location for the location
     // conditions (the player is not cell-owned, so it has no `CellRoot` to
     // follow). Only where the load order authors locations: FO3/FNV/Oblivion
@@ -60,12 +126,11 @@ pub fn story_change_location_system(world: &World) {
         .try_resource::<byroredux_scripting::LocationTable>()
         .is_some_and(|table| !table.is_empty())
     {
-        let location = resolve_current_lctn(world);
         if let Some(mut published) =
             world.try_resource_mut::<byroredux_scripting::PlayerLocation>()
         {
-            if published.0 != location {
-                published.0 = location;
+            if published.0 != derived.location {
+                published.0 = derived.location;
             }
         }
     }
@@ -90,10 +155,8 @@ pub fn story_change_location_system(world: &World) {
     // cells by worldspace+grid. The loaded index is installed on every
     // load path; without it (or without an `XLCN`) the location stays
     // `None` and the key falls back to the Phase-1 identity.
-    let location = resolve_current_lctn(world);
-    let key = location_key(world, location);
     byroredux_scripting::story_manager::emit_change_location_on_key_change(
-        world, key, player, location,
+        world, derived.key, player, derived.location,
     );
 }
 
@@ -298,6 +361,42 @@ mod tests {
             masters: Vec::new(),
         });
         (world, player)
+    }
+
+    /// #6335 — the cell kind, LCTN and CLOC key come from the memo while the contexts are
+    /// unchanged and are re-derived when they move: a poisoned memo is served on a hit (proving the
+    /// string maps were not read), and replaced after the cell changes.
+    #[test]
+    fn the_location_is_derived_once_per_context_not_per_frame() {
+        use byroredux_scripting::cell_kind::{CellKind, PlayerCellKind};
+        let (mut world, _player) = world_with_sm_tree(1);
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        for (name, lctn) in [("whiterunbanneredmare", 0x0001_0A0B), ("dragonsreach", 0x0001_0A0C)] {
+            index.cells.cells.insert(
+                name.to_string(),
+                byroredux_plugin::esm::cell::CellData { location_form: Some(lctn), is_interior: true, ..Default::default() },
+            );
+        }
+        world.insert_resource(LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert_resource(StoryLocationMemo::default());
+        world.insert_resource(PlayerCellKind::default());
+
+        story_change_location_system(&world);
+        {
+            let memo = world.resource::<StoryLocationMemo>();
+            assert_eq!(memo.derived.location, Some(0x0001_0A0B));
+            assert_eq!(memo.derived.kind, Some(CellKind::Interior));
+        }
+
+        let poisoned = Some(CellKind::Exterior { worldspace: 7 });
+        world.resource_mut::<StoryLocationMemo>().derived.kind = poisoned;
+        story_change_location_system(&world);
+        assert_eq!(world.resource::<PlayerCellKind>().0, poisoned, "an unchanged context is served from the memo");
+
+        world.resource_mut::<CurrentCellContext>().cell_editor_id = "DragonsReach".to_string();
+        story_change_location_system(&world);
+        assert_eq!(world.resource::<PlayerCellKind>().0, Some(CellKind::Interior), "a new cell is derived afresh");
+        assert_eq!(world.resource::<StoryLocationMemo>().derived.location, Some(0x0001_0A0C));
     }
 
     /// #5447 — a load order with no Story Manager nodes (FO3 / FNV /
