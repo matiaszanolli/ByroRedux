@@ -50,7 +50,7 @@ in its module doc; each is a `FORMAT_MAJOR` question for `/audit-save`): `quest_
 `activate_parents`/`crime_*`/`jail`/`guards`/`followers`/`map_markers`/`menus`/`ownership`/`scanning`/`skills`/`speechcraft`/
 `*_requests` files (subsystems migrated by #5802 export their own `install(world)` + `register_saved(registry)`;
 `build_save_registry` calls each at its old row position — the schema fingerprint is order-sensitive); the M47.3 ObScript family
-`obscript{,_runtime,_vm,_quests,_results,_objects,_effects,_actions,_actor_values,_anim,_speech,_state,_ledger,_more}.rs`
+`obscript{,_runtime,_vm,_quests,_results,_objects,_cmd,_effects,_actions,_actor_values,_anim,_speech,_state,_ledger,_more}.rs`
 + `obscript_more/` with its sibling runtimes `magic_effects.rs`
 (caster runtime), `magic_shaders.rs`, `script_packages.rs`, `challenges.rs` (Dim 6); `registration.rs` (the crate's
 `register`, #5806); `papyrus_provider/`,
@@ -772,7 +772,7 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
 **Output**: `/tmp/audit/scripting/dim_5.md`
 
 ### Dimension 6: Legacy ObScript Execution (Oblivion/FO3/FNV; M47.3 quest + object scripts)
-Paths: `crates/scripting/src/obscript{,_runtime,_vm,_quests,_objects,_effects,_actions,_actor_values,_anim,_speech,_state,_ledger,_more}.rs`, `crates/scripting/src/obscript_more/`, `crates/scripting/src/{magic_effects,magic_shaders,script_packages,challenges}.rs`, `byroredux/src/cell_loader/references/attach.rs` (`attach_scpt_script`, `obscript_dialect_for`, `attach_object_script` call), `byroredux/src/asset_provider/script.rs` (`install_quest_scripts` / `install_object_scripts` / `install_item_scripts` calls), the request consumers `byroredux/src/systems/{script_requests,script_queries,revive,knockdown,flee,magic_shader,head_look}.rs`
+Paths: `crates/scripting/src/obscript{,_runtime,_vm,_quests,_objects,_cmd,_effects,_actions,_actor_values,_anim,_speech,_state,_ledger,_more}.rs`, `crates/scripting/src/obscript_more/`, `crates/scripting/src/{magic_effects,magic_shaders,script_packages,challenges}.rs`, `byroredux/src/cell_loader/references/attach.rs` (`attach_scpt_script`, `obscript_dialect_for`, `attach_object_script` call), `byroredux/src/asset_provider/script.rs` (`install_quest_scripts` / `install_object_scripts` / `install_item_scripts` calls), the request consumers `byroredux/src/systems/{script_requests,script_queries,revive,knockdown,flee,magic_shader,head_look}.rs`
 First step: `cargo test -p byroredux-scripting -- obscript`; `cargo test -p byroredux --bin byroredux -- attach::tests`; `git log -p --since=<last report> -- crates/scripting/src/obscript_vm.rs`
 Untrusted-Input: Yes — `SCDA` bytecode comes from mod-supplied plugins. Distinct from the (unbuilt) `.psc`-side
 SCTX frontend (`ScriptSource::Obscript` placeholder).
@@ -806,8 +806,15 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   Dim 1's per-primitive rules and Dim 2's lock inventory cover them), `obscript_actions.rs` (reference-bound
   `Enable`/`Disable`/`MoveTo`/`EVP`/`AddScriptPackage` onto the existing sinks), `obscript_actor_values.rs` (GECK AV
   codes → AVIF, checked by `obscript_tools avcodes`), `obscript_anim.rs`, `obscript_speech.rs`, and
-  `obscript_more.rs` (`FALLOUT` / `OBLIVION` id tables; one id that names different commands per family is told
-  apart by the loaded game). Anything unmodelled
+  `obscript_more.rs` and its four sibling files. Every one of those commands is a **row of the command table**
+  (`obscript_cmd.rs`, #6139: id, `Games`, `needs_caller`, handler; each family file exports its own `*_COMMANDS`
+  slice, listed in `FAMILIES`); the host asks the table, not a `match cmd` chain, so an id claimed twice in one
+  game is `duplicate_rows`' test failure, never a shadowed arm, and one id that names different commands per family
+  (`0x116b`, `0x116c`, `0x10db`) is two rows told apart by the loaded game (`Game::of`: Oblivion, Fallout, or
+  `Other`, which runs only the `Games::Any` rows). The `FALLOUT` / `OBLIVION` census lives in
+  `obscript_more/tests.rs`, checked against the rows both ways. Only the VM's own statements
+  (`ObScriptCommandHost::call`: `Set`, quest variables, `RemoveMe` / `DropMe`, `GetSecondsPassed`) stay outside it.
+  Anything unmodelled
   is a **traced no-op returning 0, counted per owner in `ObScriptQuestTimers.unknown_commands`, never faked**
   — a command that returns a guessed value, or answers state the engine does not keep, is a finding
   (*feedback_no_guessing*; `obscript_more` answers only from a named page, engine state or the ledger); the

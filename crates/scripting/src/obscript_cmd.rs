@@ -1,18 +1,17 @@
 //! The ObScript command table (#6139).
 //!
-//! The M47.3 command surface grew as a chain of `match cmd` functions
-//! (`obscript_effects::run`, `obscript_more` and its four links,
-//! `obscript_actions::run`), each ending `_ => next::run(..)`. Which function owns
-//! a command is only discoverable by reading the chain, and an arm added early
-//! silently shadows a later one. This table replaces the chain one link at a
-//! time: a command's row names its id, the games it exists in, whether it acts on
-//! a calling reference, and the handler that runs it. The host asks the table
-//! before it asks any chain link, so a command moves by deleting its arm and
-//! adding its row, with the rest of the chain untouched.
+//! The M47.3 command surface grew as a chain of six `match cmd` functions
+//! (`obscript_effects::run` and `getter`, `obscript_actions::run`, and `obscript_more` with its four
+//! links), each ending `_ => next::run(..)`. Which function owned a command was only discoverable by
+//! reading the chain, and an arm added early silently shadowed a later one. The chain is gone: a
+//! command is a row here (its id, the games it exists in, whether it acts on a calling reference, and
+//! the handler that runs it), the rows live in the file of the family that implements them (each
+//! exports a `COMMANDS` slice, listed in [`FAMILIES`]), and the host asks the table, not a function
+//! chain. A row of a duplicate id in one game fails [`duplicate_rows`]'s test instead of shadowing.
 //!
-//! Rows live in per-family files, each exporting a `COMMANDS` slice that is added
-//! to [`FAMILIES`]; [`duplicate_rows`] (and the test over it) makes a repeated id
-//! in one game a build-time failure instead of a shadowed arm.
+//! What stays outside the table is the VM's own statements (`ObScriptCommandHost::call`'s `Set`, quest
+//! variables, `RemoveMe`, `GetSecondsPassed`, ...): they act on the running script's state, not the world,
+//! so they are not commands a handler could run.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -103,7 +102,6 @@ const FAMILIES: &[&[Command]] = &[
 ];
 
 /// `(id, game)` pairs claimed by more than one row of `families`.
-#[cfg_attr(not(test), allow(dead_code))] // read by the table's tests
 pub(crate) fn duplicate_rows(families: &[&[Command]]) -> Vec<(u16, Game)> {
     let mut seen = std::collections::HashSet::new();
     let mut duplicates = Vec::new();
@@ -133,7 +131,10 @@ fn index(families: &'static [&'static [Command]]) -> Table {
 
 fn table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| index(FAMILIES))
+    TABLE.get_or_init(|| {
+        debug_assert!(duplicate_rows(FAMILIES).is_empty(), "a command id is claimed twice in one game: {:?}", duplicate_rows(FAMILIES));
+        index(FAMILIES)
+    })
 }
 
 /// The row for `cmd` under `game`, if the table owns it.

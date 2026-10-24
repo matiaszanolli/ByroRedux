@@ -558,40 +558,8 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
             // `GetContainer`: "the container the object is in" — the holder while an item's
             // script runs, nothing for a reference lying in the world.
             0x10cf => Some(ObScriptValue::Ref(self.item.map_or(0, |item| item.container))),
-            // `RemoveMe [target container]`: take the item out of the container it is in
-            // (to the target, if one is named) and end the script.
-            0x10a5 if self.item.is_some() => {
-                let item = self.item.expect("checked above");
-                let destination = match args.first() {
-                    Some(ObScriptValue::Ref(form)) if *form != 0 => resolve_entity_by_global_form_id(self.world, *form),
-                    _ => None,
-                };
-                let Some(holder) = resolve_entity_by_global_form_id(self.world, item.container) else {
-                    return self.decline(cmd);
-                };
-                crate::fragment::remove_items(self.world, holder, item.item, 1, destination);
-                self.ends.set(true);
-                None
-            }
-            // `DropMe`: "drops the calling item from its container ... The dropped item will appear
-            // next to the container or the owner" (GECK) — taken out of the holder, placed in the world
-            // at the holder, and, like `RemoveMe`, it ends the script (the item is gone from the
-            // inventory it ran in). Without a holder it does nothing.
-            0x10a6 if self.item.is_some() => {
-                let item = self.item.expect("checked above");
-                let Some(holder) = resolve_entity_by_global_form_id(self.world, item.container) else {
-                    return self.decline(cmd);
-                };
-                crate::fragment::remove_items(self.world, holder, item.item, 1, None);
-                let ids = self.world.try_resource::<crate::CreatedReferences>().map(|created| created.scripted_ids());
-                if let Some(form) = ids.and_then(|ids| ids.next()) {
-                    if let Some(mut created) = self.world.try_resource_mut::<crate::CreatedReferences>() {
-                        created.create_scripted(form, item.item, item.container, false);
-                    }
-                }
-                self.ends.set(true);
-                None
-            }
+            // `RemoveMe` / `DropMe`: an item script moving the item it runs in; see `item_command`.
+            0x10a5 | 0x10a6 if self.item.is_some() => self.item_command(cmd, args),
             0x10ce => Some(ObScriptValue::Ref(self.owner)),
             // GetActionRef / IsActionRef — the reference that activated the
             // owner, inside the event block that has one; a null reference
@@ -693,6 +661,46 @@ impl ObScriptCommandHost<'_> {
         match self.reference {
             Some(entity) if form == self.owner => Some(entity),
             _ => resolve_entity_by_global_form_id(self.world, form),
+        }
+    }
+
+    /// `RemoveMe [target container]` and `DropMe`, the commands of an item script that move the item it
+    /// runs in. Both end the script (the item is gone from the inventory it ran in).
+    fn item_command(&mut self, cmd: u16, args: &[ObScriptValue]) -> Option<ObScriptValue> {
+        let item = self.item.expect("the caller checked an item script");
+        match cmd {
+            // `RemoveMe [target container]`: take the item out of the container it is in
+            // (to the target, if one is named) and end the script.
+            0x10a5 => {
+                let destination = match args.first() {
+                    Some(ObScriptValue::Ref(form)) if *form != 0 => resolve_entity_by_global_form_id(self.world, *form),
+                    _ => None,
+                };
+                let Some(holder) = resolve_entity_by_global_form_id(self.world, item.container) else {
+                    return self.decline(cmd);
+                };
+                crate::fragment::remove_items(self.world, holder, item.item, 1, destination);
+                self.ends.set(true);
+                None
+            }
+            // `DropMe`: "drops the calling item from its container ... The dropped item will appear
+            // next to the container or the owner" (GECK) — taken out of the holder, placed in the world
+            // at the holder, and, like `RemoveMe`, it ends the script (the item is gone from the
+            // inventory it ran in). Without a holder it does nothing.
+            _ => {
+                let Some(holder) = resolve_entity_by_global_form_id(self.world, item.container) else {
+                    return self.decline(cmd);
+                };
+                crate::fragment::remove_items(self.world, holder, item.item, 1, None);
+                let ids = self.world.try_resource::<crate::CreatedReferences>().map(|created| created.scripted_ids());
+                if let Some(form) = ids.and_then(|ids| ids.next()) {
+                    if let Some(mut created) = self.world.try_resource_mut::<crate::CreatedReferences>() {
+                        created.create_scripted(form, item.item, item.container, false);
+                    }
+                }
+                self.ends.set(true);
+                None
+            }
         }
     }
 
