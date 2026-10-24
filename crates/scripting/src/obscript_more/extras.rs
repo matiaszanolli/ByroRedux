@@ -9,6 +9,7 @@ use byroredux_plugin::esm::records::EsmIndex;
 
 use super::{answer, caller, done, flag, ledger, MenuRequest, PendingMenus};
 use crate::obscript_actions::{Action, Context};
+use crate::obscript_cmd::{Command, Games};
 use crate::obscript_effects::{form_arg, live, num};
 use crate::obscript_vm::ObScriptValue;
 
@@ -141,163 +142,208 @@ fn elapsed_days(world: &World) -> u64 {
     world.try_resource::<crate::globals::GameCalendar>().map_or(0, |calendar| calendar.days_elapsed)
 }
 
-pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    match cmd {
-        // ── challenges (GECK *Challenge*) ──────────────────────────────────────────────────────────
-        0x125e | 0x126c => match form_arg(args, 0) {
-            Some(challenge) => {
-                let known = if cmd == 0x125e { crate::challenges::unlock(world, challenge) } else { crate::challenges::remove_recurring(world, challenge) };
-                if known {
-                    done(format!("{} {challenge:08X}", if cmd == 0x125e { "UnlockChallenge" } else { "RemoveRecurringFromChallenge" }))
-                } else {
-                    Action::Declined
-                }
-            }
-            None => Action::Declined,
-        },
-        0x1266 => match form_arg(args, 0).and_then(|challenge| crate::challenges::completed(world, challenge)) {
-            Some(completed) => flag(completed),
-            None => Action::Declined,
-        },
-
-        // ── casinos ────────────────────────────────────────────────────────────────────────────────
-        // `GetCasinoWinningsLevel <casino>`: the winnings level (1 small, 2 big, 3 whale, 4 banned — the
-        // casino-comps scripts' `SmallFry` / `BigWinner` / `Whale` / `Banned`) of what the player has won
-        // there. The engine runs no casino game, so nothing has been won: level 0.
-        0x125c => match form_arg(args, 0) {
-            Some(casino) => answer(ledger(world, |l| l.value(0x125c, casino)).flatten().unwrap_or(0.0)),
-            None => Action::Declined,
-        },
-        // The blackjack, roulette and slot-machine screens: asked of the UI that shows them.
-        0x1254 | 0x1256 | 0x1252 => {
-            let menu = match cmd {
-                0x1254 => "blackjack",
-                0x1256 => "roulette",
-                _ => "slot machine",
-            };
-            let casino = form_arg(args, 0).unwrap_or(0);
-            if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
-                menus.0.push(MenuRequest { menu, form: casino });
-            }
-            done(format!("Show{menu}Menu {casino:08X}"))
-        }
-
-        // ── calendar ───────────────────────────────────────────────────────────────────────────────
-        // GECK / CS *GetDayOfWeek*: 0 Sunday .. 6 Saturday.
-        0x10aa => answer(crate::globals::day_of_week(world, fallout, elapsed_days(world)) as f32),
-
-        // ── actors ─────────────────────────────────────────────────────────────────────────────────
-        // `GetOwnerLastTarget`: the last actor the calling actor (the owner of the effect or script)
-        // struck. No page documents it; the one vanilla use is `Set UnluckyDude to GetOwnerLastTarget`
-        // in the Miss Fortune ability's `OnHit`, which then casts at him.
-        0x124e => match caller(world, ctx) {
-            Some((form, _)) => Action::Done {
-                value: Some(ObScriptValue::Ref(ledger(world, |l| l.last_target(form)).flatten().unwrap_or(0))),
-                effect: String::new(),
-            },
-            None => Action::Declined,
-        },
-        // GECK *UseWeapon <weapon> <where to stand> <target> <shots> [crouch] [hold fire] [always hit]
-        // [no damage] [target place]*: "has an actor use its weapon".
-        0x119c => match (caller(world, ctx), form_arg(args, 0), form_arg(args, 2)) {
-            (Some((_, actor)), Some(weapon), Some(target)) => {
-                if let Some(mut requests) = world.query_mut::<UseWeaponRequest>() {
-                    requests.insert(actor, UseWeaponRequest { weapon, target, shots: num(args, 3).max(1.0) as u32, harmless: false });
-                }
-                done(format!("UseWeapon {weapon:08X} on {target:08X}"))
-            }
-            _ => Action::Declined,
-        },
-
-        // ── presentation ───────────────────────────────────────────────────────────────────────────
-        // GECK *PlayMusic <music type>*: plays the track "and will not stop the music of the cell".
-        0x11ff => match args.first() {
-            Some(ObScriptValue::Ref(form)) if *form != 0 => {
-                let Some(track) = world.try_resource::<MusicTracks>().and_then(|tracks| tracks.by_form(*form).cloned()) else { return Action::Declined };
-                if let Some(mut pending) = world.try_resource_mut::<PendingMusic>() {
-                    pending.0.push(track);
-                }
-                done(format!("PlayMusic {form:08X}"))
-            }
-            _ => Action::Declined,
-        },
-        // `SwapTexture <ref> "<slot>" "<texture>"`: the end-slide screens' picture.
-        0x1269 => {
-            let strings = texts(world);
-            match (form_arg(args, 0).and_then(|form| live(world, form)), strings.as_slice()) {
-                (Some(target), [slot, texture]) => {
-                    if let Some(mut pending) = world.try_resource_mut::<PendingTextureSwaps>() {
-                        pending.0.push(TextureSwap { target, slot: slot.clone(), texture: texture.clone() });
-                    }
-                    done(format!("SwapTexture {slot} {texture}"))
-                }
-                _ => Action::Declined,
+// ── challenges (GECK *Challenge*) ──────────────────────────────────────────────────────────
+fn challenge(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
+    match form_arg(args, 0) {
+        Some(challenge) => {
+            let known = if cmd == 0x125e { crate::challenges::unlock(world, challenge) } else { crate::challenges::remove_recurring(world, challenge) };
+            if known {
+                done(format!("{} {challenge:08X}", if cmd == 0x125e { "UnlockChallenge" } else { "RemoveRecurringFromChallenge" }))
+            } else {
+                Action::Declined
             }
         }
-        // CS *EssentialDeathReload "message"*: "force reload of the game (same as when the player dies). The
-        // message will appear first, then the reload menu."
-        0x114d => {
-            let message = texts(world).into_iter().next().unwrap_or_default();
-            crate::obscript_state::show_warning(world, &message);
-            if let Some(mut reload) = world.try_resource_mut::<ReloadRequest>() {
-                reload.0 = Some(message);
-            }
-            done("EssentialDeathReload")
-        }
-
-        // ── placement ──────────────────────────────────────────────────────────────────────────────
-        // GECK *AttachAshPile [type]*: "attaches an ash pile to the calling reference" — 1 the normal one,
-        // 2 the plasma goo pile.
-        0x1211 => match caller(world, ctx) {
-            Some((at, _)) => {
-                let piles = world.try_resource::<AshPiles>().map(|piles| *piles).unwrap_or_default();
-                let base = if num(args, 0) as i32 == 2 { piles.goo } else { piles.normal };
-                if base == 0 {
-                    return Action::Declined;
-                }
-                match place_at_reference(world, base, at) {
-                    Some(form) => Action::Done { value: Some(ObScriptValue::Ref(form)), effect: format!("AttachAshPile {base:08X} at {at:08X}") },
-                    None => Action::Declined,
-                }
-            }
-            None => Action::Declined,
-        },
-        // GECK *PlaceAtReticle <object> [i1 i2 distance]*: "places the object at the spot the crosshair is
-        // pointing at" — the reticle's hit point, asked through the query the app installs.
-        0x1263 => match (form_arg(args, 0), super::engine_queries(world)) {
-            (Some(base), queries) => {
-                let distance = if args.len() > 3 { num(args, 3) } else { 0.0 };
-                let (Some(point), Some(place)) = (queries.reticle_point.and_then(|reticle| reticle(world, distance)), queries.placement_at) else {
-                    return Action::Declined;
-                };
-                let Some(placement) = place(world, point) else { return Action::Declined };
-                let Some(mut created) = world.try_resource_mut::<crate::CreatedReferences>() else { return Action::Declined };
-                let Some(form) = created.scripted_ids().next() else { return Action::Declined };
-                created.create_scripted(form, base, crate::PLAYER_REFERENCE, false);
-                created.place(form, placement);
-                Action::Done { value: Some(ObScriptValue::Ref(form)), effect: format!("PlaceAtReticle {base:08X}") }
-            }
-            _ => Action::Declined,
-        },
-        // GECK *DisableAllMines*: "disables all the mines located in the cell the player is in" — every
-        // placed mine (a weapon of the mine animation types) the player's cell holds.
-        0x122f => {
-            let mines = mines_in_player_cell(world);
-            for &mine in &mines {
-                crate::obscript_actions::run(world, 0x1022, &[], &Context { caller: Some(mine), ..*ctx });
-            }
-            done(format!("DisableAllMines {}", mines.len()))
-        }
-        // CS *TrapUpdate*: "special function which allows traps to deal damage ... everytime it's called it
-        // checks whether any actor is in contact with the trap and takes care of the damage", by the
-        // variables the trap's script declares (the VM hands them over): `fTrapDamage` each time the trap
-        // affects an actor, `fTrapPushBack` the push, `fTrapMinVelocity` the speed the trap must have
-        // relative to the actor, `bTrapContinuous` (0 only on first contact, 1 every call while in contact),
-        // `fLevelledDamage` extra per level of the actor.
-        0x110c => trap_update(world, args, ctx),
-        _ => super::tail::run(world, fallout, cmd, args, ctx),
+        None => Action::Declined,
     }
 }
+
+fn cmd_1266(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
+    match form_arg(args, 0).and_then(|challenge| crate::challenges::completed(world, challenge)) {
+        Some(completed) => flag(completed),
+        None => Action::Declined,
+    }
+}
+
+// ── casinos ────────────────────────────────────────────────────────────────────────────────
+// `GetCasinoWinningsLevel <casino>`: the winnings level (1 small, 2 big, 3 whale, 4 banned — the
+// casino-comps scripts' `SmallFry` / `BigWinner` / `Whale` / `Banned`) of what the player has won
+// there. The engine runs no casino game, so nothing has been won: level 0.
+fn get_casino_winnings_level(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
+    match form_arg(args, 0) {
+        Some(casino) => answer(ledger(world, |l| l.value(0x125c, casino)).flatten().unwrap_or(0.0)),
+        None => Action::Declined,
+    }
+}
+
+// The blackjack, roulette and slot-machine screens: asked of the UI that shows them.
+fn cmd_1254(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
+    let menu = match cmd {
+        0x1254 => "blackjack",
+        0x1256 => "roulette",
+        _ => "slot machine",
+    };
+    let casino = form_arg(args, 0).unwrap_or(0);
+    if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
+        menus.0.push(MenuRequest { menu, form: casino });
+    }
+    done(format!("Show{menu}Menu {casino:08X}"))
+}
+
+// ── calendar ───────────────────────────────────────────────────────────────────────────────
+// GECK / CS *GetDayOfWeek*: 0 Sunday .. 6 Saturday.
+fn get_day_of_week(world: &World, fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+    answer(crate::globals::day_of_week(world, fallout, elapsed_days(world)) as f32)
+}
+
+// ── actors ─────────────────────────────────────────────────────────────────────────────────
+// `GetOwnerLastTarget`: the last actor the calling actor (the owner of the effect or script)
+// struck. No page documents it; the one vanilla use is `Set UnluckyDude to GetOwnerLastTarget`
+// in the Miss Fortune ability's `OnHit`, which then casts at him.
+fn get_owner_last_target(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
+    match caller(world, ctx) {
+        Some((form, _)) => Action::Done {
+            value: Some(ObScriptValue::Ref(ledger(world, |l| l.last_target(form)).flatten().unwrap_or(0))),
+            effect: String::new(),
+        },
+        None => Action::Declined,
+    }
+}
+
+// GECK *UseWeapon <weapon> <where to stand> <target> <shots> [crouch] [hold fire] [always hit]
+// [no damage] [target place]*: "has an actor use its weapon".
+fn cmd_119c(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
+    match (caller(world, ctx), form_arg(args, 0), form_arg(args, 2)) {
+        (Some((_, actor)), Some(weapon), Some(target)) => {
+            if let Some(mut requests) = world.query_mut::<UseWeaponRequest>() {
+                requests.insert(actor, UseWeaponRequest { weapon, target, shots: num(args, 3).max(1.0) as u32, harmless: false });
+            }
+            done(format!("UseWeapon {weapon:08X} on {target:08X}"))
+        }
+        _ => Action::Declined,
+    }
+}
+
+// ── presentation ───────────────────────────────────────────────────────────────────────────
+// GECK *PlayMusic <music type>*: plays the track "and will not stop the music of the cell".
+fn cmd_11ff(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
+    match args.first() {
+        Some(ObScriptValue::Ref(form)) if *form != 0 => {
+            let Some(track) = world.try_resource::<MusicTracks>().and_then(|tracks| tracks.by_form(*form).cloned()) else { return Action::Declined };
+            if let Some(mut pending) = world.try_resource_mut::<PendingMusic>() {
+                pending.0.push(track);
+            }
+            done(format!("PlayMusic {form:08X}"))
+        }
+        _ => Action::Declined,
+    }
+}
+
+// `SwapTexture <ref> "<slot>" "<texture>"`: the end-slide screens' picture.
+fn swap_texture(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
+    let strings = texts(world);
+    match (form_arg(args, 0).and_then(|form| live(world, form)), strings.as_slice()) {
+        (Some(target), [slot, texture]) => {
+            if let Some(mut pending) = world.try_resource_mut::<PendingTextureSwaps>() {
+                pending.0.push(TextureSwap { target, slot: slot.clone(), texture: texture.clone() });
+            }
+            done(format!("SwapTexture {slot} {texture}"))
+        }
+        _ => Action::Declined,
+    }
+}
+
+// CS *EssentialDeathReload "message"*: "force reload of the game (same as when the player dies). The
+// message will appear first, then the reload menu."
+fn cmd_114d(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+    let message = texts(world).into_iter().next().unwrap_or_default();
+    crate::obscript_state::show_warning(world, &message);
+    if let Some(mut reload) = world.try_resource_mut::<ReloadRequest>() {
+        reload.0 = Some(message);
+    }
+    done("EssentialDeathReload")
+}
+
+// ── placement ──────────────────────────────────────────────────────────────────────────────
+// GECK *AttachAshPile [type]*: "attaches an ash pile to the calling reference" — 1 the normal one,
+// 2 the plasma goo pile.
+fn cmd_1211(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
+    match caller(world, ctx) {
+        Some((at, _)) => {
+            let piles = world.try_resource::<AshPiles>().map(|piles| *piles).unwrap_or_default();
+            let base = if num(args, 0) as i32 == 2 { piles.goo } else { piles.normal };
+            if base == 0 {
+                return Action::Declined;
+            }
+            match place_at_reference(world, base, at) {
+                Some(form) => Action::Done { value: Some(ObScriptValue::Ref(form)), effect: format!("AttachAshPile {base:08X} at {at:08X}") },
+                None => Action::Declined,
+            }
+        }
+        None => Action::Declined,
+    }
+}
+
+// GECK *PlaceAtReticle <object> [i1 i2 distance]*: "places the object at the spot the crosshair is
+// pointing at" — the reticle's hit point, asked through the query the app installs.
+fn cmd_1263(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
+    match (form_arg(args, 0), super::engine_queries(world)) {
+        (Some(base), queries) => {
+            let distance = if args.len() > 3 { num(args, 3) } else { 0.0 };
+            let (Some(point), Some(place)) = (queries.reticle_point.and_then(|reticle| reticle(world, distance)), queries.placement_at) else {
+                return Action::Declined;
+            };
+            let Some(placement) = place(world, point) else { return Action::Declined };
+            let Some(mut created) = world.try_resource_mut::<crate::CreatedReferences>() else { return Action::Declined };
+            let Some(form) = created.scripted_ids().next() else { return Action::Declined };
+            created.create_scripted(form, base, crate::PLAYER_REFERENCE, false);
+            created.place(form, placement);
+            Action::Done { value: Some(ObScriptValue::Ref(form)), effect: format!("PlaceAtReticle {base:08X}") }
+        }
+        _ => Action::Declined,
+    }
+}
+
+// GECK *DisableAllMines*: "disables all the mines located in the cell the player is in" — every
+// placed mine (a weapon of the mine animation types) the player's cell holds.
+fn disable_all_mines(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
+    let mines = mines_in_player_cell(world);
+    for &mine in &mines {
+        crate::obscript_actions::run(world, 0x1022, &[], &Context { caller: Some(mine), ..*ctx });
+    }
+    done(format!("DisableAllMines {}", mines.len()))
+}
+
+// CS *TrapUpdate*: "special function which allows traps to deal damage ... everytime it's called it
+// checks whether any actor is in contact with the trap and takes care of the damage", by the
+// variables the trap's script declares (the VM hands them over): `fTrapDamage` each time the trap
+// affects an actor, `fTrapPushBack` the push, `fTrapMinVelocity` the speed the trap must have
+// relative to the actor, `bTrapContinuous` (0 only on first contact, 1 every call while in contact),
+// `fLevelledDamage` extra per level of the actor.
+fn trap_update_command(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
+    trap_update(world, args, ctx)
+}
+
+/// The commands this file runs (#6139).
+pub(crate) const EXTRAS_COMMANDS: &[Command] = &[
+    Command { id: 0x125e, games: Games::Fallout, needs_caller: false, handler: challenge },
+    Command { id: 0x126c, games: Games::Fallout, needs_caller: false, handler: challenge },
+    Command { id: 0x1266, games: Games::Fallout, needs_caller: false, handler: cmd_1266 },
+    Command { id: 0x125c, games: Games::Fallout, needs_caller: false, handler: get_casino_winnings_level },
+    Command { id: 0x1254, games: Games::Fallout, needs_caller: false, handler: cmd_1254 },
+    Command { id: 0x1256, games: Games::Fallout, needs_caller: false, handler: cmd_1254 },
+    Command { id: 0x1252, games: Games::Fallout, needs_caller: false, handler: cmd_1254 },
+    Command { id: 0x10aa, games: Games::Both, needs_caller: false, handler: get_day_of_week },
+    Command { id: 0x124e, games: Games::Fallout, needs_caller: false, handler: get_owner_last_target },
+    Command { id: 0x119c, games: Games::Fallout, needs_caller: false, handler: cmd_119c },
+    Command { id: 0x11ff, games: Games::Fallout, needs_caller: false, handler: cmd_11ff },
+    Command { id: 0x1269, games: Games::Fallout, needs_caller: false, handler: swap_texture },
+    Command { id: 0x114d, games: Games::Oblivion, needs_caller: false, handler: cmd_114d },
+    Command { id: 0x1211, games: Games::Fallout, needs_caller: false, handler: cmd_1211 },
+    Command { id: 0x1263, games: Games::Fallout, needs_caller: false, handler: cmd_1263 },
+    Command { id: 0x122f, games: Games::Fallout, needs_caller: false, handler: disable_all_mines },
+    Command { id: 0x110c, games: Games::Both, needs_caller: false, handler: trap_update_command },
+];
+
 
 fn trap_update(world: &World, args: &[ObScriptValue], ctx: &Context) -> Action {
     let [damage, push, _death_push, min_speed, continuous, levelled] = [0, 1, 2, 3, 4, 5].map(|i| num(args, i));

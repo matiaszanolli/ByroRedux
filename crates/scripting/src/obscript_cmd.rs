@@ -22,30 +22,62 @@ use byroredux_core::ecs::World;
 use crate::obscript_actions::{Action, Context};
 use crate::obscript_vm::ObScriptValue;
 
-/// Runs one command.
-pub(crate) type Handler = fn(&World, &[ObScriptValue], &Context) -> Action;
+/// Runs one command: the world, whether the loaded game is Fallout 3 / New Vegas, the command id (a
+/// handler shared by several ids tells them apart by it), its arguments and the call's context.
+pub(crate) type Handler = fn(&World, bool, u16, &[ObScriptValue], &Context) -> Action;
 
-/// The game families a command exists in. The opcode numbers of the Oblivion and
-/// Fallout 3 / New Vegas tables overlap (`0x116b` is `PurgeCellBuffers` in one and
-/// `GetLinkedRef` in the other), so a row is keyed by id *and* family.
-// Unconstructed until the first family file adds rows (#6139 stage 1); drop the allow then.
-#[cfg_attr(not(test), allow(dead_code))]
+/// The game family a call runs under. The opcode numbers of the Oblivion and Fallout 3 / New Vegas
+/// tables overlap (`0x116b` is `PurgeCellBuffers` in one and `GetLinkedRef` in the other), so a row is
+/// keyed by id *and* family. `Other` is a world with neither loaded (a test's bare world, a Papyrus game).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Game {
+    Oblivion,
+    Fallout,
+    Other,
+}
+
+impl Game {
+    /// The family of the game loaded in `world`.
+    pub(crate) fn of(world: &World) -> Self {
+        use byroredux_plugin::esm::reader::GameKind;
+        match world.try_resource::<crate::ScriptGame>().map(|game| game.0) {
+            Some(GameKind::Fallout3NV) => Self::Fallout,
+            Some(GameKind::Oblivion) => Self::Oblivion,
+            _ => Self::Other,
+        }
+    }
+
+    /// `fallout` as `command_is_modeled` is asked it: only the two ObScript families exist there.
+    pub(crate) fn from_fallout(fallout: bool) -> Self {
+        if fallout { Self::Fallout } else { Self::Oblivion }
+    }
+}
+
+/// The games a row runs in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Games {
     Oblivion,
     Fallout,
+    /// Oblivion and Fallout 3 / New Vegas, but not a world with neither loaded.
     Both,
+    /// Every game, a world with none loaded included.
+    // Unconstructed until the effects / actions links move (#6139 stages 5-6); drop the allow then.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Any,
 }
 
 impl Games {
-    fn includes(self, fallout: bool) -> bool {
+    fn includes(self, game: Game) -> bool {
         match self {
-            Self::Oblivion => !fallout,
-            Self::Fallout => fallout,
-            Self::Both => true,
+            Self::Oblivion => game == Game::Oblivion,
+            Self::Fallout => game == Game::Fallout,
+            Self::Both => game != Game::Other,
+            Self::Any => true,
         }
     }
 }
+
+const ALL_GAMES: [Game; 3] = [Game::Oblivion, Game::Fallout, Game::Other];
 
 /// One row of the table.
 #[derive(Clone, Copy)]
@@ -61,58 +93,60 @@ pub(crate) struct Command {
 
 /// Every family's rows. A family file adds its `COMMANDS` slice here when its
 /// commands move out of a chain link.
-const FAMILIES: &[&[Command]] = &[];
+const FAMILIES: &[&[Command]] = &[crate::obscript_more::EXTRAS_COMMANDS];
 
-/// `(id, family)` pairs claimed by more than one row of `families`.
-#[cfg_attr(not(test), allow(dead_code))] // read by the table's tests; see `Games`
-pub(crate) fn duplicate_rows(families: &[&[Command]]) -> Vec<(u16, bool)> {
+/// `(id, game)` pairs claimed by more than one row of `families`.
+#[cfg_attr(not(test), allow(dead_code))] // read by the table's tests
+pub(crate) fn duplicate_rows(families: &[&[Command]]) -> Vec<(u16, Game)> {
     let mut seen = std::collections::HashSet::new();
     let mut duplicates = Vec::new();
     for row in families.iter().flat_map(|rows| rows.iter()) {
-        for fallout in [false, true] {
-            if row.games.includes(fallout) && !seen.insert((row.id, fallout)) {
-                duplicates.push((row.id, fallout));
+        for game in ALL_GAMES {
+            if row.games.includes(game) && !seen.insert((row.id, game)) {
+                duplicates.push((row.id, game));
             }
         }
     }
     duplicates
 }
 
-fn index(families: &'static [&'static [Command]]) -> HashMap<(u16, bool), &'static Command> {
+type Table = HashMap<(u16, Game), &'static Command>;
+
+fn index(families: &'static [&'static [Command]]) -> Table {
     let mut table = HashMap::new();
     for row in families.iter().flat_map(|rows| rows.iter()) {
-        for fallout in [false, true] {
-            if row.games.includes(fallout) {
-                table.entry((row.id, fallout)).or_insert(row);
+        for game in ALL_GAMES {
+            if row.games.includes(game) {
+                table.entry((row.id, game)).or_insert(row);
             }
         }
     }
     table
 }
 
-fn table() -> &'static HashMap<(u16, bool), &'static Command> {
-    static TABLE: OnceLock<HashMap<(u16, bool), &'static Command>> = OnceLock::new();
+fn table() -> &'static Table {
+    static TABLE: OnceLock<Table> = OnceLock::new();
     TABLE.get_or_init(|| index(FAMILIES))
 }
 
-/// The row for `cmd` in the Fallout (`fallout`) or Oblivion family, if the table owns it.
-pub(crate) fn find(cmd: u16, fallout: bool) -> Option<&'static Command> {
-    table().get(&(cmd, fallout)).copied()
+/// The row for `cmd` under `game`, if the table owns it.
+pub(crate) fn find(cmd: u16, game: Game) -> Option<&'static Command> {
+    table().get(&(cmd, game)).copied()
 }
 
 /// Run `row` for a call whose arguments are `args`.
-fn run_row(row: &Command, world: &World, args: &[ObScriptValue], context: &Context) -> Action {
+fn run_row(row: &Command, world: &World, game: Game, args: &[ObScriptValue], context: &Context) -> Action {
     if row.needs_caller && context.caller.filter(|&form| form != 0).is_none() {
         return Action::Declined;
     }
-    (row.handler)(world, args, context)
+    (row.handler)(world, game == Game::Fallout, row.id, args, context)
 }
 
 /// Run `cmd` if the table owns it; `Unhandled` otherwise, so the host keeps looking.
 pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let fallout = crate::ScriptGame::is_fallout3_nv(world);
-    match find(cmd, fallout) {
-        Some(row) => run_row(row, world, args, context),
+    let game = Game::of(world);
+    match find(cmd, game) {
+        Some(row) => run_row(row, world, game, args, context),
         None => Action::Unhandled,
     }
 }
@@ -121,8 +155,13 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Con
 mod tests {
     use super::*;
 
-    fn done(_: &World, _: &[ObScriptValue], _: &Context) -> Action {
+    fn done(_: &World, _: bool, _: u16, _: &[ObScriptValue], _: &Context) -> Action {
         Action::Done { value: None, effect: "ran".to_owned() }
+    }
+
+    /// Echoes what the handler is handed, so a test can see `fallout` and `cmd` arrive.
+    fn echo(_: &World, fallout: bool, cmd: u16, _: &[ObScriptValue], _: &Context) -> Action {
+        Action::Done { value: None, effect: format!("{cmd:#06x} fallout={fallout}") }
     }
 
     const fn row(id: u16, games: Games, needs_caller: bool) -> Command {
@@ -132,29 +171,35 @@ mod tests {
     /// The shipped table claims no id twice in one game: a repeated row would be a
     /// shadowed handler.
     #[test]
-    fn the_table_claims_no_id_twice_in_a_family() {
+    fn the_table_claims_no_id_twice_in_a_game() {
         assert_eq!(duplicate_rows(FAMILIES), Vec::new());
     }
 
     /// The same id may be two commands in two games (`0x116b`), and a `Both` row
     /// claims it in each, so it clashes with either.
     #[test]
-    fn duplicates_are_per_family() {
+    fn duplicates_are_per_game() {
         static OBLIVION_AND_FALLOUT: [Command; 2] = [row(0x116b, Games::Oblivion, false), row(0x116b, Games::Fallout, false)];
         assert!(duplicate_rows(&[&OBLIVION_AND_FALLOUT]).is_empty());
         static CLASH: [Command; 2] = [row(0x116b, Games::Both, false), row(0x116b, Games::Fallout, false)];
-        assert_eq!(duplicate_rows(&[&CLASH]), vec![(0x116b, true)]);
+        assert_eq!(duplicate_rows(&[&CLASH]), vec![(0x116b, Game::Fallout)]);
         static ACROSS_FILES: [Command; 1] = [row(0x1000, Games::Both, false)];
-        assert_eq!(duplicate_rows(&[&ACROSS_FILES, &ACROSS_FILES]), vec![(0x1000, false), (0x1000, true)]);
+        assert_eq!(
+            duplicate_rows(&[&ACROSS_FILES, &ACROSS_FILES]),
+            vec![(0x1000, Game::Oblivion), (0x1000, Game::Fallout)]
+        );
     }
 
     #[test]
     fn a_row_answers_only_in_its_games() {
-        static ROWS: [Command; 2] = [row(0x2001, Games::Fallout, false), row(0x2002, Games::Both, false)];
+        static ROWS: [Command; 3] = [row(0x2001, Games::Fallout, false), row(0x2002, Games::Both, false), row(0x2003, Games::Any, false)];
         static FAMILIES_UNDER_TEST: [&[Command]; 1] = [&ROWS];
         let table = index(&FAMILIES_UNDER_TEST);
-        assert!(table.contains_key(&(0x2001, true)) && !table.contains_key(&(0x2001, false)));
-        assert!(table.contains_key(&(0x2002, true)) && table.contains_key(&(0x2002, false)));
+        assert!(table.contains_key(&(0x2001, Game::Fallout)) && !table.contains_key(&(0x2001, Game::Oblivion)));
+        assert!(!table.contains_key(&(0x2001, Game::Other)));
+        assert!(table.contains_key(&(0x2002, Game::Fallout)) && table.contains_key(&(0x2002, Game::Oblivion)));
+        assert!(!table.contains_key(&(0x2002, Game::Other)), "`Both` is not a world with neither game loaded");
+        assert!(table.contains_key(&(0x2003, Game::Other)));
     }
 
     /// A row that acts on a calling reference is declined without one, before its
@@ -167,17 +212,26 @@ mod tests {
         let none = Context::default();
         let zero = Context { caller: Some(0), ..Context::default() };
         let named = Context { caller: Some(0x14), ..Context::default() };
-        assert_eq!(run_row(&needs, &world, &[], &none), Action::Declined);
-        assert_eq!(run_row(&needs, &world, &[], &zero), Action::Declined);
-        assert!(matches!(run_row(&needs, &world, &[], &named), Action::Done { .. }));
-        assert!(matches!(run_row(&free, &world, &[], &none), Action::Done { .. }));
+        assert_eq!(run_row(&needs, &world, Game::Fallout, &[], &none), Action::Declined);
+        assert_eq!(run_row(&needs, &world, Game::Fallout, &[], &zero), Action::Declined);
+        assert!(matches!(run_row(&needs, &world, Game::Fallout, &[], &named), Action::Done { .. }));
+        assert!(matches!(run_row(&free, &world, Game::Fallout, &[], &none), Action::Done { .. }));
     }
 
-    /// With no rows yet, the table owns nothing and the host's chain answers every command.
+    /// The handler is handed the command id (a handler shared by several ids needs it) and whether
+    /// the game is Fallout.
     #[test]
-    fn an_unowned_command_is_unhandled_so_the_chain_keeps_looking() {
+    fn a_handler_is_told_its_command_and_game() {
         let world = World::new();
-        assert!(FAMILIES.is_empty());
-        assert_eq!(run(&world, 0x1002, &[], &Context::default()), Action::Unhandled);
+        let shared = Command { id: 0x2005, games: Games::Both, needs_caller: false, handler: echo };
+        let ctx = Context::default();
+        assert_eq!(
+            run_row(&shared, &world, Game::Fallout, &[], &ctx),
+            Action::Done { value: None, effect: "0x2005 fallout=true".to_owned() }
+        );
+        assert_eq!(
+            run_row(&shared, &world, Game::Oblivion, &[], &ctx),
+            Action::Done { value: None, effect: "0x2005 fallout=false".to_owned() }
+        );
     }
 }

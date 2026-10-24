@@ -124,7 +124,7 @@ pub fn command_is_modeled(cmd: u16, fallout: bool) -> bool {
         return true;
     }
     // The command table (#6139) owns the commands that have left the chain below.
-    if crate::obscript_cmd::find(cmd, fallout).is_some() {
+    if crate::obscript_cmd::find(cmd, crate::obscript_cmd::Game::from_fallout(fallout)).is_some() {
         return true;
     }
     // `MoveToMarkerWithFade` and `GetLinkedRef` are Fallout commands; the numbers are
@@ -742,7 +742,7 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
             }
             // The command table (#6139): the commands that have left the chain below. It is asked first, so a
             // migrated command is never answered by a stale arm of an older link.
-            _ if crate::obscript_cmd::find(cmd, crate::ScriptGame::is_fallout3_nv(self.world)).is_some() => {
+            _ if crate::obscript_cmd::find(cmd, crate::obscript_cmd::Game::of(self.world)).is_some() => {
                 match crate::obscript_cmd::run(self.world, cmd, args, &self.context(caller)) {
                     Action::Done { value, effect: text } => {
                         if !text.is_empty() {

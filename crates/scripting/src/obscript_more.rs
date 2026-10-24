@@ -26,6 +26,7 @@ mod extras;
 mod state;
 mod tail;
 pub use tail::{ChildRaces, CellZones, ExitGameRequest, PendingVideos, PlayableRaces};
+pub(crate) use extras::EXTRAS_COMMANDS;
 pub use extras::{AshPiles, MusicTrack, MusicTracks, PendingMusic, PendingTextureSwaps, ReloadRequest, TextArguments, TextureSwap, UseWeaponRequest};
 
 /// Fallout 3 / New Vegas command ids this module runs.
@@ -307,6 +308,10 @@ pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], ctx: &Context
         return Action::Unhandled;
     }
     let fallout = family == Family::Fallout;
+    // The command table (#6139) owns the commands that have left the chain below.
+    if crate::obscript_cmd::find(cmd, crate::obscript_cmd::Game::from_fallout(fallout)).is_some() {
+        return crate::obscript_cmd::run(world, cmd, args, ctx);
+    }
     let queries = world.try_resource::<EngineQueries>().map(|queries| *queries).unwrap_or_default();
     let target = || form_arg(args, 0).and_then(|form| live(world, form));
     match cmd {
