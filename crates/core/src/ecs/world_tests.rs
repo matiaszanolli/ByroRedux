@@ -529,6 +529,48 @@ fn resource_insert_and_mutate() {
     assert!((dt.0 - 1.0 / 30.0).abs() < f32::EPSILON);
 }
 
+/// #6136 - `init_resource` is insert-if-absent: a value already installed (a
+/// save restore's, say) survives the ~155 call sites that "ensure" the resource.
+#[test]
+fn init_resource_inserts_the_default_only_when_absent() {
+    #[derive(Default)]
+    struct Tuning(u32);
+    impl Resource for Tuning {}
+
+    let mut world = World::new();
+    world.init_resource::<Tuning>();
+    assert_eq!(world.resource::<Tuning>().0, 0, "an absent resource gets its default");
+
+    world.insert_resource(Tuning(7));
+    world.init_resource::<Tuning>();
+    assert_eq!(world.resource::<Tuning>().0, 7, "an existing resource is left untouched");
+}
+
+/// #6136 - rustdoc attaches a `///` block to the next item, so each resource
+/// method's doc must sit directly above it: `init_resource` once landed between
+/// `insert_resource`'s doc and its signature, and rustdoc then described
+/// `init_resource` as returning a previous value.
+#[test]
+fn insert_resource_keeps_its_own_doc() {
+    const WORLD_RS: &str = include_str!("world.rs");
+    let (before, _) = WORLD_RS
+        .split_once("    pub fn insert_resource<")
+        .expect("insert_resource exists");
+    let doc = before.rsplit("\n\n").next().expect("a doc block");
+    assert!(
+        doc.contains("Insert a global resource. Returns the previous value"),
+        "insert_resource's doc block must sit directly above it"
+    );
+    let (before, _) = WORLD_RS
+        .split_once("    pub fn init_resource<")
+        .expect("init_resource exists");
+    let doc = before.rsplit("\n\n").next().expect("a doc block");
+    assert!(
+        !doc.contains("Returns the previous value"),
+        "init_resource must not carry insert_resource's doc"
+    );
+}
+
 #[test]
 fn two_resource_types_coexist() {
     let mut world = World::new();

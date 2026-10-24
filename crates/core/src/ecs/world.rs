@@ -661,16 +661,6 @@ impl World {
     /// panicked mid-access), this re-panics with the type name via the #466
     /// fail-fast lock-poison doctrine rather than swallowing it into `None`
     /// (#1837). The freshly-installed replacement value is always un-poisoned.
-    /// #5806 — the "insert the default if absent" idiom, spelled 160
-    /// times workspace-wide as a three-line try_resource/insert pair.
-    /// Insert-if-absent semantics: an existing resource (e.g. a save
-    /// restore's) is left untouched.
-    pub fn init_resource<R: Resource + Default>(&mut self) {
-        if self.try_resource::<R>().is_none() {
-            self.insert_resource(R::default());
-        }
-    }
-
     pub fn insert_resource<R: Resource>(&mut self, resource: R) -> Option<R> {
         let old = self
             .resources
@@ -686,6 +676,17 @@ impl World {
                 .unwrap_or_else(|_| resource_lock_poisoned::<R>());
             *boxed.downcast::<R>().expect("resource type mismatch")
         })
+    }
+
+    /// Insert `R::default()` unless a resource of that type is already present.
+    ///
+    /// #5806 — the "insert the default if absent" idiom, spelled 160 times
+    /// workspace-wide as a three-line `try_resource`/`insert_resource` pair.
+    /// An existing resource (e.g. a save restore's) is left untouched.
+    pub fn init_resource<R: Resource + Default>(&mut self) {
+        if self.try_resource::<R>().is_none() {
+            self.insert_resource(R::default());
+        }
     }
 
     /// Remove a global resource, returning it if it existed.
