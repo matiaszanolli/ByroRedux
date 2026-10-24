@@ -119,6 +119,9 @@ pub enum ItemKind {
         simple_consumption_header: bool,
         /// FO3/FNV ENIT Medicine flag: positive effects scale with Medicine.
         medicine: bool,
+        /// FO3/FNV ENIT Food Item flag (0x2): the object type a Find package
+        /// calls Food (18) as against Alchemy (17). `false` on other games.
+        food: bool,
     },
     /// KEYM: key — same as MISC but the engine treats it specially.
     Key,
@@ -1012,6 +1015,7 @@ pub fn parse_alch(
             authored_effects: None,
             simple_consumption_header: false,
             medicine: false,
+            food: false,
         },
     }
 }
@@ -1042,11 +1046,25 @@ pub fn parse_alch_for_game(
                 .map(|entry| entry.effect.clone())
                 .collect::<Vec<_>>()
         });
+    // The Food Item flag is read ahead of the consumption-header gates below,
+    // which decline addictive and scripted items: those are still food.
+    let food_flag = game == GameKind::Fallout3NV
+        && subs
+            .iter()
+            .find(|s| &s.sub_type == b"ENIT" && s.data.len() >= 8)
+            .is_some_and(|s| {
+            let mut r = SubReader::new(&s.data);
+            r.skip_or_eof(4);
+            r.u32_or_default() & 2 != 0
+        });
     if let ItemKind::Aid {
-        authored_effects, ..
+        authored_effects,
+        food,
+        ..
     } = &mut item.kind
     {
         *authored_effects = authored;
+        *food = food_flag;
     }
     if !matches!(game, GameKind::Skyrim | GameKind::Fallout3NV)
         || subs

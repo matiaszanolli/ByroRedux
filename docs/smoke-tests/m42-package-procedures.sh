@@ -22,6 +22,13 @@
 #      "arrived, now approach the marker" forever (he stood 222 units above
 #      it) and he never sat.
 #
+#   4. Find (PACK procedure 0). hooverdamintoliverarea's Oliver troopers run
+#      `DefaultFindPlayerPackage` (hunt the player): each must install
+#      FindPackageBehavior and start a FindProgress. The player stands across
+#      the dam structure, so the straight-line walk is held against geometry and
+#      the hunt drops the target for a while; the item pickup and the attack
+#      are unit-gated (`systems::find_package`).
+#
 # FleeNotCombat, Accompany and Ambush have no unconditional vanilla placement
 # to boot into, so they are unit-gated only (`systems::flee_package`,
 # `systems::faction_hostility`, `npc_spawn::ai_package`).
@@ -139,4 +146,14 @@ count_entities Seated vault3-seated >/dev/null
 grep -Fq "Entity $runner" "$LOG_DIR/vault3-seated.log" \
     || fail "the Motor-Runner never sat on Throne01 (the Eat approach/arrival regression): $(grep -a '\[m42\]' "$LOG_DIR/vault3.stderr" | head -2)"
 echo "smoke[m42-package-procedures]: UseItemAt PASS — the Motor-Runner is seated on his throne"
+stop_engine
+
+# ── 4. Find: the troopers hunt the player ───────────────────────────
+boot_cell hooverdamintoliverarea hoover
+sleep 8
+hunters="$(count_entities FindPackageBehavior hoover-find)"
+(( hunters >= 1 )) || fail "no Oliver trooper installed FindPackageBehavior (DefaultFindPlayerPackage)"
+progress="$(count_entities FindProgress hoover-progress)"
+(( progress >= 1 )) || fail "$hunters troopers carry the package but none started a FindProgress (the hunt never ran)"
+echo "smoke[m42-package-procedures]: Find PASS — $hunters troopers hunting the player, $progress with a run in progress"
 echo "smoke[m42-package-procedures]: PASS; artifacts: $LOG_DIR"

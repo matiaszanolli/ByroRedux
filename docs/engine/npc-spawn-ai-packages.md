@@ -184,11 +184,10 @@ modeled player-targeted Conversations only, #5376) and
 `PROCEDURE_USE_WEAPON = 16` (`use_weapon_package_system`) have a name and a
 consumer, as do `PROCEDURE_ACCOMPANY = 7` (it runs on the Follow runtime),
 `PROCEDURE_AMBUSH = 9` (Guard's runtime plus a hostility gate) and
-`PROCEDURE_USE_ITEM_AT = 8` (Eat's walk-and-sit runtime); the other 2
-(Find/CastMagic) are captured as a raw integer and dispatched nowhere.
-CastMagic has no vanilla FO3/FNV package to run (procedure 11 is unused in
-both masters); Find does and is a design question, not a wiring one - see
-below. `active_package_is_sandbox`/
+`PROCEDURE_USE_ITEM_AT = 8` (Eat's walk-and-sit runtime) and
+`PROCEDURE_FIND = 0` (`find_package_system`); the one other, CastMagic (11),
+is captured as a raw integer and dispatched nowhere - no FO3/FNV package uses
+it, so there is nothing to run. `active_package_is_sandbox`/
 `active_sandbox_location`, `active_package_is_wander`/
 `active_wander_location`, `active_package_is_travel`/
 `active_travel_location`, `active_package_is_follow`/
@@ -528,7 +527,7 @@ animation-clip swap).
 
 ## What's not covered / honest state
 
-- **Fifteen procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
+- **Sixteen procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
   (M42.4), Follow (M42.5), Escort (M42.6), Guard (M42.7), and Patrol
   (M42.8, which shares Wander's algorithm rather than running a
   distinct one); Eat and Sleep (2026-10-08, `eat_sleep_system` — walk to
@@ -564,17 +563,32 @@ animation-clip swap).
   target-less packages (fire into the air) are declined too. Not modelled: the `PLDT`
   place to stand, the `PLD2` target location, Crouch To Reload, Hold Fire
   When Blocked, Always Hit and the authored pause between volleys. No
-  Find/Accompany/UseItemAt/Ambush/CastMagic runtime exists as a PACK
-  procedure; `magic_effects` has the caster, so CastMagic is blocked on
-  its target/range policy (and in FO3/FNV has no data to size it against).
-  **Find** (81 FNV / 78 FO3 packages) is not a mapping onto an existing
-  runtime: the vanilla targets split between hunting the player or a named
-  actor (`DefaultFindPlayerPackage`), walking to a placed item (a strange
-  meat pie), and 49 FNV packages that *search an area* for an object type
-  (Food 18, Alchemy 17, Ammo 13, Flora 10, Furniture 11) or base object,
-  attacking what is hostile and picking up what is an item. It needs an
-  area search over loaded references, an NPC item pickup and a policy for
-  the GECK's "if a non-hostile NPC, talk to it" - decisions left open.
+  CastMagic runtime exists as a PACK procedure; `magic_effects` has the
+  caster, but FO3/FNV author no package for it to run. **Find** (81 FNV / 78
+  FO3 packages; `FindPackageBehavior` + `find_package_system`): the actor
+  settles on a target - a `PTDT` reference, or the nearest loaded reference
+  of a base object or placed item of an object type inside the `PLDT`
+  area (searched once a second) - walks to it and acts: an item is picked up
+  through the player's pickup path (`inventory::take_placed_item`: inventory,
+  hidden placement, tombstone, item events, but no player notification and
+  no player theft), a creature or an actor the ambient hostility rules would
+  attack is attacked (an `AiCombatState` the combat AI fights, not dropped
+  on lost contact), the friendly player is greeted through the force-greet
+  bridge, another friendly actor is stood beside, and anything else is
+  activated (`ActivateEvent` with the actor as activator). Done at the
+  object count. The object types searched are the three the item records
+  can classify: Ammo 13, Alchemy 17, and Food 18 (new: the `ALCH` Food Item
+  flag, `ItemKind::Aid::food`, validated against vanilla - meats and steaks
+  are food, Stimpak/RadAway/Jet are not). Declined: any other object type
+  (flora, furniture, the weapon classes), a dead target, and - the #5376
+  rule - any package with a condition the evaluator cannot fully model,
+  since Find sends the actor off to hunt. A target the walk is held away
+  from for 2.5 s is dropped for 30 s and then tried again (single-tile
+  pathing blocks a straight line across levels: the Hoover Dam troopers'
+  `DefaultFindPlayerPackage` shows it live). Not modelled: conversation
+  between two NPCs, run speed, dead-creature finds
+  (`FFER15FindDeadBrahmin`). Live-gated for install and hunt only; the pickup
+  and the attack are unit-gated.
   Ambush
   (`AmbushBehavior` + Guard): the actor waits at the `PLDT` wait location on
   Guard's runtime, and `faction_hostility_system` gates its fights - an

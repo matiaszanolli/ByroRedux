@@ -364,6 +364,7 @@ fn synthetic_index() -> EsmIndex {
                 ]),
                 simple_consumption_header: true,
                 medicine: false,
+                food: false,
                 immediate_effects: Some(vec![MagicEffectItem {
                     effect_form_id: 20,
                     magnitude: 25.0,

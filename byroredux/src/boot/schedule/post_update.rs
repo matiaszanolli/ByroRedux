@@ -122,6 +122,9 @@ pub(super) fn register_post_update_systems(scheduler: &mut Scheduler) {
         // M42 — FleeNotCombat (procedure 10): keep away from the PTDT target
         // or hold at the PLDT refuge. See `systems::flee_package` docs.
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_flee_package_system());
+        // M42 — Find (procedure 0): go to a target and take / attack / greet /
+        // activate it. See `systems::find_package` docs.
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_find_package_system());
         // M42.8 — Patrol: shares Wander's oscillating algorithm (no
         // patrol-route data is decoded anywhere yet — see
         // `systems::patrol` module docs).

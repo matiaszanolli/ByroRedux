@@ -465,6 +465,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::GuardState>()
             .writes::<byroredux_core::ecs::components::FleePackageBehavior>()
             .writes::<byroredux_core::ecs::components::AmbushBehavior>()
+            .writes::<byroredux_core::ecs::components::FindPackageBehavior>()
+            .writes::<byroredux_core::ecs::components::FindProgress>()
             .writes::<byroredux_core::ecs::components::UseWeaponPackageBehavior>()
             .writes::<byroredux_core::ecs::components::UseWeaponPackageStarted>()
             .writes::<crate::systems::script_requests::UseWeaponRun>()

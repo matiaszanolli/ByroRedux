@@ -87,6 +87,32 @@ pub(crate) struct InventoryCatalog {
 }
 
 impl InventoryCatalog {
+    /// A catalog that knows these bases as plain pickup items - the fixture
+    /// other systems' tests need to make a placement a pickup target.
+    #[cfg(test)]
+    pub(crate) fn with_pickup_bases(bases: &[u32]) -> Self {
+        let entries = bases
+            .iter()
+            .map(|&base| {
+                (
+                    base,
+                    InventoryItemDefinition {
+                        name: format!("Item {base:X}"),
+                        category: "Misc",
+                        value: 1,
+                        weight: 0.1,
+                        details: String::new(),
+                        equip_target: None,
+                        weapon_damage: None,
+                        weapon_reach: 0.0,
+                        weapon_speed: 0.0,
+                    },
+                )
+            })
+            .collect();
+        Self { entries, player_base_form_id: 0x14, ..Self::default() }
+    }
+
     /// One `base_form_id` item's weight; 0 for an item outside the catalog.
     pub(crate) fn item_weight(&self, base_form_id: u32) -> f32 {
         self.entries
@@ -1379,6 +1405,20 @@ pub(crate) fn pickup_loot(
     player: byroredux_core::ecs::EntityId,
     target: byroredux_core::ecs::EntityId,
 ) -> bool {
+    take_placed_item(world, player, target, true)
+}
+
+/// [`pickup_loot`] for any actor. An NPC taker (a Find package picking up
+/// what it was sent for) moves the item the same way - inventory, hidden
+/// placement, tombstone, item-transfer events - but says nothing to the player
+/// and cannot commit the *player's* theft: ownership is a rule about the
+/// player's hands.
+pub(crate) fn take_placed_item(
+    world: &World,
+    player: byroredux_core::ecs::EntityId,
+    target: byroredux_core::ecs::EntityId,
+    player_is_taker: bool,
+) -> bool {
     if !is_pickup_target(world, target) {
         return false;
     }
@@ -1388,7 +1428,7 @@ pub(crate) fn pickup_loot(
     else {
         return false;
     };
-    let stolen_from = theft_owner(world, player, target);
+    let stolen_from = if player_is_taker { theft_owner(world, player, target) } else { None };
     let stolen = stolen_from.is_some();
     let count = world
         .get::<PlacedItemCount>(target)
@@ -1435,14 +1475,16 @@ pub(crate) fn pickup_loot(
     if count > 1 {
         name = format!("{name} ({count})");
     }
-    crate::notifications::push(
-        world,
-        if stolen {
-            format!("Stolen {name}")
-        } else {
-            format!("Added {name}")
-        },
-    );
+    if player_is_taker {
+        crate::notifications::push(
+            world,
+            if stolen {
+                format!("Stolen {name}")
+            } else {
+                format!("Added {name}")
+            },
+        );
+    }
     if let Some(owner) = stolen_from {
         crate::crime::report_theft(world, player, owner, &[(base, count)]);
     }
@@ -4558,6 +4600,7 @@ mod tests {
                     authored_effects: Some(effects),
                     simple_consumption_header: simple_header,
                     medicine: false,
+                    food: false,
                 },
             },
         );

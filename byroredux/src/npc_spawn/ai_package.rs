@@ -10,7 +10,7 @@ use super::EsmIndex;
 use crate::components::{AmbientPackageRuntime, GameTimeRes, NavPath, SeatReservations};
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
-    AmbushBehavior, Dead, EatBehavior, EatSleepLocation, EatSleepState, EscortBehavior, EscortState, Escorted,
+    AmbushBehavior, Dead, FindItemKind, FindPackageBehavior, FindProgress, FindTarget, EatBehavior, EatSleepLocation, EatSleepState, EscortBehavior, EscortState, Escorted,
     FollowBehavior,
     FleePackageBehavior, FollowState, GuardBehavior, GuardState, PatrolBehavior, PatrolState, SandboxBehavior, Seated,
     SleepBehavior, TravelBehavior, TravelState, Traveled, UseWeaponPackageBehavior,
@@ -126,12 +126,63 @@ fn use_weapon_behavior(package: &PackRecord, world: &World) -> Option<UseWeaponP
     })
 }
 
+/// What a Find package installs, or `None` when it must not install:
+///
+/// - A package whose conditions could not all be evaluated: Find takes the
+///   actor over to hunt, take or greet, so a fail-open pass (#5376) would send
+///   it off on content the quest has not reached.
+/// - A package with no `PTDT`, or one searching an object type the item
+///   records cannot classify (only Ammo 13, Alchemy 17 and Food 18 are; the
+///   enum's weapon classes are contradicted by the data and the rest have no
+///   record to read).
+fn find_behavior(package: &PackRecord, world: &World) -> Option<FindPackageBehavior> {
+    if !package_conditions_fully_modeled(&package.conditions, world) {
+        return None;
+    }
+    let target = package.target?;
+    let (target_kind, count) = match target.target {
+        PackTargetKind::SpecificReference(form_id) => (FindTarget::Reference(form_id), 1),
+        PackTargetKind::ObjectId(base) => (FindTarget::Base(base), target.count_or_distance.max(1) as u32),
+        PackTargetKind::Other(_) if target.target_type == 2 => {
+            let PackTargetKind::Other(object_type) = target.target else { return None };
+            // The object-type numbers are FO3/FNV's: Oblivion numbers the same
+            // enum differently (there 13 is Weapons, 17 Soul Gems, 18 Keys), so
+            // another game's type search would be misread, not just missed.
+            let game = world
+                .try_resource::<crate::cell_loader::LoadedCellIndex>()
+                .map(|index| index.0.game);
+            if game != Some(byroredux_plugin::esm::reader::GameKind::Fallout3NV) {
+                return None;
+            }
+            let kind = match object_type {
+                13 => FindItemKind::Ammo,
+                17 => FindItemKind::Alchemy,
+                18 => FindItemKind::Food,
+                _ => return None,
+            };
+            (FindTarget::Kind(kind), target.count_or_distance.max(1) as u32)
+        }
+        PackTargetKind::Other(_) => return None,
+    };
+    Some(FindPackageBehavior {
+        target: target_kind,
+        count,
+        area: location_anchor(package.location),
+        area_radius: package.location.map_or(0.0, |area| area.radius.max(0) as f32),
+    })
+}
+
 /// Whether selection may pick `package`: a Dialogue-procedure package must be
 /// one the installer would take (#5499 / #5722), and so must a UseWeapon one;
 /// every other procedure passes. Shared by the schedule scan and the
 /// script-package slot so a scripted Say-To / off-target Dialogue package
 /// cannot win and then install nothing (#6051).
 fn selectable_by_installer(package: &PackRecord, world: &World) -> bool {
+    // Find first, and by `is_find`: procedure 0 is also every Skyrim+ package's
+    // unset byte, which `is_find` tells apart by shape.
+    if package.is_find() {
+        return find_behavior(package, world).is_some();
+    }
     match package.procedure_type {
         PROCEDURE_DIALOGUE => dialogue_installs_ambient(package, world),
         PROCEDURE_USE_WEAPON => use_weapon_behavior(package, world).is_some(),
@@ -205,6 +256,8 @@ enum AmbientBehavior {
         ambush: AmbushBehavior,
         actor_form_id: u32,
     },
+    /// M42 — Find (procedure 0): `find_package_system` hunts the target.
+    Find(FindPackageBehavior),
     /// M42 — UseWeapon (procedure 16): `use_weapon_package_system` raises
     /// the `UseWeaponRequest` for it once.
     UseWeapon(UseWeaponPackageBehavior),
@@ -346,6 +399,8 @@ impl AmbientBehavior {
                 },
                 actor_form_id,
             })
+        } else if package.is_find() {
+            find_behavior(package, world).map(Self::Find)
         } else if package.is_use_weapon() {
             use_weapon_behavior(package, world).map(Self::UseWeapon)
         } else if package.is_patrol() {
@@ -591,6 +646,9 @@ impl AmbientBehavior {
                 );
                 world.insert(actor, ambush);
             }
+            Self::Find(behavior) => {
+                world.insert(actor, behavior);
+            }
             Self::UseWeapon(behavior) => {
                 world.insert(actor, behavior);
             }
@@ -747,6 +805,7 @@ impl AmbientBehavior {
                 );
                 insert_component(world, actor, ambush);
             }
+            Self::Find(behavior) => insert_component(world, actor, behavior),
             Self::UseWeapon(behavior) => insert_component(world, actor, behavior),
             Self::Flee {
                 threat_form_id,
@@ -873,6 +932,8 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     remove_component::<GuardState>(world, actor);
     remove_component::<FleePackageBehavior>(world, actor);
     remove_component::<AmbushBehavior>(world, actor);
+    remove_component::<FindPackageBehavior>(world, actor);
+    remove_component::<FindProgress>(world, actor);
     // A UseWeapon package's volleys stop with it. The run is only the
     // package's when the package started it: a scripted `UseWeapon` volley
     // must survive an unrelated handover.
@@ -1374,6 +1435,8 @@ mod tests {
         world.register::<FleePackageBehavior>();
         world.register::<UseWeaponPackageBehavior>();
         world.register::<AmbushBehavior>();
+        world.register::<FindPackageBehavior>();
+        world.register::<FindProgress>();
         world.register::<UseWeaponPackageStarted>();
         world.register::<PatrolBehavior>();
         world.register::<PatrolState>();
@@ -1881,6 +1944,87 @@ mod tests {
                 assert!(world.has::<TravelBehavior>(actor));
             }
         }
+    }
+
+    /// Find (procedure 0): a reference, a base object or a classifiable object
+    /// type, searched for in the `PLDT` area; anything else, and a fail-open
+    /// condition list, is declined.
+    #[test]
+    fn a_find_package_installs_only_what_the_runtime_can_hunt() {
+        use byroredux_core::ecs::components::{EatSleepLocation, FindItemKind, FindTarget};
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+        use byroredux_plugin::esm::records::misc::pack::PROCEDURE_FIND;
+        use byroredux_plugin::esm::records::PackTarget;
+
+        let finding = |form_id, target_type, kind, count| {
+            let mut package = pack(form_id, PROCEDURE_FIND, None);
+            package.target = Some(PackTarget { target_type, target: kind, count_or_distance: count });
+            package.location = Some(PackLocation {
+                location_type: 2,
+                target: PackLocationTarget::Other(0),
+                radius: 1000,
+            });
+            package
+        };
+        let installed_in = |game, package: PackRecord| {
+            let (mut world, actor) = setup_actor(10.0, vec![package]);
+            world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(EsmIndex {
+                game,
+                ..Default::default()
+            })));
+            // The behavior is chosen at spawn and again at each re-evaluation;
+            // the index is in place by the time the second one runs.
+            world.query_mut::<EvaluatePackageRequest>().unwrap().insert(actor, EvaluatePackageRequest);
+            ambient_ai_package_system(&world, 0.0);
+            world.get::<FindPackageBehavior>(actor).map(|behavior| *behavior)
+        };
+        let installed = |package: PackRecord| installed_in(byroredux_plugin::esm::reader::GameKind::Fallout3NV, package);
+
+        // FNV `FFER08FindFoodDog`: a base object, count 1, a 1000 area.
+        assert_eq!(
+            installed(finding(0x100, 1, PackTargetKind::ObjectId(0x5001), 1)),
+            Some(FindPackageBehavior {
+                target: FindTarget::Base(0x5001),
+                count: 1,
+                area: EatSleepLocation::NearCurrentLocation,
+                area_radius: 1000.0,
+            })
+        );
+        // FNV `VCrGeckoFindFood`: object type 18, count 2.
+        let food = installed(finding(0x101, 2, PackTargetKind::Other(18), 2)).expect("food installs");
+        assert_eq!((food.target, food.count), (FindTarget::Kind(FindItemKind::Food), 2));
+        // FNV `DefaultFindPlayerPackage`: the player.
+        let player = installed(finding(0x102, 0, PackTargetKind::SpecificReference(0x14), 0)).expect("the player");
+        assert_eq!((player.target, player.count), (FindTarget::Reference(0x14), 1));
+
+        // Oblivion numbers the object types differently, so its type search is declined.
+        assert_eq!(
+            installed_in(
+                byroredux_plugin::esm::reader::GameKind::Oblivion,
+                finding(0x10A, 2, PackTargetKind::Other(18), 2)
+            ),
+            None,
+            "18 is Keys in Oblivion's enum, not Food"
+        );
+        // Flora (10), furniture (11) and the contradicted weapon classes are not searched for.
+        for unclassified in [10, 11, 21, 22, 23, 28] {
+            assert_eq!(
+                installed(finding(0x103, 2, PackTargetKind::Other(unclassified), 1)),
+                None,
+                "object type {unclassified} has no record to classify it by"
+            );
+        }
+        // A fail-open conditions pass must not send the actor hunting, nor shadow the next package.
+        let mut unmodeled = finding(0x104, 1, PackTargetKind::ObjectId(0x5001), 1);
+        unmodeled.conditions = vec![Condition {
+            function_index: 79,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(0.0),
+            ..Default::default()
+        }];
+        assert_eq!(installed(unmodeled.clone()), None);
+        let (world, actor) = setup_actor(10.0, vec![unmodeled, pack(0x105, PROCEDURE_GUARD, None)]);
+        assert!(world.has::<GuardBehavior>(actor), "the lower package still wins");
     }
 
     /// UseItemAt (procedure 8) is furniture use in the vanilla data: it takes
@@ -3213,6 +3357,7 @@ mod tests {
                 || world.has::<FleePackageBehavior>(actor)
                 || world.has::<UseWeaponPackageBehavior>(actor)
                 || world.has::<AmbushBehavior>(actor)
+                || world.has::<FindPackageBehavior>(actor)
             {
                 resolved_any_behavior += 1;
             }

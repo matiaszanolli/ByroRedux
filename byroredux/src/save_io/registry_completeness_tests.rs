@@ -609,6 +609,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("GuardBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion GuardState is registered"),
         ("UseWeaponPackageBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; the volleys it starts are NOT_SAVED_BY_DESIGN like UseWeaponRun"),
         ("UseWeaponPackageStarted", "one-shot guard of the active UseWeapon package; re-armed with the behavior at spawn, so a load re-requests the volleys"),
+        ("FindPackageBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; taken items persist through the picked-up tombstones"),
+        ("FindProgress", "a Find run's target and count; a load restarts the hunt, and what was already taken stays taken through the tombstones"),
         ("AmbushBehavior", "active-package-derived gate rebuilt at spawn and replaced by ambient_ai_package_system; stateless, read by the hostility pass"),
         ("FleePackageBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; stateless, so there is no companion to register"),
         ("LocalBound", "write-once at NIF import/mesh spawn, read-only thereafter to derive WorldBound"),

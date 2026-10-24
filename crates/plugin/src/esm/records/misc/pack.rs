@@ -374,6 +374,14 @@ pub const PROCEDURE_ESCORT: u32 = 2;
 /// is indefinite, like Wander) — see `systems::guard` module docs. See M42.
 pub const PROCEDURE_GUARD: u32 = 14;
 
+/// FO3/FNV procedure index for `Find` (see [`PackRecord::is_find`] for why it
+/// needs the flat-shape guard that no other procedure does) - go to a `PTDT` target (a reference,
+/// a base object, or an object type searched for in the `PLDT` area) and act
+/// on it: pick an item up, attack a creature or hostile actor, activate an
+/// activator, talk to a friendly one (GECK *Find Package*). 81 FalloutNV.esm
+/// and 78 Fallout3.esm packages (2026-10-24 census).
+pub const PROCEDURE_FIND: u32 = 0;
+
 /// FO3/FNV procedure index for `UseItemAt` — go to the `PLDT` location and
 /// "use" the `PTDT` item (GECK *Use Item At Package*: furniture and
 /// activators are sat in or used, an inventory item plays an animation).
@@ -719,6 +727,18 @@ impl PackRecord {
     /// location indefinitely, returning if displaced).
     pub fn is_guard(&self) -> bool {
         self.procedure_type == PROCEDURE_GUARD
+    }
+
+    /// True when this package's procedure is `Find`.
+    ///
+    /// Procedure `0` is also what a package with no `PKDT` procedure byte
+    /// reads as - every Skyrim+ package, whose procedure tree lives in its
+    /// template or its own `procedures` - so a flat FO3/FNV shape is required:
+    /// no template reference and no procedure tree of its own.
+    pub fn is_find(&self) -> bool {
+        self.procedure_type == PROCEDURE_FIND
+            && self.package_template_form_id.is_none()
+            && self.procedures.is_empty()
     }
 
     /// True when this package's procedure is `UseItemAt`.

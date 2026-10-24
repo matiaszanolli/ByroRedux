@@ -186,7 +186,7 @@ using the generic `register_component::<T>()` helper, called from
 `byroredux-core`). The registry is owned by the `DebugDrainSystem`
 (`DebugDrainSystem.registry`), not stored as a World resource.
 
-### Currently registered (78 components)
+### Currently registered (80 components)
 
 | Component | Fields |
 |-----------|--------|
@@ -232,6 +232,8 @@ using the generic `register_component::<T>()` helper, called from
 | `GuardState` | anchor |
 | `FleePackageBehavior` | threat form, minimum distance, refuge form |
 | `AmbushBehavior` | ambush zone anchor, zone radius, target form |
+| `FindPackageBehavior` | target, count, search area anchor, area radius |
+| `FindProgress` | current target, items taken, done |
 | `UseWeaponPackageBehavior` | weapon form, target form, bursts, volley shots, harmless |
 | `UseWeaponPackageStarted` | (marker) |
 | `PatrolBehavior` | patrol package parameters |
@@ -1317,7 +1319,7 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(78 components)
+(80 components)
 
 byro> entities Inventory
   Entity 12 "saadia"
