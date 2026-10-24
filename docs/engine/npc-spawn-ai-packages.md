@@ -182,10 +182,10 @@ the FO3/FNV procedure enum's values, only `PROCEDURE_SANDBOX = 12`
 modeled player-targeted Conversations only, #5376) and
 `PROCEDURE_FLEE_NOT_COMBAT = 10` (`flee_package_system`) and
 `PROCEDURE_USE_WEAPON = 16` (`use_weapon_package_system`) have a name and a
-consumer, as do `PROCEDURE_ACCOMPANY = 7` (it runs on the Follow runtime) and
-`PROCEDURE_AMBUSH = 9` (Guard's runtime plus a hostility gate); the other 3
-(Find/UseItemAt/CastMagic) are captured as a raw integer and dispatched
-nowhere. `active_package_is_sandbox`/
+consumer, as do `PROCEDURE_ACCOMPANY = 7` (it runs on the Follow runtime),
+`PROCEDURE_AMBUSH = 9` (Guard's runtime plus a hostility gate) and
+`PROCEDURE_USE_ITEM_AT = 8` (Eat's walk-and-sit runtime); the other 2
+(Find/CastMagic) are captured as a raw integer and dispatched nowhere. `active_package_is_sandbox`/
 `active_sandbox_location`, `active_package_is_wander`/
 `active_wander_location`, `active_package_is_travel`/
 `active_travel_location`, `active_package_is_follow`/
@@ -525,7 +525,7 @@ animation-clip swap).
 
 ## What's not covered / honest state
 
-- **Fourteen procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
+- **Fifteen procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
   (M42.4), Follow (M42.5), Escort (M42.6), Guard (M42.7), and Patrol
   (M42.8, which shares Wander's algorithm rather than running a
   distinct one); Eat and Sleep (2026-10-08, `eat_sleep_system` — walk to
@@ -574,7 +574,22 @@ animation-clip swap).
   apply, as before). Not modelled: hiding while waiting, wandering within a
   wait radius, Continue During Combat (combat always pre-empts the
   package), and the stealth model. 38 FNV / 25 FO3 packages; no interior
-  placement reaches one unconditionally, so it is unit-gated only. Accompany (14 FNV / 24 FO3 packages, each
+  placement reaches one unconditionally, so it is unit-gated only.
+  UseItemAt (26 FNV / 20 FO3 packages): 24 of the 26 FNV packages are
+  furniture - object type 11 (Furniture, the one object-type number the
+  fopdoc table and the data agree on) or a specific chair, throne, stool or
+  workbench marker - so it installs `EatBehavior` from the `PLDT` location
+  and sits at the nearest marker. The `PTDT` item is not read, so an item
+  that is not furniture leaves the actor standing at the location (the
+  GECK's "animation, if available", with none). **Live finding
+  (2026-10-24, `vault3c`):** `V03MotorRunner`'s unconditional
+  `V03MotorRunnerSit` installs `EatBehavior` and resolves its walk
+  destination, but he never seats - his `Eat` approach walks the character
+  controller into `Throne01`'s own collision and up onto it (authored height
+  6144, seat marker 6146, standing at 6368), so the 3-D arrival test against
+  the marker is never met. That is Eat/Sleep's approach leg, which no live
+  gate has covered (`m42-eat-sleep.sh` has nothing to seat); not changed
+  here. Accompany (14 FNV / 24 FO3 packages, each
   a `PTDT` reference plus a 50-768 distance and no `PLDT`) runs as a Follow:
   the GECK calls it "similar to a Follow" but pathing to the target's
   destination, and that lead is not modelled. No vanilla FNV placement

@@ -372,6 +372,15 @@ pub const PROCEDURE_ESCORT: u32 = 2;
 /// is indefinite, like Wander) — see `systems::guard` module docs. See M42.
 pub const PROCEDURE_GUARD: u32 = 14;
 
+/// FO3/FNV procedure index for `UseItemAt` — go to the `PLDT` location and
+/// "use" the `PTDT` item (GECK *Use Item At Package*: furniture and
+/// activators are sat in or used, an inventory item plays an animation).
+/// 26 FalloutNV.esm and 20 Fallout3.esm packages (2026-10-24 census); in
+/// FNV 24 of 26 name furniture - object type 11 (Furniture, the one object
+/// type number fopdoc and the data agree on), or a specific chair, throne,
+/// stool or marker - so the furniture half runs on Eat's seat runtime.
+pub const PROCEDURE_USE_ITEM_AT: u32 = 8;
+
 /// FO3/FNV procedure index for `Ambush` — wait at the `PLDT` location and
 /// aggro on an enemy that enters the `PLD2` ambush location (GECK *Ambush
 /// Package*). 38 FalloutNV.esm and 25 Fallout3.esm packages (2026-10-24
@@ -708,6 +717,11 @@ impl PackRecord {
     /// location indefinitely, returning if displaced).
     pub fn is_guard(&self) -> bool {
         self.procedure_type == PROCEDURE_GUARD
+    }
+
+    /// True when this package's procedure is `UseItemAt`.
+    pub fn is_use_item_at(&self) -> bool {
+        self.procedure_type == PROCEDURE_USE_ITEM_AT
     }
 
     /// True when this package's procedure is `Ambush`.

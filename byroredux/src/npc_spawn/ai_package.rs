@@ -353,7 +353,12 @@ impl AmbientBehavior {
                 patrol_radius: location_radius,
                 actor_form_id,
             })
-        } else if package.procedure_type == PROCEDURE_EAT {
+        } else if package.procedure_type == PROCEDURE_EAT || package.is_use_item_at() {
+            // UseItemAt's vanilla use is sitting: go to the PLDT location and
+            // sit at the nearest seat marker, which is what Eat does. The
+            // PTDT item is not read - an item that is not furniture (an
+            // inventory item's animation) leaves the actor standing at the
+            // location, the GECK's "animation (if available)" with none.
             Some(Self::Eat {
                 radius: location_radius,
                 location: eat_sleep_location(package),
@@ -1876,6 +1881,27 @@ mod tests {
                 assert!(world.has::<TravelBehavior>(actor));
             }
         }
+    }
+
+    /// UseItemAt (procedure 8) is furniture use in the vanilla data: it takes
+    /// Eat's walk-and-sit runtime at its `PLDT` location.
+    #[test]
+    fn a_use_item_at_package_walks_to_its_location_and_sits() {
+        use byroredux_core::ecs::components::{EatBehavior, EatSleepLocation};
+        use byroredux_plugin::esm::records::misc::pack::PROCEDURE_USE_ITEM_AT;
+
+        // FNV `PrimmNashStool`: near a reference, radius 0.
+        let mut sit = pack(0x100, PROCEDURE_USE_ITEM_AT, None);
+        sit.location = Some(PackLocation {
+            location_type: 0,
+            target: PackLocationTarget::NearReference(0x000A_23CF),
+            radius: 0,
+        });
+        let (world, actor) = setup_actor(10.0, vec![sit]);
+        assert_eq!(
+            world.get::<EatBehavior>(actor).map(|behavior| (behavior.location, behavior.radius)),
+            Some((EatSleepLocation::NearReference(0x000A_23CF), None))
+        );
     }
 
     /// Ambush (procedure 9): wait on Guard's runtime at `PLDT`, gate the
