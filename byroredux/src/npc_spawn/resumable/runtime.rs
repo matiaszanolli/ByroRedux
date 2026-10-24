@@ -590,7 +590,10 @@ pub(super) fn prepare_creature_state(
     let equip = build_npc_equip_state(resolved, index, game, gender);
     let armor = SpawnArmor::collect(placement_root, equip.armor_to_spawn);
 
-    let _ = world;
+    // #5495 — the actor-kind marker the M42 seat gates read. The first fix
+    // added the gates and the component but no production stamper, so every
+    // creature still ran the humanoid seating path.
+    world.insert(placement_root, byroredux_core::ecs::components::CreatureActor);
     RuntimeNpcState {
         appearance: NpcLootAppearance::default(),
         placement_root,

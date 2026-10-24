@@ -1261,6 +1261,40 @@ mod tests {
         );
     }
 
+    /// #5495 — the first fix gated the seat systems on `CreatureActor` but
+    /// nothing stamped it outside tests. The production spawn path must.
+    #[test]
+    fn creature_spawn_stamps_creature_actor_and_a_humanoid_does_not() {
+        use byroredux_core::ecs::components::CreatureActor;
+
+        let index = EsmIndex {
+            game: GameKind::Fallout3NV,
+            ..Default::default()
+        };
+        let spawn = |is_creature: bool| {
+            let mut world = World::new();
+            let npc = NpcRecord {
+                form_id: 5,
+                is_creature,
+                ..Default::default()
+            };
+            let state = prepare_runtime_state(
+                &mut world,
+                &npc,
+                None,
+                GameKind::Fallout3NV,
+                Vec3::ZERO,
+                Quat::IDENTITY,
+                1.0,
+                &index,
+                false,
+            );
+            world.has::<CreatureActor>(state.placement_root)
+        };
+        assert!(spawn(true), "a CREA spawn must carry CreatureActor");
+        assert!(!spawn(false), "an NPC_ spawn must not");
+    }
+
     #[test]
     fn equipment_parts_keep_shared_item_ownership_without_tagging_body() {
         let mut world = World::new();
