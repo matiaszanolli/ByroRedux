@@ -54,6 +54,7 @@ pub fn register(world: &mut World) {
     crate::obscript_state::install(world);
     crate::obscript_ledger::install(world);
     crate::crime_knowledge::install(world);
+    world.init_resource::<crate::jail::PendingEvidenceDeposits>();
     crate::challenges::install(world);
     crate::obscript_more::install(world);
     crate::magic_effects::install(world);

@@ -24,9 +24,16 @@
 //! (`crime::jail_bed_system`) calls [`serve_sentence`]; the `jail.serve`
 //! console command is the same call without the walk.
 //!
-//! Not modelled: the `StolenGoods` chest is not restocked (the confiscated goods
-//! wait in the ledger's evidence), and the skill loss for time served (UESP
-//! gives no rule for which skill).
+//! The confiscated goods go to the jail's `StolenGoods` chest ("the stolen items
+//! are put into the Stolengoods chest that needs to be placed in the same
+//! interior cell as the Prisonmarker"), where the player can fetch them back:
+//! each is recorded in the ledger's evidence, queued as an [`EvidenceDeposit`],
+//! and the app's deposit system moves it into the chest (resident or not) and
+//! releases the evidence. A jail whose chest authors its own contents is not
+//! used (a deposit never replaces them), and its goods stay in the evidence.
+//!
+//! Not modelled: the skill loss for time served (UESP gives no rule for which
+//! skill).
 
 use std::sync::Arc;
 
@@ -48,6 +55,25 @@ use crate::obscript_more::PendingSleep;
 /// places a linked pair of these makes a jail.
 pub const JAIL_MARKER_EDITOR_ID: &str = "PrisonMarker";
 
+/// The editor id of the container a jail keeps confiscated goods in (CS wiki
+/// *Jail*: "a Stolengoods container, placed in the jail interior cell").
+pub const JAIL_EVIDENCE_EDITOR_ID: &str = "StolenGoods";
+
+/// Confiscated goods on their way into a jail's chest. `NOT_SAVED_BY_DESIGN`: drained
+/// within the frame that queued them; the ledger's evidence is the durable record until delivered.
+#[derive(Debug, Default)]
+pub struct PendingEvidenceDeposits(pub Vec<EvidenceDeposit>);
+
+impl Resource for PendingEvidenceDeposits {}
+
+/// `count` of `item` for the chest placed as reference `chest`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvidenceDeposit {
+    pub chest: u32,
+    pub item: u32,
+    pub count: u32,
+}
+
 /// One jail: the marker inside the cell and the one at the exit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Jail {
@@ -59,6 +85,8 @@ pub struct Jail {
     pub exit_worldspace: u32,
     /// The exit's placement, in Bethesda (Z-up) units.
     pub exit_position: [f32; 3],
+    /// The `StolenGoods` chest in the jail's cell, when it authors no contents of its own.
+    pub evidence_chest: Option<u32>,
 }
 
 /// Every jail the load order defines. Rebuilt from the records each boot.
@@ -107,7 +135,15 @@ pub fn install_jail_table(world: &mut World, index: &EsmIndex) {
                 note(name, cell);
             }
         }
+        // The evidence chests whose container authors no contents (a deposit must not replace them).
+        let empty_chests: Vec<u32> = index
+            .containers
+            .iter()
+            .filter(|(_, container)| container.editor_id.eq_ignore_ascii_case(JAIL_EVIDENCE_EDITOR_ID) && container.contents.is_empty())
+            .map(|(&form, _)| form)
+            .collect();
         for cell in index.cells.cells.values() {
+            let evidence_chest = cell.references.iter().find(|r| empty_chests.contains(&r.base_form_id)).map(|r| r.form_id);
             for reference in cell.references.iter().filter(|r| markers.contains(&r.base_form_id)) {
                 let Some(teleport) = reference.teleport else { continue };
                 if let Some(&(exit_worldspace, exit_position)) = exits.get(&teleport.destination) {
@@ -116,6 +152,7 @@ pub fn install_jail_table(world: &mut World, index: &EsmIndex) {
                         exit_marker: teleport.destination,
                         exit_worldspace,
                         exit_position,
+                        evidence_chest,
                     });
                 }
             }
@@ -150,7 +187,7 @@ fn player_of(world: &World) -> Option<EntityId> {
 
 /// Take the stolen goods the player still holds into the evidence. Returns how
 /// many items left the inventory.
-fn confiscate_stolen_goods(world: &World, player: EntityId) -> u32 {
+fn confiscate_stolen_goods(world: &World, player: EntityId, chest: Option<u32>) -> u32 {
     let stolen = world.try_resource::<ObScriptLedger>().map(|ledger| ledger.stolen_goods()).unwrap_or_default();
     let mut taken_total = 0;
     for (item, recorded) in stolen {
@@ -162,9 +199,19 @@ fn confiscate_stolen_goods(world: &World, player: EntityId) -> u32 {
             remove_items(world, player, item, taken, None);
             taken_total += taken;
         }
-        // Whatever was recorded but is no longer held (sold, used, dropped) leaves the record too.
+        // What was taken is evidence; whatever was recorded but is no longer held (sold, used,
+        // dropped) just leaves the stolen goods.
         if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
-            ledger.confiscate(item, recorded);
+            if taken > 0 {
+                ledger.confiscate(item, taken);
+            }
+            ledger.forget_stolen(item);
+        }
+        // What was taken goes to the jail's chest; the evidence stands until it arrives.
+        if let (Some(chest), true) = (chest, taken > 0) {
+            if let Some(mut deposits) = world.try_resource_mut::<PendingEvidenceDeposits>() {
+                deposits.0.push(EvidenceDeposit { chest, item, count: taken });
+            }
         }
     }
     taken_total
@@ -203,7 +250,7 @@ pub fn pay_fine(world: &World) -> bool {
     }
     let Some(jail) = nearest_jail(world, player) else { return false };
     take_payment(world, player);
-    confiscate_stolen_goods(world, player);
+    confiscate_stolen_goods(world, player, jail.evidence_chest);
     request_move(world, jail.exit_marker)
 }
 
@@ -219,7 +266,7 @@ pub fn go_to_jail(world: &World) -> bool {
     }
     let Some(jail) = nearest_jail(world, player) else { return false };
     let days = model.sentence_days(bounty_of(world, player));
-    confiscate_stolen_goods(world, player);
+    confiscate_stolen_goods(world, player, jail.evidence_chest);
     if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
         ledger.crime_gold = 0;
         ledger.jail = Some(JailSentence { exit_marker: jail.exit_marker, days });
@@ -270,7 +317,7 @@ mod tests {
     const ARROW: u32 = 0x5678;
 
     fn jail(cell_marker: u32, exit_marker: u32, worldspace: u32, at: [f32; 3]) -> Jail {
-        Jail { cell_marker, exit_marker, exit_worldspace: worldspace, exit_position: at }
+        Jail { cell_marker, exit_marker, exit_worldspace: worldspace, exit_position: at, evidence_chest: Some(0xC0FFEE) }
     }
 
     /// A player in the exterior of `worldspace` at `at` (Z-up), holding `gold` and the arrows.
@@ -284,6 +331,7 @@ mod tests {
         world.register::<crate::cell_kind::ExteriorCell>();
         world.insert_resource(CrimeModel::OBLIVION);
         world.insert_resource(PendingSleep::default());
+        world.insert_resource(PendingEvidenceDeposits::default());
         world.insert_resource(PlayerMoveRequest::default());
         world.insert_resource(JailTable(Arc::new(vec![
             jail(1, 2, BRAVIL, [1000.0, 0.0, 0.0]),
@@ -358,9 +406,14 @@ mod tests {
         let ledger = world.resource::<ObScriptLedger>();
         assert_eq!(ledger.crime_gold, 0);
         assert!(ledger.stolen_goods().is_empty());
-        assert_eq!(ledger.evidence(), vec![(ARROW, 6), (0x9999, 3)]);
+        assert_eq!(ledger.evidence(), vec![(ARROW, 6)], "only what was actually found is evidence");
         assert_eq!(world.resource::<PlayerMoveRequest>().0, Some(2), "the exit of the nearest jail");
         assert_eq!(ledger.jail, None);
+        assert_eq!(
+            world.resource::<PendingEvidenceDeposits>().0,
+            vec![EvidenceDeposit { chest: 0xC0FFEE, item: ARROW, count: 6 }],
+            "the six arrows are on their way to the jail's chest"
+        );
     }
 
     #[test]

@@ -722,7 +722,7 @@ fn the_fine_and_jail_commands_run_through_the_host() {
     world.insert_resource(PlayerMoveRequest::default());
     world.insert_resource(PendingSleep::default());
     world.insert_resource(crate::cell_kind::PlayerCellKind(Some(crate::cell_kind::CellKind::Exterior { worldspace: 7 })));
-    world.insert_resource(JailTable::for_test(vec![Jail { cell_marker: 0xC1, exit_marker: 0xE1, exit_worldspace: 7, exit_position: [0.0; 3] }]));
+    world.insert_resource(JailTable::for_test(vec![Jail { cell_marker: 0xC1, exit_marker: 0xE1, exit_worldspace: 7, exit_position: [0.0; 3], evidence_chest: None }]));
     let c = ctx(None);
     run(&world, 0x1075, &nums(&[40.0]), &c);
 

@@ -84,8 +84,8 @@ pub struct ObScriptLedger {
     /// is charged, taken back by `PayFine` / `GoToJail`. A count, not a per-stack mark, so
     /// confiscation takes no more than the player still holds of the item.
     stolen_goods: BTreeMap<u32, u32>,
-    /// Stolen goods the law confiscated, by base form: the contents of the jail's
-    /// `StolenGoods` chest, kept here until that chest can be restocked from it.
+    /// Stolen goods the law confiscated and that have not reached a jail's `StolenGoods`
+    /// chest yet (a jail with no usable chest never delivers them), by base form.
     evidence: BTreeMap<u32, u32>,
     /// The sentence being served, if the player is in jail.
     pub jail: Option<JailSentence>,
@@ -133,6 +133,12 @@ impl ObScriptLedger {
         self.stolen_goods.iter().map(|(&item, &count)| (item, count)).collect()
     }
 
+    /// `item` is no longer held stolen: it is erased from the stolen goods (what a confiscation
+    /// did not find any more, because the player sold, used or dropped it).
+    pub fn forget_stolen(&mut self, item: u32) {
+        self.stolen_goods.remove(&item);
+    }
+
     /// Move `count` of `item` from the stolen goods to the evidence.
     pub fn confiscate(&mut self, item: u32, count: u32) {
         if let Some(held) = self.stolen_goods.get_mut(&item) {
@@ -143,6 +149,16 @@ impl ObScriptLedger {
         }
         let kept = self.evidence.entry(item).or_default();
         *kept = kept.saturating_add(count);
+    }
+
+    /// `count` of `item` reached the evidence chest: they leave the ledger's evidence.
+    pub fn release_evidence(&mut self, item: u32, count: u32) {
+        if let Some(kept) = self.evidence.get_mut(&item) {
+            *kept = kept.saturating_sub(count);
+            if *kept == 0 {
+                self.evidence.remove(&item);
+            }
+        }
     }
 
     /// The confiscated goods: `(base form, count)`.

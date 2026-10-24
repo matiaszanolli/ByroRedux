@@ -86,6 +86,56 @@ struct ReferenceState {
     ignore_crime: bool,
 }
 
+impl ReferenceState {
+    /// A row that parks nothing.
+    fn blank() -> Self {
+        Self {
+            inventory: None,
+            equipment: None,
+            weapon: None,
+            actor_values: None,
+            spells: None,
+            perks: None,
+            control: None,
+            bleedout: None,
+            script_package: None,
+            dead: false,
+            corpse_pose: None,
+            picked_up: false,
+            magic_effects: None,
+            weapon_drawn: false,
+            ignore_crime: false,
+        }
+    }
+}
+
+/// Put `count` of `item` into the inventory of the placed reference `reference` (a global FormID),
+/// resident or not: a loaded reference gets them directly; one whose cell is not loaded has them
+/// added to its parked inventory — or a new parked row holding just them, so the caller must only
+/// target a container whose authored contents are empty (the row replaces the authored inventory
+/// at respawn). `false` when the reference can be neither found nor parked.
+pub(crate) fn deposit_into_reference(world: &World, reference: u32, item: u32, count: u32) -> bool {
+    if let Some(entity) = byroredux_scripting::condition::resolve_entity_by_global_form_id(world, reference) {
+        byroredux_scripting::add_items(world, entity, item, count);
+        return true;
+    }
+    let Some(pair) = world
+        .try_resource::<super::load_order::GlobalFormIdResolver>()
+        .and_then(|resolver| resolver.resolve(reference))
+    else {
+        return false;
+    };
+    let Some(mut store) = world.try_resource_mut::<PersistentReferenceStates>() else {
+        return false;
+    };
+    let stacks = store.rows.entry(pair).or_insert_with(ReferenceState::blank).inventory.get_or_insert_with(Vec::new);
+    match stacks.iter_mut().find(|stack| stack.base_form_id == item && stack.instance.is_none()) {
+        Some(stack) => stack.count = stack.count.saturating_add(count),
+        None => stacks.push(StoredStack { base_form_id: item, count, instance: None }),
+    }
+    true
+}
+
 /// #6071 — a reference's script state at eviction. Kept apart from
 /// [`ReferenceState`] because it is consumed at a different boundary: the
 /// script attach ([`restore_script_state`]), which stamps the authored
@@ -205,23 +255,7 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
                 Some((
                     entity,
                     pair,
-                    ReferenceState {
-                        inventory: None,
-                        equipment: None,
-                        weapon: None,
-                        actor_values: None,
-                        spells: None,
-                        perks: None,
-                        control: None,
-                        bleedout: None,
-                        script_package: None,
-                        dead: false,
-                        corpse_pose: None,
-                        picked_up: false,
-                        magic_effects: None,
-                        weapon_drawn: false,
-                        ignore_crime: false,
-                    },
+                    ReferenceState::blank(),
                 ))
             })
             .collect()
@@ -1533,6 +1567,41 @@ mod tests {
         capture(world, entities);
         super::super::unload::release_victim_item_instances(world, entities);
         world.despawn_batch(entities.to_vec());
+    }
+
+    /// A jail's evidence chest, loaded or not: goods deposited into a parked reference wait in its
+    /// row and arrive with it on respawn; into a resident one they land in its inventory at once.
+    #[test]
+    fn goods_deposit_into_a_resident_or_a_parked_reference() {
+        use super::super::load_order::{GlobalFormIdResolver, LoadOrder};
+        let mut world = world();
+        world.register::<Inventory>();
+        world.insert_resource(GlobalFormIdResolver::from_load_order(&LoadOrder::new(
+            vec!["Oblivion.esm".into()],
+            vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+        )));
+        const CHEST: u32 = 0x0003_0001;
+
+        // Not resident: the row holds them, merged by item.
+        assert!(deposit_into_reference(&world, CHEST, 0xAAAA, 3));
+        assert!(deposit_into_reference(&world, CHEST, 0xAAAA, 2));
+        assert!(deposit_into_reference(&world, CHEST, 0xBBBB, 1));
+        // The chest's cell loads: its authored (empty) inventory is replaced by the parked one.
+        let chest = reference(&mut world, "Oblivion.esm", CHEST);
+        world.insert(chest, Inventory::new());
+        assert!(restore(&mut world, chest));
+        let held: Vec<(u32, u32)> = world.get::<Inventory>(chest).unwrap().items.iter().map(|s| (s.base_form_id, s.count)).collect();
+        assert_eq!(held, vec![(0xAAAA, 5), (0xBBBB, 1)]);
+
+        // Resident: straight into the inventory.
+        world.insert_resource(byroredux_core::ecs::resources::ItemInstancePool::new());
+        assert!(deposit_into_reference(&world, CHEST, 0xAAAA, 4));
+        let aaaa: u32 = world.get::<Inventory>(chest).unwrap().items.iter().filter(|s| s.base_form_id == 0xAAAA).map(|s| s.count).sum();
+        assert_eq!(aaaa, 9);
+
+        // No load order, no way to name the reference.
+        world.remove_resource::<GlobalFormIdResolver>();
+        assert!(!deposit_into_reference(&world, 0x0009_9999, 0xAAAA, 1));
     }
 
     #[test]

@@ -295,6 +295,26 @@ pub(crate) fn jail_bed_system(world: &World, _dt: f32) {
 }
 
 #[cfg(test)]
+mod evidence_tests {
+    use super::*;
+    use byroredux_scripting::jail::{EvidenceDeposit, PendingEvidenceDeposits};
+
+    /// With no way to reach the chest the goods stay in the evidence; the queue is drained either way.
+    #[test]
+    fn an_unreachable_chest_leaves_the_goods_in_the_evidence() {
+        let mut world = World::new();
+        world.insert_resource(PendingEvidenceDeposits(vec![EvidenceDeposit { chest: 0xC0FFEE, item: 0xAAAA, count: 3 }]));
+        let mut ledger = ObScriptLedger::default();
+        ledger.note_stolen(0xAAAA, 3);
+        ledger.confiscate(0xAAAA, 3);
+        world.insert_resource(ledger);
+        evidence_deposit_system(&world, 0.0);
+        assert!(world.resource::<PendingEvidenceDeposits>().0.is_empty());
+        assert_eq!(world.resource::<ObScriptLedger>().evidence(), vec![(0xAAAA, 3)]);
+    }
+}
+
+#[cfg(test)]
 mod bed_tests {
     use super::*;
     use byroredux_core::ecs::components::{Furniture, FurnitureMarker, FurnitureMarkerKind};
@@ -516,5 +536,24 @@ mod alarm_tests {
         report_strike(&town.world, town.player, town.far_guard, false);
         assert!(knows(&town, town.witness, CrimeKind::Attack) && !knows(&town, town.witness, CrimeKind::Murder));
         assert_eq!(town.world.resource::<ObScriptLedger>().crime_gold, 40);
+    }
+}
+
+/// Move the goods a confiscation queued into the jails' `StolenGoods` chests, loaded or not, and
+/// release them from the ledger's evidence once they are there. A chest that cannot be reached
+/// leaves its goods in the evidence.
+pub(crate) fn evidence_deposit_system(world: &World, _dt: f32) {
+    let deposits = match world.try_resource_mut::<byroredux_scripting::jail::PendingEvidenceDeposits>() {
+        Some(mut pending) if !pending.0.is_empty() => std::mem::take(&mut pending.0),
+        _ => return,
+    };
+    for deposit in deposits {
+        if crate::cell_loader::reference_state::deposit_into_reference(world, deposit.chest, deposit.item, deposit.count) {
+            if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
+                ledger.release_evidence(deposit.item, deposit.count);
+            }
+        } else {
+            log::warn!("evidence deposit: chest {:08X} cannot be reached; {} of {:08X} stay in the evidence", deposit.chest, deposit.count, deposit.item);
+        }
     }
 }

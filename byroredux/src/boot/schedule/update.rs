@@ -310,6 +310,19 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::PlayerMoveRequest>()
             .writes_resource::<crate::notifications::PlayerNotifications>(),
     );
+    // Confiscated goods reach the jail's `StolenGoods` chest, loaded or parked.
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::crime::evidence_deposit_system,
+        Access::new()
+            .writes_resource::<byroredux_scripting::jail::PendingEvidenceDeposits>()
+            .writes_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()
+            .writes_resource::<crate::cell_loader::reference_state::PersistentReferenceStates>()
+            .reads_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .reads_resource::<byroredux_core::form_id::FormIdPool>()
+            .writes::<byroredux_core::ecs::components::Inventory>(),
+    );
     // Combat follows the same producer-before-consumer event contract as
     // activation: physical Attack emits HitEvent, then health/death resolves
     // before script consumers and Late-stage transient cleanup.

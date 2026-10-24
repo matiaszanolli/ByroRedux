@@ -852,8 +852,12 @@ GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
   Jails are the load order's linked `PrisonMarker` door pairs (14 in
   Oblivion.esm); "nearest" is the closest exit in the player's worldspace, and
   a player indoors or somewhere with no jail gets a declined command with
-  nothing half done. Not built: the `StolenGoods` chest is not restocked (the
-  confiscated goods wait in the ledger's `evidence`), the skill loss for time
+  nothing half done. The confiscated goods go into the jail's `StolenGoods` chest
+  (the container placed in the jail's interior cell; all 14 in Oblivion.esm
+  author no contents of their own), whether or not that cell is loaded: a
+  loaded chest receives them directly, an unloaded one has them added to its
+  parked inventory (`reference_state::deposit_into_reference`), and the ledger's
+  `evidence` holds them until they arrive. Not built: the skill loss for time
   served (UESP names no rule for which skill), arrest on sight at a high bounty.
 - Assault is charged once per victim (the original turns the victim
   hostile; a hostile victim is self-defence). A kill in one blow is only a
