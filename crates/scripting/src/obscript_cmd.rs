@@ -94,6 +94,7 @@ pub(crate) struct Command {
 /// Every family's rows. A family file adds its `COMMANDS` slice here when its
 /// commands move out of a chain link.
 const FAMILIES: &[&[Command]] = &[
+    crate::obscript_more::HEAD_COMMANDS,
     crate::obscript_more::ACTIONS_COMMANDS,
     crate::obscript_more::EXTRAS_COMMANDS,
     crate::obscript_more::STATE_COMMANDS,
