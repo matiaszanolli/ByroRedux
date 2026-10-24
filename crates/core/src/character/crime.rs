@@ -34,13 +34,17 @@ pub struct CrimeModel {
     /// observation, not a setting the masters author, so it is data on the
     /// model (a mod's rules profile can change it), not a constant.
     pub infamy_bounty_step: i32,
+    /// `iCrimeDaysInPrisonMod`: "to get number of days, player bounty is
+    /// divided by the value of this setting" (CS wiki, default 100; not
+    /// authored by Oblivion.esm).
+    pub prison_days_divisor: i32,
 }
 
 impl Resource for CrimeModel {}
 
 impl CrimeModel {
     /// Oblivion's defaults (CS wiki *fCrimeGoldSteal*, UESP *Crime*).
-    pub const OBLIVION: Self = Self { steal_value_mult: 0.5, attack_gold: 40, murder_gold: 1000, infamy_bounty_step: 1000 };
+    pub const OBLIVION: Self = Self { steal_value_mult: 0.5, attack_gold: 40, murder_gold: 1000, infamy_bounty_step: 1000, prison_days_divisor: 100 };
 
     /// The model with each setting the load order authors replacing its
     /// default. A non-finite or negative authored value is ignored.
@@ -53,11 +57,19 @@ impl CrimeModel {
             attack_gold: Self::authored_gold(&gmst, "iCrimeGoldAttack", self.attack_gold),
             murder_gold: Self::authored_gold(&gmst, "iCrimeGoldMurder", self.murder_gold),
             infamy_bounty_step: self.infamy_bounty_step,
+            prison_days_divisor: Self::authored_gold(&gmst, "iCrimeDaysInPrisonMod", self.prison_days_divisor).max(1),
         }
     }
 
     fn authored_gold(gmst: &impl Fn(&str) -> Option<f32>, name: &str, default: i32) -> i32 {
         gmst(name).filter(|gold| gold.is_finite() && *gold >= 0.0).map_or(default, |gold| gold as i32)
+    }
+
+    /// The days a jail sentence for `bounty` lasts: `bounty / iCrimeDaysInPrisonMod`
+    /// (CS wiki; UESP: "one day for every 100 gold").
+    #[must_use]
+    pub fn sentence_days(self, bounty: i32) -> f32 {
+        bounty.max(0) as f32 / self.prison_days_divisor.max(1) as f32
     }
 
     /// The infamy a crime that adds `bounty` earns (see [`Self::infamy_bounty_step`]).
@@ -103,6 +115,15 @@ mod tests {
         assert_eq!(model.infamy_for(model.attack_gold), 0.0);
         assert_eq!(model.infamy_for(2500), 2.0);
         assert_eq!(model.infamy_for(-5), 0.0);
+    }
+
+    #[test]
+    fn a_sentence_is_a_day_per_hundred_gold_unless_the_setting_says_otherwise() {
+        assert_eq!(CrimeModel::OBLIVION.sentence_days(250), 2.5);
+        let slow = CrimeModel::OBLIVION.with_gmst(|name| (name == "iCrimeDaysInPrisonMod").then_some(50.0));
+        assert_eq!(slow.sentence_days(250), 5.0);
+        let zero = CrimeModel::OBLIVION.with_gmst(|name| (name == "iCrimeDaysInPrisonMod").then_some(0.0));
+        assert_eq!(zero.sentence_days(100), 100.0, "a zero divisor reads as 1, never a division by zero");
     }
 
     #[test]

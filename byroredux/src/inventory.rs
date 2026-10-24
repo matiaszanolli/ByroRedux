@@ -3065,6 +3065,7 @@ mod tests {
         transfer_loot(&world, player, chest, LootSelection::All).unwrap();
         let ledger = world.resource::<ObScriptLedger>();
         assert_eq!(ledger.crime_gold, 4, "7 arrows × 1 gold × 0.5 = 3.5, rounded up");
+        assert_eq!(ledger.stolen_goods(), vec![(0x5678, 7)], "the seven arrows are on record as stolen");
         assert!(ledger.flag(FactionFlag::Steal, 0xF00D));
         drop(ledger);
         assert!(crate::notifications::drain(&world).contains(&"You were seen stealing. Your bounty is now 4 gold".to_owned()));
@@ -3079,6 +3080,7 @@ mod tests {
         let ledger = world.resource::<ObScriptLedger>();
         assert_eq!(ledger.crime_gold, 0);
         assert!(ledger.flag(FactionFlag::Steal, 0xF00D), "no witness is needed for the flag");
+        assert_eq!(ledger.stolen_goods(), vec![(0x5678, 7)], "unseen goods are still stolen goods");
     }
 
     #[test]

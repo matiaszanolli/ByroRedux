@@ -579,7 +579,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v116 -> v117 (#6190): `ObScriptLedger` lost the `known_topics`, `quest_objects`,
 /// `disposition_mods` and `item_values` columns (their commands now decline; nothing read them back),
 /// so a v116 ledger no longer decodes.
-pub const FORMAT_MAJOR: u16 = 117;
+///
+/// v117 -> v118 (Oblivion jail): `ObScriptLedger` gained the required `stolen_goods` (what the player
+/// holds by theft), `evidence` (what the law confiscated) and `jail` (the sentence being served) fields,
+/// so a v117 ledger no longer decodes.
+pub const FORMAT_MAJOR: u16 = 118;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

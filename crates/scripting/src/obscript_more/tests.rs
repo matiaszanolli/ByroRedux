@@ -703,3 +703,56 @@ fn drop_removes_the_item_and_leaves_a_reference_at_the_actors_feet() {
     let created = world.try_resource::<crate::CreatedReferences>().unwrap();
     assert!(created.iter().any(|r| r.base == ITEM && r.at_reference == ACTOR));
 }
+
+/// `PayFine` / `PayFineThief` / `GoToJail` (0x107b / 0x107c / 0x107e) through the host: the player pays or
+/// goes to jail, and a refusal is a decline that changes nothing.
+#[test]
+fn the_fine_and_jail_commands_run_through_the_host() {
+    use byroredux_core::character::CrimeModel;
+    use byroredux_core::ecs::components::{GlobalTransform, ItemStack};
+    use crate::jail::{Jail, JailTable};
+    use crate::PlayerMoveRequest;
+
+    let (mut world, ..) = world(GameKind::Oblivion);
+    let player = crate::papyrus_demo::PapyrusPlayerEntity::get(&world).unwrap();
+    world.register::<GlobalTransform>();
+    world.insert(player, GlobalTransform::new(Default::default(), Default::default(), 1.0));
+    world.insert(player, Inventory { items: vec![ItemStack::new(crate::guards::CURRENCY_FORM, 100)] });
+    world.insert_resource(CrimeModel::OBLIVION);
+    world.insert_resource(PlayerMoveRequest::default());
+    world.insert_resource(PendingSleep::default());
+    world.insert_resource(crate::cell_kind::PlayerCellKind(Some(crate::cell_kind::CellKind::Exterior { worldspace: 7 })));
+    world.insert_resource(JailTable::for_test(vec![Jail { cell_marker: 0xC1, exit_marker: 0xE1, exit_worldspace: 7, exit_position: [0.0; 3] }]));
+    let c = ctx(None);
+    run(&world, 0x1075, &nums(&[40.0]), &c);
+
+    // Cannot pay 400: declined, nothing taken.
+    run(&world, 0x1075, &nums(&[400.0]), &c);
+    let refused = run(&world, 0x107c, &[], &c);
+    assert!(matches!(refused, Action::Declined), "{refused:?}");
+    assert_eq!(value(run(&world, 0x1074, &[], &c)), 400.0);
+    run(&world, 0x1075, &nums(&[40.0]), &c);
+
+    assert!(is_done(&run(&world, 0x107c, &[], &c)), "PayFineThief");
+    assert_eq!(value(run(&world, 0x1074, &[], &c)), 0.0);
+    assert_eq!(world.get::<Inventory>(player).unwrap().items[0].count, 60);
+
+    run(&world, 0x1075, &nums(&[200.0]), &c);
+    assert!(is_done(&run(&world, 0x107e, &[], &c)), "GoToJail");
+    assert_eq!(world.resource::<PlayerMoveRequest>().0, Some(0xC1));
+    assert_eq!(world.get::<Inventory>(player).unwrap().items[0].count, 60, "no gold for a sentence");
+    assert!(matches!(run(&world, 0x107e, &[], &c), Action::Declined), "already serving");
+}
+
+/// The same opcodes are other commands on Fallout: the Oblivion arms must not take them.
+#[test]
+fn the_fine_and_jail_ids_belong_to_oblivion_alone() {
+    let (world, ..) = world(GameKind::Fallout3NV);
+    let c = ctx(None);
+    for id in [0x107b, 0x107c, 0x107e] {
+        assert!(
+            !matches!(run(&world, id, &[], &c), Action::Done { .. }),
+            "{id:#06x} must not run Oblivion's fine on Fallout"
+        );
+    }
+}

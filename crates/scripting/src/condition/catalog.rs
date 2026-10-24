@@ -359,8 +359,7 @@ pub enum ConditionFunction {
     /// the faction (the saved ledger's Expelled flag).
     GetPCExpelled,
     /// Oblivion's `IsPlayerInJail` (CTDA **171**; not a function of the later
-    /// games). Always 0: the engine has no jail (`GoToJail` is not built), so
-    /// the player is never in one.
+    /// games). 1 while the player is serving a sentence ([`crate::jail`]).
     IsPlayerInJail,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-

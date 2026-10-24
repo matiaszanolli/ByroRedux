@@ -663,8 +663,7 @@ pub fn evaluate_function(
                 .try_resource::<crate::obscript_ledger::ObScriptLedger>()
                 .is_some_and(|ledger| ledger.flag(crate::obscript_ledger::FactionFlag::Expelled, condition.param_1)),
         ),
-        // The engine has no jail, so the player is never in one.
-        ConditionFunction::IsPlayerInJail => 0.0,
+        ConditionFunction::IsPlayerInJail => truth(crate::jail::player_in_jail(world)),
         ConditionFunction::Unknown(index) => {
             log::trace!(
                 "M47.1: condition function index {index} not in M47.1 catalog — \

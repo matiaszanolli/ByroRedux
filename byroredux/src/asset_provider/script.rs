@@ -1197,6 +1197,8 @@ pub(crate) fn populate_scene_runtime(
     byroredux_scripting::install_owner_kinds(world, index);
     // Oblivion's guard classes (the `CLAS` Guard flag): `IsGuard`, `IsTurnArrest`.
     byroredux_scripting::guards::install_guard_classes(world, index);
+    // The jails (linked `PrisonMarker` door pairs): `PayFine`, `GoToJail`.
+    byroredux_scripting::jail::install_jail_table(world, index);
     // M47.2 — Actor.GetCrimeFaction.
     byroredux_scripting::install_crime_factions(world, index);
     // M47.2 — ActorBase.GetSex / GetVoiceType.

@@ -100,7 +100,7 @@
 //! | 251   | GetPCInfamy            | `ObScriptLedger` infamy (Oblivion dialect) |
 //! | 329   | IsTurnArrest           | speaker is a guard and the player has a bounty (Oblivion dialect) |
 //! | 193   | GetPCExpelled          | `ObScriptLedger` Expelled flag (Oblivion dialect) |
-//! | 171   | IsPlayerInJail         | always 0, the engine has no jail (Oblivion dialect) |
+//! | 171   | IsPlayerInJail         | `jail::player_in_jail` (Oblivion dialect) |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
 //! function → safe-default" contract) and are logged at debug for

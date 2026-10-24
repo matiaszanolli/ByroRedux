@@ -37,6 +37,20 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
             ledger_mut(world, |l| l.mod_crime_gold(num(args, 0) as i32));
             done(format!("ModCrimeGold {}", num(args, 0)))
         }
+        // CS *PayFine* / *PayFineThief* / *GoToJail* (Oblivion): the fine, and the jail. A refusal (no
+        // crime model, cannot pay, no jail in reach, already serving) is a decline with nothing changed.
+        0x107b | 0x107c | 0x107e if !fallout => {
+            let (name, ok) = match cmd {
+                0x107b => ("PayFine", crate::jail::pay_fine(world)),
+                0x107c => ("PayFineThief", crate::jail::pay_fine_thief(world)),
+                _ => ("GoToJail", crate::jail::go_to_jail(world)),
+            };
+            if ok {
+                done(name)
+            } else {
+                Action::Declined
+            }
+        }
         // CS *GetAmountSoldStolen*: "the total value of stolen goods that the player has sold" — no sale
         // of stolen goods is tracked, so it is what scripts have put there (0).
         0x10be => answer(ledger(world, |l| l.amount_sold_stolen).unwrap_or(0) as f32),

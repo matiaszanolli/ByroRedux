@@ -38,6 +38,16 @@ pub enum FactionFlag {
     Enemy,
 }
 
+/// A jail sentence the player is serving: where they leave by and how long it runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct JailSentence {
+    /// The exterior `PrisonMarker` reference the player is released at.
+    pub exit_marker: u32,
+    /// The sentence, in days (`bounty / iCrimeDaysInPrisonMod`).
+    pub days: f32,
+}
+
 /// See the module docs.
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
@@ -70,6 +80,15 @@ pub struct ObScriptLedger {
     reactions: BTreeMap<(u32, u32), f32>,
     /// The player's tagged skills: slot (0..=2) to the skill's actor-value code.
     tag_skills: BTreeMap<u8, u8>,
+    /// What the player holds that was stolen, by base form: counted when a witnessed theft
+    /// is charged, taken back by `PayFine` / `GoToJail`. A count, not a per-stack mark, so
+    /// confiscation takes no more than the player still holds of the item.
+    stolen_goods: BTreeMap<u32, u32>,
+    /// Stolen goods the law confiscated, by base form: the contents of the jail's
+    /// `StolenGoods` chest, kept here until that chest can be restocked from it.
+    evidence: BTreeMap<u32, u32>,
+    /// The sentence being served, if the player is in jail.
+    pub jail: Option<JailSentence>,
     /// Friendly hits taken, by `(victim, attacker)` reference (`GetFriendHit`).
     #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
     friend_hits: BTreeMap<(u32, u32), u32>,
@@ -101,6 +120,34 @@ impl ObScriptLedger {
 
     pub fn note_talked_to_player(&mut self, actor: u32) {
         self.talked_to_player.insert(actor);
+    }
+
+    /// Note that the player took `count` of `item` by theft.
+    pub fn note_stolen(&mut self, item: u32, count: u32) {
+        let held = self.stolen_goods.entry(item).or_default();
+        *held = held.saturating_add(count);
+    }
+
+    /// The stolen goods on record: `(base form, count)`.
+    pub fn stolen_goods(&self) -> Vec<(u32, u32)> {
+        self.stolen_goods.iter().map(|(&item, &count)| (item, count)).collect()
+    }
+
+    /// Move `count` of `item` from the stolen goods to the evidence.
+    pub fn confiscate(&mut self, item: u32, count: u32) {
+        if let Some(held) = self.stolen_goods.get_mut(&item) {
+            *held = held.saturating_sub(count);
+            if *held == 0 {
+                self.stolen_goods.remove(&item);
+            }
+        }
+        let kept = self.evidence.entry(item).or_default();
+        *kept = kept.saturating_add(count);
+    }
+
+    /// The confiscated goods: `(base form, count)`.
+    pub fn evidence(&self) -> Vec<(u32, u32)> {
+        self.evidence.iter().map(|(&item, &count)| (item, count)).collect()
     }
 
     /// `ModCrimeGold`: saturating, so mod-supplied bytecode cannot wrap the bounty negative.
@@ -224,6 +271,9 @@ mod tests {
         ledger.set_weapon_condition(0x14, 0x0008_ED0B, 40.0);
         ledger.set_reaction(0x0010_4C5F, 0x0001_B2A4, 1.0);
         ledger.note_friend_hit(0x0010_4E85, 0x14);
+        ledger.note_stolen(0x5678, 7);
+        ledger.confiscate(0x5678, 3);
+        ledger.jail = Some(JailSentence { exit_marker: 0x0003_8D6A, days: 2.5 });
         let json = serde_json::to_value(&ledger).expect("a populated ledger serializes");
         assert_eq!(serde_json::from_value::<ObScriptLedger>(json).unwrap(), ledger);
     }

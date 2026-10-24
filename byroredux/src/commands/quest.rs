@@ -1445,6 +1445,28 @@ impl ConsoleCommand for ObScriptCmdCommand {
     }
 }
 
+/// `jail.serve` — the player rests out their jail sentence: the clock runs the sentence's days and the
+/// player is sent to the jail's exit. Stands in for sleeping in the cell bed until that interaction exists.
+pub(crate) struct JailServeCommand;
+
+impl ConsoleCommand for JailServeCommand {
+    fn name(&self) -> &str {
+        "jail.serve"
+    }
+
+    fn description(&self) -> &str {
+        "Serve the current jail sentence (stand-in for resting in the cell bed): runs the clock and releases at the exit"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        if byroredux_scripting::jail::serve_sentence(world) {
+            CommandOutput::line("sentence served: the clock runs its days and the player leaves by the exit")
+        } else {
+            CommandOutput::error("the player is not serving a sentence (GoToJail starts one)")
+        }
+    }
+}
+
 /// `misc.stat <name> [delta]` — read a misc stat the ObScript commands keep (`GetPCMiscStat`), or add to it
 /// (`ModPCMiscStat`). `_` or `%20` stands for a space in the name (`Caravan_Games_Won`).
 pub(crate) struct MiscStatCommand;

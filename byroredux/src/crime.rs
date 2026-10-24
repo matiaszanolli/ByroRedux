@@ -78,6 +78,12 @@ pub(crate) fn report_theft(world: &World, player: EntityId, owner: u32, rows: &[
     let Some(model) = world.try_resource::<CrimeModel>().map(|model| *model) else {
         return 0;
     };
+    // The player now holds these stolen: `PayFine` / `GoToJail` take them back.
+    if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
+        for &(base, count) in rows {
+            ledger.note_stolen(base, count);
+        }
+    }
     // The faction flag does not need a witness.
     if byroredux_scripting::is_faction(world, owner) {
         if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {

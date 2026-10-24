@@ -835,9 +835,20 @@ GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
   dialect: 116 / 125 / 127 / 171 / 193 / 249 / 251 / 329), the CTDA "Run On
   Target" bit, and the `CLAS` Guard flag (`guards.rs`), so 39 of those 46 INFOs
   are now evaluable (the rest need `GetActorValue`, `GetDisposition` and
-  `IsWeaponOut` on Oblivion). Not built: `PayFine` / `GoToJail` and the jail,
-  `GetCrime` (who knows which crime), and whatever sends a guard to the
-  criminal.
+  `IsWeaponOut` on Oblivion). The result commands are built too (`jail.rs`):
+  `PayFineThief` (the bounty's gold leaves, the bounty is wiped), `PayFine`
+  (that, the stolen goods confiscated, and the player sent to the exit of the
+  nearest jail) and `GoToJail` (bounty wiped for free, goods confiscated,
+  the player sent to the cell to serve `bounty / iCrimeDaysInPrisonMod` days).
+  Jails are the load order's linked `PrisonMarker` door pairs (14 in
+  Oblivion.esm); "nearest" is the closest exit in the player's worldspace, and
+  a player indoors or somewhere with no jail gets a declined command with
+  nothing half done. Not built: the `StolenGoods` chest is not restocked (the
+  confiscated goods wait in the ledger's `evidence`), the skill loss for time
+  served (UESP names no rule for which skill), resting in the cell bed to end
+  the sentence (`jail.serve` stands in; a bed interaction will call
+  `serve_sentence`), `GetCrime` (who knows which crime), and whatever sends a
+  guard to the criminal.
 - Assault is charged once per victim (the original turns the victim
   hostile; a hostile victim is self-defence). A kill in one blow is only a
   murder. "Non-hostile" is the hostility pass's own judgement plus not
