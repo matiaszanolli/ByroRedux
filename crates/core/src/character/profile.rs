@@ -7,7 +7,7 @@
 //! downstream character consumers read the same table.
 
 use super::{
-    fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, skyrim_ruleset, CharacterRuleset,
+    fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, skyrim_ruleset, CharacterRuleset, CrimeModel,
     SkillSet,
 };
 
@@ -266,6 +266,8 @@ pub struct CharacterRulesProfile {
     /// `(master stem, levels)` adds its levels to the cap (after the
     /// `iMaxCharacterLevel` overlay) when a plugin of that stem is loaded.
     level_cap_raises: &'static [(&'static str, u16)],
+    /// What a crime costs the criminal, where one is sourced and wired.
+    crime: Option<CrimeModel>,
 }
 
 /// Skyrim's *Mod Buy Prices* / *Mod Sell Prices* entry points
@@ -289,6 +291,7 @@ impl CharacterRulesProfile {
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
         level_cap_raises: &[],
+        crime: None,
     };
 
     pub const OBLIVION: Self = Self {
@@ -310,6 +313,7 @@ impl CharacterRulesProfile {
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
         level_cap_raises: &[],
+        crime: Some(CrimeModel::OBLIVION),
     };
 
     pub const FALLOUT3: Self = Self {
@@ -340,6 +344,7 @@ impl CharacterRulesProfile {
         barter: None,
         perk_entry_points: PerkEntryPointDialect::Fallout3NV,
         level_cap_raises: &[],
+        crime: None,
     };
 
     pub const FALLOUT_NEW_VEGAS: Self = Self {
@@ -375,6 +380,7 @@ impl CharacterRulesProfile {
         // FalloutNV.esm alone. FalloutNV.exe carries exactly these four
         // stems as a string table beside its master-file loading strings.
         level_cap_raises: &[("DeadMoney", 5), ("HonestHearts", 5), ("OldWorldBlues", 5), ("LonesomeRoad", 5)],
+        crime: None,
     };
 
     pub const SKYRIM: Self = Self {
@@ -415,6 +421,7 @@ impl CharacterRulesProfile {
         }),
         perk_entry_points: PerkEntryPointDialect::Skyrim,
         level_cap_raises: &[],
+        crime: None,
     };
 
     pub const FALLOUT4: Self = Self {
@@ -447,6 +454,7 @@ impl CharacterRulesProfile {
         }),
         perk_entry_points: PerkEntryPointDialect::None,
         level_cap_raises: &[],
+        crime: None,
     };
 
     pub const FALLOUT76: Self = Self {
@@ -474,6 +482,7 @@ impl CharacterRulesProfile {
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
         level_cap_raises: &[],
+        crime: None,
     };
 
     pub const STARFIELD: Self = Self {
@@ -505,6 +514,7 @@ impl CharacterRulesProfile {
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
         level_cap_raises: &[],
+        crime: None,
     };
 
     #[must_use]
@@ -578,6 +588,13 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn barter(self) -> Option<BarterModel> {
         self.barter
+    }
+
+    /// What a crime costs the criminal, `None` where no crime model is
+    /// sourced and wired (every game but Oblivion).
+    #[must_use]
+    pub const fn crime(self) -> Option<CrimeModel> {
+        self.crime
     }
 
     /// #5921 — the perk entry-point numbering the game's `PERK`s author.

@@ -885,7 +885,7 @@ pub(super) fn spawn_synth_child(
         }
         // P3 — `XOWN` is REFR-level data like `teleport`/`lock` above, so
         // only the primary synthetic child carries it. The minimal theft
-        // rule in `inventory::transfer_is_theft` reads this stamp.
+        // rule in `inventory::theft_owner` reads this stamp.
         if let Some(ownership) = placed_ref.ownership.as_ref() {
             world.insert(
                 placement_root,

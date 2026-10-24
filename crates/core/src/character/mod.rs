@@ -23,6 +23,8 @@
 //!   derived-formula table + leveling model.
 //! * [`reputation`] — the reputation family: [`KarmaBand`] (FO3/FNV Karma) +
 //!   [`ReputationStanding`] (FNV Fame/Infamy 4×4 grid) classifiers.
+//! * [`crime`] — the crime family: [`CrimeModel`], what a crime costs the
+//!   criminal (Oblivion's `fCrimeGoldSteal` theft fine so far).
 //! * [`resistance`] — the affliction family's resistance half:
 //!   [`Affliction`] descriptors (radiation / poison resistance derivation) +
 //!   the damage-multiplier model.
@@ -74,6 +76,7 @@
 pub mod affliction;
 pub mod attribute;
 pub mod components;
+pub mod crime;
 pub mod derived;
 pub mod fallout;
 pub mod leveling;
@@ -95,6 +98,7 @@ pub use components::{
     Background, CharacterLevel, FactionReputation, FactionStanding, LevelUpPoints, PerkRank,
     Perks,
 };
+pub use crime::CrimeModel;
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
 pub use fallout::{
     fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, melee_damage_config, MeleeDamageConfig,
@@ -152,7 +156,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            14,
+            15,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {

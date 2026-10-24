@@ -23,6 +23,7 @@ pub(crate) mod cell_loader;
 mod cli_args;
 mod combat;
 mod commands;
+mod crime;
 mod components;
 mod cornell;
 mod debug_load;

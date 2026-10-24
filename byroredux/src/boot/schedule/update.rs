@@ -258,7 +258,7 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::SceneAliasCandidate>()
             .reads::<byroredux_core::ecs::components::Locked>()
             // #4574 — pickup_loot stamps PickedUp on the target and its
-            // subtree meshes; transfer_is_theft reads ownership.
+            // subtree meshes; theft_owner reads ownership.
             .writes::<crate::inventory::PickedUp>()
             .reads::<byroredux_core::ecs::components::Owned>()
             // #5866 — the theft rule reads a script's ownership change first.
@@ -280,7 +280,16 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes_resource::<crate::cell_loader::reference_state::PersistentReferenceStates>()
             .reads::<byroredux_core::ecs::components::PhysicsSourceForm>()
             .reads::<byroredux_physics::RapierHandles>()
-            .writes_resource::<byroredux_physics::PhysicsWorld>(),
+            .writes_resource::<byroredux_physics::PhysicsWorld>()
+            // `crime::report_theft` — the bounty, its witnesses and the sight test between them.
+            .reads_resource::<byroredux_core::character::CrimeModel>()
+            .writes_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()
+            .reads_resource::<byroredux_scripting::OwnerKinds>()
+            .reads::<crate::systems::faction_hostility::CombatDisposition>()
+            .reads::<byroredux_core::ecs::components::CreatureActor>()
+            .reads::<byroredux_core::ecs::components::GlobalTransform>()
+            .reads_resource::<crate::systems::faction_hostility::DetectionConfig>()
+            .reads_resource::<crate::components::CellLightingRes>(),
     );
     // Combat follows the same producer-before-consumer event contract as
     // activation: physical Attack emits HitEvent, then health/death resolves

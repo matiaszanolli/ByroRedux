@@ -798,3 +798,34 @@ attribute receives a +1 to +5 bonus based on governed major-skill increases
 (0, 1–4, 5–7, 8–9, and 10+). The engine's `fSkillUseCurve` is 1.95 for the
 skill-use progression curve. Source: [UESP Oblivion:
 Leveling](https://en.uesp.net/wiki/Oblivion:Leveling).
+
+## Crime fines — theft built, the rest sourced and unbuilt
+
+Sources: CS wiki *Crime Overview*, *iCrimeGoldXX*, *fCrimeGoldSteal*,
+*GetPCFactionSteal*; UESP *Oblivion:Crime*. Built as
+`character::CrimeModel` (`crates/core/src/character/crime.rs`), a
+`CharacterRulesProfile` row (`crime()`, Oblivion only) with the load order's
+GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
+
+| Crime | Bounty | Built |
+|---|---|---|
+| Theft | `ceil(item value × fCrimeGoldSteal)`, minimum 1; `fCrimeGoldSteal` 0.5 (Oblivion.esm does not author it) | yes — witnessed only |
+| Lockpicking an owned lock | 5 | no |
+| Trespass | 5 (after a 30 s warning) | no |
+| Pickpocket | 25 | no |
+| Assault | 40 (`iCrimeGoldAttack`, authored) | no |
+| Jailbreak | 50 (`iCrimeGoldJailBreak`, authored) | no |
+| Horse theft | 250 (`iCrimeGoldStealHorse`, authored) | no |
+| Murder | 1000, plus one infamy | no |
+
+- The faction Steal flag is set by any theft from a faction's property,
+  witnessed or not (`GetPCFactionSteal`: "this does not have to be a crime
+  that was witnessed by anyone"). Only a faction owner marks a flag; an NPC
+  owner's own factions are not resolved.
+- A witness is any living, non-creature NPC that passes the hostility pass's
+  sight test (`fSneakMaxDistance`, line of sight). The wiki's "successfully
+  sneaking prevents being detected" has no stealth roll here yet.
+- Guards: bounty over 1000 means arrest on sight, over 4000 attack
+  (`Bounty`), `iCrimeGoldAttackMin` is the rush threshold; none of that reads
+  the bounty yet.
+- Shivering Isles tracks a separate bounty; one value is kept.

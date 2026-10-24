@@ -94,6 +94,11 @@ impl InventoryCatalog {
             .map_or(0.0, |definition| definition.weight)
     }
 
+    /// One `base_form_id` item's gold value; 0 for an item outside the catalog.
+    pub(crate) fn item_value(&self, base_form_id: u32) -> u32 {
+        self.entries.get(&base_form_id).map_or(0, |definition| definition.value)
+    }
+
     /// The total weight `inventory` carries (M47.2 encumbrance, the
     /// inventory menu's total).
     pub(crate) fn inventory_weight(&self, inventory: &Inventory) -> f32 {
@@ -999,9 +1004,10 @@ pub(crate) fn stamp_cell_ownership(
     world.insert_batch(targets.into_iter().map(|entity| (entity, owned)));
 }
 
-/// P3's minimal theft rule (no witness/bounty system — recorded, not
-/// punished): a transfer is theft when the source is owned and the owner is
-/// neither the player nor a faction the player holds the required rank in.
+/// P3's theft rule: a transfer is theft when the source is owned and the
+/// owner is neither the player nor a faction the player holds the required
+/// rank in. The answer is the owner it steals from; what the theft costs the
+/// player is [`crate::crime::report_theft`]'s.
 ///
 /// #4699 — "the player" is the Player `NPC_` base (0x7), what vanilla
 /// authors in `XOWN` on player-owned containers; the 0x14 PlayerRef
@@ -1012,36 +1018,30 @@ pub(crate) fn stamp_cell_ownership(
 /// reaches `Owned` through [`stamp_cell_ownership`].
 ///
 /// [`FactionRanks`]: byroredux_core::ecs::components::FactionRanks
-fn transfer_is_theft(
+fn theft_owner(
     world: &World,
     player: byroredux_core::ecs::EntityId,
     source: byroredux_core::ecs::EntityId,
-) -> bool {
+) -> Option<u32> {
     // #5866 — one ownership read: a script's `SetActorOwner` / `SetFactionOwner`
     // (a cleared owner is `Some(0)`) overrides the `XOWN` the cell loader
     // stamped, for the theft rule exactly as for `GetActorOwner`.
     let owned = match byroredux_scripting::owner_override(world, source) {
-        Some(0) => return false,
+        Some(0) => return None,
         Some(owner) => byroredux_core::ecs::components::Owned {
             owner_form_id: owner,
             faction_rank: None,
             global_var_form_id: None,
         },
-        None => {
-            let Some(owned) = world
-                .get::<byroredux_core::ecs::components::Owned>(source)
-                .map(|owned| *owned)
-            else {
-                return false;
-            };
-            owned
-        }
+        None => world
+            .get::<byroredux_core::ecs::components::Owned>(source)
+            .map(|owned| *owned)?,
     };
     let player_base = world
         .try_resource::<InventoryCatalog>()
         .map(|catalog| catalog.player_base_form_id);
     if player_base == Some(owned.owner_form_id) {
-        return false;
+        return None;
     }
     let member = world
         .get::<byroredux_core::ecs::components::FactionRanks>(player)
@@ -1051,7 +1051,7 @@ fn transfer_is_theft(
                 .faction_rank
                 .is_none_or(|required| i32::from(rank) >= required)
         });
-    !member
+    (!member).then_some(owned.owner_form_id)
 }
 
 /// Which stacks a loot transfer moves out of a source inventory.
@@ -1107,7 +1107,8 @@ pub(crate) fn transfer_loot(
     {
         return None;
     }
-    let stolen = transfer_is_theft(world, player, source);
+    let stolen_from = theft_owner(world, player, source);
+    let stolen = stolen_from.is_some();
     let mut outcome = LootOutcome {
         item_count: 0,
         rows: Vec::new(),
@@ -1207,6 +1208,9 @@ pub(crate) fn transfer_loot(
             format!("Took {} {noun}", outcome.item_count)
         },
     );
+    if let Some(owner) = stolen_from {
+        crate::crime::report_theft(world, player, owner, &outcome.rows);
+    }
     // Equipment points into the source inventory, not the destination.
     // Snapshot unique indices and release every storage guard before
     // acquiring the next one or publishing the script event batch.
@@ -1384,7 +1388,8 @@ pub(crate) fn pickup_loot(
     else {
         return false;
     };
-    let stolen = transfer_is_theft(world, player, target);
+    let stolen_from = theft_owner(world, player, target);
+    let stolen = stolen_from.is_some();
     let count = world
         .get::<PlacedItemCount>(target)
         .map_or(1, |count| count.0.max(1));
@@ -1438,6 +1443,9 @@ pub(crate) fn pickup_loot(
             format!("Added {name}")
         },
     );
+    if let Some(owner) = stolen_from {
+        crate::crime::report_theft(world, player, owner, &[(base, count)]);
+    }
     byroredux_scripting::emit_item_transfers(
         world,
         player,
@@ -2966,9 +2974,9 @@ mod tests {
 
         // Below the rank bar it is theft; at the bar it is not.
         world.insert(player, FactionRanks::from_pairs([(0xF00D, 1)]));
-        assert!(transfer_is_theft(&world, player, shop_chest));
+        assert!(theft_owner(&world, player, shop_chest).is_some());
         world.insert(player, FactionRanks::from_pairs([(0xF00D, 2)]));
-        assert!(!transfer_is_theft(&world, player, shop_chest));
+        assert!(theft_owner(&world, player, shop_chest).is_none());
         world.remove::<FactionRanks>(player);
         // #5866 — a script's ownership change reaches the theft rule: cleared
         // or handed to the player it is no theft; handed to someone else it is.
@@ -2985,19 +2993,128 @@ mod tests {
             });
             world.insert(shop_chest, byroredux_core::ecs::components::FormIdComponent(id));
         }
-        assert!(transfer_is_theft(&world, player, shop_chest));
+        assert!(theft_owner(&world, player, shop_chest).is_some());
         world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, 0);
-        assert!(!transfer_is_theft(&world, player, shop_chest), "SetActorOwner(None) clears it");
+        assert!(theft_owner(&world, player, shop_chest).is_none(), "SetActorOwner(None) clears it");
         world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, PLAYER_NPC_FORM_ID);
-        assert!(!transfer_is_theft(&world, player, shop_chest));
+        assert!(theft_owner(&world, player, shop_chest).is_none());
         world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, 0xABBA);
-        assert!(transfer_is_theft(&world, player, shop_chest));
+        assert!(theft_owner(&world, player, shop_chest).is_some());
         let outcome = transfer_loot(&world, player, shop_chest, LootSelection::All).unwrap();
         assert!(outcome.stolen);
         assert_eq!(
             crate::notifications::drain(&world),
             vec!["Stolen 7 items".to_owned()]
         );
+    }
+
+    /// A theft of the merchants' chest (7 arrows, value 1 each) in a world
+    /// with the Oblivion crime model: the faction flag is set whoever looks,
+    /// the bounty (`7 × 0.5`, rounded up) only when an NPC can see the thief.
+    fn crime_world(witness_at: Option<byroredux_core::math::Vec3>) -> (World, byroredux_core::ecs::EntityId, byroredux_core::ecs::EntityId) {
+        use byroredux_core::ecs::components::{GlobalTransform, Owned};
+        use byroredux_core::math::Vec3;
+        use byroredux_plugin::esm::records::{ActorAiData, Aggression, Confidence, FactionRecord};
+        let (mut world, player) = fixture();
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
+        world.register::<Owned>();
+        world.register::<GlobalTransform>();
+        world.register::<byroredux_core::ecs::components::Dead>();
+        world.register::<crate::systems::faction_hostility::CombatDisposition>();
+        world.insert_resource(byroredux_core::character::CrimeModel::OBLIVION);
+        world.insert_resource(byroredux_scripting::obscript_ledger::ObScriptLedger::default());
+        world.insert_resource(crate::systems::faction_hostility::DetectionConfig { max_distance: 1000.0, exterior_mult: 1.0 });
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.factions.insert(
+            0xF00D,
+            FactionRecord {
+                form_id: 0xF00D,
+                editor_id: String::new(),
+                full_name: String::new(),
+                flags: 0,
+                relations: Vec::new(),
+                ranks: Vec::new(),
+                reputation: None,
+                vendor: None,
+            },
+        );
+        byroredux_scripting::install_owner_kinds(&mut world, &index);
+        world.insert(player, GlobalTransform::new(Vec3::ZERO, Default::default(), 1.0));
+        if let Some(at) = witness_at {
+            let witness = world.spawn();
+            world.insert(witness, GlobalTransform::new(at, Default::default(), 1.0));
+            world.insert(
+                witness,
+                crate::systems::faction_hostility::CombatDisposition(ActorAiData {
+                    aggression: Aggression::Unaggressive,
+                    confidence: Confidence::Average,
+                    responsibility: None,
+                    attack_radius: None,
+                }),
+            );
+        }
+        let chest = activated_container(&mut world, player);
+        world.insert(chest, Owned { owner_form_id: 0xF00D, faction_rank: None, global_var_form_id: None });
+        (world, player, chest)
+    }
+
+    #[test]
+    fn a_witnessed_theft_adds_the_bounty_and_marks_the_faction() {
+        use byroredux_scripting::obscript_ledger::{FactionFlag, ObScriptLedger};
+        let (world, player, chest) = crime_world(Some(byroredux_core::math::Vec3::new(0.0, 0.0, 500.0)));
+        transfer_loot(&world, player, chest, LootSelection::All).unwrap();
+        let ledger = world.resource::<ObScriptLedger>();
+        assert_eq!(ledger.crime_gold, 4, "7 arrows × 1 gold × 0.5 = 3.5, rounded up");
+        assert!(ledger.flag(FactionFlag::Steal, 0xF00D));
+        drop(ledger);
+        assert!(crate::notifications::drain(&world).contains(&"You were seen stealing. Your bounty is now 4 gold".to_owned()));
+    }
+
+    #[test]
+    fn an_unwitnessed_theft_marks_the_faction_but_costs_nothing() {
+        use byroredux_scripting::obscript_ledger::{FactionFlag, ObScriptLedger};
+        // The only NPC is past the detection range.
+        let (world, player, chest) = crime_world(Some(byroredux_core::math::Vec3::new(0.0, 0.0, 5000.0)));
+        transfer_loot(&world, player, chest, LootSelection::All).unwrap();
+        let ledger = world.resource::<ObScriptLedger>();
+        assert_eq!(ledger.crime_gold, 0);
+        assert!(ledger.flag(FactionFlag::Steal, 0xF00D), "no witness is needed for the flag");
+    }
+
+    #[test]
+    fn a_dead_or_creature_onlooker_reports_nothing() {
+        use byroredux_scripting::obscript_ledger::ObScriptLedger;
+        let near = byroredux_core::math::Vec3::new(0.0, 0.0, 500.0);
+        for kind in ["dead", "creature"] {
+            let (mut world, player, chest) = crime_world(Some(near));
+            let witness = world
+                .query::<crate::systems::faction_hostility::CombatDisposition>()
+                .unwrap()
+                .iter()
+                .map(|(entity, _)| entity)
+                .next()
+                .unwrap();
+            if kind == "dead" {
+                world.insert(witness, byroredux_core::ecs::components::Dead);
+            } else {
+                world.register::<byroredux_core::ecs::components::CreatureActor>();
+                world.insert(witness, byroredux_core::ecs::components::CreatureActor);
+            }
+            transfer_loot(&world, player, chest, LootSelection::All).unwrap();
+            assert_eq!(world.resource::<ObScriptLedger>().crime_gold, 0, "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_game_without_a_crime_model_charges_nothing() {
+        use byroredux_scripting::obscript_ledger::{FactionFlag, ObScriptLedger};
+        let (mut world, player, chest) = crime_world(Some(byroredux_core::math::Vec3::new(0.0, 0.0, 500.0)));
+        world.remove_resource::<byroredux_core::character::CrimeModel>();
+        let outcome = transfer_loot(&world, player, chest, LootSelection::All).unwrap();
+        assert!(outcome.stolen, "still classified as theft");
+        let ledger = world.resource::<ObScriptLedger>();
+        assert_eq!(ledger.crime_gold, 0);
+        assert!(!ledger.flag(FactionFlag::Steal, 0xF00D));
     }
 
     #[test]

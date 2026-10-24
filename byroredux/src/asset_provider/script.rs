@@ -1065,6 +1065,8 @@ pub(crate) fn populate_scene_runtime(
     world.insert_resource(byroredux_scripting::SpellCatalog::from_index(index));
     // #4414 — the ambient-hostility detection range (`fSneakMaxDistance`).
     crate::systems::install_detection_config(world, index);
+    // The per-game crime fines (Oblivion's theft bounty), cleared for a game without a model.
+    crate::crime::install_crime_model(world, index);
     let imad_count = byroredux_scripting::install_image_space_modifiers(
         world,
         index.imagespace_modifiers.values().cloned(),

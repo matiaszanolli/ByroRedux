@@ -16,9 +16,12 @@ use crate::ecs::storage::Component;
 /// P3's consumer is the minimal theft rule in the binary's loot path: a
 /// transfer from an owned source is classified stolen when the owner is
 /// neither the player reference (0x14) nor a faction the player holds rank
-/// in. There is deliberately **no** witness, bounty, or crime-response
-/// system yet — the classification is recorded (notification + `stolen` on
-/// `ItemTransfer` rows), not punished.
+/// in. The classification is recorded (notification + `stolen` on
+/// `ItemTransfer` rows), and where the game has a [`CrimeModel`] a theft
+/// seen by an NPC adds its bounty (`byroredux/src/crime.rs`); guards, arrest
+/// and the other crimes are not modelled.
+///
+/// [`CrimeModel`]: crate::character::CrimeModel
 ///
 /// Sparse storage — owned REFRs are a minority of placements.
 ///
