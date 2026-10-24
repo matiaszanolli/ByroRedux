@@ -85,6 +85,9 @@ impl AnimationPlayer {
 
 impl Component for AnimationPlayer {
     type Storage = SparseSetStorage<Self>;
+    /// Membership changes (a player started, replaced or ended) are what re-open an actor to the
+    /// archetype-idle pass (`archetype_idle_system`, #6334); nothing else reads the generation.
+    const TRACK_CHANGES: bool = true;
 }
 
 /// Fold a ping-pong (`CycleType::Reverse`) clock advanced by `delta` back into

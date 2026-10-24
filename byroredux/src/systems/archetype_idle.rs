@@ -27,6 +27,7 @@ pub(crate) struct ArchetypeIdle {
 
 impl Component for ArchetypeIdle {
     type Storage = SparseSetStorage<Self>;
+    const TRACK_CHANGES: bool = true;
 }
 
 /// The archetype overrides the last pass saw: a change re-selects every actor.
@@ -37,6 +38,39 @@ pub(crate) struct ArchetypeIdleSeen {
     /// Actors with no entry (or no clip for it) at the last selection: not asked
     /// again until the overrides change.
     unmatched: rustc_hash::FxHashSet<EntityId>,
+    /// What the last pass keyed on (#6334). While it is unchanged and the overrides are too, no
+    /// actor can have become eligible, so the pass returns before walking any.
+    last_key: Option<PassKey>,
+    /// The `(actor, skeleton root)` list a pass walks, kept between passes so its capacity is.
+    actors: Vec<(EntityId, EntityId)>,
+}
+
+/// Everything that decides whether an actor is skipped: the animated actors, whether something
+/// already animates one, whether it is dead (the `Dead` count: a revive lifts one, and the saved
+/// `Dead` component is left without a change-tracking opt-in), whether this system marked it, and
+/// who the player is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PassKey {
+    generations: [u64; 4],
+    player: Option<EntityId>,
+}
+
+fn pass_key(world: &World, player: Option<EntityId>) -> PassKey {
+    fn generation<T>(world: &World) -> u64
+    where
+        T: Component<Storage = SparseSetStorage<T>>,
+    {
+        world.query::<T>().map_or(0, |q| q.storage().structural_generation())
+    }
+    PassKey {
+        generations: [
+            generation::<AnimationTarget>(world),
+            generation::<AnimationPlayer>(world),
+            world.count::<Dead>() as u64,
+            generation::<ArchetypeIdle>(world),
+        ],
+        player,
+    }
 }
 
 impl Resource for ArchetypeIdleSeen {}
@@ -65,19 +99,35 @@ pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
     if changed {
         log::debug!("archetype idle: the archetype overrides changed");
     }
-    let actors: Vec<(EntityId, EntityId)> = match world.query::<AnimationTarget>() {
+    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
+    // #6334 — an actor is only ever worked on when it has no player, no marker and no `unmatched`
+    // entry, or when the overrides changed; every way into that state moves one of the keyed
+    // generations. The pass's own inserts move them too, so the pass after one repeats once and
+    // then settles.
+    let key = pass_key(world, player);
+    let mut actors = match world.try_resource_mut::<ArchetypeIdleSeen>() {
+        Some(mut seen) => {
+            if !changed && seen.last_key == Some(key) {
+                return;
+            }
+            seen.last_key = Some(key);
+            std::mem::take(&mut seen.actors)
+        }
+        None => Vec::new(),
+    };
+    actors.clear();
+    match world.query::<AnimationTarget>() {
         Some(targets) => {
             // #6292 — entity ids are never recycled, so an actor that streamed out
             // would stay in `unmatched` for the session; forget the ones that are gone.
             if let Some(mut seen) = world.try_resource_mut::<ArchetypeIdleSeen>() {
                 seen.unmatched.retain(|actor| targets.contains(*actor));
             }
-            targets.iter().map(|(entity, target)| (entity, target.skeleton_root)).collect()
+            actors.extend(targets.iter().map(|(entity, target)| (entity, target.skeleton_root)));
         }
         None => return,
-    };
-    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
-    for (actor, skeleton_root) in actors {
+    }
+    for &(actor, skeleton_root) in &actors {
         if Some(actor) == player || world.get::<Dead>(actor).is_some() {
             continue;
         }
@@ -121,6 +171,9 @@ pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
         if let Some(mut markers) = world.query_mut::<ArchetypeIdle>() {
             markers.insert(actor, ArchetypeIdle { clip });
         }
+    }
+    if let Some(mut seen) = world.try_resource_mut::<ArchetypeIdleSeen>() {
+        seen.actors = actors;
     }
 }
 
@@ -258,6 +311,51 @@ mod tests {
         world.query_mut::<Dead>().unwrap().insert(corpse, Dead);
         archetype_idle_system(&world, 0.0);
         assert_eq!(clip_of(&world, corpse), None);
+    }
+
+    /// #6334 — a settled pass does not walk the animated actors again until one of the keyed
+    /// storages changes shape: the `unmatched` prune (a walk) is the probe.
+    #[test]
+    fn a_settled_pass_skips_the_walk_until_an_actor_appears() {
+        let (mut world, actor, _) = world_with_settler();
+        archetype_idle_system(&world, 0.0);
+        archetype_idle_system(&world, 0.0); // the pass's own inserts moved the key once
+        let stale = world.spawn();
+        world.resource_mut::<ArchetypeIdleSeen>().unmatched.insert(stale);
+        archetype_idle_system(&world, 0.0);
+        assert!(
+            world.resource::<ArchetypeIdleSeen>().unmatched.contains(&stale),
+            "nothing changed shape, so the settled pass walked no actors"
+        );
+
+        let skeleton = world.get::<AnimationTarget>(actor).unwrap().skeleton_root;
+        let arrival = world.spawn();
+        world.insert(arrival, AnimationTarget { skeleton_root: skeleton, consumed_idle_serial: 0 });
+        archetype_idle_system(&world, 0.0);
+        assert!(!world.resource::<ArchetypeIdleSeen>().unmatched.contains(&stale), "an arrival re-opens the walk");
+    }
+
+    /// #6334 — the gate must not strand an actor whose animation another system ended: it gets its
+    /// archetype idle once that player is gone, and a revived corpse once `Dead` is lifted.
+    #[test]
+    fn the_gate_reopens_when_a_player_ends_or_the_dead_revive() {
+        let (world, actor, _) = world_with_settler();
+        world.query_mut::<AnimationPlayer>().unwrap().insert(actor, AnimationPlayer::new(99));
+        archetype_idle_system(&world, 0.0);
+        archetype_idle_system(&world, 0.0);
+        assert_eq!(clip_of(&world, actor), Some(99));
+        world.query_mut::<AnimationPlayer>().unwrap().remove(actor);
+        archetype_idle_system(&world, 0.0);
+        assert_eq!(clip_of(&world, actor), Some(11), "the played idle ended");
+
+        let (world, corpse, _) = world_with_settler();
+        world.query_mut::<Dead>().unwrap().insert(corpse, Dead);
+        archetype_idle_system(&world, 0.0);
+        archetype_idle_system(&world, 0.0);
+        assert_eq!(clip_of(&world, corpse), None);
+        world.query_mut::<Dead>().unwrap().remove(corpse);
+        archetype_idle_system(&world, 0.0);
+        assert_eq!(clip_of(&world, corpse), Some(11), "revived");
     }
 
     /// The marker component and the pass's state must exist in the engine's world:

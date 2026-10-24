@@ -67,6 +67,9 @@ pub(crate) struct AnimationTarget {
 
 impl Component for AnimationTarget {
     type Storage = SparseSetStorage<Self>;
+    /// `archetype_idle_system` keys its per-frame walk on this storage's membership generation
+    /// (#6334): a new or removed animated actor is what gives it something to do.
+    const TRACK_CHANGES: bool = true;
 }
 
 /// M42.10 — one animation snapshot's worth of `AnimationPlayer` state,
