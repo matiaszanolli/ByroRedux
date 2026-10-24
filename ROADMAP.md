@@ -28,10 +28,9 @@ only.
 bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
 --workspace -- -D warnings` was **clean** at the last run (2026-10-22, after the
 Session 103 `head_look` lint was fixed; `--all-targets` is not, Known Issues). All 11 303 tests
-pass (2026-10-24). The lock-order detector is clean across the
-workspace (`BYRO_LOCK_ORDER_CHECK=1`, `--exclude byroredux-ui`, 2026-10-24). It
-went red on Session 104's Find and Flee systems and was fixed the same day; a
-bare `cargo test` does not run it, so run it before closing a session. The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
+pass (2026-10-24). The lock-order detector is clean across the workspace
+(`BYRO_LOCK_ORDER_CHECK=1`, `--exclude byroredux-ui`, 2026-10-24; it caught
+Session 104's Find and Flee, and a bare `cargo test` does not run it). The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
 regression, **R6a-regress-22**, was the bench camera moving with `b9e961eeb`'s
 interior spawn ladder, not renderer code (#5128, 2026-09-30); a small residual
 stays open — the top-of-frame all-slots fence wait that dominates GPU-bound
