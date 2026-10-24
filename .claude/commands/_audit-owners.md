@@ -87,7 +87,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/scripting/src/fragment/{vm,budget.rs,reference.rs}` | scripting, concurrency, performance Dim 1, tech-debt Dim 1 | HIGH |
 | `crates/scripting/src/magic.rs` | scripting, gameplay, character | MEDIUM |
 | `crates/scripting/src/load_order.rs` | scripting, save | MEDIUM |
-| `crates/scripting/src/{crime_faction,crime_gold,ownership}.rs` | scripting, gameplay, save Dims 1-2 | MEDIUM |
+| `crates/scripting/src/{crime_faction,crime_gold,crime_knowledge,guards,jail,ownership}.rs` | scripting, gameplay, save Dims 1-2 | MEDIUM |
 | `crates/scripting/src/bleedout.rs` | scripting, gameplay, character | MEDIUM |
 | `crates/scripting/src/{speechcraft,destruction}.rs` | scripting, gameplay, save Dims 1-2 | MEDIUM |
 | `crates/scripting/src/{bribe,detection_events,followers,map_markers,encounter_level}.rs` | scripting, gameplay | MEDIUM |
@@ -128,7 +128,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/fog.rs` | exterior, renderer | MEDIUM |
 | `byroredux/src/terrain_height.rs` | exterior Dim 2, performance Dim 7, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/cell_loader/terrain` | exterior, physics; per-game | MEDIUM |
-| `byroredux/src/cell_loader/water.rs` | exterior, performance Dim 7; per-game | MEDIUM |
+| `byroredux/src/cell_loader/water.rs` | exterior, physics Dim 5, performance Dim 7; per-game | MEDIUM |
 | `byroredux/src/cell_loader/lod_bands.rs` | exterior, performance; fo3, fnv | MEDIUM |
 | `byroredux/src/cell_loader/lod` | exterior, performance | MEDIUM |
 | `byroredux/src/cell_loader/object_lod.rs` | exterior, performance | MEDIUM |
@@ -141,6 +141,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/precombined` | fo4; performance | HIGH |
 | `byroredux/src/cell_loader/spawn/precombined.rs` | fo4, performance | MEDIUM |
 | `byroredux/src/cell_loader/spawn/authored_cover.rs` | exterior | MEDIUM |
+| `byroredux/src/cell_loader/transition.rs` | audio Dim 3, gameplay, save; per-game, performance | MEDIUM |
+| `byroredux/src/cell_loader/material_flags.rs` | nifal, starfield; per-game, performance | MEDIUM |
 | `byroredux/src/cell_loader/unload.rs` | ecs Dim 7, save Dim 5, concurrency Dim 5, performance; per-game | HIGH |
 | `byroredux/src/cell_loader/exterior` | exterior, ecs Dim 7, performance; per-game | HIGH |
 | `byroredux/src/cell_loader/load.rs` | ecs Dim 7, performance; per-game | HIGH |
@@ -149,7 +151,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader` | per-game; performance | MEDIUM |
 | `byroredux/src/material_translate.rs` | nifal | HIGH |
 | `byroredux/src/ragdoll_installed_tests.rs` | physics, nif Dim 5; skyrim, fo4, starfield | MEDIUM |
-| `byroredux/src/ragdoll` | physics; skyrim, fo4, starfield | HIGH |
+| `byroredux/src/ragdoll` | physics; skyrim, fo4, starfield, fo3, fnv | HIGH |
 | `byroredux/src/npc_spawn/seam_blend` | nifal, gameplay; oblivion, fo3, fnv | MEDIUM |
 | `byroredux/src/npc_spawn/loot_appearance.rs` | gameplay, save Dim 1, nifal; skyrim | MEDIUM |
 | `byroredux/src/npc_spawn/ai_package.rs` | gameplay, scripting Dim 5, performance Dim 7, concurrency Dim 7; per-game | MEDIUM |
@@ -171,7 +173,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/systems/{projectiles,trap_hits}.rs` | gameplay Dim 4, scripting Dim 5, ecs, performance | MEDIUM |
 | `byroredux/src/systems/scripted_sound.rs` | audio, scripting Dim 5, ecs, performance | MEDIUM |
 | `byroredux/src/systems/{graph_locomotion,archetype_idle}.rs` | gameplay Dim 5, ecs Dim 9, performance; fo4 | MEDIUM |
-| `byroredux/src/systems/{flee,head_look,knockdown,revive,magic_shader,script_queries,script_requests}.rs` | scripting Dim 6, gameplay, ecs, performance | MEDIUM |
+| `byroredux/src/systems/script_requests.rs` | scripting Dim 6, gameplay, audio Dim 3+5, ecs, performance | MEDIUM |
+| `byroredux/src/systems/{flee,head_look,knockdown,revive,magic_shader,script_queries}.rs` | scripting Dim 6, gameplay, ecs, performance | MEDIUM |
 | `byroredux/src/systems/` | ecs, performance | MEDIUM |
 | `byroredux/src/render/{sky,water,groundcover}.rs` | exterior, renderer, performance, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/render/` | renderer, performance, concurrency Dim 7 | MEDIUM |
