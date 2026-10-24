@@ -423,6 +423,7 @@ mod ambient_locomotion_default_on_tests {
             [
                 "eat_sleep_system",
                 "escort_system",
+                "flee_package_system",
                 "follow_system",
                 "guard_system",
                 "npc_walk_animation_system",
@@ -464,6 +465,7 @@ mod ambient_locomotion_default_on_tests {
             "crate::systems::make_follow_system()",
             "crate::systems::make_escort_system()",
             "crate::systems::make_guard_system()",
+            "crate::systems::make_flee_package_system()",
             "crate::systems::make_patrol_system()",
             // #5430 — the Eat/Sleep walk-then-seat mover.
             "crate::systems::make_eat_sleep_system()",

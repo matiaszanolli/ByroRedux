@@ -463,6 +463,7 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::Escorted>()
             .writes::<byroredux_core::ecs::components::GuardBehavior>()
             .writes::<byroredux_core::ecs::components::GuardState>()
+            .writes::<byroredux_core::ecs::components::FleePackageBehavior>()
             .writes::<byroredux_core::ecs::components::PatrolBehavior>()
             .writes::<byroredux_core::ecs::components::PatrolState>()
             // M42 Eat/Sleep + the Dialogue force-greet bridge — same

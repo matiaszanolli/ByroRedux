@@ -12,7 +12,7 @@ use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
     Dead, EatBehavior, EatSleepLocation, EatSleepState, EscortBehavior, EscortState, Escorted,
     FollowBehavior,
-    FollowState, GuardBehavior, GuardState, PatrolBehavior, PatrolState, SandboxBehavior, Seated,
+    FleePackageBehavior, FollowState, GuardBehavior, GuardState, PatrolBehavior, PatrolState, SandboxBehavior, Seated,
     SleepBehavior, TravelBehavior, TravelState, Traveled, WanderBehavior, WanderState,
 };
 use byroredux_core::ecs::storage::EntityId;
@@ -148,6 +148,13 @@ enum AmbientBehavior {
         location: EatSleepLocation,
         actor_form_id: u32,
     },
+    /// M42 — FleeNotCombat (procedure 10): keep `min_distance` from the
+    /// `PTDT` target, or hold at the `PLDT` refuge; `flee_package_system`.
+    Flee {
+        threat_form_id: Option<u32>,
+        min_distance: Option<f32>,
+        refuge_form_id: Option<u32>,
+    },
     /// M42 + #5367 — Dialogue (procedure 15): the active package
     /// installs the force-greet bridge; `forcegreet_system` does the
     /// approach + open. Consumed on the first greet — re-installed only
@@ -257,6 +264,12 @@ impl AmbientBehavior {
                 anchor_form_id: location_reference,
                 radius: location_radius,
                 actor_form_id,
+            })
+        } else if package.is_flee_not_combat() {
+            Some(Self::Flee {
+                threat_form_id: target_reference,
+                min_distance: target_distance,
+                refuge_form_id: location_reference,
             })
         } else if package.is_patrol() {
             Some(Self::Patrol {
@@ -480,6 +493,20 @@ impl AmbientBehavior {
                     },
                 );
             }
+            Self::Flee {
+                threat_form_id,
+                min_distance,
+                refuge_form_id,
+            } => {
+                world.insert(
+                    actor,
+                    FleePackageBehavior {
+                        threat_form_id,
+                        min_distance,
+                        refuge_form_id,
+                    },
+                );
+            }
             Self::Patrol {
                 patrol_radius,
                 actor_form_id,
@@ -602,6 +629,19 @@ impl AmbientBehavior {
                     form_id: actor_form_id,
                 },
             ),
+            Self::Flee {
+                threat_form_id,
+                min_distance,
+                refuge_form_id,
+            } => insert_component(
+                world,
+                actor,
+                FleePackageBehavior {
+                    threat_form_id,
+                    min_distance,
+                    refuge_form_id,
+                },
+            ),
             Self::Patrol {
                 patrol_radius,
                 actor_form_id,
@@ -712,6 +752,7 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     remove_component::<Escorted>(world, actor);
     remove_component::<GuardBehavior>(world, actor);
     remove_component::<GuardState>(world, actor);
+    remove_component::<FleePackageBehavior>(world, actor);
     remove_component::<PatrolBehavior>(world, actor);
     remove_component::<PatrolState>(world, actor);
     remove_component::<EatBehavior>(world, actor);
@@ -1202,6 +1243,7 @@ mod tests {
         world.register::<Escorted>();
         world.register::<GuardBehavior>();
         world.register::<GuardState>();
+        world.register::<FleePackageBehavior>();
         world.register::<PatrolBehavior>();
         world.register::<PatrolState>();
         world.register::<EatBehavior>();
@@ -1708,6 +1750,69 @@ mod tests {
                 assert!(world.has::<TravelBehavior>(actor));
             }
         }
+    }
+
+    /// FleeNotCombat (procedure 10): `PTDT` becomes the threat and its
+    /// distance the minimum to keep, `PLDT` a `NearReference` the refuge; a
+    /// later package handover removes the marker.
+    #[test]
+    fn a_flee_not_combat_package_installs_its_threat_distance_and_refuge() {
+        use byroredux_plugin::esm::records::misc::pack::PROCEDURE_FLEE_NOT_COMBAT;
+        use byroredux_plugin::esm::records::{PackLocation, PackTarget};
+
+        // FNV `VFSFreesideThugFleeFromPlayerPackage`: the player, 1500 units.
+        let mut from_player = pack(0x100, PROCEDURE_FLEE_NOT_COMBAT, None);
+        from_player.target = Some(PackTarget {
+            target_type: 0,
+            target: PackTargetKind::SpecificReference(0x14),
+            count_or_distance: 1500,
+        });
+        // FNV `JacobstownNightkinFlee`: flee to a reference.
+        let mut to_refuge = pack(0x200, PROCEDURE_FLEE_NOT_COMBAT, None);
+        to_refuge.location = Some(PackLocation {
+            location_type: 0,
+            target: PackLocationTarget::NearReference(0x0013_F711),
+            radius: 512,
+        });
+        let flee = |package: PackRecord| {
+            let (world, actor) = setup_actor(10.0, vec![package]);
+            world.get::<FleePackageBehavior>(actor).map(|behavior| *behavior)
+        };
+        assert_eq!(
+            flee(from_player),
+            Some(FleePackageBehavior {
+                threat_form_id: Some(0x14),
+                min_distance: Some(1500.0),
+                refuge_form_id: None,
+            })
+        );
+        assert_eq!(
+            flee(to_refuge),
+            Some(FleePackageBehavior {
+                threat_form_id: None,
+                min_distance: None,
+                refuge_form_id: Some(0x0013_F711),
+            })
+        );
+
+        // A gated Flee loses to the next package, and the marker goes.
+        let mut gated = pack(0x300, PROCEDURE_FLEE_NOT_COMBAT, None);
+        gated.conditions.push(Condition {
+            function_index: 58,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(10.0),
+            param_1: 0x900,
+            run_on: RunOn::Subject,
+            ..Default::default()
+        });
+        let wander = pack(0x400, PROCEDURE_WANDER, None);
+        let (world, actor) = setup_actor(10.0, vec![gated, wander]);
+        assert!(world.has::<WanderBehavior>(actor) && !world.has::<FleePackageBehavior>(actor));
+        world.resource_mut::<QuestStageState>().set_stage(QuestFormId(0x900), 10);
+        world.query_mut::<EvaluatePackageRequest>().unwrap().insert(actor, EvaluatePackageRequest);
+        ambient_ai_package_system(&world, 0.0);
+        assert!(world.has::<FleePackageBehavior>(actor), "the gate opened, Flee wins");
+        assert!(!world.has::<WanderBehavior>(actor));
     }
 
     #[test]
@@ -2802,6 +2907,7 @@ mod tests {
                 || world.has::<FollowBehavior>(actor)
                 || world.has::<EscortBehavior>(actor)
                 || world.has::<GuardBehavior>(actor)
+                || world.has::<FleePackageBehavior>(actor)
             {
                 resolved_any_behavior += 1;
             }

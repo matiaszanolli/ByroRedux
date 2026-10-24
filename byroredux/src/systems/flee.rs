@@ -41,7 +41,7 @@ impl Component for FleeState {
     type Storage = SparseSetStorage<Self>;
 }
 
-fn range(world: &World) -> f32 {
+pub(crate) fn range(world: &World) -> f32 {
     let exterior = world.try_resource::<crate::components::CellLightingRes>().is_some_and(|cell| !cell.is_interior);
     world.try_resource::<crate::systems::DetectionConfig>().map_or(FALLBACK_RANGE, |config| config.range(exterior))
 }

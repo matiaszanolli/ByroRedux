@@ -275,6 +275,11 @@ pub fn register_all(registry: &mut ComponentRegistry) {
         vec!["anchor_form_id", "radius", "form_id"],
     );
     register_component::<GuardState>(registry, "GuardState", vec!["anchor"]);
+    register_component::<FleePackageBehavior>(
+        registry,
+        "FleePackageBehavior",
+        vec!["threat_form_id", "min_distance", "refuge_form_id"],
+    );
     register_component::<PatrolBehavior>(
         registry,
         "PatrolBehavior",

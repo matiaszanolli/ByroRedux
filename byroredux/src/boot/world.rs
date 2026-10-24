@@ -419,6 +419,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // first guarding actor spawns.
     world.register::<byroredux_core::ecs::components::GuardBehavior>();
     world.register::<byroredux_core::ecs::components::GuardState>();
+    // M42 — FleeNotCombat marker (stateless, so no companion storage).
+    world.register::<byroredux_core::ecs::components::FleePackageBehavior>();
 
     // M42 — pre-register the Eat/Sleep marker + walk-state storages so
     // `eat_sleep_system`'s `query::<EatBehavior>()`/`query::<SleepBehavior>()`

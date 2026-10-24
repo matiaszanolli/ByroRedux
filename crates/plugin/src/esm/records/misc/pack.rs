@@ -330,6 +330,13 @@ pub const PROCEDURE_ESCORT: u32 = 2;
 /// is indefinite, like Wander) — see `systems::guard` module docs. See M42.
 pub const PROCEDURE_GUARD: u32 = 14;
 
+/// FO3/FNV procedure index for `FleeNotCombat` — run from the `PTDT` target
+/// until `PTDT`'s distance away, or run to the `PLDT` refuge and hold there,
+/// without entering combat (GECK *Flee not Combat Package*). 15 packages in
+/// FalloutNV.esm and 8 in Fallout3.esm (2026-10-24 census), all authored
+/// with `PTDT` and/or `PLDT` only.
+pub const PROCEDURE_FLEE_NOT_COMBAT: u32 = 10;
+
 /// FO3/FNV procedure index for `Eat` — walk to the `PLDT` dining
 /// location and sit at the nearest furniture marker for the schedule
 /// window. 706 NPC-default references across FalloutNV.esm (2026-10-08
@@ -637,6 +644,12 @@ impl PackRecord {
     /// location indefinitely, returning if displaced).
     pub fn is_guard(&self) -> bool {
         self.procedure_type == PROCEDURE_GUARD
+    }
+
+    /// True when this package's procedure is `FleeNotCombat` (keep away
+    /// from the `PTDT` target, or hold at the `PLDT` refuge).
+    pub fn is_flee_not_combat(&self) -> bool {
+        self.procedure_type == PROCEDURE_FLEE_NOT_COMBAT
     }
 
     /// True when this package's procedure is `Patrol` (v0: identical to
