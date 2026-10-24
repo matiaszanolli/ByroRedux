@@ -1258,8 +1258,11 @@ fn triangle_shaders_keep_the_render_origin_relative_varying_convention() {
             "POM / parallaxDisplaceUV",
         ),
         (
-            "perturbNormal(N, fragWorldPosRel,",
-            "derivative TBN (perturbNormal)",
+            // #6345 — the base normal's TBN uses the gradient form with this
+            // capture (taken before the terrain parallax march rewrote the
+            // UV), so the relative-position derivative is read once, here.
+            "vec3 splatPosdx = dFdx(fragWorldPosRel);",
+            "derivative TBN (perturbNormalGrad via splatPosdx)",
         ),
         (
             "max(length(dFdx(fragWorldPosRel)), length(dFdy(fragWorldPosRel)))",

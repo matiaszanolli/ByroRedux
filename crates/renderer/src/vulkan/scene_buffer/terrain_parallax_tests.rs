@@ -292,6 +292,59 @@ fn glsl_parallax_uses_only_explicit_gradients() {
     }
 }
 
+/// Collapse whitespace so a pin does not depend on how a call is wrapped.
+fn squashed(code: &str) -> String {
+    code.lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// #6345 — the march rewrites `sampleUV` for terrain fragments, so every
+/// base-layer read after it must take the gradients captured *before* it
+/// (`splatUVdx/dy`, `splatPosdx/dy`). An implicit `texture()` or `perturbNormal`
+/// differentiates the displaced UV, whose derivative jumps where neighbouring
+/// quad lanes stop on different march layers: a too-coarse mip and a rotated
+/// tangent frame on the base layer, which the (explicit) splat layers did not
+/// share. For every other fragment the captured gradients are the derivatives
+/// of the same `sampleUV`, so the explicit form is the same read.
+#[test]
+fn triangle_frag_reads_the_terrain_base_layer_with_the_pre_march_gradients() {
+    let frag = squashed(include_str!("../../../shaders/triangle.frag"));
+    for required in [
+        "textureGrad( textures[nonuniformEXT(fragTexIndex)], sampleUV, splatUVdx, splatUVdy)",
+        "textureGrad( textures[nonuniformEXT(handle)], sampleUV, splatUVdx, splatUVdy)",
+        "textureGrad( textures[nonuniformEXT(mat.specularMapIndex)], sampleUV, splatUVdx, splatUVdy )",
+        "textureGrad( textures[nonuniformEXT(mat.reflectanceMapIndex)], sampleUV, splatUVdx, splatUVdy )",
+        "textureGrad( textures[nonuniformEXT(normalMapIdx)], sampleUV, splatUVdx, splatUVdy)",
+        "perturbNormalGrad( N, sampleUV, normalMapIdx, fragTangent, splatPosdx, splatPosdy, splatUVdx, splatUVdy)",
+    ] {
+        assert!(
+            frag.contains(required),
+            "triangle.frag lost the explicit-gradient base-layer read `{required}` (#6345)"
+        );
+    }
+    // The implicit forms must not come back on those textures. `texture(` is
+    // not a prefix of `textureGrad(`, so these needles match only the bad form.
+    for banned in [
+        "texture(textures[nonuniformEXT(fragTexIndex)]",
+        "texture(textures[nonuniformEXT(handle)]",
+        "texture(textures[nonuniformEXT(mat.specularMapIndex)]",
+        "texture(textures[nonuniformEXT(mat.reflectanceMapIndex)]",
+        "texture(textures[nonuniformEXT(normalMapIdx)]",
+        "perturbNormal(N",
+    ] {
+        assert!(
+            !frag.contains(banned),
+            "triangle.frag reads `{banned}` with implicit derivatives of a UV the terrain \
+             parallax march may have displaced (#6345); use the captured splat gradients"
+        );
+    }
+}
+
 /// The call site: gradients captured in quad-uniform flow first, the effect
 /// gated on the per-tile depth and the POM bypass, and run *before* the blend
 /// so the blend and every splat loop read the displaced UV.

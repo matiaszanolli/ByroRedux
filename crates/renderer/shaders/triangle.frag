@@ -366,7 +366,16 @@ void main() {
         }
     }
 
-    vec4 texColor = texture(textures[nonuniformEXT(fragTexIndex)], sampleUV);
+    // #6345 — every base-layer read below takes the gradients captured above,
+    // before the terrain parallax march rewrote `sampleUV`. An implicit
+    // `texture()` / `dFdx(sampleUV)` here would differentiate the DISPLACED
+    // UV, whose screen derivative jumps wherever neighbouring quad lanes stop
+    // on different march layers: a too-coarse mip and a rotated tangent frame
+    // on the base layer at relief edges, which the splat layers (already
+    // explicit) did not share. For every other fragment `splatUVdx/dy` are the
+    // derivatives of this same `sampleUV`, so the reads are unchanged.
+    vec4 texColor = textureGrad(
+        textures[nonuniformEXT(fragTexIndex)], sampleUV, splatUVdx, splatUVdy);
     // #1653 — a BC1 diffuse carries no authored alpha channel: BC1 is
     // 1-bit punch-through, decoded as BC1_RGBA only so alpha-test cutouts
     // (aThresh>0) see it (2aac5351). With no alpha test active the
@@ -409,7 +418,8 @@ void main() {
     for (int decalIndex = 0; decalIndex < MATERIAL_DECAL_SLOTS; ++decalIndex) {
         uint handle = materialDecals[decalIndex];
         if (handle != 0u) {
-            vec4 decalSample = texture(textures[nonuniformEXT(handle)], sampleUV);
+            vec4 decalSample = textureGrad(
+                textures[nonuniformEXT(handle)], sampleUV, splatUVdx, splatUVdy);
             texColor.rgb = mix(texColor.rgb, decalSample.rgb, decalSample.a);
             texColor.a = decalSample.a + texColor.a * (1.0 - decalSample.a);
         }
@@ -534,15 +544,15 @@ void main() {
     float normalAlphaSpecMask = 1.0;
     vec3 specColor = vec3(mat.specularR, mat.specularG, mat.specularB);
     if (mat.specularMapIndex != 0u) {
-        specColor *= texture(
+        specColor *= textureGrad(
             textures[nonuniformEXT(mat.specularMapIndex)],
-            sampleUV
+            sampleUV, splatUVdx, splatUVdy
         ).rgb;
     }
     if (mat.reflectanceMapIndex != 0u) {
-        specColor *= texture(
+        specColor *= textureGrad(
             textures[nonuniformEXT(mat.reflectanceMapIndex)],
-            sampleUV
+            sampleUV, splatUVdx, splatUVdy
         ).rgb;
     }
     // LAND TX07 is a per-layer specular-colour map. Apply the same ordered
@@ -638,7 +648,8 @@ void main() {
         // is set CPU-side (`texture_registry.rs` / `material_translate.rs`)
         // rather than re-derived here.
         if ((mat.materialFlags & MAT_FLAG_MODEL_SPACE_NORMALS) != 0u) {
-            vec3 mn = texture(textures[nonuniformEXT(normalMapIdx)], sampleUV).rgb;
+            vec3 mn = textureGrad(
+                textures[nonuniformEXT(normalMapIdx)], sampleUV, splatUVdx, splatUVdy).rgb;
             mn = mn * 2.0 - 1.0;
             if ((mat.materialFlags & MAT_FLAG_MSN_HAS_AUTHORED_Z) == 0u) {
                 // #3922 — re-derived for the corrected basis. The missing
@@ -674,7 +685,13 @@ void main() {
                 ? normalize(worldMn)
                 : N;
         } else {
-            N = perturbNormal(N, fragWorldPosRel, sampleUV, normalMapIdx, fragTangent);  // #1496 — TBN from dFdx(worldPos) only
+            // #1496 — TBN from dFdx(worldPos) only. #6345 — the gradient form
+            // with the pre-march captures: `perturbNormal` would take
+            // `dFdx(sampleUV)` of the parallax-displaced terrain UV, and Path 2
+            // builds the terrain base normal's TBN from exactly that.
+            N = perturbNormalGrad(
+                N, sampleUV, normalMapIdx, fragTangent,
+                splatPosdx, splatPosdy, splatUVdx, splatUVdy);
         }
     }
     // LAND TX01 normal maps follow the same splat weights and ordering as
