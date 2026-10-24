@@ -73,15 +73,23 @@ pub(crate) fn stand_up(world: &World, actor: EntityId) -> Vec<String> {
     // The keyframed collision rows the bones and the #6070 stand-in capsule had while the actor lived:
     // activation parked exactly those (#6326), so the authored layer, sensor flag, materials and contact
     // coefficients come back with them, and a bone that never had a row gets none.
-    let retired = world.query_mut::<RetiredBodyRows>().and_then(|mut parked| parked.remove(root)).map(|rows| rows.0).unwrap_or_default();
+    let retired = world.query_mut::<RetiredBodyRows>().and_then(|mut parked| parked.remove(root)).unwrap_or_default();
+    // Shapes first: a row without its shape is not a body yet (#6134 parked both).
+    if let Some(mut shapes) = world.query_mut::<byroredux_core::ecs::components::CollisionShape>() {
+        for (entity, shape) in &retired.shapes {
+            if shapes.get(*entity).is_none() {
+                shapes.insert(*entity, shape.clone());
+            }
+        }
+    }
     if let Some(mut bodies) = world.query_mut::<RigidBodyData>() {
-        for (entity, row) in &retired {
+        for (entity, row) in &retired.rows {
             if bodies.get(*entity).is_none() {
                 bodies.insert(*entity, row.clone());
             }
         }
     }
-    notes.push(format!("{} bone bodies restored", retired.len()));
+    notes.push(format!("{} bone bodies restored", retired.rows.len()));
 
     // The idle it was spawned with, on the actor, driving its skeleton (#6231): a creature's own clip, not
     // the humanoid one, whose bones its rig does not have. An actor spawned with none stands unanimated.

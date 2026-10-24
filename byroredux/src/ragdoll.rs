@@ -85,31 +85,50 @@ impl Component for RagdollActive {
 /// (`systems::revive::stand_up`) puts back exactly what the actor spawned
 /// with: the authored layer, sensor flag, surface materials and contact
 /// coefficients (#6326). A bone that had no row stays without one.
+///
+/// The bones' [`CollisionShape`]s are parked beside the rows (#6134): left behind,
+/// a shape with neither a body row nor a Rapier handle is a permanently
+/// incomplete `collect_newcomers` candidate, which keeps the physics step's
+/// newcomer-scan cache off for as long as the corpse is resident.
 #[derive(Debug, Clone, Default)]
-pub struct RetiredBodyRows(pub Vec<(EntityId, RigidBodyData)>);
+pub struct RetiredBodyRows {
+    pub rows: Vec<(EntityId, RigidBodyData)>,
+    pub shapes: Vec<(EntityId, CollisionShape)>,
+}
 
 impl Component for RetiredBodyRows {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Remove `entities`' `RigidBodyData` rows and park them on `root`'s
-/// [`RetiredBodyRows`]. A re-activation finds the rows already gone and adds
-/// nothing, so the first activation's rows survive it.
+/// Remove `entities`' `RigidBodyData` rows and `CollisionShape`s and park them
+/// on `root`'s [`RetiredBodyRows`]. A re-activation finds them already gone and
+/// adds nothing, so the first activation's rows survive it.
 fn retire_body_rows(world: &World, root: EntityId, entities: impl IntoIterator<Item = EntityId>) {
-    let retired: Vec<(EntityId, RigidBodyData)> = match world.query_mut::<RigidBodyData>() {
+    let entities: Vec<EntityId> = entities.into_iter().collect();
+    let rows: Vec<(EntityId, RigidBodyData)> = match world.query_mut::<RigidBodyData>() {
         Some(mut rbq) => entities
-            .into_iter()
-            .filter_map(|entity| rbq.remove(entity).map(|row| (entity, row)))
+            .iter()
+            .filter_map(|&entity| rbq.remove(entity).map(|row| (entity, row)))
             .collect(),
-        None => return,
+        None => Vec::new(),
     };
-    if retired.is_empty() {
+    let shapes: Vec<(EntityId, CollisionShape)> = match world.query_mut::<CollisionShape>() {
+        Some(mut shapes) => entities
+            .iter()
+            .filter_map(|&entity| shapes.remove(entity).map(|shape| (entity, shape)))
+            .collect(),
+        None => Vec::new(),
+    };
+    if rows.is_empty() && shapes.is_empty() {
         return;
     }
     if let Some(mut parked) = world.query_mut::<RetiredBodyRows>() {
         match parked.get_mut(root) {
-            Some(rows) => rows.0.extend(retired),
-            None => parked.insert(root, RetiredBodyRows(retired)),
+            Some(retired) => {
+                retired.rows.extend(rows);
+                retired.shapes.extend(shapes);
+            }
+            None => parked.insert(root, RetiredBodyRows { rows, shapes }),
         }
     }
 }
@@ -1942,6 +1961,13 @@ mod tests {
                 world.query::<RapierHandles>().unwrap().get(b).is_none(),
                 "keyframed RapierHandles must be removed on activation",
             );
+            // #6134 - a shape left behind with neither a body row nor a handle
+            // is a permanently incomplete `collect_newcomers` candidate, which
+            // keeps the newcomer-scan cache (#3477) off while the corpse lives.
+            assert!(
+                world.query::<CollisionShape>().unwrap().get(b).is_none(),
+                "a ragdolled bone must not keep a handle-less CollisionShape",
+            );
         }
         // 3 keyframed followers freed; the 3 dynamic ragdoll bodies remain.
         assert_eq!(
@@ -2083,6 +2109,10 @@ mod tests {
         }
         assert!(world.query::<RapierHandles>().unwrap().get(capsule).is_none());
         assert!(world.query::<RigidBodyData>().unwrap().get(capsule).is_none());
+        assert!(
+            world.query::<CollisionShape>().unwrap().get(capsule).is_none(),
+            "the retired capsule keeps no handle-less shape (#6134)"
+        );
         assert_eq!(
             world.resource::<PhysicsWorld>().body_count(),
             2,
@@ -2099,6 +2129,13 @@ mod tests {
         // template bones, which never had one.
         crate::systems::revive::stand_up(&world, actor);
         {
+            assert!(
+                matches!(
+                    world.query::<CollisionShape>().unwrap().get(capsule),
+                    Some(CollisionShape::Capsule { .. })
+                ),
+                "the capsule's shape comes back with its row (#6134)"
+            );
             let rows = world.query::<RigidBodyData>().unwrap();
             let row = rows.get(capsule).expect("the capsule's row is restored");
             assert_eq!(row.motion_type, MotionType::Keyframed);
