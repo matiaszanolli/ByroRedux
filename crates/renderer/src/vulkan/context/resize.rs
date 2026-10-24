@@ -620,7 +620,14 @@ impl VulkanContext {
                 // command buffer is valid.
                 gbuffer.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
             } {
-                log::warn!("G-buffer post-resize layout init failed: {e}");
+                // #6343 — fail the resize like the `recreate_on_resize` above
+                // does for an allocation failure: a G-buffer left UNDEFINED
+                // is a layout mismatch for every post pass on every frame.
+                // The pass stays owned by `self.post`, whose teardown idles
+                // the device first, so nothing is disposed here.
+                return Err(e).context(
+                    "G-buffer post-resize layout init failed — every post pass samples the G-buffer",
+                );
             }
         }
 
@@ -911,7 +918,26 @@ impl VulkanContext {
                             self.transfer_pool,
                         )
                     } {
-                        log::warn!("Bloom layout re-init after resize failed: {e}");
+                        // #6343 — fail closed like the creation arm below (and
+                        // the volumetrics arm after it): composite needs a
+                        // usable bloom view for binding 7, and a pyramid left
+                        // UNDEFINED breaks bloom's GENERAL barriers on every
+                        // frame. `new_bloom` is unpublished, so dispose it on
+                        // the submit's failure class (#4891, #6146).
+                        crate::vulkan::texture::release_after_failed_submit(
+                            new_bloom,
+                            &e,
+                            |mut new_bloom| {
+                                // SAFETY: the resize path waited the device idle,
+                                // and the helper only destroys when the layout
+                                // submit never reached the queue.
+                                unsafe { new_bloom.destroy(&self.device, allocator) }
+                            },
+                        );
+                        return Err(e).context(
+                            "initialize recreated bloom layouts — composite binding 7 would \
+                             dangle. See #905.",
+                        );
                     }
                     self.post.bloom = Some(new_bloom);
                 }
@@ -2274,5 +2300,102 @@ mod tests {
             "the budget recompute must not return to recreate_bloom_and_volumetrics — \
              that phase runs before the upscaler is recreated (#4111)"
         );
+    }
+
+    /// Whitespace-collapsed text of the statement that starts at `needle` (given
+    /// in collapsed form), up to the first `;` — so a pin does not depend on how
+    /// a call is wrapped.
+    fn statement_from(src: &str, needle: &str) -> String {
+        let squashed = src.split_whitespace().collect::<Vec<_>>().join(" ");
+        let start = squashed
+            .find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` must still exist"));
+        let end = squashed[start..].find(';').map_or(squashed.len(), |at| start + at);
+        squashed[start..end].to_string()
+    }
+
+    /// #6343 — a failed one-time layout walk (`initialize_layouts`, the only
+    /// thing that moves these images out of UNDEFINED) must not leave the pass
+    /// running: bloom's barriers declare GENERAL, SVGF samples the previous
+    /// G-buffer slot as SHADER_READ_ONLY, SVGF/TAA/caustic bind their history
+    /// as GENERAL storage, so a pass still UNDEFINED is
+    /// VUID-VkImageMemoryBarrier-oldLayout-01197 on every later frame. The
+    /// arms that used to `log::warn!` and carry on now fail closed — the
+    /// volumetrics policy (#1389) — and an unpublished pass is disposed on the
+    /// submit's failure class (#6146). Source-shape only: the failure needs a
+    /// one-time-submit fault no unit test can inject.
+    #[test]
+    fn a_failed_layout_walk_fails_closed_instead_of_warning_and_continuing() {
+        use crate::source_scan::{production_text, production_text_or_whole as prod};
+        // Not every pass file has a test module to cut; `resize.rs` does.
+        let init = prod(include_str!("init.rs"));
+        let resize = production_text(include_str!("resize.rs"));
+        let taa = prod(include_str!("../taa.rs"));
+        let svgf = prod(include_str!("../svgf.rs"));
+        let caustic = prod(include_str!("../caustic.rs"));
+
+        for (file, src, banned) in [
+            ("init.rs", init, "log::warn!(\"G-buffer layout init failed: {e}\")"),
+            ("init.rs", init, "log::warn!(\"Bloom pyramid layout init failed: {e}\")"),
+            ("resize.rs", resize, "log::warn!(\"G-buffer post-resize layout init failed: {e}\")"),
+            ("resize.rs", resize, "log::warn!(\"Bloom layout re-init after resize failed: {e}\")"),
+            ("taa.rs", taa, "log::warn!(\"TAA layout re-init after resize failed: {e}\")"),
+            ("svgf.rs", svgf, "log::warn!(\"SVGF layout re-init after resize failed: {e}\")"),
+            ("caustic.rs", caustic, "log::warn!(\"Caustic layout re-init after resize failed: {e}\")"),
+        ] {
+            assert!(
+                !src.contains(banned),
+                "{file}: `{banned}` — a failed layout walk must fail closed, not warn and keep a \
+                 pass whose images are still UNDEFINED (#6343, the #1389 class)"
+            );
+        }
+
+        // The init arms dispose the unpublished pass and refuse to build.
+        let g_buffer = statement_from(init, "if let Some(pass) = gbuffer.take()");
+        assert!(g_buffer.contains("release_after_failed_submit(pass, &e,"), "{g_buffer}");
+        assert!(
+            init.contains("\"G-buffer layout init failed: {e} — every post pass samples the G-buffer\""),
+            "the G-buffer init arm must return Err"
+        );
+        let bloom = statement_from(init, "crate::vulkan::texture::release_after_failed_submit(b, &e,");
+        assert!(bloom.contains("b.destroy") || bloom.contains("release_after_failed_submit(b, &e,"));
+        assert!(
+            init.contains("\"Bloom pyramid layout init failed: {e} — composite"),
+            "the bloom init arm must return Err"
+        );
+
+        // The resize arms: G-buffer stays owned (teardown idles the device), the
+        // unpublished new bloom is disposed on the failure class; both return Err.
+        assert!(
+            statement_from(resize, "return Err(e).context( \"G-buffer post-resize layout init failed")
+                .contains("every post pass samples the G-buffer"),
+            "the G-buffer resize arm must return Err"
+        );
+        let new_bloom =
+            statement_from(resize, "crate::vulkan::texture::release_after_failed_submit( new_bloom,");
+        assert!(new_bloom.contains("release_after_failed_submit( new_bloom, &e,"), "{new_bloom}");
+        assert!(
+            resize.contains("initialize recreated bloom layouts"),
+            "the bloom resize arm must return Err"
+        );
+
+        // The pass-internal resize walks return the error, and the context's
+        // resize still propagates it with `?` rather than swallowing it.
+        for (file, src, message) in [
+            ("taa.rs", taa, "TAA layout re-init after resize failed"),
+            ("svgf.rs", svgf, "SVGF layout re-init after resize failed"),
+            ("caustic.rs", caustic, "Caustic layout re-init after resize failed"),
+        ] {
+            let wanted = format!("return Err(e.context(\"{message}\"))");
+            assert!(src.contains(&wanted), "{file}: the layout walk must `{wanted}`");
+        }
+        for caller in ["svgf.recreate_on_resize(", "caustic.recreate_on_resize(", "taa.recreate_on_resize("] {
+            // `statement_from` stops at the first `;`, which is the `)?` that ends the call.
+            let call = statement_from(resize, caller);
+            assert!(
+                call.ends_with(")?"),
+                "resize.rs must propagate `{caller}` with `?`, or the layout error is swallowed again: {call}"
+            );
+        }
     }
 }

@@ -1138,7 +1138,7 @@ impl VulkanContext {
         // 14b. G-buffer: all auxiliary attachments (normal, motion, mesh_id,
         // raw_indirect, albedo). Created BEFORE composite because composite's
         // descriptor sets reference the raw_indirect + albedo views.
-        let gbuffer = Some(GBuffer::new(
+        let mut gbuffer = Some(GBuffer::new(
             &device,
             &gpu_allocator,
             render_extent.width,
@@ -1157,7 +1157,21 @@ impl VulkanContext {
             // their UNDEFINED → SHADER_READ_ONLY transition is sound.
             gbuffer_ref.initialize_layouts(&device, &graphics_queue, transfer_pool)
         } {
-            log::warn!("G-buffer layout init failed: {e}");
+            // #6343 — a hard requirement, like the caustic block below: every
+            // post pass samples these attachments as SHADER_READ_ONLY, so
+            // running on with them still UNDEFINED is a layout-mismatch
+            // validation error on every frame (the #1389 class).
+            if let Some(pass) = gbuffer.take() {
+                crate::vulkan::texture::release_after_failed_submit(pass, &e, |mut pass| unsafe {
+                    // SAFETY: `pass` was just created by `device`; the layout
+                    // submit never reached the queue (the helper leaks the pass
+                    // otherwise, #6146) and no frame has referenced its images.
+                    pass.destroy(&device, &gpu_allocator)
+                });
+            }
+            return Err(anyhow::anyhow!(
+                "G-buffer layout init failed: {e} — every post pass samples the G-buffer"
+            ));
         }
 
         // Collect G-buffer views up-front so svgf, composite, and main
@@ -1389,7 +1403,20 @@ impl VulkanContext {
                     // layout transition is sound.
                     b.initialize_layouts(&device, &graphics_queue, transfer_pool)
                 } {
-                    log::warn!("Bloom pyramid layout init failed: {e}");
+                    // #6343 — the same hard requirement as the creation arm
+                    // below: bloom's per-dispatch barriers declare the walked
+                    // GENERAL layout, so keeping a pass whose images are still
+                    // UNDEFINED is a validation error on every frame.
+                    crate::vulkan::texture::release_after_failed_submit(b, &e, |mut b| unsafe {
+                        // SAFETY: `b` was just created by `device`; the layout
+                        // submit never reached the queue (the helper leaks the
+                        // pass otherwise, #6146) and no frame has used it.
+                        b.destroy(&device, &gpu_allocator)
+                    });
+                    return Err(anyhow::anyhow!(
+                        "Bloom pyramid layout init failed: {e} — composite \
+                         requires the bloom output view for binding 7 (M58)."
+                    ));
                 }
                 Some(b)
             }

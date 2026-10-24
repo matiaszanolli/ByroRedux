@@ -1368,11 +1368,15 @@ impl SvgfPipeline {
         // loops above — `recreate_swapchain` waits both
         // frames-in-flight before reaching this branch, so the
         // one-time command buffer queued by `initialize_layouts` has
-        // no concurrent reader on these images. Warn-log on failure
-        // matches the caller's pre-#1031 behaviour at
-        // `context::resize::recreate_swapchain`.
+        // no concurrent reader on these images.
+        //
+        // #6343 — a failed walk leaves the fresh history UNDEFINED while the
+        // temporal and à-trous dispatches bind it as GENERAL, so it fails the
+        // resize like the allocation steps above instead of warning and
+        // carrying on. The pass stays owned by the caller's context, whose
+        // teardown idles the device first.
         if let Err(e) = unsafe { self.initialize_layouts(device, queue, command_pool) } {
-            log::warn!("SVGF layout re-init after resize failed: {e}");
+            return Err(e.context("SVGF layout re-init after resize failed"));
         }
         // #2679 / PERF-D3-03 — a resize is the other point where this
         // footprint changes; see the sibling log in `new_inner`.

@@ -1170,10 +1170,16 @@ impl CausticPipeline {
 
         // #1031 — walk fresh slot images from UNDEFINED to GENERAL.
         // SAFETY: fenced-resize contract — no concurrent reader on
-        // these images. Warn-log on failure matches the caller's
-        // pre-#1031 behaviour.
+        // these images.
+        //
+        // #6343 — a failed walk leaves the fresh accumulator slots UNDEFINED
+        // while the splat and composite passes bind them as GENERAL, so it
+        // fails the resize like the allocation steps above (and like the init
+        // arm, which treats the caustic array as a hard requirement) instead
+        // of warning and carrying on. The pass stays owned by the caller's
+        // context, whose teardown idles the device first.
         if let Err(e) = unsafe { self.initialize_layouts(device, queue, command_pool) } {
-            log::warn!("Caustic layout re-init after resize failed: {e}");
+            return Err(e.context("Caustic layout re-init after resize failed"));
         }
         // #2679 / PERF-D3-03 — a resize is the other point where this
         // footprint changes; see the sibling log in `new_inner`.

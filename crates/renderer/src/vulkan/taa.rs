@@ -774,10 +774,16 @@ impl TaaPipeline {
 
         // #1031 — walk fresh history images from UNDEFINED to GENERAL.
         // SAFETY: fenced-resize contract — no concurrent reader on
-        // these images. Warn-log matches the caller's pre-#1031
-        // behaviour.
+        // these images.
+        //
+        // #6343 — a failed walk leaves the fresh history UNDEFINED while the
+        // dispatches and barriers declare GENERAL, so it fails the resize like
+        // the allocation steps above instead of warning and carrying on. The
+        // pass stays owned by the caller's context, whose teardown idles the
+        // device first; the class is carried in the error for a caller that
+        // wants to dispose it (`OneTimeCommandError::may_be_in_flight`).
         if let Err(e) = unsafe { self.initialize_layouts(device, queue, command_pool) } {
-            log::warn!("TAA layout re-init after resize failed: {e}");
+            return Err(e.context("TAA layout re-init after resize failed"));
         }
         Ok(())
     }
