@@ -452,6 +452,6 @@ pub(super) fn run(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue]
             }
             _ => Action::Declined,
         },
-        _ => super::tail::run(world, fallout, cmd, args, ctx),
+        _ => Action::Unhandled,
     }
 }

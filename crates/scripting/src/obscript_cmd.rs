@@ -96,6 +96,7 @@ pub(crate) struct Command {
 const FAMILIES: &[&[Command]] = &[
     crate::obscript_more::ACTIONS_COMMANDS,
     crate::obscript_more::EXTRAS_COMMANDS,
+    crate::obscript_more::TAIL_COMMANDS,
 ];
 
 /// `(id, game)` pairs claimed by more than one row of `families`.

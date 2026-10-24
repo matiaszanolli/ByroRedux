@@ -25,6 +25,7 @@ mod actions;
 mod extras;
 mod state;
 mod tail;
+pub(crate) use tail::TAIL_COMMANDS;
 pub use tail::{ChildRaces, CellZones, ExitGameRequest, PendingVideos, PlayableRaces};
 pub(crate) use actions::ACTIONS_COMMANDS;
 pub(crate) use extras::EXTRAS_COMMANDS;
