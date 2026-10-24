@@ -75,6 +75,7 @@ pub mod magic_effects;
 pub mod magic_shaders;
 pub mod obscript;
 mod obscript_actions;
+mod obscript_cmd;
 pub mod obscript_actor_values;
 mod obscript_effects;
 pub mod challenges;

@@ -123,6 +123,10 @@ pub fn command_is_modeled(cmd: u16, fallout: bool) -> bool {
     if VM_LEVEL.contains(&cmd) || (fallout && FALLOUT_ONLY.contains(&cmd)) {
         return true;
     }
+    // The command table (#6139) owns the commands that have left the chain below.
+    if crate::obscript_cmd::find(cmd, fallout).is_some() {
+        return true;
+    }
     // `MoveToMarkerWithFade` and `GetLinkedRef` are Fallout commands; the numbers are
     // other commands in Oblivion (`PurgeCellBuffers` for `0x116b`).
     if crate::obscript_more::models(cmd, fallout) {
@@ -735,6 +739,19 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                     return self.decline(cmd);
                 };
                 self.fallout_quest_command(cmd, QuestFormId(target), args)
+            }
+            // The command table (#6139): the commands that have left the chain below. It is asked first, so a
+            // migrated command is never answered by a stale arm of an older link.
+            _ if crate::obscript_cmd::find(cmd, crate::ScriptGame::is_fallout3_nv(self.world)).is_some() => {
+                match crate::obscript_cmd::run(self.world, cmd, args, &self.context(caller)) {
+                    Action::Done { value, effect: text } => {
+                        if !text.is_empty() {
+                            effect(self, text);
+                        }
+                        value
+                    }
+                    _ => self.decline(cmd),
+                }
             }
             // The commands `obscript_more` models, per game: the opcode numbers overlap between the
             // Oblivion and Fallout tables, so it is asked with the loaded game (it precedes the
