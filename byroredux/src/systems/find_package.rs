@@ -130,18 +130,27 @@ fn search(
         _ if behavior.area_radius > 0.0 => behavior.area_radius,
         _ => AI_PACKAGE_DEFAULT_RADIUS,
     };
-    let identities = world.query::<SceneAliasCandidate>()?;
-    identities
-        .iter()
-        .filter(|&(entity, identity)| {
-            entity != actor
-                && match behavior.target {
-                    FindTarget::Base(base) => identity.base_form_id == base,
-                    FindTarget::Kind(kind) => item_kind(index, identity.base_form_id) == Some(kind),
-                    FindTarget::Reference(_) => false,
-                }
-        })
-        .filter_map(|(entity, _)| {
+    // The identity guard is dropped before the per-entity checks: `is_pickup_target`
+    // takes `InventoryCatalog`, which other systems hold while reading identities,
+    // so reading it under this guard closes an ABBA cycle.
+    let candidates: Vec<EntityId> = {
+        let identities = world.query::<SceneAliasCandidate>()?;
+        identities
+            .iter()
+            .filter(|&(entity, identity)| {
+                entity != actor
+                    && match behavior.target {
+                        FindTarget::Base(base) => identity.base_form_id == base,
+                        FindTarget::Kind(kind) => item_kind(index, identity.base_form_id) == Some(kind),
+                        FindTarget::Reference(_) => false,
+                    }
+            })
+            .map(|(entity, _)| entity)
+            .collect()
+    };
+    candidates
+        .into_iter()
+        .filter_map(|entity| {
             if !still_valid(world, actor, entity, scratch) {
                 return None;
             }

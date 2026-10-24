@@ -64,11 +64,13 @@ struct FleeStep {
 
 #[derive(Default)]
 struct FleePackageScratch {
+    eligible: Vec<(EntityId, FleePackageBehavior)>,
     steps: Vec<FleeStep>,
     moved: Vec<(EntityId, Vec3, Option<Quat>)>,
 }
 
 fn flee_package_system_inner(world: &World, dt: f32, scratch: &mut FleePackageScratch) {
+    scratch.eligible.clear();
     scratch.steps.clear();
     scratch.moved.clear();
     let Some(behavior_q) = world.query::<FleePackageBehavior>() else {
@@ -79,6 +81,20 @@ fn flee_package_system_inner(world: &World, dt: f32, scratch: &mut FleePackageSc
     }
     let detection = range(world);
 
+    // ── Pass 0: who may flee. The state markers are read before any
+    // `Transform` guard exists: `AiCombatState` is taken ahead of `Transform`
+    // elsewhere, so reading it under one closes an ABBA cycle. ──
+    for (entity, behavior) in behavior_q.iter() {
+        if world.has::<Dead>(entity)
+            || world.has::<AiCombatState>(entity)
+            || world.has::<AiSuspended>(entity)
+            || world.has::<super::flee::FleeState>(entity)
+        {
+            continue;
+        }
+        scratch.eligible.push((entity, *behavior));
+    }
+
     // ── Pass 1: decide each actor's goal. `PhysicsWorld` is NOT held here
     // (#2134: it must never be live beside a `GlobalTransform` read). ──
     {
@@ -86,14 +102,7 @@ fn flee_package_system_inner(world: &World, dt: f32, scratch: &mut FleePackageSc
             return;
         };
         let walk_speed_q = world.query::<crate::components::WalkSpeed>();
-        for (entity, behavior) in behavior_q.iter() {
-            if world.has::<Dead>(entity)
-                || world.has::<AiCombatState>(entity)
-                || world.has::<AiSuspended>(entity)
-                || world.has::<super::flee::FleeState>(entity)
-            {
-                continue;
-            }
+        for &(entity, ref behavior) in &scratch.eligible {
             let Some(transform) = transform_q.get(entity) else {
                 continue;
             };
