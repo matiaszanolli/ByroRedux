@@ -1085,6 +1085,9 @@ impl ApplicationHandler for App {
         // for this frame. No-ops outside `--esm + --grid` exterior
         // mode and when the player hasn't crossed a boundary.
         self.step_streaming();
+        // #6309 — the interior counterpart: a forced-weather change while
+        // indoors, where `step_streaming` has no session to act on.
+        self.step_interior_forced_weather();
 
         // #4180 — static-BLAS recovery, moved out of the render driver. Must
         // follow `step_streaming`: it shares that step's deadline, and a cell

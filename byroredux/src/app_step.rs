@@ -117,7 +117,6 @@ impl App {
             &state.tex_provider,
             &state.wctx,
             state.applied_climate_form,
-            &mut state.applied_forced_weather,
         );
         // EX-16 item 1 (#2372) — same "outside the grid_changed guard"
         // placement as the climate override immediately above, and for
@@ -1109,6 +1108,33 @@ impl App {
                 }
             }
         }
+    }
+
+    /// ObScript `ForceWeather` / `SetWeather` / `ReleaseWeatherOverride` issued while the player is
+    /// in an interior (#6309). [`Self::step_streaming`] re-installs the sky for a forced-weather
+    /// change in an exterior session and returns at once without one, so an interior needs its own
+    /// look. The archive provider is the one kept for actor clips (built on first need, as
+    /// [`Self::step_actor_graphs`] does), and only built when a change is actually waiting.
+    pub(crate) fn step_interior_forced_weather(&mut self) {
+        if self.streaming.is_some()
+            || self.interior_transition.is_some()
+            || self.loading_screen.active()
+            || crate::scene::interior_forced_weather_pending(&self.world).is_none()
+        {
+            return;
+        }
+        let Some(ctx) = self.renderer.as_mut() else {
+            return;
+        };
+        let provider = self
+            .world
+            .remove_resource::<crate::asset_provider::ActorClipProvider>()
+            .unwrap_or_else(|| {
+                let args: Vec<String> = crate::cli_args::effective_args();
+                crate::asset_provider::ActorClipProvider(crate::asset_provider::build_texture_provider(&args))
+            });
+        crate::scene::apply_forced_weather_in_interior(&mut self.world, ctx, &provider.0);
+        self.world.insert_resource(provider);
     }
 
     /// Fallout 4 actors' behavior graphs: attach the ones actors are waiting for and

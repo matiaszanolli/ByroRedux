@@ -184,6 +184,22 @@ impl Resource for InteriorSkyExposureRes {}
 pub(crate) struct ProvisionalOutdoorEnvironment;
 impl Resource for ProvisionalOutdoorEnvironment {}
 
+/// What the outdoor environment (`SkyParamsRes`, `WeatherDataRes`, …) was last installed from:
+/// the climate, the weather that climate defaults to, and the weather a script had forced at the
+/// time (ObScript `ForceWeather`, #6028). Written by the one install funnel, so it describes what
+/// is *installed*, not what is wanted. A later difference between `forced_weather` and the live
+/// `ForcedWeather` is what asks for a re-install, in an exterior session (`apply_forced_weather`)
+/// and an interior alike (`apply_forced_weather_in_interior`, #6309); the other two fields are
+/// the interior's way back to the exterior's weather, since the streaming state that held it is
+/// gone. Never saved: a load re-installs the environment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct InstalledOutdoorEnvironment {
+    pub(crate) climate: Option<u32>,
+    pub(crate) default_weather: Option<u32>,
+    pub(crate) forced_weather: Option<u32>,
+}
+impl Resource for InstalledOutdoorEnvironment {}
+
 /// Resolved ambient-audio directive for the currently resident cell's
 /// highest-priority `REGN` `Sound` entry (EX-16 item 1, #2372). CPU-only —
 /// carries FormIDs, not decoded audio; `asset_provider::audio`'s

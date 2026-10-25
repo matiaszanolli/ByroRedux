@@ -864,6 +864,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("AmbientPackageRuntime", "NPC_.PKID candidate state rebuilt at spawn and re-evaluated on the first tick against restored clock/CTDA resources"),
         ("CellLightingRes", "WTHR ambient/directional CPU-side mirror, re-flowed from the plugin's parsed lighting record every cell load"),
         ("InteriorSkyExposureRes", "current CELL Show Sky flag, rederived from parsed CELL DATA on every interior cell load"),
+        ("InstalledOutdoorEnvironment", "records the climate, default weather and forced weather the outdoor sky was last installed from (#6309); every environment install rewrites it, and a load re-installs the sky, so a saved copy could only go stale"),
         ("ProvisionalOutdoorEnvironment", "marks the interior-boot canonical outdoor default (#4902); re-installed by the interior cell load when no worldspace sky exists and consumed by the first worldspace weather, never saved"),
         ("CellRootIndex", "inverted CellRoot->owned-entities index, repopulated by cell_loader::stamp_cell_root every cell load (#791)"),
         ("CellLoadPhaseTimings", "last cell load's per-phase wall-clock telemetry (esm parse, precombined spawn, …), overwritten by every load — diagnostics, not gameplay state"),

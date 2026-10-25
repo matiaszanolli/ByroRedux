@@ -15,8 +15,8 @@ use byroredux_renderer::VulkanContext;
 use crate::asset_provider::TextureProvider;
 use crate::cell_loader;
 use crate::components::{
-    CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes, WeatherSurfaceState,
-    WeatherTransitionRes,
+    CellLightingRes, CloudSimState, GameTimeRes, InstalledOutdoorEnvironment, SkyParamsRes,
+    WeatherDataRes, WeatherSurfaceState, WeatherTransitionRes,
 };
 use crate::streaming::{self, WorldStreamingState};
 use crate::streaming_helpers::{
@@ -249,8 +249,49 @@ fn apply_environment(
         image_spaces: &wctx.record_index.image_spaces,
         modifiers: &wctx.record_index.imagespace_modifiers,
     };
-    let weather = forced_or(world, &wctx.record_index.weathers, default_weather);
-    apply_environment_with_sources(world, ctx, tex_provider, climate, weather, &image_spaces);
+    install_environment(
+        world,
+        ctx,
+        tex_provider,
+        climate,
+        default_weather,
+        &wctx.record_index.weathers,
+        &image_spaces,
+    );
+}
+
+/// The one funnel every outdoor-environment install goes through: pick the weather (a script's
+/// forced one over the climate's `default_weather`, #6028), record what the install is built from
+/// ([`InstalledOutdoorEnvironment`]), and install. Recording here, not at each caller, keeps the
+/// record true however the environment arrived: a worldspace bootstrap, a cell's `XCCM`, a
+/// Show-Sky interior, or a forced-weather re-apply.
+fn install_environment(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    climate: Option<&byroredux_plugin::esm::records::ClimateRecord>,
+    default_weather: Option<&byroredux_plugin::esm::records::WeatherRecord>,
+    weathers: &std::collections::HashMap<u32, byroredux_plugin::esm::records::WeatherRecord>,
+    image_spaces: &crate::env_translate::ImageSpaceSources<'_>,
+) {
+    world.insert_resource(InstalledOutdoorEnvironment {
+        climate: climate.map(|c| c.form_id),
+        default_weather: default_weather.map(|w| w.form_id),
+        forced_weather: forced_weather_form(world),
+    });
+    let weather = forced_or(world, weathers, default_weather);
+    apply_environment_with_sources(world, ctx, tex_provider, climate, weather, image_spaces);
+}
+
+/// Whether the weather a script has forced differs from the one the installed environment was
+/// built against, i.e. whether the sky needs re-installing. With no environment recorded yet,
+/// nothing was built against a forced weather.
+fn forced_weather_changed(world: &World) -> bool {
+    let installed = world
+        .try_resource::<InstalledOutdoorEnvironment>()
+        .map(|installed| installed.forced_weather)
+        .unwrap_or(None);
+    installed != forced_weather_form(world)
 }
 
 /// The weather form a script forced (ObScript `ForceWeather` / `SetWeather`), `None` when
@@ -276,24 +317,24 @@ fn forced_or<'a>(
 
 /// Switch the exterior to the weather a script forced, or back to the climate's own when the override
 /// is released: ObScript `ForceWeather` / `SetWeather` ("switch to the specified weather at once"),
-/// `ReleaseWeatherOverride`. `applied` is what the last call saw, seeded by
-/// [`assemble_exterior_streaming`] with the weather its bootstrap installed (`None` only for a state
-/// built elsewhere, whose first call just records it); the sky is re-installed only when the forced
-/// weather changed. The switch snaps: the worldspace-change cross-fade is collapsed to its target.
-/// `true` when the sky was re-installed.
+/// `ReleaseWeatherOverride`. The sky is re-installed only when the forced weather differs from the one
+/// the installed environment was built against ([`InstalledOutdoorEnvironment`]); an interior does the
+/// same through [`apply_forced_weather_in_interior`] (#6309). The switch snaps: the worldspace-change
+/// cross-fade is collapsed to its target. `true` when the sky was re-installed.
 pub(crate) fn apply_forced_weather(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     wctx: &cell_loader::ExteriorWorldContext,
     applied_climate: Option<u32>,
-    applied: &mut Option<Option<u32>>,
 ) -> bool {
-    let forced = forced_weather_form(world);
-    let previous = applied.replace(forced);
-    if previous.is_none() || previous == Some(forced) {
+    if !forced_weather_changed(world) {
         return false;
     }
+    let forced = forced_weather_form(world);
+    let previous = world
+        .try_resource::<InstalledOutdoorEnvironment>()
+        .and_then(|installed| installed.forced_weather);
     let climate = applied_climate
         .and_then(|form| wctx.record_index.climates.get(&form))
         .or(wctx.climate.as_ref());
@@ -304,6 +345,88 @@ pub(crate) fn apply_forced_weather(
     log::info!("Forced weather {previous:08X?} -> {forced:08X?}: re-applying the exterior sky");
     apply_environment(world, ctx, tex_provider, wctx, climate, default);
     // `ForceWeather` "forces the weather to immediately switch" (GECK): no 8 s fade.
+    collapse_weather_transition(world);
+    true
+}
+
+/// The loaded interior (its index and lower-cased cell EDID) when a forced-weather change is
+/// waiting to be applied to it, else `None`. Cheap, so the per-frame step can ask it before paying
+/// for an archive provider (#6309).
+pub(crate) fn interior_forced_weather_pending(
+    world: &World,
+) -> Option<(std::sync::Arc<byroredux_plugin::esm::records::EsmIndex>, String)> {
+    if !forced_weather_changed(world) {
+        return None;
+    }
+    if !world
+        .try_resource::<CellLightingRes>()
+        .is_some_and(|lighting| lighting.is_interior)
+    {
+        return None;
+    }
+    // Both are absent mid-transition, and in loose-NIF / exterior modes.
+    let index = std::sync::Arc::clone(&world.try_resource::<cell_loader::LoadedCellIndex>()?.0);
+    let cell = world
+        .try_resource::<cell_loader::CurrentCellContext>()?
+        .cell_editor_id
+        .to_ascii_lowercase();
+    Some((index, cell))
+}
+
+/// [`apply_forced_weather`] for a player standing in an interior (#6309). The streaming step that
+/// calls it in an exterior session does not run here, so a `ForceWeather` / `ReleaseWeatherOverride`
+/// issued indoors never reached the sky: a Show-Sky interior kept the climate default, and an
+/// ordinary interior's window-portal palette (`SkyParamsRes`) kept the weather it entered with.
+///
+/// A Show-Sky cell re-runs its own install ([`apply_show_sky_interior_climate`]). Any other interior
+/// re-installs the outdoor environment it inherited, from the climate and default weather recorded in
+/// [`InstalledOutdoorEnvironment`] (the exterior's streaming state that held them is gone), through
+/// the same funnel and the same snap. Does nothing until an interior is fully loaded (its
+/// `CurrentCellContext` is absent mid-transition). `true` when the sky was re-installed.
+pub(crate) fn apply_forced_weather_in_interior(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+) -> bool {
+    let Some((index, cell_editor_id)) = interior_forced_weather_pending(world) else {
+        return false;
+    };
+    let installed = world
+        .try_resource::<InstalledOutdoorEnvironment>()
+        .map(|installed| *installed)
+        .unwrap_or_default();
+    log::info!(
+        "Forced weather {:08X?} -> {:08X?}: re-applying the interior's outdoor sky",
+        installed.forced_weather,
+        forced_weather_form(world),
+    );
+    let show_sky_cell = index
+        .cells
+        .cells
+        .get(&cell_editor_id)
+        .filter(|cell| cell.show_sky.unwrap_or(false));
+    let reapplied = show_sky_cell.is_some_and(|cell| {
+        apply_show_sky_interior_climate(world, ctx, tex_provider, &index, cell)
+    });
+    if !reapplied {
+        let climate = installed.climate.and_then(|form| index.climates.get(&form));
+        let default = installed.default_weather.and_then(|form| index.weathers.get(&form));
+        let image_spaces = crate::env_translate::ImageSpaceSources {
+            worldspaces: &index.cells.worldspaces,
+            worldspace_key: "",
+            image_spaces: &index.image_spaces,
+            modifiers: &index.imagespace_modifiers,
+        };
+        install_environment(
+            world,
+            ctx,
+            tex_provider,
+            climate,
+            default,
+            &index.weathers,
+            &image_spaces,
+        );
+    }
     collapse_weather_transition(world);
     true
 }
@@ -574,9 +697,6 @@ pub(crate) fn apply_show_sky_interior_climate(
         return false;
     };
 
-    // A weather a script holds wins over the climate's default here too (#6028).
-    let weather = forced_or(world, &index.weathers, Some(weather));
-
     // `apply_environment_with_sources` samples the weather immediately, so
     // set the interior gate before it resamples the sky for the first frame.
     world.insert_resource(crate::components::InteriorSkyExposureRes(true));
@@ -586,12 +706,14 @@ pub(crate) fn apply_show_sky_interior_climate(
         image_spaces: &index.image_spaces,
         modifiers: &index.imagespace_modifiers,
     };
-    apply_environment_with_sources(
+    // A weather a script holds wins over the climate's default here too (#6028).
+    install_environment(
         world,
         ctx,
         tex_provider,
         Some(climate),
-        weather,
+        Some(weather),
+        &index.weathers,
         &image_spaces,
     );
     true
@@ -1294,12 +1416,11 @@ pub(crate) fn assemble_exterior_streaming(
     // the walk clip and under the same idempotence + silent-downgrade
     // contract (`docs/engine/p2-combat-anim-sound-fixture.md`).
     crate::asset_provider::populate_draugr_combat_clips(world, &wctx.record_index, &tex_provider);
-    // What the bootstrap sky is built from: a force a script issues before the
-    // first `step_streaming` differs from this and is installed then (#6028).
-    let bootstrap_forced_weather = forced_weather_form(world);
+    // The bootstrap install records the forced weather it is built from
+    // (`InstalledOutdoorEnvironment`): a force a script issues before the
+    // first `step_streaming` differs from it and is installed then (#6028).
     apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
     let mut state = WorldStreamingState::new(wctx, tex_provider, mat_provider, radius);
-    state.applied_forced_weather = Some(bootstrap_forced_weather);
     if let Some(root) = preserved_persistent_root {
         state.persistent_root = Some(root);
         log::info!(
@@ -1981,6 +2102,82 @@ mod tests {
         *world.resource_mut::<ForcedWeather>() = ForcedWeather { weather: Some(0xDEAD), locked: true };
         assert_eq!(pick(&world), Some(DEFAULT), "a weather the load order lacks cannot be installed");
         assert_eq!(forced_or(&world, &weathers, None).map(|w| w.form_id), None);
+    }
+
+    /// #6309 — the sky needs re-installing exactly when the forced weather differs from the one the
+    /// installed environment was built against: a force, a different force, and a release all do.
+    #[test]
+    fn a_forced_weather_change_is_a_difference_from_what_was_installed() {
+        use byroredux_scripting::obscript_state::ForcedWeather;
+        let force = |world: &mut World, weather: Option<u32>| {
+            world.insert_resource(ForcedWeather { weather, locked: false });
+        };
+        let installed = |world: &mut World, forced_weather: Option<u32>| {
+            world.insert_resource(InstalledOutdoorEnvironment { forced_weather, ..Default::default() });
+        };
+        let mut world = World::new();
+        assert!(!forced_weather_changed(&world), "nothing forced, nothing installed");
+        force(&mut world, None);
+        assert!(!forced_weather_changed(&world));
+        force(&mut world, Some(0x33));
+        assert!(forced_weather_changed(&world), "a force with no environment recorded yet");
+        installed(&mut world, Some(0x33));
+        assert!(!forced_weather_changed(&world), "the installed sky already was built against it");
+        force(&mut world, Some(0x44));
+        assert!(forced_weather_changed(&world), "a different force");
+        force(&mut world, None);
+        assert!(forced_weather_changed(&world), "the release of a force that was installed");
+        installed(&mut world, None);
+        assert!(!forced_weather_changed(&world));
+    }
+
+    /// #6309 — a pending forced weather is applied to a loaded interior only: not to an exterior, not
+    /// mid-transition (no `CurrentCellContext`), not without a cell index.
+    #[test]
+    fn a_forced_weather_waits_for_a_fully_loaded_interior() {
+        use byroredux_scripting::obscript_state::ForcedWeather;
+        let lighting = |interior: bool| {
+            CellLightingRes::bare([0.1; 3], [0.0; 3], [0.0, -1.0, 0.0], interior, [0.1; 3], 1.0, 2.0)
+        };
+        let mut world = World::new();
+        world.insert_resource(ForcedWeather { weather: Some(0x33), locked: false });
+        world.insert_resource(lighting(true));
+        assert!(interior_forced_weather_pending(&world).is_none(), "no cell index yet");
+        world.insert_resource(cell_loader::LoadedCellIndex(std::sync::Arc::new(Default::default())));
+        assert!(interior_forced_weather_pending(&world).is_none(), "mid-transition: no cell context");
+        world.insert_resource(cell_loader::CurrentCellContext {
+            cell_editor_id: "GSDocMitchellHouse".into(),
+            ..Default::default()
+        });
+        let (_, cell) = interior_forced_weather_pending(&world).expect("a loaded interior with a change waiting");
+        assert_eq!(cell, "gsdocmitchellhouse", "the key the cell map is looked up by");
+        world.insert_resource(lighting(false));
+        assert!(interior_forced_weather_pending(&world).is_none(), "an exterior is the streaming step's");
+        world.insert_resource(lighting(true));
+        world.insert_resource(InstalledOutdoorEnvironment { forced_weather: Some(0x33), ..Default::default() });
+        assert!(interior_forced_weather_pending(&world).is_none(), "already installed");
+    }
+
+    /// #6309 — every environment install goes through [`install_environment`], which records what the
+    /// install is built from. A second caller of the bare installer would leave that record stale, and
+    /// the forced-weather steps would then re-install every frame or never.
+    #[test]
+    fn only_the_install_funnel_calls_the_bare_environment_installer() {
+        let production = byroredux_core::source_scan::production_text(include_str!("world_setup.rs"));
+        let calls: Vec<_> = production.match_indices("apply_environment_with_sources(").collect();
+        // The definition, the funnel's call, and the doc/comment mentions are not calls: count
+        // call-shaped uses outside the funnel.
+        let funnel = production
+            .find("\nfn install_environment(")
+            .expect("the install funnel exists");
+        let funnel_end = funnel + production[funnel..].find("\n}\n").unwrap();
+        let outside: Vec<_> = calls
+            .iter()
+            .map(|(at, _)| *at)
+            .filter(|at| !(funnel..funnel_end).contains(at))
+            .filter(|&at| !production[..at].ends_with("fn "))
+            .collect();
+        assert!(outside.is_empty(), "apply_environment_with_sources is called outside install_environment");
     }
 
     #[test]
