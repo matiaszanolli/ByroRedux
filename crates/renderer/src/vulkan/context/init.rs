@@ -1264,7 +1264,9 @@ impl VulkanContext {
             scene_buffers.write_reservoir_buffers(&device, i, &reservoir_buffers);
         }
         // Direct-shadow spatial filter over the reservoirs' shadow ratio;
-        // composite binds its correction image when it exists.
+        // composite binds its correction image when it exists. The mesh-ID
+        // views are the G-buffer's per-frame slots (also `mesh_id_views_seed`
+        // above) — the filter's ownership gate samples them (#6249).
         let shadow_filter = match super::super::shadow_filter::ShadowFilterPipeline::new(
             super::super::GpuUploadCtx {
                 device: &device,
@@ -1274,6 +1276,7 @@ impl VulkanContext {
             },
             pipeline_cache,
             &reservoir_buffers,
+            &mesh_id_views_seed,
             render_extent.width,
             render_extent.height,
         ) {

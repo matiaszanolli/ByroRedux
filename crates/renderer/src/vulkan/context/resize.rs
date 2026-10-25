@@ -710,9 +710,10 @@ impl VulkanContext {
                     &self.reservoir_buffers,
                 );
             }
-            // The shadow filter reads the recreated reservoir buffers; a
-            // failed recreate drops the pass (composite then reads no
-            // correction) rather than failing the resize.
+            // The shadow filter reads the recreated reservoir buffers and
+            // the recreated G-buffer mesh-ID views above (its ownership
+            // gate, #6249); a failed recreate drops the pass (composite then
+            // reads no correction) rather than failing the resize.
             if let Some(ref mut filter) = self.post.shadow_filter {
                 let upload = crate::upload_ctx!(self);
                 // Two stages so the failure class is known: recreating the
@@ -721,6 +722,7 @@ impl VulkanContext {
                     .recreate_on_resize(
                         upload,
                         &self.reservoir_buffers,
+                        &mesh_id_views_in,
                         self.frame_extents.render.width,
                         self.frame_extents.render.height,
                     )

@@ -11,12 +11,19 @@
 //! Only the ratio is filtered, never U, so texture and highlight detail stay
 //! put; with the pass absent, composite reads no correction at all.
 //!
+//! #6249 — a guide (and the centre pixel) is valid only when the slot's
+//! owner is the visible surface: the pass samples the G-buffer mesh-ID
+//! attachment (binding 5) and compares it against the reservoir's packed
+//! surface tag, so corrections never land on unlit screens, blades, glass,
+//! decals or torn slots that never claimed the pixel they shade.
+//!
 //! Dispatched from `record_svgf_pass`, inside the SVGF GPU-timer bracket.
 
 use super::allocator::SharedAllocator;
 use super::descriptors::{
-    image_barrier_general_write_to_read, image_barrier_undef_to_general, write_storage_buffer,
-    write_storage_image, DescriptorPoolBuilder,
+    clamp_sampler, image_barrier_general_write_to_read, image_barrier_undef_to_general,
+    sampled_image_info, write_combined_image_sampler, write_storage_buffer, write_storage_image,
+    DescriptorPoolBuilder,
 };
 use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
@@ -69,6 +76,9 @@ pub struct ShadowFilterPipeline {
     pipeline: vk::Pipeline,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
+    /// Point sampler for the mesh-ID attachment (#6249): exact texel
+    /// identity, never filtered.
+    point_sampler: vk::Sampler,
     frames: Vec<FrameImages>,
     width: u32,
     height: u32,
@@ -79,9 +89,11 @@ impl ShadowFilterPipeline {
         ctx: GpuUploadCtx,
         pipeline_cache: vk::PipelineCache,
         reservoirs: &ReservoirBuffers,
+        mesh_id_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<Self> {
+        debug_assert_eq!(mesh_id_views.len(), super::sync::MAX_FRAMES_IN_FLIGHT);
         let device = ctx.device;
         let mut partial = Self {
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
@@ -89,11 +101,12 @@ impl ShadowFilterPipeline {
             pipeline: vk::Pipeline::null(),
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_sets: Vec::new(),
+            point_sampler: vk::Sampler::null(),
             frames: Vec::new(),
             width,
             height,
         };
-        if let Err(e) = partial.new_inner(ctx, pipeline_cache, reservoirs) {
+        if let Err(e) = partial.new_inner(ctx, pipeline_cache, reservoirs, mesh_id_views) {
             // SAFETY: nothing created so far has been submitted.
             unsafe { partial.destroy(device, ctx.allocator) };
             return Err(e);
@@ -119,6 +132,7 @@ impl ShadowFilterPipeline {
         ctx: GpuUploadCtx,
         pipeline_cache: vk::PipelineCache,
         reservoirs: &ReservoirBuffers,
+        mesh_id_views: &[vk::ImageView],
     ) -> Result<()> {
         let device = ctx.device;
         let bindings = [
@@ -131,6 +145,9 @@ impl ShadowFilterPipeline {
             compute_binding(3, vk::DescriptorType::STORAGE_IMAGE),
             // 4: the correction composite adds
             compute_binding(4, vk::DescriptorType::STORAGE_IMAGE),
+            // 5: the G-buffer mesh-ID attachment — slot-ownership gate
+            // (#6249), SHADER_READ_ONLY_OPTIMAL like SVGF's taps of it.
+            compute_binding(5, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
         ];
         validate_set_layout(
             0,
@@ -192,8 +209,15 @@ impl ShadowFilterPipeline {
                 .context("shadow filter descriptor sets")?
         };
 
+        // SAFETY: info fully populated; the handle is owned here and freed
+        // in `destroy` (also on the partial-failure path above via `new`).
+        self.point_sampler = unsafe {
+            clamp_sampler(device, vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST)
+                .context("shadow filter point sampler")?
+        };
+
         self.create_images(ctx)?;
-        self.write_descriptor_sets(device, reservoirs);
+        self.write_descriptor_sets(device, reservoirs, mesh_id_views);
         Ok(())
     }
 
@@ -239,7 +263,12 @@ impl ShadowFilterPipeline {
         Ok(())
     }
 
-    fn write_descriptor_sets(&self, device: &ash::Device, reservoirs: &ReservoirBuffers) {
+    fn write_descriptor_sets(
+        &self,
+        device: &ash::Device,
+        reservoirs: &ReservoirBuffers,
+        mesh_id_views: &[vk::ImageView],
+    ) {
         for (f, frame) in self.frames.iter().enumerate() {
             let set = self.descriptor_sets[f];
             let reservoir_info = [vk::DescriptorBufferInfo {
@@ -262,12 +291,16 @@ impl ShadowFilterPipeline {
             let a = image_info(frame.ratio_a.view);
             let b = image_info(frame.ratio_b.view);
             let d = image_info(frame.delta.view);
+            // #6249 — the mesh-ID attachment in its post-render-pass
+            // SHADER_READ_ONLY_OPTIMAL layout, point-sampled.
+            let mesh_id = [sampled_image_info(self.point_sampler, mesh_id_views[f])];
             let writes = [
                 write_storage_buffer(set, 0, &reservoir_info),
                 write_storage_buffer(set, 1, &unshadowed_info),
                 write_storage_image(set, 2, &a),
                 write_storage_image(set, 3, &b),
                 write_storage_image(set, 4, &d),
+                write_combined_image_sampler(set, 5, &mesh_id),
             ];
             // SAFETY: `set` is live; every write borrows locals that outlive
             // the call; the buffers and views are owned and live.
@@ -408,8 +441,9 @@ impl ShadowFilterPipeline {
     }
 
     /// Recreate the screen-sized images at a new extent and rebind the
-    /// (also recreated) reservoir buffers. Called after
-    /// `ReservoirBuffers::recreate_on_resize` from the fenced resize path.
+    /// (also recreated) reservoir buffers and G-buffer mesh-ID views.
+    /// Called after `ReservoirBuffers::recreate_on_resize` and the G-buffer
+    /// recreate from the fenced resize path.
     ///
     /// Submits nothing: the caller follows with `initialize_layouts`
     /// so it can tell a failure that left GPU work pending from one that did
@@ -418,6 +452,7 @@ impl ShadowFilterPipeline {
         &mut self,
         ctx: GpuUploadCtx,
         reservoirs: &ReservoirBuffers,
+        mesh_id_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<()> {
@@ -429,7 +464,7 @@ impl ShadowFilterPipeline {
         self.width = width;
         self.height = height;
         self.create_images(ctx)?;
-        self.write_descriptor_sets(ctx.device, reservoirs);
+        self.write_descriptor_sets(ctx.device, reservoirs, mesh_id_views);
         Ok(())
     }
 
@@ -463,12 +498,53 @@ impl ShadowFilterPipeline {
                 device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
                 self.descriptor_set_layout = vk::DescriptorSetLayout::null();
             }
+            if self.point_sampler != vk::Sampler::null() {
+                device.destroy_sampler(self.point_sampler, None);
+                self.point_sampler = vk::Sampler::null();
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// #6249 — the filter must gate every guide (and the centre pixel) on
+    /// the slot's owner being the visible surface: the mesh-ID attachment
+    /// sampled at binding 5, checked for stable history and compared against
+    /// the reservoir's packed surface tag. Pins the GLSL gate and the
+    /// descriptor write that feeds it; the GPU behaviour needs RenderDoc.
+    #[test]
+    fn guides_require_the_slot_owner_to_be_the_visible_surface() {
+        let comp = include_str!("../../shaders/shadow_filter.comp");
+        assert!(
+            comp.contains("layout(set = 0, binding = 5) uniform highp usampler2D meshIdTex;"),
+            "the mesh-ID attachment must be bound at set 0 binding 5"
+        );
+        assert!(
+            comp.contains("bool slotOwnsVisiblePixel(ivec2 q, uint lightAndSurface) {")
+                && comp.contains("meshIdHasStableHistory(visible)")
+                && comp.contains(
+                    "(visible & RESERVOIR_SURFACE_MASK) == (lightAndSurface >> RESERVOIR_LIGHT_BITS)"
+                ),
+            "the ownership test must reject blended mesh IDs and foreign surface tags"
+        );
+        // The gate must be part of guide validity — the centre pixel and
+        // every neighbour tap go through guideAt.
+        assert!(
+            comp.contains("g.valid = histDepth.x != 0.0 && !isnan(histDepth.x)")
+                && comp.contains("&& slotOwnsVisiblePixel(q, r.lightAndSurface);"),
+            "guideAt must fold the ownership test into validity"
+        );
+
+        let own = crate::source_scan::production_text(include_str!("shadow_filter.rs"));
+        assert!(
+            own.contains("compute_binding(5, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)")
+                && own.contains("write_combined_image_sampler(set, 5, &mesh_id)")
+                && own.contains("sampled_image_info(self.point_sampler, mesh_id_views[f])"),
+            "the Rust side must declare, write, and point-sample binding 5 per frame"
+        );
+    }
+
     /// #6035 — the published figure the BLAS reservation bills must be the
     /// three `FrameImages` at `FORMAT`'s 8 B/px.
     #[test]

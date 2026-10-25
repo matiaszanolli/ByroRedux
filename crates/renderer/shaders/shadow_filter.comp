@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "include/shader_constants.glsl"
+#include "include/mesh_id.glsl"
 #include "include/oct_codec.glsl"
 
 // Direct-shadow spatial filter: an edge-aware 5x5 B3 a-trous chain over the
@@ -19,6 +20,17 @@
 // view-ray distance (histLenAndDepth.y), validity (a zero history length is
 // a zero-filled slot nothing claimed this frame). Edge stops: normal power,
 // distance against the local slope, and the ratio difference.
+//
+// #6249 — validity also requires the slot's owner to be the VISIBLE
+// surface: the claimant is whichever lit fragment won the atomicMin, but
+// unlit screens, alpha-tested blades, glass and blended decals never claim,
+// so the surface behind them owns the slot while the pixel shows something
+// else. `slotOwnsVisiblePixel` compares the G-buffer mesh ID (bit 31 set on
+// blended draws, low bits = the stable surface ID otherwise) against the
+// reservoir's surface tag, the same identity the claim packed. That also
+// rejects torn claim/store pairs whose reservoir came from a different
+// surface than the depth winner. Water keeps the floor's correction: it
+// writes no mesh ID, so the attachment still names the claimant.
 
 layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y, local_size_z = 1) in;
 
@@ -45,6 +57,10 @@ layout(std430, set = 0, binding = 1) readonly buffer UnshadowedBuffer {
 layout(set = 0, binding = 2, rgba16f) uniform image2D ratioA;
 layout(set = 0, binding = 3, rgba16f) uniform image2D ratioB;
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D outDelta;
+// #6249 — the G-buffer mesh-ID attachment (R32_UINT), already in
+// SHADER_READ_ONLY_OPTIMAL after the main pass (SVGF samples it the same
+// way one dispatch earlier). Point-sampled: exact texel identity, no filter.
+layout(set = 0, binding = 5) uniform highp usampler2D meshIdTex;
 
 layout(push_constant) uniform Push {
     uvec2 screen;
@@ -62,11 +78,26 @@ struct ShadowFilterGuide {
     vec3 normal;
 };
 
+// #6249 — is `q`'s reservoir slot owned by the surface `q` actually shows?
+// The claim packs its stable surface ID in `lightAndSurface`'s high bits
+// (`RESERVOIR_SURFACE_MASK`-wide, same helper as triangle.frag's
+// `reservoirSurfaceId`); the mesh-ID attachment carries the depth winner's
+// stable ID, or bit 31 + an alpha draw index for blended draws. A match
+// means the correction lands on the surface it was computed for; anything
+// else (unlit screen over a lit wall, blade over terrain, glass, decal,
+// torn slot) must not be filtered or used as a neighbour guide.
+bool slotOwnsVisiblePixel(ivec2 q, uint lightAndSurface) {
+    uint visible = texelFetch(meshIdTex, q, 0).r;
+    return meshIdHasStableHistory(visible)
+        && (visible & RESERVOIR_SURFACE_MASK) == (lightAndSurface >> RESERVOIR_LIGHT_BITS);
+}
+
 ShadowFilterGuide guideAt(ivec2 q) {
     Reservoir r = reservoirs[uint(q.y) * pc.screen.x + uint(q.x)];
     vec2 histDepth = unpackHalf2x16(floatBitsToUint(r.histLenAndDepth));
     ShadowFilterGuide g;
-    g.valid = histDepth.x != 0.0 && !isnan(histDepth.x);
+    g.valid = histDepth.x != 0.0 && !isnan(histDepth.x)
+        && slotOwnsVisiblePixel(q, r.lightAndSurface);
     g.dist = histDepth.y;
     g.histLen = abs(histDepth.x);
     g.normal = octDecode(unpackSnorm2x16(floatBitsToUint(r.pad0)));
@@ -109,8 +140,9 @@ void main() {
 
     ShadowFilterGuide gp = guideAt(p);
     if (!gp.valid) {
-        // Nothing claimed this pixel (sky, blend-only, unlit): no ratio to
-        // filter and nothing for composite to correct.
+        // Nothing claimed this pixel (sky, blend-only, unlit), or the slot's
+        // owner is not the visible surface (#6249): no ratio to filter and
+        // nothing for composite to correct.
         storeResult(p, vec3(0.0), vec3(0.0), idx, 0.0);
         return;
     }
