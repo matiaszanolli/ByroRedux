@@ -151,6 +151,13 @@ pub(super) fn as_ni_node(block: &dyn NiObject) -> Option<&NiNode> {
     None
 }
 
+/// The `NiNode` data of any node-family block: [`as_ni_node`]'s subclasses plus the switch and
+/// LOD nodes it leaves out. Those need child filtering when a walker *descends*, but a parent
+/// lookup (a bone's chain to the root) only wants the child list and the local transform (#6303).
+pub(crate) fn any_ni_node(block: &dyn NiObject) -> Option<&NiNode> {
+    as_ni_node(block).or_else(|| switch_active_children(block).map(|(node, _)| node))
+}
+
 /// Extract the active child indices for NiSwitchNode (and NiLODNode).
 ///
 /// NiSwitchNode: walk only child at `active_index` (furniture states,

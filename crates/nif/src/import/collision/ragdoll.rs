@@ -9,7 +9,10 @@ use crate::blocks::collision::*;
 use crate::import::types::{
     ImportedJointKind, ImportedRagdoll, ImportedRagdollBody, ImportedRagdollConstraint,
 };
+use crate::import::transform::compose_transforms;
+use crate::import::walk::any_ni_node;
 use crate::scene::NifScene;
+use crate::types::NiTransform;
 
 use byroredux_core::ecs::components::collision::CollisionShape;
 use byroredux_core::math::{Mat3, Quat, Vec3};
@@ -532,11 +535,12 @@ fn np_shape(shape: &NpShape, scale: f32) -> Option<CollisionShape> {
     }
 }
 
-/// Block index → parent `NiNode` block index.
+/// Block index → parent node block index, through every `NiNode`-family block
+/// (`BSMultiBoundNode`, `NiSwitchNode`, … — [`any_ni_node`]).
 fn node_parents(scene: &NifScene) -> HashMap<usize, usize> {
     let mut parents = HashMap::new();
     for (i, block) in scene.blocks.iter().enumerate() {
-        if let Some(node) = block.as_any().downcast_ref::<crate::blocks::node::NiNode>() {
+        if let Some(node) = any_ni_node(block.as_ref()) {
             for child in &node.children {
                 if let Some(c) = child.index() {
                     parents.insert(c, i);
@@ -556,8 +560,7 @@ fn node_world(
     let mut chain = Vec::new();
     // A parent chain is a tree; the bound only stops a corrupt cycle.
     for _ in 0..256 {
-        if let Some(node) = scene.blocks.get(idx).and_then(|b| b.as_any().downcast_ref::<crate::blocks::node::NiNode>())
-        {
+        if let Some(node) = scene.blocks.get(idx).and_then(|b| any_ni_node(b.as_ref())) {
             chain.push(&node.av.transform);
         }
         match parents.get(&idx) {
@@ -565,19 +568,18 @@ fn node_world(
             None => break,
         }
     }
-    let (mut r, mut t, mut s) = (Mat3::IDENTITY, Vec3::ZERO, 1.0f32);
-    for local in chain.into_iter().rev() {
-        let rows = &local.rotation.rows;
-        let lr = Mat3::from_cols(
-            Vec3::new(rows[0][0], rows[1][0], rows[2][0]),
-            Vec3::new(rows[0][1], rows[1][1], rows[2][1]),
-            Vec3::new(rows[0][2], rows[1][2], rows[2][2]),
-        );
-        t += r * (Vec3::new(local.translation.x, local.translation.y, local.translation.z) * s);
-        r *= lr;
-        s *= local.scale;
-    }
-    (r, t, s)
+    let world = chain
+        .into_iter()
+        .rev()
+        .fold(NiTransform::default(), |parent, local| compose_transforms(&parent, local));
+    let rows = &world.rotation.rows;
+    let rotation = Mat3::from_cols(
+        Vec3::new(rows[0][0], rows[1][0], rows[2][0]),
+        Vec3::new(rows[0][1], rows[1][1], rows[2][1]),
+        Vec3::new(rows[0][2], rows[1][2], rows[2][2]),
+    );
+    let t = world.translation;
+    (rotation, Vec3::new(t.x, t.y, t.z), world.scale)
 }
 
 /// `(is_t, translation, rotation)` for a blob body hosted on `node`: the body's
@@ -1482,7 +1484,11 @@ mod np_ragdoll_extract_tests {
     use crate::types::{BlockRef, NiPoint3, NiTransform};
 
     fn node(name: &str, translation: [f32; 3], children: Vec<u32>) -> Box<dyn NiObject> {
-        Box::new(NiNode {
+        Box::new(ni_node(name, translation, children))
+    }
+
+    fn ni_node(name: &str, translation: [f32; 3], children: Vec<u32>) -> NiNode {
+        NiNode {
             av: NiAVObjectData {
                 net: NiObjectNETData {
                     name: Some(Arc::from(name)),
@@ -1503,7 +1509,7 @@ mod np_ragdoll_extract_tests {
             },
             children: children.into_iter().map(BlockRef).collect(),
             effects: Vec::new(),
-        })
+        }
     }
 
     fn np_collision(target: u32, system: u32, body_id: u32) -> Box<dyn NiObject> {
@@ -1580,6 +1586,31 @@ mod np_ragdoll_extract_tests {
             "{:?}",
             r.bodies[1].translation
         );
+    }
+
+    /// #6303 - a bone's rest world transform is composed through every `NiNode`-family parent,
+    /// not just a bare `NiNode`. The root here is the 10-unit-high ancestor both bodies' poses
+    /// are measured from: dropping it from the chain would put both bodies off their bones.
+    #[test]
+    fn a_bone_under_a_node_subclass_still_composes_its_whole_parent_chain() {
+        use crate::blocks::node::{BsMultiBoundNode, NiSwitchNode};
+        let wrappers: [(&str, fn(NiNode) -> Box<dyn NiObject>); 2] = [
+            ("BSMultiBoundNode", |base| {
+                Box::new(BsMultiBoundNode { base, multi_bound_ref: BlockRef::NULL, culling_mode: 0 })
+            }),
+            // Both bones are children of the switch; index 0 is the active one.
+            ("NiSwitchNode", |base| Box::new(NiSwitchNode { base, switch_flags: 0, index: 0 })),
+        ];
+        for (name, wrap) in wrappers {
+            let mut s = scene(5.0, "bhkRagdollSystem");
+            s.blocks[0] = wrap(ni_node("Root", [0.0, 0.0, 10.0], vec![1, 2]));
+            let r = extract_ragdoll(&s).unwrap_or_else(|| panic!("{name}: a ragdoll"));
+            assert!(
+                r.bodies.iter().all(|b| !b.is_t && b.translation == Vec3::ZERO),
+                "{name}: bodies on their bones need no offset: {:?}",
+                r.bodies.iter().map(|b| (b.is_t, b.translation)).collect::<Vec<_>>()
+            );
+        }
     }
 
     /// Only a `bhkRagdollSystem` is a skeleton's articulation; a
