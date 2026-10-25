@@ -1256,10 +1256,13 @@ fn pitch_or_linear_size_for(
     )
 }
 
-/// Normalize a path for case-insensitive, slash-agnostic lookup.
-/// `pub(crate)`: the BSA side reuses it for its assembled keys so both
-/// archive formats answer the same queries (#4671).
-pub(crate) fn normalize_path(path: &str) -> String {
+/// Normalize a path for case-insensitive, slash-agnostic lookup: Unicode
+/// lowercase, `/` to `\\`. The one fold every archive key goes through, so
+/// the BSA and BA2 readers answer the same queries (#4671). Public so the
+/// loose-file tier indexes by the same key (#6308) — a second, ASCII-only
+/// fold there left non-ASCII loose overrides unreachable by the lookups that
+/// find the archived copy.
+pub fn normalize_path(path: &str) -> String {
     path.to_lowercase().replace('/', "\\")
 }
 

@@ -74,6 +74,36 @@ fn loose_tier_indexes_asset_roots_by_archive_key() {
     assert!(Archive::open_loose(empty.path()).is_none());
 }
 
+/// #6308 — the loose tier folds keys exactly as the archive readers do
+/// (Unicode lowercase), so a non-ASCII override is found by the same
+/// lookup that finds the archived copy; two files that fold onto one key
+/// resolve deterministically instead of by `read_dir` order.
+#[test]
+fn loose_keys_fold_like_the_archives() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "textures/Ölfass.dds", b"fass");
+    let loose = Archive::open_loose(tmp.path()).expect("loose assets present");
+    assert!(loose.contains(r"textures\ölfass.dds"));
+    assert!(loose.contains("Textures/ÖLFASS.DDS"));
+    assert_eq!(loose.extract(r"textures\ölfass.dds").unwrap(), b"fass");
+}
+
+#[cfg(unix)]
+#[test]
+fn loose_case_variant_duplicates_resolve_to_the_last_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Distinct paths on a case-sensitive filesystem, one archive key.
+    write(tmp.path(), "textures/x.dds", b"lower");
+    write(tmp.path(), "Textures/x.dds", b"upper");
+    if std::fs::read(tmp.path().join("textures/x.dds")).unwrap() != b"lower" {
+        return; // case-insensitive filesystem: no duplicate to resolve
+    }
+    let loose = Archive::open_loose(tmp.path()).expect("loose assets present");
+    assert_eq!(loose.list_files().len(), 1);
+    // "Textures" < "textures" bytewise, so the lowercase directory is greater.
+    assert_eq!(loose.extract(r"textures\x.dds").unwrap(), b"lower");
+}
+
 /// #6243 — a symlinked directory is followed, but a link back to an ancestor
 /// is not re-walked: two looping links used to cost ~2^40 `read_dir` calls
 /// at boot, and one re-indexed its subtree ~40 times under longer keys.

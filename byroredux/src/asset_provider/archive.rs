@@ -78,11 +78,23 @@ impl LooseDir {
             return Self { files };
         };
         let mut visited = std::collections::HashSet::new();
+        let mut collisions = Vec::new();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
             if LOOSE_ASSET_ROOTS.contains(&name.as_str()) && entry.path().is_dir() {
-                Self::walk(&entry.path(), &name, 0, &mut visited, &mut files);
+                Self::walk(&entry.path(), &name, 0, &mut visited, &mut files, &mut collisions);
             }
+        }
+        if let Some(example) = collisions.first() {
+            // The archive readers count and warn on in-archive duplicates
+            // (#4671); a loose tree on a case-sensitive filesystem can fold
+            // two files onto one key just the same.
+            log::warn!(
+                "{} loose files in '{}' share an archive key after case folding; the \
+                 lexicographically last path of each wins (first: '{example}')",
+                collisions.len(),
+                data_dir.display()
+            );
         }
         Self { files }
     }
@@ -99,6 +111,7 @@ impl LooseDir {
         depth: usize,
         visited: &mut std::collections::HashSet<std::path::PathBuf>,
         files: &mut HashMap<String, std::path::PathBuf>,
+        collisions: &mut Vec<String>,
     ) {
         if depth > MAX_LOOSE_DEPTH {
             return;
@@ -115,21 +128,32 @@ impl LooseDir {
         for entry in entries.flatten() {
             let child = format!(
                 "{key}\\{}",
-                entry.file_name().to_string_lossy().to_ascii_lowercase()
+                byroredux_bsa::normalize_path(&entry.file_name().to_string_lossy())
             );
             let path = entry.path();
             if path.is_dir() {
-                Self::walk(&path, &child, depth + 1, visited, files);
+                Self::walk(&path, &child, depth + 1, visited, files, collisions);
             } else if path.is_file() {
-                files.insert(child, path);
+                // `read_dir` order is arbitrary, so a colliding key must
+                // resolve by something stable: the greater path wins, the
+                // same last-listed-wins direction the archive tiers use.
+                match files.entry(child) {
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(path);
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut slot) => {
+                        collisions.push(slot.key().clone());
+                        if path > *slot.get() {
+                            slot.insert(path);
+                        }
+                    }
+                }
             }
         }
     }
 
     fn key(path: &str) -> String {
-        path.trim_start_matches(['\\', '/'])
-            .replace('/', "\\")
-            .to_ascii_lowercase()
+        byroredux_bsa::normalize_path(path.trim_start_matches(['\\', '/']))
     }
 
     fn file(&self, path: &str) -> Result<&std::path::PathBuf, std::io::Error> {

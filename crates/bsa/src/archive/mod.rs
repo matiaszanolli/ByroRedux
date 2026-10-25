@@ -119,7 +119,6 @@ impl BsaArchive {
     }
 }
 
-/// Normalize a file path for lookup: lowercase, forward slashes to backslashes.
-pub(super) fn normalize_path(path: &str) -> String {
-    path.to_lowercase().replace('/', "\\")
-}
+// One key fold for both archive formats (and the loose tier): see
+// `ba2::normalize_path`.
+pub(super) use crate::ba2::normalize_path;
