@@ -260,6 +260,14 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// field that carries it across eviction. No `serde(default)`; pre-v32 saves
 /// are rejected.
 ///
+/// v32 -> v33 (#5367 Phase L, `14cff35ae`): a new saved resource,
+/// `DialogueSpokenInfoForms` — the spoken Say-Once ledger that
+/// disqualifies already-said lines in dialogue selection. A pre-v33 save
+/// carries no ledger, so every said-once line would re-qualify after a
+/// load; rejected like the other resource-column additions. (The element
+/// later widened from a bare INFO FormID to a `(speaker, INFO)` pair at
+/// #5300's v38 bump.)
+///
 /// v33 -> v34 (#5412): every `ActorValue` gained the required `set_override`
 /// layer — the destination for a deliberate `SetBase` on the player's
 /// derived pools, split out of the constant-spell `permanent_mod` so an
@@ -707,6 +715,51 @@ pub fn decode(bytes: &[u8], expected_fpr: u64) -> Result<Snapshot, SaveError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5459 — the bump ledger above this module must be contiguous and
+    /// reach the current `FORMAT_MAJOR`: every step `vN -> vN+1` present
+    /// in order, starting wherever the ledger begins, ending at
+    /// `v(FORMAT_MAJOR - 1) -> vFORMAT_MAJOR`. A bump that edits only the
+    /// constant (as `14cff35ae` did for v33) leaves a hole this test
+    /// fails on, instead of the ledger silently drifting a version — or,
+    /// by now, ninety — behind.
+    #[test]
+    fn the_bump_ledger_is_contiguous_and_current() {
+        let source = include_str!("snapshot.rs");
+        let entries: Vec<(u16, u16)> = source
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim_start_matches('/').trim();
+                let (from, to) = line.split_once(" -> ")?;
+                if !from.starts_with('v') || !to.starts_with('v') {
+                    return None;
+                }
+                let digits: String = to[1..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                Some((from[1..].parse().ok()?, digits.parse().ok()?))
+            })
+            .collect();
+        assert!(
+            entries.len() > 1,
+            "the ledger parse found nothing — the comment format changed"
+        );
+        for pair in entries.windows(2) {
+            assert_eq!(
+                pair[0].1, pair[1].0,
+                "ledger hole: v{} -> v{} is followed by v{} -> v{}",
+                pair[0].0, pair[0].1, pair[1].0, pair[1].1
+            );
+            assert_eq!(pair[0].0 + 1, pair[0].1, "non-step entry v{} -> v{}", pair[0].0, pair[0].1);
+        }
+        let last = entries.last().unwrap();
+        assert_eq!(
+            last.1, FORMAT_MAJOR,
+            "the ledger stops at v{} while FORMAT_MAJOR is {FORMAT_MAJOR}",
+            last.1
+        );
+    }
 
     fn sample() -> Snapshot {
         let mut components = BTreeMap::new();

@@ -1213,9 +1213,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     //
     // v32 -> v33 (#5367 Phase L) — refreshed WITH a major bump:
     // `DialogueSpokenInfoForms` joined the saved registry as a NEW
-    // resource (the spoken Say-Once ledger) — its absence in pre-v33
-    // snapshots means a said-once line can legitimately re-qualify after
-    // loading an old save, the same forward-default the format gates.
+    // resource (the spoken Say-Once ledger). A pre-v33 save is rejected
+    // outright — by this major and by the fingerprint — so the ledger's
+    // absence never plays out on a loaded save; there is no population
+    // of pre-v33 snapshots whose said-once lines could re-qualify.
     //
     // v33 -> v34 (#5412) — refreshed WITH a major bump: `ActorValue`
     // gained the required `set_override` layer (the player `SetBase`
