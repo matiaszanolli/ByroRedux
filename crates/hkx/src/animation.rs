@@ -118,6 +118,12 @@ const MAX_SPLINE_BLOCKS: usize = 4096;
 /// Control points in one spline track.
 const MAX_SPLINE_CONTROL_POINTS: usize = 4096;
 
+/// #6306 - ceiling on the samples (`tracks x frames`) of a lossless clip that stores no dynamic
+/// series, so every frame repeats one pose. The Fallout 4 census (`Fallout4 - Animations.ba2`,
+/// 856 lossless clips) has 11 such clips: at most 21 frames over 94 tracks, 1,974 samples. This
+/// is 33x that, and ~2.6 MB of decoded transforms.
+pub(crate) const MAX_STATIC_CLIP_SAMPLES: usize = 65_536;
+
 /// #5006 (PAR-D1-2026-09-29-01) — ceiling on a clip's declared
 /// `max_frames_per_block`. 256 is the Havok compressor's default and the
 /// measured vanilla maximum (SE Animations.bsa census,
@@ -828,6 +834,9 @@ fn decode_lossless_in(pack: &Packfile<'_>) -> Result<HkxAnimation> {
         .ok_or(HkxError::InvalidData("animation sample count overflows usize"))?;
     if !duration.is_finite()
         || duration < 0.0
+        // The spline path refuses `frame_duration <= 0` (every key would land at t = 0); a
+        // lossless clip stores the duration, so a flat one over many frames is the same clip (#6306).
+        || (duration == 0.0 && frame_count > 1)
         || float_count != 0
         || transform_count == 0
         || transform_count > MAX_TRANSFORM_TRACKS
@@ -861,6 +870,14 @@ fn decode_lossless_in(pack: &Packfile<'_>) -> Result<HkxAnimation> {
     // Dynamic series are `frame_count` long: the array is a whole number of frames.
     if translations.1 % frame_count != 0 || rotations.1 % frame_count != 0 {
         return Err(HkxError::InvalidData("lossless series do not divide into frames"));
+    }
+    // A dynamic series ties `frame_count` to the file (the array is `series x frame_count` long),
+    // and absent or static channels cost nothing per frame. With no dynamic data at all the
+    // declared frame count is tied to nothing: every frame is the same pose, so a descriptor table
+    // of a few tens of KB could claim the whole `MAX_TRANSFORM_SAMPLES` budget (#6306). The spline
+    // path closed the same gap with #4655 / #5006.
+    if translations.1 == 0 && rotations.1 == 0 && sample_count > MAX_STATIC_CLIP_SAMPLES {
+        return Err(HkxError::InvalidData("lossless clip with no dynamic data claims more frames than a still pose needs"));
     }
     let (series_t, series_r) = (translations.1 / frame_count, rotations.1 / frame_count);
 
@@ -2935,6 +2952,56 @@ mod tests {
         let mut builder = lossless_clip();
         put_u32(&mut builder.data, ANIM + Layout::new(8).transform_tracks, MAX_TRANSFORM_TRACKS as u32 + 1);
         assert!(decode_animation(&builder.build()).is_err());
+    }
+
+    /// The fixture with every dynamic series removed: translation x static, rotations static.
+    fn static_lossless_clip(frames: u32) -> PackfileBuilder {
+        let layout = LosslessLayout::new(8);
+        let mut builder = lossless_clip();
+        put_u32(&mut builder.data, ANIM + layout.translations.count, 0);
+        put_u32(&mut builder.data, ANIM + layout.rotations.count, 0);
+        put_u16(&mut builder.data, T_CH, &[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        put_u16(&mut builder.data, R_CH, &[1, 1, 1]);
+        put_u32(&mut builder.data, ANIM + layout.num_frames, frames);
+        builder
+    }
+
+    /// #6306 - without a dynamic series nothing in the file bounds the frame count, so a
+    /// descriptor table alone must not buy the whole sample budget.
+    #[test]
+    fn a_lossless_clip_with_no_dynamic_data_cannot_claim_a_sample_budget_of_frames() {
+        let at_cap = (MAX_STATIC_CLIP_SAMPLES / 3) as u32;
+        let clip = decode_animation(&static_lossless_clip(at_cap).build()).expect("a still pose at the cap");
+        assert_eq!(clip.num_frames, at_cap);
+        assert!(clip.tracks.iter().all(|track| track.len() == at_cap as usize));
+        assert!(
+            matches!(
+                decode_animation(&static_lossless_clip(at_cap + 1).build()),
+                Err(HkxError::InvalidData("lossless clip with no dynamic data claims more frames than a still pose needs")),
+            ),
+            "one frame over the static budget",
+        );
+        // 3 tracks x 100,000 frames is under MAX_TRANSFORM_SAMPLES: only the static bound refuses it.
+        assert!(decode_animation(&static_lossless_clip(100_000).build()).is_err());
+        // A clip that does store dynamic series is bounded by its own array, not by this budget.
+        assert!(decode_animation(&lossless_clip().build()).is_ok());
+    }
+
+    /// #6306 - the spline path refuses `frame_duration <= 0`; a lossless clip of many frames over
+    /// zero seconds is the same clip. A single frame has no spacing, so its duration is free.
+    #[test]
+    fn a_lossless_clip_cannot_stretch_many_frames_over_zero_duration() {
+        let duration = ANIM + Layout::new(8).animation_duration;
+        let mut flat = lossless_clip();
+        put_f32(&mut flat.data, duration, &[0.0]);
+        assert!(matches!(
+            decode_animation(&flat.build()),
+            Err(HkxError::InvalidData("unsupported lossless clip dimensions")),
+        ));
+        let mut one_frame = static_lossless_clip(1);
+        put_f32(&mut one_frame.data, duration, &[0.0]);
+        let clip = decode_animation(&one_frame.build()).expect("a one-frame pose has no spacing to be flat");
+        assert_eq!((clip.num_frames, clip.duration, clip.frame_duration), (1, 0.0, 0.0));
     }
 
     /// The same policy as the spline path (#5662): a track holding a non-finite value is dropped
