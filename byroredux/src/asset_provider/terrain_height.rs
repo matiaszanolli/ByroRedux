@@ -202,15 +202,53 @@ fn generate_and_store(
     Ok(cached_height(key, dds_path, source_path, generated.meta))
 }
 
+/// Publish `bytes` at `path` through the shared durable writer, staging in a temp name that is
+/// unique per write. Two jobs whose source triples differ can still resolve to one cache key (a
+/// shared normal map, byte-identical textures under different archive paths), and a temp name
+/// carrying only the pid made both write the same file: the second rename then failed with
+/// `ENOENT` and a reader could see the first writer's file mid-truncate (#6290).
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))
+    let temp_path = byroredux_core::atomic_file::atomic_temp_path(path);
+    byroredux_core::atomic_file::atomic_write(path, &temp_path, bytes)
+        .map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6290 — jobs with different source triples can share one cache key, so several
+    /// writers publish the same path at once. Every one must succeed, and the file must
+    /// always be whole for a concurrent reader.
+    #[test]
+    fn concurrent_writers_of_one_cache_key_all_succeed_and_readers_see_whole_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("0123456789abcdef.dds");
+        let bytes = vec![0xA5u8; 256 * 1024];
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..25 {
+                        write_atomic(&path, &bytes).expect("a concurrent same-key write");
+                    }
+                });
+            }
+            scope.spawn(|| {
+                for _ in 0..200 {
+                    if let Ok(read) = std::fs::read(&path) {
+                        assert_eq!(read.len(), bytes.len(), "a reader saw a partial cache file");
+                    }
+                }
+            });
+        });
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let strays: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name() != "0123456789abcdef.dds")
+            .collect();
+        assert!(strays.is_empty(), "no staging file may outlive its write: {strays:?}");
+    }
 
     fn loose_archive(dir: &Path, files: &[(&str, Vec<u8>)]) -> Archive {
         for (rel, bytes) in files {
