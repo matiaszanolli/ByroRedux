@@ -762,7 +762,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_scripting::ObjectAnimationGraph>()
             .writes::<crate::systems::GraphLocomotion>()
             .writes::<crate::systems::ConsoleWalk>()
-            // #6289 — death ends the actor's forced head-look.
+            // #6288 / #6289 — death ends the actor's magic effects and its forced head-look.
+            .writes::<byroredux_scripting::magic_effects::ActiveMagicEffects>()
             .writes::<byroredux_scripting::obscript_anim::HeadLook>()
             .writes_resource::<byroredux_scripting::ActivePackages>()
             .writes_resource::<byroredux_scripting::PendingPackageTransitions>()

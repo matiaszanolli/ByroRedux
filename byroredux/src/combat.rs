@@ -392,7 +392,7 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
                 target,
                 Some(event.aggressor),
             );
-            outcome.push_str(&reconcile_dead_actor(world, target));
+            outcome.push_str(&reconcile_new_death(world, target));
             award_kill_experience(world, target, vitals.health);
         }
         if crime {
@@ -1015,6 +1015,18 @@ fn disable_actor_ai(world: &World, actor: EntityId) {
     crate::npc_spawn::ai_package::clear_ambient_behavior(world, actor);
 }
 
+/// [`reconcile_dead_actor`] for an actor that has just died (a combat kill, a scripted `Kill`),
+/// as opposed to a corpse the save-load sweep re-reaches. A death ends the actor's magic effects
+/// (`magic_effects`' module contract: an effect finishes when "the duration elapsed, or `Dispel` /
+/// death"), so they are marked ending here and `ScriptEffectFinish` runs once at the next effect
+/// pass. Left alone, effect scripts kept running against a corpse, and an indefinite effect never
+/// finished (#6288). Not part of [`reconcile_dead_actor`] itself: that also runs over every saved
+/// corpse on a load, which must not execute effect scripts.
+pub(crate) fn reconcile_new_death(world: &World, actor: EntityId) -> String {
+    byroredux_scripting::magic_effects::dispel(world, actor, None);
+    reconcile_dead_actor(world, actor)
+}
+
 /// Rebuild the runtime consequences of the persisted [`Dead`] fact.
 ///
 /// Live-load deltas are intentionally additive, so absence of AI and
@@ -1294,7 +1306,7 @@ pub(crate) fn reconcile_pending_dead_actors_system(world: &World, _dt: f32) {
         if world.get::<Dead>(actor).is_some() {
             // #6070 — the one record of a queued death's outcome (an authored
             // corpse's XRGD pose, its ragdoll); a combat kill traces its own.
-            let outcome = reconcile_dead_actor(world, actor);
+            let outcome = reconcile_new_death(world, actor);
             log::debug!("actor {actor}: death reconciled{outcome}");
         }
     }
@@ -2334,6 +2346,47 @@ mod tests {
                 looted
             );
         }
+    }
+
+    fn running_effect() -> byroredux_scripting::magic_effects::ActiveEffect {
+        byroredux_scripting::magic_effects::ActiveEffect {
+            source: 0x500,
+            mgef: 0x77,
+            caster: 0,
+            script: 0,
+            duration: 0.0,
+            indefinite: true,
+            elapsed: 3.0,
+            started: true,
+            ending: false,
+            value: None,
+            ticks: 0,
+            locals: Vec::new(),
+            ref_locals: Vec::new(),
+        }
+    }
+
+    /// #6288 — a death ends the actor's magic effects (Finish runs at the next effect pass); the
+    /// save-load sweep over an existing corpse does not touch them, so it cannot run effect
+    /// scripts during a load.
+    #[test]
+    fn a_new_death_ends_the_actors_magic_effects_but_the_load_sweep_does_not() {
+        use byroredux_scripting::magic_effects::ActiveMagicEffects;
+        let effects_ending = |world: &World, actor| {
+            world.get::<ActiveMagicEffects>(actor).unwrap().0.iter().map(|e| e.ending).collect::<Vec<_>>()
+        };
+        let mut world = World::new();
+        world.register::<Dead>();
+        let live = world.spawn();
+        let corpse = world.spawn();
+        for actor in [live, corpse] {
+            world.insert(actor, Dead);
+            world.insert(actor, ActiveMagicEffects(vec![running_effect(), running_effect()]));
+        }
+        reconcile_new_death(&world, live);
+        assert_eq!(effects_ending(&world, live), [true, true], "an indefinite effect now ends with its host");
+        reconcile_dead_actor(&world, corpse);
+        assert_eq!(effects_ending(&world, corpse), [false, false], "the load sweep leaves a saved corpse's effects");
     }
 
     /// #6289 — a corpse stops head-tracking: `Look`'s `HeadLook` goes with the actor's other
