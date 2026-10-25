@@ -1089,6 +1089,10 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     // the combat system keeps its own branch as the one-tick fallback for
     // deaths its reconcile pass doesn't see.
     remove_component::<byroredux_scripting::AiCombatState>(world, actor);
+    // #6289 — ObScript `Look`'s forced head-track: `head_look_system` turns the head bone by a delta
+    // on whatever pose the clip left, and a corpse has no clip (nor a ragdoll writing last), so the
+    // head drifted. Only `StopLook` or a vanished target removed it.
+    remove_component::<byroredux_scripting::obscript_anim::HeadLook>(world, actor);
     // NPC playback can be owned by the placed actor, with root_entity
     // targeting the skeleton. Removing only the skeleton's player leaves
     // that controller sampling over the corpse every frame.
@@ -2330,6 +2334,22 @@ mod tests {
                 looted
             );
         }
+    }
+
+    /// #6289 — a corpse stops head-tracking: `Look`'s `HeadLook` goes with the actor's other
+    /// per-actor runtime, on both the live and the load path.
+    #[test]
+    fn death_removes_a_forced_head_look() {
+        use byroredux_scripting::obscript_anim::HeadLook;
+        let mut world = World::new();
+        world.register::<Dead>();
+        world.register::<HeadLook>();
+        let actor = world.spawn();
+        let target = world.spawn();
+        world.insert(actor, Dead);
+        world.insert(actor, HeadLook { target, yaw: 0.3, pitch: 0.1, head: None });
+        reconcile_dead_actor(&world, actor);
+        assert!(world.get::<HeadLook>(actor).is_none());
     }
 
     #[test]

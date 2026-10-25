@@ -13,7 +13,7 @@
 //! frame's parent transform (the neck does not move between frames in a way that matters).
 
 use byroredux_core::ecs::collect_subtree;
-use byroredux_core::ecs::components::{GlobalTransform, Name, Parent, Transform};
+use byroredux_core::ecs::components::{Dead, GlobalTransform, Name, Parent, Transform};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
@@ -92,6 +92,11 @@ pub(crate) fn head_look_system(world: &World, dt: f32) {
     };
     let dt = if dt.is_finite() { dt.clamp(0.0, 0.25) } else { 0.0 };
     for (actor, look) in looks {
+        // A corpse does not track (#6289): death removes the component, and this guards the window
+        // before that reconcile runs and a `Look` issued on an actor that is already dead.
+        if world.get::<Dead>(actor).is_some() {
+            continue;
+        }
         // "or the target leaves the loaded area": a target with no placement is gone.
         let Some(target_position) = world.get::<GlobalTransform>(look.target).map(|t| t.translation) else {
             if let Some(mut looks) = world.query_mut::<HeadLook>() {
@@ -203,6 +208,20 @@ mod tests {
         let replacement = bone(&mut world, Some(actor), "Bip01 Head", Vec3::new(0.0, 1.7, 0.0));
         head_look_system(&world, 0.016);
         assert_eq!(world.get::<HeadLook>(actor).unwrap().head, Some(replacement), "stale cache re-found");
+    }
+
+    /// #6289 — a dead actor's head is left alone, even in the window before its death
+    /// reconcile removes the `HeadLook`.
+    #[test]
+    fn a_dead_actors_head_is_not_turned() {
+        let (mut world, actor, head, _target) = fixture(Vec3::new(-10.0, 1.7, -10.0));
+        world.register::<Dead>();
+        world.insert(actor, Dead);
+        for _ in 0..30 {
+            head_look_system(&world, 0.016);
+        }
+        assert_eq!(world.get::<Transform>(head).unwrap().rotation, Quat::IDENTITY, "the corpse's head stays put");
+        assert_eq!(world.get::<HeadLook>(actor).unwrap().yaw, 0.0);
     }
 
     /// The body faces -Z. A target to its left (-X) turns the head toward -X at a steady rate, a target
