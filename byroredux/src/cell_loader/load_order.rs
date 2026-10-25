@@ -584,17 +584,24 @@ pub(crate) fn parse_record_indexes_in_load_order(
     )
 }
 
-/// The post-parse step only an exterior session wants: Oblivion's city
-/// worldspaces author LAND for their own footprint only, so the LAND-less cells
-/// around them take their parent's landscape (#5505). Idempotent; a no-op on
-/// every other game, so an index of those is ready for both kinds of session.
+/// The post-parse step only an exterior session wants: child
+/// worldspaces whose WRLD `PNAM` carries "Use Land Data" author LAND
+/// for their own footprint only (or not at all), so the LAND-less
+/// cells take their parent's landscape (#5505). Measured co-located on
+/// Oblivion's city worlds and — #6089 — on FO3's `Oasis` (median |dz|
+/// 166 units against the parent's VHGT vs 2,480 for a shifted control)
+/// and `ParadiseFalls` (46 vs 4,126): the four FO3 "Use Land Data"
+/// children (Oasis, ParadiseFalls, GNRroofWorld, MegatonWorld) stand
+/// on the Wasteland's terrain. Idempotent; a no-op on every other
+/// game, so an index of those is ready for both kinds of session.
 fn apply_exterior_processing(index: &mut esm::records::EsmIndex) {
-    // Oblivion only: the co-located grid was measured there, not on the FO3+
-    // children.
-    if index.game == esm::reader::GameKind::Oblivion {
+    if matches!(
+        index.game,
+        esm::reader::GameKind::Oblivion | esm::reader::GameKind::Fallout3NV
+    ) {
         let filled = index.cells.inherit_parent_landscapes();
         if filled > 0 {
-            log::info!("Oblivion child worldspaces: {filled} LAND-less cells take their parent's landscape");
+            log::info!("child worldspaces: {filled} LAND-less cells take their parent's landscape");
         }
     }
 }

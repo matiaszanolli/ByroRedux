@@ -522,9 +522,10 @@ impl EsmCellIndex {
     /// carries [`PNAM_INHERIT_LAND`]. Run once after the load order is merged
     /// (the parent may live in a master). Returns the cells filled.
     ///
-    /// The caller gates on the game: the co-location above was measured on
-    /// Oblivion only, and FO3+ child grids are not assumed to share the
-    /// parent's coordinates.
+    /// The caller gates on the game: measured co-located on Oblivion's
+    /// city worlds (#5505) and on FO3's four "Use Land Data" children —
+    /// Oasis and ParadiseFalls decisively, GNRroofWorld and MegatonWorld
+    /// consistent though not separately proven (#6089).
     pub fn inherit_parent_landscapes(&mut self) -> usize {
         // A WNAM chain is a few links long; the cap only stops a cycle.
         const MAX_CHAIN: usize = 16;

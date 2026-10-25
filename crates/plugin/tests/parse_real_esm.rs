@@ -6468,3 +6468,26 @@ fn fo3_race_body_icons_decode_for_the_ghoul_and_raider_races() {
         "census shape"
     );
 }
+
+/// #6089 — FO3's four "Use Land Data" child worldspaces (Oasis,
+/// ParadiseFalls, GNRroofWorld, MegatonWorld, parent Wasteland) author
+/// their cells without LAND; pre-fix #5505's inheritance was
+/// Oblivion-gated so those cells had no ground at all. The audit
+/// census: 108 LAND-less cells whose parent carries LAND at the same
+/// coordinates (Oasis 34, ParadiseFalls 11, GNRroofWorld 58,
+/// MegatonWorld 5). The count is the pin.
+#[test]
+#[ignore = "needs FO3 game data on disk"]
+fn fo3_use_land_data_children_inherit_the_wasteland_landscape() {
+    let Some(data) = data_dir(test_paths::FO3_ENV, test_paths::FO3_DEFAULT) else {
+        eprintln!("[FO3 LAND] skipping: game data unavailable");
+        return;
+    };
+    let mut index = parse_esm(&std::fs::read(data.join("Fallout3.esm")).unwrap()).unwrap();
+    let filled = index.cells.inherit_parent_landscapes();
+    assert!(
+        (100..=120).contains(&filled),
+        "expected ~108 inherited landscapes (Oasis 34 + ParadiseFalls 11 + \
+         GNRroofWorld 58 + MegatonWorld 5), filled {filled}"
+    );
+}
