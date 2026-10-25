@@ -743,7 +743,7 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 | surface diffuse texture | AUTHORED `TNAM` on 15/23 (preserved; not sampled as a normal) | n/a | n/a | Oblivion `TNAM` → `diffuse_texture_path` |
 | normal/noise texture | **SENTINEL** `u32::MAX` → procedural | AUTHORED (`NNAM`) | AUTHORED (`TNAM`) | NNAM/TNAM role resolved by `GameKind` |
 | surface material / medium | AUTHORED `MNAM`; `lava` on 2/23 | n/a | n/a | Oblivion `MNAM` → `material_name` → `WaterKind::Lava` |
-| surface sound | AUTHORED `SNAM` on 17/23 (consumer pending) | n/a | n/a | Oblivion `SNAM` → `surface_sound` |
+| surface sound | AUTHORED `SNAM` on 17/23 (consumer pending) | AUTHORED `SNAM` (consumer pending) | AUTHORED `SNAM` (consumer pending) | `SNAM` → `WatrRecord::sound_form` (#6045): a remapped FormID, `SOUN` on Oblivion/FO3/FNV and `SNDR` on Skyrim+; 0 = none |
 | surface impact material | n/a | n/a | AUTHORED `TNAM` on 9 vanilla records (consumer pending) | Skyrim/FO4/FO76 `TNAM` → MATT `material_type_form` (Skyrim 5, FO4 2, FO76 2); not a texture path — Oblivion's text `TNAM` is the diffuse-texture row above |
 | noise layers (`NAM2`/`NAM3`/`NAM4`, flowing `NAM5`) | **SENTINEL** `[u32::MAX;3]` | **SENTINEL** | AUTHORED (NAM5 replaces layer 3 for flow) | NAM2-5 |
 | below-water fog split | **SENTINEL** (reuse above) | **SENTINEL** | AUTHORED (DNAM tail) | DNAM[144..152] |
