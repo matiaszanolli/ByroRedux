@@ -319,6 +319,20 @@ pub struct EsmIndex {
     pub factions: HashMap<u32, FactionRecord>,
     pub globals: HashMap<u32, GlobalRecord>,
     pub game_settings: HashMap<u32, GameSetting>,
+    /// #6350 — GMST resolution side-table: lower-cased EditorID → the
+    /// FormID of the **last plugin in load order** that defines that
+    /// EditorID. `game_settings` alone is keyed by FormID, which is only
+    /// correct for proper overrides (a mod re-shipping the master's GMST
+    /// under the master's remapped FormID — the common case, honored by
+    /// `merge_from`'s last-write-wins fold). A mod that ships a *new*
+    /// GMST record under its own FormID with a duplicate EditorID
+    /// defeats that key: the old `game_setting_float` linear scan then
+    /// resolved whichever duplicate HashMap iteration happened to yield
+    /// first. This table is maintained by [`Self::insert_game_setting`]
+    /// (parse path) and the `game_settings` category merge closure
+    /// (load-order fold, later plugin overwrites per EditorID), and is
+    /// read first by [`Self::game_setting_float`].
+    pub game_settings_by_edid: HashMap<String, u32>,
     pub weathers: HashMap<u32, WeatherRecord>,
     pub climates: HashMap<u32, ClimateRecord>,
     /// #5364 — Starfield's `WTHS` weather-settings records: the
@@ -854,7 +868,34 @@ impl EsmIndex {
             map_category!("classes", classes),
             map_category!("factions", factions),
             map_category!("globals", globals),
-            map_category!("game_settings", game_settings),
+            // #6350 — game_settings is the one category whose merge needs a
+            // second index kept coherent (see `game_settings_by_edid`): the
+            // FormID map stays last-write-wins for proper overrides, and the
+            // EditorID table folds the source's entries over the target's so
+            // a later plugin's *new-FormID* GMST with a duplicate EditorID
+            // also wins — the load-order rule the original engine applies.
+            (
+                "game_settings",
+                |index: &EsmIndex| index.game_settings.len(),
+                |target: &mut EsmIndex, source: &mut EsmIndex| {
+                    target.game_settings.extend(std::mem::take(&mut source.game_settings));
+                    for (editor_id, form_id) in std::mem::take(&mut source.game_settings_by_edid)
+                    {
+                        target.game_settings_by_edid.insert(editor_id, form_id);
+                    }
+                },
+                |index: &mut EsmIndex, deleted: &HashSet<u32>| {
+                    index.game_settings.retain(|form_id, _| !deleted.contains(form_id));
+                    // A tombstoned winner must not keep resolving: drop the
+                    // EditorID pointers into pruned FormIDs. A later plugin
+                    // re-defining the setting re-points the entry when it
+                    // merges in (the per-plugin parse pruned `other`'s own
+                    // maps before this cross-plugin prune runs).
+                    index
+                        .game_settings_by_edid
+                        .retain(|_, form_id| !deleted.contains(form_id));
+                },
+            ),
             map_category!("weathers", weathers),
             map_category!("climates", climates),
             map_category!("weather_settings", weather_settings),
@@ -1153,16 +1194,41 @@ impl EsmIndex {
     /// Resolve a numeric GMST by EditorID for CHARAL's authored leveling
     /// constants. GMST records are keyed by FormID on the wire, so consumers
     /// must use this normalized EditorID lookup rather than guessing IDs.
+    ///
+    /// #6350 — resolution goes through [`Self::game_settings_by_edid`]
+    /// first, so a load order where two plugins define the same EditorID
+    /// under different FormIDs resolves to the **later** plugin's value
+    /// (the original engine's rule), deterministically. The linear-scan
+    /// fallback below only serves indexes populated by direct
+    /// `game_settings` insertion (test fixtures); every parse-path insert
+    /// goes through [`Self::insert_game_setting`], which maintains the
+    /// table.
     pub fn game_setting_float(&self, editor_id: &str) -> Option<f32> {
-        self.game_settings
-            .values()
-            .find(|setting| setting.editor_id.eq_ignore_ascii_case(editor_id))
-            .and_then(|setting| match setting.value {
-                super::SettingValue::Float(value) => Some(value),
-                super::SettingValue::Int(value) => Some(value as f32),
-                super::SettingValue::Short(value) => Some(f32::from(value)),
-                super::SettingValue::String(_) => None,
-            })
+        let setting = self
+            .game_settings_by_edid
+            .get(&editor_id.to_ascii_lowercase())
+            .and_then(|form_id| self.game_settings.get(form_id))
+            .or_else(|| {
+                self.game_settings
+                    .values()
+                    .find(|setting| setting.editor_id.eq_ignore_ascii_case(editor_id))
+            });
+        setting.and_then(|setting| match setting.value {
+            super::SettingValue::Float(value) => Some(value),
+            super::SettingValue::Int(value) => Some(value as f32),
+            super::SettingValue::Short(value) => Some(f32::from(value)),
+            super::SettingValue::String(_) => None,
+        })
+    }
+
+    /// Insert a GMST, maintaining the load-order EditorID side-table
+    /// (#6350). This is the only parse-path insert: a later record with
+    /// the same EditorID — same FormID (override) or its own — takes the
+    /// table entry, matching the engine's last-definition-wins rule.
+    pub fn insert_game_setting(&mut self, setting: GameSetting) {
+        self.game_settings_by_edid
+            .insert(setting.editor_id.to_ascii_lowercase(), setting.form_id);
+        self.game_settings.insert(setting.form_id, setting);
     }
 
     /// Format the per-category breakdown as a single line — used by the
@@ -1980,6 +2046,15 @@ mod tests {
                 "generic_greeting_form",
                 "derived cache of `dialogues` (the greeting topic's FormID, resolved at merge end)",
             ),
+            // #6350 — a resolution side-table, not an independent record
+            // map: lower-cased EditorID → winning FormID, maintained by
+            // `insert_game_setting` and the `game_settings` category row's
+            // bespoke merge/prune closures. Counting it beside
+            // `game_settings` would double-report one record per GMST.
+            (
+                "game_settings_by_edid",
+                "derived side-table of `game_settings` (EditorID → winning FormID, load-order rule #6350)",
+            ),
         ];
 
         // #4084 (ESM-2026-09-09-D7-09) — collections merged by hand in
@@ -2661,6 +2736,108 @@ mod tests {
         assert_eq!(idx.game_setting_float("fxplevelupbase"), Some(80.0));
         assert_eq!(idx.game_setting_float("iXPBase"), Some(150.0));
         assert_eq!(idx.game_setting_float("missing"), None);
+    }
+
+    /// #6350 — the mod-compat core: a later plugin that ships a *new*
+    /// GMST record (its own FormID) with a duplicate EditorID must win
+    /// over an earlier plugin's same-named setting. The FormID-keyed map
+    /// alone cannot express this — the old linear scan resolved whichever
+    /// duplicate HashMap iteration yielded first.
+    #[test]
+    fn game_setting_duplicate_editor_id_across_distinct_form_ids_resolves_last_loaded() {
+        fn plugin(fid: u32, value: f32) -> EsmIndex {
+            let mut idx = EsmIndex::default();
+            idx.insert_game_setting(GameSetting {
+                form_id: fid,
+                editor_id: "fVATSHitChanceMult".to_string(),
+                value: SettingValue::Float(value),
+            });
+            idx
+        }
+        let master = plugin(0x000123, 1.0);
+        let modded = plugin(0x010123, 0.5);
+        let mut merged = EsmIndex::default();
+        merged.merge_from(master);
+        merged.merge_from(modded);
+        assert_eq!(merged.game_setting_float("fVATSHitChanceMult"), Some(0.5));
+
+        // Load order is the only variable: fold the other way and the
+        // master's value must resolve just as deterministically.
+        let master = plugin(0x000123, 1.0);
+        let modded = plugin(0x010123, 0.5);
+        let mut merged = EsmIndex::default();
+        merged.merge_from(modded);
+        merged.merge_from(master);
+        assert_eq!(merged.game_setting_float("fVATSHitChanceMult"), Some(1.0));
+    }
+
+    /// #6350 — the classic override path stays pinned: a later plugin
+    /// re-shipping the master's GMST under the same (remapped) FormID
+    /// wins through the FormID map itself.
+    #[test]
+    fn game_setting_same_form_id_override_still_wins() {
+        let mut master = EsmIndex::default();
+        master.insert_game_setting(GameSetting {
+            form_id: 0x000456,
+            editor_id: "fVATSMaxChance".to_string(),
+            value: SettingValue::Float(95.0),
+        });
+        let mut dlc = EsmIndex::default();
+        dlc.insert_game_setting(GameSetting {
+            form_id: 0x000456,
+            editor_id: "fVATSMaxChance".to_string(),
+            value: SettingValue::Float(90.0),
+        });
+        let mut merged = EsmIndex::default();
+        merged.merge_from(master);
+        merged.merge_from(dlc);
+        assert_eq!(merged.game_setting_float("fVATSMaxChance"), Some(90.0));
+        // And the table points at the surviving FormID, not a stale one.
+        assert_eq!(
+            merged.game_settings_by_edid.get("fvatsmaxchance"),
+            Some(&0x000456)
+        );
+    }
+
+    /// #6350 — a tombstoned winner stops resolving instead of keeping the
+    /// EditorID table pinned to a pruned FormID.
+    #[test]
+    fn game_setting_deleted_winner_drops_from_editor_id_table() {
+        let mut master = EsmIndex::default();
+        master.insert_game_setting(GameSetting {
+            form_id: 0x000789,
+            editor_id: "fVATSSkillFactor".to_string(),
+            value: SettingValue::Float(1.0),
+        });
+        let mut modded = EsmIndex::default();
+        modded.insert_game_setting(GameSetting {
+            form_id: 0x010789,
+            editor_id: "fVATSSkillFactor".to_string(),
+            value: SettingValue::Float(2.0),
+        });
+        modded.deleted_record_metadata.insert(0x000789);
+        let mut merged = EsmIndex::default();
+        merged.merge_from(master);
+        merged.merge_from(modded);
+        // The mod both deleted the master's record and re-defined the
+        // setting under its own FormID: the re-definition wins.
+        assert_eq!(merged.game_setting_float("fVATSSkillFactor"), Some(2.0));
+
+        // Delete without a re-definition: the setting resolves to nothing
+        // (engine built-in defaults take over downstream), not to the
+        // master's tombstoned value.
+        let mut master = EsmIndex::default();
+        master.insert_game_setting(GameSetting {
+            form_id: 0x000789,
+            editor_id: "fVATSSkillFactor".to_string(),
+            value: SettingValue::Float(1.0),
+        });
+        let mut modded = EsmIndex::default();
+        modded.deleted_record_metadata.insert(0x000789);
+        let mut merged = EsmIndex::default();
+        merged.merge_from(master);
+        merged.merge_from(modded);
+        assert_eq!(merged.game_setting_float("fVATSSkillFactor"), None);
     }
 
     /// #5375 — an override DIAL replaces the master's TOPIC header but

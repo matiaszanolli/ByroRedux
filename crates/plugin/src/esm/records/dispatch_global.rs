@@ -18,7 +18,7 @@ pub(super) fn dispatch_global_group(
             index.globals.insert(fid, parse_glob(fid, subs));
         })?,
         b"GMST" => extract_records(reader, end, b"GMST", &mut |fid, subs| {
-            index.game_settings.insert(fid, parse_gmst(fid, subs));
+            index.insert_game_setting(parse_gmst(fid, subs));
         })?,
         _ => unreachable!("dispatch_global_group: unexpected label {label:?}"),
     }
