@@ -32,6 +32,10 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // turntable, whose stage only exists on frames where the scheduler's
     // dt is pinned to 0.0.
     world.insert_resource(LoadingCoverClock(0.0));
+    // #6350 — VATS mode state + the wall-clock escape hatch (stamped in
+    // app_events beside the cover clock).
+    world.insert_resource(crate::components::VatsState::default());
+    world.insert_resource(crate::components::VatsClock(0.0));
     world.insert_resource(TotalTime(0.0));
     world.insert_resource(byroredux_core::ecs::resources::HardcoreMode::default());
     world.insert_resource(EngineConfig {

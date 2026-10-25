@@ -461,6 +461,7 @@ fn sdk_input_action(action: crate::interaction::InputAction) -> SdkInputAction {
         crate::interaction::InputAction::Inventory => SdkInputAction::Inventory,
         crate::interaction::InputAction::Quicksave => SdkInputAction::Quicksave,
         crate::interaction::InputAction::Quickload => SdkInputAction::Quickload,
+        crate::interaction::InputAction::Vats => SdkInputAction::Vats,
         crate::interaction::InputAction::Pause => SdkInputAction::Pause,
     }
 }

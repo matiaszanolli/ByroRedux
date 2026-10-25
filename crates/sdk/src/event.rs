@@ -681,6 +681,8 @@ pub enum InputAction {
     Inventory,
     Quicksave,
     Quickload,
+    /// #6350 — enter/exit VATS (FO3/FNV PC default: V).
+    Vats,
     Pause,
 }
 
@@ -700,6 +702,7 @@ impl InputAction {
             Self::Inventory => "inventory",
             Self::Quicksave => "quicksave",
             Self::Quickload => "quickload",
+            Self::Vats => "vats",
             Self::Pause => "pause",
         }
     }

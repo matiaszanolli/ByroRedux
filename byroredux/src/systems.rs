@@ -27,6 +27,7 @@ pub(crate) mod magic_shader;
 pub(crate) mod head_look;
 pub(crate) mod revive;
 pub(crate) mod combat_ai;
+pub(crate) mod vats;
 mod debug;
 mod loading_model;
 mod escort;

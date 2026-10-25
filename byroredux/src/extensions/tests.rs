@@ -48,7 +48,7 @@ const COMPONENT: &str = r#"
     (type $input-action-shape (enum
       "move-forward" "move-backward" "strafe-left" "strafe-right"
       "jump" "sprint" "activate" "attack" "block" "inventory"
-      "quicksave" "quickload" "pause"))
+      "quicksave" "quickload" "vats" "pause"))
     (export "input-action" (type $input-action-in (eq $input-action-shape)))
     (type $input-phase-shape (enum "pressed" "released"))
     (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
@@ -182,7 +182,7 @@ const STORAGE_COMPONENT: &str = r#"
     (type $input-action-shape (enum
       "move-forward" "move-backward" "strafe-left" "strafe-right"
       "jump" "sprint" "activate" "attack" "block" "inventory"
-      "quicksave" "quickload" "pause"))
+      "quicksave" "quickload" "vats" "pause"))
     (export "input-action" (type $input-action-in (eq $input-action-shape)))
     (type $input-phase-shape (enum "pressed" "released"))
     (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
@@ -383,7 +383,7 @@ const PROJECTION_COMPONENT: &str = r#"
     (type $input-action-shape (enum
       "move-forward" "move-backward" "strafe-left" "strafe-right"
       "jump" "sprint" "activate" "attack" "block" "inventory"
-      "quicksave" "quickload" "pause"))
+      "quicksave" "quickload" "vats" "pause"))
     (export "input-action" (type $input-action-in (eq $input-action-shape)))
     (type $input-phase-shape (enum "pressed" "released"))
     (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))

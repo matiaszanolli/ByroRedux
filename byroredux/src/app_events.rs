@@ -766,6 +766,22 @@ impl ApplicationHandler for App {
         };
         self.last_frame = now;
 
+        // #6350 — VATS freeze. While any VATS mode is active the world
+        // runs at a 0.0 time scale (FO3/FNV freeze solid), on the exact
+        // axis the loading cover already pins dt to 0.0 on — the dt=0
+        // audit (every divide guarded, every integrator early-returns)
+        // is documented on `VatsState::world_time_scale`. `VatsClock`
+        // carries the UN-scaled dt so the overlay and camera keep
+        // animating (the LoadingCoverClock pattern).
+        let vats_scale = self
+            .world
+            .try_resource::<crate::components::VatsState>()
+            .map_or(1.0, |vats| vats.world_time_scale());
+        let unscaled_dt = dt;
+        let dt = dt * vats_scale;
+        let vats_dt = if vats_scale < 1.0 { unscaled_dt } else { 0.0 };
+        world_resource_set::<crate::components::VatsClock>(&self.world, |r| r.0 = vats_dt);
+
         let simulation_paused = self
             .debug_ui
             .as_ref()

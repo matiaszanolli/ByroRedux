@@ -270,6 +270,7 @@ impl ModInstance {
             InputAction::Inventory => state::InputAction::Inventory,
             InputAction::Quicksave => state::InputAction::Quicksave,
             InputAction::Quickload => state::InputAction::Quickload,
+            InputAction::Vats => state::InputAction::Vats,
             InputAction::Pause => state::InputAction::Pause,
         };
         let phase = match event.phase {

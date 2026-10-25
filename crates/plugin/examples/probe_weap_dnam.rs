@@ -9,11 +9,16 @@
 //! @12, #3324) printed alongside so shared-weapon correlation can
 //! confirm an AP column when one exists.
 //!
+//! #6350 follow-up: this probe absorbed `probe_weap_align.rs`'s
+//! watchlist (parsed damage/clip/crit beside the raw columns) — one
+//! DNAM probe, not two.
+//!
 //! Usage:
 //!   cargo run -p byroredux-plugin --example probe_weap_dnam -- <ESM>
 
 use std::collections::BTreeMap;
 
+use byroredux_plugin::esm::parse_esm;
 use byroredux_plugin::esm::reader::EsmReader;
 
 fn main() -> anyhow::Result<()> {
@@ -54,10 +59,11 @@ fn main() -> anyhow::Result<()> {
     })?;
 
     // Correlation table: for every weapon whose VATS sub-record authors
-    // an AP cost (#3324 layout: f32 @12), line it up against the DNAM
-    // columns at @28 (base-to-hit candidate) and @68 (AP candidate). If
-    // @68 tracks the VATS AP, it is the FO3-era AP column DNAM kept.
-    println!("  correlation: edid | dnam@28 | dnam@68 | vats_ap");
+    // an AP override (#3324 layout: f32 @12), line it up against the
+    // DNAM columns at @28 (base to-hit) and @68 (the standard AP cost)
+    // plus the parser's own decode of the same record.
+    let parsed = parse_esm(&bytes).expect("parse");
+    println!("  correlation: edid | parsed dmg | dnam@28 | dnam@68 | vats_ap_override");
     let mut reader = EsmReader::new(&bytes);
     let _ = reader.read_file_header()?;
     let mut printed = 0usize;
@@ -84,10 +90,20 @@ fn main() -> anyhow::Result<()> {
         let vats_ap = vats.as_deref().and_then(|v| f32_at(v, 12)).unwrap_or(0.0);
         if vats_ap > 0.0 {
             if let Some(d) = dnam {
+                let parsed_damage = parsed
+                    .items
+                    .get(&header.form_id)
+                    .map(|item| match &item.kind {
+                        byroredux_plugin::esm::records::ItemKind::Weapon { damage, .. } => {
+                            format!("{damage:.0}")
+                        }
+                        _ => "-".to_string(),
+                    })
+                    .unwrap_or_else(|| "-".into());
                 let at28 = f32_at(&d, 28);
                 let at68 = f32_at(&d, 68);
                 println!(
-                    "    {edid:<30} {:?} {:?} {vats_ap:.0}",
+                    "    {edid:<30} {parsed_damage:>6} {:>7} {:>7} {vats_ap:>14.0}",
                     at28.map(|v| format!("{v:.0}")).unwrap_or("-".into()),
                     at68.map(|v| format!("{v:.0}")).unwrap_or("-".into()),
                 );

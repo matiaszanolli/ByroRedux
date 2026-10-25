@@ -64,6 +64,8 @@ pub(crate) enum InputAction {
     Inventory,
     Quicksave,
     Quickload,
+    /// #6350 — enter/exit VATS. Vanilla PC default is V on FO3/FNV.
+    Vats,
     #[allow(dead_code, reason = "no physical input source yet")]
     Pause,
 }
@@ -90,7 +92,7 @@ impl InputAction {
         1_u16 << self as u8
     }
 
-    const CONFIGURABLE: [Self; 10] = [
+    const CONFIGURABLE: [Self; 11] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -101,6 +103,7 @@ impl InputAction {
         Self::Attack,
         Self::Block,
         Self::Inventory,
+        Self::Vats,
     ];
 
     const fn setting_id(self) -> &'static str {
@@ -116,6 +119,7 @@ impl InputAction {
             Self::Block => "controls.bind.block",
             Self::Inventory => "controls.bind.inventory",
             Self::Quicksave | Self::Quickload => "",
+            Self::Vats => "controls.bind.vats",
             Self::Pause => "",
         }
     }
@@ -132,6 +136,7 @@ impl InputAction {
             Self::Inventory => "Inventory",
             Self::Quicksave => "Quicksave",
             Self::Quickload => "Quickload",
+            Self::Vats => "VATS",
             Self::Attack => "Attack",
             Self::Block => "Block",
             Self::Pause => "Pause",
@@ -167,6 +172,7 @@ impl Default for ActionBindings {
                 (KeyCode::Tab, InputAction::Inventory),
                 (KeyCode::F5, InputAction::Quicksave),
                 (KeyCode::F9, InputAction::Quickload),
+                (KeyCode::KeyV, InputAction::Vats),
             ]),
             mouse: HashMap::from([
                 (MouseButton::Left, InputAction::Attack),
@@ -268,6 +274,7 @@ fn papyrus_control_name(action: InputAction) -> &'static str {
         InputAction::Inventory => "Quick Inventory",
         InputAction::Quicksave => "Quicksave",
         InputAction::Quickload => "Quickload",
+        InputAction::Vats => "VATS",
         InputAction::Pause => "Pause",
     }
 }
@@ -302,6 +309,7 @@ fn papyrus_keycode(key: KeyCode) -> Option<i32> {
         KeyCode::Enter => 28,
         KeyCode::F5 => 63,
         KeyCode::F9 => 67,
+        KeyCode::KeyV => 47, // DIK_V
         _ => return None,
     })
 }
@@ -435,6 +443,8 @@ const SUPPORTED_KEYS: &[KeyCode] = &[
     // controls, so exposing either here would create a binding that fires two
     // actions at once. Add them only after those paths join ActionState.
     KeyCode::KeyR,
+    // #6350 — the VATS key (vanilla FO3/FNV PC default).
+    KeyCode::KeyV,
     KeyCode::KeyC,
     KeyCode::KeyI,
     KeyCode::KeyJ,
@@ -464,6 +474,7 @@ fn key_id(key: KeyCode) -> &'static str {
         KeyCode::KeyF => "key_f",
         KeyCode::KeyQ => "key_q",
         KeyCode::KeyR => "key_r",
+        KeyCode::KeyV => "key_v",
         KeyCode::KeyC => "key_c",
         KeyCode::KeyI => "key_i",
         KeyCode::KeyJ => "key_j",

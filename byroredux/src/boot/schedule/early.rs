@@ -24,6 +24,9 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
         Access::new()
             .reads_resource::<crate::systems::PlayerMode>()
             .reads_resource::<crate::systems::PlayerEntity>()
+            // #6350 — the VATS suppression gates inside
+            // `player_can_act` / `player_accepts_movement_input`.
+            .reads_resource::<crate::components::VatsState>()
             // M47.2 — over-encumbrance's movement effect.
             .reads_resource::<crate::encumbrance::PlayerEncumbrance>()
             .reads_resource::<ActiveCamera>()
@@ -96,6 +99,24 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             // (interaction, picking, audio, debug camera commands) read
             // the global pose before propagation runs again.
             .writes::<GlobalTransform>(),
+    );
+    // #6350 — VATS enter/exit on the key edge. EXCLUSIVE: the mode
+    // state is the freeze switch the whole frame reads, and
+    // `player_controller_system`'s VATS suppression gates read it too —
+    // a parallel write would conflict with every reader. Exclusive Early
+    // also runs after the parallel batch, i.e. after this frame's
+    // `ActionState` edges exist.
+    scheduler.add_exclusive_with_access(
+        Stage::Early,
+        crate::systems::vats::vats_mode_system,
+        Access::new()
+            .reads_resource::<crate::interaction::ActionState>()
+            .writes_resource::<crate::components::VatsState>()
+            .reads_resource::<byroredux_core::character::VatsModel>()
+            .reads_resource::<crate::systems::PlayerMode>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .reads_resource::<byroredux_scripting::input_layers::InputLayers>(),
     );
     // #3111 — weather writes WindField while the player controller samples it
     // for water waves. Keep weather in the same stage but serialize it after

@@ -954,7 +954,11 @@ fn example_targets_hold_their_per_crate_ceilings() {
         ("menuxml", 1, 197),
         ("nif", 38, 4289),
         ("pex", 3, 1215),
-        ("plugin", 64, 7788),
+        // #6350 re-measure: +3 corpus probes (probe_bptd — the BPTD spike,
+        // probe_weap_dnam — DNAM VATS-slot alignment, probe_gmst_vats — the
+        // fVATS/fActionPoints defaults dump). All three carry wiki-pinned
+        // evidence cited from items.rs / equipment.rs / vats.rs docs.
+        ("plugin", 67, 8098),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

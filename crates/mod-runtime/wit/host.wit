@@ -90,6 +90,7 @@ interface state {
         inventory,
         quicksave,
         quickload,
+        vats,
         pause,
     }
 

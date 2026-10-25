@@ -74,7 +74,7 @@ const IMPORTS: &str = r#"
         (type $input-action-shape (enum
             "move-forward" "move-backward" "strafe-left" "strafe-right"
             "jump" "sprint" "activate" "attack" "block" "inventory"
-            "quicksave" "quickload" "pause"))
+            "quicksave" "quickload" "vats" "pause"))
         (export "input-action" (type $input-action-in (eq $input-action-shape)))
         (type $input-phase-shape (enum "pressed" "released"))
         (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
@@ -779,7 +779,7 @@ fn principal_storage_increment_component() -> String {
                 (type $input-action-shape (enum
                     "move-forward" "move-backward" "strafe-left" "strafe-right"
                     "jump" "sprint" "activate" "attack" "block" "inventory"
-                    "quicksave" "quickload" "pause"))
+                    "quicksave" "quickload" "vats" "pause"))
                 (export "input-action" (type $input-action-in (eq $input-action-shape)))
                 (type $input-phase-shape (enum "pressed" "released"))
                 (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))
@@ -951,7 +951,7 @@ fn entity_projection_component() -> String {
                 (type $input-action-shape (enum
                     "move-forward" "move-backward" "strafe-left" "strafe-right"
                     "jump" "sprint" "activate" "attack" "block" "inventory"
-                    "quicksave" "quickload" "pause"))
+                    "quicksave" "quickload" "vats" "pause"))
                 (export "input-action" (type $input-action-in (eq $input-action-shape)))
                 (type $input-phase-shape (enum "pressed" "released"))
                 (export "input-phase" (type $input-phase-in (eq $input-phase-shape)))

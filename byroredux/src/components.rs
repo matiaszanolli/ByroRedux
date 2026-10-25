@@ -12,6 +12,7 @@ pub(crate) use projectile_muzzle::ProjectileMuzzle;
 pub(crate) use game_time::GameTimeRes;
 
 mod render;
+mod vats;
 mod terrain;
 mod environment;
 mod indices;
@@ -22,6 +23,7 @@ mod ai_anim;
 mod navmesh;
 
 pub(crate) use render::*;
+pub(crate) use vats::*;
 pub(crate) use terrain::*;
 pub(crate) use environment::*;
 pub(crate) use indices::*;

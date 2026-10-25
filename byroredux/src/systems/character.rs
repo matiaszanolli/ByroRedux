@@ -102,6 +102,13 @@ pub(crate) fn player_can_act(world: &World) -> bool {
         .try_resource::<PlayerEntity>()
         .and_then(|player| player.0)
         .is_none_or(|player| world.get::<Dead>(player).is_none())
+        // #6350 — while any VATS mode is active, normal attack/activate
+        // input is suppressed: attacks arrive through the VATS queue, not
+        // the live key. The mode machine itself checks this gate BEFORE
+        // entering, so the enter edge is unaffected.
+        && world
+            .try_resource::<crate::components::VatsState>()
+            .is_none_or(|vats| vats.mode == crate::components::VatsMode::None)
 }
 
 /// #5039 — keep the player's stamped `PlayerOnly` pools (Health, AP, …)
@@ -147,7 +154,13 @@ fn player_accepts_movement_input(world: &World, player: EntityId) -> bool {
     let restrained = world
         .get::<byroredux_scripting::ActorControlState>(player)
         .is_some_and(|state| state.restrained);
-    controls_allow_movement && !restrained
+    // #6350 — the world is frozen solid inside VATS; live movement input
+    // is part of what's frozen (vanilla locks the player in place while
+    // targeting).
+    let in_vats = world
+        .try_resource::<crate::components::VatsState>()
+        .is_some_and(|vats| vats.mode != crate::components::VatsMode::None);
+    controls_allow_movement && !restrained && !in_vats
 }
 
 /// Drive the kinematic character body forward one frame.

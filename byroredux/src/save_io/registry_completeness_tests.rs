@@ -449,6 +449,10 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
     /// Verified 2026-08-05 against real (non-`#[cfg(test)]`) insertion
     /// sites for every entry — see the individual reasons.
     const NOT_SAVED_BY_DESIGN: &[(&str, &str)] = &[
+        // ── #6350 VATS session state ────────────────────────────────
+        ("VatsModel", "re-derived at load from the load order's GMSTs by build_vats_model; saving it would freeze a mod's tuning across load-order changes"),
+        ("VatsState", "transient targeting-mode state (mode + scan + queue); dies with the session like vanilla — the AP pool persists through ActorValues"),
+        ("VatsClock", "per-frame unscaled-dt escape hatch stamped in app_events; meaningless across sessions"),
         // ── crates/core/src outside ecs/components/ (#3166) ───────
         ("StringPool", "serialized specially as Snapshot.strings so FixedString symbol order is restored before component columns"),
         ("CommandRegistry", "boot-time function-pointer command table; reconstructed by command registration and not serializable gameplay state"),
