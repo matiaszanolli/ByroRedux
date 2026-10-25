@@ -25,6 +25,8 @@
 //!   [`ReputationStanding`] (FNV Fame/Infamy 4×4 grid) classifiers.
 //! * [`crime`] — the crime family: [`CrimeModel`], what a crime costs the
 //!   criminal (Oblivion's `fCrimeGoldSteal` theft fine so far).
+//! * [`vats`] — [`VatsModel`]: the `fVATS*` GMST tuning family and the
+//!   FO3/FNV VATS to-hit chain, load-order-driven (#6350).
 //! * [`resistance`] — the affliction family's resistance half:
 //!   [`Affliction`] descriptors (radiation / poison resistance derivation) +
 //!   the damage-multiplier model.
@@ -77,6 +79,7 @@ pub mod affliction;
 pub mod attribute;
 pub mod components;
 pub mod crime;
+pub mod vats;
 pub mod derived;
 pub mod fallout;
 pub mod leveling;
@@ -99,6 +102,7 @@ pub use components::{
     Perks,
 };
 pub use crime::{BountyScope, CrimeKind, CrimeModel};
+pub use vats::{VatsHitInput, VatsModel};
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
 pub use fallout::{
     fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, melee_damage_config, MeleeDamageConfig,
@@ -156,7 +160,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            15,
+            16,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {
