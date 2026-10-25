@@ -205,13 +205,14 @@ impl PrecombinedSpawnJob {
     pub(super) fn new(
         cell: &CellData,
         plugin_path: &str,
+        load_order: &super::load_order::LoadOrder,
         load_order_paths: &[&str],
     ) -> Option<Self> {
         if cell.precombined_mesh_hashes.is_empty() {
             return None;
         }
         let (owning_path, owning_subdir) =
-            resolve_precombine_owner(cell.form_id, load_order_paths, plugin_path);
+            resolve_precombine_owner(cell.form_id, load_order, load_order_paths, plugin_path);
         Some(Self {
             form_id: cell.form_id,
             total_hashes: cell.precombined_mesh_hashes.len(),
@@ -692,11 +693,13 @@ pub(super) fn spawn_precombined_meshes(
     tex_provider: &TextureProvider,
     mut mat_provider: Option<&mut MaterialProvider>,
     plugin_path: &str,
+    load_order: &super::load_order::LoadOrder,
     load_order_paths: &[&str],
     // (entities spawned, bake misses, hashes that drew geometry) — the
     // third element keys `CellData::absorbed_ref_bakes` (#5484).
 ) -> (usize, usize, Vec<u32>) {
-    let Some(mut job) = PrecombinedSpawnJob::new(cell, plugin_path, load_order_paths) else {
+    let Some(mut job) = PrecombinedSpawnJob::new(cell, plugin_path, load_order, load_order_paths)
+    else {
         return (0, 0, Vec::new());
     };
     let mut budget = FrameTimeBudget::unlimited();
@@ -767,10 +770,23 @@ fn precombine_oc_nif_path(form_id: u32, hash: u32, owning_subdir: Option<&str>) 
 /// `Fallout4.esm`-owned cells that way (#2369).
 fn resolve_precombine_owner<'a>(
     form_id: u32,
+    load_order: &super::load_order::LoadOrder,
     load_order_paths: &[&'a str],
     fallback: &'a str,
 ) -> (&'a str, Option<String>) {
-    let idx = (form_id >> 24) as usize;
+    // #6088 — the FormID's top byte is a GlobalSlot, not a load-order
+    // position: ESL (0xFE…) and medium (0xFD…) plugins draw from their
+    // own counters, so a regular plugin after k ESLs sits at position
+    // slot+…-k and the raw byte names a DIFFERENT plugin's path. Decode
+    // through the slot table like `plugin_for_form_id`; an order with no
+    // slot table (hand-built test fixtures) keeps the legacy byte read,
+    // where position == slot by construction.
+    let idx = if !load_order.has_slot_table() {
+        (form_id >> 24) as usize
+    } else {
+        super::load_order::load_order_position_of(form_id, load_order)
+            .unwrap_or(usize::MAX)
+    };
     match load_order_paths.get(idx) {
         Some(&path) if idx == 0 => (path, None),
         Some(&path) => (path, Some(super::load_order::plugin_basename_lc(path))),
@@ -1013,9 +1029,11 @@ pub(super) fn merge_precombine_materials(
 pub(crate) fn precombine_oc_nif_paths(
     cell: &CellData,
     plugin_path: &str,
+    load_order: &super::load_order::LoadOrder,
     load_order_paths: &[&str],
 ) -> Vec<String> {
-    let (_, owning_subdir) = resolve_precombine_owner(cell.form_id, load_order_paths, plugin_path);
+    let (_, owning_subdir) =
+        resolve_precombine_owner(cell.form_id, load_order, load_order_paths, plugin_path);
     cell.precombined_mesh_hashes
         .iter()
         .map(|&hash| precombine_oc_nif_path(cell.form_id, hash, owning_subdir.as_deref()))
@@ -1039,9 +1057,11 @@ impl CsgHandleCache {
         &mut self,
         cell_form_id: u32,
         plugin_path: &str,
+        load_order: &super::load_order::LoadOrder,
         load_order_paths: &[&str],
     ) -> std::collections::HashMap<u32, Arc<CsgArchive>> {
-        let (owner, _) = resolve_precombine_owner(cell_form_id, load_order_paths, plugin_path);
+        let (owner, _) =
+            resolve_precombine_owner(cell_form_id, load_order, load_order_paths, plugin_path);
         csg_paths_by_name_hash(load_order_paths, owner)
             .into_iter()
             .filter_map(|(name_hash, path)| {
@@ -1382,25 +1402,82 @@ mod tests {
             "/Data/DLCCoast.esm",
         ];
         let fallback = "/Data/DLCCoast.esm";
+        // No slot table (hand-built fixture): the legacy byte read.
+        let order = super::super::load_order::LoadOrder::default();
         // A base-game cell (mod index 0) resolves Fallout4 + root even when a
         // DLC is the active plugin — pre-fix opened the active plugin's CSG.
         assert_eq!(
-            resolve_precombine_owner(0x0000_e2db, &paths, fallback),
+            resolve_precombine_owner(0x0000_e2db, &order, &paths, fallback),
             ("/Data/Fallout4.esm", None)
         );
         // A DLCRobot-owned cell at global slot 1 → its CSG + `dlcrobot.esm\`.
         assert_eq!(
-            resolve_precombine_owner(0x0100_2345, &paths, fallback),
+            resolve_precombine_owner(0x0100_2345, &order, &paths, fallback),
             ("/Data/DLCRobot.esm", Some("dlcrobot.esm".to_string()))
         );
         // Out-of-range mod index (standalone-artifact form) → fallback + root.
         assert_eq!(
-            resolve_precombine_owner(0x7f00_0001, &paths, fallback),
+            resolve_precombine_owner(0x7f00_0001, &order, &paths, fallback),
             (fallback, None)
         );
         // Single-plugin load: one-element slice, owner is slot 0 → root.
         assert_eq!(
-            resolve_precombine_owner(0x0000_1234, &["/Data/Fallout4.esm"], "/Data/Fallout4.esm"),
+            resolve_precombine_owner(
+                0x0000_1234,
+                &order,
+                &["/Data/Fallout4.esm"],
+                "/Data/Fallout4.esm"
+            ),
+            ("/Data/Fallout4.esm", None)
+        );
+    }
+
+    /// #6088 — the FormID's top byte is a slot, not a load-order
+    /// position. With an ESL ahead of a regular plugin, the regular
+    /// plugin's slot byte (1) names a different *position* (2), and the
+    /// raw byte read resolved the ESL's path — pre-fix, a
+    /// settlement `.esp` baking new cells in an ESL-bearing FO4 order
+    /// opened the CC plugin's CSG and looked in its subdirectory. An
+    /// ESL-owned cell (0xFE…) was out of range entirely and fell back to
+    /// the active plugin at the root.
+    #[test]
+    fn resolve_precombine_owner_decodes_slots_not_positions() {
+        use byroredux_plugin::esm::reader::GlobalSlot;
+        // Position: 0 Fallout4.esm, 1 a CC .esl (light slot 0), 2 the
+        // settlement .esp (regular slot 1 — the byte an ESL shifts).
+        let paths = [
+            "/Data/Fallout4.esm",
+            "/Data/ccBGS.esl",
+            "/Data/Settlement.esp",
+        ];
+        let fallback = "/Data/Settlement.esp";
+        let order = super::super::load_order::LoadOrder::new(
+            vec![
+                "Fallout4.esm".into(),
+                "ccBGS.esl".into(),
+                "Settlement.esp".into(),
+            ],
+            vec![
+                GlobalSlot::Regular(0),
+                GlobalSlot::Light(0),
+                GlobalSlot::Regular(1),
+            ],
+        );
+        // A Settlement-owned cell: slot byte 1, position 2. Pre-fix the
+        // byte read resolved paths[1] — the CC plugin.
+        assert_eq!(
+            resolve_precombine_owner(0x0100_2345, &order, &paths, fallback),
+            ("/Data/Settlement.esp", Some("settlement.esp".to_string()))
+        );
+        // An ESL-owned cell: light slot 0, position 1. Pre-fix 0xFE was
+        // out of range and fell back to the active plugin at the root.
+        assert_eq!(
+            resolve_precombine_owner(0xFE00_0123, &order, &paths, fallback),
+            ("/Data/ccBGS.esl", Some("ccbgs.esl".to_string()))
+        );
+        // The base game keeps its root-subdir contract.
+        assert_eq!(
+            resolve_precombine_owner(0x0000_e2db, &order, &paths, fallback),
             ("/Data/Fallout4.esm", None)
         );
     }
@@ -1978,8 +2055,12 @@ mod tests {
         let load_order: [&str; 2] = [f4.to_str().unwrap(), coast.to_str().unwrap()];
         let remapped_form_id = (1u32 << 24) | low24;
 
-        let (owning_path, subdir) =
-            resolve_precombine_owner(remapped_form_id, &load_order, load_order[1]);
+        let (owning_path, subdir) = resolve_precombine_owner(
+            remapped_form_id,
+            &super::super::load_order::LoadOrder::default(),
+            &load_order,
+            load_order[1],
+        );
         assert_eq!(
             owning_path, load_order[1],
             "owner is DLCCoast, not the master"

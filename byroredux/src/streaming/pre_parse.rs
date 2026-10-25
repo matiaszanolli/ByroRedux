@@ -751,7 +751,12 @@ pub(crate) fn pre_parse_cell(
     let precombine_keys = if cell.precombined_mesh_hashes.is_empty() {
         Vec::new()
     } else {
-        crate::cell_loader::precombined::precombine_oc_nif_paths(cell, &wctx.plugin_path, &load_order_paths)
+        crate::cell_loader::precombined::precombine_oc_nif_paths(
+            cell,
+            &wctx.plugin_path,
+            &wctx.load_order,
+            &load_order_paths,
+        )
     };
     // #6097 — the refs whose geometry a bake present in the archives absorbs.
     // The main thread's reference pass drops them before any model lookup, so
@@ -847,7 +852,12 @@ pub(crate) fn pre_parse_cell(
         }
         if !precombine_paths.is_empty() {
             csg_blobs =
-                csg_handles.blobs_for_cell(cell.form_id, &wctx.plugin_path, &load_order_paths);
+                csg_handles.blobs_for_cell(
+                    cell.form_id,
+                    &wctx.plugin_path,
+                    &wctx.load_order,
+                    &load_order_paths,
+                );
         }
     }
     if skipped_cached > 0 || skipped_batch_duplicates > 0 || skipped_absorbed > 0 {

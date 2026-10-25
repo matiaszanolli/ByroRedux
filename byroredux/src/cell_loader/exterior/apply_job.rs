@@ -228,6 +228,7 @@ impl ExteriorCellApplyJob {
         let precombined = super::super::precombined::PrecombinedSpawnJob::new(
             cell,
             &wctx.plugin_path,
+            &wctx.load_order,
             &load_order_paths,
         );
         let baked_hashes = precombined.is_none().then(Vec::new);

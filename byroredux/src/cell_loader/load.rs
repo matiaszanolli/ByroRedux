@@ -590,6 +590,7 @@ impl InteriorCellApplyJob {
             tex_provider,
             mat_provider,
             esm_path,
+            &load_order,
             &plugin_paths,
         );
         phases.precombined = phase_started.elapsed();
