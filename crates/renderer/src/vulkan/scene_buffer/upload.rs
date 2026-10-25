@@ -831,6 +831,38 @@ impl super::buffers::SceneBuffers {
         Ok(())
     }
 
+    /// #6250 — upload this build's moved stable surface IDs (scene set
+    /// binding 25) for the mover taint's prev-occluder arm. The buffer is
+    /// `[count, ids...]`; over-cap ids are dropped with a warn (they still
+    /// taint via the hit arm / the K-jitter re-roll a few frames later).
+    /// Rewritten whole every frame — 260 B, no dirty-gate is worth the hash.
+    pub fn upload_moved_surface_ids(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        moved_surface_ids: &[u32],
+    ) -> Result<()> {
+        use crate::shader_constants::RESTIR_MAX_MOVED_SURFACES;
+        debug_assert_eq!(
+            self.moved_surface_buffers.len(),
+            MAX_FRAMES_IN_FLIGHT
+        );
+        let kept = moved_surface_ids.len().min(RESTIR_MAX_MOVED_SURFACES as usize);
+        if moved_surface_ids.len() > kept {
+            log::warn!(
+                "moved-surface set over capacity: {} movers, kept {} (#6250) — the rest \
+                 taint via the hit arm instead of the prev-occluder arm",
+                moved_surface_ids.len(),
+                kept
+            );
+        }
+        let mut words = [0u32; 1 + RESTIR_MAX_MOVED_SURFACES as usize];
+        words[0] = kept as u32;
+        words[1..1 + kept].copy_from_slice(&moved_surface_ids[..kept]);
+        self.moved_surface_buffers[frame_index].write_mapped(device, &words)?;
+        Ok(())
+    }
+
     /// Upload previous rigid transforms aligned with the current instance
     /// array. New entities carry their current transform, producing zero
     /// object velocity on first sight.

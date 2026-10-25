@@ -114,6 +114,17 @@ uint packReservoirLightAndSurface(uint lightIndex, uint surfaceId) {
     return ((surfaceId & RESERVOIR_SURFACE_MASK) << RESERVOIR_LIGHT_BITS)
         | (lightIndex & RESERVOIR_LIGHT_MASK);
 }
+// #6250 — is `sid` (a stable surface ID, RESERVOIR_SURFACE_MASK-wide) one of
+// this build's movers (binding 25: [0] = count, then the IDs)? The list is
+// CPU-built and tiny; the count is clamped again here so a stale or corrupt
+// header can never read past RESTIR_MAX_MOVED_SURFACES.
+bool movedSurfaceSetContains(uint sid) {
+    uint count = min(movedSurfaceSet[0], RESTIR_MAX_MOVED_SURFACES);
+    for (uint i = 1u; i <= count; ++i) {
+        if (movedSurfaceSet[i] == sid) return true;
+    }
+    return false;
+}
 
 // CameraUBO.renderDebug.w carries the compact, history-dependent exterior
 // ground state. The low/high halves are unorm16 wetness and snow coverage;
@@ -3633,6 +3644,10 @@ void main() {
             // mover-tainted (see the EMA below); its magnitude is the count.
             bool prevTainted = false;
             bool reprojValid = false;
+            // #6250 — the accepted previous reservoir's recorded blocker
+            // (its stable surface ID, 0 when last frame's selected ray found
+            // none). Consumed by the mover taint below.
+            uint prevOccluderSid = 0u;
             vec3 geomN = normalize(fragNormalEffective);
             // `fragInstanceIndex` follows the per-frame sorted SSBO order and
             // changes when animated actors move between depth buckets. Keying
@@ -3812,6 +3827,7 @@ void main() {
                     // ~1/65 no matter what the EMA constants said.
                     histPrev = clamp(abs(rpHistLen), 0.0, RESTIR_HISTORY_CAP_PARKED);
                     prevTainted = rpHistLen < 0.0;
+                    prevOccluderSid = rp.occluderSurface;
                 }
             }
 
@@ -4201,9 +4217,29 @@ void main() {
             // an occluder leaves behind fades at the moving floor, not as a
             // ghost at the parked one. The taint is stored as the sign of the
             // history length (always a positive integer otherwise).
-            bool moverHit = selectedRayHitInstance != 0xFFFFFFFFu
+            //
+            // #6250 — two arms, because the hit alone misses the first
+            // moving frame: a mover's initial step (and a teleport) uncovers
+            // pixels whose rays now MISS it, and it was static the frame
+            // before, so nothing ever tainted them. The second arm taints on
+            // the PREVIOUS frame's occluder: `Reservoir::occluderSurface`
+            // recorded the blocker the uncovered pixel's ray hit last frame,
+            // and the CPU's moved set (binding 25, keyed by the STABLE
+            // surface ID — instance indices follow the per-frame sort order
+            // and cannot be resolved across frames) names it as moved on the
+            // frame it first moves. `committedInstance` itself now names the
+            // instance that actually blocked the ray (shadow_transport.glsl),
+            // not the first committed candidate, so an alpha hole or effect
+            // card in front of the real occluder no longer shields it.
+            // Remaining hole, documented: only sample 0 runs the detailed
+            // trace, so with directShadowSamples > 1 a penumbra pixel whose
+            // mover is hit only by samples > 0 taints once the per-frame
+            // K-jitter re-rolls sample 0 onto it — frames, not seconds.
+            bool moverHit = (selectedRayHitInstance != 0xFFFFFFFFu
                 && (instances[selectedRayHitInstance].flags
-                    & INSTANCE_FLAG_MOVED_THIS_FRAME) != 0u;
+                    & INSTANCE_FLAG_MOVED_THIS_FRAME) != 0u)
+                || (reprojValid && prevOccluderSid != 0u
+                    && movedSurfaceSetContains(prevOccluderSid));
             vec3 accum;
             float histLen;
             bool tainted = moverHit;
@@ -4249,6 +4285,14 @@ void main() {
             rc.lightAndSurface = packReservoirLightAndSurface(restirY, surfaceId);
             rc.W = restirW;
             rc.M = restirM;
+            // #6250 — this frame's selected-ray BLOCKER by stable surface ID
+            // (0 = no blocker), for the next frame's first-moving-frame /
+            // teleport taint above. Masked to the reservoir's 22-bit surface
+            // width so the moved-set match is exact.
+            rc.occluderSurface = selectedRayHitInstance != 0xFFFFFFFFu
+                ? (instances[selectedRayHitInstance].surfaceId
+                    & RESERVOIR_SURFACE_MASK)
+                : 0u;
             rc.histLenAndDepth = uintBitsToFloat(packHalf2x16(vec2(
                 tainted ? -histLen : histLen,
                 min(worldDist, 65504.0)

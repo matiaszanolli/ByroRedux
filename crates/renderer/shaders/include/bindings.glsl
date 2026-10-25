@@ -828,7 +828,14 @@ struct Reservoir {
     float accumB;      //   the current frame's unshadowed sum
     float pad0;        // geometric normal: octEncode → packSnorm2x16 → float
                        // bits. Consumed by temporal + spatial rejection;
-                       // keeps the struct at 32 B.
+                       // kept the struct at 32 B pre-#6250.
+    uint  occluderSurface; // #6250 — the selected shadow ray's BLOCKER's
+                       // stable surface ID (0 when the ray found no blocker
+                       // this frame). Next frame's reprojection taints the
+                       // pixel when this surface appears in binding 25's
+                       // moved set, so a mover's first moving frame — and a
+                       // teleport — clears the deep tail on the pixels it
+                       // used to shadow. std430 stride 36 B.
 };
 
 // writeonly (#5062): triangle.frag only ever stores this frame's reservoirs;
@@ -853,12 +860,23 @@ layout(std430, set = 1, binding = 22) buffer ReservoirClaimBuffer {
 };
 // The claim winner's unshadowed direct radiance U (restirUnshadowedSum), the
 // factor its shadow ratio multiplies, packed as
-// uvec2(packHalf2x16(U.rg), packHalf2x16(vec2(U.b, 0.0))). The
-// shadow filter pass reads it beside the reservoir to correct direct light by
+// uvec2(packHalf2x16(U.rg), packHalf2x16(vec2(U.b, 0.0))). The shadow filter
+// pass reads it beside the reservoir to correct direct light by
 // U * (filteredRatio - rawRatio). Written only with the reservoir, so a slot
 // whose reservoir is zero-filled carries a stale U the pass never reads.
 layout(std430, set = 1, binding = 23) writeonly buffer DirectUnshadowedBuffer {
     uvec2 directUnshadowed[];
+};
+// #6250 — this build's moved stable surface IDs, small enough to scan per
+// reprojection: element [0] is the count N (clamped to
+// RESTIR_MAX_MOVED_SURFACES by the uploader), [1..N] the surface IDs of
+// every instance flagged INSTANCE_FLAG_MOVED_THIS_FRAME. The mover taint
+// matches last frame's recorded occluder (`Reservoir::occluderSurface`)
+// against it, because instance indices are per-frame sort order and cannot
+// be resolved across frames — surface IDs are stable. Partially bound is
+// not relied on: the CPU writes every frame slot at init.
+layout(std430, set = 1, binding = 25) readonly buffer MovedSurfaceSet {
+    uint movedSurfaceSet[];
 };
 
 // One bounded selected-light visibility-ray record per frame-in-flight.

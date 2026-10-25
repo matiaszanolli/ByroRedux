@@ -149,6 +149,13 @@ pub const RESTIR_VIEW_COS_FLOOR: f32 = 0.1;
 // rejoining the parked tail, so a shadow an occluder leaves behind fades at
 // the moving floor instead of ghosting at the parked one.
 pub const RESTIR_MOVER_SETTLE_FRAMES: f32 = 32.0;
+// #6250 — capacity of the moved-surface-ID set (scene set binding 25): the
+// per-frame list of stable surface IDs flagged `INSTANCE_FLAG_MOVED_THIS_FRAME`
+// that the mover taint matches last frame's recorded occluder against. The
+// list is scanned per reprojection, so it is capped rather than unbounded;
+// every instance over the cap simply taints via the hit arm (or the K-jitter
+// re-roll) a few frames later instead of the prev-occluder arm.
+pub const RESTIR_MAX_MOVED_SURFACES: u32 = 64;
 
 // Direct-shadow spatial filter (`shadow_filter.comp`): an edge-aware 5x5
 // B3 a-trous pass over the per-pixel ReSTIR shadow ratio, the spatial half
@@ -2448,6 +2455,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float RESTIR_DEPTH_REL_TOL),
     shader_define!(Float RESTIR_VIEW_COS_FLOOR),
     shader_define!(Float RESTIR_MOVER_SETTLE_FRAMES),
+    shader_define!(Uint RESTIR_MAX_MOVED_SURFACES),
     shader_define!(Float SHADOW_FILTER_NORMAL_POWER),
     shader_define!(Float SHADOW_FILTER_DEPTH_SLOPE_SCALE),
     shader_define!(Float SHADOW_FILTER_RATIO_SIGMA),

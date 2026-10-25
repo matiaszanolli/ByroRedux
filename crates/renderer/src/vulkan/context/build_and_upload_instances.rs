@@ -377,6 +377,14 @@ impl VulkanContext {
         let suppress_rigid_history =
             std::mem::take(&mut self.history.suppress_rigid_history_next_build);
         let mut rigid_instance_moved = false;
+        // #6250 — the moved stable surface IDs for the scene set's mover
+        // list (binding 25): `Reservoir::occluderSurface` records blockers
+        // by this identity, and instance indices cannot be resolved across
+        // frames (they follow the per-frame sort order), so the taint's
+        // prev-occluder arm matches on the stable ID. Same `surface_id`
+        // derivation the GpuInstance write uses, masked to the reservoir's
+        // 22-bit surface width so the shader-side compare is exact.
+        let mut moved_surface_ids: Vec<u32> = Vec::new();
         // #4943 — a rigid instance with no previous model this build (first
         // sight: spawned, enabled, streamed back in). Its own pixels reject
         // history by mesh ID, but the surfaces around it do not.
@@ -544,6 +552,16 @@ impl VulkanContext {
                 // draw: an off-screen mover still occludes on-screen pixels.
                 if instance_moved {
                     f |= INSTANCE_FLAG_MOVED_THIS_FRAME;
+                    // #6250 — the flag only reaches pixels whose ray HITS
+                    // the mover this frame; the list also covers the pixels
+                    // it just un-occluded (their prev reservoir recorded it
+                    // as blocker). Dedup: one entity can submit several
+                    // draws, and the list is scanned per reprojection.
+                    let moved_sid =
+                        draw_cmd.entity_id.wrapping_add(1) & crate::shader_constants::RESERVOIR_SURFACE_MASK;
+                    if !moved_surface_ids.contains(&moved_sid) {
+                        moved_surface_ids.push(moved_sid);
+                    }
                 }
                 // Rasterizer-only bits from here down — skipped for draws
                 // that will not be rasterized (#1260, narrowed by #3978).
@@ -1067,6 +1085,12 @@ impl VulkanContext {
                 .upload_previous_models(&self.device, frame, &previous_models)
                 .unwrap_or_else(|e| log::warn!("Failed to upload previous models: {e}"));
         }
+        // #6250 — the mover list rides the same per-frame upload: 260 B
+        // whole-buffer rewrite, and an empty scene still publishes count 0
+        // so a stale slot can never taint on two-frame-old movers.
+        self.scene_buffers
+            .upload_moved_surface_ids(&self.device, frame, &moved_surface_ids)
+            .unwrap_or_else(|e| log::warn!("Failed to upload moved surface ids: {e}"));
 
         // R1 Phase 4 — upload the deduplicated material table. The
         // fragment shader reads `materials[instance.materialId]` for

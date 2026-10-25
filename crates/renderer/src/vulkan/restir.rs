@@ -38,9 +38,10 @@ use anyhow::Result;
 use ash::vk;
 
 /// Bytes per [`Reservoir`] — must match the `struct Reservoir` std430 layout
-/// in `shaders/include/bindings.glsl` (8 × 4-byte scalars). Pinned by
-/// [`tests::reservoir_stride_matches_shader`].
-pub const RESERVOIR_STRIDE: vk::DeviceSize = 32;
+/// in `shaders/include/bindings.glsl` (9 × 4-byte scalars: the 32-B
+/// pre-#6250 reservoir plus the recorded blocker's stable surface ID).
+/// Pinned by [`tests::reservoir_stride_matches_shader`].
+pub const RESERVOIR_STRIDE: vk::DeviceSize = 36;
 
 /// Bytes per pixel claim word (`uint reservoirClaim[]`, binding 22).
 pub(crate) const CLAIM_STRIDE: vk::DeviceSize = 4;
@@ -347,13 +348,14 @@ mod tests {
     use super::*;
 
     /// The Rust-side stride must match the std430 `struct Reservoir` in
-    /// `bindings.glsl` (8 scalars × 4 bytes). If the shader struct grows,
+    /// `bindings.glsl` (9 scalars × 4 bytes). If the shader struct grows,
     /// this and the GLSL must move together.
     #[test]
     fn reservoir_stride_matches_shader() {
         // lightAndSurface + W + M + packed(histLen, depth) + accumR/G/B
-        // + pad0 (packed geometric normal). 8 scalars × 4 bytes.
-        assert_eq!(RESERVOIR_STRIDE, 8 * 4);
+        // + pad0 (packed geometric normal) + occluderSurface (#6250).
+        // 9 scalars × 4 bytes.
+        assert_eq!(RESERVOIR_STRIDE, 9 * 4);
     }
 
     /// #6035 — the published per-pixel figure must cover every region a slot
@@ -471,6 +473,65 @@ mod tests {
         assert!(!src.contains(">= 0.906"));
         assert!(!src.contains("TEMPORAL_NORMAL_COS ="));
         assert!(!src.contains("SPATIAL_NORMAL_COS ="));
+    }
+
+    /// #6250 — the mover taint must also fire on the PREVIOUS frame's
+    /// occluder, or a mover's first moving frame (and a teleport) leaves the
+    /// pixels it un-occludes blending away the old shadow edge at the parked
+    /// floor (~346-frame half-life). Three source shapes pin the mechanism
+    /// (the GPU behaviour needs RenderDoc):
+    /// 1. the reservoir records the selected ray's blocker by STABLE surface
+    ///    ID (`occluderSurface`) — instance indices follow the per-frame
+    ///    sort order and cannot be resolved across frames;
+    /// 2. the taint ORs a prev-occluder arm matching the CPU-built moved set
+    ///    (scene binding 25), uploaded every frame with a clamped count;
+    /// 3. `committedInstance` names the instance that actually blocked the
+    ///    ray, not the first committed candidate (an alpha hole or effect
+    ///    card in front of a mover must not shield it).
+    #[test]
+    fn mover_taint_covers_the_previous_frames_occluder() {
+        let frag = include_str!("../../shaders/triangle.frag");
+        let transport = include_str!("../../shaders/include/shadow_transport.glsl");
+        let bindings = include_str!("../../shaders/include/bindings.glsl");
+
+        assert!(
+            frag.contains("uint prevOccluderSid = 0u;")
+                && frag.contains("prevOccluderSid = rp.occluderSurface;")
+                && frag.contains("rc.occluderSurface = selectedRayHitInstance != 0xFFFFFFFFu")
+                && frag.contains("& RESERVOIR_SURFACE_MASK"),
+            "the reservoir must record the blocker's masked stable surface ID and \
+             the reprojection must carry it to the taint"
+        );
+        assert!(
+            frag.contains("|| (reprojValid && prevOccluderSid != 0u")
+                && frag.contains("movedSurfaceSetContains(prevOccluderSid));")
+                && bindings.contains("layout(std430, set = 1, binding = 25) readonly buffer MovedSurfaceSet"),
+            "the taint must OR the prev-occluder arm against the moved set"
+        );
+        assert!(
+            frag.contains("uint count = min(movedSurfaceSet[0], RESTIR_MAX_MOVED_SURFACES);"),
+            "the moved-set scan must clamp the count to the uploaded capacity"
+        );
+        assert!(
+            !transport.contains("if (committedInstance == 0xFFFFFFFFu) {"),
+            "the transport must not record the first committed candidate — only the \
+             hit that actually blocked (see the recording at the zero-visibility \
+             returns)"
+        );
+        assert!(
+            transport.contains("committedInstance = uint(hitIdx);\n            committedDistance = hitDist;\n            return vec3(0.0);"),
+            "the opaque and covered blocking returns must record the blocker"
+        );
+
+        // `upload.rs` carries an early `#[cfg(test)] mod` (bone-world slot
+        // tests, line 31), so `production_text` would cut the file open at
+        // it and hide this fn; the raw source is scanned directly.
+        let upload = include_str!("scene_buffer/upload.rs");
+        assert!(
+            upload.contains("pub fn upload_moved_surface_ids(")
+                && upload.contains("moved_surface_ids.len().min(RESTIR_MAX_MOVED_SURFACES as usize)"),
+            "the CPU upload must clamp the moved list to the shader's capacity"
+        );
     }
 
     #[test]
@@ -931,15 +992,18 @@ mod tests {
     /// constants. If either constant changes, this fails as the nudge to
     /// update the doc's table alongside the code (the whole point of the
     /// fix — the doc had silently drifted out of existence before #1814).
+    /// #6250 — the stride grew 32 → 36 B (the reservoir's recorded blocker
+    /// surface ID); figures below are the reservoir region only, matching
+    /// `byte_size`.
     #[test]
     fn byte_size_matches_documented_memory_budget_figures() {
         // (width, height, expected per-slot MB, expected 2-FIF total MB)
         // MB here is decimal (bytes / 1_000_000), matching every other
         // entry in memory-budget.md.
         let cases = [
-            (1920u32, 1080u32, 66.4, 132.7),
-            (2560, 1440, 118.0, 235.9),
-            (3840, 2160, 265.4, 530.8),
+            (1920u32, 1080u32, 74.6, 149.3),
+            (2560, 1440, 132.7, 265.4),
+            (3840, 2160, 298.6, 597.2),
         ];
         for (w, h, expected_per_slot_mb, expected_total_mb) in cases {
             let per_slot = ReservoirBuffers::byte_size(w, h) as f64 / 1_000_000.0;

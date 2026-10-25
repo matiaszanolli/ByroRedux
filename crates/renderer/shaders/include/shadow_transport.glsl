@@ -15,6 +15,12 @@ float shadowFresnelSchlickScalar(float cosTheta, float f0) {
 // alpha-aware binary blocker; glass accumulates tint, absorption and Fresnel
 // loss interface by interface.  Callers must include bindings.glsl and
 // ray_hit.glsl and shadow_common.glsl before this file.
+//
+// #6250 — `committedInstance` names the instance that actually returned (or
+// exhausted) the transmittance — the BLOCKER — not the first committed
+// candidate. An alpha-tested hole, an effect card or an uncovered glass pane
+// is advanced past; recording it made the mover taint key on static foliage
+// or a fence while the real occluder behind it moved.
 bool advanceShadowRayPastHit(
     inout vec3 origin,
     inout float remaining,
@@ -56,10 +62,7 @@ vec3 traceShadowTransmittanceDetailed(
         int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(opaqueRQ, true);
         vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(opaqueRQ, true);
         float hitT = rayQueryGetIntersectionTEXT(opaqueRQ, true);
-        if (committedInstance == 0xFFFFFFFFu) {
-            committedInstance = uint(hitIdx);
-            committedDistance = (maxDist - opaqueRemaining) + hitT;
-        }
+        float hitDist = (maxDist - opaqueRemaining) + hitT;
         GpuInstance hitInst = instances[hitIdx];
         GpuMaterial hitMat = materials[hitInst.materialId];
         // Effects have their own non-opaque visibility layer and therefore
@@ -79,7 +82,12 @@ vec3 traceShadowTransmittanceDetailed(
             && opaqueRemaining - hitT <= emitterRadius
             && max(max(hitMat.emissiveR, hitMat.emissiveG), hitMat.emissiveB)
                 * max(hitMat.emissiveMult, 1.0) > 0.01;
-        if (!alphaSensitive && !nearEmitter) return vec3(0.0);
+        if (!alphaSensitive && !nearEmitter) {
+            // A plain opaque blocker — the canonical occluder.
+            committedInstance = uint(hitIdx);
+            committedDistance = hitDist;
+            return vec3(0.0);
+        }
 
         vec2 hitUV = resolveRayHitUV(
             uint(hitIdx), uint(hitPrim), hitBary, direction, hitMat);
@@ -90,7 +98,13 @@ vec3 traceShadowTransmittanceDetailed(
         vec3 hitEmission = rayHitEmission(hitMat, hitUV, hitBase.rgb, 0.0);
         bool sourceShell = nearEmitter
             && max(max(hitEmission.r, hitEmission.g), hitEmission.b) > 0.01;
-        if (covered && !sourceShell) return vec3(0.0);
+        if (covered && !sourceShell) {
+            // An alpha-tested texel that blocks — the occluder, not the
+            // cutout holes advanced past below.
+            committedInstance = uint(hitIdx);
+            committedDistance = hitDist;
+            return vec3(0.0);
+        }
 
         if (!advanceShadowRayPastHit(
                 opaqueOrigin, opaqueRemaining, direction, hitT)) break;
@@ -124,10 +138,7 @@ vec3 traceShadowTransmittanceDetailed(
         int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(glassRQ, true);
         vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(glassRQ, true);
         float hitT = rayQueryGetIntersectionTEXT(glassRQ, true);
-        if (committedInstance == 0xFFFFFFFFu) {
-            committedInstance = uint(hitIdx);
-            committedDistance = (maxDist - remaining) + hitT;
-        }
+        float hitDist = (maxDist - remaining) + hitT;
         GpuInstance hitInst = instances[hitIdx];
         GpuMaterial hitMat = materials[hitInst.materialId];
         vec2 hitUV = resolveRayHitUV(
@@ -141,6 +152,11 @@ vec3 traceShadowTransmittanceDetailed(
                     rayOrigin, remaining, direction, hitT)) break;
             continue;
         }
+        // A covered interface attenuates the transmittance — it is the
+        // visibility this ray reports, so the mover taint keys on it (#6250).
+        // The last one before an exhaustion return below is the blocker.
+        committedInstance = uint(hitIdx);
+        committedDistance = hitDist;
         vec3 tint = clamp(
             glassTex.rgb * vec3(hitMat.diffuseR, hitMat.diffuseG, hitMat.diffuseB),
             vec3(0.02), vec3(1.0));

@@ -274,9 +274,10 @@ entry on this page, size scales with **swapchain resolution**, not a fixed
 constant — recreated on every resize.
 
 Formula: `width × height × RESERVOIR_BYTES_PER_PIXEL_PER_SLOT` bytes per FIF
-slot, where `RESERVOIR_BYTES_PER_PIXEL_PER_SLOT` = `RESERVOIR_STRIDE` (32 B, one
-[`Reservoir`] per pixel) + `CLAIM_STRIDE` (the 4 B ownership-claim word) +
-`UNSHADOWED_STRIDE` (8 B of unshadowed direct radiance) = **44 B/px**. #5765
+slot, where `RESERVOIR_BYTES_PER_PIXEL_PER_SLOT` = `RESERVOIR_STRIDE` (36 B, one
+[`Reservoir`] per pixel — 32 B until #6250 added the recorded blocker's stable
+surface ID for the mover taint) + `CLAIM_STRIDE` (the 4 B ownership-claim word)
++ `UNSHADOWED_STRIDE` (8 B of unshadowed direct radiance) = **48 B/px**. #5765
 put the two tails in the same buffer, each at a 256-aligned offset; the
 alignment padding (under 512 B per slot) is not billed. This page said
 `RESERVOIR_STRIDE + 4` until #6035, which also added the tails to the BLAS
@@ -284,9 +285,9 @@ residency reservation (`render_extent_bytes_per_pixel_x1024`).
 
 | Resolution | Per-slot | × 2 FIF |
 |---|---|---|
-| 1920×1080 | 91.2 MB | **182.5 MB** |
-| 2560×1440 | 162.2 MB | **324.4 MB** |
-| 3840×2160 | 365.0 MB | **729.9 MB** |
+| 1920×1080 | 99.5 MB | **199.1 MB** |
+| 2560×1440 | 176.9 MB | **353.9 MB** |
+| 3840×2160 | 398.1 MB | **796.3 MB** |
 
 This was the largest single VRAM addition of the denoiser overhaul (PERF-D5-NEW-04
 / #1814) — at 4K it is over 13% of the ~4 GB engine budget target below — but

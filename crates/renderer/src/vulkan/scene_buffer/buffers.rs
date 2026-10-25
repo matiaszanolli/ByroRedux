@@ -230,6 +230,11 @@ pub struct SceneBuffers {
     /// readback memory is armed by the CPU, written by `triangle.frag`, and
     /// drained only after the slot fence signals.
     pub(super) selected_ray_probe_buffers: Vec<GpuBuffer>,
+    /// #6250 — this build's moved stable surface IDs, one small host-visible
+    /// SSBO per frame-in-flight (binding 25): `[0]` = count, `[1..]` = IDs.
+    /// Rewritten every frame by `upload_moved_surface_ids` for the ReSTIR
+    /// mover taint's prev-occluder arm.
+    pub(super) moved_surface_buffers: Vec<GpuBuffer>,
     pub(super) ray_budget_controller: AdaptiveRayBudget,
     /// Descriptor pool for scene descriptor sets.
     pub(super) descriptor_pool: vk::DescriptorPool,
@@ -457,6 +462,18 @@ pub(crate) fn build_scene_descriptor_bindings() -> Vec<vk::DescriptorSetLayoutBi
         vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
         vk::ShaderStageFlags::FRAGMENT,
     ));
+    // Binding 25: the ReSTIR mover taint's moved-surface-ID set (#6250) —
+    // `[0]` = count, `[1..]` = the stable surface IDs flagged
+    // `INSTANCE_FLAG_MOVED_THIS_FRAME` this build. `triangle.frag` matches
+    // last frame's recorded occluder (`Reservoir::occluderSurface`) against
+    // it, so a mover's first moving frame (and a teleport) taints the pixels
+    // it un-occludes. Always written at descriptor creation, contents
+    // rewritten per frame by `upload_moved_surface_ids`.
+    bindings.push(layout_binding(
+        25,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     bindings
 }
 
@@ -483,6 +500,7 @@ struct SceneRenderBuffers {
     bind_inverse_upload_staging: GpuBuffer,
     bone_buf_size: vk::DeviceSize,
     instance_buffers: Vec<GpuBuffer>,
+    moved_surface_buffers: Vec<GpuBuffer>,
     instance_buf_size: vk::DeviceSize,
     previous_model_buffers: Vec<GpuBuffer>,
     previous_model_buf_size: vk::DeviceSize,
@@ -554,6 +572,11 @@ fn allocate_scene_render_buffers(
     let mut bone_world_staging_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut bone_world_device_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut moved_surface_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    // #6250 — (1 count word + the id cap) × 4 B per frame-in-flight slot.
+    let moved_surface_buf_size = (1 + crate::shader_constants::RESTIR_MAX_MOVED_SURFACES)
+        as vk::DeviceSize
+        * std::mem::size_of::<u32>() as vk::DeviceSize;
     let mut previous_model_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut material_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -634,6 +657,15 @@ fn allocate_scene_render_buffers(
             std::mem::size_of::<GpuSelectedRayProbe>() as vk::DeviceSize,
             vk::BufferUsageFlags::STORAGE_BUFFER,
         )?);
+        // #6250 — the mover taint's moved-surface-ID set: 1 count word +
+        // RESTIR_MAX_MOVED_SURFACES ids, host-visible and rewritten whole
+        // every frame.
+        moved_surface_buffers.push(GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            moved_surface_buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        )?);
         // Ray budget counter is a SINGLE shared buffer (created below)
         // with per-frame slots at `frame * RAY_BUDGET_STRIDE`. #683 / MEM-2-8.
     }
@@ -700,6 +732,7 @@ fn allocate_scene_render_buffers(
         bind_inverse_upload_staging,
         bone_buf_size,
         instance_buffers,
+        moved_surface_buffers,
         instance_buf_size,
         previous_model_buffers,
         previous_model_buf_size,
@@ -898,6 +931,14 @@ fn create_scene_descriptors(
             offset: 0,
             range: std::mem::size_of::<GpuSelectedRayProbe>() as vk::DeviceSize,
         }];
+        // #6250 — the moved-surface set: the whole small buffer, count and
+        // ids, always bound (a zero count reads as "no movers").
+        let moved_surface_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.moved_surface_buffers[i].buffer,
+            offset: 0,
+            range: (1 + crate::shader_constants::RESTIR_MAX_MOVED_SURFACES) as vk::DeviceSize
+                * std::mem::size_of::<u32>() as vk::DeviceSize,
+        }];
         let writes = [
             write_storage_buffer(set, 0, &light_buf_info),
             write_uniform_buffer(set, 1, &camera_buf_info),
@@ -910,6 +951,7 @@ fn create_scene_descriptors(
             write_uniform_buffer(set, 14, &dalc_buf_info),
             write_storage_buffer(set, 18, &previous_model_buf_info),
             write_storage_buffer(set, 19, &selected_ray_probe_buf_info),
+            write_storage_buffer(set, 25, &moved_surface_buf_info),
         ];
         unsafe {
             // SAFETY: `device` is live; `set` is one of the just-allocated device-owned
@@ -977,6 +1019,18 @@ impl SceneBuffers {
                 return Err(e);
             }
         }
+        // #6250 — seed every moved-surface slot with a zero count so the
+        // first frames' mover taint reads "no movers" rather than garbage.
+        for buf in &mut bufs.moved_surface_buffers {
+            if let Err(e) = buf.write_mapped(device, &[0u32]) {
+                // SAFETY: same raw-handle ownership window as the DALC seed above.
+                unsafe {
+                    device.destroy_descriptor_pool(descriptor_pool, None);
+                    device.destroy_descriptor_set_layout(descriptor_set_layout, None);
+                }
+                return Err(e);
+            }
+        }
 
         log::info!(
             "Scene buffers created: {} frames, {} max lights ({} bytes/frame)",
@@ -1027,6 +1081,7 @@ impl SceneBuffers {
             terrain_tile_staging_pool: StagingPool::new(device.clone(), allocator.clone()),
             ray_budget_buffer: bufs.ray_budget_buffer,
             selected_ray_probe_buffers: bufs.selected_ray_probe_buffers,
+            moved_surface_buffers: bufs.moved_surface_buffers,
             ray_budget_controller: AdaptiveRayBudget::default(),
             descriptor_pool,
             descriptor_set_layout,
