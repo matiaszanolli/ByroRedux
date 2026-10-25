@@ -285,8 +285,11 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
   base objects in ~4 s), collapsing the original 7–11-session Starfield
   roadmap to 3–4. The bring-up arc:
   - #1291 — split Starfield off its own XCLL canonical-size set `[28, 108]`
-    (was bucketed with the FNV-era `[28, 40]`; silenced 11 985 warns). The
-    108-byte body is the Skyrim+ 92-byte layout plus a 16-byte tail.
+    (was bucketed with the FNV-era `[28, 40]`; silenced 11 985 warns).
+    Brought in as "the Skyrim 92-byte layout plus a 16-byte tail", the
+    108-byte body turned out to be its own layout — bytes 0–39 shared
+    with Skyrim, then a distinct volumetric height-fog model (#1293
+    decoded it; see `esm/cell/walkers.rs`).
   - #1292 — `BSGeometry` external `.mesh` resolution took cell entities from
     75 to 93 547 (a ~1 247× spawn-rate jump).
   - #1294 — static-trimesh-fallback gate moved from `final_layer` to

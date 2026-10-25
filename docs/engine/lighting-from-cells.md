@@ -137,9 +137,15 @@ canonical sizes are pinned in `cell/walkers.rs` and validated by an
 | Starfield           | 28 / 108                     |
 
 Starfield's vanilla 108-byte XCLL was split onto its own set in #1291
-(it had been tripping the sanity-warn ~12 k× per `Starfield.esm` parse);
-the size-based field dispatch reads the Skyrim 92-byte prefix and ignores
-the trailing 16 bytes for now (#1277 Task 4 hardened the sanity gate).
+(it had been tripping the sanity-warn ~12 k× per `Starfield.esm` parse;
+#1277 Task 4 hardened the sanity gate). It is **not** the Skyrim 92-byte
+layout plus a 16-byte tail — Starfield's XCLL shares only bytes 0–39
+with Skyrim and then diverges into a distinct volumetric height-fog
+model (Fog Color Far, Fog Max, Light Fade, Near/Far Height Mid/Range,
+Fog Color High Near/Far, four fog scales, an Interior Type enum; no
+ambient cube / specular / fresnel), and has its own dedicated decode
+(`game == Starfield && len >= 108`, #1293 / #1579) per xEdit SF1. See
+[`crates/plugin/src/esm/cell/walkers.rs`](../../crates/plugin/src/esm/cell/walkers.rs).
 
 ### `CellLightingRes` (renderer-facing resource)
 
