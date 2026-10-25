@@ -779,6 +779,29 @@ classifier's no-coverage early return fired before `bgem_glass` was
 consulted and authored glass rendered opaque; the Alpha-side
 `Blender`→`AlphaBlenderSettings` edge has zero top-level instances in the
 base CDB, schema probe 2026-10-09), and the
+**parked additive-family blend modes (#5509)**: `BlendingMode` is authored
+on 526 `EffectSettingsComponent`s — Additive 234, SourceSoftAdditive 283,
+AlphaBlend 2 — and Starfield shapes almost never carry `NiAlphaProperty`
+(884 blocks against 190,549 `BSGeometry`), so the CDB string is their only
+blend signal. The shapes that reference them render opaque, depth-writing
+cards today: Additive 182 (ship weapon projectile glows
+`ShipBallisticBoltCore` / `ShipEM_SwirlGlow_01` / `ShipKineticCannonGlow`,
+`starborntempleintpedestal_b02`), SourceSoftAdditive 277
+(`smod_fx_enginemain_*` `EngineGlowFlames.mat`, `spacemine.nif`
+`RadialGlow_01_Red`), DestinationInvertedSoftAdditive 29
+(`nathemast_topwaterfall.nif` `Water\Waterfall01.mat`), and one shape each
+of DestinationSoftAdditive / Multiply / TakeSmaller
+(`effects\debugfiles\testblendingmodes_*`) — 491 total, all on
+`BSLightingShaderProperty` stubs with no `NiAlphaProperty`. **Additive and
+Multiply are sourced but not landed**: the studio's own preset table
+(`/mnt/data/src/reference/Material-Editor/MaterialLib/BaseMaterialFile.cs`,
+`ConvertAlphaBlendMode`) maps Additive = (SRC_ALPHA=6, ONE=0) and
+Multiplicative = (DEST_COLOR=4, ZERO=1) — the same Gamebryo-native factors
+the BGSM arm forwards and the renderer keys (#1651/#1823) — but the
+cross-game carry-over (that Starfield's CDB string means the FO4-era preset
+factors) must be confirmed against a capture before the arms land in
+`apply_cdb_material`. The soft variants and `TakeSmaller` have no local
+source at all and stay parked until one is found.
 `EmissiveSettingsComponent` capture — Enabled + the nested
 `EmittanceSettings` tint / luminous emittance is captured by
 `byroredux_sfmaterial` but **parked** at the canonical boundary (#5283
