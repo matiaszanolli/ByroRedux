@@ -26,7 +26,23 @@
 //! warn, no error). With it, the decoded WAV bytes flow into
 //! [`load_sound_from_bytes`] like any other vanilla format.
 
-use std::process::{Command, Stdio};
+use std::io::{Read, Write};
+use std::process::{Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
+
+/// Ceiling on the PCM read back from `ffmpeg` (#6307): 64 MiB is ~6 minutes of
+/// 44.1 kHz mono, an order of magnitude past the longest vanilla voice line, and
+/// the same figure as `VoiceSoundCache`'s budget. A crafted `data` chunk could
+/// otherwise buffer without limit under the cache's write guard.
+pub const MAX_PCM_BYTES: usize = 64 * 1024 * 1024;
+
+/// Wall-clock ceiling on one `ffmpeg` decode (#6307). A line decodes in well
+/// under a second; the decode runs inside the voice cache's loader, so a hung
+/// child would stall the frame that asked for the line.
+pub const FFMPEG_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How much of `ffmpeg`'s stderr is kept for the failure message.
+const STDERR_KEPT: usize = 4096;
 
 /// `WAVE_FORMAT_WMAUDIO2` — the payload tag on 40/40 censused SE voice
 /// files. (The XMA family, 0x0165/0x0166, never appeared; a stream
@@ -88,6 +104,14 @@ pub enum FuzDecodeError {
     FfmpegFailed(String),
     /// `ffmpeg` produced no decodable output.
     FfmpegEmptyOutput,
+    /// `ffmpeg` did not finish within [`FFMPEG_TIMEOUT`] and was killed.
+    FfmpegTimedOut,
+    /// `ffmpeg` produced more than [`MAX_PCM_BYTES`] of PCM and was cut off.
+    FfmpegOutputTooLarge,
+    /// The xWMA temp file could not be created or written (a full or
+    /// read-only temp directory, permissions). `ffmpeg` may well be present:
+    /// this is not [`Self::FfmpegMissing`] (#6307).
+    TempWrite(std::io::Error),
 }
 
 impl std::fmt::Display for FuzDecodeError {
@@ -103,6 +127,13 @@ impl std::fmt::Display for FuzDecodeError {
                 write!(f, "ffmpeg decode failed: {}", stderr.trim())
             }
             Self::FfmpegEmptyOutput => write!(f, "ffmpeg produced no audio output"),
+            Self::FfmpegTimedOut => write!(f, "ffmpeg did not finish within {FFMPEG_TIMEOUT:?}"),
+            Self::FfmpegOutputTooLarge => {
+                write!(f, "ffmpeg produced more than {MAX_PCM_BYTES} bytes of audio")
+            }
+            Self::TempWrite(error) => {
+                write!(f, "could not write the xWMA temp file for ffmpeg: {error}")
+            }
         }
     }
 }
@@ -219,34 +250,29 @@ pub fn fuz_to_wav_bytes(data: &[u8]) -> Result<Vec<u8>, FuzDecodeError> {
     // ffmpeg writes 0xFFFFFFFF there and symphonia's wav reader dies on
     // the declared length. The canonical 44-byte header below carries
     // the real sizes; channel count and rate come from the parsed `fmt`.
-    let mut temp = std::env::temp_dir();
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    temp.push(format!("byro-fuz-{unique}.xwma"));
-    std::fs::write(&temp, container.xwma).map_err(|_| FuzDecodeError::FfmpegMissing)?;
-    let result = Command::new("ffmpeg")
-        .args([
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-        ])
+    let temp = write_temp_xwma(container.xwma).map_err(FuzDecodeError::TempWrite)?;
+    let mut command = Command::new("ffmpeg");
+    command
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
         .arg(&temp)
-        .args(["-vn", "-acodec", "pcm_s16le", "-f", "s16le", "pipe:1"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output();
+        .args(["-vn", "-acodec", "pcm_s16le", "-f", "s16le", "pipe:1"]);
+    let result = run_bounded(command, MAX_PCM_BYTES, FFMPEG_TIMEOUT);
     let _ = std::fs::remove_file(&temp);
     let output = match result {
         Ok(output) => output,
-        // The only way `Command::new` fails for an existing binary is
-        // spawn-level: the host has no `ffmpeg` (or it is not
-        // executable) — the optional route is absent, not misconfigured.
-        Err(_) => return Err(FuzDecodeError::FfmpegMissing),
+        // No `ffmpeg` on the host (or it is not executable): the optional
+        // route is absent, not misconfigured. Any other spawn failure (fd or
+        // process limits) says what it was.
+        Err(RunError::Spawn(error)) => {
+            return Err(match error.kind() {
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
+                    FuzDecodeError::FfmpegMissing
+                }
+                _ => FuzDecodeError::FfmpegFailed(format!("could not start ffmpeg: {error}")),
+            });
+        }
+        Err(RunError::TimedOut) => return Err(FuzDecodeError::FfmpegTimedOut),
+        Err(RunError::OutputTooLarge) => return Err(FuzDecodeError::FfmpegOutputTooLarge),
     };
     if !output.status.success() {
         return Err(FuzDecodeError::FfmpegFailed(
@@ -257,6 +283,115 @@ pub fn fuz_to_wav_bytes(data: &[u8]) -> Result<Vec<u8>, FuzDecodeError> {
         return Err(FuzDecodeError::FfmpegEmptyOutput);
     }
     Ok(wav_header(output.stdout, stream.channels, stream.sample_rate))
+}
+
+/// Write the xWMA image to a fresh temp file. `create_new` (`O_EXCL`) refuses an
+/// existing path, a planted symlink included, instead of following and
+/// truncating it; the name carries the pid and a per-process counter beside the
+/// clock, so concurrent decodes cannot collide (#6307).
+fn write_temp_xwma(xwma: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut last = None;
+    for _ in 0..8 {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "byro-fuz-{}-{unique}-{counter}.xwma",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        match options.open(&path) {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(xwma) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(error);
+                }
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => last = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AlreadyExists)))
+}
+
+/// A finished child process: its exit status and what it wrote.
+struct ChildOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+enum RunError {
+    /// The process could not be started.
+    Spawn(std::io::Error),
+    /// It did not exit within the time limit and was killed.
+    TimedOut,
+    /// It wrote more than the stdout limit; the read end was closed on it.
+    OutputTooLarge,
+}
+
+/// Run `command` to completion with stdout capped at `max_stdout` bytes and a
+/// wall-clock `timeout`. Both pipes are drained on their own threads, so a
+/// chatty child cannot block on a full stderr pipe, and stdout is read through
+/// a bounded reader: past the cap the read end is closed (the child gets
+/// `SIGPIPE`) rather than buffered (#6307).
+fn run_bounded(
+    mut command: Command,
+    max_stdout: usize,
+    timeout: Duration,
+) -> Result<ChildOutput, RunError> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(RunError::Spawn)?;
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let _ = stdout.take(max_stdout as u64 + 1).read_to_end(&mut kept);
+        kept
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let _ = (&mut stderr).take(STDERR_KEPT as u64).read_to_end(&mut kept);
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        kept
+    });
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // Past the deadline, or the wait itself failed: reap the child.
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    if stdout.len() > max_stdout {
+        return Err(RunError::OutputTooLarge);
+    }
+    match status {
+        Some(status) => Ok(ChildOutput { status, stdout, stderr }),
+        None => Err(RunError::TimedOut),
+    }
 }
 
 /// Wrap raw little-endian s16 PCM in the canonical 44-byte PCM WAV
@@ -381,6 +516,87 @@ mod tests {
             Err(FuzDecodeError::BadContainer) => {}
             other => panic!("expected BadContainer, got {other:?}"),
         }
+    }
+
+    /// #6307 - the subprocess runner is bounded in output and time, and a temp-write failure is
+    /// not reported as a missing ffmpeg. `sh` stands in for `ffmpeg`.
+    #[cfg(unix)]
+    mod bounded {
+        use super::super::*;
+
+        fn sh(script: &str) -> Command {
+            let mut command = Command::new("sh");
+            command.args(["-c", script]);
+            command
+        }
+
+        #[test]
+        fn output_within_the_cap_is_returned_with_its_status() {
+            let out = run_bounded(sh("printf abcd; printf oops >&2"), 16, Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("a short run"));
+            assert!(out.status.success());
+            assert_eq!((out.stdout.as_slice(), out.stderr.as_slice()), (&b"abcd"[..], &b"oops"[..]));
+        }
+
+        #[test]
+        fn output_past_the_cap_is_cut_off_not_buffered() {
+            // 100 MB of zeros against a 1 KB cap: the read end closes, the child dies of SIGPIPE.
+            let result = run_bounded(sh("head -c 100000000 /dev/zero"), 1024, Duration::from_secs(10));
+            assert!(matches!(result, Err(RunError::OutputTooLarge)));
+        }
+
+        #[test]
+        fn a_child_that_outlives_the_timeout_is_killed() {
+            let started = Instant::now();
+            // `exec` so the kill lands on the sleeper itself, not on a shell that forked it.
+            let result = run_bounded(sh("exec sleep 30"), 1024, Duration::from_millis(150));
+            assert!(matches!(result, Err(RunError::TimedOut)));
+            assert!(started.elapsed() < Duration::from_secs(10), "the child was not waited out");
+        }
+
+        #[test]
+        fn a_chatty_stderr_does_not_block_the_child() {
+            // Far more than a pipe buffer (64 KiB) on stderr, with a clean exit.
+            let out = run_bounded(sh("head -c 1000000 /dev/zero >&2; printf ok"), 16, Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("a run that talks on stderr"));
+            assert!(out.status.success());
+            assert_eq!(out.stdout, b"ok");
+            assert_eq!(out.stderr.len(), STDERR_KEPT, "only the head of stderr is kept");
+        }
+
+        #[test]
+        fn a_missing_binary_is_a_spawn_error() {
+            let result = run_bounded(Command::new("byro-no-such-binary"), 16, Duration::from_secs(1));
+            assert!(matches!(result, Err(RunError::Spawn(_))));
+        }
+
+        #[test]
+        fn the_temp_file_is_exclusive_and_unique() {
+            let a = write_temp_xwma(b"one").unwrap();
+            let b = write_temp_xwma(b"two").unwrap();
+            assert_ne!(a, b);
+            assert_eq!(std::fs::read(&a).unwrap(), b"one");
+            assert_eq!(std::fs::read(&b).unwrap(), b"two");
+            // An existing path (a planted symlink included) is refused, never truncated.
+            let planted = std::env::temp_dir().join(format!("byro-fuz-test-{}", std::process::id()));
+            std::fs::write(&planted, b"keep").unwrap();
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            assert_eq!(
+                options.open(&planted).unwrap_err().kind(),
+                std::io::ErrorKind::AlreadyExists
+            );
+            for path in [a, b, planted] {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+
+    #[test]
+    fn a_temp_write_failure_is_not_reported_as_a_missing_ffmpeg() {
+        let error = FuzDecodeError::TempWrite(std::io::Error::from(std::io::ErrorKind::StorageFull));
+        assert!(!matches!(error, FuzDecodeError::FfmpegMissing));
+        assert!(error.to_string().contains("temp file"), "{error}");
     }
 
     /// The real corpus end-to-end: a vanilla SE line parses, reports its
