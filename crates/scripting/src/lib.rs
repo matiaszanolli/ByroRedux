@@ -289,7 +289,7 @@ pub use bleedout::{
     spare_from_death, ActorBaseProtectionOverrides, ActorProtection, Bleedout, BleedoutRules,
 };
 pub use player_control::{
-    collect_ghosts, collect_unconscious, AiSuspended, is_ghost, is_unconscious, update_actor_control, ActorControlState, PlayerControlSelection,
+    collect_ghosts, collect_unconscious, AiSuspended, is_ghost, is_incapacitated, is_unconscious, update_actor_control, ActorControlState, PlayerControlSelection,
     PlayerControlState,
 };
 pub use quest_stages::{

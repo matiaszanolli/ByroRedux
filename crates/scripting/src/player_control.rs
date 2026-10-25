@@ -194,6 +194,19 @@ pub fn is_unconscious(world: &World, entity: EntityId) -> bool {
         || crate::bleedout::is_bleeding_out(world, entity)
 }
 
+/// Whether `entity` is in the set [`collect_unconscious`] gathers: unconscious (bleedout included),
+/// held out of the AI by the engine ([`AiSuspended`]: knocked down, running from a `ForceFlee`), or
+/// switched off by a script (`SetActorsAI 0`). The scalar of that bulk form — a per-frame scan uses
+/// one, an activation path the other, and #6287 was the two disagreeing — so they share the pieces
+/// and `incapacity_scalar_and_bulk_forms_agree` pins them against each other over the state matrix.
+/// [`is_unconscious`] stays the strict question ("is it unconscious"), which the ObScript query
+/// functions answer; a fleeing actor is incapacitated, not unconscious.
+pub fn is_incapacitated(world: &World, entity: EntityId) -> bool {
+    is_unconscious(world, entity)
+        || world.get::<AiSuspended>(entity).is_some()
+        || crate::obscript_more::ai_disabled_actors(world).contains(&entity)
+}
+
 /// Whether `entity` is a ghost (M47.2, `SetGhost`).
 pub fn is_ghost(world: &World, entity: EntityId) -> bool {
     world
@@ -215,7 +228,8 @@ pub fn collect_ghosts(world: &World, out: &mut Vec<EntityId>) {
     }
 }
 
-/// Refill `out` with every unconscious entity (bleedout included), taking
+/// Refill `out` with every incapacitated entity — unconscious (bleedout included),
+/// [`AiSuspended`], or `SetActorsAI 0` ([`is_incapacitated`] is its scalar) — taking
 /// one guard at a time and dropping each before returning (#5017). Per-frame
 /// systems collect this first, so they never take the guards while holding
 /// their own queries.

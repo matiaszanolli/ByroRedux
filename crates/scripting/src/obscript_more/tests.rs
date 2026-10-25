@@ -816,3 +816,37 @@ fn get_crime_known_reads_what_the_caller_knows() {
         "someone else does not know it"
     );
 }
+
+/// #6287 — `is_incapacitated` (an activation path's question) and `collect_unconscious` (a per-frame
+/// scan's) are one set seen two ways. Every engine- and script-side way to take an actor out of play,
+/// and the states that must not, give the same answer from both.
+#[test]
+fn incapacity_scalar_and_bulk_forms_agree() {
+    use crate::bleedout::Bleedout;
+    use crate::player_control::{update_actor_control, AiSuspended};
+
+    type Apply = fn(&mut World, EntityId);
+    let cases: [(&str, Apply, bool); 8] = [
+        ("conscious and free", |_, _| {}, false),
+        ("unconscious", |w, a| assert!(update_actor_control(w, a, |s| s.unconscious = true)), true),
+        ("bleeding out", |w, a| w.insert(a, Bleedout { remaining_secs: Some(20.0) }), true),
+        ("knocked down or fleeing (AiSuspended)", |w, a| w.insert(a, AiSuspended), true),
+        ("SetActorsAI 0", |w, _| w.resource_mut::<crate::obscript_ledger::ObScriptLedger>().set_value(0x118b, ACTOR, 0.0), true),
+        ("SetActorsAI 1", |w, _| w.resource_mut::<crate::obscript_ledger::ObScriptLedger>().set_value(0x118b, ACTOR, 1.0), false),
+        ("a ghost, which can still talk", |w, a| assert!(update_actor_control(w, a, |s| s.ghost = true)), false),
+        ("restrained only", |w, a| assert!(update_actor_control(w, a, |s| s.restrained = true)), false),
+    ];
+    for (name, apply, incapacitated) in cases {
+        let (mut world, actor, other, _) = world(GameKind::Fallout3NV);
+        world.register::<crate::player_control::ActorControlState>();
+        world.register::<crate::bleedout::Bleedout>();
+        world.register::<AiSuspended>();
+        world.init_resource::<crate::obscript_ledger::ObScriptLedger>();
+        apply(&mut world, actor);
+        let mut bulk = Vec::new();
+        crate::collect_unconscious(&world, &mut bulk);
+        assert_eq!(crate::is_incapacitated(&world, actor), incapacitated, "{name}: scalar");
+        assert_eq!(bulk.contains(&actor), incapacitated, "{name}: bulk");
+        assert!(!crate::is_incapacitated(&world, other) && !bulk.contains(&other), "{name}: the bystander is unaffected");
+    }
+}

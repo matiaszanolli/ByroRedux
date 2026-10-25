@@ -694,7 +694,9 @@ struct TopicSelection {
 
 /// #5043 — whether `npc` is in no state to hold a conversation: dead (corpse
 /// loot owns it), fighting (`AiCombatState`, against the player or anyone
-/// else), or unconscious (#5017). The interaction Talk arm applies the same
+/// else), or unconscious (#5017) — and "unconscious" here is the whole set
+/// `collect_unconscious` gathers: also knocked down or fleeing (`AiSuspended`)
+/// and `SetActorsAI 0` (#6287). The interaction Talk arm applies the same
 /// three filters (in bulk, via [`collect_dialogue_refusals`]), so the prompt
 /// and the selection agree.
 pub(crate) fn npc_refuses_dialogue(world: &World, npc: EntityId) -> Option<&'static str> {
@@ -708,6 +710,9 @@ pub(crate) fn npc_refuses_dialogue(world: &World, npc: EntityId) -> Option<&'sta
     if byroredux_scripting::is_unconscious(world, npc) {
         return Some("that actor is unconscious");
     }
+    if byroredux_scripting::is_incapacitated(world, npc) {
+        return Some("that actor is knocked down, fleeing or has its AI disabled");
+    }
     None
 }
 
@@ -716,7 +721,8 @@ pub(crate) fn npc_refuses_dialogue(world: &World, npc: EntityId) -> Option<&'sta
 /// storage guard each, so the HUD prompt path never re-locks four storages
 /// per placement root per frame. The scalar form stays the authority for
 /// the one-NPC activation path (it names the refusing state) — the two
-/// must always check the same three conditions.
+/// must always check the same three conditions, and
+/// `dialogue_refusal_scalar_and_bulk_forms_agree` pins that over the states.
 pub(crate) struct DialogueRefusals {
     dead: FxHashSet<EntityId>,
     fighting: FxHashSet<EntityId>,
@@ -1031,6 +1037,37 @@ mod voice_lifetime_source_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6287 — the scalar refusal (activation, topic clicks, `forcegreet`, barter, the open-partner
+    /// check) and the bulk one (the HUD's Talk prompt) answer alike over every refusing state:
+    /// dead, fighting, unconscious, bleeding out, and knocked down or fleeing (`AiSuspended`).
+    #[test]
+    fn dialogue_refusal_scalar_and_bulk_forms_agree() {
+        use byroredux_scripting::{update_actor_control, AiSuspended};
+        type Apply = fn(&mut World, EntityId);
+        let cases: [(&str, Apply, bool); 7] = [
+            ("free", |_, _| {}, false),
+            ("dead", |w, a| w.insert(a, Dead), true),
+            ("in combat", |w, a| w.insert(a, AiCombatState { target: a, attack_cooldown_remaining: 0.0 }), true),
+            ("unconscious", |w, a| assert!(update_actor_control(w, a, |s| s.unconscious = true)), true),
+            ("bleeding out", |w, a| w.insert(a, byroredux_scripting::Bleedout { remaining_secs: Some(5.0) }), true),
+            ("knocked down or fleeing", |w, a| w.insert(a, AiSuspended), true),
+            ("a ghost, which can still talk", |w, a| assert!(update_actor_control(w, a, |s| s.ghost = true)), false),
+        ];
+        for (name, apply, refused) in cases {
+            let mut world = World::new();
+            world.register::<Dead>();
+            world.register::<AiCombatState>();
+            world.register::<AiSuspended>();
+            world.register::<byroredux_scripting::ActorControlState>();
+            world.register::<byroredux_scripting::Bleedout>();
+            let npc = world.spawn();
+            apply(&mut world, npc);
+            assert_eq!(npc_refuses_dialogue(&world, npc).is_some(), refused, "{name}: scalar");
+            assert_eq!(collect_dialogue_refusals(&world).refuses(npc), refused, "{name}: bulk");
+        }
+    }
+
     use byroredux_plugin::esm::records::InfoRecord;
     use byroredux_plugin::esm::records::{AliasFillType, QuestAlias, QustRecord};
     use byroredux_scripting::quest_stages::QuestStageState;
