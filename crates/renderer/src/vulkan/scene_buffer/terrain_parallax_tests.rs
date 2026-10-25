@@ -334,6 +334,34 @@ fn every_parallax_march_uses_the_guarded_secant_weight() {
     }
 }
 
+/// #6347 — every height read the march makes happens in `byroTerrainBlendCore`, reached through
+/// `byroTerrainBlendedHeight`; the guard above only looks inside `terrainParallaxDisplaceUV`. The
+/// core also backs `byroTerrainHeightBlend`, which runs in uniform flow, so an editor there has no
+/// local reason to keep `textureGrad`, yet an implicit `texture()` or derivative inside the march
+/// loop is undefined behaviour. Ban the same tokens in the whole call chain.
+#[test]
+fn glsl_terrain_height_chain_uses_only_explicit_gradients() {
+    let bindings = include_str!("../../../shaders/include/bindings.glsl");
+    for header in ["float byroTerrainBlendCore(", "float byroTerrainBlendedHeight("] {
+        // Comments may name the banned calls (this one explains why they are banned).
+        let body = squashed(function_body(bindings, header));
+        for banned in ["dFdx(", "dFdy(", "fwidth(", "texture(", "textureQueryLod(", "textureOffset("] {
+            assert!(
+                !body.contains(banned),
+                "`{header}` reads `{banned}` — it is reached from inside the parallax march's \
+                 data-dependent loop, where implicit derivatives are undefined; take gradients \
+                 as parameters and sample with textureGrad (#6347)"
+            );
+        }
+    }
+    // The positive half: the core really does sample with the handed-in gradients.
+    let core = squashed(function_body(bindings, "float byroTerrainBlendCore("));
+    assert!(
+        core.contains("textureGrad(textures[nonuniformEXT(idx)], uv, dx, dy)"),
+        "byroTerrainBlendCore lost its explicit-gradient height read"
+    );
+}
+
 /// Collapse whitespace so a pin does not depend on how a call is wrapped.
 fn squashed(code: &str) -> String {
     code.lines()
