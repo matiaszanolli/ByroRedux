@@ -649,19 +649,6 @@ pub(crate) fn pre_parse_model_skip_reason(
     }
 }
 
-/// Pre-parse one exterior cell's unique, uncached static NIFs for the
-/// main-thread streaming drain.
-///
-/// The coordinator resolves the CELL, canonicalizes and deduplicates its
-/// model paths, skips the caller's cache snapshot (#862), and admits each
-/// input against the decoded-input budget; each pool task then extracts
-/// (archive read + inflate) and parses its own input (#3659).
-/// `load_one_exterior_cell` can therefore spawn cached REFR assets directly
-/// while consuming this payload only for cache misses.
-///
-/// Returns a [`LoadCellPayload`] with an empty `parsed` map when the cell is
-/// absent, has no references, or every model was cached. The main-thread drain
-/// still consumes that empty payload so its pending entry is cleared.
 /// The refs a cell's loaded bakes absorb, as the main thread's reference pass
 /// will see them (#6097).
 ///
@@ -687,6 +674,98 @@ fn bake_absorbed_refs(
         .map(|(&hash, _)| hash)
         .collect();
     crate::cell_loader::precombined::effective_absorbed_refs(bakes, &present)
+}
+
+/// Pre-parse one exterior cell's unique, uncached static NIFs for the
+/// main-thread streaming drain.
+///
+/// The coordinator resolves the CELL, canonicalizes and deduplicates its
+/// model paths, skips the caller's cache snapshot (#862), and admits each
+/// input against the decoded-input budget; each pool task then extracts
+/// (archive read + inflate) and parses its own input (#3659).
+/// `load_one_exterior_cell` can therefore spawn cached REFR assets directly
+/// while consuming this payload only for cache misses.
+///
+/// Returns a [`LoadCellPayload`] with an empty `parsed` map when the cell is
+/// absent, has no references, or every model was cached. The main-thread drain
+/// still consumes that empty payload so its pending entry is cleared.
+///
+/// #6342 — a ref a *present* bake would absorb is parsed after all when its bake did not draw: the
+/// first pass parses the bakes and every other model, and the models of the absorbed refs wait for
+/// the bakes' results ([`drawn_absorbed_refs`]), a second pass that is empty for a healthy install.
+/// What the worker knows of one precombine bake once the first pass has run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BakeVerdict {
+    /// Not in the archives: draws nothing.
+    Absent,
+    /// Parsed with at least one mesh: the main thread will spawn it (`count > 0`).
+    Drew,
+    /// Parsed, but with no mesh (a zero-mesh `_oc.nif`, a CSG-deferred placeholder) or failed to
+    /// parse: the main thread's spawn comes back with `count == 0` and its refs render per-REFR.
+    DrewNothing,
+    /// Not parsed by this request (already cached, or batched from another cell): the worker has no
+    /// mesh count, so it assumes the bake draws, as the pre-#6342 predicate did.
+    Unknown,
+}
+
+/// The refs a cell's bakes *absorb*, as the main thread's `baked_hashes` will see them (#6342): a
+/// bake counts when it drew, or when the worker cannot tell ([`BakeVerdict::Unknown`]). Strictly
+/// narrower than [`bake_absorbed_refs`], which only asks whether the `_oc.nif` exists.
+fn drawn_absorbed_refs(
+    bakes: &[(u32, u32)],
+    hashes: &[u32],
+    keys: &[String],
+    verdict: impl Fn(&str) -> BakeVerdict,
+) -> HashSet<u32> {
+    let drawn: Vec<u32> = hashes
+        .iter()
+        .zip(keys)
+        .filter(|(_, key)| matches!(verdict(key), BakeVerdict::Drew | BakeVerdict::Unknown))
+        .map(|(&hash, _)| hash)
+        .collect();
+    crate::cell_loader::precombined::effective_absorbed_refs(bakes, &drawn)
+}
+
+/// The per-model preflight shared by the first pass and the deferred one: a model already cached
+/// or already batched is not parsed again, a SpeedTree binary is not a NIF, and anything else is
+/// admitted under its canonical key. Memoised per raw path in `decisions` (#4207).
+fn admit_model<'a>(
+    model_path: &'a str,
+    decisions: &mut HashMap<&'a str, PreflightDecision>,
+    cached_keys: &HashSet<String>,
+    batch_keys: &HashSet<String>,
+    model_paths: &mut HashSet<String>,
+    skipped_cached: &mut usize,
+    skipped_batch_duplicates: &mut usize,
+) {
+    if !decisions.contains_key(model_path) {
+        let d = if is_spt_model_path(model_path) {
+            // #3735 — SpeedTree `.spt` binaries are not NIFs; prefetching them
+            // was actively harmful (`extract_mesh` missed and wrote a NEGATIVE
+            // `NifImportRegistry` entry under the shared cache key, which the
+            // sync loader's own resolver then never got past).
+            PreflightDecision::SkipSpt
+        } else {
+            // #3038 — must match the sync REFR loader's key exactly
+            // (`references/synth_child.rs`), or the same asset ends up cached
+            // under two different `NifImportRegistry` keys and parsed twice.
+            let key = canonical_model_path_key(model_path);
+            match pre_parse_model_skip_reason(&key, cached_keys, batch_keys) {
+                Some(skip) => PreflightDecision::Skip(skip),
+                None => PreflightDecision::Insert(key),
+            }
+        };
+        decisions.insert(model_path, d);
+    }
+    match decisions.get(model_path) {
+        Some(PreflightDecision::SkipSpt) => {}
+        Some(PreflightDecision::Skip(PreParseModelSkip::Cached)) => *skipped_cached += 1,
+        Some(PreflightDecision::Skip(PreParseModelSkip::BatchDuplicate)) => *skipped_batch_duplicates += 1,
+        Some(PreflightDecision::Insert(key)) => {
+            model_paths.insert(key.clone());
+        }
+        None => unreachable!("just inserted"),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -768,7 +847,8 @@ pub(crate) fn pre_parse_cell(
         &precombine_keys,
         |key| tex_provider.has_mesh(key),
     );
-    let mut skipped_absorbed = 0usize;
+    // Refs a present bake may absorb, held back until the first pass shows whether it drew (#6342).
+    let mut deferred_absorbed: Vec<(u32, &str)> = Vec::new();
     let mut decisions: std::collections::HashMap<&str, PreflightDecision> = HashMap::new();
     for refr in &cell.references {
         let Some(object) = wctx.record_index.cells.statics.get(&refr.base_form_id) else {
@@ -781,65 +861,35 @@ pub(crate) fn pre_parse_cell(
         if absorbed_refs.contains(&refr.form_id)
             && crate::cell_loader::references::precombine_can_replace_record(Some(object.record_type))
         {
-            skipped_absorbed += 1;
+            // A present bake probably absorbs this ref, but only a bake that draws does: wait for
+            // the bakes' results before deciding whether its model is needed (#6342).
+            deferred_absorbed.push((refr.form_id, model_path));
             continue;
         }
-        // #3735 — SpeedTree `.spt` binaries are not NIFs and are not
-        // resolved through `extract_mesh`'s `meshes\` rooting; the sync REFR
-        // loader owns their archive-key resolution
-        // (`references::import::resolve_spt_model_path`). Prefetching them
-        // here was actively harmful, not merely useless: `extract_mesh`
-        // missed, and `finish_streaming_import`'s `None` arm wrote a
-        // NEGATIVE `NifImportRegistry` entry under the shared cache key —
-        // so the sync loader's three-tier lookup found a cached miss and
-        // skipped the REFR before its own resolver ran. On the exterior
-        // path, which is where trees actually live, that made the fix on
-        // the sync side unobservable.
-        // #4207 — memoize the decision per raw path: identical strings
-        // (the shared-furniture case) compute once, so the lowercase /
-        // format! allocations run per UNIQUE model, not per REFR. The
-        // early-continue arms replay the memoized outcome.
-        if !decisions.contains_key(model_path) {
-            let d = if is_spt_model_path(model_path) {
-                // #3735 — SpeedTree `.spt` binaries are not NIFs; see the
-                // comment above for why prefetching them was actively
-                // harmful.
-                PreflightDecision::SkipSpt
-            } else {
-                // #3038 — must match the sync REFR loader's key exactly
-                // (`references/synth_child.rs`), or the same asset ends up
-                // cached under two different `NifImportRegistry` keys and
-                // gets parsed + imported twice. Both loaders route through
-                // the one shared normaliser.
-                let key = canonical_model_path_key(model_path);
-                match pre_parse_model_skip_reason(&key, cached_keys, batch_keys) {
-                    Some(skip) => PreflightDecision::Skip(skip),
-                    None => PreflightDecision::Insert(key),
-                }
-            };
-            decisions.insert(model_path, d);
-        }
-        match decisions.get(model_path) {
-            Some(PreflightDecision::SkipSpt) => continue,
-            Some(PreflightDecision::Skip(PreParseModelSkip::Cached)) => {
-                skipped_cached += 1;
-                continue;
-            }
-            Some(PreflightDecision::Skip(PreParseModelSkip::BatchDuplicate)) => {
-                skipped_batch_duplicates += 1;
-                continue;
-            }
-            Some(PreflightDecision::Insert(key)) => {
-                model_paths.insert(key.clone());
-            }
-            None => unreachable!("just inserted"),
-        }
+        // #3735 / #4207 / #3038 — see `admit_model`.
+        admit_model(
+            model_path,
+            &mut decisions,
+            cached_keys,
+            batch_keys,
+            &mut model_paths,
+            &mut skipped_cached,
+            &mut skipped_batch_duplicates,
+        );
     }
     // Pre-parsing the precombines moves their read, parse and CSG decode off the
     // main thread; the drain's precombine merge and the job's cache hit do
     // the rest. They go first: CSG decode is the heaviest task per input.
     let mut precombine_paths: Vec<String> = Vec::new();
     let mut csg_blobs = HashMap::new();
+    // Bakes this request does not parse (cached, or batched from another cell) have no mesh count
+    // here; the first pass's verdict treats them as drawing.
+    let unparsed_bakes: HashSet<String> = precombine_keys
+        .iter()
+        .filter(|key| pre_parse_model_skip_reason(key, cached_keys, batch_keys).is_some())
+        .cloned()
+        .collect();
+    let bake_keys = precombine_keys.clone();
     if !precombine_keys.is_empty() {
         let mut seen = HashSet::new();
         for key in precombine_keys {
@@ -860,15 +910,15 @@ pub(crate) fn pre_parse_cell(
                 );
         }
     }
-    if skipped_cached > 0 || skipped_batch_duplicates > 0 || skipped_absorbed > 0 {
+    if skipped_cached > 0 || skipped_batch_duplicates > 0 || !deferred_absorbed.is_empty() {
         log::debug!(
             "[stream-worker] cell ({},{}): {} cached models skipped, {} batch duplicates skipped, \
-             {} precombine-absorbed refs skipped, {} unique to parse",
+             {} refs held for their bakes, {} unique to parse",
             gx,
             gy,
             skipped_cached,
             skipped_batch_duplicates,
-            skipped_absorbed,
+            deferred_absorbed.len(),
             model_paths.len() + precombine_paths.len(),
         );
     }
@@ -923,6 +973,61 @@ pub(crate) fn pre_parse_cell(
     // produced.
     batch_keys.extend(results.iter().map(|(key, _)| key.clone()));
     parsed.extend(results);
+
+    // #6342 — the second pass. A ref's model is skipped only if its bake actually drew, which is
+    // what the main thread's `baked_hashes` records (`count > 0`); a bake that is in the archives
+    // but drew nothing (a zero-mesh `_oc.nif`, a CSG-deferred placeholder, a parse failure) leaves
+    // its refs to render per-REFR, and without their models parsed here each unique one takes an
+    // inline extract + parse on the main thread, the cost this worker exists to remove.
+    let mut parallel_parse_threads = parallel_parse_threads;
+    if !deferred_absorbed.is_empty() {
+        let drawn = drawn_absorbed_refs(&cell.absorbed_ref_bakes, &cell.precombined_mesh_hashes, &bake_keys, |key| {
+            if !tex_provider.has_mesh(key) {
+                BakeVerdict::Absent
+            } else if unparsed_bakes.contains(key) {
+                BakeVerdict::Unknown
+            } else {
+                match parsed.get(key) {
+                    Some(Some(import)) if !import.meshes.is_empty() => BakeVerdict::Drew,
+                    _ => BakeVerdict::DrewNothing,
+                }
+            }
+        });
+        let mut late_paths: HashSet<String> = HashSet::new();
+        let (mut late_cached, mut late_batched) = (0usize, 0usize);
+        for &(form_id, model_path) in &deferred_absorbed {
+            if !drawn.contains(&form_id) {
+                admit_model(
+                    model_path,
+                    &mut decisions,
+                    cached_keys,
+                    batch_keys,
+                    &mut late_paths,
+                    &mut late_cached,
+                    &mut late_batched,
+                );
+            }
+        }
+        skipped_batch_duplicates += late_batched;
+        if !late_paths.is_empty() {
+            log::debug!(
+                "[stream-worker] cell ({gx},{gy}): {} models of refs whose bake drew nothing parsed after all",
+                late_paths.len()
+            );
+            let inputs: Vec<PreParseInput> = late_paths
+                .into_iter()
+                .map(|key| PreParseInput {
+                    declared_bytes: tex_provider.mesh_declared_size(&key).unwrap_or(0),
+                    key,
+                    precombine: false,
+                })
+                .collect();
+            let (late_results, late_threads, _stats) = parse_nif_pipeline(inputs.into_iter(), stream_pool, &ctx);
+            batch_keys.extend(late_results.iter().map(|(key, _)| key.clone()));
+            parsed.extend(late_results);
+            parallel_parse_threads.extend(late_threads);
+        }
+    }
 
     LoadCellPayload {
         gx,
@@ -1070,7 +1175,7 @@ mod parse_input_budget_tests {
 /// #6097 - which refs the worker may leave unparsed.
 #[cfg(test)]
 mod absorbed_ref_tests {
-    use super::bake_absorbed_refs;
+    use super::{bake_absorbed_refs, drawn_absorbed_refs, BakeVerdict};
 
     fn keys(hashes: &[u32]) -> Vec<String> {
         hashes.iter().map(|hash| format!("meshes/precombined/{hash:08x}_oc.nif")).collect()
@@ -1101,6 +1206,52 @@ mod absorbed_ref_tests {
         assert!(bake_absorbed_refs(&[(1, 0xC)], &[0xA], &keys(&[0xA]), |_| true).is_empty());
     }
 
+    /// #6342 - a bake in the archives that draws nothing (a zero-mesh `_oc.nif`, a CSG-deferred
+    /// placeholder, a parse failure) is not a carrier of its refs' geometry: the main thread
+    /// renders them per-REFR, so the worker must still have their models. `bake_absorbed_refs`
+    /// (presence only) says they are absorbed; `drawn_absorbed_refs` (what the main thread's
+    /// `count > 0` records) says otherwise.
+    #[test]
+    fn a_bake_that_exists_but_draws_nothing_does_not_absorb_its_refs() {
+        let bakes = [(1, 0xA), (2, 0xA), (3, 0xB), (4, 0xC)];
+        let hashes = [0xA, 0xB, 0xC];
+        let paths = keys(&hashes);
+        let by_hash = |verdicts: [BakeVerdict; 3]| {
+            let paths = paths.clone();
+            move |key: &str| verdicts[paths.iter().position(|p| p == key).expect("a listed bake")]
+        };
+
+        // All three are in the archives: the presence predicate absorbs every ref ...
+        assert_eq!(bake_absorbed_refs(&bakes, &hashes, &paths, |_| true).len(), 4);
+        // ... but bake A parsed to no mesh (CSG-deferred) and bake B failed to parse.
+        let drawn = drawn_absorbed_refs(
+            &bakes,
+            &hashes,
+            &paths,
+            by_hash([BakeVerdict::DrewNothing, BakeVerdict::DrewNothing, BakeVerdict::Drew]),
+        );
+        assert_eq!(drawn, [4].into_iter().collect(), "only the bake that drew absorbs its refs");
+        assert!(!drawn.contains(&1) && !drawn.contains(&2), "A's refs keep their models");
+        assert!(!drawn.contains(&3), "B's ref keeps its model");
+    }
+
+    /// A bake this request did not parse (cached, or batched from another cell) has no mesh count
+    /// here: it keeps absorbing, as before #6342; an absent one never does.
+    #[test]
+    fn an_unparsed_bake_is_assumed_to_draw_and_an_absent_one_does_not() {
+        let bakes = [(1, 0xA), (2, 0xB)];
+        let paths = keys(&[0xA, 0xB]);
+        let absent_b = paths[1].clone();
+        let drawn = drawn_absorbed_refs(&bakes, &[0xA, 0xB], &paths, |key| {
+            if key == absent_b {
+                BakeVerdict::Absent
+            } else {
+                BakeVerdict::Unknown
+            }
+        });
+        assert_eq!(drawn, [1].into_iter().collect());
+    }
+
     /// The loop applies the main thread's type gate, not the absorbed set alone:
     /// an interactive record in an XCRI pair keeps its runtime identity there, so
     /// the worker must keep its model.
@@ -1113,9 +1264,14 @@ mod absorbed_ref_tests {
         let source = byroredux_core::source_scan::strip_test_modules(include_str!("pre_parse.rs"));
         let loop_body = source.split_once("for refr in &cell.references").expect("the preflight loop").1;
         assert!(
+            loop_body.contains("deferred_absorbed.push(")
+                && source.contains("drawn_absorbed_refs(&cell.absorbed_ref_bakes"),
+            "an absorbed ref is deferred to the post-bake pass, not dropped outright (#6342)"
+        );
+        assert!(
             loop_body.contains("absorbed_refs.contains(&refr.form_id)")
                 && loop_body.contains("precombine_can_replace_record"),
-            "the preflight loop must skip a STAT/SCOL ref the bakes absorb (#6097)"
+            "the preflight loop must hold back a STAT/SCOL ref the bakes absorb (#6097 / #6342)"
         );
     }
 }
