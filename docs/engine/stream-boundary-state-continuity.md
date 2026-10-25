@@ -119,6 +119,8 @@ to be classified — explicit allow-list, not a blanket rule:
 - `AmbientPackageRuntime.active_package_form_id` (FormID, trivially safe).
 - `TravelState.destination` + `Traveled` presence (the "already arrived"
   fact is exactly what must survive, per §2).
+- `Escorted` presence (#6294) — the same terminal-marker fact for Escort;
+  `EscortState` is not kept (it holds the collect target's `EntityId`).
 - `Seated.furniture`, snapshotted as a **FormID** via §3's index, not the
   raw `EntityId`.
 

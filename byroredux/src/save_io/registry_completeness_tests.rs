@@ -1199,6 +1199,9 @@ fn every_delta_column_is_parked_or_explicitly_not() {
         ("Transform", "position"),
         ("TravelState", "travel_destination"),
         ("Traveled", "traveled"),
+        // The terminal marker of a finished escort: without it the escort
+        // package re-runs after eviction and fires its PF_ fragments twice.
+        ("Escorted", "escorted"),
     ];
     /// Parked fields that no delta column maps to.
     const FIELDS_WITHOUT_A_COLUMN: &[&str] = &[
@@ -1207,10 +1210,8 @@ fn every_delta_column_is_parked_or_explicitly_not() {
         // The pickup tombstone; the live marker is `PickedUp`, not a column.
         "ReferenceState.picked_up",
     ];
-    /// Columns deliberately not parked, each with its reason. `UNAUDITED`
-    /// rows predate this guard and still owe a decision (park them, or
-    /// replace the marker with the real reason); [`STILL_UNAUDITED`] names the
-    /// ones that remain and no new row may join them (#6294).
+    /// Columns deliberately not parked, each with its reason. A row may not
+    /// read `UNAUDITED` (#6294): park the column or write the real reason.
     const NOT_PARKED: &[(&str, &str)] = &[
         (
             "WanderState",
@@ -1244,24 +1245,17 @@ fn every_delta_column_is_parked_or_explicitly_not() {
             "PatrolState",
             "AI runtime that re-rolls on respawn, as WanderState does",
         ),
-        // The one open decision (gameplay-owned): `Escorted` is the terminal marker of a
-        // finished escort, so after an eviction the escort package can run again and fire
-        // its PF_ fragments a second time. Park it, or justify the repeat.
-        ("Escorted", "UNAUDITED"),
         ("CharacterController", "the player outlives cell reloads; never evicted"),
     ];
 
-    /// The `UNAUDITED` rows still owed a decision. The list may shrink; a new
-    /// delta column has to be parked or given its real reason (#6294).
-    const STILL_UNAUDITED: &[&str] = &["Escorted"];
     let unaudited: Vec<&str> = NOT_PARKED
         .iter()
-        .filter(|(_, reason)| *reason == "UNAUDITED")
+        .filter(|(_, reason)| reason.trim().eq_ignore_ascii_case("UNAUDITED"))
         .map(|(column, _)| *column)
         .collect();
     assert!(
-        unaudited.iter().all(|column| STILL_UNAUDITED.contains(column)),
-        "#6294: only {STILL_UNAUDITED:?} may stay `UNAUDITED`; decide these instead: {unaudited:?}",
+        unaudited.is_empty(),
+        "#6294: `UNAUDITED` is not a reason; park these columns or say why they are not: {unaudited:?}",
     );
 
     let covered: std::collections::BTreeSet<&str> = PARKED

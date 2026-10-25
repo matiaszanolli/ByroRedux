@@ -33,8 +33,8 @@
 //! ## Scope
 //!
 //! Keep (§4): live position, `AmbientPackageRuntime.active_package_form_id`,
-//! `TravelState.destination` + `Traveled` presence, and `Seated.furniture`
-//! **as a FormID**.
+//! `TravelState.destination` + `Traveled` presence, `Escorted` presence
+//! (#6294), and `Seated.furniture` **as a FormID**.
 //!
 //! Deliberately dropped: `WanderState`, because re-rolling it on respawn is
 //! `WanderBehavior`'s *intended* behaviour — its `form_id` feeds a
@@ -55,6 +55,7 @@ use std::collections::HashMap;
 use crate::components::AmbientPackageRuntime;
 use byroredux_core::ecs::components::sandbox::{Seated, SeatedAnimationRestore};
 use byroredux_core::ecs::components::travel::{TravelState, Traveled};
+use byroredux_core::ecs::components::Escorted;
 
 /// How far an actor must have moved from its authored REFR placement before
 /// the snapshot bothers to restore a position.
@@ -90,6 +91,12 @@ pub(crate) struct ActorStreamSnapshot {
     pub(crate) travel_destination: Option<Vec3>,
     /// Whether the actor had already reached its Travel destination.
     pub(crate) traveled: bool,
+    /// Whether the actor had already led its Escort target to the destination
+    /// (the terminal `Escorted` marker, #6294). `EscortState` itself is not
+    /// carried: it holds the collect target's `EntityId`, which a respawn
+    /// invalidates (#372). Without the marker a finished escort re-runs after
+    /// a round trip and fires its PF_ fragments a second time.
+    pub(crate) escorted: bool,
     /// `Seated.furniture` as the furniture's **global FormID**.
     ///
     /// `EntityId` allocation is monotonic and never recycled (#372), so a
@@ -123,6 +130,7 @@ impl ActorStreamSnapshot {
         self.active_package_form_id.is_some()
             || self.travel_destination.is_some()
             || self.traveled
+            || self.escorted
             || self.seated_furniture_form_id.is_some()
     }
 }
@@ -228,6 +236,7 @@ pub(crate) fn capture_actor_snapshots(world: &mut World, victims: &[EntityId]) {
                         active_package_form_id: None,
                         travel_destination: None,
                         traveled: false,
+                        escorted: false,
                         seated_furniture_form_id: None,
                         seated_animation_restore: None,
                         seated_marker_idx: None,
@@ -281,6 +290,11 @@ pub(crate) fn capture_actor_snapshots(world: &mut World, victims: &[EntityId]) {
         if let Some(traveled_q) = world.query::<Traveled>() {
             for (victim, _, snapshot) in &mut rows {
                 snapshot.traveled = traveled_q.get(*victim).is_some();
+            }
+        }
+        if let Some(escorted_q) = world.query::<Escorted>() {
+            for (victim, _, snapshot) in &mut rows {
+                snapshot.escorted = escorted_q.get(*victim).is_some();
             }
         }
         // `global_form_id` last, under the pool alone — victims and seated
@@ -431,6 +445,12 @@ pub(crate) fn restore_actor_snapshot(
             restored = true;
         }
     }
+    if snapshot.escorted && package_restored {
+        if let Some(mut done) = world.query_mut::<Escorted>() {
+            done.insert(entity, Escorted);
+            restored = true;
+        }
+    }
 
     if let Some(furniture_form_id) = snapshot
         .seated_furniture_form_id
@@ -556,6 +576,7 @@ mod tests {
         world.register::<AmbientPackageRuntime>();
         world.register::<TravelState>();
         world.register::<Traveled>();
+        world.register::<Escorted>();
         world.register::<Seated>();
         world.register::<WanderState>();
         // #5501 — the seated restore runs the full seating write path.
@@ -628,6 +649,48 @@ mod tests {
             Some(walked_to),
             "the actor must stay where it walked to, not snap back to the \
              authored REFR placement"
+        );
+    }
+
+    /// #6294 — a finished escort must not re-run after a stream round trip:
+    /// without the terminal `Escorted` marker the escort package restarts and
+    /// fires its PF_ fragments a second time. Only the marker and the
+    /// position travel; `EscortState` names an `EntityId` and is re-derived.
+    #[test]
+    fn a_finished_escort_survives_an_eviction_and_respawn_cycle() {
+        const ACTOR: u32 = 0x0001_9006;
+        let arrived_at = Vec3::new(4000.0, 0.0, 250.0);
+        let authored = Vec3::new(100.0, 0.0, 250.0);
+
+        let mut world = fixture();
+        let actor = spawn_with_form_id(&mut world, ACTOR);
+        at(&mut world, actor, arrived_at);
+        world.insert(actor, Escorted);
+
+        capture_actor_snapshots(&mut world, &[actor]);
+        assert_eq!(
+            world.resource::<StreamStateSnapshots>().len(),
+            1,
+            "Escorted alone is state worth keeping"
+        );
+
+        world.despawn(actor);
+        let respawned = spawn_with_form_id(&mut world, ACTOR);
+        at(&mut world, respawned, authored);
+        assert!(restore_actor_snapshot(
+            &mut world,
+            respawned,
+            ACTOR,
+            authored,
+            Quat::IDENTITY,
+        ));
+        assert!(
+            world.get::<Escorted>(respawned).is_some(),
+            "a finished escort must not un-finish itself"
+        );
+        assert_eq!(
+            world.get::<Transform>(respawned).map(|t| t.translation),
+            Some(arrived_at),
         );
     }
 

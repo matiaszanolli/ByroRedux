@@ -2453,6 +2453,7 @@ mod tests {
             active_package_form_id: Some(0x200),
             travel_destination: Some(destination),
             traveled: false,
+            escorted: false,
             seated_furniture_form_id: None,
             seated_animation_restore: None,
             seated_marker_idx: None,
