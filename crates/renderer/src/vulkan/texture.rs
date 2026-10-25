@@ -1645,36 +1645,85 @@ mod initial_layout_submit_tests {
         None
     }
 
-    /// #6146 — a failed `initialize_layouts` submit may still be executing
-    /// against the pass's images (#6063), so no caller may destroy the pass
-    /// before consulting the in-flight class: through
-    /// `release_after_failed_submit`, or `may_be_in_flight` directly.
+    /// How one `.initialize_layouts(` call site handles failure.
+    #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+    struct Shapes {
+        /// `if let Err(..) = … { … }` whose arm destroys the pass only after consulting the
+        /// in-flight class (`release_after_failed_submit` / `may_be_in_flight`).
+        guarded_destroy: usize,
+        /// An arm that disposes of nothing and returns the error: the pass stays owned by the
+        /// context, whose teardown idles the device first (#6343).
+        keep_alive: usize,
+        /// A chained result (`.and_then(|()| … initialize_layouts(..).map_err(..))`) whose
+        /// statement captures `may_be_in_flight`, consumed by a later forget-or-destroy.
+        chained_with_class: usize,
+    }
+
+    /// #6146 / #6348 — a failed `initialize_layouts` submit may still be executing against the
+    /// pass's images (#6063), so no caller may destroy the pass before consulting the in-flight
+    /// class: through `release_after_failed_submit`, or `may_be_in_flight` directly.
+    ///
+    /// Every caller in production code is scanned — the two context files and the pass-internal
+    /// `recreate_on_resize` / constructor bodies — and every call site must fall into a
+    /// recognised shape. The per-file counts are pinned, so a new caller, or an arm whose shape
+    /// the scan cannot read (it used to be silently skipped), fails here instead of passing.
     #[test]
     fn no_initialize_layouts_caller_destroys_without_the_in_flight_check() {
-        for (name, src) in [
-            ("context/init.rs", include_str!("context/init.rs")),
-            ("context/resize.rs", include_str!("context/resize.rs")),
+        let expected = |guarded_destroy, keep_alive, chained_with_class| Shapes { guarded_destroy, keep_alive, chained_with_class };
+        for (name, src, want) in [
+            ("context/init.rs", include_str!("context/init.rs"), expected(7, 0, 0)),
+            // The G-buffer keeps its pass on failure; the shadow filter is chained; the rest guard.
+            ("context/resize.rs", include_str!("context/resize.rs"), expected(4, 1, 1)),
+            ("taa.rs", include_str!("taa.rs"), expected(0, 1, 0)),
+            ("svgf.rs", include_str!("svgf.rs"), expected(0, 1, 0)),
+            ("caustic.rs", include_str!("caustic.rs"), expected(0, 1, 0)),
+            ("shadow_filter.rs", include_str!("shadow_filter.rs"), expected(1, 0, 0)),
         ] {
             let own = crate::source_scan::production_text_or_whole(src);
-            let mut checked = 0;
+            let mut got = Shapes::default();
             for (at, _) in own.match_indices(".initialize_layouts(") {
-                let Some(arm) = failure_arm(&own[at..]) else { continue };
-                let Some(destroy) = arm.find(".destroy(") else {
-                    checked += 1;
-                    continue;
-                };
-                let guarded = ["release_after_failed_submit(", "may_be_in_flight"]
-                    .iter()
-                    .filter_map(|guard| arm.find(guard))
-                    .any(|guard| guard < destroy);
-                assert!(
-                    guarded,
-                    "{name}: a failed initialize_layouts arm destroys its pass without consulting \
-                     the in-flight class (#6063 / #6146):\n{arm}"
-                );
-                checked += 1;
+                match failure_arm(&own[at..]) {
+                    Some(arm) => match arm.find(".destroy(") {
+                        None => {
+                            assert!(
+                                arm.contains("return Err("),
+                                "{name}: a failed initialize_layouts arm neither disposes of the pass \
+                                 nor returns the error, so the pass would run with UNDEFINED layouts \
+                                 (#6343 / #6348):\n{arm}"
+                            );
+                            got.keep_alive += 1;
+                        }
+                        Some(destroy) => {
+                            let guarded = ["release_after_failed_submit(", "may_be_in_flight"]
+                                .iter()
+                                .filter_map(|guard| arm.find(guard))
+                                .any(|guard| guard < destroy);
+                            assert!(
+                                guarded,
+                                "{name}: a failed initialize_layouts arm destroys its pass without \
+                                 consulting the in-flight class (#6063 / #6146):\n{arm}"
+                            );
+                            got.guarded_destroy += 1;
+                        }
+                    },
+                    None => {
+                        let statement = &own[at..at + own[at..].find(';').unwrap_or(own.len() - at)];
+                        assert!(
+                            statement.contains("may_be_in_flight"),
+                            "{name}: an initialize_layouts result is chained in a shape this scan \
+                             cannot read, and its statement does not capture the in-flight class \
+                             (#6348):\n{statement}"
+                        );
+                        got.chained_with_class += 1;
+                    }
+                }
             }
-            assert!(checked > 0, "{name}: no initialize_layouts failure arm was found to check");
+            assert_eq!(
+                got, want,
+                "{name}: the initialize_layouts call sites changed shape or number — classify the new \
+                 site (guarded destroy / keep-alive that returns the error / chained with the class) \
+                 and update this table (#6348)"
+            );
         }
     }
 }
