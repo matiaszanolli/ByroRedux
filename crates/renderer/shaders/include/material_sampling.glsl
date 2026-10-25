@@ -143,7 +143,7 @@ vec2 parallaxDisplaceUV(
     float beforeDepth =
         sampleParallaxHeight(parallaxMapIdx, prevUV, heightInAlpha, parallaxLod)
         - (currentDepth - layerDepth);
-    float weight = afterDepth / (afterDepth - beforeDepth + 1e-6);
+    float weight = parallaxSecantWeight(afterDepth, beforeDepth);
     return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));
 }
 
@@ -216,6 +216,9 @@ vec2 terrainParallaxDisplaceUV(
     const float minSteps = 6.0;
     const float maxSteps = 20.0;
     int steps = int(mix(maxSteps, minSteps, clamp(vz, 0.0, 1.0)) + 0.5);
+    // `vz` is NaN for a zero interpolated normal or a degenerate flat-shaded quad, and the
+    // float-to-int conversion of NaN is undefined: bound the loop whatever it produced (#6346).
+    steps = clamp(steps, int(minSteps), int(maxSteps));
     float layerDepth = 1.0 / float(steps);
     vec2 deltaUV = planarSlide / float(steps);
 
@@ -248,7 +251,7 @@ vec2 terrainParallaxDisplaceUV(
     vec2 prevUV = currentUV + deltaUV;
     float afterDepth = surfaceDepth - currentDepth;
     float beforeDepth = prevSurface - (currentDepth - layerDepth);
-    float weight = afterDepth / (afterDepth - beforeDepth + 1.0e-6);
+    float weight = parallaxSecantWeight(afterDepth, beforeDepth);
     return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));
 }
 

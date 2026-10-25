@@ -298,6 +298,22 @@ bool getRayHitTangentFrame(
     return true;
 }
 
+// ── Parallax secant weight ──────────────────────────────────────────
+// Shared with `material_sampling.glsl` (included after this file in triangle.frag); lives here
+// because `water.frag` and the ground-cover blade include this file but not `math_common.glsl`.
+// Where between a march's last two layers the ray meets the surface:
+// `afterDepth / (afterDepth - beforeDepth)`. After a `break`, afterDepth <= 0
+// < beforeDepth, so the span is negative; a march that runs out of steps has
+// no such ordering. The old `+ 1e-6` nudged the span toward zero from below
+// and was 0/0 at span == -1e-6 (#6346). A span too small to divide by takes
+// -1e-6 instead — the sign of the usual crossing — and every other span is
+// untouched, so no ordinary pixel moves.
+float parallaxSecantWeight(float afterDepth, float beforeDepth) {
+    float span = afterDepth - beforeDepth;
+    span = abs(span) < 1.0e-6 ? -1.0e-6 : span;
+    return afterDepth / span;
+}
+
 // Resolve the material UV visible at a secondary ray hit. The BVH remains
 // the authored triangle surface (POM cannot change silhouettes or the ray
 // intersection), but every material lookup at that hit now follows the same
@@ -375,7 +391,7 @@ vec2 resolveRayHitUV(
         textureLod(textures[nonuniformEXT(parallaxIdx)], prevUV, 0.0);
     float beforeDepth = (heightInAlpha ? prevTexel.a : prevTexel.r)
         - (currentDepth - layerDepth);
-    float weight = afterDepth / (afterDepth - beforeDepth + 1e-6);
+    float weight = parallaxSecantWeight(afterDepth, beforeDepth);
     return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));
 }
 

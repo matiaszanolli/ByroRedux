@@ -27,7 +27,15 @@ struct Tile {
 /// `mix(maxSteps, minSteps, clamp(vz, 0, 1)) + 0.5` truncated.
 fn step_count(vz: f32) -> i32 {
     let t = vz.clamp(0.0, 1.0);
-    (20.0 + (6.0 - 20.0) * t + 0.5) as i32
+    // Rust's `as i32` saturates (NaN -> 0); the GLSL conversion is undefined for NaN, so the
+    // shader clamps the integer and this mirrors the clamp (#6346).
+    ((20.0 + (6.0 - 20.0) * t + 0.5) as i32).clamp(6, 20)
+}
+
+/// Mirror of `parallaxSecantWeight` (`ray_hit.glsl`).
+fn secant_weight(after: f32, before: f32) -> f32 {
+    let span = after - before;
+    after / if span.abs() < 1.0e-6 { -1.0e-6 } else { span }
 }
 
 fn fade_of(tile: Tile, distance: f32) -> f32 {
@@ -109,7 +117,7 @@ fn displace(
     let prev = [current[0] + delta[0], current[1] + delta[1]];
     let after = surface - current_depth;
     let before = prev_surface - (current_depth - layer_depth);
-    let weight = (after / (after - before + 1.0e-6)).clamp(0.0, 1.0);
+    let weight = secant_weight(after, before).clamp(0.0, 1.0);
     [
         current[0] + (prev[0] - current[0]) * weight,
         current[1] + (prev[1] - current[1]) * weight,
@@ -238,6 +246,21 @@ fn depth_zero_missing_heights_and_degenerate_quads_leave_the_uv_alone() {
     assert_eq!(displace(uv, dx, dy, px, scale3(px, 2.0), view, UP, 100.0, TILE, |_| 0.0), uv);
 }
 
+/// #6346 — the loop bound holds for a NaN `vz` (a zero interpolated normal), and the secant weight
+/// stays finite where `after - before + 1e-6` was exactly 0/0 — without moving an ordinary pixel.
+#[test]
+fn degenerate_inputs_keep_the_march_bounded_and_finite() {
+    assert!((6..=20).contains(&step_count(f32::NAN)));
+    assert!((6..=20).contains(&step_count(f32::INFINITY)));
+    // The old form: span of exactly -1e-6 made the denominator 0.
+    let (after, before) = (-0.5e-6f32, 0.5e-6f32);
+    assert!(secant_weight(after, before).is_finite());
+    assert!(secant_weight(0.0, 0.0).is_finite());
+    // An ordinary crossing and an ordinary no-crossing are the plain ratio.
+    assert!((secant_weight(-0.1, 0.3) - 0.25).abs() < 1e-6);
+    assert!((secant_weight(0.5, 0.3) - 2.5).abs() < 1e-5);
+}
+
 #[test]
 fn steps_grow_toward_grazing_angles() {
     assert_eq!(step_count(1.0), 6, "looking straight down");
@@ -286,9 +309,28 @@ fn glsl_parallax_uses_only_explicit_gradients() {
         "const float minSteps = 6.0;",
         "const float maxSteps = 20.0;",
         "int steps = int(mix(maxSteps, minSteps, clamp(vz, 0.0, 1.0)) + 0.5);",
+        "steps = clamp(steps, int(minSteps), int(maxSteps));",
         "currentUV -= deltaUV;",
     ] {
         assert!(body.contains(line), "terrainParallaxDisplaceUV lost `{line}` (#6197)");
+    }
+}
+
+/// #6346 — all three marchers take their secant weight from the one guarded helper; none keeps the
+/// `+ 1e-6` form that is 0/0 at a span of exactly -1e-6.
+#[test]
+fn every_parallax_march_uses_the_guarded_secant_weight() {
+    for (name, src) in [
+        ("material_sampling.glsl", include_str!("../../../shaders/include/material_sampling.glsl")),
+        ("ray_hit.glsl", include_str!("../../../shaders/include/ray_hit.glsl")),
+    ] {
+        let code = squashed(src);
+        assert!(!code.contains("afterDepth - beforeDepth + 1"), "{name} still divides by the nudged span");
+        assert!(
+            code.matches("parallaxSecantWeight(afterDepth, beforeDepth)").count()
+                >= if name == "material_sampling.glsl" { 2 } else { 1 },
+            "{name} lost a parallaxSecantWeight call"
+        );
     }
 }
 
