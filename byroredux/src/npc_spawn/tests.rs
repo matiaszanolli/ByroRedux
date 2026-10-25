@@ -3724,3 +3724,45 @@ fn build_vats_model_prices_from_the_load_order() {
     skyrim.character_rules = CharacterRulesProfile::SKYRIM;
     assert!(crate::npc_spawn::build_vats_model(&skyrim).is_none());
 }
+
+/// #6090 — the FO3/FNV body-section ICON mapping: the three-slot
+/// vocabulary (0 upper body, 1 left hand, 2 right hand) across the
+/// gender/child file variants, and Oblivion's five-slot table intact.
+#[test]
+fn body_icon_index_maps_the_fo3_body_vocabulary() {
+    use crate::npc_spawn::humanoid_body_path_icon_index;
+    use byroredux_plugin::esm::reader::GameKind;
+    let fo3 = GameKind::Fallout3NV;
+    for path in [
+        r"meshes\characters\_male\upperbody.nif",
+        r"meshes\characters\_male\femaleupperbody.nif",
+        r"meshes\characters\_male\childupperbody.nif",
+        r"meshes\characters\_male\childfemaleupperbody.nif",
+    ] {
+        assert_eq!(humanoid_body_path_icon_index(fo3, path), Some(0), "{path}");
+    }
+    assert_eq!(
+        humanoid_body_path_icon_index(fo3, r"meshes\characters\_male\lefthand.nif"),
+        Some(1)
+    );
+    assert_eq!(
+        humanoid_body_path_icon_index(fo3, r"meshes\characters\_male\femalelefthand.nif"),
+        Some(1)
+    );
+    assert_eq!(
+        humanoid_body_path_icon_index(fo3, r"meshes\characters\_male\righthand.nif"),
+        Some(2)
+    );
+    assert_eq!(
+        humanoid_body_path_icon_index(fo3, r"meshes\characters\_male\femalerighthand.nif"),
+        Some(2)
+    );
+    assert_eq!(humanoid_body_path_icon_index(fo3, r"meshes\characters\_male\hand.nif"), None);
+    // Oblivion's own table is unchanged.
+    let ob = GameKind::Oblivion;
+    assert_eq!(humanoid_body_path_icon_index(ob, r"...\upperbody.nif"), Some(0));
+    assert_eq!(humanoid_body_path_icon_index(ob, r"...\lowerbody.nif"), Some(1));
+    assert_eq!(humanoid_body_path_icon_index(ob, r"...\hand.nif"), Some(2));
+    assert_eq!(humanoid_body_path_icon_index(ob, r"...\foot.nif"), Some(3));
+    assert_eq!(humanoid_body_path_icon_index(ob, r"...\tail.nif"), Some(4));
+}

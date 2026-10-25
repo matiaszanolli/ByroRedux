@@ -39,17 +39,61 @@ impl RestorePart {
     }
 }
 
-/// The imported-tier override a body piece takes from its race at spawn: every
-/// mesh's base colour becomes `texture`. The one definition both the spawn
-/// (`resumable/runtime.rs`) and the restore re-import call (#6128), so the two
-/// cannot drift apart.
+/// The imported-tier override a body piece takes from its race at spawn —
+/// applied to the piece's **skin meshes only** (#6090). The one definition
+/// both the spawn (`resumable/runtime.rs`) and the restore re-import call
+/// (#6128), so the two cannot drift apart.
+///
+/// #6090 — FO3/FNV body NIFs are multi-mesh: beside the skin they carry
+/// the underwear meshes (`textures\armor\underwear\…`) and the gore
+/// caps (`textures\gore\…`). Repainting every mesh turned a Ghoul's
+/// race skin onto his underwear. The census (`probe_body_nif_meshes`):
+/// the skin meshes — and only they — author a base colour under
+/// `textures\characters\…` (Oblivion's single-mesh bodies author the
+/// Imperial skin there too), so the filter is the authored path family,
+/// which holds on both games.
 pub(super) fn set_body_base_color(
     scene: &mut byroredux_nif::import::ImportedScene,
+    skin_textures: Option<&std::collections::HashSet<byroredux_core::string::FixedString>>,
     texture: byroredux_core::string::FixedString,
 ) {
     for mesh in &mut scene.meshes {
-        override_base_color(mesh, texture);
+        let is_skin_mesh = skin_textures.is_some_and(|skins| {
+            mesh.material
+                .textures
+                .base_color
+                .is_some_and(|sym| skins.contains(&sym))
+        });
+        // No pool in scope (unit fixtures) → the pre-#6090 paint-all
+        // behaviour, so the degraded path is the old one, not nothing.
+        if is_skin_mesh || skin_textures.is_none() {
+            override_base_color(mesh, texture);
+        }
     }
+}
+
+/// The symbols of every interned texture path under `textures\characters\`
+/// — the skin family, snapshot out of the pool so spawn/restore hooks stay
+/// world-free (#6090; see [`set_body_base_color`]).
+pub(super) fn skin_texture_symbols(world: &byroredux_core::ecs::World) -> Option<std::collections::HashSet<byroredux_core::string::FixedString>> {
+    world.try_resource::<StringPool>().as_deref().map(skin_texture_symbols_from)
+}
+
+/// The pool-derived half of [`skin_texture_symbols`] — testable without
+/// a World.
+fn skin_texture_symbols_from(pool: &StringPool) -> std::collections::HashSet<byroredux_core::string::FixedString> {
+    let mut skins = std::collections::HashSet::new();
+    for path in pool.dump() {
+        if path
+            .to_ascii_lowercase()
+            .starts_with("textures\\characters\\")
+        {
+            if let Some(sym) = pool.get(&path) {
+                skins.insert(sym);
+            }
+        }
+    }
+    skins
 }
 
 /// Replace a mesh's authored base colour with `texture` and say so: the
@@ -867,9 +911,10 @@ impl LootAppearanceLoader {
             .body_texture
             .as_deref()
             .map(|texture| world.resource_mut::<StringPool>().intern(texture));
+        let skin_textures = skin_texture_symbols(world);
         let mut restore_hook = |scene: &mut byroredux_nif::import::ImportedScene| {
             if let Some(texture) = body_texture {
-                set_body_base_color(scene, texture);
+                set_body_base_color(scene, skin_textures.as_ref(), texture);
             }
             if let Some(context) = hand_seams.as_deref() {
                 let stats = super::seam_blend::blend_hand_scene_seams(
@@ -1385,6 +1430,51 @@ mod tests {
         );
         // Only the overridden role: the normal map keeps whatever it had.
         assert_eq!(mesh.material.texture_sources.normal, ImportedTextureSource::NifTextureSet);
+    }
+
+    /// #6090 — the race skin lands on the SKIN meshes only. FO3's
+    /// `upperbody.nif` carries the underwear (`armor\underwear\`), the
+    /// gore caps (`gore\`) and the skin (`characters\…`) side by side
+    /// (census: `probe_body_nif_meshes`); painting every mesh put a
+    /// Ghoul's skin on his underwear. The filter is the authored path
+    /// family — Oblivion's single-mesh bodies author the Imperial skin
+    /// under the same prefix, so the rule holds on both games.
+    #[test]
+    fn race_skin_overrides_only_the_skin_meshes() {
+        use byroredux_nif::import::ImportedMesh;
+
+        let make = |path: Option<&str>, pool: &mut byroredux_core::string::StringPool| {
+            let mut mesh =
+                ImportedMesh::from_geometry(vec![[0.0; 3]], Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            mesh.material.textures.base_color = path.map(|p| pool.intern(p));
+            mesh
+        };
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut scene = byroredux_nif::import::ImportedScene {
+            nodes: Vec::new(),
+            meshes: vec![
+                make(Some("textures\\armor\\underwear\\underwearm.dds"), &mut pool),
+                make(Some("textures\\gore\\meatcapgore01.dds"), &mut pool),
+                make(Some("textures\\characters\\male\\upperbodymale.dds"), &mut pool),
+            ],
+            particle_emitters: Vec::new(), bsx_flags: None, bs_bound: None,
+            phantom_bounds: None, attach_points: None, child_attach_connections: None,
+            furniture_markers: Vec::new(), embedded_clip: None, ragdoll: None, lights: Vec::new(),
+        };
+        let skins = super::skin_texture_symbols_from(&pool);
+        let race_skin = pool.intern("textures\\characters\\ghoul\\upperbodymale.dds");
+        super::set_body_base_color(&mut scene, Some(&skins), race_skin);
+        assert_eq!(
+            scene.meshes[0].material.textures.base_color,
+            Some(pool.intern("textures\\armor\\underwear\\underwearm.dds")),
+            "underwear keeps its authored texture"
+        );
+        assert_eq!(
+            scene.meshes[1].material.textures.base_color,
+            Some(pool.intern("textures\\gore\\meatcapgore01.dds")),
+            "gore caps keep theirs"
+        );
+        assert_eq!(scene.meshes[2].material.textures.base_color, Some(race_skin));
     }
 
     fn fixture() -> (World, EntityId, EntityId, EntityId, EntityId) {

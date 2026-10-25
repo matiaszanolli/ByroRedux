@@ -718,6 +718,10 @@ pub(super) fn advance_runtime_unit(
                 let mut pool = world.resource_mut::<StringPool>();
                 pool.intern(texture)
             });
+            // #6090 — the skin-family symbols, snapshotted so the hook
+            // below stays world-free.
+            let skin_textures =
+                super::super::loot_appearance::skin_texture_symbols(world);
             let hand_seams = state
                 .seam_context
                 .clone()
@@ -725,7 +729,9 @@ pub(super) fn advance_runtime_unit(
             let mut tone_sampler = super::seam_blend::ToneSampler::new(world, tex_provider);
             let mut blend_hand = |scene: &mut byroredux_nif::import::ImportedScene| {
                 if let Some(texture) = body_texture_id {
-                    super::super::loot_appearance::set_body_base_color(scene, texture);
+                    super::super::loot_appearance::set_body_base_color(
+                        scene, skin_textures.as_ref(), texture,
+                    );
                 }
                 let Some(context) = hand_seams.as_deref() else {
                     return;

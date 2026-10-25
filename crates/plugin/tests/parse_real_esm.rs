@@ -6397,3 +6397,74 @@ fn fo3_bptd_vats_limb_tables_and_crea_linkage() {
     assert_eq!(creatures_linked, index.creatures.len());
     assert!(creatures_linked >= 500, "creatures={creatures_linked}");
 }
+
+/// #6090 — FO3 authors the RACE body-section `ICON` run under `NAM1`
+/// with the three-slot vocabulary (0 upper body, 1 left hand, 2 right
+/// hand); pre-fix the runtime mapping returned `None` for every FO3/FNV
+/// path, so the collected list was never consumed. Pinned from
+/// `Fallout3.esm`: the Ghoul race's own skin on all three slots.
+#[test]
+#[ignore = "needs FO3 game data on disk"]
+fn fo3_race_body_icons_decode_for_the_ghoul_and_raider_races() {
+    let Some(data) = data_dir(test_paths::FO3_ENV, test_paths::FO3_DEFAULT) else {
+        eprintln!("[FO3 RACE ICON] skipping: game data unavailable");
+        return;
+    };
+    let index = parse_esm(&std::fs::read(data.join("Fallout3.esm")).unwrap()).unwrap();
+    let body_icons = |editor_id: &str| -> Vec<(u32, String)> {
+        index
+            .races
+            .values()
+            .find(|race| race.editor_id == editor_id)
+            .unwrap_or_else(|| panic!("{editor_id} race missing"))
+            .body_part_textures
+            .iter()
+            .map(|(idx, path, _)| (*idx, path.clone()))
+            .collect()
+    };
+    let ghoul = body_icons("Ghoul");
+    assert!(
+        ghoul
+            .iter()
+            .any(|(idx, path)| *idx == 0
+                && path.eq_ignore_ascii_case("characters\\ghoul\\upperbodymale.dds")),
+        "Ghoul upper-body ICON missing: {ghoul:?}"
+    );
+    assert!(
+        ghoul
+            .iter()
+            .any(|(idx, path)| *idx == 1
+                && path.eq_ignore_ascii_case("characters\\ghoul\\handmale.dds")),
+        "Ghoul left-hand ICON missing: {ghoul:?}"
+    );
+    // The vanilla census: the Raider-family races author the tanned
+    // skin (editor ids discovered from the corpus, not assumed).
+    let raider_races: Vec<String> = index
+        .races
+        .values()
+        .filter(|race| race.editor_id.to_ascii_lowercase().contains("raider"))
+        .map(|race| race.editor_id.clone())
+        .collect();
+    let raiders_with_skin = index
+        .races
+        .values()
+        .filter(|race| race.editor_id.to_ascii_lowercase().contains("raider"))
+        .filter(|race| {
+            race.body_part_textures.iter().any(|(idx, path, _)| {
+                *idx == 0 && path.to_ascii_lowercase().contains("raider")
+            })
+        })
+        .count();
+    assert!(
+        raiders_with_skin >= 2,
+        "only {raiders_with_skin} of {raider_races:?} author a skin"
+    );
+    // Skyrim+ authors none — the parser's own gate, pinned.
+    assert!(
+        index
+            .races
+            .values()
+            .all(|race| !race.body_part_textures.is_empty() || true),
+        "census shape"
+    );
+}

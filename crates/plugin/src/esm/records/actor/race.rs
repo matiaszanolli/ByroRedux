@@ -90,8 +90,12 @@ pub struct RaceRecord {
     /// the body NIFs themselves all author the Imperial skin — pre-fix
     /// the section was dropped wholesale (the `ICON` arm gated on
     /// `in_head_section`), so every beast and mer torso rendered human.
-    /// FO3 / FNV author body textures in the head-section table instead;
-    /// this list is empty there and on Skyrim+.
+    /// #6090 — FO3 / FNV author the SAME body-section run under `NAM1`
+    /// with a three-slot vocabulary (0 UpperBody, 1 Left Hand, 2 Right
+    /// Hand): `Fallout3.esm`'s `Ghoul` carries
+    /// `Characters\Ghoul\UpperBodyMale.dds` + `HandMale.dds`, the
+    /// `*Raider` / `*Child` races likewise (~600 of 3,252 placed FO3
+    /// humanoids resolve a non-default race). Skyrim+ authors none.
     pub body_part_textures: Vec<(u32, String, Option<u8>)>,
     /// #5753 — Oblivion's per-gender **tail** model, indexed male then female
     /// (empty = the race authors none). The body section opens each gender with

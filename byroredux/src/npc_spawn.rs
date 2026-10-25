@@ -821,26 +821,43 @@ fn humanoid_body_path_biped_mask(game: GameKind, path: &str) -> u32 {
     }
 }
 
-/// #5487 — the RACE body-section `ICON` index a loose body mesh takes
-/// its skin from (0 UpperBody, 1 Leg, 2 Hand, 3 Foot, 4 Tail — the tail mesh is
-/// the race's own, [`oblivion_race_tail_path`], #5753). `None` for the FO3/FNV paths, whose body ICONs
-/// ride the head-section table instead and whose naked meshes keep
-/// their own NIF-authored skin.
+/// #5487/#6090 — the RACE body-section `ICON` index a loose body mesh
+/// takes its skin from. Oblivion: 0 UpperBody, 1 Leg, 2 Hand, 3 Foot,
+/// 4 Tail (the tail mesh is the race's own, [`oblivion_race_tail_path`],
+/// #5753). FO3/FNV author the same section under `NAM1` with a
+/// three-slot vocabulary — 0 UpperBody, 1 Left Hand, 2 Right Hand
+/// (`Fallout3.esm`: `Ghoul` -> `Characters\Ghoul\UpperBodyMale.dds` +
+/// `HandMale.dds`; the `*Child`/`*Raider` races likewise) — and their
+/// body NIFs bake the *default* skin (incl. `childupperbody.nif`
+/// baking the adult male one), so without this arm every FO3/FNV
+/// humanoid kept the generic skin.
 pub(crate) fn humanoid_body_path_icon_index(game: GameKind, path: &str) -> Option<u32> {
-    if game != GameKind::Oblivion {
-        return None;
-    }
-    if path.ends_with("upperbody.nif") {
-        Some(0)
-    } else if path.ends_with("lowerbody.nif") {
-        Some(1)
-    } else if path.ends_with("hand.nif") {
-        Some(2)
-    } else if path.ends_with("foot.nif") {
-        Some(3)
-    } else if path.ends_with("tail.nif") {
-        // Argonian `tail.nif` and Khajiit `khajiittail.nif`.
-        Some(4)
+    if game == GameKind::Fallout3NV {
+        if path.ends_with("upperbody.nif") {
+            // Covers the plain, `female…` and `child…` variants.
+            Some(0)
+        } else if path.ends_with("lefthand.nif") {
+            Some(1)
+        } else if path.ends_with("righthand.nif") {
+            Some(2)
+        } else {
+            None
+        }
+    } else if game == GameKind::Oblivion {
+        if path.ends_with("upperbody.nif") {
+            Some(0)
+        } else if path.ends_with("lowerbody.nif") {
+            Some(1)
+        } else if path.ends_with("hand.nif") {
+            Some(2)
+        } else if path.ends_with("foot.nif") {
+            Some(3)
+        } else if path.ends_with("tail.nif") {
+            // Argonian `tail.nif` and Khajiit `khajiittail.nif`.
+            Some(4)
+        } else {
+            None
+        }
     } else {
         None
     }
