@@ -9,7 +9,7 @@ Read `.claude/commands/_audit-common.md` and `.claude/commands/_audit-severity.m
 
 Audit ByroRedux for CPU hot-path inefficiency, per-frame allocation churn, draw/instancing waste, GPU memory pressure + eviction thrash, SSBO sizing/upload cost, pass cost and streaming stalls. **Do not re-derive memory ceilings** — `docs/engine/memory-budget.md` owns every size, threshold, reserve floor and VRAM budget; cite it.
 
-**Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
+**Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent). Always pass the Agent tool's `model` parameter — otherwise the agent inherits the session model. `model: "haiku"` for a guard-only dimension (no commits since the last report: it runs named tests and checks symbols exist); `model: "sonnet"` for a dimension with a changed delta (it traces new code and judges it).
 
 Hardware target: **RTX 4070 Ti (12 GB) + Ryzen 7950X (16c/32t)**; RT VRAM minimum 6 GB. A CPU bottleneck here is a **bug**, not a tuning gap — dimensions are ordered by per-frame impact.
 

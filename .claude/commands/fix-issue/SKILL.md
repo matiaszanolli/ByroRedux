@@ -6,10 +6,11 @@ argument-hint: "<issue-number>"
 # Fix Issue Pipeline
 
 ## Phase 1: Fetch
+If `.claude/issues/$ARGUMENTS/ISSUE.md` already exists (`/audit-publish` writes a curated one), read it and skip the fetch; never overwrite it.
 ```bash
 gh issue view $ARGUMENTS --repo matiaszanolli/ByroRedux --json title,body,labels,state
 ```
-Save details to `.claude/issues/$ARGUMENTS/ISSUE.md`.
+Otherwise save the details to `.claude/issues/$ARGUMENTS/ISSUE.md`.
 
 ## Phase 2: Classify Domain
 Classify the issue — the matched crate becomes the `-p` test target in Phase 6:
@@ -25,7 +26,8 @@ Classify the issue — the matched crate becomes the `-p` test target in Phase 6
 
 ## Phase 3: Investigate
 Read only the source files on the code path — don't pre-read a whole crate, and
-don't re-read files already in context. Trace the path inline.
+don't re-read files already in context. `rg` for the symbol first, then Read with
+`offset`/`limit` around it; never Read a whole large file. Trace the path inline.
 
 **Specialist agents are a last resort, not a default.** Each one is a fresh
 context window — only delegate when the issue genuinely spans 2+ domains *and*
@@ -53,11 +55,12 @@ context — `-q` prints dots for passes and full detail only for failures.
 
 ```bash
 cargo test -q -p <crate>          # the Phase 2 crate — the only suite that can regress for a scoped fix
-cargo test -q                     # full workspace — ONCE, final gate (skip the redundant `cargo check`: test already built everything)
+# Full workspace ONLY when the fix changes an item other crates use, or touches
+# core/shared code. Filter the output; the dots are noise:
+cargo test -q 2>&1 | grep -E 'test result|FAILED|panicked|^error|^warning'
 ```
-All tests must pass with zero warnings. Run the full suite a single time at the
-end, not per fix iteration. For a fix confined to one crate with no cross-crate
-surface, the scoped run is sufficient evidence — note that you scoped it.
+All tests must pass with zero warnings. For a fix confined to one crate with no
+cross-crate surface, the scoped run is sufficient — say that you scoped it.
 
 ## Phase 7: Completeness Checks
 Before committing, verify:

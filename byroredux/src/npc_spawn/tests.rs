@@ -3685,9 +3685,11 @@ fn build_vats_model_prices_from_the_load_order() {
     use byroredux_plugin::esm::reader::GameKind;
     use byroredux_plugin::esm::records::{GameSetting, SettingValue};
 
-    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
-    index.game = GameKind::Fallout3NV;
-    index.character_rules = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
+    let mut index = byroredux_plugin::esm::records::EsmIndex {
+        game: GameKind::Fallout3NV,
+        character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        ..Default::default()
+    };
     index.actor_values.insert(
         0x40AA,
         byroredux_plugin::esm::records::AvifRecord {
@@ -3719,9 +3721,11 @@ fn build_vats_model_prices_from_the_load_order() {
     let _ = std::mem::size_of::<VatsModel>();
 
     // Non-Fallout: nothing at all.
-    let mut skyrim = byroredux_plugin::esm::records::EsmIndex::default();
-    skyrim.game = GameKind::Skyrim;
-    skyrim.character_rules = CharacterRulesProfile::SKYRIM;
+    let skyrim = byroredux_plugin::esm::records::EsmIndex {
+        game: GameKind::Skyrim,
+        character_rules: CharacterRulesProfile::SKYRIM,
+        ..Default::default()
+    };
     assert!(crate::npc_spawn::build_vats_model(&skyrim).is_none());
 }
 

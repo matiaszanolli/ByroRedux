@@ -1840,6 +1840,70 @@ mod tests {
         assert!(world.has::<SandboxBehavior>(actor));
     }
 
+    /// #6087 — a script package present at the re-seat is confirmed as
+    /// the winner directly (a first-tick confirmation), so the markers
+    /// the save overlay restores afterwards survive the next minute and
+    /// no scheduled→script transition fires for an actor that was
+    /// already running the script package. Pre-fix the drain ran the
+    /// re-seat before the ScriptPackage column landed, and the next
+    /// minute's tick treated the overlaid package as a *change*:
+    /// `clear_ambient_behavior` deleted the freshly restored
+    /// `TravelState`/`Traveled` (both ride the same clear) and a
+    /// spurious fragment fired. Pinned together with the drain-order
+    /// source scan (`post_reload_drain_steps_keep_their_order`).
+    #[test]
+    fn script_package_at_the_reseat_keeps_the_restored_markers() {
+        use byroredux_core::math::Vec3;
+        use byroredux_scripting::script_packages::ScriptPackage;
+
+        let sandbox = pack(0x100, PROCEDURE_SANDBOX, None);
+        let script_travel = pack(0x77, PROCEDURE_TRAVEL, None);
+        let (mut world, actor) = setup_actor(10.0, vec![sandbox, script_travel]);
+        assert!(
+            world.has::<SandboxBehavior>(actor),
+            "the scheduled winner installs at spawn"
+        );
+
+        // The #6087 drain order: the ScriptPackage pre-seat runs BEFORE
+        // the re-seat, so the re-seat's confirmation selects it.
+        world.insert(
+            actor,
+            ScriptPackage { package: 0x77, constrained: false, running_secs: None },
+        );
+        {
+            let mut runtimes = world.query_mut::<AmbientPackageRuntime>().unwrap();
+            runtimes.get_mut(actor).unwrap().last_evaluated_game_minute = None;
+        }
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(
+            byroredux_scripting::reported_package(&world, actor),
+            Some(Some(0x77)),
+            "the confirmation names the script package, not the schedule"
+        );
+
+        // The overlay then lands its restored procedure state on the
+        // confirmed winner.
+        world.insert(actor, TravelState { destination: Vec3::ZERO });
+
+        // The next in-game minute: still the script package — no change,
+        // no clear, the restored marker survives.
+        world.resource_mut::<GameTimeRes>().set_hour(10.1);
+        {
+            let mut runtimes = world.query_mut::<AmbientPackageRuntime>().unwrap();
+            runtimes.get_mut(actor).unwrap().last_evaluated_game_minute = None;
+        }
+        ambient_ai_package_system(&world, 0.0);
+        assert!(
+            world.has::<TravelState>(actor),
+            "the overlay's restored marker survives the next minute"
+        );
+        assert_eq!(
+            byroredux_scripting::reported_package(&world, actor),
+            Some(Some(0x77)),
+            "no scheduled->script transition fired for the running package"
+        );
+    }
+
     #[test]
     fn schedule_boundary_replaces_behavior_and_releases_seat_claim() {
         let sandbox = pack(

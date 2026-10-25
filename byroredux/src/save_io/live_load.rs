@@ -706,8 +706,23 @@ pub fn execute_pending_save_loads(
     // outgoing session's clock; re-seat against the restored one BEFORE the
     // overlay below, so the saved procedure state lands on the saved winner
     // and the first Update tick does not clear it as a package change.
-    crate::npc_spawn::ai_package::reseat_ambient_packages_after_restore(world);
+    // #6087 — `ScriptPackage` must be present when the re-seat runs: the
+    // ambient selection honours a running script package over the schedule,
+    // and re-seating without it stamped the scheduled winner W for an actor
+    // the overlay then restored onto the script package — the next minute's
+    // tick saw the "change", cleared the freshly overlaid TravelState /
+    // Traveled markers and reported a spurious W→script fragment. The
+    // column is replacing and idempotent, so the full overlay below reapplies
+    // the same value harmlessly.
     let remap = byroredux_save::build_form_id_remap(world, &registry, &snapshot);
+    match byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, &["ScriptPackage"]) {
+        Ok(applied) if applied > 0 => {
+            log::debug!("save load: pre-seated {applied} ScriptPackage(s) before the ambient re-seat")
+        }
+        Ok(_) => {}
+        Err(error) => log::warn!("save load: ScriptPackage pre-seat failed: {error}"),
+    }
+    crate::npc_spawn::ai_package::reseat_ambient_packages_after_restore(world);
     // #5054 — an exterior save holds resident cells out to the hysteresis
     // ring (`radius_load + 1`) while the reload streams only `radius_load`,
     // so the ring's rows cannot overlay. Park them as eviction would have,

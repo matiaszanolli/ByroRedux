@@ -67,7 +67,7 @@ fn main() -> anyhow::Result<()> {
     let mut reader = EsmReader::new(&bytes);
     let _ = reader.read_file_header()?;
     let mut printed = 0usize;
-    reader.for_each_record(bytes.len(), Some(b"WEAP"), |_header, subs| {
+    reader.for_each_record(bytes.len(), Some(b"WEAP"), |header, subs| {
         if printed >= 30 {
             return;
         }

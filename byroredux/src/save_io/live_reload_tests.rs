@@ -480,12 +480,19 @@ fn post_reload_drain_steps_keep_their_order() {
     // The drain body only: up to the next item at column 0.
     let body = &rest[..rest.find("\n}\n").expect("the drain must close")];
 
+    // #6087 — the remap and the ScriptPackage pre-seat run BEFORE the
+    // re-seat (the re-seat's selection honours a running script package,
+    // so seating without it stamps the scheduled winner and the next
+    // minute's tick clears the overlaid markers as a "change"); the full
+    // overlay still runs last. The pre-seat and the full apply share a
+    // call shape, so the markers key on their column arguments.
     let steps = [
         "byroredux_save::restore_resources(world, &registry, &snapshot)",
         "reference_state::restore_resident(world)",
-        "ai_package::reseat_ambient_packages_after_restore(world)",
         "byroredux_save::build_form_id_remap(world, &registry, &snapshot)",
-        "byroredux_save::apply_deltas(world, &registry, &snapshot, &remap,",
+        "&[\"ScriptPackage\"])",
+        "ai_package::reseat_ambient_packages_after_restore(world)",
+        "&remap, MUTABLE_DELTA_COLUMNS)",
         // #5460 — the worn-gear reconcile lives in the apply_deltas
         // reconciler arm and must run exactly once (a merge slip had left
         // it doubled; `matches().count() == 1` below pins that).
