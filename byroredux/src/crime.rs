@@ -317,24 +317,34 @@ pub(crate) fn report_strike(world: &World, player: EntityId, victim: EntityId, k
     bounty
 }
 
+/// Whether `furniture` has a sleeping position (a bed).
+fn has_sleep_marker(furniture: &byroredux_core::ecs::components::Furniture) -> bool {
+    use byroredux_core::ecs::components::FurnitureMarkerKind;
+    furniture.markers.iter().any(|marker| marker.kind == FurnitureMarkerKind::Sleep)
+}
+
+/// Whether `entity` is placed furniture with a sleeping position.
+pub(crate) fn is_bed(world: &World, entity: EntityId) -> bool {
+    world.get::<byroredux_core::ecs::components::Furniture>(entity).is_some_and(|furniture| has_sleep_marker(&furniture))
+}
+
 /// The placed furniture with a sleeping position (a bed).
 pub(crate) fn bed_entities(world: &World) -> Vec<EntityId> {
-    use byroredux_core::ecs::components::{Furniture, FurnitureMarkerKind};
+    use byroredux_core::ecs::components::Furniture;
     world
         .query::<Furniture>()
-        .map(|furniture| {
-            furniture
-                .iter()
-                .filter(|(_, furniture)| furniture.markers.iter().any(|marker| marker.kind == FurnitureMarkerKind::Sleep))
-                .map(|(entity, _)| entity)
-                .collect()
-        })
+        .map(|furniture| furniture.iter().filter(|(_, furniture)| has_sleep_marker(furniture)).map(|(entity, _)| entity).collect())
         .unwrap_or_default()
 }
 
 /// Resting in a bed while serving a jail sentence ends it: the player activated a bed (the
 /// canonical `ActivateEvent`), so the clock runs the sentence and the player leaves by the exit
 /// ([`byroredux_scripting::jail::serve_sentence`]). Outside a sentence a bed is just furniture.
+///
+/// `ActivateEvent` is a transient marker that is empty on nearly every frame, so it is read first
+/// and only the player's activations are tested for being a bed (#6340); gathering every bed in
+/// the world each frame of a sentence, ahead of an event that rarely comes, was the cost. The
+/// targets are collected before `Furniture` is touched, so the two guards are never held together.
 pub(crate) fn jail_bed_system(world: &World, _dt: f32) {
     if !byroredux_scripting::jail::player_in_jail(world) {
         return;
@@ -342,10 +352,11 @@ pub(crate) fn jail_bed_system(world: &World, _dt: f32) {
     let Some(player) = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) else {
         return;
     };
-    let beds = bed_entities(world);
-    let rested = world
+    let activated: Vec<EntityId> = world
         .query::<byroredux_scripting::ActivateEvent>()
-        .is_some_and(|events| events.iter().any(|(target, event)| event.activator == player && beds.contains(&target)));
+        .map(|events| events.iter().filter(|(_, event)| event.activator == player).map(|(target, _)| target).collect())
+        .unwrap_or_default();
+    let rested = activated.into_iter().any(|target| is_bed(world, target));
     if rested && byroredux_scripting::jail::serve_sentence(world) {
         crate::notifications::push(world, "You have served your sentence");
     }
@@ -407,6 +418,17 @@ mod bed_tests {
         let (world, _player, bed, chair) = cell();
         assert_eq!(bed_entities(&world), vec![bed]);
         assert!(!bed_entities(&world).contains(&chair));
+    }
+
+    /// #6340 — the per-entity predicate the system uses and the bulk gather the interaction
+    /// prompt uses are one definition.
+    #[test]
+    fn is_bed_agrees_with_the_bulk_bed_gather() {
+        let (world, player, bed, chair) = cell();
+        let beds = bed_entities(&world);
+        for entity in [bed, chair, player] {
+            assert_eq!(is_bed(&world, entity), beds.contains(&entity), "{entity:?}");
+        }
     }
 
     #[test]
