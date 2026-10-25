@@ -57,6 +57,7 @@ use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
 use byroredux_scripting::condition::resolve_entity_by_global_form_id;
 use byroredux_scripting::{AiCombatState, AiSuspended, SceneAliasCandidate};
 use rustc_hash::FxHashMap;
+use std::sync::Arc;
 
 /// Seconds between one actor's searches for a generic target.
 const SEARCH_PERIOD_SECS: f32 = 1.0;
@@ -94,6 +95,44 @@ fn is_actor(world: &World, entity: EntityId) -> bool {
             .is_some_and(|player| player.0 == Some(entity))
 }
 
+/// Memo of [`item_kind`] per placed base, valid for one `LoadedCellIndex` (#6339). A kind search
+/// classifies every `SceneAliasCandidate` row once a second; the classification is a SipHash lookup
+/// into the big `ItemRecord` map, so each base is looked up once per index and answered from a small
+/// Fx map after. Holding the `Arc` keeps the pointer comparison honest (a freed index's address can
+/// be reused) and is released when no Find actor remains.
+#[derive(Default)]
+struct KindMemo {
+    index: Option<Arc<EsmIndex>>,
+    kinds: FxHashMap<u32, Option<FindItemKind>>,
+}
+
+impl KindMemo {
+    /// Start answering for `index`, dropping the answers of any other.
+    fn bind(&mut self, index: &Arc<EsmIndex>) {
+        if !self.index.as_ref().is_some_and(|bound| Arc::ptr_eq(bound, index)) {
+            self.kinds.clear();
+            self.index = Some(Arc::clone(index));
+        }
+    }
+
+    fn kind(&mut self, base: u32) -> Option<FindItemKind> {
+        let index = self.index.as_deref()?;
+        *self.kinds.entry(base).or_insert_with(|| item_kind(index, base))
+    }
+}
+
+/// How an actor will act on the target it is walking to, and how near it must get.
+#[derive(Clone, Copy)]
+struct Classified {
+    target: EntityId,
+    stop_at: f32,
+    arrival: Arrival,
+    /// Seconds before it is worked out again: whether the target is hostile can change under a
+    /// walking actor (a faction relation, a weapon drawn), so it is re-read about once a second
+    /// rather than every frame (#6339).
+    ttl: f32,
+}
+
 #[derive(Default)]
 struct FindScratch {
     search_clock: FxHashMap<EntityId, f32>,
@@ -101,6 +140,18 @@ struct FindScratch {
     /// `(actor, target)` pairs the actor could not reach, with the seconds
     /// left before it tries again.
     unreachable: FxHashMap<(EntityId, EntityId), f32>,
+    /// Persistent buffer for the frame's behavior snapshot (no per-frame `Vec`, #6339; the
+    /// sibling `flee_package` keeps its scratch the same way, #2033).
+    behaviors: Vec<(EntityId, FindPackageBehavior)>,
+    kinds: KindMemo,
+    arrival: FxHashMap<EntityId, Classified>,
+}
+
+/// An actor's first search comes at a fixed offset inside the period instead of at once, so the
+/// actors a cell installs in one frame do not all walk the whole candidate set on the same tick
+/// (#6339). Spread over eight slots by entity id: deterministic, and at most 7/8 s late.
+fn first_search_delay(actor: EntityId) -> f32 {
+    (actor % 8) as f32 / 8.0 * SEARCH_PERIOD_SECS
 }
 
 /// Whether `target` is still worth going to.
@@ -114,7 +165,7 @@ fn still_valid(world: &World, actor: EntityId, target: EntityId, scratch: &FindS
 /// The nearest loaded candidate for a generic target, inside the search area.
 fn search(
     world: &World,
-    index: &EsmIndex,
+    kinds: &mut KindMemo,
     actor: EntityId,
     here: Vec3,
     behavior: &FindPackageBehavior,
@@ -141,7 +192,7 @@ fn search(
                 entity != actor
                     && match behavior.target {
                         FindTarget::Base(base) => identity.base_form_id == base,
-                        FindTarget::Kind(kind) => item_kind(index, identity.base_form_id) == Some(kind),
+                        FindTarget::Kind(kind) => kinds.kind(identity.base_form_id) == Some(kind),
                         FindTarget::Reference(_) => false,
                     }
             })
@@ -172,22 +223,56 @@ fn arm_combat(world: &World, actor: EntityId, target: EntityId) {
 }
 
 fn find_package_system_inner(world: &World, dt: f32, scratch: &mut FindScratch) {
-    let behaviors: Vec<(EntityId, FindPackageBehavior)> = match world.query::<FindPackageBehavior>() {
-        Some(q) if !q.is_empty() => q.iter().map(|(actor, b)| (actor, *b)).collect(),
+    let mut behaviors = std::mem::take(&mut scratch.behaviors);
+    behaviors.clear();
+    match world.query::<FindPackageBehavior>() {
+        Some(q) if !q.is_empty() => {
+            behaviors.extend(q.iter().map(|(actor, b)| (actor, *b)));
+            // Entries for actors that streamed out or changed package would otherwise stay for the
+            // session (`EatSleepScratch.live` prunes the same way, #5707). The length test keeps the
+            // common frame, where every entry is live, at three integer compares.
+            let live = behaviors.len();
+            if scratch.search_clock.len() > live {
+                scratch.search_clock.retain(|actor, _| q.contains(*actor));
+            }
+            if scratch.stuck.len() > live {
+                scratch.stuck.retain(|actor, _| q.contains(*actor));
+            }
+            if scratch.arrival.len() > live {
+                scratch.arrival.retain(|actor, _| q.contains(*actor));
+            }
+        }
         _ => {
             scratch.search_clock.clear();
             scratch.stuck.clear();
+            scratch.arrival.clear();
+            scratch.kinds = KindMemo::default();
+            scratch.behaviors = behaviors;
             return;
         }
-    };
+    }
+    drive_find_packages(world, dt, scratch, &behaviors);
+    behaviors.clear();
+    scratch.behaviors = behaviors;
+}
+
+fn drive_find_packages(
+    world: &World,
+    dt: f32,
+    scratch: &mut FindScratch,
+    behaviors: &[(EntityId, FindPackageBehavior)],
+) {
     let Some(index) = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|i| i.0.clone()) else {
         return;
     };
+    // Taken out of the scratch for the pass: `search` reads the rest of it while it fills the memo.
+    let mut kinds = std::mem::take(&mut scratch.kinds);
+    kinds.bind(&index);
     scratch.unreachable.retain(|_, left| {
         *left -= dt;
         *left > 0.0
     });
-    for (actor, behavior) in behaviors {
+    for &(actor, behavior) in behaviors {
         if world.has::<Dead>(actor)
             || world.has::<AiCombatState>(actor)
             || world.has::<AiSuspended>(actor)
@@ -196,6 +281,7 @@ fn find_package_system_inner(world: &World, dt: f32, scratch: &mut FindScratch) 
             continue;
         }
         let mut progress = world.get::<FindProgress>(actor).map(|p| *p).unwrap_or_default();
+        let progress_on_entry = progress;
         if progress.done {
             continue;
         }
@@ -212,13 +298,13 @@ fn find_package_system_inner(world: &World, dt: f32, scratch: &mut FindScratch) 
             progress.target = None;
         }
         if progress.target.is_none() {
-            let clock = scratch.search_clock.entry(actor).or_insert(0.0);
+            let clock = scratch.search_clock.entry(actor).or_insert_with(|| first_search_delay(actor));
             *clock -= dt;
             if *clock > 0.0 {
                 continue;
             }
             *clock = SEARCH_PERIOD_SECS;
-            progress.target = search(world, &index, actor, here, &behavior, scratch);
+            progress.target = search(world, &mut kinds, actor, here, &behavior, scratch);
             store(world, actor, progress);
             if progress.target.is_none() {
                 continue;
@@ -230,19 +316,22 @@ fn find_package_system_inner(world: &World, dt: f32, scratch: &mut FindScratch) 
         };
         let distance = ground_distance(here, target_at);
 
-        let (stop_at, on_arrival) = if is_actor(world, target) {
-            let hostile = world.has::<CreatureActor>(target) || actor_would_attack(world, actor, target);
-            if hostile {
-                (ENGAGE, Arrival::Attack)
-            } else if world.try_resource::<crate::systems::PlayerEntity>().is_some_and(|p| p.0 == Some(target)) {
-                (BESIDE, Arrival::Greet)
-            } else {
-                (BESIDE, Arrival::Stand)
+        // The arrival class is worked out when the target changes and about once a second after,
+        // not every frame of the walk (#6339): `actor_would_attack` clones the faction relations
+        // and `is_pickup_target` makes four sparse lookups plus a catalog probe.
+        let cached = scratch.arrival.get_mut(&actor).and_then(|class| {
+            class.ttl -= dt;
+            (class.target == target && class.ttl > 0.0).then_some(class)
+        });
+        let (stop_at, on_arrival) = match cached {
+            Some(class) => (class.stop_at, class.arrival),
+            None => {
+                let (stop_at, arrival) = classify_arrival(world, actor, target);
+                scratch
+                    .arrival
+                    .insert(actor, Classified { target, stop_at, arrival, ttl: SEARCH_PERIOD_SECS });
+                (stop_at, arrival)
             }
-        } else if crate::inventory::is_pickup_target(world, target) {
-            (REACH, Arrival::Take)
-        } else {
-            (REACH, Arrival::Activate)
         };
 
         if distance > stop_at {
@@ -305,7 +394,30 @@ fn find_package_system_inner(world: &World, dt: f32, scratch: &mut FindScratch) 
             // the target so it follows if they walk off.
             Arrival::Stand => {}
         }
-        store(world, actor, progress);
+        // An actor standing beside a friendly NPC changes nothing frame after frame; do not rewrite
+        // its progress through a `query_mut` every one of them (#6339).
+        if progress != progress_on_entry {
+            store(world, actor, progress);
+        }
+    }
+    scratch.kinds = kinds;
+}
+
+/// How far `actor` goes toward `target`, and what it does there.
+fn classify_arrival(world: &World, actor: EntityId, target: EntityId) -> (f32, Arrival) {
+    if is_actor(world, target) {
+        let hostile = world.has::<CreatureActor>(target) || actor_would_attack(world, actor, target);
+        if hostile {
+            (ENGAGE, Arrival::Attack)
+        } else if world.try_resource::<crate::systems::PlayerEntity>().is_some_and(|p| p.0 == Some(target)) {
+            (BESIDE, Arrival::Greet)
+        } else {
+            (BESIDE, Arrival::Stand)
+        }
+    } else if crate::inventory::is_pickup_target(world, target) {
+        (REACH, Arrival::Take)
+    } else {
+        (REACH, Arrival::Activate)
     }
 }
 
@@ -530,5 +642,109 @@ mod tests {
         run(&world, 10);
         assert!(world.get::<AiCombatState>(actor).is_none(), "a corpse is not attacked");
         assert!(world.get::<FindProgress>(actor).is_none_or(|p| p.target.is_none()));
+    }
+
+    // ── #6339: scratch, memo and cadence ────────────────────────────────
+
+    fn step(world: &World, scratch: &mut FindScratch, steps: usize) {
+        let mut propagate = byroredux_core::ecs::systems::make_transform_propagation_system();
+        for _ in 0..steps {
+            find_package_system_inner(world, 0.5, scratch);
+            propagate(world, 0.5);
+        }
+    }
+
+    fn food_hunter() -> FindPackageBehavior {
+        FindPackageBehavior {
+            target: FindTarget::Kind(FindItemKind::Food),
+            count: 1,
+            area: EatSleepLocation::NearCurrentLocation,
+            area_radius: 1000.0,
+        }
+    }
+
+    /// Each base is classified once per index; a swapped index starts the memo afresh.
+    #[test]
+    fn the_item_kind_memo_classifies_each_base_once_per_index() {
+        let first = Arc::new(index());
+        let mut memo = KindMemo::default();
+        assert_eq!(memo.kind(FOOD), None, "nothing is bound yet");
+        memo.bind(&first);
+        assert_eq!(memo.kind(FOOD), Some(FindItemKind::Food));
+        assert_eq!(memo.kind(0x9999), None);
+        assert_eq!(memo.kinds.len(), 2, "unknown bases are remembered too");
+        memo.bind(&first);
+        assert_eq!(memo.kinds.len(), 2, "re-binding the same index keeps the answers");
+        let mut other = index();
+        other.items.insert(FOOD, item(aid(false)));
+        memo.bind(&Arc::new(other));
+        assert!(memo.kinds.is_empty(), "a new index drops the old answers");
+        assert_eq!(memo.kind(FOOD), Some(FindItemKind::Alchemy), "and is read afresh");
+    }
+
+    /// The first search is spread over the period by entity id, never later than the period itself.
+    #[test]
+    fn first_searches_are_staggered_across_the_period() {
+        let delays: Vec<f32> = (0..8).map(first_search_delay).collect();
+        assert!(delays.iter().all(|d| (0.0..SEARCH_PERIOD_SECS).contains(d)), "{delays:?}");
+        assert!(delays.windows(2).all(|pair| pair[0] < pair[1]), "eight distinct slots: {delays:?}");
+        assert_eq!(first_search_delay(8), first_search_delay(0));
+    }
+
+    /// Entries for actors that left (streamed out, changed package) do not accumulate, and the
+    /// behavior buffer is kept between frames instead of being rebuilt.
+    #[test]
+    fn scratch_is_pruned_to_the_live_actors_and_the_buffer_is_kept() {
+        let mut world = world();
+        food_item_far(&mut world);
+        let keep = finder(&mut world, food_hunter());
+        let leave = finder(&mut world, food_hunter());
+        let mut scratch = FindScratch::default();
+        step(&world, &mut scratch, 4);
+        assert!(scratch.search_clock.contains_key(&keep) && scratch.search_clock.contains_key(&leave));
+        assert!(scratch.behaviors.capacity() >= 2 && scratch.behaviors.is_empty(), "buffer kept, emptied");
+        scratch.stuck.insert(leave, 1.0);
+        scratch.arrival.insert(
+            leave,
+            Classified { target: keep, stop_at: REACH, arrival: Arrival::Take, ttl: 1.0 },
+        );
+
+        world.query_mut::<FindPackageBehavior>().unwrap().remove(leave);
+        step(&world, &mut scratch, 1);
+        assert!(scratch.search_clock.contains_key(&keep));
+        assert!(!scratch.search_clock.contains_key(&leave), "its search clock is pruned");
+        assert!(!scratch.stuck.contains_key(&leave), "its stuck timer is pruned");
+        assert!(!scratch.arrival.contains_key(&leave), "its arrival class is pruned");
+
+        world.query_mut::<FindPackageBehavior>().unwrap().remove(keep);
+        step(&world, &mut scratch, 1);
+        assert!(scratch.search_clock.is_empty() && scratch.arrival.is_empty());
+        assert!(scratch.kinds.index.is_none(), "the index is released with the last Find actor");
+    }
+
+    fn food_item_far(world: &mut World) {
+        place(world, FOOD, 0x301, Vec3::new(0.0, 0.0, 700.0));
+    }
+
+    /// The arrival class is worked out once for a target and kept while the walk goes on.
+    #[test]
+    fn the_arrival_class_is_cached_for_the_walk() {
+        let mut world = world();
+        let food = place(&mut world, FOOD, 0x302, Vec3::new(0.0, 0.0, 700.0));
+        let actor = finder(&mut world, food_hunter());
+        let mut scratch = FindScratch::default();
+        step(&world, &mut scratch, 6);
+        let class = *scratch.arrival.get(&actor).expect("a walking actor has its class cached");
+        assert_eq!((class.target, class.stop_at), (food, REACH));
+        assert!(matches!(class.arrival, Arrival::Take));
+        // Within the refresh window the cached class is used as is.
+        scratch.arrival.get_mut(&actor).unwrap().ttl = 10.0;
+        scratch.arrival.get_mut(&actor).unwrap().stop_at = 1.0;
+        step(&world, &mut scratch, 1);
+        assert_eq!(scratch.arrival[&actor].stop_at, 1.0, "not recomputed inside its window");
+        // Once the window lapses, it is read from the world again.
+        scratch.arrival.get_mut(&actor).unwrap().ttl = 0.1;
+        step(&world, &mut scratch, 1);
+        assert_eq!(scratch.arrival[&actor].stop_at, REACH, "recomputed after it lapses");
     }
 }
