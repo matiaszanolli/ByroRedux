@@ -350,6 +350,20 @@ pub(super) fn load_references_budgeted(
                 world.insert_resource(rs);
             }
         }
+        // #6350 — same idempotent-once construction for the VATS tuning
+        // model and the ActionPoints regen lane. Nothing is inserted on
+        // non-Fallout loads (the builder returns None there), and a
+        // Fallout load whose ActionPoints AVIF failed to resolve still
+        // gets the model — regen alone stays inert, the degraded rule.
+        if world
+            .try_resource::<byroredux_core::character::VatsModel>()
+            .is_none()
+        {
+            if let Some((model, regen)) = crate::npc_spawn::build_vats_model(record_index) {
+                world.insert_resource(model);
+                world.insert_resource(regen);
+            }
+        }
         // #3092 — same idempotent-once construction for the Melee Damage
         // AVIF id `byroredux/src/combat.rs`'s `attack_damage` needs to look
         // the CharacterRuleset row above back up at combat time. Absent on

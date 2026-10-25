@@ -132,14 +132,37 @@ impl PoolRegenAccumulator {
 /// anywhere, tests included, and cannot acquire one until Oblivion gets a
 /// pre-`AVIF` actor-value resolver (#3768). `git show` recovers it if a
 /// wiring pass wants the Fatigue/Magicka/Willpower EditorID set back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PoolRegenConfig {
     pub fatigue_avif: u32,
     pub magicka_avif: u32,
     pub willpower_avif: u32,
+    /// #6350 — the Fallout ActionPoints lane. `None` on the TES games
+    /// (and on any Fallout load whose AP AVIF failed to resolve, which
+    /// disables regen rather than force-populating a zero entry — the
+    /// same degraded rule the fatigue lane's per-actor `get` check
+    /// applies below).
+    pub action_points: Option<ActionPointsRegen>,
 }
 
 impl Resource for PoolRegenConfig {}
+
+/// #6350 — ActionPoints regen on the same fixed 60 Hz tick as Fatigue.
+///
+/// The authored GMST (`fActionPointsRestoreRate`) differs in both value
+/// and unit across the two games that author it: FO3 ships `4` — per
+/// second — while FNV ships `0.06` — per frame, the source of the
+/// 30-vs-60 fps regen divergence FNV inherited from FO3's engine. On
+/// this fixed tick the per-frame semantics convert once, at install,
+/// to `0.06 × 60 = 3.6` per second: the deterministic 60 Hz behaviour,
+/// not the bug.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActionPointsRegen {
+    pub avif: u32,
+    /// Points per second, already unit-normalized by the installer
+    /// (see [`VatsModel::ap_regen_per_second`]).
+    pub per_second: f32,
+}
 
 /// The fixed-60Hz regen tick. Registered as an ordinary variable-`dt` system
 /// (same signature every scheduler system uses); internally drains
@@ -231,6 +254,16 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
         if avs.get(config.fatigue_avif).is_some() {
             avs.restore(config.fatigue_avif, FATIGUE_REGEN_PER_SEC * elapsed);
         }
+        // #6350 — the AP lane: flat per-second restore on the same tick,
+        // actors without the AV simply skip it. VATS needs no special
+        // case here: the mode freezes world dt (Phase 3b), and a frozen
+        // accumulator advances zero ticks — regen pauses inside VATS for
+        // free, matching vanilla.
+        if let Some(ap) = config.action_points {
+            if avs.get(ap.avif).is_some() {
+                avs.restore(ap.avif, ap.per_second * elapsed);
+            }
+        }
         if let Some(base_max) = avs.get(config.magicka_avif).map(|av| av.base) {
             let willpower = avs.current(config.willpower_avif);
             // #2932 — honour `DerivedScope`, which `derived_value`
@@ -264,6 +297,48 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
 #[cfg(test)]
 mod tests {
 
+    /// #6350 — the ActionPoints lane restores on the same fixed tick at
+    /// the unit-normalized per-second rate, skips actors without the AV,
+    /// and stays inert when the lane is `None` (the TES games).
+    #[test]
+    fn action_points_regen_restores_at_the_normalized_rate() {
+        const AP: u32 = 0x2A;
+        let mut world = World::new();
+        world.insert_resource(PoolRegenConfig {
+            fatigue_avif: 0x01,
+            magicka_avif: 0x10,
+            willpower_avif: 0x11,
+            action_points: Some(ActionPointsRegen {
+                avif: AP,
+                // FNV's authored 0.06 per frame, normalized to per-second.
+                per_second: 3.6,
+            }),
+        });
+        world.insert_resource(PoolRegenAccumulator::default());
+        let entity = world.spawn();
+        let mut avs = ActorValues::default();
+        avs.set_base(AP, 95.0);
+        avs.apply_damage(AP, 95.0);
+        world.insert(entity, avs);
+        // One second of frames -> 60 ticks -> exactly per_second restored.
+        for _ in 0..60 {
+            pool_regen_tick_system(&world, POOL_REGEN_DT);
+        }
+        let restored = world.get::<ActorValues>(entity).unwrap().current(AP);
+        assert!(
+            (restored - 3.6).abs() < 1e-3,
+            "one second restores per_second: got {restored}"
+        );
+
+        // An actor without the AV is skipped, not populated.
+        let other = world.spawn();
+        world.insert(other, ActorValues::default());
+        for _ in 0..60 {
+            pool_regen_tick_system(&world, POOL_REGEN_DT);
+        }
+        assert!(world.get::<ActorValues>(other).unwrap().get(AP).is_none());
+    }
+
     /// Regression for #2932 — the tick must honour `DerivedScope`.
     ///
     /// `derived_value` deliberately does not enforce scope (it is a caller
@@ -296,6 +371,7 @@ mod tests {
             fatigue_avif: 0x01,
             magicka_avif: MAGICKA,
             willpower_avif: WILLPOWER,
+            action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
         let e = world.spawn();
@@ -350,6 +426,7 @@ mod tests {
             fatigue_avif: 0x01,
             magicka_avif: MAGICKA,
             willpower_avif: WILLPOWER,
+            action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
 
@@ -507,6 +584,7 @@ mod tests {
             fatigue_avif: FATIGUE,
             magicka_avif: MAGICKA,
             willpower_avif: WILLPOWER,
+            action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
 
@@ -588,6 +666,7 @@ mod tests {
             fatigue_avif: FATIGUE,
             magicka_avif: MAGICKA,
             willpower_avif: WILLPOWER,
+            action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
         // Deliberately NO CharacterRuleset.

@@ -307,6 +307,54 @@ pub fn build_character_ruleset(
     index.character_rules.build_ruleset(resolve, gmst, &index.plugin_files)
 }
 
+/// Build the per-game VATS resources (#6350): the load-order-priced
+/// [`VatsModel`](byroredux_core::character::VatsModel), and — when the
+/// load order resolves an `ActionPoints` AVIF — the regen lane for
+/// [`PoolRegenConfig`](byroredux_core::character::regen::PoolRegenConfig)
+/// (its first production consumer; the TES lanes stay inert because no
+/// Fallout load order resolves Fatigue/Magicka AVIFs). `None` on every
+/// non-Fallout game.
+pub fn build_vats_model(
+    index: &EsmIndex,
+) -> Option<(
+    byroredux_core::character::VatsModel,
+    byroredux_core::character::regen::PoolRegenConfig,
+)> {
+    if index.game != byroredux_plugin::esm::reader::GameKind::Fallout3NV {
+        return None;
+    }
+    let gmst = |editor_id: &str| index.game_setting_float(editor_id);
+    // The FO3-vs-FNV restore-rate dialect is a profile decision (both
+    // share GameKind::Fallout3NV); the profile the parser selected at
+    // load time owns it (#3384's first-non-NONE-wins).
+    let base = if index.character_rules
+        == byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS
+    {
+        byroredux_core::character::VatsModel::FALLOUT_NV
+    } else {
+        byroredux_core::character::VatsModel::FALLOUT3
+    };
+    let model = base.with_gmst(gmst);
+    let action_points = index
+        .actor_value_form_id("ActionPoints")
+        .map(|avif| byroredux_core::character::regen::ActionPointsRegen {
+            avif,
+            per_second: model.ap_regen_per_second(),
+        });
+    // Fatigue/Magicka/Willpower are TES pools: no Fallout load order
+    // resolves them, so the per-actor AV gates keep those lanes inert —
+    // but they still must name *something* for the Copy struct.
+    Some((
+        model,
+        byroredux_core::character::regen::PoolRegenConfig {
+            fatigue_avif: 0,
+            magicka_avif: 0,
+            willpower_avif: 0,
+            action_points,
+        },
+    ))
+}
+
 /// Build the per-game [`MeleeDamageConfig`](byroredux_core::character::MeleeDamageConfig)
 /// resource — the resolved AVIF id for the AVIF-backed additive Melee Damage
 /// row (`STR × 0.5` on FO3/FNV, #3092). `None` means this game authors no

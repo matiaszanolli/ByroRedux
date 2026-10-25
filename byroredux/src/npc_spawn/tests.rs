@@ -3672,3 +3672,55 @@ fn installed_fallout_spawner_shells_resolve_a_model() {
         );
     }
 }
+
+/// #6350 — the VATS wiring: an FNV-shaped load order gets the
+/// FALLOUT_NV model with load-order GMST overrides applied and the AP
+/// regen lane resolved against the ActionPoints AVIF; a non-Fallout
+/// index gets nothing; a Fallout index without the AVIF gets the model
+/// but an inert regen lane (the degraded rule, not a panic).
+#[test]
+fn build_vats_model_prices_from_the_load_order() {
+    use byroredux_core::character::regen::PoolRegenConfig;
+    use byroredux_core::character::{CharacterRulesProfile, VatsModel};
+    use byroredux_plugin::esm::reader::GameKind;
+    use byroredux_plugin::esm::records::{GameSetting, SettingValue};
+
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.game = GameKind::Fallout3NV;
+    index.character_rules = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
+    index.actor_values.insert(
+        0x40AA,
+        byroredux_plugin::esm::records::AvifRecord {
+            form_id: 0x40AA,
+            editor_id: "ActionPoints".to_string(),
+            ..Default::default()
+        },
+    );
+    // A modded-style override: the default 65 % cap lowered to 50.
+    index.insert_game_setting(GameSetting {
+        form_id: 0x0001,
+        editor_id: "fVATSMaxChance".to_string(),
+        value: SettingValue::Float(50.0),
+    });
+
+    let (model, regen) = crate::npc_spawn::build_vats_model(&index)
+        .expect("Fallout3NV index builds the VATS resources");
+    assert_eq!(model.max_chance, 50.0, "load-order override applies");
+    // FNV dialect: 0.06 per frame normalized at install time.
+    assert!((regen.action_points.expect("AV resolved").per_second - 3.6).abs() < 1e-4);
+    assert_eq!(regen.action_points.unwrap().avif, 0x40AA);
+    assert!((model.ap_regen_per_second() - 3.6).abs() < 1e-4);
+
+    // Degraded: no ActionPoints AVIF -> model present, regen lane None.
+    index.actor_values.clear();
+    let (_, regen) = crate::npc_spawn::build_vats_model(&index).unwrap();
+    assert!(regen.action_points.is_none());
+    let _ = std::mem::size_of::<PoolRegenConfig>();
+    let _ = std::mem::size_of::<VatsModel>();
+
+    // Non-Fallout: nothing at all.
+    let mut skyrim = byroredux_plugin::esm::records::EsmIndex::default();
+    skyrim.game = GameKind::Skyrim;
+    skyrim.character_rules = CharacterRulesProfile::SKYRIM;
+    assert!(crate::npc_spawn::build_vats_model(&skyrim).is_none());
+}

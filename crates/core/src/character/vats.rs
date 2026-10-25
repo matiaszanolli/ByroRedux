@@ -31,11 +31,55 @@
 
 use crate::ecs::resource::Resource;
 
+/// The `fActionPoints*` family — the per-action AP *standards* the GECK's
+/// weapon-Override field replaces ("Action Points: overrides the standard
+/// number of action points the weapon uses"), plus the restore rate.
+/// Vanilla values corpus-pinned (#6350, `probe_gmst_vats`; FO3 and FNV
+/// author identical attack costs — only the restore rate differs).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StandardActionPoints {
+    /// `fActionPointsRestoreRate`. **Unit differs per game**: FO3 authors
+    /// `4` per second; FNV authors `0.06` per frame (the 30-vs-60 fps
+    /// regen divergence FNV inherited). Normalize through
+    /// [`VatsModel::ap_regen_per_second`], never read this raw.
+    pub restore_rate: f32,
+    /// True on the FNV dialect (rate is per frame on a 60 Hz clock).
+    pub restore_rate_per_frame: bool,
+    /// `fActionPointsAttackPistol` (20).
+    pub attack_pistol: f32,
+    /// `fActionPointsAttackRifle` (25).
+    pub attack_rifle: f32,
+    /// `fActionPointsAttackOneHandMelee` (15).
+    pub attack_one_hand_melee: f32,
+    /// `fActionPointsAttackTwoHandMelee` (30).
+    pub attack_two_hand_melee: f32,
+    /// `fActionPointsAttackUnarmed` (22).
+    pub attack_unarmed: f32,
+    /// `fActionPointsAttackGrenade` (35).
+    pub attack_grenade: f32,
+    /// `fActionPointsAttackMine` (10).
+    pub attack_mine: f32,
+    /// `fActionPointsAttackLauncher` (40).
+    pub attack_launcher: f32,
+    /// `fActionPointsAttackHandle` (20).
+    pub attack_handle: f32,
+    /// `fActionPointsReload` (10).
+    pub reload: f32,
+    /// `fActionPointsHeal` (10).
+    pub heal: f32,
+    /// `fActionPointsPowerAttackMult` (1.5).
+    pub power_attack_mult: f32,
+    /// `fActionPointsVATSMeleeMult` (1).
+    pub vats_melee_mult: f32,
+}
+
 /// The `fVATS*` / `iVATS*` tuning family. Field-per-GMST, so a later
 /// phase (playback, melee warp, the Stranger) consumes its knobs without
 /// reopening the model.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VatsModel {
+    /// The `fActionPoints*` per-action standards + restore rate.
+    pub ap: StandardActionPoints,
     /// `fVATSHitChanceMult` (default 1) — "the value at which VATS
     /// multiplies the accuracy of a weapon".
     pub hit_chance_mult: f32,
@@ -112,9 +156,11 @@ pub struct VatsModel {
 impl Resource for VatsModel {}
 
 impl VatsModel {
-    /// Vanilla FO3/FNV defaults — the GECK wiki *VATS Settings* page,
-    /// value-for-value (both games author the same numbers).
-    pub const FALLOUT: Self = Self {
+    /// Vanilla FO3 defaults — the GECK wiki *VATS Settings* page
+    /// value-for-value, plus the FO3 `fActionPoints` corpus values.
+    /// The `fVATS*` half is identical in both games; only
+    /// [`StandardActionPoints::restore_rate`] differs (see FALLOUT_NV).
+    pub const FALLOUT3: Self = Self {
         hit_chance_mult: 1.0,
         max_chance: 95.0,
         distance_factor: 2.0,
@@ -142,6 +188,34 @@ impl VatsModel {
         stranger_distance: 164.0,
         range_spread_max: 3.0,
         range_spread_uncertainty: 0.7,
+        ap: StandardActionPoints {
+            restore_rate: 4.0,
+            restore_rate_per_frame: false,
+            attack_pistol: 20.0,
+            attack_rifle: 25.0,
+            attack_one_hand_melee: 15.0,
+            attack_two_hand_melee: 30.0,
+            attack_unarmed: 22.0,
+            attack_grenade: 35.0,
+            attack_mine: 10.0,
+            attack_launcher: 40.0,
+            attack_handle: 20.0,
+            reload: 10.0,
+            heal: 10.0,
+            power_attack_mult: 1.5,
+            vats_melee_mult: 1.0,
+        },
+    };
+
+    /// Vanilla FNV: the `fVATS*` half unchanged; the AP restore rate
+    /// switches to the per-frame dialect (0.06 × 60 Hz = 3.6/s).
+    pub const FALLOUT_NV: Self = Self {
+        ap: StandardActionPoints {
+            restore_rate: 0.06,
+            restore_rate_per_frame: true,
+            ..Self::FALLOUT3.ap
+        },
+        ..Self::FALLOUT3
     };
 
     /// The model with each setting the load order authors replacing its
@@ -182,6 +256,42 @@ impl VatsModel {
             stranger_distance: f("fVATSStrangerDistance", self.stranger_distance),
             range_spread_max: f("fVATSRangeSpreadMax", self.range_spread_max),
             range_spread_uncertainty: f("fVATSRangeSpreadUncertainty", self.range_spread_uncertainty),
+            ap: StandardActionPoints {
+                restore_rate: f("fActionPointsRestoreRate", self.ap.restore_rate),
+                restore_rate_per_frame: self.ap.restore_rate_per_frame,
+                attack_pistol: f("fActionPointsAttackPistol", self.ap.attack_pistol),
+                attack_rifle: f("fActionPointsAttackRifle", self.ap.attack_rifle),
+                attack_one_hand_melee: f(
+                    "fActionPointsAttackOneHandMelee",
+                    self.ap.attack_one_hand_melee,
+                ),
+                attack_two_hand_melee: f(
+                    "fActionPointsAttackTwoHandMelee",
+                    self.ap.attack_two_hand_melee,
+                ),
+                attack_unarmed: f("fActionPointsAttackUnarmed", self.ap.attack_unarmed),
+                attack_grenade: f("fActionPointsAttackGrenade", self.ap.attack_grenade),
+                attack_mine: f("fActionPointsAttackMine", self.ap.attack_mine),
+                attack_launcher: f("fActionPointsAttackLauncher", self.ap.attack_launcher),
+                attack_handle: f("fActionPointsAttackHandle", self.ap.attack_handle),
+                reload: f("fActionPointsReload", self.ap.reload),
+                heal: f("fActionPointsHeal", self.ap.heal),
+                power_attack_mult: f("fActionPointsPowerAttackMult", self.ap.power_attack_mult),
+                vats_melee_mult: f("fActionPointsVATSMeleeMult", self.ap.vats_melee_mult),
+            },
+        }
+    }
+
+    /// The restore rate normalized to per-second on the fixed 60 Hz
+    /// clock — the number [`crate::character::regen::ActionPointsRegen`]
+    /// consumes. A mod re-pricing `fActionPointsRestoreRate` flows
+    /// through with its game's unit semantics intact.
+    #[must_use]
+    pub fn ap_regen_per_second(&self) -> f32 {
+        if self.ap.restore_rate_per_frame {
+            self.ap.restore_rate * 60.0
+        } else {
+            self.ap.restore_rate
         }
     }
 
@@ -286,7 +396,7 @@ mod tests {
     /// The documented anchors hold on the vanilla model.
     #[test]
     fn vanilla_defaults_match_the_geck_wiki_page() {
-        let m = VatsModel::FALLOUT;
+        let m = VatsModel::FALLOUT3;
         assert_eq!(m.max_chance, 95.0);
         assert_eq!(m.hit_chance_mult, 1.0);
         assert_eq!(m.distance_factor, 2.0);
@@ -297,13 +407,39 @@ mod tests {
         assert_eq!(m.screen_percent_factor, 1.0);
     }
 
+    /// The AP corpus values pin per game: identical attack standards,
+    /// the restore-rate unit split FO3 (4/s) vs FNV (0.06/frame).
+    #[test]
+    fn ap_standards_pin_the_per_game_corpus_values() {
+        assert_eq!(VatsModel::FALLOUT3.ap.restore_rate, 4.0);
+        // Compile-time pins (clippy: assertions_on_constants).
+        const _: () = assert!(!VatsModel::FALLOUT3.ap.restore_rate_per_frame);
+        assert_eq!(VatsModel::FALLOUT3.ap_regen_per_second(), 4.0);
+        assert_eq!(VatsModel::FALLOUT_NV.ap.restore_rate, 0.06);
+        const _: () = assert!(VatsModel::FALLOUT_NV.ap.restore_rate_per_frame);
+        assert!((VatsModel::FALLOUT_NV.ap_regen_per_second() - 3.6).abs() < 1e-4);
+        // The attack standards are the shared corpus values.
+        for m in [VatsModel::FALLOUT3, VatsModel::FALLOUT_NV] {
+            assert_eq!(m.ap.attack_pistol, 20.0);
+            assert_eq!(m.ap.attack_rifle, 25.0);
+            assert_eq!(m.ap.attack_one_hand_melee, 15.0);
+            assert_eq!(m.ap.attack_two_hand_melee, 30.0);
+            assert_eq!(m.ap.reload, 10.0);
+        }
+        // A mod re-pricing the restore rate keeps its unit: FNV 0.1 per
+        // frame -> 6/s.
+        let modded = VatsModel::FALLOUT_NV
+            .with_gmst(|name| (name == "fActionPointsRestoreRate").then_some(0.1));
+        assert!((modded.ap_regen_per_second() - 6.0).abs() < 1e-4);
+    }
+
     /// Point-blank, fully visible, skill 50, torso part (100), a 65 %
     /// weapon: every reconstructed term is neutral except the weapon
     /// and part bases, so the chain's multiplicative skeleton is
     /// directly observable.
     #[test]
     fn neutral_conditions_reduce_to_weapon_times_part_share() {
-        let m = VatsModel::FALLOUT;
+        let m = VatsModel::FALLOUT3;
         let chance = m.to_hit_chance(VatsHitInput {
             weapon_base_to_hit: 65.0,
             part_to_hit: 100.0,
@@ -319,7 +455,7 @@ mod tests {
     /// real (if small) chance, one unit outside is zero.
     #[test]
     fn max_engage_distance_gates_rather_than_decays() {
-        let m = VatsModel::FALLOUT;
+        let m = VatsModel::FALLOUT3;
         let base = VatsHitInput {
             weapon_base_to_hit: 65.0,
             part_to_hit: 100.0,
@@ -336,7 +472,7 @@ mod tests {
     /// becomes 68 on the second shot and 73 on the third.
     #[test]
     fn concentrated_fire_matches_the_wiki_example() {
-        let m = VatsModel::FALLOUT;
+        let m = VatsModel::FALLOUT3;
         // Any input producing 63 % on shot 1 works; solved for the
         // quadratic distance term: 90 × (1 − d/5000)² = 63 → d ≈ 816.7.
         let input = VatsHitInput {
@@ -357,7 +493,7 @@ mod tests {
     /// more visible part, bigger weapon base — each strictly helps.
     #[test]
     fn chance_is_monotonic_in_every_documented_input() {
-        let m = VatsModel::FALLOUT;
+        let m = VatsModel::FALLOUT3;
         let base = VatsHitInput {
             weapon_base_to_hit: 65.0,
             part_to_hit: 60.0,
@@ -378,7 +514,7 @@ mod tests {
     /// "always" part sentinel (255) and Concentrated Fire stacking.
     #[test]
     fn chance_caps_at_max_chance() {
-        let m = VatsModel::FALLOUT;
+        let m = VatsModel::FALLOUT3;
         let chance = m.to_hit_chance(VatsHitInput {
             weapon_base_to_hit: 100.0,
             part_to_hit: 255.0,
@@ -397,7 +533,7 @@ mod tests {
     /// (the 1a case) must resolve identically to a proper override.
     #[test]
     fn authored_gmsts_reprice_the_model() {
-        let vanilla = VatsModel::FALLOUT;
+        let vanilla = VatsModel::FALLOUT3;
         let modded = vanilla.with_gmst(|name| match name {
             "fVATSHitChanceMult" => Some(0.5),
             "fVATSMaxChance" => Some(50.0),
@@ -466,7 +602,7 @@ mod tests {
             //     0.0, // ← replace with the in-game display
             // ),
         ];
-        let model = VatsModel::FALLOUT.with_gmst(|name| {
+        let model = VatsModel::FALLOUT3.with_gmst(|name| {
             // Fill from the load order's GMSTs when capturing; vanilla
             // values equal the compiled defaults, so `|_| None` is
             // correct for a clean vanilla run.
