@@ -256,7 +256,7 @@ fn load_archive_resource(
     resolved: Url,
     archive_path: String,
 ) -> Box<dyn SuccessResponse> {
-    let body = match provider.load(&archive_path) {
+    let mut body = match provider.load(&archive_path) {
         Ok(Some(body)) => body,
         Ok(None) => {
             return record_degraded(
@@ -282,6 +282,17 @@ fn load_archive_resource(
         if let Err(message) = crate::prepare::ensure_declared_len_within_ceiling(&body) {
             return record_degraded(state, &request_url, message);
         }
+    }
+    // #5480 — the shim's documented contract ("normalize … before Ruffle
+    // sees it", prepare.rs) covers the movies Ruffle parses through THIS
+    // response, not only the import scan: the body is normalized once
+    // here, and both the import scan below and Ruffle read the result
+    // (the scan no longer re-normalizes — UI-D1-01's extra scan inflate
+    // is gone). Idempotent for the root movie, which `prepare_movie`
+    // already normalized, and `None` (no change) keeps the raw bytes —
+    // an unpatched CWS still reaches Ruffle compressed, as before.
+    if let Some(normalized) = crate::prepare::normalize_scaleform_dialect(&body) {
+        body = normalized;
     }
     let is_import_asset = state.borrow().import_asset_paths.contains(&archive_path);
     let (body, import_preload_rewritten) = if is_import_asset {
@@ -534,11 +545,11 @@ fn import_asset_paths(
     }
     // #5966 — the dependency path never saw the shim's #5719 ceiling.
     crate::prepare::ensure_declared_len_within_ceiling(movie_data)?;
-    // #4470 — dependency movies speak the same Scaleform dialect as the
-    // root (Starfield's imported components carry the same flag-clear
-    // PlaceObject3 records); normalize before the parse.
-    let normalized = crate::prepare::normalize_scaleform_dialect(movie_data);
-    let movie_data: &[u8] = normalized.as_deref().unwrap_or(movie_data);
+    // #5480 — the caller (`load_archive_resource`) has already run the
+    // dialect shim over this body — the same normalized bytes Ruffle
+    // parses — so the scan parses them directly instead of normalizing a
+    // private copy (the old shape both double-inflated and left Ruffle
+    // reading the un-normalized original).
     let decompressed = swf::decompress_swf(movie_data)
         .map_err(|error| format!("failed to decompress imported Scaleform movie: {error}"))?;
     let movie = swf::parse_swf(&decompressed)
@@ -740,6 +751,72 @@ mod tests {
         let errors = runtime.take_errors();
         assert!(errors.iter().any(|error| error.contains("ceiling")), "{errors:?}");
         assert!(runtime.take_loads().is_empty(), "a refused body is not a load");
+    }
+
+    /// #5480 — the shim's contract covers what Ruffle parses, not only the
+    /// navigator's own import scan: a dependency movie carrying the
+    /// Starfield dialect (a flag-clear PlaceObject3 inside a sprite) comes
+    /// back NORMALIZED — the response body is the patched FWS, not the raw
+    /// archive bytes. Pre-fix the scan normalized a private copy and
+    /// Ruffle read the original, so the root and its dependencies took two
+    /// different code paths for the same records.
+    #[test]
+    fn a_dependency_movie_reaches_ruffle_normalized() {
+        fn tag(code: u16, body: &[u8]) -> Vec<u8> {
+            let mut out = Vec::with_capacity(6 + body.len());
+            out.extend_from_slice(&((code << 6) | (body.len() as u16 & 0x3F)).to_le_bytes());
+            out.extend_from_slice(body);
+            out
+        }
+        // A PlaceObject3 whose flags (0x0824) carry neither MOVE nor
+        // HAS_CHARACTER — the Starfield form the shim patches.
+        let mut place3 = Vec::new();
+        place3.extend_from_slice(&0x0824u16.to_le_bytes());
+        place3.extend_from_slice(&0x1125u16.to_le_bytes());
+        place3.extend_from_slice(b"SomeClass\0");
+        place3.extend_from_slice(&[0; 12]);
+        let mut sprite_body = Vec::new();
+        sprite_body.extend_from_slice(&7u16.to_le_bytes()); // character id
+        sprite_body.extend_from_slice(&1u16.to_le_bytes()); // frame count
+        sprite_body.extend_from_slice(&tag(70, &place3));
+        sprite_body.extend_from_slice(&[0x00, 0x00]); // sprite END
+        let mut file = Vec::new();
+        file.extend_from_slice(b"FWS");
+        file.push(12);
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.push(0x00); // RECT nbits=0
+        file.extend_from_slice(&30u16.to_le_bytes()); // frame rate
+        file.extend_from_slice(&1u16.to_le_bytes()); // frame count
+        file.extend_from_slice(&tag(39, &sprite_body));
+        file.extend_from_slice(&[0x00, 0x00]); // END
+        let len = file.len() as u32;
+        file[4..8].copy_from_slice(&len.to_le_bytes());
+
+        let provider = Arc::new(MemoryProvider(HashMap::from([(
+            "interface\\component_glow.swf".to_string(),
+            file.clone(),
+        )])));
+        let (navigator, _runtime, _) = ScaleformNavigatorRuntime::create(
+            archive_movie_url("interface\\hudmenu.swf").unwrap(),
+            Vec::new(),
+            Vec::new(),
+            provider as Arc<dyn ScaleformResourceProvider>,
+        )
+        .unwrap();
+        let response = match block_on(navigator.fetch(Request::get("component_glow.swf".to_string()))) {
+            Ok(response) => response,
+            Err(error) => panic!("the dependency movie should load: {}", error.error),
+        };
+        let body = block_on(response.body()).unwrap();
+        assert_ne!(body, file, "Ruffle must see the normalized body, not the raw archive bytes");
+        assert!(
+            body.windows(2).any(|w| w == 0x0825u16.to_le_bytes()),
+            "the PlaceObject3 flags carry MOVE (0x0824 → 0x0825) in the response body"
+        );
+        assert!(
+            !body.windows(2).any(|w| w == 0x0824u16.to_le_bytes()),
+            "the un-patched Starfield dialect form is gone"
+        );
     }
 
     #[test]
