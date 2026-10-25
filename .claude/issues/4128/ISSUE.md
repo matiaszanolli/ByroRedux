@@ -1,3 +1,5 @@
+# SUBSYS-01: NiControllerManager/KFM sequence state machine (AR-09) is open again [OPEN]
+
 ### SUBSYS-01: `NiControllerManager`/KFM sequence state machine (AR-09) is open again — its only Redux glue was deleted today as dead code
 
 - **Severity**: MEDIUM
@@ -12,3 +14,4 @@
 
 ## Completeness Checks
 - [ ] **TESTS**: When re-wired, a regression test drives at least one real KFM-triggered sequence transition end-to-end (spawn → catalog → transition → blended pose), not just unit tests on the isolated state machine
+

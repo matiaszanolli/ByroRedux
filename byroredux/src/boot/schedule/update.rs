@@ -965,6 +965,13 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // M47.3 — ObScript `Look`: turn the head bones of actors told to head-track, on top of the pose the
     // animation batch just wrote and before propagation reads it.
     scheduler.add_exclusive(Stage::Update, crate::systems::head_look::head_look_system);
+    // #4128 — ObScript `PlayGroup <group> 0` ("let the current cycle finish
+    // first"): start the held sequence at the cycle boundary the animation
+    // batch just crossed, on the same exclusive tail so the wrap is visible.
+    fn pending_group_swap_dispatch(world: &World, _dt: f32) {
+        byroredux_scripting::obscript_anim::apply_pending_group_swaps(world)
+    }
+    scheduler.add_exclusive(Stage::Update, pending_group_swap_dispatch);
     // P3 player body — third-person facing. Writes the body root's Transform
     // rotation from `InputState.yaw`, the same look accumulator
     // `camera_follow_system` reads. #4995 — registered in **Update**, not

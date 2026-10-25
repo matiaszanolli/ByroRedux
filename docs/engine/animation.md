@@ -234,33 +234,40 @@ The blend-interpolator NIF blocks (`NiBlendTransformInterpolator` /
 `NiBlendFloatInterpolator`) are parsed in
 [`crates/nif/src/blocks/interpolator.rs`](../../crates/nif/src/blocks/interpolator.rs).
 
-## State machine: none (AR-09 / #338 is open again)
+## State machine: the consumer-anchored slice (AR-09 / #4128)
 
-Redux has **no** `NiControllerManager` / KFM equivalent. `AnimationStack`
-supplies the blend mechanism and `byroredux_nif::kfm` supplies the
-catalog, but nothing joins them: no spawn path builds a per-actor
-sequence catalog, and no system drives sequence transitions.
+Redux's `NiControllerManager` representation is the slice its real
+consumers need, not the KFM-authored whole. What exists:
 
-An `AnimationController` component was added under #338 (`07dc6b16`,
-2026-04-23) to be that glue and was deleted on 2026-09-11 under #3886,
-having never acquired a consumer — no spawn path attached it, no system
-read it, and its only entry point `apply_pending_transition` had zero
-callers for ~5 months. `parse_kfm` is in the same state: parsed, tested,
-and called by nothing outside its own crate's tests.
+- **Per-object sequence catalogs at spawn** (`NamedSequences`, M47.3):
+  the cell loader converts every `NiControllerSequence` a placed mesh's
+  `NiControllerManager` carries and keeps them by name — the catalog
+  AR-09 originally noted was missing.
+- **A scripted driver** (M47.3 ObScript): `PlayGroup <group> <flag>`
+  starts a named sequence on the object's player, `IsAnimPlaying` asks
+  which is running, `Reset3DState` rewinds. Flag `0` ("let the current
+  cycle finish first") holds the request in a `PendingGroupSwap` that
+  `apply_pending_group_swaps` starts at the cycle boundary the
+  animation batch just crossed — a real transition state on the live
+  consumer (#4128). Combat takes and `graph_locomotion`'s hkx blenders
+  are the actor-side consumers; the hkx path blends, the classic paths
+  hard-swap.
 
-The deleted transition model — sync groups, the blend-duration
-precedence chain (explicit entry → `DefaultSync`/`DefaultNonSync`
-indirection → sync-group fallback), and the `KfmTransitionType`
-discriminant mapping — is recoverable verbatim from `git show 07dc6b16`
-when an actor bring-up actually needs sequence blending. Rebuilding it
-alongside a real consumer is the point; the previous attempt shipped the
-half that had no way to be wrong.
+What deliberately does **not** exist: the KFM transition model — sync
+groups, the blend-duration precedence chain, `KfmTransitionType`. No
+shipped title carries `.kfm` files at all (verified across the
+Oblivion/FO3/FNV/Skyrim SE/FO4/FO76 installs; the games' sequences are
+embedded in the meshes), so the model has no data to serve and no
+consumer asking. `parse_kfm` stays a parsed, tested, consumer-less
+catalog layer. The deleted `AnimationController` (#338 `07dc6b16`,
+removed by #3886) is recoverable from `git show 07dc6b16` if a game or
+mod corpus ever ships KFM data; until then rebuilding it would repeat
+the half-that-could-not-be-wrong mistake #3886 deleted.
 
-Reopen tracking: #4128. When an actor bring-up milestone wires it, the
-issue's completeness gate applies — a regression test must drive at
-least one real KFM-triggered sequence transition end-to-end (spawn →
-catalog → transition → blended pose), not just unit tests on the
-isolated state machine.
+Crossfade on the classic paths stays a hard cut for the same reason:
+these sequences carry no authored blend duration, and inventing one is
+guessing. Tracking: #4128 (closed with the flag-0 slice and the
+no-shipped-KFM finding; reopen if KFM data appears).
 
 ## Root motion
 

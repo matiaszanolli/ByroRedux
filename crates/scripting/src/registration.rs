@@ -60,6 +60,8 @@ pub fn register(world: &mut World) {
     crate::magic_effects::install(world);
     crate::magic_shaders::install(world);
     world.register::<crate::obscript_anim::HeadLook>();
+    // #4128 — PlayGroup flag 0's held sequence request (not saved).
+    world.register::<crate::obscript_anim::PendingGroupSwap>();
     // M47.2 — form lists scripts read (derived) and the forms scripts added to
     // them (saved): `form_lists` installs both (#5802).
     form_lists::install(world);

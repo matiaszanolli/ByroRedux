@@ -819,6 +819,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PlayingShaders", "M47.3 — magic shaders playing on a reference; their look is presentation and ends with the session"),
         ("ShaderCatalog", "M47.3 — the fill layer of every EFSH and each MGEF's effect shader; rebuilt from the records"),
         ("HeadLook", "M47.3 — a forced head-track target (an entity of this session); presentation"),
+        ("PendingGroupSwap", "#4128 — PlayGroup flag 0's held sequence request (\"let the current cycle finish first\"); a script's transient presentation intent — a save taken mid-wait resumes the outgoing sequence"),
         ("ShaderTintRestore", "M47.3 — the emissive of the meshes a magic shader is tinting, kept to put back; session-local"),
         ("PendingScriptedLines", "M47.3 — the lines ObScript Say/SayTo made actors say, waiting for the voice player and timing their SayToDone; a moment of speech, not gameplay state"),
         ("GameClockGlobals", "M47.3 — the FormID of the GameHour GLOB, found in the records when the globals are installed; the hour itself is written into the saved Globals every frame"),

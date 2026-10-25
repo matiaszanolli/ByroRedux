@@ -1291,7 +1291,8 @@ fn set_angle(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], co
 }
 
 // `PlayGroup <group> <flag>`: play the object's animation group (see `obscript_anim`); an
-// object with no sequence of that name, or an actor's combat group, declines.
+// object with no sequence of that name, or an actor's combat group, declines. Flag `0` holds
+// the request until the current cycle finishes (#4128); `1`/`2` start at once.
 fn play_group(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
     let caller = caller_of(context);
     let caller_entity = live(world, caller);
@@ -1300,10 +1301,11 @@ fn play_group(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], 
     }
     let Some(entity) = caller_entity else { return Action::Declined };
     let Some(group) = crate::obscript_anim::group_name(world, num(args, 0)) else { return Action::Declined };
-    if !crate::obscript_anim::play_group(world, entity, group) {
+    let flag = num(args, 1) as i64;
+    if !crate::obscript_anim::play_group(world, entity, group, flag) {
         return Action::Declined;
     }
-    Action::Done { value: None, effect: format!("PlayGroup {caller:08X} {group}") }
+    Action::Done { value: None, effect: format!("PlayGroup {caller:08X} {group} flag {flag}") }
 }
 
 // `SetScale <factor>`: "sets the scale of the calling object ... 1.0 being normal size".

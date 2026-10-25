@@ -9,11 +9,17 @@
 //! (`crates/nif/tests/sequence_names_census.rs`) — so the group index is a name and the name picks
 //! a clip from the object's [`NamedSequences`].
 //!
-//! The call starts the clip on the object's [`AnimationPlayer`] at the beginning. The GECK's init
-//! flags distinguish `0` (let the current cycle finish first) from `1` / `2` (start at once, `2` at
-//! the start of the loop cycle); here every flag starts at once from the first key, so `0` begins a
-//! cycle early. `IsAnimPlaying [group]` is whether the object's player is running a clip that has
-//! not ended — a `Clamp` clip ends at its duration — and, with a group, whether it is that group's.
+//! The GECK's init flags distinguish `0` ("let the current cycle finish first") from `1` / `2`
+//! ("start at once", `2` "at the start of the loop cycle"). Flag `0` holds the request in a
+//! [`PendingGroupSwap`] that [`apply_pending_group_swaps`] starts at the cycle boundary the
+//! animation batch just crossed — #4128: the first slice of the `NiControllerManager` transition
+//! model, anchored to this real consumer. Flags `1`/`2` start at once from the first key; for a
+//! mesh's embedded sequences the loop cycle begins at that first key, so `2` coincides with `1`.
+//! No crossfade: these objects' sequences carry no authored blend duration (a KFM would supply
+//! one, and no shipped title carries `.kfm` files — the blend stays a hard cut until a data
+//! source exists). `IsAnimPlaying [group]` is whether the object's player is running a clip that
+//! has not ended — a `Clamp` clip ends at its duration — and, with a group, whether it is that
+//! group's.
 //!
 //! The groups an *actor* plays (`AttackPower`, `Recoil`, ...) belong to the actor's animation set,
 //! not its mesh's sequences: an object with no sequence of the name declines. The indices above
@@ -87,11 +93,47 @@ fn sequence_player(world: &World, object: EntityId) -> Option<EntityId> {
     scoped.iter().find(|(_, clip)| runs_sequence(*clip)).or(scoped.first()).map(|(entity, _)| *entity)
 }
 
-/// Start `group` on `object`. `false` when the object has no such sequence or no player to run it.
-pub fn play_group(world: &World, object: EntityId, group: &str) -> bool {
+/// Start `group` on `object`. `flag` is the GECK's init flag: `0` lets the current cycle finish
+/// first (the request is held and applied at the cycle boundary; a later `PlayGroup` replaces
+/// it), anything else starts at once. `false` when the object has no such sequence or no player
+/// to run it.
+pub fn play_group(world: &World, object: EntityId, group: &str, flag: i64) -> bool {
     let Some(handle) = world.get::<NamedSequences>(object).and_then(|sequences| sequences.handle(group)) else {
         return false;
     };
+    if flag == 0 && cycle_in_progress(world, object) {
+        let Some(mut pendings) = world.query_mut::<PendingGroupSwap>() else {
+            return false;
+        };
+        pendings.insert(object, PendingGroupSwap { clip_handle: handle });
+        return true;
+    }
+    start_clip_on_sequence_player(world, object, handle)
+}
+
+/// Whether the object's sequence player is mid-cycle in a clip that has not
+/// reached its end — the state flag `0` waits out.
+fn cycle_in_progress(world: &World, object: EntityId) -> bool {
+    let Some(registry) = world.try_resource::<AnimationClipRegistry>() else {
+        return false;
+    };
+    let Some(entity) = sequence_player(world, object) else {
+        return false;
+    };
+    let Some(players) = world.query::<AnimationPlayer>() else {
+        return false;
+    };
+    let Some(player) = players.get(entity) else {
+        return false;
+    };
+    player.playing
+        && registry
+            .get(player.clip_handle)
+            .is_some_and(|clip| clip.duration > 0.0 && player.local_time < clip.duration - 1e-5)
+}
+
+/// Swap the object's sequence player to `handle`, starting at the first key.
+fn start_clip_on_sequence_player(world: &World, object: EntityId, handle: u32) -> bool {
     let Some(entity) = sequence_player(world, object) else {
         return false;
     };
@@ -107,6 +149,74 @@ pub fn play_group(world: &World, object: EntityId, group: &str) -> bool {
     player.reverse_direction = false;
     player.playing = true;
     true
+}
+
+/// #4128 — `PlayGroup <group> 0`'s held request: the sequence to start once
+/// the object's current cycle finishes ("let the current cycle finish
+/// first", GECK). Applied at the cycle boundary by
+/// [`apply_pending_group_swaps`]; a later `PlayGroup` replaces it.
+/// `NOT_SAVED_BY_DESIGN`: a script's transient presentation intent — a save
+/// taken mid-wait simply resumes the outgoing sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingGroupSwap {
+    pub clip_handle: u32,
+}
+
+impl byroredux_core::ecs::storage::Component for PendingGroupSwap {
+    type Storage = byroredux_core::ecs::sparse_set::SparseSetStorage<Self>;
+}
+
+/// Apply the [`PendingGroupSwap`]s whose cycle just finished: an exclusive
+/// Update step after the animation batch, so the boundary the player crossed
+/// this frame is visible. A `Loop` clip's boundary is the wrap
+/// (`prev_time > local_time` after the advance); a `Clamp`/`Reverse` clip's
+/// is its held end (`playing == false`, or the playhead at the duration).
+/// Runs after `head_look_system` in the same exclusive tail.
+pub fn apply_pending_group_swaps(world: &World) {
+    let Some(registry) = world.try_resource::<AnimationClipRegistry>() else {
+        return;
+    };
+    let mut ready: Vec<(EntityId, u32)> = Vec::new();
+    // Collect under read borrows only; the apply loop below takes the
+    // player storage mutably, and the engine's per-storage RwLocks make a
+    // held read borrow and a fresh write borrow of the same storage on one
+    // thread an ABBA self-deadlock, so this query is scoped and dropped
+    // before it.
+    {
+        let Some(players) = world.query::<AnimationPlayer>() else {
+            return;
+        };
+        let Some(pendings) = world.query::<PendingGroupSwap>() else {
+            return;
+        };
+        for (object, pending) in pendings.iter() {
+            let Some(player_entity) = sequence_player(world, object) else {
+                continue;
+            };
+            let Some(player) = players.get(player_entity) else {
+                continue;
+            };
+            let crossed_end = match registry.get(player.clip_handle) {
+                // An unresolvable or zero-length clip has no cycle to finish.
+                None => true,
+                Some(clip) if clip.duration <= 0.0 => true,
+                Some(clip) => match clip.cycle_type {
+                    CycleType::Loop => player.prev_time > player.local_time,
+                    _ => !player.playing || player.local_time + 1e-5 >= clip.duration,
+                },
+            };
+            if crossed_end {
+                ready.push((object, pending.clip_handle));
+            }
+        }
+    }
+    for (object, handle) in ready {
+        if start_clip_on_sequence_player(world, object, handle) {
+            if let Some(mut pendings) = world.query_mut::<PendingGroupSwap>() {
+                pendings.remove(object);
+            }
+        }
+    }
 }
 
 /// `Reset3DState`: "clears any saved data regarding a reference's animation/havok state ... Note that
@@ -180,6 +290,13 @@ mod tests {
         }
     }
 
+    /// The clip the fixture's one sequence player is running.
+    fn clip_handle_of(world: &World) -> u32 {
+        let players = world.query::<AnimationPlayer>().unwrap();
+        let (_, player) = players.iter().next().unwrap();
+        player.clip_handle
+    }
+
     /// An object with a `forward` and a `backward` sequence and a player running the first.
     fn object(game: GameKind) -> (World, EntityId, u32, u32) {
         let mut world = World::new();
@@ -214,14 +331,94 @@ mod tests {
     fn play_group_starts_the_named_sequence_from_the_beginning() {
         let (world, object, forward, backward) = object(GameKind::Fallout3NV);
         world.query_mut::<AnimationPlayer>().unwrap().iter_mut().for_each(|(_, p)| p.local_time = 1.5);
-        assert!(play_group(&world, object, "Backward"));
+        assert!(play_group(&world, object, "Backward", 1));
         let players = world.query::<AnimationPlayer>().unwrap();
         let (_, player) = players.iter().next().unwrap();
         assert_eq!((player.clip_handle, player.local_time, player.playing), (backward, 0.0, true));
         assert_ne!(forward, backward);
         // A group the object has no sequence of, and an object with no sequences, decline.
-        assert!(!play_group(&world, object, "Left"));
-        assert!(!play_group(&world, 12345, "Forward"));
+        assert!(!play_group(&world, object, "Left", 1));
+        assert!(!play_group(&world, 12345, "Forward", 1));
+    }
+
+    /// #4128 — flag `0` ("let the current cycle finish first") holds the
+    /// request until the outgoing clip crosses its cycle end, then the
+    /// applier starts the held sequence from the first key. A later
+    /// `PlayGroup` replaces the held one.
+    #[test]
+    fn flag_zero_waits_for_the_cycle_end_before_the_swap() {
+        let (mut world, object, forward, backward) = object(GameKind::Fallout3NV);
+        world.register::<PendingGroupSwap>();
+        // The fixture's player runs `forward` (Clamp, 2 s) mid-cycle.
+        let player_entity = world.query::<AnimationPlayer>().unwrap().iter().next().unwrap().0;
+        world.get_mut::<AnimationPlayer>(player_entity).unwrap().local_time = 1.0;
+        assert!(play_group(&world, object, "Backward", 0));
+        assert_eq!(clip_handle_of(&world), forward, "flag 0 must not cut the running cycle");
+        assert!(world.get::<PendingGroupSwap>(object).is_some_and(|p| p.clip_handle == backward));
+
+        // Mid-cycle: nothing to apply yet.
+        apply_pending_group_swaps(&world);
+        assert_eq!(clip_handle_of(&world), forward);
+
+        // The Clamp clip reaches its end: the applier swaps and clears.
+        let player_entity = world.query::<AnimationPlayer>().unwrap().iter().next().unwrap().0;
+        {
+            let mut players = world.query_mut::<AnimationPlayer>().unwrap();
+            let player = players.get_mut(player_entity).unwrap();
+            player.local_time = 2.0;
+            player.playing = false;
+        }
+        apply_pending_group_swaps(&world);
+        assert_eq!(clip_handle_of(&world), backward);
+        assert!(world.get::<PendingGroupSwap>(object).is_none());
+    }
+
+    /// A `Loop` clip's cycle end is the wrap the animation advance leaves
+    /// behind (`prev_time > local_time`); a held request swaps there. The
+    /// second `PlayGroup 0` replaces the first held clip.
+    #[test]
+    fn a_held_request_applies_at_a_loop_wrap_and_the_latest_wins() {
+        let (mut world, object, forward, backward) = object(GameKind::Fallout3NV);
+        world.register::<PendingGroupSwap>();
+        // Start from the looping `backward` instead of the fixture's Clamp.
+        assert!(play_group(&world, object, "Backward", 1));
+        let player_entity = world.query::<AnimationPlayer>().unwrap().iter().next().unwrap().0;
+        {
+            let mut players = world.query_mut::<AnimationPlayer>().unwrap();
+            let player = players.get_mut(player_entity).unwrap();
+            player.local_time = 0.1;
+            player.prev_time = 1.9; // the advance just wrapped
+        }
+        assert!(play_group(&world, object, "Forward", 0));
+        assert!(world.get::<PendingGroupSwap>(object).is_some_and(|p| p.clip_handle == forward));
+        assert!(play_group(&world, object, "Backward", 0), "a later request replaces the held one");
+        assert!(world.get::<PendingGroupSwap>(object).is_some_and(|p| p.clip_handle == backward));
+        apply_pending_group_swaps(&world);
+        let players = world.query::<AnimationPlayer>().unwrap();
+        let (_, player) = players.iter().next().unwrap();
+        assert_eq!((player.clip_handle, player.local_time, player.playing), (backward, 0.0, true));
+        assert_ne!(forward, backward);
+    }
+
+    /// Flag `0` with no cycle to finish — the player idle or at its clip's
+    /// end — starts at once, exactly like flag `1`.
+    #[test]
+    fn flag_zero_with_no_cycle_running_starts_at_once() {
+        let (mut world, object, forward, backward) = object(GameKind::Fallout3NV);
+        world.register::<PendingGroupSwap>();
+        let player_entity = world.query::<AnimationPlayer>().unwrap().iter().next().unwrap().0;
+        {
+            let mut players = world.query_mut::<AnimationPlayer>().unwrap();
+            let player = players.get_mut(player_entity).unwrap();
+            player.local_time = 2.0; // the Clamp clip's end
+            player.playing = false;
+        }
+        assert!(play_group(&world, object, "Backward", 0));
+        let players = world.query::<AnimationPlayer>().unwrap();
+        let (_, player) = players.iter().next().unwrap();
+        assert_eq!(player.clip_handle, backward);
+        assert!(world.get::<PendingGroupSwap>(object).is_none());
+        assert_ne!(forward, backward);
     }
 
     /// #6253 — beside the sequence player, a model with standalone controllers runs a second player
@@ -239,7 +436,7 @@ mod tests {
         let clip_of = |world: &World, entity| world.get::<AnimationPlayer>(entity).map(|p| (p.clip_handle, p.local_time));
 
         assert_eq!(is_anim_playing(&world, object, Some("Forward")), Some(true));
-        assert!(play_group(&world, object, "Backward"));
+        assert!(play_group(&world, object, "Backward", 1));
         assert_eq!(clip_of(&world, ambient), Some((ambient_clip, 0.5)), "the ambient player is untouched");
         let sequence = sequence_player(&world, object).unwrap();
         assert_ne!(sequence, ambient);
