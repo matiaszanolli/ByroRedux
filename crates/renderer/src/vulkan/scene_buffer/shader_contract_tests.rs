@@ -7050,6 +7050,42 @@ fn tint_multiply_is_gated_on_both_the_index_and_the_alpha_weight_bit() {
     }
 }
 
+/// #6349 — `byte_view`'s doc says no byte view in this crate is hand-rolled bar `hash_indirect_slice`.
+/// The per-file pin above only reads `descriptors.rs`; `create_device_local_buffer` carried a second
+/// copy of the cast unseen. Count the production `from_raw_parts` crate-wide: `byte_view` itself and
+/// the one ash-typed exemption, nothing else.
+#[test]
+fn only_byte_view_and_the_ash_exemption_hand_roll_from_raw_parts() {
+    fn walk(dir: &std::path::Path, hits: &mut Vec<(String, usize)>) {
+        for entry in std::fs::read_dir(dir).expect("renderer src readable").flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_owned();
+            if path.is_dir() {
+                if !name.contains("tests") {
+                    walk(&path, hits);
+                }
+            } else if name.ends_with(".rs") && !name.contains("tests") {
+                let text = std::fs::read_to_string(&path).expect("renderer source readable");
+                let count = crate::source_scan::production_text_or_whole(&text)
+                    .match_indices("slice::from_raw_parts(")
+                    .count();
+                if count > 0 {
+                    hits.push((path.display().to_string(), count));
+                }
+            }
+        }
+    }
+    let mut hits = Vec::new();
+    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut hits);
+    hits.sort();
+    let total: usize = hits.iter().map(|(_, count)| count).sum();
+    assert_eq!(
+        total, 2,
+        "production `from_raw_parts` must be `byte_view` plus `hash_indirect_slice` only (#6349); \
+         route a new byte view through `crate::vulkan::buffer::byte_view`: {hits:#?}"
+    );
+}
+
 /// #4521 / REN-3-2026-09-20-02 regression. #4445 declared `byte_view` the
 /// single place byte views come from, yet four sibling dirty-gate hash
 /// views in `descriptors.rs` still hand-rolled `slice::from_raw_parts`.

@@ -1513,15 +1513,9 @@ impl GpuBuffer {
             StagingGuard::create(device, allocator, size, "buffer_staging")?
         };
 
-        // SAFETY: `T: NoUninit` guarantees every byte of `T` is initialised
-        // (no implicit padding), so the byte view below contains no
-        // uninitialised bytes (#3761 / SAFE-2026-08-30-D4-01 — this used to
-        // be the same false `T: Copy` claim as `write_mapped`). The pointer
-        // is valid and aligned (from a live slice), size_of_val gives the
-        // exact byte length, and the borrow is bounded by this scope.
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
-        };
+        // `T: NoUninit` is what makes the byte view sound (#3761 / SAFE-2026-08-30-D4-01);
+        // `byte_view` carries that argument, so no second hand-rolled cast lives here (#6349).
+        let bytes: &[u8] = byte_view(data);
 
         staging.mapped_slice_mut()?[..bytes.len()].copy_from_slice(bytes);
 
