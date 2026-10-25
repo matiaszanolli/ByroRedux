@@ -28,6 +28,7 @@
 use byroredux_plugin::esm::parse_esm;
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::misc::ForceGreetLine;
+use byroredux_plugin::esm::records::{DEFAULT_BODY_PART_DATA, PLAYER_BODY_PART_DATA};
 use byroredux_plugin::esm::test_paths;
 use std::path::PathBuf;
 
@@ -6239,4 +6240,127 @@ fn skyrim_map_markers_decode() {
     assert_eq!(markers.len(), 397);
     assert_eq!(markers.iter().filter(|flags| *flags & 0x01 != 0).count(), 20);
     assert_eq!(markers.iter().filter(|flags| *flags & 0x02 != 0).count(), 11);
+}
+
+/// #6350 — BPTD full decode + creature linkage on the shipped FNV
+/// master: the engine-reserved default slots exist and carry real limb
+/// tables (values below pinned from the decoded corpus, 2026-10-25),
+/// and every creature attaches its body data through `PNAM`.
+#[test]
+#[ignore = "needs FNV game data on disk"]
+fn fnv_bptd_vats_limb_tables_and_crea_linkage() {
+    let Some(data) = data_dir(test_paths::FNV_ENV, test_paths::FNV_DEFAULT) else {
+        eprintln!("[FNV BPTD] skipping: game data unavailable");
+        return;
+    };
+    let index = parse_esm(&std::fs::read(data.join("FalloutNV.esm")).unwrap()).unwrap();
+
+    // DefaultBodyPartData (0x1D) — what every humanoid resolves to.
+    let default_bptd = index
+        .body_parts
+        .get(&DEFAULT_BODY_PART_DATA)
+        .expect("DefaultBodyPartData (0x1D) missing from body_parts");
+    assert_eq!(default_bptd.editor_id, "DefaultBodyPartData");
+    assert_eq!(
+        default_bptd.skeleton_model,
+        "Characters\\_Male\\skeleton.NIF"
+    );
+    assert_eq!(default_bptd.parts.len(), 6);
+    let head = default_bptd
+        .parts
+        .iter()
+        .find(|p| p.name == "Head")
+        .expect("Default part named Head");
+    // The classic Fallout limb profile: heads take double damage, are
+    // the *hardest* VATS shot (20 %), carry the head-condition AV (25)
+    // and the least health (30 % of total).
+    assert_eq!(head.damage_mult, 2.0);
+    assert_eq!(head.to_hit_chance, 20);
+    assert_eq!(head.actor_value, 25);
+    assert_eq!(head.health_percent, 30);
+    let torso = default_bptd
+        .parts
+        .iter()
+        .find(|p| p.name == "Torso")
+        .expect("Default part named Torso");
+    assert_eq!(torso.damage_mult, 1.0);
+    assert_eq!(torso.to_hit_chance, 60);
+    assert_eq!(torso.actor_value, 26);
+    assert_eq!(torso.health_percent, 60);
+
+    // PlayerBodyPartData (0x1C) — the player's own target profile:
+    // same limb health authoring, different (generous) hit chances —
+    // torso 255, the "always" sentinel; head 75. This pair is what
+    // separated @6 (to-hit, varies per record) from @8 (health,
+    // identical across both) during the #6350 spike.
+    let player_bptd = index
+        .body_parts
+        .get(&PLAYER_BODY_PART_DATA)
+        .expect("PlayerBodyPartData (0x1C) missing from body_parts");
+    assert_eq!(player_bptd.parts.len(), 6);
+    let player_torso = player_bptd
+        .parts
+        .iter()
+        .find(|p| p.name == "Torso")
+        .expect("Player part named Torso");
+    assert_eq!(player_torso.to_hit_chance, 255);
+    assert_eq!(player_torso.health_percent, torso.health_percent);
+    let player_head = player_bptd
+        .parts
+        .iter()
+        .find(|p| p.name == "Head")
+        .expect("Player part named Head");
+    assert_eq!(player_head.to_hit_chance, 75);
+    assert_eq!(player_head.damage_mult, 1.0);
+
+    let total_parts: usize = index.body_parts.values().map(|b| b.parts.len()).sum();
+    let creatures_linked = index
+        .creatures
+        .values()
+        .filter(|c| c.body_part_form.is_some())
+        .count();
+    assert!(index.body_parts.len() >= 40, "BPTD={}", index.body_parts.len());
+    assert!(total_parts >= 300, "total_parts={total_parts}");
+    // 1578/1578 vanilla creatures carry PNAM → BPTD (spike census).
+    assert_eq!(creatures_linked, index.creatures.len());
+    assert!(creatures_linked >= 1500, "creatures={creatures_linked}");
+}
+
+/// #6350 — the FO3 twin of the FNV census: same layout, same reserved
+/// slots, every creature linked.
+#[test]
+#[ignore = "needs FO3 game data on disk"]
+fn fo3_bptd_vats_limb_tables_and_crea_linkage() {
+    let Some(data) = data_dir(test_paths::FO3_ENV, test_paths::FO3_DEFAULT) else {
+        eprintln!("[FO3 BPTD] skipping: game data unavailable");
+        return;
+    };
+    let index = parse_esm(&std::fs::read(data.join("Fallout3.esm")).unwrap()).unwrap();
+    assert!(index.body_parts.len() >= 30, "BPTD={}", index.body_parts.len());
+    assert!(
+        index.body_parts.contains_key(&PLAYER_BODY_PART_DATA),
+        "PlayerBodyPartData (0x1C) missing"
+    );
+    assert!(
+        index.body_parts.contains_key(&DEFAULT_BODY_PART_DATA),
+        "DefaultBodyPartData (0x1D) missing"
+    );
+    let head = index
+        .body_parts
+        .get(&DEFAULT_BODY_PART_DATA)
+        .expect("DefaultBodyPartData")
+        .parts
+        .iter()
+        .find(|p| p.name == "Head")
+        .expect("FO3 default part named Head");
+    assert_eq!(head.damage_mult, 2.0);
+    assert_eq!(head.actor_value, 25);
+    let creatures_linked = index
+        .creatures
+        .values()
+        .filter(|c| c.body_part_form.is_some())
+        .count();
+    // 533/533 vanilla FO3 creatures carry PNAM → BPTD (spike census).
+    assert_eq!(creatures_linked, index.creatures.len());
+    assert!(creatures_linked >= 500, "creatures={creatures_linked}");
 }

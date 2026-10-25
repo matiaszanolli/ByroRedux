@@ -145,9 +145,17 @@ pub(super) fn dispatch_misc_gameplay_b_group(
                     .insert(fid, parse_otft(fid, subs, &otft_remap));
             })?
         }
-        b"BPTD" => extract_records(reader, end, b"BPTD", &mut |fid, subs| {
-            index.body_parts.insert(fid, parse_bptd(fid, subs));
-        })?,
+        b"BPTD" => {
+            // #3714/#6350 — BPND carries embedded DEBR/EXPL FormIDs
+            // (generic debris, explosion); plugin-local ones need the
+            // same remap as every other cross-reference.
+            let bptd_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"BPTD", &mut |fid, subs| {
+                index
+                    .body_parts
+                    .insert(fid, parse_bptd(fid, subs, &bptd_remap));
+            })?
+        }
         // #809 / FNV-D2-NEW-02 — seven supporting records that
         // gate FNV NPC AI / crafting / impact-effect / faction-
         // reputation subsystems. Same stub-form pattern as #808.

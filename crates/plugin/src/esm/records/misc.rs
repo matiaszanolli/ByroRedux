@@ -64,7 +64,8 @@ pub use effects::{
 };
 pub use equipment::{
     parse_arma, parse_bptd, parse_cobj, parse_minimal_esm_record, parse_slgm, ArmaRecord,
-    BptdRecord, CobjRecord, MinimalEsmRecord, SlgmRecord,
+    BptdRecord, CobjRecord, MinimalEsmRecord, SlgmRecord, DEFAULT_BODY_PART_DATA,
+    PLAYER_BODY_PART_DATA,
 };
 pub use imagespace::{parse_imad, ImadColorKey, ImadRecord, ImadScalarKey};
 pub use location::{parse_lctn, LctnRecord};

@@ -149,35 +149,110 @@ pub fn parse_arma(
     out
 }
 
-/// BPTD — body part data record. Per-NPC dismemberment routing
-/// (head, torso, limbs) + biped slot count. Used by VATS targeting
-/// and gore effects.
+/// One body part of a [`BptdRecord`] — the `BPTN`/`BPNN`/`BPNT`/`BPNI`
+/// string run plus its 84-byte `BPND` payload.
 ///
-/// Each part is described by a quartet of sub-records (`BPTN` name +
-/// `BPNN` node + `BPNT` target + `BPND` data). The stub captures the
-/// total part count and the first part name as a sanity check; the
-/// full per-part array decode lands with the dismemberment consumer.
-/// See audit `FNV-D2-NEW-01` / #808.
+/// The `BPND` layout is corpus-established (#6350 spike, value-shape
+/// clustering per the #3324 method; evidence table on the issue):
+/// offsets are identical across vanilla `FalloutNV.esm` and
+/// `Fallout3.esm`. Fields past `@20` (gore art, hit-reaction twist in
+/// radians, blood/decal IPDS refs) are Phase-4 dismemberment material
+/// and are not decoded yet.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BptdPart {
+    /// `BPTN` — display name ("Head", "Left Legs", …). VATS groups
+    /// parts by [`Self::actor_value`] in the UI, not by this name.
+    pub name: String,
+    /// `BPNN` — the bone the part is attached to (e.g. `Bip01 R Calf`).
+    pub node: String,
+    /// `BPNT` — the bone VATS aims at. NOT always `node`: measured,
+    /// `Bip01 R UpperArm` parts target `Bip01 R Forearm`.
+    pub vats_target_node: String,
+    /// `BPNI` — fourth string in the run (gore/IK-flavored); retained
+    /// raw for the Phase-4 dismemberment consumer.
+    pub bpni: String,
+    /// `BPND` @0 — damage multiplier applied to hits on this part.
+    pub damage_mult: f32,
+    /// `BPND` @4 — part-type byte (wide, creature-flavored enum);
+    /// stored raw, semantics pinned at Phase 4.
+    pub part_type: u8,
+    /// `BPND` @5 — flags. Corpus evidence: bit0 tracks "severable"
+    /// exactly (head = 1, torso = 0 across both games' vanilla sets).
+    pub flags: u8,
+    /// `BPND` @6 — base to-hit chance in VATS (percent). Authors may
+    /// exceed 100: vanilla `PlayerBodyPartData` ships torso 255 (the
+    /// "always" sentinel) and head 75, while `DefaultBodyPartData`
+    /// authors torso 60 / head 20 — the engine clamps downstream.
+    pub to_hit_chance: u8,
+    /// `BPND` @7 — limb-condition actor-value enum (`25..=31` in the
+    /// FO3/FNV AV layout; `255` = none). Parts sharing a value group
+    /// into one VATS UI entry.
+    pub actor_value: u8,
+    /// `BPND` @8 — limb health as a percent of the actor's total.
+    pub health_percent: u8,
+    /// `BPND` @9 — chance the part explodes when destroyed (percent;
+    /// torso 0, arms 30-50, heads 95-100 in vanilla).
+    pub explosion_chance: u8,
+    /// `BPND` @10 — debris count.
+    pub debris_count: u8,
+    /// `BPND` @12 — generic debris FormID (DEBR; 0 = none).
+    pub generic_debris: u32,
+    /// `BPND` @16 — explosion FormID (EXPL; 0 = none).
+    pub explosion: u32,
+}
+
+/// BPTD — body part data record. Per-actor limb table: what VATS aims
+/// at (`vats_target_node` + `to_hit_chance`), how limb damage routes
+/// (`actor_value`, `damage_mult`, `health_percent`), and the
+/// dismemberment/gore metadata the Phase-4 consumer reads.
+///
+/// Linkage (#6350 spike): `RACE` carries **no** BPTD reference in
+/// FO3/FNV. Creatures attach theirs via a standalone 4-byte `PNAM` on
+/// `CREA` (1578/1578 FNV, 533/533 FO3); humanoids need none — the
+/// engine-reserved default-object slots are
+/// [`PLAYER_BODY_PART_DATA`] (`0x1C`, the player) and
+/// [`DEFAULT_BODY_PART_DATA`] (`0x1D`, everyone else).
 #[derive(Debug, Clone, Default)]
 pub struct BptdRecord {
     pub form_id: u32,
     pub editor_id: String,
-    /// Number of body parts (count of `BPTN` sub-records).
-    pub part_count: u32,
-    /// `BPTN` of the first body part (often "Head"). Sanity-check
-    /// field; downstream code that needs every part will re-walk
-    /// the sub-records.
-    pub first_part_name: String,
+    /// `MODL` — the skeleton model whose bones the part nodes name.
+    pub skeleton_model: String,
+    pub parts: Vec<BptdPart>,
 }
 
-// MILESTONE: Tier-7 ragdoll / dismemberment — see #1057.
-// `BptdRecord` (part_count + first_part_name) is extracted today but
-// no consumer touches it. The dismemberment routing + biped-slot
-// catalogue from BPTD never reaches the physics or render layer.
-// When ragdoll lands, swap the count-only stub for a full per-part
-// array (BPTN + BPNN + BPNT + BPND quartets) and wire to the physics
-// crate's actor body builder.
-pub fn parse_bptd(form_id: u32, subs: &[SubRecord]) -> BptdRecord {
+/// Engine-reserved body-part-data slots, measured on vanilla masters
+/// (#6350): `PlayerBodyPartData` ships at FormID `0x1C` and
+/// `DefaultBodyPartData` at `0x1D` in both FalloutNV.esm and
+/// Fallout3.esm — the Bethesda default-object convention (cf. the
+/// player reference `0x14`). Humanoid actors resolve body data through
+/// these; only `CREA.PNAM` overrides.
+pub const PLAYER_BODY_PART_DATA: u32 = 0x1C;
+pub const DEFAULT_BODY_PART_DATA: u32 = 0x1D;
+
+impl BptdRecord {
+    /// Number of body parts (the old count-only stub's field, kept as a
+    /// method so census callers read the same number as before #6350).
+    pub fn part_count(&self) -> u32 {
+        self.parts.len() as u32
+    }
+
+    /// First part's name ("" when the record authors none) — the old
+    /// stub's sanity-check field.
+    pub fn first_part_name(&self) -> &str {
+        self.parts.first().map(|p| p.name.as_str()).unwrap_or("")
+    }
+}
+
+// #1057's Tier-7 note is half-retired: the full per-part array decode
+// landed with VATS (#6350) because targeting needs the limb table. The
+// gore/dismemberment half (BPND @20+, NAM1/NAM4/NAM5, RAGA, and the
+// physics-crate wiring) still lands with the ragdoll consumer.
+pub fn parse_bptd(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<FormIdRemap>,
+) -> BptdRecord {
     let mut out = BptdRecord {
         form_id,
         ..Default::default()
@@ -186,14 +261,47 @@ pub fn parse_bptd(form_id: u32, subs: &[SubRecord]) -> BptdRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
+    out.skeleton_model = common.model_path;
+    // The per-part run is `BPTN, BPNN, BPNT, BPNI, BPND` repeating
+    // (two vanilla records start mid-run at BPNN — a nameless part is
+    // legal, so nothing here assumes BPTN arrived). BPND finalizes the
+    // accumulated part; NAM1/NAM4/NAM5/RAGA trail each part as gore
+    // data and are skipped until Phase 4.
+    let mut part = BptdPart::default();
     for sub in subs {
-        if &sub.sub_type == b"BPTN" {
-            if out.part_count == 0 {
-                out.first_part_name = read_lstring_or_zstring(&sub.data);
+        let d = &sub.data;
+        match &sub.sub_type {
+            b"BPTN" => part.name = read_lstring_or_zstring(d),
+            b"BPNN" => part.node = read_lstring_or_zstring(d),
+            b"BPNT" => part.vats_target_node = read_lstring_or_zstring(d),
+            b"BPNI" => part.bpni = read_lstring_or_zstring(d),
+            b"BPND" => {
+                // Width-guarded field reads (#3724): a short payload
+                // decodes what it carries and defaults the rest rather
+                // than failing the record — modded content must parse.
+                let f32_at = |o: usize| d.get(o..o + 4).map_or(0.0, |b| {
+                    f32::from_le_bytes([b[0], b[1], b[2], b[3]])
+                });
+                let u8_at = |o: usize| d.get(o).copied().unwrap_or(0);
+                let u32_at = |o: usize| {
+                    d.get(o..o + 4)
+                        .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                };
+                part.damage_mult = f32_at(0);
+                part.part_type = u8_at(4);
+                part.flags = u8_at(5);
+                part.to_hit_chance = u8_at(6);
+                part.actor_value = u8_at(7);
+                part.health_percent = u8_at(8);
+                part.explosion_chance = u8_at(9);
+                part.debris_count = u8_at(10);
+                part.generic_debris = remap_fid(u32_at(12), remap);
+                part.explosion = remap_fid(u32_at(16), remap);
+                out.parts.push(std::mem::take(&mut part));
             }
-            out.part_count += 1;
+            _ => {}
         }
     }
     out
@@ -432,20 +540,122 @@ mod tests {
         assert_eq!(a.biped_flags, 0);
     }
 
+    /// #6350 — the pre-VATS stub counted `BPTN` sub-records directly;
+    /// the real grammar finalizes a part only at `BPND` (the string run
+    /// accumulates, the payload commits). A `BPTN` with no following
+    /// `BPND` contributes no part — pinned here so the rule is a
+    /// checked claim, not a comment.
     #[test]
-    fn parse_bptd_picks_edid_first_bptn() {
-        // `HumanRace` shape: BPTN labels each body-part name; stub
-        // captures the first one for sanity-check round-tripping.
+    fn parse_bptd_requires_bpnd_to_finalize_a_part() {
         let subs = vec![
             sub(b"EDID", b"HumanRace\0"),
             sub(b"BPTN", b"Head\0"),
             sub(b"BPTN", b"Torso\0"),
             sub(b"BPTN", b"Left Arm\0"),
         ];
-        let b = parse_bptd(0x0009_29DC, &subs);
+        let b = parse_bptd(0x0009_29DC, &subs, &None);
         assert_eq!(b.editor_id, "HumanRace");
-        assert_eq!(b.part_count, 3);
-        assert_eq!(b.first_part_name, "Head");
+        assert_eq!(b.part_count(), 0);
+        assert_eq!(b.first_part_name(), "");
+    }
+
+    /// #6350 — the full per-part decode against the corpus-established
+    /// BPND layout: a humanoid head-shaped part with the vanilla value
+    /// profile (damage mult 2, severable flag, AV 25 = head condition,
+    /// high explosion chance) round-trips field-for-field.
+    #[test]
+    fn parse_bptd_decodes_the_part_run_and_bpnd_payload() {
+        let bpnd = |damage: f32,
+                    part_type: u8,
+                    flags: u8,
+                    hit: u8,
+                    av: u8,
+                    health: u8,
+                    boom: u8,
+                    debris_n: u8,
+                    debris_form: u32,
+                    expl_form: u32| {
+            let mut d = Vec::new();
+            d.extend_from_slice(&damage.to_le_bytes());
+            d.push(part_type);
+            d.push(flags);
+            d.push(hit);
+            d.push(av);
+            d.push(health);
+            d.push(boom);
+            d.push(debris_n);
+            d.push(0); // @11 — always zero in the corpus; padding
+            d.extend_from_slice(&debris_form.to_le_bytes());
+            d.extend_from_slice(&expl_form.to_le_bytes());
+            d.extend_from_slice(&[0u8; 84 - 20]); // gore tail, Phase 4
+            d
+        };
+        let subs = vec![
+            sub(b"EDID", b"DefaultBodyPartData\0"),
+            sub(b"MODL", b"characters\\skeleton.nif\0"),
+            sub(b"BPTN", b"Head\0"),
+            sub(b"BPNN", b"Bip01 Head\0"),
+            sub(b"BPNT", b"Bip01 Head\0"),
+            sub(b"BPNI", b"GoreHead\0"),
+            sub(
+                b"BPND",
+                bpnd(2.0, 59, 1, 40, 25, 30, 95, 3, 0x000A_0001, 0x000B_0002),
+            ),
+            sub(b"NAM1", [0]),
+            sub(b"BPTN", b"Torso\0"),
+            sub(b"BPNN", b"Bip01 Spine1\0"),
+            sub(b"BPNT", b"Bip01 Spine1\0"),
+            sub(b"BPNI", b"\0"),
+            sub(b"BPND", bpnd(1.0, 0, 0, 100, 26, 50, 0, 0, 0, 0)),
+        ];
+        // A mod-plugin remap so the embedded DEBR/EXPL refs prove the
+        // #3714 path: this plugin's first master lives at global slot
+        // 1, so an embedded FormID with master index 0 remaps upward.
+        let remap = FormIdRemap::regular(2, vec![1]);
+        let b = parse_bptd(0x0000_001D, &subs, &Some(remap));
+        assert_eq!(b.editor_id, "DefaultBodyPartData");
+        assert_eq!(b.skeleton_model, "characters\\skeleton.nif");
+        assert_eq!(b.parts.len(), 2);
+
+        let head = &b.parts[0];
+        assert_eq!(head.name, "Head");
+        assert_eq!(head.node, "Bip01 Head");
+        assert_eq!(head.vats_target_node, "Bip01 Head");
+        assert_eq!(head.bpni, "GoreHead");
+        assert_eq!(head.damage_mult, 2.0);
+        assert_eq!(head.part_type, 59);
+        assert_eq!(head.flags, 1);
+        assert_eq!(head.to_hit_chance, 40);
+        assert_eq!(head.actor_value, 25);
+        assert_eq!(head.health_percent, 30);
+        assert_eq!(head.explosion_chance, 95);
+        assert_eq!(head.debris_count, 3);
+        assert_eq!(head.generic_debris, 0x010A_0001);
+        assert_eq!(head.explosion, 0x010B_0002);
+
+        let torso = &b.parts[1];
+        assert_eq!(torso.actor_value, 26);
+        assert_eq!(torso.to_hit_chance, 100);
+        assert_eq!(torso.generic_debris, 0);
+        assert_eq!(torso.explosion, 0);
+    }
+
+    /// #6350 — short BPND payloads decode what they carry and default
+    /// the rest: a modded record must parse, never fail.
+    #[test]
+    fn parse_bptd_tolerates_short_bpnd() {
+        let subs = vec![
+            sub(b"EDID", b"ModdedPart\0"),
+            sub(b"BPTN", b"Head\0"),
+            sub(b"BPNN", b"Bip01 Head\0"),
+            sub(b"BPND", 1.5f32.to_le_bytes()), // 4 bytes: damage mult only
+        ];
+        let b = parse_bptd(0x0000_001D, &subs, &None);
+        assert_eq!(b.parts.len(), 1);
+        assert_eq!(b.parts[0].damage_mult, 1.5);
+        assert_eq!(b.parts[0].to_hit_chance, 0);
+        assert_eq!(b.parts[0].actor_value, 0);
+        assert_eq!(b.parts[0].explosion, 0);
     }
 
     // ── #809 / FNV-D2-NEW-02 stubs ─────────────────────────────────

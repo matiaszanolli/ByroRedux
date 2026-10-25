@@ -64,6 +64,20 @@ pub(super) fn dispatch_actor_group(
                 // paths and its head from RACE. Set at the one site that
                 // knows which group it read.
                 record.is_creature = true;
+                // #6350 — on FO3/FNV CREA, `PNAM` is the creature's BPTD
+                // body-part-data FormID (censused: resolves to a BPTD on
+                // 1578/1578 FNV and 533/533 FO3 creatures), not the NPC_
+                // eyebrow HDPT semantic the shared walker captures it
+                // under. Move it to the honest slot here — the #3383
+                // CNAM pattern: reinterpret at the one site that knows
+                // which group it read. Humanoid NPC_ authors no PNAM, and
+                // Oblivion creatures predate BPTD entirely.
+                if game == GameKind::Fallout3NV {
+                    record.body_part_form = record
+                        .runtime_facegen
+                        .as_mut()
+                        .and_then(|recipe| recipe.eyebrow_form_id.take());
+                }
                 // #5013 — same Oblivion "Starts Dead" base flag as `NPC_`
                 // above (xEdit TES4 CREA flag 19). OR, not assign — the
                 // FO3/FNV health-≤0 corpse rule stamps inside `parse_npc`

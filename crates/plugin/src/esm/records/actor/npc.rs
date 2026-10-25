@@ -198,6 +198,16 @@ pub struct NpcRecord {
     /// `CREA` `RNAM` is a 1-byte attack reach, not a race FormID), so the
     /// humanoid body/head/hair/eye recipe does not apply to them. See #2567.
     pub is_creature: bool,
+    /// FO3 / FNV `CREA` `PNAM` — the creature's `BPTD` body-part-data
+    /// FormID (#6350). Censused: every vanilla creature carries one
+    /// (1578/1578 FNV, 533/533 FO3), while `RACE`/`NPC_` carry none —
+    /// humanoids resolve through the engine-reserved defaults
+    /// (`0x1C` player / `0x1D` everyone else; see
+    /// `equipment::{PLAYER_BODY_PART_DATA, DEFAULT_BODY_PART_DATA}`).
+    /// The shared walker captures the raw `PNAM` under the NPC_
+    /// eyebrow semantic; the CREA dispatch site moves it here. `None`
+    /// for `NPC_` and non-Fallout games.
+    pub body_part_form: Option<u32>,
     /// FO3 / FNV `CREA` `DATA` — the creature's own stat block (#3390).
     ///
     /// `None` for `NPC_` (whose `DATA` is a different, 11-byte struct) and
@@ -484,6 +494,7 @@ pub fn parse_npc(
         model_path: common.model_path,
         body_part_models: Vec::new(),
         is_creature: false,
+        body_part_form: None,
         creature_stats: None,
         data_base_health: None,
         data_attributes: None,
