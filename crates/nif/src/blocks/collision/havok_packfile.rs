@@ -1,7 +1,8 @@
 //! Havok "classic packfile" container decoder for the raw
-//! [`BhkSystemBinary`](super::BhkSystemBinary) blob carried by FO4/FO76
+//! [`BhkSystemBinary`](super::BhkSystemBinary) blob carried by FO4
 //! `bhkPhysicsSystem` / `bhkRagdollSystem` blocks (#3809, EX-14/15 item
-//! C4).
+//! C4). FO76 and Starfield blobs are Havok *tagfiles* (`TAG0`) and are
+//! refused with `ErrorKind::Unsupported` (#6302).
 //!
 //! This decodes ONLY the outer container: the packfile header, the
 //! section table, and the `__classnames__` section's string list. The
@@ -40,6 +41,17 @@ use std::ops::Range;
 /// [`BhkSystemBinary`](super::BhkSystemBinary) blob: the classic Havok
 /// packfile magic pair.
 pub const HAVOK_PACKFILE_MAGIC: [u32; 2] = [0x57e0_e057, 0x10c0_c010];
+
+/// The tag at offset 4 of a Havok tagfile, the container FO76 and Starfield
+/// use for `bhkSystemBinary` payloads (preceded by a big-endian size word).
+/// Fallout 4's are classic packfiles ([`HAVOK_PACKFILE_MAGIC`]).
+pub const HAVOK_TAGFILE_TAG: [u8; 4] = *b"TAG0";
+
+/// Whether an error from [`parse_havok_packfile`] (or a decoder built on it)
+/// is the tagfile case: a known unsupported container, not corrupt data.
+pub fn is_havok_tagfile_error(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Unsupported
+}
 
 /// Size of one section-table entry: a 20-byte name block (19 bytes of
 /// null-padded ASCII + a `0xFF` terminator byte, verified at the same
@@ -368,6 +380,16 @@ fn read_virtual_fixups(data: &[u8], start: usize, end: usize) -> Vec<VirtualFixu
 /// rather than a hard failure (other Havok/game versions may use a
 /// different container).
 pub fn parse_havok_packfile(data: &[u8]) -> io::Result<HavokPackfile> {
+    // FO76 and Starfield blobs are Havok *tagfiles*, a different container
+    // (a big-endian size word, then `TAG0`), not packfiles. They are a known
+    // unsupported format rather than corrupt data, so say so with a distinct
+    // kind (#6302); `is_havok_tagfile_error` is the caller-side test.
+    if data.get(4..8) == Some(HAVOK_TAGFILE_TAG.as_slice()) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "havok tagfile (TAG0, FO76/Starfield) — not a packfile, not decoded",
+        ));
+    }
     if data.len() < SECTION_TABLE_START {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
@@ -481,6 +503,24 @@ pub(super) mod tests {
     /// its test fixtures.
     fn build_synthetic_packfile(class_names: &[&str], data_payload: &[u8]) -> Vec<u8> {
         build_synthetic_packfile_with_fixups(class_names, data_payload, &[], &[], &[])
+    }
+
+    /// #6302 - FO76 and Starfield blobs start with a big-endian size word and `TAG0`: a Havok
+    /// tagfile, refused as an unsupported container rather than reported as a bad magic.
+    #[test]
+    fn a_havok_tagfile_is_an_unsupported_container_not_a_magic_mismatch() {
+        let mut blob = vec![0u8; 256];
+        blob[..4].copy_from_slice(&0x4a9cu32.to_be_bytes());
+        blob[4..8].copy_from_slice(b"TAG0");
+        let error = parse_havok_packfile(&blob).unwrap_err();
+        assert!(is_havok_tagfile_error(&error), "{error}");
+        assert!(error.to_string().contains("tagfile"));
+        // Recognised from the tag alone, even in a blob too short for a packfile header.
+        assert!(is_havok_tagfile_error(&parse_havok_packfile(&blob[..8]).unwrap_err()));
+        // A real mismatch (or a short blob) is still the generic error.
+        let garbage = vec![0xAAu8; 256];
+        assert!(!is_havok_tagfile_error(&parse_havok_packfile(&garbage).unwrap_err()));
+        assert!(!is_havok_tagfile_error(&parse_havok_packfile(&garbage[..16]).unwrap_err()));
     }
 
     #[test]

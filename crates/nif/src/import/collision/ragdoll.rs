@@ -24,7 +24,7 @@ use super::{finite, finite_vec, havok_quat_to_engine, havok_to_engine};
 /// a lone static collider isn't a ragdoll.
 ///
 /// Bodies are reached via the classic `BhkCollisionObject → BhkRigidBody`
-/// chain; FO4+ NP-blob ragdolls (`bhkRagdollSystem`) take
+/// chain; FO4 NP-blob ragdolls (`bhkRagdollSystem`) take
 /// [`extract_np_ragdoll`] when the scene authors no discrete constraints. Each body's bone name is its host
 /// NiNode's name. Constraint entity refs are rigid-body *block* indices,
 /// remapped here to body-array indices. All geometry is Y-up + havok-
@@ -41,7 +41,7 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
         block.as_any().is::<BhkConstraint>() || block.as_any().is::<BhkBreakableConstraint>()
     });
     if !has_constraint_authoring {
-        // FO4+ keeps the whole articulation in a `bhkRagdollSystem` blob
+        // FO4 keeps the whole articulation in a `bhkRagdollSystem` blob
         // instead of discrete `bhkRigidBody` / `bhkConstraint` blocks (#5015).
         return extract_np_ragdoll(scene);
     }
@@ -346,7 +346,7 @@ const NP_RESTITUTION: f32 = 0.8;
 const NP_COINCIDENT_DISTANCE: f32 = 0.01;
 const NP_COINCIDENT_DOT: f32 = 1.0 - 1.0e-6;
 
-/// FO4+ counterpart of [`extract_ragdoll`]: assemble the articulation from a
+/// Fallout 4 counterpart of [`extract_ragdoll`]: assemble the articulation from a
 /// skeleton's `bhkRagdollSystem` blob (#5015).
 ///
 /// The blob lists bodies and joints in its own order; the skeleton's
@@ -367,6 +367,11 @@ pub(super) fn extract_np_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
     })?;
     let decoded = match decode_np_ragdoll(blob) {
         Ok(d) => d,
+        // FO76 / Starfield: a known unsupported container, not corrupt data (#6302).
+        Err(e) if is_havok_tagfile_error(&e) => {
+            log::debug!("extract_np_ragdoll: bhkRagdollSystem block {system_idx} skipped: {e}");
+            return None;
+        }
         Err(e) => {
             log::warn!("extract_np_ragdoll: bhkRagdollSystem block {system_idx} not decoded: {e}");
             return None;
@@ -1548,6 +1553,18 @@ mod np_ragdoll_extract_tests {
         // Pivot A is 0.5 m along Havok +X → 5 engine units along +X.
         assert!((pivot_a - Vec3::new(5.0, 0.0, 0.0)).length() < 1e-4, "{pivot_a:?}");
         assert_eq!((cone_max, twist_min, twist_max), (0.5, -0.25, 0.3));
+    }
+
+    /// #6302 - an FO76 / Starfield `bhkRagdollSystem` payload is a Havok tagfile: declined
+    /// (no ragdoll, no panic), like any blob this decoder cannot read.
+    #[test]
+    fn a_tagfile_ragdoll_system_is_declined() {
+        let mut scene = scene(5.0, "bhkRagdollSystem");
+        let mut blob = vec![0u8; 128];
+        blob[..4].copy_from_slice(&0x4a9cu32.to_be_bytes());
+        blob[4..8].copy_from_slice(b"TAG0");
+        scene.blocks[5] = Box::new(BhkSystemBinary { type_name: "bhkRagdollSystem", data: blob });
+        assert!(extract_ragdoll(&scene).is_none());
     }
 
     /// A body whose bind pose is off its bone's rest transform is expressed

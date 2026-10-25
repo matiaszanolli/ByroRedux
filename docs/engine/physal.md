@@ -186,7 +186,8 @@ therefore feeds every game:
 | **Oblivion / Morrowind** | NIF ≤ 20.0.0.5 (`#NI_BS_LTE_16#`) | Ragdoll 6×Vec4 + 6×f32 (pivots-first, **no motors**); LimitedHinge 7×Vec4 + 3×f32 (**no Perp B1**); Hinge 5×Vec4 = 80 B (**no Axis A** — derived); Prismatic 8×Vec4 + 3×f32 = 140 B, pivots-first order, **no motor** | **decoded (2026-06-14; Hinge #3330, Prismatic #3792)** |
 | **FO3 / FNV** | NIF 20.2.0.7, bsver ≤ 34 (`!#NI_BS_LTE_16#`) | Ragdoll 8×Vec4 + 6×f32 + motor; LimitedHinge 8×Vec4 + 3×f32 + motor; Hinge 8×Vec4 = 128 B + motor (no serialized limits); Prismatic 8×Vec4 + 3×f32 = 140 B + motor, `Sliding/Rotation/Plane/Pivot` A-then-B order (**not** the Oblivion order) | **decoded — slice 1 reference** |
 | **Skyrim LE/SE** | NIF 20.2.0.7, bsver 83–127 | identical FO3+ layout; gated by NIF **version**, not bsver. `havok_scale` ×69.99 applied at import via `havok_scale_for(header)` | **decoded; version-gate pinned by test, real-data validation pending** |
-| **FO4 / FO76 / Starfield** | `BhkNPCollisionObject` → `BhkSystemBinary` | Havok-serialised binary blob — the constraint graph is inside the blob, not as discrete `bhkRigidBody.constraints` | **container + object table decoded (#3809, `parse_havok_packfile`); FO4 skeleton ragdolls (`bhkRagdollSystem`) decoded and threaded (#5015, `decode_np_ragdoll`); precombined geometry blocked on `hknpCompressedMeshShapeData`'s field layout. Documented limitation, not a leak** |
+| **FO4** | `BhkNPCollisionObject` → `BhkSystemBinary` | Havok-serialised **packfile** blob — the constraint graph is inside the blob, not as discrete `bhkRigidBody.constraints` | **container + object table decoded (#3809, `parse_havok_packfile`); FO4 skeleton ragdolls (`bhkRagdollSystem`) decoded and threaded (#5015, `decode_np_ragdoll`); precombined geometry blocked on `hknpCompressedMeshShapeData`'s field layout. Documented limitation, not a leak** |
+| **FO76 / Starfield** | `BhkNPCollisionObject` → `BhkSystemBinary` | Havok **tagfile** blob (a big-endian size word, then `TAG0`) — a different container from FO4's packfile | **opaque (#6302).** `parse_havok_packfile` recognises the tag and refuses it as `ErrorKind::Unsupported`; the ragdoll import declines at debug level. 100 % of the blobs probed (249 FO76, 571 Starfield `bhkRagdollSystem`) are tagfiles. Out of scope |
 
 Sources of truth (no-guessing): `/mnt/data/src/reference/nifxml/nif.xml`
 (`bhkRagdollConstraintCInfo` / `bhkLimitedHingeConstraintCInfo` /
@@ -316,10 +317,13 @@ rigid body — deferred, mirroring the NIFAL collision note. FO3 DLC
 `bhkSPCollisionObject` now dispatches through the same phantom wrapper instead
 of being misclassified as classic rigid-body authoring.
 
-### FO4+ packed Havok — **container decoded; one payload class remains**
+### FO4 packed Havok — **container decoded; one payload class remains**
 
 `BhkNPCollisionObject → BhkSystemBinary` holds the whole physics system
-(bodies + constraints) as a serialised Havok binary. The **container** is no
+(bodies + constraints) as a serialised Havok binary. (This section is FO4's
+classic **packfile**. FO76 and Starfield ship Havok **tagfiles** instead —
+`TAG0` at offset 4 — which `parse_havok_packfile` refuses as unsupported, #6302.)
+The **container** is no
 longer opaque: `blocks::collision::parse_havok_packfile` decodes the classic
 packfile header, section table, class-name table and — since #3809 — all three
 fixup tables, which makes `HavokPackfile::objects()` return every top-level

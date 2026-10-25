@@ -1,4 +1,4 @@
-//! FO4+ `bhkRagdollSystem` payload: the `hknpRagdollData` articulation
+//! FO4 `bhkRagdollSystem` payload: the `hknpRagdollData` articulation
 //! (#5015).
 //!
 //! A Fallout 4 skeleton NIF hosts its ragdoll in a `bhkRagdollSystem` block
