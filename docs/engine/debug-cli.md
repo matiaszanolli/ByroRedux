@@ -340,7 +340,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**138**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**144**) grouped by
 purpose:
 
 ```
@@ -529,6 +529,11 @@ misc.stat <name> [delta]    → read or change a misc stat (`_` for spaces in th
 challenge.status [CHAL id]  → New Vegas challenge progress (hex CHAL form id optional)
 
 # Legacy HUD + focused diagnostics
+vats.enter / vats.exit        → enter/leave VATS targeting (FO3/FNV freezes the world)
+vats.scan                     → re-run the VATS limb scan against live positions
+vats.status                   → mode, per-part hit % and AP costs, queue depth (smoke observable)
+vats.queue <part>             → queue a scanned body part by name (e.g. Torso)
+vats.confirm                  → charge AP, execute the queue through the combat funnel, exit
 hud.on / hud.off            → show or hide the active legacy HUD
 hud.values                  → inspect current HUD trait values
 hud.heading                 → inspect the active HUD heading

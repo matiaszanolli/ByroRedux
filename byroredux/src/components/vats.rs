@@ -65,9 +65,12 @@ pub(crate) struct VatsState {
     pub targets: Vec<VatsTargetPart>,
     /// Attacks the player queued and confirmed; executed on playback.
     pub queue: Vec<VatsTargetPart>,
-    /// AP reserved by the queue (charged on confirm; refunded if the
-    /// queue is cancelled before execution).
+    /// AP reserved by the queue (charged on confirm; cancelled queues
+    /// drop the reservation).
     pub ap_reserved: f32,
+    /// Session-deterministic LCG state for the execution die rolls —
+    /// gates and tests rely on replayable outcomes, not wall-clock rng.
+    pub roll_state: u32,
 }
 
 impl Resource for VatsState {}
