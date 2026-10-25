@@ -2160,10 +2160,14 @@ mod tests {
     ///
     /// Pins #3011's bound: `transform_count * num_frames` past
     /// `MAX_TRANSFORM_SAMPLES` must be rejected before any `Vec::with_
-    /// capacity` allocation, not after. `num_blocks`/`max_frames_per_block`/
-    /// `mask_size` are left zeroed — the dimension check's `||` chain short-
-    /// circuits on the sample-count clause before reaching theirs, so this
-    /// fixture never needs valid spline block data at all.
+    /// capacity` allocation, not after. #5446 — every OTHER clause of the
+    /// dimension gate must pass, so only the sample-count clause can
+    /// reject this shape: the blocks (20 × mfpb 256) have room for the
+    /// frames, and `mask_size` is the exact padded table for 4096
+    /// transform tracks. Pre-fix the fixture left `num_blocks` and
+    /// `mask_size` zeroed, so deleting the sample-count clause left the
+    /// blocks and mask clauses to reject with the same error — the test
+    /// could not fail.
     #[test]
     fn decode_spline_animation_rejects_a_sample_count_bomb() {
         use crate::packfile::fixtures::PackfileBuilder;
@@ -2174,6 +2178,9 @@ mod tests {
         data[0x14..0x18].copy_from_slice(&1.0f32.to_le_bytes()); // duration
         data[0x18..0x1c].copy_from_slice(&4096u32.to_le_bytes()); // transform_count (max allowed)
         data[0x38..0x3c].copy_from_slice(&5000u32.to_le_bytes()); // num_frames: transform_count * num_frames > MAX_TRANSFORM_SAMPLES
+        data[0x3c..0x40].copy_from_slice(&20u32.to_le_bytes()); // num_blocks: 20 x 255 + 1 = 5101 >= 5000
+        data[0x40..0x44].copy_from_slice(&256u32.to_le_bytes()); // mfpb at the ceiling, in range
+        data[0x44..0x48].copy_from_slice(&(4096u32 * 4).to_le_bytes()); // mask_size = tracks x 4
         data[0x50..0x54].copy_from_slice(&(1.0f32 / 30.0).to_le_bytes()); // frame_duration
 
         let mut builder = PackfileBuilder {
@@ -2184,6 +2191,8 @@ mod tests {
         builder.virtual_fixups.push((0, 0, class));
         let bytes = builder.build();
 
+        // 4096 tracks x 5000 frames = 20,480,000 samples: past the
+        // census-derived 1 M cap, under every relative check.
         let err = decode_spline_animation(&bytes).expect_err(
             "a transform_count * num_frames product past MAX_TRANSFORM_SAMPLES must be \
              rejected, not handed to Vec::with_capacity (#3011)",
@@ -2211,6 +2220,7 @@ mod tests {
         data[0x38..0x3c].copy_from_slice(&3906u32.to_le_bytes()); // num_frames
         data[0x3c..0x40].copy_from_slice(&2u32.to_le_bytes()); // num_blocks (tiny)
         data[0x40..0x44].copy_from_slice(&16u32.to_le_bytes()); // max_frames_per_block
+        data[0x44..0x48].copy_from_slice(&(8u32 * 4).to_le_bytes()); // mask_size = tracks x 4 (#5446)
         data[0x50..0x54].copy_from_slice(&(1.0f32 / 30.0).to_le_bytes()); // frame_duration
 
         let mut builder = PackfileBuilder {
@@ -2222,8 +2232,11 @@ mod tests {
         let bytes = builder.build();
 
         // 8 tracks x 3906 frames = 31,248 samples: far below the absolute
-        // cap, so ONLY the relative check can reject it — 2 blocks x 15
-        // frames cannot carry 3906 frames.
+        // cap, mfpb in range, and — #5446 — the mask table is sized
+        // exactly, so ONLY the relative check can reject it: 2 blocks x 15
+        // frames cannot carry 3906 frames. (Pre-fix, `mask_size` was left
+        // at 0, so deleting the relative clause still rejected via the
+        // mask clause with the same error — the test could not fail.)
         let err = decode_spline_animation(&bytes)
             .expect_err("frames beyond the declared block capacity must be rejected");
         assert_eq!(
@@ -2277,21 +2290,30 @@ mod tests {
     /// #5006 (PAR-D1-2026-09-29-01) — #4655's frames-vs-blocks tie is
     /// bypassable with ONE block whose `max_frames_per_block` ≈
     /// `num_frames`: all-static masks cost `transform_count * 4` bytes
-    /// per block whatever the frame count, so a 17 KB file claiming 4096
-    /// tracks x 3906 frames (15,998,976 samples, 610 MiB decoded) passed
-    /// every #4655 check. The vanilla-measured 256 ceiling on the
-    /// compressor parameter rejects it before any allocation.
+    /// per block whatever the frame count, so a small file claiming a
+    /// huge frame count passed every #4655 check. The vanilla-measured
+    /// 256 ceiling on the compressor parameter rejects it before any
+    /// allocation. #5446 — the shapes now sit UNDER the 1 M sample cap
+    /// with the mask table sized exactly, so only the mfpb ceiling can
+    /// reject them (the pre-fix 4096 x 3906 shape's 15,998,976 samples
+    /// were rejected by the absolute cap first, whatever this test
+    /// claimed to pin).
     #[test]
     fn decode_spline_animation_rejects_a_block_claiming_its_whole_clip() {
         use crate::packfile::fixtures::PackfileBuilder;
 
+        // 4 tracks x 250,000 frames = 1,000,000 samples: AT the absolute
+        // cap (not past it), one block whose mfpb covers the whole clip —
+        // #4655's tie satisfied exactly — and only the mfpb ceiling (256)
+        // can refuse.
         let mut data = vec![0u8; 0x60];
         data[0x10..0x14].copy_from_slice(&5u32.to_le_bytes()); // spline-compressed
         data[0x14..0x18].copy_from_slice(&1.0f32.to_le_bytes()); // duration
-        data[0x18..0x1c].copy_from_slice(&4096u32.to_le_bytes()); // transform_count (max)
-        data[0x38..0x3c].copy_from_slice(&3906u32.to_le_bytes()); // num_frames
+        data[0x18..0x1c].copy_from_slice(&4u32.to_le_bytes()); // transform_count
+        data[0x38..0x3c].copy_from_slice(&250_000u32.to_le_bytes()); // num_frames
         data[0x3c..0x40].copy_from_slice(&1u32.to_le_bytes()); // num_blocks
-        data[0x40..0x44].copy_from_slice(&3907u32.to_le_bytes()); // mfpb = num_frames + 1
+        data[0x40..0x44].copy_from_slice(&250_001u32.to_le_bytes()); // mfpb = num_frames + 1
+        data[0x44..0x48].copy_from_slice(&(4u32 * 4).to_le_bytes()); // mask_size = tracks x 4
         data[0x50..0x54].copy_from_slice(&(1.0f32 / 30.0).to_le_bytes()); // frame_duration
 
         let mut builder = PackfileBuilder {
@@ -2302,10 +2324,6 @@ mod tests {
         builder.virtual_fixups.push((0, 0, class));
         let bytes = builder.build();
 
-        // 1 block x 3906 declared frames satisfies #4655's
-        // `num_frames <= num_blocks * (mfpb - 1) + 1` exactly, and the
-        // sample product sits just under MAX_TRANSFORM_SAMPLES — only the
-        // MAX_FRAMES_PER_BLOCK ceiling can reject it.
         let err = decode_spline_animation(&bytes).expect_err(
             "max_frames_per_block beyond the vanilla ceiling must be rejected (#5006)",
         );
@@ -2314,16 +2332,16 @@ mod tests {
             HkxError::InvalidData("unsupported spline clip dimensions")
         );
 
-        // The 99-track skeleton-binding form (blocks=40, mfpb=4096,
-        // frames=161,616 → 15,999,984 samples from a 16 KB file) dies on
-        // the same ceiling.
+        // The 99-track skeleton-binding form dies on the same ceiling:
+        // 99 x 10,101 = 999,999 samples, one block, mfpb 10,102.
         let mut data = vec![0u8; 0x60];
         data[0x10..0x14].copy_from_slice(&5u32.to_le_bytes());
         data[0x14..0x18].copy_from_slice(&1.0f32.to_le_bytes());
         data[0x18..0x1c].copy_from_slice(&99u32.to_le_bytes());
-        data[0x38..0x3c].copy_from_slice(&161_616u32.to_le_bytes());
-        data[0x3c..0x40].copy_from_slice(&40u32.to_le_bytes());
-        data[0x40..0x44].copy_from_slice(&4096u32.to_le_bytes());
+        data[0x38..0x3c].copy_from_slice(&10_101u32.to_le_bytes());
+        data[0x3c..0x40].copy_from_slice(&1u32.to_le_bytes());
+        data[0x40..0x44].copy_from_slice(&10_102u32.to_le_bytes());
+        data[0x44..0x48].copy_from_slice(&(99u32 * 4).to_le_bytes());
         data[0x50..0x54].copy_from_slice(&(1.0f32 / 30.0).to_le_bytes());
         let mut builder = PackfileBuilder {
             data,
@@ -2332,7 +2350,7 @@ mod tests {
         let class = builder.class("hkaSplineCompressedAnimation");
         builder.virtual_fixups.push((0, 0, class));
         let err = decode_spline_animation(&builder.build())
-            .expect_err("the 99-track mfpb=4096 form must be rejected on the same ceiling");
+            .expect_err("the 99-track mfpb=102 form must be rejected on the same ceiling");
         assert_eq!(
             err,
             HkxError::InvalidData("unsupported spline clip dimensions")
