@@ -302,7 +302,7 @@ pub(crate) fn capture_actor_snapshots(world: &mut World, victims: &[EntityId]) {
         let Some(pool) = world.try_resource::<FormIdPool>() else {
             return;
         };
-        let global = |fid: FormId| pool.resolve(fid).map(|pair| pair.local.0);
+        let global = |fid: FormId| pool.local_of(fid);
         let mut captured: Vec<(u32, ActorStreamSnapshot)> = Vec::new();
         for (((_, fid, mut snapshot), seat), furniture) in
             rows.into_iter().zip(seated).zip(furniture_fids)

@@ -16,20 +16,6 @@ fn provider_initialized_key() -> ConditionStringId {
     ConditionStringId::from_text("::init::papyrus_provider")
 }
 
-/// The stable (plugin-local) FormID of the reference `entity` stands for, if it
-/// has one. Looked up per entity on demand (#6020): the callers need it for a
-/// handful of entities per frame at most, never for every placed reference.
-/// Takes and releases its component / pool guards before returning, so it is
-/// safe to call before a resource guard is taken but not while one is held.
-fn owner_form_id(world: &World, entity: EntityId) -> Option<u32> {
-    use byroredux_core::ecs::components::FormIdComponent;
-    use byroredux_core::form_id::FormIdPool;
-
-    let form = world.get::<FormIdComponent>(entity)?.0;
-    let pool = world.try_resource::<FormIdPool>()?;
-    pool.resolve(form).map(|pair| pair.local.0)
-}
-
 /// Keep only the `OnInit` markers that are a reference's *first*: `OnInit`
 /// "will run once, when the script is initialized" (CK), but the program is
 /// re-attached every time the reference spawns — each stream-in, cell
@@ -46,7 +32,7 @@ fn first_initializations(world: &World, initialized: BTreeSet<EntityId>) -> BTre
     // component / pool lock is acquired underneath it.
     let owners: Vec<(EntityId, Option<u32>)> = initialized
         .into_iter()
-        .map(|entity| (entity, owner_form_id(world, entity)))
+        .map(|entity| (entity, crate::condition::entity_global_form_id(world, entity)))
         .collect();
     let Some(mut variables) = world.try_resource_mut::<QuestScriptVariables>() else {
         return owners.into_iter().map(|(entity, _)| entity).collect();
@@ -350,7 +336,7 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
             }
         }
         if statements_need_owner_sender(&statements) {
-            let Some(owner_form_id) = owner.and_then(|owner| owner_form_id(world, owner)) else {
+            let Some(owner_form_id) = owner.and_then(|owner| crate::condition::entity_global_form_id(world, owner)) else {
                 log::warn!("Papyrus SendModEvent aborted: script owner has no stable FormID");
                 continue;
             };

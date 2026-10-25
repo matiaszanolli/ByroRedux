@@ -345,12 +345,10 @@ pub(crate) fn vats_scan(world: &World) {
         }
         let is_creature = world.get::<CreatureActor>(entity).is_some();
         // The index maps key on the remapped global form id; the runtime
-        // FormId resolves through the pool (`pair.local.0` carries the
-        // global value — trap_hits.rs's record lookups use the same
-        // idiom).
+        // FormId resolves through the pool (`FormIdPool::local_of`).
         let global_form = world
             .try_resource::<byroredux_core::form_id::FormIdPool>()
-            .and_then(|pool| pool.resolve(form.0).map(|pair| pair.local.0));
+            .and_then(|pool| pool.local_of(form.0));
         let body_form = if is_creature {
             global_form.and_then(|form| index.creatures.get(&form).and_then(|r| r.body_part_form))
         } else {

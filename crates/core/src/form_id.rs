@@ -197,6 +197,15 @@ impl FormIdPool {
         self.to_pair.get(id.0 as usize)
     }
 
+    /// The plugin-local value of a runtime [`FormId`]: `resolve(id).local.0`. This is the
+    /// "global form id" the record index, the script ledgers and every FormID-keyed save
+    /// table are keyed by (the loader remaps a record's FormID into the load order before it
+    /// is interned), so each reader of it goes through here rather than spelling the walk
+    /// again (#6351).
+    pub fn local_of(&self, id: FormId) -> Option<u32> {
+        self.resolve(id).map(|pair| pair.local.0)
+    }
+
     /// Look up a [`FormIdPair`] without interning it.
     /// Returns `None` if the pair has never been interned.
     pub fn get(&self, pair: &FormIdPair) -> Option<FormId> {
@@ -259,6 +268,14 @@ mod tests {
             plugin: PluginId::from_filename(plugin_name),
             local: LocalFormId(local),
         }
+    }
+
+    #[test]
+    fn local_of_is_the_resolved_pairs_local_value() {
+        let mut pool = FormIdPool::new();
+        let id = pool.intern(test_pair("Skyrim.esm", 0x0001_4D8A));
+        assert_eq!(pool.local_of(id), Some(0x0001_4D8A));
+        assert_eq!(pool.local_of(FormId(99)), None, "an id that was never interned");
     }
 
     #[test]

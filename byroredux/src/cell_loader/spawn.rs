@@ -485,7 +485,7 @@ pub(crate) fn placement_is_disabled(
     };
     let Some(local) = world
         .try_resource::<FormIdPool>()
-        .and_then(|pool| pool.resolve(fid).map(|pair| pair.local.0))
+        .and_then(|pool| pool.local_of(fid))
     else {
         return false;
     };
@@ -566,7 +566,7 @@ pub(crate) fn scripted_motion_type(
 ) -> Option<byroredux_core::ecs::components::MotionType> {
     let local = world
         .try_resource::<FormIdPool>()
-        .and_then(|pool| pool.resolve(placement_fid?).map(|pair| pair.local.0))?;
+        .and_then(|pool| pool.local_of(placement_fid?))?;
     world
         .try_resource::<byroredux_scripting::ReferenceMotionTypeState>()
         .and_then(|state| state.override_for(local))

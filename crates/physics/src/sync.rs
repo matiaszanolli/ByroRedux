@@ -412,7 +412,7 @@ fn dump_awake_fallers(world: &World) {
         .into_iter()
         .map(|(mut entry, source_form)| {
             entry.form =
-                source_form.and_then(|fid| pool.as_ref()?.resolve(fid).map(|pair| pair.local.0));
+                source_form.and_then(|fid| pool.as_ref()?.local_of(fid));
             entry
         })
         .collect();
@@ -750,7 +750,7 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
         .into_iter()
         .map(|(mut entry, source_form)| {
             entry.form =
-                source_form.and_then(|fid| pool.as_ref()?.resolve(fid).map(|pair| pair.local.0));
+                source_form.and_then(|fid| pool.as_ref()?.local_of(fid));
             entry
         })
         .collect::<Vec<_>>();

@@ -898,6 +898,52 @@ fn no_production_code_reads_le_ints_by_hand() {
     );
 }
 
+/// #6351 — the runtime `FormId` → global (plugin-local) form id walk is
+/// `FormIdPool::local_of`. `papyrus_provider::owner_form_id` was a re-copy of
+/// `entity_global_form_id` that lacked its player arm (a player-owned script
+/// keyed under local 1 instead of `PlayerRef`), and the bare pool step was
+/// spelled eight more ways; #5588's guard only greps for a fn *name*, so a
+/// copy under another name passed. Scan every production file for the
+/// spelled-out step, and for the deleted copy's name.
+#[test]
+fn no_production_code_spells_the_pool_to_local_walk_by_hand() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_crates = manifest.join("../crates");
+    let mut roots = vec![manifest.join("src")];
+    for entry in std::fs::read_dir(&workspace_crates).expect("crates/ readable").flatten() {
+        if entry.path().is_dir() {
+            roots.push(entry.path().join("src"));
+        }
+    }
+    let mut found = Vec::new();
+    for root in roots {
+        visit_workspace_rs_files(&root, &mut |path, contents| {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let in_test_dir = path.components().any(|c| c.as_os_str() == "tests");
+            if name.ends_with("_tests.rs") || name == "tests.rs" || in_test_dir || name == "form_id.rs" {
+                return;
+            }
+            let production = byroredux_core::source_scan::production_text_or_whole(contents);
+            for (idx, line) in production.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                let walks_pool = line.contains(".resolve(") && line.contains(".map(") && line.contains(".local.0)");
+                if walks_pool || line.contains("fn owner_form_id(") {
+                    found.push(format!("{}:{}  {}", path.display(), idx + 1, line.trim()));
+                }
+            }
+        });
+    }
+    assert!(
+        found.is_empty(),
+        "hand-spelled FormId -> local walk (or the deleted `owner_form_id` copy) — use \
+         `FormIdPool::local_of`, or `condition::entity_global_form_id` for an entity (which \
+         also maps the player to PlayerRef) (#6351):\n{}",
+        found.join("\n"),
+    );
+}
+
 /// #5856 — count a crate's example *targets* the way cargo discovers them:
 /// every top-level `examples/*.rs` plus every `examples/<name>/main.rs`.
 /// Non-target files (`examples/common/archives.rs`, a shared module) are

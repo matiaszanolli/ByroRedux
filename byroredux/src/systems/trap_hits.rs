@@ -92,7 +92,7 @@ pub(crate) fn live_actor_bodies(
 fn source_reference(world: &World, entity: EntityId) -> Option<u32> {
     let source = world.get::<byroredux_core::ecs::components::PhysicsSourceForm>(entity)?.0;
     let pool = world.try_resource::<byroredux_core::form_id::FormIdPool>()?;
-    pool.resolve(source).map(|pair| pair.local.0)
+    pool.local_of(source)
 }
 
 /// Raise this tick's trap-contact events.

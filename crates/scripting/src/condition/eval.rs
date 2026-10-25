@@ -225,7 +225,7 @@ pub fn entity_global_form_id(world: &World, entity: EntityId) -> Option<u32> {
     }
     let component = world.get::<FormIdComponent>(entity)?;
     let pool = world.try_resource::<FormIdPool>()?;
-    pool.resolve(component.0).map(|pair| pair.local.0)
+    pool.local_of(component.0)
 }
 
 /// What a context-reading condition runs on: a reference, or — Run On

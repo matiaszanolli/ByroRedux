@@ -1801,3 +1801,46 @@ fn saved_wait_above_the_lowering_bound_is_rejected() {
     assert!(validate_provider_statements(&wait(-1.0), &catalog, 0).is_err());
     assert!(validate_provider_statements(&wait(f32::NAN), &catalog, 0).is_err());
 }
+
+/// #6351 — a script on the player keys its first-`OnInit` flag by `PlayerRef` (0x14), the id every
+/// other FormID-keyed table names the player by, not by the body's pool pair (local 1). The key came
+/// from a private copy of `entity_global_form_id` that lacked the player arm.
+#[test]
+fn a_player_owned_script_keys_its_first_init_flag_under_player_ref() {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    let source = r#"
+        ScriptName Fixture
+        Event OnInit()
+            self.Touch(7)
+        EndEvent
+    "#;
+    let (script, errors) = parse_script(source).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let program = lower_provider_program(&script, &self_catalog()).unwrap().unwrap();
+    let mut world = World::new();
+    crate::register(&mut world);
+    let mut pool = FormIdPool::new();
+    // The player's body is interned as local 1 (`PLAYER_FORM_ID_PAIR`), not 0x14.
+    let body = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(1) });
+    world.insert_resource(pool);
+    let player = world.spawn();
+    world.insert(player, FormIdComponent(body));
+    world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+    let callback = Arc::new(
+        |_principal: Option<&PrincipalId>, _route: &str, _arguments: &[ScriptValue]| Ok(ScriptValue::None),
+    ) as Arc<PapyrusProviderCallback>;
+    set_papyrus_provider_runtime(&world, Arc::new(self_catalog()), Some(callback));
+    let resolver = Arc::new(|entity: EntityId| {
+        EntityRef::new(9, u64::from(entity) + 1).ok_or_else(|| "invalid test entity".to_owned())
+    }) as Arc<PapyrusProviderEntityResolver>;
+    set_papyrus_provider_entity_resolver(&world, Some(resolver));
+    attach_papyrus_provider_program(&mut world, player, program);
+    world.insert(player, OnInitEvent);
+    papyrus_provider_system(&world, 0.0);
+
+    let key = byroredux_plugin::esm::records::condition::ConditionStringId::from_text("::init::papyrus_provider");
+    let variables = world.resource::<crate::QuestScriptVariables>();
+    assert_eq!(variables.get(crate::QuestFormId(crate::PLAYER_REFERENCE), key), Some(1.0));
+    assert_eq!(variables.get(crate::QuestFormId(1), key), None, "not under the body's pool-local id");
+}
