@@ -2013,29 +2013,62 @@ fn parse_rate_fnv_esm() {
         &unresolved[..unresolved.len().min(8)],
     );
 
-    // #3324 — WEAP `VATS`. `ap_cost` was pinned to 0.0 for every FNV weapon
-    // because the parser searched `DNAM`. The census found 245 of 261 WEAP
-    // records carrying a `VATS` sub-record, 45 of them with a non-zero AP
-    // cost at offset 12.
-    let (vats_records, nonzero_ap) =
-        index
-            .items
-            .values()
-            .fold((0usize, 0usize), |acc, item| match &item.kind {
-                byroredux_plugin::esm::records::ItemKind::Weapon { ap_cost, vats, .. } => (
-                    acc.0 + usize::from(vats.is_some()),
-                    acc.1 + usize::from(*ap_cost > 0.0),
-                ),
-                _ => acc,
-            });
+    // #3324/#6350 — WEAP VATS inputs. The census found 245 of 261 WEAP
+    // records carrying a `VATS` sub-record, 45 with a non-zero AP
+    // override at offset 12. #6350 re-pinned the split: the STANDARD
+    // AP cost is DNAM offset 68 (wiki-pinned below), the sub-record's
+    // offset 12 is the GECK Override-tab value — so `ap_cost > 0` now
+    // holds for essentially every weapon, not 45.
+    let (vats_records, nonzero_override, nonzero_ap) = index.items.values().fold(
+        (0usize, 0usize, 0usize),
+        |acc, item| match &item.kind {
+            byroredux_plugin::esm::records::ItemKind::Weapon { ap_cost, vats, .. } => (
+                acc.0 + usize::from(vats.is_some()),
+                acc.1 + usize::from(vats.as_ref().is_some_and(|v| v.ap_override > 0.0)),
+                acc.2 + usize::from(*ap_cost > 0.0),
+            ),
+            _ => acc,
+        },
+    );
     assert!(
         vats_records >= 240,
         "WEAP with decoded VATS={vats_records} (expected >= 240; vanilla ships 245)",
     );
     assert!(
-        nonzero_ap >= 40,
-        "WEAP with non-zero VATS ap_cost={nonzero_ap} (expected >= 40; vanilla ships 45)",
+        nonzero_override >= 40,
+        "WEAP with non-zero VATS ap_override={nonzero_override} (expected >= 40; vanilla ships 45)",
     );
+    assert!(
+        nonzero_ap >= 200,
+        "WEAP with non-zero DNAM ap_cost={nonzero_ap} (expected >= 200; vanilla ships 203 — \
+         grenades and placeholder weapons author none)",
+    );
+    // Wiki-pinned spot checks (Fallout wiki weapon tables, 2026-10-25):
+    // standard AP costs and base VATS to-hit chances per named weapon.
+    let weapon_stat = |editor_id: &str| {
+        index
+            .items
+            .values()
+            .find_map(|item| match &item.kind {
+                byroredux_plugin::esm::records::ItemKind::Weapon {
+                    ap_cost,
+                    vats_base_to_hit,
+                    ..
+                } if item.common.editor_id == editor_id => Some((*ap_cost, *vats_base_to_hit)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{editor_id} missing from items"))
+    };
+    // (AP, base-to-hit): 10mm 17/65, laser rifle 18/40, hunting rifle
+    // 40/38, sniper 27/25, minigun 30/45, super sledge 38/0 (melee
+    // authors no ranged base chance), ripper 65/0.
+    assert_eq!(weapon_stat("Weap10mmPistol"), (17.0, 65.0));
+    assert_eq!(weapon_stat("WeapLaserRifle"), (18.0, 40.0));
+    assert_eq!(weapon_stat("WeapHuntingRifle"), (40.0, 38.0));
+    assert_eq!(weapon_stat("WeapSniperRifle"), (27.0, 25.0));
+    assert_eq!(weapon_stat("WeapMinigun"), (30.0, 45.0));
+    assert_eq!(weapon_stat("WeapSuperSledge"), (38.0, 0.0));
+    assert_eq!(weapon_stat("WeapRipper"), (65.0, 0.0));
     assert!(
         index.explosions.len() >= 130,
         "EXPL={} (expected >= 130; vanilla ships ~154)",

@@ -9,9 +9,14 @@
 //! `u32 + f32 + f32 + f32 + u8` shape and reports, per slot, the value
 //! distribution and — for the leading FormID — what record type each payload
 //! resolves to against a whole-file FormID→type map. A slot whose values are
-//! integral and clustered in 14..=48 is AP cost; one clustered in 0..=100 on
-//! multiples of 5 is a skill requirement; one clustered near 1.0 is a
-//! multiplier. Those shapes are what name the fields, not a guess.
+//! integral and clustered in 14..=48 is in the AP domain; one clustered in
+//! 0..=100 on multiples of 5 is a skill requirement; one clustered near 1.0
+//! is a multiplier. Those shapes are what name the fields, not a guess.
+//!
+//! #6350 follow-up: slot 12 is the GECK *Override*-tab "Action Points"
+//! (45 FNV weapons), NOT the standard AP cost — that lives at `DNAM`
+//! offset 68, wiki-pinned in both games (see the `DNAM` arm in
+//! `items.rs` and `probe_weap_align.rs` for the alignment evidence).
 //!
 //! Usage:
 //!   cargo run -p byroredux-plugin --example probe_weap_vats -- <ESM>

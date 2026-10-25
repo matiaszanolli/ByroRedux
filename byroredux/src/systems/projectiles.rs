@@ -426,6 +426,7 @@ mod tests {
                     clip_size: 0,
                     anim_type: 0,
                     ap_cost: 0.0,
+                    vats_base_to_hit: 0.0,
                     skill_form: 0,
                     min_spread: 0.0,
                     spread: 0.0,
