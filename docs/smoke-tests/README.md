@@ -63,6 +63,7 @@ docs/smoke-tests/m47-2-bleedout.sh             # Skyrim: an essential NPC bleeds
 docs/smoke-tests/fo4-ragdoll.sh                  # FO4: XRGD-posed ghoul / human corpses + ghoul and raider ragdolls on death + a starts-dead molerat, validation-clean (#6070)
 docs/smoke-tests/dt2-skyrim-forcegreet.sh        # Skyrim SE: ForceGreet-tree PACK dialect resolves its PDTO topic / greets generically (#5367)
 docs/smoke-tests/m47-3-obscript.sh               # FNV: ObScript object scripts (OnLoad / OnTriggerEnter / OnDeath) and an item's OnAdd+RemoveMe run live (M47.3)
+docs/smoke-tests/tsd1-height-census.sh           # Skyrim/FNV/Oblivion/FO4 exteriors: every resident terrain layer has a height map (census `terrain.height all`, screenshots per area) (#6195)
 ```
 
 Every game-specific value — data dir, archives, cell, camera pose, destination
