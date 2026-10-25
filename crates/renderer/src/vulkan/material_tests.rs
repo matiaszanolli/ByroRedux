@@ -2010,3 +2010,71 @@ mod msn_basis_pin {
         );
     }
 }
+
+/// #6352 — the ReSTIR `Reservoir` is not a `Gpu*` record, so `gpu_material_size_claims` cannot see it.
+/// #6250 grew it 32 → 36 B and left "32 B/reservoir" in a shader header, a shader comment, an assert
+/// message and the audit skill. The live stride is `RESERVOIR_STRIDE`; a line that talks about a
+/// reservoir must not state the old figure as current.
+#[cfg(test)]
+mod reservoir_size_claims {
+    use crate::vulkan::restir::RESERVOIR_STRIDE;
+    use std::path::{Path, PathBuf};
+
+    /// Dated narrative, as in the `Gpu*` guard, plus "until" ("32 B until #6250 added …").
+    const HISTORIC_MARKERS: &[&str] = &["was ", "grew", "grown", "then-", "before", "used to", "until", "from 32", "Closed ("];
+
+    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !matches!(name, "target" | ".git" | "audits" | "issues") {
+                    collect(&path, out);
+                }
+            } else if matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("rs" | "md" | "glsl" | "vert" | "frag" | "comp")
+            ) {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Whether `line` states a 32-byte size (`32 B`, `32-byte`, `32 byte`, `32B`).
+    fn states_32_bytes(line: &str) -> bool {
+        let bytes = line.as_bytes();
+        line.match_indices("32").any(|(at, _)| {
+            let before_ok = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
+            let rest = line[at + 2..].trim_start_matches([' ', '-']);
+            before_ok && (rest.starts_with("byte") || (rest.starts_with('B') && !rest[1..].starts_with(|c: char| c.is_ascii_alphanumeric())))
+        })
+    }
+
+    #[test]
+    fn prose_states_the_live_reservoir_stride() {
+        assert_eq!(RESERVOIR_STRIDE, 36, "update the prose this guard protects, then this figure");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        for dir in ["crates", "byroredux", "tools", "docs/engine", ".claude/commands"] {
+            collect(&root.join(dir), &mut files);
+        }
+        let mut stale = Vec::new();
+        for path in files {
+            // This file's own needles are not claims.
+            if path.ends_with("vulkan/material_tests.rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            for (index, line) in text.lines().enumerate() {
+                if line.to_ascii_lowercase().contains("reservoir")
+                    && states_32_bytes(line)
+                    && !HISTORIC_MARKERS.iter().any(|marker| line.contains(marker))
+                {
+                    stale.push(format!("{}:{}: {}", path.display(), index + 1, line.trim()));
+                }
+            }
+        }
+        assert!(stale.is_empty(), "stale 32-byte reservoir claims (live stride is {RESERVOIR_STRIDE}):\n{}", stale.join("\n"));
+    }
+}

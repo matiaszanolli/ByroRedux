@@ -525,7 +525,7 @@ struct GpuTerrainTile {
     uvec4 groundcoverDetailAtlas;
     /// The BTXT base LTEX's own `cover_affinity` (#4903) — the terrain-side
     /// density evaluations start their ordered mix from it. The named tail
-    /// pads below round the record out to the 208-byte std430 array stride
+    /// pads below round the record out to the 224-byte std430 array stride
     /// (the struct's 16-alignment from its vec4 rows).
     float baseCoverAffinity;
     /// Bindless diffuse handle of the BTXT base texture (#4907). Zero when
@@ -811,7 +811,7 @@ layout(set = 1, binding = 14) uniform DalcCubeUBO {
 // One reservoir per screen pixel, indexed `pixelY * screenWidth + pixelX`.
 // Persisted across frames as a ping-pong pair of per-frame-in-flight
 // SSBOs: `reservoirsCurr` (this frame's write) + `reservoirsPrev` (last
-// frame's read, the temporal source). 32 B/reservoir. The temporal reuse
+// frame's read, the temporal source). 36 B/reservoir. The temporal reuse
 // reprojects the previous reservoir via the motion vector (packed surface ID
 // + normal rejection, mirroring svgf_temporal.comp) so the soft-shadow
 // estimate accumulates effective samples across frames instead of

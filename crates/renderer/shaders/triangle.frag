@@ -3389,7 +3389,7 @@ void main() {
         // switched off beside an occluded one leaves a phantom share that
         // fades with the parked floor's ~346-frame half-life (~6 s at 60 fps,
         // ~1.2 s at 300; mode 3 keeps the deep tail through an intensity
-        // change). Per-light history would not fit the 32-byte reservoir.
+        // change). Per-light history would not fit the 36-byte reservoir.
         vec3  restirUnshadowedSum = vec3(0.0);
         ClusterEntry cluster = clusters[clusterIdx];
         for (uint ci = 0; ci < cluster.count; ci++) {

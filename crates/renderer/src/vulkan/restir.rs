@@ -856,7 +856,7 @@ mod tests {
         assert!(
             src.contains("packHalf2x16(vec2(")
                 && src.contains("floatBitsToUint(rn.histLenAndDepth)"),
-            "depth compatibility must stay inside the existing 32-byte reservoir stride"
+            "depth compatibility must stay inside the existing 36-byte reservoir stride"
         );
     }
 
