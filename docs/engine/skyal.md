@@ -418,10 +418,15 @@ clouds; every direct-sun site multiplies by the map
 grass, the water glint), and passes that light with one sun value — the froxel
 volumetrics, the interior portal sun, caustics — use the camera's own column,
 read back from the bake after its fence (`camera_cloud_sun_transmittance`).
-Beyond the map's edge there is no cloud data, so the lookup fades to
-unshadowed across the outer tenth rather than letting the clamped sampler
-smear the edge texel over distant terrain (found with a forced checkerboard
-map, which also proved the map, binding and world addressing reach surfaces).
+Beyond the map's edge there is no local cloud data, so the bake fades each
+texel of the outer tenth from its full column to the uniform overcast term
+alone (`cloud_shadow_edge_weight`), and the clamped sampler beyond the edge
+returns that term rather than smearing a local shadow over distant terrain
+(found with a forced checkerboard map, which also proved the map, binding and
+world addressing reach surfaces). The fade used to live in the lookup and ran
+to 1.0, which dropped the overcast term too: once the deck-base crossing left
+the map (sun below ~3 degrees), overcast ground got the full above-cloud sun
+while the froxels stayed dark (#6310).
 The clouds themselves are lit by the unattenuated sun, since their march
 self-shadows. `every_direct_sun_site_applies_the_cloud_shadow` pins the sites.
 

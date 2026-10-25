@@ -45,6 +45,18 @@ layout(std430, set = 0, binding = 4) writeonly buffer CameraSunTransmittance {
     float cameraSunTransmittance;
 };
 
+// Broad stratiform cover above the pleasant-weather baseline: uniform, so
+// overcast-class weathers keep a dark ground under the local deck shadows.
+// 1.0 while the sun is down (there is no direct light left to shadow).
+float cloud_shadow_overcast(SkyDome dome) {
+    if (dome.sun_dir.y <= 0.0) {
+        return 1.0;
+    }
+    float coverage = clamp(dome.weather_aurora.z, 0.0, 1.0);
+    return exp(-CLOUD_OVERCAST_OPTICAL_DEPTH
+        * max(coverage - CLOUD_OVERCAST_ONSET, 0.0) / (1.0 - CLOUD_OVERCAST_ONSET));
+}
+
 // Direct-sun transmittance of the column above the deck-base point `base_xz`.
 float cloud_shadow_column(SkyDome dome, vec2 base_xz) {
     vec3 to_sun = dome.sun_dir.xyz;
@@ -60,10 +72,7 @@ float cloud_shadow_column(SkyDome dome, vec2 base_xz) {
     // with y = altitude, which is what the march's world-anchored lookups
     // see near the viewer.
     float coverage = clamp(dome.weather_aurora.z, 0.0, 1.0);
-    // Broad stratiform cover above the pleasant-weather baseline: uniform, so
-    // overcast-class weathers keep a dark ground under the local deck shadows.
-    transmittance *= exp(-CLOUD_OVERCAST_OPTICAL_DEPTH
-        * max(coverage - CLOUD_OVERCAST_ONSET, 0.0) / (1.0 - CLOUD_OVERCAST_ONSET));
+    transmittance *= cloud_shadow_overcast(dome);
     if (coverage > 0.001) {
         float step_length = (CLOUD_LAYER_TOP - CLOUD_LAYER_BOTTOM) / rise
             / float(CLOUD_SHADOW_STEPS);
@@ -100,7 +109,16 @@ void main() {
     // Texel centre, matching the bilinear lookup's sample positions.
     vec2 base_xz = centre
         + ((vec2(coord) + 0.5) / vec2(size) - 0.5) * CLOUD_SHADOW_MAP_EXTENT;
-    imageStore(cloudShadow, coord, vec4(cloud_shadow_column(dome, base_xz), 0.0, 0.0, 0.0));
+    // The outer tenth fades from the full column to the uniform overcast term
+    // alone: the map knows no local cloud beyond its edge, and the clamped
+    // sampler returns this texel there (#6310). The march is skipped where the
+    // weight is zero.
+    float uniform_term = cloud_shadow_overcast(dome);
+    float local_weight = cloud_shadow_edge_weight((vec2(coord) + 0.5) / vec2(size));
+    float shadow = local_weight > 0.0
+        ? mix(uniform_term, cloud_shadow_column(dome, base_xz), local_weight)
+        : uniform_term;
+    imageStore(cloudShadow, coord, vec4(shadow, 0.0, 0.0, 0.0));
 
     if (coord == ivec2(0)) {
         vec2 camera_base =

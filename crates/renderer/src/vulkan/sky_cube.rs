@@ -1321,6 +1321,31 @@ mod tests {
         assert!(bake.contains("max(coverage - CLOUD_OVERCAST_ONSET, 0.0) / (1.0 - CLOUD_OVERCAST_ONSET)"));
     }
 
+    /// #6310 — the map's edge fades to the UNIFORM overcast term, not to 1.0.
+    /// The sampler used to fade to 1.0, so below ~3 degrees of sun elevation
+    /// (the deck-base crossing leaves the map) overcast ground got the full
+    /// above-cloud sun while the froxels, which read the camera column, stayed
+    /// dark. The fade now lives in the bake, where coverage is known, and the
+    /// clamped sampler beyond the edge returns the uniform term.
+    #[test]
+    fn the_cloud_shadow_edge_fades_to_the_overcast_term_not_to_unshadowed() {
+        let bake = include_str!("../../shaders/cloud_shadow.comp");
+        let bindings = include_str!("../../shaders/include/bindings.glsl");
+        let addressing = include_str!("../../shaders/include/cloud_shadow.glsl");
+        assert!(
+            bake.contains("mix(uniform_term, cloud_shadow_column(dome, base_xz), local_weight)"),
+            "the bake must blend the outer tenth toward the uniform overcast term"
+        );
+        assert!(addressing.contains("float cloud_shadow_edge_weight(vec2 uv)"));
+        let lookup = &bindings[bindings.find("float exteriorCloudSunTransmittance").unwrap()..];
+        let lookup = &lookup[..lookup.find("\n}\n").unwrap()];
+        assert!(
+            !lookup.contains("mix(1.0,"),
+            "the sampler must not fade the map to 1.0: that drops the uniform overcast term"
+        );
+        assert!(lookup.contains("return textureLod(cloudShadowMap, uv, 0.0).r;"));
+    }
+
     /// The bake and every consumer address the map through one include, and
     /// the bake marches the sky's own deck — same column coverage, wind and
     /// world anchoring — so the shadows fall under the clouds drawn.

@@ -1527,6 +1527,10 @@ pub const CLOUD_SHADOW_MAP_SIZE: u32 = 512;
 /// direction at 125 m per texel, which the bilinear sample resolves into
 /// soft-edged shadows. Receivers beyond it take the edge texel.
 pub const CLOUD_SHADOW_MAP_EXTENT: f32 = 64000.0;
+/// Fraction of the map's width, measured in from each edge, over which the
+/// bake fades the local deck shadows out to the uniform overcast term (the
+/// map knows no local cloud beyond its edge).
+pub const CLOUD_SHADOW_EDGE_FADE: f32 = 0.1;
 /// Density samples per shadow column through the deck. The column is at most
 /// (top - bottom) / sin(elevation) long; 16 samples put a 3.5 km zenith column
 /// at 219 m per sample, finer than the 125 m texel's footprint can show only
@@ -2796,6 +2800,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float ATMOSPHERE_MIE_SCALE_HEIGHT),
     shader_define!(Float CLOUD_SHADOW_MAP_SIZE as f32),
     shader_define!(Float CLOUD_SHADOW_MAP_EXTENT),
+    shader_define!(Float CLOUD_SHADOW_EDGE_FADE),
     shader_define!(UintPlain CLOUD_SHADOW_STEPS),
     shader_define!(Float CLOUD_OVERCAST_ONSET),
     shader_define!(Float CLOUD_MOOD_CHROMA_WEIGHT),
