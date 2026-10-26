@@ -131,7 +131,7 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
 - WATAL: W0 and W1 are closed on FNV and Skyrim (2026-10-26); distant water is per
   cell (#5243). Calm water has wind-driven swell that shoals and breaks at shores,
   river currents follow the bed (`WaterBedField`); underwater shafts are a sun-ray
-  march, scene occluders do not cast them ([`watal.md`](docs/engine/watal.md)).
+  march with a screen-space occluder test ([`watal.md`](docs/engine/watal.md)).
 
 ### How to run a bench
 

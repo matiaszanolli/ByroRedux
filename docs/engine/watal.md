@@ -1091,9 +1091,13 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    perspective and follow the refracted sun direction — the screen-space streak
    fan it replaces could not. The camera's depth below the surface and the fog
    span reach the shader through `UnderwaterView.surface` into the reserved
-   `caustic_flags.zw` lanes. Not built: shafts cast by scene occluders (rocks,
-   hulls) — the march has no TLAS, only the surface itself modulates light — and
-   the focusing pattern is procedural, not the live wave field; its scales (70 /
+   `caustic_flags.zw` lanes. Scene occluders block the light through a
+   depth-buffer contact test (`underwaterSunVisibility`: four taps up the refracted
+   sun ray, blocked when the scene surface at the tap's pixel lies 6–160 BU in front
+   of it) — a screen-space term, so off-screen geometry casts nothing, and it is
+   *implemented but not yet shown in a capture*: the Lake Mead fixture has nothing
+   above the camera, and the captures confirm only that it does not darken open
+   shafts. There is no TLAS in composite, so it is not a trace. The focusing pattern is procedural, not the live wave field; its scales (70 /
    37 BU), sharpness (ridge^6) and the 0.12 energy factor are chosen values. Remaining: the §2 remainder (residual
    unnamed Skyrim DNAM tail bytes — xEdit dev-4.1.6 marks every still-
    unread offset unnamed, so nothing meaningful is left to decode there).

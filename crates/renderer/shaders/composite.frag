@@ -526,14 +526,38 @@ float underwaterSurfaceFocus(vec2 entry, float seconds) {
     return pow(ridge, 6.0) * 2.4;
 }
 
+// Screen-space visibility of the sun from `p` underwater: four taps up the
+// refracted sun ray (`toSun`, unit, pointing up) against the depth buffer. A
+// tap is blocked when the scene surface at its pixel lies just in front of it,
+// within a thin slab, so only geometry the ray really passes behind counts and
+// a rock merely nearer the camera than the sample casts nothing. Geometry that
+// is off screen cannot block; this is a contact-shadow term, not a trace.
+float underwaterSunVisibility(vec3 p, vec3 toSun, float sunPath, mat4 viewProj) {
+    float reach = min(sunPath, 900.0);
+    float visible = 1.0;
+    for (int i = 0; i < 4; ++i) {
+        float fraction = i == 0 ? 0.08 : (i == 1 ? 0.2 : (i == 2 ? 0.4 : 0.7));
+        vec4 clip = viewProj * vec4(p + toSun * (reach * fraction), 1.0);
+        if (clip.w <= 1.0e-3) continue;
+        vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) continue;
+        float scene = linearViewDepth(uv, texture(depthTex, uv).r);
+        float behind = clip.w - scene;
+        if (behind > 6.0 + 0.01 * clip.w && behind < 160.0) {
+            visible = 0.0;
+        }
+    }
+    return visible;
+}
+
 // Underwater god rays: a short ray march through the water column that
 // accumulates sun light scattered toward the camera. Each sample finds where
 // its (refracted) sun ray crossed the surface, takes the surface focusing
 // pattern there, and attenuates along the sun path and the view path, so the
 // light arrives as columns that follow the refracted sun direction through the
 // water. The refracted-sun, surface-height and fog-span inputs come from the
-// CPU submersion state (`caustic_flags.zw`); there is no occlusion by scene
-// geometry, only by the surface itself.
+// CPU submersion state (`caustic_flags.zw`). Scene geometry blocks the light
+// through `underwaterSunVisibility`, a depth-buffer contact test.
 vec3 underwaterGodRays(vec3 viewDir, vec3 sunDirection, float rayLength, float jitter) {
     float depthBelowSurface = params.caustic_flags.z;
     float span = max(params.caustic_flags.w, 1.0);
@@ -553,6 +577,8 @@ vec3 underwaterGodRays(vec3 viewDir, vec3 sunDirection, float rayLength, float j
     float cosine = dot(travel, -viewDir);
     float phase = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosine, 1.5);
 
+    mat4 viewProj = inverse(params.inv_view_proj);
+    vec3 toSun = -travel;
     const int steps = 24;
     float k = 2.0 / span;
     float dt = tMax / float(steps);
@@ -565,7 +591,8 @@ vec3 underwaterGodRays(vec3 viewDir, vec3 sunDirection, float rayLength, float j
         if (below <= 0.0) break;
         float sunPath = below / -travel.y;
         vec2 entry = p.xz - travel.xz * sunPath;
-        sum += underwaterSurfaceFocus(entry, seconds) * exp(-k * (t + sunPath)) * k * dt;
+        float focus = underwaterSurfaceFocus(entry, seconds) * exp(-k * (t + sunPath));
+        sum += focus * underwaterSunVisibility(p, toSun, sunPath, viewProj) * k * dt;
     }
     return vec3(sum * phase);
 }
