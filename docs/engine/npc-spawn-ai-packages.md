@@ -13,7 +13,7 @@ and console-walk systems registered beside them). This doc documents
 what's real, not what's planned.
 
 > **Currency note.** Verified against the tree as of 2026-07-15. One
-> stale comment found and fixed: `boot.rs`'s inline comment gating
+> stale comment found and fixed: `boot/`'s inline comment gating
 > `BYRO_SANDBOX_SIT` (and its runtime log message) still describes the
 > M42.0 float bug — "actors will float above seats until the sit-enter
 > transition lands" — but that transition landed in M42.1
@@ -126,7 +126,7 @@ Travel-, Follow-, Escort-, Guard-, or Patrol-type entry,
 
 ## 3. PACK record parsing
 
-`crates/plugin/src/esm/records/mod.rs:587` dispatches `b"PACK"` groups
+`crates/plugin/src/esm/records/dispatch_misc_gameplay_a.rs` dispatches `b"PACK"` groups
 to `parse_pack` (`crates/plugin/src/esm/records/misc/pack.rs:178`),
 populating `EsmIndex.packages: HashMap<u32, PackRecord>`. `PackRecord`
 (`pack.rs`) decodes four sub-records: `PKDT` (flags +
@@ -187,24 +187,16 @@ consumer, as do `PROCEDURE_ACCOMPANY = 7` (it runs on the Follow runtime),
 `PROCEDURE_USE_ITEM_AT = 8` (Eat's walk-and-sit runtime) and
 `PROCEDURE_FIND = 0` (`find_package_system`); the one other, CastMagic (11),
 is captured as a raw integer and dispatched nowhere - no FO3/FNV package uses
-it, so there is nothing to run. `active_package_is_sandbox`/
-`active_sandbox_location`, `active_package_is_wander`/
-`active_wander_location`, `active_package_is_travel`/
-`active_travel_location`, `active_package_is_follow`/
-`active_follow_target`, `active_package_is_escort`/
-`active_escort_target`/`active_escort_location`,
-`active_package_is_guard`/`active_guard_location`, and
-`active_package_is_patrol`/`active_patrol_location` are independent
-mirror groups — since an NPC's active package is always a single
-winning `PackRecord` (`active_package`'s `find`), the seven checks are
-naturally mutually exclusive per actor with no extra guard logic
-needed.
-
-> **Stale as of #2031.** The spawn path no longer calls any of those
-> fourteen selectors: it makes one `active_package()` resolve and hands
-> the winner to `AmbientBehavior::from_package`. They remain in
-> `pack.rs` with their tests, unused — tracked as #3042. This paragraph
-> describes the shape of the API, not the live wiring.
+it, so there is nothing to run. The per-procedure
+`active_package_is_*` / `active_*_location` / `active_*_target` selectors
+this section used to describe are gone: #2031 collapsed the spawn path onto
+a single `active_package()` resolve whose winner goes to
+`AmbientBehavior::from_package`, and #3042 deleted the unreachable
+wrappers. What remains is the test-only `active_package_is!` macro in
+`pack.rs`'s test module, which generates the seven `active_package_is_*`
+helpers over `active_package` + `PackRecord::is_*`; since an NPC's active
+package is always a single winning `PackRecord`, the seven checks are
+naturally mutually exclusive per actor with no extra guard logic needed.
 
 ## 5. Sandbox seating
 
@@ -215,9 +207,8 @@ Wired at `npc_spawn/ai_package.rs`: one `active_package()` resolve
 `SandboxBehavior { search_radius }`
 (`crates/core/src/ecs/components/sandbox.rs`) using the active
 package's authored `PLDT.radius` when present. (The per-procedure
-`active_package_is_sandbox` / `active_sandbox_location` selectors this
-section used to describe were replaced by that single resolve in #2031
-and are dead code tracked as #3042.) At runtime,
+sandbox selectors this section used to describe were replaced by that
+single resolve in #2031 and deleted in #3042.) At runtime,
 `sandbox_seat_system` (`byroredux/src/systems/sandbox.rs`) — **live by
 default since M42.10** (`BYRO_NO_AI_LOCOMOTION=1` opts out;
 `byroredux/src/boot/schedule/post_update.rs`) —
@@ -261,9 +252,8 @@ teleports an actor onto a seat rather than walking there. Wired at
 resolve picks the winning PACK, and `AmbientBehavior::from_package`
 turns it into the `WanderBehavior` insert
 (`crates/core/src/ecs/components/wander.rs`). The per-procedure
-`active_package_is_wander` / `active_wander_location` selectors this
-section used to describe were replaced by that single resolve in #2031
-and are dead code tracked as #3042; `npc_spawn.rs` itself was split
+wander selectors this section used to describe were replaced by that
+single resolve in #2031 and deleted in #3042; `npc_spawn.rs` itself was split
 into `npc_spawn/`.
 
 `wander_system` (`byroredux/src/systems/wander.rs`, live by default
@@ -301,9 +291,8 @@ alongside Sandbox/Wander: the same `active_package()` resolve, gated
 on `PackRecord::is_travel()`, feeds `AmbientBehavior::from_package`'s
 Travel arm, which inserts `TravelBehavior`
 (`crates/core/src/ecs/components/travel.rs`) — the per-procedure
-`active_package_is_travel` / `active_travel_location` selectors this
-section used to describe were replaced by that resolve in #2031 and
-are dead code tracked as #3042 — reusing the same
+travel selectors this section used to describe were replaced by that
+resolve in #2031 and deleted in #3042 — reusing the same
 `game_hour`/`condition_met` closure.
 
 Travel differs from Wander in what it's *for*: Wander repeats
@@ -371,9 +360,8 @@ procedure to track a **live** target rather than a fixed point. Wired at
 `active_package()` resolve, gated on `PackRecord::is_follow()`, feeds
 `AmbientBehavior::from_package`'s Follow arm, which inserts
 `FollowBehavior` (`crates/core/src/ecs/components/follow.rs`) — the
-per-procedure `active_package_is_follow` / `active_follow_target`
-selectors this section used to describe were replaced by that resolve
-in #2031 and are dead code tracked as #3042 — capturing PTDT's target
+per-procedure follow selectors this section used to describe were
+replaced by that resolve in #2031 and deleted in #3042 — capturing PTDT's target
 FormID (only for `SpecificReference`/`ObjectId`) and its
 `count_or_distance` field (interpreted here as a stand-off distance).
 `follow_system` (`byroredux/src/systems/follow.rs`, live by default
@@ -407,10 +395,9 @@ Travel does), both landing on one `EscortBehavior`
 `npc_spawn/ai_package.rs` alongside Sandbox/Wander/Travel/Follow: the
 same `active_package()` resolve, gated on `PackRecord::is_escort()`,
 feeds `AmbientBehavior::from_package`'s Escort arm and inserts the
-component — the per-procedure `active_package_is_escort` /
-`active_escort_target` / `active_escort_location` selectors this
-section used to describe were replaced by that resolve in #2031 and
-are dead code tracked as #3042 — reusing the same
+component — the per-procedure
+escort selectors this section used to describe were replaced by that
+resolve in #2031 and deleted in #3042 — reusing the same
 `game_hour`/`condition_met` closure.
 
 `escort_system` (`byroredux/src/systems/escort.rs`, live by default
@@ -457,9 +444,8 @@ Sandbox/Wander/Travel/Follow/Escort: the same `active_package()`
 resolve, gated on `PackRecord::is_guard()`, feeds
 `AmbientBehavior::from_package`'s Guard arm and inserts
 `GuardBehavior` (`crates/core/src/ecs/components/guard.rs`) — the
-per-procedure `active_package_is_guard` / `active_guard_location`
-selectors this section used to describe were replaced by that resolve
-in #2031 and are dead code tracked as #3042 — reusing the same
+per-procedure guard selectors this section used to describe were
+replaced by that resolve in #2031 and deleted in #3042 — reusing the same
 `game_hour`/`condition_met` closure.
 
 `guard_system` (`byroredux/src/systems/guard.rs`, live by default
