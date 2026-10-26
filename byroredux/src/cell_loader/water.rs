@@ -165,6 +165,8 @@ where
 
 /// LAND is 32 segments (33 vertices) per exterior cell side.
 const LAND_BED_SEGMENTS: usize = 32;
+/// How close to the plane's `±1` edge a normalized vertex counts as on it.
+const BORDER_EPSILON: f32 = 1.0e-4;
 
 /// The bed under a water plane, sampled from the cell's LAND heightfield.
 ///
@@ -242,7 +244,20 @@ fn build_full_detail_water_grid(
     let bed = terrain.and_then(|land| bed_field_from_land(land, water_height_zup, [-1.0, -1.0], 1.0));
     let vertex = |x: f32, z: f32| Vertex {
         position: [x, 0.0, z],
-        color: bed_vertex_color(bed.as_ref().and_then(|field| field.sample(x, z))),
+        color: bed_vertex_color(bed.as_ref().and_then(|field| {
+            let mut sample = field.sample(x, z)?;
+            // A vertex on the plane's edge is shared with the neighbouring
+            // cell's mesh, and each cell derives its shoreward direction from
+            // its own side of the edge, so the two disagree. The swell turns
+            // toward that direction, which would displace the shared vertex
+            // differently on each side and open a hairline crack along the
+            // cell border. The depth is the same on both sides (LAND edges
+            // match); only the direction is dropped there.
+            if x.abs() >= 1.0 - BORDER_EPSILON || z.abs() >= 1.0 - BORDER_EPSILON {
+                sample.uphill = [0.0, 0.0];
+            }
+            Some(sample)
+        })),
         normal: [0.0, 1.0, 0.0],
         // UVs are world-distance based so adjacent cells keep the same
         // normal-map derivative and wave phase.
@@ -1955,9 +1970,22 @@ mod tests {
         assert!(!vertices.is_empty());
         for vertex in &vertices {
             assert_eq!(vertex.color[3], WATER_BED_VALID_ALPHA, "every wet vertex carries bed data");
-            // The beach rises to the west, so the shoreward direction is -X.
-            assert!(vertex.color[1] < 0.01, "uphill.x -1 -> 0.0, got {:?}", vertex.color);
-            assert!((vertex.color[2] - 0.5).abs() < 1.0e-3, "uphill.z is 0 -> 0.5");
+            let on_edge = vertex.position[0].abs() >= 1.0 - BORDER_EPSILON
+                || vertex.position[2].abs() >= 1.0 - BORDER_EPSILON;
+            if on_edge {
+                // Shared with the neighbouring cell's mesh, which would derive
+                // a different direction: dropped so both sides displace the
+                // swell identically and no crack opens along the border.
+                assert!(
+                    (vertex.color[1] - 0.5).abs() < 1.0e-3 && (vertex.color[2] - 0.5).abs() < 1.0e-3,
+                    "an edge vertex carries no shoreward direction, got {:?}",
+                    vertex.color
+                );
+            } else {
+                // The beach rises to the west, so the shoreward direction is -X.
+                assert!(vertex.color[1] < 0.01, "uphill.x -1 -> 0.0, got {:?}", vertex.color);
+                assert!((vertex.color[2] - 0.5).abs() < 1.0e-3, "uphill.z is 0 -> 0.5");
+            }
             // Depth below the surface is the LAND drop, linear in X:
             // LAND col = (x + 1) * 16, depth = -(200 - col * 18.75).
             let col = (vertex.position[0] + 1.0) * 16.0;
@@ -1971,6 +1999,38 @@ mod tests {
         }
         // The waterline vertices sit at zero depth.
         assert!(vertices.iter().any(|v| v.color[0] < 0.01));
+    }
+
+    /// Two neighbouring cells over one continuous beach bake byte-identical
+    /// colours on the vertices they share: the east edge of the west cell and
+    /// the west edge of the east cell.
+    #[test]
+    fn neighbouring_cells_bake_identical_colour_on_a_shared_edge() {
+        let west = beach_land();
+        // The east cell continues the beach: its west column is the west
+        // cell's east column.
+        let mut east = beach_land();
+        for row in 0..33 {
+            for col in 0..33 {
+                // Same shared edge, but the east side tilts along Z as it
+                // leaves it, so its gradient differs from the west cell's.
+                east.heights[row * 33 + col] = west.heights[row * 33 + 32]
+                    - col as f32 * (600.0 / 32.0)
+                    + col as f32 * row as f32 * 3.0;
+            }
+        }
+        let (wv, _) = build_full_detail_water_grid(2048.0, Some(&west), 0.0);
+        let (ev, _) = build_full_detail_water_grid(2048.0, Some(&east), 0.0);
+        let mut shared = 0;
+        for a in wv.iter().filter(|v| v.position[0] >= 1.0 - BORDER_EPSILON) {
+            if let Some(b) = ev.iter().find(|v| {
+                v.position[0] <= -1.0 + BORDER_EPSILON && (v.position[2] - a.position[2]).abs() < 1.0e-6
+            }) {
+                assert_eq!(a.color, b.color, "shared edge vertex at z={}", a.position[2]);
+                shared += 1;
+            }
+        }
+        assert!(shared > 8, "the cells must actually share edge vertices, found {shared}");
     }
 
     #[test]

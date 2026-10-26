@@ -698,6 +698,18 @@ cell (Tamriel 13,7) at sea level facing both shores after the 128-unit-lattice
 water mesh (`4a56fd9c7`) and the LOD skirts: both island bases meet the water
 along the terrain's own contour with breaker foam, no ruled line.
 
+**Hairline cracks along cell borders at grazing angles (2026-10-26).** Thin
+light lines ran across open water along the border between two cells' water
+meshes. Each cell bakes its own shoreward direction from its own side of the
+edge (the bilinear bed gradient picks a different quad on each side), and the
+swell turns toward that direction, so the shared border vertex was displaced
+differently by the two meshes wherever the bed is shallower than the
+refraction depth. LAND edge heights match exactly (checked over 81 Skyrim
+cell pairs), so only the direction disagreed. Vertices on the plane's edge
+now carry no shoreward direction (`BORDER_EPSILON` in `cell_loader/water.rs`);
+`neighbouring_cells_bake_identical_colour_on_a_shared_edge` fails without it.
+The water-normal view at the same pose lost the diagonal and the dash row.
+
 **Riverwood bank wedge was a VFX sheet, not water (2026-10-26).** The character
 capsule stuck on the Riverwood riverbank because the missing-collision fallback
 built a solid `Fixed TriMesh` from `Effects\FXrapidsBig01.nif` (two alpha-blended
