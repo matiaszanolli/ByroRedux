@@ -1593,9 +1593,10 @@ state:
   calls that undetermined). A race's entries are its own, its `SRAC` template's and those of races
   `SADD`-additive onto it (`RaceRecord::subgraph_data`, xEdit `wbRACE`). Vanilla check
   (`vanilla_fo4_archetype_npcs_select_their_entries`): 710 of the 726 archetype-authoring `NPC_`s
-  select an MT entry, and all 710 name their own archetype. What is **not** built is a *running* actor
-  behavior graph (variables, blends and events of `MTBehavior` are not evaluated), but its *start* is data and
-  the archetype is visible on screen through it. Fallout 4's HKX files are Havok 2014 packfiles
+  select an MT entry, and all 710 name their own archetype. The actor's graph itself runs (variables, blends and
+  events of `MTBehavior` are evaluated; see the actor-graph paragraphs below). What is **not** built is the pose
+  modifiers (look-at, twist, foot IK, ragdoll, jiggle) and the modifiers whose formula the files do not give
+  (`crates/scripting/src/animation_modifiers.rs`), and the archetype is visible on screen through the running graph. Fallout 4's HKX files are Havok 2014 packfiles
   (file version 11, a predicate area before the section table; `byroredux-hkx` reads them: all 328
   behavior graphs decode with `LAYOUT_2014`, 13,989 of 13,990 clips and all 121 skeletons; the one
   clip left is a bare `hkaAnimationContainer`. 856 of those clips are `hkaLosslessCompressedAnimation`
@@ -2283,7 +2284,7 @@ named by aligning each script's `SCTX` source with its compiled statements
 rule the getters follow: an ObScript getter's id is `0x1000` plus its CTDA
 function index (`GetDead` 46 = `0x102e`, `GetInCell` 67 = `0x1043`,
 `GetFactionRank` 73 = `0x1049`, `GetQuestCompleted` 546 = `0x1222`), the same
-in Oblivion, FO3 and FNV. So `QuestCommandHost` answers an allow-listed set of
+in Oblivion, FO3 and FNV. So `ObScriptCommandHost` answers an allow-listed set of
 getters through `condition::evaluate_script_getter` rather than carrying a
 second copy of each; a reference that is not loaded, a null form argument, or a
 function the evaluator cannot read in this game (`GetActorValue` in a *CTDA*, whose
