@@ -636,10 +636,10 @@ pub const WATER_WEATHER_SCROLL_WEIGHT_C: f32 = 0.45;
 // drifts with the weather wind: a floor for a still pond and a ceiling for the
 // wind field's maximum (`MAX_WIND_SPEED`). 70 world units = 1 m.
 
-/// Pattern speed of wind-driven calm water in dead calm, world units/s (2 cm/s).
-pub const WATER_CALM_DRIFT_MIN_BU_PER_S: f32 = 1.4;
-/// Pattern speed at the wind field's maximum, world units/s (25 cm/s).
-pub const WATER_CALM_DRIFT_MAX_BU_PER_S: f32 = 17.5;
+/// Pattern speed of wind-driven calm water in dead calm, world units/s (3 cm/s).
+pub const WATER_CALM_DRIFT_MIN_BU_PER_S: f32 = 2.1;
+/// Pattern speed at the wind field's maximum, world units/s (37.5 cm/s).
+pub const WATER_CALM_DRIFT_MAX_BU_PER_S: f32 = 26.25;
 /// Layer B's share of the calm drift (layer A takes it whole).
 pub const WATER_CALM_DRIFT_WEIGHT_B: f32 = 0.8;
 /// Layer C's share of the calm drift.

@@ -618,9 +618,10 @@ wind_driven` — set at the translate boundary for `Calm` water and for a `River
 whose current is at or below `WaterFlow::SPEED_MIN` (placeholder motion on
 still water: Skyrim's `DefaultWater` lakes, the unauthored defaults) — now keeps
 its authored scroll *heading* but takes its *rate* from the weather wind,
-`WATER_CALM_DRIFT_MIN/MAX_BU_PER_S` (1.4 to 17.5 BU/s, 2 to 25 cm/s) across
-the wind field's range. Every lake fixture now reads 0.02-0.05 m/s at the
-fixture wind; rivers with an authored current keep their flow-driven scroll.
+`WATER_CALM_DRIFT_MIN/MAX_BU_PER_S` (2.1 to 26.25 BU/s, 3 to 37.5 cm/s) across
+the wind field's range (first set at 1.4 to 17.5; the user asked for 50% more
+speed after seeing it). Every lake fixture reads 0.03-0.08 m/s at the fixture
+wind; rivers with an authored current keep their flow-driven scroll.
 Both the renderer and the CPU crest sampler read `wave_scrolls`, so buoyancy
 follows the slower crest. The numbers are a calibration chosen with the user,
 not an authored value; the constants are in `components/water.rs`. The textured
