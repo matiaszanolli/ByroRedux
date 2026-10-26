@@ -715,8 +715,12 @@ view (camera `-33024 1060 64640`, yaw 0, pitch -6; floor point near
 `-31256, -58501`) is also the caustic deposit — it vanishes with the deposit
 disabled, and survives the shallow fade and a composite-side cap of 4 suns on the
 water accumulator (tried and reverted: no visible effect). It is not foam, glint,
-reflection, a placed object (none within 500 BU), or a cell-border crack. Not yet
-explained; likely a many-to-one floor mapping along a static edge.
+reflection, a placed object (none within 500 BU), or a cell-border crack — it
+survives skipping every deposit from fragments within 24 BU of a 4096 border (that
+test instead left a dark diagonal where the border's own deposits had been, which
+confirms the deposit lands at the sun-refracted image of its source). Not yet
+explained; likely a many-to-one floor mapping along a static edge. Next bisect:
+restrict deposits by source screen region, or by the floor hit's instance index.
 
 **Lake shores faded to a solid white strip instead of merging with the land
 (2026-10-26).** Two shore foam terms (the contact ray and the breaker band) both
