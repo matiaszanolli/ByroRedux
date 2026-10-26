@@ -593,6 +593,19 @@ integer PCG hash (`pcgHash`), the tile grid is gone on Oblivion, FO3 and FNV
 `water_noise_hash_is_integer_exact_and_rivers_have_no_streak_foam` pins it. The
 white crescent noted alongside it is a separate, still-open item.
 
+**Terrain through water is not a ray-hit defect (2026-10-26).** The "refraction
+hits shade terrain with the base BTXT only" item (`ray_hit.glsl` deliberately
+does not port splat blending) is real in the code but has no visible effect at
+any of the five water fixtures: a probe that paints every LAND hit in
+`traceWaterRay` magenta found 0 of 921 600 pixels on Skyrim's White River pose
+and 15 on FNV Lake Mead, so the lake bed seen through the surface is the raster
+scene, not a ray hit. A splat-blending port into the water ray (the blend
+helpers are shared: `byroTerrainSplatAlbedo`, `byroTerrainHeightBlend`, the
+vertex lanes at `VERTEX_SPLAT0/1_OFFSET_FLOATS`) was written and reverted
+unshipped because it could not be exercised on shipped content. Revisit it if a
+pose is found where a water ray does land on terrain (a reflection of far land
+at a grazing angle is the likely one).
+
 **Regression guard, not a remaining fragility:** the procedural-noise hash
 bands past ~176k world units (#1502) are fixed — `sampleScrollingNormal` and
 `foamFlowStreaks` both subtract `originOffset` before hashing, rebased twice
