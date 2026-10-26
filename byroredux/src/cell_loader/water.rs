@@ -226,7 +226,16 @@ fn build_full_detail_water_grid(
     terrain: Option<&esm::cell::LandscapeData>,
     water_height_zup: f32,
 ) -> (Vec<Vertex>, Vec<u32>) {
-    let segments = FULL_DETAIL_WATER_GRID_SEGMENTS;
+    // Over LAND the mesh follows LAND's own lattice (128 units): the waterline
+    // is clipped against the same heights the terrain mesh is built from, and
+    // at the old 256-unit grid it cut across every sand ridge and rock between
+    // two samples as one straight edge (visible as a stepped, ruled shoreline
+    // against an island). Without LAND (interiors) the coarse grid is enough.
+    let segments = if terrain.is_some() {
+        LAND_BED_SEGMENTS
+    } else {
+        FULL_DETAIL_WATER_GRID_SEGMENTS
+    };
     let side = segments + 1;
     // The bed in the plane's own normalized coordinates (the mesh is a unit
     // square scaled by `half_extent`), baked into each vertex's colour.
@@ -2008,7 +2017,7 @@ mod tests {
         assert!(!indices.is_empty());
         assert!(vertices.iter().any(|vertex| {
             (vertex.position[0] + 1.0).abs() < 1.0e-6
-                && (vertex.position[2] - 0.9375).abs() < 1.0e-6
+                && (vertex.position[2] - 0.96875).abs() < 1.0e-6
         }));
         assert!(vertices.iter().all(|vertex| {
             vertex.position[0] >= -1.0
