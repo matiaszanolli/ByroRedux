@@ -1953,7 +1953,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct GpuGroundCoverBlade",
             NO_ALIASES,
         ),
-        // #4849 — neither side pads (four vec4 + one uvec4, no `pad*`), so the
+        // #4849 — neither side pads (five vec4, no `pad*`), so the
         // field-for-field comparator applies as it does to the blade record.
         (
             "GroundCoverSpecies",

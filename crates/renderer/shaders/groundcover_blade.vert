@@ -236,6 +236,30 @@ float gcSeedStream(uint seed, uint stream) {
     return float(h >> 8) * (1.0 / 16777216.0);
 }
 
+/// One blade's length (#6201): log-normal with the species' average length and
+/// coefficient of variation, clamped to its `sizeRange.xy`.
+///
+/// For mean `m` and CV `c`: `s2 = ln(1 + c^2)`, `mu = ln(m) - s2/2`, so the
+/// untruncated draw has mean `m` and CV `c`. The normal variate is Box–Muller
+/// over two independent seed streams. A species with no mean (or a zero spread)
+/// keeps the uniform draw it had before, so a record that never set the lanes
+/// is unchanged. The distribution and its parameters are cited in
+/// `docs/engine/exal-groundcover.md` §12.16.
+float byroGcBladeLength(GroundCoverSpecies sp, uint seed) {
+    float lo = sp.sizeRange.x;
+    float hi = sp.sizeRange.y;
+    float mean = sp.bladeLength.x;
+    float cv = sp.bladeLength.y;
+    float u0 = gcSeedStream(seed, 0u);
+    if (mean <= 0.0 || cv <= 0.0) {
+        return mix(lo, hi, u0);
+    }
+    float s2 = log(1.0 + cv * cv);
+    float radius = sqrt(-2.0 * log(max(u0, 1.0e-6)));
+    float z = radius * cos(GROUNDCOVER_TWO_PI * gcSeedStream(seed, 13u));
+    return clamp(exp(log(mean) - 0.5 * s2 + sqrt(s2) * z), lo, hi);
+}
+
 vec3 byroGcWindBend(
     vec3 base,
     vec3 facing,
@@ -366,8 +390,7 @@ void main() {
     float clumpHeight = 1.0 + GROUNDCOVER_CLUMP_HEIGHT_VARIATION
         * (2.0 * gcSeedStream(clumpSeed, 11u) - 1.0);
     vClumpTone = gcSeedStream(clumpSeed, 12u);
-    float height = mix(sp.sizeRange.x, sp.sizeRange.y, gcSeedStream(seed, 0u))
-        * clumpHeight * chunk.entryProgress;
+    float height = byroGcBladeLength(sp, seed) * clumpHeight * chunk.entryProgress;
     float width = mix(sp.sizeRange.z, sp.sizeRange.w, gcSeedStream(seed, 1u));
     float stiffness = clamp(sp.baseColour.a, 0.0, 1.0);
 

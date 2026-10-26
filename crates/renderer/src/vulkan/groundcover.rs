@@ -156,12 +156,13 @@ pub struct GpuGroundCoverSpecies {
     pub tip_colour: [f32; 4],
     /// Transmission colour RGB (§12.2) + sheen amount (§12.6). #4057.
     pub transmission_sheen: [f32; 4],
-    /// Legacy Tier-2 clump-card atlas handle in x — unused since af8323881
-    /// replaced the card tier with the geomorphing segment ladder (no
-    /// ground-cover shader samples it; kept for the std430 layout).
-    pub card_atlas: [u32; 4],
+    /// Average blade length (x) and its per-blade coefficient of variation (y),
+    /// #6201; zw are reserved. Replaces the legacy clump-card atlas handle,
+    /// which no ground-cover shader sampled after af8323881 removed the card
+    /// tier.
+    pub blade_length: [f32; 4],
 }
-// SAFETY: 64 bytes of `f32` plus one fully initialised `uvec4`, no padding.
+// SAFETY: five `[f32; 4]`, 80 bytes, no padding.
 unsafe impl NoUninit for GpuGroundCoverSpecies {}
 
 /// One accepted blade. Mirrors `GroundCoverBlade` in the shared GLSL header.

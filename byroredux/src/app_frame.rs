@@ -1113,7 +1113,6 @@ fn collect_and_prepare_groundcover(
         crate::render::groundcover::collect_groundcover_species(
             world,
             dimmer,
-            (*gc.detail_atlas).map_or(0, |(handle, _)| handle),
             gc.species,
         );
         // §7 — built from the same palette, in the same order and

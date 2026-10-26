@@ -121,7 +121,8 @@ uint byroGcBladeSpecies(GroundCoverBlade blade) {
 /// GroundCoverSpecies`'s *rendering* fields; the selection fields (climate
 /// weights) are resolved host-side and never reach the GPU.
 struct GroundCoverSpecies {
-    /// min/max blade height and width, Gamebryo units.
+    /// min/max blade height (the clamp on the length draw) and width,
+    /// Gamebryo units.
     vec4 sizeRange;
     /// Base colour (rgb) + bend stiffness (a).
     vec4 baseColour;
@@ -134,9 +135,10 @@ struct GroundCoverSpecies {
     /// and an invented scalar in a canonical type is how a placeholder becomes
     /// the value nobody revisits.
     vec4 transmissionSheen;
-    /// x = the legacy clump-card atlas handle — unused since af8323881
-    /// removed the card tier; kept for the std430 layout.
-    uvec4 cardAtlas;
+    /// x = average blade length, y = its per-blade coefficient of variation
+    /// (#6201, `GroundCoverSpecies::blade_length_*`); zw reserved. The draw is
+    /// log-normal around x, clamped to `sizeRange.xy`.
+    vec4 bladeLength;
 };
 
 #endif // BYRO_GROUNDCOVER_SCENE_GLSL

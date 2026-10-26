@@ -912,7 +912,6 @@ fn chunk_seed(base_xz: [f32; 2]) -> u32 {
 pub(crate) fn collect_groundcover_species(
     world: &World,
     dimmer: GroundCoverDimmer,
-    card_atlas_handle: u32,
     out: &mut Vec<GpuGroundCoverSpecies>,
 ) {
     use byroredux_core::ecs::components::groundcover::GroundCoverSpecies;
@@ -955,7 +954,7 @@ pub(crate) fn collect_groundcover_species(
                 // also flatten the silvering that overcast light produces.
                 s.sheen,
             ],
-            card_atlas: [card_atlas_handle, 0, 0, 0],
+            blade_length: [s.blade_length_mean, s.blade_length_cv, 0.0, 0.0],
         });
     }
 }
@@ -1918,7 +1917,7 @@ mod tests {
     fn species_collection_is_never_empty() {
         let world = World::new();
         let mut out = Vec::new();
-        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, 0, &mut out);
+        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, &mut out);
         assert_eq!(out.len(), 1);
         assert!(out[0].size_range[1] >= out[0].size_range[0]);
     }
@@ -1969,8 +1968,8 @@ mod tests {
         let world = World::new();
         let mut neutral = Vec::new();
         let mut dimmed = Vec::new();
-        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, 0, &mut neutral);
-        collect_groundcover_species(&world, GroundCoverDimmer(0.5), 0, &mut dimmed);
+        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, &mut neutral);
+        collect_groundcover_species(&world, GroundCoverDimmer(0.5), &mut dimmed);
         for c in 0..3 {
             assert!((dimmed[0].base_colour[c] - neutral[0].base_colour[c] * 0.5).abs() < 1.0e-6);
             assert!((dimmed[0].tip_colour[c] - neutral[0].tip_colour[c] * 0.5).abs() < 1.0e-6);
@@ -1989,12 +1988,16 @@ mod tests {
         );
     }
 
+    /// #6201 — the species' average blade length and spread reach the GPU
+    /// record, in the lanes the blade shader reads.
     #[test]
-    fn species_collection_carries_the_palette_card_atlas_handle() {
+    fn species_collection_carries_the_blade_length_distribution() {
         let world = World::new();
         let mut out = Vec::new();
-        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, 37, &mut out);
-        assert!(out.iter().all(|species| species.card_atlas == [37, 0, 0, 0]));
+        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, &mut out);
+        let species = byroredux_core::ecs::components::groundcover::GroundCoverSpecies::DEFAULT_TEMPERATE;
+        assert!(out.iter().all(|gpu| gpu.blade_length
+            == [species.blade_length_mean, species.blade_length_cv, 0.0, 0.0]));
     }
 
     /// §12.3's per-species ground-coupling weight must reach the GPU record
@@ -2006,7 +2009,7 @@ mod tests {
     fn species_table_carries_the_ground_coupling_weight() {
         let world = World::new();
         let mut out = Vec::new();
-        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, 0, &mut out);
+        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, &mut out);
         let fallback = byroredux_core::ecs::components::groundcover::GroundCoverSpecies::DEFAULT_TEMPERATE;
         assert!((out[0].tip_colour[3] - fallback.ground_coupling).abs() < 1.0e-6);
 
@@ -2020,7 +2023,7 @@ mod tests {
             },
         );
         let mut out = Vec::new();
-        collect_groundcover_species(&palette_world, GroundCoverDimmer(0.5), 0, &mut out);
+        collect_groundcover_species(&palette_world, GroundCoverDimmer(0.5), &mut out);
         assert!(
             (out[0].tip_colour[3] - 0.7).abs() < 1.0e-6,
             "an authored coupling weight must survive the dimmer unchanged"

@@ -30,6 +30,65 @@ fn malformed_species_are_rejected() {
     assert!(!inf_colour.is_well_formed());
 }
 
+/// #6201 — the built-in species' mean and spread are the first two moments of
+/// the uniform `height_range` draw they replace, not new numbers.
+#[test]
+fn default_blade_length_matches_the_moments_of_the_uniform_it_replaced() {
+    let (mean, cv) = moment_matched_length((9.0, 21.0));
+    assert_eq!(mean, 15.0);
+    // σ of U(9, 21) is 12/√12 = 3.4641.
+    assert!((cv * mean - 12.0 / 12f32.sqrt()).abs() < 1e-4, "cv {cv}");
+    for species in [GroundCoverSpecies::DEFAULT_TEMPERATE, GroundCoverSpecies::DEFAULT_ARID] {
+        let (mean, cv) = moment_matched_length(species.height_range);
+        assert_eq!((species.blade_length_mean, species.blade_length_cv), (mean, cv));
+    }
+}
+
+#[test]
+fn a_blade_length_mean_outside_the_clamp_or_a_negative_spread_is_rejected() {
+    let mut outside = GroundCoverSpecies::DEFAULT_TEMPERATE;
+    outside.blade_length_mean = outside.height_range.1 + 1.0;
+    assert!(!outside.is_well_formed());
+
+    let mut negative = GroundCoverSpecies::DEFAULT_TEMPERATE;
+    negative.blade_length_cv = -0.1;
+    assert!(!negative.is_well_formed());
+
+    let mut nan = GroundCoverSpecies::DEFAULT_TEMPERATE;
+    nan.blade_length_cv = f32::NAN;
+    assert!(!nan.is_well_formed());
+}
+
+/// #6201 — a reference of `byroGcBladeLength` (`groundcover_blade.vert`): the
+/// log-normal parameters it derives from a mean and CV give back that mean and
+/// CV, with the right skew. The GLSL and this share the formula, not the code.
+#[test]
+fn the_lognormal_blade_length_reproduces_its_mean_and_cv_inside_the_clamp() {
+    let species = GroundCoverSpecies::DEFAULT_TEMPERATE;
+    let (m, c) = (species.blade_length_mean, species.blade_length_cv);
+    let s2 = (1.0 + c * c).ln();
+    let draw = |u0: f32, u1: f32| {
+        let z = (-2.0 * u0.max(1.0e-6).ln()).sqrt() * (std::f32::consts::TAU * u1).cos();
+        ((m.ln() - 0.5 * s2) + s2.sqrt() * z).exp()
+    };
+    // A fixed low-discrepancy grid over the two streams, no RNG.
+    let n = 400usize;
+    let mut raw = Vec::with_capacity(n * n);
+    for i in 0..n {
+        for j in 0..n {
+            raw.push(draw((i as f32 + 0.5) / n as f32, (j as f32 + 0.5) / n as f32));
+        }
+    }
+    let count = raw.len() as f32;
+    let mean = raw.iter().sum::<f32>() / count;
+    let var = raw.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / count;
+    assert!((mean / m - 1.0).abs() < 0.01, "mean {mean} vs {m}");
+    assert!((var.sqrt() / mean / c - 1.0).abs() < 0.03, "cv {}", var.sqrt() / mean);
+    // Right-skewed: the mean is above the median.
+    raw.sort_by(f32::total_cmp);
+    assert!(mean > raw[raw.len() / 2]);
+}
+
 #[test]
 fn palette_is_never_empty() {
     // The scatter pass must not need an empty-palette branch; getting that

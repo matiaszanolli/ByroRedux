@@ -491,7 +491,9 @@ point, the EXAL translate boundary, and only to populate the **species palette**
 
 ```
 GroundCoverSpecies {
-    height_range:    (f32, f32),
+    height_range:    (f32, f32),  // clamp on the per-blade length draw
+    blade_length_mean: f32,       // average blade length, §12.16
+    blade_length_cv:   f32,       // per-blade spread (σ/mean), §12.16
     width_range:     (f32, f32),
     colour_gradient: [Rgb; 2],   // base → tip
     bend_stiffness:  f32,
@@ -1966,6 +1968,50 @@ has been taken: the geomorph is pinned by tests (endpoints coincide with the
 next tier's polyline; coverage conserved) but not eyeballed in motion, and the
 fixed-dt dolly bench mode cannot be viewed (exposure veil above).
 
+### 12.16 Average blade length with per-blade variation (#6201, 2026-10-25)
+
+**Request** (Matías, 2026-10-20): "an average length and variable height per
+blade". Each species now carries `blade_length_mean` (Gamebryo units) and
+`blade_length_cv` (σ / mean), and `byroGcBladeLength`
+(`groundcover_blade.vert`) draws each blade's length from a **log-normal**
+with that mean and CV, clamped to the species' `height_range`. The clump scale
+(`GROUNDCOVER_CLUMP_HEIGHT_VARIATION`) and the entry fade multiply on top,
+unchanged. A species whose lanes are zero keeps the old uniform draw. For mean
+`m` and CV `c`: `s² = ln(1 + c²)`, `μ = ln m − s²/2`, `length = exp(μ + s·z)`
+with `z` a Box–Muller normal over two independent seed streams (0 and 13).
+
+**What is sourced and what is not.**
+
+- *That blade length varies within a species, and with which leaf is measured:*
+  Barre, Turner & Escobar-Gutiérrez 2015 (§13) — "considerable variation in
+  leaf length exists within grass species", it must be compared "at the same
+  leaf rank" and growth stage, and it responds to environment and cutting
+  regime. This is why a single `[min, max]` uniform was the wrong abstraction:
+  the figure that matters is a *typical* blade, with the extremes as limits.
+  The paper's Fig. 3 gives perennial-ryegrass adult lamina length means of about
+  85–117 mm across selected populations (C0 ≈ 100 mm), which is the only
+  measured length in it.
+- *The shape:* a skewed, positive distribution. The one source on a
+  distribution is the kikuyu grazing study in §13, whose abstract reports sward
+  *height* frequency best fitted by a log-normal. That is sward height under
+  grazing, not individual blade length, and the paper itself was not retrieved
+  (the figure is from its abstract as seen in a search result), so this is the
+  nearest cited shape, not a measurement of blades.
+- *The numbers:* **not sourced.** Barre et al. publish no within-sward spread
+  and no CV. The built-in species therefore carry `moment_matched_length` of
+  their existing `height_range`: mean at the midpoint, `σ = (max − min)/√12`,
+  i.e. the first two moments of the uniform draw this replaces (temperate:
+  15 units, CV 0.231; arid: 9.75 units, CV 0.222). Only the shape changes, no
+  number is invented, and the placeholder status is recorded on the field's doc
+  comment. Replacing it needs a measured within-sward length spread for a
+  species the palette stands for; the rangeland study on ryegrass tiller-length
+  CVs seen in the same search was not retrievable.
+
+**Not done.** A separate standing height after bend or bow (length decoupled
+from height) — the request's second reading, not the one chosen. The
+before/after capture at the Whiterun tundra position and the review of it are
+Matías's, per the issue.
+
 ## 13. References
 
 Every external source this document or its shaders draw on. Where a detail
@@ -2048,6 +2094,19 @@ could not be verified against the source itself, the entry says so.
 
 ### Botany and canopy physics
 
+- Philippe Barre, Lesley B. Turner and Abraham J. Escobar-Gutiérrez, "Leaf
+  Length Variation in Perennial Forage Grasses", *Agriculture* 5(3), 682–696
+  (2015), doi:10.3390/agriculture5030682, <https://www.mdpi.com/2077-0472/5/3/682>.
+  Read in full (§12.16). Used for: leaf length varies within a species and is
+  compared at the same leaf rank and growth stage (§1, §2.1); perennial-ryegrass
+  population mean lamina lengths ~85–117 mm (Fig. 3, p. 686). It contains no
+  within-sward spread, CV or distribution shape.
+- Kikuyu grazing study, *Animal Production Science*,
+  <https://publish.csiro.au/AN/EA08263>. **Not retrieved** (the fetch failed):
+  authors, title and year were not recorded. Used only for the statement in its
+  abstract, as shown in a search result, that sward-height frequency was best
+  described by a log-normal distribution (§12.16's choice of shape). It
+  measures sward height under grazing, not individual blade length.
 - Edgar & Connor (2000), *Flora of New Zealand* Vol. V, Gramineae, web
   factsheets at `https://www.nzflora.info/factsheet/taxon/<Genus-species>.html`. Leaf-blade
   and tuft dimensions for *Lolium perenne*, *Dactylis glomerata*, *Poa

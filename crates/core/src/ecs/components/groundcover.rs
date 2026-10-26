@@ -131,6 +131,16 @@ pub const NO_WATER_HEIGHT: f32 = -1.0e30;
 /// which can only name core items.
 pub const GROUNDCOVER_NO_TERRAIN_TILE: u32 = u32::MAX;
 
+/// `(mean, coefficient of variation)` of a uniform draw over `range`: the mean
+/// at the midpoint and `σ = (max − min) / √12`, so a log-normal built from it
+/// reproduces the spread of the uniform it replaces (#6201).
+pub const fn moment_matched_length(range: (f32, f32)) -> (f32, f32) {
+    /// `1 / √12`, the standard deviation of a unit-width uniform.
+    const UNIFORM_SIGMA_PER_WIDTH: f32 = 0.288_675_13;
+    let mean = (range.0 + range.1) * 0.5;
+    (mean, (range.1 - range.0) * UNIFORM_SIGMA_PER_WIDTH / mean)
+}
+
 /// One kind of ground cover in a worldspace's palette.
 ///
 /// Field-for-field the design's §7 shape. Every field is a *rendering* or
@@ -140,6 +150,24 @@ pub struct GroundCoverSpecies {
     /// Blade height range in Gamebryo units. The scatter seed picks within it,
     /// so a patch has natural height variance rather than a uniform lawn.
     pub height_range: (f32, f32),
+    /// Average blade length in Gamebryo units — the centre the per-blade draw
+    /// is distributed around (#6201). [`Self::height_range`] stays as the hard
+    /// clamp (and the reach bound the host sizes cover tests from); this is
+    /// where within it a typical blade of the species sits.
+    ///
+    /// Not a sourced botanical figure: the built-in species carry
+    /// [`moment_matched_length`] of their own `height_range`, i.e. exactly the
+    /// first two moments the uniform draw it replaces already had, so only the
+    /// distribution's *shape* changes. Barre, Turner & Escobar-Gutiérrez 2015
+    /// (§13) establishes that leaf length varies within a species and with leaf
+    /// rank, but publishes no within-sward spread to replace the placeholder.
+    pub blade_length_mean: f32,
+    /// Per-blade variation of blade length as a coefficient of variation
+    /// (σ / mean), `0.0` = every blade the mean. The draw is log-normal with
+    /// this mean and CV (positive and right-skewed, the shape reported for
+    /// sward heights, §13), clamped to [`Self::height_range`]. See
+    /// [`Self::blade_length_mean`] for the provenance of the number.
+    pub blade_length_cv: f32,
     /// Blade width range in Gamebryo units.
     pub width_range: (f32, f32),
     /// Base → tip colour: **the plant's own colour variation, and nothing
@@ -217,6 +245,8 @@ impl GroundCoverSpecies {
         // The fallback stays deliberately short: isolated procedural ribbons
         // must resolve as cover before the authored card LOD takes over.
         height_range: (9.0, 21.0),
+        blade_length_mean: moment_matched_length((9.0, 21.0)).0,
+        blade_length_cv: moment_matched_length((9.0, 21.0)).1,
         width_range: (0.9, 1.75),
         // Base is the sheath: paler and a touch warmer than the lamina. It is
         // NOT a darkened tip — see the field's doc and §12.1. Keep the
@@ -241,6 +271,8 @@ impl GroundCoverSpecies {
     /// Sparse arid scrub — shorter, wider, stiffer, and yellowed.
     pub const DEFAULT_ARID: Self = Self {
         height_range: (6.0, 13.5),
+        blade_length_mean: moment_matched_length((6.0, 13.5)).0,
+        blade_length_cv: moment_matched_length((6.0, 13.5)).1,
         width_range: (1.1, 2.25),
         colour_gradient: [[0.40, 0.36, 0.14], [0.52, 0.46, 0.24]],
         transmission_colour: [0.62, 0.46, 0.12],
@@ -275,6 +307,8 @@ impl GroundCoverSpecies {
             self.height_range.1,
             self.width_range.0,
             self.width_range.1,
+            self.blade_length_mean,
+            self.blade_length_cv,
             self.bend_stiffness,
             self.cover_affinity,
             self.ground_coupling,
@@ -288,8 +322,14 @@ impl GroundCoverSpecies {
                 .flatten()
                 .chain(self.transmission_colour.iter())
                 .all(|c| c.is_finite() && *c >= 0.0);
+        // The mean sits inside the clamp it is drawn within; a mean outside
+        // it would pin every blade to one end.
+        let length_ok = (self.height_range.0..=self.height_range.1)
+            .contains(&self.blade_length_mean)
+            && self.blade_length_cv >= 0.0;
         ranges_ok
             && finite
+            && length_ok
             && self.bend_stiffness >= 0.0
             && self.cover_affinity >= 0.0
             && self.sheen >= 0.0
