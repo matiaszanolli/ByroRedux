@@ -606,6 +606,31 @@ unshipped because it could not be exercised on shipped content. Revisit it if a
 pose is found where a water ray does land on terrain (a reflection of far land
 at a grazing angle is the likely one).
 
+**Calm water drifts with the wind, and the sky layers are capped (2026-10-26).**
+User report: water and clouds move far faster than they would in life. Measured
+with the new `pattern_speed` line of `water.dump` (the uploaded scroll over each
+layer's UV-per-unit scale, 70 BU = 1 m): FNV/FO3/Oblivion lakes 0.1-0.6 m/s,
+Skyrim's calm lake 1.2 m/s, Fallout 4's distant water 3.3 m/s on layer A,
+whatever the weather was doing (the scroll was authored UV/s plus a flow term
+calibrated to the default *look*, not to a world speed, and `water.vert`'s wave
+rate follows the same scroll magnitude). A plane flagged `WaterMaterial::
+wind_driven` — set at the translate boundary for `Calm` water and for a `River`
+whose current is at or below `WaterFlow::SPEED_MIN` (placeholder motion on
+still water: Skyrim's `DefaultWater` lakes, the unauthored defaults) — now keeps
+its authored scroll *heading* but takes its *rate* from the weather wind,
+`WATER_CALM_DRIFT_MIN/MAX_BU_PER_S` (1.4 to 17.5 BU/s, 2 to 25 cm/s) across
+the wind field's range. Every lake fixture now reads 0.02-0.05 m/s at the
+fixture wind; rivers with an authored current keep their flow-driven scroll.
+Both the renderer and the CPU crest sampler read `wave_scrolls`, so buoyancy
+follows the slower crest. The numbers are a calibration chosen with the user,
+not an authored value; the constants are in `components/water.rs`. The textured
+cloud layers (`sky_upper_cloud_layer`: `uv = shell_uv * tile_scale + scroll`,
+`shell_uv` in units of the 9 km shell) travelled `scroll / tile_scale * 9000`
+m/s, ~1 700 m/s for Oblivion's layer 0 (tile 0.075) on paper;
+`cap_cloud_layer_drift` now bounds every layer to 20 m/s. The volumetric deck's
+own wind advection is `0.25 m/s` per unit of normalised wind and was not
+touched. Measured sky drift on Skyrim before the cap was ~0.5 deg/s.
+
 **Regression guard, not a remaining fragility:** the procedural-noise hash
 bands past ~176k world units (#1502) are fixed — `sampleScrollingNormal` and
 `foamFlowStreaks` both subtract `originOffset` before hashing, rebased twice

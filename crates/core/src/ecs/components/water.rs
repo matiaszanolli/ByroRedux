@@ -376,6 +376,13 @@ pub struct WaterMaterial {
     /// Authored flow-map tile scale. One is neutral; zero means legacy
     /// records without a dedicated flow-map field.
     pub flowmap_scale: f32,
+    /// The surface pattern's speed follows the weather wind instead of the
+    /// authored layer scroll: the scroll *direction* stays authored, the
+    /// *rate* is `WATER_CALM_DRIFT_*` between a still pond and the wind
+    /// field's maximum ([`WaterMaterial::wave_scrolls`]). Set at the
+    /// translate boundary for calm water (lakes, ponds, the sea, distant LOD
+    /// water); flowing kinds keep their flow-driven scroll.
+    pub wind_driven: bool,
     /// Starfield per-channel extinction coefficients. A zero triplet is the
     /// canonical sentinel for pre-Starfield records and keeps their legacy
     /// scalar fog response unchanged.
@@ -478,6 +485,7 @@ impl Default for WaterMaterial {
             specular_magnitude: 1.0,
             specular_radius: 0.0,
             flowmap_scale: 1.0,
+            wind_driven: false,
             absorption_coefficients: [0.0; 3],
             concentration: [0.0; 4],
             // Shoreline foam is authored by the shader's contact ray for
@@ -618,6 +626,25 @@ pub const WATER_WEATHER_SCROLL_WEIGHT_B: f32 = 0.65;
 /// Share of the (kind-damped) weather scroll layer C takes.
 pub const WATER_WEATHER_SCROLL_WEIGHT_C: f32 = 0.45;
 
+// ── Wind-driven calm water (2026-10-26) ─────────────────────────────────
+//
+// A lake's visible pattern used to scroll at whatever the WATR authored
+// (UV/s) over the layer's UV-per-world-unit scale: measured at the shipped
+// fixtures that is 0.1-0.6 m/s on FNV/FO3/Oblivion, 1.2 m/s on Skyrim's calm
+// lake and 3.3 m/s on Fallout 4's distant water, whatever the wind was doing,
+// and the vertex-wave rate follows the same scroll magnitude. Calm water now
+// drifts with the weather wind: a floor for a still pond and a ceiling for the
+// wind field's maximum (`MAX_WIND_SPEED`). 70 world units = 1 m.
+
+/// Pattern speed of wind-driven calm water in dead calm, world units/s (2 cm/s).
+pub const WATER_CALM_DRIFT_MIN_BU_PER_S: f32 = 1.4;
+/// Pattern speed at the wind field's maximum, world units/s (25 cm/s).
+pub const WATER_CALM_DRIFT_MAX_BU_PER_S: f32 = 17.5;
+/// Layer B's share of the calm drift (layer A takes it whole).
+pub const WATER_CALM_DRIFT_WEIGHT_B: f32 = 0.8;
+/// Layer C's share of the calm drift.
+pub const WATER_CALM_DRIFT_WEIGHT_C: f32 = 0.5;
+
 /// The three normal/wave layer scroll vectors exactly as the GPU receives
 /// them (`GpuWaterParams.scroll` / `scroll_c`): authored scroll × flow-map
 /// scale, rotated by the NAM1 angular velocity at `time_secs`, plus the
@@ -658,6 +685,50 @@ impl WaterMaterial {
             0.0
         };
         let (sin_angle, cos_angle) = (angular_rate * time_secs).sin_cos();
+        if self.wind_driven {
+            // Wind strength 0..1 from the (undamped, calm-kind) weather scroll.
+            let wind_bu_per_s = (weather_scroll[0] * weather_scroll[0]
+                + weather_scroll[1] * weather_scroll[1])
+                .sqrt()
+                / WEATHER_SCROLL_PER_BU_PER_S;
+            let wind = (wind_bu_per_s / crate::ecs::components::groundcover::MAX_WIND_SPEED)
+                .clamp(0.0, 1.0);
+            let drift = WATER_CALM_DRIFT_MIN_BU_PER_S
+                + (WATER_CALM_DRIFT_MAX_BU_PER_S - WATER_CALM_DRIFT_MIN_BU_PER_S) * wind;
+            let unit = |v: [f32; 2]| {
+                let len = (v[0] * v[0] + v[1] * v[1]).sqrt();
+                (len.is_finite() && len > 1.0e-6).then(|| [v[0] / len, v[1] / len])
+            };
+            let layer = |scroll: [f32; 2], uv_scale: f32, weight: f32, fallback: [f32; 2]| {
+                // Authored heading (rotated by NAM1), else the wind's, else the
+                // layer's default travel direction.
+                let rotated = [
+                    scroll[0] * cos_angle - scroll[1] * sin_angle,
+                    scroll[0] * sin_angle + scroll[1] * cos_angle,
+                ];
+                let dir = unit(rotated)
+                    .or_else(|| unit(weather_scroll))
+                    .or_else(|| unit(fallback))
+                    .unwrap_or([1.0, 0.0]);
+                let uv_per_s = drift * weight * uv_scale.abs();
+                [dir[0] * uv_per_s, dir[1] * uv_per_s]
+            };
+            return WaterWaveScrolls {
+                a: layer(self.scroll_a, self.uv_scale_a, 1.0, WATER_WAVE_FALLBACK_DIR_A),
+                b: layer(
+                    self.scroll_b,
+                    self.uv_scale_b,
+                    WATER_CALM_DRIFT_WEIGHT_B,
+                    WATER_WAVE_FALLBACK_DIR_B,
+                ),
+                c: layer(
+                    self.scroll_c,
+                    self.uv_scale_c,
+                    WATER_CALM_DRIFT_WEIGHT_C,
+                    WATER_WAVE_FALLBACK_DIR_A,
+                ),
+            };
+        }
         let layer = |scroll: [f32; 2], weather_weight: f32| {
             let x = scroll[0] * flowmap_scale;
             let y = scroll[1] * flowmap_scale;
@@ -1148,6 +1219,53 @@ mod wave_tuning_tests {
         assert!((len(m.scroll_a) - WATER_WAVE_DEFAULT_SCROLL_A).abs() < 1e-6);
         assert!((len(m.scroll_b) - WATER_WAVE_DEFAULT_SCROLL_B).abs() < 1e-6);
         assert!((WATER_WAVE_MIX_A + WATER_WAVE_MIX_B - 1.0).abs() < 1e-6);
+    }
+
+    /// Wind-driven calm water: the pattern's world speed is the wind-tied
+    /// drift (floor in dead calm, ceiling at the field's maximum wind), the
+    /// authored heading is kept, and an authored-zero layer takes the wind's.
+    #[test]
+    fn wind_driven_water_drifts_with_the_wind_not_the_authored_rate() {
+        use crate::ecs::components::groundcover::MAX_WIND_SPEED;
+        let m = WaterMaterial {
+            wind_driven: true,
+            // Authored scroll is 100x the default and points +Y; its rate must not matter.
+            scroll_a: [0.0, 3.0],
+            scroll_b: [0.0, 0.0],
+            scroll_c: [0.0, 0.0],
+            uv_scale_a: 0.004,
+            uv_scale_b: 0.002,
+            uv_scale_c: 0.002,
+            angular_velocity: 0.0,
+            ..WaterMaterial::default()
+        };
+        let speed = |v: [f32; 2], uv_scale: f32| (v[0] * v[0] + v[1] * v[1]).sqrt() / uv_scale;
+        let wind_scroll = |bu_per_s: f32| [bu_per_s * WEATHER_SCROLL_PER_BU_PER_S, 0.0];
+
+        let calm = m.wave_scrolls([0.0, 0.0], 0.0);
+        assert!((speed(calm.a, 0.004) - WATER_CALM_DRIFT_MIN_BU_PER_S).abs() < 1e-3);
+        assert!(calm.a[0].abs() < 1e-9 && calm.a[1] > 0.0, "authored +Y heading kept: {:?}", calm.a);
+
+        let gale = m.wave_scrolls(wind_scroll(MAX_WIND_SPEED), 0.0);
+        assert!((speed(gale.a, 0.004) - WATER_CALM_DRIFT_MAX_BU_PER_S).abs() < 1e-3);
+        // Past the maximum it saturates rather than growing.
+        let storm = m.wave_scrolls(wind_scroll(MAX_WIND_SPEED * 10.0), 0.0);
+        assert!((speed(storm.a, 0.004) - WATER_CALM_DRIFT_MAX_BU_PER_S).abs() < 1e-3);
+
+        // Layers with no authored heading follow the wind's, scaled by their weight.
+        assert!(gale.b[0] > 0.0 && gale.b[1].abs() < 1e-9, "{:?}", gale.b);
+        assert!(
+            (speed(gale.b, 0.002) - WATER_CALM_DRIFT_MAX_BU_PER_S * WATER_CALM_DRIFT_WEIGHT_B).abs()
+                < 1e-3
+        );
+        assert!(
+            (speed(gale.c, 0.002) - WATER_CALM_DRIFT_MAX_BU_PER_S * WATER_CALM_DRIFT_WEIGHT_C).abs()
+                < 1e-3
+        );
+
+        // The same material with the flag off keeps the authored rate.
+        let authored = WaterMaterial { wind_driven: false, ..m }.wave_scrolls([0.0, 0.0], 0.0);
+        assert!((authored.a[1] - 3.0).abs() < 1e-6, "{:?}", authored.a);
     }
 
     /// The prep is flow-scale → rotate → add weighted weather, the weather

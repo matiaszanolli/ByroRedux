@@ -201,6 +201,30 @@ impl ConsoleCommand for WaterDumpCommand {
                 material.sun_specular_power,
                 material.specular_magnitude,
             ));
+            // The surface pattern's world speed per layer: the uploaded UV/s
+            // scroll (authored + flow + weather, exactly what the shader gets)
+            // over the layer's UV-per-BU scale. 70 BU = 1 m (Skyrim/FO4 units).
+            {
+                let time_secs = world
+                    .try_resource::<byroredux_core::ecs::TotalTime>()
+                    .map_or(0.0, |t| t.0);
+                let (weather, _) = byroredux_physics::weather_wave_adjustment(world, time_secs);
+                let scrolls = material.wave_scrolls(plane.kind.weather_scroll_for(weather), time_secs);
+                let speed = |scroll: [f32; 2], uv_scale: f32| {
+                    let uv_per_s = (scroll[0] * scroll[0] + scroll[1] * scroll[1]).sqrt();
+                    if uv_scale > 1.0e-9 { uv_per_s / uv_scale } else { 0.0 }
+                };
+                let (a, b, c) = (
+                    speed(scrolls.a, material.uv_scale_a),
+                    speed(scrolls.b, material.uv_scale_b),
+                    speed(scrolls.c, material.uv_scale_c),
+                );
+                lines.push(format!(
+                    "    pattern_speed BU/s a={:.1} b={:.1} c={:.1} (m/s at 70 BU/m: {:.2} {:.2} {:.2}) scroll UV/s a=[{:.4},{:.4}] b=[{:.4},{:.4}] c=[{:.4},{:.4}]",
+                    a, b, c, a / 70.0, b / 70.0, c / 70.0,
+                    scrolls.a[0], scrolls.a[1], scrolls.b[0], scrolls.b[1], scrolls.c[0], scrolls.c[1],
+                ));
+            }
             lines.push(format!(
                 "    underwater_fog={:.1}..{:.1} depth_weights=[{:.3},{:.3},{:.3},{:.3}] effects=[{:.3},{:.3},{:.3},{:.3}] extinction_coefficients=[{:.5},{:.5},{:.5}] opacity={:.3} shoreline={:.1} flowmap_scale={:.3} rain_response={:.3}",
                 material.underwater_fog_near,
