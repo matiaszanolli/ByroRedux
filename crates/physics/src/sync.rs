@@ -560,6 +560,8 @@ impl SpawnProbeVerdict {
 pub struct SpawnCensusEntry {
     pub body_type: &'static str,
     pub is_sensor: bool,
+    /// The collider's shape kind (`TriMesh`, `Cuboid`, ...).
+    pub shape: &'static str,
     /// #3967 (PHYS-D7-2026-09-06-03) — the FULL 3-D AABB, not just its Y
     /// range. The pre-fix `center_y`/`min_y`/`max_y` triple discarded the X
     /// and Z extents `colliders_near_xz` already computes, so a collider
@@ -725,6 +727,7 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
                 SpawnCensusEntry {
                     body_type: n.body_type,
                     is_sensor: n.is_sensor,
+                    shape: n.shape,
                     aabb_min: n.aabb_min,
                     aabb_max: n.aabb_max,
                     entity: entity.map(|e| e.to_string()),
@@ -837,10 +840,11 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
     ));
     for e in entries.iter().take(SPAWN_CENSUS_DETAIL_CAP) {
         out.push(format!(
-            "  {}{} entity={} form={} layer={} y=[{:.0}, {:.0}] centre={:.0} \
+            "  {}{} {} entity={} form={} layer={} y=[{:.0}, {:.0}] centre={:.0} \
              extent=[{:.0}, {:.0}, {:.0}] scale={}",
             e.body_type,
             if e.is_sensor { " (sensor)" } else { "" },
+            e.shape,
             e.entity.as_deref().unwrap_or("?"),
             e.form
                 .map(|id| format!("{id:#08X}"))
@@ -2069,6 +2073,7 @@ mod spawn_census_tests {
         SpawnCensusEntry {
             body_type,
             is_sensor,
+            shape: "Cuboid",
             aabb_min: [-1.0, -1.0, -1.0],
             aabb_max: [1.0, 1.0, 1.0],
             entity: None,

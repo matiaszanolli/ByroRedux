@@ -249,6 +249,9 @@ pub struct NearbyCollider {
     /// Sensors (trigger volumes) never generate contacts — a sensor sitting
     /// where the floor should be is not a floor.
     pub is_sensor: bool,
+    /// The collider's shape kind (`"TriMesh"`, `"Cuboid"`, `"HalfSpace"`...), so a
+    /// census can tell a zero-thickness sheet from a box of the same footprint.
+    pub shape: &'static str,
     pub aabb_min: [f32; 3],
     pub aabb_max: [f32; 3],
 }
