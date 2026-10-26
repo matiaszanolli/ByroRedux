@@ -2,6 +2,14 @@ use super::super::common::{read_zstring, remap_fid, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
+/// Shortest `CRVA` the parser decodes: Skyrim lets the record end after the
+/// `unknown` word (14 bytes; the `actor/tests.rs` short-CRVA case truncates
+/// there), so the steal multiplier / escape / werewolf tail is optional.
+const CRVA_MIN_LEN: usize = 14;
+/// `CRVA` length at which the optional tail (steal multiplier f32, escape u16,
+/// werewolf u16) is fully present.
+const CRVA_TAIL_LEN: usize = 20;
+
 /// Faction-to-faction relation.
 #[derive(Debug, Clone, Copy)]
 pub struct FactionRelation {
@@ -326,14 +334,14 @@ pub fn parse_fact_crime(subs: &[SubRecord], remap: &Option<FormIdRemap>) -> Opti
             b"JOUT" if sub.data.len() >= 4 => crime.jail_outfit = form(sub),
             // CRVA: arrest u8, attack on sight u8, murder, assault, trespass, pickpocket, unknown (u16 each),
             // steal multiplier f32, escape u16, werewolf u16. The tail after `unknown` is optional.
-            b"CRVA" if sub.data.len() >= 14 => {
+            b"CRVA" if sub.data.len() >= CRVA_MIN_LEN => {
                 let mut r = SubReader::new(&sub.data);
                 let arrest = r.u8_or_default() != 0;
                 let attack_on_sight = r.u8_or_default() != 0;
                 let (murder, assault, trespass, pickpocket) =
                     (r.u16_or_default(), r.u16_or_default(), r.u16_or_default(), r.u16_or_default());
                 let _unknown = r.u16_or_default();
-                let tail = sub.data.len() >= 20;
+                let tail = sub.data.len() >= CRVA_TAIL_LEN;
                 crime.values = Some(CrimeValues {
                     arrest,
                     attack_on_sight,

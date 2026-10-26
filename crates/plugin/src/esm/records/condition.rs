@@ -164,6 +164,8 @@ const CTDA_RUN_ON_OFFSET: usize = 20;
 /// Oblivion's "Run On Target" bit in the CTDA type byte (no run-on field exists).
 const CTDA_OBLIVION_RUN_ON_TARGET: u8 = 0x02;
 const CTDA_RUN_ON_MIN_LEN: usize = 28;
+/// Oblivion's 24-byte CTDA: the prefix plus four unused bytes, no Run-On field.
+const CTDA_OBLIVION_LEN: usize = 24;
 
 /// `true` when `data` carries a Run-On value [`RunOn::from_u32`] would have
 /// silently mapped to `Subject`. Gates that must never change who a
@@ -395,7 +397,7 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
     let type_byte = data[0];
     // The 24-byte CTDA and the legacy `CTDT` are Oblivion's (the FNV 20-byte
     // short form is a `CTDA` and keeps its FO3+ reading).
-    let oblivion_layout = data.len() == 24 || sub.sub_type == *b"CTDT";
+    let oblivion_layout = data.len() == CTDA_OBLIVION_LEN || sub.sub_type == *b"CTDT";
     let or_next = (type_byte & 0x01) != 0;
     let use_global = (type_byte & 0x04) != 0;
     let comparator = ComparisonOp::from_type_byte(type_byte);

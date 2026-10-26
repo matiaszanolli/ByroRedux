@@ -7,6 +7,19 @@ use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use super::super::script_instance::{parse_package_fragments, PackageScriptFragment, ScriptInstanceData};
 
+/// Bytes every package location / target body (`PLDT`, `PLD2`, `PTDT`, `PTD2`)
+/// must carry: type u32, union u32, count / radius i32. A trailing unknown f32
+/// on the FO3/FNV layout is never read, so this is the decode gate. The arms
+/// and `parse_location` / `parse_target` / `parse_data_target` all gate on it;
+/// the arm guard stays so that a short repeat cannot overwrite a decoded value.
+const PACK_LOCATION_LEN: usize = 12;
+/// `PKCU` Data Input Count u32, package template FormID, version u32.
+const PKCU_MIN_LEN: usize = 12;
+/// `PKW3` Use Weapon Data is 24 bytes (fopdoc), but only the first 20 are
+/// decoded (flags, fire rate / count, bursts, volley min / max, pause min /
+/// max); the trailing word is unread, so a 20-byte body is accepted.
+const PKW3_MIN_LEN: usize = 20;
+
 /// `PACK` AI package record. 30-procedure scheduling system
 /// (guard patrols, merchant behavior, dialogue triggers, ambient
 /// idles). `NpcRecord.ai_packages` carries PKID form refs; pre-#446
@@ -829,7 +842,7 @@ pub fn active_package<'a>(
 /// ones: the trailing f32 of the FO3/FNV layout is never read, so the gate
 /// is the three fields decoded.
 fn parse_target(data: &[u8], remap: &Option<crate::esm::reader::FormIdRemap>) -> Option<PackTarget> {
-    if data.len() < 12 {
+    if data.len() < PACK_LOCATION_LEN {
         return None;
     }
     let mut r = SubReader::new(data);
@@ -852,7 +865,7 @@ fn parse_location(
     data: &[u8],
     remap: &Option<crate::esm::reader::FormIdRemap>,
 ) -> Option<PackLocation> {
-    if data.len() < 12 {
+    if data.len() < PACK_LOCATION_LEN {
         return None;
     }
     let mut r = SubReader::new(data);
@@ -879,7 +892,7 @@ fn parse_data_target(
     data: &[u8],
     remap: &Option<crate::esm::reader::FormIdRemap>,
 ) -> Option<PackDataTarget> {
-    if data.len() < 12 {
+    if data.len() < PACK_LOCATION_LEN {
         return None;
     }
     let mut r = SubReader::new(data);
@@ -1118,7 +1131,7 @@ pub fn parse_pack(
                 // against a full FalloutNV.esm sweep).
                 out.procedure_type = r.u8_or_default() as u32;
             }
-            b"PKCU" if sub.data.len() >= 12 => {
+            b"PKCU" if sub.data.len() >= PKCU_MIN_LEN => {
                 let mut r = SubReader::new(&sub.data);
                 out.data_input_count = r.u32_or_default();
                 let template = remap_fid(r.u32_or_default(), remap);
@@ -1226,10 +1239,10 @@ pub fn parse_pack(
             // Only types 0 (Near Reference) / 1 (In Cell) / 4 (Object ID)
             // carry a FormID that needs remapping to global space; the
             // others are self-referential and pass through raw.
-            b"PLDT" if sub.data.len() >= 12 => {
+            b"PLDT" if sub.data.len() >= PACK_LOCATION_LEN => {
                 out.location = parse_location(&sub.data, remap);
             }
-            b"PLD2" if sub.data.len() >= 12 => {
+            b"PLD2" if sub.data.len() >= PACK_LOCATION_LEN => {
                 if out.location2.is_none() {
                     out.location2 = parse_location(&sub.data, remap);
                 }
@@ -1248,7 +1261,7 @@ pub fn parse_pack(
             // does not exist there, and FO3 authors 26 twelve-byte ones
             // too. The unread f32 is the only thing past byte 12, so the
             // gate is the three fields actually decoded.
-            b"PTDT" if sub.data.len() >= 12 => {
+            b"PTDT" if sub.data.len() >= PACK_LOCATION_LEN => {
                 out.target = parse_target(&sub.data, remap);
             }
             // FO3/FNV PTD2 — the second target, the same 16-byte layout as
@@ -1256,14 +1269,14 @@ pub fn parse_pack(
             // 55 of the 56 FO3 packages): there PTDT names the *weapon* and
             // PTD2 the thing to shoot (fopdoc "Target 2"; the Oliver
             // Ranger snipers' PTD2 is the player, `0x14`).
-            b"PTD2" if sub.data.len() >= 12 => {
+            b"PTD2" if sub.data.len() >= PACK_LOCATION_LEN => {
                 out.target2 = parse_target(&sub.data, remap);
             }
             // FO3/FNV PKW3 — Use Weapon Data, 24 bytes (fopdoc, checked
             // against the vanilla values: the snipers carry Crouch To
             // Reload | Hold Fire When Blocked, the scripted set pieces Do
             // No Damage, every Repeat Fire package count 1).
-            b"PKW3" if sub.data.len() >= 20 => {
+            b"PKW3" if sub.data.len() >= PKW3_MIN_LEN => {
                 let mut r = SubReader::new(&sub.data);
                 let flags = r.u32_or_default();
                 let fire_rate = r.u8_or_default();

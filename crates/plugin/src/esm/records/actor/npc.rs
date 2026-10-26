@@ -607,6 +607,11 @@ pub fn parse_npc(
     record
 }
 
+/// FO4 / FO76 `ACBS` bytes through the template flags at +16 (#6120).
+const ACBS_FO4_LEN: usize = 20;
+/// Starfield `ACBS` length — every vanilla NPC_ is exactly this (#6120).
+const ACBS_STARFIELD_LEN: usize = 16;
+
 /// `ACBS` flag bit 1, Essential, on every game's `NPC_` (and FO3/FNV
 /// `CREA`) record (xEdit).
 pub const ACBS_FLAG_ESSENTIAL: u32 = 0x0000_0002;
@@ -863,8 +868,8 @@ fn parse_npc_core(
         // Without this arm every Starfield actor kept acbs_flags = 0 (all male,
         // none essential / unique) and template_flags = 0 (#6120).
         b"ACBS"
-            if (matches!(game, GameKind::Fallout4 | GameKind::Fallout76) && sub.data.len() >= 20)
-                || (matches!(game, GameKind::Starfield) && sub.data.len() >= 16) =>
+            if (matches!(game, GameKind::Fallout4 | GameKind::Fallout76) && sub.data.len() >= ACBS_FO4_LEN)
+                || (matches!(game, GameKind::Starfield) && sub.data.len() >= ACBS_STARFIELD_LEN) =>
         {
             let mut r = SubReader::new(&sub.data);
             record.acbs_flags = r.u32_or_default();
