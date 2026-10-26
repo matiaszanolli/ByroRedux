@@ -53,82 +53,10 @@ BYRO_DEBUG_PORT=8080 cargo run -p byro-dbg  # Custom port
 ### Smoke tests
 Manual end-to-end checks that need a Vulkan device + on-disk game data
 (out of `cargo test` scope). All follow the same `--bench-hold` →
-`byro-dbg`-attach pattern documented in
-[`docs/smoke-tests/README.md`](docs/smoke-tests/README.md). Currently:
-[`docs/smoke-tests/m41-equip.sh`](docs/smoke-tests/m41-equip.sh)
-verifies Skyrim+ / FO4 NPC outfit equip end-to-end,
-[`docs/smoke-tests/m48-menu-load.sh`](docs/smoke-tests/m48-menu-load.sh)
-verifies the archive-backed `--menu` route on FO4 (AVM2) and Skyrim (AVM1),
-[`docs/smoke-tests/w1-water-traversal.sh`](docs/smoke-tests/w1-water-traversal.sh)
-walks the real character capsule shore → swim → dive → surface → shore →
-cell boundary on FNV Lake Mead (WATAL W1), the HUD family
-[`m48-4-oblivion-hud.sh`](docs/smoke-tests/m48-4-oblivion-hud.sh) /
-[`m48-5-fo3-hud.sh`](docs/smoke-tests/m48-5-fo3-hud.sh) /
-[`m48-6-skyrim-hud.sh`](docs/smoke-tests/m48-6-skyrim-hud.sh) /
-[`m48-7-fo4-hud.sh`](docs/smoke-tests/m48-7-fo4-hud.sh) covers the MenuXml
-(Oblivion/FO3) and Scaleform (Skyrim/FO4) drivers per game, and
-[`docs/smoke-tests/p4-quest-route.sh`](docs/smoke-tests/p4-quest-route.sh)
-verifies the P4 authored-objective loop end-to-end (MS01 in MarkarthWarrens:
-activation → dialogue selection → presented response → objective-chain transitions),
-and the P5 hardening family
-[`p5-f5-f9-quicksave.sh`](docs/smoke-tests/p5-f5-f9-quicksave.sh) /
-[`p5-quest-persistence.sh`](docs/smoke-tests/p5-quest-persistence.sh) /
-[`p5-door-transition.sh`](docs/smoke-tests/p5-door-transition.sh) /
-[`p5-soak.sh`](docs/smoke-tests/p5-soak.sh) gates F5/F9 bound-input
-quicksave/quickload, quest-state revert/restore, cross-cell door saves,
-graceful quit (`engine.quit`), a `BYRO_VALIDATION=1` clean leg, and the
-30-minute transition/save soak, and
-[`p6-loading-model.sh`](docs/smoke-tests/p6-loading-model.sh) gates the
-Creation-era LSCR model loading cover on Skyrim (inline SNAM/RNAM/XNAM
-pose) and FO4 (TNAM→TRNS) — census, cover begin/present, a rendered-frame
-screenshot floor, and dismissal after the destination applies, and
-[`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh) gates
-Story Manager event dispatch live on Skyrim (#5366 Phases 1–4): the
-boot-time CLOC event must start the authored set through the canonical
-lifecycle (`WIGreetingNodeSHARES` declines on its uncatalogued fn-145
-gate per #5380; the non-sharing `CWChangeLocationScenes` — which the
-#5385 previous-sibling order puts before every `WI*` node — evaluates
-its fn-56 gate for real, starts its scene quest, and consumes the
-event, leaving `CRHoldExpansion` below it stopped, the shares-consume
-negative), and
-hand-raised `sm.event` KILL events with non-matching event data (no
-killer / player victim) must be refused by the authored R1/R2 node
-conditions, and
-[`dt1-dialogue-layers.sh`](docs/smoke-tests/dt1-dialogue-layers.sh)
-gates the dialogue greeting + force-greet layers on FNV (#5367): a
-quest-less activation must greet, a Dialogue-procedure PACK must
-open its conversation without activation, and the voice line must
-resolve, and
-[`dt2-skyrim-forcegreet.sh`](docs/smoke-tests/dt2-skyrim-forcegreet.sh)
-gates the Skyrim force-greet dialect (#5367): the `ForceGreet`
-procedure-tree leaf's `Topic` input resolves its authored topic and
-a topic-less package greets generically, opening with no activation.
-[`m42-eat-sleep.sh`](docs/smoke-tests/m42-eat-sleep.sh)
-gates the M42 Eat/Sleep behavior components live on FNV
-(GSProspectorSaloonInterior): the settler must be awake at the boot
-hour, `time.set 23` inside his 22:00–08:00 window must hand him
-`SleepBehavior`, and — because his In-Cell package targets another cell
-(#5391) — he must idle with no `Seated`; the seat runtime itself is
-unit-gated.
-[`m47-2-bleedout.sh`](docs/smoke-tests/m47-2-bleedout.sh) gates
-essential-actor bleedout live on Skyrim (RiverwoodSleepingGiantInn):
-real swings put the essential Delphine into bleedout instead of
-killing her, she gets back up 20 s later at 30 health, and Orgnar,
-who is not essential, dies to the same blows.
-[`fo4-ragdoll.sh`](docs/smoke-tests/fo4-ragdoll.sh) gates the FO4
-ragdoll live (#6070): authored `XRGD` corpses in CharlestownHouse01 (two
-feral ghouls) and ShamrockTaphouse01 (human) lie posed (18 bones) on an
-18-body ragdoll, a feral ghoul and a raider killed by real swings activate
-finite ragdolls, and a starts-dead molerat holds a stable 20-body one, every
-session under `BYRO_VALIDATION=1` (corpses whose reference carries a large X/Y
-tilt are not covered: their pose composition is not established). 
-[`m42-package-procedures.sh`](docs/smoke-tests/m42-package-procedures.sh)
-gates four M42 package procedures live on FNV: creatures stay out of furniture
-(#5495 — Vault11a's mantises carry `CreatureActor`, nothing is `Seated`),
-UseWeapon packages install and keep firing (ULKitchen's two White Glove
-torchers), and UseItemAt/Eat seats (vault3c's Motor-Runner sits on his
-throne), and Find (the Hoover Dam troopers hunt the player; Flee, Accompany and
-Ambush have no unconditional placement and are unit-gated only).
+`byro-dbg`-attach pattern. Every script under `docs/smoke-tests/` is
+indexed, with what it gates and how to run it, in
+[`docs/smoke-tests/README.md`](docs/smoke-tests/README.md) — that index is
+the one list to trust; do not enumerate scripts here (#6166).
 
 ### Shader Compilation
 ```bash
@@ -147,7 +75,8 @@ byroredux/              Binary — game loop, scene setup, systems
   src/app_step.rs          Per-tick streaming / debug-load / save / cell-transition steppers
   src/components/          Marker components + app resources, split by domain
                            (render, terrain, environment, indices, input, audio,
-                           tuning, ai_anim, navmesh — #6ef8976f2's hub ~30 LOC)
+                           tuning, ai_anim, navmesh, vats, explicit_start,
+                           projectile_muzzle, game_time — #6ef8976f2's hub ~30 LOC)
   src/systems.rs           ECS systems: fly camera, animation, transform propagation, spin, stats
   src/scene.rs             Scene setup, NIF loading (load_nif_bytes, load_nif_from_args)
   src/asset_provider/      BSA/BA2-backed texture and mesh extraction
@@ -181,6 +110,9 @@ byroredux/              Binary — game loop, scene setup, systems
   src/hud.rs                MenuXml HUD driver — per-game profiles Oblivion/FO3/FNV (--hud, triple-buffered uploads)
   src/scaleform_hud.rs      Scaleform HUD driver — Skyrim + Fallout 4 hudmenu.swf via --hud (transparent stage, hud.debug)
   src/cell_loader.rs        ESM cell loading (interior + exterior)
+  src/boot/                 CLI parsing, World/Scheduler construction, per-stage system registration (schedule/*)
+  src/streaming/            M40 exterior cell streaming — live (gx,gy)→cell map, load/unload hysteresis
+  src/save_io.rs            M45 binary-side save/load wiring — populates the SaveRegistry for byroredux-save
 crates/
   core/                      ECS, math (glam), types, string interning, form IDs
     src/ecs/                 World, Component, Storage, Query, System, Scheduler, Resource
@@ -331,14 +263,6 @@ crates/
     src/timer.rs             ScriptTimer component + timer_tick_system
     src/cleanup.rs           event_cleanup_system (end-of-frame marker removal)
   menuxml/                   Oblivion/FO3/FNV MenuXml UI (M48.4/M48.5 legacy-UI track)
-  mod-runtime/               WASM sandbox runtime (wasmtime 49, hostcall fuel #5718)
-  pex/                       Compiled Papyrus (.pex) reader
-  physics/                   Rapier physics world, water, footstep surface probe
-  save/                      Save-file serialisation (shape-guarded)
-  sdk/                       Script-extender SDK surface (script_function, hostcalls)
-  settings-io/               profiles.toml + settings persistence
-  sfmaterial/                Starfield .cdb material reader
-  spt/                       SpeedTree (.spt) reader
     src/parse.rs             Tolerant XML scanner (vanilla quirks, <include> prefabs)
     src/eval.rs              Per-frame trait FOLD language + selectors + overrides
     src/layout.rs            Locus chains, depth sort, clipwindow scissor
@@ -348,6 +272,14 @@ crates/
     src/menu.rs              MenuRenderer — sets, fonts, overrides, frames; runtime menu API (instantiate_template / graft_fragment)
     src/profile.rs           Per-game corpus profiles (font table, font archive, strings source)
     examples/render_hud.rs   Reference-frame + trait-probe visualizer
+  mod-runtime/               WASM sandbox runtime (wasmtime 49, hostcall fuel #5718)
+  pex/                       Compiled Papyrus (.pex) reader
+  physics/                   Rapier physics world, water, footstep surface probe
+  save/                      Save-file serialisation (shape-guarded)
+  sdk/                       Script-extender SDK surface (script_function, hostcalls)
+  settings-io/               profiles.toml + settings persistence
+  sfmaterial/                Starfield .cdb material reader
+  spt/                       SpeedTree (.spt) reader
   papyrus/                   Papyrus language parser (.psc source → AST)
     src/token.rs             Token enum (logos derive, case-insensitive keywords)
     src/lexer.rs             Lexer wrapper (line continuation, comments, doc comments)
@@ -366,11 +298,6 @@ crates/
     src/wire.rs              Length-prefixed JSON encode/decode
     src/registry.rs          ComponentDescriptor, ComponentRegistry (type-erased accessors)
   debug-server/              TCP debug server embedded in engine
-  debug-ui/                  Dear ImGui-style debug overlay types
-  facegen/                   EGM/EGT FaceGen morph + texture readers
-  fsr3-sys/                  FSR3 upscaler native bindings
-  game-detect/               Installed-game discovery (registry / Steam library)
-  hkx/                       Havok .hkx behavior-graph + clip reader
     src/lib.rs               start() entry point, SystemList re-export
     src/listener.rs          TcpListener, per-client threads, command queue
     src/system.rs            DebugDrainSystem (Late-stage exclusive), screenshot flow
@@ -378,14 +305,19 @@ crates/
     src/registration.rs      register_component::<T>() per inspectable type (re-derive the
                              count with `grep -c 'register_component::<' crates/debug-server/src/registration.rs`
                              rather than trusting a number here — it moves with every component added)
+  debug-ui/                  Dear ImGui-style debug overlay types
+  facegen/                   EGM/EGT FaceGen morph + texture readers
+  fsr3-sys/                  FSR3 upscaler native bindings
+  game-detect/               Installed-game discovery (registry / Steam library)
+  hkx/                       Havok .hkx behavior-graph + clip reader
 tools/
   byro-dbg/                  Standalone debug CLI binary
+    src/main.rs              TCP client, REPL loop, shorthand commands
+    src/display.rs           Pretty-print responses (entities, JSON, stats)
   byro-detect/               Game-install detection CLI (shares game-detect)
   byro-launcher/             Profile launcher CLI (shares the --profiles parser)
   nifskope/                  NIF inspection tooling (vendored; out of LOC scans)
   texture-upscale/           Offline texture upscaling tool
-    src/main.rs              TCP client, REPL loop, shorthand commands
-    src/display.rs           Pretty-print responses (entities, JSON, stats)
 docs/
   engine/                    Engine documentation (architecture, ECS, renderer, etc.)
   legacy/                    Gamebryo 2.3 analysis (class hierarchy, NIF format, API)
