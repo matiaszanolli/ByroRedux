@@ -1487,7 +1487,7 @@ pub(super) fn spawn_mesh_instance(
     //   - `RenderLayer::Architecture` — structural only; clutter and
     //     decals are escalated away from this layer above.
     //   - `!mesh.skinned` — never synthesize for animated bodies.
-    //   - `!mesh.material.is_decal && !mesh.material.alpha_test` — skip overlay planes.
+    //   - `render_geometry_can_collide` — skip overlay planes and VFX sheets.
     //   - ≥ 1 triangle of geometry.
     // Scale: the trimesh verts stay in canonical local units and
     // `final_scale` rides the ghost's `Transform`/`GlobalTransform`;
@@ -1525,9 +1525,7 @@ pub(super) fn spawn_mesh_instance(
     // sub-decomposed architecture changes behaviour.
     if collision_fallback == MissingCollisionFallback::ArchitectureTriMesh
         && mesh.skin.is_none()
-        && !source_material.is_decal
-        && !source_material.alpha_test
-        && source_material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+        && render_geometry_can_collide(source_material)
         && mesh.positions.len() >= 3
         && mesh.indices.len() >= 3
     {

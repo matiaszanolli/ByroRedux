@@ -3,7 +3,7 @@
 //! Extracted from `spawn.rs`'s inline test module (#2410 / TD1-007).
 
 use super::{
-    missing_collision_fallback, spawn_packed_collision_proxy, spawn_trimesh_collider_ghost,
+    missing_collision_fallback, render_geometry_can_collide, spawn_packed_collision_proxy, spawn_trimesh_collider_ghost,
     synthesize_packed_collision_proxy, synthesize_static_trimesh, transformed_mesh_aabb,
     MissingCollisionFallback, ProxyMeshGeometry,
 };
@@ -18,6 +18,7 @@ use byroredux_core::{
     math::{Quat, Vec3},
 };
 use byroredux_nif::import::collision::CollisionAuthoringSummary;
+use byroredux_nif::import::{BsEffectShaderData, ImportedMaterial};
 use byroredux_physics::{physics_sync_system, PhysicsWorld, RapierHandles};
 
 /// A single unit triangle synthesizes into a 1-triangle TriMesh
@@ -584,4 +585,26 @@ fn packed_proxy_is_keyframed_and_parented_to_visual_placement() {
     assert_eq!(parents.get(proxy).map(|p| p.0), Some(root));
     let meshes = world.query::<MeshHandle>();
     assert!(meshes.as_ref().is_none_or(|q| !q.contains(proxy)));
+}
+
+/// VFX sheets must never become solid colliders. Skyrim's `FXrapidsBig01`
+/// (two alpha-blended `BSEffectShaderProperty` quads, no bhk) was spawning a
+/// 2.6k-unit zero-thickness `Fixed TriMesh` across Riverwood's riverbank and
+/// wedged the character capsule against it.
+#[test]
+fn effect_shader_sheets_do_not_synthesize_collision() {
+    let solid = ImportedMaterial::default();
+    assert!(render_geometry_can_collide(&solid));
+
+    let mut effect = ImportedMaterial::default();
+    effect.effect_shader = Some(BsEffectShaderData::default());
+    assert!(!render_geometry_can_collide(&effect));
+
+    let mut decal = ImportedMaterial::default();
+    decal.is_decal = true;
+    assert!(!render_geometry_can_collide(&decal));
+
+    let mut tested = ImportedMaterial::default();
+    tested.alpha_test = true;
+    assert!(!render_geometry_can_collide(&tested));
 }
