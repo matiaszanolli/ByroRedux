@@ -668,6 +668,13 @@ pub const GROUNDCOVER_MODEL_POINTS_PER_CHUNK: u32 = 1024;
 pub const GROUNDCOVER_MODEL_MAX_RECORDS: u32 = 128;
 /// Shapes across every record's model.
 pub const GROUNDCOVER_MODEL_MAX_SHAPES: u32 = 256;
+/// Hash stream of the candidate hash the plant's height scale draws from. Every per-plant
+/// quantity reads its own stream: the record pick uses 4, yaw 5, wind phase 7 and the stable
+/// surface id `6 + shape index`, so this one sits past the last of those (#6408; the scale used
+/// the pick's stream and was confined to each record's pick bucket). A compile-time assert
+/// below keeps it clear of the surface-id range.
+pub const GROUNDCOVER_MODEL_SCALE_STREAM: u32 = 512;
+const _: () = assert!(GROUNDCOVER_MODEL_SCALE_STREAM >= 6 + GROUNDCOVER_MODEL_MAX_SHAPES);
 /// Instance slots the tier appends after the main instance list each frame.
 /// An engine budget, not a game value: past it the layout phase grants every
 /// record the same share of its placed plants, whole plants only (#4920), so
@@ -2705,6 +2712,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint GROUNDCOVER_MODEL_POINTS_PER_CHUNK),
     shader_define!(Uint GROUNDCOVER_MODEL_MAX_RECORDS),
     shader_define!(Uint GROUNDCOVER_MODEL_MAX_SHAPES),
+    shader_define!(Uint GROUNDCOVER_MODEL_SCALE_STREAM),
     shader_define!(Uint GROUNDCOVER_MODEL_PHASE_PLACE),
     shader_define!(Uint GROUNDCOVER_MODEL_PHASE_LAYOUT),
     shader_define!(Uint GROUNDCOVER_MODEL_PHASE_EMIT),

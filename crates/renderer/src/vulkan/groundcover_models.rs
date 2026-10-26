@@ -1237,6 +1237,40 @@ mod tests {
         assert!(walk < base, "the permuted chunk must be the one LAYOUT bases");
     }
 
+    /// #6408: every per-plant draw reads its own stream of the candidate hash. The height scale
+    /// used the record pick's stream, so a record that owns the bucket `[a, b)` of the pick could
+    /// only receive scales from that bucket and each record's height variation was truncated.
+    #[test]
+    fn model_tier_per_plant_draws_use_distinct_hash_streams() {
+        let shader = include_str!("../../shaders/groundcover_models.comp");
+        let mut literal = Vec::new();
+        let mut named = Vec::new();
+        for (at, _) in shader.match_indices("gcModelHash(h, ") {
+            let rest = &shader[at + "gcModelHash(h, ".len()..];
+            let arg = rest[..rest.find(')').unwrap()].trim();
+            if let Some(n) = arg.strip_suffix('u').and_then(|n| n.parse::<u32>().ok()) {
+                literal.push(n);
+            } else {
+                named.push(arg.to_string());
+            }
+        }
+        let mut sorted = literal.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), literal.len(), "two draws share a stream: {literal:?}");
+        assert!(literal.contains(&4), "the record pick still reads stream 4");
+
+        // The surface id reads `6u + shape index`; the scale stream is a generated constant that a
+        // compile-time assert keeps past the last of them.
+        assert_eq!(named.iter().filter(|a| a.as_str() == "6u + s").count(), 1);
+        assert_eq!(
+            named.iter().filter(|a| a.as_str() == "GROUNDCOVER_MODEL_SCALE_STREAM").count(),
+            1,
+            "the scale draws from GROUNDCOVER_MODEL_SCALE_STREAM: {named:?}"
+        );
+        assert!(!literal.contains(&crate::shader_constants::GROUNDCOVER_MODEL_SCALE_STREAM));
+    }
+
     /// #4866: decoding a timer pair alone does not prove the GPU work writes it.
     #[test]
     fn model_timer_encloses_all_phases_and_stats_copy() {

@@ -643,7 +643,7 @@ void emit(uint chunkIdx, uint lane) {
             + point.meta.y;
         uint h = point.meta.w;
 
-        float scale = 1.0 + (gcUnit(gcModelHash(h, 4u)) * 2.0 - 1.0) * rec.heightRange;
+        float scale = 1.0 + (gcUnit(gcModelHash(h, GROUNDCOVER_MODEL_SCALE_STREAM)) * 2.0 - 1.0) * rec.heightRange;
         bool uniformScale = (rec.flags & GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING) != 0u;
         vec3 scale3 = uniformScale ? vec3(scale) : vec3(1.0, scale, 1.0);
         float yaw = gcUnit(gcModelHash(h, 5u)) * 6.28318530718;
