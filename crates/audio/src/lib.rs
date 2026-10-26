@@ -39,10 +39,13 @@
 //! - [`load_sound_from_bytes`] — decode a fully-buffered audio blob
 //!   (typically extracted from a Bethesda BSA) through kira's
 //!   symphonia-backed `StaticSoundData::from_cursor` path. The workspace
-//!   enables WAV/PCM and OGG/Vorbis explicitly in `Cargo.toml`.
+//!   enables WAV/PCM, OGG/Vorbis, MP3 (Oblivion voice, #5526) and FLAC
+//!   explicitly in `Cargo.toml`.
 //! - [`SoundCache`] — process-lifetime path-keyed cache of decoded
 //!   `Arc<StaticSoundData>`. Repeat plays of the same SFX (footsteps,
-//!   weapon fire, dialogue line) skip the decode cost entirely.
+//!   weapon fire) skip the decode cost entirely. Open-ended keyspaces —
+//!   dialogue voice (#5382) and script-chosen sounds (#6281) — use the
+//!   bounded [`VoiceSoundCache`] instead.
 //!
 //! # Phase 3
 //!
@@ -1802,7 +1805,7 @@ pub fn load_streaming_sound_from_file(
 
 /// Process-lifetime cache of decoded `StaticSoundData`, keyed by
 /// lowercased asset path. Repeat plays of the same SFX (footsteps,
-/// weapon fire, dialogue lines) skip the decode cost entirely —
+/// weapon fire) skip the decode cost entirely —
 /// kira clones the `Arc<StaticSoundData>` cheaply when handing it
 /// to the playback handle.
 ///
@@ -1821,6 +1824,11 @@ pub fn load_streaming_sound_from_file(
 /// before OOM. If a real LRU is ever needed (1000+ unique
 /// sounds with frequent rotation), bolt it on without touching the
 /// call sites. See #850 / AUD-D6-NEW-09.
+///
+/// Only a closed keyspace belongs here: today the combat swing / impact /
+/// death sounds. Dialogue voice (#5382) and script-chosen sounds
+/// (`Sound.Play`, `PlaySound`, graph `SoundPlay.*`, #6281) have open-ended
+/// keys and ride the byte-budgeted [`VoiceSoundCache`].
 ///
 /// `None` values represent negative-cache entries and are not counted by
 /// `len()` or `bytes_estimate()`: telemetry measures decoded audio retained

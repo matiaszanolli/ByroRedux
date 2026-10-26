@@ -152,11 +152,13 @@ separate integration gap. See the gaps table below.
 | Feature | Status |
 |---|---|
 | 3D spatial audio (kira 0.12) | ✓ |
-| BSA WAV decode | ✓ (combat one-shots use the engine-wide `SoundCache`, which caches decoded paths and misses) |
+| BSA sound decode (WAV, OGG Vorbis, MP3, FLAC) | ✓ (combat one-shots use the engine-wide `SoundCache`, which caches decoded paths and misses; voice and script sounds use the byte-budgeted `VoiceSoundCache`) |
 | One-shot sounds + footstep system | ✓ |
 | Looping ambient (tweened stop on despawn) | ✓ |
-| Streaming music (OGG, crossfade) | ✓ |
-| NPC dialogue voice playback (Phase V; archive-backed segmented lines) | ✓ |
+| Streaming music (OGG / MP3 / WAV, crossfade) | ✓ |
+| Scripted `PlayMusic` (FO3/FNV `MUSC` track layered over the cell music; loose `Data\Music` files or archive) | ✓ (#6226) |
+| NPC dialogue voice playback (Phase V; archive-backed segmented lines) | ✓ (Skyrim / FO4 `.fuz` voice needs an optional host `ffmpeg` to decode the xWMA payload; without one the line stays silent on the subtitle estimate) |
+| Script sound plays (Papyrus `Sound.Play`, ObScript `PlaySound` / `PlaySound3D`, graph `SoundPlay.*`) | ◐ played from the source through the bounded `VoiceSoundCache`, with a `SOUN`'s authored `SNDD` attenuation and `2D` / `Menu Sound` flags; Skyrim `SNDR` output-model attenuation is not decoded, so those use the generic range; looping descriptors are not played (#6281) |
 | Contact-force impact sounds (Wave 4) | ◐ config-driven dispatch mechanism shipped; default/per-material sound content is not populated |
 | Per-cell reverb send (`-12 dB` interior / silent exterior) | ✓ |
 | Underwater low-pass (submersion-driven, 900 Hz wet / dry bypass) | ✓ |
