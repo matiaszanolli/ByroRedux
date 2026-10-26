@@ -718,9 +718,15 @@ water accumulator (tried and reverted: no visible effect). It is not foam, glint
 reflection, a placed object (none within 500 BU), or a cell-border crack — it
 survives skipping every deposit from fragments within 24 BU of a 4096 border (that
 test instead left a dark diagonal where the border's own deposits had been, which
-confirms the deposit lands at the sun-refracted image of its source). Not yet
-explained; likely a many-to-one floor mapping along a static edge. Next bisect:
-restrict deposits by source screen region, or by the floor hit's instance index.
+confirms the deposit lands at the sun-refracted image of its source). Bisect of the
+deposit's SOURCE fragments by screen region (`gl_FragCoord`): the streak comes from
+sources in x 640-960 (any y), but neither 640-800 nor 800-960 alone reproduces it,
+so it needs sources on both sides of x = 800. Scaling every deposit by 1/4 leaves a
+proportionally fainter streak and 1/16 removes it (so it is not a fixed-point
+wrap-around), and capping the water accumulator at 2x the sun in the composite does
+not remove it either (so it is not a high-multiplicity pile-up). Still unexplained.
+Next: record the floor hit's instance index for the deposits that land on the
+streak's pixels.
 
 **Lake shores faded to a solid white strip instead of merging with the land
 (2026-10-26).** Two shore foam terms (the contact ray and the breaker band) both
