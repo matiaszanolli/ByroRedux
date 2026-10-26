@@ -22,7 +22,7 @@ use super::frame_params::{
     CompositeParamsInputs, DrawBatch, build_composite_params, build_sky_cube_params,
     is_caustic_source, is_refractive_glass, morph_gpu_fields_for_draw, morph_slot_backs_mesh,
     rebase_model_matrix, rigid_instance_set_changed, skin_slot_backs_mesh,
-    skinned_vertex_address_for_draw, uses_rigid_motion_history,
+    skinned_vertex_address_for_draw, uses_rigid_motion_history, UnderwaterView,
 };
 use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use ash::vk;
@@ -304,7 +304,7 @@ impl VulkanContext {
         camera_pos: [f32; 3],
         inv_vp_arr: [[f32; 4]; 4],
         fog_volumes: &[super::super::volumetrics::GpuFogVolume],
-        underwater: [f32; 4],
+        underwater: UnderwaterView,
         water_commands: &[super::super::water::WaterDrawCommand],
         armed_selected_ray_probe_generation: &mut Option<u32>,
         t: &mut FrameTimings,
@@ -1328,7 +1328,8 @@ impl VulkanContext {
             render_origin,
             inv_vp_arr,
             sky_aperture_volumes: fog_volumes,
-            underwater,
+            underwater: underwater.grade,
+            underwater_surface: underwater.surface,
             water_caustic_active: self.post.water_caustic_accum.is_some(),
             shadow_filter_active: self.shadow_filter_active().is_some(),
         };

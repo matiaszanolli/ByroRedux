@@ -422,7 +422,7 @@ impl VulkanContext {
                 wind_gust,
                 fog_volumes,
                 fsr_frame,
-                underwater,
+                underwater.grade,
                 image_space_modifier,
                 ui_instance_idx,
                 &mut t.fog_cluster_ns,

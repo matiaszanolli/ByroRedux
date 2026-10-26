@@ -1081,12 +1081,20 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    linear velocity and `NAM5` flow noise drive Rapids/River, `material_name`
    drives Lava, and the EDID name is only the fallback signal in
    `classify_water_kind_and_flow` — the "replace the heuristic" item is
-   done) are all live. Underwater god-rays: `composite.frag` already carried a smooth sun-aligned
-   shaft term gated on the submersion extinction; since 2026-10-26 it breaks into
-   animated radial streaks converging on the sun (two octaves of integer-hashed 1D
-   noise over the angle around the sun axis, mean-normalised so the energy budget
-   is unchanged). A froxel-based version that casts shafts from real occluders
-   through the surface is not built. Remaining: the §2 remainder (residual
+   done) are all live. Underwater god-rays (2026-10-26): `composite.frag`
+   `underwaterGodRays` marches 24 jittered steps down the view ray through the
+   water column. Each sample refracts the sun (Snell, n = 1.333), finds where its
+   sun ray crossed the surface, takes a ridged two-scale value-noise focusing
+   pattern there (the wave crests acting as lenses), and attenuates along the sun
+   path and the view path with the authored fog span (`k = 2 / span`, matching
+   `underwater_extinction`). The result is light columns that converge in
+   perspective and follow the refracted sun direction — the screen-space streak
+   fan it replaces could not. The camera's depth below the surface and the fog
+   span reach the shader through `UnderwaterView.surface` into the reserved
+   `caustic_flags.zw` lanes. Not built: shafts cast by scene occluders (rocks,
+   hulls) — the march has no TLAS, only the surface itself modulates light — and
+   the focusing pattern is procedural, not the live wave field; its scales (70 /
+   37 BU), sharpness (ridge^6) and the 0.12 energy factor are chosen values. Remaining: the §2 remainder (residual
    unnamed Skyrim DNAM tail bytes — xEdit dev-4.1.6 marks every still-
    unread offset unnamed, so nothing meaningful is left to decode there).
    Each sub-item independently shippable.

@@ -8,6 +8,7 @@ use byroredux_core::ecs::components::water::{
 use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, ParticleEmitter};
 use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
 use byroredux_core::math::Vec3;
+use byroredux_renderer::vulkan::context::UnderwaterView;
 use byroredux_scripting::{RippleEvent, SplashEvent};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -574,29 +575,29 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
 /// no active camera). Moved out of `main.rs`
 /// under TD9-NEW-01 / #1267 to keep the binary entry file below
 /// the 2000-LOC ceiling.
-pub fn compute_underwater_params(world: &World) -> [f32; 4] {
+pub fn compute_underwater_frame(world: &World) -> UnderwaterView {
     let active = world.try_resource::<ActiveCamera>().map(|a| a.0);
     let Some(cam_entity) = active else {
-        return [0.0; 4];
+        return UnderwaterView::default();
     };
     let Some(sq) = world.query::<SubmersionState>() else {
-        return [0.0; 4];
+        return UnderwaterView::default();
     };
     let Some(state) = sq.get(cam_entity).copied() else {
-        return [0.0; 4];
+        return UnderwaterView::default();
     };
     drop(sq);
     if !state.head_submerged || state.depth <= 0.0 {
-        return [0.0; 4];
+        return UnderwaterView::default();
     }
     let Some(surface_entity) = state.surface_entity else {
-        return [0.0; 4];
+        return UnderwaterView::default();
     };
     let Some(plane_q) = world.query::<WaterPlane>() else {
-        return [0.0; 4];
+        return UnderwaterView::default();
     };
     let Some(plane) = plane_q.get(surface_entity) else {
-        return [0.0; 4];
+        return UnderwaterView::default();
     };
     let mat = &plane.material;
     let (fog_near, fog_far) = if mat.underwater_fog_far > mat.underwater_fog_near {
@@ -612,12 +613,24 @@ pub fn compute_underwater_params(world: &World) -> [f32; 4] {
         fog_near,
         mat.absorption_coefficients,
     );
-    [
-        underwater_color[0],
-        underwater_color[1],
-        underwater_color[2],
-        extinction,
-    ]
+    UnderwaterView {
+        grade: [
+            underwater_color[0],
+            underwater_color[1],
+            underwater_color[2],
+            extinction,
+        ],
+        // The shaft march needs the surface's place in the view: x = how far
+        // the camera is below it, y = the authored fog span the extinction
+        // ramp saturates over (`underwater_extinction` is 1 - exp(-2·ramp)).
+        surface: [state.depth, (fog_far - fog_near).max(1.0), 0.0, 0.0],
+    }
+}
+
+/// The composite/presentation underwater grade for the active camera, or all
+/// zeros while its head is out of the water.
+pub fn compute_underwater_params(world: &World) -> [f32; 4] {
+    compute_underwater_frame(world).grade
 }
 
 /// Apply authored Starfield extinction coefficients to the underwater target

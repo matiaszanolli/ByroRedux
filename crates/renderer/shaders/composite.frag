@@ -497,13 +497,77 @@ bool skyThroughAuthoredWindow(vec2 uv, float depth, bool hasSurface) {
     return false;
 }
 
-// One lattice value of the underwater shaft streak noise: an exact integer
-// (PCG) hash, so the streak pattern does not depend on float precision.
-float underwaterShaftHash(int lattice, int octave) {
-    uint v = uint(lattice) * 747796405u + uint(octave) * 1664525u + 2891336453u;
+// Exact integer (PCG) hash of a 2-D lattice cell in [0, 1], so the surface
+// focusing pattern below never depends on float precision.
+float underwaterFocusHash(ivec2 cell) {
+    uint v = uint(cell.x) * 747796405u + uint(cell.y) * 2891336453u + 2891336453u;
     v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
     v = (v >> 22u) ^ v;
     return float(v >> 8u) * (1.0 / 16777215.0);
+}
+
+float underwaterFocusNoise(vec2 p) {
+    vec2 cell = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    ivec2 c = ivec2(cell);
+    return mix(mix(underwaterFocusHash(c), underwaterFocusHash(c + ivec2(1, 0)), f.x),
+               mix(underwaterFocusHash(c + ivec2(0, 1)), underwaterFocusHash(c + ivec2(1, 1)), f.x),
+               f.y);
+}
+
+// How much sunlight the wavy surface focuses onto the water column below the
+// point where this sample's sun ray crossed it: bright ridges where the crests
+// act as lenses, dark between. Two drifting scales of ridged value noise.
+float underwaterSurfaceFocus(vec2 entry, float seconds) {
+    float a = underwaterFocusNoise(entry / 70.0 + vec2(seconds * 0.35, seconds * 0.20));
+    float b = underwaterFocusNoise(entry / 37.0 + vec2(-seconds * 0.27, seconds * 0.31));
+    float ridge = 1.0 - abs(a + b - 1.0);
+    return pow(ridge, 6.0) * 2.4;
+}
+
+// Underwater god rays: a short ray march through the water column that
+// accumulates sun light scattered toward the camera. Each sample finds where
+// its (refracted) sun ray crossed the surface, takes the surface focusing
+// pattern there, and attenuates along the sun path and the view path, so the
+// light arrives as columns that follow the refracted sun direction through the
+// water. The refracted-sun, surface-height and fog-span inputs come from the
+// CPU submersion state (`caustic_flags.zw`); there is no occlusion by scene
+// geometry, only by the surface itself.
+vec3 underwaterGodRays(vec3 viewDir, vec3 sunDirection, float rayLength, float jitter) {
+    float depthBelowSurface = params.caustic_flags.z;
+    float span = max(params.caustic_flags.w, 1.0);
+    if (depthBelowSurface <= 0.0 || sunDirection.y < 0.05) return vec3(0.0);
+
+    vec3 travel = refract(-sunDirection, vec3(0.0, 1.0, 0.0), 1.0 / 1.333);
+    if (travel.y > -0.05) return vec3(0.0);
+
+    float surfaceY = params.camera_pos.y + depthBelowSurface;
+    float tMax = min(rayLength, span * 1.5);
+    if (viewDir.y > 1.0e-3) {
+        tMax = min(tMax, depthBelowSurface / viewDir.y);
+    }
+    // Looking toward the sun, light scatters forward along its travel
+    // direction; Henyey-Greenstein, normalised so its mean over the sphere is 1.
+    const float g = 0.6;
+    float cosine = dot(travel, -viewDir);
+    float phase = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosine, 1.5);
+
+    const int steps = 24;
+    float k = 2.0 / span;
+    float dt = tMax / float(steps);
+    float seconds = params.weather_params.w;
+    float sum = 0.0;
+    for (int i = 0; i < steps; ++i) {
+        float t = (float(i) + jitter) * dt;
+        vec3 p = params.camera_pos.xyz + viewDir * t;
+        float below = surfaceY - p.y;
+        if (below <= 0.0) break;
+        float sunPath = below / -travel.y;
+        vec2 entry = p.xz - travel.xz * sunPath;
+        sum += underwaterSurfaceFocus(entry, seconds) * exp(-k * (t + sunPath)) * k * dt;
+    }
+    return vec3(sum * phase);
 }
 
 void main() {
@@ -823,62 +887,26 @@ void main() {
         return;
     }
 
-    // Underwater god rays. The authored submersion extinction is already
-    // computed from each game's WATR fog range on the CPU, so use it as the
-    // gate/energy budget rather than inventing a second water-depth model.
-    // A narrow sun-alignment lobe gives shafts toward the visible sun, while
-    // the depth ramp keeps the effect negligible at the waterline. This is a
-    // screen-space presentation term intentionally kept after the integrated
-    // froxel debug return and before bloom; it requires no new descriptor.
-    // The composite carries the outdoor palette for an interior aperture;
-    // that palette alone must not create underwater shafts in sealed rooms.
+    // Underwater god rays: a ray march through the water column
+    // (`underwaterGodRays`). The authored submersion extinction gates it, so a
+    // camera that is out of the water, or an interior that merely carries the
+    // outdoor palette, gets nothing.
     if (params.depth_params.x > 0.5
         && params.underwater.w > 0.0 && params.sun_dir.w > 0.0) {
         vec3 viewDir = screen_to_world_dir(fragUV);
         vec3 sunDirection = normalize(params.sun_dir.xyz);
-        float sunAlignment = max(dot(viewDir, sunDirection), 0.0);
-        float shaftLobe = pow(sunAlignment, 18.0);
-        // Shafts converge on the sun and break into columns where the sun
-        // crosses wave crests: a smooth glow around the sun axis reads as
-        // fog, not light shafts. Two animated octaves of 1D value noise over
-        // the angle around the sun axis give the radial streaks (about one
-        // streak every 18 degrees, the slower octave drifting the other way),
-        // normalised to a mean of ~0.65 so the lobe's energy budget is unchanged.
-        {
-            vec3 sideA = normalize(cross(sunDirection, abs(sunDirection.y) < 0.95
-                ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
-            vec3 sideB = cross(sunDirection, sideA);
-            vec3 around = viewDir - sunDirection * dot(viewDir, sunDirection);
-            float angle = atan(dot(around, sideB), dot(around, sideA));
-            float seconds = params.weather_params.w;
-            float streaks = 20.0;
-            float streak = 0.0;
-            for (int octave = 0; octave < 2; ++octave) {
-                float freq = streaks * (octave == 0 ? 1.0 : 0.45);
-                float drift = seconds * (octave == 0 ? 0.30 : -0.17);
-                float x = angle * (freq / 6.2831853) + drift;
-                float cell = floor(x);
-                float f = fract(x);
-                f = f * f * (3.0 - 2.0 * f);
-                float a = underwaterShaftHash(int(cell), octave);
-                float b = underwaterShaftHash(int(cell) + 1, octave);
-                streak += mix(a, b, f) * (octave == 0 ? 0.65 : 0.35);
-            }
-            shaftLobe *= mix(0.25, 1.0, streak) / 0.65;
+        float rayLength = params.volume_params.x;
+        if (has_surface) {
+            vec4 surfaceClip = params.inv_view_proj * vec4(fragUV * 2.0 - 1.0, depth, 1.0);
+            rayLength = length(surfaceClip.xyz / surfaceClip.w - params.camera_pos.xyz);
         }
-        float underwaterDistance = has_surface
-            ? linearViewDepth(fragUV, depth)
-            : params.volume_params.x;
-        float depthRamp = 1.0 - exp(-max(underwaterDistance, 0.0) * 0.002);
-        float shaftStrength = shaftLobe * depthRamp
-            * clamp(params.underwater.w, 0.0, 0.85)
-            * params.sun_dir.w * 0.12;
         vec3 shaftColor = mix(
             params.underwater.rgb,
             params.sun_color.rgb,
             0.35
         );
-        combined += shaftColor * shaftStrength;
+        combined += shaftColor * params.sun_dir.w * 0.12
+            * underwaterGodRays(viewDir, sunDirection, rayLength, blueNoiseRank());
     }
 
     // Weather precipitation and lightning are exterior-only presentation
