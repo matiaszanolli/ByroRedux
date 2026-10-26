@@ -1163,7 +1163,11 @@ void main() {
         foamMask += foamFlowStreaks(vWorldPos, renderOrigin.xyz, time) * 0.85;
         foamMask += foamCrest(Nperturbed, N) * 0.7;
     } else if (kind == WATER_RIVER) {
-        foamMask += foamFlowStreaks(vWorldPos, renderOrigin.xyz, time) * 0.25;
+        // No procedural streaks: a river's whitewater is authored (the
+        // `fxrapids*` / `fxcreek*` effect meshes), and the 0.25-weight streak
+        // term laid fine diagonal bands over every calm river plane (Skyrim
+        // White River, FO4 Commonwealth shore — gone with the term off, same
+        // capture pose). Rapids and waterfalls keep theirs.
     } else if (kind == WATER_WATERFALL) {
         // Sheet foam: more at the top and bottom of the falling
         // surface. We don't have a normalised sheet coordinate

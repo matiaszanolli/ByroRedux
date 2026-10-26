@@ -568,6 +568,18 @@ Verified on the Cornell glass scene (pools survive the gate); pinned by
 `glass_caustic_deposits_are_gated_on_landing_pixel_visibility` in
 `vulkan/caustic.rs`.
 
+**River water has no procedural flow-streak foam (2026-10-26).** The
+0.25-weight `foamFlowStreaks` term on `WATER_RIVER` painted fine diagonal
+bands over every calm river plane (Skyrim White River 5,-10 and the FO4
+Commonwealth shore in the `m-exteriors.sh water` captures); with the term
+removed the same poses show the river bed through clean water, and FNV is
+unchanged. A river's whitewater is authored as the `fxrapids*` / `fxcreek*`
+effect meshes, so the shader term only double-counted it. Rapids and
+waterfalls keep their streaks (no defect measured there). Method: the
+`water_term` oracle's green channel is the foam mask but is too faint to
+read by eye; the decisive check was an A/B capture of the same fixture pose
+with the term compiled out.
+
 **Regression guard, not a remaining fragility:** the procedural-noise hash
 bands past ~176k world units (#1502) are fixed — `sampleScrollingNormal` and
 `foamFlowStreaks` both subtract `originOffset` before hashing, rebased twice
