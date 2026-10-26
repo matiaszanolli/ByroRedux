@@ -17,7 +17,7 @@ changes gameplay silently — no crash, no validation error, no failing test unl
 
 ## Scope
 
-- `crates/core/src/character/` (15 modules, `mod_docstring_indexes_every_sub_module` pins the count):
+- `crates/core/src/character/` (16 modules, `mod_docstring_indexes_every_sub_module` pins the count):
   `ruleset.rs` (`CharacterRuleset`, the per-game `Resource` seam), `profile.rs` (`CharacterRulesProfile` —
   the single per-game policy row: `NpcStatModel`, `creature_stats`, `body_condition_base`, `vital_pools`,
   `RulesetBuilder`, and since #5921 `3162b21b8` `OverEncumberedRule`, `awards_kill_experience`,
