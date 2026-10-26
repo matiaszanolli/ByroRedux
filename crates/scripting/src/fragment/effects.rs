@@ -21,6 +21,14 @@ mod vehicle_cinematic;
 mod ai_combat;
 mod quest_scoped;
 mod evaluate;
+mod guards;
+mod actor_lists;
+mod actor_values;
+mod location_alias;
+mod messages;
+mod player_stats;
+mod quest_vars;
+mod reference_state;
 
 pub(crate) use resolve::*;
 pub use deferred::*;
@@ -33,6 +41,14 @@ use player_control::*;
 use vehicle_cinematic::*;
 use ai_combat::*;
 use quest_scoped::*;
+use actor_lists::*;
+use actor_values::*;
+use guards::*;
+use location_alias::*;
+use messages::*;
+use player_stats::*;
+use quest_vars::*;
+use reference_state::*;
 pub(in crate::fragment) use evaluate::*;
 pub(crate) use evaluate::{
     clear_actor_value_damage, evaluate_guard_guard_free, evaluate_value_guard_free,
@@ -159,18 +175,13 @@ pub(crate) fn apply_effect(
     deferred: &mut DeferredFragmentEffects,
 ) -> Option<QuestStageAdvanced> {
     match effect {
-        Effect::SetGlobalValue { global, value } => {
-            // Read first: the value may read `Globals` itself (`G.Mod(x)`).
-            let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
-            let form_id = resolve_property_form_id(vmad, global.property_name())?;
-            if let Some(mut globals) = world.try_resource_mut::<crate::Globals>() {
-                globals.set(form_id, value);
-            } else {
-                log::debug!(
-                    "fragment SetValue skipped: Globals resource is unavailable for {form_id:08X}"
-                );
-            }
-            None
+        Effect::SetGlobalValue { .. }
+        | Effect::SetReferenceVariable { .. }
+        | Effect::SetLocal { .. }
+        | Effect::SetQuestVariable { .. }
+        | Effect::CopyQuestVariable { .. }
+        | Effect::ModQuestVariable { .. } => {
+            apply_quest_vars_effect(effect, context, vmad, world, stages, deferred)
         }
         Effect::AddItem { .. } | Effect::RemoveItem { .. } | Effect::EquipItem { .. } => {
             apply_inventory_effect(effect, context, vmad, world, stages, deferred)
@@ -209,461 +220,51 @@ pub(crate) fn apply_effect(
         | Effect::ExitCart { .. } => {
             apply_vehicle_cinematic_effect(effect, context, vmad, world, deferred)
         }
-        Effect::SendStoryEvent {
-            keyword,
-            location,
-            references,
-            values,
-        } => {
-            let keyword = resolve_property_form_id(vmad, keyword.property_name())?;
-            log::debug!(
-                "fragment SendStoryEvent: quest {:08X} raises SCPT keyword {keyword:08X}",
-                context.0
-            );
-            // A location property, or a location alias's bound location.
-            let location = match location {
-                None => None,
-                Some(location) => resolve_location(vmad, world, context, location),
-            };
-            let [first, second] = references
-                .clone()
-                .map(|actor| actor.and_then(|actor| guard_actor(&actor, context, vmad, world, deferred)));
-            // `R1` holds an entity: the first reference, else the player
-            // (flagged absent).
-            let carrier = first.or_else(|| {
-                crate::papyrus_demo::PapyrusPlayerEntity::get(world)
-            })?;
-            deferred.story_events.push(
-                crate::story_manager::StoryEvent {
-                    mnemonic: *b"SCPT",
-                    reference_1: carrier,
-                    reference_2: second,
-                    location_1: location,
-                    location_2: None,
-                    scripted: Some(crate::story_manager::ScriptedStoryEvent {
-                        keyword,
-                        values: *values,
-                        has_reference_1: first.is_some(),
-                    }),
-                },
-            );
-            None
+        Effect::SendStoryEvent { .. }
+        | Effect::AddToMap { .. }
+        | Effect::ShowMessage { .. }
+        | Effect::ShowHelpMessage { .. }
+        | Effect::Notification { .. }
+        | Effect::ShowBarterMenu { .. } => {
+            apply_messages_effect(effect, context, vmad, world, deferred)
         }
-        Effect::AddToMap { marker, fast_travel } => {
-            let Some(reference) = object_form_id(vmad, world, context, marker, deferred) else {
-                log::debug!("fragment AddToMap skipped: the marker does not resolve");
-                return None;
-            };
-            deferred.map_markers.push((reference, *fast_travel));
-            None
+        Effect::DeleteWhenAble { .. }
+        | Effect::ChangeKeyword { .. }
+        | Effect::SetLinkedRef { .. }
+        | Effect::SetLocRefType { .. }
+        | Effect::SetRelationshipRank { .. }
+        | Effect::Kill { .. }
+        | Effect::SetBaseProtection { .. }
+        | Effect::BlockActivation { .. } => {
+            apply_reference_state_effect(effect, context, vmad, world, deferred)
         }
-        Effect::ShowMessage { message, args } => {
-            let form_id = resolve_property_form_id(vmad, message.property_name())?;
-            deferred.messages.push(PendingMessage::Show(form_id, args.clone()));
-            None
+        Effect::RewardPlayerXp { .. }
+        | Effect::SetPlayerTeammate { .. }
+        | Effect::SetDoingFavor { .. }
+        | Effect::AdvanceSkill { .. }
+        | Effect::AddAchievement { .. }
+        | Effect::IncrementStat { .. }
+        | Effect::PlayerCaps { .. } => {
+            apply_player_stats_effect(effect, context, vmad, world, stages, deferred)
         }
-        Effect::ShowHelpMessage { message } => {
-            let form_id = resolve_property_form_id(vmad, message.property_name())?;
-            deferred.messages.push(PendingMessage::Show(form_id, Vec::new()));
-            None
+        Effect::SetLocationCleared { .. }
+        | Effect::ForceLocationTo { .. }
+        | Effect::ForceAlias { .. }
+        | Effect::SetLocationKeywordData { .. } => {
+            apply_location_alias_effect(effect, context, vmad, world, stages, deferred)
         }
-        Effect::Notification { text } => {
-            deferred.messages.push(PendingMessage::Notify(text.clone()));
-            None
+        Effect::SetActorValue { .. }
+        | Effect::SetActorValueNamed { .. }
+        | Effect::DamageActorValue { .. } => {
+            apply_actor_values_effect(effect, context, vmad, world, stages, deferred)
         }
-        Effect::DeleteWhenAble { object } => {
-            let form_id = object_form_id(vmad, world, context, object, deferred)?;
-            deferred.deletions.push(form_id);
-            None
-        }
-        Effect::ShowBarterMenu { vendor } => {
-            let vendor = guard_actor(vendor, context, vmad, world, deferred)?;
-            deferred.barter = Some(vendor);
-            None
-        }
-        Effect::ChangeKeyword {
-            object,
-            keyword,
-            change,
-        } => {
-            let object = guard_actor(object, context, vmad, world, deferred)?;
-            let keyword = resolve_property_form_id(vmad, keyword.property_name())?;
-            deferred.keyword_changes.push((object, keyword, *change));
-            None
-        }
-        Effect::SetReferenceVariable {
-            object,
-            variable,
-            value,
-        } => {
-            let Some(entity) =
-                resolve_object(vmad, world, context, object, &deferred.scene_actor_bindings)
-            else {
-                log::debug!("fragment reference variable write skipped: the reference is not loaded");
-                return None;
-            };
-            deferred
-                .reference_variables
-                .push((entity, variable.clone(), *value));
-            None
-        }
-        Effect::SetLocal { local, value } => {
-            let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
-            deferred.locals.insert(local.clone(), value);
-            None
-        }
-        Effect::RewardPlayerXp { amount, direct } => {
-            let amount = resolve_item_count(amount, context, vmad, world, stages, deferred)?;
-            deferred.player_xp.push((amount, *direct));
-            None
-        }
-        Effect::SetPlayerTeammate {
-            actor,
-            teammate,
-            can_do_favor,
-        } => {
-            let actor = guard_actor(actor, context, vmad, world, deferred)?;
-            let form = crate::condition::entity_global_form_id(world, actor)?;
-            deferred.follower_changes.push((
-                form,
-                FollowerChange::Teammate {
-                    teammate: *teammate,
-                    can_do_favor: *can_do_favor,
-                },
-            ));
-            None
-        }
-        Effect::SetDoingFavor { actor, doing } => {
-            let actor = guard_actor(actor, context, vmad, world, deferred)?;
-            let form = crate::condition::entity_global_form_id(world, actor)?;
-            deferred.follower_changes.push((form, FollowerChange::DoingFavor(*doing)));
-            None
-        }
-        Effect::SetLinkedRef {
-            object,
-            target,
-            keyword,
-        } => {
-            let source = object_form_id(vmad, world, context, object, deferred)?;
-            let target = match target {
-                Some(target) => object_form_id(vmad, world, context, target, deferred)?,
-                None => 0,
-            };
-            let keyword = match keyword {
-                Some(keyword) => resolve_property_form_id(vmad, keyword.property_name())?,
-                None => 0,
-            };
-            deferred.linked_ref_changes.push((source, keyword, target));
-            None
-        }
-        Effect::SetLocRefType { object, ref_type } => {
-            let reference = object_form_id(vmad, world, context, object, deferred)?;
-            let ref_type = match ref_type {
-                Some(ref_type) => resolve_property_form_id(vmad, ref_type.property_name())?,
-                None => 0,
-            };
-            deferred.loc_ref_type_changes.push((reference, ref_type));
-            None
-        }
-        Effect::AdvanceSkill { skill, magnitude } => {
-            deferred.skill_advances.push((skill.clone(), *magnitude));
-            None
-        }
-        Effect::AddAchievement { id } => {
-            deferred.achievements.push(*id);
-            None
-        }
-        Effect::IncrementStat { stat, amount } => {
-            deferred.misc_stats.push((stat.clone(), *amount));
-            None
-        }
-        Effect::PlayerCaps { delta, silent } => {
-            // `Game.GetCaps()` is `Game.GetForm(15)` in FO4's `Game.psc`.
-            const CAPS: u32 = 0x0000_000F;
-            let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world)?;
-            match delta.cmp(&0) {
-                std::cmp::Ordering::Greater => {
-                    add_items(world, player, CAPS, *delta as u32);
-                    if !*silent {
-                        deferred.messages.push(PendingMessage::ItemAdded(CAPS, *delta as u32));
-                    }
-                }
-                std::cmp::Ordering::Less => {
-                    remove_items(world, player, CAPS, delta.unsigned_abs(), None);
-                }
-                std::cmp::Ordering::Equal => {}
-            }
-            None
-        }
-        Effect::SetRelationshipRank { actor, other, rank } => {
-            let actor = guard_actor(actor, context, vmad, world, deferred)?;
-            let other = guard_actor(other, context, vmad, world, deferred)?;
-            let (Some(actor), Some(other)) = (
-                crate::relationships::actor_base(world, actor),
-                crate::relationships::actor_base(world, other),
-            ) else {
-                log::debug!("fragment SetRelationshipRank skipped: an actor has no base");
-                return None;
-            };
-            deferred
-                .relationship_changes
-                .push((crate::relationships::pair(actor, other), *rank));
-            None
-        }
-        Effect::Kill { actor, killer, silent } => {
-            let victim = guard_actor(actor, context, vmad, world, deferred)?;
-            let killer = killer
-                .as_ref()
-                .and_then(|killer| guard_actor(killer, context, vmad, world, deferred));
-            deferred.kills.push((victim, killer, *silent));
-            None
-        }
-        Effect::SetBaseProtection {
-            base,
-            protected,
-            value,
-        } => {
-            let base = match base {
-                crate::translate::effects::ActorBaseRef::OfActor(actor) => {
-                    let actor = guard_actor(actor, context, vmad, world, deferred)?;
-                    world
-                        .get::<crate::scene::SceneAliasCandidate>(actor)
-                        .map(|candidate| candidate.base_form_id)
-                }
-                crate::translate::effects::ActorBaseRef::Form(form) => {
-                    resolve_property_form_id(vmad, form.property_name())
-                }
-            };
-            let Some(base) = base else {
-                log::debug!("fragment SetEssential / SetProtected skipped: no actor base");
-                return None;
-            };
-            deferred.base_protection.push((base, *protected, *value));
-            None
-        }
-        Effect::SetLocationCleared { location, cleared } => {
-            let Some(location) = resolve_location(vmad, world, context, location) else {
-                log::debug!("fragment SetCleared skipped: the location does not resolve");
-                return None;
-            };
-            deferred.location_clears.push((location, *cleared));
-            None
-        }
-        Effect::BlockActivation { object, blocked } => {
-            let Some(reference) = object_form_id(vmad, world, context, object, deferred) else {
-                log::debug!("fragment BlockActivation skipped: the reference does not resolve");
-                return None;
-            };
-            deferred.activation_blocks.push((reference, *blocked));
-            None
-        }
-        Effect::ForceLocationTo { alias, location } => {
-            let name = alias.property_name();
-            let Some((quest, alias_id)) = alias_property(vmad, context, name) else {
-                log::debug!("fragment ForceLocationTo skipped: '{name}' is not an alias property");
-                return None;
-            };
-            let location = resolve_property_form_id(vmad, location.property_name())?;
-            deferred
-                .alias_overrides
-                .push((quest, alias_id, crate::AliasOverride::ForcedLocation(location)));
-            deferred.scene_actor_bindings_dirty = true;
-            None
-        }
-        Effect::ForceAlias { alias, target } => {
-            let name = alias.property_name();
-            let Some((quest, alias_id)) = alias_property(vmad, context, name) else {
-                log::debug!("fragment ForceRefTo/Clear skipped: '{name}' is not an alias property");
-                return None;
-            };
-            let value = match target {
-                None => crate::AliasOverride::Cleared,
-                Some(target) => {
-                    crate::AliasOverride::Forced(actor_reference_form_id(target, context, vmad, world, deferred)?)
-                }
-            };
-            deferred.alias_overrides.push((quest, alias_id, value));
-            deferred.scene_actor_bindings_dirty = true;
-            None
-        }
-        Effect::SetLocationKeywordData { location, keyword, value } => {
-            let location = resolve_property_form_id(vmad, location.property_name())?;
-            let keyword = resolve_property_form_id(vmad, keyword.property_name())?;
-            let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
-            deferred.location_keyword_changes.push((location, keyword, value));
-            None
-        }
-        Effect::SetActorValue {
-            actor,
-            actor_value,
-            value,
-        } => {
-            let actor = resolve_actor(
-                vmad,
-                world,
-                context,
-                actor,
-                &deferred.scene_actor_bindings,
-                deferred.speaker,
-            )?;
-            let avif = resolve_property_form_id(vmad, actor_value.property_name())?;
-            let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
-            set_actor_value_base(world, actor, avif, value);
-            queue_health_death(world, actor);
-            None
-        }
-        Effect::SetActorValueNamed { actor, name, value } => {
-            let actor = resolve_actor(
-                vmad,
-                world,
-                context,
-                actor,
-                &deferred.scene_actor_bindings,
-                deferred.speaker,
-            )?;
-            let Some(avif) = world
-                .try_resource::<crate::ActorValueNames>()
-                .and_then(|names| names.resolve(name))
-            else {
-                log::debug!("fragment SetAV skipped: no actor value named '{name}'");
-                return None;
-            };
-            let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
-            set_actor_value_base(world, actor, avif, value);
-            queue_health_death(world, actor);
-            None
-        }
-        Effect::DamageActorValue {
-            actor,
-            actor_value,
-            amount,
-            restore,
-        } => {
-            let actor = resolve_actor(
-                vmad,
-                world,
-                context,
-                actor,
-                &deferred.scene_actor_bindings,
-                deferred.speaker,
-            )?;
-            let avif = match actor_value {
-                crate::translate::effects::ActorValueArg::Form(form) => {
-                    resolve_property_form_id(vmad, form.property_name())?
-                }
-                crate::translate::effects::ActorValueArg::Named(name) => world
-                    .try_resource::<crate::ActorValueNames>()
-                    .and_then(|names| names.resolve(name))?,
-            };
-            let amount = evaluate_value(amount, context, vmad, world, stages, deferred)?;
-            {
-                let mut values = world.query_mut::<byroredux_core::ecs::components::ActorValues>()?;
-                if values.get_mut(actor).is_none() {
-                    values.insert(actor, byroredux_core::ecs::components::ActorValues::new());
-                }
-                let values = values.get_mut(actor).expect("present or inserted");
-                if *restore {
-                    values.restore(avif, amount);
-                } else {
-                    values.apply_damage(avif, amount);
-                }
-            }
-            if !*restore {
-                queue_health_death(world, actor);
-            }
-            None
-        }
-        Effect::ChangePerk { actor, perk, add } => {
-            let actor = resolve_actor(
-                vmad,
-                world,
-                context,
-                actor,
-                &deferred.scene_actor_bindings,
-                deferred.speaker,
-            )?;
-            let perk = resolve_property_form_id(vmad, perk.property_name())?;
-            // `Perks` is direct component storage, written in place like
-            // `ActorValues` above.
-            let mut perks = world.query_mut::<byroredux_core::character::Perks>()?;
-            if perks.get_mut(actor).is_none() {
-                perks.insert(actor, byroredux_core::character::Perks::default());
-            }
-            let owned = perks.get_mut(actor).expect("present or inserted");
-            if !*add {
-                owned.remove(perk);
-            } else if owned.rank(perk) == 0 {
-                owned.set_rank(perk, 1);
-            }
-            None
-        }
-        Effect::ChangeFaction {
-            actor,
-            faction,
-            change,
-        } => {
-            let actor = resolve_actor(
-                vmad,
-                world,
-                context,
-                actor,
-                &deferred.scene_actor_bindings,
-                deferred.speaker,
-            )?;
-            let faction = match change {
-                crate::FactionChange::RemoveAll => 0,
-                _ => resolve_property_form_id(vmad, faction.property_name())?,
-            };
-            deferred.faction_changes.push((actor, faction, *change));
-            None
-        }
-        Effect::SetQuestVariable {
-            quest,
-            variable,
-            value,
-        } => {
-            let quest = resolve_quest_logged(quest, context, vmad)?;
-            deferred.quest_variables.push((
-                quest,
-                crate::QuestScriptVariables::property_key(variable),
-                *value,
-            ));
-            None
-        }
-        Effect::CopyQuestVariable { quest, from, to } => {
-            let quest = resolve_quest_logged(quest, context, vmad)?;
-            let from = crate::QuestScriptVariables::property_key(from);
-            let to = crate::QuestScriptVariables::property_key(to);
-            // The same pending-then-written chain `ModQuestVariable` reads.
-            let value = deferred
-                .quest_variables
-                .iter()
-                .rev()
-                .find(|(q, k, _)| *q == quest && *k == from)
-                .map(|(_, _, value)| *value)
-                .or_else(|| crate::quest_variable(world, quest, from))?;
-            deferred.quest_variables.push((quest, to, value));
-            None
-        }
-        Effect::ModQuestVariable {
-            quest,
-            variable,
-            delta,
-        } => {
-            // Read through the same pending-then-written-then-authored chain
-            // a guard uses, so an earlier write in this fragment counts.
-            let quest = resolve_quest_logged(quest, context, vmad)?;
-            let key = crate::QuestScriptVariables::property_key(variable);
-            let current = deferred
-                .quest_variables
-                .iter()
-                .rev()
-                .find(|(q, k, _)| *q == quest && *k == key)
-                .map(|(_, _, value)| *value)
-                .or_else(|| crate::quest_variable(world, quest, key))
-                .unwrap_or(0.0);
-            deferred.quest_variables.push((quest, key, current + delta));
-            None
+        Effect::ChangePerk { .. }
+        | Effect::ChangeFaction { .. }
+        | Effect::AddSpell { .. }
+        | Effect::RemoveSpell { .. }
+        | Effect::AddRaceSpells { .. }
+        | Effect::RemoveRaceSpells { .. } => {
+            apply_actor_lists_effect(effect, context, vmad, world, deferred)
         }
         Effect::SetEnemy { .. }
         | Effect::SetAlly { .. }
@@ -675,48 +276,6 @@ pub(crate) fn apply_effect(
         | Effect::SetGhost { .. }
         | Effect::EvaluatePackage { .. } => {
             apply_ai_combat_effect(effect, context, vmad, world, deferred)
-        }
-        Effect::AddSpell { actor, spell } | Effect::RemoveSpell { actor, spell } => {
-            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
-            let spell = resolve_property_form_id(vmad, spell.property_name())?;
-            let adding = matches!(effect, Effect::AddSpell { .. });
-            let changed = if adding {
-                crate::magic::add_spell(world, actor, spell)
-            } else {
-                crate::magic::remove_spell(world, actor, spell)
-            };
-            // #4822 — never drop the result silently. `magic` itself warns
-            // when the actor has no `SpellList` (a lost effect); what is left
-            // here is Papyrus' own idempotent no-op.
-            if !changed {
-                let verb = if adding { "AddSpell" } else { "RemoveSpell" };
-                log::debug!(
-                    "quest {context:?}: {verb}({spell:08X}) on entity {actor} changed nothing"
-                );
-            }
-            None
-        }
-        // #4415 — the script-defined racial pair. The racial set was
-        // level-resolved and stamped as `RaceSpells` at spawn, so the apply
-        // needs no index; each member goes through the same add/remove the
-        // scripted `AddSpell` uses (constant modifiers included).
-        Effect::AddRaceSpells { actor } | Effect::RemoveRaceSpells { actor } => {
-            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
-            let adding = matches!(effect, Effect::AddRaceSpells { .. });
-            let changed = if adding {
-                crate::magic::add_race_spells(world, actor)
-            } else {
-                crate::magic::remove_race_spells(world, actor)
-            };
-            if !changed {
-                let verb = if adding {
-                    "AddRaceSpells"
-                } else {
-                    "RemoveRaceSpells"
-                };
-                log::debug!("quest {context:?}: {verb} on entity {actor} changed nothing");
-            }
-            None
         }
         Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } | Effect::WaitWhile { .. } => {
             None

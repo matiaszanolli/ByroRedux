@@ -384,6 +384,23 @@ fn classify_comparison(atom: &Expr, scope: &Scope) -> Option<(GuardReading, Guar
     Some((guard_reading(atom, scope)?, GuardComparison::Ne, 0.0))
 }
 
+/// The quest a reading's receiver names: `Self` / the owning quest, a bare
+/// quest property, or a cast to the owning quest script. (#6142, lifted out
+/// of `guard_reading`, whose phases all resolve quest receivers.)
+fn reading_quest(object: &Expr, scope: &Scope) -> Option<QuestRef> {
+    if matches!(object, Expr::Ident(name) if name.0.eq_ignore_ascii_case("self")) {
+        return Some(QuestRef::SelfRef);
+    }
+    match object {
+        Expr::Ident(_) => explicit_quest_receiver(object, scope),
+        Expr::Cast { .. } | Expr::Call { .. } => match quest_expr_ref(object, scope)? {
+            quest @ (QuestRef::OwningQuest | QuestRef::SelfRef) => Some(quest),
+            QuestRef::Property(_) => None,
+        },
+        _ => None,
+    }
+}
+
 fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
     if let Expr::Cast { expr, target_type } = e {
         let inner = guard_reading(&expr.node, scope)?;
@@ -399,19 +416,7 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             integral => Some(integral),
         };
     }
-    let quest = |object: &Expr| -> Option<QuestRef> {
-        if matches!(object, Expr::Ident(name) if name.0.eq_ignore_ascii_case("self")) {
-            return Some(QuestRef::SelfRef);
-        }
-        match object {
-            Expr::Ident(_) => explicit_quest_receiver(object, scope),
-            Expr::Cast { .. } | Expr::Call { .. } => match quest_expr_ref(object, scope)? {
-                quest @ (QuestRef::OwningQuest | QuestRef::SelfRef) => Some(quest),
-                QuestRef::Property(_) => None,
-            },
-            _ => None,
-        }
-    };
+    let quest = |object: &Expr| reading_quest(object, scope);
     let int = |args: &[byroredux_papyrus::ast::CallArg]| -> Option<i64> {
         if args.len() == 1 {
             int_arg(args, 0)
@@ -457,6 +462,12 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             return global_receiver(object, scope).map(reading);
         }
     }
+    guard_reading_actor(e, scope)
+}
+
+/// The actor / reference reads of [`guard_reading`] (keywords, death, faction,
+/// perk, distance, follower flags, item count). (#6142, split out of it.)
+fn guard_reading_actor(e: &Expr, scope: &Scope) -> Option<GuardReading> {
     // M47.2 — actor, quest, scene and location reads.
     let one_object = |args: &[byroredux_papyrus::ast::CallArg]| {
         (args.len() == 1)
@@ -575,6 +586,13 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
     if let Some((object, args)) = method_call(e, "GetItemCount") {
         return Some(GuardReading::ItemCount(receiver_actor(object, scope)?, one_object(args)?));
     }
+    guard_reading_quest(e, scope)
+}
+
+/// The quest / scene / map-marker / location reads of [`guard_reading`].
+/// (#6142, split out of it.)
+fn guard_reading_quest(e: &Expr, scope: &Scope) -> Option<GuardReading> {
+    let quest = |object: &Expr| reading_quest(object, scope);
     if let Some((object, args)) = method_call(e, "IsCompleted") {
         return args
             .is_empty()
@@ -605,6 +623,12 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             .then(|| receiver_object(object, scope).map(GuardReading::ScenePlaying))
             .flatten();
     }
+    guard_reading_member(e, scope)
+}
+
+/// The property-style reads of [`guard_reading`]: `<global>.Value` and
+/// `<quest>.<variable>`. (#6142, split out of it.)
+fn guard_reading_member(e: &Expr, scope: &Scope) -> Option<GuardReading> {
     if let Expr::MemberAccess { object, member } = e {
         // `<global>.Value` — the GlobalVariable property spelling.
         if member.node.0.eq_ignore_ascii_case("value") {

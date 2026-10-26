@@ -1242,6 +1242,13 @@ impl Vm<'_> {
                 }
             }
         }
+        self.call_statement_no_ops(frame, callee, args)
+    }
+
+    /// The statements that need no effect of their own — music stack, guards,
+    /// housekeeping, array / collection / layer natives and engine reads called
+    /// for effect. (#6142, split from [`Self::call_statement`].)
+    fn call_statement_no_ops(&mut self, frame: &mut Frame, callee: &Spanned<Expr>, args: &[CallArg]) -> Run<Flow> {
         // Help-message housekeeping names the `Message` class or a message: the
         // receiver is never read.
         // CK *Add - MusicType* / *Remove - MusicType*: "Adds this music type to
@@ -1306,6 +1313,12 @@ impl Vm<'_> {
                 }
             }
         }
+        self.call_statement_script(frame, callee, args)
+    }
+
+    /// A script function called as a statement, its state events and the
+    /// registrations and `GotoState`. (#6142, split from [`Self::call_statement`].)
+    fn call_statement_script(&mut self, frame: &mut Frame, callee: &Spanned<Expr>, args: &[CallArg]) -> Run<Flow> {
         // A script function called as a statement may wait.
         if let Some((callee_frame, code)) = self.script_call_target(frame, &callee.node)? {
             let name = callee_name(&callee.node);
@@ -1374,6 +1387,12 @@ impl Vm<'_> {
         if is_trace(&callee.node) {
             return Ok(Flow::Normal);
         }
+        self.call_statement_native(frame, callee, args)
+    }
+
+    /// The native-effect statement: synthesize the call and apply the effect.
+    /// (#6142, split from [`Self::call_statement`].)
+    fn call_statement_native(&mut self, frame: &mut Frame, callee: &Spanned<Expr>, args: &[CallArg]) -> Run<Flow> {
         let (call, bindings, vmad) = self.synthesize(frame, &callee.node, args)?;
         let Some(effect) = classify_native_effect(&call, &bindings) else {
             return stop(format!("unsupported statement {}", callee_name(&callee.node)));
@@ -1393,4 +1412,5 @@ impl Vm<'_> {
         self.advances.extend(advances);
         Ok(Flow::Normal)
     }
+
 }

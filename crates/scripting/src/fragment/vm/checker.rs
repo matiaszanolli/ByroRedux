@@ -773,6 +773,13 @@ impl<'l> Checker<'l> {
                 }
             }
         }
+        self.check_call_forms(frame, callee, receiver, name, arg_kinds, statement)
+    }
+
+    /// The call forms with their own shape, tried before any receiver is
+    /// resolved: help-message housekeeping, `InputEnableLayer`, `Sound.Play`,
+    /// `MusicType.Add/Remove`. (#6142, split from [`Self::check_call`].)
+    fn check_call_forms(&mut self, frame: &mut CheckFrame, callee: &Expr, receiver: Option<&Expr>, name: String, arg_kinds: Vec<Arg>, statement: bool) -> Option<Kind> {
         // Help-message housekeeping (see [`help_message_housekeeping`]).
         if statement {
             if let Some(arity) = help_message_housekeeping(callee) {
@@ -830,6 +837,13 @@ impl<'l> Checker<'l> {
             && receiver.is_some_and(|receiver| declares_music_type(&frame.script, receiver)) {
                 return Some(Kind::None);
             }
+        self.check_own_call(frame, callee, receiver, name, arg_kinds, statement)
+    }
+
+    /// A call on the frame's own script (no receiver, or `Self`): its function,
+    /// state events, event registrations and `GotoState`. (#6142, split from
+    /// [`Self::check_call`].)
+    fn check_own_call(&mut self, frame: &mut CheckFrame, callee: &Expr, receiver: Option<&Expr>, name: String, arg_kinds: Vec<Arg>, statement: bool) -> Option<Kind> {
         // The frame's own script function.
         if receiver.is_none()
             || receiver.is_some_and(|r| matches!(r, Expr::Ident(id) if id.0.eq_ignore_ascii_case("self")))
@@ -893,6 +907,13 @@ impl<'l> Checker<'l> {
                 return Some(Kind::None);
             }
         }
+        self.check_receiver_call(frame, callee, receiver, name, arg_kinds, statement)
+    }
+
+    /// A call with a receiver that is not a value: `Parent.Fn()`, a script's
+    /// global function, a static class or an engine class's static native.
+    /// (#6142, split from [`Self::check_call`].)
+    fn check_receiver_call(&mut self, frame: &mut CheckFrame, callee: &Expr, receiver: Option<&Expr>, name: String, arg_kinds: Vec<Arg>, statement: bool) -> Option<Kind> {
         let Some(receiver) = receiver else {
             return self.fail(|| format!("global {name}"));
         };
@@ -971,6 +992,13 @@ impl<'l> Checker<'l> {
                 return result;
             }
         }
+        self.check_value_call(frame, receiver, name, arg_kinds, statement)
+    }
+
+    /// A call on a value receiver: arrays, collection aliases, the per-family
+    /// natives, registrations on another quest, scripts on other references and
+    /// the placeholder-native fallback. (#6142, split from [`Self::check_call`].)
+    fn check_value_call(&mut self, frame: &mut CheckFrame, receiver: &Expr, name: String, arg_kinds: Vec<Arg>, statement: bool) -> Option<Kind> {
         let receiver_kind = self.kind(frame, receiver)?;
         if receiver_kind == Kind::Array {
             return self.check_array_call(&name, &arg_kinds, statement);
@@ -1091,6 +1119,7 @@ impl<'l> Checker<'l> {
         }
         result
     }
+
 
     /// The script a quest-typed receiver's `name` lives in: a cast's target
     /// type, or the declared type of a property / local.
