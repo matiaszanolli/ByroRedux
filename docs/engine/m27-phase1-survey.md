@@ -134,7 +134,7 @@ Access shape derived by inspecting each function body for `world.query::<T>()` /
 ```
 **Structural mutation**: none. Self-contained — just reads cell type, mutates the audio world's reverb send.
 
-### 9. `audio_system` [Stage::Late] — `crates/audio/src/lib.rs:638`
+### 9. `audio_system` [Stage::Late] — `crates/audio/src/system.rs`
 
 ```rust
 .writes_resource::<AudioWorld>()

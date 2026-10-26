@@ -4,6 +4,38 @@
 
 use super::*;
 
+/// Every production source file of the crate, for the source-scan pins
+/// below. `lib.rs` was split into `dsp` / `world` / `components` / `system`
+/// / `cache`; a pin that read `lib.rs` alone would go vacuous (#6140), so
+/// they all read this. `fuz.rs` has its own tests and no pinned seam.
+const PRODUCTION_SOURCE: &str = concat!(
+    include_str!("lib.rs"),
+    include_str!("dsp.rs"),
+    include_str!("world.rs"),
+    include_str!("components.rs"),
+    include_str!("system.rs"),
+    include_str!("cache.rs"),
+);
+
+/// A new production module that is not listed in [`PRODUCTION_SOURCE`] would
+/// silently escape every source-scan pin; fail instead.
+#[test]
+fn production_source_lists_every_module_file() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for entry in std::fs::read_dir(dir).expect("src dir") {
+        let path = entry.expect("dir entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).expect("utf-8 name");
+        if !name.ends_with(".rs") || matches!(name, "tests.rs" | "fuz.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read source");
+        assert!(
+            PRODUCTION_SOURCE.contains(&text),
+            "{name} is not part of PRODUCTION_SOURCE — add it to the concat! above"
+        );
+    }
+}
+
 #[test]
 fn only_transformless_anchored_sources_are_prune_orphans() {
     let entity = 7;
@@ -1372,7 +1404,7 @@ fn reverb_send_gate_matches_silence_db_boundary() {
 /// at the source level, matching that same convention.
 #[test]
 fn drain_pending_oneshots_drains_in_place_instead_of_stranding_capacity() {
-    const LIB_RS: &str = include_str!("lib.rs");
+    const LIB_RS: &str = PRODUCTION_SOURCE;
     let start = LIB_RS
         .find("fn drain_pending_oneshots(")
         .expect("drain_pending_oneshots must still exist");
@@ -1439,7 +1471,7 @@ fn vecdeque_full_range_drain_preserves_capacity() {
 /// used for device-only renderer paths.
 #[test]
 fn oneshot_marker_is_consumed_on_both_dispatch_failure_arms() {
-    const LIB_RS: &str = include_str!("lib.rs");
+    const LIB_RS: &str = PRODUCTION_SOURCE;
 
     for arm in [
         "M44 Phase 3: add_spatial_sub_track failed for entity",
@@ -1524,7 +1556,7 @@ fn default_attenuation_band_is_metres_not_bethesda_units() {
 #[test]
 fn every_kira_position_site_goes_through_the_unit_seam() {
     // Whitespace-normalized so rustfmt's line wrapping can't break the needles.
-    let lib_rs: String = squeeze_whitespace(include_str!("lib.rs"));
+    let lib_rs: String = squeeze_whitespace(PRODUCTION_SOURCE);
     let lib_rs = lib_rs.as_str();
     for needle in [
         "mgr.add_listener(bu_to_audio_space(pose.0), pose.1)",
@@ -1654,7 +1686,7 @@ fn above_water_cutoff_never_reaches_the_kira_clamp_ceiling() {
 /// #2405 was filed for on the reverb-send gate three lines above.
 #[test]
 fn both_dispatch_paths_build_the_filter_through_one_call_site() {
-    let lib_rs = squeeze_whitespace(include_str!("lib.rs"));
+    let lib_rs = squeeze_whitespace(PRODUCTION_SOURCE);
     assert_eq!(
         lib_rs.matches("FilterBuilder::new()").count(),
         1,

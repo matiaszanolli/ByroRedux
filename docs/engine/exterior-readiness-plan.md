@@ -1224,7 +1224,7 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    own sequencing.
 5. [x] **Ambient audio emitter REGN-binding — music done, `incidental` not
    attempted.** The generic crossfade machinery already existed
-   (`AudioWorld::play_music`/`stop_music`, `crates/audio/src/lib.rs`);
+   (`AudioWorld::play_music`/`stop_music`, `crates/audio/src/world.rs`);
    what landed (2026-08-23) is the dispatch wiring, not a new spatial
    emitter type — `play_music` is non-spatial by design (background
    track, not a positioned SFX), which is the right fit for `music` and
