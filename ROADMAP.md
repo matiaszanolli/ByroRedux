@@ -141,18 +141,10 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
 `cargo run --release -- --game fnv --cell GSProspectorSaloonInterior --bench-frames 300 --bench-hold`.
 The bench-of-record table below deliberately keeps the bare-name + `cd` form for apples-to-apples continuity with the historical record — do not restate those numbers under a different invocation shape.
 
-**Standing methodology.** Every refresh includes a same-machine control:
-rebuild the outgoing record's commit in a worktree and bench it in the same
-session, on the same harness. That control is what proved
-PERF-REGRESSION-6c56e311 was code. It also produced R6a-regress-22 — later
-shown to be the bench camera's origin moving, not code (#5128) — so pin
-`--camera-pos` / `--camera-forward` across any spawn-placement change.
-`fsr-bench-matrix.sh` now records each run's
-`camera_pos` / `camera_forward`, and the report prints them per scene. Also
-isolate `BYROREDUX_SETTINGS_PATH` so persisted menu settings cannot leak into
-runs (#4947). A genuinely idle-machine run has never been done. FSR Quality
-is the engine default; the `TAA (native)` column stays the historical
-reference and is reachable with `--upscaler taa`.
+**Standing methodology.** Every refresh includes a same-machine control (the
+outgoing record's commit rebuilt in a worktree and benched in the same session),
+a pinned `--camera-pos` / `--camera-forward`, and an isolated `BYROREDUX_SETTINGS_PATH`
+(full text: [`roadmap-history.md` §2](docs/archive/roadmap-history.md#2-superseded-bench-records)).
 
 Superseded records (R6a-stale-15 at `8a668eff` through `4c9a5b36`) are in
 [`roadmap-history.md` §2](docs/archive/roadmap-history.md#2-superseded-bench-records);
@@ -432,16 +424,9 @@ rewrite pressure.
 
 ### Risk-reducers (R1–R7, 2026-04-22)
 
-Structural fixes to keep known growth patterns from calcifying. Only R2 is
-still open; the others are listed under Completed Milestones.
-
-- **R2** — ESM typed sub-record decoder. Phases A and B closed 2026-05-24
-  (cursor primitive and the 169-site migration). Phase C, the typed
-  `read_sub::<T>` schema layer, is adopted only in `records/misc/magic.rs` so
-  far. It does not block M24.2.
-- **R6a** — the bench-of-record discipline. It is a standing rule rather than
-  a milestone: a record more than 30 commits old is stale. The live record and
-  its open regression are under Status and Known Issues.
+Only **R2** (ESM typed sub-record decoder, Phase C) is still open; **R6a**, the
+bench-of-record discipline, is a standing rule — a record more than 30 commits
+old is stale. Full index: [`roadmap-history.md` §6](docs/archive/roadmap-history.md#6-risk-reducer-index-growth-tripwire-and-pacing-discipline).
 
 ### Growth discipline
 
@@ -461,15 +446,9 @@ Before splitting one, grep for `include_str!` source-shape tests that read it.
 
 ### Pacing discipline
 
-Audit cadence is load-bearing: without backpressure, audits become the work
-product instead of the work.
+Audit cadence is delta-scoped and low-severity findings are bundled per theme
+(full wording in [`roadmap-history.md` §6](docs/archive/roadmap-history.md#6-risk-reducer-index-growth-tripwire-and-pacing-discipline)).
 
-- **Which audits run** is decided by the audit skills, not by session habit.
-  Runs are delta-scoped: `/audit-suite --changed` routes the diff through
-  `_audit-owners.md`, and each skill scopes to the dimensions whose paths
-  changed since its last report.
-- **LOW-severity findings** are bundled per audit into one commit per theme,
-  not one commit per finding.
 - **Stale-bench discipline**: any change that touches a numbered claim here
   must refresh the claim, remove it, or move it to
   [`roadmap-history.md`](docs/archive/roadmap-history.md). No silent drift.
