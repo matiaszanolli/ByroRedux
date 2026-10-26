@@ -3037,7 +3037,7 @@ mod tests {
         // Source of truth: the struct's own field list. Counted from the
         // declaration rather than a hardcoded number so this test cannot
         // drift the same way the prose did.
-        const TYPES_SRC: &str = include_str!("../../crates/nif/src/import/types.rs");
+        const TYPES_SRC: &str = include_str!("../../crates/nif/src/import/types/material.rs");
         let struct_body = TYPES_SRC
             .split_once("pub struct MaterialTextureSet<T> {")
             .expect("MaterialTextureSet must still be declared here")

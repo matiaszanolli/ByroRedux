@@ -61,7 +61,7 @@ Two consequences worth knowing:
   *wrong* for any case-preserving use such as book/UI text or paths
   surfaced to mod authors. Those sites carry an `Arc<str>` alongside the
   `FixedString` instead — see `ImportedNode` / `ImportedMesh` (with their
-  `Option<Arc<str>>` `name` fields) in `crates/nif/src/import/types.rs`.
+  `Option<Arc<str>>` `name` fields) in `crates/nif/src/import/types/{node,mesh}.rs`.
 - Only ASCII bytes (`0x41..=0x5A`) are folded; multi-byte UTF-8 sequences
   are left untouched, so a string like `"Naïve Café"` round-trips as
   `"naïve café"` and stays valid UTF-8.
@@ -139,7 +139,7 @@ Two differences:
   (`texture_path`, `normal_map`, `glow_map`, `detail_map`, `gloss_map`,
   `dark_map`, `parallax_map`, `env_map`, `env_mask`, `material_path`, …) in
   `crates/nif/src/import/material/mod.rs` and
-  `crates/nif/src/import/types.rs`. A shared
+  `crates/nif/src/import/types/material.rs`. A shared
   `intern_texture_path(pool, &str)` helper centralises the
   empty-string-collapses-to-`None` invariant. The NIF import entry points
   (`import_nif_scene`, `import_nif`, `import_nif_with_collision`) and the

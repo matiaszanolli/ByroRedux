@@ -36,7 +36,7 @@ The NIF parser now handles the full `NiLight` hierarchy (#156):
   skipping editor markers and culled/hidden nodes, and honouring
   `NiSwitchNode` / `NiLODNode` active-child selection (#718). Each light
   becomes an `ImportedLight`
-  ([`crates/nif/src/import/types.rs`](../../crates/nif/src/import/types.rs)):
+  ([`crates/nif/src/import/types/light.rs`](../../crates/nif/src/import/types/light.rs)):
   world-space `translation` / `direction`, diffuse `color`, derived
   `radius`, a `LightKind` tag, the spot `outer_angle`, the
   `affected_node_names` from the `NiDynamicEffect.Affected Nodes` Ptr

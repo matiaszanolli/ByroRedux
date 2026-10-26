@@ -89,7 +89,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    production >2000 LOC: **5** — `crates/renderer/src/shader_constants_data.rs` (2972, a data table, Dim 1),
    `crates/scripting/examples/mq101_conformance.rs` (2157), `crates/audio/src/lib.rs` (2086, +52 in three days),
    `crates/scripting/src/obscript_effects.rs` (2034; 1528 at dcad3669d → 2032 at d5d13edcc, #6139 stage 8) and
-   `crates/nif/src/import/types.rs` (2011). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
+   `crates/nif/src/import/types/` (one 2011-LOC `types.rs` until #6141 split it). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
    `crates/scripting/src/fragment/vm.rs`, `crates/scripting/src/translate/effects.rs`, `crates/scripting/src/condition.rs`,
    `byroredux/src/save_io.rs` and `crates/plugin/src/esm/cell/mod.rs` are now ~70–150-LOC hubs over `vm/`, `effects/`,
    `condition/`, `save_io/` and `cell/` directories, the largest child ~1400 — as did `byroredux/src/components.rs` (#5467) and

@@ -211,7 +211,7 @@ plain `import_nif_with_collision()` passes `None`). The result is
 `ImportedMesh` is the post-coordinate-converted, SVD-repaired,
 strip-to-triangle-flattened, single-material chunk of a NIF subtree. It
 is a large struct (defined in
-[`crates/nif/src/import/types.rs`](../../crates/nif/src/import/types.rs))
+[`crates/nif/src/import/types/mesh.rs`](../../crates/nif/src/import/types/mesh.rs))
 — the renderer-facing core, abbreviated:
 
 ```rust

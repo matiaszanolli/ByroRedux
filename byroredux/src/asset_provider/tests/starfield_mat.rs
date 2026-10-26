@@ -391,7 +391,7 @@ fn starfield_single_channel_kinds_are_parked_by_name_or_canonical() {
         ("opacity", "_opacity"),
         ("transmissive", "_transmissive"),
     ];
-    const TYPES_SRC: &str = include_str!("../../../../crates/nif/src/import/types.rs");
+    const TYPES_SRC: &str = include_str!("../../../../crates/nif/src/import/types/material.rs");
     let struct_body = TYPES_SRC
         .split_once("pub struct MaterialTextureSet<T> {")
         .expect("MaterialTextureSet must still be declared here")

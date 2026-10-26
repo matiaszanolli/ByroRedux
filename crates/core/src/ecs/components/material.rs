@@ -754,7 +754,7 @@ impl Default for Material {
             // 0.0, not a "neutral" 1.0 — matches `EmissiveSource::None`'s own
             // doc ("no emissive authoring; `emissive_mult` defaulted to
             // 0.0") and `ImportedMaterial::default()`'s already-0.0 value
-            // (crates/nif/src/import/types.rs), which this struct's default
+            // (crates/nif/src/import/types/material.rs), which this struct's default
             // otherwise silently contradicted (#2556). No call site sets
             // `emissive_color` non-zero via `..Material::default()` without
             // also setting `emissive_mult` explicitly (verified: every such
@@ -837,7 +837,7 @@ impl Default for Material {
             sheen_tint: 0.0,
             anisotropic: 0.0,
             // #2571 — mirror `ImportedMaterial::default()`'s own values
-            // (crates/nif/src/import/types.rs) exactly: SRC_ALPHA (6) /
+            // (crates/nif/src/import/types/material.rs) exactly: SRC_ALPHA (6) /
             // INV_SRC_ALPHA (7) is the Gamebryo default blend-factor pair;
             // `0` (CLAMP_S_CLAMP_T) is that struct's stub clamp default.
             // 3 = WRAP_S_WRAP_T (#610 / #3515) — see the field's doc.

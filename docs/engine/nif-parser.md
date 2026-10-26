@@ -119,7 +119,7 @@ without dragging in `glam` or any renderer types.
 > `import/mesh/mod.rs` → `import/mesh/`, `import/material/mod.rs` →
 > `import/material/`, `import/walk/mod.rs` → `import/walk/`, *anim.rs* →
 > `anim/`. The `Imported*` structs moved out of `import/mod.rs` into
-> `import/types.rs`, and the SVD rotation repair moved out of
+> `import/types/`, and the SVD rotation repair moved out of
 > `import/transform.rs` to the top-level `rotation.rs`. Translate stale
 > paths through this map.
 
@@ -514,7 +514,7 @@ decode through `decode_np_ragdoll` (#5015).
 `Imported*` tier — see [NIFAL](nifal.md) for how this is then resolved to
 the canonical, game-agnostic types the engine consumes). The
 `Imported*` structs live in
-[`import/types.rs`](../../crates/nif/src/import/types.rs). Key
+[`import/types/`](../../crates/nif/src/import/types). Key
 transformations:
 
 - **Z-up → Y-up coordinate change** with the documented CW→CCW rotation
@@ -852,7 +852,7 @@ ni_tri_shape), `blocks/collision/mod.rs` → `collision/` (9 production + test s
 `blocks/controller/mod.rs` → `controller/` (legacy / sequence / morph / shader),
 `import/mesh/mod.rs` → `mesh/`, `import/material/mod.rs` → `material/` (walker + shader_data),
 `import/walk/mod.rs` → `walk/`, and *anim.rs* → `anim/`. The `Imported*` structs moved
-to `import/types.rs`, the SVD rotation repair to the top-level `rotation.rs` (#1044),
+to `import/types/`, the SVD rotation repair to the top-level `rotation.rs` (#1044),
 and the lib.rs recovery tests to a sibling `tests.rs` (#1118 TD9-002). New
 top-level files: `shader_flags.rs` (named flag constants + typed variant view,
 #1277 Tasks 5/6), `kfm.rs` (KFM state-machine parser).
