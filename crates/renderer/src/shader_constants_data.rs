@@ -1826,6 +1826,10 @@ pub const WATER_BREAKER_FOAM_FULL_AMPLITUDE: f32 = 8.0;
 /// Depth over which the water's coverage fades to nothing at the waterline, so
 /// the shore merges with the land (about a third of a metre at 70 BU/m).
 pub const WATER_SHORE_FADE_DEPTH_BU: f32 = 20.0;
+/// Distance under the surface over which the water-side caustic deposit builds
+/// up from nothing: a caustic cannot focus in a film of water, and at zero
+/// depth it only doubled the sun the bed already receives.
+pub const WATER_CAUSTIC_SHALLOW_FADE_BU: f32 = 96.0;
 /// World size of the larger lace patch in shore foam.
 pub const WATER_SHORE_LACE_SCALE_BU: f32 = 24.0;
 /// Strongest the shore foam gets, so it never becomes an opaque white strip.
@@ -3011,6 +3015,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float WATER_BREAKER_FOAM_DEPTH),
     shader_define!(Float WATER_BREAKER_FOAM_FULL_AMPLITUDE),
     shader_define!(Float WATER_SHORE_FADE_DEPTH_BU),
+    shader_define!(Float WATER_CAUSTIC_SHALLOW_FADE_BU),
     shader_define!(Float WATER_SHORE_LACE_SCALE_BU),
     shader_define!(Float WATER_SHORE_FOAM_MAX),
     shader_define!(Float WATER_RIVER_BANK_DEPTH),

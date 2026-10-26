@@ -1373,6 +1373,9 @@ mod tests {
             "alpha *= smoothstep(0.0, WATER_SHORE_FADE_DEPTH_BU, vShore.x);",
             "alpha *= smoothstep(0.0, WATER_SHORE_FADE_DEPTH_BU, refrDist);",
             "shoreFoam *= smoothstep(0.4, 0.72, lace) * WATER_SHORE_FOAM_MAX;",
+            // The caustic deposit builds up with depth; at the waterline it
+            // would only double the sun the bed already receives.
+            "* NdotSun * travelFall * shallowFade;",
         ] {
             assert!(frag.contains(needle), "water.frag lost `{needle}`");
         }

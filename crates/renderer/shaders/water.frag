@@ -1623,8 +1623,18 @@ void main() {
                             // the same wave-perturbed geometry that focused it.
                             float NdotSun = max(dot(causticNormal, sunDir), 0.0);
                             float travelFall = 1.0 / (1.0 + floorT * floorT * 1e-4);
+                            // A caustic needs water to focus through: where
+                            // the bed is within a few tens of units of the
+                            // surface the light is just the sun, which the bed
+                            // already receives, so a full-strength deposit
+                            // there doubles it into a white strip along the
+                            // waterline (measured on FO3's Potomac shore: 240+
+                            // with the deposit, ~150 without). It builds up
+                            // over the first WATER_CAUSTIC_SHALLOW_FADE_BU.
+                            float shallowFade = smoothstep(
+                                0.0, WATER_CAUSTIC_SHALLOW_FADE_BU, floorT);
                             float contrib = sunDirection.w * sunVisibility
-                                * NdotSun * travelFall;
+                                * NdotSun * travelFall * shallowFade;
                             float scale = CAUSTIC_FIXED_SCALE;
                             float clamp_max = float(0xFFFFFFFFu) / scale;
                             // Match the glass writer's normalised 5x5

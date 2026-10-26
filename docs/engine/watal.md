@@ -698,6 +698,18 @@ cell (Tamriel 13,7) at sea level facing both shores after the 128-unit-lattice
 water mesh (`4a56fd9c7`) and the LOD skirts: both island bases meet the water
 along the terrain's own contour with breaker foam, no ruled line.
 
+**The white strip along lake shores was mostly the water-side caustic deposit
+(2026-10-26).** Measured on FO3's Potomac shore (cell 14,-24): with the deposit the
+band reads 240-247; with it disabled, 106-163; foam off and sun glint off changed
+nothing. `water.frag` deposits `sunIntensity x NdotSun x travelFall` at each water
+fragment's floor-hit pixel, and `travelFall` is 1 at zero depth, so at the
+waterline a caustic that cannot focus yet still added a whole extra sun on a bed
+that already receives it. The deposit now builds up over the first
+`WATER_CAUSTIC_SHALLOW_FADE_BU` (96) of floor distance (`shallowFade`). FO3's band
+became a thin surf fringe, Skyrim's shore merges into the grass, and the pale rock
+shelf there reads as rock. Before/after: `~/Downloads/byro-watal-godrays/fo3_shore_before_after.png`.
+The foam and coverage work below was done first and still applies.
+
 **Lake shores faded to a solid white strip instead of merging with the land
 (2026-10-26).** Two shore foam terms (the contact ray and the breaker band) both
 reached full strength at zero depth and were blended in as opaque white, over
@@ -709,7 +721,8 @@ carved into lace by two scales of value noise and capped at
 `WATER_SHORE_FOAM_MAX` (0.45), leaving a thin broken fringe offshore of the
 waterline. Other foam sources (rapids streaks, crests) are unchanged. Before and
 after on the Skyrim W1 shore: `~/Downloads/byro-watal-godrays/lake_shore_before_after.png`.
-The pale rock shelf in the Skyrim W1 foreground is not foam (foam reads 5-25 %
+(Superseded in part by the caustic finding above: much of the pale shelf was the
+caustic deposit too.) The pale rock shelf in the Skyrim W1 foreground is not foam (foam reads 5-25 %
 there, coverage 1, the refraction hit is traced): it is the placed
 `MountainTrim02RiverbedEdge01` landscape slab, whose texture is pale. Lighting the
 refraction hit like the main shader does (`reflectionHitIrradiance`, albedo x
