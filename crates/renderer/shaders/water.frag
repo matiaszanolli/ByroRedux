@@ -1209,8 +1209,12 @@ void main() {
 
     // ── Foam composite ──
     float foamMask = 0.0;
+    // Shore foam (the contact ray and the breakers below) is kept apart from
+    // the other sources: it is broken into lace and capped, so it reads as a
+    // fringe of surf over the water and not as an opaque white strip.
+    float shoreFoam = 0.0;
     if (kind != WATER_WATERFALL && kind != WATER_LAVA) {
-        foamMask += foamShoreline(vWorldPos, Nsurface) * 1.0;
+        shoreFoam += foamShoreline(vWorldPos, Nsurface) * 1.0;
     }
     if (kind == WATER_RAPIDS) {
         foamMask += foamFlowStreaks(vWorldPos, renderOrigin.xyz, time) * 0.85;
@@ -1238,9 +1242,15 @@ void main() {
         float band = 1.0 - smoothstep(0.0, WATER_BREAKER_FOAM_DEPTH, vShore.x);
         float crestPass = smoothstep(0.3, 0.95, vCrest);
         float energy = clamp(push.optical.z / WATER_BREAKER_FOAM_FULL_AMPLITUDE, 0.0, 1.0);
-        foamMask += band * mix(0.12, 1.0, crestPass) * mix(0.35, 1.0, energy);
+        shoreFoam += band * mix(0.12, 1.0, crestPass) * mix(0.35, 1.0, energy);
     }
-    foamMask = clamp(foamMask * foamStrength, 0.0, 1.0);
+    // Lace: two drifting scales of value noise carve the shore foam into
+    // patches with clear water between them; the cap keeps even the thickest
+    // patch translucent enough to show the water and the bed through it.
+    float lace = 0.6 * valueNoise(vWorldPos.xz / WATER_SHORE_LACE_SCALE_BU + vec2(time * 0.05, 0.0))
+               + 0.4 * valueNoise(vWorldPos.xz / (0.4 * WATER_SHORE_LACE_SCALE_BU) - vec2(0.0, time * 0.08));
+    shoreFoam *= smoothstep(0.4, 0.72, lace) * WATER_SHORE_FOAM_MAX;
+    foamMask = clamp((foamMask + shoreFoam) * foamStrength, 0.0, 1.0);
     if (rainIntensity > 0.0) {
         foamMask = clamp(foamMask + rainSurfaceNoise(uvWorld * 1.7, time * 1.3)
             * 0.08 * rainIntensity, 0.0, 1.0);
@@ -1394,6 +1404,18 @@ void main() {
     float alpha = baseAlpha <= 0.0
         ? 0.0
         : clamp(max(reflectedCoverage, refractionCoverage) + foamMask * 0.1, 0.0, 1.0);
+    // The water thins to nothing where the bed meets the surface, so the shore
+    // blends into the land instead of ending in an opaque cut. `vShore.x` is
+    // 1e6 on meshes without baked bed data, which leaves them untouched. The
+    // baked LAND depth cannot see rocks and other statics standing in the
+    // shallows, so the traced refraction distance fades the water over those
+    // the same way.
+    if (kind != WATER_WATERFALL && kind != WATER_LAVA) {
+        alpha *= smoothstep(0.0, WATER_SHORE_FADE_DEPTH_BU, vShore.x);
+        if (refrHit) {
+            alpha *= smoothstep(0.0, WATER_SHORE_FADE_DEPTH_BU, refrDist);
+        }
+    }
 
     outColor = vec4(surfaceColor, alpha);
     // WATAL oracles: opaque, so the blend cannot mix in what lies beneath.

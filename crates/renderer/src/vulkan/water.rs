@@ -1368,6 +1368,11 @@ mod tests {
             "(kind == WATER_RIVER || kind == WATER_RAPIDS) && vShore.w > 0.5",
             "mix(WATER_RIVER_SPEED_MIN, 1.0,",
             "vShore.w > 0.5 && push.optical.z > 0.0 && kind == WATER_CALM",
+            // The shore merges with the land: coverage fades out over the last
+            // WATER_SHORE_FADE_DEPTH_BU of depth, and shore foam is lacy and capped.
+            "alpha *= smoothstep(0.0, WATER_SHORE_FADE_DEPTH_BU, vShore.x);",
+            "alpha *= smoothstep(0.0, WATER_SHORE_FADE_DEPTH_BU, refrDist);",
+            "shoreFoam *= smoothstep(0.4, 0.72, lace) * WATER_SHORE_FOAM_MAX;",
         ] {
             assert!(frag.contains(needle), "water.frag lost `{needle}`");
         }

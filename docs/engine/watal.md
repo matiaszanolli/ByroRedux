@@ -698,6 +698,21 @@ cell (Tamriel 13,7) at sea level facing both shores after the 128-unit-lattice
 water mesh (`4a56fd9c7`) and the LOD skirts: both island bases meet the water
 along the terrain's own contour with breaker foam, no ruled line.
 
+**Lake shores faded to a solid white strip instead of merging with the land
+(2026-10-26).** Two shore foam terms (the contact ray and the breaker band) both
+reached full strength at zero depth and were blended in as opaque white, over
+water that stayed fully opaque to the waterline. Now the water's coverage fades
+to nothing over the last `WATER_SHORE_FADE_DEPTH_BU` (20) of depth — by the baked
+LAND depth and, for statics standing in the shallows, by the traced refraction
+distance — so the terrain shows through at the waterline; and shore foam is
+carved into lace by two scales of value noise and capped at
+`WATER_SHORE_FOAM_MAX` (0.45), leaving a thin broken fringe offshore of the
+waterline. Other foam sources (rapids streaks, crests) are unchanged. Before and
+after on the Skyrim W1 shore: `~/Downloads/byro-watal-godrays/lake_shore_before_after.png`.
+Not changed: submerged static rocks still refract as unlit albedo (the hit proxy
+in `traceWaterRay` carries no lighting), so a pale rock shelf in clear shallows
+can read lighter than its dry neighbour.
+
 **Hairline cracks along cell borders at grazing angles (2026-10-26).** Thin
 light lines ran across open water along the border between two cells' water
 meshes. Each cell bakes its own shoreward direction from its own side of the
