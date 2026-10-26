@@ -338,7 +338,7 @@ Exterior worldspace placement uses
   shipped to date (Oblivion → Starfield), so it is hard-coded rather than
   per-game. As of `#1112` / TD3-202 it is the sole source of truth; pre-fix
   the literal `4096.0` appeared in six places across `cell_loader/`,
-  `streaming.rs`, and `crates/plugin/src/esm/cell/mod.rs` with at least one
+  `streaming/mod.rs`, and `crates/plugin/src/esm/cell/mod.rs` with at least one
   divergent Z-flip sign-bug history (TD3-110).
 - `cell_grid_to_world_yup(gx, gy)` — composes the cell-size scale with the
   Z-up→Y-up flip in one step: `world = (gx·UNITS, 0, -(gy·UNITS))`. Bethesda

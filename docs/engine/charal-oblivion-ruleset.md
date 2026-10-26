@@ -413,7 +413,7 @@ needed). `pool_regen_tick_system(world, frame_dt)` is registered in
 `Stage::Update` via `add_exclusive_with_access`
 (`byroredux/src/boot/schedule/update.rs` — the registration moved out of
 `main.rs` under #3170's boot split; #4109 swept the stale `main.rs`/
-`boot.rs` references) — it no-ops today because `PoolRegenConfig`
+`boot/` references) — it no-ops today because `PoolRegenConfig`
 (the per-game resolved AVIF ids) is inserted only by unit tests: the
 `oblivion_pool_regen_config` constructor that once lived in `tes.rs` was
 deleted under #3848 (`git show e13985dfc` recovers it), and re-adding it

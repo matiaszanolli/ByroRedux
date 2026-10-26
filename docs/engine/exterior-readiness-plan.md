@@ -709,7 +709,7 @@ choice is deliberately unmade, and each would be its own follow-up issue.
    between a concurrent persistent-CELL lookup and an ordinary-root
    lookup), just not two copies of the logic underneath them. Landed
    ahead of its consumer, same posture as `PersistentRefIndex` itself
-   (`#[allow(dead_code)]`, registered in `boot.rs`, classified in the
+   (`#[allow(dead_code)]`, registered in `boot/`, classified in the
    save-registry's `NOT_SAVED_BY_DESIGN` list). 9 new unit tests (4
    mirroring `persistent_ref_index`'s suite for the new resource, 1 on
    the shared helper directly). Still open: §7 steps 2 (this item's own
@@ -895,7 +895,7 @@ transitions, saves, and load-order changes.
    passed (was 1406), 0 failed, no new warnings.
 5. [x] **CELL/REFR/LAND/environment multi-master merge** — fully wired and
    tested via `EsmCellIndex::merge_from`
-   (`crates/plugin/src/esm/cell/mod.rs:1271-1316`): per-REFR-FormID
+   (`crates/plugin/src/esm/cell/index.rs`): per-REFR-FormID
    last-write-wins reference merging (fixing the historical #1546
    whole-vec-replace bug), absent-field-inherits-from-base for
    lighting/landscape/water/climate, all covered by real tests in

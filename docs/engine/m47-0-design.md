@@ -110,7 +110,7 @@ Every demo system that consumes the registry gets declared access at registratio
 |--------|-------|-------|--------|
 | `rumble_on_activate_system` | Update | `ActivateEvent`, `RumbleOnActivate`, `PlayerEntity` resource | `RumbleOnActivate` (state transition), `CameraShakeCommand`, `ControllerRumbleCommand` |
 | `rumble_tick_system` | Update | (none) | `RumbleOnActivate` |
-| `quest_advance_on_activate_system` | Update | `ActivateEvent`, `QuestAdvanceOnActivate`, `QuestStageState` resource | `QuestStageState` resource |
+| `quest_advance_system` | Update | `ActivateEvent`, `QuestAdvanceOnActivate`, `QuestStageState` resource | `QuestStageState` resource |
 | `actor_stats_*_system` | Update | (see actor_stats.rs body) | (see actor_stats.rs body) |
 | `mg07_door_*_system` | Update | (see mg07_door.rs body) | (see mg07_door.rs body) |
 | `dlc2_ttr4a_*_system` | Update | (see dlc2_ttr4a.rs body) | (see dlc2_ttr4a.rs body) |

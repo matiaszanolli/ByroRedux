@@ -263,7 +263,7 @@ DX10 extension (20 bytes)
 └── miscFlags2 = 0
 ```
 
-The `linear_size_for()` helper computes a reasonable
+The `pitch_or_linear_size_for()` helper computes a reasonable
 `dwPitchOrLinearSize` for block-compressed formats from the BC block size
 table; uncompressed RGBA / single-channel formats use a per-row pitch
 instead (`DDSD_PITCH`, #594 — pinned by
@@ -451,7 +451,7 @@ Full byte-layout spec with validation notes at
 - **11 unit tests** between BSA and BA2 — `normalize_path`, header rejection
   of non-archive files, DDS header reconstruction layout invariants
   (148 bytes, "DDS " magic, "DX10" FourCC, dxgi_format at offset 128),
-  `linear_size_for` block size math, `decompress_chunk` zlib/LZ4 roundtrip
+  `pitch_or_linear_size_for` block size math, `decompress_chunk` zlib/LZ4 roundtrip
   + corrupt-data rejection
 - **7 ignored integration tests** in BSA covering FNV mesh open / list /
   contains / extract / decompress, FNV texture BSA decompression

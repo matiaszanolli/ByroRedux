@@ -615,7 +615,7 @@ Each phase ends at a gate that is demonstrable to someone who is not us.
    handling.~~ **Landed.** Every `Action` variant round-trips; an unknown
    version is refused *by version*, not by a field-level parse error, so the
    user is told to reinstall rather than shown a confusing schema complaint.
-2. ~~`expand_boot_request` in `boot.rs`, ahead of `expand_game_profile_args`;
+2. ~~`expand_boot_request` in `boot/cli.rs`, ahead of `expand_game_profile_args`;
    argv precedence per §2.4.~~ **Landed.** Argv without `--boot` passes through
    byte-for-byte, so the seam is inert for every existing invocation.
 3. ~~`crates/game-detect`: Steam VDF/ACF walk, GOG and registry probes, the
