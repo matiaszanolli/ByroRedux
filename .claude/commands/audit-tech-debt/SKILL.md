@@ -108,7 +108,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
 
 Ordered by debt impact: complexity and duplication compound across every edit; doc/audit rot misdirects the *next*
 audit; markers and dead code are cheap. Recent yield (`grep -h '\*\*Dimension\*\*' docs/audits/AUDIT_TECH_DEBT_*.md`):
-Dims 4, 3, 1, 8 dominate (then 2, 9); 5 and 6 rarely surface real debt. Each agent writes `/tmp/audit/tech-debt/dim_<N>.md`.
+Dims 2, 1, 3 dominate (then 8, 4; 7, 9) — counted over all 40 reports on 2026-10-25; 5 and 6 rarely surface real debt. Each agent writes `/tmp/audit/tech-debt/dim_<N>.md`.
 
 ### Dimension 1: File / Function / Module Complexity
 Paths: all `.rs` under `crates/`, `byroredux/`, `tools/`
