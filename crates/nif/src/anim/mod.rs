@@ -65,4 +65,6 @@ pub(crate) const BSPLINE_SAMPLE_HZ: f32 = 30.0;
 pub(crate) const BSPLINE_DEGREE: usize = 3;
 
 #[cfg(test)]
+mod function_size_pin_tests;
+#[cfg(test)]
 mod tests;

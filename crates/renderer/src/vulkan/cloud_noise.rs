@@ -247,7 +247,7 @@ mod tests {
     fn src() -> &'static str {
         crate::source_scan::production_text(include_str!("cloud_noise.rs"))
     }
-    const INIT: &str = include_str!("context/init.rs");
+    const INIT: &str = crate::vulkan::context::INIT_SOURCES;
     const TEARDOWN: &str = include_str!("context/teardown.rs");
 
     /// The cloud texels are the froxel pipeline's existing volumes, not a

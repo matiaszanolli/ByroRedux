@@ -424,7 +424,7 @@ mod tests {
             "cloud_noise.rs must leak its images when the upload may be in flight"
         );
         for (name, src) in [
-            ("context/init.rs", include_str!("../context/init.rs")),
+            ("context/init.rs + init_stages.rs", crate::vulkan::context::INIT_SOURCES),
             ("context/resize.rs", include_str!("../context/resize.rs")),
         ] {
             assert!(

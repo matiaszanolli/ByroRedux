@@ -19,6 +19,7 @@
 const MAIN_RS: &str = include_str!("main.rs");
 const APP_EVENTS_RS: &str = include_str!("app_events.rs");
 const APP_FRAME_RS: &str = include_str!("app_frame.rs");
+
 /// #3855 — `boot.rs` became the `boot/` directory, so this is now the
 /// concatenation of every file it split into rather than one `include_str!`.
 /// Every assertion below still sees the same text: a registration that moves
@@ -788,7 +789,7 @@ fn submersion_runs_after_camera_follow_and_before_water_audio() {
     let camera_follow = index_of("systems::character::camera_follow_system");
     let submersion = index_of("systems::water::submersion_system");
     let water_audio = index_of("systems::audio::water_audio_system");
-    let audio = index_of("byroredux_audio::audio_system");
+    let audio = index_of("byroredux_audio::system::audio_system");
     let ragdoll = index_of("ragdoll::ragdoll_writeback_system");
 
     assert!(
@@ -1230,44 +1231,42 @@ fn paused_frame_drain_names_the_system_through_the_shared_constant() {
     );
 }
 
-/// #5096 (regression of #4342) — the per-frame driver functions regrow
-/// because only `draw_frame` had a size budget. These pins freeze each at
-/// its 2026-10-06 measured size: a new addition that grows one must move
-/// the work into a helper/module and say so here, not raise the pin.
-/// Counts the function body's raw lines (declaration through the brace
-/// that closes it).
-fn function_line_count(source: &str, declaration: &str) -> usize {
-    let start = source
-        .find(declaration)
-        .unwrap_or_else(|| panic!("`{declaration}` not found in source"));
-    let body = &source[start..];
-    let mut depth: i32 = 0;
-    let mut began = false;
-    for (i, line) in body.lines().enumerate() {
-        depth += line.matches('{').count() as i32;
-        depth -= line.matches('}').count() as i32;
-        if line.contains('{') {
-            began = true;
-        }
-        if began && depth <= 0 {
-            return i + 1;
-        }
-    }
-    panic!("`{declaration}` never closed");
-}
-
+/// #5096 (regression of #4342), widened by #6143 — the per-frame driver, scene
+/// walk and reference-load functions regrow because only `draw_frame` had a
+/// size budget. Each pin sits just above the function's measured size after
+/// the #6143 extractions: a new addition that grows one must move the work into
+/// a helper/module and say so here, not raise the pin. Sizes are counted by
+/// `byroredux_core::source_scan::function_line_count` — declaration line
+/// through the line of the closing brace, braces in literals and comments
+/// ignored.
 #[test]
 fn per_frame_driver_functions_stay_within_their_size_pins() {
+    const STATIC_MESHES_RS: &str = include_str!("render/static_meshes.rs");
+    const REFERENCES_RS: &str = include_str!("cell_loader/references/mod.rs");
+    const SYNTH_CHILD_RS: &str = include_str!("cell_loader/references/synth_child.rs");
     for (source, declaration, pin) in [
-        // about_to_wait was 822 when #4342 was filed; +222 since.
-        (APP_EVENTS_RS, "fn about_to_wait(", 1044usize),
+        // about_to_wait was 822 when #4342 was filed and 1044 by #5096;
+        // #6143 moved the bench summary, the screenshot state machine and the
+        // telemetry refresh out into `App` methods.
+        (APP_EVENTS_RS, "fn about_to_wait(", 410),
         // render_one_frame: #4342 extracted it to 591; +125 since.
         (APP_FRAME_RS, "fn render_one_frame(", 716),
+        // #6143 — 1031 lines before the query bundle and the DrawCommand build
+        // moved into `StaticDrawQueries` / `build_static_draw_command`.
+        (STATIC_MESHES_RS, "fn collect_static_mesh_draws(", 160),
+        (STATIC_MESHES_RS, "fn build_static_draw_command(", 640),
+        // #6143 — 580 lines before the actor arm and the synth expansion moved
+        // out; nesting 9 -> 5.
+        (REFERENCES_RS, "fn load_references_budgeted(", 420),
+        (REFERENCES_RS, "fn advance_actor_synth(", 215),
+        // Not extracted by #6143 (a placement is one long straight-line
+        // spawn); pinned at its 2026-10-26 size so growth is deliberate.
+        (SYNTH_CHILD_RS, "fn spawn_synth_child(", 605),
     ] {
-        let measured = function_line_count(source, declaration);
+        let measured = byroredux_core::source_scan::function_line_count(source, declaration);
         assert!(
             measured <= pin,
-            "`{declaration}` carries {measured} lines (pin {pin}) — move the new work into a helper or module and record the decision, rather than raising the pin (#5096)"
+            "`{declaration}` carries {measured} lines (pin {pin}) — move the new work into a helper or module and record the decision, rather than raising the pin (#5096 / #6143)"
         );
     }
 }

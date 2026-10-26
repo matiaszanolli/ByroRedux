@@ -20,6 +20,8 @@
 pub mod components;
 pub mod config;
 pub mod convert;
+#[cfg(test)]
+mod function_size_pin_tests;
 pub mod ragdoll;
 #[cfg(test)]
 pub(crate) mod source_scan;

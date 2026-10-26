@@ -563,62 +563,18 @@ pub(super) fn load_references_budgeted(
         // SCOL/PKIN's `synth_refs` stashes the already-expanded list (and
         // its shared overlay) on `job.current_ref_synth`; reuse it here
         // instead of re-expanding from scratch on the resumed tick.
-        let (synth_refs, refr_overlay) = match job.current_ref_synth.take() {
-            Some(cached) => cached,
-            None => {
-                // Build per-REFR texture overlay once. Shared across every
-                // synthetic SCOL child — FO4 REFRs that overlay textures at
-                // the SCOL level apply the same swap to every child
-                // placement. #584.
-                let refr_overlay = {
-                    let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
-                    build_refr_texture_overlay(
-                        placed_ref,
-                        index,
-                        mat_provider.as_deref_mut(),
-                        &mut pool,
-                    )
-                };
-
-                // Compose REFR expansion from composite-record helpers:
-                //   1. PKIN (#589) — Pack-In bundle fans out to one synth per
-                //      `CNAM` content at the outer transform.
-                //   2. SCOL (#585) — Static Collection fans out to one synth
-                //      per `ONAM/DATA` placement when no cached `CM*.NIF`.
-                //   3. Default — single synth at the outer transform.
-                //
-                // First expander that fires wins; `expand_scol_placements`
-                // already returns the single-entry default when the base
-                // form isn't a SCOL, so the chain closes cleanly.
-                let synth_refs = expand_pkin_placements(
-                    placed_ref.base_form_id,
-                    outer_pos,
-                    outer_rot,
-                    outer_scale,
-                    index,
-                )
-                .unwrap_or_else(|| {
-                    // #5523 — a SCOL whose combined mesh is in no archive
-                    // (neither its authored MODL nor the derived
-                    // `scol\<owner>\cm<id>.nif`) expands into its parts
-                    // instead of spawning nothing.
-                    expand_scol_placements_if(
-                        placed_ref.base_form_id,
-                        outer_pos,
-                        outer_rot,
-                        outer_scale,
-                        index,
-                        &|scol| {
-                            scol_cm_path(scol, index, load_order, &|path| {
-                                tex_provider.has_mesh(path)
-                            })
-                            .is_none()
-                        },
-                    )
-                });
-                (synth_refs, refr_overlay)
-            }
-        };
+        let (synth_refs, refr_overlay) = expand_reference_children(
+            &mut job,
+            world,
+            tex_provider,
+            &mut mat_provider,
+            index,
+            load_order,
+            placed_ref,
+            outer_pos,
+            outer_rot,
+            outer_scale,
+        );
 
         // #2026 / SCR-D7-NEW2-01 — the outer REFR's own VMAD
         // (`placed_ref.script_instance`) is a property of that single
@@ -666,198 +622,37 @@ pub(super) fn load_references_budgeted(
                 (*form_id, *pos, *rot, *scale)
             };
 
-            // EXAL sub-REFR continuation: an actor is a bundle of top-level
-            // NIFs, not one indivisible placement.  Keep its skeleton map and
-            // placement root alive across frames, advancing one body/head/
-            // armor part at a time.  Synchronous interiors drive this exact
-            // job with an unlimited budget through `load_references`.
-            // #2567 (OBL-D3-01) — `record_index.actor` covers `NPC_` **and**
-            // `CREA`. This site used to read the `npcs` map alone, so every
-            // placed creature (a placed `ACRE` — Oblivion/FO3/FNV — or an
-            // `ACHR`→`CREA`)
-            // missed the actor pipeline entirely and fell through to the
-            // static-mesh path below — which rendered the creature's MODL, i.e.
-            // its bare skeleton, and never animated it.
             if let Some(npc) = record_index.actor(child_form_id) {
-                if placement_disabled {
-                    // #4327 — no NPC job (body, armor, skeleton, collision):
-                    // the canonical identity and scripts only.
-                    if synth_idx == 0 {
-                        let entity = spawn_logical_quest_reference(
-                            world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
-                        );
-                        attach_identity_reference_script(
-                            world,
-                            entity,
-                            child_form_id,
-                            record_index,
-                            refr_script_instance_for_synth_child(
-                                synth_idx,
-                                placed_ref.script_instance.as_ref(),
-                            ),
-                            &mut job.accum,
-                        );
-                        job.accum.entity_count += 1;
-                    }
-                    job.next_synth = synth_idx + 1;
-                    budget.complete_unit();
-                    synth_idx += 1;
-                    continue;
-                }
-                if job.active_npc.is_none() {
-                    job.accum.bounds_min = job.accum.bounds_min.min(ref_pos);
-                    job.accum.bounds_max = job.accum.bounds_max.max(ref_pos);
-                    // #4092 (D5-01) — resolve `Use Traits` before reading
-                    // race, the same source `stamp_character_components`'s
-                    // `Background` already uses. A shell whose own `RNAM`
-                    // disagrees with its template's was handing
-                    // `NpcSpawnJob::runtime` the wrong `RaceRecord`, and a
-                    // race miss returns `Vec::new()` from
-                    // `resolve_armor_meshes` — the same "invisible or
-                    // wrong-race body" failure #1ee804c2/#3714 fixed for
-                    // FormID remapping.
-                    let traits_terminal = byroredux_plugin::equip::resolve_inherited_traits(
-                        npc,
-                        byroredux_plugin::esm::records::effective_actor_level(npc),
-                        record_index,
-                    );
-                    let resolved_race_form_id = traits_terminal.race_form_id;
-                    job.active_npc = if game.has_runtime_facegen_recipe() {
-                        Some(NpcSpawnJob::runtime(
-                            npc,
-                            races.get(&resolved_race_form_id),
-                            game,
-                            ref_pos,
-                            ref_rot,
-                            ref_scale,
-                        ))
-                    } else if game.uses_prebaked_facegen() {
-                        // #6113 — the FaceGen files belong to the Use-Traits
-                        // terminal, so the plugin segment of their path is its
-                        // owner's, not the placed shell's.
-                        let plugin =
-                            load_order::plugin_for_form_id(traits_terminal.form_id, load_order)
-                                .unwrap_or("");
-                        Some(NpcSpawnJob::prebaked(
-                            npc, game, plugin, ref_pos, ref_rot, ref_scale,
-                        ))
-                    } else {
-                        None
-                    };
-                }
-
-                let Some(active_npc) = job.active_npc.as_mut() else {
-                    job.next_synth = synth_idx + 1;
-                    budget.complete_unit();
-                    synth_idx += 1;
-                    continue;
-                };
-                match active_npc.advance(
+                match advance_actor_synth(
+                    &mut job,
                     world,
                     ctx,
                     tex_provider,
-                    mat_provider.as_deref_mut(),
-                    &job.idle_pool,
+                    &mut mat_provider,
                     record_index,
+                    races,
+                    game,
+                    load_order,
+                    &script_killed_corpses,
                     budget,
+                    placed_ref,
+                    npc,
+                    child_form_id,
+                    ref_pos,
+                    ref_rot,
+                    ref_scale,
+                    synth_idx,
+                    placement_disabled,
                 ) {
-                    NpcSpawnProgress::Pending => {
+                    ActorSynthStep::Yield => {
                         job.current_ref_synth = Some((synth_refs, refr_overlay));
                         return ReferenceLoadProgress::Pending(job);
                     }
-                    NpcSpawnProgress::Complete(result) => {
-                        job.accum.npc_spawn_wall += result.work_wall;
-                        if let Some(root) = result.root {
-                            // Actor jobs build their own placement root rather
-                            // than routing through `spawn_placed_instances`, so
-                            // stamp the canonical ACHR identity and the three
-                            // fields Skyrim quest-alias resolution consumes.
-                            if synth_idx == 0 {
-                                stamp_quest_reference(world, root, placed_ref, load_order);
-                                // #4814 — an authored corpse ("Starts Dead"):
-                                // dead from its first frame, through the same
-                                // death teardown a parked `dead` row takes in
-                                // `reference_state::restore` above, so its
-                                // AI never runs and it is a loot source.
-                                // #5013 — Oblivion marks the corpse on the
-                                // BASE actor (NPC_/CREA header bit 0x80000),
-                                // not the placement, so the resolved record
-                                // ORs its flag in here.
-                                if placed_ref.starts_dead
-                                    || npc.starts_dead
-                                    || script_killed_corpses.contains(&placed_ref.form_id)
-                                {
-                                    // #5015 — an authored corpse lies as
-                                    // posed: park the `XRGD` pose for the
-                                    // death reconciliation to apply. #6252 —
-                                    // on FO3/FNV the corpse is the base's.
-                                    if crate::ragdoll_pose::parks_authored_pose(
-                                        placed_ref.starts_dead,
-                                        npc.starts_dead,
-                                        game,
-                                        &placed_ref.ragdoll_pose,
-                                    ) {
-                                        world.insert(
-                                            root,
-                                            crate::ragdoll_pose::AuthoredRagdollPose(
-                                                placed_ref.ragdoll_pose.clone(),
-                                            ),
-                                        );
-                                    }
-                                    super::reference_state::apply_starts_dead(world, root);
-                                }
-                                // #5017 — FO4+ dormant robots and turrets.
-                                if placed_ref.starts_unconscious {
-                                    super::reference_state::apply_starts_unconscious(world, root);
-                                }
-                                if let Some(mut identities) =
-                                    world.query_mut::<byroredux_scripting::SceneAliasCandidate>()
-                                {
-                                    if let Some(identity) = identities.get_mut(root) {
-                                        // A placed ACHR may reference an LVLN. Papyrus
-                                        // GetActorBase observes the resolved NPC_, which is
-                                        // the synthesized child selected above.
-                                        identity.base_form_id = child_form_id;
-                                    }
-                                }
-                            }
-                            // #2662 — actor jobs bypass `spawn_synth_child`
-                            // entirely, so without this they never reached
-                            // `attach_script_for_refr`: the `npcs` arm of
-                            // `base_record_script_instance` was unreachable
-                            // from the live attach path and the placed
-                            // `ACHR`'s own VMAD was never consumed. Use the
-                            // same per-synth-child gate the static path uses,
-                            // so the REFR-own VMAD binds to child 0 only and
-                            // the additive REFR-then-base merge is identical.
-                            // #3016 — the call itself stays ungated: this
-                            // already matched the shared policy documented
-                            // on `attach_quest_reference_script`.
-                            attach_quest_reference_script(
-                                world,
-                                root,
-                                child_form_id,
-                                record_index,
-                                refr_script_instance_for_synth_child(
-                                    synth_idx,
-                                    placed_ref.script_instance.as_ref(),
-                                ),
-                                &mut job.accum,
-                            );
-                            job.accum.npc_spawned += 1;
-                            if job.accum.npc_spawned_sample.len() < 8
-                                && !job.accum.npc_spawned_sample.contains(&child_form_id)
-                            {
-                                job.accum.npc_spawned_sample.push(child_form_id);
-                            }
-                            job.accum.entity_count += 1;
-                        }
-                        job.active_npc = None;
-                        job.next_synth = synth_idx + 1;
+                    ActorSynthStep::Next => {
+                        synth_idx += 1;
+                        continue;
                     }
                 }
-                synth_idx += 1;
-                continue;
             }
 
             let refr_script_instance = refr_script_instance_for_synth_child(
@@ -912,6 +707,307 @@ pub(super) fn load_references_budgeted(
         }
     }
     complete_reference_load(job, game, world, ctx, label, load_order)
+}
+
+/// What the actor part of a synthetic child asks the reference loop to do next.
+enum ActorSynthStep {
+    /// The frame budget ran out mid-actor: stash the expansion and yield.
+    Yield,
+    /// This synthetic child is finished (spawned, skipped or disabled): advance.
+    Next,
+}
+
+/// Advance one actor (`NPC_` / `CREA`) synthetic child of the reference being
+/// loaded: spawn it whole, or step its resumable body / head / armor job, and
+/// stamp the canonical identity, corpse state and scripts on its root. Moved
+/// verbatim out of [`load_references_budgeted`]'s loop (#6143); the yield and
+/// advance exits that used to `return` / `continue` there are the
+/// [`ActorSynthStep`] this returns.
+#[allow(clippy::too_many_arguments)]
+fn advance_actor_synth(
+    job: &mut ReferenceLoadJob,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    mat_provider: &mut Option<&mut MaterialProvider>,
+    record_index: &byroredux_plugin::esm::records::EsmIndex,
+    races: &HashMap<u32, byroredux_plugin::esm::records::RaceRecord>,
+    game: byroredux_plugin::esm::reader::GameKind,
+    load_order: &LoadOrder,
+    script_killed_corpses: &std::collections::HashSet<u32>,
+    budget: &mut FrameTimeBudget,
+    placed_ref: &esm::cell::PlacedRef,
+    npc: &byroredux_plugin::esm::records::NpcRecord,
+    child_form_id: u32,
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+    synth_idx: usize,
+    placement_disabled: bool,
+) -> ActorSynthStep {
+// EXAL sub-REFR continuation: an actor is a bundle of top-level
+// NIFs, not one indivisible placement.  Keep its skeleton map and
+// placement root alive across frames, advancing one body/head/
+// armor part at a time.  Synchronous interiors drive this exact
+// job with an unlimited budget through `load_references`.
+// #2567 (OBL-D3-01) — `record_index.actor` covers `NPC_` **and**
+// `CREA`. This site used to read the `npcs` map alone, so every
+// placed creature (a placed `ACRE` — Oblivion/FO3/FNV — or an
+// `ACHR`→`CREA`)
+// missed the actor pipeline entirely and fell through to the
+// static-mesh path below — which rendered the creature's MODL, i.e.
+// its bare skeleton, and never animated it.
+    if placement_disabled {
+        // #4327 — no NPC job (body, armor, skeleton, collision):
+        // the canonical identity and scripts only.
+        if synth_idx == 0 {
+            let entity = spawn_logical_quest_reference(
+                world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+            );
+            attach_identity_reference_script(
+                world,
+                entity,
+                child_form_id,
+                record_index,
+                refr_script_instance_for_synth_child(
+                    synth_idx,
+                    placed_ref.script_instance.as_ref(),
+                ),
+                &mut job.accum,
+            );
+            job.accum.entity_count += 1;
+        }
+        job.next_synth = synth_idx + 1;
+        budget.complete_unit();
+        return ActorSynthStep::Next;
+    }
+    if job.active_npc.is_none() {
+        job.accum.bounds_min = job.accum.bounds_min.min(ref_pos);
+        job.accum.bounds_max = job.accum.bounds_max.max(ref_pos);
+        // #4092 (D5-01) — resolve `Use Traits` before reading
+        // race, the same source `stamp_character_components`'s
+        // `Background` already uses. A shell whose own `RNAM`
+        // disagrees with its template's was handing
+        // `NpcSpawnJob::runtime` the wrong `RaceRecord`, and a
+        // race miss returns `Vec::new()` from
+        // `resolve_armor_meshes` — the same "invisible or
+        // wrong-race body" failure #1ee804c2/#3714 fixed for
+        // FormID remapping.
+        let traits_terminal = byroredux_plugin::equip::resolve_inherited_traits(
+            npc,
+            byroredux_plugin::esm::records::effective_actor_level(npc),
+            record_index,
+        );
+        let resolved_race_form_id = traits_terminal.race_form_id;
+        job.active_npc = if game.has_runtime_facegen_recipe() {
+            Some(NpcSpawnJob::runtime(
+                npc,
+                races.get(&resolved_race_form_id),
+                game,
+                ref_pos,
+                ref_rot,
+                ref_scale,
+            ))
+        } else if game.uses_prebaked_facegen() {
+            // #6113 — the FaceGen files belong to the Use-Traits
+            // terminal, so the plugin segment of their path is its
+            // owner's, not the placed shell's.
+            let plugin =
+                load_order::plugin_for_form_id(traits_terminal.form_id, load_order)
+                    .unwrap_or("");
+            Some(NpcSpawnJob::prebaked(
+                npc, game, plugin, ref_pos, ref_rot, ref_scale,
+            ))
+        } else {
+            None
+        };
+    }
+
+    let Some(active_npc) = job.active_npc.as_mut() else {
+        job.next_synth = synth_idx + 1;
+        budget.complete_unit();
+        return ActorSynthStep::Next;
+    };
+    match active_npc.advance(
+        world,
+        ctx,
+        tex_provider,
+        mat_provider.as_deref_mut(),
+        &job.idle_pool,
+        record_index,
+        budget,
+    ) {
+        NpcSpawnProgress::Pending => {
+            return ActorSynthStep::Yield;
+        }
+        NpcSpawnProgress::Complete(result) => {
+            job.accum.npc_spawn_wall += result.work_wall;
+            if let Some(root) = result.root {
+                // Actor jobs build their own placement root rather
+                // than routing through `spawn_placed_instances`, so
+                // stamp the canonical ACHR identity and the three
+                // fields Skyrim quest-alias resolution consumes.
+                if synth_idx == 0 {
+                    stamp_quest_reference(world, root, placed_ref, load_order);
+                    // #4814 — an authored corpse ("Starts Dead"):
+                    // dead from its first frame, through the same
+                    // death teardown a parked `dead` row takes in
+                    // `reference_state::restore` above, so its
+                    // AI never runs and it is a loot source.
+                    // #5013 — Oblivion marks the corpse on the
+                    // BASE actor (NPC_/CREA header bit 0x80000),
+                    // not the placement, so the resolved record
+                    // ORs its flag in here.
+                    if placed_ref.starts_dead
+                        || npc.starts_dead
+                        || script_killed_corpses.contains(&placed_ref.form_id)
+                    {
+                        // #5015 — an authored corpse lies as
+                        // posed: park the `XRGD` pose for the
+                        // death reconciliation to apply. #6252 —
+                        // on FO3/FNV the corpse is the base's.
+                        if crate::ragdoll_pose::parks_authored_pose(
+                            placed_ref.starts_dead,
+                            npc.starts_dead,
+                            game,
+                            &placed_ref.ragdoll_pose,
+                        ) {
+                            world.insert(
+                                root,
+                                crate::ragdoll_pose::AuthoredRagdollPose(
+                                    placed_ref.ragdoll_pose.clone(),
+                                ),
+                            );
+                        }
+                        super::reference_state::apply_starts_dead(world, root);
+                    }
+                    // #5017 — FO4+ dormant robots and turrets.
+                    if placed_ref.starts_unconscious {
+                        super::reference_state::apply_starts_unconscious(world, root);
+                    }
+                    if let Some(mut identities) =
+                        world.query_mut::<byroredux_scripting::SceneAliasCandidate>()
+                    {
+                        if let Some(identity) = identities.get_mut(root) {
+                            // A placed ACHR may reference an LVLN. Papyrus
+                            // GetActorBase observes the resolved NPC_, which is
+                            // the synthesized child selected above.
+                            identity.base_form_id = child_form_id;
+                        }
+                    }
+                }
+                // #2662 — actor jobs bypass `spawn_synth_child`
+                // entirely, so without this they never reached
+                // `attach_script_for_refr`: the `npcs` arm of
+                // `base_record_script_instance` was unreachable
+                // from the live attach path and the placed
+                // `ACHR`'s own VMAD was never consumed. Use the
+                // same per-synth-child gate the static path uses,
+                // so the REFR-own VMAD binds to child 0 only and
+                // the additive REFR-then-base merge is identical.
+                // #3016 — the call itself stays ungated: this
+                // already matched the shared policy documented
+                // on `attach_quest_reference_script`.
+                attach_quest_reference_script(
+                    world,
+                    root,
+                    child_form_id,
+                    record_index,
+                    refr_script_instance_for_synth_child(
+                        synth_idx,
+                        placed_ref.script_instance.as_ref(),
+                    ),
+                    &mut job.accum,
+                );
+                job.accum.npc_spawned += 1;
+                if job.accum.npc_spawned_sample.len() < 8
+                    && !job.accum.npc_spawned_sample.contains(&child_form_id)
+                {
+                    job.accum.npc_spawned_sample.push(child_form_id);
+                }
+                job.accum.entity_count += 1;
+            }
+            job.active_npc = None;
+            job.next_synth = synth_idx + 1;
+        }
+    }
+    return ActorSynthStep::Next;
+}
+
+/// Expand the reference being loaded into its synthetic children and the
+/// texture overlay they share: reuse the plan a budget yield stashed on the job
+/// (#2277), else build the overlay once (#584) and fan the REFR out through
+/// PKIN (#589), SCOL (#585) or the single default placement. (#6143, split out
+/// of [`load_references_budgeted`].)
+#[allow(clippy::too_many_arguments)]
+fn expand_reference_children(
+    job: &mut ReferenceLoadJob,
+    world: &mut World,
+    tex_provider: &TextureProvider,
+    mat_provider: &mut Option<&mut MaterialProvider>,
+    index: &esm::cell::EsmCellIndex,
+    load_order: &LoadOrder,
+    placed_ref: &esm::cell::PlacedRef,
+    outer_pos: Vec3,
+    outer_rot: Quat,
+    outer_scale: f32,
+) -> SynthChildPlan {
+    match job.current_ref_synth.take() {
+        Some(cached) => cached,
+        None => {
+            // Build per-REFR texture overlay once. Shared across every
+            // synthetic SCOL child — FO4 REFRs that overlay textures at
+            // the SCOL level apply the same swap to every child
+            // placement. #584.
+            let refr_overlay = {
+                let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+                build_refr_texture_overlay(
+                    placed_ref,
+                    index,
+                    mat_provider.as_deref_mut(),
+                    &mut pool,
+                )
+            };
+
+            // Compose REFR expansion from composite-record helpers:
+            //   1. PKIN (#589) — Pack-In bundle fans out to one synth per
+            //      `CNAM` content at the outer transform.
+            //   2. SCOL (#585) — Static Collection fans out to one synth
+            //      per `ONAM/DATA` placement when no cached `CM*.NIF`.
+            //   3. Default — single synth at the outer transform.
+            //
+            // First expander that fires wins; `expand_scol_placements`
+            // already returns the single-entry default when the base
+            // form isn't a SCOL, so the chain closes cleanly.
+            let synth_refs = expand_pkin_placements(
+                placed_ref.base_form_id,
+                outer_pos,
+                outer_rot,
+                outer_scale,
+                index,
+            )
+            .unwrap_or_else(|| {
+                // #5523 — a SCOL whose combined mesh is in no archive
+                // (neither its authored MODL nor the derived
+                // `scol\<owner>\cm<id>.nif`) expands into its parts
+                // instead of spawning nothing.
+                expand_scol_placements_if(
+                    placed_ref.base_form_id,
+                    outer_pos,
+                    outer_rot,
+                    outer_scale,
+                    index,
+                    &|scol| {
+                        scol_cm_path(scol, index, load_order, &|path| {
+                            tex_provider.has_mesh(path)
+                        })
+                        .is_none()
+                    },
+                )
+            });
+            (synth_refs, refr_overlay)
+        }
+    }
 }
 
 /// Minimum number of queued DDS textures worth a synchronous submit/fence

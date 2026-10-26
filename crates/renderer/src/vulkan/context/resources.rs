@@ -1267,7 +1267,7 @@ mod tests {
             .expect("resources.rs must have a `mod tests` block")];
         // #1749 / TD1-004 — the image_health_buffers allocation loop lives
         // in `init.rs`'s `build_pipelines_and_finish` now, not `mod.rs`.
-        let mod_src = include_str!("init.rs");
+        let mod_src = crate::vulkan::context::INIT_SOURCES;
 
         assert!(
             mod_src.contains("GpuBuffer::create_host_readback("),

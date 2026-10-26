@@ -1517,7 +1517,7 @@ mod caps_tests {
         // The model tier's draws are GPU-emitted with a non-zero
         // `firstInstance` and have no direct fallback: it must be created only
         // when the combined predicate holds.
-        let init = production(include_str!("context/init.rs"));
+        let init = production(crate::vulkan::context::INIT_SOURCES);
         let tier = format!("{}::new(", "GroundCoverModelTier");
         let tier_pos = init.find(&tier).expect("init.rs must create the model tier");
         assert!(

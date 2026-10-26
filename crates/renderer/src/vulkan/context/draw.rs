@@ -1383,19 +1383,38 @@ mod draw_frame_size_budget_tests {
         let upload = crate::source_scan::production_text(include_str!(
             "build_and_upload_instances.rs"
         ));
+        // #6143 — the blend-variant creation is `prewarm_blend_pipelines` now: the
+        // driver reads "ssbo build, pipeline compile, parameter upload" as three
+        // sequential brackets, so the call sits between the first and the third and
+        // the compile bracket is closed inside the helper.
         ordered(
             upload,
             &[
                 "t.ssbo_build_ns =",
+                "self.prewarm_blend_pipelines(&batches, t);",
+                "let parameter_t0 = Instant::now();",
+                "self.upload_frame_parameters(",
+                "t.parameter_upload_ns = parameter_t0.elapsed()",
+            ],
+        );
+        // …and the parameter helper is where the composite inputs are built.
+        assert!(upload.contains("fn upload_frame_parameters("));
+        ordered(
+            &upload[upload.find("fn upload_frame_parameters(").unwrap()..],
+            &["let composite_inputs ="],
+        );
+        let prewarm = &upload[upload
+            .find("fn prewarm_blend_pipelines(")
+            .expect("prewarm_blend_pipelines must exist")..];
+        ordered(
+            prewarm,
+            &[
                 "let pipeline_t0 = Instant::now();",
                 "let variant_t0 = Instant::now();",
                 "self.get_or_create_blend_pipeline(",
                 "variant_t0.elapsed()",
                 "save_pipeline_cache_if_grown(",
                 "t.pipeline_compile_ns = pipeline_t0.elapsed()",
-                "let parameter_t0 = Instant::now();",
-                "let composite_inputs =",
-                "t.parameter_upload_ns = parameter_t0.elapsed()",
             ],
         );
         let fog = crate::source_scan::production_text(include_str!("../volumetrics.rs"));

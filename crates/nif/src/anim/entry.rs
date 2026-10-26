@@ -326,6 +326,310 @@ pub(crate) fn walk_controller_chain(
     }
 }
 
+/// Import one embedded time controller into `clip`, dispatching on its block type
+/// (material / shader / light / flip / UV controllers). Unsupported types are
+/// logged and skipped. (#6143, split out of `import_embedded_animations`.)
+fn import_embedded_controller(
+    scene: &NifScene,
+    ctrl_block: &dyn crate::NiObject,
+    node_name: &Arc<str>,
+    clip: &mut AnimationClip,
+    sampling: &mut super::bspline::BsplineSampling,
+) {
+    use crate::blocks::controller::{
+        BsNamedFloatInterpController, BsShaderController, NiFlipController, NiLightColorController,
+        NiLightFloatController, NiMaterialColorController, NiSingleInterpController,
+        NiTextureTransformController,
+    };
+
+    let ctrl_type = ctrl_block.block_type_name();
+    let any = ctrl_block.as_any();
+
+    // For each controller, dispatch on type and use the
+    // ControlledBlock-free extract_*_at helpers.
+    match ctrl_type {
+        // #2562 / #2563 — NiAlphaController / NiVisController now
+        // parse into their own `NiPreSplitDataController` type
+        // (previously a bare `NiSingleInterpController`, which
+        // erased the RTTI `block_type_name()` reports — these two
+        // match arms existed but were unreachable dead code before
+        // that fix, since `ctrl_type` could never actually equal
+        // these strings).
+        "NiAlphaController" => {
+            let interp_idx = any
+                .downcast_ref::<NiPreSplitDataController>()
+                .and_then(|c| c.base.interpolator_ref.index());
+            if let Some(idx) = interp_idx {
+                if let Some(ch) = extract_float_channel_at(scene, idx, FloatTarget::Alpha, sampling) {
+                    clip.float_channels.push((Arc::clone(&node_name), ch));
+                }
+            }
+        }
+        "NiVisController" => {
+            let interp_idx = any
+                .downcast_ref::<NiPreSplitDataController>()
+                .and_then(|c| c.base.interpolator_ref.index());
+            if let Some(idx) = interp_idx {
+                if let Some(ch) = extract_bool_channel_at(scene, idx) {
+                    clip.bool_channels.push((Arc::clone(&node_name), ch));
+                }
+            }
+        }
+        // #1440 (LC-D5-01) — an inline transform controller hung
+        // directly off a node (animated scenery: fans, doors, lifts,
+        // swinging signs in loose Oblivion/FO3/FNV .nifs) carries no
+        // NiControllerSequence, so the KF-sequence dispatch never sees
+        // it and the mesh rendered static.
+        //
+        // #2562 / #2563 — `NiTransformController` and the pre-Skyrim
+        // `NiKeyframeController` alias now parse into
+        // `NiPreSplitDataController` with their real RTTI preserved
+        // (previously a bare `NiSingleInterpController`, erased to
+        // that name — see the comment on the arm below for what
+        // still reaches it under the erased name today).
+        "NiTransformController" | "NiKeyframeController" => {
+            let interp_idx = any
+                .downcast_ref::<NiPreSplitDataController>()
+                .and_then(|c| c.base.interpolator_ref.index());
+            if let Some(channel) = interp_idx
+                .and_then(|idx| extract_transform_channel_at(scene, idx, sampling))
+            {
+                clip.channels.insert(Arc::clone(&node_name), channel);
+            }
+        }
+        // #3327 — pre-fix, the three arms below all parsed as a bare
+        // `NiSingleInterpController` and fell through to this arm
+        // under that erased name; none of them drive a transform, so
+        // `extract_transform_channel_at` always self-selected to
+        // `None`. Kept as a harmless, self-selecting fallback for
+        // any genuinely-unlisted same-shape block that might still
+        // reach here.
+        "NiSingleInterpController" => {
+            let interp_idx = any
+                .downcast_ref::<NiSingleInterpController>()
+                .and_then(|c| c.interpolator_ref.index());
+            if let Some(channel) = interp_idx
+                .and_then(|idx| extract_transform_channel_at(scene, idx, sampling))
+            {
+                clip.channels.insert(Arc::clone(&node_name), channel);
+            }
+        }
+        // #3327 — animated material emissive multiplier (pulsing/
+        // flickering neon, glow-panel signage). No ECS/render
+        // consumer yet (same state `ShaderFloat` shipped in for
+        // #2221) — this restores the channel reaching
+        // `AnimationClip::float_channels` with its real RTTI, which
+        // is this issue's scope.
+        "BSMaterialEmittanceMultController" => {
+            let interp_idx = any
+                .downcast_ref::<BsNamedFloatInterpController>()
+                .and_then(|c| c.base.interpolator_ref.index());
+            if let Some(ch) = interp_idx.and_then(|idx| {
+                extract_float_channel_at(scene, idx, FloatTarget::EmissiveMultiple, sampling)
+            }) {
+                clip.float_channels.push((Arc::clone(&node_name), ch));
+            }
+        }
+        // #3327 — animated glass refraction strength (Stealth Boy /
+        // heat-haze). Same no-consumer-yet caveat as above.
+        "BSRefractionStrengthController" => {
+            let interp_idx = any
+                .downcast_ref::<BsNamedFloatInterpController>()
+                .and_then(|c| c.base.interpolator_ref.index());
+            if let Some(ch) = interp_idx.and_then(|idx| {
+                extract_float_channel_at(scene, idx, FloatTarget::RefractionStrength, sampling)
+            }) {
+                clip.float_channels.push((Arc::clone(&node_name), ch));
+            }
+        }
+        // #3327 — animated camera FOV. No `FloatTarget` variant:
+        // unlike the two arms above, this doesn't animate a
+        // Material field at all (it's a NiCamera property), so
+        // there's no natural sink to route it to yet. This arm
+        // exists purely so the block keeps its real RTTI
+        // (`BSFrustumFOVController`, not the erased
+        // `NiSingleInterpController` label) rather than to extract
+        // a channel — a future camera-animation feature has a real
+        // type to hang off of.
+        "BSFrustumFOVController" => {}
+        "NiTextureTransformController" => {
+            if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
+                let target = float_target_from_operation(c.operation);
+                if let Some(idx) = c.interpolator_ref.index() {
+                    if let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
+                        clip.float_channels.push((Arc::clone(&node_name), ch));
+                    }
+                }
+            }
+        }
+        "NiMaterialColorController" => {
+            if let Some(c) = any.downcast_ref::<NiMaterialColorController>() {
+                if let Some(idx) = c.interpolator_ref.index() {
+                    let keys = resolve_color_keys_at(scene, idx, sampling);
+                    if !keys.is_empty() {
+                        let target = color_target_from_target_color(c.target_color);
+                        clip.color_channels
+                            .push((Arc::clone(&node_name), ColorChannel { target, keys }));
+                    }
+                }
+            }
+        }
+        "BSEffectShaderPropertyFloatController"
+        | "BSLightingShaderPropertyFloatController" => {
+            if let Some(c) = any.downcast_ref::<BsShaderController>() {
+                let target = float_target_from_shader_controller(c.kind);
+                if let Some(idx) = c.base.interpolator_ref.index() {
+                    if let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
+                        clip.float_channels.push((Arc::clone(&node_name), ch));
+                    }
+                }
+            }
+        }
+        "BSEffectShaderPropertyColorController"
+        | "BSLightingShaderPropertyColorController" => {
+            let interp_idx = any
+                .downcast_ref::<BsShaderController>()
+                .and_then(|c| c.base.interpolator_ref.index());
+            if let Some(idx) = interp_idx {
+                let keys = resolve_color_keys_at(scene, idx, sampling);
+                if !keys.is_empty() {
+                    clip.color_channels.push((
+                        Arc::clone(&node_name),
+                        ColorChannel {
+                            target: ColorTarget::ShaderColor,
+                            keys,
+                        },
+                    ));
+                }
+            }
+        }
+        "NiFlipController" => {
+            // Texture-flipbook controller (#545). Resolve the
+            // per-frame source list to filenames at import time
+            // so the runtime never has to walk back into the
+            // NIF scene. Float keys come from the inherited
+            // NiSingleInterpController.interpolator_ref —
+            // typically a stepped saw 0..N over the cycle.
+            if let Some(c) = any.downcast_ref::<NiFlipController>() {
+                let source_paths = resolve_flip_source_paths(scene, &c.sources);
+                if source_paths.is_empty() {
+                    // Empty source list — controller is structurally
+                    // valid but contributes nothing to render.
+                    return;
+                }
+                let keys = c
+                    .base
+                    .interpolator_ref
+                    .index()
+                    .and_then(|idx| {
+                        extract_float_channel_at(scene, idx, FloatTarget::ShaderFloat, sampling)
+                    })
+                    .map(|ch| ch.keys)
+                    .unwrap_or_default();
+                clip.texture_flip_channels.push((
+                    Arc::clone(&node_name),
+                    TextureFlipChannel {
+                        texture_slot: c.texture_slot,
+                        source_paths,
+                        keys,
+                    },
+                ));
+            }
+        }
+        // #983 — Four NiLight*Controller types animate the
+        // light's color / dimmer / intensity / radius slots.
+        // All four follow the standard
+        // NiSingleInterpController shape (interpolator_ref
+        // → NiFloatInterpolator / NiPoint3Interpolator →
+        // NiFloatData / NiPosData keys), so the extract
+        // helpers used elsewhere in this match work
+        // directly. See the dispatch in `blocks/mod.rs`
+        // and the FloatTarget::Light* / ColorTarget::Light*
+        // sinks in `core/src/animation/types.rs`.
+        "NiLightColorController" => {
+            if let Some(c) = any.downcast_ref::<NiLightColorController>() {
+                if let Some(idx) = c.interpolator_ref.index() {
+                    let keys = resolve_color_keys_at(scene, idx, sampling);
+                    if !keys.is_empty() {
+                        // target_color: 0 = Diffuse, 1 = Ambient
+                        // (per nif.xml line 1241 LightColor enum).
+                        let target = if c.target_color == 1 {
+                            ColorTarget::LightAmbient
+                        } else {
+                            ColorTarget::LightDiffuse
+                        };
+                        clip.color_channels
+                            .push((Arc::clone(&node_name), ColorChannel { target, keys }));
+                    }
+                }
+            }
+        }
+        "NiLightDimmerController"
+        | "NiLightIntensityController"
+        | "NiLightRadiusController" => {
+            if let Some(c) = any.downcast_ref::<NiLightFloatController>() {
+                let target = match ctrl_type {
+                    "NiLightDimmerController" => FloatTarget::LightDimmer,
+                    "NiLightIntensityController" => FloatTarget::LightIntensity,
+                    "NiLightRadiusController" => FloatTarget::LightRadius,
+                    _ => unreachable!(),
+                };
+                if let Some(idx) = c.base.interpolator_ref.index() {
+                    if let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
+                        clip.float_channels.push((Arc::clone(&node_name), ch));
+                    }
+                }
+            }
+        }
+        "NiUVController" => {
+            // The NiUVController + NiUVData path is distinct from
+            // the NiTextureTransformController: UVData stores four
+            // independent float-key groups (offsetU, offsetV,
+            // scaleU, scaleV). Emit up to four channels per host
+            // node, each with its own target. See #154.
+            if let Some(c) = any.downcast_ref::<crate::blocks::controller::NiUVController>()
+            {
+                if let Some(data_idx) = c.data_ref.index() {
+                    if let Some(data) =
+                        scene.get_as::<crate::blocks::interpolator::NiUVData>(data_idx)
+                    {
+                        // NiUVData.groups = [offset_u, offset_v, tiling_u, tiling_v].
+                        for (group, target) in [
+                            (&data.groups[0], FloatTarget::UvOffsetU),
+                            (&data.groups[1], FloatTarget::UvOffsetV),
+                            (&data.groups[2], FloatTarget::UvScaleU),
+                            (&data.groups[3], FloatTarget::UvScaleV),
+                        ] {
+                            if group.keys.is_empty() {
+                                continue;
+                            }
+                            let keys: Vec<AnimFloatKey> = group
+                                .keys
+                                .iter()
+                                .map(|k| AnimFloatKey {
+                                    time: k.time,
+                                    value: k.value,
+                                })
+                                .collect();
+                            clip.float_channels.push((
+                                Arc::clone(&node_name),
+                                FloatChannel { target, keys },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        other => {
+            log::debug!(
+                "Skipping unsupported embedded controller type '{}' on node '{}'",
+                other,
+                node_name
+            );
+        }
+    }
+}
+
 /// Import mesh-embedded animation controllers into a single looping
 /// `AnimationClip`. See #261.
 ///
@@ -366,11 +670,6 @@ pub(crate) fn walk_controller_chain(
 /// `NiFlipController`, `NiLight*Controller`). Unsupported types are skipped
 /// with a debug-log.
 pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
-    use crate::blocks::controller::{
-        BsNamedFloatInterpController, BsShaderController, NiFlipController, NiLightColorController,
-        NiLightFloatController, NiMaterialColorController, NiSingleInterpController,
-        NiTextureTransformController,
-    };
 
     // #5486 — the embedded path has no owning sequence, so only the
     // per-channel ceiling and this budget bound its B-spline sampling.
@@ -455,292 +754,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                     envelope_taken = true;
                 }
             }
-            let ctrl_type = ctrl_block.block_type_name();
-            let any = ctrl_block.as_any();
-
-            // For each controller, dispatch on type and use the
-            // ControlledBlock-free extract_*_at helpers.
-            match ctrl_type {
-                // #2562 / #2563 — NiAlphaController / NiVisController now
-                // parse into their own `NiPreSplitDataController` type
-                // (previously a bare `NiSingleInterpController`, which
-                // erased the RTTI `block_type_name()` reports — these two
-                // match arms existed but were unreachable dead code before
-                // that fix, since `ctrl_type` could never actually equal
-                // these strings).
-                "NiAlphaController" => {
-                    let interp_idx = any
-                        .downcast_ref::<NiPreSplitDataController>()
-                        .and_then(|c| c.base.interpolator_ref.index());
-                    if let Some(idx) = interp_idx {
-                        if let Some(ch) = extract_float_channel_at(scene, idx, FloatTarget::Alpha, &mut sampling) {
-                            clip.float_channels.push((Arc::clone(&node_name), ch));
-                        }
-                    }
-                }
-                "NiVisController" => {
-                    let interp_idx = any
-                        .downcast_ref::<NiPreSplitDataController>()
-                        .and_then(|c| c.base.interpolator_ref.index());
-                    if let Some(idx) = interp_idx {
-                        if let Some(ch) = extract_bool_channel_at(scene, idx) {
-                            clip.bool_channels.push((Arc::clone(&node_name), ch));
-                        }
-                    }
-                }
-                // #1440 (LC-D5-01) — an inline transform controller hung
-                // directly off a node (animated scenery: fans, doors, lifts,
-                // swinging signs in loose Oblivion/FO3/FNV .nifs) carries no
-                // NiControllerSequence, so the KF-sequence dispatch never sees
-                // it and the mesh rendered static.
-                //
-                // #2562 / #2563 — `NiTransformController` and the pre-Skyrim
-                // `NiKeyframeController` alias now parse into
-                // `NiPreSplitDataController` with their real RTTI preserved
-                // (previously a bare `NiSingleInterpController`, erased to
-                // that name — see the comment on the arm below for what
-                // still reaches it under the erased name today).
-                "NiTransformController" | "NiKeyframeController" => {
-                    let interp_idx = any
-                        .downcast_ref::<NiPreSplitDataController>()
-                        .and_then(|c| c.base.interpolator_ref.index());
-                    if let Some(channel) = interp_idx
-                        .and_then(|idx| extract_transform_channel_at(scene, idx, &mut sampling))
-                    {
-                        clip.channels.insert(Arc::clone(&node_name), channel);
-                    }
-                }
-                // #3327 — pre-fix, the three arms below all parsed as a bare
-                // `NiSingleInterpController` and fell through to this arm
-                // under that erased name; none of them drive a transform, so
-                // `extract_transform_channel_at` always self-selected to
-                // `None`. Kept as a harmless, self-selecting fallback for
-                // any genuinely-unlisted same-shape block that might still
-                // reach here.
-                "NiSingleInterpController" => {
-                    let interp_idx = any
-                        .downcast_ref::<NiSingleInterpController>()
-                        .and_then(|c| c.interpolator_ref.index());
-                    if let Some(channel) = interp_idx
-                        .and_then(|idx| extract_transform_channel_at(scene, idx, &mut sampling))
-                    {
-                        clip.channels.insert(Arc::clone(&node_name), channel);
-                    }
-                }
-                // #3327 — animated material emissive multiplier (pulsing/
-                // flickering neon, glow-panel signage). No ECS/render
-                // consumer yet (same state `ShaderFloat` shipped in for
-                // #2221) — this restores the channel reaching
-                // `AnimationClip::float_channels` with its real RTTI, which
-                // is this issue's scope.
-                "BSMaterialEmittanceMultController" => {
-                    let interp_idx = any
-                        .downcast_ref::<BsNamedFloatInterpController>()
-                        .and_then(|c| c.base.interpolator_ref.index());
-                    if let Some(ch) = interp_idx.and_then(|idx| {
-                        extract_float_channel_at(scene, idx, FloatTarget::EmissiveMultiple, &mut sampling)
-                    }) {
-                        clip.float_channels.push((Arc::clone(&node_name), ch));
-                    }
-                }
-                // #3327 — animated glass refraction strength (Stealth Boy /
-                // heat-haze). Same no-consumer-yet caveat as above.
-                "BSRefractionStrengthController" => {
-                    let interp_idx = any
-                        .downcast_ref::<BsNamedFloatInterpController>()
-                        .and_then(|c| c.base.interpolator_ref.index());
-                    if let Some(ch) = interp_idx.and_then(|idx| {
-                        extract_float_channel_at(scene, idx, FloatTarget::RefractionStrength, &mut sampling)
-                    }) {
-                        clip.float_channels.push((Arc::clone(&node_name), ch));
-                    }
-                }
-                // #3327 — animated camera FOV. No `FloatTarget` variant:
-                // unlike the two arms above, this doesn't animate a
-                // Material field at all (it's a NiCamera property), so
-                // there's no natural sink to route it to yet. This arm
-                // exists purely so the block keeps its real RTTI
-                // (`BSFrustumFOVController`, not the erased
-                // `NiSingleInterpController` label) rather than to extract
-                // a channel — a future camera-animation feature has a real
-                // type to hang off of.
-                "BSFrustumFOVController" => {}
-                "NiTextureTransformController" => {
-                    if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
-                        let target = float_target_from_operation(c.operation);
-                        if let Some(idx) = c.interpolator_ref.index() {
-                            if let Some(ch) = extract_float_channel_at(scene, idx, target, &mut sampling) {
-                                clip.float_channels.push((Arc::clone(&node_name), ch));
-                            }
-                        }
-                    }
-                }
-                "NiMaterialColorController" => {
-                    if let Some(c) = any.downcast_ref::<NiMaterialColorController>() {
-                        if let Some(idx) = c.interpolator_ref.index() {
-                            let keys = resolve_color_keys_at(scene, idx, &mut sampling);
-                            if !keys.is_empty() {
-                                let target = color_target_from_target_color(c.target_color);
-                                clip.color_channels
-                                    .push((Arc::clone(&node_name), ColorChannel { target, keys }));
-                            }
-                        }
-                    }
-                }
-                "BSEffectShaderPropertyFloatController"
-                | "BSLightingShaderPropertyFloatController" => {
-                    if let Some(c) = any.downcast_ref::<BsShaderController>() {
-                        let target = float_target_from_shader_controller(c.kind);
-                        if let Some(idx) = c.base.interpolator_ref.index() {
-                            if let Some(ch) = extract_float_channel_at(scene, idx, target, &mut sampling) {
-                                clip.float_channels.push((Arc::clone(&node_name), ch));
-                            }
-                        }
-                    }
-                }
-                "BSEffectShaderPropertyColorController"
-                | "BSLightingShaderPropertyColorController" => {
-                    let interp_idx = any
-                        .downcast_ref::<BsShaderController>()
-                        .and_then(|c| c.base.interpolator_ref.index());
-                    if let Some(idx) = interp_idx {
-                        let keys = resolve_color_keys_at(scene, idx, &mut sampling);
-                        if !keys.is_empty() {
-                            clip.color_channels.push((
-                                Arc::clone(&node_name),
-                                ColorChannel {
-                                    target: ColorTarget::ShaderColor,
-                                    keys,
-                                },
-                            ));
-                        }
-                    }
-                }
-                "NiFlipController" => {
-                    // Texture-flipbook controller (#545). Resolve the
-                    // per-frame source list to filenames at import time
-                    // so the runtime never has to walk back into the
-                    // NIF scene. Float keys come from the inherited
-                    // NiSingleInterpController.interpolator_ref —
-                    // typically a stepped saw 0..N over the cycle.
-                    if let Some(c) = any.downcast_ref::<NiFlipController>() {
-                        let source_paths = resolve_flip_source_paths(scene, &c.sources);
-                        if source_paths.is_empty() {
-                            // Empty source list — controller is structurally
-                            // valid but contributes nothing to render.
-                            return;
-                        }
-                        let keys = c
-                            .base
-                            .interpolator_ref
-                            .index()
-                            .and_then(|idx| {
-                                extract_float_channel_at(scene, idx, FloatTarget::ShaderFloat, &mut sampling)
-                            })
-                            .map(|ch| ch.keys)
-                            .unwrap_or_default();
-                        clip.texture_flip_channels.push((
-                            Arc::clone(&node_name),
-                            TextureFlipChannel {
-                                texture_slot: c.texture_slot,
-                                source_paths,
-                                keys,
-                            },
-                        ));
-                    }
-                }
-                // #983 — Four NiLight*Controller types animate the
-                // light's color / dimmer / intensity / radius slots.
-                // All four follow the standard
-                // NiSingleInterpController shape (interpolator_ref
-                // → NiFloatInterpolator / NiPoint3Interpolator →
-                // NiFloatData / NiPosData keys), so the extract
-                // helpers used elsewhere in this match work
-                // directly. See the dispatch in `blocks/mod.rs`
-                // and the FloatTarget::Light* / ColorTarget::Light*
-                // sinks in `core/src/animation/types.rs`.
-                "NiLightColorController" => {
-                    if let Some(c) = any.downcast_ref::<NiLightColorController>() {
-                        if let Some(idx) = c.interpolator_ref.index() {
-                            let keys = resolve_color_keys_at(scene, idx, &mut sampling);
-                            if !keys.is_empty() {
-                                // target_color: 0 = Diffuse, 1 = Ambient
-                                // (per nif.xml line 1241 LightColor enum).
-                                let target = if c.target_color == 1 {
-                                    ColorTarget::LightAmbient
-                                } else {
-                                    ColorTarget::LightDiffuse
-                                };
-                                clip.color_channels
-                                    .push((Arc::clone(&node_name), ColorChannel { target, keys }));
-                            }
-                        }
-                    }
-                }
-                "NiLightDimmerController"
-                | "NiLightIntensityController"
-                | "NiLightRadiusController" => {
-                    if let Some(c) = any.downcast_ref::<NiLightFloatController>() {
-                        let target = match ctrl_type {
-                            "NiLightDimmerController" => FloatTarget::LightDimmer,
-                            "NiLightIntensityController" => FloatTarget::LightIntensity,
-                            "NiLightRadiusController" => FloatTarget::LightRadius,
-                            _ => unreachable!(),
-                        };
-                        if let Some(idx) = c.base.interpolator_ref.index() {
-                            if let Some(ch) = extract_float_channel_at(scene, idx, target, &mut sampling) {
-                                clip.float_channels.push((Arc::clone(&node_name), ch));
-                            }
-                        }
-                    }
-                }
-                "NiUVController" => {
-                    // The NiUVController + NiUVData path is distinct from
-                    // the NiTextureTransformController: UVData stores four
-                    // independent float-key groups (offsetU, offsetV,
-                    // scaleU, scaleV). Emit up to four channels per host
-                    // node, each with its own target. See #154.
-                    if let Some(c) = any.downcast_ref::<crate::blocks::controller::NiUVController>()
-                    {
-                        if let Some(data_idx) = c.data_ref.index() {
-                            if let Some(data) =
-                                scene.get_as::<crate::blocks::interpolator::NiUVData>(data_idx)
-                            {
-                                // NiUVData.groups = [offset_u, offset_v, tiling_u, tiling_v].
-                                for (group, target) in [
-                                    (&data.groups[0], FloatTarget::UvOffsetU),
-                                    (&data.groups[1], FloatTarget::UvOffsetV),
-                                    (&data.groups[2], FloatTarget::UvScaleU),
-                                    (&data.groups[3], FloatTarget::UvScaleV),
-                                ] {
-                                    if group.keys.is_empty() {
-                                        continue;
-                                    }
-                                    let keys: Vec<AnimFloatKey> = group
-                                        .keys
-                                        .iter()
-                                        .map(|k| AnimFloatKey {
-                                            time: k.time,
-                                            value: k.value,
-                                        })
-                                        .collect();
-                                    clip.float_channels.push((
-                                        Arc::clone(&node_name),
-                                        FloatChannel { target, keys },
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-                other => {
-                    log::debug!(
-                        "Skipping unsupported embedded controller type '{}' on node '{}'",
-                        other,
-                        node_name
-                    );
-                }
-            }
+            import_embedded_controller(scene, ctrl_block, &node_name, &mut clip, &mut sampling);
         });
 
         for owner in other_owners {

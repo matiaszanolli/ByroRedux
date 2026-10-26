@@ -1983,8 +1983,9 @@ mod tests {
     #[test]
     fn placeholders_are_created_before_the_passes_that_fall_back_to_them() {
         // #1749 / TD1-004 — this init-order sequence lives in `init.rs`'s
-        // `build_pipelines_and_finish` now, not `mod.rs`.
-        let src = include_str!("init.rs");
+        // `build_pipelines_and_finish` (and its `init_stages.rs` stage
+        // functions, #6143) now, not `mod.rs`.
+        let src = crate::vulkan::context::INIT_SOURCES;
 
         let ao_create = src
             .find("PlaceholderImage::new_white_ao")
@@ -2015,11 +2016,12 @@ mod tests {
     #[test]
     fn init_path_water_set_2_falls_back_and_drops_the_stale_comment() {
         // #1749 / TD1-004 — this init-path wiring lives in `init.rs`'s
-        // `build_pipelines_and_finish` now, not `mod.rs`.
-        let src = include_str!("init.rs");
+        // `build_pipelines_and_finish` (and its `init_stages.rs` stage
+        // functions, #6143) now, not `mod.rs`.
+        let src = crate::vulkan::context::INIT_SOURCES;
 
         assert!(
-            !src.contains("won't fire during the\n        // scaffold-only window"),
+            !src.contains("won't fire during the\n    // scaffold-only window"),
             "the `sunDirection.w > 0` / scaffold-only-window justification is stale — \
              Phase D and Phase E (#1255 / #1257) shipped, so set 2 is now bound \
              unconditionally AND written by the shader (#2142)"
@@ -2330,7 +2332,7 @@ mod tests {
     fn a_failed_layout_walk_fails_closed_instead_of_warning_and_continuing() {
         use crate::source_scan::{production_text, production_text_or_whole as prod};
         // Not every pass file has a test module to cut; `resize.rs` does.
-        let init = prod(include_str!("init.rs"));
+        let init = prod(crate::vulkan::context::INIT_SOURCES);
         let resize = production_text(include_str!("resize.rs"));
         let taa = prod(include_str!("../taa.rs"));
         let svgf = prod(include_str!("../svgf.rs"));

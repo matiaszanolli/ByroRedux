@@ -1590,6 +1590,16 @@ mod helpers;
 // that creates it (`helpers::create_depth_resources`).
 pub(crate) use helpers::DEPTH_BYTES_PER_PIXEL;
 mod init;
+mod init_stages;
+
+/// The construction chain's source: `init_stages.rs` (one function per optional
+/// pass, #6143) followed by `init.rs` (the phases that call them). Source-scan
+/// tests that pin construction text read this instead of `init.rs` alone, which
+/// no longer holds the pass bodies. The stages come first so a scan that orders
+/// two constructions (cloud noise before composite) sees them in creation order.
+#[cfg(test)]
+pub(crate) const INIT_SOURCES: &str =
+    concat!(include_str!("init_stages.rs"), "\n", include_str!("init.rs"));
 mod post_passes;
 mod render_debug;
 mod resize;
@@ -1601,6 +1611,9 @@ mod sync_and_acquire_frame;
 mod teardown;
 mod telemetry;
 mod types;
+
+#[cfg(test)]
+mod function_size_pin_tests;
 
 // #4217 — the data types moved out; every existing
 // `context::<Type>` path resolves through here.
@@ -1940,7 +1953,7 @@ mod rigid_history_hasher_tests {
     fn production_src() -> String {
         const CONTEXT_MOD_RS: &str = include_str!("mod.rs");
         let mod_production = crate::source_scan::production_text(CONTEXT_MOD_RS);
-        format!("{mod_production}\n{}", include_str!("init.rs"))
+        format!("{mod_production}\n{}", crate::vulkan::context::INIT_SOURCES)
     }
 
     #[test]

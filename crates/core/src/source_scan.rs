@@ -200,6 +200,23 @@ fn module_end(src: &str) -> Option<usize> {
     None
 }
 
+/// Lines in the function whose header begins with `signature` — from the
+/// signature's own line through the line holding the closing brace of its
+/// body. The body's extent is found by brace depth, skipping string, raw-string
+/// and char literals and `//` comments, so a `{}` format placeholder cannot end
+/// it early. For the function-size pins that stop a split function from
+/// quietly regrowing (#6143); `signature` must be unique enough to name one
+/// function. Panics if it is not found or never closes.
+pub fn function_line_count(src: &str, signature: &str) -> usize {
+    let at = src
+        .find(signature)
+        .unwrap_or_else(|| panic!("`{signature}` not found in source"));
+    let line_start = src[..at].rfind('\n').map_or(0, |nl| nl + 1);
+    let tail = &src[at..];
+    let end = module_end(tail).unwrap_or_else(|| panic!("`{signature}` never closes"));
+    src[line_start..at + end].matches('\n').count() + 1
+}
+
 /// Every `.rs` file under `dir`, recursively. For the tests that walk a
 /// crate's own source to derive what a guard must cover, rather than naming
 /// it.
@@ -269,6 +286,22 @@ mod tests {
             !stripped.contains("needle"),
             "the module must strip whole — a literal brace ended it early: {stripped}"
         );
+    }
+
+    /// #6143 — the size pins count a function from its signature line to the
+    /// line of its closing brace, counting only braces that are code.
+    #[test]
+    fn function_line_count_spans_signature_to_closing_brace() {
+        let src = "fn before() {}\n\n/// docs are not counted\npub(super) fn target(\n    a: u32,\n) -> u32 {\n\
+                   \x20   let s = \"}\";\n    // }\n    let c = '{';\n    format!(\"{x}\");\n    a\n}\nfn after() {}\n";
+        assert_eq!(function_line_count(src, "fn target("), 9);
+        assert_eq!(function_line_count(src, "fn before("), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "not found")]
+    fn function_line_count_panics_when_the_function_is_gone() {
+        function_line_count("fn a() {}", "fn b(");
     }
 
     #[test]

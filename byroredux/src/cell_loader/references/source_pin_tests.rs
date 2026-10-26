@@ -64,13 +64,14 @@ fn actor_spawn_branch_attaches_vmad_scripts() {
     let actor_branch = src
         .find("NpcSpawnProgress::Complete(result)")
         .expect("the actor spawn-complete branch must still exist");
-    // Bound the window to the actor arm itself — it ends at the
-    // `continue` that hands off to the static `spawn_synth_child` path.
+    // Bound the window to the actor arm itself. The arm is
+    // `advance_actor_synth` now (#6143), so it ends with that function; the
+    // static `spawn_synth_child` handoff lives in the caller, before it.
     // Without this bound the search would happily match a *later*
     // branch's attach and pass while the actor arm has none.
     let branch_len = src[actor_branch..]
-        .find("let refr_script_instance = refr_script_instance_for_synth_child(")
-        .expect("the static-path handoff must follow the actor branch");
+        .find("\n}\n")
+        .expect("the actor arm must end with its function");
     let branch_tail = &src[actor_branch..actor_branch + branch_len];
     let stamp = branch_tail
         .find("stamp_quest_reference(")

@@ -1671,7 +1671,7 @@ mod initial_layout_submit_tests {
     fn no_initialize_layouts_caller_destroys_without_the_in_flight_check() {
         let expected = |guarded_destroy, keep_alive, chained_with_class| Shapes { guarded_destroy, keep_alive, chained_with_class };
         for (name, src, want) in [
-            ("context/init.rs", include_str!("context/init.rs"), expected(7, 0, 0)),
+            ("context/init.rs + init_stages.rs", crate::vulkan::context::INIT_SOURCES, expected(7, 0, 0)),
             // The G-buffer keeps its pass on failure; the shadow filter is chained; the rest guard.
             ("context/resize.rs", include_str!("context/resize.rs"), expected(4, 1, 1)),
             ("taa.rs", include_str!("taa.rs"), expected(0, 1, 0)),

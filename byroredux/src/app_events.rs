@@ -157,6 +157,592 @@ impl App {
         self.window.take();
         event_loop.exit();
     }
+
+    /// The `--bench-frames` summary: the `bench:` line and the telemetry rows
+    /// that follow it. Printed once the timed window has closed, so reading
+    /// the scene state here cannot feed back into the frame time it reports.
+    /// (#6143, split out of `about_to_wait`.)
+    fn emit_bench_summary(&self) {
+        // Capture the renderer-facing state only after the timed
+        // window has closed. Hashing a large bone palette can be
+        // measurable CPU work, so it must not feed back into the
+        // frame time being reported.
+        let scene_state = crate::bench::capture_scene_state(
+            &self.world,
+            &self.draw_commands,
+            &self.water_commands,
+            &self.gpu_lights,
+            &self.gpu_fog_volumes,
+            &self.bone_world,
+        );
+        let bench_mode = self
+            .bench_mode
+            .expect("every finite benchmark resolves a named mode");
+        let bench_camera = self
+            .bench_camera
+            .map_or_else(|| "free".to_owned(), |path| path.to_string());
+        let stats = self.world.resource::<DebugStats>();
+        let elapsed_secs = self
+            .bench_start
+            .map(|t| t.elapsed().as_secs_f64())
+            .unwrap_or(1.0);
+        let wall_fps = self.bench_frames_count as f64 / elapsed_secs;
+        let wall_ms = elapsed_secs * 1000.0 / self.bench_frames_count as f64;
+        let [frame_p50_ms, frame_p95_ms, frame_max_ms] =
+            bench_frame_distribution(&self.bench_cpu_frame_ms);
+        let n = self.bench_frames_count as f64;
+        let ticks_per_frame = self.bench_systems_ticks as f64 / n;
+        let systems_ms = if self.bench_systems_ticks > 0 {
+            self.bench_systems_ns as f64 / self.bench_systems_ticks as f64 / 1e6
+        } else {
+            0.0
+        };
+        let brd_ms = self.bench_build_render_ns as f64 / n / 1e6;
+        let ui_ms = self.bench_ui_ns as f64 / n / 1e6;
+        let draw_ms = self.bench_render_ns as f64 / n / 1e6;
+        let ft = &self.bench_frame_timings;
+        let fence_ms = ft.fence_wait_ns as f64 / n / 1e6;
+        // #3629 — the HOST-side TLAS build cost, from
+        // `FrameTimings`. Printed as `cpu_tlas_ms=` (renamed from
+        // the bare `tlas_ms=`) because the device-side bracket
+        // `gpu_tlas_build=` now appears on the same line, and the
+        // old name was the only `tlas` token a harness could
+        // extract — inviting the host number to be read as the
+        // device one.
+        let cpu_tlas_ms = ft.tlas_build_ns as f64 / n / 1e6;
+        let ssbo_ms = ft.ssbo_build_ns as f64 / n / 1e6;
+        let pipeline_compile_ms = ft.pipeline_compile_ns as f64 / n / 1e6;
+        let parameter_upload_ms = ft.parameter_upload_ns as f64 / n / 1e6;
+        let fog_cluster_ms = ft.fog_cluster_ns as f64 / n / 1e6;
+        let post_present_ms = ft.post_present_ns as f64 / n / 1e6;
+        // #3467 — the resumable geometry-rebuild slice. Reported
+        // here so `GEOMETRY_REBUILD_CHUNK_BYTES` can finally be
+        // re-picked against a measured number instead of the
+        // "chosen conservatively pending live tuning" its own doc
+        // still carries.
+        let geom_rebuild_ms = ft.geometry_rebuild_ns as f64 / n / 1e6;
+        let cmd_ms = ft.cmd_record_ns as f64 / n / 1e6;
+        let submit_ms = ft.submit_present_ns as f64 / n / 1e6;
+        let accounted = systems_ms * ticks_per_frame + brd_ms + ui_ms + draw_ms;
+        let unaccounted_ms = (wall_ms - accounted).max(0.0);
+        // #1194 — per-pass GPU timer snapshot. The
+        // SkinCoverageStats resource is filled at the end
+        // of every `draw_frame`; values here are from the
+        // last completed frame and represent one
+        // `MAX_FRAMES_IN_FLIGHT` cycle of pipeline lag.
+        // Reads 0.0 across the board when the driver
+        // lacks `timestampComputeAndGraphics` or no
+        // skinned/TAA work fired on the snapshot frame.
+        // Surfaces `gpu_skin_disp` / `gpu_blas_refit` /
+        // `gpu_taa` so PERF-DIM7-01/-02/-03 (#1195/#1196/
+        // #1197) can measure rather than guess.
+        // Full per-pass GPU breakdown. The FSR benchmark matrix
+        // (execution phase 7) needs the render-resolution passes
+        // and the output-resolution ones separable, because only
+        // the former shrink with a preset — reporting a frame-time
+        // win without netting out presentation and the upscale
+        // dispatch would overstate what a player actually gets.
+        // #2821 — the `_active` mirrors travel with the values.
+        // A bracket that did not run reports `0.000` here like any
+        // other, because widening a numeric field to `n/a` would
+        // break every `key=<float>` extractor across the four
+        // sweep harnesses; instead the companion `gpu_inactive=`
+        // token below names the brackets whose zero is "skipped",
+        // so a skipped pass no longer lands in the TSV as a hard
+        // 0.000 indistinguishable from a measured one.
+        // #6337 — key, milliseconds and ran-flag travel as one row per
+        // bracket (`bench_gpu_samples`), and the line's tokens and the
+        // `gpu_inactive=` names are both read off those rows, so the three
+        // hand-ordered lists that could silently transpose no longer exist.
+        let gpu_samples = self
+            .world
+            .try_resource::<SkinCoverageStats>()
+            .map(|s| crate::bench_gpu_samples(&s))
+            .unwrap_or_else(|| crate::bench_gpu_samples(&SkinCoverageStats::default()));
+        let gpu_tokens = crate::bench_gpu_tokens(&gpu_samples);
+        let gpu_inactive = bench_gpu_inactive_token(gpu_samples.map(|(_, _, active)| active));
+        let rt_tier = self
+            .renderer
+            .as_ref()
+            .map(|ctx| {
+                ctx.scene_buffers
+                    .current_ray_budget(ctx.renderer_config.rt_test_ray_quality_tier)
+                    .quality_tier
+            })
+            .unwrap_or(0);
+        let vol_state = self.world.try_resource::<SkinCoverageStats>()
+            .map(|s| s.volumetrics_state).unwrap_or_default();
+        let (upscaler_token, render_extent_token, output_extent_token) = self
+            .renderer
+            .as_ref()
+            .map(|ctx| {
+                let e = &ctx.frame_extents;
+                (
+                    ctx.renderer_config.upscaler.to_string(),
+                    format!("{}x{}", e.render.width, e.render.height),
+                    format!("{}x{}", e.output.width, e.output.height),
+                )
+            })
+            .unwrap_or_else(|| ("none".into(), "0x0".into(), "0x0".into()));
+        let rt_integrity_line = self
+            .world
+            .try_resource::<RtIntegrityStats>()
+            .map(|snapshot| snapshot.machine_line());
+        println!(
+            "bench: mode={} gate={} dt={} camera={} frames={} \
+             wall_fps={:.1} wall_ms={:.2} \
+             frame_p50_ms={:.2} frame_p95_ms={:.2} frame_max_ms={:.2} \
+             frame_max_over_p95={:.1} \
+             brd_ms={:.2} ui_ms={:.2} draw_ms={:.2} \
+             [fence={:.2} cpu_tlas_ms={:.2} ssbo={:.2} geom_rebuild={:.2} \
+             cmd={:.2} submit={:.2} pipeline_compile_ms={:.2} \
+             parameter_upload_ms={:.2} fog_cluster_ms={:.2} post_present_ms={:.2}] \
+             [{}] \
+             gpu_inactive={} \
+             systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
+             camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
+             sim_time_s={:.6} entities={} meshes={} textures={} \
+             draws={}/{}b/{}c bench_draws_raster_cmds={} \
+             lights={} tlas={} state_hash={:016x} \
+             skin={}/{}+{} rt_tier={} volumetric_rt_tier={} volumetric_light_cap={} froxel_x={} froxel_y={} froxel_z={} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={} \
+             upscaler={} render_extent={} output_extent={}",
+            bench_mode,
+            bench_mode.gate_label(),
+            bench_mode.dt_label(),
+            bench_camera,
+            self.bench_frames_count,
+            wall_fps,
+            wall_ms,
+            frame_p50_ms,
+            frame_p95_ms,
+            frame_max_ms,
+            // #3559 — appended as its own token so a harness can
+            // gate on the relationship rather than a per-scene
+            // millisecond threshold. `frame_max_ms` alone cannot
+            // tell a heavy scene from one blocked frame.
+            crate::bench_frame_max_over_p95([frame_p50_ms, frame_p95_ms, frame_max_ms]),
+            brd_ms,
+            ui_ms,
+            draw_ms,
+            fence_ms,
+            cpu_tlas_ms,
+            ssbo_ms,
+            geom_rebuild_ms,
+            cmd_ms,
+            submit_ms,
+            pipeline_compile_ms,
+            parameter_upload_ms,
+            fog_cluster_ms,
+            post_present_ms,
+            gpu_tokens,
+            gpu_inactive,
+            systems_ms,
+            ticks_per_frame,
+            unaccounted_ms,
+            scene_state.camera_position[0],
+            scene_state.camera_position[1],
+            scene_state.camera_position[2],
+            scene_state.camera_forward[0],
+            scene_state.camera_forward[1],
+            scene_state.camera_forward[2],
+            scene_state.simulated_time_s,
+            scene_state.entities,
+            stats.mesh_count,
+            stats.texture_count,
+            // #1258 — `draws=N/Mb/Kc` = N input DrawCommands
+            // / M post-merge batches / K actual GPU calls.
+            // Pre-fix this was a single `draws=N` that
+            // looked like a GPU call count but was actually
+            // the input. Format change preserves the
+            // existing first number for audit comparability.
+            scene_state.draws,
+            stats.batch_count,
+            stats.indirect_call_count,
+            stats.raster_draw_command_count,
+            scene_state.lights,
+            scene_state.tlas_eligible,
+            scene_state.state_hash,
+            // #4417 — appended after the existing bench fields,
+            // same #3629 rule. The
+            // once-a-second `engine::stats` line is gated on
+            // `TotalTime` crossing a boundary, and
+            // `renderer-static` freezes `dt`, so that line never
+            // fires inside the bench window and a capture can
+            // quit before `--bench-hold` produces one. Reading
+            // the pool here ties the `skin_pool_*` baseline rows
+            // to the measured frame like every other column.
+            stats.skin_pool_live,
+            stats.skin_pool_max,
+            stats.skin_pool_overflow_attempts,
+            // #4808 — append the adaptive RT quality tier so the
+            // FSR harness can group GPU timings by active tier.
+            rt_tier,
+            vol_state.rt_tier,
+            vol_state.light_cap,
+            vol_state.froxel_extent[0],
+            vol_state.froxel_extent[1],
+            vol_state.froxel_extent[2],
+            u32::from(vol_state.transport_armed),
+            vol_state.fog_volume_count,
+            vol_state.max_density_count,
+            vol_state.max_portal_count,
+            // #4947 — the reconstruction path this run actually
+            // exercised. A persisted `render.upscaler` can replace
+            // the no-flag default, so a harness must read the
+            // effective mode here, not assume it from the CLI.
+            upscaler_token,
+            render_extent_token,
+            output_extent_token,
+        );
+        if let Some(line) = rt_integrity_line {
+            println!("{line}");
+        }
+        drop(stats);
+        if let Some(streaming) = self.streaming.as_ref() {
+            println!("{}", streaming.telemetry.bench_line());
+        }
+
+        // #4053 — TLAS membership by policy verdict. Printed
+        // unconditionally, because its value is as a *diff*: the
+        // failure mode in this area is "something quietly entered
+        // or left the TLAS", which no test sees and no frame-time
+        // graph shows. A row that is always present is one a
+        // before/after comparison can rely on being there.
+        println!("{}", self.tlas_policy.bench_line());
+
+        // #4054 — the scatter's own telemetry, including §11.3's
+        // `d_ground` histogram. The design is explicit that the
+        // density field cannot be unit-tested (it exists only in
+        // GLSL, deliberately), and that this histogram over real
+        // cells is what pins it instead.
+        if let Some(ref ctx) = self.renderer {
+            if let Some(stats) = ctx.groundcover_stats() {
+                println!("{}", stats.bench_line());
+            }
+            // #4413 — the authored-model tier's last placement:
+            // instances the placed plants asked for, and how many
+            // fit the tail budget.
+            if let Some(models) = ctx.groundcover_model_stats() {
+                println!(
+                    "groundcover-models: demanded={} emitted={}",
+                    models.demanded, models.emitted
+                );
+            }
+        }
+
+        // #4052 — EXAL ground cover §11.1. One row per measured
+        // variant plus the bake row. Printed as their own lines
+        // rather than folded into the `bench:` line because there
+        // are five of them and each carries its own sample count;
+        // an existing `bench:` extractor sees nothing new.
+        if self.groundcover_bench.is_some() {
+            if let Some(ref ctx) = self.renderer {
+                if ctx.groundcover_bench_has_samples() {
+                    for line in ctx.groundcover_bench_report() {
+                        println!("{line}");
+                    }
+                } else {
+                    // An all-zero report would read as a result.
+                    // The overwhelmingly likely cause is an
+                    // interior cell: §11.1 is about LAND terrain,
+                    // and there is none to sample indoors.
+                    println!(
+                        "groundcover-bench: no samples — the bench needs a loaded \
+                         exterior worldspace (try --grid X,Y --radius N)"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Drive the `--screenshot` capture across frames: queue the request on the
+    /// first call, then poll for the PNG. Returns `true` while the capture is
+    /// still pending — the caller publishes its timings and keeps pumping
+    /// frames — and `false` once it has landed, been skipped or timed out.
+    /// (#6143, split out of `about_to_wait`.)
+    fn advance_screenshot_request(&mut self) -> bool {
+        // --screenshot: queue a capture request and defer
+        // the event-loop exit until the PNG lands (or the
+        // frame-budget elapses). The screenshot flow takes
+        // 2+ frames: frame N kicks the staging copy, N+1
+        // encodes the PNG. We re-enter this branch up to
+        // SCREENSHOT_DEADLINE_FRAMES times before giving
+        // up.
+        if let Some(path) = self.screenshot_path.clone() {
+            if !self.screenshot_requested {
+                if let Some(bridge) = self
+                    .world
+                    .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
+                {
+                    // #1006 — claim ownership atomically.
+                    // If the debug-server already holds
+                    // the bridge (rare: byro-dbg attached
+                    // before the CLI's first frame issues
+                    // its screenshot command), bail with a
+                    // clear error so the user knows the
+                    // collision happened instead of silently
+                    // racing for the result slot.
+                    if !bridge
+                        .try_claim(byroredux_core::ecs::resources::SCREENSHOT_OWNER_CLI)
+                    {
+                        eprintln!(
+                            "screenshot: bridge already claimed (debug-server owns it) — skipping CLI capture"
+                        );
+                        self.screenshot_path = None;
+                    } else {
+                        drop(bridge);
+                        self.screenshot_requested = true;
+                        self.screenshot_deadline_frames = 60;
+                        return true; // keep running frames
+                    }
+                }
+            }
+
+            // Poll the result slot until the PNG arrives.
+            // Owner-gated take so a debug-server screenshot
+            // racing past the CLI claim can't steal our bytes.
+            let maybe_bytes = self
+                .world
+                .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
+                .and_then(|b| {
+                    b.take_result_for(
+                        byroredux_core::ecs::resources::SCREENSHOT_OWNER_CLI,
+                    )
+                });
+            if let Some(bytes) = maybe_bytes {
+                match std::fs::write(&path, &bytes) {
+                    Ok(()) => {
+                        println!("screenshot: wrote {} bytes to {}", bytes.len(), path)
+                    }
+                    Err(e) => eprintln!("screenshot: failed to write {}: {e}", path),
+                }
+            } else if self.screenshot_deadline_frames > 0 {
+                self.screenshot_deadline_frames -= 1;
+                return true; // keep pumping
+            } else {
+                eprintln!("screenshot: timed out waiting for PNG result",);
+            }
+        }
+        false
+    }
+
+    /// Mirror the per-frame engine and renderer telemetry into the resources the
+    /// console, the debug server and the bench summary read: frame-time and
+    /// handle-count stats, scratch-Vec rows, image health, skin / RT / shadow /
+    /// upscaler counters and the live GPU memory budget. Runs before the
+    /// scheduler, so every sample is the previous frame's. (#6143, split out of
+    /// `about_to_wait`.)
+    fn refresh_frame_telemetry(&mut self, wall_dt: f32, dt: f32) {
+        // Update debug stats.
+        //
+        // #637 / FNV-D5-02 — `mesh_count` / `texture_count` are
+        // registry-wide and don't drop on cell unload. The new
+        // `meshes_in_use` / `textures_in_use` counts walk the ECS
+        // `MeshHandle` / `TextureHandle` queries and dedupe non-zero
+        // handles, so a regression that retains a registry entry past
+        // the last live consumer shows up as `registry > in_use`. Done
+        // in two scopes because the queries need an immutable world
+        // borrow that can't coexist with `resource_mut::<DebugStats>`.
+        //
+        // PERF-D1-NEW-01 / #1801 — this walk used to run unconditionally
+        // every frame, but both consumers (the `stats` console command
+        // and the debug-server entity evaluator) are on-demand, not
+        // per-frame; `log_stats_system` doesn't print these fields
+        // either. Throttled to the same once-per-wall-clock-second
+        // boundary `log_stats_system` already uses for its own summary
+        // line, so a console/debug-server read is at most ~1 second
+        // stale — indistinguishable from before for a human operator,
+        // for a cost paid once/second instead of every frame.
+        let total = self.world.resource::<byroredux_core::ecs::TotalTime>().0;
+        let should_refresh_handle_counts = crate::systems::crosses_one_second_boundary(total, dt);
+        if should_refresh_handle_counts {
+            // #1584 — reuse persistent scratch sets (clear() keeps the
+            // allocation, drops the contents) so this dedup walk does
+            // zero steady-state heap allocations.
+            self.in_use_mesh_scratch.clear();
+            if let Some(q) = self.world.query::<byroredux_core::ecs::MeshHandle>() {
+                for (_, h) in q.iter() {
+                    if h.0 != 0 {
+                        self.in_use_mesh_scratch.insert(h.0);
+                    }
+                }
+            }
+            self.in_use_tex_scratch.clear();
+            if let Some(q) = self.world.query::<byroredux_core::ecs::TextureHandle>() {
+                for (_, h) in q.iter() {
+                    if h.0 != 0 {
+                        self.in_use_tex_scratch.insert(h.0);
+                    }
+                }
+            }
+        }
+        // #2689 — read before the `DebugStats` write-lock block opens
+        // (not nested inside it) so this stays a plain sequential pair of
+        // resource acquisitions rather than a `DebugStats` write held
+        // across a second, independent resource read.
+        let (anim_clip_count, anim_clip_stub_count) = {
+            let registry = self
+                .world
+                .resource::<byroredux_core::animation::AnimationClipRegistry>();
+            (
+                registry.len() as u32,
+                registry.stub_slot_count() as u32,
+            )
+        };
+        {
+            let mut stats = self.world.resource_mut::<DebugStats>();
+            // Wall clock, not the simulation `dt`: a finite bench fixes `dt`
+            // at 1/60 s (and a loading screen holds it at 0), which made the
+            // FPS readouts claim 60 and hid every bench hitch from the
+            // SLOW FRAME warning — the frames it exists to catch.
+            stats.push_frame_time(wall_dt);
+            stats.entity_count = self.world.next_entity_id();
+            // Off-cadence frames keep the previous values (still fresh to
+            // within ~1 second) rather than stale-to-zero.
+            if should_refresh_handle_counts {
+                stats.meshes_in_use = self.in_use_mesh_scratch.len() as u32;
+                stats.textures_in_use = self.in_use_tex_scratch.len() as u32;
+            }
+            if let Some(ref ctx) = self.renderer {
+                stats.mesh_count = ctx.mesh_registry.len() as u32;
+                stats.texture_count = ctx.texture_registry.len() as u32;
+                // #4920 — the model tier's truncation, visible without
+                // `--bench-*`.
+                let models = ctx.groundcover_model_stats().unwrap_or_default();
+                stats.groundcover_model_demanded = models.demanded;
+                stats.groundcover_model_emitted = models.emitted;
+            }
+            // #1284 — mirror SkinSlotPool telemetry into DebugStats so
+            // `log_stats_system` (ECS, no App access) can surface it.
+            stats.skin_pool_live = self.skin_slot_pool.live_slot_count();
+            stats.skin_pool_max = self.skin_slot_pool.max_slot();
+            stats.skin_pool_overflow_attempts = self.skin_slot_pool.overflow_attempt_count();
+            // #2689 (SAFE-D8-01) — surface the AnimationClipRegistry's
+            // permanently-stranded stub-slot count so the `stats` console
+            // command makes the evict/reload leak observable.
+            stats.anim_clip_count = anim_clip_count;
+            stats.anim_clip_stub_count = anim_clip_stub_count;
+        }
+
+        // Refresh renderer-side scratch-Vec telemetry (R6). Reuses the
+        // resource's `rows` Vec so this is amortized to ~zero allocs
+        // after the first frame; capacity stabilises at the count of
+        // declared scratches in `VulkanContext::fill_scratch_telemetry`.
+        if let Some(ref ctx) = self.renderer {
+            let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
+            ctx.fill_scratch_telemetry(&mut tlm.rows);
+            tlm.renderer_row_count = tlm.rows.len();
+
+            // #3694 — the engine binary's own `build_render_data` scratches
+            // (`render/mod.rs`'s own doc names this set as "owned by the
+            // caller and cleared on entry"). Appended after
+            // `fill_scratch_telemetry`'s rows rather than folded into it:
+            // that function only ever sees renderer-owned fields, and
+            // `draw_commands` in particular is the quantity five of its
+            // own rows (`gpu_instances_scratch`, `previous_models_scratch`,
+            // `batches_scratch`, both rigid-motion maps) are `reserve()`d
+            // against, so it belongs in the same report even though it
+            // lives on `App`, not `VulkanContext`.
+            //
+            // #4610 — every container field of `App` is either a row here or
+            // named, with its reason, in `app_scratch_telemetry_coverage_tests`
+            // at the bottom of this file, which derives that set from
+            // `main.rs`. The ground-cover collectors, the ground-cover model
+            // tier and the handle-dedup sets used to have no row at all.
+            let gc = &self.groundcover_collect_scratch;
+            tlm.rows.extend([
+                vec_row("draw_commands", &self.draw_commands),
+                vec_row("cover_template_draws", &self.cover_template_draws),
+                vec_row("groundcover_model_records", &self.groundcover_model_records),
+                vec_row("groundcover_model_selection", &self.groundcover_model_selection),
+                vec_row("water_commands", &self.water_commands),
+                vec_row("gpu_lights", &self.gpu_lights),
+                vec_row("light_ids", &self.light_ids),
+                vec_row("gpu_fog_volumes", &self.gpu_fog_volumes),
+                vec_row("light_sort_scratch", &self.light_sort_scratch),
+                vec_row("bone_world", &self.bone_world),
+                map_row("skin_offsets", &self.skin_offsets),
+                vec_row("groundcover_cells", &self.groundcover_cells),
+                vec_row("groundcover_chunks", &self.groundcover_chunks),
+                vec_row("groundcover_species", &self.groundcover_species),
+                vec_row("groundcover_species_table", &self.groundcover_species_table),
+                vec_row("groundcover_disturbers", &self.groundcover_disturbers),
+                // `GroundCoverCollectScratch`'s containers, one row each.
+                // They live in `groundcover_collect_scratch_rows` so
+                // `about_to_wait` stays inside its size pin (#5096).
+                set_row("in_use_mesh_scratch", &self.in_use_mesh_scratch),
+                set_row("in_use_tex_scratch", &self.in_use_tex_scratch),
+            ]);
+            tlm.rows.extend(groundcover_collect_scratch_rows(gc));
+        }
+
+        // EX-05 / #2736 — mirror the pre-tonemap non-finite pixel counters so
+        // the console and bench summary can read them without renderer access.
+        if let Some(ref ctx) = self.renderer {
+            let ((last_rgb, last_alpha), (total_rgb, total_alpha)) = ctx.image_health();
+            let mut health = self
+                .world
+                .resource_mut::<byroredux_core::ecs::ImageHealth>();
+            health.last_non_finite_rgb = last_rgb;
+            health.last_non_finite_alpha = last_alpha;
+            health.total_non_finite_rgb = total_rgb;
+            health.total_non_finite_alpha = total_alpha;
+        }
+
+        // EX-08 / #2374 — refresh the cross-subsystem ownership snapshot on the
+        // same throttled cadence as the handle counts above. It reuses the
+        // scratch sets those already populated rather than re-walking the ECS,
+        // so the added per-sample cost is a handful of `len()` calls; off-
+        // cadence frames keep the previous sample.
+        if should_refresh_handle_counts {
+            let snapshot = crate::ownership_sample::sample_all(
+                &self.world,
+                self.renderer.as_ref(),
+                self.in_use_mesh_scratch.len(),
+                self.in_use_tex_scratch.len(),
+            );
+            self.world
+                .resource_mut::<byroredux_core::ecs::OwnershipTelemetry>()
+                .current = snapshot;
+        }
+
+        // Refresh skinned-BLAS coverage stats — captures last frame's
+        // dispatches / first-sight / refit counters from the renderer
+        // so `skin.coverage` reflects the just-drawn frame. Mirrors the
+        // scratch-telemetry pattern; the `failed_entity_ids` Vec is
+        // bounded to 16 entries inside `fill_skin_coverage_stats`.
+        if let Some(ref ctx) = self.renderer {
+            let mut cov = self.world.resource_mut::<SkinCoverageStats>();
+            ctx.fill_skin_coverage_stats(&mut cov);
+        }
+        let live_vulkan_memory = self
+            .renderer
+            .as_mut()
+            .and_then(VulkanContext::sample_live_memory_budget);
+        if let Some((usage_bytes, budget_bytes)) = live_vulkan_memory {
+            self.world
+                .resource_mut::<byroredux_renderer::vulkan::allocator::GpuMemoryBudget>()
+                .update_live(usage_bytes, budget_bytes);
+        }
+        if let Some(ref ctx) = self.renderer {
+            let mut integrity = self.world.resource_mut::<RtIntegrityStats>();
+            ctx.fill_rt_integrity_stats(&mut integrity);
+        }
+        if let Some(ref ctx) = self.renderer {
+            let mut census = self.world.resource_mut::<ShadowMaskCensus>();
+            ctx.fill_shadow_mask_census(&mut census);
+        }
+
+        // Refresh the upscaler line `ctx.upscaler` prints — the FSR provider
+        // version and the SDK's own GPU reservation, which live outside
+        // `gpu-allocator` and so never appear in `ctx.memory`.
+        if let Some(ref ctx) = self.renderer {
+            let mut telemetry = self
+                .world
+                .resource_mut::<byroredux_core::ecs::UpscalerTelemetry>();
+            ctx.fill_upscaler_telemetry(&mut telemetry);
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -803,215 +1389,7 @@ impl ApplicationHandler for App {
             world_resource_set::<TotalTime>(&self.world, |r| r.0 += dt);
         }
 
-        // Update debug stats.
-        //
-        // #637 / FNV-D5-02 — `mesh_count` / `texture_count` are
-        // registry-wide and don't drop on cell unload. The new
-        // `meshes_in_use` / `textures_in_use` counts walk the ECS
-        // `MeshHandle` / `TextureHandle` queries and dedupe non-zero
-        // handles, so a regression that retains a registry entry past
-        // the last live consumer shows up as `registry > in_use`. Done
-        // in two scopes because the queries need an immutable world
-        // borrow that can't coexist with `resource_mut::<DebugStats>`.
-        //
-        // PERF-D1-NEW-01 / #1801 — this walk used to run unconditionally
-        // every frame, but both consumers (the `stats` console command
-        // and the debug-server entity evaluator) are on-demand, not
-        // per-frame; `log_stats_system` doesn't print these fields
-        // either. Throttled to the same once-per-wall-clock-second
-        // boundary `log_stats_system` already uses for its own summary
-        // line, so a console/debug-server read is at most ~1 second
-        // stale — indistinguishable from before for a human operator,
-        // for a cost paid once/second instead of every frame.
-        let total = self.world.resource::<byroredux_core::ecs::TotalTime>().0;
-        let should_refresh_handle_counts = crate::systems::crosses_one_second_boundary(total, dt);
-        if should_refresh_handle_counts {
-            // #1584 — reuse persistent scratch sets (clear() keeps the
-            // allocation, drops the contents) so this dedup walk does
-            // zero steady-state heap allocations.
-            self.in_use_mesh_scratch.clear();
-            if let Some(q) = self.world.query::<byroredux_core::ecs::MeshHandle>() {
-                for (_, h) in q.iter() {
-                    if h.0 != 0 {
-                        self.in_use_mesh_scratch.insert(h.0);
-                    }
-                }
-            }
-            self.in_use_tex_scratch.clear();
-            if let Some(q) = self.world.query::<byroredux_core::ecs::TextureHandle>() {
-                for (_, h) in q.iter() {
-                    if h.0 != 0 {
-                        self.in_use_tex_scratch.insert(h.0);
-                    }
-                }
-            }
-        }
-        // #2689 — read before the `DebugStats` write-lock block opens
-        // (not nested inside it) so this stays a plain sequential pair of
-        // resource acquisitions rather than a `DebugStats` write held
-        // across a second, independent resource read.
-        let (anim_clip_count, anim_clip_stub_count) = {
-            let registry = self
-                .world
-                .resource::<byroredux_core::animation::AnimationClipRegistry>();
-            (
-                registry.len() as u32,
-                registry.stub_slot_count() as u32,
-            )
-        };
-        {
-            let mut stats = self.world.resource_mut::<DebugStats>();
-            // Wall clock, not the simulation `dt`: a finite bench fixes `dt`
-            // at 1/60 s (and a loading screen holds it at 0), which made the
-            // FPS readouts claim 60 and hid every bench hitch from the
-            // SLOW FRAME warning — the frames it exists to catch.
-            stats.push_frame_time(wall_dt);
-            stats.entity_count = self.world.next_entity_id();
-            // Off-cadence frames keep the previous values (still fresh to
-            // within ~1 second) rather than stale-to-zero.
-            if should_refresh_handle_counts {
-                stats.meshes_in_use = self.in_use_mesh_scratch.len() as u32;
-                stats.textures_in_use = self.in_use_tex_scratch.len() as u32;
-            }
-            if let Some(ref ctx) = self.renderer {
-                stats.mesh_count = ctx.mesh_registry.len() as u32;
-                stats.texture_count = ctx.texture_registry.len() as u32;
-                // #4920 — the model tier's truncation, visible without
-                // `--bench-*`.
-                let models = ctx.groundcover_model_stats().unwrap_or_default();
-                stats.groundcover_model_demanded = models.demanded;
-                stats.groundcover_model_emitted = models.emitted;
-            }
-            // #1284 — mirror SkinSlotPool telemetry into DebugStats so
-            // `log_stats_system` (ECS, no App access) can surface it.
-            stats.skin_pool_live = self.skin_slot_pool.live_slot_count();
-            stats.skin_pool_max = self.skin_slot_pool.max_slot();
-            stats.skin_pool_overflow_attempts = self.skin_slot_pool.overflow_attempt_count();
-            // #2689 (SAFE-D8-01) — surface the AnimationClipRegistry's
-            // permanently-stranded stub-slot count so the `stats` console
-            // command makes the evict/reload leak observable.
-            stats.anim_clip_count = anim_clip_count;
-            stats.anim_clip_stub_count = anim_clip_stub_count;
-        }
-
-        // Refresh renderer-side scratch-Vec telemetry (R6). Reuses the
-        // resource's `rows` Vec so this is amortized to ~zero allocs
-        // after the first frame; capacity stabilises at the count of
-        // declared scratches in `VulkanContext::fill_scratch_telemetry`.
-        if let Some(ref ctx) = self.renderer {
-            let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
-            ctx.fill_scratch_telemetry(&mut tlm.rows);
-            tlm.renderer_row_count = tlm.rows.len();
-
-            // #3694 — the engine binary's own `build_render_data` scratches
-            // (`render/mod.rs`'s own doc names this set as "owned by the
-            // caller and cleared on entry"). Appended after
-            // `fill_scratch_telemetry`'s rows rather than folded into it:
-            // that function only ever sees renderer-owned fields, and
-            // `draw_commands` in particular is the quantity five of its
-            // own rows (`gpu_instances_scratch`, `previous_models_scratch`,
-            // `batches_scratch`, both rigid-motion maps) are `reserve()`d
-            // against, so it belongs in the same report even though it
-            // lives on `App`, not `VulkanContext`.
-            //
-            // #4610 — every container field of `App` is either a row here or
-            // named, with its reason, in `app_scratch_telemetry_coverage_tests`
-            // at the bottom of this file, which derives that set from
-            // `main.rs`. The ground-cover collectors, the ground-cover model
-            // tier and the handle-dedup sets used to have no row at all.
-            let gc = &self.groundcover_collect_scratch;
-            tlm.rows.extend([
-                vec_row("draw_commands", &self.draw_commands),
-                vec_row("cover_template_draws", &self.cover_template_draws),
-                vec_row("groundcover_model_records", &self.groundcover_model_records),
-                vec_row("groundcover_model_selection", &self.groundcover_model_selection),
-                vec_row("water_commands", &self.water_commands),
-                vec_row("gpu_lights", &self.gpu_lights),
-                vec_row("light_ids", &self.light_ids),
-                vec_row("gpu_fog_volumes", &self.gpu_fog_volumes),
-                vec_row("light_sort_scratch", &self.light_sort_scratch),
-                vec_row("bone_world", &self.bone_world),
-                map_row("skin_offsets", &self.skin_offsets),
-                vec_row("groundcover_cells", &self.groundcover_cells),
-                vec_row("groundcover_chunks", &self.groundcover_chunks),
-                vec_row("groundcover_species", &self.groundcover_species),
-                vec_row("groundcover_species_table", &self.groundcover_species_table),
-                vec_row("groundcover_disturbers", &self.groundcover_disturbers),
-                // `GroundCoverCollectScratch`'s containers, one row each.
-                // They live in `groundcover_collect_scratch_rows` so
-                // `about_to_wait` stays inside its size pin (#5096).
-                set_row("in_use_mesh_scratch", &self.in_use_mesh_scratch),
-                set_row("in_use_tex_scratch", &self.in_use_tex_scratch),
-            ]);
-            tlm.rows.extend(groundcover_collect_scratch_rows(gc));
-        }
-
-        // EX-05 / #2736 — mirror the pre-tonemap non-finite pixel counters so
-        // the console and bench summary can read them without renderer access.
-        if let Some(ref ctx) = self.renderer {
-            let ((last_rgb, last_alpha), (total_rgb, total_alpha)) = ctx.image_health();
-            let mut health = self
-                .world
-                .resource_mut::<byroredux_core::ecs::ImageHealth>();
-            health.last_non_finite_rgb = last_rgb;
-            health.last_non_finite_alpha = last_alpha;
-            health.total_non_finite_rgb = total_rgb;
-            health.total_non_finite_alpha = total_alpha;
-        }
-
-        // EX-08 / #2374 — refresh the cross-subsystem ownership snapshot on the
-        // same throttled cadence as the handle counts above. It reuses the
-        // scratch sets those already populated rather than re-walking the ECS,
-        // so the added per-sample cost is a handful of `len()` calls; off-
-        // cadence frames keep the previous sample.
-        if should_refresh_handle_counts {
-            let snapshot = crate::ownership_sample::sample_all(
-                &self.world,
-                self.renderer.as_ref(),
-                self.in_use_mesh_scratch.len(),
-                self.in_use_tex_scratch.len(),
-            );
-            self.world
-                .resource_mut::<byroredux_core::ecs::OwnershipTelemetry>()
-                .current = snapshot;
-        }
-
-        // Refresh skinned-BLAS coverage stats — captures last frame's
-        // dispatches / first-sight / refit counters from the renderer
-        // so `skin.coverage` reflects the just-drawn frame. Mirrors the
-        // scratch-telemetry pattern; the `failed_entity_ids` Vec is
-        // bounded to 16 entries inside `fill_skin_coverage_stats`.
-        if let Some(ref ctx) = self.renderer {
-            let mut cov = self.world.resource_mut::<SkinCoverageStats>();
-            ctx.fill_skin_coverage_stats(&mut cov);
-        }
-        let live_vulkan_memory = self
-            .renderer
-            .as_mut()
-            .and_then(VulkanContext::sample_live_memory_budget);
-        if let Some((usage_bytes, budget_bytes)) = live_vulkan_memory {
-            self.world
-                .resource_mut::<byroredux_renderer::vulkan::allocator::GpuMemoryBudget>()
-                .update_live(usage_bytes, budget_bytes);
-        }
-        if let Some(ref ctx) = self.renderer {
-            let mut integrity = self.world.resource_mut::<RtIntegrityStats>();
-            ctx.fill_rt_integrity_stats(&mut integrity);
-        }
-        if let Some(ref ctx) = self.renderer {
-            let mut census = self.world.resource_mut::<ShadowMaskCensus>();
-            ctx.fill_shadow_mask_census(&mut census);
-        }
-
-        // Refresh the upscaler line `ctx.upscaler` prints — the FSR provider
-        // version and the SDK's own GPU reservation, which live outside
-        // `gpu-allocator` and so never appear in `ctx.memory`.
-        if let Some(ref ctx) = self.renderer {
-            let mut telemetry = self
-                .world
-                .resource_mut::<byroredux_core::ecs::UpscalerTelemetry>();
-            ctx.fill_upscaler_telemetry(&mut telemetry);
-        }
+        self.refresh_frame_telemetry(wall_dt, dt);
 
         // Select the deterministic bench-camera pose before the scheduler so
         // camera-dependent systems observe this frame's requested path.
@@ -1221,370 +1599,16 @@ impl ApplicationHandler for App {
                     self.bench_frames_count >= target
                 };
                 if path_complete && !self.bench_summary_printed {
-                    // Capture the renderer-facing state only after the timed
-                    // window has closed. Hashing a large bone palette can be
-                    // measurable CPU work, so it must not feed back into the
-                    // frame time being reported.
-                    let scene_state = crate::bench::capture_scene_state(
-                        &self.world,
-                        &self.draw_commands,
-                        &self.water_commands,
-                        &self.gpu_lights,
-                        &self.gpu_fog_volumes,
-                        &self.bone_world,
-                    );
-                    let bench_mode = self
-                        .bench_mode
-                        .expect("every finite benchmark resolves a named mode");
-                    let bench_camera = self
-                        .bench_camera
-                        .map_or_else(|| "free".to_owned(), |path| path.to_string());
-                    let stats = self.world.resource::<DebugStats>();
-                    let elapsed_secs = self
-                        .bench_start
-                        .map(|t| t.elapsed().as_secs_f64())
-                        .unwrap_or(1.0);
-                    let wall_fps = self.bench_frames_count as f64 / elapsed_secs;
-                    let wall_ms = elapsed_secs * 1000.0 / self.bench_frames_count as f64;
-                    let [frame_p50_ms, frame_p95_ms, frame_max_ms] =
-                        bench_frame_distribution(&self.bench_cpu_frame_ms);
-                    let n = self.bench_frames_count as f64;
-                    let ticks_per_frame = self.bench_systems_ticks as f64 / n;
-                    let systems_ms = if self.bench_systems_ticks > 0 {
-                        self.bench_systems_ns as f64 / self.bench_systems_ticks as f64 / 1e6
-                    } else {
-                        0.0
-                    };
-                    let brd_ms = self.bench_build_render_ns as f64 / n / 1e6;
-                    let ui_ms = self.bench_ui_ns as f64 / n / 1e6;
-                    let draw_ms = self.bench_render_ns as f64 / n / 1e6;
-                    let ft = &self.bench_frame_timings;
-                    let fence_ms = ft.fence_wait_ns as f64 / n / 1e6;
-                    // #3629 — the HOST-side TLAS build cost, from
-                    // `FrameTimings`. Printed as `cpu_tlas_ms=` (renamed from
-                    // the bare `tlas_ms=`) because the device-side bracket
-                    // `gpu_tlas_build=` now appears on the same line, and the
-                    // old name was the only `tlas` token a harness could
-                    // extract — inviting the host number to be read as the
-                    // device one.
-                    let cpu_tlas_ms = ft.tlas_build_ns as f64 / n / 1e6;
-                    let ssbo_ms = ft.ssbo_build_ns as f64 / n / 1e6;
-                    let pipeline_compile_ms = ft.pipeline_compile_ns as f64 / n / 1e6;
-                    let parameter_upload_ms = ft.parameter_upload_ns as f64 / n / 1e6;
-                    let fog_cluster_ms = ft.fog_cluster_ns as f64 / n / 1e6;
-                    let post_present_ms = ft.post_present_ns as f64 / n / 1e6;
-                    // #3467 — the resumable geometry-rebuild slice. Reported
-                    // here so `GEOMETRY_REBUILD_CHUNK_BYTES` can finally be
-                    // re-picked against a measured number instead of the
-                    // "chosen conservatively pending live tuning" its own doc
-                    // still carries.
-                    let geom_rebuild_ms = ft.geometry_rebuild_ns as f64 / n / 1e6;
-                    let cmd_ms = ft.cmd_record_ns as f64 / n / 1e6;
-                    let submit_ms = ft.submit_present_ns as f64 / n / 1e6;
-                    let accounted = systems_ms * ticks_per_frame + brd_ms + ui_ms + draw_ms;
-                    let unaccounted_ms = (wall_ms - accounted).max(0.0);
-                    // #1194 — per-pass GPU timer snapshot. The
-                    // SkinCoverageStats resource is filled at the end
-                    // of every `draw_frame`; values here are from the
-                    // last completed frame and represent one
-                    // `MAX_FRAMES_IN_FLIGHT` cycle of pipeline lag.
-                    // Reads 0.0 across the board when the driver
-                    // lacks `timestampComputeAndGraphics` or no
-                    // skinned/TAA work fired on the snapshot frame.
-                    // Surfaces `gpu_skin_disp` / `gpu_blas_refit` /
-                    // `gpu_taa` so PERF-DIM7-01/-02/-03 (#1195/#1196/
-                    // #1197) can measure rather than guess.
-                    // Full per-pass GPU breakdown. The FSR benchmark matrix
-                    // (execution phase 7) needs the render-resolution passes
-                    // and the output-resolution ones separable, because only
-                    // the former shrink with a preset — reporting a frame-time
-                    // win without netting out presentation and the upscale
-                    // dispatch would overstate what a player actually gets.
-                    // #2821 — the `_active` mirrors travel with the values.
-                    // A bracket that did not run reports `0.000` here like any
-                    // other, because widening a numeric field to `n/a` would
-                    // break every `key=<float>` extractor across the four
-                    // sweep harnesses; instead the companion `gpu_inactive=`
-                    // token below names the brackets whose zero is "skipped",
-                    // so a skipped pass no longer lands in the TSV as a hard
-                    // 0.000 indistinguishable from a measured one.
-                    // #6337 — key, milliseconds and ran-flag travel as one row per
-                    // bracket (`bench_gpu_samples`), and the line's tokens and the
-                    // `gpu_inactive=` names are both read off those rows, so the three
-                    // hand-ordered lists that could silently transpose no longer exist.
-                    let gpu_samples = self
-                        .world
-                        .try_resource::<SkinCoverageStats>()
-                        .map(|s| crate::bench_gpu_samples(&s))
-                        .unwrap_or_else(|| crate::bench_gpu_samples(&SkinCoverageStats::default()));
-                    let gpu_tokens = crate::bench_gpu_tokens(&gpu_samples);
-                    let gpu_inactive = bench_gpu_inactive_token(gpu_samples.map(|(_, _, active)| active));
-                    let rt_tier = self
-                        .renderer
-                        .as_ref()
-                        .map(|ctx| {
-                            ctx.scene_buffers
-                                .current_ray_budget(ctx.renderer_config.rt_test_ray_quality_tier)
-                                .quality_tier
-                        })
-                        .unwrap_or(0);
-                    let vol_state = self.world.try_resource::<SkinCoverageStats>()
-                        .map(|s| s.volumetrics_state).unwrap_or_default();
-                    let (upscaler_token, render_extent_token, output_extent_token) = self
-                        .renderer
-                        .as_ref()
-                        .map(|ctx| {
-                            let e = &ctx.frame_extents;
-                            (
-                                ctx.renderer_config.upscaler.to_string(),
-                                format!("{}x{}", e.render.width, e.render.height),
-                                format!("{}x{}", e.output.width, e.output.height),
-                            )
-                        })
-                        .unwrap_or_else(|| ("none".into(), "0x0".into(), "0x0".into()));
-                    let rt_integrity_line = self
-                        .world
-                        .try_resource::<RtIntegrityStats>()
-                        .map(|snapshot| snapshot.machine_line());
-                    println!(
-                        "bench: mode={} gate={} dt={} camera={} frames={} \
-                         wall_fps={:.1} wall_ms={:.2} \
-                         frame_p50_ms={:.2} frame_p95_ms={:.2} frame_max_ms={:.2} \
-                         frame_max_over_p95={:.1} \
-                         brd_ms={:.2} ui_ms={:.2} draw_ms={:.2} \
-                         [fence={:.2} cpu_tlas_ms={:.2} ssbo={:.2} geom_rebuild={:.2} \
-                         cmd={:.2} submit={:.2} pipeline_compile_ms={:.2} \
-                         parameter_upload_ms={:.2} fog_cluster_ms={:.2} post_present_ms={:.2}] \
-                         [{}] \
-                         gpu_inactive={} \
-                         systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
-                         camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
-                         sim_time_s={:.6} entities={} meshes={} textures={} \
-                         draws={}/{}b/{}c bench_draws_raster_cmds={} \
-                         lights={} tlas={} state_hash={:016x} \
-                         skin={}/{}+{} rt_tier={} volumetric_rt_tier={} volumetric_light_cap={} froxel_x={} froxel_y={} froxel_z={} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={} \
-                         upscaler={} render_extent={} output_extent={}",
-                        bench_mode,
-                        bench_mode.gate_label(),
-                        bench_mode.dt_label(),
-                        bench_camera,
-                        self.bench_frames_count,
-                        wall_fps,
-                        wall_ms,
-                        frame_p50_ms,
-                        frame_p95_ms,
-                        frame_max_ms,
-                        // #3559 — appended as its own token so a harness can
-                        // gate on the relationship rather than a per-scene
-                        // millisecond threshold. `frame_max_ms` alone cannot
-                        // tell a heavy scene from one blocked frame.
-                        crate::bench_frame_max_over_p95([frame_p50_ms, frame_p95_ms, frame_max_ms]),
-                        brd_ms,
-                        ui_ms,
-                        draw_ms,
-                        fence_ms,
-                        cpu_tlas_ms,
-                        ssbo_ms,
-                        geom_rebuild_ms,
-                        cmd_ms,
-                        submit_ms,
-                        pipeline_compile_ms,
-                        parameter_upload_ms,
-                        fog_cluster_ms,
-                        post_present_ms,
-                        gpu_tokens,
-                        gpu_inactive,
-                        systems_ms,
-                        ticks_per_frame,
-                        unaccounted_ms,
-                        scene_state.camera_position[0],
-                        scene_state.camera_position[1],
-                        scene_state.camera_position[2],
-                        scene_state.camera_forward[0],
-                        scene_state.camera_forward[1],
-                        scene_state.camera_forward[2],
-                        scene_state.simulated_time_s,
-                        scene_state.entities,
-                        stats.mesh_count,
-                        stats.texture_count,
-                        // #1258 — `draws=N/Mb/Kc` = N input DrawCommands
-                        // / M post-merge batches / K actual GPU calls.
-                        // Pre-fix this was a single `draws=N` that
-                        // looked like a GPU call count but was actually
-                        // the input. Format change preserves the
-                        // existing first number for audit comparability.
-                        scene_state.draws,
-                        stats.batch_count,
-                        stats.indirect_call_count,
-                        stats.raster_draw_command_count,
-                        scene_state.lights,
-                        scene_state.tlas_eligible,
-                        scene_state.state_hash,
-                        // #4417 — appended after the existing bench fields,
-                        // same #3629 rule. The
-                        // once-a-second `engine::stats` line is gated on
-                        // `TotalTime` crossing a boundary, and
-                        // `renderer-static` freezes `dt`, so that line never
-                        // fires inside the bench window and a capture can
-                        // quit before `--bench-hold` produces one. Reading
-                        // the pool here ties the `skin_pool_*` baseline rows
-                        // to the measured frame like every other column.
-                        stats.skin_pool_live,
-                        stats.skin_pool_max,
-                        stats.skin_pool_overflow_attempts,
-                        // #4808 — append the adaptive RT quality tier so the
-                        // FSR harness can group GPU timings by active tier.
-                        rt_tier,
-                        vol_state.rt_tier,
-                        vol_state.light_cap,
-                        vol_state.froxel_extent[0],
-                        vol_state.froxel_extent[1],
-                        vol_state.froxel_extent[2],
-                        u32::from(vol_state.transport_armed),
-                        vol_state.fog_volume_count,
-                        vol_state.max_density_count,
-                        vol_state.max_portal_count,
-                        // #4947 — the reconstruction path this run actually
-                        // exercised. A persisted `render.upscaler` can replace
-                        // the no-flag default, so a harness must read the
-                        // effective mode here, not assume it from the CLI.
-                        upscaler_token,
-                        render_extent_token,
-                        output_extent_token,
-                    );
-                    if let Some(line) = rt_integrity_line {
-                        println!("{line}");
-                    }
-                    drop(stats);
-                    if let Some(streaming) = self.streaming.as_ref() {
-                        println!("{}", streaming.telemetry.bench_line());
-                    }
+                    self.emit_bench_summary();
 
-                    // #4053 — TLAS membership by policy verdict. Printed
-                    // unconditionally, because its value is as a *diff*: the
-                    // failure mode in this area is "something quietly entered
-                    // or left the TLAS", which no test sees and no frame-time
-                    // graph shows. A row that is always present is one a
-                    // before/after comparison can rely on being there.
-                    println!("{}", self.tlas_policy.bench_line());
-
-                    // #4054 — the scatter's own telemetry, including §11.3's
-                    // `d_ground` histogram. The design is explicit that the
-                    // density field cannot be unit-tested (it exists only in
-                    // GLSL, deliberately), and that this histogram over real
-                    // cells is what pins it instead.
-                    if let Some(ref ctx) = self.renderer {
-                        if let Some(stats) = ctx.groundcover_stats() {
-                            println!("{}", stats.bench_line());
-                        }
-                        // #4413 — the authored-model tier's last placement:
-                        // instances the placed plants asked for, and how many
-                        // fit the tail budget.
-                        if let Some(models) = ctx.groundcover_model_stats() {
-                            println!(
-                                "groundcover-models: demanded={} emitted={}",
-                                models.demanded, models.emitted
-                            );
-                        }
-                    }
-
-                    // #4052 — EXAL ground cover §11.1. One row per measured
-                    // variant plus the bake row. Printed as their own lines
-                    // rather than folded into the `bench:` line because there
-                    // are five of them and each carries its own sample count;
-                    // an existing `bench:` extractor sees nothing new.
-                    if self.groundcover_bench.is_some() {
-                        if let Some(ref ctx) = self.renderer {
-                            if ctx.groundcover_bench_has_samples() {
-                                for line in ctx.groundcover_bench_report() {
-                                    println!("{line}");
-                                }
-                            } else {
-                                // An all-zero report would read as a result.
-                                // The overwhelmingly likely cause is an
-                                // interior cell: §11.1 is about LAND terrain,
-                                // and there is none to sample indoors.
-                                println!(
-                                    "groundcover-bench: no samples — the bench needs a loaded \
-                                     exterior worldspace (try --grid X,Y --radius N)"
-                                );
-                            }
-                        }
-                    }
-
-                    // --screenshot: queue a capture request and defer
-                    // the event-loop exit until the PNG lands (or the
-                    // frame-budget elapses). The screenshot flow takes
-                    // 2+ frames: frame N kicks the staging copy, N+1
-                    // encodes the PNG. We re-enter this branch up to
-                    // SCREENSHOT_DEADLINE_FRAMES times before giving
-                    // up.
-                    if let Some(path) = self.screenshot_path.clone() {
-                        if !self.screenshot_requested {
-                            if let Some(bridge) = self
-                                .world
-                                .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
-                            {
-                                // #1006 — claim ownership atomically.
-                                // If the debug-server already holds
-                                // the bridge (rare: byro-dbg attached
-                                // before the CLI's first frame issues
-                                // its screenshot command), bail with a
-                                // clear error so the user knows the
-                                // collision happened instead of silently
-                                // racing for the result slot.
-                                if !bridge
-                                    .try_claim(byroredux_core::ecs::resources::SCREENSHOT_OWNER_CLI)
-                                {
-                                    eprintln!(
-                                        "screenshot: bridge already claimed (debug-server owns it) — skipping CLI capture"
-                                    );
-                                    self.screenshot_path = None;
-                                } else {
-                                    drop(bridge);
-                                    self.screenshot_requested = true;
-                                    self.screenshot_deadline_frames = 60;
-                                    record_about_to_wait_timings(
-                                        &self.world,
-                                        atw_pre_ns,
-                                        atw_scheduler_ns,
-                                        atw_post_t0,
-                                    );
-                                    return; // keep running frames
-                                }
-                            }
-                        }
-
-                        // Poll the result slot until the PNG arrives.
-                        // Owner-gated take so a debug-server screenshot
-                        // racing past the CLI claim can't steal our bytes.
-                        let maybe_bytes = self
-                            .world
-                            .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
-                            .and_then(|b| {
-                                b.take_result_for(
-                                    byroredux_core::ecs::resources::SCREENSHOT_OWNER_CLI,
-                                )
-                            });
-                        if let Some(bytes) = maybe_bytes {
-                            match std::fs::write(&path, &bytes) {
-                                Ok(()) => {
-                                    println!("screenshot: wrote {} bytes to {}", bytes.len(), path)
-                                }
-                                Err(e) => eprintln!("screenshot: failed to write {}: {e}", path),
-                            }
-                        } else if self.screenshot_deadline_frames > 0 {
-                            self.screenshot_deadline_frames -= 1;
-                            record_about_to_wait_timings(
-                                &self.world,
-                                atw_pre_ns,
-                                atw_scheduler_ns,
-                                atw_post_t0,
-                            );
-                            return; // keep pumping
-                        } else {
-                            eprintln!("screenshot: timed out waiting for PNG result",);
-                        }
+                    if self.advance_screenshot_request() {
+                        record_about_to_wait_timings(
+                            &self.world,
+                            atw_pre_ns,
+                            atw_scheduler_ns,
+                            atw_post_t0,
+                        );
+                        return; // keep running frames
                     }
 
                     // Latch the summary-once invariant for `--bench-hold`
@@ -1983,20 +2007,33 @@ mod screenshot_timing_tests {
     #[test]
     fn screenshot_waits_publish_all_cpu_phases_before_returning() {
         let source = include_str!("app_events.rs");
+        // The wait itself lives in `advance_screenshot_request`, which reports
+        // "still pending" as `true` instead of returning from `about_to_wait`
+        // (#6143). Both pending exits must stay that, and the one call site
+        // must publish every CPU phase before it returns for them.
         let screenshot = source
-            .split("if let Some(path) = self.screenshot_path.clone() {")
+            .split("fn advance_screenshot_request(&mut self) -> bool {")
             .nth(1)
             .unwrap()
             .split("screenshot: timed out")
             .next()
             .unwrap();
-        for branch in screenshot.split("return; // keep").take(2) {
-            assert!(branch.contains("record_about_to_wait_timings("));
-            for phase in ["atw_pre_ns", "atw_scheduler_ns", "atw_post_t0"] {
-                assert!(branch.contains(phase));
-            }
+        assert_eq!(screenshot.matches("return true; // keep").count(), 2);
+        assert!(
+            !screenshot.contains("return;"),
+            "a bare return would leave about_to_wait without publishing its timings"
+        );
+        let call_site = source
+            .split("if self.advance_screenshot_request() {")
+            .nth(1)
+            .unwrap()
+            .split("return; // keep running frames")
+            .next()
+            .unwrap();
+        assert!(call_site.contains("record_about_to_wait_timings("));
+        for phase in ["atw_pre_ns", "atw_scheduler_ns", "atw_post_t0"] {
+            assert!(call_site.contains(phase));
         }
-        assert_eq!(screenshot.matches("return; // keep").count(), 2);
         let mut world = byroredux_core::ecs::World::new();
         world.insert_resource(byroredux_core::ecs::CpuFrameTimings::default());
         let started = Instant::now() - std::time::Duration::from_millis(1);
