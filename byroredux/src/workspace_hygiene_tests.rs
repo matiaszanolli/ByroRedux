@@ -1004,7 +1004,10 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // probe_weap_dnam — DNAM VATS-slot alignment, probe_gmst_vats — the
         // fVATS/fActionPoints defaults dump). All three carry wiki-pinned
         // evidence cited from items.rs / equipment.rs / vats.rs docs.
-        ("plugin", 67, 8098),
+        // 2026-10-26 re-measure: +1 `shore_probe.rs`, the grounding tool for the
+        // WATAL W1 shore transects (LAND descent into swimmable water that
+        // continues inland across a cell edge), cited from the Skyrim W1 fixture.
+        ("plugin", 68, 8321),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

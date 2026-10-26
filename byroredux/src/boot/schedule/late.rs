@@ -184,6 +184,7 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::WaterPlane>()
             .reads::<byroredux_core::ecs::components::WaterVolume>()
             .reads::<byroredux_core::ecs::components::WaterSurfaceMesh>()
+            .reads::<byroredux_core::ecs::components::water::WaterBedField>()
             .reads::<byroredux_core::ecs::GlobalTransform>()
             .writes::<byroredux_core::ecs::components::ParticleEmitter>()
             .writes::<byroredux_scripting::RippleEvent>()
