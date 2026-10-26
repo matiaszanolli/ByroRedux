@@ -109,7 +109,7 @@ float fresnelSchlickScalar(float cosTheta, float F0) {
 }
 
 float fresnelSchlickScalarPower(float cosTheta, float F0, float authoredPower) {
-    float exponent = clamp(authoredPower, 0.25, 16.0);
+    float exponent = clamp(authoredPower, FRESNEL_POWER_MIN, FRESNEL_POWER_MAX);
     float weight = abs(exponent - 5.0) < 1e-4
         ? schlickWeight(cosTheta)
         : pow(clamp(1.0 - cosTheta, 0.0, 1.0), exponent);
@@ -126,7 +126,7 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 // Preserve the exact fixed-x^5 path for the neutral/default value and use a
 // bounded general power only when content actually overrides it.
 vec3 fresnelSchlickPower(float cosTheta, vec3 F0, float authoredPower) {
-    float exponent = clamp(authoredPower, 0.25, 16.0);
+    float exponent = clamp(authoredPower, FRESNEL_POWER_MIN, FRESNEL_POWER_MAX);
     float weight = abs(exponent - 5.0) < 1e-4
         ? schlickWeight(cosTheta)
         : pow(clamp(1.0 - cosTheta, 0.0, 1.0), exponent);

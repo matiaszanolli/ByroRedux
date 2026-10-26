@@ -360,8 +360,9 @@ vec2 resolveRayHitUV(
     // Secondary paths can visit several surfaces per primary pixel. Bound
     // their march to twelve layers and spend that budget near grazing
     // angles; the common four-pass legacy material remains exactly four.
-    float layerBudget = clamp(mat.parallaxMaxPasses, 4.0, 12.0);
-    float layerFloor = min(layerBudget, 4.0);
+    float layerBudget = clamp(
+        mat.parallaxMaxPasses, PARALLAX_PASSES_MIN, PARALLAX_PASSES_SECONDARY_MAX);
+    float layerFloor = min(layerBudget, PARALLAX_PASSES_SECONDARY_FLOOR);
     int steps = int(mix(
         layerBudget,
         layerFloor,

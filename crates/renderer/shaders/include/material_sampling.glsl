@@ -112,8 +112,8 @@ vec2 parallaxDisplaceUV(
     // Spend the authored maximum near grazing angles, where displacement
     // changes fastest, and converge toward eight layers head-on. Materials
     // authored with a four-pass budget retain four passes exactly.
-    float layerBudget = clamp(maxPasses, 4.0, 32.0);
-    float layerFloor = min(layerBudget, 8.0);
+    float layerBudget = clamp(maxPasses, PARALLAX_PASSES_MIN, PARALLAX_PASSES_PRIMARY_MAX);
+    float layerFloor = min(layerBudget, PARALLAX_PASSES_PRIMARY_FLOOR);
     int steps = int(mix(
         layerBudget,
         layerFloor,

@@ -151,8 +151,8 @@ float bethesdaRimFactor(GpuMaterial mat, float NdotV, float frontNdotL) {
     // grayscale-to-palette / Fresnel fields (#3448).
     float authored = mat.rimlightPower > 0.0
         ? mat.rimlightPower : mat.lightingEffect2;
-    float exponent = authored > 0.0 ? authored : 2.0;
-    exponent = clamp(exponent, 0.25, 16.0);
+    float exponent = authored > 0.0 ? authored : FRESNEL_RIM_DEFAULT_EXPONENT;
+    exponent = clamp(exponent, FRESNEL_POWER_MIN, FRESNEL_POWER_MAX);
     return pow(clamp(1.0 - NdotV, 0.0, 1.0), exponent) * frontNdotL;
 }
 

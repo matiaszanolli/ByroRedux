@@ -185,11 +185,11 @@ vec4 sampleImageSpace(vec2 uv) {
         }
         float amount = clamp(radialStrength * 0.02 * envelope, -0.25, 0.25);
         vec4 radialSum = scene;
-        for (int i = 1; i <= 6; ++i) {
-            float stepAmount = amount * (float(i) / 6.0);
+        for (int i = 1; i <= int(PRESENTATION_RADIAL_TAPS); ++i) {
+            float stepAmount = amount * (float(i) / float(PRESENTATION_RADIAL_TAPS));
             radialSum += texture(upscaledScene, uv - radial * stepAmount);
         }
-        scene = radialSum / 7.0;
+        scene = radialSum / float(PRESENTATION_RADIAL_TAPS + 1u);
     }
     return scene;
 }

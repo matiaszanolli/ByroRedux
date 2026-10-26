@@ -1819,6 +1819,29 @@ pub const WATER_RAIN_ENCODED_MAX: f32 = 0.999;
 /// Decoder denominator floor in `x / max(1 - x, EPSILON)`.
 pub const WATER_RAIN_DECODE_EPSILON: f32 = 0.001;
 
+// Material-authored value clamps shared across shader includes (TD7-2026-10-25-04).
+// Schlick exponent: `pbr.glsl` (both Fresnel variants) and `lighting.glsl`'s
+// rim-light exponent clamp an authored BSLighting/BGSM power to the same range,
+// so the rim and the Schlick term can never disagree on one authored value.
+pub const FRESNEL_POWER_MIN: f32 = 0.25;
+pub const FRESNEL_POWER_MAX: f32 = 16.0;
+/// Rim-light exponent when the material authors neither `rimlightPower` nor
+/// `lightingEffect2` — nif.xml's declared `Lighting Effect 2` default.
+pub const FRESNEL_RIM_DEFAULT_EXPONENT: f32 = 2.0;
+// Parallax layer budget. The authored maximum is clamped to
+// `[MIN, MAX]` and converges to `FLOOR` head-on. Primary rays spend up to 32
+// layers; secondary (ray-hit) paths can visit several surfaces per pixel so they
+// cap at 12. `MIN` equals `DEFAULT_PARALLAX_MAX_PASSES`, so an unauthored
+// material keeps exactly its legacy pass count on both paths.
+pub const PARALLAX_PASSES_MIN: f32 = 4.0;
+pub const PARALLAX_PASSES_PRIMARY_MAX: f32 = 32.0;
+pub const PARALLAX_PASSES_SECONDARY_MAX: f32 = 12.0;
+pub const PARALLAX_PASSES_PRIMARY_FLOOR: f32 = 8.0;
+pub const PARALLAX_PASSES_SECONDARY_FLOOR: f32 = 4.0;
+/// Taps of `presentation.frag`'s radial blur beyond the centre sample. The
+/// loop bound and both normalisers (`i / TAPS`, `/ (TAPS + 1)`) derive from it.
+pub const PRESENTATION_RADIAL_TAPS: u32 = 6;
+
 // Local fog-volume clustering (M55/Session 62). Lockstep with
 // `volumetrics_inject.comp`'s `sampleLocalMedium` and
 // `vulkan::volumetrics`, which derive their own `usize` copies from these
@@ -2901,6 +2924,16 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float WATER_RAIN_LANE_SCALE),
     shader_define!(Float WATER_RAIN_ENCODED_MAX),
     shader_define!(Float WATER_RAIN_DECODE_EPSILON),
+    HeaderLine::Comment("Material-authored value clamps shared across shader includes (TD7-2026-10-25-04)."),
+    shader_define!(Float FRESNEL_POWER_MIN),
+    shader_define!(Float FRESNEL_POWER_MAX),
+    shader_define!(Float FRESNEL_RIM_DEFAULT_EXPONENT),
+    shader_define!(Float PARALLAX_PASSES_MIN),
+    shader_define!(Float PARALLAX_PASSES_PRIMARY_MAX),
+    shader_define!(Float PARALLAX_PASSES_SECONDARY_MAX),
+    shader_define!(Float PARALLAX_PASSES_PRIMARY_FLOOR),
+    shader_define!(Float PARALLAX_PASSES_SECONDARY_FLOOR),
+    shader_define!(Uint PRESENTATION_RADIAL_TAPS),
     HeaderLine::Comment("`water.vert` two-wave displacement — shared with the CPU crest sampler (#5582)."),
     shader_define!(Float WATER_WAVE_DEFAULT_SCROLL_A),
     shader_define!(Float WATER_WAVE_DEFAULT_SCROLL_B),

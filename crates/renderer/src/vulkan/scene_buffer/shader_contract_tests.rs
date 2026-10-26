@@ -4521,7 +4521,7 @@ fn disney_sheen_keeps_its_relative_weight_in_canonical_direct_path() {
 /// `parse_fo76_plus`, `MaterialInfo::default`, `ImportedMaterial::default`,
 /// `Material::default`), and `parse_skyrim` hard-sets `rimlightPower` to zero
 /// by design — so "nothing authored" must not be allowed to fall through the
-/// `clamp(exponent, 0.25, 16.0)` onto the FLOOR, which is the broadest
+/// `clamp(exponent, FRESNEL_POWER_MIN, FRESNEL_POWER_MAX)` onto the FLOOR, which is the broadest
 /// possible rim (weight 0.56 head-on at `NdotV = 0.9`) added across the whole
 /// surface rather than at its silhouette. This is the same hazard #2589 fixed
 /// on the sibling `grayscale_to_palette_scale` / `fresnel_power` fields.
@@ -4532,7 +4532,7 @@ fn bethesda_rim_exponent_substitutes_the_format_default_not_the_clamp_floor() {
         .expect("lighting.glsl must declare bethesdaRimFactor");
 
     assert!(
-        body.contains("float exponent = authored > 0.0 ? authored : 2.0;"),
+        body.contains("float exponent = authored > 0.0 ? authored : FRESNEL_RIM_DEFAULT_EXPONENT;"),
         "bethesdaRimFactor must substitute nif.xml's declared `Lighting Effect 2` \
          default (2.0) when neither exponent lane is authored — see #3448"
     );
@@ -4545,7 +4545,7 @@ fn bethesda_rim_exponent_substitutes_the_format_default_not_the_clamp_floor() {
     // The clamp itself stays — it still bounds authored values — but it must
     // no longer be the thing that decides the no-value case.
     assert!(
-        body.contains("clamp(exponent, 0.25, 16.0)"),
+        body.contains("clamp(exponent, FRESNEL_POWER_MIN, FRESNEL_POWER_MAX)"),
         "the authored-value clamp must be kept"
     );
 }

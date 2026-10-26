@@ -606,6 +606,47 @@ mod tests {
         );
     }
 
+    /// The provenance gate above only sees declared SCREAMING constants, so a
+    /// clamp range repeated as bare literals in several includes slips past it
+    /// (TD7-2026-10-25-04). Pin the specific ranges that must stay shared, and
+    /// tie the CPU default parallax budget to the shader's floor.
+    #[test]
+    fn material_authored_clamps_are_not_repeated_as_inline_literals() {
+        use crate::shader_constants::{
+            PARALLAX_PASSES_MIN, PARALLAX_PASSES_PRIMARY_MAX, PARALLAX_PASSES_SECONDARY_MAX,
+            PRESENTATION_RADIAL_TAPS,
+        };
+        assert_eq!(
+            byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES,
+            PARALLAX_PASSES_MIN,
+            "an unauthored material must keep exactly the shader's minimum pass count"
+        );
+        assert!(PARALLAX_PASSES_MIN <= PARALLAX_PASSES_SECONDARY_MAX);
+        assert!(PARALLAX_PASSES_SECONDARY_MAX <= PARALLAX_PASSES_PRIMARY_MAX);
+        assert!(PRESENTATION_RADIAL_TAPS >= 1);
+
+        let banned: &[(&str, &[&str])] = &[
+            ("include/pbr.glsl", &["0.25, 16.0"]),
+            ("include/lighting.glsl", &["0.25, 16.0"]),
+            ("include/material_sampling.glsl", &["4.0, 32.0"]),
+            ("include/ray_hit.glsl", &["4.0, 12.0"]),
+            ("presentation.frag", &["/ 6.0", "/ 7.0", "i <= 6"]),
+        ];
+        let sources = renderer_shader_sources();
+        for (file, literals) in banned {
+            let (_, source) = sources
+                .iter()
+                .find(|(name, _)| name == file)
+                .unwrap_or_else(|| panic!("{file} missing from the shader corpus"));
+            for literal in *literals {
+                assert!(
+                    !source.contains(literal),
+                    "{file} repeats the inline literal `{literal}`; use the shader_constants_data.rs name"
+                );
+            }
+        }
+    }
+
     #[test]
     fn shader_constant_provenance_gate_rejects_synthetic_shared_redeclaration() {
         let shared_names = shader_constant_data_names();
