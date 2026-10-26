@@ -710,6 +710,14 @@ became a thin surf fringe, Skyrim's shore merges into the grass, and the pale ro
 shelf there reads as rock. Before/after: `~/Downloads/byro-watal-godrays/fo3_shore_before_after.png`.
 The foam and coverage work below was done first and still applies.
 
+*Open observation:* a one-pixel-wide white diagonal streak on the Skyrim W1 shore
+view (camera `-33024 1060 64640`, yaw 0, pitch -6; floor point near
+`-31256, -58501`) is also the caustic deposit — it vanishes with the deposit
+disabled, and survives the shallow fade and a composite-side cap of 4 suns on the
+water accumulator (tried and reverted: no visible effect). It is not foam, glint,
+reflection, a placed object (none within 500 BU), or a cell-border crack. Not yet
+explained; likely a many-to-one floor mapping along a static edge.
+
 **Lake shores faded to a solid white strip instead of merging with the land
 (2026-10-26).** Two shore foam terms (the contact ray and the breaker band) both
 reached full strength at zero depth and were blended in as opaque white, over
