@@ -376,6 +376,13 @@ pub struct WaterMaterial {
     /// Authored flow-map tile scale. One is neutral; zero means legacy
     /// records without a dedicated flow-map field.
     pub flowmap_scale: f32,
+    /// The surface pattern's speed follows the weather wind instead of the
+    /// authored layer scroll: the scroll *direction* stays authored, the
+    /// *rate* is `WATER_CALM_DRIFT_*` between a still pond and the wind
+    /// field's maximum ([`WaterMaterial::wave_scrolls`]). Set at the
+    /// translate boundary for calm water (lakes, ponds, the sea, distant LOD
+    /// water); flowing kinds keep their flow-driven scroll.
+    pub wind_driven: bool,
     /// Starfield per-channel extinction coefficients. A zero triplet is the
     /// canonical sentinel for pre-Starfield records and keeps their legacy
     /// scalar fog response unchanged.
@@ -478,6 +485,7 @@ impl Default for WaterMaterial {
             specular_magnitude: 1.0,
             specular_radius: 0.0,
             flowmap_scale: 1.0,
+            wind_driven: false,
             absorption_coefficients: [0.0; 3],
             concentration: [0.0; 4],
             // Shoreline foam is authored by the shader's contact ray for
@@ -604,6 +612,8 @@ pub const WATER_WAVE_SPATIAL_FLOOR_B: f32 = 1.0 / 4096.0;
 pub const WATER_WAVE_FALLBACK_DIR_A: [f32; 2] = [1.0, 0.35];
 /// World-XZ travel direction of wave B when its post-weather scroll is ~0.
 pub const WATER_WAVE_FALLBACK_DIR_B: [f32; 2] = [-0.4, 1.0];
+/// [`WATER_WAVE_FALLBACK_DIR_A`] normalised: the swell's heading in dead calm.
+pub const WATER_WAVE_FALLBACK_DIR_A_UNIT: [f32; 2] = [0.943_858_4, 0.330_350_4];
 /// Clamp (rad/s, either sign) on the NAM1 angular velocity that rotates the
 /// authored scroll vectors.
 pub const WATER_SCROLL_ANGULAR_RATE_MAX: f32 = 32.0;
@@ -618,6 +628,122 @@ pub const WATER_WEATHER_SCROLL_WEIGHT_B: f32 = 0.65;
 /// Share of the (kind-damped) weather scroll layer C takes.
 pub const WATER_WEATHER_SCROLL_WEIGHT_C: f32 = 0.45;
 
+// ── Wind-driven calm water (2026-10-26) ─────────────────────────────────
+//
+// A lake's visible pattern used to scroll at whatever the WATR authored
+// (UV/s) over the layer's UV-per-world-unit scale: measured at the shipped
+// fixtures that is 0.1-0.6 m/s on FNV/FO3/Oblivion, 1.2 m/s on Skyrim's calm
+// lake and 3.3 m/s on Fallout 4's distant water, whatever the wind was doing,
+// and the vertex-wave rate follows the same scroll magnitude. Calm water now
+// drifts with the weather wind: a floor for a still pond and a ceiling for the
+// wind field's maximum (`MAX_WIND_SPEED`). 70 world units = 1 m.
+
+/// Pattern speed of wind-driven calm water in dead calm, world units/s (3 cm/s).
+pub const WATER_CALM_DRIFT_MIN_BU_PER_S: f32 = 2.1;
+/// Pattern speed at the wind field's maximum, world units/s (37.5 cm/s).
+pub const WATER_CALM_DRIFT_MAX_BU_PER_S: f32 = 26.25;
+/// Layer B's share of the calm drift (layer A takes it whole).
+pub const WATER_CALM_DRIFT_WEIGHT_B: f32 = 0.8;
+/// Layer C's share of the calm drift.
+pub const WATER_CALM_DRIFT_WEIGHT_C: f32 = 0.5;
+
+// ── Swell (2026-10-26) ──────────────────────────────────────────────────
+//
+// The authored wave pair is a ripple (WATR amplitude defaults to 0.4 BU, 6 mm);
+// a lake or sea with no swell reads as a flat sheet with a normal map. Wind
+// -driven water carries one more travelling wave: a deep-water swell of fixed
+// wavelength whose speed follows the dispersion relation `w^2 = g k` and whose
+// height follows the weather wind. `water.vert` and the CPU crest sampler
+// (`physics::water::authored_wave_height_with_weather`) both read these, so the
+// visible swell and the buoyancy crest are one wave. 70 world units = 1 m.
+
+/// Wavelength of the swell, world units (~14 m).
+pub const WATER_SWELL_WAVELENGTH_BU: f32 = 1000.0;
+/// Gravity in world units/s^2 (9.81 m/s^2 at 70 BU/m): sets the swell's phase
+/// speed through `w = sqrt(g k)` (a ~4 m/s crest at the default wavelength).
+pub const WATER_SWELL_GRAVITY_BU_PER_S2: f32 = 686.7;
+/// Swell crest height (half the wave height) in dead calm, world units.
+pub const WATER_SWELL_AMPLITUDE_MIN: f32 = 1.5;
+/// Swell crest height at the wind field's maximum, world units (0.4 m, a
+/// 0.8 m wave: a lake in a gale or an open sea in a fresh breeze).
+pub const WATER_SWELL_AMPLITUDE_MAX: f32 = 28.0;
+/// A wave breaks once its height exceeds ~0.78 of the water depth, so the crest
+/// height (half the wave height) is capped at this fraction of the depth.
+pub const WATER_SWELL_BREAK_RATIO: f32 = 0.39;
+/// Depth at and below which Green's-law shoaling starts to raise the swell
+/// (the wave steepens as `depth^(-1/4)`), world units (~13 m).
+pub const WATER_SWELL_SHOAL_REF_DEPTH_BU: f32 = 900.0;
+/// Ceiling on the shoaling gain.
+pub const WATER_SWELL_SHOAL_GAIN_MAX: f32 = 1.6;
+/// Depth under which swell and ripple crests bend toward the shore
+/// (refraction), world units.
+pub const WATER_SHORE_REFRACT_DEPTH: f32 = 900.0;
+/// The largest share of the heading that refraction turns toward the shore.
+pub const WATER_SHORE_REFRACT_MAX: f32 = 0.7;
+
+// ── River current over the bed ──────────────────────────────────────────
+//
+// A river does not flow as one vector across its width: open-channel flow is
+// faster over deep water than over the shallows, and it runs along the banks
+// instead of into them. `WaterFlow::over_bed` is that rule, shared by the
+// visible current in `water.frag` and the current force on floating bodies.
+
+/// Depth under which a river's current is pulled into the bank's direction.
+pub const WATER_RIVER_BANK_DEPTH: f32 = 160.0;
+/// Share of the bank-parallel direction the current takes at the waterline.
+pub const WATER_RIVER_BANK_ALIGN: f32 = 0.7;
+/// Slowest current as a fraction of the plane's speed (at the waterline).
+pub const WATER_RIVER_SPEED_MIN: f32 = 0.35;
+/// Depth at which a river's current reaches the plane's full speed.
+pub const WATER_RIVER_DEPTH_FULL: f32 = 420.0;
+
+/// The wind-driven travelling swell of a calm surface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterSwell {
+    /// Open-water crest height, world units.
+    pub amplitude: f32,
+    /// Unit horizontal travel direction (the wind's heading).
+    pub direction: [f32; 2],
+}
+
+impl WaterSwell {
+    /// Wave number `k = 2 pi / wavelength`, rad per world unit.
+    pub fn wave_number() -> f32 {
+        std::f32::consts::TAU / WATER_SWELL_WAVELENGTH_BU
+    }
+
+    /// Angular frequency from the deep-water dispersion relation,
+    /// `w = sqrt(g k)`, rad/s.
+    pub fn angular_frequency() -> f32 {
+        (WATER_SWELL_GRAVITY_BU_PER_S2 * Self::wave_number()).sqrt()
+    }
+
+    /// Crest height after shoaling and breaking over a bed `depth` below the
+    /// surface: Green's-law growth `(ref / depth)^(1/4)` up to the gain
+    /// ceiling, then the breaking cap, which also takes the swell to zero at
+    /// the waterline so it cannot lift the surface off the shore it meets.
+    pub fn amplitude_over(&self, depth: f32) -> f32 {
+        let depth = depth.max(0.0);
+        let gain = if depth >= WATER_SWELL_SHOAL_REF_DEPTH_BU {
+            1.0
+        } else {
+            (WATER_SWELL_SHOAL_REF_DEPTH_BU / depth.max(1.0))
+                .powf(0.25)
+                .min(WATER_SWELL_SHOAL_GAIN_MAX)
+        };
+        (self.amplitude * gain).min(WATER_SWELL_BREAK_RATIO * depth)
+    }
+
+    /// Surface height offset of the swell at horizontal position `(x, z)` and
+    /// time, over water of the given bed `depth` (use a large depth for open
+    /// water).
+    pub fn height(&self, x: f32, z: f32, time_secs: f32, depth: f32) -> f32 {
+        let phase = (x * self.direction[0] + z * self.direction[1]) * Self::wave_number()
+            - time_secs * Self::angular_frequency();
+        self.amplitude_over(depth) * phase.sin()
+    }
+}
+
 /// The three normal/wave layer scroll vectors exactly as the GPU receives
 /// them (`GpuWaterParams.scroll` / `scroll_c`): authored scroll × flow-map
 /// scale, rotated by the NAM1 angular velocity at `time_secs`, plus the
@@ -630,6 +756,34 @@ pub struct WaterWaveScrolls {
 }
 
 impl WaterMaterial {
+    /// The wind-driven swell of this surface, or `None` for water whose
+    /// motion is its authored current (rivers and falls) or that is not
+    /// wind-driven. `weather_scroll` is the same live wind scroll
+    /// [`WaterMaterial::wave_scrolls`] takes, so the swell's strength tracks
+    /// the wind the surface drifts with.
+    pub fn swell(&self, weather_scroll: [f32; 2]) -> Option<WaterSwell> {
+        if !self.wind_driven {
+            return None;
+        }
+        let len = (weather_scroll[0] * weather_scroll[0] + weather_scroll[1] * weather_scroll[1]).sqrt();
+        let wind = if len.is_finite() {
+            (len / WEATHER_SCROLL_PER_BU_PER_S / crate::ecs::components::groundcover::MAX_WIND_SPEED)
+                .clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let direction = if len.is_finite() && len > 1.0e-9 {
+            [weather_scroll[0] / len, weather_scroll[1] / len]
+        } else {
+            WATER_WAVE_FALLBACK_DIR_A_UNIT
+        };
+        Some(WaterSwell {
+            amplitude: WATER_SWELL_AMPLITUDE_MIN
+                + (WATER_SWELL_AMPLITUDE_MAX - WATER_SWELL_AMPLITUDE_MIN) * wind,
+            direction,
+        })
+    }
+
     /// Authored scroll prep shared by the renderer upload and the CPU crest
     /// sampler (#5582), so a retune moves the visible crest and the
     /// buoyancy/submersion crest together.
@@ -658,6 +812,50 @@ impl WaterMaterial {
             0.0
         };
         let (sin_angle, cos_angle) = (angular_rate * time_secs).sin_cos();
+        if self.wind_driven {
+            // Wind strength 0..1 from the (undamped, calm-kind) weather scroll.
+            let wind_bu_per_s = (weather_scroll[0] * weather_scroll[0]
+                + weather_scroll[1] * weather_scroll[1])
+                .sqrt()
+                / WEATHER_SCROLL_PER_BU_PER_S;
+            let wind = (wind_bu_per_s / crate::ecs::components::groundcover::MAX_WIND_SPEED)
+                .clamp(0.0, 1.0);
+            let drift = WATER_CALM_DRIFT_MIN_BU_PER_S
+                + (WATER_CALM_DRIFT_MAX_BU_PER_S - WATER_CALM_DRIFT_MIN_BU_PER_S) * wind;
+            let unit = |v: [f32; 2]| {
+                let len = (v[0] * v[0] + v[1] * v[1]).sqrt();
+                (len.is_finite() && len > 1.0e-6).then(|| [v[0] / len, v[1] / len])
+            };
+            let layer = |scroll: [f32; 2], uv_scale: f32, weight: f32, fallback: [f32; 2]| {
+                // Authored heading (rotated by NAM1), else the wind's, else the
+                // layer's default travel direction.
+                let rotated = [
+                    scroll[0] * cos_angle - scroll[1] * sin_angle,
+                    scroll[0] * sin_angle + scroll[1] * cos_angle,
+                ];
+                let dir = unit(rotated)
+                    .or_else(|| unit(weather_scroll))
+                    .or_else(|| unit(fallback))
+                    .unwrap_or([1.0, 0.0]);
+                let uv_per_s = drift * weight * uv_scale.abs();
+                [dir[0] * uv_per_s, dir[1] * uv_per_s]
+            };
+            return WaterWaveScrolls {
+                a: layer(self.scroll_a, self.uv_scale_a, 1.0, WATER_WAVE_FALLBACK_DIR_A),
+                b: layer(
+                    self.scroll_b,
+                    self.uv_scale_b,
+                    WATER_CALM_DRIFT_WEIGHT_B,
+                    WATER_WAVE_FALLBACK_DIR_B,
+                ),
+                c: layer(
+                    self.scroll_c,
+                    self.uv_scale_c,
+                    WATER_CALM_DRIFT_WEIGHT_C,
+                    WATER_WAVE_FALLBACK_DIR_A,
+                ),
+            };
+        }
         let layer = |scroll: [f32; 2], weather_weight: f32| {
             let x = scroll[0] * flowmap_scale;
             let y = scroll[1] * flowmap_scale;
@@ -675,6 +873,46 @@ impl WaterMaterial {
 }
 
 impl WaterFlow {
+    /// This plane's current as it runs at a point over the bed: slower over
+    /// the shallows (`WATER_RIVER_SPEED_MIN` at the waterline, the plane's
+    /// speed from `WATER_RIVER_DEPTH_FULL` down) and, near the banks, turned
+    /// toward the bank-parallel direction while keeping the sign of the
+    /// authored flow. `water.frag` evaluates the same rule on the baked bed.
+    /// The result is a derived local current and is not clamped to the
+    /// documented speed band.
+    pub fn over_bed(&self, bed: WaterBedSample) -> WaterFlow {
+        let smooth = |edge0: f32, edge1: f32, x: f32| {
+            let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        let depth_speed = WATER_RIVER_SPEED_MIN
+            + (1.0 - WATER_RIVER_SPEED_MIN) * smooth(0.0, WATER_RIVER_DEPTH_FULL, bed.depth);
+        let flow_len = (self.direction[0] * self.direction[0] + self.direction[2] * self.direction[2]).sqrt();
+        let bank_len = (bed.uphill[0] * bed.uphill[0] + bed.uphill[1] * bed.uphill[1]).sqrt();
+        let mut direction = self.direction;
+        if flow_len > 1.0e-4 && bank_len > 0.1 {
+            let flow = [self.direction[0] / flow_len, self.direction[2] / flow_len];
+            let mut along = [-bed.uphill[1] / bank_len, bed.uphill[0] / bank_len];
+            if along[0] * flow[0] + along[1] * flow[1] < 0.0 {
+                along = [-along[0], -along[1]];
+            }
+            let hug = (1.0 - smooth(0.25 * WATER_RIVER_BANK_DEPTH, WATER_RIVER_BANK_DEPTH, bed.depth))
+                * WATER_RIVER_BANK_ALIGN;
+            let mixed = [
+                flow[0] + (along[0] - flow[0]) * hug,
+                flow[1] + (along[1] - flow[1]) * hug,
+            ];
+            let len = (mixed[0] * mixed[0] + mixed[1] * mixed[1]).sqrt();
+            if len > 1.0e-6 {
+                direction = [mixed[0] / len, self.direction[1], mixed[1] / len];
+            }
+        }
+        WaterFlow {
+            direction,
+            speed: self.speed * depth_speed,
+        }
+    }
+
     /// Slowest current the physics sink will simulate — the "calm river"
     /// anchor of [`Self::speed`]'s documented band. BU/s.
     pub const SPEED_MIN: f32 = 0.5;
@@ -806,6 +1044,9 @@ pub struct WaterSurfaceMesh {
 }
 
 mod surface_grid;
+
+mod bed_field;
+pub use bed_field::{WaterBedField, WaterBedSample};
 
 // Shared with the grid bounds: the broad phase must include the same slack
 // as the exact barycentric test, including columns just outside an edge.
@@ -1148,6 +1389,132 @@ mod wave_tuning_tests {
         assert!((len(m.scroll_a) - WATER_WAVE_DEFAULT_SCROLL_A).abs() < 1e-6);
         assert!((len(m.scroll_b) - WATER_WAVE_DEFAULT_SCROLL_B).abs() < 1e-6);
         assert!((WATER_WAVE_MIX_A + WATER_WAVE_MIX_B - 1.0).abs() < 1e-6);
+    }
+
+    /// Wind-driven calm water: the pattern's world speed is the wind-tied
+    /// drift (floor in dead calm, ceiling at the field's maximum wind), the
+    /// authored heading is kept, and an authored-zero layer takes the wind's.
+    #[test]
+    fn wind_driven_water_drifts_with_the_wind_not_the_authored_rate() {
+        use crate::ecs::components::groundcover::MAX_WIND_SPEED;
+        let m = WaterMaterial {
+            wind_driven: true,
+            // Authored scroll is 100x the default and points +Y; its rate must not matter.
+            scroll_a: [0.0, 3.0],
+            scroll_b: [0.0, 0.0],
+            scroll_c: [0.0, 0.0],
+            uv_scale_a: 0.004,
+            uv_scale_b: 0.002,
+            uv_scale_c: 0.002,
+            angular_velocity: 0.0,
+            ..WaterMaterial::default()
+        };
+        let speed = |v: [f32; 2], uv_scale: f32| (v[0] * v[0] + v[1] * v[1]).sqrt() / uv_scale;
+        let wind_scroll = |bu_per_s: f32| [bu_per_s * WEATHER_SCROLL_PER_BU_PER_S, 0.0];
+
+        let calm = m.wave_scrolls([0.0, 0.0], 0.0);
+        assert!((speed(calm.a, 0.004) - WATER_CALM_DRIFT_MIN_BU_PER_S).abs() < 1e-3);
+        assert!(calm.a[0].abs() < 1e-9 && calm.a[1] > 0.0, "authored +Y heading kept: {:?}", calm.a);
+
+        let gale = m.wave_scrolls(wind_scroll(MAX_WIND_SPEED), 0.0);
+        assert!((speed(gale.a, 0.004) - WATER_CALM_DRIFT_MAX_BU_PER_S).abs() < 1e-3);
+        // Past the maximum it saturates rather than growing.
+        let storm = m.wave_scrolls(wind_scroll(MAX_WIND_SPEED * 10.0), 0.0);
+        assert!((speed(storm.a, 0.004) - WATER_CALM_DRIFT_MAX_BU_PER_S).abs() < 1e-3);
+
+        // Layers with no authored heading follow the wind's, scaled by their weight.
+        assert!(gale.b[0] > 0.0 && gale.b[1].abs() < 1e-9, "{:?}", gale.b);
+        assert!(
+            (speed(gale.b, 0.002) - WATER_CALM_DRIFT_MAX_BU_PER_S * WATER_CALM_DRIFT_WEIGHT_B).abs()
+                < 1e-3
+        );
+        assert!(
+            (speed(gale.c, 0.002) - WATER_CALM_DRIFT_MAX_BU_PER_S * WATER_CALM_DRIFT_WEIGHT_C).abs()
+                < 1e-3
+        );
+
+        // The same material with the flag off keeps the authored rate.
+        let authored = WaterMaterial { wind_driven: false, ..m }.wave_scrolls([0.0, 0.0], 0.0);
+        assert!((authored.a[1] - 3.0).abs() < 1e-6, "{:?}", authored.a);
+    }
+
+    /// A river's current over the bed: full speed in deep water, slowed over
+    /// the shallows, and turned parallel to the bank near it with the sign of
+    /// the authored flow kept.
+    #[test]
+    fn river_current_slows_over_shallows_and_runs_along_the_bank() {
+        let flow = WaterFlow { direction: [1.0, 0.0, 0.0], speed: 8.0 };
+        // Mid-channel: deep, flat bed — untouched.
+        let deep = flow.over_bed(WaterBedSample { depth: 2000.0, uphill: [0.0, 0.0] });
+        assert_eq!(deep.direction, [1.0, 0.0, 0.0]);
+        assert!((deep.speed - 8.0).abs() < 1e-4);
+        // Deep water beside a bank is still full speed and unturned.
+        let deep_bank = flow.over_bed(WaterBedSample { depth: 2000.0, uphill: [0.0, 1.0] });
+        assert_eq!(deep_bank.direction, [1.0, 0.0, 0.0]);
+        // At the waterline of a bank to the +Z side the current slows to the
+        // floor and turns toward the bank's tangent (±X), keeping +X.
+        let edge = flow.over_bed(WaterBedSample { depth: 0.0, uphill: [0.0, 1.0] });
+        assert!((edge.speed - 8.0 * WATER_RIVER_SPEED_MIN).abs() < 1e-4, "{edge:?}");
+        assert!(edge.direction[0] > 0.99 && edge.direction[2].abs() < 0.05, "{edge:?}");
+        // A bank to the side the flow points toward turns it along the bank
+        // instead of into it: flow +X into a bank whose uphill is +X -> the
+        // tangent is +/-Z; the current takes `hug` of it.
+        let into = flow.over_bed(WaterBedSample { depth: 0.0, uphill: [1.0, 0.0] });
+        assert!(into.direction[2].abs() > 0.5, "turned along the bank: {into:?}");
+        let len = (into.direction[0].powi(2) + into.direction[2].powi(2)).sqrt();
+        assert!((len - 1.0).abs() < 1e-4, "stays a unit heading");
+        // Speed grows with depth, monotonically.
+        let mut last = 0.0;
+        for depth in [0.0, 50.0, 150.0, 300.0, 420.0, 900.0] {
+            let v = flow.over_bed(WaterBedSample { depth, uphill: [0.0, 0.0] }).speed;
+            assert!(v >= last - 1e-5, "{v} at {depth}");
+            last = v;
+        }
+    }
+
+    /// The swell: only wind-driven water has one, its crest follows the wind,
+    /// it shoals over a rising bed and is capped by breaking to nothing at the
+    /// waterline, and its crest moves at the dispersion-relation speed.
+    #[test]
+    fn swell_follows_the_wind_shoals_and_breaks() {
+        use crate::ecs::components::groundcover::MAX_WIND_SPEED;
+        let wind = |bu_per_s: f32| [bu_per_s * WEATHER_SCROLL_PER_BU_PER_S, 0.0];
+        let still = WaterMaterial { wind_driven: false, ..WaterMaterial::default() };
+        assert!(still.swell(wind(MAX_WIND_SPEED)).is_none(), "a river has no swell");
+
+        let lake = WaterMaterial { wind_driven: true, ..WaterMaterial::default() };
+        let calm = lake.swell([0.0, 0.0]).unwrap();
+        assert!((calm.amplitude - WATER_SWELL_AMPLITUDE_MIN).abs() < 1e-5);
+        assert!((calm.direction[0].powi(2) + calm.direction[1].powi(2) - 1.0).abs() < 1e-4);
+        let gale = lake.swell(wind(MAX_WIND_SPEED)).unwrap();
+        assert!((gale.amplitude - WATER_SWELL_AMPLITUDE_MAX).abs() < 1e-3);
+        assert_eq!(gale.direction, [1.0, 0.0]);
+        assert_eq!(lake.swell(wind(MAX_WIND_SPEED * 9.0)).unwrap().amplitude, gale.amplitude);
+
+        // Open water: untouched. Shoaling raises it, the breaking cap then
+        // takes it down to zero at the waterline, and it is never negative.
+        let open = gale.amplitude_over(5000.0);
+        assert_eq!(open, gale.amplitude);
+        let shoaled = gale.amplitude_over(WATER_SWELL_SHOAL_REF_DEPTH_BU * 0.1);
+        assert!(shoaled > 0.0 && shoaled <= WATER_SWELL_BREAK_RATIO * WATER_SWELL_SHOAL_REF_DEPTH_BU * 0.1 + 1e-4);
+        assert!(gale.amplitude_over(40.0) <= WATER_SWELL_BREAK_RATIO * 40.0 + 1e-4);
+        assert_eq!(gale.amplitude_over(0.0), 0.0);
+        assert_eq!(gale.amplitude_over(-3.0), 0.0);
+        let mut last = 0.0;
+        for depth in [0.0, 10.0, 25.0, 60.0, 120.0] {
+            let a = gale.amplitude_over(depth);
+            assert!(a >= last - 1e-5, "breaking cap must grow with depth: {a} at {depth}");
+            last = a;
+        }
+
+        // The crest travels along +direction at w / k.
+        let k = WaterSwell::wave_number();
+        let w = WaterSwell::angular_frequency();
+        let t = 2.0;
+        let crest_x = (std::f32::consts::FRAC_PI_2 + w * t) / k; // sin(k x - w t) = 1
+        assert!((gale.height(crest_x, 0.0, t, 5000.0) - gale.amplitude).abs() < 1e-3);
+        let speed_m_per_s = w / k / 70.0;
+        assert!((3.0..6.0).contains(&speed_m_per_s), "{speed_m_per_s} m/s");
     }
 
     /// The prep is flow-scale → rotate → add weighted weather, the weather

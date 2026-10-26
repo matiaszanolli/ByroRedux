@@ -690,6 +690,39 @@ fn cloud_scroll_vectors(
     result
 }
 
+/// Ceiling on how fast an authored textured cloud layer travels over the
+/// ground, m/s. Upper-air winds at cirrus heights are 10-30 m/s and rarely
+/// beyond 50, but the legacy scroll rates were authored in UV per second with
+/// no notion of altitude: at the shell's 9 km a 0.015 UV/s scroll under a 0.075
+/// tile scale is ~1 700 m/s. 20 m/s is the user-chosen "near real life" cap
+/// (2026-10-26).
+const CLOUD_LAYER_MAX_DRIFT_M_PER_S: f32 = 20.0;
+
+/// Cap each textured layer's scroll so its ground drift stays within
+/// [`CLOUD_LAYER_MAX_DRIFT_M_PER_S`].
+///
+/// The shader samples `uv = shell_uv * tile_scale + scroll`, where `shell_uv`
+/// is the horizontal world position in units of the shell altitude
+/// (`sky.glsl::sky_upper_cloud_layer`), so a scroll of `s` UV/s moves the
+/// pattern `s / tile_scale` altitude-units per second, i.e.
+/// `s / tile_scale * CLOUD_UPPER_PLANE_ALTITUDE` metres per second. A layer
+/// with no texture (`tile_scale == 0`) is left alone.
+pub(crate) fn cap_cloud_layer_drift(vectors: &mut [[f32; 2]; 4], tile_scales: [f32; 4]) {
+    let altitude = byroredux_renderer::shader_constants::CLOUD_UPPER_PLANE_ALTITUDE;
+    for (vector, tile_scale) in vectors.iter_mut().zip(tile_scales) {
+        if !(tile_scale > 0.0) {
+            continue;
+        }
+        let max_uv_per_s = tile_scale * CLOUD_LAYER_MAX_DRIFT_M_PER_S / altitude;
+        let len = (vector[0] * vector[0] + vector[1] * vector[1]).sqrt();
+        if len.is_finite() && len > max_uv_per_s {
+            let k = max_uv_per_s / len;
+            vector[0] *= k;
+            vector[1] *= k;
+        }
+    }
+}
+
 #[inline]
 fn advance_cloud_scroll(scroll: &mut [f32; 2], velocity: [f32; 2], dt: f32) {
     scroll[0] = (scroll[0] + velocity[0] * dt).rem_euclid(1.0);
@@ -1228,12 +1261,23 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // Wrap scroll at 1.0 so it never grows unboundedly; sampler
     // REPEAT makes the wrap invisible.
     if let Some(mut clouds) = world.try_resource_mut::<CloudSimState>() {
-        let scroll_vectors = cloud_scroll_vectors(
+        let mut scroll_vectors = cloud_scroll_vectors(
             cloud_layer_velocities,
             cloud_layer_velocities_authored,
             cloud_scroll_rate,
             wind_direction,
         );
+        if let Some(sky) = world.try_resource::<SkyParamsRes>() {
+            cap_cloud_layer_drift(
+                &mut scroll_vectors,
+                [
+                    sky.cloud_tile_scale,
+                    sky.cloud_tile_scale_1,
+                    sky.cloud_tile_scale_2,
+                    sky.cloud_tile_scale_3,
+                ],
+            );
+        }
         advance_cloud_scroll(&mut clouds.cloud_scroll, scroll_vectors[0], dt);
         advance_cloud_scroll(&mut clouds.cloud_scroll_1, scroll_vectors[1], dt);
         advance_cloud_scroll(&mut clouds.cloud_scroll_2, scroll_vectors[2], dt);
@@ -1470,6 +1514,35 @@ mod cloud_scroll_rate_tests {
     }
 }
 
+#[cfg(test)]
+mod cloud_drift_cap_tests {
+    use super::*;
+
+    fn drift_m_per_s(vector: [f32; 2], tile_scale: f32) -> f32 {
+        (vector[0] * vector[0] + vector[1] * vector[1]).sqrt() / tile_scale
+            * byroredux_renderer::shader_constants::CLOUD_UPPER_PLANE_ALTITUDE
+    }
+
+    /// The Oblivion fixture's layer 0 (tile 0.075, mid wind) is ~1 700 m/s
+    /// before the cap and exactly the cap after it, heading unchanged; a
+    /// layer already slower than the cap, and an unused one, are untouched.
+    #[test]
+    fn fast_layers_are_capped_and_slow_or_unused_layers_are_not() {
+        let tiles = [0.075, 0.5, 0.0, 0.6];
+        let slow = [0.5 * 5.0 / 9000.0, 0.0];
+        let mut v = [[0.0143, 0.0], slow, [1.0, 1.0], [0.0, -0.9]];
+        assert!(drift_m_per_s(v[0], tiles[0]) > 1_000.0);
+        cap_cloud_layer_drift(&mut v, tiles);
+        assert!((drift_m_per_s(v[0], tiles[0]) - CLOUD_LAYER_MAX_DRIFT_M_PER_S).abs() < 1e-3);
+        assert!(v[0][0] > 0.0 && v[0][1] == 0.0, "heading preserved: {:?}", v[0]);
+        assert_eq!(v[1], slow, "a layer under the cap must not change");
+        assert_eq!(v[2], [1.0, 1.0], "a layer with no texture is skipped");
+        assert!((drift_m_per_s(v[3], tiles[3]) - CLOUD_LAYER_MAX_DRIFT_M_PER_S).abs() < 1e-3);
+        assert!(v[3][0] == 0.0 && v[3][1] < 0.0);
+    }
+}
+
+#[cfg(test)]
 #[cfg(test)]
 mod cloud_scroll_vectors_tests {
     //! Regression tests for #3985 (REN-2026-09-06-D18-01) — two

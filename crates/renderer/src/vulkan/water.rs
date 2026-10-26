@@ -165,7 +165,9 @@ pub struct GpuWaterParams {
     /// `GpuCamera.render_origin.w` (#2164).
     pub uv_offset: [f32; 4],
     /// x = FO4+/Creation-2 WATR `Depth Amount`; y = `WaterNormalEncoding`
-    /// (0 unit tangent normal, 1 FO3/FNV offset noise); zw reserved. `x`
+    /// (0 unit tangent normal, 1 FO3/FNV offset noise); z = the wind-driven
+    /// swell's open-water crest height (world units, 0 = none) and w its
+    /// heading in radians. `x`
     /// remains separate from `shallow.a`/`deep.a`, which are actual fog
     /// distances.
     pub optical: [f32; 4],
@@ -1295,6 +1297,92 @@ mod tests {
             "#define WATER_FLOW_MAP_CYCLE_SECONDS {:?}",
             crate::shader_constants::WATER_FLOW_MAP_CYCLE_SECONDS
         )));
+    }
+
+    /// The procedural water noise's lattice hash must be integer-exact. The
+    /// float `fract(p * 443.897)` form lost its fractional bits once the finer
+    /// octaves' lattice coordinates reached the thousands, quantising the
+    /// hash to a few levels: Oblivion's procedural normal then showed a grid
+    /// of flat diamond tiles in the cloud reflection. And the river plane
+    /// carries no flow-streak foam: that term banded every calm river.
+    #[test]
+    fn water_noise_hash_is_integer_exact_and_rivers_have_no_streak_foam() {
+        let src = include_str!("../../shaders/water.frag");
+        let hash = src
+            .split_once("float hash21(")
+            .expect("hash21 is declared")
+            .1
+            .split_once("\n}\n")
+            .expect("hash21 has a body")
+            .0;
+        assert!(hash.contains("pcgHash("), "hash21 must go through the integer hash");
+        assert!(!hash.contains("fract("), "hash21 must not use float fract() mixing");
+        let river = src
+            .split_once("kind == WATER_RIVER) {")
+            .expect("the foam composite has a River arm")
+            .1
+            .split_once("} else if (kind == WATER_WATERFALL)")
+            .expect("the River arm ends before the waterfall arm")
+            .0;
+        assert!(
+            !river.contains("foamFlowStreaks("),
+            "river water must not call the procedural streak foam"
+        );
+    }
+
+    /// The swell, shore and river contract between the cell loader's baked
+    /// vertex colour, `water.vert`, `water.frag` and the CPU crest sampler.
+    #[test]
+    fn swell_shore_and_river_shaders_keep_their_contract() {
+        use crate::shader_constants::{WATER_BED_VALID_ALPHA, WATER_BED_VALID_ALPHA_TOL};
+        // The sentinel alpha must not be reachable by any 8-bit authored alpha
+        // (k/255), or a placed water mesh's vertex colour could be read as bed.
+        let nearest = (WATER_BED_VALID_ALPHA * 255.0).round() / 255.0;
+        assert!(
+            (WATER_BED_VALID_ALPHA - nearest).abs() > 4.0 * WATER_BED_VALID_ALPHA_TOL,
+            "the bed sentinel {WATER_BED_VALID_ALPHA} sits within reach of the 8-bit alpha {nearest}"
+        );
+
+        let vert = include_str!("../../shaders/water.vert");
+        // Bed data is trusted only on the exact sentinel.
+        assert!(vert.contains(
+            "abs(inColor.a - WATER_BED_VALID_ALPHA) < WATER_BED_VALID_ALPHA_TOL"
+        ));
+        // The swell law mirrors `WaterSwell` in core: k = 2 pi / wavelength,
+        // w = sqrt(g k), the crest travelling along +heading (the -t sign),
+        // Green's-law shoaling then the breaking cap.
+        for needle in [
+            "float swellK = 6.2831853 / WATER_SWELL_WAVELENGTH_BU;",
+            "float swellW = sqrt(WATER_SWELL_GRAVITY_BU_PER_S2 * swellK);",
+            "dot(absolutePos.xz, swellDir) * swellK - water.timing.x * swellW",
+            "pow(WATER_SWELL_SHOAL_REF_DEPTH_BU / max(bedDepth, 1.0), 0.25)",
+            "min(water.optical.z * shoal, WATER_SWELL_BREAK_RATIO * bedDepth)",
+            "amplitude = min(amplitude, WATER_SWELL_BREAK_RATIO * bedDepth);",
+            "vec2(cos(water.optical.w), sin(water.optical.w))",
+        ] {
+            assert!(vert.contains(needle), "water.vert lost `{needle}`");
+        }
+        let frag = include_str!("../../shaders/water.frag");
+        for needle in [
+            "layout(location = 5) in vec4 vShore;",
+            "(kind == WATER_RIVER || kind == WATER_RAPIDS) && vShore.w > 0.5",
+            "mix(WATER_RIVER_SPEED_MIN, 1.0,",
+            "vShore.w > 0.5 && push.optical.z > 0.0 && kind == WATER_CALM",
+            // The shore merges with the land: coverage fades out over the last
+            // WATER_SHORE_FADE_DEPTH_BU of depth, and shore foam is lacy and capped.
+            "alpha *= smoothstep(0.0, WATER_SHORE_FADE_DEPTH_BU, vShore.x);",
+            "alpha *= smoothstep(0.0, WATER_SHORE_FADE_DEPTH_BU, refrDist);",
+            "shoreFoam *= smoothstep(0.4, 0.72, lace) * WATER_SHORE_FOAM_MAX;",
+            // The caustic deposit builds up with depth; at the waterline it
+            // would only double the sun the bed already receives.
+            "* NdotSun * travelFall * shallowFade * floorFacing;",
+            // A floor face the camera sees edge-on piles many deposits into
+            // a few screen pixels (the Skyrim shore streak); it counts only
+            // as far as it is as foreshortened as the water plane.
+            "WATER_CAUSTIC_FACING_MIN, WATER_CAUSTIC_FACING_FULL,",
+        ] {
+            assert!(frag.contains(needle), "water.frag lost `{needle}`");
+        }
     }
 
     #[test]

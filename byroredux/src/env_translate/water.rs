@@ -656,6 +656,16 @@ pub(crate) fn resolve_water_material(
     // see "water without a parsed XCWT" cells.
     let _ = SubmersionState::default();
 
+    // Calm water's pattern drifts with the weather wind, not at the authored
+    // layer rate (`WaterMaterial::wave_scrolls`); decided here, once, so the
+    // renderer and the CPU crest sampler cannot disagree.
+    // A `River` whose current sits at the engine's calm-river floor (or that
+    // has none at all) is placeholder motion on still water — Skyrim's
+    // `DefaultWater` lakes and the unauthored defaults — so it follows the wind
+    // too. A real authored current keeps its flow-driven scroll.
+    let still_river = kind == WaterKind::River
+        && flow.is_none_or(|flow| flow.speed <= WaterFlow::SPEED_MIN + 1.0e-3);
+    mat.wind_driven = kind == WaterKind::Calm || still_river;
     (mat, kind, flow, normal_path, noise_paths)
 }
 
@@ -988,6 +998,11 @@ mod tests {
         let (mat, kind, _flow, _normal, _noise) =
             resolve_water_material(&waters, Some(0x000A_0001), GameKind::Skyrim);
         assert_eq!(
+            mat.wind_driven,
+            kind == WaterKind::Calm,
+            "this record authors no current, so only a calm classification is wind-driven"
+        );
+        assert_eq!(
             mat.wave_amplitude, 1.5,
             "wave_amplitude must round-trip from WATR"
         );
@@ -1050,6 +1065,10 @@ mod tests {
             resolve_water_material(&waters, Some(rec.form_id), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::River), "the name alone classifies the kind");
         assert!(
+            mat.wind_driven,
+            "a creek with no current is still water: it follows the wind"
+        );
+        assert!(
             flow.is_none(),
             "an unauthored heading must not fabricate a physics current (#4734)"
         );
@@ -1074,6 +1093,10 @@ mod tests {
         let (_, _, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0005), GameKind::Skyrim);
         let flow = flow.expect("an authored NAM0 current must survive");
         assert!((flow.speed - 1.0).abs() < 1.0e-6);
+        // ...and a real current keeps the flow-driven scroll, unlike the
+        // currentless creek above.
+        let (mat, ..) = resolve_water_material(&waters, Some(0x000A_0005), GameKind::Skyrim);
+        assert!(!mat.wind_driven, "an authored current is not wind-driven");
     }
 
     /// #4931 — the flag, not the value, gates the fallback: a NAM0-less

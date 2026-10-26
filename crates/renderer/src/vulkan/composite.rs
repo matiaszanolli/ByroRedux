@@ -1946,13 +1946,14 @@ mod composite_params_layout_tests {
     }
 
     #[test]
-    fn underwater_composite_adds_bounded_sun_aligned_shafts() {
+    fn underwater_composite_marches_refracted_sun_shafts_through_the_water() {
         let shader = include_str!("../../shaders/composite.frag");
         for needle in [
             "if (params.depth_params.x > 0.5\n        && params.underwater.w > 0.0 && params.sun_dir.w > 0.0)",
-            "float shaftLobe = pow(sunAlignment, 18.0);",
-            "float depthRamp = 1.0 - exp(-max(underwaterDistance, 0.0) * 0.002);",
-            "combined += shaftColor * shaftStrength;",
+            "vec3 travel = refract(-sunDirection, vec3(0.0, 1.0, 0.0), 1.0 / 1.333);",
+            "float surfaceY = params.camera_pos.y + depthBelowSurface;",
+            "vec2 entry = p.xz - travel.xz * sunPath;",
+            "* underwaterGodRays(viewDir, sunDirection, rayLength, blueNoiseRank());",
         ] {
             assert!(
                 shader.contains(needle),

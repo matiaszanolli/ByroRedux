@@ -55,6 +55,9 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::water::WaterPlane>()
             .reads::<byroredux_core::ecs::components::water::WaterVolume>()
             .reads::<byroredux_core::ecs::components::water::WaterSurfaceMesh>()
+            // The player's waterline samples the same swell the camera does,
+            // over the plane's bed field.
+            .reads::<byroredux_core::ecs::components::water::WaterBedField>()
             .reads::<byroredux_core::ecs::components::water::WaterFlow>()
             // #3974 — `player_water_state` falls back to a placed
             // `WaterCurrentVolume` marker when the plane has no flow of

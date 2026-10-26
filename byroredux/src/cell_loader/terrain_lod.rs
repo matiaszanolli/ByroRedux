@@ -133,15 +133,22 @@ fn cell_is_full_detail(gx: i32, gy: i32, resident_full_cells: &HashSet<(i32, i32
 //
 // Current values: 625 blocks × 289 verts = 180 625 verts (~4.5% soft cap)
 //                 625 blocks × 1536 idx  = 960 000 idx  (~6.0% soft cap)
+// Skirts (`append_lod_skirts`) hang only along the edges that border a
+// resident full-detail cell, so they scale with the perimeter of the resident
+// region (at most 15 x 15 cells, 4 samples a cell: 240 edges, 2 vertices and 6
+// indices each), not with the ring's area. The allowance below is ~8x that.
+const LOD_SKIRT_VERTEX_ALLOWANCE: usize = 4096;
+const LOD_SKIRT_INDEX_ALLOWANCE: usize = 8192;
 const LOD_RING_VERTEX_FOOTPRINT: usize = {
     let blocks_per_side = 2 * LOD_RADIUS_BLOCKS as usize + 1;
     let verts_per_edge = LOD_BLOCK_CELLS as usize * SAMPLES_PER_CELL + 1;
-    blocks_per_side * blocks_per_side * verts_per_edge * verts_per_edge
+    blocks_per_side * blocks_per_side * verts_per_edge * verts_per_edge + LOD_SKIRT_VERTEX_ALLOWANCE
 };
 const LOD_RING_INDEX_FOOTPRINT: usize = {
     let blocks_per_side = 2 * LOD_RADIUS_BLOCKS as usize + 1;
     let quads_per_edge = LOD_BLOCK_CELLS as usize * SAMPLES_PER_CELL;
     blocks_per_side * blocks_per_side * quads_per_edge * quads_per_edge * 6
+        + LOD_SKIRT_INDEX_ALLOWANCE
 };
 const _: () = assert!(
     LOD_RING_VERTEX_FOOTPRINT < byroredux_renderer::mesh::VERTEX_POOL_SOFT_CAP,
@@ -838,6 +845,59 @@ fn synth_base_texture_path(
 /// missing, landscape-less, or actually resident at full detail — or the
 /// upload fails. On success returns the [`LodBlock`] for streaming tracking.
 #[allow(clippy::too_many_arguments)]
+/// How far a skirt hangs below the LOD edge it hides a seam for, world units.
+/// Terrain's deviation from a straight 1 024-unit chord between two LOD samples
+/// is tens to a few hundred units on rugged ground; 640 covers that with room.
+const LOD_SKIRT_DROP: f32 = 640.0;
+
+/// Hang a vertical wall under each `(a, b, toward_hole)` edge: `a` and `b` index
+/// the top vertices (already in `vertices`), `toward_hole` is the horizontal
+/// direction, in renderer axes, from the LOD quad into the full-detail cell the
+/// edge borders.
+///
+/// The LOD block shares its corner vertices with the full-detail cells, but
+/// between them (1 024 units apart) the full-detail edge follows the real
+/// terrain every 128 units while the LOD edge is a straight chord. Where the
+/// chord sits above the true edge the LOD quad has no front face toward the
+/// player and sky shows through the join — a pale-blue ribbon along the
+/// boundary, most visible seen through water. The wall is wound to face the
+/// hole side (the viewer's side), so it fills that gap without being a surface
+/// anything can stand on.
+fn append_lod_skirts(
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+    edges: &[(usize, usize, [f32; 3])],
+) {
+    for &(a, b, toward_hole) in edges {
+        let (va, vb) = (vertices[a].clone(), vertices[b].clone());
+        let mut down_a = va.clone();
+        let mut down_b = vb.clone();
+        down_a.position[1] -= LOD_SKIRT_DROP;
+        down_b.position[1] -= LOD_SKIRT_DROP;
+        let ia = vertices.len() as u32;
+        let ib = ia + 1;
+        let (pa, pb, pd) = (va.position, vb.position, down_a.position);
+        vertices.push(down_a);
+        vertices.push(down_b);
+        // Face normal of (a, b, a_down) under the terrain's counter-clockwise
+        // front-face convention; flip the wall if it faces away from the hole.
+        let u = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let v = [pd[0] - pa[0], pd[1] - pa[1], pd[2] - pa[2]];
+        let n = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        let faces_hole = n[0] * toward_hole[0] + n[1] * toward_hole[1] + n[2] * toward_hole[2] >= 0.0;
+        let (a, b) = (a as u32, b as u32);
+        if faces_hole {
+            indices.extend_from_slice(&[a, b, ia, b, ib, ia]);
+        } else {
+            indices.extend_from_slice(&[a, ia, b, b, ia, ib]);
+        }
+    }
+}
+
 fn spawn_lod_block(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -935,6 +995,7 @@ fn spawn_lod_block(
     // vertices belonged to both representations, producing a bright moat.
     // Same CW winding as full-detail terrain (the Z negate flips to CCW).
     let mut indices: Vec<u32> = Vec::with_capacity((n - 1) * (n - 1) * 6);
+    let mut skirt_edges: Vec<(usize, usize, [f32; 3])> = Vec::new();
     for r in 0..(n - 1) {
         let (cdy, _) = sample_to_cell(r, k as usize);
         for c in 0..(n - 1) {
@@ -962,12 +1023,38 @@ fn spawn_lod_block(
             indices.push(tr as u32);
             indices.push(br as u32);
             indices.push(bl as u32);
+            // A skirt under every edge that borders a resident full-detail
+            // cell (the neighbour may be in the next block, so go by cell).
+            let spc = SAMPLES_PER_CELL as i32;
+            let neighbour_is_full_detail = |dr: i32, dc: i32| {
+                let (nr, nc) = (r as i32 + dr, c as i32 + dc);
+                cell_is_full_detail(
+                    bx0 + nc.div_euclid(spc),
+                    by0 + nr.div_euclid(spc),
+                    resident_full_cells,
+                )
+            };
+            // Renderer axes: +x is east; LOD row r grows north (world +y), which
+            // is renderer -z.
+            if neighbour_is_full_detail(-1, 0) {
+                skirt_edges.push((tl, tr, [0.0, 0.0, 1.0]));
+            }
+            if neighbour_is_full_detail(1, 0) {
+                skirt_edges.push((bl, br, [0.0, 0.0, -1.0]));
+            }
+            if neighbour_is_full_detail(0, -1) {
+                skirt_edges.push((tl, bl, [-1.0, 0.0, 0.0]));
+            }
+            if neighbour_is_full_detail(0, 1) {
+                skirt_edges.push((tr, br, [1.0, 0.0, 0.0]));
+            }
         }
     }
 
     if indices.is_empty() {
         return None; // entirely holes — nothing to draw
     }
+    append_lod_skirts(&mut vertices, &mut indices, &skirt_edges);
 
     ctx.allocator.as_ref()?;
 
@@ -1323,6 +1410,47 @@ mod tests {
         // Normal: old inline literal was `[nx, nz, -ny]`.
         let (nx, ny, nz) = (0.25_f32, 0.5_f32, -0.75_f32);
         assert_eq!(zup_to_yup_pos([nx, ny, nz]), [nx, nz, -ny]);
+    }
+
+    /// Skirts hang the drop below each bordering edge and face the hole side
+    /// whichever way the edge runs.
+    #[test]
+    fn lod_skirts_hang_below_the_edge_and_face_the_hole() {
+        let top = |x: f32, z: f32| Vertex::new([x, 100.0, z], [1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0]);
+        let face_normal = |vertices: &[Vertex], tri: &[u32]| {
+            let p = |i: u32| vertices[i as usize].position;
+            let (a, b, c) = (p(tri[0]), p(tri[1]), p(tri[2]));
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ]
+        };
+        // The same physical edge given both ways round: the wall must face the
+        // hole (+Z here) either way.
+        for (a, b) in [(0, 1), (1, 0)] {
+            let mut vertices = vec![top(0.0, 0.0), top(1024.0, 0.0)];
+            let mut indices = Vec::new();
+            append_lod_skirts(&mut vertices, &mut indices, &[(a, b, [0.0, 0.0, 1.0])]);
+            assert_eq!(vertices.len(), 4, "two skirt vertices");
+            assert_eq!(indices.len(), 6, "one wall of two triangles");
+            for new in &vertices[2..] {
+                assert_eq!(new.position[1], 100.0 - LOD_SKIRT_DROP);
+            }
+            for tri in indices.chunks(3) {
+                let n = face_normal(&vertices, tri);
+                assert!(n[2] > 0.0, "wall must face the hole: {n:?}");
+            }
+        }
+        // And toward -X for a north-south edge.
+        let mut vertices = vec![top(0.0, 0.0), top(0.0, -1024.0)];
+        let mut indices = Vec::new();
+        append_lod_skirts(&mut vertices, &mut indices, &[(0, 1, [-1.0, 0.0, 0.0])]);
+        for tri in indices.chunks(3) {
+            assert!(face_normal(&vertices, tri)[0] < 0.0);
+        }
     }
 
     #[test]

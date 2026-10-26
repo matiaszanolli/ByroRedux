@@ -647,6 +647,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("WaterPlane", "static per-cell water geometry+material set once from XCWT/WATR at cell load, no runtime mutator"),
         ("WaterVolume", "static per-cell AABB set once from XCLW/cell floor data at cell load, no runtime mutator"),
         ("WaterSurfaceMesh", "static world-space triangles of a placed mesh-water surface, rebuilt from the NIF at spawn alongside its WaterVolume, no runtime mutator"),
+        ("WaterBedField", "static grid of water depth and shoreward direction sampled from the cell's LAND heightfield at plane spawn (the same samples baked into the mesh vertex colours), no runtime mutator"),
         ("WaterLodInfo", "diagnostic-only worldspace LOD provenance rebuilt with the render-only LOD entity and removed on unload"),
         ("WaterNoiseMapHandles", "GPU bindless noise-texture handles rebuilt from WATR NAM2/NAM3/NAM4 paths at cell load; released on unload and never save-relevant"),
         ("WindField", "EXAL-derived (#2369): re-translated from the live WeatherDataRes wind byte at every worldspace entry; the saved WTHR state it derives from is what carries forward"),

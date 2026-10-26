@@ -858,8 +858,20 @@ fn kf_body_piece_masks_follow_each_games_hand_layout() {
     );
     assert_eq!(
         crate::npc_spawn::humanoid_body_path_icon_index(GameKind::Fallout3NV, r"x\lefthand.nif"),
-        None,
-        "FO3/FNV body skins ride the head-section table, not body ICONs"
+        Some(1),
+        "FO3/FNV author the body-section ICON run under NAM1: 0 upper, 1 left hand, 2 right hand (#6090)"
+    );
+    assert_eq!(
+        crate::npc_spawn::humanoid_body_path_icon_index(GameKind::Fallout3NV, r"x\childupperbody.nif"),
+        Some(0)
+    );
+    assert_eq!(
+        crate::npc_spawn::humanoid_body_path_icon_index(GameKind::Fallout3NV, r"x\righthand.nif"),
+        Some(2)
+    );
+    assert_eq!(
+        crate::npc_spawn::humanoid_body_path_icon_index(GameKind::Fallout3NV, r"x\headhuman.nif"),
+        None
     );
 }
 

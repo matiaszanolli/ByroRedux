@@ -730,6 +730,7 @@ impl PhysicsWorld {
                 body: parent,
                 body_type,
                 is_sensor: c.is_sensor(),
+                shape: shape_label(c.shape().shape_type()),
                 aabb_min: [aabb.mins.x, aabb.mins.y, aabb.mins.z],
                 aabb_max: [aabb.maxs.x, aabb.maxs.y, aabb.maxs.z],
             });
@@ -853,4 +854,30 @@ impl PhysicsWorld {
 pub(super) fn character_capsule(half_height: f32, radius: f32) -> rapier3d::parry::shape::Capsule {
     use crate::convert::clamp_shape_extent;
     rapier3d::parry::shape::Capsule::new_y(clamp_shape_extent(half_height), clamp_shape_extent(radius))
+}
+
+/// A stable label for a rapier shape kind, for census output.
+fn shape_label(kind: rapier3d::parry::shape::ShapeType) -> &'static str {
+    use rapier3d::parry::shape::ShapeType;
+    match kind {
+        ShapeType::Ball => "Ball",
+        ShapeType::Cuboid => "Cuboid",
+        ShapeType::Capsule => "Capsule",
+        ShapeType::Segment => "Segment",
+        ShapeType::Triangle => "Triangle",
+        ShapeType::TriMesh => "TriMesh",
+        ShapeType::Polyline => "Polyline",
+        ShapeType::HeightField => "HeightField",
+        ShapeType::Compound => "Compound",
+        ShapeType::ConvexPolyhedron => "ConvexPolyhedron",
+        ShapeType::Cylinder => "Cylinder",
+        ShapeType::Cone => "Cone",
+        ShapeType::RoundCuboid
+        | ShapeType::RoundTriangle
+        | ShapeType::RoundCylinder
+        | ShapeType::RoundCone
+        | ShapeType::RoundConvexPolyhedron => "Rounded",
+        ShapeType::HalfSpace => "HalfSpace",
+        _ => "Other",
+    }
 }

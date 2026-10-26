@@ -568,6 +568,211 @@ Verified on the Cornell glass scene (pools survive the gate); pinned by
 `glass_caustic_deposits_are_gated_on_landing_pixel_visibility` in
 `vulkan/caustic.rs`.
 
+**River water has no procedural flow-streak foam (2026-10-26).** The
+0.25-weight `foamFlowStreaks` term on `WATER_RIVER` painted fine diagonal
+bands over every calm river plane (Skyrim White River 5,-10 and the FO4
+Commonwealth shore in the `m-exteriors.sh water` captures); with the term
+removed the same poses show the river bed through clean water, and FNV is
+unchanged. A river's whitewater is authored as the `fxrapids*` / `fxcreek*`
+effect meshes, so the shader term only double-counted it. Rapids and
+waterfalls keep their streaks (no defect measured there). Method: the
+`water_term` oracle's green channel is the foam mask but is too faint to
+read by eye; the decisive check was an A/B capture of the same fixture pose
+with the term compiled out.
+
+**The "blocky sky-cube reflection" on Oblivion was the noise hash, not the cube
+(2026-10-26).** The cloud reflection on procedural-normal water showed a grid of
+hard flat diamond tiles. A 512² sky-cube bake (the cube is 128²) left the tile
+grid on exactly the same screen positions, so the cube resolution was
+exonerated; the tiles were in the `water_normal` oracle itself. The cause was
+`hash21`'s float `fract(p * 443.897)`: the finer octaves' lattice coordinates
+reach the thousands, the product passes 2^21 and float32 keeps almost no
+fractional bits, so the hash collapsed to a few levels. `hash21` is now an
+integer PCG hash (`pcgHash`), the tile grid is gone on Oblivion, FO3 and FNV
+(the three procedural-normal games), and
+`water_noise_hash_is_integer_exact_and_rivers_have_no_streak_foam` pins it. The
+white crescent noted alongside it is a separate, still-open item.
+
+**Terrain through water is not a ray-hit defect (2026-10-26).** The "refraction
+hits shade terrain with the base BTXT only" item (`ray_hit.glsl` deliberately
+does not port splat blending) is real in the code but has no visible effect at
+any of the five water fixtures: a probe that paints every LAND hit in
+`traceWaterRay` magenta found 0 of 921 600 pixels on Skyrim's White River pose
+and 15 on FNV Lake Mead, so the lake bed seen through the surface is the raster
+scene, not a ray hit. A splat-blending port into the water ray (the blend
+helpers are shared: `byroTerrainSplatAlbedo`, `byroTerrainHeightBlend`, the
+vertex lanes at `VERTEX_SPLAT0/1_OFFSET_FLOATS`) was written and reverted
+unshipped because it could not be exercised on shipped content. Revisit it if a
+pose is found where a water ray does land on terrain (a reflection of far land
+at a grazing angle is the likely one).
+
+**Calm water drifts with the wind, and the sky layers are capped (2026-10-26).**
+User report: water and clouds move far faster than they would in life. Measured
+with the new `pattern_speed` line of `water.dump` (the uploaded scroll over each
+layer's UV-per-unit scale, 70 BU = 1 m): FNV/FO3/Oblivion lakes 0.1-0.6 m/s,
+Skyrim's calm lake 1.2 m/s, Fallout 4's distant water 3.3 m/s on layer A,
+whatever the weather was doing (the scroll was authored UV/s plus a flow term
+calibrated to the default *look*, not to a world speed, and `water.vert`'s wave
+rate follows the same scroll magnitude). A plane flagged `WaterMaterial::
+wind_driven` — set at the translate boundary for `Calm` water and for a `River`
+whose current is at or below `WaterFlow::SPEED_MIN` (placeholder motion on
+still water: Skyrim's `DefaultWater` lakes, the unauthored defaults) — now keeps
+its authored scroll *heading* but takes its *rate* from the weather wind,
+`WATER_CALM_DRIFT_MIN/MAX_BU_PER_S` (2.1 to 26.25 BU/s, 3 to 37.5 cm/s) across
+the wind field's range (first set at 1.4 to 17.5; the user asked for 50% more
+speed after seeing it). Every lake fixture reads 0.03-0.08 m/s at the fixture
+wind; rivers with an authored current keep their flow-driven scroll.
+Both the renderer and the CPU crest sampler read `wave_scrolls`, so buoyancy
+follows the slower crest. The numbers are a calibration chosen with the user,
+not an authored value; the constants are in `components/water.rs`. The textured
+cloud layers (`sky_upper_cloud_layer`: `uv = shell_uv * tile_scale + scroll`,
+`shell_uv` in units of the 9 km shell) travelled `scroll / tile_scale * 9000`
+m/s, ~1 700 m/s for Oblivion's layer 0 (tile 0.075) on paper;
+`cap_cloud_layer_drift` now bounds every layer to 20 m/s. The volumetric deck's
+own wind advection is `0.25 m/s` per unit of normalised wind and was not
+touched. Measured sky drift on Skyrim before the cap was ~0.5 deg/s.
+
+**Waves, shores and river motion share one bed field (2026-10-26).** User
+direction: "basic motion physics for rivers, and waves and shores for lakes and
+oceans, for all games". Both need the depth of water over the bed and the way
+the shore lies, and the LAND heightfield under the plane is the only authored
+description of the bed, so it is sampled once. `cell_loader/water.rs::
+bed_field_from_land` builds a `WaterBedField` (core: signed surface-minus-bed
+depth on LAND's 33x33 lattice, bilinear `sample` returning depth and the unit
+shoreward direction, clamped after interpolation so the waterline is exact);
+the same samples are baked into each mesh vertex's colour (`r` depth over
+`WATER_BED_DEPTH_MAX`, `gb` shoreward direction, `a` the sentinel
+`WATER_BED_VALID_ALPHA` = 0.5004, not a k/255 value so no authored 8-bit alpha
+on a placed water mesh can be mistaken for bed data) and attached to the plane
+entity as the component physics reads. Interior, LOD and placed-mesh water
+carry no bed and take the open-water path.
+
+*Waves.* Wind-driven water (`WaterMaterial::wind_driven`, calm water) now
+carries a travelling swell (`WaterSwell`, core): wavelength 1000 BU (14 m),
+speed from the deep-water dispersion `w = sqrt(g k)` (a ~4 m/s crest), height
+from the weather wind (1.5 BU in dead calm to 28 BU at the wind field's
+maximum), heading the wind's. Over a rising bed it shoals (Green's law,
+`(900/depth)^(1/4)`, gain capped at 1.6), turns toward the shore (refraction,
+below 900 BU of depth) and is capped by breaking at 0.39 of the depth, which
+also takes it to zero at the waterline so it cannot lift the surface off the
+shore it meets. `water.vert` and `authored_wave_height_over_bed` (physics, the
+CPU crest sampler the camera, the player and buoyancy all read) evaluate the
+same law from the same constants; the camera and player sites now pass the
+plane's bed field. Breakers: `water.frag` lays foam in the shallow band at the
+shore, brightest as swell crests pass, scaled by the swell's height.
+
+*Rivers.* Over the bed, a river's pattern no longer moves as one vector: it
+runs faster over the deep middle than the shallows (`WATER_RIVER_SPEED_MIN`
+0.35 at the waterline to the plane's speed at `WATER_RIVER_DEPTH_FULL`) and,
+near the banks, turns toward the bank-parallel direction (keeping the sign of
+the authored flow), so the visible current bends with the channel. The same rule is
+`WaterFlow::over_bed` in core: the physics current on floating bodies
+(`apply_buoyancy`) and the `WaterContact` it publishes use it at the body's
+position, so clutter in a river follows the visible bank turn and slows over
+the shallows (`river_current_on_a_floating_body_follows_the_bed`).
+
+*Verified:* the bed data arrives intact on the Skyrim river (depth and
+direction render as smooth continuous fields over the water, dry ground
+excluded); a gale-height swell on Lake Mead rolls and keeps the shoreline
+clean; Oblivion's island beach shows swell ridges parallel to the shore. The
+default wind is mild, so the everyday swell is a few world units.
+
+**The pale-blue slivers on Oblivion and FO4 water were a terrain-LOD crack, not
+water (2026-10-26).** Thin sky-coloured ribbons crossed the water in the Oblivion
+and FO4 surface captures. They were absent from the `water_term` and
+`water_normal` oracle views, survived removing the distant-water plane, and
+survived hiding all water: the seabed itself had a gap along the join between
+full-detail terrain and the synthetic terrain-LOD ring, where the LOD block's
+straight 1 024-unit chord sits above the true full-detail edge (which follows
+the terrain every 128 units) and no front face covers the join. The water,
+semi-transparent over the sea floor, simply made it conspicuous.
+`append_lod_skirts` (`cell_loader/terrain_lod.rs`) now hangs a vertical wall
+640 units under every LOD quad edge that borders a resident full-detail cell,
+wound to face the hole side; the ribbon is gone from both captures. Not WATAL
+code, found through WATAL captures.
+
+**The ruled line along Oblivion's island bases is gone (2026-10-26).** The older
+capture showed a straight horizontal line where an island met the water — the
+exterior water mesh's coarse chord cutting the shore. Re-captured on the same
+cell (Tamriel 13,7) at sea level facing both shores after the 128-unit-lattice
+water mesh (`4a56fd9c7`) and the LOD skirts: both island bases meet the water
+along the terrain's own contour with breaker foam, no ruled line.
+
+**The white strip along lake shores was mostly the water-side caustic deposit
+(2026-10-26).** Measured on FO3's Potomac shore (cell 14,-24): with the deposit the
+band reads 240-247; with it disabled, 106-163; foam off and sun glint off changed
+nothing. `water.frag` deposits `sunIntensity x NdotSun x travelFall` at each water
+fragment's floor-hit pixel, and `travelFall` is 1 at zero depth, so at the
+waterline a caustic that cannot focus yet still added a whole extra sun on a bed
+that already receives it. The deposit now builds up over the first
+`WATER_CAUSTIC_SHALLOW_FADE_BU` (96) of floor distance (`shallowFade`). FO3's band
+became a thin surf fringe, Skyrim's shore merges into the grass, and the pale rock
+shelf there reads as rock. Before/after: `~/Downloads/byro-watal-godrays/fo3_shore_before_after.png`.
+The foam and coverage work below was done first and still applies.
+
+*Resolved (2026-10-26):* a one-pixel-wide white diagonal streak on the Skyrim W1
+shore view (camera `-33024 1060 64640`, yaw 0, pitch -6) was the caustic deposit
+piling up on an edge-on floor face. Bisect: multiplying the deposit by one bit of
+the floor hit's instance index at a time kept the streak for bits 0-6 and lost it
+for bits 7-13, so every deposit on the streak hit instance 127 (a bit-count
+reading of the crops: `fx:maxima` saturates at 1 for any glint, so the first run's
+numbers said nothing and the crops were compared by eye). That instance is the
+distant terrain LOD tile `tamriel.4.-12.-12`; its skirts are not involved
+(disabling them left the streak). Splitting deposits on the floor face's facing
+to the camera: only faces with `|dot(n, toCamera)| < 0.25` draw it. The deposit
+splats at the floor hit's SCREEN pixel, so a face seen edge-on collects many water
+pixels into a few screen pixels. Fix: weight the deposit by how foreshortened the
+floor face is against the water plane, `smoothstep(WATER_CAUSTIC_FACING_MIN 0.5,
+WATER_CAUSTIC_FACING_FULL 1.0, cosFloor / cosWater)` (a floor parallel to the
+surface is 1). The ratio alone (clamped, no smoothstep) only dimmed it; threshold
+sweeps put the streak at ratios 0.5-0.7. The streak is gone on Skyrim W1, the
+FO3 lake lost a thin white line along its far shoreline, FNV lake is unchanged.
+The 0.5 / 1.0 pair is chosen from that sweep, not derived: a derivative-based
+screen Jacobian would be exact but needs uniform control flow around the floor
+ray. Earlier bisects (source-region, 1/4 and 1/16 scaling, composite cap)
+are consistent with this: it needs a fan of sources, not a fixed-point wrap.
+
+**Lake shores faded to a solid white strip instead of merging with the land
+(2026-10-26).** Two shore foam terms (the contact ray and the breaker band) both
+reached full strength at zero depth and were blended in as opaque white, over
+water that stayed fully opaque to the waterline. Now the water's coverage fades
+to nothing over the last `WATER_SHORE_FADE_DEPTH_BU` (20) of depth — by the baked
+LAND depth and, for statics standing in the shallows, by the traced refraction
+distance — so the terrain shows through at the waterline; and shore foam is
+carved into lace by two scales of value noise and capped at
+`WATER_SHORE_FOAM_MAX` (0.45), leaving a thin broken fringe offshore of the
+waterline. Other foam sources (rapids streaks, crests) are unchanged. Before and
+after on the Skyrim W1 shore: `~/Downloads/byro-watal-godrays/lake_shore_before_after.png`.
+(Superseded in part by the caustic finding above: much of the pale shelf was the
+caustic deposit too.) The pale rock shelf in the Skyrim W1 foreground is not foam (foam reads 5-25 %
+there, coverage 1, the refraction hit is traced): it is the placed
+`MountainTrim02RiverbedEdge01` landscape slab, whose texture is pale. Lighting the
+refraction hit like the main shader does (`reflectionHitIrradiance`, albedo x
+(irradiance / pi + ambient)) compiled and ran but changed nothing visible there
+and cost about 0.6 ms (7.1 vs 6.5 ms `main_render` on that view), so it was not
+kept; `traceWaterRay` still returns bare albedo + emission for its hits. Checked
+on Skyrim (lake), Oblivion (sea shores) and FNV (Lake Mead); FO3 was not.
+
+**Hairline cracks along cell borders at grazing angles (2026-10-26).** Thin
+light lines ran across open water along the border between two cells' water
+meshes. Each cell bakes its own shoreward direction from its own side of the
+edge (the bilinear bed gradient picks a different quad on each side), and the
+swell turns toward that direction, so the shared border vertex was displaced
+differently by the two meshes wherever the bed is shallower than the
+refraction depth. LAND edge heights match exactly (checked over 81 Skyrim
+cell pairs), so only the direction disagreed. Vertices on the plane's edge
+now carry no shoreward direction (`BORDER_EPSILON` in `cell_loader/water.rs`);
+`neighbouring_cells_bake_identical_colour_on_a_shared_edge` fails without it.
+The water-normal view at the same pose lost the diagonal and the dash row.
+
+**Riverwood bank wedge was a VFX sheet, not water (2026-10-26).** The character
+capsule stuck on the Riverwood riverbank because the missing-collision fallback
+built a solid `Fixed TriMesh` from `Effects\FXrapidsBig01.nif` (two alpha-blended
+`BSEffectShaderProperty` quads, no bhk). Effect-shader meshes are now excluded
+(`render_geometry_can_collide`, `cell_loader/spawn.rs`); the sheets no longer
+appear in `phys.census`, and the capsule wades, swims and walks out in all four
+directions from three bank positions along the river.
+
 **Regression guard, not a remaining fragility:** the procedural-noise hash
 bands past ~176k world units (#1502) are fixed — `sampleScrollingNormal` and
 `foamFlowStreaks` both subtract `originOffset` before hashing, rebased twice
@@ -919,15 +1124,20 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    Current force matches velocity along the canonical flow axis instead of adding
    an unbounded constant acceleration. Water remains a trigger volume, not a
    solid Rapier plane, so entering it cannot block bodies or the character.
-   W0's real-data waterline GPU smoke is closed. Remaining Phase 2 scope is a
-   real-data dynamic-body contact/current gate. **Player traversal closed
+   W0's real-data waterline GPU smoke is closed, and the real-data
+   dynamic-body gate (`w2-dynamic-water.sh`, 2026-10-26) runs on FNV's Lake Mead:
+   two authored clutter bodies reach the contact sink, float at a submerged
+   fraction of 0.6 and hold it; with the swell they ride a moving surface and stay awake, so the gate asserts that only the floats are ever awake, not that the world reaches zero. The *current* half of that
+   gate is not observable on shipped content: none of the five fixtures has an
+   authored dynamic body in a flowing plane (`water.contacts` at each fixture:
+   FNV 2 bodies in calm water, FO3 1, Oblivion/Skyrim/FO4 0). **Player traversal closed
    2026-09-09** — see the W1 block in §2 and the
    `w1-water-traversal.sh` gate in §8. The existing
    dry→wet one-shot wake and settled-float sleep
    discipline remains load-bearing: water must never pin the exterior physics
    world awake. Test gate for body physics is closed (rise, settle, downstream
-   drift, calm-water quiescence); the remaining open real-data gate is the
-   dynamic-body contact/current one.
+   drift, calm-water quiescence); the real-data dynamic-body gate is
+   `w2-dynamic-water.sh` (contact and float; current unobservable).
 
 4. **Phase 3 — RENDER-FIDELITY + GAMEPLAY POLISH — OPEN (two items left).**
    The indexed per-frame water UBO, authored noise layers, bounded sunlight
@@ -938,8 +1148,29 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    linear velocity and `NAM5` flow noise drive Rapids/River, `material_name`
    drives Lava, and the EDID name is only the fallback signal in
    `classify_water_kind_and_flow` — the "replace the heuristic" item is
-   done) are all live. Remaining: underwater god-rays via the M55
-   volumetrics gated on `WaterContact`, and the §2 remainder (residual
+   done) are all live. Underwater god-rays (2026-10-26): `composite.frag`
+   `underwaterGodRays` marches 24 jittered steps down the view ray through the
+   water column. Each sample refracts the sun (Snell, n = 1.333), finds where its
+   sun ray crossed the surface, takes a ridged two-scale value-noise focusing
+   pattern there (the wave crests acting as lenses), and attenuates along the sun
+   path and the view path with the authored fog span (`k = 2 / span`, matching
+   `underwater_extinction`). The result is light columns that converge in
+   perspective and follow the refracted sun direction — the screen-space streak
+   fan it replaces could not. The camera's depth below the surface and the fog
+   span reach the shader through `UnderwaterView.surface` into the reserved
+   `caustic_flags.zw` lanes. Scene occluders block the light through a
+   depth-buffer contact test (`underwaterSunVisibility`: three taps up the refracted
+   sun ray to the surface and three along the unrefracted ray above it, blocked
+   when the scene surface at the tap's pixel lies 6–160 BU in front of it) — a
+   screen-space term, so off-screen geometry casts nothing, and there is no TLAS
+   in composite, so it is not a trace. *Shown in a capture:* under Riften's docks
+   (Skyrim, Tamriel 41,-24, camera `168200 10380 96496` looking up) the same pose
+   with the test disabled floods the haze across the area under the boardwalk;
+   enabled, the light is confined to the opening between the beams.
+   Captures: `~/Downloads/byro-watal-godrays/`. Taps that only reached the water
+   surface (the first version) could not see overhead docks — the above-surface
+   taps are what make it work. The focusing pattern is procedural, not the live wave field; its scales (70 /
+   37 BU), sharpness (ridge^6) and the 0.12 energy factor are chosen values. Remaining: the §2 remainder (residual
    unnamed Skyrim DNAM tail bytes — xEdit dev-4.1.6 marks every still-
    unread offset unnamed, so nothing meaningful is left to decode there).
    Each sub-item independently shippable.

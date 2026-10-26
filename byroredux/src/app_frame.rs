@@ -25,7 +25,7 @@ use winit::event_loop::ActiveEventLoop;
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::streaming;
-use crate::systems::compute_underwater_params;
+use crate::systems::compute_underwater_frame;
 use crate::App;
 use crate::{
     apply_debug_ui_outputs, build_debug_ui_snapshot, build_interaction_prompt, setting_bool,
@@ -696,7 +696,7 @@ impl App {
                 frame_time_delta_ms,
                 timings: frame_timings.as_mut(),
                 water_commands: &self.water_commands,
-                underwater: compute_underwater_params(&self.world),
+                underwater: compute_underwater_frame(&self.world),
                 image_space_modifier,
                 pose_dirty: self.skin_slot_pool.pose_dirty(),
             });

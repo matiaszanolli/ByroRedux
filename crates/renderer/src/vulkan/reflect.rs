@@ -1024,7 +1024,11 @@ mod tests {
     /// and mean-depth gates: 97, measured by this test's own counter on the
     /// recompiled module. The stratiform regime (column coverage mix, overcast
     /// storm blend) and the authored-cloud-colour layer loop then bring it to 100,
-    /// measured the same way. Pins the
+    /// measured the same way. The underwater god-ray march (surface-entry
+    /// early-outs, the 24-step loop, its surface break and the two noise
+    /// lattice mixes) replaced the screen-space streak loop (106), and the depth-buffer sun
+    /// visibility taps add seven (113), and the above-surface sun-ray taps one more
+    /// (114). Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
@@ -1033,8 +1037,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 100,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 100 — \
+            count, 114,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 114 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \

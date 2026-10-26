@@ -27,13 +27,14 @@
 //! Returns the number of water-plane entities spawned (0 or 1 today).
 
 use byroredux_core::ecs::components::water::{
-    WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+    WaterBedField, WaterBedSample, WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
 };
 use byroredux_core::ecs::components::ParticleEmitter;
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{EntityId, GlobalTransform, MeshHandle, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
+use byroredux_renderer::shader_constants::{WATER_BED_DEPTH_MAX, WATER_BED_VALID_ALPHA};
 use byroredux_renderer::{SceneMeshUpload, Vertex, VulkanContext};
 use std::collections::HashMap;
 
@@ -162,16 +163,101 @@ where
     (center, half_extent)
 }
 
+/// LAND is 32 segments (33 vertices) per exterior cell side.
+const LAND_BED_SEGMENTS: usize = 32;
+/// How close to the plane's `±1` edge a normalized vertex counts as on it.
+const BORDER_EPSILON: f32 = 1.0e-4;
+
+/// The bed under a water plane, sampled from the cell's LAND heightfield.
+///
+/// `origin_xz` is the renderer X/Z of the field's minimum corner and
+/// `half_extent` the plane's half width, so a plane spawned at `position` with
+/// `half_extent` passes `[position.x - half_extent, position.z - half_extent]`.
+/// LAND rows run south-first and the renderer's Z is `-world_y`, so LAND row 0
+/// is the field's *last* row (largest Z); the same orientation
+/// `build_full_detail_water_grid` samples the wet mask with.
+///
+/// The one place the bed is derived: the mesh bake (`bed_vertex_color`) and the
+/// physics component read the same field, so the visible swell and the
+/// buoyancy crest agree about how deep the water is.
+pub(crate) fn bed_field_from_land(
+    land: &esm::cell::LandscapeData,
+    water_height_zup: f32,
+    origin_xz: [f32; 2],
+    half_extent: f32,
+) -> Option<WaterBedField> {
+    let side = LAND_BED_SEGMENTS + 1;
+    if land.heights.len() < side * side || !(half_extent.is_finite() && half_extent > 0.0) {
+        return None;
+    }
+    let mut depth = Vec::with_capacity(side * side);
+    for row in 0..side {
+        let land_row = LAND_BED_SEGMENTS - row;
+        for col in 0..side {
+            // Signed: negative where the bed is above the surface, so the
+            // field interpolates across the waterline correctly.
+            depth.push(water_height_zup - land.heights[land_row * side + col]);
+        }
+    }
+    WaterBedField::new(
+        origin_xz,
+        2.0 * half_extent / LAND_BED_SEGMENTS as f32,
+        side,
+        depth,
+    )
+}
+
+/// A water vertex's colour: the bed baked for `water.vert` / `water.frag`
+/// (`r` = depth / `WATER_BED_DEPTH_MAX`, `gb` = the shoreward direction mapped
+/// to 0..1, `a` = `WATER_BED_VALID_ALPHA`), or the opaque white of a vertex
+/// that carries none (interior water, no LAND under it).
+pub(crate) fn bed_vertex_color(sample: Option<WaterBedSample>) -> [f32; 4] {
+    match sample {
+        Some(sample) => [
+            (sample.depth / WATER_BED_DEPTH_MAX).clamp(0.0, 1.0),
+            sample.uphill[0] * 0.5 + 0.5,
+            sample.uphill[1] * 0.5 + 0.5,
+            WATER_BED_VALID_ALPHA,
+        ],
+        None => [1.0, 1.0, 1.0, 1.0],
+    }
+}
+
 fn build_full_detail_water_grid(
     half_extent: f32,
     terrain: Option<&esm::cell::LandscapeData>,
     water_height_zup: f32,
 ) -> (Vec<Vertex>, Vec<u32>) {
-    let segments = FULL_DETAIL_WATER_GRID_SEGMENTS;
+    // Over LAND the mesh follows LAND's own lattice (128 units): the waterline
+    // is clipped against the same heights the terrain mesh is built from, and
+    // at the old 256-unit grid it cut across every sand ridge and rock between
+    // two samples as one straight edge (visible as a stepped, ruled shoreline
+    // against an island). Without LAND (interiors) the coarse grid is enough.
+    let segments = if terrain.is_some() {
+        LAND_BED_SEGMENTS
+    } else {
+        FULL_DETAIL_WATER_GRID_SEGMENTS
+    };
     let side = segments + 1;
+    // The bed in the plane's own normalized coordinates (the mesh is a unit
+    // square scaled by `half_extent`), baked into each vertex's colour.
+    let bed = terrain.and_then(|land| bed_field_from_land(land, water_height_zup, [-1.0, -1.0], 1.0));
     let vertex = |x: f32, z: f32| Vertex {
         position: [x, 0.0, z],
-        color: [1.0, 1.0, 1.0, 1.0],
+        color: bed_vertex_color(bed.as_ref().and_then(|field| {
+            let mut sample = field.sample(x, z)?;
+            // A vertex on the plane's edge is shared with the neighbouring
+            // cell's mesh, and each cell derives its shoreward direction from
+            // its own side of the edge, so the two disagree. The swell turns
+            // toward that direction, which would displace the shared vertex
+            // differently on each side and open a hairline crack along the
+            // cell border. The depth is the same on both sides (LAND edges
+            // match); only the direction is dropped there.
+            if x.abs() >= 1.0 - BORDER_EPSILON || z.abs() >= 1.0 - BORDER_EPSILON {
+                sample.uphill = [0.0, 0.0];
+            }
+            Some(sample)
+        })),
         normal: [0.0, 1.0, 0.0],
         // UVs are world-distance based so adjacent cells keep the same
         // normal-map derivative and wave phase.
@@ -529,6 +615,19 @@ pub(super) fn spawn_water_plane(
     if let Some(flow) = flow {
         world.insert(entity, flow);
     }
+    // The bed under the plane, for physics: the same field the mesh vertices
+    // were baked from, in world coordinates.
+    let bed_field = terrain.and_then(|land| {
+        bed_field_from_land(
+            land,
+            xclw_height,
+            [position.x - half_extent, position.z - half_extent],
+            half_extent,
+        )
+    });
+    if let Some(field) = &bed_field {
+        world.insert(entity, field.clone());
+    }
     // Volume extends from the surface down to a per-mode floor (#6135: the
     // caller's `interior` flag decides it, not the plane's size).
     let volume_depth = water_volume_depth(interior);
@@ -569,6 +668,9 @@ pub(super) fn spawn_water_plane(
         );
         if let Some(flow) = flow {
             world.insert(component_entity, flow);
+        }
+        if let Some(field) = &bed_field {
+            world.insert(component_entity, field.clone());
         }
         world.insert(
             component_entity,
@@ -1845,6 +1947,120 @@ mod tests {
         );
     }
 
+    /// A beach: LAND falls from 200 above the surface at the west edge to 400
+    /// below it at the east edge, so the shore is to the west.
+    fn beach_land() -> esm::cell::LandscapeData {
+        let mut heights = vec![0.0; 33 * 33];
+        for row in 0..33 {
+            for col in 0..33 {
+                heights[row * 33 + col] = 200.0 - col as f32 * (600.0 / 32.0);
+            }
+        }
+        esm::cell::LandscapeData {
+            heights,
+            normals: None,
+            vertex_colors: None,
+            quadrants: Default::default(),
+        }
+    }
+
+    #[test]
+    fn the_mesh_bakes_bed_depth_and_the_shoreward_direction_into_vertex_colour() {
+        let (vertices, _) = build_full_detail_water_grid(2048.0, Some(&beach_land()), 0.0);
+        assert!(!vertices.is_empty());
+        for vertex in &vertices {
+            assert_eq!(vertex.color[3], WATER_BED_VALID_ALPHA, "every wet vertex carries bed data");
+            let on_edge = vertex.position[0].abs() >= 1.0 - BORDER_EPSILON
+                || vertex.position[2].abs() >= 1.0 - BORDER_EPSILON;
+            if on_edge {
+                // Shared with the neighbouring cell's mesh, which would derive
+                // a different direction: dropped so both sides displace the
+                // swell identically and no crack opens along the border.
+                assert!(
+                    (vertex.color[1] - 0.5).abs() < 1.0e-3 && (vertex.color[2] - 0.5).abs() < 1.0e-3,
+                    "an edge vertex carries no shoreward direction, got {:?}",
+                    vertex.color
+                );
+            } else {
+                // The beach rises to the west, so the shoreward direction is -X.
+                assert!(vertex.color[1] < 0.01, "uphill.x -1 -> 0.0, got {:?}", vertex.color);
+                assert!((vertex.color[2] - 0.5).abs() < 1.0e-3, "uphill.z is 0 -> 0.5");
+            }
+            // Depth below the surface is the LAND drop, linear in X:
+            // LAND col = (x + 1) * 16, depth = -(200 - col * 18.75).
+            let col = (vertex.position[0] + 1.0) * 16.0;
+            let want = (col * (600.0 / 32.0) - 200.0).max(0.0);
+            let got = vertex.color[0] * WATER_BED_DEPTH_MAX;
+            assert!(
+                (got - want).abs() < 0.5 || got >= WATER_BED_DEPTH_MAX - 0.5,
+                "x={} depth {got} vs {want}",
+                vertex.position[0]
+            );
+        }
+        // The waterline vertices sit at zero depth.
+        assert!(vertices.iter().any(|v| v.color[0] < 0.01));
+    }
+
+    /// Two neighbouring cells over one continuous beach bake byte-identical
+    /// colours on the vertices they share: the east edge of the west cell and
+    /// the west edge of the east cell.
+    #[test]
+    fn neighbouring_cells_bake_identical_colour_on_a_shared_edge() {
+        let west = beach_land();
+        // The east cell continues the beach: its west column is the west
+        // cell's east column.
+        let mut east = beach_land();
+        for row in 0..33 {
+            for col in 0..33 {
+                // Same shared edge, but the east side tilts along Z as it
+                // leaves it, so its gradient differs from the west cell's.
+                east.heights[row * 33 + col] = west.heights[row * 33 + 32]
+                    - col as f32 * (600.0 / 32.0)
+                    + col as f32 * row as f32 * 3.0;
+            }
+        }
+        let (wv, _) = build_full_detail_water_grid(2048.0, Some(&west), 0.0);
+        let (ev, _) = build_full_detail_water_grid(2048.0, Some(&east), 0.0);
+        let mut shared = 0;
+        for a in wv.iter().filter(|v| v.position[0] >= 1.0 - BORDER_EPSILON) {
+            if let Some(b) = ev.iter().find(|v| {
+                v.position[0] <= -1.0 + BORDER_EPSILON && (v.position[2] - a.position[2]).abs() < 1.0e-6
+            }) {
+                assert_eq!(a.color, b.color, "shared edge vertex at z={}", a.position[2]);
+                shared += 1;
+            }
+        }
+        assert!(shared > 8, "the cells must actually share edge vertices, found {shared}");
+    }
+
+    #[test]
+    fn water_without_land_keeps_the_white_no_bed_colour() {
+        let (vertices, _) = build_full_detail_water_grid(256.0, None, 0.0);
+        assert!(vertices.iter().all(|v| v.color == [1.0, 1.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn the_physics_bed_field_agrees_with_the_baked_vertices() {
+        let land = beach_land();
+        // A plane at world (10_000, -20_000) with half extent 2048.
+        let field = bed_field_from_land(&land, 0.0, [10_000.0 - 2048.0, -20_000.0 - 2048.0], 2048.0)
+            .expect("a LAND tile gives a field");
+        let (vertices, _) = build_full_detail_water_grid(2048.0, Some(&land), 0.0);
+        for vertex in vertices.iter().step_by(7) {
+            let world = (
+                10_000.0 + vertex.position[0] * 2048.0,
+                -20_000.0 + vertex.position[2] * 2048.0,
+            );
+            let sample = field.sample(world.0, world.1).expect("inside the plane");
+            let baked = vertex.color[0] * WATER_BED_DEPTH_MAX;
+            assert!(
+                (sample.depth.min(WATER_BED_DEPTH_MAX) - baked).abs() < 0.5,
+                "physics {} vs mesh {baked}",
+                sample.depth
+            );
+        }
+    }
+
     #[test]
     fn terrain_mask_clips_mixed_cells_at_the_waterline() {
         let mut land = esm::cell::LandscapeData {
@@ -1861,7 +2077,7 @@ mod tests {
         assert!(!indices.is_empty());
         assert!(vertices.iter().any(|vertex| {
             (vertex.position[0] + 1.0).abs() < 1.0e-6
-                && (vertex.position[2] - 0.9375).abs() < 1.0e-6
+                && (vertex.position[2] - 0.96875).abs() < 1.0e-6
         }));
         assert!(vertices.iter().all(|vertex| {
             vertex.position[0] >= -1.0

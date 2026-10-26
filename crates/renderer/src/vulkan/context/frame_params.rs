@@ -802,12 +802,26 @@ pub(super) struct CompositeParamsInputs<'a> {
     pub(super) inv_vp_arr: [[f32; 4]; 4],
     pub(super) sky_aperture_volumes: &'a [super::super::volumetrics::GpuFogVolume],
     pub(super) underwater: [f32; 4],
+    pub(super) underwater_surface: [f32; 4],
     /// Whether `water_caustic_accum` is genuinely live this session — see
     /// `CompositeParams::caustic_flags` (#2508).
     pub(super) water_caustic_active: bool,
     /// The direct-shadow spatial filter ran this frame, so composite's
     /// binding 11 holds this frame's correction (`caustic_flags.y`).
     pub(super) shadow_filter_active: bool,
+}
+
+/// The camera's underwater state for one frame. All zero while its head is out
+/// of the water.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UnderwaterView {
+    /// The grade the composite and presentation passes apply: `xyz` = deep
+    /// colour at the camera's depth, `w` = authored extinction (0..1).
+    pub grade: [f32; 4],
+    /// Where the water surface sits relative to the camera, for the shaft
+    /// march: `x` = camera depth below the surface (world units), `y` = the
+    /// authored fog span the extinction ramp saturates over.
+    pub surface: [f32; 4],
 }
 
 /// Assemble this frame's `CompositeParams` (#2255 / TD1-NEW-02, extracted
@@ -839,6 +853,7 @@ pub(super) fn build_composite_params(
         inv_vp_arr,
         sky_aperture_volumes,
         underwater,
+        underwater_surface,
         water_caustic_active,
         shadow_filter_active,
     } = inputs;
@@ -979,8 +994,8 @@ pub(super) fn build_composite_params(
         caustic_flags: [
             if water_caustic_active { 1.0 } else { 0.0 },
             if shadow_filter_active { 1.0 } else { 0.0 },
-            0.0,
-            0.0,
+            underwater_surface[0],
+            underwater_surface[1],
         ],
         // SKYAL — the directional light surfaces receive; lights the clouds.
         sun_illuminance: dome.sun_illuminance,
@@ -1274,6 +1289,7 @@ mod composite_params_tests {
             inv_vp_arr: [[0.0; 4]; 4],
             sky_aperture_volumes: &aperture_volumes,
             underwater: [0.0; 4],
+            underwater_surface: [0.0; 4],
             water_caustic_active: false,
             shadow_filter_active: false,
         };
@@ -1425,6 +1441,7 @@ mod composite_params_tests {
             inv_vp_arr: [[0.0; 4]; 4],
             sky_aperture_volumes: &[],
             underwater: [0.0; 4],
+            underwater_surface: [0.0; 4],
             water_caustic_active: false,
             shadow_filter_active: false,
         };
@@ -1488,6 +1505,7 @@ mod composite_params_tests {
             inv_vp_arr: [[0.0; 4]; 4],
             sky_aperture_volumes: &[],
             underwater: [0.1, 0.2, 0.3, 0.4],
+            underwater_surface: [75.0, 600.0, 0.0, 0.0],
             water_caustic_active: true,
             shadow_filter_active: false,
         });
@@ -1526,6 +1544,10 @@ mod composite_params_tests {
             [10.0 - 1.0, 20.0 - 2.0, 30.0 - 3.0, 50.0 - 2.0]
         );
         assert_eq!(params.underwater, [0.1, 0.2, 0.3, 0.4]);
+        // The shaft march reads the surface depth and fog span from the
+        // reserved caustic_flags lanes.
+        assert_eq!(params.caustic_flags[2], 75.0);
+        assert_eq!(params.caustic_flags[3], 600.0);
         assert_eq!(
             params.caustic_flags[0], 1.0,
             "water_caustic_active must map through to caustic_flags.x"
@@ -1561,6 +1583,7 @@ mod composite_params_tests {
             inv_vp_arr: [[0.0; 4]; 4],
             sky_aperture_volumes: &[],
             underwater: [0.0; 4],
+            underwater_surface: [0.0; 4],
             water_caustic_active: false,
             shadow_filter_active: false,
         });
@@ -2106,7 +2129,7 @@ pub struct FrameInputs<'a> {
     /// `xyz` = deep_color tint to blend the scene toward; `w` = camera depth
     /// below the water surface in world units. `[0, 0, 0, 0]` disables
     /// underwater FX.
-    pub underwater: [f32; 4],
+    pub underwater: UnderwaterView,
     /// Timed Bethesda IMAD lens and color-grade channels.
     pub image_space_modifier: ImageSpaceModifier,
     /// #1195 / PERF-DIM7-01 — per-frame dirty set for the skin compute

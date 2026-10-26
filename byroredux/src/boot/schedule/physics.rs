@@ -45,6 +45,9 @@ pub(super) fn register_physics_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::water::WaterPlane>()
             .reads::<byroredux_core::ecs::components::water::WaterVolume>()
             .reads::<byroredux_core::ecs::components::water::WaterSurfaceMesh>()
+            // The bed field each cell plane carries: the buoyancy crest
+            // shoals and the river current follows the channel over it.
+            .reads::<byroredux_core::ecs::components::water::WaterBedField>()
             .reads::<byroredux_core::ecs::components::water::WaterFlow>()
             .reads::<byroredux_core::ecs::components::water::WaterCurrentVolume>()
             .writes::<byroredux_core::ecs::components::water::WaterContact>()

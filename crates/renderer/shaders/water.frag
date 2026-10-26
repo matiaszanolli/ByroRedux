@@ -160,6 +160,11 @@ layout(location = 3) in float vWorldBitangentSign;
 // Mesh-bound BGSM flow maps sample authored mesh UVs. Cell WATR surfaces
 // retain the u32::MAX flow-map sentinel and ignore this input.
 layout(location = 4) in vec2 vUV;
+// The bed under this fragment, baked into the mesh by the cell loader and
+// interpolated: x = depth below the surface (1e6 = none), yz = unit shoreward
+// direction, w = 1 when bed data is present. vCrest = the swell crest phase.
+layout(location = 5) in vec4 vShore;
+layout(location = 6) in float vCrest;
 
 // Single HDR output — water is a transparent draw, blended onto the
 // opaque pass's main colour attachment via standard SRC_ALPHA /
@@ -236,10 +241,23 @@ layout(set = 2, binding = 0, r32ui) uniform uimage2D waterCausticAccum;
 // for GPU Rendering" (JCGT 2020) — cheap, no tex-fetch, good visual
 // quality for foam streak randomisation.
 
+// `p` is an integer lattice corner (valueNoise only ever passes `i + {0,1}`).
+// The hash is integer-exact: the float `fract(p * 443.897)` form this
+// replaced kept only a couple of fractional bits once the finer octaves'
+// lattice coordinates reached the thousands (the product passes 2^21), so
+// its output collapsed to a few coarse levels and the procedural normal
+// showed a lattice of flat diamond tiles — most visible in the high-contrast
+// cloud reflection on Oblivion's procedural water.
+uint pcgHash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
 float hash21(vec2 p) {
-    p = fract(p * vec2(443.897, 441.423));
-    p += dot(p, p.yx + 19.19);
-    return fract((p.x + p.y) * p.x);
+    ivec2 q = ivec2(floor(p + 0.5));
+    uint h = pcgHash(uint(q.x) + pcgHash(uint(q.y)));
+    return float(h >> 8u) * (1.0 / 16777215.0);
 }
 
 float valueNoise(vec2 p) {
@@ -813,6 +831,41 @@ void main() {
         // Use world XZ — flat-plane water.
         uvWorld = vWorldPos.xz;
         uvOrigin = renderOrigin.xz;
+        // A river's current is not one vector across the plane: it runs
+        // faster down the deep middle than over the shallows (open-channel
+        // flow scales with depth), and hugs the banks instead of running
+        // into them. Both come from the bed under the fragment. Away from
+        // the banks the plane's own flow is untouched; at the waterline the
+        // current turns parallel to the shore (keeping its sign against the
+        // authored flow) and slows to WATER_RIVER_SPEED_MIN of the plane's.
+        if ((kind == WATER_RIVER || kind == WATER_RAPIDS) && vShore.w > 0.5) {
+            float riverDepth = vShore.x;
+            float depthSpeed = mix(WATER_RIVER_SPEED_MIN, 1.0,
+                                   smoothstep(0.0, WATER_RIVER_DEPTH_FULL, riverDepth));
+            vec2 flowXZ = push.flow.xz;
+            float flowLen = length(flowXZ);
+            vec2 bank = vShore.yz;
+            if (flowLen > 1.0e-4 && length(bank) > 0.1) {
+                vec2 flowDirXZ = flowXZ / flowLen;
+                vec2 along = vec2(-bank.y, bank.x);
+                if (dot(along, flowDirXZ) < 0.0) along = -along;
+                float hug = (1.0 - smoothstep(0.25 * WATER_RIVER_BANK_DEPTH,
+                                              WATER_RIVER_BANK_DEPTH, riverDepth))
+                    * WATER_RIVER_BANK_ALIGN;
+                vec2 localDir = normalize(mix(flowDirXZ, along, hug));
+                // Rotate every scroll vector by the turn from the plane's
+                // flow heading to the local one.
+                float c = dot(flowDirXZ, localDir);
+                float sn = flowDirXZ.x * localDir.y - flowDirXZ.y * localDir.x;
+                mat2 turn = mat2(c, sn, -sn, c);
+                normalScrollA = turn * normalScrollA;
+                normalScrollB = turn * normalScrollB;
+                normalScrollC = turn * normalScrollC;
+            }
+            normalScrollA *= depthSpeed;
+            normalScrollB *= depthSpeed;
+            normalScrollC *= depthSpeed;
+        }
     }
     // Two scrolling normal layers (the "movement on flat surfaces"
     // case). For River/Rapids/Waterfall, layer A's scroll vector is
@@ -1156,14 +1209,22 @@ void main() {
 
     // ── Foam composite ──
     float foamMask = 0.0;
+    // Shore foam (the contact ray and the breakers below) is kept apart from
+    // the other sources: it is broken into lace and capped, so it reads as a
+    // fringe of surf over the water and not as an opaque white strip.
+    float shoreFoam = 0.0;
     if (kind != WATER_WATERFALL && kind != WATER_LAVA) {
-        foamMask += foamShoreline(vWorldPos, Nsurface) * 1.0;
+        shoreFoam += foamShoreline(vWorldPos, Nsurface) * 1.0;
     }
     if (kind == WATER_RAPIDS) {
         foamMask += foamFlowStreaks(vWorldPos, renderOrigin.xyz, time) * 0.85;
         foamMask += foamCrest(Nperturbed, N) * 0.7;
     } else if (kind == WATER_RIVER) {
-        foamMask += foamFlowStreaks(vWorldPos, renderOrigin.xyz, time) * 0.25;
+        // No procedural streaks: a river's whitewater is authored (the
+        // `fxrapids*` / `fxcreek*` effect meshes), and the 0.25-weight streak
+        // term laid fine diagonal bands over every calm river plane (Skyrim
+        // White River, FO4 Commonwealth shore — gone with the term off, same
+        // capture pose). Rapids and waterfalls keep theirs.
     } else if (kind == WATER_WATERFALL) {
         // Sheet foam: more at the top and bottom of the falling
         // surface. We don't have a normalised sheet coordinate
@@ -1173,7 +1234,23 @@ void main() {
         foamMask += foamFlowStreaks(vWorldPos, renderOrigin.xyz, time * 1.6) * 0.95;
         foamMask += foamCrest(Nperturbed, N) * 0.45;
     }
-    foamMask = clamp(foamMask * foamStrength, 0.0, 1.0);
+    // Breakers: where the swell runs out of water it breaks. Foam is laid in
+    // the band of shallow water at the shore, brightest on the crests as they
+    // pass, scaled by how much swell there is to break (a flat calm leaves a
+    // fringe, a gale a surf line). Needs the baked bed and a swell.
+    if (vShore.w > 0.5 && push.optical.z > 0.0 && kind == WATER_CALM) {
+        float band = 1.0 - smoothstep(0.0, WATER_BREAKER_FOAM_DEPTH, vShore.x);
+        float crestPass = smoothstep(0.3, 0.95, vCrest);
+        float energy = clamp(push.optical.z / WATER_BREAKER_FOAM_FULL_AMPLITUDE, 0.0, 1.0);
+        shoreFoam += band * mix(0.12, 1.0, crestPass) * mix(0.35, 1.0, energy);
+    }
+    // Lace: two drifting scales of value noise carve the shore foam into
+    // patches with clear water between them; the cap keeps even the thickest
+    // patch translucent enough to show the water and the bed through it.
+    float lace = 0.6 * valueNoise(vWorldPos.xz / WATER_SHORE_LACE_SCALE_BU + vec2(time * 0.05, 0.0))
+               + 0.4 * valueNoise(vWorldPos.xz / (0.4 * WATER_SHORE_LACE_SCALE_BU) - vec2(0.0, time * 0.08));
+    shoreFoam *= smoothstep(0.4, 0.72, lace) * WATER_SHORE_FOAM_MAX;
+    foamMask = clamp((foamMask + shoreFoam) * foamStrength, 0.0, 1.0);
     if (rainIntensity > 0.0) {
         foamMask = clamp(foamMask + rainSurfaceNoise(uvWorld * 1.7, time * 1.3)
             * 0.08 * rainIntensity, 0.0, 1.0);
@@ -1327,6 +1404,18 @@ void main() {
     float alpha = baseAlpha <= 0.0
         ? 0.0
         : clamp(max(reflectedCoverage, refractionCoverage) + foamMask * 0.1, 0.0, 1.0);
+    // The water thins to nothing where the bed meets the surface, so the shore
+    // blends into the land instead of ending in an opaque cut. `vShore.x` is
+    // 1e6 on meshes without baked bed data, which leaves them untouched. The
+    // baked LAND depth cannot see rocks and other statics standing in the
+    // shallows, so the traced refraction distance fades the water over those
+    // the same way.
+    if (kind != WATER_WATERFALL && kind != WATER_LAVA) {
+        alpha *= smoothstep(0.0, WATER_SHORE_FADE_DEPTH_BU, vShore.x);
+        if (refrHit) {
+            alpha *= smoothstep(0.0, WATER_SHORE_FADE_DEPTH_BU, refrDist);
+        }
+    }
 
     outColor = vec4(surfaceColor, alpha);
     // WATAL oracles: opaque, so the blend cannot mix in what lies beneath.
@@ -1534,8 +1623,34 @@ void main() {
                             // the same wave-perturbed geometry that focused it.
                             float NdotSun = max(dot(causticNormal, sunDir), 0.0);
                             float travelFall = 1.0 / (1.0 + floorT * floorT * 1e-4);
+                            // A caustic needs water to focus through: where
+                            // the bed is within a few tens of units of the
+                            // surface the light is just the sun, which the bed
+                            // already receives, so a full-strength deposit
+                            // there doubles it into a white strip along the
+                            // waterline (measured on FO3's Potomac shore: 240+
+                            // with the deposit, ~150 without). It builds up
+                            // over the first WATER_CAUSTIC_SHALLOW_FADE_BU.
+                            float shallowFade = smoothstep(
+                                0.0, WATER_CAUSTIC_SHALLOW_FADE_BU, floorT);
+                            // The splat lands at the floor hit's screen pixel,
+                            // so a floor face the camera sees edge-on piles
+                            // many water pixels into a few screen pixels and
+                            // drew a thin bright line (the Skyrim shore
+                            // streak: a distant terrain tile's steep face).
+                            // Weight by how much more foreshortened the floor
+                            // face is than the water plane the deposit came
+                            // from; a floor parallel to the surface is 1.
+                            vec3 floorN = getHitTriNormal(
+                                uint(rayQueryGetIntersectionInstanceCustomIndexEXT(floorRq, true)),
+                                uint(rayQueryGetIntersectionPrimitiveIndexEXT(floorRq, true)));
+                            float waterFacing = abs(dot(Nsurface,
+                                normalize(cameraPos.xyz - vWorldPos)));
+                            float floorFacing = smoothstep(
+                                WATER_CAUSTIC_FACING_MIN, WATER_CAUSTIC_FACING_FULL,
+                                abs(dot(floorN, toCamera)) / max(waterFacing, 1.0e-3));
                             float contrib = sunDirection.w * sunVisibility
-                                * NdotSun * travelFall;
+                                * NdotSun * travelFall * shallowFade * floorFacing;
                             float scale = CAUSTIC_FIXED_SCALE;
                             float clamp_max = float(0xFFFFFFFFu) / scale;
                             // Match the glass writer's normalised 5x5

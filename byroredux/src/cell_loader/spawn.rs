@@ -73,6 +73,22 @@ enum MissingCollisionFallback {
     PackedAabbProxy,
 }
 
+/// Whether a mesh's render geometry is a plausible stand-in for solid
+/// collision. Decals and alpha-tested overlays are planes laid over other
+/// surfaces; fire-refraction and `BSEffectShaderProperty` meshes are VFX
+/// sheets (rapids, waterfalls, mist, god-rays) that the game never collides
+/// with. A synthesised trimesh from one of those is a zero-thickness wall
+/// across open ground — the Riverwood `FXrapidsBig01` sheets wedged the
+/// character capsule on the riverbank.
+fn render_geometry_can_collide(
+    material: &byroredux_nif::import::ImportedMaterial,
+) -> bool {
+    !material.is_decal
+        && !material.alpha_test
+        && material.effect_shader.is_none()
+        && material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+}
+
 fn missing_collision_fallback(
     collisions_empty: bool,
     authoring: byroredux_nif::import::collision::CollisionAuthoringSummary,

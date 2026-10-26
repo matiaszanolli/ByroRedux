@@ -1577,7 +1577,7 @@ mod egui_pending_output_tests {
 // Method implementations split across submodules:
 mod draw;
 mod frame_params;
-pub use frame_params::{is_refractive_glass, FrameInputs};
+pub use frame_params::{is_refractive_glass, FrameInputs, UnderwaterView};
 mod assemble_camera_and_lights;
 mod begin_frame_recording;
 mod build_and_upload_instances;

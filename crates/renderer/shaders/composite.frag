@@ -497,6 +497,114 @@ bool skyThroughAuthoredWindow(vec2 uv, float depth, bool hasSurface) {
     return false;
 }
 
+// Exact integer (PCG) hash of a 2-D lattice cell in [0, 1], so the surface
+// focusing pattern below never depends on float precision.
+float underwaterFocusHash(ivec2 cell) {
+    uint v = uint(cell.x) * 747796405u + uint(cell.y) * 2891336453u + 2891336453u;
+    v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+    v = (v >> 22u) ^ v;
+    return float(v >> 8u) * (1.0 / 16777215.0);
+}
+
+float underwaterFocusNoise(vec2 p) {
+    vec2 cell = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    ivec2 c = ivec2(cell);
+    return mix(mix(underwaterFocusHash(c), underwaterFocusHash(c + ivec2(1, 0)), f.x),
+               mix(underwaterFocusHash(c + ivec2(0, 1)), underwaterFocusHash(c + ivec2(1, 1)), f.x),
+               f.y);
+}
+
+// How much sunlight the wavy surface focuses onto the water column below the
+// point where this sample's sun ray crossed it: bright ridges where the crests
+// act as lenses, dark between. Two drifting scales of ridged value noise.
+float underwaterSurfaceFocus(vec2 entry, float seconds) {
+    float a = underwaterFocusNoise(entry / 70.0 + vec2(seconds * 0.35, seconds * 0.20));
+    float b = underwaterFocusNoise(entry / 37.0 + vec2(-seconds * 0.27, seconds * 0.31));
+    float ridge = 1.0 - abs(a + b - 1.0);
+    return pow(ridge, 6.0) * 2.4;
+}
+
+// Screen-space visibility of the sun from `p` underwater: taps up the sun's
+// path against the depth buffer, three along the refracted ray to the surface
+// (`toSun`, pointing up; submerged hulls and pilings) and three along the
+// unrefracted ray above it (`sunDirection`; docks, hulls, bridges overhead).
+// A tap is blocked when the scene surface at its pixel lies just in front of
+// it, within a thin slab, so only geometry the ray really passes behind counts
+// and a rock merely nearer the camera than the sample casts nothing. Geometry
+// that is off screen cannot block; this is a contact-shadow term, not a trace.
+float underwaterSunVisibility(vec3 p, vec3 toSun, vec3 sunDirection, float sunPath, mat4 viewProj) {
+    float visible = 1.0;
+    float reach = min(sunPath, 900.0);
+    vec3 surfacePoint = p + toSun * sunPath;
+    for (int i = 0; i < 6; ++i) {
+        vec3 q;
+        if (i < 3) {
+            q = p + toSun * (reach * (i == 0 ? 0.15 : (i == 1 ? 0.4 : 0.75)));
+        } else {
+            q = surfacePoint + sunDirection * (i == 3 ? 60.0 : (i == 4 ? 180.0 : 420.0));
+        }
+        vec4 clip = viewProj * vec4(q, 1.0);
+        if (clip.w <= 1.0e-3) continue;
+        vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) continue;
+        float scene = linearViewDepth(uv, texture(depthTex, uv).r);
+        float behind = clip.w - scene;
+        if (behind > 6.0 + 0.01 * clip.w && behind < 160.0) {
+            visible = 0.0;
+        }
+    }
+    return visible;
+}
+
+// Underwater god rays: a short ray march through the water column that
+// accumulates sun light scattered toward the camera. Each sample finds where
+// its (refracted) sun ray crossed the surface, takes the surface focusing
+// pattern there, and attenuates along the sun path and the view path, so the
+// light arrives as columns that follow the refracted sun direction through the
+// water. The refracted-sun, surface-height and fog-span inputs come from the
+// CPU submersion state (`caustic_flags.zw`). Scene geometry blocks the light
+// through `underwaterSunVisibility`, a depth-buffer contact test.
+vec3 underwaterGodRays(vec3 viewDir, vec3 sunDirection, float rayLength, float jitter) {
+    float depthBelowSurface = params.caustic_flags.z;
+    float span = max(params.caustic_flags.w, 1.0);
+    if (depthBelowSurface <= 0.0 || sunDirection.y < 0.05) return vec3(0.0);
+
+    vec3 travel = refract(-sunDirection, vec3(0.0, 1.0, 0.0), 1.0 / 1.333);
+    if (travel.y > -0.05) return vec3(0.0);
+
+    float surfaceY = params.camera_pos.y + depthBelowSurface;
+    float tMax = min(rayLength, span * 1.5);
+    if (viewDir.y > 1.0e-3) {
+        tMax = min(tMax, depthBelowSurface / viewDir.y);
+    }
+    // Looking toward the sun, light scatters forward along its travel
+    // direction; Henyey-Greenstein, normalised so its mean over the sphere is 1.
+    const float g = 0.6;
+    float cosine = dot(travel, -viewDir);
+    float phase = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosine, 1.5);
+
+    mat4 viewProj = inverse(params.inv_view_proj);
+    vec3 toSun = -travel;
+    const int steps = 24;
+    float k = 2.0 / span;
+    float dt = tMax / float(steps);
+    float seconds = params.weather_params.w;
+    float sum = 0.0;
+    for (int i = 0; i < steps; ++i) {
+        float t = (float(i) + jitter) * dt;
+        vec3 p = params.camera_pos.xyz + viewDir * t;
+        float below = surfaceY - p.y;
+        if (below <= 0.0) break;
+        float sunPath = below / -travel.y;
+        vec2 entry = p.xz - travel.xz * sunPath;
+        float focus = underwaterSurfaceFocus(entry, seconds) * exp(-k * (t + sunPath));
+        sum += focus * underwaterSunVisibility(p, toSun, sunDirection, sunPath, viewProj) * k * dt;
+    }
+    return vec3(sum * phase);
+}
+
 void main() {
 
     outReactive = 0.0;
@@ -814,34 +922,26 @@ void main() {
         return;
     }
 
-    // Underwater god rays. The authored submersion extinction is already
-    // computed from each game's WATR fog range on the CPU, so use it as the
-    // gate/energy budget rather than inventing a second water-depth model.
-    // A narrow sun-alignment lobe gives shafts toward the visible sun, while
-    // the depth ramp keeps the effect negligible at the waterline. This is a
-    // screen-space presentation term intentionally kept after the integrated
-    // froxel debug return and before bloom; it requires no new descriptor.
-    // The composite carries the outdoor palette for an interior aperture;
-    // that palette alone must not create underwater shafts in sealed rooms.
+    // Underwater god rays: a ray march through the water column
+    // (`underwaterGodRays`). The authored submersion extinction gates it, so a
+    // camera that is out of the water, or an interior that merely carries the
+    // outdoor palette, gets nothing.
     if (params.depth_params.x > 0.5
         && params.underwater.w > 0.0 && params.sun_dir.w > 0.0) {
         vec3 viewDir = screen_to_world_dir(fragUV);
         vec3 sunDirection = normalize(params.sun_dir.xyz);
-        float sunAlignment = max(dot(viewDir, sunDirection), 0.0);
-        float shaftLobe = pow(sunAlignment, 18.0);
-        float underwaterDistance = has_surface
-            ? linearViewDepth(fragUV, depth)
-            : params.volume_params.x;
-        float depthRamp = 1.0 - exp(-max(underwaterDistance, 0.0) * 0.002);
-        float shaftStrength = shaftLobe * depthRamp
-            * clamp(params.underwater.w, 0.0, 0.85)
-            * params.sun_dir.w * 0.12;
+        float rayLength = params.volume_params.x;
+        if (has_surface) {
+            vec4 surfaceClip = params.inv_view_proj * vec4(fragUV * 2.0 - 1.0, depth, 1.0);
+            rayLength = length(surfaceClip.xyz / surfaceClip.w - params.camera_pos.xyz);
+        }
         vec3 shaftColor = mix(
             params.underwater.rgb,
             params.sun_color.rgb,
             0.35
         );
-        combined += shaftColor * shaftStrength;
+        combined += shaftColor * params.sun_dir.w * 0.12
+            * underwaterGodRays(viewDir, sunDirection, rayLength, blueNoiseRank());
     }
 
     // Weather precipitation and lightning are exterior-only presentation

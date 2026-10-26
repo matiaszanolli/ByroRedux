@@ -1787,6 +1787,72 @@ pub const WATER_WAVE_AMPLITUDE_MAX: f32 =
     byroredux_core::ecs::components::water::WATER_WAVE_AMPLITUDE_MAX;
 pub const WATER_WAVE_SPATIAL_FLOOR_A: f32 =
     byroredux_core::ecs::components::water::WATER_WAVE_SPATIAL_FLOOR_A;
+
+// Swell (`water.vert`): the wind-driven travelling wave of calm water, shared
+// with the CPU crest sampler through core, plus the shoaling and breaking
+// that reshape it over a rising bed.
+pub const WATER_SWELL_WAVELENGTH_BU: f32 =
+    byroredux_core::ecs::components::water::WATER_SWELL_WAVELENGTH_BU;
+pub const WATER_SWELL_GRAVITY_BU_PER_S2: f32 =
+    byroredux_core::ecs::components::water::WATER_SWELL_GRAVITY_BU_PER_S2;
+pub const WATER_SWELL_BREAK_RATIO: f32 =
+    byroredux_core::ecs::components::water::WATER_SWELL_BREAK_RATIO;
+pub const WATER_SWELL_SHOAL_REF_DEPTH_BU: f32 =
+    byroredux_core::ecs::components::water::WATER_SWELL_SHOAL_REF_DEPTH_BU;
+pub const WATER_SWELL_SHOAL_GAIN_MAX: f32 =
+    byroredux_core::ecs::components::water::WATER_SWELL_SHOAL_GAIN_MAX;
+
+// The bed under a water plane rides in the mesh's vertex colour (unused on
+// water otherwise): r = depth / WATER_BED_DEPTH_MAX, gb = the shoreward
+// direction * 0.5 + 0.5, a = WATER_BED_VALID_ALPHA. Only a vertex whose alpha
+// is within WATER_BED_VALID_ALPHA_TOL of that sentinel carries bed data;
+// interior water, distant LOD water and every placed water mesh (authored
+// vertex colours, alpha in k/255 steps) take the open-water path. The sentinel
+// is deliberately not a k/255 value, so no 8-bit authored alpha can match it.
+/// World units of depth at which the baked depth saturates.
+pub const WATER_BED_DEPTH_MAX: f32 = 1024.0;
+/// Vertex alpha of a vertex that carries bed data (not a multiple of 1/255).
+pub const WATER_BED_VALID_ALPHA: f32 = 0.5004;
+/// How far from the sentinel an alpha may be and still carry bed data.
+pub const WATER_BED_VALID_ALPHA_TOL: f32 = 1.0e-4;
+pub const WATER_SHORE_REFRACT_DEPTH: f32 =
+    byroredux_core::ecs::components::water::WATER_SHORE_REFRACT_DEPTH;
+pub const WATER_SHORE_REFRACT_MAX: f32 =
+    byroredux_core::ecs::components::water::WATER_SHORE_REFRACT_MAX;
+/// Depth under which a swell crest breaks into foam.
+pub const WATER_BREAKER_FOAM_DEPTH: f32 = 140.0;
+/// Swell crest height (world units) at which breaker foam is at full strength.
+pub const WATER_BREAKER_FOAM_FULL_AMPLITUDE: f32 = 8.0;
+/// Depth over which the water's coverage fades to nothing at the waterline, so
+/// the shore merges with the land (about a third of a metre at 70 BU/m).
+pub const WATER_SHORE_FADE_DEPTH_BU: f32 = 20.0;
+/// Distance under the surface over which the water-side caustic deposit builds
+/// up from nothing: a caustic cannot focus in a film of water, and at zero
+/// depth it only doubled the sun the bed already receives.
+pub const WATER_CAUSTIC_SHALLOW_FADE_BU: f32 = 96.0;
+/// Foreshortening ratio (floor face against the water plane, both seen from
+/// the camera) below which a water-side caustic deposit is dropped, and above
+/// which it counts in full. The deposit splats at the floor hit's screen
+/// pixel, so a face the camera sees edge-on collects many water pixels into a
+/// few screen pixels and drew a thin bright line (the Skyrim shore streak,
+/// bisected to a distant terrain tile's steep face); flat floors sit near 1.
+pub const WATER_CAUSTIC_FACING_MIN: f32 = 0.5;
+pub const WATER_CAUSTIC_FACING_FULL: f32 = 1.0;
+/// World size of the larger lace patch in shore foam.
+pub const WATER_SHORE_LACE_SCALE_BU: f32 = 24.0;
+/// Strongest the shore foam gets, so it never becomes an opaque white strip.
+pub const WATER_SHORE_FOAM_MAX: f32 = 0.45;
+// River motion (`water.frag`), from the same bed field; owned by core
+// (`WaterFlow::over_bed`) so the visible current and the force on floating
+// bodies are one rule.
+pub const WATER_RIVER_BANK_DEPTH: f32 =
+    byroredux_core::ecs::components::water::WATER_RIVER_BANK_DEPTH;
+pub const WATER_RIVER_BANK_ALIGN: f32 =
+    byroredux_core::ecs::components::water::WATER_RIVER_BANK_ALIGN;
+pub const WATER_RIVER_SPEED_MIN: f32 =
+    byroredux_core::ecs::components::water::WATER_RIVER_SPEED_MIN;
+pub const WATER_RIVER_DEPTH_FULL: f32 =
+    byroredux_core::ecs::components::water::WATER_RIVER_DEPTH_FULL;
 pub const WATER_WAVE_SPATIAL_FLOOR_B: f32 =
     byroredux_core::ecs::components::water::WATER_WAVE_SPATIAL_FLOOR_B;
 pub const WATER_WAVE_FALLBACK_DIR_A: [f32; 2] =
@@ -2944,6 +3010,28 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float WATER_WAVE_PHASE_B_RATE),
     shader_define!(Float WATER_WAVE_AMPLITUDE_MAX),
     shader_define!(Float WATER_WAVE_SPATIAL_FLOOR_A),
+    shader_define!(Float WATER_SWELL_WAVELENGTH_BU),
+    shader_define!(Float WATER_SWELL_GRAVITY_BU_PER_S2),
+    shader_define!(Float WATER_SWELL_BREAK_RATIO),
+    shader_define!(Float WATER_SWELL_SHOAL_REF_DEPTH_BU),
+    shader_define!(Float WATER_SWELL_SHOAL_GAIN_MAX),
+    shader_define!(Float WATER_BED_DEPTH_MAX),
+    shader_define!(Float WATER_BED_VALID_ALPHA),
+    shader_define!(Float WATER_BED_VALID_ALPHA_TOL),
+    shader_define!(Float WATER_SHORE_REFRACT_DEPTH),
+    shader_define!(Float WATER_SHORE_REFRACT_MAX),
+    shader_define!(Float WATER_BREAKER_FOAM_DEPTH),
+    shader_define!(Float WATER_BREAKER_FOAM_FULL_AMPLITUDE),
+    shader_define!(Float WATER_SHORE_FADE_DEPTH_BU),
+    shader_define!(Float WATER_CAUSTIC_SHALLOW_FADE_BU),
+    shader_define!(Float WATER_CAUSTIC_FACING_MIN),
+    shader_define!(Float WATER_CAUSTIC_FACING_FULL),
+    shader_define!(Float WATER_SHORE_LACE_SCALE_BU),
+    shader_define!(Float WATER_SHORE_FOAM_MAX),
+    shader_define!(Float WATER_RIVER_BANK_DEPTH),
+    shader_define!(Float WATER_RIVER_BANK_ALIGN),
+    shader_define!(Float WATER_RIVER_SPEED_MIN),
+    shader_define!(Float WATER_RIVER_DEPTH_FULL),
     shader_define!(Float WATER_WAVE_SPATIAL_FLOOR_B),
     shader_define!(Vec2 WATER_WAVE_FALLBACK_DIR_A),
     shader_define!(Vec2 WATER_WAVE_FALLBACK_DIR_B),

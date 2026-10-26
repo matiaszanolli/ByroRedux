@@ -529,9 +529,12 @@ mod body_skin_tests {
         assert_eq!(part("characters/_male/hand.nif").body_texture.as_deref(), Some("dunmer-hand.dds"));
         assert_eq!(part("characters/_male/foot.nif").body_texture, None, "the race lists no foot skin");
         assert_eq!(part("armor/iron/cuirass.nif").body_texture, None, "not a loose body piece");
-        // FO3 / FNV naked meshes keep their own NIF-authored skin.
+        // FO3 / FNV take the race's upper-body skin too (#6090); a piece the
+        // race's three-slot run has no entry for keeps its NIF-authored skin.
         let fnv = restore_body_part(GameKind::Fallout3NV, Some(&race), 0, "characters/_male/upperbody.nif");
-        assert_eq!(fnv.body_texture, None);
+        assert_eq!(fnv.body_texture.as_deref(), Some("dunmer-upper.dds"));
+        let fnv_head = restore_body_part(GameKind::Fallout3NV, Some(&race), 0, "characters/headhuman.nif");
+        assert_eq!(fnv_head.body_texture, None);
     }
 }
 
