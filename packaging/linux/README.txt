@@ -12,8 +12,8 @@ What is in this folder
   byroredux       The engine itself (what the launcher runs).
   byro-detect     Prints the games it can find on this machine.
   byro-dbg        Console client for a running engine (see below).
-  assets/         Game profiles and graphics presets. REQUIRED, read relative
-                  to the current directory -- see "Running".
+  assets/         Game profiles and graphics presets. REQUIRED, found beside
+                  the binaries -- see "Running".
   LICENSE, THIRD_PARTY_NOTICES.md, third_party/   Licences.
 
 What you need
@@ -28,8 +28,10 @@ What you need
 
 Running
 -------
-Run everything from inside this folder -- the engine and launcher look for
-assets/ in the current directory:
+Keep assets/ beside the binaries: the engine and launcher look for it in the
+current directory first, then in the folder holding the executable, so they
+work from any directory. (An assets/ in the current directory overrides the
+shipped one -- do not copy it around, it goes stale on the next release.)
 
     cd byroredux-*-linux-x86_64
     ./byro-detect            # which games were found?
@@ -41,10 +43,6 @@ names resolve against the current directory), e.g. Fallout: New Vegas:
     cd "/path/to/Fallout New Vegas/Data"
     /path/to/byroredux --esm FalloutNV.esm --cell GSProspectorSaloonInterior \
         --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa"
-
-NOTE: started that way, byroredux cannot find assets/debug_profiles.toml unless
-your current directory contains an assets/ folder. Copy or symlink this
-folder's assets/ next to where you run it, or use the launcher.
 
     ./byroredux --version    # exactly which build this is
 

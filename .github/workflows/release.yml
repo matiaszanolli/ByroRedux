@@ -139,7 +139,7 @@ jobs:
             echo "**Alpha.** Linux x86_64 binaries of ByroRedux at \`${BYRO_COMMIT:0:9}\`. No Bethesda content is included; you need your own copy of a supported game."
             echo
             echo "- **Needs:** a Vulkan 1.3 GPU/driver with \`VK_KHR_ray_query\`, glibc 2.35+, \`libvulkan1\`, \`libasound2\`, \`libstdc++6\`."
-            echo "- **Run:** extract, \`cd\` into the folder, then \`./byro-detect\` and \`./byro-launcher\`. The engine and launcher read \`assets/\` from the current directory. See \`README.txt\` inside the archive."
+            echo "- **Run:** extract, \`cd\` into the folder, then \`./byro-detect\` and \`./byro-launcher\`. The engine and launcher find \`assets/\` beside themselves. See \`README.txt\` inside the archive."
             echo "- **Verify:** \`sha256sum -c SHA256SUMS\`; \`./byroredux --version\` should report \`$RELEASE_TAG\`."
             echo "- **Known rough edges:** [ROADMAP.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/ROADMAP.md) (Known Issues) and the [open issues](https://github.com/${GITHUB_REPOSITORY}/issues)."
             echo

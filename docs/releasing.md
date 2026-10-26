@@ -16,7 +16,7 @@ not bumped; the tag is the release identity, and the binaries report it
 | `byro-launcher` | Resident window that detects installed games and starts the engine. |
 | `byro-detect` | Prints the detected game installs. |
 | `byro-dbg` | Console client for a running engine (`BYRO_DEBUG_SERVER=1` on the engine). |
-| `assets/` | `debug_profiles.toml` and `graphics_presets.toml`. Read **relative to the current directory**, so the binaries are run from this folder. |
+| `assets/` | `debug_profiles.toml` and `graphics_presets.toml`. Found beside the binaries (the current directory is tried first, so an `assets/` there overrides the shipped one), so the binaries run from any directory. |
 | `README.txt` | Requirements and how to run (from [`packaging/linux/README.txt`](../packaging/linux/README.txt)). |
 | `LICENSE`, `THIRD_PARTY_NOTICES.md`, `third_party/.../LICENSE.txt` | Licences, including the vendored FidelityFX SDK. |
 
