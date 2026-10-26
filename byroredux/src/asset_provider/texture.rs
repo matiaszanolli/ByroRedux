@@ -1269,7 +1269,8 @@ mod tests {
         use std::path::PathBuf;
 
         use byroredux_plugin::esm::test_paths;
-        let games: [(&str, fn() -> PathBuf, &str); 4] = [
+        type GameArchiveCase<'a> = (&'a str, fn() -> PathBuf, &'a str);
+        let games: [GameArchiveCase; 4] = [
             ("fnv", test_paths::fnv_data_dir, "Fallout - Sound.bsa"),
             ("fo3", test_paths::fo3_data_dir, "Fallout - Sound.bsa"),
             ("skyrimse", test_paths::skyrim_se_data_dir, "Skyrim - Sounds.bsa"),

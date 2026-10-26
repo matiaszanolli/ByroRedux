@@ -2477,7 +2477,7 @@ fn get_crime_reads_what_the_caller_knows_of_a_crime_against_them() {
         victim: 0xB0B,
     });
     assert!(evaluate_condition(&attack, &world, &context), "the victim saw the assault");
-    let murder = Condition { param_2: 4, ..attack.clone() };
+    let murder = Condition { param_2: 4, ..attack };
     assert!(!evaluate_condition(&murder, &world, &context), "another crime type");
 }
 

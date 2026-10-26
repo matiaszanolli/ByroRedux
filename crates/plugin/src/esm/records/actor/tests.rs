@@ -53,10 +53,10 @@ fn fo76_race_reads_its_skeleton_run_with_modt_between() {
     let subs = vec![
         sub(b"MNAM", b""),
         sub(b"ANAM", b"actors/deathclaw/characterassets/skeleton.nif\0"),
-        sub(b"MODT", &[0u8; 12]),
+        sub(b"MODT", [0u8; 12]),
         sub(b"FNAM", b""),
         sub(b"ANAM", b"actors/deathclaw/characterassets/skeletonf.nif\0"),
-        sub(b"MODT", &[0u8; 12]),
+        sub(b"MODT", [0u8; 12]),
         sub(b"NAM2", b""),
         sub(b"NAM1", b""),
         sub(b"MNAM", b""),
@@ -1475,7 +1475,7 @@ fn clas_guard_flag_is_read_on_oblivion_fo3_and_fnv() {
     let guard = parse_clas(0x836, &[sub(b"DATA", &oblivion)], GameKind::Oblivion);
     assert!(guard.is_guard() && guard.class_flags == guard.flags_oblivion);
 
-    let skyrim = parse_clas(0x603, &[sub(b"DATA", &[0xFFu8; 36])], GameKind::Skyrim);
+    let skyrim = parse_clas(0x603, &[sub(b"DATA", [0xFFu8; 36])], GameKind::Skyrim);
     assert!(skyrim.class_flags.is_none() && !skyrim.is_guard(), "Skyrim's classes carry no flags word");
 }
 
@@ -2670,11 +2670,11 @@ fn fact_crime_tab_round_trips_for_skyrim() {
     assert_eq!(crva.len(), 20);
     let subs = vec![
         sub(b"EDID", b"CrimeFactionWhiterun\0"),
-        sub(b"DATA", &flags.to_le_bytes()),
-        sub(b"JAIL", &0x0001_AAAAu32.to_le_bytes()),
-        sub(b"STOL", &0x0001_BBBBu32.to_le_bytes()),
-        sub(b"PLCN", &0x0001_CCCCu32.to_le_bytes()),
-        sub(b"JOUT", &0x0001_DDDDu32.to_le_bytes()),
+        sub(b"DATA", flags.to_le_bytes()),
+        sub(b"JAIL", 0x0001_AAAAu32.to_le_bytes()),
+        sub(b"STOL", 0x0001_BBBBu32.to_le_bytes()),
+        sub(b"PLCN", 0x0001_CCCCu32.to_le_bytes()),
+        sub(b"JOUT", 0x0001_DDDDu32.to_le_bytes()),
         sub(b"CRVA", &crva),
     ];
     let crime = parse_fact_crime(&subs, &None).expect("a crime faction");

@@ -1594,7 +1594,8 @@ mod np_ragdoll_extract_tests {
     #[test]
     fn a_bone_under_a_node_subclass_still_composes_its_whole_parent_chain() {
         use crate::blocks::node::{BsMultiBoundNode, NiSwitchNode};
-        let wrappers: [(&str, fn(NiNode) -> Box<dyn NiObject>); 2] = [
+        type NodeWrapper<'a> = (&'a str, fn(NiNode) -> Box<dyn NiObject>);
+        let wrappers: [NodeWrapper; 2] = [
             ("BSMultiBoundNode", |base| {
                 Box::new(BsMultiBoundNode { base, multi_bound_ref: BlockRef::NULL, culling_mode: 0 })
             }),

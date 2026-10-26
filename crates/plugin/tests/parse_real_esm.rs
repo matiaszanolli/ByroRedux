@@ -6459,14 +6459,6 @@ fn fo3_race_body_icons_decode_for_the_ghoul_and_raider_races() {
         raiders_with_skin >= 2,
         "only {raiders_with_skin} of {raider_races:?} author a skin"
     );
-    // Skyrim+ authors none — the parser's own gate, pinned.
-    assert!(
-        index
-            .races
-            .values()
-            .all(|race| !race.body_part_textures.is_empty() || true),
-        "census shape"
-    );
 }
 
 /// #6089 — FO3's four "Use Land Data" child worldspaces (Oasis,
