@@ -681,6 +681,22 @@ pub const WATER_SHORE_REFRACT_DEPTH: f32 = 900.0;
 /// The largest share of the heading that refraction turns toward the shore.
 pub const WATER_SHORE_REFRACT_MAX: f32 = 0.7;
 
+// ── River current over the bed ──────────────────────────────────────────
+//
+// A river does not flow as one vector across its width: open-channel flow is
+// faster over deep water than over the shallows, and it runs along the banks
+// instead of into them. `WaterFlow::over_bed` is that rule, shared by the
+// visible current in `water.frag` and the current force on floating bodies.
+
+/// Depth under which a river's current is pulled into the bank's direction.
+pub const WATER_RIVER_BANK_DEPTH: f32 = 160.0;
+/// Share of the bank-parallel direction the current takes at the waterline.
+pub const WATER_RIVER_BANK_ALIGN: f32 = 0.7;
+/// Slowest current as a fraction of the plane's speed (at the waterline).
+pub const WATER_RIVER_SPEED_MIN: f32 = 0.35;
+/// Depth at which a river's current reaches the plane's full speed.
+pub const WATER_RIVER_DEPTH_FULL: f32 = 420.0;
+
 /// The wind-driven travelling swell of a calm surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WaterSwell {
@@ -857,6 +873,46 @@ impl WaterMaterial {
 }
 
 impl WaterFlow {
+    /// This plane's current as it runs at a point over the bed: slower over
+    /// the shallows (`WATER_RIVER_SPEED_MIN` at the waterline, the plane's
+    /// speed from `WATER_RIVER_DEPTH_FULL` down) and, near the banks, turned
+    /// toward the bank-parallel direction while keeping the sign of the
+    /// authored flow. `water.frag` evaluates the same rule on the baked bed.
+    /// The result is a derived local current and is not clamped to the
+    /// documented speed band.
+    pub fn over_bed(&self, bed: WaterBedSample) -> WaterFlow {
+        let smooth = |edge0: f32, edge1: f32, x: f32| {
+            let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        let depth_speed = WATER_RIVER_SPEED_MIN
+            + (1.0 - WATER_RIVER_SPEED_MIN) * smooth(0.0, WATER_RIVER_DEPTH_FULL, bed.depth);
+        let flow_len = (self.direction[0] * self.direction[0] + self.direction[2] * self.direction[2]).sqrt();
+        let bank_len = (bed.uphill[0] * bed.uphill[0] + bed.uphill[1] * bed.uphill[1]).sqrt();
+        let mut direction = self.direction;
+        if flow_len > 1.0e-4 && bank_len > 0.1 {
+            let flow = [self.direction[0] / flow_len, self.direction[2] / flow_len];
+            let mut along = [-bed.uphill[1] / bank_len, bed.uphill[0] / bank_len];
+            if along[0] * flow[0] + along[1] * flow[1] < 0.0 {
+                along = [-along[0], -along[1]];
+            }
+            let hug = (1.0 - smooth(0.25 * WATER_RIVER_BANK_DEPTH, WATER_RIVER_BANK_DEPTH, bed.depth))
+                * WATER_RIVER_BANK_ALIGN;
+            let mixed = [
+                flow[0] + (along[0] - flow[0]) * hug,
+                flow[1] + (along[1] - flow[1]) * hug,
+            ];
+            let len = (mixed[0] * mixed[0] + mixed[1] * mixed[1]).sqrt();
+            if len > 1.0e-6 {
+                direction = [mixed[0] / len, self.direction[1], mixed[1] / len];
+            }
+        }
+        WaterFlow {
+            direction,
+            speed: self.speed * depth_speed,
+        }
+    }
+
     /// Slowest current the physics sink will simulate — the "calm river"
     /// anchor of [`Self::speed`]'s documented band. BU/s.
     pub const SPEED_MIN: f32 = 0.5;
@@ -1380,6 +1436,40 @@ mod wave_tuning_tests {
         // The same material with the flag off keeps the authored rate.
         let authored = WaterMaterial { wind_driven: false, ..m }.wave_scrolls([0.0, 0.0], 0.0);
         assert!((authored.a[1] - 3.0).abs() < 1e-6, "{:?}", authored.a);
+    }
+
+    /// A river's current over the bed: full speed in deep water, slowed over
+    /// the shallows, and turned parallel to the bank near it with the sign of
+    /// the authored flow kept.
+    #[test]
+    fn river_current_slows_over_shallows_and_runs_along_the_bank() {
+        let flow = WaterFlow { direction: [1.0, 0.0, 0.0], speed: 8.0 };
+        // Mid-channel: deep, flat bed — untouched.
+        let deep = flow.over_bed(WaterBedSample { depth: 2000.0, uphill: [0.0, 0.0] });
+        assert_eq!(deep.direction, [1.0, 0.0, 0.0]);
+        assert!((deep.speed - 8.0).abs() < 1e-4);
+        // Deep water beside a bank is still full speed and unturned.
+        let deep_bank = flow.over_bed(WaterBedSample { depth: 2000.0, uphill: [0.0, 1.0] });
+        assert_eq!(deep_bank.direction, [1.0, 0.0, 0.0]);
+        // At the waterline of a bank to the +Z side the current slows to the
+        // floor and turns toward the bank's tangent (±X), keeping +X.
+        let edge = flow.over_bed(WaterBedSample { depth: 0.0, uphill: [0.0, 1.0] });
+        assert!((edge.speed - 8.0 * WATER_RIVER_SPEED_MIN).abs() < 1e-4, "{edge:?}");
+        assert!(edge.direction[0] > 0.99 && edge.direction[2].abs() < 0.05, "{edge:?}");
+        // A bank to the side the flow points toward turns it along the bank
+        // instead of into it: flow +X into a bank whose uphill is +X -> the
+        // tangent is +/-Z; the current takes `hug` of it.
+        let into = flow.over_bed(WaterBedSample { depth: 0.0, uphill: [1.0, 0.0] });
+        assert!(into.direction[2].abs() > 0.5, "turned along the bank: {into:?}");
+        let len = (into.direction[0].powi(2) + into.direction[2].powi(2)).sqrt();
+        assert!((len - 1.0).abs() < 1e-4, "stays a unit heading");
+        // Speed grows with depth, monotonically.
+        let mut last = 0.0;
+        for depth in [0.0, 50.0, 150.0, 300.0, 420.0, 900.0] {
+            let v = flow.over_bed(WaterBedSample { depth, uphill: [0.0, 0.0] }).speed;
+            assert!(v >= last - 1e-5, "{v} at {depth}");
+            last = v;
+        }
     }
 
     /// The swell: only wind-driven water has one, its crest follows the wind,

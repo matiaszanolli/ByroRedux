@@ -1823,15 +1823,17 @@ pub const WATER_SHORE_REFRACT_MAX: f32 =
 pub const WATER_BREAKER_FOAM_DEPTH: f32 = 140.0;
 /// Swell crest height (world units) at which breaker foam is at full strength.
 pub const WATER_BREAKER_FOAM_FULL_AMPLITUDE: f32 = 8.0;
-// River motion (`water.frag`), from the same bed field.
-/// Depth under which a river's current is pulled into the bank's direction.
-pub const WATER_RIVER_BANK_DEPTH: f32 = 160.0;
-/// Share of the bank-parallel direction the current takes at the waterline.
-pub const WATER_RIVER_BANK_ALIGN: f32 = 0.7;
-/// Slowest current as a fraction of the plane's speed (at the waterline).
-pub const WATER_RIVER_SPEED_MIN: f32 = 0.35;
-/// Depth at which a river's current reaches the plane's full speed.
-pub const WATER_RIVER_DEPTH_FULL: f32 = 420.0;
+// River motion (`water.frag`), from the same bed field; owned by core
+// (`WaterFlow::over_bed`) so the visible current and the force on floating
+// bodies are one rule.
+pub const WATER_RIVER_BANK_DEPTH: f32 =
+    byroredux_core::ecs::components::water::WATER_RIVER_BANK_DEPTH;
+pub const WATER_RIVER_BANK_ALIGN: f32 =
+    byroredux_core::ecs::components::water::WATER_RIVER_BANK_ALIGN;
+pub const WATER_RIVER_SPEED_MIN: f32 =
+    byroredux_core::ecs::components::water::WATER_RIVER_SPEED_MIN;
+pub const WATER_RIVER_DEPTH_FULL: f32 =
+    byroredux_core::ecs::components::water::WATER_RIVER_DEPTH_FULL;
 pub const WATER_WAVE_SPATIAL_FLOOR_B: f32 =
     byroredux_core::ecs::components::water::WATER_WAVE_SPATIAL_FLOOR_B;
 pub const WATER_WAVE_FALLBACK_DIR_A: [f32; 2] =

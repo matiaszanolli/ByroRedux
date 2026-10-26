@@ -1212,6 +1212,19 @@ fn apply_buoyancy_with_scratch(
                     let mut pending_torque: Option<Vec3> = None;
                     let mut pending_lift: Option<WaterLift> = None;
                     let frac = submerged_fraction(min_y, max_y, surface_y);
+                    // The current as it runs at this body: a river is faster
+                    // over the deep channel and runs along the banks
+                    // (`WaterFlow::over_bed`), exactly as `water.frag` shows
+                    // it; every other kind, and water with no bed, keeps the
+                    // plane's flow.
+                    let local_flow = s.flow.map(|flow| {
+                        match (s.kind, s.bed.as_ref()) {
+                            (WaterKind::River | WaterKind::Rapids, Some(bed)) => bed
+                                .sample(reference_point.x, reference_point.z)
+                                .map_or(flow, |sample| flow.over_bed(sample)),
+                            _ => flow,
+                        }
+                    });
                     if frac > 0.0 {
                         if let Some(b) = pw.bodies.get_mut(t.handles.body) {
                             // Submerged viscous damping so the float settles
@@ -1303,7 +1316,7 @@ fn apply_buoyancy_with_scratch(
                                     // dry pass applies.
                                     pending_torque = Some(PhysicsWorld::angular_damping_torque(b, c_ang));
                                 }
-                                if let Some(flow) = s.flow {
+                                if let Some(flow) = local_flow {
                                     let velocity = b.linvel();
                                     f += current_force(
                                         flow,
@@ -1346,7 +1359,7 @@ fn apply_buoyancy_with_scratch(
                                 depth: surface_y - center_y,
                                 submerged_fraction: frac,
                                 head_submerged: max_y <= surface_y,
-                                flow: s.flow,
+                                flow: local_flow,
                                 damage_per_second: s.damage_per_second,
                                 // #5562 — the waterline under the collider AABB
                                 // centre, the reference point every decision in
@@ -2742,6 +2755,54 @@ mod tests {
             .expect("dry transition keeps a contact breadcrumb");
         assert_eq!(cleared.submerged_fraction, 0.0);
         assert!(cleared.surface_entity.is_none());
+    }
+
+    /// The current carries a floating body at the speed the channel runs there:
+    /// the same river, with the bed deep under the body and then shallow
+    /// (`WaterFlow::over_bed`), drifts it markedly further in the deep run, and
+    /// a contact reports the current it was actually driven by.
+    #[test]
+    fn river_current_on_a_floating_body_follows_the_bed() {
+        use crate::physics_sync_system;
+        use byroredux_core::ecs::components::water::{
+            WaterBedField, WaterContact, WaterKind, WaterMaterial, WaterPlane,
+            WATER_RIVER_SPEED_MIN,
+        };
+        use byroredux_core::ecs::components::Transform;
+
+        let run = |bed_depth: f32| {
+            let (mut world, water, body) = submerged_ball_world(-5.0);
+            world.insert(
+                water,
+                WaterPlane {
+                    kind: WaterKind::River,
+                    material: WaterMaterial::default(),
+                    damage_per_second: 0.0,
+                },
+            );
+            world.insert(
+                water,
+                WaterBedField::new([-500.0, -500.0], 100.0, 21, vec![bed_depth; 21 * 21]).unwrap(),
+            );
+            for _ in 0..600 {
+                physics_sync_system(&world, PHYSICS_DT);
+            }
+            let x = world.get::<Transform>(body).unwrap().translation.x;
+            let contact_speed = world.get::<WaterContact>(body).unwrap().flow.map(|f| f.speed);
+            (x, contact_speed)
+        };
+        let (deep_x, deep_speed) = run(2000.0);
+        let (shallow_x, shallow_speed) = run(0.0);
+        assert!(deep_x > 5.0, "the deep river carries the body: x={deep_x}");
+        assert!(
+            shallow_x < deep_x * 0.75,
+            "the shallow run must carry it clearly less: deep={deep_x} shallow={shallow_x}"
+        );
+        assert!((deep_speed.unwrap() - 8.0).abs() < 1e-3, "deep contact flow {deep_speed:?}");
+        assert!(
+            (shallow_speed.unwrap() - 8.0 * WATER_RIVER_SPEED_MIN).abs() < 1e-3,
+            "shallow contact flow {shallow_speed:?}"
+        );
     }
 
     /// A buoyant body settling at equilibrium must fall asleep, and once

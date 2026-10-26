@@ -665,11 +665,11 @@ shore, brightest as swell crests pass, scaled by the swell's height.
 runs faster over the deep middle than the shallows (`WATER_RIVER_SPEED_MIN`
 0.35 at the waterline to the plane's speed at `WATER_RIVER_DEPTH_FULL`) and,
 near the banks, turns toward the bank-parallel direction (keeping the sign of
-the authored flow), so the visible current bends with the channel. **Not
-done:** the physics current (`current_force`) still applies the plane's single
-flow vector to bodies; the bed field is attached to the plane and available
-to it, but a depth-profiled current on dynamic bodies is not built, so
-floating clutter in a river does not yet follow the visible bank turn.
+the authored flow), so the visible current bends with the channel. The same rule is
+`WaterFlow::over_bed` in core: the physics current on floating bodies
+(`apply_buoyancy`) and the `WaterContact` it publishes use it at the body's
+position, so clutter in a river follows the visible bank turn and slows over
+the shallows (`river_current_on_a_floating_body_follows_the_bed`).
 
 *Verified:* the bed data arrives intact on the Skyrim river (depth and
 direction render as smooth continuous fields over the water, dry ground
