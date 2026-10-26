@@ -1436,6 +1436,7 @@ mod tests {
             texture_handle: 0,
             normal_texture_handle: 0,
             hole_mask: 0,
+            rim_mask: 0,
         }
     }
 

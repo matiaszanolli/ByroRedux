@@ -491,6 +491,9 @@ pub(crate) fn spawn_btr_block(
         texture_handle: tex_handle,
         normal_texture_handle: normal_handle,
         hole_mask,
+        // Only invoked for a block with no resident neighbour (the caller's
+        // gate), so there is no rim to track and no skirt to hang.
+        rim_mask: 0,
     })
 }
 

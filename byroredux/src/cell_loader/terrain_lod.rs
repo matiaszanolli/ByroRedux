@@ -184,6 +184,48 @@ fn assemble_hole_mask(bx0: i32, by0: i32, holed: impl Fn(i32, i32) -> bool) -> u
     mask
 }
 
+// The rim mask is a `u16` too: `LOD_BLOCK_CELLS` cells along each of four sides.
+const _: () = assert!(
+    4 * LOD_BLOCK_CELLS <= 16,
+    "LOD rim mask is u16 — four sides of LOD_BLOCK_CELLS cells must fit"
+);
+
+/// OR a bit for every cell just outside the finest-level block whose SW corner is
+/// `(bx0, by0)` — the `LOD_BLOCK_CELLS` cells beyond each of its four edges
+/// (west, east, south, north, in that bit order per step along the edge) — for
+/// which `resident(gx, gy)` is true. These are the cells a skirt can look at across
+/// a block border, so the pattern is part of what a synth block was built from.
+fn assemble_rim_mask(bx0: i32, by0: i32, resident: impl Fn(i32, i32) -> bool) -> u16 {
+    let k = LOD_BLOCK_CELLS;
+    let mut mask: u16 = 0;
+    for d in 0..k {
+        let outside = [(bx0 - 1, by0 + d), (bx0 + k, by0 + d), (bx0 + d, by0 - 1), (bx0 + d, by0 + k)];
+        for (side, (gx, gy)) in outside.into_iter().enumerate() {
+            if resident(gx, gy) {
+                mask |= 1u16 << (d * 4 + side as i32);
+            }
+        }
+    }
+    mask
+}
+
+/// The rim pattern of the finest-level block at `(bx0, by0)` against actual
+/// full-detail residency (#6409). Together with [`block_hole_mask`] it is the
+/// block's rebuild key: a skirt exists exactly where a LOD quad edge borders a
+/// resident cell, wherever that cell is.
+fn block_rim_mask(bx0: i32, by0: i32, resident_full_cells: &HashSet<(i32, i32)>) -> u16 {
+    assemble_rim_mask(bx0, by0, |gx, gy| cell_is_full_detail(gx, gy, resident_full_cells))
+}
+
+/// Whether the finest-band block with this hole/rim pattern may be drawn from a
+/// prebaked `.btr` mesh: only when no cell of it is holed and none of its
+/// neighbours is resident. A `.btr` carries per-quad texturing but neither
+/// per-cell holes nor skirts, so a block that touches full-detail terrain takes
+/// the synth path, like a block that contains it (#6409).
+fn block_may_use_prebaked(hole_mask: u16, rim_mask: u16) -> bool {
+    hole_mask == 0 && rim_mask == 0
+}
+
 /// Mask with every cell holed — an empty block (no geometry to draw).
 fn all_holed_mask() -> u16 {
     ((1u32 << (LOD_BLOCK_CELLS * LOD_BLOCK_CELLS)) - 1) as u16
@@ -490,7 +532,7 @@ pub(crate) fn stream_lod_blocks(
     input: &LodReconcileInput<'_>,
     mat_provider: Option<&mut MaterialProvider>,
     lod_blocks: &mut HashMap<(i32, i32, i32), LodBlock>,
-    missing_blocks: &mut HashMap<(i32, i32, i32), u16>,
+    missing_blocks: &mut HashMap<(i32, i32, i32), (u16, u16)>,
     available_cache: &mut rustc_hash::FxHashMap<(i32, i32, i32), bool>,
     budget: &mut LodWorkBudget,
 ) -> bool {
@@ -628,13 +670,18 @@ pub(crate) fn stream_lod_blocks(
         // per-cell holes: selection subdivides any coarse quad that would
         // reach the resident ring (`LodReconcileInput::full_detail_radius`,
         // #6094), so the baked coarse meshes stay outside it.
-        let mask = if level == k {
-            block_hole_mask(cells_map, qx, qy, resident_full_cells)
+        let (mask, rim) = if level == k {
+            (
+                block_hole_mask(cells_map, qx, qy, resident_full_cells),
+                block_rim_mask(qx, qy, resident_full_cells),
+            )
         } else {
-            0
+            (0, 0)
         };
-        // Copy the prior mask out before mutating the map (no borrow held).
-        let prev_mask = lod_blocks.get(&(level, qx, qy)).map(|b| b.hole_mask);
+        // Copy the prior masks out before mutating the map (no borrow held).
+        let prev_masks = lod_blocks
+            .get(&(level, qx, qy))
+            .map(|b| (b.hole_mask, b.rim_mask));
 
         // Empty block (every cell holed) — ensure no stale entry remains.
         if mask == all_holed {
@@ -646,13 +693,13 @@ pub(crate) fn stream_lod_blocks(
             continue;
         }
 
-        match prev_mask {
-            Some(m) if m == mask => {
+        match prev_masks {
+            Some(m) if m == (mask, rim) => {
                 missing_blocks.remove(&(level, qx, qy));
                 continue;
             }
             Some(_) => {
-                // Hole pattern moved — drop the stale block now; its
+                // Hole or rim pattern moved — drop the stale block now; its
                 // replacement may be deferred below.
                 if let Some(block) = lod_blocks.remove(&(level, qx, qy)) {
                     unload_lod_block(world, ctx, &block);
@@ -662,11 +709,11 @@ pub(crate) fn stream_lod_blocks(
             None => {} // new block
         }
 
-        if missing_blocks.get(&(level, qx, qy)) == Some(&mask) {
+        if missing_blocks.get(&(level, qx, qy)) == Some(&(mask, rim)) {
             continue;
         }
         missing_blocks.remove(&(level, qx, qy));
-        candidates.push((level, qx, qy, mask));
+        candidates.push((level, qx, qy, mask, rim));
     }
 
     let candidate_count = candidates.len();
@@ -674,7 +721,7 @@ pub(crate) fn stream_lod_blocks(
     // #6092 — set when the geometry pool stops admitting uploads. The rest of
     // the ring is then held back rather than attempted or cached as a miss.
     let mut starved = false;
-    for (level, qx, qy, mask) in candidates {
+    for (level, qx, qy, mask, rim) in candidates {
         // #6092 — a closed pool refuses every upload, so decoding and
         // rejecting each remaining quad is wasted work (an archive read, a
         // parse, a texture resolve) for a certain refusal.
@@ -690,17 +737,19 @@ pub(crate) fn stream_lod_blocks(
 
         // Prefer the game's prebaked `.btr` distant-terrain mesh for a
         // fully-distant block (`mask == 0` → every cell has landscape and
-        // none lie inside the full-detail ring): it carries per-quad
+        // none lie inside the full-detail ring, and `rim == 0` → no resident
+        // neighbour to hang a skirt against): it carries per-quad
         // texturing instead of the synth path's single flat base texture.
         // Boundary blocks (`mask != 0`) need per-cell hole-masking a baked
-        // mesh can't do, and missing `.btr` / older games fall through — the
-        // synth path handles all of those. Exactly one block per coordinate,
+        // mesh can't do, blocks beside the resident region (`rim != 0`) need
+        // the synth path's skirts (#6409), and missing `.btr` / older games
+        // fall through — the synth path handles all of those. Exactly one block per coordinate,
         // so the textured LOD never double-draws the synth LOD (EXAL §5).
         //
         // Coarse bands (`level > k`) exist *only* as `.btr`: the descent
         // above only proposes them where one is baked, and the synth builder
         // is finest-band-only (its hole mask is a `u16`, one bit per cell).
-        let btr_block = if mask == 0 && combined_lod_supported(game) {
+        let btr_block = if block_may_use_prebaked(mask, rim) && combined_lod_supported(game) {
             super::terrain_lod_btr::spawn_btr_block(
                 world,
                 ctx,
@@ -761,7 +810,7 @@ pub(crate) fn stream_lod_blocks(
                 // Remember a real miss at this exact hole mask so a budgeted
                 // reconcile can continue outward instead of retrying forever.
                 LodAttemptVerdict::Miss => {
-                    missing_blocks.insert((level, qx, qy), mask);
+                    missing_blocks.insert((level, qx, qy), (mask, rim));
                 }
                 // #6092 — the pool refused this quad. It says nothing about
                 // the asset, so nothing is remembered: this quad and the rest
@@ -1246,10 +1295,13 @@ fn spawn_lod_block(
     // and is skipped by any TLAS-membership logic.
     world.insert(entity, IsLodTerrain);
 
-    let hole_mask = if level == LOD_BLOCK_CELLS {
-        block_hole_mask(cells_map, bx0, by0, resident_full_cells)
+    let (hole_mask, rim_mask) = if level == LOD_BLOCK_CELLS {
+        (
+            block_hole_mask(cells_map, bx0, by0, resident_full_cells),
+            block_rim_mask(bx0, by0, resident_full_cells),
+        )
     } else {
-        0
+        (0, 0)
     };
     Some(LodBlock {
         entity,
@@ -1257,6 +1309,7 @@ fn spawn_lod_block(
         texture_handle: tex_handle,
         normal_texture_handle,
         hole_mask,
+        rim_mask,
     })
 }
 
@@ -1854,6 +1907,73 @@ mod tests {
             "the radius-13 premise is gone: without the fix no coarse authored quad \
              reaches the ring, so this test no longer exercises #6094"
         );
+    }
+
+    /// #6409 — a skirt looks at the neighbouring CELL, which can sit in the next block, so a block
+    /// must regenerate when a resident cell appears just outside it even though none of its own
+    /// 16 cells changed. The hole mask alone cannot see that; the rim mask does.
+    #[test]
+    fn a_resident_cell_in_the_next_block_changes_the_rim_not_the_hole_mask() {
+        let k = LOD_BLOCK_CELLS;
+        let resident_at = |cell: (i32, i32)| move |gx: i32, gy: i32| (gx, gy) == cell;
+        // Block (0,0); the resident region advances onto the first cell of the block east of it.
+        let before = (
+            assemble_hole_mask(0, 0, resident_at((-50, -50))),
+            assemble_rim_mask(0, 0, resident_at((-50, -50))),
+        );
+        let after = (
+            assemble_hole_mask(0, 0, resident_at((k, 1))),
+            assemble_rim_mask(0, 0, resident_at((k, 1))),
+        );
+        assert_eq!(before.0, after.0, "none of the block's own cells changed");
+        assert_eq!(before.1, 0);
+        assert_ne!(before.1, after.1, "the rim sees the neighbour block's cell");
+        // Every outside cell has its own bit, and no cell inside the block sets one.
+        let mut seen = 0u16;
+        for d in 0..k {
+            for cell in [(-1, d), (k, d), (d, -1), (d, k)] {
+                let bit = assemble_rim_mask(0, 0, resident_at(cell));
+                assert_eq!(bit.count_ones(), 1, "{cell:?}");
+                assert_eq!(seen & bit, 0, "{cell:?} shares a bit");
+                seen |= bit;
+            }
+        }
+        assert_eq!(seen, u16::MAX, "all 16 rim cells are tracked");
+        for dy in 0..k {
+            for dx in 0..k {
+                assert_eq!(assemble_rim_mask(0, 0, resident_at((dx, dy))), 0, "inside ({dx},{dy})");
+            }
+        }
+        // Corner-diagonal cells never face a quad edge.
+        assert_eq!(assemble_rim_mask(0, 0, resident_at((-1, -1))), 0);
+        assert_eq!(assemble_rim_mask(0, 0, resident_at((k, k))), 0);
+    }
+
+    /// #6409 — a prebaked `.btr` block has no skirts, so it is used only when no cell of it is
+    /// holed and no neighbour is resident.
+    #[test]
+    fn a_block_beside_resident_ground_takes_the_synth_path() {
+        assert!(block_may_use_prebaked(0, 0));
+        assert!(!block_may_use_prebaked(1, 0), "a holed cell needs the synth path");
+        assert!(!block_may_use_prebaked(0, 1), "a resident neighbour needs a skirt");
+        assert!(!block_may_use_prebaked(3, 8));
+    }
+
+    /// #6409 — the streaming step keys both the rebuild and the attempted-miss cache on the pair,
+    /// and gates the `.btr` path on it.
+    #[test]
+    fn the_ring_rebuilds_and_gates_on_the_hole_and_rim_pair() {
+        let production = byroredux_core::source_scan::production_text(include_str!("terrain_lod.rs"));
+        let stream = &production[production.find("pub(crate) fn stream_lod_blocks(").unwrap()..];
+        for needle in [
+            "(b.hole_mask, b.rim_mask)",
+            "Some(m) if m == (mask, rim)",
+            "Some(&(mask, rim))",
+            "missing_blocks.insert((level, qx, qy), (mask, rim))",
+            "block_may_use_prebaked(mask, rim)",
+        ] {
+            assert!(stream.contains(needle), "stream_lod_blocks lost: {needle}");
+        }
     }
 
     /// #1373 — a boundary block's hole mask shifts as the player crosses

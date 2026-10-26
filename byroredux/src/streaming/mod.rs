@@ -57,6 +57,13 @@ pub struct LoadedCell {
 /// of staying anchored to the spawn cell. Unloading a block calls
 /// `drop_mesh(mesh_handle)` (frees its global-SSBO range on the next
 /// rebuild) + `World::despawn(entity)`.
+///
+/// `rim_mask` is the same pattern for the 16 cells just outside the block's
+/// four edges (see `terrain_lod::block_rim_mask`): a synth block hangs skirts
+/// under the edges that border a resident full-detail cell, and that cell may
+/// sit in the next block, so the block is regenerated when its rim changes too
+/// (#6409). A prebaked `.btr` block has no skirts and is used only with an
+/// empty rim.
 #[derive(Debug, Clone, Copy)]
 pub struct LodBlock {
     pub entity: EntityId,
@@ -75,6 +82,7 @@ pub struct LodBlock {
     /// `texture_handle`.
     pub normal_texture_handle: u32,
     pub hole_mask: u16,
+    pub rim_mask: u16,
 }
 
 /// Distant, worldspace-wide LOD water mesh (#2449 / EXAL-01; per cell since
@@ -307,11 +315,11 @@ pub struct WorldStreamingState {
     /// the hole-out went stale as the player walked.
     pub lod_blocks: HashMap<(i32, i32, i32), LodBlock>,
     /// Terrain-LOD coordinates that were reconciled but produced no mesh,
-    /// keyed to the hole mask that was attempted. This is the terrain
+    /// keyed to the `(hole mask, rim mask)` that was attempted. This is the terrain
     /// equivalent of the empty sentinels stored directly in the object and
     /// placement maps: incremental initialization must not retry the same
     /// absent asset every frame and starve all later coordinates.
-    pub lod_missing_blocks: HashMap<(i32, i32, i32), u16>,
+    pub lod_missing_blocks: HashMap<(i32, i32, i32), (u16, u16)>,
     /// Distant **object** LOD quads, keyed by `(level, qx, qy)` — the quad's
     /// LOD band plus its SW-corner cell (EXAL step 6). Skyrim+/FO4 only —
     /// each entry is the baked `.bto` macro-mesh's spawned sub-meshes (or an
