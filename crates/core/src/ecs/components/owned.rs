@@ -18,8 +18,10 @@ use crate::ecs::storage::Component;
 /// neither the player reference (0x14) nor a faction the player holds rank
 /// in. The classification is recorded (notification + `stolen` on
 /// `ItemTransfer` rows), and where the game has a [`CrimeModel`] a theft
-/// seen by an NPC adds its bounty (`byroredux/src/crime.rs`); guards, arrest
-/// and the other crimes are not modelled.
+/// seen by an NPC adds its bounty. Bounty, witnesses, guards and Oblivion jail
+/// live in `byroredux/src/crime.rs` and
+/// `scripting/src/{jail,guards,crime_knowledge}.rs`; see that module's *Not
+/// modelled yet* list for what is still missing.
 ///
 /// [`CrimeModel`]: crate::character::CrimeModel
 ///
