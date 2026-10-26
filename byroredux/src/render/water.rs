@@ -28,7 +28,7 @@
 use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterMaterial, WaterPlane};
 use byroredux_core::ecs::{EntityId, MeshHandle, Resource, TotalTime, World};
 use byroredux_renderer::vulkan::context::DrawCommand;
-use byroredux_renderer::vulkan::water::{GpuWaterParams, WaterDrawCommand};
+use byroredux_renderer::vulkan::water::{pack_rain_controls, GpuWaterParams, WaterDrawCommand};
 use byroredux_scripting::RippleEvent;
 use rustc_hash::FxHashMap;
 
@@ -63,24 +63,6 @@ fn effective_noise_indices(material: &WaterMaterial) -> [u32; 3] {
             index
         }
     })
-}
-
-/// Pack three non-negative legacy rain controls into the reserved fourth
-/// normal-falloff lane. Each channel uses a 10-bit reciprocal encoding so
-/// small authored values retain useful precision while large malformed
-/// values remain bounded; zero is the compatibility sentinel.
-#[inline]
-fn pack_rain_controls(velocity: f32, falloff: f32, dampener: f32) -> f32 {
-    let quantize = |value: f32| {
-        let value = if value.is_finite() {
-            value.max(0.0)
-        } else {
-            0.0
-        };
-        ((value / (value + 1.0)).clamp(0.0, 0.999) * 1023.0).round() as u32
-    };
-    let packed = quantize(velocity) | (quantize(falloff) << 10) | (quantize(dampener) << 20);
-    f32::from_bits(packed)
 }
 
 /// Re-emit water planes: flip the `is_water` flag on each plane's

@@ -456,6 +456,12 @@
 #define DEFAULT_WATER_WAVE_FREQUENCY 0.6
 #define WATER_COLUMN_ABSORPTION_SHAPE 2.0
 #define WATER_FLOW_MAP_CYCLE_SECONDS 4.0
+// Water legacy rain-control lane packing — CPU half is `vulkan::water::pack_rain_controls` (TD7-2026-10-25-03).
+#define WATER_RAIN_LANE_BITS 10u
+#define WATER_RAIN_LANE_MASK 1023u
+#define WATER_RAIN_LANE_SCALE 1023.0
+#define WATER_RAIN_ENCODED_MAX 0.999
+#define WATER_RAIN_DECODE_EPSILON 0.001
 // `water.vert` two-wave displacement — shared with the CPU crest sampler (#5582).
 #define WATER_WAVE_DEFAULT_SCROLL_A 0.0228254
 #define WATER_WAVE_DEFAULT_SCROLL_B 0.0286531

@@ -1804,6 +1804,21 @@ pub const WATER_COLUMN_ABSORPTION_SHAPE: f32 = 2.0;
 /// phase travels 0.08 UV — under a tenth of a tile — before it resets.
 pub const WATER_FLOW_MAP_CYCLE_SECONDS: f32 = 4.0;
 
+// Legacy rain controls (velocity / falloff / dampener) ride in the reserved
+// fourth `normal_falloff` lane as three 10-bit `v / (v + 1)` quantised
+// fields. `vulkan::water::{pack,unpack}_rain_controls` is the CPU half and
+// `water.frag` the GPU half; both read these.
+pub const WATER_RAIN_LANE_BITS: u32 = 10;
+pub const WATER_RAIN_LANE_MASK: u32 = (1u32 << WATER_RAIN_LANE_BITS) - 1;
+/// Quantisation scale: a lane holds `round(x * SCALE)` for `x` in `[0, 1)`.
+pub const WATER_RAIN_LANE_SCALE: f32 = WATER_RAIN_LANE_MASK as f32;
+/// Upper clamp on the `v / (v + 1)` code before quantising. It keeps the
+/// decode `x / (1 - x)` finite (the largest representable control is
+/// ~`LANE_MASK - 1`, not infinity), so a malformed authored value stays bounded.
+pub const WATER_RAIN_ENCODED_MAX: f32 = 0.999;
+/// Decoder denominator floor in `x / max(1 - x, EPSILON)`.
+pub const WATER_RAIN_DECODE_EPSILON: f32 = 0.001;
+
 // Local fog-volume clustering (M55/Session 62). Lockstep with
 // `volumetrics_inject.comp`'s `sampleLocalMedium` and
 // `vulkan::volumetrics`, which derive their own `usize` copies from these
@@ -2880,6 +2895,12 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float DEFAULT_WATER_WAVE_FREQUENCY),
     shader_define!(Float WATER_COLUMN_ABSORPTION_SHAPE),
     shader_define!(Float WATER_FLOW_MAP_CYCLE_SECONDS),
+    HeaderLine::Comment("Water legacy rain-control lane packing — CPU half is `vulkan::water::pack_rain_controls` (TD7-2026-10-25-03)."),
+    shader_define!(Uint WATER_RAIN_LANE_BITS),
+    shader_define!(Uint WATER_RAIN_LANE_MASK),
+    shader_define!(Float WATER_RAIN_LANE_SCALE),
+    shader_define!(Float WATER_RAIN_ENCODED_MAX),
+    shader_define!(Float WATER_RAIN_DECODE_EPSILON),
     HeaderLine::Comment("`water.vert` two-wave displacement — shared with the CPU crest sampler (#5582)."),
     shader_define!(Float WATER_WAVE_DEFAULT_SCROLL_A),
     shader_define!(Float WATER_WAVE_DEFAULT_SCROLL_B),

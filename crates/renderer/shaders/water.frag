@@ -927,11 +927,12 @@ void main() {
         }
         uint rainPacked = floatBitsToUint(push.normal_falloff.w);
         vec3 rainNormalised = vec3(
-            float(rainPacked & 1023u),
-            float((rainPacked >> 10u) & 1023u),
-            float((rainPacked >> 20u) & 1023u)
-        ) / 1023.0;
-        vec3 rainControls = rainNormalised / max(vec3(1.0) - rainNormalised, vec3(0.001));
+            float(rainPacked & WATER_RAIN_LANE_MASK),
+            float((rainPacked >> WATER_RAIN_LANE_BITS) & WATER_RAIN_LANE_MASK),
+            float((rainPacked >> (2u * WATER_RAIN_LANE_BITS)) & WATER_RAIN_LANE_MASK)
+        ) / WATER_RAIN_LANE_SCALE;
+        vec3 rainControls = rainNormalised
+            / max(vec3(1.0) - rainNormalised, vec3(WATER_RAIN_DECODE_EPSILON));
         float rainRate = rainControls.x > 0.0
             ? clamp(rainControls.x, 0.25, 16.0)
             : 1.0;

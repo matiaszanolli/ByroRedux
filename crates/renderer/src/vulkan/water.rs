@@ -190,6 +190,49 @@ const _: () = assert!(
     "GpuWaterParams must remain 23 std430 vec4 slots"
 );
 
+/// Pack three non-negative legacy rain controls into the reserved fourth
+/// `GpuWaterParams::normal_falloff` lane. Each channel uses a
+/// `WATER_RAIN_LANE_BITS`-bit reciprocal (`v / (v + 1)`) encoding so small
+/// authored values retain useful precision while large malformed values
+/// remain bounded; zero is the compatibility sentinel. Decoded by
+/// `water.frag` and mirrored by [`unpack_rain_controls`].
+#[inline]
+pub fn pack_rain_controls(velocity: f32, falloff: f32, dampener: f32) -> f32 {
+    use crate::shader_constants::{
+        WATER_RAIN_ENCODED_MAX, WATER_RAIN_LANE_BITS, WATER_RAIN_LANE_SCALE,
+    };
+    let quantize = |value: f32| {
+        let value = if value.is_finite() {
+            value.max(0.0)
+        } else {
+            0.0
+        };
+        ((value / (value + 1.0)).clamp(0.0, WATER_RAIN_ENCODED_MAX) * WATER_RAIN_LANE_SCALE).round()
+            as u32
+    };
+    let packed = quantize(velocity)
+        | (quantize(falloff) << WATER_RAIN_LANE_BITS)
+        | (quantize(dampener) << (2 * WATER_RAIN_LANE_BITS));
+    f32::from_bits(packed)
+}
+
+/// CPU mirror of `water.frag`'s rain-control decode — the other half of the
+/// round trip `pack_rain_controls` is tested against.
+pub fn unpack_rain_controls(packed: f32) -> [f32; 3] {
+    use crate::shader_constants::{
+        WATER_RAIN_DECODE_EPSILON, WATER_RAIN_LANE_BITS, WATER_RAIN_LANE_MASK,
+        WATER_RAIN_LANE_SCALE,
+    };
+    let bits = packed.to_bits();
+    let lane = |index: u32| {
+        let normalised =
+            ((bits >> (index * WATER_RAIN_LANE_BITS)) & WATER_RAIN_LANE_MASK) as f32
+                / WATER_RAIN_LANE_SCALE;
+        normalised / (1.0 - normalised).max(WATER_RAIN_DECODE_EPSILON)
+    };
+    [lane(0), lane(1), lane(2)]
+}
+
 /// Per-draw selector for the material array uploaded once per frame.
 ///
 /// The GLSL `WaterDrawPush` blocks (water.vert / water.frag) declare only
@@ -1324,6 +1367,59 @@ mod tests {
         assert!(src.contains("1.7 / max(push.displacement.w, 0.25)"));
         assert!(src.contains("uint rainPacked = floatBitsToUint(push.normal_falloff.w)"));
         assert!(src.contains("rainControls.z / 4.0"));
+    }
+
+    #[test]
+    fn water_fragment_shader_decodes_rain_lanes_from_shared_constants() {
+        let src = include_str!("../../shaders/water.frag");
+        for token in [
+            "WATER_RAIN_LANE_MASK",
+            "WATER_RAIN_LANE_BITS",
+            "WATER_RAIN_LANE_SCALE",
+            "WATER_RAIN_DECODE_EPSILON",
+        ] {
+            assert!(src.contains(token), "water.frag must read {token}");
+        }
+        // The bare literals this contract used to be spelled with.
+        assert!(!src.contains("& 1023u") && !src.contains("/ 1023.0"));
+    }
+
+    #[test]
+    fn rain_controls_zero_is_the_compat_sentinel() {
+        assert_eq!(pack_rain_controls(0.0, 0.0, 0.0).to_bits(), 0);
+        assert_eq!(unpack_rain_controls(pack_rain_controls(0.0, 0.0, 0.0)), [0.0; 3]);
+        // Negative and non-finite authored values collapse to the sentinel.
+        for bad in [-3.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(pack_rain_controls(bad, bad, bad).to_bits(), 0, "{bad}");
+        }
+    }
+
+    #[test]
+    fn rain_controls_round_trip_keeps_each_lane_independent() {
+        let decoded = unpack_rain_controls(pack_rain_controls(1.0, 2.0, 4.0));
+        for (got, want) in decoded.iter().zip([1.0f32, 2.0, 4.0]) {
+            assert!((got - want).abs() / want < 0.01, "{got} vs {want}");
+        }
+        // A lane set alone must not leak into its neighbours.
+        let only_mid = unpack_rain_controls(pack_rain_controls(0.0, 3.0, 0.0));
+        assert_eq!(only_mid[0], 0.0);
+        assert_eq!(only_mid[2], 0.0);
+        assert!((only_mid[1] - 3.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn rain_controls_clamp_bounds_a_huge_authored_value() {
+        use crate::shader_constants::{
+            WATER_RAIN_DECODE_EPSILON, WATER_RAIN_ENCODED_MAX, WATER_RAIN_LANE_SCALE,
+        };
+        let [v, ..] = unpack_rain_controls(pack_rain_controls(1.0e9, 0.0, 0.0));
+        // The 0.999 clamp quantises to the top code (1022 of 1023), and the
+        // decoder's denominator floor then bounds the control at ~999 — it
+        // must never run toward infinity.
+        let top = (WATER_RAIN_ENCODED_MAX * WATER_RAIN_LANE_SCALE).round() / WATER_RAIN_LANE_SCALE;
+        let expected = top / (1.0 - top).max(WATER_RAIN_DECODE_EPSILON);
+        assert!((v - expected).abs() < 1e-2, "{v} vs {expected}");
+        assert!((998.0..1000.0).contains(&v), "{v}");
     }
 
     #[test]
