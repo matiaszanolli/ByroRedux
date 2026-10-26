@@ -778,6 +778,22 @@ Leveling](https://en.uesp.net/wiki/Skyrim:Leveling). Implemented as
 `SKYRIM_SKILL_USE_CURVE` (`crates/core/src/character/skyrim.rs`), pinned by
 `skill_xp_cost_matches_uesp_lockpicking`.
 
+## Bleedout, encumbrance, barter defaults — LOCKED (#6284)
+
+The executable defaults `CharacterRulesProfile::SKYRIM` carries (#5921), captured
+here so the row can be checked against a document.
+
+- **Essential bleedout.** `fEssentialDeathTime` defaults to **30 s** in
+  SkyrimSE.exe's setting table; Skyrim.esm authors **20 s**, which overrides it.
+  `fEssentialHealthPercentReGain` defaults to **0.3** (`scripting.md`, "Essential
+  and Protected actors, bleedout").
+- **Over-encumbrance — no sprint.** UESP *Skyrim:Carry Weight*: "If you try to
+  carry a combined weight that is greater than your Carry Weight, you will be
+  limited to walking, unable to run or sprint." The capacity is the Carry Weight
+  formula above; the rule is `OverEncumberedRule::NoSprint`.
+- **Barter.** The executable defaults `fBarterSellMax=0.95` and
+  `fBarterBuyMin=1.05` are captured in "Barter prices" above.
+
 ## Crime — fines per crime faction (built), guards and jail (not built)
 
 Sources: CK *Crime*, *Faction* (Crime Tab), *Creating a Custom Crime Faction*,

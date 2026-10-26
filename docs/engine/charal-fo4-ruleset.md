@@ -510,6 +510,28 @@ parameterisation for CHARAL.
 → **The FO4 *player-facing* ruleset is now complete.** Only NPC SPECIAL storage
 (below) remains before NPC population code.
 
+## Bleedout, encumbrance, kill XP, barter defaults — LOCKED where sourced (#6284)
+
+What `CharacterRulesProfile::FALLOUT4` carries (#5921), captured here so the row
+can be checked against a document. Two of its switches are *off because the
+rule is uncaptured*, not because the game lacks the mechanic.
+
+- **Essential bleedout.** `fEssentialDeathTime` defaults to **30 s** in
+  Fallout4.exe's setting table; Fallout4.esm authors **20 s**, which overrides it.
+  `fEssentialHealthPercentReGain` defaults to **0.3** (`scripting.md`, "Essential
+  and Protected actors, bleedout").
+- **Over-encumbrance — NOT captured, not wired** (`OverEncumberedRule::None`).
+  "Carry Weight" above captures only the capacity. No source for what exceeding
+  it does is in the local references (`encumbrance.rs` records the same gap),
+  so no effect is modelled rather than a guessed one.
+- **Kill experience — the game has it; the formula is NOT captured, so the
+  consumer is off** (`kill_experience: false` means "unwired", not "FO4 awards
+  none"). The XP / level curve above says the XP multiplier scales XP from all
+  sources and that Survival mode doubles kill XP, so kills do award XP; the base
+  per-kill amount is unsourced.
+- **Barter.** The executable defaults `fBarterSellMax=0.95` and
+  `fBarterBuyMin=1.05` are captured in "Barter Prices" above.
+
 ## NPC SPECIAL storage — RESOLVED (xEdit `Core/wbDefinitionsFO4.pas`, dev-4.1.6)
 
 **Answer: the `PRPS` (Properties) subrecord — an array of `(AVIF FormID, value)`

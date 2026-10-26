@@ -799,6 +799,22 @@ attribute receives a +1 to +5 bonus based on governed major-skill increases
 skill-use progression curve. Source: [UESP Oblivion:
 Leveling](https://en.uesp.net/wiki/Oblivion:Leveling).
 
+## Essential bleedout and encumbrance — LOCKED / NOT WIRED (#6284)
+
+The two executable-derived facts `CharacterRulesProfile::OBLIVION` carries (#5921).
+
+- **Essential bleedout.** The essential-actor down time is **10 s**; Oblivion.exe
+  loads it as a constant beside the setting's name (there is no GMST to read), and
+  the health regained on getting up is **0.3** (`scripting.md`, "Essential and
+  Protected actors, bleedout").
+- **Over-encumbrance — NOT wired** (`OverEncumberedRule::None`). UESP
+  *Oblivion:Encumbrance*: when the carried weight exceeds the maximum, "you will
+  become over-encumbered and will not be able to move". Encumbrance is a
+  hard-coded actor value with no `AVIF`, so the engine keeps no over-encumbrance
+  rule for Oblivion yet; the Movement section above covers the speed formula only.
+- **Barter.** No barter model is wired (`barter: None`); the Commerce section
+  above holds the sourced price formula.
+
 ## Crime fines — theft, assault and murder built, the rest sourced and unbuilt
 
 Sources: CS wiki *Crime Overview*, *iCrimeGoldXX*, *fCrimeGoldSteal*,

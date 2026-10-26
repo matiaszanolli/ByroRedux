@@ -245,9 +245,11 @@ pub struct CharacterRulesProfile {
     ruleset: RulesetBuilder,
     /// #5921 — what over-encumbrance does.
     over_encumbered: OverEncumberedRule,
-    /// #5921 — whether killing an actor awards experience. The GECK
-    /// documents FO3 / FNV kill rewards; Skyrim.esm authors the same
-    /// `iXPLevelKill*` names but levels by skill use and awards none.
+    /// #5921 — whether the kill-experience consumer is wired, i.e. a sourced
+    /// kill-XP formula exists. The GECK documents FO3 / FNV kill rewards;
+    /// Skyrim.esm authors the same `iXPLevelKill*` names but levels by skill
+    /// use and awards none. `false` also covers a game that *does* award kill
+    /// XP whose formula is uncaptured (FO4: `charal-fo4-ruleset.md`).
     kill_experience: bool,
     /// #5921 — the engine's `fEssentialDeathTime` default (seconds an
     /// essential actor stays down), read from each executable's setting
@@ -434,8 +436,9 @@ impl CharacterRulesProfile {
         // FO4 / FO76 radiation lowers max HP instead of filling a meter.
         radiation_gauge: None,
         ruleset: RulesetBuilder::Fallout4,
-        // No sourced FO4 over-encumbrance effect is wired (#5921 capture
-        // note: intended, not an oversight).
+        // No sourced FO4 over-encumbrance effect or kill-XP formula is wired:
+        // both rules are uncaptured (`charal-fo4-ruleset.md`, "Bleedout,
+        // encumbrance, kill XP, barter defaults"), not absent from the game.
         over_encumbered: OverEncumberedRule::None,
         kill_experience: false,
         // Fallout4.exe's setting table.
@@ -571,7 +574,7 @@ impl CharacterRulesProfile {
         self.over_encumbered
     }
 
-    /// #5921 — whether killing an actor awards experience.
+    /// #5921 — whether the kill-experience consumer is wired (see the field doc).
     #[must_use]
     pub const fn awards_kill_experience(self) -> bool {
         self.kill_experience
