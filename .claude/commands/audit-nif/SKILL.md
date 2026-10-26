@@ -203,7 +203,7 @@ First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archiv
 **Output**: `/tmp/audit/nif/dim_3.md`
 
 ### Dimension 4: Geometry Extraction & Import Handoff
-Paths: `crates/nif/src/import/{mod,types,transform,coord,precombine,units}.rs`, `import/mesh/`, `import/walk/`, `import/material/{walker,dedicated_shader}.rs`
+Paths: `crates/nif/src/import/{mod,transform,coord,precombine,units}.rs`, `import/types/`, `import/mesh/`, `import/walk/`, `import/material/{walker,dedicated_shader}.rs`
 First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/import/mesh crates/nif/src/import/walk`
 This is the *parse → ECS* handoff; per-game material classification is `/audit-nifal`.
 **Guards**: `import/mesh/sse_skin_index_space_tests.rs` (`#[ignore]`, needs Skyrim SE data),

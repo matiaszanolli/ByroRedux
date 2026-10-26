@@ -87,7 +87,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 373 (368 on 2026-10-24, 363 on 2026-10-21, 352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
    earlier reports scoped to `crates`+`byroredux` read lower; none runs on a hosted runner),
    production >2000 LOC: **5** — `crates/renderer/src/shader_constants_data.rs` (2972, a data table, Dim 1),
-   `crates/scripting/examples/mq101_conformance.rs` (2157), `crates/audio/src/lib.rs` (2086, +52 in three days),
+   `crates/scripting/examples/mq101_conformance.rs` (2157), `crates/audio/src/` (one 2086-LOC `lib.rs` until #6140 split it),
    `crates/scripting/src/obscript_effects.rs` (2034; 1528 at dcad3669d → 2032 at d5d13edcc, #6139 stage 8) and
    `crates/nif/src/import/types/` (one 2011-LOC `types.rs` until #6141 split it). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
    `crates/scripting/src/fragment/vm.rs`, `crates/scripting/src/translate/effects.rs`, `crates/scripting/src/condition.rs`,

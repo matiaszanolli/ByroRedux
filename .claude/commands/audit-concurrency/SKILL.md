@@ -367,7 +367,7 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
 **Output**: `/tmp/audit/concurrency/dim_6.md`
 
 ### Dimension 7: Worker Threads & Thread-Safety Bounds
-Paths: `byroredux/src/streaming/`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/terrain_height.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/render/mod.rs`, `crates/bsa/src/read_at.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/lib.rs`
+Paths: `byroredux/src/streaming/`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/terrain_height.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/render/mod.rs`, `crates/bsa/src/read_at.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/`
 First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs' crates byroredux tools | grep -v test` (a new worker thread outside this list is a coverage gap)
 **Checklist**:
 - **Streaming worker shutdown.** `WorldStreamingState::shutdown` takes the `worker` handle first, then

@@ -31,8 +31,8 @@ Audits `crates/audio/` (kira `0.12`, `default-features = false` with an explicit
 ## Phase 2: Dimensions
 
 ### Dim 1: Spatial Dispatch, Listener & the Unit Seam
-**Paths**: `crates/audio/src/lib.rs` (`dispatch_new_oneshots`, `drain_pending_oneshots`, `build_spatial_track`, `prune_stopped_sounds`, `sync_listener_pose`, `sync_emitter_positions`, `bu_to_audio_space`, `linear_volume_to_db`, `ActiveSound`, `SoundSource`, `play_oneshot_following`, `stop_sounds_for`)
-**First step**: `git log --since=D -- crates/audio/src/lib.rs`
+**Paths**: `crates/audio/src/` (`dispatch_new_oneshots`, `drain_pending_oneshots`, `build_spatial_track`, `prune_stopped_sounds`, `sync_listener_pose`, `sync_emitter_positions`, `bu_to_audio_space`, `linear_volume_to_db`, `ActiveSound`, `SoundSource`, `play_oneshot_following`, `stop_sounds_for`)
+**First step**: `git log --since=D -- crates/audio/src/`
 **Guards** (default lane): `tests.rs::{every_kira_position_site_goes_through_the_unit_seam, emitter_at_max_distance_in_bu_lands_on_max_distance_in_audio_space, drain_pending_oneshots_drains_in_place_instead_of_stranding_capacity, play_oneshot_queue_caps_at_max_pending_when_active, oneshot_marker_is_consumed_on_both_dispatch_failure_arms, with_start_delay_sets_the_start_time_and_shares_frames, play_oneshot_following_drops_on_inactive_audio, stop_sounds_for_is_a_no_op_on_a_headless_world}`; `#[ignore]`d device-gated `emitter_position_follows_the_source_entity_regression_3086` (#3086) and `anchored_voice_follows_survives_prune_and_stops` (#5410).
 - Two dispatch paths stay observably equivalent: entity path (`OneShotSound`+`AudioEmitter` → per-emitter `SpatialTrackHandle`, `SoundSource::Emitter`, marker removed, `AudioEmitter` kept) and queue path (`PendingOneShot`, never loops: `play_oneshot` → `SoundSource::Detached`, or `play_oneshot_following` → `SoundSource::Anchored(entity)`, #5410 d1a7ee8c6). Both early-return without a listener id and build their sub-track through the one `build_spatial_track` (distance window, reverb send, underwater filter, kira sub-track; each loop keeps only its play tail and error policy, #5738 eac602644) — a loop that hand-builds the chain again is the regression. `stop_sounds_for(entity, fade_ms)` fades every playing `Emitter`/`Anchored` sound of the entity and drops its queued segments; its production caller is `dialogue_voice::stop_line_voice` (150 ms fade; `apply_selection`, `end_open_conversation`, `reconcile_dead_actor`, and ahead of each ObScript `Say` line in `scripted_line_voice_system`; #5432). The entity path has NO engine producer — `spawn_oneshot_at` is test/tooling-only, so its dispatch is exercised by `tests.rs` alone (#5612 81207d34d).
 - `ActiveSound::track` is held for its Drop side effect AND carries the #3086 position pushes (renamed from `_track`; the track must still be kept alive): it must land in `active_sounds` before the helper returns. `Arc<StaticSoundData>` is shared, never deep-cloned; volume applies via `(*sound).clone().volume(db)`.
@@ -44,8 +44,8 @@ Audits `crates/audio/` (kira `0.12`, `default-features = false` with an explicit
 **Output**: `/tmp/audit/audio/dim_1.md`
 
 ### Dim 2: Send Graph: Reverb Send & Underwater Filter
-**Paths**: `crates/audio/src/lib.rs` (`AudioWorld::new`, `apply_reverb_send`, `reverb_send_gate_open`, `set_reverb_send_db`, `apply_underwater_filter`, `update_underwater_filters`, `set_underwater`)
-**First step**: `git log --since=D -- crates/audio/src/lib.rs` (send/filter regions)
+**Paths**: `crates/audio/src/` (`AudioWorld::new`, `apply_reverb_send`, `reverb_send_gate_open`, `set_reverb_send_db`, `apply_underwater_filter`, `update_underwater_filters`, `set_underwater`)
+**First step**: `git log --since=D -- crates/audio/src/` (send/filter regions)
 **Guards**: `tests.rs::{reverb_send_defaults_to_silent, reverb_send_gate_matches_silence_db_boundary, above_water_filter_state_is_a_dry_bypass, above_water_cutoff_never_reaches_the_kira_clamp_ceiling, both_dispatch_paths_build_the_filter_through_one_call_site}`.
 - One global reverb send is created in `AudioWorld::new` from `REVERB_FEEDBACK`/`REVERB_DAMPING`/`REVERB_STEREO_WIDTH` (0.85/0.6/1.0). They have **no recorded provenance** and are not kira's defaults: flag the doc gap, never invent a rationale. `reverb_send: None` never cascades into an `unwrap()`.
 - Send opt-in is build-time only (`with_send` at track construction, gated `is_finite() && > -60 dB`) and both paths use the shared helper. Default level `NEG_INFINITY` (dry). Playing sounds keep their construction-time level: the documented "next-dispatch knob" contract, not a bug — kira 0.12's `SpatialTrackHandle::set_send` could retarget an existing route, but the engine does not, and a track built while the send was muted has no route at all (doc corrected #5677 b0b9bc987; a live fader needs every track routed at `SILENCE_DB` from construction).
@@ -53,8 +53,8 @@ Audits `crates/audio/` (kira `0.12`, `default-features = false` with an explicit
 **Output**: `/tmp/audit/audio/dim_2.md`
 
 ### Dim 3: Streaming Music & SoundCache
-**Paths**: `crates/audio/src/lib.rs` (`play_music`, `stop_music`, `is_music_active`, `play_script_music`, `stop_script_music`, `load_streaming_sound_from_*`, `SoundCache`, `VoiceSoundCache`)
-**First step**: `git log --since=D -- crates/audio/src/lib.rs`
+**Paths**: `crates/audio/src/` (`play_music`, `stop_music`, `is_music_active`, `play_script_music`, `stop_script_music`, `load_streaming_sound_from_*`, `SoundCache`, `VoiceSoundCache`)
+**First step**: `git log --since=D -- crates/audio/src/`
 **Guards**: `tests.rs::{play_music_no_op_when_inactive, sound_cache_hits_are_case_insensitive_and_share_arc, sound_cache_get_or_load_invokes_loader_only_on_miss, sound_cache_clear_drops_entries_and_bytes_estimate_tracks_pcm_size, voice_cache_evicts_lru_under_byte_budget, voice_cache_negatives_are_capped_and_counted}`.
 - Two music slots, one playback body (`play_main_track` / `stop_main_track`): the cell's `music` slot, `play_music(streaming_sound, volume, fade_in_secs, looping)` (4 parameters, `looping` since #3775; re-verify the arity before citing), crossfades any existing handle; and the scripted layer `script_music` (`play_script_music` / `stop_script_music` / `is_script_music_active`, #6226 567bfe593), a slot of its own because ObScript `PlayMusic` "will not stop the currently playing music of the cell". Music routes through the **main track**, never a spatial sub-track. `PlayMusic` used to decode the whole track to static PCM on the main thread (FNV stingers are 11-30 MB, uncached, even headless), play it as a Detached spatial one-shot at the listener's old spot (panning, reverb send, low-pass), never stop it on a cell change, and count it in `oneshots_requested`; the regression is any scripted music back on the one-shot queue. It uses `StreamingSoundData` (`from_cursor`/`from_file`), never `StaticSoundData` (full PCM decode = OOM on long tracks).
 - `stop_music` fades for `fade_out_secs.max(0.0)` then drops the handle (an instant stop clicks); `is_music_active` goes false the moment `stop_music` returns (the slot is cleared while kira renders the fade tail): documented, so a caller must not read it as "audibly occupied".
@@ -63,8 +63,8 @@ Audits `crates/audio/` (kira `0.12`, `default-features = false` with an explicit
 **Output**: `/tmp/audit/audio/dim_3.md`
 
 ### Dim 4: Manager, ECS Lifecycle & Schedule
-**Paths**: `crates/audio/src/lib.rs` (struct, `AudioWorld::new`/`headless`, `audio_system`, `prune_stopped_sounds`), `byroredux/src/boot/schedule/late.rs`, `byroredux/src/cell_loader/{load,unload}.rs`
-**First step**: `git log --since=D -- crates/audio/src/lib.rs byroredux/src/boot/schedule/late.rs`
+**Paths**: `crates/audio/src/` (struct, `AudioWorld::new`/`headless`, `audio_system`, `prune_stopped_sounds`), `byroredux/src/boot/schedule/late.rs`, `byroredux/src/cell_loader/{load,unload}.rs`
+**First step**: `git log --since=D -- crates/audio/src/ byroredux/src/boot/schedule/late.rs`
 **Guards**: `tests.rs::{audio_world_constructs_without_panic_on_any_environment, explicit_headless_world_discards_playback_without_retaining_sound, manager_capacities_exceed_kira_defaults}`; `scheduler_access_tests.rs::{footstep_runs_after_camera_follow_in_late, reverb_zone_is_parallel_and_audio_is_exclusive_in_late}`.
 - Graceful degradation: `AudioManager::new` failure leaves `manager = None`; every public API gates on it with no `unwrap()`; headless/CI boot must succeed (report as PASS/FAIL in the summary). `AudioWorld::headless()` never contacts a device; tests use it, not the device-dependent `default()`.
 - `SUB_TRACK_CAPACITY` (512) and `SEND_TRACK_CAPACITY` (32) exceed kira's defaults and are applied in `new()`.
