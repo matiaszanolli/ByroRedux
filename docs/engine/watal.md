@@ -677,6 +677,20 @@ excluded); a gale-height swell on Lake Mead rolls and keeps the shoreline
 clean; Oblivion's island beach shows swell ridges parallel to the shore. The
 default wind is mild, so the everyday swell is a few world units.
 
+**The pale-blue slivers on Oblivion and FO4 water were a terrain-LOD crack, not
+water (2026-10-26).** Thin sky-coloured ribbons crossed the water in the Oblivion
+and FO4 surface captures. They were absent from the `water_term` and
+`water_normal` oracle views, survived removing the distant-water plane, and
+survived hiding all water: the seabed itself had a gap along the join between
+full-detail terrain and the synthetic terrain-LOD ring, where the LOD block's
+straight 1 024-unit chord sits above the true full-detail edge (which follows
+the terrain every 128 units) and no front face covers the join. The water,
+semi-transparent over the sea floor, simply made it conspicuous.
+`append_lod_skirts` (`cell_loader/terrain_lod.rs`) now hangs a vertical wall
+640 units under every LOD quad edge that borders a resident full-detail cell,
+wound to face the hole side; the ribbon is gone from both captures. Not WATAL
+code, found through WATAL captures.
+
 **Regression guard, not a remaining fragility:** the procedural-noise hash
 bands past ~176k world units (#1502) are fixed — `sampleScrollingNormal` and
 `foamFlowStreaks` both subtract `originOffset` before hashing, rebased twice
