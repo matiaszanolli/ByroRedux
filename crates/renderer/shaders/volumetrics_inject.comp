@@ -417,9 +417,6 @@ const float PI = 3.14159265358979323846;
 // pinned to `byroredux_core::radiometry::LINEAR_SRGB_LUMA` so CPU and GPU agree
 // on what "brightness" means (#4347).
 const float AMBIENT_TEMPERATURE_K = 293.15;
-const float IGNITION_TEMPERATURE_K = 720.0;
-const float MAX_COMBUSTION_TEMPERATURE_K = 4200.0;
-const float MAX_COMBUSTION_SPEED_MPS = 28.0;
 const float COMBUSTION_WALL_FRICTION_PER_SECOND = 0.35;
 // FOG_VOLUME_CLUSTER_DIM / MAX_FOG_VOLUMES_PER_CLUSTER come from the
 // #include'd shader_constants.glsl header (generated from
@@ -1316,9 +1313,9 @@ void applyCombustionSources(
             float reactionMask = densityProfile * radialSource * reactionZone;
             float reactionStateMask = stateProfile * radialSource * reactionZone;
             float sourceTemperature = clamp(
-                max(volume.emission_temperature.w, 1650.0),
-                IGNITION_TEMPERATURE_K,
-                MAX_COMBUSTION_TEMPERATURE_K
+                max(volume.emission_temperature.w, COMBUSTION_FLAME_SOURCE_FLOOR_K),
+                COMBUSTION_IGNITION_TEMPERATURE_K,
+                COMBUSTION_MAX_TEMPERATURE_K
             );
             chemistry.x = max(chemistry.x, sourceMask * 0.82);
             chemistry.y = max(
@@ -1416,9 +1413,11 @@ void applyCombustionSources(
             ? densityProfile * smokeEnvelope
             : densityProfile * smokeEnvelope * 0.38;
         float sourceTemperature = clamp(
-            max(volume.emission_temperature.w, nuclearExplosion ? 3800.0 : 2300.0),
-            IGNITION_TEMPERATURE_K,
-            MAX_COMBUSTION_TEMPERATURE_K
+            max(volume.emission_temperature.w, nuclearExplosion
+                ? COMBUSTION_NUCLEAR_SOURCE_FLOOR_K
+                : COMBUSTION_EXPLOSION_SOURCE_FLOOR_K),
+            COMBUSTION_IGNITION_TEMPERATURE_K,
+            COMBUSTION_MAX_TEMPERATURE_K
         );
         chemistry.x = max(
             chemistry.x,
@@ -1473,7 +1472,7 @@ void applyCombustionSources(
         float expansionSpeed = min(
             radius / EXPLOSION_EXPANSION_TIME_SECONDS
                 * (nuclearExplosion ? NUCLEAR_EXPLOSION_EXPANSION_SCALE : 1.0),
-            MAX_COMBUSTION_SPEED_MPS * WORLD_UNITS_PER_METER
+            COMBUSTION_MAX_SPEED_MPS * WORLD_UNITS_PER_METER
         );
         float impulseScale = !coldHistory
             ? dt * 7.0
@@ -1733,7 +1732,7 @@ vec4 sanitizedChemistry(vec4 chemistry) {
     }
     chemistry.x = clamp(chemistry.x, 0.0, 1.0);
     chemistry.y = chemistry.y > 1.0
-        ? clamp(chemistry.y, AMBIENT_TEMPERATURE_K, MAX_COMBUSTION_TEMPERATURE_K)
+        ? clamp(chemistry.y, AMBIENT_TEMPERATURE_K, COMBUSTION_MAX_TEMPERATURE_K)
         : AMBIENT_TEMPERATURE_K;
     chemistry.z = clamp(chemistry.z, 0.0, 0.20);
     chemistry.w = clamp(chemistry.w, 0.0, 64.0);
@@ -1744,7 +1743,7 @@ vec4 sanitizedDynamics(vec4 dynamics) {
     if (any(isnan(dynamics)) || any(isinf(dynamics))) {
         return vec4(0.0);
     }
-    float maxSpeed = MAX_COMBUSTION_SPEED_MPS * WORLD_UNITS_PER_METER;
+    float maxSpeed = COMBUSTION_MAX_SPEED_MPS * WORLD_UNITS_PER_METER;
     float speed = length(dynamics.xyz);
     if (speed > maxSpeed) {
         dynamics.xyz *= maxSpeed / speed;
@@ -1752,7 +1751,7 @@ vec4 sanitizedDynamics(vec4 dynamics) {
     dynamics.w = clamp(
         dynamics.w,
         0.0,
-        0.5 * MAX_COMBUSTION_SPEED_MPS * MAX_COMBUSTION_SPEED_MPS
+        0.5 * COMBUSTION_MAX_SPEED_MPS * COMBUSTION_MAX_SPEED_MPS
     );
     return dynamics;
 }
@@ -2388,8 +2387,8 @@ void transportCombustion(
 
     if (dt > 0.0) {
         float ignition = smoothstep(
-            IGNITION_TEMPERATURE_K - 90.0,
-            IGNITION_TEMPERATURE_K + 180.0,
+            COMBUSTION_IGNITION_TEMPERATURE_K - 90.0,
+            COMBUSTION_IGNITION_TEMPERATURE_K + 180.0,
             chemistry.y
         );
         // `chemistry.x` is the canonical normalized fuel fraction. The

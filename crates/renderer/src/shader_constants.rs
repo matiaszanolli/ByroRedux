@@ -221,9 +221,6 @@ mod tests {
         ("svgf_atrous.comp", "DEPTH_EPS"),
         ("volumetrics_inject.comp", "PI"),
         ("volumetrics_inject.comp", "AMBIENT_TEMPERATURE_K"),
-        ("volumetrics_inject.comp", "IGNITION_TEMPERATURE_K"),
-        ("volumetrics_inject.comp", "MAX_COMBUSTION_TEMPERATURE_K"),
-        ("volumetrics_inject.comp", "MAX_COMBUSTION_SPEED_MPS"),
         (
             "volumetrics_inject.comp",
             "COMBUSTION_WALL_FRICTION_PER_SECOND",

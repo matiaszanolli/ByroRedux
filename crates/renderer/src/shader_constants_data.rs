@@ -1062,6 +1062,14 @@ pub const LEGACY_LIGHT_CULL_RANGE_MULTIPLIER: f32 =
     byroredux_core::lighting::LEGACY_LIGHT_CULL_RANGE_MULTIPLIER;
 pub const ADIABATIC_FLAME_TEMPERATURE_K: f32 =
     byroredux_core::combustion::ADIABATIC_FLAME_TEMPERATURE_K;
+pub const COMBUSTION_IGNITION_TEMPERATURE_K: f32 = byroredux_core::combustion::IGNITION_TEMPERATURE_K;
+pub const COMBUSTION_MAX_TEMPERATURE_K: f32 = byroredux_core::combustion::MAX_TEMPERATURE_K;
+pub const COMBUSTION_MAX_SPEED_MPS: f32 = byroredux_core::combustion::MAX_TRANSPORT_SPEED_MPS;
+pub const COMBUSTION_FLAME_SOURCE_FLOOR_K: f32 = byroredux_core::combustion::FLAME_SOURCE_FLOOR_K;
+pub const COMBUSTION_EXPLOSION_SOURCE_FLOOR_K: f32 =
+    byroredux_core::combustion::EXPLOSION_SOURCE_FLOOR_K;
+pub const COMBUSTION_NUCLEAR_SOURCE_FLOOR_K: f32 =
+    byroredux_core::combustion::NUCLEAR_EXPLOSION_SOURCE_FLOOR_K;
 pub const COMBUSTION_REACTION_RATE_PER_SECOND: f32 =
     byroredux_core::combustion::REACTION_RATE_PER_SECOND;
 pub const COMBUSTION_RICH_SOOT_YIELD: f32 = byroredux_core::combustion::RICH_SOOT_YIELD;
@@ -2680,6 +2688,12 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float WORLD_UNITS_PER_METER),
     shader_define!(Float LEGACY_LIGHT_CULL_RANGE_MULTIPLIER),
     shader_define!(Float ADIABATIC_FLAME_TEMPERATURE_K),
+    shader_define!(Float COMBUSTION_IGNITION_TEMPERATURE_K),
+    shader_define!(Float COMBUSTION_MAX_TEMPERATURE_K),
+    shader_define!(Float COMBUSTION_MAX_SPEED_MPS),
+    shader_define!(Float COMBUSTION_FLAME_SOURCE_FLOOR_K),
+    shader_define!(Float COMBUSTION_EXPLOSION_SOURCE_FLOOR_K),
+    shader_define!(Float COMBUSTION_NUCLEAR_SOURCE_FLOOR_K),
     shader_define!(Float COMBUSTION_REACTION_RATE_PER_SECOND),
     shader_define!(Float COMBUSTION_RICH_SOOT_YIELD),
     shader_define!(Float COMBUSTION_LEAN_SOOT_YIELD),

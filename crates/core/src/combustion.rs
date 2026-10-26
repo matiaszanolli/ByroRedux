@@ -15,6 +15,32 @@ use crate::radiometry::blackbody_radiance_srgb;
 /// temperature increment and run away toward the numerical safety ceiling.
 pub const ADIABATIC_FLAME_TEMPERATURE_K: f32 = 2350.0;
 
+/// Temperature below which a cell is no longer burning, kelvin. The renderer
+/// clamps every source temperature to at least this.
+pub const IGNITION_TEMPERATURE_K: f32 = 720.0;
+
+/// Ceiling the transported solver clamps chemistry temperature to, kelvin.
+///
+/// Tied to the hottest authored regime so the shader's clamp can never sit
+/// below a regime's own temperature: a regime hotter than this would be
+/// silently clamped on the GPU, and `no_regime_exceeds_the_transport_ceiling`
+/// fails first.
+pub const MAX_TEMPERATURE_K: f32 = CombustionRegime::NUCLEAR_EXPLOSION.temperature_k();
+
+/// Speed ceiling for transported combustion flow, metres per second.
+pub const MAX_TRANSPORT_SPEED_MPS: f32 = 28.0;
+
+/// Lowest temperature an ordinary flame source injects, kelvin. Sits below
+/// `CombustionRegime::FLAME` (1850 K) so a cool authored emitter still reads
+/// as a flame rather than being lifted to the regime temperature.
+pub const FLAME_SOURCE_FLOOR_K: f32 = 1650.0;
+
+/// Lowest temperature a one-shot explosion source injects, kelvin.
+pub const EXPLOSION_SOURCE_FLOOR_K: f32 = 2300.0;
+
+/// Lowest temperature a nuclear-explosion source injects, kelvin.
+pub const NUCLEAR_EXPLOSION_SOURCE_FLOOR_K: f32 = 3800.0;
+
 /// First-order fuel/oxidizer reaction rate, per second, for the normalized
 /// transported mixture-fraction field.
 pub const REACTION_RATE_PER_SECOND: f32 = 5.8;
@@ -336,6 +362,32 @@ mod tests {
             [0.26; 3]
         );
         assert_eq!(ADIABATIC_FLAME_TEMPERATURE_K, 2350.0);
+    }
+
+    #[test]
+    fn no_regime_exceeds_the_transport_ceiling() {
+        for regime in [
+            CombustionRegime::FLAME,
+            CombustionRegime::GAS_FLAME,
+            CombustionRegime::EMBER,
+            CombustionRegime::EXPLOSION,
+            CombustionRegime::NUCLEAR_EXPLOSION,
+        ] {
+            assert!(regime.temperature_k() <= MAX_TEMPERATURE_K);
+            assert!(regime.reference_temperature_k() <= MAX_TEMPERATURE_K);
+        }
+        const {
+            assert!(IGNITION_TEMPERATURE_K < FLAME_SOURCE_FLOOR_K);
+            assert!(FLAME_SOURCE_FLOOR_K <= EXPLOSION_SOURCE_FLOOR_K);
+            assert!(EXPLOSION_SOURCE_FLOOR_K <= NUCLEAR_EXPLOSION_SOURCE_FLOOR_K);
+            assert!(NUCLEAR_EXPLOSION_SOURCE_FLOOR_K <= MAX_TEMPERATURE_K);
+        }
+    }
+
+    #[test]
+    fn transport_limits_are_pinned() {
+        assert_eq!(MAX_TEMPERATURE_K, 4200.0);
+        assert_eq!(MAX_TRANSPORT_SPEED_MPS, 28.0);
         // Constant-only relations are checked at compile time.
         const {
             assert!(REACTION_RATE_PER_SECOND > 0.0);
