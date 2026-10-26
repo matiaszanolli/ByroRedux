@@ -755,11 +755,13 @@ fn apply_alias_injections(
             if !next_grants.insert((quest, alias, reference_form_id, item, count)) {
                 continue;
             }
+            // #6286 — `add`, not `push`: a form the actor already holds folds
+            // into its plain row (#5871) instead of growing a second one.
             if let Some(inventory) = inventories.get_mut(entity) {
-                inventory.push(ItemStack::new(item, count));
+                inventory.add(ItemStack::new(item, count));
             } else {
                 let mut inventory = Inventory::new();
-                inventory.push(ItemStack::new(item, count));
+                inventory.add(ItemStack::new(item, count));
                 inventories.insert(entity, inventory);
             }
         }

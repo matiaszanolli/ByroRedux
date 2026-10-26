@@ -1055,6 +1055,55 @@ fn quest_alias_injections_are_idempotent_and_clear_transient_factions() {
     );
 }
 
+/// #6286 — an alias that grants a form the actor already holds adds to its
+/// plain row (the #5871 fold) rather than appending a duplicate one; two
+/// grants of the same form in one alias fold together too.
+#[test]
+fn an_alias_inventory_grant_folds_into_the_existing_row() {
+    use byroredux_core::ecs::components::ItemStack;
+    let mut world = World::new();
+    crate::register(&mut world);
+    let actor = world.spawn();
+    world.insert(
+        actor,
+        SceneAliasCandidate {
+            reference_form_id: 0xA1,
+            base_form_id: 0xB1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    let mut held = Inventory::new();
+    held.push(ItemStack::new(0xC1, 3));
+    world.insert(actor, held);
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![QuestAlias {
+                alias_id: 1,
+                fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                injected: byroredux_plugin::esm::records::AliasInjectedData {
+                    inventory: vec![(0xC1, 2), (0xC2, 1), (0xC2, 4)],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    );
+
+    refresh_scene_actor_bindings(&world);
+
+    let inventory = world.get::<Inventory>(actor).unwrap();
+    let rows: Vec<(u32, u32)> = inventory
+        .items
+        .iter()
+        .map(|row| (row.base_form_id, row.count))
+        .collect();
+    assert_eq!(rows, [(0xC1, 5), (0xC2, 5)]);
+}
+
 #[test]
 fn quest_aliases_fill_only_while_the_quest_is_running() {
     let mut world = World::new();
