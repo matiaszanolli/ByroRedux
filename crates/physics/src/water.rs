@@ -468,6 +468,33 @@ pub fn authored_wave_height_with_weather(
     )
 }
 
+/// `dir` mixed toward `shore_dir` by `share` and renormalised; `dir` itself if
+/// the mix collapses. Mirrors `normalize(mix(dir, shoreDir, share))` in
+/// `water.vert`.
+fn turn_toward(dir: [f32; 2], shore_dir: [f32; 2], share: f32) -> [f32; 2] {
+    let mixed = [
+        dir[0] + (shore_dir[0] - dir[0]) * share,
+        dir[1] + (shore_dir[1] - dir[1]) * share,
+    ];
+    let len = (mixed[0] * mixed[0] + mixed[1] * mixed[1]).sqrt();
+    if len > 1.0e-6 {
+        [mixed[0] / len, mixed[1] / len]
+    } else {
+        dir
+    }
+}
+
+/// The swell's heading after shore refraction. Only a swell travelling toward
+/// the shore turns toward it, fading in from perpendicular to 60° off
+/// (`smoothstep(0, 0.5, dot)` in `water.vert`): one running offshore would mix
+/// to a near-zero vector at half share, and normalising that flips the
+/// heading from one vertex to the next.
+fn refract_swell(heading: [f32; 2], shore_dir: [f32; 2], refraction: f32) -> [f32; 2] {
+    let cosine = heading[0] * shore_dir[0] + heading[1] * shore_dir[1];
+    let t = (cosine / 0.5).clamp(0.0, 1.0);
+    turn_toward(heading, shore_dir, refraction * t * t * (3.0 - 2.0 * t))
+}
+
 /// [`authored_wave_height_with_weather`] over a known bed: the wind-driven swell
 /// (`WaterMaterial::swell`) shoals, turns toward the shore and breaks exactly
 /// as `water.vert` does, and the authored ripple pair is capped by the same
@@ -500,18 +527,7 @@ pub fn authored_wave_height_over_bed(
     } else {
         0.0
     };
-    let turn = |dir: [f32; 2], share: f32| {
-        let mixed = [
-            dir[0] + (shore_dir[0] - dir[0]) * share,
-            dir[1] + (shore_dir[1] - dir[1]) * share,
-        ];
-        let len = (mixed[0] * mixed[0] + mixed[1] * mixed[1]).sqrt();
-        if len > 1.0e-6 {
-            [mixed[0] / len, mixed[1] / len]
-        } else {
-            dir
-        }
-    };
+    let turn = |dir: [f32; 2], share: f32| turn_toward(dir, shore_dir, share);
 
     // The swell is independent of the authored ripple amplitude: a plane with
     // none still rolls in the wind.
@@ -519,7 +535,7 @@ pub fn authored_wave_height_over_bed(
         .swell(weather_scroll)
         .map(|mut swell| {
             if refraction > 0.0 {
-                swell.direction = turn(swell.direction, refraction);
+                swell.direction = refract_swell(swell.direction, shore_dir, refraction);
             }
             swell.height(position.x, position.z, time_secs, bed_depth)
         })
@@ -1534,6 +1550,28 @@ fn apply_buoyancy_with_scratch(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_swell_running_offshore_keeps_its_heading_and_never_collapses() {
+        let shore = [1.0, 0.0];
+        // Offshore, perpendicular and slightly shoreward headings all stay
+        // finite and unit-length at every share, including the 0.5 that would
+        // zero a plain mix of opposite vectors.
+        for heading in [[-1.0, 0.0], [0.0, 1.0], [0.3, 0.954]] {
+            for share in [0.0, 0.25, 0.5, 0.7] {
+                let out = refract_swell(heading, shore, share);
+                let len = (out[0] * out[0] + out[1] * out[1]).sqrt();
+                assert!((len - 1.0).abs() < 1.0e-4, "{heading:?} @ {share}: {out:?}");
+            }
+        }
+        assert_eq!(refract_swell([-1.0, 0.0], shore, 0.5), [-1.0, 0.0]);
+        // Perpendicular: no turn yet (continuous with the offshore side).
+        let perpendicular = refract_swell([0.0, 1.0], shore, 0.7);
+        assert!((perpendicular[0]).abs() < 1.0e-6 && (perpendicular[1] - 1.0).abs() < 1.0e-6);
+        // Travelling at the shore: turned toward it, not away.
+        let shoreward = refract_swell([0.6, 0.8], shore, 0.7);
+        assert!(shoreward[0] > 0.6, "{shoreward:?}");
+    }
     use super::*;
     use crate::convert::pose_from_trs;
     use crate::world::{PhysicsWorld, PHYSICS_DT};

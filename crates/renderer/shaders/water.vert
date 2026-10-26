@@ -271,7 +271,13 @@ void main() {
         float swellDz = 0.0;
         if (water.optical.z > 0.0) {
             vec2 swellDir = vec2(cos(water.optical.w), sin(water.optical.w));
-            if (refraction > 0.0) swellDir = normalize(mix(swellDir, shoreDir, refraction));
+            // Only a swell travelling toward the shore turns toward it: one
+            // running offshore would mix to a near-zero vector at half share,
+            // and normalising that flips the heading from vertex to vertex.
+            if (refraction > 0.0) {
+                float toward = smoothstep(0.0, 0.5, dot(swellDir, shoreDir));
+                swellDir = normalize(mix(swellDir, shoreDir, refraction * toward));
+            }
             float swellK = 6.2831853 / WATER_SWELL_WAVELENGTH_BU;
             float swellW = sqrt(WATER_SWELL_GRAVITY_BU_PER_S2 * swellK);
             float swellPhase = dot(absolutePos.xz, swellDir) * swellK - water.timing.x * swellW;
