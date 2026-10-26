@@ -383,6 +383,11 @@ pub(crate) fn interior_forced_weather_pending(
 /// [`InstalledOutdoorEnvironment`] (the exterior's streaming state that held them is gone), through
 /// the same funnel and the same snap. Does nothing until an interior is fully loaded (its
 /// `CurrentCellContext` is absent mid-transition). `true` when the sky was re-installed.
+///
+/// The funnel writes the *exterior's* cell lighting, sun gate and base image space (a cell load
+/// follows it with `apply_interior_cell_lighting`, which puts the room's own back; this call has
+/// nothing after it). The room's three are therefore set aside around the install and restored,
+/// so only the outdoor lanes (`SkyParamsRes`, `WeatherDataRes`) take the new weather (#6406).
 pub(crate) fn apply_forced_weather_in_interior(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -405,6 +410,7 @@ pub(crate) fn apply_forced_weather_in_interior(
         .cells
         .get(&cell_editor_id)
         .filter(|cell| cell.show_sky.unwrap_or(false));
+    let room = InteriorOwnedState::take(world);
     let reapplied = show_sky_cell.is_some_and(|cell| {
         apply_show_sky_interior_climate(world, ctx, tex_provider, &index, cell)
     });
@@ -427,8 +433,45 @@ pub(crate) fn apply_forced_weather_in_interior(
             &image_spaces,
         );
     }
+    room.restore(world);
     collapse_weather_transition(world);
     true
+}
+
+/// What an interior cell owns that an environment install overwrites with the exterior's: its
+/// lighting (XCLL / LGTM), the Show-Sky gate and its base image space (`XCIM`). Set aside around a
+/// mid-session install and put back after it (#6406); `weather_system` leaves all three alone only
+/// while the lighting is still `is_interior`.
+struct InteriorOwnedState {
+    lighting: Option<CellLightingRes>,
+    sky_exposure: Option<bool>,
+    image_space: Option<byroredux_scripting::ImageSpaceBase>,
+}
+
+impl InteriorOwnedState {
+    fn take(world: &mut World) -> Self {
+        Self {
+            lighting: world.remove_resource::<CellLightingRes>(),
+            sky_exposure: world
+                .try_resource::<crate::components::InteriorSkyExposureRes>()
+                .map(|exposure| exposure.0),
+            image_space: world
+                .try_resource::<byroredux_scripting::ImageSpaceBase>()
+                .map(|base| *base),
+        }
+    }
+
+    fn restore(self, world: &mut World) {
+        if let Some(lighting) = self.lighting {
+            world.insert_resource(lighting);
+        }
+        if let Some(exposure) = self.sky_exposure {
+            world.insert_resource(crate::components::InteriorSkyExposureRes(exposure));
+        }
+        if let Some(base) = self.image_space {
+            world.insert_resource(base);
+        }
+    }
 }
 
 fn apply_environment_with_sources(
@@ -2156,6 +2199,55 @@ mod tests {
         world.insert_resource(lighting(true));
         world.insert_resource(InstalledOutdoorEnvironment { forced_weather: Some(0x33), ..Default::default() });
         assert!(interior_forced_weather_pending(&world).is_none(), "already installed");
+    }
+
+    /// #6406 — the funnel overwrites the interior's lighting, sun gate and base image space with the
+    /// exterior's; the mid-session forced-weather re-apply must hand the room's own back.
+    #[test]
+    fn a_forced_weather_reapply_leaves_the_rooms_own_lighting() {
+        let mut room = crate::env_translate::procedural_fallback_cell_lighting([0.0, 1.0, 0.0]);
+        room.is_interior = true;
+        room.ambient = [0.01, 0.02, 0.03];
+        let mut world = World::new();
+        world.insert_resource(room);
+        world.insert_resource(crate::components::InteriorSkyExposureRes(false));
+        let mut grade = byroredux_scripting::ImageSpace::default();
+        grade.saturation = 0.25;
+        world.insert_resource(byroredux_scripting::ImageSpaceBase(grade));
+
+        let set_aside = InteriorOwnedState::take(&mut world);
+        // What the install does on the way through.
+        let mut outdoors = crate::env_translate::procedural_fallback_cell_lighting([0.0, 1.0, 0.0]);
+        outdoors.is_interior = false;
+        outdoors.ambient = [0.9, 0.9, 0.9];
+        world.insert_resource(outdoors);
+        world.insert_resource(crate::components::InteriorSkyExposureRes(true));
+        world.insert_resource(byroredux_scripting::ImageSpaceBase(Default::default()));
+        set_aside.restore(&mut world);
+
+        let lit = world.resource::<CellLightingRes>();
+        assert!(lit.is_interior, "the room is still an interior");
+        assert_eq!(lit.ambient, [0.01, 0.02, 0.03], "the room keeps its XCLL ambient");
+        drop(lit);
+        assert!(!world.resource::<crate::components::InteriorSkyExposureRes>().0);
+        assert_eq!(world.resource::<byroredux_scripting::ImageSpaceBase>().0, grade);
+    }
+
+    /// #6406 — the re-apply sets the room aside around BOTH install arms (Show-Sky and the inherited
+    /// outdoor environment) and puts it back before anything else runs.
+    #[test]
+    fn the_interior_reapply_brackets_both_installs_with_the_rooms_state() {
+        let production = byroredux_core::source_scan::production_text(include_str!("world_setup.rs"));
+        let start = production
+            .find("pub(crate) fn apply_forced_weather_in_interior(")
+            .expect("the interior re-apply exists");
+        let body = &production[start..start + production[start..].find("\n}\n").unwrap()];
+        let take = body.find("InteriorOwnedState::take(").expect("sets the room aside");
+        let show_sky = body.find("apply_show_sky_interior_climate(").expect("show-sky arm");
+        let funnel = body.find("install_environment(").expect("outdoor arm");
+        let restore = body.find("room.restore(").expect("puts the room back");
+        assert!(take < show_sky && take < funnel, "taken before either install");
+        assert!(restore > show_sky && restore > funnel, "restored after both installs");
     }
 
     /// #6309 — every environment install goes through [`install_environment`], which records what the
