@@ -526,18 +526,26 @@ float underwaterSurfaceFocus(vec2 entry, float seconds) {
     return pow(ridge, 6.0) * 2.4;
 }
 
-// Screen-space visibility of the sun from `p` underwater: four taps up the
-// refracted sun ray (`toSun`, unit, pointing up) against the depth buffer. A
-// tap is blocked when the scene surface at its pixel lies just in front of it,
-// within a thin slab, so only geometry the ray really passes behind counts and
-// a rock merely nearer the camera than the sample casts nothing. Geometry that
-// is off screen cannot block; this is a contact-shadow term, not a trace.
-float underwaterSunVisibility(vec3 p, vec3 toSun, float sunPath, mat4 viewProj) {
-    float reach = min(sunPath, 900.0);
+// Screen-space visibility of the sun from `p` underwater: taps up the sun's
+// path against the depth buffer, three along the refracted ray to the surface
+// (`toSun`, pointing up; submerged hulls and pilings) and three along the
+// unrefracted ray above it (`sunDirection`; docks, hulls, bridges overhead).
+// A tap is blocked when the scene surface at its pixel lies just in front of
+// it, within a thin slab, so only geometry the ray really passes behind counts
+// and a rock merely nearer the camera than the sample casts nothing. Geometry
+// that is off screen cannot block; this is a contact-shadow term, not a trace.
+float underwaterSunVisibility(vec3 p, vec3 toSun, vec3 sunDirection, float sunPath, mat4 viewProj) {
     float visible = 1.0;
-    for (int i = 0; i < 4; ++i) {
-        float fraction = i == 0 ? 0.08 : (i == 1 ? 0.2 : (i == 2 ? 0.4 : 0.7));
-        vec4 clip = viewProj * vec4(p + toSun * (reach * fraction), 1.0);
+    float reach = min(sunPath, 900.0);
+    vec3 surfacePoint = p + toSun * sunPath;
+    for (int i = 0; i < 6; ++i) {
+        vec3 q;
+        if (i < 3) {
+            q = p + toSun * (reach * (i == 0 ? 0.15 : (i == 1 ? 0.4 : 0.75)));
+        } else {
+            q = surfacePoint + sunDirection * (i == 3 ? 60.0 : (i == 4 ? 180.0 : 420.0));
+        }
+        vec4 clip = viewProj * vec4(q, 1.0);
         if (clip.w <= 1.0e-3) continue;
         vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
         if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) continue;
@@ -592,7 +600,7 @@ vec3 underwaterGodRays(vec3 viewDir, vec3 sunDirection, float rayLength, float j
         float sunPath = below / -travel.y;
         vec2 entry = p.xz - travel.xz * sunPath;
         float focus = underwaterSurfaceFocus(entry, seconds) * exp(-k * (t + sunPath));
-        sum += focus * underwaterSunVisibility(p, toSun, sunPath, viewProj) * k * dt;
+        sum += focus * underwaterSunVisibility(p, toSun, sunDirection, sunPath, viewProj) * k * dt;
     }
     return vec3(sum * phase);
 }
