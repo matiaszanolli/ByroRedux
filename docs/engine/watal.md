@@ -1007,8 +1007,12 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    linear velocity and `NAM5` flow noise drive Rapids/River, `material_name`
    drives Lava, and the EDID name is only the fallback signal in
    `classify_water_kind_and_flow` — the "replace the heuristic" item is
-   done) are all live. Remaining: underwater god-rays via the M55
-   volumetrics gated on `WaterContact`, and the §2 remainder (residual
+   done) are all live. Underwater god-rays: `composite.frag` already carried a smooth sun-aligned
+   shaft term gated on the submersion extinction; since 2026-10-26 it breaks into
+   animated radial streaks converging on the sun (two octaves of integer-hashed 1D
+   noise over the angle around the sun axis, mean-normalised so the energy budget
+   is unchanged). A froxel-based version that casts shafts from real occluders
+   through the surface is not built. Remaining: the §2 remainder (residual
    unnamed Skyrim DNAM tail bytes — xEdit dev-4.1.6 marks every still-
    unread offset unnamed, so nothing meaningful is left to decode there).
    Each sub-item independently shippable.

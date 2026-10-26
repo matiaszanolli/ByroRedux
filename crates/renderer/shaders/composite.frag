@@ -497,6 +497,15 @@ bool skyThroughAuthoredWindow(vec2 uv, float depth, bool hasSurface) {
     return false;
 }
 
+// One lattice value of the underwater shaft streak noise: an exact integer
+// (PCG) hash, so the streak pattern does not depend on float precision.
+float underwaterShaftHash(int lattice, int octave) {
+    uint v = uint(lattice) * 747796405u + uint(octave) * 1664525u + 2891336453u;
+    v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+    v = (v >> 22u) ^ v;
+    return float(v >> 8u) * (1.0 / 16777215.0);
+}
+
 void main() {
 
     outReactive = 0.0;
@@ -829,6 +838,34 @@ void main() {
         vec3 sunDirection = normalize(params.sun_dir.xyz);
         float sunAlignment = max(dot(viewDir, sunDirection), 0.0);
         float shaftLobe = pow(sunAlignment, 18.0);
+        // Shafts converge on the sun and break into columns where the sun
+        // crosses wave crests: a smooth glow around the sun axis reads as
+        // fog, not light shafts. Two animated octaves of 1D value noise over
+        // the angle around the sun axis give the radial streaks (about one
+        // streak every 18 degrees, the slower octave drifting the other way),
+        // normalised to a mean of ~0.65 so the lobe's energy budget is unchanged.
+        {
+            vec3 sideA = normalize(cross(sunDirection, abs(sunDirection.y) < 0.95
+                ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+            vec3 sideB = cross(sunDirection, sideA);
+            vec3 around = viewDir - sunDirection * dot(viewDir, sunDirection);
+            float angle = atan(dot(around, sideB), dot(around, sideA));
+            float seconds = params.weather_params.w;
+            float streaks = 20.0;
+            float streak = 0.0;
+            for (int octave = 0; octave < 2; ++octave) {
+                float freq = streaks * (octave == 0 ? 1.0 : 0.45);
+                float drift = seconds * (octave == 0 ? 0.30 : -0.17);
+                float x = angle * (freq / 6.2831853) + drift;
+                float cell = floor(x);
+                float f = fract(x);
+                f = f * f * (3.0 - 2.0 * f);
+                float a = underwaterShaftHash(int(cell), octave);
+                float b = underwaterShaftHash(int(cell) + 1, octave);
+                streak += mix(a, b, f) * (octave == 0 ? 0.65 : 0.35);
+            }
+            shaftLobe *= mix(0.25, 1.0, streak) / 0.65;
+        }
         float underwaterDistance = has_surface
             ? linearViewDepth(fragUV, depth)
             : params.volume_params.x;
