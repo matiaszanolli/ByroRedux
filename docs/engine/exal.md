@@ -148,8 +148,10 @@ is the city's real position in Tamriel (BrumaWorld's LAND sits at cells
 (4..8, 34..38)). `EsmCellIndex::inherit_parent_landscapes` copies the `WNAM`
 chain's LAND into each of the child's own LAND-less cells at the same
 coordinate (1,040 cells over the 30 vanilla children), once after the load
-order is merged and for Oblivion only — the co-located grid was measured there,
-not on the FO3+ children. The ring beyond the cells a child authors is the
+order is merged and for Oblivion and FO3/FNV only (`needs_exterior_processing`;
+#6089 measured the FO3 "Use Land Data" children co-located on the Wasteland's
+grid, and the shared parse cache re-parses either game's interior-first index for
+an exterior session, #6407) — not measured on the Skyrim+ children. The ring beyond the cells a child authors is the
 parent-keyed distant-LOD ring (#5496, `lod_worldspace_key`). Open, unsourced
 from the data files: whether vanilla also draws the parent's placed objects
 around a city, and whether the empty ring is full LAND or LOD in the original;

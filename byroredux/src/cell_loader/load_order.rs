@@ -601,6 +601,16 @@ pub(crate) fn parse_record_indexes_in_load_order(
     )
 }
 
+/// Whether `game`'s index wants [`apply_exterior_processing`] before an exterior session. The one
+/// rule both that step and the shared parse's `exterior_ready` read, so an index parsed for an
+/// interior is served to an exterior session only when this is false (#6407).
+fn needs_exterior_processing(game: esm::reader::GameKind) -> bool {
+    matches!(
+        game,
+        esm::reader::GameKind::Oblivion | esm::reader::GameKind::Fallout3NV
+    )
+}
+
 /// The post-parse step only an exterior session wants: child
 /// worldspaces whose WRLD `PNAM` carries "Use Land Data" author LAND
 /// for their own footprint only (or not at all), so the LAND-less
@@ -612,10 +622,7 @@ pub(crate) fn parse_record_indexes_in_load_order(
 /// on the Wasteland's terrain. Idempotent; a no-op on every other
 /// game, so an index of those is ready for both kinds of session.
 fn apply_exterior_processing(index: &mut esm::records::EsmIndex) {
-    if matches!(
-        index.game,
-        esm::reader::GameKind::Oblivion | esm::reader::GameKind::Fallout3NV
-    ) {
+    if needs_exterior_processing(index.game) {
         let filled = index.cells.inherit_parent_landscapes();
         if filled > 0 {
             log::info!("child worldspaces: {filled} LAND-less cells take their parent's landscape");
@@ -676,7 +683,8 @@ impl SharedParseCache {
     /// The parse of `plugin_paths`, from the memo when it holds exactly this
     /// set. `exterior` asks for the index as an exterior session needs it; an
     /// index parsed for an interior is reused for one only when that needs no
-    /// extra processing (anything but Oblivion), otherwise it parses again -
+    /// extra processing ([`needs_exterior_processing`]: Oblivion and FO3/FNV
+    /// do), otherwise it parses again -
     /// `EsmIndex` is shared and not `Clone`, so it cannot be processed in place.
     fn get_or_parse(
         &self,
@@ -699,7 +707,7 @@ impl SharedParseCache {
         if exterior {
             apply_exterior_processing(&mut index);
         }
-        let exterior_ready = exterior || index.game != esm::reader::GameKind::Oblivion;
+        let exterior_ready = exterior || !needs_exterior_processing(index.game);
         let (index, load_order) = (Arc::new(index), Arc::new(load_order));
         *self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SharedParse {
             files,
@@ -1862,7 +1870,7 @@ mod shared_parse_tests {
         let paths = [master.as_str(), active.as_str()];
         let cache = SharedParseCache::new();
         let calls = Cell::new(0);
-        let parse = fake_parse(&calls, esm::reader::GameKind::Fallout3NV);
+        let parse = fake_parse(&calls, esm::reader::GameKind::Skyrim);
 
         let (first, order) = cache.get_or_parse(&paths, false, &parse).unwrap();
         assert_eq!(calls.get(), 1);
@@ -1917,6 +1925,53 @@ mod shared_parse_tests {
         cache.get_or_parse(&[path.as_str()], true, &parse).unwrap();
         cache.get_or_parse(&[path.as_str()], false, &parse).unwrap();
         assert_eq!(calls.get(), 2, "the processed index serves both");
+    }
+
+    /// FO3/FNV "Use Land Data" children (Oasis, ParadiseFalls, ...) take their parent's landscape
+    /// in the same exterior-only step (#6089), so an interior-first FO3/FNV parse must not reach an
+    /// exterior session unprocessed (#6407).
+    #[test]
+    fn a_fallout3_interior_parse_is_not_served_to_an_exterior_session() {
+        let dir = plugin_dir("fo3");
+        let path = write(&dir, "Fallout3.esm", b"fallout3");
+        let cache = SharedParseCache::new();
+        let calls = Cell::new(0);
+        let parse = fake_parse(&calls, esm::reader::GameKind::Fallout3NV);
+
+        cache.get_or_parse(&[path.as_str()], false, &parse).unwrap();
+        assert_eq!(calls.get(), 1);
+        cache.get_or_parse(&[path.as_str()], true, &parse).unwrap();
+        assert_eq!(calls.get(), 2, "the exterior session needs the processed index");
+        cache.get_or_parse(&[path.as_str()], false, &parse).unwrap();
+        assert_eq!(calls.get(), 2, "the processed index serves both");
+    }
+
+    /// The step's gate and the cache's `exterior_ready` are one predicate: every game the step
+    /// processes is re-parsed for an exterior session, and no other is.
+    #[test]
+    fn the_cache_and_the_processing_step_share_one_gate() {
+        use esm::reader::GameKind;
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+        ] {
+            let dir = plugin_dir("gate");
+            let path = write(&dir, "Gate.esm", b"gate");
+            let cache = SharedParseCache::new();
+            let calls = Cell::new(0);
+            let parse = fake_parse(&calls, game);
+            cache.get_or_parse(&[path.as_str()], false, &parse).unwrap();
+            cache.get_or_parse(&[path.as_str()], true, &parse).unwrap();
+            let reparsed = calls.get() == 2;
+            assert_eq!(reparsed, needs_exterior_processing(game), "{game:?}");
+        }
+        let production = byroredux_core::source_scan::production_text(include_str!("load_order.rs"));
+        assert!(
+            !production.contains("index.game != esm::reader::GameKind"),
+            "exterior_ready must read needs_exterior_processing, not its own game test"
+        );
     }
 
     /// A parse failure is returned and leaves the previous memo usable.
