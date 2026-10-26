@@ -691,6 +691,21 @@ semi-transparent over the sea floor, simply made it conspicuous.
 wound to face the hole side; the ribbon is gone from both captures. Not WATAL
 code, found through WATAL captures.
 
+**The ruled line along Oblivion's island bases is gone (2026-10-26).** The older
+capture showed a straight horizontal line where an island met the water — the
+exterior water mesh's coarse chord cutting the shore. Re-captured on the same
+cell (Tamriel 13,7) at sea level facing both shores after the 128-unit-lattice
+water mesh (`4a56fd9c7`) and the LOD skirts: both island bases meet the water
+along the terrain's own contour with breaker foam, no ruled line.
+
+**Riverwood bank wedge was a VFX sheet, not water (2026-10-26).** The character
+capsule stuck on the Riverwood riverbank because the missing-collision fallback
+built a solid `Fixed TriMesh` from `Effects\FXrapidsBig01.nif` (two alpha-blended
+`BSEffectShaderProperty` quads, no bhk). Effect-shader meshes are now excluded
+(`render_geometry_can_collide`, `cell_loader/spawn.rs`); the sheets no longer
+appear in `phys.census`, and the capsule wades, swims and walks out in all four
+directions from three bank positions along the river.
+
 **Regression guard, not a remaining fragility:** the procedural-noise hash
 bands past ~176k world units (#1502) are fixed — `sampleScrollingNormal` and
 `foamFlowStreaks` both subtract `originOffset` before hashing, rebased twice
