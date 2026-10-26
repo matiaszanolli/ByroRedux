@@ -138,10 +138,11 @@ A fixture may also decline a gate. For fixtures without an explicit gate
 restriction, `w1-water-traversal.sh` SKIPs (77) any title whose fixture declares
 no `W1_*` route, and declares per profile what its water
 can physically gate (`W1_HEAD_SUBMERSION`, `W1_BOUNDARY_PHASE`). That is
-deliberate: Skyrim's frozen W0 water body has no capsule-traversable shore (the
-measurements, and the KCC wedge that blocks the one bank that does exist, are
-recorded in `fixtures/skyrim_se.env`), and a route weakened to pass there would
-be worse than an honest skip.
+deliberate: a title gets a route only once one has been measured on its water.
+Skyrim's frozen W0 water body has no capsule-traversable shore, so its route is
+the northern sea shore at Tamriel (-9,-16), found with
+`crates/plugin/examples/shore_probe.rs` and walked live; the river banks that
+wedge the controller are recorded in `fixtures/skyrim_se.env`.
 
 Fixture values are *derived from the plugin*, not hand-tuned:
 

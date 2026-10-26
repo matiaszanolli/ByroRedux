@@ -249,7 +249,7 @@ Open follow-ons, none of them a slice blocker:
   #5246 contained the ragdoll solver explosion. #5352 closed the
   recovery-substep gap in that clamp (`1efdfda4a`), and rapier 0.36's BVH
   broad phase removed the multi-SAP panic class outright (#5488).
-- P1: Skyrim's W1 water leg is skipped (land-side KCC wedge). P4's
+- P1: Skyrim's W1 water leg runs since 2026-10-26 on the northern sea shore (Tamriel (-9,-16)); the Riverwood bank wedge that blocked it is still an open character-controller defect. P4's
   greeting / line-lifetime / force-greet layers landed with #5367
   (Skyrim force-greet and voice remain). Gamepad sources are not started.
 
