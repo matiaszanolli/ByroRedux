@@ -1950,7 +1950,10 @@ impl Resource for SoundCache {}
 /// retains ~0.19 MB of decoded PCM per voiced second (measured on Doc
 /// Mitchell's 5 s mono 24 kHz greeting → 960,400 B of stereo `f32`
 /// frames), and FNV's Voices1 archive alone holds 105,517 candidates —
-/// so voice rides this separate cache instead of the shared one.
+/// so voice rides this separate cache instead of the shared one. Sounds a
+/// script or a graph event names (`Sound.Play`, `PlaySound`, `SoundPlay.*`,
+/// #6281) are the second open-ended keyspace and share it: it is the engine's
+/// bounded cache, whatever the key's origin.
 ///
 /// Same `get_or_load` contract as [`SoundCache`] (the loader runs under
 /// the cache write guard, preserving the #5383 cache→provider lock

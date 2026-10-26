@@ -326,6 +326,7 @@ mod tests {
             sound_path: path.to_string(),
             looping: false,
             variants: Vec::new(),
+            ..Default::default()
         }
     }
 

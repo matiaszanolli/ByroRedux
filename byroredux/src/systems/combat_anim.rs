@@ -401,46 +401,95 @@ fn read_skeleton_root(world: &World, actor: EntityId) -> Option<EntityId> {
         .and_then(|q| q.get(actor).map(|t| t.skeleton_root))
 }
 
+/// Combat one-shots carry a little further than footsteps (footsteps:
+/// 12 m) — a swing should read across a small interior.
+const COMBAT_ATTENUATION: byroredux_audio::Attenuation = byroredux_audio::Attenuation {
+    min_distance: 0.5,
+    max_distance: 24.0,
+};
+
+/// The archive bytes for a sound path, or `None` — no provider / empty
+/// provider / not in any `--sounds-bsa` archive. `role` names the caller in
+/// the miss log ("combat sound", "script sound").
+fn archive_sound_bytes(world: &World, path: &str, role: &str) -> Option<Vec<u8>> {
+    let provider = world.try_resource::<crate::asset_provider::SoundArchiveProvider>()?;
+    if provider.is_empty() {
+        return None;
+    }
+    provider.extract(path).or_else(|| {
+        log::warn!("{role}: '{path}' not found in any --sounds-bsa archive");
+        None
+    })
+}
+
+/// Hand a decoded sound to the audio world. `false` when there is no
+/// `AudioWorld` resource.
+fn enqueue_oneshot(
+    world: &World,
+    data: std::sync::Arc<byroredux_audio::Sound>,
+    position: Vec3,
+    attenuation: byroredux_audio::Attenuation,
+) -> bool {
+    let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
+        return false;
+    };
+    audio.play_oneshot(data, position, attenuation, 1.0);
+    true
+}
+
 /// Lazily decode (or reuse) a one-shot and enqueue it. Headless (no
 /// `AudioWorld`) and archive-less (no provider / decode failure) paths
 /// both collapse to a silent skip — sound is never a hard dependency.
 /// Returns whether a one-shot was actually requested from the audio world
 /// (#5148), so callers can count real requests.
+///
+/// Decodes into the process-lifetime [`byroredux_audio::SoundCache`], which
+/// is only right for a closed keyspace of archive staples (the combat
+/// swing / impact / death sounds). A caller whose paths are chosen by data
+/// or script uses [`play_oneshot_bounded`].
 pub(crate) fn play_oneshot_cached(world: &World, path: &str, position: Vec3) -> bool {
     let data = world
         .try_resource_mut::<byroredux_audio::SoundCache>()
         .and_then(|mut cache| {
-            cache.get_or_load(path, || {
-                let provider =
-                    world.try_resource::<crate::asset_provider::SoundArchiveProvider>()?;
-                if provider.is_empty() {
-                    return None;
-                }
-                provider.extract(path).or_else(|| {
-                    log::warn!("combat sound: '{path}' not found in any --sounds-bsa archive");
-                    None
-                })
-            })
+            cache.get_or_load(path, || archive_sound_bytes(world, path, "combat sound"))
         });
     let Some(data) = data else {
         return false;
     };
-    if let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() {
-        audio.play_oneshot(
-            data,
-            position,
-            // Weapon/voice one-shots carry a little further than
-            // footsteps (footsteps: 12 m) — a swing should read across
-            // a small interior.
-            byroredux_audio::Attenuation {
-                min_distance: 0.5,
-                max_distance: 24.0,
-            },
-            1.0,
-        );
-        return true;
+    enqueue_oneshot(world, data, position, COMBAT_ATTENUATION)
+}
+
+/// [`play_oneshot_cached`] for an open-ended keyspace (#6281): the path was
+/// chosen by a script or a data record, so the decode goes through the
+/// byte-budgeted LRU [`byroredux_audio::VoiceSoundCache`] (#5382) rather
+/// than the unbounded `SoundCache`, and nothing is extracted or decoded
+/// unless the `AudioWorld` has a device to play it on.
+///
+/// Lock order is cache → provider, `combat_anim`'s and the voice path's
+/// (#5383): the loader reads the archive provider under the cache write
+/// guard.
+pub(crate) fn play_oneshot_bounded(
+    world: &World,
+    path: &str,
+    position: Vec3,
+    attenuation: byroredux_audio::Attenuation,
+    role: &str,
+) -> bool {
+    let audible = world
+        .try_resource::<byroredux_audio::AudioWorld>()
+        .is_some_and(|audio| audio.is_active());
+    if !audible {
+        return false;
     }
-    false
+    let data = world
+        .try_resource_mut::<byroredux_audio::VoiceSoundCache>()
+        .and_then(|mut cache| {
+            cache.get_or_load(path, || archive_sound_bytes(world, path, role))
+        });
+    let Some(data) = data else {
+        return false;
+    };
+    enqueue_oneshot(world, data, position, attenuation)
 }
 
 /// System factory — returns a closure with persistent scratch, mirroring

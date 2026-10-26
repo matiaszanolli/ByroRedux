@@ -33,18 +33,18 @@
 //! z-string reader (`common.rs`) — only the *meaning* of `SOUN.FNAM`
 //! differs.
 //!
-//! **`SNDD`/`SNDX`**: only the `Loop` playback flag is decoded (#3775 /
-//! AUD-2026-08-30-D4-01) — see [`SounRecord::looping`]'s doc for the exact
-//! bit and why no era/sub-record-type branch is needed to read it. The
-//! rest of the attenuation-curve data (min/max distance, frequency
-//! adjustment, static attenuation, priority) stays **NOT decoded**: none
-//! of it is needed to resolve a FormID to a playable archive path (the
-//! original EX-16 item 1 blocker) or to answer the Loop question, and
-//! this project's no-guessing policy requires a real spec or corpus to
-//! pin an exact byte layout before decoding it — a future consumer that
-//! needs playback tuning (volume falloff, priority) should decode those
-//! as their own addition. `CNAM`/`SDSC` (random-selection / descriptor
-//! FormID links, FO3+) are likewise still not decoded.
+//! **`SNDD`/`SNDX`**: the `Loop` playback flag (#3775 /
+//! AUD-2026-08-30-D4-01), the min/max attenuation distance and the
+//! `2D` / `Menu Sound` flags (#6281) are decoded — see
+//! [`SounRecord::looping`], [`SounRecord::attenuation_units`] and
+//! [`SounRecord::non_positional`] for the exact bytes and why no
+//! era/sub-record-type branch is needed to read them. The rest
+//! (frequency adjustment, static attenuation, the attenuation curve,
+//! priority, loop points) stays **NOT decoded**: none of it has a
+//! consumer, and this project's no-guessing policy requires a real spec
+//! or corpus to pin an exact byte layout before decoding it. `CNAM`/`SDSC`
+//! (random-selection / descriptor FormID links, FO3+) are likewise still
+//! not decoded.
 
 use crate::esm::reader::SubRecord;
 use crate::esm::records::common::{read_string_sub, CommonNamedFields};
@@ -59,6 +59,17 @@ use crate::esm::records::common::{read_string_sub, CommonNamedFields};
 /// so a single byte-offset read works for every era without branching.
 const SNDD_SNDX_FLAGS_OFFSET: usize = 4;
 const SNDD_SNDX_LOOP_BIT: u8 = 0x10;
+/// `Menu Sound` (`0x20`) and `2D` (`0x40`) — same flags word, same low
+/// byte (xEdit `wbDefinitionsTES4/FO3/FNV.pas`).
+const SNDD_SNDX_NON_POSITIONAL_BITS: u8 = 0x20 | 0x40;
+/// `SNDD`/`SNDX` bytes 0 and 1: minimum / maximum attenuation distance,
+/// stored as `u8` and multiplied by 5 and 100 game units respectively
+/// (xEdit `wbMul(5)` / `wbMul(100)`, identical across Oblivion, FO3 and
+/// FNV).
+const SNDD_SNDX_MIN_ATTENUATION_OFFSET: usize = 0;
+const SNDD_SNDX_MAX_ATTENUATION_OFFSET: usize = 1;
+const SNDD_MIN_ATTENUATION_UNIT: f32 = 5.0;
+const SNDD_MAX_ATTENUATION_UNIT: f32 = 100.0;
 
 /// Parsed `SOUN` record — just enough to resolve a sound FormID to an
 /// archive-relative path (file or folder — see [`Self::is_folder`]), plus
@@ -86,6 +97,16 @@ pub struct SounRecord {
     /// Skyrim content; decoding `SNDR` is tracked separately (#3816-
     /// adjacent scope, not attempted here).
     pub looping: bool,
+    /// `SNDD`/`SNDX` minimum / maximum attenuation distance in game
+    /// (Bethesda) units: bytes 0 and 1 scaled ×5 and ×100. `None` when
+    /// the sub-record is absent or too short, and when the maximum byte is
+    /// zero (a sound that is audible nowhere is an unauthored default, not
+    /// a request to be silent). Skyrim `SNDR` attenuation lives in a
+    /// separate output-model record and is not decoded: always `None`.
+    pub attenuation_units: Option<(f32, f32)>,
+    /// `SNDD`/`SNDX` `Flags` bit `0x20` ("Menu Sound") or `0x40` ("2D"):
+    /// the sound is not placed in the world. Same byte as [`Self::looping`].
+    pub non_positional: bool,
     /// Every `ANAM` file of a Skyrim+ `SNDR` sound descriptor, in authored
     /// order (CK: the descriptor's sounds; the engine plays one of them). Empty
     /// for a `SOUN`, whose single path is [`Self::sound_path`]. For a `SNDR`,
@@ -110,16 +131,28 @@ impl SounRecord {
 /// ignored — see the module doc for what's deliberately deferred.
 pub fn parse_soun(form_id: u32, subs: &[SubRecord]) -> SounRecord {
     let common = CommonNamedFields::from_subs_with_remap(subs, &None);
-    let looping = subs
+    let sndd = subs
         .iter()
         .find(|s| s.sub_type == *b"SNDD" || s.sub_type == *b"SNDX")
-        .and_then(|s| s.data.get(SNDD_SNDX_FLAGS_OFFSET))
-        .is_some_and(|&flags_low_byte| flags_low_byte & SNDD_SNDX_LOOP_BIT != 0);
+        .map(|s| s.data.as_slice());
+    let flags_low_byte = sndd.and_then(|d| d.get(SNDD_SNDX_FLAGS_OFFSET)).copied();
+    let attenuation_units = sndd.and_then(|d| {
+        let min = *d.get(SNDD_SNDX_MIN_ATTENUATION_OFFSET)?;
+        let max = *d.get(SNDD_SNDX_MAX_ATTENUATION_OFFSET)?;
+        (max != 0).then(|| {
+            (
+                f32::from(min) * SNDD_MIN_ATTENUATION_UNIT,
+                f32::from(max) * SNDD_MAX_ATTENUATION_UNIT,
+            )
+        })
+    });
     SounRecord {
         form_id,
         editor_id: common.editor_id,
         sound_path: read_string_sub(subs, b"FNAM").unwrap_or_default(),
-        looping,
+        looping: flags_low_byte.is_some_and(|f| f & SNDD_SNDX_LOOP_BIT != 0),
+        attenuation_units,
+        non_positional: flags_low_byte.is_some_and(|f| f & SNDD_SNDX_NON_POSITIONAL_BITS != 0),
         variants: Vec::new(),
     }
 }
@@ -155,6 +188,8 @@ pub fn parse_sndr(form_id: u32, subs: &[SubRecord]) -> SounRecord {
         editor_id: common.editor_id,
         sound_path: variants.first().cloned().unwrap_or_default(),
         looping,
+        attenuation_units: None,
+        non_positional: false,
         variants,
     }
 }
@@ -289,6 +324,47 @@ mod tests {
         let subs = vec![sub(b"SNDD", sndd)];
         let s = parse_soun(0x0008_0000, &subs);
         assert!(!s.looping);
+    }
+
+    /// #6281 — min/max attenuation are bytes 0/1 scaled ×5 / ×100 on the
+    /// Oblivion 8-byte and the FO3/FNV 36-byte layouts alike, and `Menu
+    /// Sound` / `2D` are bits `0x20` / `0x40` of the same flags byte as Loop.
+    #[test]
+    fn parse_soun_decodes_attenuation_distances_and_non_positional_flags() {
+        for len in [8usize, 36] {
+            let mut sndd = vec![0u8; len];
+            sndd[0] = 4; // min ×5  = 20
+            sndd[1] = 25; // max ×100 = 2500
+            let s = parse_soun(1, &[sub(b"SNDD", sndd.clone())]);
+            assert_eq!(s.attenuation_units, Some((20.0, 2500.0)), "len {len}");
+            assert!(!s.non_positional && !s.looping);
+
+            for bit in [0x20u8, 0x40] {
+                sndd[4] = bit;
+                assert!(parse_soun(1, &[sub(b"SNDD", sndd.clone())]).non_positional);
+            }
+            // Environment Ignored (0x04) is neither.
+            sndd[4] = 0x04;
+            assert!(!parse_soun(1, &[sub(b"SNDD", sndd)]).non_positional);
+        }
+        // The 12-byte shared SNDX shape reads the same bytes.
+        let mut sndx = vec![0u8; 12];
+        sndx[0] = 1;
+        sndx[1] = 1;
+        assert_eq!(
+            parse_soun(1, &[sub(b"SNDX", sndx)]).attenuation_units,
+            Some((5.0, 100.0))
+        );
+    }
+
+    /// An absent / truncated sub-record, or a zero maximum, is "not
+    /// authored" — never a zero-metre audible radius.
+    #[test]
+    fn parse_soun_without_usable_attenuation_is_none() {
+        assert_eq!(parse_soun(1, &[edid("x")]).attenuation_units, None);
+        assert_eq!(parse_soun(1, &[sub(b"SNDD", vec![7u8])]).attenuation_units, None);
+        assert_eq!(parse_soun(1, &[sub(b"SNDD", vec![7u8, 0, 0, 0, 0])]).attenuation_units, None);
+        assert_eq!(parse_sndr(1, &[edid("y")]).attenuation_units, None);
     }
 
     /// A record with neither `SNDD` nor `SNDX` (or one too short to hold
