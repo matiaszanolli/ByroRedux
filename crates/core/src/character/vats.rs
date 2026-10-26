@@ -29,6 +29,7 @@
 //! it must never pass on the strength of the reconstruction matching
 //! itself.
 
+use super::regen::POOL_REGEN_DT;
 use crate::ecs::resource::Resource;
 
 /// The `fActionPoints*` family — the per-action AP *standards* the GECK's
@@ -289,7 +290,7 @@ impl VatsModel {
     #[must_use]
     pub fn ap_regen_per_second(&self) -> f32 {
         if self.ap.restore_rate_per_frame {
-            self.ap.restore_rate * 60.0
+            self.ap.restore_rate / POOL_REGEN_DT
         } else {
             self.ap.restore_rate
         }
