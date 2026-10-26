@@ -1375,7 +1375,11 @@ mod tests {
             "shoreFoam *= smoothstep(0.4, 0.72, lace) * WATER_SHORE_FOAM_MAX;",
             // The caustic deposit builds up with depth; at the waterline it
             // would only double the sun the bed already receives.
-            "* NdotSun * travelFall * shallowFade;",
+            "* NdotSun * travelFall * shallowFade * floorFacing;",
+            // A floor face the camera sees edge-on piles many deposits into
+            // a few screen pixels (the Skyrim shore streak); it counts only
+            // as far as it is as foreshortened as the water plane.
+            "WATER_CAUSTIC_FACING_MIN, WATER_CAUSTIC_FACING_FULL,",
         ] {
             assert!(frag.contains(needle), "water.frag lost `{needle}`");
         }

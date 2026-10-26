@@ -1830,6 +1830,14 @@ pub const WATER_SHORE_FADE_DEPTH_BU: f32 = 20.0;
 /// up from nothing: a caustic cannot focus in a film of water, and at zero
 /// depth it only doubled the sun the bed already receives.
 pub const WATER_CAUSTIC_SHALLOW_FADE_BU: f32 = 96.0;
+/// Foreshortening ratio (floor face against the water plane, both seen from
+/// the camera) below which a water-side caustic deposit is dropped, and above
+/// which it counts in full. The deposit splats at the floor hit's screen
+/// pixel, so a face the camera sees edge-on collects many water pixels into a
+/// few screen pixels and drew a thin bright line (the Skyrim shore streak,
+/// bisected to a distant terrain tile's steep face); flat floors sit near 1.
+pub const WATER_CAUSTIC_FACING_MIN: f32 = 0.5;
+pub const WATER_CAUSTIC_FACING_FULL: f32 = 1.0;
 /// World size of the larger lace patch in shore foam.
 pub const WATER_SHORE_LACE_SCALE_BU: f32 = 24.0;
 /// Strongest the shore foam gets, so it never becomes an opaque white strip.
@@ -3016,6 +3024,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float WATER_BREAKER_FOAM_FULL_AMPLITUDE),
     shader_define!(Float WATER_SHORE_FADE_DEPTH_BU),
     shader_define!(Float WATER_CAUSTIC_SHALLOW_FADE_BU),
+    shader_define!(Float WATER_CAUSTIC_FACING_MIN),
+    shader_define!(Float WATER_CAUSTIC_FACING_FULL),
     shader_define!(Float WATER_SHORE_LACE_SCALE_BU),
     shader_define!(Float WATER_SHORE_FOAM_MAX),
     shader_define!(Float WATER_RIVER_BANK_DEPTH),

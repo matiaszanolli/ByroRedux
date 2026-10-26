@@ -710,23 +710,27 @@ became a thin surf fringe, Skyrim's shore merges into the grass, and the pale ro
 shelf there reads as rock. Before/after: `~/Downloads/byro-watal-godrays/fo3_shore_before_after.png`.
 The foam and coverage work below was done first and still applies.
 
-*Open observation:* a one-pixel-wide white diagonal streak on the Skyrim W1 shore
-view (camera `-33024 1060 64640`, yaw 0, pitch -6; floor point near
-`-31256, -58501`) is also the caustic deposit — it vanishes with the deposit
-disabled, and survives the shallow fade and a composite-side cap of 4 suns on the
-water accumulator (tried and reverted: no visible effect). It is not foam, glint,
-reflection, a placed object (none within 500 BU), or a cell-border crack — it
-survives skipping every deposit from fragments within 24 BU of a 4096 border (that
-test instead left a dark diagonal where the border's own deposits had been, which
-confirms the deposit lands at the sun-refracted image of its source). Bisect of the
-deposit's SOURCE fragments by screen region (`gl_FragCoord`): the streak comes from
-sources in x 640-960 (any y), but neither 640-800 nor 800-960 alone reproduces it,
-so it needs sources on both sides of x = 800. Scaling every deposit by 1/4 leaves a
-proportionally fainter streak and 1/16 removes it (so it is not a fixed-point
-wrap-around), and capping the water accumulator at 2x the sun in the composite does
-not remove it either (so it is not a high-multiplicity pile-up). Still unexplained.
-Next: record the floor hit's instance index for the deposits that land on the
-streak's pixels.
+*Resolved (2026-10-26):* a one-pixel-wide white diagonal streak on the Skyrim W1
+shore view (camera `-33024 1060 64640`, yaw 0, pitch -6) was the caustic deposit
+piling up on an edge-on floor face. Bisect: multiplying the deposit by one bit of
+the floor hit's instance index at a time kept the streak for bits 0-6 and lost it
+for bits 7-13, so every deposit on the streak hit instance 127 (a bit-count
+reading of the crops: `fx:maxima` saturates at 1 for any glint, so the first run's
+numbers said nothing and the crops were compared by eye). That instance is the
+distant terrain LOD tile `tamriel.4.-12.-12`; its skirts are not involved
+(disabling them left the streak). Splitting deposits on the floor face's facing
+to the camera: only faces with `|dot(n, toCamera)| < 0.25` draw it. The deposit
+splats at the floor hit's SCREEN pixel, so a face seen edge-on collects many water
+pixels into a few screen pixels. Fix: weight the deposit by how foreshortened the
+floor face is against the water plane, `smoothstep(WATER_CAUSTIC_FACING_MIN 0.5,
+WATER_CAUSTIC_FACING_FULL 1.0, cosFloor / cosWater)` (a floor parallel to the
+surface is 1). The ratio alone (clamped, no smoothstep) only dimmed it; threshold
+sweeps put the streak at ratios 0.5-0.7. The streak is gone on Skyrim W1, the
+FO3 lake lost a thin white line along its far shoreline, FNV lake is unchanged.
+The 0.5 / 1.0 pair is chosen from that sweep, not derived: a derivative-based
+screen Jacobian would be exact but needs uniform control flow around the floor
+ray. Earlier bisects (source-region, 1/4 and 1/16 scaling, composite cap)
+are consistent with this: it needs a fan of sources, not a fixed-point wrap.
 
 **Lake shores faded to a solid white strip instead of merging with the land
 (2026-10-26).** Two shore foam terms (the contact ray and the breaker band) both

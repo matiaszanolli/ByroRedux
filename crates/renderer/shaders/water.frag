@@ -1633,8 +1633,24 @@ void main() {
                             // over the first WATER_CAUSTIC_SHALLOW_FADE_BU.
                             float shallowFade = smoothstep(
                                 0.0, WATER_CAUSTIC_SHALLOW_FADE_BU, floorT);
+                            // The splat lands at the floor hit's screen pixel,
+                            // so a floor face the camera sees edge-on piles
+                            // many water pixels into a few screen pixels and
+                            // drew a thin bright line (the Skyrim shore
+                            // streak: a distant terrain tile's steep face).
+                            // Weight by how much more foreshortened the floor
+                            // face is than the water plane the deposit came
+                            // from; a floor parallel to the surface is 1.
+                            vec3 floorN = getHitTriNormal(
+                                uint(rayQueryGetIntersectionInstanceCustomIndexEXT(floorRq, true)),
+                                uint(rayQueryGetIntersectionPrimitiveIndexEXT(floorRq, true)));
+                            float waterFacing = abs(dot(Nsurface,
+                                normalize(cameraPos.xyz - vWorldPos)));
+                            float floorFacing = smoothstep(
+                                WATER_CAUSTIC_FACING_MIN, WATER_CAUSTIC_FACING_FULL,
+                                abs(dot(floorN, toCamera)) / max(waterFacing, 1.0e-3));
                             float contrib = sunDirection.w * sunVisibility
-                                * NdotSun * travelFall * shallowFade;
+                                * NdotSun * travelFall * shallowFade * floorFacing;
                             float scale = CAUSTIC_FIXED_SCALE;
                             float clamp_max = float(0xFFFFFFFFu) / scale;
                             // Match the glass writer's normalised 5x5
