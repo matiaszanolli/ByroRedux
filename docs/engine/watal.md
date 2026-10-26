@@ -982,15 +982,20 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    Current force matches velocity along the canonical flow axis instead of adding
    an unbounded constant acceleration. Water remains a trigger volume, not a
    solid Rapier plane, so entering it cannot block bodies or the character.
-   W0's real-data waterline GPU smoke is closed. Remaining Phase 2 scope is a
-   real-data dynamic-body contact/current gate. **Player traversal closed
+   W0's real-data waterline GPU smoke is closed, and the real-data
+   dynamic-body gate (`w2-dynamic-water.sh`, 2026-10-26) runs on FNV's Lake Mead:
+   two authored clutter bodies reach the contact sink, float at a submerged
+   fraction of 0.6, hold it and let the world sleep. The *current* half of that
+   gate is not observable on shipped content: none of the five fixtures has an
+   authored dynamic body in a flowing plane (`water.contacts` at each fixture:
+   FNV 2 bodies in calm water, FO3 1, Oblivion/Skyrim/FO4 0). **Player traversal closed
    2026-09-09** — see the W1 block in §2 and the
    `w1-water-traversal.sh` gate in §8. The existing
    dry→wet one-shot wake and settled-float sleep
    discipline remains load-bearing: water must never pin the exterior physics
    world awake. Test gate for body physics is closed (rise, settle, downstream
-   drift, calm-water quiescence); the remaining open real-data gate is the
-   dynamic-body contact/current one.
+   drift, calm-water quiescence); the real-data dynamic-body gate is
+   `w2-dynamic-water.sh` (contact and float; current unobservable).
 
 4. **Phase 3 — RENDER-FIDELITY + GAMEPLAY POLISH — OPEN (two items left).**
    The indexed per-frame water UBO, authored noise layers, bounded sunlight
