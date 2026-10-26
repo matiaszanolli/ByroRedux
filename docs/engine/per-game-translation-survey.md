@@ -139,7 +139,7 @@ as a monolith.
    plus `NiMaterialProperty` (legacy cascade) — in sequential `if let Some(...) =
    scene.get_as::<>()` arms. Same canonical `Material` slot, but populated from
    different sources with different conventions per game.
-2. **Texture-slot routing** ([`material/walker.rs:172-257`](../../crates/nif/src/import/material/walker.rs#L172))
+2. **Texture-slot routing** ([`material/slot_role.rs`](../../crates/nif/src/import/material/slot_role.rs) (`slot_to_role`) and [`dedicated_shader.rs`](../../crates/nif/src/import/material/dedicated_shader.rs) (`apply_bs_lighting_shader`))
    — `match shader.shader_type` for `BSLightingShaderType` (FaceTint=4 routes
    slot 4 to detail-map; MultiLayerParallax=11 routes slots 4/5/7 differently;
    default routes 4→env, 5→env_mask). FO3/FNV `BSShaderPPLightingProperty` has
@@ -174,7 +174,7 @@ as a monolith.
    metalness=0/roughness=0.8); FO4 = BGSM external; Skyrim = inline LSP
    glossiness; FO76 = `.mat` JSON. Same canonical slot, four conventions —
    already documented as Leak B in `material-abstraction.md`.
-9. **Emissive scalar conflation** ([`material/walker.rs:331-345`](../../crates/nif/src/import/material/walker.rs#L331))
+9. **Emissive scalar conflation** ([`material/dedicated_shader.rs`](../../crates/nif/src/import/material/dedicated_shader.rs) (`apply_bs_effect_shader`))
    — `BSEffect.base_color_scale` is a diffuse-tint modulator but the importer
    routes it into `emissive_mult` alongside Skyrim LSP `emissive_multiple` and
    legacy `NiMaterialProperty.emissive_mult`. Three different semantics, one

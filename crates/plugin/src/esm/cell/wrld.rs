@@ -13,7 +13,7 @@ use byroredux_core::bytes::{le_f32_at, le_u16_at};
 ///
 /// Populates both `worldspaces` (full WRLD record per #965) and
 /// `worldspace_climates` (CLMT FormID lookup preserved for back-compat
-/// with the cell loader — see byroredux/src/cell_loader.rs:778).
+/// with the cell loader — see `resolve_worldspace_climate` in byroredux/src/env_translate/climate.rs).
 pub(crate) fn parse_wrld_group(
     reader: &mut EsmReader,
     end: usize,

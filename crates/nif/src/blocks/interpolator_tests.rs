@@ -565,7 +565,7 @@ fn ni_bool_timeline_interpolator_parses_identical_wire_layout() {
 /// Regression for #548 — the dispatcher must route
 /// `NiBoolTimelineInterpolator` through `parse_timeline` (not the
 /// plain `parse`). Pre-fix the dispatch arm was absent and the
-/// block fell into the `NiUnknown` fallback at `blocks/mod.rs:705`.
+/// block fell into the `NiUnknown` fallback in `blocks/dispatch.rs`.
 #[test]
 fn ni_bool_timeline_interpolator_dispatches_via_parse_block() {
     let header = make_header_fnv();

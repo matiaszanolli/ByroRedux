@@ -32,7 +32,7 @@ all call the same `save_io::quicksave`/`SaveCommand` implementation. It resolves
 the validation gates (§3), then calls `save_world` → `encode` →
 `disk::write_slot`. It only needs `&World`, so it's a plain
 `ConsoleCommand`, not a deferred/queued action. `SaveInfoCommand`
-(`save_io.rs:783`, `"save.info"`) is the read-only companion — decode +
+(`byroredux/src/save_io/commands.rs`, `"save.info"`) is the read-only companion — decode +
 verify a slot without touching the live world.
 
 ## 2. ECS snapshot capture
@@ -44,7 +44,7 @@ on load, never serialised (`crates/save/src/registry.rs`'s module doc).
 `SaveRegistry` (`registry.rs:74`) is a type-erased registry — the same
 shape as debug-server's `ComponentDescriptor` (per CLAUDE.md) — storing
 a boxed save/load closure pair per component or resource, keyed by a
-stable string name. `build_save_registry()` (`byroredux/src/save_io.rs:223`)
+stable string name. `build_save_registry()` (`byroredux/src/save_io/registry.rs`)
 is the binary-side population point and the authoritative list — don't
 hand-copy its contents here, it has grown fast (roughly two dozen
 components — actor/AI/inventory/equipment/animation/scripting state,

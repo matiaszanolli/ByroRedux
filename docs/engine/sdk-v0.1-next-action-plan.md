@@ -227,7 +227,7 @@ kept explicit rather than overstated.
   dot-path global database most JContainers-dependent mods actually use for
   persistence) is explicitly `Unsupported`
   (`classify_static_call("JDB", "solveObj")` pinned Unsupported by its own
-  test at `compatibility.rs:4252`). This is a different thing from the
+  test in `crates/sdk/src/compatibility/tests.rs`). This is a different thing from the
   `JValue`/`JMap`/`JArray` object handles above, which JDB is usually built
   *on top of* in real JContainers — the handle primitives exist here, the
   path convenience layer over them does not.

@@ -1650,7 +1650,7 @@ fn skin_tint_and_hair_tint_route_slot_7_to_alternate_specular_under_msn() {
 /// expected values (4.0 passes / 0.04 scale — same constants the
 /// `GpuMaterial::default()` uses at
 /// `renderer/src/vulkan/material.rs:216-217` and the consumer-side
-/// fallback at `cell_loader.rs:2463`). Pre-fix the scalars stayed
+/// fallback in `material_translate::translate_material`). Pre-fix the scalars stayed
 /// `None`, requiring every consumer to repeat the `unwrap_or` —
 /// the producer-side default keeps the `Option` semantics honest:
 /// "Some = import committed to a value, None = no parallax

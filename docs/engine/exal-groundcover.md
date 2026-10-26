@@ -101,7 +101,7 @@ pipeline already builds:
   component — see §5.
 - **Wind** — WTHR's `wind_speed` byte is already parsed and currently drives
   only cloud scroll (`WeatherDataRes::wind_speed`,
-  [`components.rs:914`](../../byroredux/src/components.rs#L914)).
+  [`components/environment.rs`](../../byroredux/src/components/environment.rs)).
 - **Water height** — WATAL resolves the per-cell water plane, which the density
   field needs for shoreline behaviour ([`watal.md`](watal.md)).
 

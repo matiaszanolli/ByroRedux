@@ -52,7 +52,7 @@ three things already built and waiting:
 | QUST block-state-machine (`INDX`→stage, `QOBJ`→objective, `ALST`/`ALLS`→alias) | `crates/plugin/src/esm/records/misc/quest.rs::parse_qust` | done |
 | CTDA condition parsing + `ConditionList` | `crates/plugin/src/esm/records/condition.rs`, M47.1 | done — reusable verbatim for `ALST`/`ALLS`'s "Match Conditions" |
 | `RunOn::QuestAlias` | `crates/scripting/src/condition.rs` | **done** — resolves through `SceneActorBindings` |
-| `resolve_entity_by_global_form_id` | `crates/scripting/src/condition.rs:326` | done — the FormID→EntityId resolver every "forced"/"unique actor" fill type needs, already load-bearing for M42.5–8 AI packages and tonight's M47.2 object-targeting effects |
+| `resolve_entity_by_global_form_id` | `crates/scripting/src/condition/eval.rs` | done — the FormID→EntityId resolver every "forced"/"unique actor" fill type needs, already load-bearing for M42.5–8 AI packages and tonight's M47.2 object-targeting effects |
 | `FactionRanks` component | `crates/core/src/ecs/components/faction_ranks.rs` | done — direct target for alias-injected factions |
 | `Inventory` component + `AddItem` fragment effect | `crates/core/src/ecs/components/inventory.rs`, M47.2 | done — direct target for alias-injected `CNTO` items |
 | `ObjectRef::Property` alias resolution | `crates/scripting/src/fragment.rs` | **done** — alias-bound VMAD objects resolve to live entities |

@@ -585,7 +585,7 @@ fn interior_ambient_scale() -> f32 {
     })
 }
 
-/// Daytime peak of `SkyParamsRes::sun_intensity` (per `systems.rs:1446`,
+/// Daytime peak of `SkyParamsRes::sun_intensity` (per `compute_sun_arc` in `systems/weather.rs`,
 /// hours 7..=17). Used by [`compute_directional_upload`] to normalise
 /// the 0..4 ramp into a 0..1 contribution multiplier.
 ///
@@ -615,7 +615,7 @@ const SUN_INTENSITY_PEAK: f32 = crate::env_translate::SUN_INTENSITY_PEAK;
 /// alongside other compositing terms), not for surface BRDF input.
 ///
 /// Pre-#798 the exterior arm uploaded `directional_color` raw regardless
-/// of TOD; at midnight `sun_dir = (0, -1, 0)` per `systems.rs:1437-1442`
+/// of TOD; at midnight `sun_dir = (0, -1, 0)` per `compute_sun_arc` in `systems/weather.rs`
 /// and ceilings/overhangs received the full TOD-NIGHT `SKY_SUNLIGHT`
 /// colour. The WRS shadow ray subtracts when occluded, but at distances
 /// Beyond the renderer's shared shadow fade start, `shadowFade` decays

@@ -68,7 +68,7 @@ impl<T> ParsedNifCache<T> {
     /// [`Self::record_hit`] / [`Self::record_miss`] separately when
     /// the call site wants per-lookup tracking. Sites that batch
     /// their own counts (`load_references` end-of-cell commit at
-    /// `cell_loader.rs:1322`) bypass tracking here and use
+    /// `cell_loader/references/complete.rs`) bypass tracking here and use
     /// [`Self::accumulate_hits`] / [`Self::accumulate_misses`] once
     /// at the commit point.
     pub(crate) fn get(&self, key: &str) -> Option<&Option<Arc<T>>> {

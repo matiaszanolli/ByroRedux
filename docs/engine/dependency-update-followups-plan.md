@@ -402,7 +402,7 @@ Batch these as convenient. Each is S effort with low risk.
     `.set_parent(frame)` in `tools/byro-launcher/src/app.rs:132`. On Wayland that
     needs rfd's `wayland` feature.
 - **glam**:
-  - Collapse the three identical `[f32; 3]` lerps into one: `byroredux/src/components.rs:1241`,
+  - Collapse the three identical `[f32; 3]` lerps into one: `lerp_f32x3` in `byroredux/src/helpers.rs`,
     `byroredux/src/systems/weather.rs:264`, `byroredux/src/render/water.rs:49`.
   - Optional drop-ins: `FloatExt::smoothstep` for `render/fog_volumes.rs:284` and
     `volumetrics/noise.rs:142`; `Vec3::rotate_y` for `bench_camera.rs:391`;

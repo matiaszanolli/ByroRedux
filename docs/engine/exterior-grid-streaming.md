@@ -196,7 +196,7 @@ that command drives an unrelated `ActivateEvent` path
 (`crates/scripting/src/events.rs`) consumed only by hand-translated demo
 scripts, with no cell-transition side effect.
 
-`DoorTeleport` (`byroredux/src/components.rs:60-73`, `SparseSetStorage`)
+`DoorTeleport` (`byroredux/src/components/render.rs`, `SparseSetStorage`)
 holds a destination FormID plus Z-up position/rotation, stamped onto
 placement-root entities at spawn time
 (`byroredux/src/cell_loader/spawn.rs:281-290`) from each door REFR's
@@ -221,7 +221,7 @@ takes the pending transition and dispatches:
 Despawn, in both cases, walks `CellRoot` (`crates/core/src/ecs/components/cell_root.rs:20`)
 — every cell-owned entity carries one, pointing at that cell's root
 entity. `unload_cell` (`byroredux/src/cell_loader/unload.rs:32`) looks up
-victims via the inverted `CellRootIndex` (`byroredux/src/components.rs:968`,
+victims via the inverted `CellRootIndex` (`byroredux/src/components/indices.rs`,
 added to avoid an O(total entities) scan) and despawns them, releasing
 mesh/BLAS/texture refcounts as it goes.
 

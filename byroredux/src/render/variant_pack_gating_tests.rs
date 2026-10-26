@@ -221,7 +221,7 @@ fn effect_shader_kind_packs_falloff_cone() {
         mesh_e,
         Material {
             // `MATERIAL_KIND_EFFECT_SHADER` (101) — engine-synthesized
-            // upstream of the renderer, see render.rs:603.
+            // upstream of the renderer, see `texture_path_is_fx_mesh` in `components/render.rs`.
             material_kind: 101,
             effect_falloff: Some(EffectFalloff {
                 start_angle: 0.95,

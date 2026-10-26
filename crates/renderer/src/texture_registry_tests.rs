@@ -57,7 +57,7 @@ fn normalize_already_clean() {
 /// and `textures\landscape\dirt02.dds` mapped to different keys,
 /// producing silent bindless slot duplication on terrain tiles
 /// whose LTEX record omits the prefix (FO3/FNV vanilla) while
-/// `spawn_terrain_mesh` at cell_loader.rs:945 re-calls with the
+/// `spawn_terrain_mesh` (`cell_loader/terrain.rs`) re-calls with the
 /// fully-qualified path. Matches the canonicalization that
 /// `asset_provider::normalize_texture_path` applies for the
 /// archive lookup.

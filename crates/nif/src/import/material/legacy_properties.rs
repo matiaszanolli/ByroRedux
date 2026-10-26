@@ -305,8 +305,8 @@ fn apply_texturing_property(
             // slot binds WITHOUT a co-bound BSShaderPPLightingProperty
             // (rare on FO3 / FNV with an Oblivion-style property
             // chain), the scalar pair stays None and the consumer's
-            // `unwrap_or(0.04, 4.0)` fallback (`render.rs:573`,
-            // `cell_loader.rs:2463`, `scene.rs:1917`) compensates.
+            // `unwrap_or(0.04, 4.0)` fallback (now resolved once in
+            // `material_translate::translate_material`) compensates.
             // Setting the engine defaults at the producer-side keeps
             // the import-side `Option` semantics honest: "Some =
             // import committed to a value, None = no parallax

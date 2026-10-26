@@ -1776,7 +1776,7 @@ fn parse_rate_fnv_esm() {
     );
 
     // Per-category floors — mirror the existing inline test at
-    // records/mod.rs:525-574 so a single-category regression fails
+    // `parse_real_fnv_esm_record_counts` in `esm/records/tests.rs` so a single-category regression fails
     // loud even when the total stays above the overall floor.
     assert!(index.items.len() > 2500, "items={}", index.items.len());
     assert!(

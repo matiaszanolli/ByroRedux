@@ -3,7 +3,7 @@
 //!
 //! Pre-fix the no-WTHR fallback branch installed `SkyParamsRes` +
 //! `CellLightingRes` but skipped `GameTimeRes` + `WeatherDataRes`.
-//! `weather_system` (`systems.rs:1136`) early-returns on missing
+//! `weather_system` (`systems/weather.rs`) early-returns on missing
 //! resources, so the fallback sun stayed pinned at the initial
 //! `sun_direction = [-0.4, 0.8, -0.45]` and `sun_intensity = 4.0`
 //! forever — every cell whose worldspace failed to resolve a WTHR
