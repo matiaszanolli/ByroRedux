@@ -621,9 +621,11 @@ mod tests {
             PARALLAX_PASSES_MIN,
             "an unauthored material must keep exactly the shader's minimum pass count"
         );
-        assert!(PARALLAX_PASSES_MIN <= PARALLAX_PASSES_SECONDARY_MAX);
-        assert!(PARALLAX_PASSES_SECONDARY_MAX <= PARALLAX_PASSES_PRIMARY_MAX);
-        assert!(PRESENTATION_RADIAL_TAPS >= 1);
+        const {
+            assert!(PARALLAX_PASSES_MIN <= PARALLAX_PASSES_SECONDARY_MAX);
+            assert!(PARALLAX_PASSES_SECONDARY_MAX <= PARALLAX_PASSES_PRIMARY_MAX);
+            assert!(PRESENTATION_RADIAL_TAPS >= 1);
+        }
 
         let banned: &[(&str, &[&str])] = &[
             ("include/pbr.glsl", &["0.25, 16.0"]),
