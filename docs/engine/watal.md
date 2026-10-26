@@ -709,9 +709,14 @@ carved into lace by two scales of value noise and capped at
 `WATER_SHORE_FOAM_MAX` (0.45), leaving a thin broken fringe offshore of the
 waterline. Other foam sources (rapids streaks, crests) are unchanged. Before and
 after on the Skyrim W1 shore: `~/Downloads/byro-watal-godrays/lake_shore_before_after.png`.
-Not changed: submerged static rocks still refract as unlit albedo (the hit proxy
-in `traceWaterRay` carries no lighting), so a pale rock shelf in clear shallows
-can read lighter than its dry neighbour.
+The pale rock shelf in the Skyrim W1 foreground is not foam (foam reads 5-25 %
+there, coverage 1, the refraction hit is traced): it is the placed
+`MountainTrim02RiverbedEdge01` landscape slab, whose texture is pale. Lighting the
+refraction hit like the main shader does (`reflectionHitIrradiance`, albedo x
+(irradiance / pi + ambient)) compiled and ran but changed nothing visible there
+and cost about 0.6 ms (7.1 vs 6.5 ms `main_render` on that view), so it was not
+kept; `traceWaterRay` still returns bare albedo + emission for its hits. Checked
+on Skyrim (lake), Oblivion (sea shores) and FNV (Lake Mead); FO3 was not.
 
 **Hairline cracks along cell borders at grazing angles (2026-10-26).** Thin
 light lines ran across open water along the border between two cells' water
