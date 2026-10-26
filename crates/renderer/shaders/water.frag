@@ -160,6 +160,11 @@ layout(location = 3) in float vWorldBitangentSign;
 // Mesh-bound BGSM flow maps sample authored mesh UVs. Cell WATR surfaces
 // retain the u32::MAX flow-map sentinel and ignore this input.
 layout(location = 4) in vec2 vUV;
+// The bed under this fragment, baked into the mesh by the cell loader and
+// interpolated: x = depth below the surface (1e6 = none), yz = unit shoreward
+// direction, w = 1 when bed data is present. vCrest = the swell crest phase.
+layout(location = 5) in vec4 vShore;
+layout(location = 6) in float vCrest;
 
 // Single HDR output — water is a transparent draw, blended onto the
 // opaque pass's main colour attachment via standard SRC_ALPHA /
@@ -826,6 +831,41 @@ void main() {
         // Use world XZ — flat-plane water.
         uvWorld = vWorldPos.xz;
         uvOrigin = renderOrigin.xz;
+        // A river's current is not one vector across the plane: it runs
+        // faster down the deep middle than over the shallows (open-channel
+        // flow scales with depth), and hugs the banks instead of running
+        // into them. Both come from the bed under the fragment. Away from
+        // the banks the plane's own flow is untouched; at the waterline the
+        // current turns parallel to the shore (keeping its sign against the
+        // authored flow) and slows to WATER_RIVER_SPEED_MIN of the plane's.
+        if ((kind == WATER_RIVER || kind == WATER_RAPIDS) && vShore.w > 0.5) {
+            float riverDepth = vShore.x;
+            float depthSpeed = mix(WATER_RIVER_SPEED_MIN, 1.0,
+                                   smoothstep(0.0, WATER_RIVER_DEPTH_FULL, riverDepth));
+            vec2 flowXZ = push.flow.xz;
+            float flowLen = length(flowXZ);
+            vec2 bank = vShore.yz;
+            if (flowLen > 1.0e-4 && length(bank) > 0.1) {
+                vec2 flowDirXZ = flowXZ / flowLen;
+                vec2 along = vec2(-bank.y, bank.x);
+                if (dot(along, flowDirXZ) < 0.0) along = -along;
+                float hug = (1.0 - smoothstep(0.25 * WATER_RIVER_BANK_DEPTH,
+                                              WATER_RIVER_BANK_DEPTH, riverDepth))
+                    * WATER_RIVER_BANK_ALIGN;
+                vec2 localDir = normalize(mix(flowDirXZ, along, hug));
+                // Rotate every scroll vector by the turn from the plane's
+                // flow heading to the local one.
+                float c = dot(flowDirXZ, localDir);
+                float sn = flowDirXZ.x * localDir.y - flowDirXZ.y * localDir.x;
+                mat2 turn = mat2(c, sn, -sn, c);
+                normalScrollA = turn * normalScrollA;
+                normalScrollB = turn * normalScrollB;
+                normalScrollC = turn * normalScrollC;
+            }
+            normalScrollA *= depthSpeed;
+            normalScrollB *= depthSpeed;
+            normalScrollC *= depthSpeed;
+        }
     }
     // Two scrolling normal layers (the "movement on flat surfaces"
     // case). For River/Rapids/Waterfall, layer A's scroll vector is
@@ -1189,6 +1229,16 @@ void main() {
         // sheet" read.
         foamMask += foamFlowStreaks(vWorldPos, renderOrigin.xyz, time * 1.6) * 0.95;
         foamMask += foamCrest(Nperturbed, N) * 0.45;
+    }
+    // Breakers: where the swell runs out of water it breaks. Foam is laid in
+    // the band of shallow water at the shore, brightest on the crests as they
+    // pass, scaled by how much swell there is to break (a flat calm leaves a
+    // fringe, a gale a surf line). Needs the baked bed and a swell.
+    if (vShore.w > 0.5 && push.optical.z > 0.0 && kind == WATER_CALM) {
+        float band = 1.0 - smoothstep(0.0, WATER_BREAKER_FOAM_DEPTH, vShore.x);
+        float crestPass = smoothstep(0.3, 0.95, vCrest);
+        float energy = clamp(push.optical.z / WATER_BREAKER_FOAM_FULL_AMPLITUDE, 0.0, 1.0);
+        foamMask += band * mix(0.12, 1.0, crestPass) * mix(0.35, 1.0, energy);
     }
     foamMask = clamp(foamMask * foamStrength, 0.0, 1.0);
     if (rainIntensity > 0.0) {

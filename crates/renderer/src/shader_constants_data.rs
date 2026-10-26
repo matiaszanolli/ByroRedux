@@ -1787,6 +1787,51 @@ pub const WATER_WAVE_AMPLITUDE_MAX: f32 =
     byroredux_core::ecs::components::water::WATER_WAVE_AMPLITUDE_MAX;
 pub const WATER_WAVE_SPATIAL_FLOOR_A: f32 =
     byroredux_core::ecs::components::water::WATER_WAVE_SPATIAL_FLOOR_A;
+
+// Swell (`water.vert`): the wind-driven travelling wave of calm water, shared
+// with the CPU crest sampler through core, plus the shoaling and breaking
+// that reshape it over a rising bed.
+pub const WATER_SWELL_WAVELENGTH_BU: f32 =
+    byroredux_core::ecs::components::water::WATER_SWELL_WAVELENGTH_BU;
+pub const WATER_SWELL_GRAVITY_BU_PER_S2: f32 =
+    byroredux_core::ecs::components::water::WATER_SWELL_GRAVITY_BU_PER_S2;
+pub const WATER_SWELL_BREAK_RATIO: f32 =
+    byroredux_core::ecs::components::water::WATER_SWELL_BREAK_RATIO;
+pub const WATER_SWELL_SHOAL_REF_DEPTH_BU: f32 =
+    byroredux_core::ecs::components::water::WATER_SWELL_SHOAL_REF_DEPTH_BU;
+pub const WATER_SWELL_SHOAL_GAIN_MAX: f32 =
+    byroredux_core::ecs::components::water::WATER_SWELL_SHOAL_GAIN_MAX;
+
+// The bed under a water plane rides in the mesh's vertex colour (unused on
+// water otherwise): r = depth / WATER_BED_DEPTH_MAX, gb = the shoreward
+// direction * 0.5 + 0.5, a = WATER_BED_VALID_ALPHA. Only a vertex whose alpha
+// is within WATER_BED_VALID_ALPHA_TOL of that sentinel carries bed data;
+// interior water, distant LOD water and every placed water mesh (authored
+// vertex colours, alpha in k/255 steps) take the open-water path. The sentinel
+// is deliberately not a k/255 value, so no 8-bit authored alpha can match it.
+/// World units of depth at which the baked depth saturates.
+pub const WATER_BED_DEPTH_MAX: f32 = 1024.0;
+/// Vertex alpha of a vertex that carries bed data (not a multiple of 1/255).
+pub const WATER_BED_VALID_ALPHA: f32 = 0.5004;
+/// How far from the sentinel an alpha may be and still carry bed data.
+pub const WATER_BED_VALID_ALPHA_TOL: f32 = 1.0e-4;
+pub const WATER_SHORE_REFRACT_DEPTH: f32 =
+    byroredux_core::ecs::components::water::WATER_SHORE_REFRACT_DEPTH;
+pub const WATER_SHORE_REFRACT_MAX: f32 =
+    byroredux_core::ecs::components::water::WATER_SHORE_REFRACT_MAX;
+/// Depth under which a swell crest breaks into foam.
+pub const WATER_BREAKER_FOAM_DEPTH: f32 = 140.0;
+/// Swell crest height (world units) at which breaker foam is at full strength.
+pub const WATER_BREAKER_FOAM_FULL_AMPLITUDE: f32 = 8.0;
+// River motion (`water.frag`), from the same bed field.
+/// Depth under which a river's current is pulled into the bank's direction.
+pub const WATER_RIVER_BANK_DEPTH: f32 = 160.0;
+/// Share of the bank-parallel direction the current takes at the waterline.
+pub const WATER_RIVER_BANK_ALIGN: f32 = 0.7;
+/// Slowest current as a fraction of the plane's speed (at the waterline).
+pub const WATER_RIVER_SPEED_MIN: f32 = 0.35;
+/// Depth at which a river's current reaches the plane's full speed.
+pub const WATER_RIVER_DEPTH_FULL: f32 = 420.0;
 pub const WATER_WAVE_SPATIAL_FLOOR_B: f32 =
     byroredux_core::ecs::components::water::WATER_WAVE_SPATIAL_FLOOR_B;
 pub const WATER_WAVE_FALLBACK_DIR_A: [f32; 2] =
@@ -2944,6 +2989,22 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float WATER_WAVE_PHASE_B_RATE),
     shader_define!(Float WATER_WAVE_AMPLITUDE_MAX),
     shader_define!(Float WATER_WAVE_SPATIAL_FLOOR_A),
+    shader_define!(Float WATER_SWELL_WAVELENGTH_BU),
+    shader_define!(Float WATER_SWELL_GRAVITY_BU_PER_S2),
+    shader_define!(Float WATER_SWELL_BREAK_RATIO),
+    shader_define!(Float WATER_SWELL_SHOAL_REF_DEPTH_BU),
+    shader_define!(Float WATER_SWELL_SHOAL_GAIN_MAX),
+    shader_define!(Float WATER_BED_DEPTH_MAX),
+    shader_define!(Float WATER_BED_VALID_ALPHA),
+    shader_define!(Float WATER_BED_VALID_ALPHA_TOL),
+    shader_define!(Float WATER_SHORE_REFRACT_DEPTH),
+    shader_define!(Float WATER_SHORE_REFRACT_MAX),
+    shader_define!(Float WATER_BREAKER_FOAM_DEPTH),
+    shader_define!(Float WATER_BREAKER_FOAM_FULL_AMPLITUDE),
+    shader_define!(Float WATER_RIVER_BANK_DEPTH),
+    shader_define!(Float WATER_RIVER_BANK_ALIGN),
+    shader_define!(Float WATER_RIVER_SPEED_MIN),
+    shader_define!(Float WATER_RIVER_DEPTH_FULL),
     shader_define!(Float WATER_WAVE_SPATIAL_FLOOR_B),
     shader_define!(Vec2 WATER_WAVE_FALLBACK_DIR_A),
     shader_define!(Vec2 WATER_WAVE_FALLBACK_DIR_B),

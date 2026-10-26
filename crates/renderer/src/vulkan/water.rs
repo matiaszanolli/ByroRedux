@@ -165,7 +165,9 @@ pub struct GpuWaterParams {
     /// `GpuCamera.render_origin.w` (#2164).
     pub uv_offset: [f32; 4],
     /// x = FO4+/Creation-2 WATR `Depth Amount`; y = `WaterNormalEncoding`
-    /// (0 unit tangent normal, 1 FO3/FNV offset noise); zw reserved. `x`
+    /// (0 unit tangent normal, 1 FO3/FNV offset noise); z = the wind-driven
+    /// swell's open-water crest height (world units, 0 = none) and w its
+    /// heading in radians. `x`
     /// remains separate from `shallow.a`/`deep.a`, which are actual fog
     /// distances.
     pub optical: [f32; 4],
@@ -1326,6 +1328,49 @@ mod tests {
             !river.contains("foamFlowStreaks("),
             "river water must not call the procedural streak foam"
         );
+    }
+
+    /// The swell, shore and river contract between the cell loader's baked
+    /// vertex colour, `water.vert`, `water.frag` and the CPU crest sampler.
+    #[test]
+    fn swell_shore_and_river_shaders_keep_their_contract() {
+        use crate::shader_constants::{WATER_BED_VALID_ALPHA, WATER_BED_VALID_ALPHA_TOL};
+        // The sentinel alpha must not be reachable by any 8-bit authored alpha
+        // (k/255), or a placed water mesh's vertex colour could be read as bed.
+        let nearest = (WATER_BED_VALID_ALPHA * 255.0).round() / 255.0;
+        assert!(
+            (WATER_BED_VALID_ALPHA - nearest).abs() > 4.0 * WATER_BED_VALID_ALPHA_TOL,
+            "the bed sentinel {WATER_BED_VALID_ALPHA} sits within reach of the 8-bit alpha {nearest}"
+        );
+
+        let vert = include_str!("../../shaders/water.vert");
+        // Bed data is trusted only on the exact sentinel.
+        assert!(vert.contains(
+            "abs(inColor.a - WATER_BED_VALID_ALPHA) < WATER_BED_VALID_ALPHA_TOL"
+        ));
+        // The swell law mirrors `WaterSwell` in core: k = 2 pi / wavelength,
+        // w = sqrt(g k), the crest travelling along +heading (the -t sign),
+        // Green's-law shoaling then the breaking cap.
+        for needle in [
+            "float swellK = 6.2831853 / WATER_SWELL_WAVELENGTH_BU;",
+            "float swellW = sqrt(WATER_SWELL_GRAVITY_BU_PER_S2 * swellK);",
+            "dot(absolutePos.xz, swellDir) * swellK - water.timing.x * swellW",
+            "pow(WATER_SWELL_SHOAL_REF_DEPTH_BU / max(bedDepth, 1.0), 0.25)",
+            "min(water.optical.z * shoal, WATER_SWELL_BREAK_RATIO * bedDepth)",
+            "amplitude = min(amplitude, WATER_SWELL_BREAK_RATIO * bedDepth);",
+            "vec2(cos(water.optical.w), sin(water.optical.w))",
+        ] {
+            assert!(vert.contains(needle), "water.vert lost `{needle}`");
+        }
+        let frag = include_str!("../../shaders/water.frag");
+        for needle in [
+            "layout(location = 5) in vec4 vShore;",
+            "(kind == WATER_RIVER || kind == WATER_RAPIDS) && vShore.w > 0.5",
+            "mix(WATER_RIVER_SPEED_MIN, 1.0,",
+            "vShore.w > 0.5 && push.optical.z > 0.0 && kind == WATER_CALM",
+        ] {
+            assert!(frag.contains(needle), "water.frag lost `{needle}`");
+        }
     }
 
     #[test]

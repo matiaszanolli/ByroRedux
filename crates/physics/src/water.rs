@@ -38,8 +38,9 @@ use byroredux_core::ecs::components::collision::{MotionType, RigidBodyData};
 use rustc_hash::FxHashMap;
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{
-    WaterContact, WaterCurrentVolume, WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterSurfaceMesh,
-    WaterVolume, WATERLINE_HYSTERESIS, WATER_WAVE_AMPLITUDE_MAX, WATER_WAVE_DEFAULT_SCROLL_A,
+    WaterBedField, WaterContact, WaterCurrentVolume, WaterFlow, WaterKind, WaterMaterial,
+    WaterPlane, WaterSurfaceMesh, WaterVolume, WATERLINE_HYSTERESIS, WATER_SHORE_REFRACT_DEPTH,
+    WATER_SHORE_REFRACT_MAX, WATER_SWELL_BREAK_RATIO, WATER_WAVE_AMPLITUDE_MAX, WATER_WAVE_DEFAULT_SCROLL_A,
     WATER_WAVE_DEFAULT_SCROLL_B, WATER_WAVE_FALLBACK_DIR_A, WATER_WAVE_FALLBACK_DIR_B,
     WATER_WAVE_MIX_A, WATER_WAVE_MIX_B, WATER_WAVE_PHASE_B_RATE, WATER_WAVE_RATE_MAX,
     WATER_WAVE_RATE_MIN, WATER_WAVE_SPATIAL_FLOOR_A, WATER_WAVE_SPATIAL_FLOOR_B,
@@ -423,6 +424,9 @@ struct WaterSurface {
     material: WaterMaterial,
     flow: Option<WaterFlow>,
     damage_per_second: f32,
+    /// The bed under a cell plane (the LAND samples its mesh vertices were
+    /// baked from); `None` for water with no LAND under it.
+    bed: Option<WaterBedField>,
 }
 
 /// Absolute vertical distance from a reference point to a water surface.
@@ -454,15 +458,84 @@ pub fn authored_wave_height_with_weather(
     weather_scroll: [f32; 2],
     wind_wave_scale: f32,
 ) -> f32 {
+    authored_wave_height_over_bed(
+        material,
+        position,
+        time_secs,
+        weather_scroll,
+        wind_wave_scale,
+        None,
+    )
+}
+
+/// [`authored_wave_height_with_weather`] over a known bed: the wind-driven swell
+/// (`WaterMaterial::swell`) shoals, turns toward the shore and breaks exactly
+/// as `water.vert` does, and the authored ripple pair is capped by the same
+/// breaking limit and refracted the same way. `bed` is the plane's
+/// [`WaterBedField`]; `None`, or a position outside it, is open water. The
+/// bed field and the mesh vertices come from the same LAND samples, so the
+/// visible crest and this one cannot disagree about the depth.
+pub fn authored_wave_height_over_bed(
+    material: &WaterMaterial,
+    position: Vec3,
+    time_secs: f32,
+    weather_scroll: [f32; 2],
+    wind_wave_scale: f32,
+    bed: Option<&WaterBedField>,
+) -> f32 {
+    if !time_secs.is_finite() {
+        return 0.0;
+    }
+    let sample = bed.and_then(|bed| bed.sample(position.x, position.z));
+    let bed_depth = sample.map_or(f32::INFINITY, |sample| sample.depth);
+    // Refraction toward the shore: only where the bed rises, and only in the
+    // zone `water.vert` bends in (`WATER_SHORE_REFRACT_DEPTH`).
+    let shore_dir = sample.map_or([0.0, 0.0], |sample| sample.uphill);
+    let shore_len = (shore_dir[0] * shore_dir[0] + shore_dir[1] * shore_dir[1]).sqrt();
+    let refraction = if sample.is_some() && shore_len > 0.1 {
+        let t = ((bed_depth - 0.25 * WATER_SHORE_REFRACT_DEPTH)
+            / (0.75 * WATER_SHORE_REFRACT_DEPTH))
+            .clamp(0.0, 1.0);
+        (1.0 - t * t * (3.0 - 2.0 * t)) * WATER_SHORE_REFRACT_MAX
+    } else {
+        0.0
+    };
+    let turn = |dir: [f32; 2], share: f32| {
+        let mixed = [
+            dir[0] + (shore_dir[0] - dir[0]) * share,
+            dir[1] + (shore_dir[1] - dir[1]) * share,
+        ];
+        let len = (mixed[0] * mixed[0] + mixed[1] * mixed[1]).sqrt();
+        if len > 1.0e-6 {
+            [mixed[0] / len, mixed[1] / len]
+        } else {
+            dir
+        }
+    };
+
+    // The swell is independent of the authored ripple amplitude: a plane with
+    // none still rolls in the wind.
+    let swell = material
+        .swell(weather_scroll)
+        .map(|mut swell| {
+            if refraction > 0.0 {
+                swell.direction = turn(swell.direction, refraction);
+            }
+            swell.height(position.x, position.z, time_secs, bed_depth)
+        })
+        .unwrap_or(0.0);
+
     // The shader clamps the uploaded `tune.w` (amplitude × wind scale) and
     // takes `abs` of the uploaded frequency; mirror both exactly. #5582 —
     // the CPU used to clamp before the wind scale and floor a negative
-    // frequency at 0, two crests the visible water never showed.
-    let amplitude =
-        (material.wave_amplitude * wind_wave_scale).clamp(0.0, WATER_WAVE_AMPLITUDE_MAX);
+    // frequency at 0, two crests the visible water never showed. The breaking
+    // limit then caps it by the water under it.
+    let amplitude = (material.wave_amplitude * wind_wave_scale)
+        .clamp(0.0, WATER_WAVE_AMPLITUDE_MAX)
+        .min(WATER_SWELL_BREAK_RATIO * bed_depth);
     let frequency = material.wave_frequency.abs();
-    if !amplitude.is_finite() || !frequency.is_finite() || !time_secs.is_finite() {
-        return 0.0;
+    if !amplitude.is_finite() || !frequency.is_finite() {
+        return swell;
     }
     let direction = |scroll: [f32; 2], fallback: [f32; 2]| {
         let len_sq = scroll[0] * scroll[0] + scroll[1] * scroll[1];
@@ -481,8 +554,12 @@ pub fn authored_wave_height_with_weather(
     // `water.vert`. Deriving the CPU directions before adding weather would
     // make buoyancy/submersion sample a different crest orientation whenever
     // atmospheric wind is active.
-    let dir_a = direction(scroll_a, WATER_WAVE_FALLBACK_DIR_A);
-    let dir_b = direction(scroll_b, WATER_WAVE_FALLBACK_DIR_B);
+    let mut dir_a = direction(scroll_a, WATER_WAVE_FALLBACK_DIR_A);
+    let mut dir_b = direction(scroll_b, WATER_WAVE_FALLBACK_DIR_B);
+    if refraction > 0.0 {
+        dir_a = turn(dir_a, refraction * 0.6);
+        dir_b = turn(dir_b, refraction * 0.6);
+    }
     let rate = |scroll: [f32; 2], reference: f32| {
         ((scroll[0] * scroll[0] + scroll[1] * scroll[1]).sqrt() / reference)
             .clamp(WATER_WAVE_RATE_MIN, WATER_WAVE_RATE_MAX)
@@ -497,7 +574,7 @@ pub fn authored_wave_height_with_weather(
     let phase_b =
         (position.x * dir_b[0] + position.z * dir_b[1]) * spatial_b * std::f32::consts::TAU
             - time_secs * frequency * rate_b * (std::f32::consts::TAU * WATER_WAVE_PHASE_B_RATE);
-    amplitude * (phase_a.sin() * WATER_WAVE_MIX_A + phase_b.sin() * WATER_WAVE_MIX_B)
+    swell + amplitude * (phase_a.sin() * WATER_WAVE_MIX_A + phase_b.sin() * WATER_WAVE_MIX_B)
 }
 
 /// Return the live weather contribution used by the water vertex shader:
@@ -542,6 +619,7 @@ fn collect_water_surfaces(world: &World, out: &mut Vec<WaterSurface>) {
     };
     let flow_q = world.query::<WaterFlow>();
     let surface_q = world.query::<WaterSurfaceMesh>();
+    let bed_q = world.query::<WaterBedField>();
     for (entity, plane) in wq.iter() {
         let Some(volume) = vq.get(entity) else {
             continue;
@@ -555,6 +633,7 @@ fn collect_water_surfaces(world: &World, out: &mut Vec<WaterSurface>) {
             material: plane.material,
             flow,
             damage_per_second: plane.damage_per_second,
+            bed: bed_q.as_ref().and_then(|q| q.get(entity).cloned()),
         });
     }
 }
@@ -1047,12 +1126,13 @@ fn apply_buoyancy_with_scratch(
                                     // `surface_y_at` / containment use
                                     // (the collider AABB centre), not the
                                     // body origin.
-                                    authored_wave_height_with_weather(
+                                    authored_wave_height_over_bed(
                                         &s.material,
                                         Vec3::new(reference_point.x, pos.y, reference_point.z),
                                         time,
                                         s.kind.weather_scroll_for(weather_scroll),
                                         wind_wave_scale,
+                                        s.bed.as_ref(),
                                     )
                                 })
                                 .unwrap_or(0.0)
@@ -1509,6 +1589,7 @@ mod tests {
             material: WaterMaterial::default(),
             flow: None,
             damage_per_second: 0.0,
+            bed: None,
         }];
 
         assert!(
@@ -1856,6 +1937,66 @@ mod tests {
                 "a negative frequency must move like its magnitude, as abs() does on the GPU"
             );
         }
+    }
+
+    /// The swell reaches buoyancy through the same sampler the renderer's
+    /// vertex shader mirrors: open water is exactly the core swell, a deep bed
+    /// changes nothing, a shallow one shoals and breaks it, and at the
+    /// waterline it carries no displacement.
+    #[test]
+    fn swell_reaches_the_crest_sampler_and_shoals_over_a_bed() {
+        use byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED;
+        use byroredux_core::ecs::components::water::{
+            WaterBedField, WATER_SWELL_AMPLITUDE_MAX, WATER_SWELL_BREAK_RATIO,
+        };
+        let material = WaterMaterial {
+            wind_driven: true,
+            wave_amplitude: 0.0, // no authored ripple: only the swell
+            ..WaterMaterial::default()
+        };
+        let gale = [
+            MAX_WIND_SPEED * byroredux_core::ecs::components::water::WEATHER_SCROLL_PER_BU_PER_S,
+            0.0,
+        ];
+        let field = |depth: f32| {
+            WaterBedField::new([-1000.0, -1000.0], 100.0, 21, vec![depth; 21 * 21]).unwrap()
+        };
+        let swell = material.swell(gale).unwrap();
+        // Find a position where the swell is near a crest.
+        let (position, time) = (0..200)
+            .map(|i| (Vec3::new(i as f32 * 5.0, 0.0, 0.0), 1.3))
+            .find(|(p, t)| swell.height(p.x, p.z, *t, 1.0e6) > 0.8 * WATER_SWELL_AMPLITUDE_MAX)
+            .expect("the swell has a crest");
+
+        let open = authored_wave_height_over_bed(&material, position, time, gale, 1.0, None);
+        assert!((open - swell.height(position.x, position.z, time, 1.0e6)).abs() < 1e-4);
+        assert!(open > 0.8 * WATER_SWELL_AMPLITUDE_MAX);
+
+        let deep = field(5000.0);
+        let over_deep = authored_wave_height_over_bed(&material, position, time, gale, 1.0, Some(&deep));
+        assert!((over_deep - open).abs() < 1e-3, "a deep bed leaves open water alone");
+
+        let shallow = field(30.0);
+        let over_shallow =
+            authored_wave_height_over_bed(&material, position, time, gale, 1.0, Some(&shallow));
+        assert!(
+            over_shallow.abs() <= WATER_SWELL_BREAK_RATIO * 30.0 + 1e-3,
+            "the swell breaks over 30 BU of water: {over_shallow}"
+        );
+        let waterline = field(0.0);
+        assert_eq!(
+            authored_wave_height_over_bed(&material, position, time, gale, 1.0, Some(&waterline)),
+            0.0,
+            "no displacement where the surface meets the shore"
+        );
+        // Outside the field it is open water again.
+        let far = Vec3::new(100_000.0, 0.0, 0.0);
+        let far_open = authored_wave_height_over_bed(&material, far, time, gale, 1.0, None);
+        let far_field = authored_wave_height_over_bed(&material, far, time, gale, 1.0, Some(&shallow));
+        assert!((far_open - far_field).abs() < 1e-4);
+        // A river has no swell however hard the wind blows.
+        let river = WaterMaterial { wind_driven: false, wave_amplitude: 0.0, ..material };
+        assert_eq!(authored_wave_height_over_bed(&river, position, time, gale, 1.0, None), 0.0);
     }
 
     #[test]

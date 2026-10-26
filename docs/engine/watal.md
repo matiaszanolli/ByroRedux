@@ -632,6 +632,51 @@ m/s, ~1 700 m/s for Oblivion's layer 0 (tile 0.075) on paper;
 own wind advection is `0.25 m/s` per unit of normalised wind and was not
 touched. Measured sky drift on Skyrim before the cap was ~0.5 deg/s.
 
+**Waves, shores and river motion share one bed field (2026-10-26).** User
+direction: "basic motion physics for rivers, and waves and shores for lakes and
+oceans, for all games". Both need the depth of water over the bed and the way
+the shore lies, and the LAND heightfield under the plane is the only authored
+description of the bed, so it is sampled once. `cell_loader/water.rs::
+bed_field_from_land` builds a `WaterBedField` (core: signed surface-minus-bed
+depth on LAND's 33x33 lattice, bilinear `sample` returning depth and the unit
+shoreward direction, clamped after interpolation so the waterline is exact);
+the same samples are baked into each mesh vertex's colour (`r` depth over
+`WATER_BED_DEPTH_MAX`, `gb` shoreward direction, `a` the sentinel
+`WATER_BED_VALID_ALPHA` = 0.5004, not a k/255 value so no authored 8-bit alpha
+on a placed water mesh can be mistaken for bed data) and attached to the plane
+entity as the component physics reads. Interior, LOD and placed-mesh water
+carry no bed and take the open-water path.
+
+*Waves.* Wind-driven water (`WaterMaterial::wind_driven`, calm water) now
+carries a travelling swell (`WaterSwell`, core): wavelength 1000 BU (14 m),
+speed from the deep-water dispersion `w = sqrt(g k)` (a ~4 m/s crest), height
+from the weather wind (1.5 BU in dead calm to 28 BU at the wind field's
+maximum), heading the wind's. Over a rising bed it shoals (Green's law,
+`(900/depth)^(1/4)`, gain capped at 1.6), turns toward the shore (refraction,
+below 900 BU of depth) and is capped by breaking at 0.39 of the depth, which
+also takes it to zero at the waterline so it cannot lift the surface off the
+shore it meets. `water.vert` and `authored_wave_height_over_bed` (physics, the
+CPU crest sampler the camera, the player and buoyancy all read) evaluate the
+same law from the same constants; the camera and player sites now pass the
+plane's bed field. Breakers: `water.frag` lays foam in the shallow band at the
+shore, brightest as swell crests pass, scaled by the swell's height.
+
+*Rivers.* Over the bed, a river's pattern no longer moves as one vector: it
+runs faster over the deep middle than the shallows (`WATER_RIVER_SPEED_MIN`
+0.35 at the waterline to the plane's speed at `WATER_RIVER_DEPTH_FULL`) and,
+near the banks, turns toward the bank-parallel direction (keeping the sign of
+the authored flow), so the visible current bends with the channel. **Not
+done:** the physics current (`current_force`) still applies the plane's single
+flow vector to bodies; the bed field is attached to the plane and available
+to it, but a depth-profiled current on dynamic bodies is not built, so
+floating clutter in a river does not yet follow the visible bank turn.
+
+*Verified:* the bed data arrives intact on the Skyrim river (depth and
+direction render as smooth continuous fields over the water, dry ground
+excluded); a gale-height swell on Lake Mead rolls and keeps the shoreline
+clean; Oblivion's island beach shows swell ridges parallel to the shore. The
+default wind is mild, so the everyday swell is a few world units.
+
 **Regression guard, not a remaining fragility:** the procedural-noise hash
 bands past ~176k world units (#1502) are fixed — `sampleScrollingNormal` and
 `foamFlowStreaks` both subtract `originOffset` before hashing, rebased twice
@@ -986,7 +1031,7 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    W0's real-data waterline GPU smoke is closed, and the real-data
    dynamic-body gate (`w2-dynamic-water.sh`, 2026-10-26) runs on FNV's Lake Mead:
    two authored clutter bodies reach the contact sink, float at a submerged
-   fraction of 0.6, hold it and let the world sleep. The *current* half of that
+   fraction of 0.6 and hold it; with the swell they ride a moving surface and stay awake, so the gate asserts that only the floats are ever awake, not that the world reaches zero. The *current* half of that
    gate is not observable on shipped content: none of the five fixtures has an
    authored dynamic body in a flowing plane (`water.contacts` at each fixture:
    FNV 2 bodies in calm water, FO3 1, Oblivion/Skyrim/FO4 0). **Player traversal closed

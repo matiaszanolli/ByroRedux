@@ -216,6 +216,7 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         return;
     };
     let surface_q = world.query::<WaterSurfaceMesh>();
+    let bed_q = world.query::<byroredux_core::ecs::components::water::WaterBedField>();
     for (entity, plane) in wq.iter() {
         let Some(volume) = vq.get(entity) else {
             continue;
@@ -233,12 +234,13 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
                     // the CPU crest tracks the visible surface (#3207
                     // coherence; see FLOWING_WATER_WEATHER_TRANSPORT's doc).
                     let weather_scroll = plane.kind.weather_scroll_for(weather_scroll);
-                    byroredux_physics::authored_wave_height_with_weather(
+                    byroredux_physics::authored_wave_height_over_bed(
                         &plane.material,
                         cam_pos,
                         time,
                         weather_scroll,
                         wind_wave_scale,
+                        bed_q.as_ref().and_then(|q| q.get(entity)),
                     )
                 })
                 .unwrap_or(0.0);

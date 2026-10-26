@@ -1295,6 +1295,7 @@ fn player_water_state(
     };
     let flow_q = world.query::<WaterFlow>();
     let surface_q = world.query::<WaterSurfaceMesh>();
+    let bed_q = world.query::<byroredux_core::ecs::components::water::WaterBedField>();
     let bottom = pos.y - half_span;
     let top = pos.y + half_span;
     let mut best: Option<(PlayerWaterState, f32)> = None;
@@ -1308,7 +1309,7 @@ fn player_water_state(
         };
         let wave_height = time_secs
             .map(|time| {
-                byroredux_physics::authored_wave_height_with_weather(
+                byroredux_physics::authored_wave_height_over_bed(
                     &plane.material,
                     pos,
                     time,
@@ -1316,6 +1317,7 @@ fn player_water_state(
                     // renderer and camera submersion sample it.
                     plane.kind.weather_scroll_for(weather_scroll),
                     wind_wave_scale,
+                    bed_q.as_ref().and_then(|q| q.get(entity)),
                 )
             })
             .unwrap_or(0.0);

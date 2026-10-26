@@ -217,6 +217,10 @@ pub(super) fn reemit_water_planes(
         // prep the CPU crest sampler also calls (#5582), so the uploaded
         // scrolls and the buoyancy crest cannot drift apart.
         let scrolls = mat.wave_scrolls(weather_scroll, time_secs);
+        // The wind-driven swell (core owns the numbers; the CPU crest sampler
+        // evaluates the same wave): crest height in `optical.z`, heading
+        // angle in `optical.w`, zero amplitude for water that has none.
+        let swell = mat.swell(weather_scroll);
         let noise_indices = effective_noise_indices(&mat);
         let params = GpuWaterParams {
             timing: [
@@ -332,12 +336,14 @@ pub(super) fn reemit_water_planes(
                 mat.flowmap_scale,
             ],
             // x preserves FO4+/Creation-2 WATR `Depth Amount` independently
-            // from the explicit fog ranges. Remaining lanes are reserved.
+            // from the explicit fog ranges; y is the normal encoding; z is
+            // the swell's open-water crest height and w its heading
+            // (`atan2(dir.y, dir.x)`, radians), both zero without a swell.
             optical: [
                 mat.depth_amount,
                 f32::from(mat.normal_encoding as u8),
-                0.0,
-                0.0,
+                swell.map_or(0.0, |swell| swell.amplitude),
+                swell.map_or(0.0, |swell| swell.direction[1].atan2(swell.direction[0])),
             ],
         };
         water_commands.push(WaterDrawCommand {
