@@ -57,6 +57,62 @@ pub struct EngineProcess {
 /// to be bounded.
 const READER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Longest line kept whole; the rest of a longer line is dropped. Bounds the
+/// reader's buffer against an engine (or a native component writing to fd 2)
+/// that emits a huge run with no newline.
+const MAX_LINE_BYTES: usize = 16 * 1024;
+
+/// Feed `sink` one lossily-decoded line at a time until `reader` reaches
+/// end-of-file (#6279).
+///
+/// This must never stop before the child's end of the pipe closes. Dropping the
+/// read end early makes the engine's next `eprintln!` fail with `EPIPE` — the
+/// Rust runtime ignores `SIGPIPE` — and `eprintln!` panics on a write error, so
+/// a diagnostic line would take the engine down (exit 101) and hide its cause.
+/// `BufRead::lines` ended the loop at the first non-UTF-8 line; reading bytes
+/// and decoding lossily cannot fail on content, and a genuine read error falls
+/// back to draining into a sink.
+fn pump_lines<R: BufRead>(mut reader: R, mut sink: impl FnMut(String)) {
+    let mut line: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    let mut emit = |line: &mut Vec<u8>, truncated: &mut bool| {
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        let mut text = String::from_utf8_lossy(line).into_owned();
+        if std::mem::take(truncated) {
+            text.push_str(" […truncated]");
+        }
+        line.clear();
+        sink(text);
+    };
+    loop {
+        let (used, complete) = match reader.fill_buf() {
+            Ok([]) => break,
+            Ok(buf) => {
+                let newline = buf.iter().position(|&b| b == b'\n');
+                let chunk = &buf[..newline.unwrap_or(buf.len())];
+                let room = MAX_LINE_BYTES.saturating_sub(line.len());
+                line.extend_from_slice(&chunk[..chunk.len().min(room)]);
+                truncated |= chunk.len() > room;
+                (newline.map_or(buf.len(), |i| i + 1), newline.is_some())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                let _ = std::io::copy(&mut reader, &mut std::io::sink());
+                break;
+            }
+        };
+        reader.consume(used);
+        if complete {
+            emit(&mut line, &mut truncated);
+        }
+    }
+    if !line.is_empty() {
+        emit(&mut line, &mut truncated);
+    }
+}
+
 /// What happened to a launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineStatus {
@@ -104,13 +160,15 @@ impl EngineProcess {
         let reader = child.stderr.take().map(|stderr| {
             let log = Arc::clone(&log);
             std::thread::spawn(move || {
-                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                pump_lines(BufReader::new(stderr), |line| {
+                    // A poisoned log drops the line but keeps draining: the
+                    // pipe must outlive the child (see `pump_lines`).
                     let Ok(mut log) = log.lock() else { return };
                     if log.len() == LOG_TAIL_LINES {
                         log.pop_front();
                     }
                     log.push_back(line);
-                }
+                })
             })
         });
         Ok(Self { child, log, reader })
@@ -362,6 +420,27 @@ mod tests {
             assert_eq!(tail, ["died"]);
         }
 
+        /// #6279: the reader must outlive a non-UTF-8 line. The stub writes the
+        /// bad byte, lingers, then writes more; if the reader had returned, the
+        /// stub's next write would hit a closed pipe and `echo` would fail
+        /// (SIGPIPE) before `late` — and the exit status would not be 3.
+        #[test]
+        fn the_reader_survives_a_non_utf8_line_and_keeps_the_pipe_open() {
+            let _serialised = serialised();
+            let dir = tempfile::tempdir().unwrap();
+            let engine = stub(
+                dir.path(),
+                "printf 'before\\n\\377\\n' >&2\nsleep 0.1\necho 'late' >&2\nexit 3",
+            );
+            let mut process =
+                EngineProcess::spawn(&engine, &dir.path().join("boot.toml"), dir.path()).unwrap();
+            let EngineStatus::Failed { code, tail } = wait_for(&mut process) else {
+                panic!("expected Failed");
+            };
+            assert_eq!(code, Some(3));
+            assert_eq!(tail, ["before", "\u{FFFD}", "late"]);
+        }
+
         /// The tail is bounded, so a chatty engine cannot grow the buffer
         /// without limit — and what survives is the *end*, which is where the
         /// failure is.
@@ -387,6 +466,41 @@ mod tests {
                 Some(&*format!("line{}", total - 1))
             );
         }
+    }
+
+    fn pumped(input: &[u8]) -> Vec<String> {
+        let mut out = Vec::new();
+        pump_lines(input, |line| out.push(line));
+        out
+    }
+
+    /// #6279: a non-UTF-8 line used to end the reader, closing the pipe under a
+    /// live engine. Every later line must still arrive.
+    #[test]
+    fn a_non_utf8_line_does_not_end_the_stream() {
+        assert_eq!(
+            pumped(b"before\n\xff\xfe bad\nafter\n"),
+            ["before", "\u{FFFD}\u{FFFD} bad", "after"]
+        );
+    }
+
+    #[test]
+    fn crlf_and_an_unterminated_last_line_are_handled_like_lines() {
+        assert_eq!(pumped(b"one\r\ntwo\n\nlast"), ["one", "two", "", "last"]);
+        assert_eq!(pumped(b""), Vec::<String>::new());
+    }
+
+    /// An endless run with no newline must not buffer without bound.
+    #[test]
+    fn an_overlong_line_is_capped_and_the_next_line_is_intact() {
+        let mut input = vec![b'x'; MAX_LINE_BYTES * 3];
+        input.extend_from_slice(b"\nnext\n");
+        let lines = pumped(&input);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with(&"x".repeat(MAX_LINE_BYTES)));
+        assert!(lines[0].ends_with(" […truncated]"));
+        assert_eq!(lines[0].len(), MAX_LINE_BYTES + " […truncated]".len());
+        assert_eq!(lines[1], "next");
     }
 
     #[test]
