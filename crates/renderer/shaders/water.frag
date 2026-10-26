@@ -236,10 +236,23 @@ layout(set = 2, binding = 0, r32ui) uniform uimage2D waterCausticAccum;
 // for GPU Rendering" (JCGT 2020) — cheap, no tex-fetch, good visual
 // quality for foam streak randomisation.
 
+// `p` is an integer lattice corner (valueNoise only ever passes `i + {0,1}`).
+// The hash is integer-exact: the float `fract(p * 443.897)` form this
+// replaced kept only a couple of fractional bits once the finer octaves'
+// lattice coordinates reached the thousands (the product passes 2^21), so
+// its output collapsed to a few coarse levels and the procedural normal
+// showed a lattice of flat diamond tiles — most visible in the high-contrast
+// cloud reflection on Oblivion's procedural water.
+uint pcgHash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
 float hash21(vec2 p) {
-    p = fract(p * vec2(443.897, 441.423));
-    p += dot(p, p.yx + 19.19);
-    return fract((p.x + p.y) * p.x);
+    ivec2 q = ivec2(floor(p + 0.5));
+    uint h = pcgHash(uint(q.x) + pcgHash(uint(q.y)));
+    return float(h >> 8u) * (1.0 / 16777215.0);
 }
 
 float valueNoise(vec2 p) {

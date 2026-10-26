@@ -580,6 +580,19 @@ waterfalls keep their streaks (no defect measured there). Method: the
 read by eye; the decisive check was an A/B capture of the same fixture pose
 with the term compiled out.
 
+**The "blocky sky-cube reflection" on Oblivion was the noise hash, not the cube
+(2026-10-26).** The cloud reflection on procedural-normal water showed a grid of
+hard flat diamond tiles. A 512² sky-cube bake (the cube is 128²) left the tile
+grid on exactly the same screen positions, so the cube resolution was
+exonerated; the tiles were in the `water_normal` oracle itself. The cause was
+`hash21`'s float `fract(p * 443.897)`: the finer octaves' lattice coordinates
+reach the thousands, the product passes 2^21 and float32 keeps almost no
+fractional bits, so the hash collapsed to a few levels. `hash21` is now an
+integer PCG hash (`pcgHash`), the tile grid is gone on Oblivion, FO3 and FNV
+(the three procedural-normal games), and
+`water_noise_hash_is_integer_exact_and_rivers_have_no_streak_foam` pins it. The
+white crescent noted alongside it is a separate, still-open item.
+
 **Regression guard, not a remaining fragility:** the procedural-noise hash
 bands past ~176k world units (#1502) are fixed — `sampleScrollingNormal` and
 `foamFlowStreaks` both subtract `originOffset` before hashing, rebased twice

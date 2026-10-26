@@ -1297,6 +1297,37 @@ mod tests {
         )));
     }
 
+    /// The procedural water noise's lattice hash must be integer-exact. The
+    /// float `fract(p * 443.897)` form lost its fractional bits once the finer
+    /// octaves' lattice coordinates reached the thousands, quantising the
+    /// hash to a few levels: Oblivion's procedural normal then showed a grid
+    /// of flat diamond tiles in the cloud reflection. And the river plane
+    /// carries no flow-streak foam: that term banded every calm river.
+    #[test]
+    fn water_noise_hash_is_integer_exact_and_rivers_have_no_streak_foam() {
+        let src = include_str!("../../shaders/water.frag");
+        let hash = src
+            .split_once("float hash21(")
+            .expect("hash21 is declared")
+            .1
+            .split_once("\n}\n")
+            .expect("hash21 has a body")
+            .0;
+        assert!(hash.contains("pcgHash("), "hash21 must go through the integer hash");
+        assert!(!hash.contains("fract("), "hash21 must not use float fract() mixing");
+        let river = src
+            .split_once("kind == WATER_RIVER) {")
+            .expect("the foam composite has a River arm")
+            .1
+            .split_once("} else if (kind == WATER_WATERFALL)")
+            .expect("the River arm ends before the waterfall arm")
+            .0;
+        assert!(
+            !river.contains("foamFlowStreaks("),
+            "river water must not call the procedural streak foam"
+        );
+    }
+
     #[test]
     fn water_fragment_shader_uses_authored_underwater_response() {
         let src = include_str!("../../shaders/water.frag");
