@@ -391,10 +391,23 @@ impl App {
             // The `ctx.scratch` console command and `ScratchTelemetry` above
             // still surface the per-frame overflow count in every build.
 
-            let defer_geometry_rebuild = self
+            // Defer the rebuild while a streaming batch is in progress — but only
+            // for a bounded time, or a long load (FO4's default radius 12) keeps
+            // the ground and water masked for its whole duration.
+            let batch_in_progress = self
                 .streaming
                 .as_ref()
                 .is_some_and(streaming::WorldStreamingState::geometry_batch_in_progress);
+            if batch_in_progress && ctx.mesh_registry.is_geometry_dirty() {
+                self.geometry_deferred_since
+                    .get_or_insert_with(std::time::Instant::now);
+            } else {
+                self.geometry_deferred_since = None;
+            }
+            let defer_geometry_rebuild = crate::streaming_helpers::defer_geometry_rebuild(
+                batch_in_progress,
+                self.geometry_deferred_since.map(|since| since.elapsed()),
+            );
             // #3298 — an already-running chunked rebuild must keep advancing
             // every frame regardless of `defer_geometry_rebuild`: that gate
             // only decides whether to *start* a new rebuild once the current

@@ -565,6 +565,40 @@ fn flush_pending_lod_textures(ctx: &mut byroredux_renderer::VulkanContext) {
 /// reclaim set" contract is unit-testable without a GPU device — these
 /// blocks carry no `CellRoot`, so the only thing that proves they're
 /// reclaimed on a mid-session transition is this collection step (#1536).
+/// Per-cell pool cost of the ground, measured at FO4 radius 4 with the
+/// geometry census (`BYROREDUX_GEOMETRY_CENSUS=1`, nothing refused): 81 terrain
+/// meshes = 88 209 vertices (33 x 33 = 1089 each) and 497 664 indices (32 x 32 x
+/// 6 = 6144 each); 12 water planes = 27 234 vertices (336 per cell) and 40 848
+/// indices (504 per cell).
+const GROUND_VERTICES_PER_CELL: usize = 1089 + 336;
+const GROUND_INDICES_PER_CELL: usize = 6144 + 504;
+/// Room for the distant terrain LOD ring (FO4 `.btr` blocks are ~1 100 vertices;
+/// ~250 blocks across the ladder) — bounded, independent of the radius.
+const TERRAIN_LOD_VERTICES: usize = 300_000;
+const TERRAIN_LOD_INDICES: usize = 1_200_000;
+/// Room for actors beyond what props may use: 415 181 vertices / 1 771 239
+/// indices at FO4 radius 4 (427 skinned meshes), with headroom for a larger ring.
+const ACTOR_VERTICES: usize = 600_000;
+const ACTOR_INDICES: usize = 2_600_000;
+
+/// The geometry-pool reserve an exterior session streaming out to
+/// `radius_unload` needs: the ground (terrain + water for every cell the
+/// hysteresis ring can hold, plus the terrain LOD ring) must always fit, then
+/// actors, before props take what is left. A fixed percentage starved terrain at
+/// FO4's default radius 12 (625 cells = ~680 k terrain vertices against a 350 k
+/// reserve): 178 terrain cells, the water planes and the whole LOD terrain ring
+/// were refused, which drew as a void.
+pub(crate) fn exterior_pool_reserve(radius_unload: i32) -> byroredux_renderer::PoolReserve {
+    let side = 2 * radius_unload.max(0) as usize + 1;
+    let cells = side * side;
+    byroredux_renderer::PoolReserve {
+        ground_vertices: cells * GROUND_VERTICES_PER_CELL + TERRAIN_LOD_VERTICES,
+        ground_indices: cells * GROUND_INDICES_PER_CELL + TERRAIN_LOD_INDICES,
+        actor_vertices: ACTOR_VERTICES,
+        actor_indices: ACTOR_INDICES,
+    }
+}
+
 /// Mirrors the `collect_victim_gpu_handles` (#1341) extraction in
 /// `cell_loader::unload`. `placement_lod_blocks` (#1726) and
 /// `object_lod_blocks` are mutually exclusive per game, but both are drained
@@ -1252,6 +1286,31 @@ pub fn consume_streaming_payload(
     StreamingPayloadOutcome::Applied { coord, center }
 }
 
+/// Longest a dirty global geometry buffer may be left un-rebuilt while a
+/// streaming batch is still in progress.
+///
+/// The rebuild is deferred during a batch so a crossing (a few seconds of
+/// appends) does not become dozens of 600-900 MiB copies, and the appended
+/// ranges are masked from raster and TLAS until it lands. That is right for a
+/// crossing and wrong for a long load: FO4's default radius 12 (625 cells) keeps
+/// a batch in progress for ten minutes or more, so the buffer built at start
+/// (44 664 vertices) was never rebuilt, ~7 500 later meshes stayed masked, and
+/// the ground and water — which draw only from the rebuilt buffer — never
+/// appeared. Past this bound the rebuild runs even though streaming is busy.
+pub(crate) const GEOMETRY_REBUILD_MAX_DEFER: std::time::Duration =
+    std::time::Duration::from_secs(15);
+
+/// Whether the frame driver should still defer starting a geometry rebuild:
+/// only while a streaming batch is in progress and the geometry has not been
+/// waiting for [`GEOMETRY_REBUILD_MAX_DEFER`] yet. `dirty_for` is how long the
+/// buffer has been dirty and deferred (`None` = not deferred yet).
+pub(crate) fn defer_geometry_rebuild(
+    batch_in_progress: bool,
+    dirty_for: Option<std::time::Duration>,
+) -> bool {
+    batch_in_progress && dirty_for.map_or(true, |waited| waited < GEOMETRY_REBUILD_MAX_DEFER)
+}
+
 #[cfg(test)]
 mod tests {
     /// #6054 — a ring with nothing left to try is "settled" only if nothing it
@@ -1726,4 +1785,61 @@ mod tests {
         cells.sort();
         assert_eq!(cells, vec![(0, 0), (3, 0)]);
     }
+
+    /// The reserve is the ground's real demand at the radius, so it grows with
+    /// it — FO4's default radius 12 needs ~1.3 M vertices for terrain, water and
+    /// the LOD ring, far past the 350 k a fixed 5% held back — while the actor
+    /// room is a fixed allowance.
+    #[test]
+    fn the_exterior_pool_reserve_scales_with_the_radius() {
+        let r4 = exterior_pool_reserve(5); // radius 4, unload ring 5
+        let r12 = exterior_pool_reserve(13); // default radius 12
+        assert_eq!(r4.ground_vertices, 121 * 1425 + 300_000);
+        assert_eq!(r12.ground_vertices, 729 * 1425 + 300_000);
+        assert!(r12.ground_vertices > 1_300_000, "radius 12's terrain alone is ~800 k");
+        assert!(r12.ground_indices > r4.ground_indices);
+        assert_eq!((r4.actor_vertices, r12.actor_vertices), (600_000, 600_000));
+        // The old fixed 5% (350 k vertices of the 7 M pool) could not hold it.
+        assert!(r12.ground_vertices > 7_000_000 / 100 * 5);
+    }
+
+    /// Sized for the radius the pool must still leave props the room they
+    /// measurably need at radius 4 (5.77 M vertices: 3.10 M placed props +
+    /// 2.67 M object LOD), or the distant-object fix of the 7 M caps regresses.
+    #[test]
+    fn radius_4_still_leaves_props_what_they_were_measured_to_need() {
+        let mut reg = byroredux_renderer::MeshRegistry::new();
+        reg.set_pool_reserve(exterior_pool_reserve(5));
+        let reserve = reg.pool_reserve();
+        let prop_ceiling_vertices =
+            byroredux_renderer::mesh::VERTEX_POOL_HARD_CAP - reserve.ground_vertices - reserve.actor_vertices;
+        assert!(
+            prop_ceiling_vertices >= 5_770_000,
+            "props get {prop_ceiling_vertices} vertices at radius 4; they need ~5.77 M"
+        );
+    }
+
+    /// A crossing finishes well inside the bound and keeps its single deferred
+    /// rebuild; a load that outlasts it stops deferring, so appended ground and
+    /// water get into the bound buffer. Nothing is deferred without a batch.
+    #[test]
+    fn the_geometry_rebuild_deferral_is_bounded() {
+        use std::time::Duration;
+        assert!(!defer_geometry_rebuild(false, None), "no batch, no deferral");
+        assert!(!defer_geometry_rebuild(false, Some(Duration::from_secs(1))));
+        assert!(defer_geometry_rebuild(true, None), "a fresh batch defers");
+        assert!(
+            defer_geometry_rebuild(true, Some(Duration::from_secs(5))),
+            "a crossing's few seconds stay deferred (one rebuild at the end)"
+        );
+        assert!(
+            !defer_geometry_rebuild(true, Some(GEOMETRY_REBUILD_MAX_DEFER)),
+            "at the bound the rebuild is forced"
+        );
+        assert!(
+            !defer_geometry_rebuild(true, Some(Duration::from_secs(600))),
+            "a ten-minute radius-12 load must not stay masked"
+        );
+    }
 }
+

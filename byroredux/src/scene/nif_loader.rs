@@ -1226,12 +1226,14 @@ fn spawn_nif_mesh(
             // upload_scene_mesh registers the vertices/indices into the
             // global geometry SSBO that RT ray queries sample for
             // reflection UVs. See #371.
-            let handle = match ctx.mesh_registry.upload_scene_mesh(
-                upload_ctx,
-                &vertices,
-                &mesh.indices,
-                for_rt,
-                None,
+            // Actors (the player and NPC bodies) are their own admission tier:
+            // above props, below the ground, so a full pool refuses distant
+            // props before people and people before terrain.
+            let handle = match ctx.mesh_registry.with_admission_class(
+                byroredux_renderer::GeometryAdmissionClass::Actor,
+                |registry| {
+                    registry.upload_scene_mesh(upload_ctx, &vertices, &mesh.indices, for_rt, None)
+                },
             ) {
                 Ok(h) => h,
                 Err(e) => {

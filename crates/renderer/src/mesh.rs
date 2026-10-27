@@ -34,26 +34,44 @@ pub const VERTEX_POOL_HARD_CAP: usize = VERTEX_POOL_SOFT_CAP;
 pub const INDEX_POOL_SOFT_CAP: usize = 28_000_000;
 pub const INDEX_POOL_HARD_CAP: usize = INDEX_POOL_SOFT_CAP;
 
-/// Share of each pool held back from [`GeometryAdmissionClass::Prop`] uploads,
-/// in percent. Placed statics and distant object/tree LOD are the pool's
-/// bulk and the easiest thing to lose; the ground, the water and the player
-/// are not. Without a reserve the first prop to hit the cap latched admission
-/// closed for everyone, so a dense FO4 view lost terrain cells (a void with no
-/// ground or water) and the player's own head while props kept their share
-/// (measured: 37 meshes refused at the old cap, terrain cells (4,0)/(4,1)
-/// among them). 5% of 7 M vertices is ~350 k, over the ~240 k that a radius-4
-/// terrain + water + LOD-terrain ring needs.
-pub const PROP_POOL_RESERVE_PERCENT: usize = 5;
+/// Default share of each pool kept back from lower tiers, in percent, used
+/// until the host sizes the reserve for the real exterior radius
+/// ([`MeshRegistry::set_pool_reserve`]). 3% for the ground, 2% for actors:
+/// props get 95%, as the first version of the reserve did.
+pub const DEFAULT_GROUND_RESERVE_PERCENT: usize = 3;
+pub const DEFAULT_ACTOR_RESERVE_PERCENT: usize = 2;
 
 /// Who is asking for pool space. The class decides which ceiling and which
-/// refusal latch an upload meets; see [`PROP_POOL_RESERVE_PERCENT`].
+/// refusal latch an upload meets. Priority is ground > actors > props: when
+/// the pool is full the horizon's props go first, then people, and the ground
+/// and water last.
+///
+/// Placed props are the pool's bulk (FO4 radius 4: 3.1 M of 6.4 M vertices,
+/// plus 2.7 M of distant object LOD), so without tiers the first prop to hit
+/// the cap latched admission closed for everyone: at FO4's default radius 12
+/// that refused 178 terrain cells, the water planes and the whole LOD terrain
+/// ring — a void with no ground or water.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryAdmissionClass {
-    /// Terrain, water, terrain LOD, actors: full cap, global latch.
+    /// Terrain, water, terrain LOD: the full cap, the global latch.
     Essential,
-    /// Placed statics, object / tree / placement LOD: the reserve is kept
-    /// back, and a refusal latches only the prop latch.
+    /// Actors (the player and NPC bodies): the cap less the ground's reserve.
+    Actor,
+    /// Placed statics, object / tree / placement LOD: the cap less the
+    /// ground's and the actors' reserves.
     Prop,
+}
+
+/// Pool space kept back for the higher tiers, in vertices and indices.
+/// `ground_*` is what terrain, water and terrain LOD may count on beyond what
+/// actors and props can touch; `actor_*` is the extra room actors have over
+/// props.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolReserve {
+    pub ground_vertices: usize,
+    pub ground_indices: usize,
+    pub actor_vertices: usize,
+    pub actor_indices: usize,
 }
 
 /// The pool ceilings a registry enforces. A field (defaulting to the
@@ -63,21 +81,46 @@ pub enum GeometryAdmissionClass {
 pub(crate) struct PoolLimits {
     pub(crate) vertex_hard: usize,
     pub(crate) index_hard: usize,
+    pub(crate) reserve: PoolReserve,
 }
 
 impl PoolLimits {
-    pub(crate) const DEFAULT: Self = Self {
-        vertex_hard: VERTEX_POOL_HARD_CAP,
-        index_hard: INDEX_POOL_HARD_CAP,
-    };
+    /// The default reserve for ceilings `vertex_hard` / `index_hard`.
+    pub(crate) const fn default_reserve(vertex_hard: usize, index_hard: usize) -> PoolReserve {
+        PoolReserve {
+            ground_vertices: vertex_hard / 100 * DEFAULT_GROUND_RESERVE_PERCENT,
+            ground_indices: index_hard / 100 * DEFAULT_GROUND_RESERVE_PERCENT,
+            actor_vertices: vertex_hard / 100 * DEFAULT_ACTOR_RESERVE_PERCENT,
+            actor_indices: index_hard / 100 * DEFAULT_ACTOR_RESERVE_PERCENT,
+        }
+    }
 
-    /// Hard ceilings for `class`: props stop short by the reserve.
+    /// A limit with the default reserve.
+    pub(crate) const fn with_default_reserve(vertex_hard: usize, index_hard: usize) -> Self {
+        Self {
+            vertex_hard,
+            index_hard,
+            reserve: Self::default_reserve(vertex_hard, index_hard),
+        }
+    }
+
+    pub(crate) const DEFAULT: Self =
+        Self::with_default_reserve(VERTEX_POOL_HARD_CAP, INDEX_POOL_HARD_CAP);
+
+    /// Hard ceilings for `class`: each tier below the ground stops short by the
+    /// reserves of the tiers above it.
     pub(crate) fn for_class(self, class: GeometryAdmissionClass) -> (usize, usize) {
+        let (ground, actor) = (self.reserve.ground_vertices, self.reserve.actor_vertices);
+        let (ground_i, actor_i) = (self.reserve.ground_indices, self.reserve.actor_indices);
         match class {
             GeometryAdmissionClass::Essential => (self.vertex_hard, self.index_hard),
+            GeometryAdmissionClass::Actor => (
+                self.vertex_hard.saturating_sub(ground),
+                self.index_hard.saturating_sub(ground_i),
+            ),
             GeometryAdmissionClass::Prop => (
-                self.vertex_hard - self.vertex_hard / 100 * PROP_POOL_RESERVE_PERCENT,
-                self.index_hard - self.index_hard / 100 * PROP_POOL_RESERVE_PERCENT,
+                self.vertex_hard.saturating_sub(ground + actor),
+                self.index_hard.saturating_sub(ground_i + actor_i),
             ),
         }
     }
@@ -417,6 +460,9 @@ pub struct MeshRegistry {
     /// compaction that reopens `scene_geometry_admission_closed`. Never closes
     /// admission for essential uploads.
     prop_admission_closed: bool,
+    /// The actor tier's latch: same contract as `prop_admission_closed`, for
+    /// uploads admitted as [`GeometryAdmissionClass::Actor`].
+    actor_admission_closed: bool,
     /// Class the next uploads are admitted as; see [`Self::with_admission_class`].
     admission_class: GeometryAdmissionClass,
     /// Pool ceilings this registry enforces.
@@ -562,6 +608,7 @@ impl MeshRegistry {
             geometry_dirty: false,
             scene_geometry_admission_closed: false,
             prop_admission_closed: false,
+            actor_admission_closed: false,
             admission_class: GeometryAdmissionClass::Essential,
             pool_limits: PoolLimits::DEFAULT,
             scene_geometry_admission_rejections: 0,
@@ -773,6 +820,7 @@ impl MeshRegistry {
         let class = self.admission_class;
         if self.scene_geometry_admission_closed
             || (class == GeometryAdmissionClass::Prop && self.prop_admission_closed)
+            || (class == GeometryAdmissionClass::Actor && self.actor_admission_closed)
         {
             self.scene_geometry_admission_rejections += 1;
             bail!(
@@ -784,6 +832,7 @@ impl MeshRegistry {
         // its reserve-reduced ceiling must leave the essential tier open.
         let latch_refusal = |this: &mut Self| match class {
             GeometryAdmissionClass::Essential => this.scene_geometry_admission_closed = true,
+            GeometryAdmissionClass::Actor => this.actor_admission_closed = true,
             GeometryAdmissionClass::Prop => this.prop_admission_closed = true,
         };
 
@@ -943,6 +992,40 @@ impl MeshRegistry {
     /// reopens with the same compaction.
     pub fn prop_geometry_admission_open(&self) -> bool {
         !self.scene_geometry_admission_closed && !self.prop_admission_closed
+    }
+
+    /// Whether [`GeometryAdmissionClass::Actor`] uploads may still be decoded
+    /// and uploaded: closed by the global latch or by the actor tier's own.
+    pub fn actor_geometry_admission_open(&self) -> bool {
+        !self.scene_geometry_admission_closed && !self.actor_admission_closed
+    }
+
+    /// Size the pool reserve the lower tiers must leave for the higher ones.
+    /// The host calls this when an exterior session starts, with the demand of
+    /// the radius it is about to stream: the ground's own need grows with the
+    /// radius (a fixed percentage starved terrain at FO4's default radius 12).
+    /// Clamped so props and actors keep at least half of each pool.
+    pub fn set_pool_reserve(&mut self, reserve: PoolReserve) {
+        let limits = &mut self.pool_limits;
+        let half_v = limits.vertex_hard / 2;
+        let half_i = limits.index_hard / 2;
+        let clamp = |ground: usize, actor: usize, half: usize| {
+            let ground = ground.min(half);
+            (ground, actor.min(half - ground))
+        };
+        let (gv, av) = clamp(reserve.ground_vertices, reserve.actor_vertices, half_v);
+        let (gi, ai) = clamp(reserve.ground_indices, reserve.actor_indices, half_i);
+        limits.reserve = PoolReserve {
+            ground_vertices: gv,
+            ground_indices: gi,
+            actor_vertices: av,
+            actor_indices: ai,
+        };
+    }
+
+    /// The reserve currently enforced.
+    pub fn pool_reserve(&self) -> PoolReserve {
+        self.pool_limits.reserve
     }
 
     /// Run `f` with uploads admitted as `class`, restoring the previous class
@@ -2220,7 +2303,7 @@ mod refcount_tests {
     /// driven to their limits without allocating millions of vertices.
     fn small_pool_registry(vertex_hard: usize, index_hard: usize) -> MeshRegistry {
         let mut reg = MeshRegistry::new();
-        reg.pool_limits = PoolLimits { vertex_hard, index_hard };
+        reg.pool_limits = PoolLimits::with_default_reserve(vertex_hard, index_hard);
         reg
     }
 
@@ -2245,7 +2328,7 @@ mod refcount_tests {
     fn a_refused_prop_leaves_the_essential_tier_open_and_using_the_reserve() {
         use GeometryAdmissionClass::{Essential, Prop};
         let mut reg = small_pool_registry(1000, 4000);
-        assert_eq!(PoolLimits { vertex_hard: 1000, index_hard: 4000 }.for_class(Prop), (950, 3800));
+        assert_eq!(PoolLimits::with_default_reserve(1000, 4000).for_class(Prop), (950, 3800));
 
         upload_as(&mut reg, Prop, 930).expect("a prop under its ceiling is admitted");
         assert!(reg.prop_geometry_admission_open());
@@ -2296,6 +2379,62 @@ mod refcount_tests {
             assert_eq!(r.admission_class, Prop, "nesting restores the outer class");
         });
         assert_eq!(reg.admission_class, Essential);
+    }
+
+    /// Three tiers: props stop first, actors next, the ground last, and each
+    /// refusal latches only its own tier.
+    #[test]
+    fn the_tiers_stop_in_priority_order_and_latch_separately() {
+        use GeometryAdmissionClass::{Actor, Essential, Prop};
+        let mut reg = small_pool_registry(1000, 4000);
+        // Default reserve: ground 3% (30), actors 2% (20) -> 1000 / 970 / 950.
+        let limits = reg.pool_limits;
+        assert_eq!(limits.for_class(Essential), (1000, 4000));
+        assert_eq!(limits.for_class(Actor), (970, 3880));
+        assert_eq!(limits.for_class(Prop), (950, 3800));
+
+        upload_as(&mut reg, Prop, 945).unwrap();
+        assert!(upload_as(&mut reg, Prop, 9).is_err(), "props stop at 950");
+        assert!(!reg.prop_geometry_admission_open());
+        assert!(reg.actor_geometry_admission_open(), "actors still have room");
+
+        upload_as(&mut reg, Actor, 24).unwrap();
+        assert_eq!(reg.pending_vertices.len(), 969);
+        assert!(upload_as(&mut reg, Actor, 6).is_err(), "actors stop at 970");
+        assert!(!reg.actor_geometry_admission_open());
+        assert!(reg.scene_geometry_admission_open(), "the ground is untouched");
+
+        upload_as(&mut reg, Essential, 30).expect("the ground uses what is left");
+        assert!(upload_as(&mut reg, Essential, 3).is_err(), "only the full cap binds it");
+        assert!(!reg.scene_geometry_admission_open());
+    }
+
+    /// The reserve is sized by the host for the real radius: it replaces the
+    /// default, and is clamped so props and actors keep at least half of each pool.
+    #[test]
+    fn a_sized_reserve_replaces_the_default_and_is_clamped() {
+        use GeometryAdmissionClass::{Actor, Prop};
+        let mut reg = small_pool_registry(1000, 4000);
+        reg.set_pool_reserve(PoolReserve {
+            ground_vertices: 200,
+            ground_indices: 800,
+            actor_vertices: 100,
+            actor_indices: 400,
+        });
+        let limits = reg.pool_limits;
+        assert_eq!(limits.for_class(Actor), (800, 3200));
+        assert_eq!(limits.for_class(Prop), (700, 2800));
+
+        // An absurd demand cannot take more than half of the pool.
+        reg.set_pool_reserve(PoolReserve {
+            ground_vertices: 5000,
+            ground_indices: 20_000,
+            actor_vertices: 5000,
+            actor_indices: 20_000,
+        });
+        let r = reg.pool_reserve();
+        assert_eq!((r.ground_vertices, r.actor_vertices), (500, 0));
+        assert_eq!(reg.pool_limits.for_class(Prop), (500, 2000));
     }
 
     /// #4891 — a failed scene-mesh upload must take back the geometry it fed

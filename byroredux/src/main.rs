@@ -800,6 +800,10 @@ struct App {
     /// and synchronously loads / unloads the deltas via the per-cell
     /// loader.
     streaming: Option<streaming::WorldStreamingState>,
+    /// When the global geometry buffer first went dirty while a streaming batch
+    /// deferred its rebuild; `None` while clean or not deferring. Drives the
+    /// bound on the deferral (`streaming_helpers::GEOMETRY_REBUILD_MAX_DEFER`).
+    geometry_deferred_since: Option<std::time::Instant>,
     /// Resumable interior door transition. The job and its providers stay
     /// alive across frames until the REFR/NPC phase completes or is
     /// cancelled by a replacement transition/shutdown (#3671).
@@ -1307,6 +1311,7 @@ impl App {
             screenshot_requested: false,
             screenshot_deadline_frames: 0,
             streaming: None,
+            geometry_deferred_since: None,
             interior_transition: None,
             created_step_key: None,
             loading_screen: loading_screen::LoadingScreen::default(),

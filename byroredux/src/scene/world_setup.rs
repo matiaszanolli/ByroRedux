@@ -1464,6 +1464,10 @@ pub(crate) fn assemble_exterior_streaming(
     // first `step_streaming` differs from it and is installed then (#6028).
     apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
     let mut state = WorldStreamingState::new(wctx, tex_provider, mat_provider, radius);
+    // Size the geometry-pool reserve for the radius about to stream: the ground
+    // (terrain, water, terrain LOD) must always fit, then actors, before props.
+    ctx.mesh_registry
+        .set_pool_reserve(crate::streaming_helpers::exterior_pool_reserve(state.radius_unload));
     if let Some(root) = preserved_persistent_root {
         state.persistent_root = Some(root);
         log::info!(

@@ -267,6 +267,7 @@ impl MeshRegistry {
         // space instead of carrying a previous scene's saturation forever.
         self.scene_geometry_admission_closed = false;
         self.prop_admission_closed = false;
+        self.actor_admission_closed = false;
         // Pools are hole-free again until the next scene-mesh drop.
         self.geometry_has_holes = false;
 
@@ -1554,7 +1555,7 @@ mod abandoned_group_tests {
     fn compaction_after_an_unload_reopens_the_prop_tier_too() {
         use crate::mesh::{GeometryAdmissionClass::Prop, PoolLimits};
         let mut reg = MeshRegistry::new();
-        reg.pool_limits = PoolLimits { vertex_hard: 1000, index_hard: 4000 };
+        reg.pool_limits = PoolLimits::with_default_reserve(1000, 4000);
         let mesh = |n: usize| {
             (
                 vec![Vertex::new([0.0; 3], [1.0; 3], [0.0, 1.0, 0.0], [0.0, 0.0]); n],

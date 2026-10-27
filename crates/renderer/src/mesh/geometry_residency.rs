@@ -39,6 +39,10 @@ pub(super) struct CensusCategory {
     morphs: bool,
     dedicated: bool,
     meshes: usize,
+    /// Vertices and indices this category holds in the global pool — what the
+    /// admission tiers (`GeometryAdmissionClass`) have to be sized against.
+    vertices: usize,
+    indices: usize,
     duplicates: usize,
     duplicate_bytes: usize,
 }
@@ -165,10 +169,14 @@ impl MeshRegistry {
                     morphs: member.key.2,
                     dedicated: member.key.3,
                     meshes: 0,
+                    vertices: 0,
+                    indices: 0,
                     duplicates: 0,
                     duplicate_bytes: 0,
                 });
                 entry.meshes += 1;
+                entry.vertices += member.vertex_count as usize;
+                entry.indices += member.indices.len();
                 if rank > 0 {
                     entry.duplicates += 1;
                     entry.duplicate_bytes += member.bytes;
@@ -245,12 +253,14 @@ impl MeshRegistry {
                 for category in &c.categories {
                     log::warn!(
                         "geometry-census-category: source={} skinned={} morphs={} dedicated={} \
-                         meshes={} duplicates={} dup_bytes={}",
+                         meshes={} vertices={} indices={} duplicates={} dup_bytes={}",
                         category.source.as_str(),
                         category.skinned as u8,
                         category.morphs as u8,
                         category.dedicated as u8,
                         category.meshes,
+                        category.vertices,
+                        category.indices,
                         category.duplicates,
                         category.duplicate_bytes,
                     );
