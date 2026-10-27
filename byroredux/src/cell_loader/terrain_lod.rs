@@ -1004,15 +1004,14 @@ fn spawn_lod_block(
             let li = lrow * 33 + lcol;
             let height = land.heights[li];
 
-            // Normal: same Z-up→Y-up decode as the full-detail terrain
-            // path (center at 128, then the canonical helper).
+            // Normal: the full-detail terrain's own decoder — VNML is signed
+            // `i8` (#4059). This block used to read it unsigned, centred at
+            // 128, which turned flat ground into a sideways normal: every
+            // synth block was lit as if edge-on to the sun, drawing as a
+            // near-black band along the join.
             let normal = if let Some(ref nml) = land.normals {
                 let ni = li * 3;
-                let nx = (nml[ni] as f32 - 128.0) / 127.0;
-                let ny = (nml[ni + 1] as f32 - 128.0) / 127.0;
-                let nz = (nml[ni + 2] as f32 - 128.0) / 127.0;
-                let len = (nx * nx + nz * nz + ny * ny).sqrt().max(0.001);
-                zup_to_yup_pos([nx / len, ny / len, nz / len])
+                super::terrain::decode_vnml_normal([nml[ni], nml[ni + 1], nml[ni + 2]]).0
             } else {
                 [0.0, 1.0, 0.0]
             };
@@ -1997,6 +1996,29 @@ mod tests {
 
     /// #6409 — the streaming step keys both the rebuild and the attempted-miss cache on the pair,
     /// and gates the `.btr` path on it.
+    /// The synth block must decode LAND VNML through the full-detail terrain's
+    /// own decoder: the bytes are signed `i8` (#4059). Its private unsigned
+    /// `(b - 128) / 127` copy turned flat ground into a sideways normal, so
+    /// every boundary block was lit edge-on — a near-black band on Skyrim and
+    /// FO4 along the full-detail/LOD join.
+    #[test]
+    fn synth_blocks_decode_vnml_with_the_terrain_decoder() {
+        let src = include_str!("terrain_lod.rs");
+        let production = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let spawn = &production[production.find("fn spawn_lod_block(").unwrap()..];
+        assert!(
+            spawn.contains("terrain::decode_vnml_normal("),
+            "spawn_lod_block must reuse terrain::decode_vnml_normal"
+        );
+        assert!(
+            !spawn.contains("- 128.0) / 127.0"),
+            "no unsigned VNML decode may creep back into the synth path"
+        );
+        // And the shared decoder keeps flat ground pointing up.
+        let (n, _) = super::super::terrain::decode_vnml_normal([0, 0, 127]);
+        assert!(n[1] > 0.99, "flat ground must decode to world up, got {n:?}");
+    }
+
     #[test]
     fn the_ring_rebuilds_and_gates_on_the_hole_and_rim_pair() {
         let production = byroredux_core::source_scan::production_text(include_str!("terrain_lod.rs"));

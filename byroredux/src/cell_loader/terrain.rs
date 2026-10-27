@@ -777,7 +777,7 @@ fn vnml_raw_magnitude(nx: f32, ny: f32, nz: f32) -> f32 {
 /// loop: the *direction* is what needs a test, and a test cannot reach an
 /// expression buried in a mesh builder. See
 /// `flat_ground_vnml_decodes_to_world_up`.
-fn decode_vnml_normal(nml: [u8; 3]) -> ([f32; 3], bool) {
+pub(super) fn decode_vnml_normal(nml: [u8; 3]) -> ([f32; 3], bool) {
     let nx = (nml[0] as i8) as f32 / 127.0;
     let ny = (nml[1] as i8) as f32 / 127.0;
     let nz = (nml[2] as i8) as f32 / 127.0;
