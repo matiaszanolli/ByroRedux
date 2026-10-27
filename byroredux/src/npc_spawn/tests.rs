@@ -3732,6 +3732,37 @@ fn build_vats_model_prices_from_the_load_order() {
     let _ = std::mem::size_of::<PoolRegenConfig>();
     let _ = std::mem::size_of::<VatsModel>();
 
+    // #6423 — the FO3 dialect is the FO3 *profile's* row: 4 AP/s as
+    // authored (`fActionPointsRestoreRate` 4 per second), not FNV's
+    // 0.06-per-frame conversion.
+    let mut fo3 = byroredux_plugin::esm::records::EsmIndex {
+        game: GameKind::Fallout3NV,
+        character_rules: CharacterRulesProfile::FALLOUT3,
+        ..Default::default()
+    };
+    fo3.actor_values.insert(
+        0x40AA,
+        byroredux_plugin::esm::records::AvifRecord {
+            form_id: 0x40AA,
+            editor_id: "ActionPoints".to_string(),
+            ..Default::default()
+        },
+    );
+    let (fo3_model, fo3_regen) = crate::npc_spawn::build_vats_model(&fo3).unwrap();
+    assert!((fo3_model.ap_regen_per_second() - 4.0).abs() < 1e-4);
+    assert!((fo3_regen.action_points.unwrap().per_second - 4.0).abs() < 1e-4);
+    assert_eq!(fo3_model.player_damage_mult, 0.1, "FO3's own fVATS row");
+    assert_eq!(model.player_damage_mult, 0.75, "FNV's own fVATS row (#6424)");
+
+    // A Fallout3NV index whose profile carries no VATS row gets none: the
+    // gate is the row, not the game kind.
+    let unprofiled = byroredux_plugin::esm::records::EsmIndex {
+        game: GameKind::Fallout3NV,
+        character_rules: CharacterRulesProfile::NONE,
+        ..Default::default()
+    };
+    assert!(crate::npc_spawn::build_vats_model(&unprofiled).is_none());
+
     // Non-Fallout: nothing at all.
     let skyrim = byroredux_plugin::esm::records::EsmIndex {
         game: GameKind::Skyrim,

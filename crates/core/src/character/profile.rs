@@ -8,7 +8,7 @@
 
 use super::{
     fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, skyrim_ruleset, CharacterRuleset, CrimeModel,
-    SkillSet,
+    SkillSet, VatsModel,
 };
 
 /// A sourced FO3/FNV NPC Health curve (#5238): the record's `DATA` Base
@@ -270,6 +270,11 @@ pub struct CharacterRulesProfile {
     level_cap_raises: &'static [(&'static str, u16)],
     /// What a crime costs the criminal, where one is sourced and wired.
     crime: Option<CrimeModel>,
+    /// #6423 — the VATS tuning model (`fVATS*` / `fActionPoints*` defaults
+    /// and the FO3-vs-FNV restore-rate dialect), where one is sourced and
+    /// wired. A row of its own, so `build_vats_model` never branches on the
+    /// game or compares whole profiles.
+    vats: Option<VatsModel>,
 }
 
 /// Skyrim's *Mod Buy Prices* / *Mod Sell Prices* entry points
@@ -294,6 +299,7 @@ impl CharacterRulesProfile {
         perk_entry_points: PerkEntryPointDialect::None,
         level_cap_raises: &[],
         crime: None,
+        vats: None,
     };
 
     pub const OBLIVION: Self = Self {
@@ -316,6 +322,7 @@ impl CharacterRulesProfile {
         perk_entry_points: PerkEntryPointDialect::None,
         level_cap_raises: &[],
         crime: Some(CrimeModel::OBLIVION),
+        vats: None,
     };
 
     pub const FALLOUT3: Self = Self {
@@ -347,6 +354,7 @@ impl CharacterRulesProfile {
         perk_entry_points: PerkEntryPointDialect::Fallout3NV,
         level_cap_raises: &[],
         crime: None,
+        vats: Some(VatsModel::FALLOUT3),
     };
 
     pub const FALLOUT_NEW_VEGAS: Self = Self {
@@ -383,6 +391,7 @@ impl CharacterRulesProfile {
         // stems as a string table beside its master-file loading strings.
         level_cap_raises: &[("DeadMoney", 5), ("HonestHearts", 5), ("OldWorldBlues", 5), ("LonesomeRoad", 5)],
         crime: None,
+        vats: Some(VatsModel::FALLOUT_NV),
     };
 
     pub const SKYRIM: Self = Self {
@@ -424,6 +433,7 @@ impl CharacterRulesProfile {
         perk_entry_points: PerkEntryPointDialect::Skyrim,
         level_cap_raises: &[],
         crime: Some(CrimeModel::SKYRIM),
+        vats: None,
     };
 
     pub const FALLOUT4: Self = Self {
@@ -458,6 +468,7 @@ impl CharacterRulesProfile {
         perk_entry_points: PerkEntryPointDialect::None,
         level_cap_raises: &[],
         crime: None,
+        vats: None,
     };
 
     pub const FALLOUT76: Self = Self {
@@ -486,6 +497,7 @@ impl CharacterRulesProfile {
         perk_entry_points: PerkEntryPointDialect::None,
         level_cap_raises: &[],
         crime: None,
+        vats: None,
     };
 
     pub const STARFIELD: Self = Self {
@@ -518,6 +530,7 @@ impl CharacterRulesProfile {
         perk_entry_points: PerkEntryPointDialect::None,
         level_cap_raises: &[],
         crime: None,
+        vats: None,
     };
 
     #[must_use]
@@ -598,6 +611,13 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn crime(self) -> Option<CrimeModel> {
         self.crime
+    }
+
+    /// #6423 — the VATS tuning model's compiled-in defaults, `None` where
+    /// the game has no sourced and wired VATS (everything but FO3/FNV).
+    #[must_use]
+    pub const fn vats(self) -> Option<VatsModel> {
+        self.vats
     }
 
     /// #5921 — the perk entry-point numbering the game's `PERK`s author.
@@ -700,6 +720,28 @@ mod tests {
         let skyrim = CharacterRulesProfile::SKYRIM.barter().unwrap();
         assert_eq!(skyrim.perk_hooks, Some((8, 60)));
         assert_eq!(CharacterRulesProfile::FALLOUT4.barter().unwrap().perk_hooks, None);
+    }
+
+    /// #6423 — the VATS model is a profile row: only FO3 and FNV carry one,
+    /// and the two dialects are told apart by the row, not by the game.
+    #[test]
+    fn vats_row_is_stated_on_every_profile() {
+        for profile in [
+            CharacterRulesProfile::NONE,
+            CharacterRulesProfile::OBLIVION,
+            CharacterRulesProfile::SKYRIM,
+            CharacterRulesProfile::FALLOUT4,
+            CharacterRulesProfile::FALLOUT76,
+            CharacterRulesProfile::STARFIELD,
+        ] {
+            assert_eq!(profile.vats(), None, "{}", profile.name());
+        }
+        let fo3 = CharacterRulesProfile::FALLOUT3.vats().expect("FO3 has VATS");
+        let fnv = CharacterRulesProfile::FALLOUT_NEW_VEGAS.vats().expect("FNV has VATS");
+        assert_eq!(fo3, VatsModel::FALLOUT3);
+        assert_eq!(fnv, VatsModel::FALLOUT_NV);
+        assert!((fo3.ap_regen_per_second() - 4.0).abs() < 1e-4, "FO3: 4 AP/s");
+        assert!((fnv.ap_regen_per_second() - 3.6).abs() < 1e-4, "FNV: 0.06 x 60 Hz");
     }
 
     #[test]

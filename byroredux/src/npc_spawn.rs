@@ -313,28 +313,18 @@ pub fn build_character_ruleset(
 /// [`PoolRegenConfig`](byroredux_core::character::regen::PoolRegenConfig)
 /// (its first production consumer; the TES lanes stay inert because no
 /// Fallout load order resolves Fatigue/Magicka AVIFs). `None` on every
-/// non-Fallout game.
+/// game whose profile carries no VATS row.
 pub fn build_vats_model(
     index: &EsmIndex,
 ) -> Option<(
     byroredux_core::character::VatsModel,
     byroredux_core::character::regen::PoolRegenConfig,
 )> {
-    if index.game != byroredux_plugin::esm::reader::GameKind::Fallout3NV {
-        return None;
-    }
+    // The model — including which FO3-vs-FNV restore-rate dialect applies —
+    // is the profile's own row (#6423): no game test, no whole-profile
+    // comparison. `None` on every game with no sourced and wired VATS.
     let gmst = |editor_id: &str| index.game_setting_float(editor_id);
-    // The FO3-vs-FNV restore-rate dialect is a profile decision (both
-    // share GameKind::Fallout3NV); the profile the parser selected at
-    // load time owns it (#3384's first-non-NONE-wins).
-    let base = if index.character_rules
-        == byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS
-    {
-        byroredux_core::character::VatsModel::FALLOUT_NV
-    } else {
-        byroredux_core::character::VatsModel::FALLOUT3
-    };
-    let model = base.with_gmst(gmst);
+    let model = index.character_rules.vats()?.with_gmst(gmst);
     let action_points = index
         .actor_value_form_id("ActionPoints")
         .map(|avif| byroredux_core::character::regen::ActionPointsRegen {
