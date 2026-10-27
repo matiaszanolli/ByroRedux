@@ -443,6 +443,41 @@ impl Default for WeatherRecord {
     }
 }
 
+/// The RGBA colour at `offset` in a NAM0 body. Callers bound the read by the table shape.
+fn sky_color_at(data: &[u8], offset: usize) -> SkyColor {
+    SkyColor {
+        r: data[offset],
+        g: data[offset + 1],
+        b: data[offset + 2],
+        a: data[offset + 3],
+    }
+}
+
+/// Fill a group's HIGH_NOON / MIDNIGHT from its DAY / NIGHT slots. Every game but the
+/// 6-slot FO3/FNV table authors only sunrise / day / sunset / night, and the shared
+/// `[group][6]` table has to stay dense for `weather_system` (#533).
+fn synthesize_noon_midnight(group: &mut [SkyColor; SKY_TIME_SLOTS]) {
+    group[TOD_HIGH_NOON] = group[TOD_DAY];
+    group[TOD_MIDNIGHT] = group[TOD_NIGHT];
+}
+
+/// The four-float head every FNAM shares: day / night near and far fog distances. The
+/// reader is left positioned at the first float after it. Missing floats keep the
+/// engine's 0 / 10000 defaults.
+fn read_fog_head(record: &mut WeatherRecord, r: &mut SubReader) {
+    record.fog_distances_authored = true;
+    record.fog_day_near = r.f32().unwrap_or(0.0);
+    record.fog_day_far = r.f32().unwrap_or(10000.0);
+    record.fog_night_near = r.f32().unwrap_or(0.0);
+    record.fog_night_far = r.f32().unwrap_or(10000.0);
+}
+
+/// The day / night fog power pair that follows the head in FO3/FNV and later FNAMs.
+fn read_fog_power(record: &mut WeatherRecord, r: &mut SubReader) {
+    record.fog_day_power = r.f32().unwrap_or(1.0);
+    record.fog_night_power = r.f32().unwrap_or(1.0);
+}
+
 /// Parse a WTHR record from its sub-records.
 ///
 /// Game-specific schema dispatch:
@@ -514,15 +549,9 @@ pub fn parse_wthr(
                 for group in 0..SKY_COLOR_GROUPS.min(on_disk_groups) {
                     for slot in 0..4 {
                         let offset = (group * on_disk_slots + slot) * 4;
-                        record.sky_colors[group][slot] = SkyColor {
-                            r: sub.data[offset],
-                            g: sub.data[offset + 1],
-                            b: sub.data[offset + 2],
-                            a: sub.data[offset + 3],
-                        };
+                        record.sky_colors[group][slot] = sky_color_at(&sub.data, offset);
                     }
-                    record.sky_colors[group][TOD_HIGH_NOON] = record.sky_colors[group][TOD_DAY];
-                    record.sky_colors[group][TOD_MIDNIGHT] = record.sky_colors[group][TOD_NIGHT];
+                    synthesize_noon_midnight(&mut record.sky_colors[group]);
                 }
             }
             b"NAM0" if sub.data.len() >= SKY_COLOR_GROUPS * 4 * 4 => {
@@ -534,18 +563,11 @@ pub fn parse_wthr(
                 let mut offset = 0;
                 for group in 0..SKY_COLOR_GROUPS {
                     for slot in 0..on_disk_slots {
-                        record.sky_colors[group][slot] = SkyColor {
-                            r: sub.data[offset],
-                            g: sub.data[offset + 1],
-                            b: sub.data[offset + 2],
-                            a: sub.data[offset + 3],
-                        };
+                        record.sky_colors[group][slot] = sky_color_at(&sub.data, offset);
                         offset += 4;
                     }
                     if on_disk_slots < SKY_TIME_SLOTS {
-                        record.sky_colors[group][TOD_HIGH_NOON] = record.sky_colors[group][TOD_DAY];
-                        record.sky_colors[group][TOD_MIDNIGHT] =
-                            record.sky_colors[group][TOD_NIGHT];
+                        synthesize_noon_midnight(&mut record.sky_colors[group]);
                     }
                 }
                 // #6258 — Oblivion's cloud tints live in NAM0 (it authors
@@ -589,22 +611,16 @@ pub fn parse_wthr(
             // independent of weather type. See audit M33-04 / #536.
             b"FNAM" if sub.data.len() >= 16 => {
                 let mut r = SubReader::new(&sub.data);
-                record.fog_distances_authored = true;
-                record.fog_day_near = r.f32().unwrap_or(0.0);
-                record.fog_day_far = r.f32().unwrap_or(10000.0);
-                record.fog_night_near = r.f32().unwrap_or(0.0);
-                record.fog_night_far = r.f32().unwrap_or(10000.0);
+                read_fog_head(&mut record, &mut r);
                 if matches!(game, GameKind::Fallout3NV) && sub.data.len() >= FO3NV_FNAM_SIZE {
-                    record.fog_day_power = r.f32().unwrap_or(1.0);
-                    record.fog_night_power = r.f32().unwrap_or(1.0);
+                    read_fog_power(&mut record, &mut r);
                 }
                 if matches!(
                     game,
                     GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
                 ) && sub.data.len() >= SKYRIM_FNAM_SIZE
                 {
-                    record.fog_day_power = r.f32().unwrap_or(1.0);
-                    record.fog_night_power = r.f32().unwrap_or(1.0);
+                    read_fog_power(&mut record, &mut r);
                     record.fog_day_max = r.f32().unwrap_or(1.0);
                     record.fog_night_max = r.f32().unwrap_or(1.0);
                 }
@@ -677,12 +693,7 @@ pub fn parse_wthr(
                 // so the M33-05 regression test (which asserts a real
                 // 56-byte HNAM does NOT clobber FNAM fog) keeps its
                 // counterpart. No vanilla master ships this shape.
-                let mut r = SubReader::new(&sub.data);
-                record.fog_distances_authored = true;
-                record.fog_day_near = r.f32().unwrap_or(0.0);
-                record.fog_day_far = r.f32().unwrap_or(10000.0);
-                record.fog_night_near = r.f32().unwrap_or(0.0);
-                record.fog_night_far = r.f32().unwrap_or(10000.0);
+                read_fog_head(&mut record, &mut SubReader::new(&sub.data));
             }
 
             // DATA: general weather data (15 bytes, shared by Oblivion,
@@ -1186,12 +1197,7 @@ fn parse_wthr_skyrim(
                         // Skyrim ships sunrise / day / sunset / night
                         // in the same TOD-index order as the engine's
                         // `TOD_SUNRISE`..`TOD_NIGHT` constants.
-                        let color = SkyColor {
-                            r: sub.data[offset],
-                            g: sub.data[offset + 1],
-                            b: sub.data[offset + 2],
-                            a: sub.data[offset + 3],
-                        };
+                        let color = sky_color_at(&sub.data, offset);
                         if group < SKY_COLOR_GROUPS {
                             record.sky_colors[group][slot] = color;
                         } else if (10..17).contains(&group) {
@@ -1204,9 +1210,7 @@ fn parse_wthr_skyrim(
                     // dense for `weather_system`. Mirrors the Oblivion
                     // / FO3 short-NAM0 fallback above.
                     if group < SKY_COLOR_GROUPS {
-                        record.sky_colors[group][TOD_HIGH_NOON] = record.sky_colors[group][TOD_DAY];
-                        record.sky_colors[group][TOD_MIDNIGHT] =
-                            record.sky_colors[group][TOD_NIGHT];
+                        synthesize_noon_midnight(&mut record.sky_colors[group]);
                     }
                 }
             }
@@ -1216,13 +1220,8 @@ fn parse_wthr_skyrim(
             // model). Trailing 4 are day/night fog power + max.
             b"FNAM" if sub.data.len() >= SKYRIM_FNAM_SIZE => {
                 let mut r = SubReader::new(&sub.data);
-                record.fog_distances_authored = true;
-                record.fog_day_near = r.f32().unwrap_or(0.0);
-                record.fog_day_far = r.f32().unwrap_or(10000.0);
-                record.fog_night_near = r.f32().unwrap_or(0.0);
-                record.fog_night_far = r.f32().unwrap_or(10000.0);
-                record.fog_day_power = r.f32().unwrap_or(1.0);
-                record.fog_night_power = r.f32().unwrap_or(1.0);
+                read_fog_head(&mut record, &mut r);
+                read_fog_power(&mut record, &mut r);
                 record.fog_day_max = r.f32().unwrap_or(1.0);
                 record.fog_night_max = r.f32().unwrap_or(1.0);
             }
