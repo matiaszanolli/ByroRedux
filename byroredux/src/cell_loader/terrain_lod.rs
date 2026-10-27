@@ -2003,8 +2003,7 @@ mod tests {
     /// FO4 along the full-detail/LOD join.
     #[test]
     fn synth_blocks_decode_vnml_with_the_terrain_decoder() {
-        let src = include_str!("terrain_lod.rs");
-        let production = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let production = byroredux_core::source_scan::production_text(include_str!("terrain_lod.rs"));
         let spawn = &production[production.find("fn spawn_lod_block(").unwrap()..];
         assert!(
             spawn.contains("terrain::decode_vnml_normal("),
