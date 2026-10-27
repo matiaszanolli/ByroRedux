@@ -63,7 +63,7 @@ impl Resource for ActiveProjectiles {}
 /// How far above its placement an actor's body centre is: an NPC's placement root stands at its feet, the
 /// player body's transform is already its capsule centre.
 fn body_centre_offset(world: &World, entity: EntityId) -> Vec3 {
-    let player = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0);
+    let player = crate::systems::PlayerEntity::get(world);
     if Some(entity) == player || world.get::<byroredux_core::ecs::components::ActorVitals>(entity).is_none() {
         return Vec3::ZERO;
     }

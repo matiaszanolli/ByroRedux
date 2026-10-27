@@ -256,7 +256,7 @@ impl Component for AssaultedByPlayer {
 /// game: striking someone who is not fighting you). Judge it **before** the strike lands: a kill
 /// clears the victim's combat state. Cheap for the common case (an NPC's own strike).
 pub(crate) fn player_strike_is_crime(world: &World, aggressor: EntityId, victim: EntityId) -> bool {
-    let player = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0);
+    let player = crate::systems::PlayerEntity::get(world);
     if player != Some(aggressor) || victim == aggressor || world.get::<CreatureActor>(victim).is_some() {
         return false;
     }
@@ -349,7 +349,7 @@ pub(crate) fn jail_bed_system(world: &World, _dt: f32) {
     if !byroredux_scripting::jail::player_in_jail(world) {
         return;
     }
-    let Some(player) = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) else {
+    let Some(player) = crate::systems::PlayerEntity::get(world) else {
         return;
     };
     let activated: Vec<EntityId> = world
@@ -760,7 +760,7 @@ fn rush_wanted_player(world: &World, waiting: &mut std::collections::HashMap<Ent
     if bounty <= 0 || bounty < model.rush_bounty || byroredux_scripting::jail::player_in_jail(world) {
         return;
     }
-    let Some(player) = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) else { return };
+    let Some(player) = crate::systems::PlayerEntity::get(world) else { return };
     // Mid-conversation, or unable to act: nobody is rushed (the dialogue runtime defers too).
     let talking = world.try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>().is_some_and(|surface| surface.npc.is_some());
     if talking || !crate::systems::player_can_act(world) {

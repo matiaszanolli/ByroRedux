@@ -139,9 +139,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
 
     // Resolved once up front: both the cooldown arm below and the reach
     // used for the ray cast need the equipped weapon.
-    let aggressor = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0);
+    let aggressor = PlayerEntity::get(world);
 
     // #3033 — the eligibility gate must be read BEFORE the `CombatState`
     // mutation, not after it. Pre-fix the attack edge was consumed, the
@@ -587,9 +585,7 @@ fn award_kill_experience(world: &World, victim: EntityId, health_avif: u32) {
     if health <= 0.0 || dealt < rules.health_share * health {
         return;
     }
-    let Some(player) = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)
+    let Some(player) = crate::systems::PlayerEntity::get(world)
     else {
         return;
     };
@@ -634,7 +630,7 @@ pub(crate) fn chargen_catch_up_system(world: &World, _dt: f32) {
         None => return,
     };
     if was && !now {
-        if let Some(player) = world.try_resource::<PlayerEntity>().and_then(|player| player.0) {
+        if let Some(player) = PlayerEntity::get(world) {
             grant_experience(world, player, 0);
         }
     }
@@ -1211,9 +1207,7 @@ pub(crate) fn scripted_experience_system(world: &World, _dt: f32) {
     if grants.is_empty() {
         return;
     }
-    let Some(player) = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)
+    let Some(player) = crate::systems::PlayerEntity::get(world)
     else {
         return;
     };
@@ -1246,9 +1240,7 @@ pub(crate) fn scripted_skill_system(world: &World, _dt: f32) {
     if advances.is_empty() {
         return;
     }
-    let Some(player) = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)
+    let Some(player) = crate::systems::PlayerEntity::get(world)
     else {
         return;
     };

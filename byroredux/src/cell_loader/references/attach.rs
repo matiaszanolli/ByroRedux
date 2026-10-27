@@ -244,9 +244,7 @@ pub(crate) fn authored_container_inventory(
     let mut inventory = Inventory::new();
     // Initial loading can precede player spawn. Level one is the bootstrap
     // policy until a live player level exists; subsequent cell loads use it.
-    let player = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0);
+    let player = crate::systems::PlayerEntity::get(world);
     let level = player
         .and_then(|entity| world.get::<byroredux_core::character::CharacterLevel>(entity))
         .map_or(1, |level| level.level.max(1));

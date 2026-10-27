@@ -1132,6 +1132,34 @@ fn no_doc_block_is_spliced_onto_the_wrong_item() {
     );
 }
 
+/// #6362 — the player entity is read through `PlayerEntity::get`. The bin had
+/// 66 hand-spelled `try_resource::<PlayerEntity>().and_then(..)` reads while
+/// the scripting crate's twin resource already had an accessor (#5813); two
+/// resources that differ in FlyCam are only safe to reason about if each has
+/// exactly one read.
+#[test]
+fn no_source_hand_spells_the_player_entity_read() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let needle = ["PlayerEntity>()", ".and_then("].concat();
+    let mut found = Vec::new();
+    visit_workspace_rs_files(&manifest.join("src"), &mut |path, contents| {
+        // The accessor itself is the one legitimate spelling; this file quotes the shape.
+        if path.ends_with("systems/character.rs") || path.ends_with("workspace_hygiene_tests.rs") {
+            return;
+        }
+        // Whitespace-insensitive: rustfmt splits the chain across lines.
+        let flat: String = contents.split_whitespace().collect();
+        if flat.contains(&needle) {
+            found.push(path.strip_prefix(manifest).unwrap_or(path).display().to_string());
+        }
+    });
+    assert!(
+        found.is_empty(),
+        "hand-spelled PlayerEntity read — use `PlayerEntity::get(world)` (#6362):\n{}",
+        found.join("\n"),
+    );
+}
+
 /// #5856 — count a crate's example *targets* the way cargo discovers them:
 /// every top-level `examples/*.rs` plus every `examples/<name>/main.rs`.
 /// Non-target files (`examples/common/archives.rs`, a shared module) are

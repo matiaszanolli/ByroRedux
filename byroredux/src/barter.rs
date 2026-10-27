@@ -215,12 +215,6 @@ impl ActiveBarter {
     }
 }
 
-fn player(world: &World) -> Option<EntityId> {
-    world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)
-}
-
 /// Open a barter session with `vendor`'s merchant faction.
 pub(crate) fn begin_barter(world: &mut World, vendor: EntityId) -> Result<(), &'static str> {
     end_barter(world);
@@ -353,7 +347,7 @@ fn price_terms(
 /// The barter page's view of the open session.
 pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::BarterSnapshot> {
     let session = session(world)?;
-    let player = player(world)?;
+    let player = crate::systems::PlayerEntity::get(world)?;
     let rules = world.try_resource::<BarterRules>()?.clone();
     let vendor_data = rules.vendors.get(&session.faction)?.clone();
     let (factor, buy_mod, sell_mod) = price_terms(world, &rules, player, session.vendor);
@@ -419,7 +413,7 @@ pub(crate) fn apply_action(
     use byroredux_debug_ui::BarterAction;
     let snapshot = snapshot(world).ok_or("no barter in progress")?;
     let session = session(world).ok_or("no barter in progress")?;
-    let player = player(world).ok_or("no player")?;
+    let player = crate::systems::PlayerEntity::get(world).ok_or("no player")?;
     match action {
         BarterAction::Buy { form_id } => {
             let item = snapshot

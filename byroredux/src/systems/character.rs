@@ -45,6 +45,19 @@ pub struct PlayerEntity(pub Option<EntityId>);
 
 impl Resource for PlayerEntity {}
 
+impl PlayerEntity {
+    /// The player character entity, or `None` when the resource is absent or
+    /// the engine is not in player mode (#6362).
+    ///
+    /// The one read of this resource. It is NOT synchronised with the
+    /// scripting crate's `PapyrusPlayerEntity` (`PapyrusPlayerEntity::get`), which
+    /// differs in FlyCam, so a flow that crosses the crate boundary reads the
+    /// pair knowingly rather than by hand-spelling either.
+    pub fn get(world: &World) -> Option<EntityId> {
+        world.try_resource::<PlayerEntity>().and_then(|player| player.0)
+    }
+}
+
 /// Engine-wide mode flag. Set at scene-setup based on CLI flags +
 /// scene type (interior cell / exterior grid → Character;
 /// `--mesh` / `--tree` / `--fly` → FlyCam).
@@ -98,9 +111,7 @@ pub(crate) fn player_controller_system(world: &World, dt: f32) {
 /// [`character_controller_system`]. No player entity (fly-cam, tests)
 /// leaves the decision to each consumer's own player lookup.
 pub(crate) fn player_can_act(world: &World) -> bool {
-    world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
+    PlayerEntity::get(world)
         .is_none_or(|player| world.get::<Dead>(player).is_none())
         // #6350 — while any VATS mode is active, normal attack/activate
         // input is suppressed: attacks arrive through the VATS queue, not
@@ -123,9 +134,7 @@ pub(crate) fn player_can_act(world: &World) -> bool {
 /// than an invented level. Lock order is `CharacterRuleset` → `ActorValues`,
 /// the canonical direction (#3441).
 pub(crate) fn player_derived_stats_system(world: &World, _dt: f32) {
-    let Some(player) = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
+    let Some(player) = PlayerEntity::get(world)
     else {
         return;
     };
@@ -903,7 +912,7 @@ pub(crate) fn camera_follow_system(world: &World, dt: f32) {
 /// [`carry_player_body_to_camera`] only ever holds a `&World`. `&mut`
 /// callers coerce automatically, so this is source-compatible for them.
 pub fn snap_character_body_to_camera(world: &byroredux_core::ecs::World) -> bool {
-    let player_entity = world.try_resource::<PlayerEntity>().and_then(|r| r.0);
+    let player_entity = PlayerEntity::get(world);
     let Some(player) = player_entity else {
         log::warn!(
             "snap_character_body_to_camera: no PlayerEntity registered \
@@ -1057,7 +1066,7 @@ pub fn carry_player_body_to_camera(world: &byroredux_core::ecs::World) -> bool {
 /// at the floor-level pose would produce exactly the unsignalled second jump
 /// #1874 was about.
 pub fn ground_character_body_at(world: &byroredux_core::ecs::World, destination: Vec3) -> bool {
-    let Some(player) = world.try_resource::<PlayerEntity>().and_then(|r| r.0) else {
+    let Some(player) = PlayerEntity::get(world) else {
         log::warn!(
             "ground_character_body_at: no PlayerEntity registered — \
              fly-cam-only boot, nothing to ground. No-op."

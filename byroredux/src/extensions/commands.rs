@@ -435,9 +435,7 @@ pub(super) fn apply_pending_actor_value_writes(world: &World, host: &mut Extensi
         // later. Read BEFORE the
         // `values` query, keeping the canonical `CharacterRuleset` →
         // `ActorValues` order (#3441) the #3819 note below documents.
-        let player = world
-            .try_resource::<crate::systems::PlayerEntity>()
-            .and_then(|player| player.0);
+        let player = crate::systems::PlayerEntity::get(world);
         let ruleset = world.try_resource::<byroredux_core::character::CharacterRuleset>();
         let values = world
             .query::<ActorValues>()

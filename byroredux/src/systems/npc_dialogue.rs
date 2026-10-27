@@ -581,9 +581,7 @@ pub(crate) fn forcegreet_open(world: &World, npc: EntityId, topic: Option<u32>) 
         };
         index.0.clone()
     };
-    let Some(player) = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
+    let Some(player) = PlayerEntity::get(world)
     else {
         return false;
     };
@@ -777,9 +775,7 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
     if !crate::systems::player_can_act(world) {
         return;
     }
-    let Some(player) = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
+    let Some(player) = PlayerEntity::get(world)
     else {
         return;
     };
@@ -860,9 +856,7 @@ pub(crate) fn select_topic_by_form_id(
     npc: EntityId,
     topic_form_id: u32,
 ) -> Result<String, String> {
-    if npc == world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
+    if npc == PlayerEntity::get(world)
         .unwrap_or_default()
     {
         return Err("the player is not a dialogue target".to_string());
@@ -915,9 +909,7 @@ pub(crate) fn select_topic_by_form_id(
             "NPC {npc} neither offers nor owns topic {topic_form_id:08X} through a running quest"
         ));
     }
-    let player = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
+    let player = PlayerEntity::get(world)
         .ok_or_else(|| "no player".to_string())?;
     // After this line, its links become the list; a line that links nowhere
     // returns to the Top-Level topics (#5037).

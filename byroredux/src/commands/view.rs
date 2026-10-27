@@ -180,9 +180,7 @@ impl ConsoleCommand for CombatStatusCommand {
         // #3709 — cooldown/blocking moved off `CombatState` onto
         // `MeleeState`, a per-combatant component. The console surface has
         // only the player to show, so it's looked up via `PlayerEntity`.
-        let melee = world
-            .try_resource::<crate::systems::PlayerEntity>()
-            .and_then(|player| player.0)
+        let melee = crate::systems::PlayerEntity::get(world)
             .and_then(|player| {
                 world
                     .query::<crate::combat::MeleeState>()?
@@ -414,9 +412,7 @@ impl ConsoleCommand for CombatApproachCommand {
                 "combat.approach: entity {target} has no GlobalTransform"
             ));
         };
-        let Some(player) = world
-            .try_resource::<crate::systems::PlayerEntity>()
-            .and_then(|player| player.0)
+        let Some(player) = crate::systems::PlayerEntity::get(world)
         else {
             return CommandOutput::line("combat.approach: no character player entity");
         };
@@ -616,9 +612,7 @@ impl ConsoleCommand for PlayerStatusCommand {
             .try_resource::<crate::systems::PlayerMode>()
             .map(|mode| *mode)
             .unwrap_or_default();
-        let player = world
-            .try_resource::<crate::systems::PlayerEntity>()
-            .and_then(|player| player.0);
+        let player = crate::systems::PlayerEntity::get(world);
         let camera_entity = world.try_resource::<ActiveCamera>().map(|active| active.0);
         let camera = camera_entity
             .and_then(|entity| world.get::<Transform>(entity))

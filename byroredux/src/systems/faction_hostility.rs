@@ -165,7 +165,7 @@ pub(crate) fn actor_detects(world: &World, observer: EntityId, target: EntityId)
 
 /// The points sight rays between two actors start and end at; `None` when either is dead or unplaced.
 fn sight_points(world: &World, observer: EntityId, target: EntityId) -> Option<(Vec3, Vec3)> {
-    let player = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0);
+    let player = crate::systems::PlayerEntity::get(world);
     let centre = Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT;
     let sight_point = |entity: EntityId| -> Option<Vec3> {
         if world.get::<Dead>(entity).is_some() {
@@ -181,7 +181,7 @@ fn sight_points(world: &World, observer: EntityId, target: EntityId) -> Option<(
 /// Whether nothing solid stands between two points (the player's own body excepted); true without a
 /// physics world.
 fn sight_is_clear(world: &World, from: Vec3, to: Vec3) -> bool {
-    let player = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0);
+    let player = crate::systems::PlayerEntity::get(world);
     let player_body = player.and_then(|player| {
         world.query::<byroredux_physics::RapierHandles>().and_then(|handles| handles.get(player).map(|h| h.body))
     });
@@ -406,9 +406,7 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
     if dispositions.is_empty() {
         return;
     }
-    let player = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0);
+    let player = crate::systems::PlayerEntity::get(world);
     let actor_centre = Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT;
     let everyone = dispositions
         .iter()

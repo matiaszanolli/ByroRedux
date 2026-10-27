@@ -254,7 +254,7 @@ pub(crate) fn add_item(
     form_id: u32,
     count: u32,
 ) -> Option<InventoryIndex> {
-    let player = world.try_resource::<PlayerEntity>().and_then(|p| p.0)?;
+    let player = PlayerEntity::get(world)?;
     let index = {
         let mut inventories = world.query_mut::<Inventory>()?;
         let inventory = inventories.get_mut(player)?;
@@ -274,9 +274,7 @@ pub(crate) fn add_item(
 /// `form_id`, to be drained through [`apply_action`] on the main thread.
 /// Returns a user-facing error when the player has no such row.
 pub(crate) fn queue_equip_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
-    let player = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|p| p.0)
+    let player = PlayerEntity::get(world)
         .ok_or_else(|| "no player".to_string())?;
     let index = world
         .get::<Inventory>(player)
@@ -303,7 +301,7 @@ pub(crate) fn queue_equip_by_form_id(world: &World, form_id: u32) -> Result<Stri
 /// Queue the menu's own `Consume` of the player's row carrying `form_id` (`inv.use`): the same door a
 /// click on "use" takes, drained by [`drain_pending_inventory_actions`].
 pub(crate) fn queue_consume_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
-    let player = world.try_resource::<PlayerEntity>().and_then(|p| p.0).ok_or_else(|| "no player".to_string())?;
+    let player = PlayerEntity::get(world).ok_or_else(|| "no player".to_string())?;
     let index = world
         .get::<Inventory>(player)
         .and_then(|inventory| inventory.items.iter().position(|stack| stack.base_form_id == form_id && stack.count > 0))
@@ -403,7 +401,7 @@ pub(crate) fn vitals_snapshot(
     world: &World,
 ) -> Option<Vec<byroredux_debug_ui::VitalBarView>> {
     use byroredux_core::ecs::components::ActorValues;
-    let player = world.try_resource::<PlayerEntity>().and_then(|r| r.0)?;
+    let player = PlayerEntity::get(world)?;
     let vitals = world.try_resource::<PlayerVitals>()?;
     let values = world.get::<ActorValues>(player)?;
     let mut bars: Vec<byroredux_debug_ui::VitalBarView> = vitals
@@ -960,9 +958,7 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
 }
 
 pub(crate) fn is_loot_source(world: &World, entity: byroredux_core::ecs::EntityId) -> bool {
-    if world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
+    if PlayerEntity::get(world)
         == Some(entity)
     {
         return false;
@@ -1314,9 +1310,7 @@ pub(crate) fn transfer_loot(
 /// already-empty source transfers nothing and says nothing. A loose world
 /// item is picked up directly — the whole placed stack (`XCNT`, #4706).
 pub(crate) fn container_loot_system(world: &World, _dt: f32) {
-    let Some(player) = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
+    let Some(player) = PlayerEntity::get(world)
     else {
         return;
     };
@@ -1503,9 +1497,7 @@ pub(crate) fn take_placed_item(
 
 /// Build the presentation snapshot only while the native inventory is visible.
 pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySnapshot> {
-    let player = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)?;
+    let player = PlayerEntity::get(world)?;
     // Clone each component before acquiring the next storage lock. The menu
     // is off the hot path, and this preserves the ECS invariant that callers
     // never hold independently-acquired component locks in an arbitrary order.
@@ -1579,7 +1571,7 @@ fn consume_item(world: &mut World, index: u32, form_id: u32) -> MutationResult {
         ActorValues, ActorVitals, Dead, TimedRestoration, TimedRestorations,
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
-    let Some(player) = world.try_resource::<PlayerEntity>().and_then(|r| r.0) else {
+    let Some(player) = PlayerEntity::get(world) else {
         return MutationResult::Unavailable;
     };
     if world.get::<Dead>(player).is_some() {
@@ -1735,9 +1727,7 @@ fn notify_refused_action(world: &World, action: byroredux_debug_ui::InventoryAct
         InventoryAction::Consume { form_id, .. } => ("use", Some(form_id)),
         InventoryAction::ToggleEquip { index } => (
             "equip",
-            world
-                .try_resource::<PlayerEntity>()
-                .and_then(|player| player.0)
+            PlayerEntity::get(world)
                 .and_then(|player| {
                     world
                         .get::<Inventory>(player)?
@@ -1774,9 +1764,7 @@ fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
     if !crate::systems::player_can_act(world) {
         return MutationResult::Unavailable;
     }
-    let Some(player) = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
+    let Some(player) = PlayerEntity::get(world)
     else {
         return MutationResult::Unavailable;
     };

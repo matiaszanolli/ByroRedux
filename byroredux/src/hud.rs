@@ -812,7 +812,7 @@ pub(crate) fn fraction(world: &World, av: Option<u32>, pinned: Option<f32>) -> f
         // that happened to carry the key — and it ran per bar per frame
         // before the change-signature check. `PlayerEntity` is the
         // contract the native vitals path already uses.
-        let Some(player) = world.try_resource::<PlayerEntity>().and_then(|r| r.0) else {
+        let Some(player) = PlayerEntity::get(world) else {
             return 1.0;
         };
         let Some(values) = world.get::<ActorValues>(player) else {

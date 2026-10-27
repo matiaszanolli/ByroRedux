@@ -1253,9 +1253,7 @@ impl ConsoleCommand for SmEventCommand {
                 }
                 "r1" | "r2" => {
                     let entity = if value.eq_ignore_ascii_case("player") {
-                        match world
-                            .try_resource::<crate::systems::PlayerEntity>()
-                            .and_then(|player| player.0)
+                        match crate::systems::PlayerEntity::get(world)
                         {
                             Some(entity) => entity,
                             None => {

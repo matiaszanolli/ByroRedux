@@ -30,9 +30,7 @@ use byroredux_physics::{CharacterController, PhysicsWorld};
 /// Character mode the camera sits `eye_height` above the body.
 fn reference_point(world: &World) -> Option<(&'static str, Vec3, Option<EntityId>)> {
     let transforms = world.query::<GlobalTransform>()?;
-    if let Some(player) = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)
+    if let Some(player) = crate::systems::PlayerEntity::get(world)
     {
         if let Some(transform) = transforms.get(player) {
             return Some(("player", transform.translation, Some(player)));

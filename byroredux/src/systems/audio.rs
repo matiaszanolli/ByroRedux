@@ -187,9 +187,7 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
         .is_some_and(|mode| *mode == crate::systems::PlayerMode::Character)
         .then(|| world.try_resource::<ActiveCamera>().map(|active| active.0))
         .flatten();
-    let body_gate = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)
+    let body_gate = crate::systems::PlayerEntity::get(world)
         .map(|body| {
             let grounded = world
                 .get::<byroredux_physics::CharacterController>(body)

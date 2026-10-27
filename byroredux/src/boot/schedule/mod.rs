@@ -901,6 +901,20 @@ mod system_access_declaration_tests {
 
     /// Every storage/resource type acquired inside `body`.
     fn acquired_in(body: &str, types: &mut Vec<String>) {
+        // #6362 — `PlayerEntity::get(world)` is the one read of that resource
+        // and lives in another file, so the turbofish scan below cannot see
+        // it. A call is the acquisition. The needle is composed at run time so
+        // this file does not contain it, and a longer name that merely ends in
+        // it (`PapyrusPlayerEntity::get`) is a different resource.
+        let accessor = format!("{}{}", "PlayerEntity::", "get(");
+        let reads_player = body.match_indices(accessor.as_str()).any(|(at, _)| {
+            !body[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+        });
+        if reads_player
+            && !types.iter().any(|t| t == "PlayerEntity=read" || t == "PlayerEntity=write")
+        {
+            types.push("PlayerEntity=read".to_owned());
+        }
         // `.query_mut::<crate::Foo>()` -> `Foo`. Needle composed at runtime.
         // #4573 — mode is part of the record: a WRITE acquisition
         // (query_mut / resource_mut / try_resource_mut) must be declared

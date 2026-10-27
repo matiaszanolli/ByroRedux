@@ -375,9 +375,7 @@ pub(crate) fn extension_input_bindings_sync_system(world: &World, _dt: f32) {
 /// fly-camera/test worlds correctly expose `None`, while a recreated player
 /// body is never captured by a long-lived callback closure.
 pub(crate) fn extension_player_entity_sync_system(world: &World, _dt: f32) {
-    let player = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|resource| resource.0);
+    let player = crate::systems::PlayerEntity::get(world);
     let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
         return;
     };

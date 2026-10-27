@@ -761,9 +761,7 @@ fn release_finished_tethers(world: &World, finished: &[(EntityId, EntityId)]) {
         // save-load teardown despawns the player and the session is left
         // with no body. Collect the player's own subtree here so pass 3
         // can leave every member out of the queue.
-        let player = world
-            .try_resource::<crate::systems::character::PlayerEntity>()
-            .and_then(|player| player.0);
+        let player = crate::systems::character::PlayerEntity::get(world);
         let player_subtree = match player {
             Some(player) => byroredux_core::ecs::collect_subtree(world, player)
                 .into_iter()
@@ -872,9 +870,7 @@ pub(crate) fn retry_cinematic_readoption(
         // next streaming unload / save-load teardown despawn the player.
         // Members of the player's subtree are consumed (dropped from the
         // pending list), not adopted.
-        let player = world
-            .try_resource::<crate::systems::character::PlayerEntity>()
-            .and_then(|player| player.0);
+        let player = crate::systems::character::PlayerEntity::get(world);
         let player_subtree = match player {
             Some(player) => byroredux_core::ecs::collect_subtree(world, player)
                 .into_iter()

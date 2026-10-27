@@ -115,9 +115,7 @@ pub(crate) fn encumbrance_system(world: &World, _dt: f32) {
     let Some(rules) = world.try_resource::<EncumbranceRules>().map(|rules| rules.clone()) else {
         return;
     };
-    let Some(player) = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)
+    let Some(player) = crate::systems::PlayerEntity::get(world)
     else {
         return;
     };

@@ -281,9 +281,7 @@ fn fog_height_reference(world: &World, cam_pos: Vec3) -> f32 {
     // i.e. exactly `cam_pos.y`, numerically identical to the fallback below.
     // That silently reverted this whole function to the pre-#2225 behaviour
     // it exists to remove, with no log and no test failure.
-    let excluded_body = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)
+    let excluded_body = crate::systems::PlayerEntity::get(world)
         .and_then(|entity| {
             world
                 .query::<byroredux_physics::RapierHandles>()

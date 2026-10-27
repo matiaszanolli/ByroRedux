@@ -120,9 +120,7 @@ fn forcegreet_system_inner(
         return;
     }
     stuck_secs.retain(|npc, _| directives.iter().any(|(carrier, _)| carrier == npc));
-    let Some(player) = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)
+    let Some(player) = crate::systems::PlayerEntity::get(world)
     else {
         return;
     };

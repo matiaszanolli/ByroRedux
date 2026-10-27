@@ -79,9 +79,7 @@ fn edit_av(world: &World, args: &str, cmd: &str, edit: AvEdit) -> CommandOutput 
     // tick later. The redirect facts are read BEFORE the ActorValues
     // write query, in the canonical `CharacterRuleset` → `ActorValues`
     // order (#3441), so no guard is held across the write.
-    let player_pool = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)
+    let player_pool = crate::systems::PlayerEntity::get(world)
         .is_some_and(|player| player == entity)
         && world
             .try_resource::<byroredux_core::character::CharacterRuleset>()

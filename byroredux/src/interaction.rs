@@ -1309,9 +1309,7 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
     // which the lock-order tracker recorded as `SceneAliasCandidate →
     // Dead` and closed an ABBA cycle with the walk_anim read pass.
     {
-        let player = world
-            .try_resource::<crate::systems::PlayerEntity>()
-            .and_then(|player| player.0);
+        let player = crate::systems::PlayerEntity::get(world);
         // #5293 — the bound set is small (tens of entities on a live load)
         // and now memoized on the binding + quest-lifecycle generations;
         // it used to rebuild the whole alias-definition table — one Vec per

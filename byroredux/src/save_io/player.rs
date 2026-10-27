@@ -148,9 +148,7 @@ pub fn capture_player_pose(world: &World) {
 
     // Position source: the body in Character mode, the camera in FlyCam.
     let target = if character_mode {
-        world
-            .try_resource::<crate::systems::PlayerEntity>()
-            .and_then(|r| r.0)
+        crate::systems::PlayerEntity::get(world)
     } else {
         world.try_resource::<ActiveCamera>().map(|a| a.0)
     };
@@ -204,9 +202,7 @@ pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) -> bool {
     }
 
     let pos = position;
-    let body = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|r| r.0);
+    let body = crate::systems::PlayerEntity::get(world);
     let character_now = world
         .try_resource::<crate::systems::PlayerMode>()
         .map(|m| *m == crate::systems::PlayerMode::Character)

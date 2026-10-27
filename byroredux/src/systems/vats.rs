@@ -306,7 +306,7 @@ pub(crate) fn vats_scan(world: &World) {
     else {
         return;
     };
-    let Some(player) = world.try_resource::<PlayerEntity>().and_then(|p| p.0) else {
+    let Some(player) = PlayerEntity::get(world) else {
         return;
     };
     let Some((eye, _aim)) = camera_ray(world) else {
@@ -505,7 +505,7 @@ pub(crate) enum VatsQueueRefusal {
 /// enforce (the degraded rule: a modded load order must never fail the
 /// mode, it degrades).
 fn player_ap(world: &World) -> Option<(u32, f32)> {
-    let player = world.try_resource::<PlayerEntity>().and_then(|p| p.0)?;
+    let player = PlayerEntity::get(world)?;
     let avif = world
         .try_resource::<LoadedCellIndex>()
         .and_then(|index| index.0.actor_value_form_id("ActionPoints"))?;
@@ -566,7 +566,7 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
     if queue.is_empty() {
         return false;
     }
-    let Some(player) = world.try_resource::<PlayerEntity>().and_then(|p| p.0) else {
+    let Some(player) = PlayerEntity::get(world) else {
         return false;
     };
 

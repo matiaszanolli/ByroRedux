@@ -571,9 +571,7 @@ pub(crate) fn status_line(world: &World) -> String {
     // The attach retargets every part's ownership to the player entity (the
     // wearer whose equip events `equipment_appearance_system` matches), so
     // the part list is "all parts owned by the player".
-    let player = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0);
+    let player = crate::systems::PlayerEntity::get(world);
     let parts: Vec<String> = world
         .query::<NpcEquipmentPart>()
         .map(|parts| {

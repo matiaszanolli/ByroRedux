@@ -749,9 +749,7 @@ pub fn execute_pending_save_loads(
             // rows just overlaid, using the same reconciler the runtime
             // equip/unequip path uses. Sibling of the `Dead` reconciler
             // above, per the contract in `byroredux_save::apply_deltas`.
-            let player = world
-                .try_resource::<crate::systems::PlayerEntity>()
-                .and_then(|entity| entity.0);
+            let player = crate::systems::PlayerEntity::get(world);
             if let Some(player) = player {
                 crate::inventory::reconcile_player_equipped_weapon(world, player);
                 // #5034 / #5255 — drop the player's mid-life gear handoff

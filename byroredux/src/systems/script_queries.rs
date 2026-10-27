@@ -175,7 +175,7 @@ fn in_dangerous_water(world: &World, actor: EntityId) -> bool {
 
 /// Whether the player's character controller is off the ground.
 fn player_airborne(world: &World) -> bool {
-    let Some(player) = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) else {
+    let Some(player) = crate::systems::PlayerEntity::get(world) else {
         return false;
     };
     world.get::<byroredux_physics::CharacterController>(player).is_some_and(|controller| !controller.is_grounded)

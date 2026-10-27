@@ -83,7 +83,7 @@ fn knock_down(world: &World, actor: EntityId, request: PushActorRequest) -> Resu
     }
     // #6230 — the player's visual body is built without a ragdoll, and its idle and controls have no
     // get-up path to come back through.
-    if world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) == Some(actor) {
+    if crate::systems::PlayerEntity::get(world) == Some(actor) {
         return Err("it is the player".into());
     }
     let root = skeleton_root(world, actor);

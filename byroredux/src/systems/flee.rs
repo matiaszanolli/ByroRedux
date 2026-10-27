@@ -62,7 +62,7 @@ pub(crate) fn range(world: &World) -> f32 {
 /// The nearest actor within `range` that fights `actor` or would attack it.
 fn nearest_threat(world: &World, actor: EntityId, at: Vec3, range: f32) -> Option<EntityId> {
     let candidates: Vec<EntityId> = world.query::<byroredux_core::ecs::components::ActorVitals>()?.iter().map(|(entity, _)| entity).collect();
-    let player = world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0);
+    let player = crate::systems::PlayerEntity::get(world);
     candidates
         .into_iter()
         .chain(player)

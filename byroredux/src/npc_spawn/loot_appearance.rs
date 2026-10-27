@@ -1018,9 +1018,7 @@ fn restore_seam_context(
 /// `HiddenFirstPerson` restamp (which walks the body root's subtree) covers
 /// it exactly like spawn-time gear.
 fn player_gear_parent(world: &World, wearer: EntityId) -> Option<EntityId> {
-    let player = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0)?;
+    let player = crate::systems::PlayerEntity::get(world)?;
     (player == wearer).then_some(())?;
     world
         .try_resource::<crate::player_body::PlayerBodyRootEntity>()

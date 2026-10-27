@@ -145,9 +145,7 @@ pub fn story_change_location_system(world: &World) {
     {
         return;
     }
-    let Some(player) = world
-        .try_resource::<PlayerEntity>()
-        .and_then(|player| player.0)
+    let Some(player) = PlayerEntity::get(world)
     else {
         return;
     };

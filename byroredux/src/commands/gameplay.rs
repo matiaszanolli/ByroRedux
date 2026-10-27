@@ -152,7 +152,7 @@ impl ConsoleCommand for MagicCastCommand {
                 Ok(entity) => entity,
                 Err(message) => return CommandOutput::error(format!("magic.cast: {message}")),
             },
-            None => match world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) {
+            None => match crate::systems::PlayerEntity::get(world) {
                 Some(player) => player,
                 None => return CommandOutput::error("magic.cast: no player"),
             },
@@ -248,7 +248,7 @@ impl ConsoleCommand for MagicEffectsCommand {
                 Ok(entity) => entity,
                 Err(message) => return CommandOutput::error(format!("magic.effects: {message}")),
             },
-            None => match world.try_resource::<crate::systems::PlayerEntity>().and_then(|player| player.0) {
+            None => match crate::systems::PlayerEntity::get(world) {
                 Some(player) => player,
                 None => return CommandOutput::error("magic.effects: no player"),
             },
@@ -287,9 +287,7 @@ impl ConsoleCommand for InventoryStatusCommand {
     }
 
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
-        let Some(player) = world
-            .try_resource::<crate::systems::PlayerEntity>()
-            .and_then(|player| player.0)
+        let Some(player) = crate::systems::PlayerEntity::get(world)
         else {
             return CommandOutput::lines(vec![
                 "Inventory status:".to_owned(),
@@ -519,9 +517,7 @@ impl ConsoleCommand for LevelUpCommand {
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         use byroredux_core::character::{CharacterLevel, CharacterRuleset, LevelUpPoints, Perks};
-        let Some(player) = world
-            .try_resource::<crate::systems::PlayerEntity>()
-            .and_then(|player| player.0)
+        let Some(player) = crate::systems::PlayerEntity::get(world)
         else {
             return CommandOutput::error("levelup: no player");
         };
