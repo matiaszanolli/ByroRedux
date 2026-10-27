@@ -340,7 +340,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**144**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**145**) grouped by
 purpose:
 
 ```
