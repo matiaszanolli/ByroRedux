@@ -1608,10 +1608,10 @@ mod tests {
         assert_eq!(std::mem::align_of::<GpuBenchChunk>(), 4);
     }
 
-    /// `push_bytes` hands the driver `size_of::<BenchPush>()` bytes, and the
+    /// `byte_view` hands the driver `size_of::<BenchPush>()` bytes, and the
     /// push range is declared with the same number. Five 4-byte scalars, no
-    /// padding — if a field were ever added at a different alignment the
-    /// unsafe slice would start reading uninitialised padding.
+    /// padding — the `NoUninit` impl's SAFETY comment relies on that, so a
+    /// field added at a different alignment would make the view read padding.
     #[test]
     fn push_constants_have_no_padding() {
         assert_eq!(std::mem::size_of::<BenchPush>(), 20);

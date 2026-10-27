@@ -17,7 +17,7 @@ Sibling of [NIFAL](nifal.md), [EXAL](exal.md), [PHYSAL](physal.md),
 EXAL already translates per-game WTHR/CLMT into the canonical
 `SkyParamsRes`, so everything here is game-agnostic by construction. Do
 not add a per-game branch to any of it — that is what the EXAL boundary
-is for (see `feedback_format_translation`).
+is for (see *feedback_format_translation*).
 
 ---
 
@@ -370,7 +370,7 @@ muted lavender is the weather as authored (`fo4_jnam_alphas_use_the_eight_slot_s
 The per-world colour temperature — FO3/FNV and every DLC author their own: the
 Pitt's grey-sepia, Point Lookout's teal, Big MT's lavender, Dead Money's orange —
 comes from the worldspace `INAM` image space plus each weather's per-time-of-day
-IMAD, and from the weather's own sky and cloud colours (`environment_temperature_grading`).
+IMAD, and from the weather's own sky and cloud colours (*environment_temperature_grading*).
 Everything SKYAL adds sits on that base and must not re-colour it:
 
 * **Aerial perspective is chromatically neutral.** The atmosphere's extinction is
