@@ -1125,8 +1125,20 @@ fn spawn_lod_block(
     //      over full-detail content (Small World city worldspaces like AnvilWorld
     //      ship no LOD textures at all). Suppressing the block is correct: those
     //      worlds have no distant terrain.
+    let combined = combined_lod_supported(game);
     let translated_lod = if legacy_landscape_lod_supported(game) {
         translate_terrain_lod_textures(game, worldspace_key, world_form_id, k, bx0, by0)
+    } else if combined {
+        // A boundary block stands in for its quad's prebaked `.btr`, so it
+        // wears that quad's baked colours — not one tiled terrain texture,
+        // which read as a differently coloured ring right at the join.
+        Some(super::terrain_lod_btr::btr_quad_texture(
+            worldspace_key,
+            k,
+            bx0,
+            by0,
+            game,
+        ))
     } else {
         None
     };
@@ -1141,14 +1153,29 @@ fn spawn_lod_block(
         .unwrap_or(0);
     let translated_lod = translated_lod
         .filter(|_| lod_quad_tex != 0 && lod_quad_tex != ctx.texture_registry.fallback());
-    let resolved_normal = translated_lod
-        .as_ref()
-        // Normal maps are vector data: linear upload, like the material
-        // slot — and the authored quad's clamp (#4912).
-        .map(|lod| {
-            resolve_linear_texture_with_clamp(ctx, tex_provider, Some(lod.normal_path.as_str()), 0)
-        })
-        .unwrap_or(0);
+    // Normal maps are vector data: linear upload, like the material slot — and
+    // the authored quad's clamp (#4912). The combined family lists fallbacks
+    // (FO4 `_msn`, then `_n`); the legacy families author exactly one.
+    let normal_candidates: Vec<String> = match translated_lod.as_ref() {
+        Some(_) if combined => super::terrain_lod_btr::btr_normal_path_candidates(
+            worldspace_key,
+            k,
+            bx0,
+            by0,
+            game,
+        ),
+        Some(lod) => vec![lod.normal_path.clone()],
+        None => Vec::new(),
+    };
+    let mut resolved_normal = 0;
+    for candidate in &normal_candidates {
+        let handle =
+            resolve_linear_texture_with_clamp(ctx, tex_provider, Some(candidate.as_str()), 0);
+        if handle != 0 && handle != ctx.texture_registry.fallback() {
+            resolved_normal = handle;
+            break;
+        }
+    }
     let normal_texture_handle =
         if resolved_normal != 0 && resolved_normal != ctx.texture_registry.fallback() {
             resolved_normal
@@ -1259,7 +1286,10 @@ fn spawn_lod_block(
                     normal: normal_texture_handle,
                     ..Default::default()
                 },
-                normal_has_alpha: false,
+                // The combined family's DXT5 maps carry a signed authored blue
+                // axis (alpha constant 255); `resolve_msn_z_source` keys off the
+                // bound DDS, exactly as the prebaked `.btr` spawner does.
+                normal_has_alpha: combined && ctx.texture_registry.handle_has_alpha(normal_texture_handle),
                 // #4423 — synthetic paths bind no tint texture; see the field doc.
                 tint_has_alpha: false,
                 // #4444 — canonical defaults, not literals (#3073 doctrine:
@@ -1283,11 +1313,17 @@ fn spawn_lod_block(
         // #4912 — the Material's clamp matches whichever arm resolved: the
         // authored legacy quad's CLAMP_S_CLAMP_T, or the tiled base LTEX's
         // WRAP (the plain wrapper's default).
-        crate::material_translate::translate_texture_only_material_with_clamp(
+        crate::material_translate::translate_texture_only_material_with_authored_msn(
             base_texture_path,
+            // Every vanilla `.btr` normal map is model-space (see
+            // `btr_normal_path_candidates`' census); only a bound map can be.
+            combined && normal_texture_handle != 0,
             if translated_lod.is_some() { 0 } else { 3 },
         ),
     );
+    if combined && normal_texture_handle != 0 {
+        crate::material_translate::resolve_msn_z_source(world, entity);
+    }
     // Architecture layer (zero depth bias) — same canonical baseline the
     // full-detail terrain uses.
     world.insert(entity, RenderLayer::Architecture);

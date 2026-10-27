@@ -160,6 +160,35 @@ pub(crate) fn btr_normal_path_candidates(
     }
 }
 
+/// The baked diffuse/normal pair of the `.btr` quad at `(level, qx, qy)`, in
+/// the common LOD texture contract, so a heightmap-synth block drawn in that
+/// quad's place (a block beside resident full-detail ground, which needs
+/// skirts and per-cell holes a baked mesh cannot carry) samples the same
+/// colours as its prebaked neighbours instead of one tiled terrain texture.
+///
+/// `normal_path` is the game's first candidate; [`btr_normal_path_candidates`]
+/// lists the fallbacks. The maps are model-space ([`btr_normal_path_candidates`]),
+/// so the shading tangent frame the synth path installs is irrelevant to them.
+pub(crate) fn btr_quad_texture(
+    worldspace_key: &str,
+    level: i32,
+    qx: i32,
+    qy: i32,
+    game: byroredux_plugin::esm::reader::GameKind,
+) -> crate::env_translate::TranslatedTerrainLodTexture {
+    crate::env_translate::TranslatedTerrainLodTexture {
+        diffuse_path: btr_diffuse_path(worldspace_key, level, qx, qy),
+        normal_path: btr_normal_path_candidates(worldspace_key, level, qx, qy, game)
+            .into_iter()
+            .next()
+            .unwrap_or_default(),
+        quad_origin: (qx, qy),
+        quad_cells: level,
+        u_runs_west: false,
+        v_runs_south: true,
+    }
+}
+
 /// Whether this `.btr` sub-mesh hangs off the authored `WATER` node.
 ///
 /// #3363 — the discriminator is already in `ImportedScene.nodes`: the water
@@ -639,6 +668,23 @@ mod tests {
             "normal_has_alpha must come from the bound DDS, not a hardcoded \
              false"
         );
+    }
+
+    /// A synth boundary block wears its quad's baked colours, so its UVs must
+    /// agree with the `.btr` mesh's own: probed on vanilla `tamriel.4.8.-8` and
+    /// `tamriel.8.0.-8`, the SW corner is (0, 1) and the NE corner (1, 0).
+    #[test]
+    fn btr_quad_texture_maps_corners_like_the_baked_mesh() {
+        use byroredux_core::math::coord::EXTERIOR_CELL_UNITS as CELL;
+        use byroredux_plugin::esm::reader::GameKind;
+        let lod = btr_quad_texture("Tamriel", 4, 8, -8, GameKind::Skyrim);
+        assert_eq!(lod.diffuse_path, "textures\\terrain\\tamriel\\tamriel.4.8.-8.dds");
+        assert_eq!(lod.normal_path, "textures\\terrain\\tamriel\\tamriel.4.8.-8_n.dds");
+        let (ox, oy) = (8.0 * CELL, -8.0 * CELL);
+        assert_eq!(lod.uv_at(ox, oy), [0.0, 1.0]);
+        assert_eq!(lod.uv_at(ox + 4.0 * CELL, oy + 4.0 * CELL), [1.0, 0.0]);
+        let fo4 = btr_quad_texture("Commonwealth", 32, 32, 0, GameKind::Fallout4);
+        assert!(fo4.normal_path.ends_with("_msn.dds"));
     }
 
     #[test]

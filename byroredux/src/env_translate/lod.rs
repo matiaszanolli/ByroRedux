@@ -62,6 +62,11 @@ pub(crate) struct TranslatedTerrainLodTexture {
     /// Confirmed independently by LAND height gradients against the decoded
     /// normal texels, and by seam continuity across shared quad edges.
     pub(crate) u_runs_west: bool,
+    /// Image V increases toward world **south** rather than north: the
+    /// Creation `.btr` quads author V = 1 on a quad's south edge and V = 0 on
+    /// its north edge (probed on vanilla Tamriel quads, which map their SW
+    /// corner to (0, 1) and their NE corner to (1, 0)).
+    pub(crate) v_runs_south: bool,
 }
 
 impl TranslatedTerrainLodTexture {
@@ -71,7 +76,10 @@ impl TranslatedTerrainLodTexture {
         let size = self.quad_cells as f32 * EXTERIOR_CELL_UNITS;
         let s = (world_x - self.quad_origin.0 as f32 * EXTERIOR_CELL_UNITS) / size;
         let t = (world_y_zup - self.quad_origin.1 as f32 * EXTERIOR_CELL_UNITS) / size;
-        [if self.u_runs_west { 1.0 - s } else { s }, t]
+        [
+            if self.u_runs_west { 1.0 - s } else { s },
+            if self.v_runs_south { 1.0 - t } else { t },
+        ]
     }
 }
 
@@ -125,6 +133,7 @@ pub(crate) fn translate_terrain_lod_textures(
                 quad_origin: (ox, oy),
                 quad_cells: QUAD_CELLS,
                 u_runs_west: false,
+                v_runs_south: false,
             })
         }
         TerrainLodLayout::FalloutLegacy if level > 0 => {
@@ -139,6 +148,7 @@ pub(crate) fn translate_terrain_lod_textures(
                 quad_origin: (qx, qy),
                 quad_cells: level,
                 u_runs_west: true,
+                v_runs_south: false,
             })
         }
         TerrainLodLayout::FalloutLegacy | TerrainLodLayout::Combined | TerrainLodLayout::None => {
