@@ -750,22 +750,7 @@ mod scan_tests {
             byroredux_plugin::esm::records::ItemRecord {
                 form_id: 0x0434F,
                 common: byroredux_plugin::esm::records::common::CommonItemFields::default(),
-                kind: ItemKind::Weapon {
-                    ammo_form: 0,
-                    damage: 22,
-                    clip_size: 12,
-                    anim_type: 0,
-                    ap_cost: 17.0,
-                    vats_base_to_hit: 65.0,
-                    skill_form: 0x40BB,
-                    min_spread: 0.0,
-                    spread: 0.0,
-                    crit_mult: 1.0,
-                    reach: 0.0,
-                    speed: 0.0,
-                    reload_anim: 0,
-                    vats: None,
-                },
+                kind: ItemKind::weapon_stub(22, 12).with_weapon_vats_stats(17.0, 65.0, 0x40BB),
             },
         );
         world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(
@@ -838,22 +823,7 @@ mod scan_tests {
             byroredux_plugin::esm::records::ItemRecord {
                 form_id: 0x0434F,
                 common: byroredux_plugin::esm::records::common::CommonItemFields::default(),
-                kind: ItemKind::Weapon {
-                    ammo_form: 0,
-                    damage: 22,
-                    clip_size: 12,
-                    anim_type: 0,
-                    ap_cost: 17.0,
-                    vats_base_to_hit: 65.0,
-                    skill_form: 0,
-                    min_spread: 0.0,
-                    spread: 0.0,
-                    crit_mult: 1.0,
-                    reach: 0.0,
-                    speed: 0.0,
-                    reload_anim: 0,
-                    vats: None,
-                },
+                kind: ItemKind::weapon_stub(22, 12).with_weapon_vats_stats(17.0, 65.0, 0),
             },
         );
         world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(

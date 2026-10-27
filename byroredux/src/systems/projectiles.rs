@@ -420,22 +420,7 @@ mod tests {
             ItemRecord {
                 form_id: 0xA1,
                 common: CommonItemFields::default(),
-                kind: ItemKind::Weapon {
-                    ammo_form: 0,
-                    damage: 3,
-                    clip_size: 0,
-                    anim_type: 0,
-                    ap_cost: 0.0,
-                    vats_base_to_hit: 0.0,
-                    skill_form: 0,
-                    min_spread: 0.0,
-                    spread: 0.0,
-                    crit_mult: 1.0,
-                    reach: 0.0,
-                    speed: 1.0,
-                    reload_anim: 0,
-                    vats: None,
-                },
+                kind: ItemKind::weapon_stub(3, 0).with_weapon_speed(1.0),
             },
         );
         index.items.insert(

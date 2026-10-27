@@ -1160,6 +1160,43 @@ fn no_source_hand_spells_the_player_entity_read() {
     );
 }
 
+/// #6372 — `ItemKind::Weapon` has fourteen fields and ten test fixtures spelled
+/// all of them; the VATS work touched four of those literals to add one. The
+/// parser is the one place that builds the variant field by field; a fixture
+/// goes through `ItemKind::weapon_stub`. The field name `reload_anim:` only
+/// appears in a field-by-field literal, so it stands for the shape.
+#[test]
+fn weapon_fixtures_go_through_weapon_stub() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let needle = ["reload_", "anim:"].concat();
+    let mut roots = vec![manifest.join("src")];
+    for entry in std::fs::read_dir(manifest.join("../crates")).expect("crates/ readable").flatten() {
+        if entry.path().is_dir() {
+            roots.push(entry.path());
+        }
+    }
+    let mut found = Vec::new();
+    for root in roots {
+        visit_workspace_rs_files(&root, &mut |path, contents| {
+            // The variant's own definition and parser.
+            if path.ends_with("esm/records/items.rs") {
+                return;
+            }
+            for (idx, line) in contents.lines().enumerate() {
+                if line.contains(&needle) && !line.trim_start().starts_with("//") {
+                    found.push(format!("{}:{}", path.strip_prefix(manifest).unwrap_or(path).display(), idx + 1));
+                }
+            }
+        });
+    }
+    assert!(
+        found.is_empty(),
+        "field-by-field `ItemKind::Weapon` literal outside the parser — use \
+         `ItemKind::weapon_stub(damage, clip_size)` plus its setters (#6372):\n{}",
+        found.join("\n"),
+    );
+}
+
 /// #5856 — count a crate's example *targets* the way cargo discovers them:
 /// every top-level `examples/*.rs` plus every `examples/<name>/main.rs`.
 /// Non-target files (`examples/common/archives.rs`, a shared module) are

@@ -254,6 +254,50 @@ pub enum ItemKind {
 }
 
 impl ItemKind {
+    /// A weapon with every optional field at its "not authored" value
+    /// (`0` / `None`) and a neutral `1.0` critical multiplier, for fixtures
+    /// and placeholders that pin only the fields they care about (#6372).
+    /// Nine of the fourteen `Weapon` fields are zero for almost every fixture,
+    /// and a new field used to touch every literal.
+    pub fn weapon_stub(damage: u32, clip_size: u16) -> Self {
+        ItemKind::Weapon {
+            ammo_form: 0,
+            damage,
+            clip_size,
+            anim_type: 0,
+            ap_cost: 0.0,
+            vats_base_to_hit: 0.0,
+            skill_form: 0,
+            min_spread: 0.0,
+            spread: 0.0,
+            crit_mult: 1.0,
+            reach: 0.0,
+            speed: 0.0,
+            reload_anim: 0,
+            vats: None,
+        }
+    }
+
+    /// Set a [`Self::weapon_stub`]'s attack-speed multiplier. No-op on any
+    /// other kind.
+    pub fn with_weapon_speed(mut self, new_speed: f32) -> Self {
+        if let ItemKind::Weapon { speed, .. } = &mut self {
+            *speed = new_speed;
+        }
+        self
+    }
+
+    /// Set a [`Self::weapon_stub`]'s VATS stats: AP cost, base to-hit percent
+    /// and the required-skill form. No-op on any other kind.
+    pub fn with_weapon_vats_stats(mut self, ap: f32, to_hit: f32, skill: u32) -> Self {
+        if let ItemKind::Weapon { ap_cost, vats_base_to_hit, skill_form, .. } = &mut self {
+            *ap_cost = ap;
+            *vats_base_to_hit = to_hit;
+            *skill_form = skill;
+        }
+        self
+    }
+
     /// Type-name string for diagnostics / counting.
     pub fn label(&self) -> &'static str {
         match self {
@@ -1416,6 +1460,36 @@ pub fn parse_note(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6372 — the stub is "nothing authored" beyond the two fields it takes,
+    /// the setters touch only their own fields, and they leave other kinds alone.
+    #[test]
+    fn weapon_stub_and_setters_pin_only_their_fields() {
+        let stub = ItemKind::weapon_stub(22, 12);
+        let ItemKind::Weapon {
+            ammo_form, damage, clip_size, anim_type, ap_cost, vats_base_to_hit, skill_form,
+            min_spread, spread, crit_mult, reach, speed, reload_anim, vats,
+        } = stub.clone()
+        else {
+            panic!("weapon_stub builds a Weapon");
+        };
+        assert_eq!((damage, clip_size), (22, 12));
+        assert_eq!((ammo_form, anim_type, skill_form, reload_anim), (0, 0, 0, 0));
+        assert_eq!((ap_cost, vats_base_to_hit, min_spread, spread, reach, speed), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert_eq!(crit_mult, 1.0);
+        assert!(vats.is_none());
+
+        let ItemKind::Weapon { speed, ap_cost, vats_base_to_hit, skill_form, damage, .. } =
+            stub.clone().with_weapon_speed(1.5).with_weapon_vats_stats(17.0, 65.0, 0x40BB)
+        else {
+            panic!("setters keep the variant");
+        };
+        assert_eq!((speed, ap_cost, vats_base_to_hit, skill_form, damage), (1.5, 17.0, 65.0, 0x40BB, 22));
+
+        // Not a weapon: returned unchanged.
+        let ammo = ItemKind::Misc;
+        assert_eq!(ammo.clone().with_weapon_speed(2.0).label(), ammo.label());
+    }
     use crate::esm::records::test_support::sub;
 
     #[test]
