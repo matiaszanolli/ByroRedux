@@ -555,17 +555,19 @@ impl AmbientBehavior {
         None
     }
 
-    fn insert_at_spawn(self, world: &mut World, actor: EntityId) {
+    /// Install this behavior's component(s) on `actor` through `sink`. The one
+    /// variant match: a new procedure edits this arm and the remover list below
+    /// (#6361).
+    fn install(self, sink: &mut impl ComponentSink, actor: EntityId) {
         match self {
             Self::Sandbox { search_radius } => {
-                world.insert(actor, SandboxBehavior { search_radius });
+                sink.put(actor, SandboxBehavior { search_radius });
             }
             Self::Wander {
                 wander_radius,
                 actor_form_id,
             } => {
-                world.insert(
-                    actor,
+                sink.put(actor,
                     WanderBehavior {
                         wander_radius,
                         form_id: actor_form_id,
@@ -577,8 +579,7 @@ impl AmbientBehavior {
                 target_form_id,
                 actor_form_id,
             } => {
-                world.insert(
-                    actor,
+                sink.put(actor,
                     TravelBehavior {
                         radius,
                         target_form_id,
@@ -590,8 +591,7 @@ impl AmbientBehavior {
                 target_form_id,
                 follow_distance,
             } => {
-                world.insert(
-                    actor,
+                sink.put(actor,
                     FollowBehavior {
                         target_form_id,
                         follow_distance,
@@ -605,8 +605,7 @@ impl AmbientBehavior {
                 collect_distance,
                 actor_form_id,
             } => {
-                world.insert(
-                    actor,
+                sink.put(actor,
                     EscortBehavior {
                         target_form_id,
                         destination_form_id,
@@ -621,8 +620,7 @@ impl AmbientBehavior {
                 radius,
                 actor_form_id,
             } => {
-                world.insert(
-                    actor,
+                sink.put(actor,
                     GuardBehavior {
                         anchor_form_id,
                         radius,
@@ -636,29 +634,27 @@ impl AmbientBehavior {
                 ambush,
                 actor_form_id,
             } => {
-                world.insert(
-                    actor,
+                sink.put(actor,
                     GuardBehavior {
                         anchor_form_id: wait_form_id,
                         radius: wait_radius,
                         form_id: actor_form_id,
                     },
                 );
-                world.insert(actor, ambush);
+                sink.put(actor, ambush);
             }
             Self::Find(behavior) => {
-                world.insert(actor, behavior);
+                sink.put(actor, behavior);
             }
             Self::UseWeapon(behavior) => {
-                world.insert(actor, behavior);
+                sink.put(actor, behavior);
             }
             Self::Flee {
                 threat_form_id,
                 min_distance,
                 refuge_form_id,
             } => {
-                world.insert(
-                    actor,
+                sink.put(actor,
                     FleePackageBehavior {
                         threat_form_id,
                         min_distance,
@@ -670,8 +666,7 @@ impl AmbientBehavior {
                 patrol_radius,
                 actor_form_id,
             } => {
-                world.insert(
-                    actor,
+                sink.put(actor,
                     PatrolBehavior {
                         patrol_radius,
                         form_id: actor_form_id,
@@ -683,8 +678,7 @@ impl AmbientBehavior {
                 location,
                 actor_form_id,
             } => {
-                world.insert(
-                    actor,
+                sink.put(actor,
                     EatBehavior {
                         radius,
                         location,
@@ -697,8 +691,7 @@ impl AmbientBehavior {
                 location,
                 actor_form_id,
             } => {
-                world.insert(
-                    actor,
+                sink.put(actor,
                     SleepBehavior {
                         radius,
                         location,
@@ -707,8 +700,7 @@ impl AmbientBehavior {
                 );
             }
             Self::Dialogue { topic } => {
-                world.insert(
-                    actor,
+                sink.put(actor,
                     crate::systems::forcegreet::ForceGreetDirective {
                         topic,
                         radius: crate::systems::forcegreet::FORCE_GREET_RADIUS,
@@ -718,154 +710,38 @@ impl AmbientBehavior {
         }
     }
 
+    /// Spawn path: the caller owns the world exclusively.
+    fn insert_at_spawn(self, world: &mut World, actor: EntityId) {
+        self.install(&mut SpawnSink(world), actor);
+    }
+
+    /// Runtime path: a system holding `&World` swaps the behavior in place.
     fn insert_at_runtime(self, world: &World, actor: EntityId) {
-        match self {
-            Self::Sandbox { search_radius } => {
-                insert_component(world, actor, SandboxBehavior { search_radius });
-            }
-            Self::Wander {
-                wander_radius,
-                actor_form_id,
-            } => insert_component(
-                world,
-                actor,
-                WanderBehavior {
-                    wander_radius,
-                    form_id: actor_form_id,
-                },
-            ),
-            Self::Travel {
-                radius,
-                target_form_id,
-                actor_form_id,
-            } => insert_component(
-                world,
-                actor,
-                TravelBehavior {
-                    radius,
-                    target_form_id,
-                    form_id: actor_form_id,
-                },
-            ),
-            Self::Follow {
-                target_form_id,
-                follow_distance,
-            } => insert_component(
-                world,
-                actor,
-                FollowBehavior {
-                    target_form_id,
-                    follow_distance,
-                },
-            ),
-            Self::Escort {
-                target_form_id,
-                destination_form_id,
-                destination_radius,
-                collect_distance,
-                actor_form_id,
-            } => insert_component(
-                world,
-                actor,
-                EscortBehavior {
-                    target_form_id,
-                    destination_form_id,
-                    destination_radius,
-                    collect_distance,
-                    form_id: actor_form_id,
-                },
-            ),
-            Self::Guard {
-                anchor_form_id,
-                radius,
-                actor_form_id,
-            } => insert_component(
-                world,
-                actor,
-                GuardBehavior {
-                    anchor_form_id,
-                    radius,
-                    form_id: actor_form_id,
-                },
-            ),
-            Self::Ambush {
-                wait_form_id,
-                wait_radius,
-                ambush,
-                actor_form_id,
-            } => {
-                insert_component(
-                    world,
-                    actor,
-                    GuardBehavior {
-                        anchor_form_id: wait_form_id,
-                        radius: wait_radius,
-                        form_id: actor_form_id,
-                    },
-                );
-                insert_component(world, actor, ambush);
-            }
-            Self::Find(behavior) => insert_component(world, actor, behavior),
-            Self::UseWeapon(behavior) => insert_component(world, actor, behavior),
-            Self::Flee {
-                threat_form_id,
-                min_distance,
-                refuge_form_id,
-            } => insert_component(
-                world,
-                actor,
-                FleePackageBehavior {
-                    threat_form_id,
-                    min_distance,
-                    refuge_form_id,
-                },
-            ),
-            Self::Patrol {
-                patrol_radius,
-                actor_form_id,
-            } => insert_component(
-                world,
-                actor,
-                PatrolBehavior {
-                    patrol_radius,
-                    form_id: actor_form_id,
-                },
-            ),
-            Self::Eat {
-                radius,
-                location,
-                actor_form_id,
-            } => insert_component(
-                world,
-                actor,
-                EatBehavior {
-                    radius,
-                    location,
-                    form_id: actor_form_id,
-                },
-            ),
-            Self::Sleep {
-                radius,
-                location,
-                actor_form_id,
-            } => insert_component(
-                world,
-                actor,
-                SleepBehavior {
-                    radius,
-                    location,
-                    form_id: actor_form_id,
-                },
-            ),
-            Self::Dialogue { topic } => insert_component(
-                world,
-                actor,
-                crate::systems::forcegreet::ForceGreetDirective {
-                    topic,
-                    radius: crate::systems::forcegreet::FORCE_GREET_RADIUS,
-                },
-            ),
-        }
+        self.install(&mut RuntimeSink(world), actor);
+    }
+}
+
+/// Where an [`AmbientBehavior`] lands. The spawn path holds `&mut World` and
+/// inserts structurally; the runtime path holds `&World` and goes through the
+/// storage lock. Both used to carry their own copy of the ~160-line variant
+/// match (#6361).
+trait ComponentSink {
+    fn put<T: Component>(&mut self, actor: EntityId, component: T);
+}
+
+struct SpawnSink<'a>(&'a mut World);
+
+impl ComponentSink for SpawnSink<'_> {
+    fn put<T: Component>(&mut self, actor: EntityId, component: T) {
+        self.0.insert(actor, component);
+    }
+}
+
+struct RuntimeSink<'a>(&'a World);
+
+impl ComponentSink for RuntimeSink<'_> {
+    fn put<T: Component>(&mut self, actor: EntityId, component: T) {
+        insert_component(self.0, actor, component);
     }
 }
 
@@ -916,54 +792,66 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
         }
     }
 
-    remove_component::<SandboxBehavior>(world, actor);
-    remove_component::<Seated>(world, actor);
-    remove_component::<WanderBehavior>(world, actor);
-    remove_component::<WanderState>(world, actor);
-    remove_component::<TravelBehavior>(world, actor);
-    remove_component::<TravelState>(world, actor);
-    remove_component::<Traveled>(world, actor);
-    remove_component::<FollowBehavior>(world, actor);
-    remove_component::<FollowState>(world, actor);
-    remove_component::<EscortBehavior>(world, actor);
-    remove_component::<EscortState>(world, actor);
-    remove_component::<Escorted>(world, actor);
-    remove_component::<GuardBehavior>(world, actor);
-    remove_component::<GuardState>(world, actor);
-    remove_component::<FleePackageBehavior>(world, actor);
-    remove_component::<AmbushBehavior>(world, actor);
-    remove_component::<FindPackageBehavior>(world, actor);
-    remove_component::<FindProgress>(world, actor);
+    // Declared in this body, not at module level, so the scheduler's source scan
+    // (`acquired_in`) still sees every removal as a write acquisition.
+    /// Every per-actor component an ambient package installs or leaves behind, one
+    /// remover each. A new procedure adds its `Behavior` / `State` rows here and its
+    /// arm to `AmbientBehavior::install` (#6361); a forgotten row is the bug #3255
+    /// had to fix by hand for `NavPath`.
+    const AMBIENT_COMPONENT_REMOVERS: &[fn(&World, EntityId)] = &[
+        remove_component::<SandboxBehavior>,
+        remove_component::<Seated>,
+        remove_component::<WanderBehavior>,
+        remove_component::<WanderState>,
+        remove_component::<TravelBehavior>,
+        remove_component::<TravelState>,
+        remove_component::<Traveled>,
+        remove_component::<FollowBehavior>,
+        remove_component::<FollowState>,
+        remove_component::<EscortBehavior>,
+        remove_component::<EscortState>,
+        remove_component::<Escorted>,
+        remove_component::<GuardBehavior>,
+        remove_component::<GuardState>,
+        remove_component::<FleePackageBehavior>,
+        remove_component::<AmbushBehavior>,
+        remove_component::<FindPackageBehavior>,
+        remove_component::<FindProgress>,
+        remove_component::<UseWeaponPackageBehavior>,
+        remove_component::<UseWeaponPackageStarted>,
+        remove_component::<PatrolBehavior>,
+        remove_component::<PatrolState>,
+        remove_component::<EatBehavior>,
+        remove_component::<SleepBehavior>,
+        remove_component::<EatSleepState>,
+        // The Dialogue procedure's bridge self-consumes on the open, but a
+        // package handover mid-approach must not leave the actor walking at
+        // the player under its next procedure.
+        remove_component::<crate::systems::forcegreet::ForceGreetDirective>,
+        // M42.10 — the oscillating walkers' blocked-timer scratch belongs to
+        // the behavior runtime, not the actor: a package handover must not
+        // carry a half-accumulated stuck timer into the next procedure.
+        remove_component::<crate::components::WalkStuckTimer>,
+        // #3255 — six of the seven M42 procedures (wander/travel/follow/
+        // escort/guard/patrol) write NavPath as their shared per-actor pathing
+        // cache. This list must cover every per-actor pathing/runtime
+        // component, not just the Behavior/State pairs above it — a stale
+        // NavPath survives a package-switch handover and can be reused by a
+        // live-goal caller (FOLLOW_REPATH_THRESHOLD / ESCORT_COLLECT_REPATH_
+        // THRESHOLD = 64.0) whose new target happens to land within that
+        // threshold of the previous procedure's cached waypoints.
+        remove_component::<NavPath>,
+    ];
+
     // A UseWeapon package's volleys stop with it. The run is only the
     // package's when the package started it: a scripted `UseWeapon` volley
-    // must survive an unrelated handover.
+    // must survive an unrelated handover. Decided before the marker below goes.
     if world.has::<UseWeaponPackageStarted>(actor) {
         remove_component::<crate::systems::script_requests::UseWeaponRun>(world, actor);
     }
-    remove_component::<UseWeaponPackageBehavior>(world, actor);
-    remove_component::<UseWeaponPackageStarted>(world, actor);
-    remove_component::<PatrolBehavior>(world, actor);
-    remove_component::<PatrolState>(world, actor);
-    remove_component::<EatBehavior>(world, actor);
-    remove_component::<SleepBehavior>(world, actor);
-    remove_component::<EatSleepState>(world, actor);
-    // The Dialogue procedure's bridge self-consumes on the open, but a
-    // package handover mid-approach must not leave the actor walking at
-    // the player under its next procedure.
-    remove_component::<crate::systems::forcegreet::ForceGreetDirective>(world, actor);
-    // M42.10 — the oscillating walkers' blocked-timer scratch belongs to
-    // the behavior runtime, not the actor: a package handover must not
-    // carry a half-accumulated stuck timer into the next procedure.
-    remove_component::<crate::components::WalkStuckTimer>(world, actor);
-    // #3255 — six of the seven M42 procedures (wander/travel/follow/
-    // escort/guard/patrol) write NavPath as their shared per-actor pathing
-    // cache. This list must cover every per-actor pathing/runtime
-    // component, not just the Behavior/State pairs above it — a stale
-    // NavPath survives a package-switch handover and can be reused by a
-    // live-goal caller (FOLLOW_REPATH_THRESHOLD / ESCORT_COLLECT_REPATH_
-    // THRESHOLD = 64.0) whose new target happens to land within that
-    // threshold of the previous procedure's cached waypoints.
-    remove_component::<NavPath>(world, actor);
+    for remove in AMBIENT_COMPONENT_REMOVERS {
+        remove(world, actor);
+    }
 }
 
 /// #4703 — combat pre-empts the ambient package. `StartCombat` arms

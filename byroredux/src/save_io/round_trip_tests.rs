@@ -252,7 +252,13 @@ fn delta_columns_removed_at_runtime_have_a_load_reconciler() {
         for column in MUTABLE_DELTA_COLUMNS {
             let direct = format!("remove::<{column}>(");
             let via_helper = format!("remove_component::<{column}>(");
-            if production_src.contains(&direct) || production_src.contains(&via_helper) {
+            // #6361 — ai_package.rs lists its removers as a table of fn
+            // pointers (`remove_component::<T>,`), not call expressions.
+            let via_table = format!("remove_component::<{column}>,");
+            if production_src.contains(&direct)
+                || production_src.contains(&via_helper)
+                || production_src.contains(&via_table)
+            {
                 removed_columns.insert(*column);
             }
         }
