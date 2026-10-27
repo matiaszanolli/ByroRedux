@@ -653,11 +653,13 @@ performance finding. The measured knob table is in
   RACE `SPLO` set (#4415, `9813af435`); no live MQ101 replay has re-checked
   it.
 - [ ] **A scripted Enable()/Disable() on a resident reference takes effect on
-  the next cell load only (#5065)** — the live consumer needs per-placement
+  the next cell load only** — the live consumer needs per-placement
   GPU/physics teardown + a re-spawn path; ledger/gate/interaction agree today.
+  *Tracked here only* (#5065 was closed with this line as the record).
 - [ ] **`NiStencilProperty` is parsed but never applied** (stencil test off,
   stencil-less `D32_SFLOAT`). Needs per-material stencil variants plus a
-  stencil format, so it waits for a consumer (#4213).
+  stencil format, so it waits for a consumer. *Tracked here only* (#4213 closed
+  2026-09-15 with this line as the record).
 - [ ] **One Starfield NIF (`meshes\marker_radius.nif`) asks for a 318 MB
   single allocation**, above `MAX_SINGLE_ALLOC_BYTES` (256 MB); raising the
   cap weakens the hostile-`u32` defence. One file in the corpus.
@@ -668,7 +670,7 @@ performance finding. The measured knob table is in
   flat-colour replacements as `Merged`, a miss keeps the Phase-1 PBR flip;
   per-slot replacements, scalars and flags translate honestly (#5190, #5196,
   #5197); `ObjectInfo.Parent` inheritance resolves for settings (`5c14ebdf8`) and texture sets (#5502; glass-coverage signal still undecided), blend
-  state is captured (#5277), emissive is parked (#5503). Owed: definition of done + a live Cydonia render.
+  state is captured (#5277), emissive is parked (*tracked here only*: #5503 closed 2026-10-11). Owed: definition of done + a live Cydonia render.
 
 - [ ] **Parsed-but-unconsumed minimal records** (TD6-2026-10-25-01, #6387).
   Fifteen `EsmIndex` maps built from EDID+FULL-only record types have no reader
