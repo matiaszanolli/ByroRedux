@@ -8,8 +8,15 @@
 
 use byroredux_core::ecs::resource::Resource;
 
+/// The `source` of a play that has no reference: ObScript `PlaySound` is
+/// "non-locational" (GECK), so it is heard where the listener is, not from
+/// the player body (the listener is the camera, which a third-person view
+/// puts metres away from it, #6226). Form 0 is the null reference, never a
+/// real placement.
+pub const NON_LOCATIONAL_SOURCE: u32 = 0;
+
 /// One `Sound.Play` call: the sound's form and the reference it plays from
-/// (`0x14` is the player).
+/// (`0x14` is the player; [`NON_LOCATIONAL_SOURCE`] is no reference at all).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SoundPlay {
     pub sound: u32,

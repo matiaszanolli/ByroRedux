@@ -218,7 +218,7 @@ pub use activate_parents::{
 pub use detection_events::{DetectionEvent, PendingDetectionEvents};
 pub use projectile_requests::{PendingProjectileLaunches, ProjectileLaunch};
 pub use trap_hit_requests::{pending_trap_hit_flush_system, PendingTrapHits, TrapHit};
-pub use sound_requests::{install_sound_editor_ids, PendingSoundPlays, SoundEditorIds, SoundPlay};
+pub use sound_requests::{install_sound_editor_ids, PendingSoundPlays, NON_LOCATIONAL_SOURCE, SoundEditorIds, SoundPlay};
 pub use reference_flags::{ReferenceFlag, ReferenceFlagChange, ReferenceFlags};
 pub use input_layers::{Control, InputLayers};
 pub use actor_base_traits::{install_actor_base_traits, voice_type, ActorBaseTrait, ActorBaseTraits};

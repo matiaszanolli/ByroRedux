@@ -40,18 +40,38 @@ fn attenuation_for(record: &SounRecord) -> Attenuation {
 }
 
 /// Where the sound is emitted: a `2D` / `Menu Sound` is not placed in the
-/// world, so it plays at the listener (the player) when there is one;
-/// everything else plays at its source. `None` when there is nowhere to play.
+/// world, so it plays at the listener when there is one; everything else plays
+/// at its source. `None` when there is nowhere to play.
 fn emitter_position(
     record: &SounRecord,
     source: Option<byroredux_core::math::Vec3>,
-    player: Option<byroredux_core::math::Vec3>,
+    listener: Option<byroredux_core::math::Vec3>,
 ) -> Option<byroredux_core::math::Vec3> {
     if record.non_positional {
-        player.or(source)
+        listener.or(source)
     } else {
         source
     }
+}
+
+/// Where a non-locational play is heard: the audio listener (the camera), else
+/// the player body when no listener exists yet.
+fn listener_or_player(
+    listener: Option<byroredux_core::math::Vec3>,
+    player: Option<byroredux_core::math::Vec3>,
+) -> Option<byroredux_core::math::Vec3> {
+    listener.or(player)
+}
+
+/// The audio listener's world position. The entity is read out and the
+/// `AudioListener` guard dropped before `GlobalTransform` is touched.
+fn listener_translation(world: &World) -> Option<byroredux_core::math::Vec3> {
+    let entity = world
+        .query::<byroredux_audio::AudioListener>()?
+        .iter()
+        .next()
+        .map(|(entity, _)| entity)?;
+    world.get::<GlobalTransform>(entity).map(|transform| transform.translation)
 }
 
 /// Play this frame's `Sound.Play` requests.
@@ -87,18 +107,24 @@ pub(crate) fn scripted_sound_system(world: &World, _dt: f32) {
             log::debug!("Sound.Play {:08X}: no file to play", play.sound);
             continue;
         }
-        let source = if play.source == byroredux_scripting::PLAYER_REFERENCE {
-            player
-        } else {
-            byroredux_scripting::condition::resolve_entity_by_global_form_id(world, play.source)
-        };
         let translation = |entity: Option<byroredux_core::ecs::EntityId>| {
             entity
                 .and_then(|entity| world.get::<GlobalTransform>(entity))
                 .map(|transform| transform.translation)
         };
-        let Some(position) = emitter_position(record, translation(source), translation(player))
-        else {
+        let heard_at = listener_or_player(listener_translation(world), translation(player));
+        let position = if play.source == byroredux_scripting::NON_LOCATIONAL_SOURCE {
+            // ObScript `PlaySound`: no reference, heard at the listener (#6226).
+            heard_at
+        } else {
+            let source = if play.source == byroredux_scripting::PLAYER_REFERENCE {
+                player
+            } else {
+                byroredux_scripting::condition::resolve_entity_by_global_form_id(world, play.source)
+            };
+            emitter_position(record, translation(source), heard_at)
+        };
+        let Some(position) = position else {
             log::debug!("Sound.Play {:08X}: the source has no 3D", play.sound);
             continue;
         };
@@ -169,6 +195,32 @@ mod tests {
         assert_eq!(range.min_distance, 35.0 / BETHESDA_UNITS_PER_METER);
         assert_eq!(range.max_distance, 7000.0 / BETHESDA_UNITS_PER_METER);
         assert_eq!(attenuation_for(&record(2, false, &[])), Attenuation::default());
+    }
+
+    /// #6226 — a play with no source reference is heard at the listener, and
+    /// at the player body only when no listener exists.
+    #[test]
+    fn a_non_locational_play_is_heard_at_the_listener() {
+        use byroredux_core::math::Vec3;
+        let listener = Some(Vec3::new(0.0, 1.7, 2.6));
+        let player = Some(Vec3::new(0.0, 0.0, 0.0));
+        assert_eq!(listener_or_player(listener, player), listener);
+        assert_eq!(listener_or_player(None, player), player);
+        assert_eq!(listener_or_player(None, None), None);
+    }
+
+    /// #6226 — the listener is the entity carrying `AudioListener` (the camera),
+    /// not the player body.
+    #[test]
+    fn the_listener_position_is_the_audio_listener_entity() {
+        use byroredux_core::math::Vec3;
+        let mut world = World::new();
+        world.register::<byroredux_audio::AudioListener>();
+        assert_eq!(listener_translation(&world), None, "no listener yet");
+        let camera = world.spawn();
+        world.insert(camera, byroredux_audio::AudioListener);
+        world.insert(camera, GlobalTransform { translation: Vec3::new(1.0, 2.0, 3.0), ..Default::default() });
+        assert_eq!(listener_translation(&world), Some(Vec3::new(1.0, 2.0, 3.0)));
     }
 
     /// #6281 — a `2D` / `Menu Sound` plays at the listener, not the source.

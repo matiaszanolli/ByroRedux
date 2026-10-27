@@ -12,7 +12,7 @@
 //! | `0x109e` | MoveTo | [`apply_move_to_effect`] (`Effect::MoveTo`); the player goes through [`PlayerMoveRequest`] (`Effect::MovePlayerTo`) |
 //! | `0x105e` | EvaluatePackage / EVP | [`request_package_evaluation`] (`Effect::EvaluatePackage`) |
 //! | `0x100d` | Activate | default activation as a native-only [`ActivateEvent`] (the Papyrus `Activate(…, true)` path), or with the run-block flag the target's `OnActivate` block ([`crate::obscript_objects`]) |
-//! | `0x1026` | PlaySound | [`PendingSoundPlays`] (the `Sound.Play` ingress), from the player |
+//! | `0x1026` | PlaySound | [`PendingSoundPlays`] (the `Sound.Play` ingress), non-locational: heard at the listener |
 //! | `0x1097` / `0x1098` | AddScriptPackage / RemoveScriptPackage | [`crate::script_packages`] (the actor's one script-package slot, read by the ambient AI system) |
 //!
 //! The ids are `names`-verified (`examples/obscript_tools`) to name the same
@@ -48,7 +48,6 @@ use crate::package::request_package_evaluation;
 use crate::script_packages::{add_script_package, remove_script_package};
 use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::sound_requests::{PendingSoundPlays, SoundPlay};
-use crate::PLAYER_REFERENCE;
 
 const CMD_ENABLE: u16 = 0x1021;
 const CMD_DISABLE: u16 = 0x1022;
@@ -237,9 +236,10 @@ fn activate(world: &World, args: &[ObScriptValue], target: u32, known: Option<(u
 }
 
 /// `PlaySound <sound> [system]`: GECK, "plays the specified sound,
-/// non-locational". It needs no calling reference. The host plays a descriptor
-/// from a reference's position, so it is played from the player — the listener,
-/// where a non-locational sound is heard. The *SystemSound* flag (play in
+/// non-locational". It needs no calling reference, so it is queued with no
+/// source ([`crate::NON_LOCATIONAL_SOURCE`]) and the host plays it at the
+/// listener — not from the player body, which a third-person camera leaves
+/// metres away (#6226). The *SystemSound* flag (play in
 /// `MenuMode`) is moot: only `GameMode` blocks run.
 fn play_sound(world: &World, args: &[ObScriptValue]) -> Action {
     let Some(ObScriptValue::Ref(sound)) = args.first().copied().filter(|v| *v != ObScriptValue::Ref(0)) else {
@@ -247,7 +247,7 @@ fn play_sound(world: &World, args: &[ObScriptValue]) -> Action {
     };
     match world.try_resource_mut::<PendingSoundPlays>() {
         Some(mut pending) => {
-            pending.0.push(SoundPlay { sound, source: PLAYER_REFERENCE });
+            pending.0.push(SoundPlay { sound, source: crate::NON_LOCATIONAL_SOURCE });
             Action::Done { value: None, effect: format!("PlaySound {sound:08X}") }
         }
         None => Action::Declined,
@@ -521,7 +521,7 @@ mod tests {
         let (mut world, _, _) = world(GameKind::Fallout3NV);
         world.insert_resource(PendingSoundPlays::default());
         assert_eq!(run(&world, CMD_PLAY_SOUND, &[ObScriptValue::Ref(0x55), ObScriptValue::Num(1.0)], None), done("PlaySound 00000055"));
-        assert_eq!(world.resource::<PendingSoundPlays>().0, vec![SoundPlay { sound: 0x55, source: PLAYER_REFERENCE }]);
+        assert_eq!(world.resource::<PendingSoundPlays>().0, vec![SoundPlay { sound: 0x55, source: crate::NON_LOCATIONAL_SOURCE }]);
         for args in [vec![], vec![ObScriptValue::Ref(0)]] {
             assert_eq!(run(&world, CMD_PLAY_SOUND, &args, None), Action::Declined);
         }
