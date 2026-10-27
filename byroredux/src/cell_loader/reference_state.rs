@@ -484,9 +484,7 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
         // Free the freshly authored inventory being replaced, not the stored
         // payloads. They have no live arena IDs until allocation below.
         super::unload::release_victim_item_instances(world, &[entity]);
-        if world.try_resource::<ItemInstancePool>().is_none() {
-            world.insert_resource(ItemInstancePool::new());
-        }
+        world.init_resource::<ItemInstancePool>();
         let items = {
             let mut pool = world.resource_mut::<ItemInstancePool>();
             stacks

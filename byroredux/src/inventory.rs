@@ -3026,9 +3026,7 @@ mod tests {
         {
             use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
             world.register::<byroredux_core::ecs::components::FormIdComponent>();
-            if world.try_resource::<FormIdPool>().is_none() {
-                world.insert_resource(FormIdPool::new());
-            }
+            world.init_resource::<FormIdPool>();
             let id = world.resource_mut::<FormIdPool>().intern(FormIdPair {
                 plugin: PluginId::from_filename("Skyrim.esm"),
                 local: LocalFormId(0xDEAD),

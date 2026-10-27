@@ -271,9 +271,7 @@ fn stand_in_container(world: &mut World, container: u32) -> Result<EntityId, &'s
         .try_resource::<crate::cell_loader::LoadedCellIndex>()
         .map(|index| std::sync::Arc::clone(&index.0))
         .ok_or("no record index")?;
-    if world.try_resource::<FormIdPool>().is_none() {
-        world.insert_resource(FormIdPool::new());
-    }
+    world.init_resource::<FormIdPool>();
     let id = world.resource_mut::<FormIdPool>().intern(pair);
     let entity = world.spawn();
     world.insert(entity, FormIdComponent(id));

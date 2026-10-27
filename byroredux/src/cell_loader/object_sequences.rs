@@ -47,9 +47,7 @@ pub(crate) fn named_sequences_for(
         let mut registry = world.resource_mut::<AnimationClipRegistry>();
         converted.into_iter().map(|(name, clip)| (name, registry.add(clip))).collect()
     };
-    if world.try_resource::<ObjectSequenceStore>().is_none() {
-        world.insert_resource(ObjectSequenceStore::default());
-    }
+    world.init_resource::<ObjectSequenceStore>();
     world.resource_mut::<ObjectSequenceStore>().0.insert(key.to_owned(), Arc::clone(&table));
     Some(NamedSequences(table))
 }

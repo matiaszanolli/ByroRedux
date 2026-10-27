@@ -3402,9 +3402,7 @@ fn dispatch_cart_animation_vehicle_and_motion_effects() {
         plugin: byroredux_core::form_id::PluginId::from_filename("Skyrim.esm"),
         local: byroredux_core::form_id::LocalFormId(0x0003_C0A7),
     };
-    if world.try_resource::<byroredux_core::form_id::FormIdPool>().is_none() {
-        world.insert_resource(byroredux_core::form_id::FormIdPool::new());
-    }
+    world.init_resource::<byroredux_core::form_id::FormIdPool>();
     let cart_fid = world.resource_mut::<byroredux_core::form_id::FormIdPool>().intern(cart_pair);
     world.register::<byroredux_core::ecs::components::FormIdComponent>();
     world.insert(cart, byroredux_core::ecs::components::FormIdComponent(cart_fid));

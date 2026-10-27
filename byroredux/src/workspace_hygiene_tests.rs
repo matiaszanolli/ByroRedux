@@ -1016,6 +1016,81 @@ fn no_production_code_spells_the_pool_to_local_walk_by_hand() {
     );
 }
 
+/// #6366 — 1-based line numbers where `source` spells the "insert the default
+/// if absent" idiom by hand: an `if <w>.try_resource::<T>().is_none() {` whose
+/// next line is `<w>.insert_resource(T::new())` / `T::default()`. That is
+/// `World::init_resource::<T>()` (#5806/#6136); a hand-spelled copy still
+/// compiles, so only a scan keeps a fourth from growing back. Inserts of a
+/// non-default value (`TerrainHeightService::new(dir)`) do not match.
+fn hand_spelled_default_inserts(source: &str) -> Vec<usize> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut hits = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("if ") else { continue };
+        let Some((world, rest)) = rest.split_once(".try_resource::<") else { continue };
+        let Some((ty, tail)) = rest.split_once(">()") else { continue };
+        if tail.trim() != ".is_none() {" {
+            continue;
+        }
+        let Some(next) = lines.get(idx + 1) else { continue };
+        let next = next.trim();
+        let new = format!("{world}.insert_resource({ty}::new());");
+        let default = format!("{world}.insert_resource({ty}::default());");
+        if next == new || next == default {
+            hits.push(idx + 1);
+        }
+    }
+    hits
+}
+
+/// #6366 — every workspace source file (tests included: the idiom had test
+/// copies too) goes through `init_resource` for insert-if-absent defaults.
+#[test]
+fn no_source_spells_insert_default_if_absent_by_hand() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut roots = vec![manifest.join("src")];
+    for entry in std::fs::read_dir(manifest.join("../crates")).expect("crates/ readable").flatten() {
+        if entry.path().is_dir() {
+            roots.push(entry.path());
+        }
+    }
+    let mut found = Vec::new();
+    for root in roots {
+        visit_workspace_rs_files(&root, &mut |path, contents| {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // `World::init_resource` is the idiom's one legitimate spelling;
+            // this file quotes the shape to test the scanner.
+            if name == "world.rs" || name == "workspace_hygiene_tests.rs" {
+                return;
+            }
+            for line in hand_spelled_default_inserts(contents) {
+                found.push(format!("{}:{line}", path.strip_prefix(manifest).unwrap_or(path).display()));
+            }
+        });
+    }
+    assert!(
+        found.is_empty(),
+        "hand-spelled insert-default-if-absent — use `world.init_resource::<T>()` \
+         (#5806/#6136/#6366):\n{}",
+        found.join("\n"),
+    );
+}
+
+#[test]
+fn default_insert_scanner_matches_only_the_default_shape() {
+    let shape = |ty: &str, ctor: &str| {
+        format!("if w.try_resource::<{ty}>().is_none() {{\n    w.insert_resource({ty}::{ctor});\n}}\n")
+    };
+    assert_eq!(hand_spelled_default_inserts(&shape("Pool", "new()")), vec![1]);
+    assert_eq!(hand_spelled_default_inserts(&shape("Pool", "default()")), vec![1]);
+    // A configured value is not the default idiom.
+    assert!(hand_spelled_default_inserts(&shape("Svc", "new(dir)")).is_empty());
+    // A different type on the insert line is a different statement.
+    let mismatched = "if w.try_resource::<A>().is_none() {\n    w.insert_resource(B::new());\n}\n";
+    assert!(hand_spelled_default_inserts(mismatched).is_empty());
+}
+
 /// #5856 — count a crate's example *targets* the way cargo discovers them:
 /// every top-level `examples/*.rs` plus every `examples/<name>/main.rs`.
 /// Non-target files (`examples/common/archives.rs`, a shared module) are
