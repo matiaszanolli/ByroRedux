@@ -364,11 +364,12 @@ pub const LVLI_MAX_DEPTH: u32 = 8;
 /// `NpcRecord` parses, not just FNV/FO3: the bits are read at a different
 /// ACBS byte offset per game family (FO4 offset 14, Skyrim offset 18,
 /// FNV/FO3 offset 22 — see the three ACBS parse arms in
-/// `esm/records/actor/mod.rs`), but the bit *meanings* are the same three-
-/// bit subset across all of them. `NpcRecord::template_flags`'s own doc
-/// comment enumerates all twelve; these three are the ones this crate
-/// currently resolves against real data (#2956) — the rest are parsed and
-/// stored for the dispatcher but have no consumer yet.
+/// `esm/records/actor/mod.rs`), but the bit *meanings* are the same across
+/// all of them. `NpcRecord::template_flags`'s own doc comment enumerates the
+/// full set; the constants below name every bit a `ResolvedNpc` terminal
+/// consumes. Only `0x0200` Script and `0x0400` Def Pack List are parsed and
+/// stored with no consumer yet (#4137) — Script's real consumer is the M47
+/// VMAD attach path, not the `NPC_` TPLT walk.
 pub const TEMPLATE_FLAG_USE_TRAITS: u16 = 0x0001;
 pub const TEMPLATE_FLAG_USE_STATS: u16 = 0x0002;
 /// "Use Factions" — consumed by [`resolve_inherited_factions`] (#4093 /
