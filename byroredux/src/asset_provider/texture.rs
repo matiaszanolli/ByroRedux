@@ -1261,7 +1261,7 @@ mod tests {
     /// BYROREDUX_SKYRIMSE_DATA=<path> BYROREDUX_OBLIVION_DATA=<path> \
     ///     cargo test -p byroredux --bin byroredux \
     ///     default_sound_candidates_hit_their_tagged_game_archive -- --ignored --nocapture
-
+    /// ```
     #[test]
     #[ignore = "needs vanilla game sound archives on disk"]
     fn default_sound_candidates_hit_their_tagged_game_archive() {

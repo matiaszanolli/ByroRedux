@@ -9,7 +9,7 @@
 //! @12, #3324) printed alongside so shared-weapon correlation can
 //! confirm an AP column when one exists.
 //!
-//! #6350 follow-up: this probe absorbed `probe_weap_align.rs`'s
+//! #6350 follow-up: this probe absorbed the deleted `probe_weap_align.rs`'s
 //! watchlist (parsed damage/clip/crit beside the raw columns) — one
 //! DNAM probe, not two.
 //!

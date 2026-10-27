@@ -673,15 +673,19 @@ Each phase is independently useful and independently reviewable.
   records move to the authored-model tier. The paragraphs below describe what
   was built in #3807.
 
-  **Palette resolution done (2026-09-06, #3807)** — `GRAS` decodes in full
+  **Palette resolution done (2026-09-06, #3807), since re-pointed** — `GRAS`
+  decodes in full
   ([`records/gras.rs`](../../crates/plugin/src/esm/records/gras.rs), replacing
-  the `MinimalEsmRecord` stub), translates to species at the EXAL boundary
-  (`species_from_gras` / `authored_species` in
-  [`groundcover_translate.rs`](../../byroredux/src/groundcover_translate.rs)),
-  and `install_ground_cover` resolves the worldspace palette from the load
-  order's records. 138 of the 168 vanilla records across Oblivion / FO3 / FNV
-  / Skyrim SE carry usable dimensions and become real species; the rest fall
-  through to the built-in default, as does content with no `GRAS` at all.
+  the `MinimalEsmRecord` stub). Its first translation, to blade species
+  (`species_from_gras` / `authored_species`), was deleted by the 2026-09-13
+  supersession (`f8a900b3c`). The EXAL boundary now keeps the decode only:
+  `resolve_authored_cover` / `authored_cover_record` in
+  [`groundcover_translate.rs`](../../byroredux/src/groundcover_translate.rs)
+  turn the load order's records into authored-model records, which
+  `install_ground_cover` installs at worldspace entry. A record is dropped
+  only when it cannot be placed as authored (no well-formed `DATA`, no model,
+  zero density, or an undocumented water rule); content with no `GRAS` at all
+  falls through to the built-in default.
 
   **`grass_dimmer` done (2026-09-06, #4057)** as `GroundCoverDimmer`, a
   per-weather resource `weather_system` cross-fades alongside `precipitation`

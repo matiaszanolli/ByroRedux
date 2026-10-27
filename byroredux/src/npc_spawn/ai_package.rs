@@ -3356,7 +3356,8 @@ mod tests {
         world.insert_resource(PendingPackageTransitions::default());
         world.insert_resource(ActivePackages::default());
         let actor = world.spawn();
-        // Ambush (9): a procedure with no runtime, so the package wins with no behavior.
+        // Ambush (9), built with no `PLDT`/`PLD2` locations: the fixture authors no
+        // wait or zone location, so the package wins without a located behavior.
         // (This used to be `PROCEDURE_DIALOGUE + 1`, which is UseWeapon now.)
         const AMBUSH: u32 = 9;
         let packages = vec![pack(0x700, AMBUSH, None)];

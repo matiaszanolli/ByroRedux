@@ -16,7 +16,7 @@
 //! #6350 follow-up: slot 12 is the GECK *Override*-tab "Action Points"
 //! (45 FNV weapons), NOT the standard AP cost — that lives at `DNAM`
 //! offset 68, wiki-pinned in both games (see the `DNAM` arm in
-//! `items.rs` and `probe_weap_align.rs` for the alignment evidence).
+//! `items.rs` and the deleted `probe_weap_align.rs` for the alignment evidence).
 //!
 //! Usage:
 //!   cargo run -p byroredux-plugin --example probe_weap_vats -- <ESM>

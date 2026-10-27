@@ -92,7 +92,7 @@ The three (`validate_world` + `validate_form_ids` +
 `validate_cinematic_entity_refs`) run **before** writing
 (`save_io.rs`, `SaveCommand::execute`): a non-empty result aborts the save
 outright — `save_world`/`write_slot` are never called, and both the command
-surface and `SaveLoadNotifications` report failure. On load,
+surface and `PlayerNotifications` report failure. On load,
 `validate_snapshot_types` first decodes every registered component/resource
 column against the snapshot alone. A decoding failure aborts while the current
 session is still intact. Referential and world invariants still run as a
