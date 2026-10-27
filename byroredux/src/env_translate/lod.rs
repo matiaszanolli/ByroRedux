@@ -41,16 +41,22 @@ pub(crate) const fn terrain_lod_layout(game: GameKind) -> TerrainLodLayout {
 /// Brightness gain applied to a game's baked distant-terrain albedo so the LOD
 /// ground meets the full-detail ground it stands in for.
 ///
-/// **Skyrim: 0.5, measured.** Rendering the same Whiterun view with the valley
+/// **Skyrim: 0.36, measured.** Rendering the same Whiterun view with the valley
 /// as LOD (radius 1) and as full detail (radius 6) put the baked `.btr` ground
-/// at 1.9x and 2.4x the full-detail ground's luminance (87/37 and 102/53) while
-/// the rock beside it matched (1.1x); canopy shadowing, the species-detail
-/// layer, LAND vertex colours and the vertex normals were each ruled out (every
-/// one moved the full-detail ground by ~1 point or less). The baked LOD ground
-/// diffuse is simply brighter than the layered ground it represents — a trait
-/// LOD generators correct with brightness/contrast settings — and 0.5 is the
-/// measured ratio rounded to the nearest simple step. One scene, two regions:
-/// a starting point to retune by eye, not a corpus calibration.
+/// at a median 2.01x (mean 1.89x) the full-detail ground's luminance over 24
+/// sample boxes across the valley floor, while the rock beside it matched
+/// (~1.1x). Canopy shadowing, the species-detail layer, LAND vertex colours and
+/// the vertex normals were each ruled out (every one moved the full-detail
+/// ground by ~1 point or less): the baked LOD ground diffuse is simply brighter
+/// than the layered ground it represents — a trait LOD generators correct with
+/// brightness/contrast settings.
+///
+/// The gain scales albedo only; fog, ambient and specular are not scaled, so
+/// the displayed luminance falls by less than the gain (0.5 left the median at
+/// 1.22x). 0.36 is the linear fit of that measured response that centres the
+/// median on 1.0, and it was re-measured: median 0.99, mean 1.00. One scene
+/// (Whiterun, overcast noon): a starting point to retune by eye, not a corpus
+/// calibration.
 ///
 /// **FNV and FO4: 1.0, measured.** The same A/B (one pose, radius 1 against a
 /// larger radius, same screen regions) put FNV's baked ground at 1.04, 0.99
@@ -65,7 +71,7 @@ pub(crate) const fn terrain_lod_layout(game: GameKind) -> TerrainLodLayout {
 /// keep the baked look until measured the same way.
 pub(crate) const fn terrain_lod_albedo_gain(game: GameKind) -> f32 {
     match game {
-        GameKind::Skyrim => 0.5,
+        GameKind::Skyrim => 0.36,
         _ => 1.0,
     }
 }
@@ -401,7 +407,7 @@ mod tests {
     #[test]
     fn only_skyrim_has_a_terrain_lod_albedo_gain() {
         use super::*;
-        assert_eq!(terrain_lod_albedo_gain(GameKind::Skyrim), 0.5);
+        assert_eq!(terrain_lod_albedo_gain(GameKind::Skyrim), 0.36);
         for game in [
             GameKind::Oblivion,
             GameKind::Fallout3NV,
