@@ -661,8 +661,8 @@ mod tests {
             parse_ltex_group(r, end, GameKind::Fallout3NV, &mut tables)
         });
         check("parse_txst_group", &any, &mut |r, end| {
-            let (mut textures, mut sets) = (HashMap::new(), HashMap::new());
-            parse_txst_group(r, end, &mut textures, &mut sets, GameKind::Fallout3NV)
+            let mut sets = HashMap::new();
+            parse_txst_group(r, end, &mut sets, GameKind::Fallout3NV)
         });
         check("parse_scol_group", &any, &mut |r, end| {
             let (mut statics, mut scols) = (HashMap::new(), HashMap::new());

@@ -537,7 +537,7 @@ fn parse_ltex_group_inner(
                         // #3314 — the map KEY (`header.form_id`) is already
                         // remapped by `read_record_header`; the VALUE is a
                         // TXST reference and must be remapped too, or the
-                        // `txst_textures` lookup misses on every DLC splat.
+                        // TXST lookup misses on every DLC splat.
                         let txst_id = reader.remap_form_id(u32::from_le_bytes([
                             sub.data[0],
                             sub.data[1],
@@ -617,26 +617,22 @@ fn parse_ltex_group_inner(
 }
 
 /// Parse TXST (Texture Set) records. Resolves TX00..TX07 into named
-/// [`TextureSet`] roles, plus the legacy
-/// `txst_textures: form_id → diffuse_path` map kept for the LTEX
-/// resolver downstream. Pre-#357 only TX00 was retained — REFR
+/// [`TextureSet`] roles. Pre-#357 only TX00 was retained — REFR
 /// XTNM/XATO/XTXR overrides referencing a TXST silently dropped 7 of 8
 /// channels (visible on Skyrim re-skinned statics as "wrong material
 /// on a re-textured prop"). See audit S6-11.
 pub(crate) fn parse_txst_group(
     reader: &mut EsmReader,
     end: usize,
-    txst_textures: &mut HashMap<u32, String>,
     texture_sets: &mut HashMap<u32, TextureSet>,
     game: GameKind,
 ) -> Result<()> {
-    parse_txst_group_inner(reader, end, txst_textures, texture_sets, game, 0)
+    parse_txst_group_inner(reader, end, texture_sets, game, 0)
 }
 
 fn parse_txst_group_inner(
     reader: &mut EsmReader,
     end: usize,
-    txst_textures: &mut HashMap<u32, String>,
     texture_sets: &mut HashMap<u32, TextureSet>,
     game: GameKind,
     depth: u32,
@@ -652,7 +648,6 @@ fn parse_txst_group_inner(
             parse_txst_group_inner(
                 reader,
                 sub_end,
-                txst_textures,
                 texture_sets,
                 game,
                 depth + 1,
@@ -700,8 +695,7 @@ fn parse_txst_group_inner(
                     // `Fallout4.esm` TXST records (140 / 382) are
                     // MNAM-only with no TX00 at all; pre-#406 they were
                     // silently dropped because the outer `if set !=
-                    // default()` guard would fail and `txst_textures`
-                    // never got a diffuse fallback either. See #406.
+                    // default()` guard would fail. See #406.
                     b"MNAM" => set.material_path = extract(&sub.data),
                     // TXST flags (`DNAM`). FO4 = 2 bytes, Skyrim = 1
                     // byte; capture as u16 with the Skyrim path landing
@@ -761,10 +755,6 @@ fn parse_txst_group_inner(
                     }
                     _ => {}
                 }
-            }
-            // Backward-compat LTEX resolver: legacy diffuse-only map.
-            if let Some(diffuse) = set.diffuse.as_ref() {
-                txst_textures.insert(header.form_id, diffuse.clone());
             }
             // Skip the all-empty case (a TXST with no readable slots
             // is uninteresting and would just bloat the map).

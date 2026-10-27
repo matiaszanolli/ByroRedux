@@ -159,7 +159,6 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     let mut ltex = crate::esm::cell::support::LtexTables::default();
     let mut worldspaces: HashMap<String, crate::esm::cell::WorldspaceRecord> = HashMap::new();
     let mut worldspace_climates: HashMap<String, u32> = HashMap::new();
-    let mut txst_textures: HashMap<u32, String> = HashMap::new();
     let mut texture_sets: HashMap<u32, TextureSet> = HashMap::new();
     let mut scols: HashMap<u32, ScolRecord> = HashMap::new();
     let mut packins: HashMap<u32, PkinRecord> = HashMap::new();
@@ -251,7 +250,6 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"TXST" => parse_txst_group(
                 &mut reader,
                 end,
-                &mut txst_textures,
                 &mut texture_sets,
                 game,
             )?,
