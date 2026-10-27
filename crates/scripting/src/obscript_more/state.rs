@@ -491,13 +491,10 @@ fn cmd_1162(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], c
     }
 }
 
-// GECK *GetAnimAction*: -1 none, 2 attack ... — only what the engine's state shows: attacking while in
-// combat is ATTACK (2), else none.
-fn get_anim_action(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((_, actor)) => answer(if crate::is_in_combat(world, actor) && world.has::<byroredux_core::ecs::components::EquippedWeapon>(actor) { 2.0 } else { -1.0 }),
-        None => Action::Declined,
-    }
+// GECK *GetAnimAction*: -1 none, 2 attack ... — the engine tracks no swing in progress (an attack
+// cooldown is not one), so it declines rather than reporting ATTACK for every armed combatant.
+fn get_anim_action(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+    Action::Declined
 }
 
 // GECK *IsPlayerMovingIntoNewSpace*: 1 while the player loads into a new cell — no cell is resident

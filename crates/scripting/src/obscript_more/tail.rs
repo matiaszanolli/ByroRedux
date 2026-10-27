@@ -580,9 +580,10 @@ fn get_gold(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _
     }
 }
 
-// CS *GetIsPlayerBirthsign <sign>*: the engine keeps no birthsign, so the player has none.
+// CS *GetIsPlayerBirthsign <sign>*: the engine keeps no birthsign state, so it declines (counted in
+// `unknown_commands`) rather than answering "no" for a player who always has one.
 fn cmd_10e0(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    flag(false)
+    Action::Declined
 }
 
 // CS *IsGuard*: "1 if the NPC's class is marked as a Guard class" — the `CLAS` Guard flag (Oblivion's).
@@ -739,12 +740,11 @@ fn cmd_1227(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ct
 }
 
 // GECK *GetIsLockBroken* above; *IsPlayerActionActive <index>* (FO3): the player's current action —
-// only jumping is tracked (index 6).
+// only jumping is tracked (index 6); every other index declines instead of answering "not doing it"
+// for an action nothing tracks.
 fn get_is_lock_broken_command(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    let action = num(args, 0) as i32;
-    match (action, super::engine_queries(world).player_airborne) {
+    match (num(args, 0) as i32, super::engine_queries(world).player_airborne) {
         (6, Some(airborne)) => flag(airborne(world)),
-        (1..=10, _) => flag(false),
         _ => Action::Declined,
     }
 }

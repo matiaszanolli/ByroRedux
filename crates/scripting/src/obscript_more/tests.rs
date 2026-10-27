@@ -850,3 +850,19 @@ fn incapacity_scalar_and_bulk_forms_agree() {
         assert!(!crate::is_incapacitated(&world, other) && !bulk.contains(&other), "{name}: the bystander is unaffected");
     }
 }
+
+/// #6221 — state the engine does not track declines (so the `unknown_commands` census counts it) instead of
+/// answering a constant: no birthsign, no swing in progress, no tracked player action other than jumping.
+#[test]
+fn untracked_state_declines_instead_of_answering_a_constant() {
+    let (oblivion, ..) = world(GameKind::Oblivion);
+    let c = ctx(Some(ACTOR));
+    assert_eq!(run(&oblivion, 0x10e0, &refs(&[0x0005_0001]), &c), Action::Declined, "GetIsPlayerBirthsign");
+    let (mut fo, fo_actor, ..) = world_fo();
+    // An armed actor: the old arm answered ATTACK (2) for every armed combatant.
+    fo.insert(fo_actor, EquippedWeapon { inventory_index: byroredux_core::ecs::components::InventoryIndex(0), base_form_id: ITEM, damage: 1.0, reach: 0.0, speed: 1.0 });
+    assert_eq!(run(&fo, 0x10db, &[], &c), Action::Declined, "GetAnimAction");
+    for index in [1.0, 2.0, 3.0, 4.0, 5.0, 7.0, 8.0, 9.0, 10.0] {
+        assert_eq!(run(&fo, 0x1170, &nums(&[index]), &c), Action::Declined, "IsPlayerActionActive {index}");
+    }
+}
