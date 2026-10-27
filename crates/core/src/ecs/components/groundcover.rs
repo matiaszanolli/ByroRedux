@@ -244,10 +244,16 @@ impl GroundCoverSpecies {
         // enough vertical and projected area for its four-ribbon tuft to
         // The fallback stays deliberately short: isolated procedural ribbons
         // must resolve as cover before the authored card LOD takes over.
-        height_range: (9.0, 21.0),
-        blade_length_mean: moment_matched_length((9.0, 21.0)).0,
-        blade_length_cv: moment_matched_length((9.0, 21.0)).1,
-        width_range: (0.9, 1.75),
+        //
+        // Retuned 11–26 / 1.2–2.35 (1.25x taller, 1.35x wider) on a "Skyrim
+        // grass needs way more volume" review: at the 9–21 / 0.9–1.75 envelope
+        // the near field read as thin separate needles over bare ground. More
+        // projected blade area per blade fills the sward without touching the
+        // scatter's candidate budget or the blade arena sizes.
+        height_range: (11.0, 26.0),
+        blade_length_mean: moment_matched_length((11.0, 26.0)).0,
+        blade_length_cv: moment_matched_length((11.0, 26.0)).1,
+        width_range: (1.2, 2.35),
         // Base is the sheath: paler and a touch warmer than the lamina. It is
         // NOT a darkened tip — see the field's doc and §12.1. Keep the
         // fallback deliberately olive rather than the old saturated yellow
