@@ -710,7 +710,8 @@ const CLOUD_LAYER_MAX_DRIFT_M_PER_S: f32 = 20.0;
 pub(crate) fn cap_cloud_layer_drift(vectors: &mut [[f32; 2]; 4], tile_scales: [f32; 4]) {
     let altitude = byroredux_renderer::shader_constants::CLOUD_UPPER_PLANE_ALTITUDE;
     for (vector, tile_scale) in vectors.iter_mut().zip(tile_scales) {
-        if !(tile_scale > 0.0) {
+        // Skips a non-positive scale and also NaN, which `tile_scale <= 0.0` would let through.
+        if tile_scale.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
             continue;
         }
         let max_uv_per_s = tile_scale * CLOUD_LAYER_MAX_DRIFT_M_PER_S / altitude;

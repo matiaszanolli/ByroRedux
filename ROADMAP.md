@@ -653,13 +653,11 @@ performance finding. The measured knob table is in
   RACE `SPLO` set (#4415, `9813af435`); no live MQ101 replay has re-checked
   it.
 - [ ] **A scripted Enable()/Disable() on a resident reference takes effect on
-  the next cell load only** — the live consumer needs per-placement
-  GPU/physics teardown + a re-spawn path; ledger/gate/interaction agree today.
-  *Tracked here only* (#5065 was closed with this line as the record).
+  the next cell load only** — the live consumer needs per-placement GPU/physics
+  teardown + a re-spawn path; ledger/gate/interaction agree (*tracked here only*).
 - [ ] **`NiStencilProperty` is parsed but never applied** (stencil test off,
   stencil-less `D32_SFLOAT`). Needs per-material stencil variants plus a
-  stencil format, so it waits for a consumer. *Tracked here only* (#4213 closed
-  2026-09-15 with this line as the record).
+  stencil format, so it waits for a consumer (*tracked here only*).
 - [ ] **One Starfield NIF (`meshes\marker_radius.nif`) asks for a 318 MB
   single allocation**, above `MAX_SINGLE_ALLOC_BYTES` (256 MB); raising the
   cap weakens the hostile-`u32` defence. One file in the corpus.

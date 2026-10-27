@@ -917,9 +917,9 @@ fn append_lod_skirts(
     edges: &[(usize, usize, [f32; 3])],
 ) {
     for &(a, b, toward_hole) in edges {
-        let (va, vb) = (vertices[a].clone(), vertices[b].clone());
-        let mut down_a = va.clone();
-        let mut down_b = vb.clone();
+        let (va, vb) = (vertices[a], vertices[b]);
+        let mut down_a = va;
+        let mut down_b = vb;
         down_a.position[1] -= LOD_SKIRT_DROP;
         down_b.position[1] -= LOD_SKIRT_DROP;
         let ia = vertices.len() as u32;
@@ -946,6 +946,7 @@ fn append_lod_skirts(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // One LOD block's spawn inputs (world, GPU context, asset providers, cell data, block coords, game/worldspace); a struct would only rename them.
 fn spawn_lod_block(
     world: &mut World,
     ctx: &mut VulkanContext,

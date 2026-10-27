@@ -204,7 +204,7 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         // no `WaterVolume` component anywhere means no water can submerge
         // the camera this frame, so any stale `head_submerged` / `material`
         // from a prior frame must be cleared, not left to feed
-        // `compute_underwater_params` indefinitely. Today `WaterPlane`
+        // `compute_underwater_frame` indefinitely. Today `WaterPlane`
         // always ships with a matching `WaterVolume` except transiently via
         // `spawn_lod_water_plane` (#2449), a state the camera can't already
         // be submerged in — but that's an invariant of the current spawn
@@ -625,12 +625,6 @@ pub fn compute_underwater_frame(world: &World) -> UnderwaterView {
         // ramp saturates over (`underwater_extinction` is 1 - exp(-2·ramp)).
         surface: [state.depth, (fog_far - fog_near).max(1.0), 0.0, 0.0],
     }
-}
-
-/// The composite/presentation underwater grade for the active camera, or all
-/// zeros while its head is out of the water.
-pub fn compute_underwater_params(world: &World) -> [f32; 4] {
-    compute_underwater_frame(world).grade
 }
 
 /// Apply authored Starfield extinction coefficients to the underwater target
@@ -1203,7 +1197,7 @@ mod tests {
     /// matching `WaterVolume` component must clear stale submersion state
     /// exactly like the "no `WaterPlane` at all" branch above it does —
     /// not bare-`return` and leave a prior frame's `head_submerged: true`
-    /// / `material` feeding `compute_underwater_params` indefinitely.
+    /// / `material` feeding `compute_underwater_frame` indefinitely.
     #[test]
     fn water_volume_absent_clears_stale_submersion_state() {
         let mut world = World::new();
@@ -1248,7 +1242,7 @@ mod tests {
         assert!(
             state.surface_entity.is_none(),
             "surface entity must reset to default, not keep feeding \
-             compute_underwater_params a stale value"
+             compute_underwater_frame a stale value"
         );
     }
 

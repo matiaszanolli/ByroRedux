@@ -1308,7 +1308,7 @@ pub(crate) fn defer_geometry_rebuild(
     batch_in_progress: bool,
     dirty_for: Option<std::time::Duration>,
 ) -> bool {
-    batch_in_progress && dirty_for.map_or(true, |waited| waited < GEOMETRY_REBUILD_MAX_DEFER)
+    batch_in_progress && dirty_for.is_none_or(|waited| waited < GEOMETRY_REBUILD_MAX_DEFER)
 }
 
 #[cfg(test)]

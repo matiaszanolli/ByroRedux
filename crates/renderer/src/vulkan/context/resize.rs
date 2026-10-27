@@ -2028,7 +2028,7 @@ mod tests {
             .find("if let Some(w) = water.as_ref()")
             .expect("init-path set-2 wiring must be gated on the water pipeline alone");
         let rebind = src[init_block..]
-            .find("update_water_caustic_descriptors(&device, &views)")
+            .find("update_water_caustic_descriptors(device, &views)")
             .map(|off| init_block + off)
             .expect("init-path rebind must still exist");
         assert!(

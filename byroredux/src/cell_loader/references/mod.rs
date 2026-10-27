@@ -931,7 +931,7 @@ fn advance_actor_synth(
             job.next_synth = synth_idx + 1;
         }
     }
-    return ActorSynthStep::Next;
+    ActorSynthStep::Next
 }
 
 /// Expand the reference being loaded into its synthetic children and the

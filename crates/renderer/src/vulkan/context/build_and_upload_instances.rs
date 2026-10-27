@@ -1382,17 +1382,17 @@ impl VulkanContext {
         if !gpu_instances.is_empty() {
             debug_assert_eq!(gpu_instances.len(), previous_models.len());
             self.scene_buffers
-                .upload_instances(&self.device, frame, &gpu_instances)
+                .upload_instances(&self.device, frame, gpu_instances)
                 .unwrap_or_else(|e| log::warn!("Failed to upload instances: {e}"));
             self.scene_buffers
-                .upload_previous_models(&self.device, frame, &previous_models)
+                .upload_previous_models(&self.device, frame, previous_models)
                 .unwrap_or_else(|e| log::warn!("Failed to upload previous models: {e}"));
         }
         // #6250 — the mover list rides the same per-frame upload: 260 B
         // whole-buffer rewrite, and an empty scene still publishes count 0
         // so a stale slot can never taint on two-frame-old movers.
         self.scene_buffers
-            .upload_moved_surface_ids(&self.device, frame, &moved_surface_ids)
+            .upload_moved_surface_ids(&self.device, frame, moved_surface_ids)
             .unwrap_or_else(|e| log::warn!("Failed to upload moved surface ids: {e}"));
 
         // R1 Phase 4 — upload the deduplicated material table. The
@@ -2387,7 +2387,7 @@ mod instance_capacity_growth_pin {
             .find(".ensure_instance_capacity(")
             .expect("the frame must grow its instance SSBOs before uploading (#4199)");
         let upload = src
-            .find(".upload_instances(&self.device, frame, &gpu_instances)")
+            .find(".upload_instances(&self.device, frame, gpu_instances)")
             .expect("instances must still be uploaded");
         assert!(
             grow < upload,

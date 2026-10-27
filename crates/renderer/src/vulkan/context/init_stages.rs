@@ -11,6 +11,12 @@
 //! Source-scan tests that pin construction text read `INIT_SOURCES` (in `context/mod.rs`),
 //! the concatenation of this file and `init.rs`.
 
+// Each stage takes exactly the Vulkan handles, allocator and shared resources its pass
+// consumes, so the stage fns are wide by design (#6143). Bundling them into a parameter
+// struct would only move the same fields behind a name and re-couple stages that the split
+// made independent.
+#![allow(clippy::too_many_arguments)]
+
 use super::*;
 
 /// Cluster-cull and skinning compute pipelines plus the per-pass GPU timers.
@@ -79,8 +85,8 @@ pub(super) fn create_compute_passes(
 ) -> ComputePasses {
     // 12c. Cluster cull compute pipeline (light culling)
     let cluster_cull = match ClusterCullPipeline::new(
-        &device,
-        &gpu_allocator,
+        device,
+        gpu_allocator,
         pipeline_cache,
         scene_buffers.light_buffers(),
         scene_buffers.camera_buffers(),
@@ -91,7 +97,7 @@ pub(super) fn create_compute_passes(
             // Write cluster buffer references into scene descriptor sets.
             for f in 0..MAX_FRAMES_IN_FLIGHT {
                 scene_buffers.write_cluster_buffers(
-                    &device,
+                    device,
                     f,
                     cc.grid_buffer(f),
                     cc.grid_buffer_size(),
@@ -118,7 +124,7 @@ pub(super) fn create_compute_passes(
     // for the value and rationale (#5217: 32 was the pre-#900 ceiling;
     // the live value is `(MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1`).
     let mut skin_compute = match super::super::skin_compute::SkinComputePipeline::new(
-        &device,
+        device,
         pipeline_cache,
         SKIN_MAX_SLOTS,
     ) {
@@ -139,7 +145,7 @@ pub(super) fn create_compute_passes(
     // legacy `upload_bones` + staging-copy path is removed since
     // M29.5 cleanup, and the engine has no supported no-RT mode).
     let skin_palette = match super::super::skin_compute::SkinPaletteComputePipeline::new(
-        &device,
+        device,
         pipeline_cache,
     ) {
         Ok(sp) => Some(sp),
@@ -161,7 +167,7 @@ pub(super) fn create_compute_passes(
     // brackets in `draw_frame` no-op, and `skin.coverage` shows
     // `gpu_timer: unavailable` instead of ms values.
     let gpu_timers =
-        match super::super::gpu_timers::GpuPerFrameTimers::new(&device, &device_caps) {
+        match super::super::gpu_timers::GpuPerFrameTimers::new(device, device_caps) {
             Ok(t) => t,
             Err(e) => {
                 log::warn!(
@@ -199,8 +205,8 @@ pub(super) fn create_ground_cover(
         None
     } else {
         match super::super::groundcover::GroundCoverPipeline::new(
-            &device,
-            &gpu_allocator,
+            device,
+            gpu_allocator,
             render_pass,
             pipeline_cache,
             texture_registry.descriptor_set_layout,
@@ -236,8 +242,8 @@ pub(super) fn create_ground_cover(
         None
     } else if groundcover.is_some() {
         match super::super::groundcover_models::GroundCoverModelTier::new(
-            &device,
-            &gpu_allocator,
+            device,
+            gpu_allocator,
             pipeline_cache,
         ) {
             Ok(tier) => Some(tier),
@@ -267,8 +273,8 @@ pub(super) fn create_water_passes(
     render_extent: vk::Extent2D,
 ) -> WaterPasses {
     let mut water = match WaterPipeline::new(
-        &device,
-        &gpu_allocator,
+        device,
+        gpu_allocator,
         render_pass,
         pipeline_cache,
         texture_registry.descriptor_set_layout,
@@ -293,9 +299,9 @@ pub(super) fn create_water_passes(
     // have something live to rebind to. A failure here is itself
     // non-fatal: the affected binding just keeps its pre-fix behaviour.
     let placeholder_ao = match super::super::placeholder::PlaceholderImage::new_white_ao(
-        &device,
-        &gpu_allocator,
-        &graphics_queue,
+        device,
+        gpu_allocator,
+        graphics_queue,
         transfer_pool,
     ) {
         Ok(p) => Some(p),
@@ -308,9 +314,9 @@ pub(super) fn create_water_passes(
     };
     let placeholder_caustic_sink =
         match super::super::placeholder::PlaceholderImage::new_storage_sink(
-            &device,
-            &gpu_allocator,
-            &graphics_queue,
+            device,
+            gpu_allocator,
+            graphics_queue,
             transfer_pool,
             super::super::caustic::CAUSTIC_FORMAT,
         ) {
@@ -324,8 +330,8 @@ pub(super) fn create_water_passes(
         };
 
     let water_caustic_accum = match super::super::water_caustic::WaterCausticAccum::new(
-        &device,
-        &gpu_allocator,
+        device,
+        gpu_allocator,
         render_extent.width,
         render_extent.height,
     ) {
@@ -341,7 +347,7 @@ pub(super) fn create_water_passes(
                 // device; `a`'s caustic-accumulator images were just created
                 // above by the same device, so recording their one-time
                 // layout transition is sound.
-                a.initialize_layouts(&device, &graphics_queue, transfer_pool)
+                a.initialize_layouts(device, graphics_queue, transfer_pool)
             } {
                 log::warn!(
                     "Water-caustic initialize_layouts failed: {e} — disabling for the rest of the session"
@@ -350,7 +356,7 @@ pub(super) fn create_water_passes(
                     // SAFETY: the layout submit never reached the queue (the
                     // helper leaks the accumulator otherwise, #6146) and no frame
                     // command buffer has referenced its images.
-                    a.destroy(&device, &gpu_allocator)
+                    a.destroy(device, gpu_allocator)
                 });
                 None
             } else {
@@ -405,7 +411,7 @@ pub(super) fn create_water_passes(
         let views = views.expect(
             "water/caustic coupling must disable water when both storage sinks are absent",
         );
-        w.update_water_caustic_descriptors(&device, &views);
+        w.update_water_caustic_descriptors(device, &views);
     }
     WaterPasses { water, placeholder_ao, placeholder_caustic_sink, water_caustic_accum }
 }
@@ -424,8 +430,8 @@ pub(super) fn create_ssao(
 ) -> Option<SsaoPipeline> {
     // 14a. SSAO pipeline (reads depth buffer after render pass)
     let ssao = match SsaoPipeline::new(
-        &device,
-        &gpu_allocator,
+        device,
+        gpu_allocator,
         pipeline_cache,
         depth_image_view,
         render_extent.width,
@@ -441,12 +447,12 @@ pub(super) fn create_ssao(
                 // SSAO pipeline `s`'s AO images were just created above by
                 // the same device, so recording their UNDEFINED →
                 // SHADER_READ_ONLY transition is sound.
-                s.initialize_ao_images(&device, &graphics_queue, transfer_pool)
+                s.initialize_ao_images(device, graphics_queue, transfer_pool)
             } {
                 log::warn!("SSAO AO image init failed: {e}");
             }
             for f in 0..MAX_FRAMES_IN_FLIGHT {
-                scene_buffers.write_ao_texture(&device, f, s.ao_image_view(f), s.ao_sampler);
+                scene_buffers.write_ao_texture(device, f, s.ao_image_view(f), s.ao_sampler);
             }
             Some(s)
         }
@@ -459,7 +465,7 @@ pub(super) fn create_ssao(
             log::warn!("SSAO pipeline creation failed: {e} — no ambient occlusion");
             if let Some(p) = placeholder_ao.as_ref() {
                 for f in 0..MAX_FRAMES_IN_FLIGHT {
-                    scene_buffers.write_ao_texture(&device, f, p.gpu.view, p.sampler);
+                    scene_buffers.write_ao_texture(device, f, p.gpu.view, p.sampler);
                 }
             }
             None
@@ -488,9 +494,9 @@ pub(super) fn create_sky_and_exposure(
     // call, so nothing can be in flight against them.
     let cloud_noise = unsafe {
         super::super::cloud_noise::CloudNoiseVolumes::new(
-            &device,
-            &gpu_allocator,
-            &graphics_queue,
+            device,
+            gpu_allocator,
+            graphics_queue,
             transfer_pool,
         )
     }
@@ -507,8 +513,8 @@ pub(super) fn create_sky_and_exposure(
     // is the whole reason the flag exists rather than relying on the
     // binding being present.
     let sky_cube = match super::super::sky_cube::SkyCubePipeline::new(
-        &device,
-        &gpu_allocator,
+        device,
+        gpu_allocator,
         pipeline_cache,
         texture_registry.descriptor_set_layout,
         cloud_noise.views(),
@@ -517,7 +523,7 @@ pub(super) fn create_sky_and_exposure(
         Ok(s) => {
             for f in 0..MAX_FRAMES_IN_FLIGHT {
                 scene_buffers.write_sky_cube(
-                    &device,
+                    device,
                     f,
                     s.cube_view(f),
                     s.sampler,
@@ -542,7 +548,7 @@ pub(super) fn create_sky_and_exposure(
     // there is no meaningful degraded mode without it. A 1x1 image
     // allocation failing means the device is not usable anyway.
     let exposure =
-        match ExposureResource::new(&device, &gpu_allocator, &graphics_queue, transfer_pool) {
+        match ExposureResource::new(device, gpu_allocator, graphics_queue, transfer_pool) {
             Ok(e) => e,
             Err(e) => {
                 return Err(anyhow::anyhow!(
@@ -557,8 +563,8 @@ pub(super) fn create_sky_and_exposure(
     // exposure slots are cleared to DEFAULT_EXPOSURE, so a meter-less
     // session degrades to frozen fixed exposure rather than aborting.
     let exposure_meter = match super::super::exposure_meter::ExposureMeterPipeline::new(
-        &device,
-        &gpu_allocator,
+        device,
+        gpu_allocator,
         pipeline_cache,
     ) {
         Ok(m) => Some(m),
@@ -597,8 +603,8 @@ pub(super) fn create_volumetrics(
             .max_image_dimension3_d
     };
     let mut volumetrics = match VolumetricsPipeline::new(
-        &device,
-        &gpu_allocator,
+        device,
+        gpu_allocator,
         pipeline_cache,
         render_extent,
         renderer_config.volumetrics,
@@ -617,7 +623,7 @@ pub(super) fn create_volumetrics(
             // volumetrics pipeline `v`'s froxel images were just created
             // above by the same device, so recording their one-time layout
             // transition and immutable density uploads is sound.
-            v.initialize_layouts(&device, &gpu_allocator, &graphics_queue, transfer_pool)
+            v.initialize_layouts(device, gpu_allocator, graphics_queue, transfer_pool)
         } {
             log::warn!("Volumetrics froxel layout init failed: {e} — disabling volumetrics");
             if let Some(mut pipe) = volumetrics.take() {
@@ -633,7 +639,7 @@ pub(super) fn create_volumetrics(
                         // layout submit never reached the queue and no
                         // frame command buffer has referenced its images,
                         // so destroying it is sound.
-                        pipe.destroy(&device, &gpu_allocator)
+                        pipe.destroy(device, gpu_allocator)
                     };
                 }
             }
@@ -654,8 +660,8 @@ pub(super) fn create_gbuffer(
     // raw_indirect, albedo). Created BEFORE composite because composite's
     // descriptor sets reference the raw_indirect + albedo views.
     let mut gbuffer = Some(GBuffer::new(
-        &device,
-        &gpu_allocator,
+        device,
+        gpu_allocator,
         render_extent.width,
         render_extent.height,
     )?);
@@ -670,7 +676,7 @@ pub(super) fn create_gbuffer(
         // is a command pool from this device; `gbuffer_ref`'s attachment
         // images were just created above by the same device, so recording
         // their UNDEFINED → SHADER_READ_ONLY transition is sound.
-        gbuffer_ref.initialize_layouts(&device, &graphics_queue, transfer_pool)
+        gbuffer_ref.initialize_layouts(device, graphics_queue, transfer_pool)
     } {
         // #6343 — a hard requirement, like the caustic block below: every
         // post pass samples these attachments as SHADER_READ_ONLY, so
@@ -681,7 +687,7 @@ pub(super) fn create_gbuffer(
                 // SAFETY: `pass` was just created by `device`; the layout
                 // submit never reached the queue (the helper leaks the pass
                 // otherwise, #6146) and no frame has referenced its images.
-                pass.destroy(&device, &gpu_allocator)
+                pass.destroy(device, gpu_allocator)
             });
         }
         return Err(anyhow::anyhow!(
@@ -739,15 +745,15 @@ pub(super) fn create_svgf_and_restir(
     // Created before composite so composite's descriptor sets can
     // reference SVGF's indirect_history views.
     let mut svgf = match SvgfPipeline::new(
-        &device,
-        &gpu_allocator,
+        device,
+        gpu_allocator,
         pipeline_cache,
         super::super::svgf::SvgfInputViews {
-            raw_indirect_views: &raw_indirect_views,
-            motion_views: &motion_views_seed,
-            mesh_id_views: &mesh_id_views_seed,
-            normal_views: &normal_views_for_svgf,
-            albedo_views: &albedo_views,
+            raw_indirect_views,
+            motion_views: motion_views_seed,
+            mesh_id_views: mesh_id_views_seed,
+            normal_views: normal_views_for_svgf,
+            albedo_views,
             depth_view: depth_image_view,
         },
         render_extent.width,
@@ -768,7 +774,7 @@ pub(super) fn create_svgf_and_restir(
             // pipeline `s`'s history images were just created above by the
             // same device, so recording their UNDEFINED → GENERAL
             // transition is sound.
-            s.initialize_layouts(&device, &graphics_queue, transfer_pool)
+            s.initialize_layouts(device, graphics_queue, transfer_pool)
         } {
             log::warn!("SVGF layout init failed: {e} — disabling SVGF");
             if let Some(pipe) = svgf.take() {
@@ -776,7 +782,7 @@ pub(super) fn create_svgf_and_restir(
                     // SAFETY: `pipe` was just created by `device`; the layout
                     // submit never reached the queue (the helper leaks the pass
                     // otherwise, #6146) and no frame has referenced its images.
-                    pipe.destroy(&device, &gpu_allocator)
+                    pipe.destroy(device, gpu_allocator)
                 });
             }
         }
@@ -787,15 +793,15 @@ pub(super) fn create_svgf_and_restir(
     // re-written after a resize recreates them. The fragment shader
     // gates use on `!DBG_DISABLE_RESTIR`. See `vulkan::restir`.
     let reservoir_buffers = super::super::restir::ReservoirBuffers::new(
-        &device,
-        &gpu_allocator,
-        &graphics_queue,
+        device,
+        gpu_allocator,
+        graphics_queue,
         transfer_pool,
         render_extent.width,
         render_extent.height,
     )?;
     for i in 0..n_frames {
-        scene_buffers.write_reservoir_buffers(&device, i, &reservoir_buffers);
+        scene_buffers.write_reservoir_buffers(device, i, &reservoir_buffers);
     }
     // Direct-shadow spatial filter over the reservoirs' shadow ratio;
     // composite binds its correction image when it exists. The mesh-ID
@@ -803,14 +809,14 @@ pub(super) fn create_svgf_and_restir(
     // above) — the filter's ownership gate samples them (#6249).
     let shadow_filter = match super::super::shadow_filter::ShadowFilterPipeline::new(
         super::super::GpuUploadCtx {
-            device: &device,
-            allocator: &gpu_allocator,
-            queue: &graphics_queue,
+            device,
+            allocator: gpu_allocator,
+            queue: graphics_queue,
             command_pool: transfer_pool,
         },
         pipeline_cache,
         &reservoir_buffers,
-        &mesh_id_views_seed,
+        mesh_id_views_seed,
         render_extent.width,
         render_extent.height,
     ) {
@@ -847,12 +853,12 @@ pub(super) fn create_caustic(
     let normal_views_seed: Vec<vk::ImageView> =
         (0..n_frames).map(|i| gbuffer_ref.normal_view(i)).collect();
     let mut caustic: Option<CausticPipeline> = match CausticPipeline::new(
-        &device,
-        &gpu_allocator,
+        device,
+        gpu_allocator,
         pipeline_cache,
         depth_image_view,
         &normal_views_seed,
-        &mesh_id_views_seed,
+        mesh_id_views_seed,
         scene_buffers.light_buffers(),
         scene_buffers.light_buffer_size(),
         scene_buffers.camera_buffers(),
@@ -874,14 +880,14 @@ pub(super) fn create_caustic(
             // caustic pipeline `c`'s images were just created above by the
             // same device, so recording their one-time layout transition
             // is sound.
-            c.initialize_layouts(&device, &graphics_queue, transfer_pool)
+            c.initialize_layouts(device, graphics_queue, transfer_pool)
         } {
             if let Some(pipe) = caustic.take() {
                 crate::vulkan::texture::release_after_failed_submit(pipe, &e, |mut pipe| unsafe {
                     // SAFETY: `pipe` was just created by `device`; the layout
                     // submit never reached the queue (the helper leaks the pass
                     // otherwise, #6146) and no frame has referenced its images.
-                    pipe.destroy(&device, &gpu_allocator)
+                    pipe.destroy(device, gpu_allocator)
                 });
             }
             return Err(anyhow::anyhow!(
@@ -922,7 +928,7 @@ pub(super) fn create_bloom(
     // allocations are universally supported on all Vulkan 1.1+ GPUs).
     // Tracked: #1081 — if a real dummy is ever needed, implement it
     // in `CompositePipeline::new` with an optional `bloom_views`.
-    let bloom = match BloomPipeline::new(&device, &gpu_allocator, pipeline_cache, render_extent)
+    let bloom = match BloomPipeline::new(device, gpu_allocator, pipeline_cache, render_extent)
     {
         Ok(b) => {
             if let Err(e) = unsafe {
@@ -931,7 +937,7 @@ pub(super) fn create_bloom(
                 // bloom pipeline `b`'s pyramid images were just created
                 // above by the same device, so recording their one-time
                 // layout transition is sound.
-                b.initialize_layouts(&device, &graphics_queue, transfer_pool)
+                b.initialize_layouts(device, graphics_queue, transfer_pool)
             } {
                 // #6343 — the same hard requirement as the creation arm
                 // below: bloom's per-dispatch barriers declare the walked
@@ -941,7 +947,7 @@ pub(super) fn create_bloom(
                     // SAFETY: `b` was just created by `device`; the layout
                     // submit never reached the queue (the helper leaks the
                     // pass otherwise, #6146) and no frame has used it.
-                    b.destroy(&device, &gpu_allocator)
+                    b.destroy(device, gpu_allocator)
                 });
                 return Err(anyhow::anyhow!(
                     "Bloom pyramid layout init failed: {e} — composite \
@@ -1002,15 +1008,15 @@ pub(super) fn create_taa(
             })
             .collect();
         match TaaPipeline::new(
-            &device,
-            &gpu_allocator,
+            device,
+            gpu_allocator,
             pipeline_cache,
             super::super::taa::TaaInputViews {
                 src_color_views: &scene_views,
-                motion_views: &motion_views_seed,
-                mesh_id_views: &mesh_id_views_seed,
-                normal_views: &normal_views_seed,
-                reactive_views: &reactive_views,
+                motion_views: motion_views_seed,
+                mesh_id_views: mesh_id_views_seed,
+                normal_views: normal_views_seed,
+                reactive_views,
             },
             render_extent.width,
             render_extent.height,
@@ -1034,7 +1040,7 @@ pub(super) fn create_taa(
             // pipeline `t`'s history/output images were just created above
             // by the same device, so recording their one-time layout
             // transition is sound.
-            t.initialize_layouts(&device, &graphics_queue, transfer_pool)
+            t.initialize_layouts(device, graphics_queue, transfer_pool)
         } {
             log::warn!("TAA layout init failed: {e} — disabling TAA");
             if let Some(pipe) = taa.take() {
@@ -1042,7 +1048,7 @@ pub(super) fn create_taa(
                     // SAFETY: `pipe` was just created by `device`; the layout
                     // submit never reached the queue (the helper leaks the pass
                     // otherwise, #6146) and no frame has referenced its images.
-                    pipe.destroy(&device, &gpu_allocator)
+                    pipe.destroy(device, gpu_allocator)
                 });
             }
         }
@@ -1075,8 +1081,8 @@ pub(super) fn create_health_buffers_and_presentation(
     for _ in 0..sync::MAX_FRAMES_IN_FLIGHT {
         image_health_buffers.push(
             super::super::buffer::GpuBuffer::create_host_readback(
-                &device,
-                &gpu_allocator,
+                device,
+                gpu_allocator,
                 IMAGE_HEALTH_BUFFER_BYTES,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
             )
@@ -1094,14 +1100,14 @@ pub(super) fn create_health_buffers_and_presentation(
         if let Ok(bytes) = buffer.mapped_slice_mut() {
             bytes.fill(0);
         }
-        if let Err(e) = buffer.flush_if_needed(&device) {
+        if let Err(e) = buffer.flush_if_needed(device) {
             log::warn!("image-health buffer zero-init flush failed: {e}");
         }
     }
     let health_handles: Vec<vk::Buffer> =
         image_health_buffers.iter().map(|b| b.buffer).collect();
     let presentation = PresentationPipeline::new(
-        &device,
+        device,
         pipeline_cache,
         crate::vulkan::presentation::PresentationTargets {
             swapchain_format: swapchain_state.format.format,

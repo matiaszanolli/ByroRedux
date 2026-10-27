@@ -361,7 +361,7 @@ fn import_embedded_controller(
                 .and_then(|c| c.base.interpolator_ref.index());
             if let Some(idx) = interp_idx {
                 if let Some(ch) = extract_float_channel_at(scene, idx, FloatTarget::Alpha, sampling) {
-                    clip.float_channels.push((Arc::clone(&node_name), ch));
+                    clip.float_channels.push((Arc::clone(node_name), ch));
                 }
             }
         }
@@ -371,7 +371,7 @@ fn import_embedded_controller(
                 .and_then(|c| c.base.interpolator_ref.index());
             if let Some(idx) = interp_idx {
                 if let Some(ch) = extract_bool_channel_at(scene, idx) {
-                    clip.bool_channels.push((Arc::clone(&node_name), ch));
+                    clip.bool_channels.push((Arc::clone(node_name), ch));
                 }
             }
         }
@@ -394,7 +394,7 @@ fn import_embedded_controller(
             if let Some(channel) = interp_idx
                 .and_then(|idx| extract_transform_channel_at(scene, idx, sampling))
             {
-                clip.channels.insert(Arc::clone(&node_name), channel);
+                clip.channels.insert(Arc::clone(node_name), channel);
             }
         }
         // #3327 — pre-fix, the three arms below all parsed as a bare
@@ -411,7 +411,7 @@ fn import_embedded_controller(
             if let Some(channel) = interp_idx
                 .and_then(|idx| extract_transform_channel_at(scene, idx, sampling))
             {
-                clip.channels.insert(Arc::clone(&node_name), channel);
+                clip.channels.insert(Arc::clone(node_name), channel);
             }
         }
         // #3327 — animated material emissive multiplier (pulsing/
@@ -427,7 +427,7 @@ fn import_embedded_controller(
             if let Some(ch) = interp_idx.and_then(|idx| {
                 extract_float_channel_at(scene, idx, FloatTarget::EmissiveMultiple, sampling)
             }) {
-                clip.float_channels.push((Arc::clone(&node_name), ch));
+                clip.float_channels.push((Arc::clone(node_name), ch));
             }
         }
         // #3327 — animated glass refraction strength (Stealth Boy /
@@ -439,7 +439,7 @@ fn import_embedded_controller(
             if let Some(ch) = interp_idx.and_then(|idx| {
                 extract_float_channel_at(scene, idx, FloatTarget::RefractionStrength, sampling)
             }) {
-                clip.float_channels.push((Arc::clone(&node_name), ch));
+                clip.float_channels.push((Arc::clone(node_name), ch));
             }
         }
         // #3327 — animated camera FOV. No `FloatTarget` variant:
@@ -457,7 +457,7 @@ fn import_embedded_controller(
                 let target = float_target_from_operation(c.operation);
                 if let Some(idx) = c.interpolator_ref.index() {
                     if let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
-                        clip.float_channels.push((Arc::clone(&node_name), ch));
+                        clip.float_channels.push((Arc::clone(node_name), ch));
                     }
                 }
             }
@@ -469,7 +469,7 @@ fn import_embedded_controller(
                     if !keys.is_empty() {
                         let target = color_target_from_target_color(c.target_color);
                         clip.color_channels
-                            .push((Arc::clone(&node_name), ColorChannel { target, keys }));
+                            .push((Arc::clone(node_name), ColorChannel { target, keys }));
                     }
                 }
             }
@@ -480,7 +480,7 @@ fn import_embedded_controller(
                 let target = float_target_from_shader_controller(c.kind);
                 if let Some(idx) = c.base.interpolator_ref.index() {
                     if let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
-                        clip.float_channels.push((Arc::clone(&node_name), ch));
+                        clip.float_channels.push((Arc::clone(node_name), ch));
                     }
                 }
             }
@@ -494,7 +494,7 @@ fn import_embedded_controller(
                 let keys = resolve_color_keys_at(scene, idx, sampling);
                 if !keys.is_empty() {
                     clip.color_channels.push((
-                        Arc::clone(&node_name),
+                        Arc::clone(node_name),
                         ColorChannel {
                             target: ColorTarget::ShaderColor,
                             keys,
@@ -527,7 +527,7 @@ fn import_embedded_controller(
                     .map(|ch| ch.keys)
                     .unwrap_or_default();
                 clip.texture_flip_channels.push((
-                    Arc::clone(&node_name),
+                    Arc::clone(node_name),
                     TextureFlipChannel {
                         texture_slot: c.texture_slot,
                         source_paths,
@@ -559,7 +559,7 @@ fn import_embedded_controller(
                             ColorTarget::LightDiffuse
                         };
                         clip.color_channels
-                            .push((Arc::clone(&node_name), ColorChannel { target, keys }));
+                            .push((Arc::clone(node_name), ColorChannel { target, keys }));
                     }
                 }
             }
@@ -576,7 +576,7 @@ fn import_embedded_controller(
                 };
                 if let Some(idx) = c.base.interpolator_ref.index() {
                     if let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
-                        clip.float_channels.push((Arc::clone(&node_name), ch));
+                        clip.float_channels.push((Arc::clone(node_name), ch));
                     }
                 }
             }
@@ -612,7 +612,7 @@ fn import_embedded_controller(
                                 })
                                 .collect();
                             clip.float_channels.push((
-                                Arc::clone(&node_name),
+                                Arc::clone(node_name),
                                 FloatChannel { target, keys },
                             ));
                         }
