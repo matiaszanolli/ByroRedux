@@ -70,6 +70,7 @@ for pin in "${pins[@]}"; do
     case "${lane}" in
         plugin-lib) target="-p byroredux-plugin --lib" ;;
         plugin-esm) target="-p byroredux-plugin --test parse_real_esm" ;;
+        scripting-lib) target="-p byroredux-scripting --lib" ;;
         bin) target="-p byroredux --bin byroredux" ;;
         nif-corpus) target="-p byroredux-nif --test normal_synthesis_corpus --test translation_completeness --test parse_real_nifs" ;;
         *) error "unknown lane '${lane}' in ${pins_file} (pin '${title}')"; failed=1; continue ;;

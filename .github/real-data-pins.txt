@@ -8,7 +8,7 @@
 # (`every_real_data_pin_names_an_ignored_test_in_its_lane`) checks on every
 # hosted run that each title is a real `#[ignore]`d `fn` in its lane's sources.
 #
-# New closed-HIGH pins append here. Lanes: plugin-lib, plugin-esm, bin, nif-corpus.
+# New closed-HIGH pins append here. Lanes: plugin-lib, plugin-esm, scripting-lib, bin, nif-corpus.
 # Run them with `scripts/run-real-data-pins.sh [filter]` (#5799, #6182, #6183).
 
 # plugin lib (records / actor / cell integration)
@@ -29,6 +29,8 @@ plugin-lib parse_real_fo4_esm_surfaces_pkin_contents
 plugin-lib parse_real_oblivion_esm_surfaces_tamriel_worldspace
 plugin-lib parse_real_fo3_esm_surfaces_wasteland_worldspace
 plugin-lib installed_starfield_small_masters_do_not_collide
+# #6354 - Starfield NPC_ ACBS / race skeleton decode (#6120; ~3.4 GB peak, one process per pin)
+plugin-lib installed_starfield_npcs_and_races_decode_acbs_and_skeletons
 # plugin parse_real_esm integration harness
 plugin-esm fnv_corpses_key_on_base_health_not_xrgd
 plugin-esm fo3_fnv_named_npc_health_matches_the_authored_curve
@@ -46,6 +48,13 @@ plugin-esm parse_rate_fnv_pack_pldt_location
 plugin-esm installed_masters_per_water_scalars_are_not_decoded_constants
 plugin-esm fnv_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master
 plugin-esm skyrim_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master
+# #6354 - the Oblivion corpse census (#5013) and the FO3 leg of #5005 (the FNV twin is above)
+plugin-esm oblivion_starts_dead_bases_and_their_placements_match_the_audit_census
+plugin-esm fo3_corpses_key_on_base_health_not_xrgd
+# scripting lib (ObScript / condition guards that read the shipped masters)
+# #6354 - #5629 (references resolve against the SCRO-only list) and #5989 (GetActorValue enum code read as a FormID)
+scripting-lib fnv_patch04_quest_script_targets_its_own_scro_quests
+scripting-lib authored_actor_value_indices_resolve_in_the_vanilla_masters
 # byroredux bin (inventory / asset provider / npc spawn / cell loader)
 bin starfield_cydonia_pack_ins_instance_their_template_cells
 bin fo3_fnv_script_killed_corpses_match_the_measured_census
