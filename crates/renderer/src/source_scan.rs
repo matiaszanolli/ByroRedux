@@ -49,8 +49,7 @@ mod tests {
         // +1 (#4958): `every_frame_recorder_is_documented` strips every test
         // module itself (`strip_test_modules`), so its self-read is cut.
         ("vulkan/context/post_passes.rs", 2),
-        ("vulkan/context/resize.rs", 1),
-        ("vulkan/context/resources.rs", 5),
+        ("vulkan/context/resources.rs", 3),
         ("vulkan/context/skinned_blas_refit.rs", 1),
         ("vulkan/context/teardown.rs", 1),
         // #6064: `no_item_is_spliced_into_another_items_doc_block` is a

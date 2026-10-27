@@ -783,7 +783,12 @@ fn no_source_scan_cuts_with_the_weak_cfg_test_needle() {
     // Composed at run time so this file does not contain the needles it
     // searches for.
     let attr = ["#[cfg(", "test)]"].concat();
+    // #6370 — the `mod tests {` spelling of the same weak cut: it also
+    // truncates at any earlier `mod tests {` in a string or comment.
+    let test_mod = ["mod ", "tests {"].concat();
     let weak: Vec<String> = [
+        format!("find(\"{test_mod}\")"),
+        format!("split(\"\\n{test_mod}\")"),
         format!("find(\"{attr}\")"),
         format!("rfind(\"{attr}\")"),
         format!("split(\"{attr}\")"),

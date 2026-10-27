@@ -1664,14 +1664,10 @@ mod tests {
         // `update_descriptor_sets` calls. We scope the search to the
         // production code half of the file (before `#[cfg(test)]`)
         // so this test's own string literals don't show up as
-        // additional "call sites" in the count.
-        // Anchor on the test module marker, not a bare `#[cfg(test)]`
-        // (which also appears earlier on a `use` import at the top
-        // of the file). The `mod tests {` line is unique.
-        let test_module_start = src
-            .find("mod tests {")
-            .expect("skin_compute.rs must have a `mod tests` block");
-        let production = &src[..test_module_start];
+        // additional "call sites" in the count. `production_text` anchors
+        // on `#[cfg(test)] mod`, so the `#[cfg(test)] use` earlier in the
+        // file does not truncate it.
+        let production = crate::source_scan::production_text(src);
 
         let calls: Vec<usize> = production
             .match_indices("update_descriptor_sets(&writes, &[])")
@@ -2196,7 +2192,7 @@ mod device_address_caching_tests {
     #[test]
     fn slot_dispatch_does_not_rebind_the_pipeline_per_entity() {
         let src = include_str!("skin_compute.rs");
-        let production = &src[..src.find("mod tests {").expect("test module")];
+        let production = crate::source_scan::production_text(src);
         let slot_impl = production
             .split("impl SkinComputePipeline {")
             .nth(1)

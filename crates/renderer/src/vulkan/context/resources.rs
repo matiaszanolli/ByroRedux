@@ -1187,10 +1187,7 @@ mod tests {
         // `mod tests`) so this test's own explanatory strings — which
         // necessarily name the retired claim to describe what it checks for
         // — don't trip the self-scan.
-        let resources_src_full = include_str!("resources.rs");
-        let resources_src = &resources_src_full[..resources_src_full
-            .find("mod tests {")
-            .expect("resources.rs must have a `mod tests` block")];
+        let resources_src = crate::source_scan::production_text(include_str!("resources.rs"));
         let mod_src = include_str!("mod.rs");
         let draw_src = include_str!("draw.rs");
         // #4034 — the #3282 split moved the `collect_image_health` call site
@@ -1275,10 +1272,7 @@ mod tests {
     /// or the buffer drifting back to the upload constructor.
     #[test]
     fn image_health_readback_allocates_gputocpu_and_invalidates_before_reading() {
-        let resources_src_full = include_str!("resources.rs");
-        let production = &resources_src_full[..resources_src_full
-            .find("mod tests {")
-            .expect("resources.rs must have a `mod tests` block")];
+        let production = crate::source_scan::production_text(include_str!("resources.rs"));
         // #1749 / TD1-004 — the image_health_buffers allocation loop lives
         // in `init.rs`'s `build_pipelines_and_finish` now, not `mod.rs`.
         let mod_src = crate::vulkan::context::INIT_SOURCES;

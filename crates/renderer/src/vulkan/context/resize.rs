@@ -1798,10 +1798,7 @@ mod tests {
     /// names the shape it forbids would match its own source and fail
     /// against correct code.
     fn production_src() -> &'static str {
-        let src = include_str!("resize.rs");
-        src.split("\nmod tests {")
-            .next()
-            .expect("split always yields a first segment")
+        crate::source_scan::production_text(include_str!("resize.rs"))
     }
 
     /// #2141 / RL-D6-01 — the SSAO `Err` arm must rebind scene binding 7

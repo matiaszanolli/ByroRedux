@@ -1070,14 +1070,11 @@ mod retire_stage_routing_tests {
         // Scan only `retire_stage`'s own region — the pin must not see its
         // own assertion strings in this file's test modules (the #4069
         // class of self-matching scan).
-        let start = full
+        let production = byroredux_core::source_scan::production_text(&full);
+        let start = production
             .find("pub(crate) fn retire_stage(")
             .expect("retire_stage must still exist");
-        let end = full[start..]
-            .find("mod tests {")
-            .map(|p| start + p)
-            .unwrap_or(full.len());
-        let src = &full[start..end];
+        let src = &production[start..];
 
         assert!(
             !src.contains("collect_victim_gpu_handles"),
