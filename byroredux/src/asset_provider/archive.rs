@@ -346,10 +346,21 @@ pub(crate) fn loose_data_dir(args: &[String]) -> Option<std::path::PathBuf> {
 }
 
 /// What identifies an on-disk archive's content for [`Archive::open_shared`].
+///
+/// Length and mtime alone miss a same-length rewrite that keeps the mtime
+/// (`cp -p`, `rsync -t --inplace`, `touch -r`) or whose mtime cannot be read:
+/// the cached reader keeps its fd and parsed table, so a stored entry then
+/// returns *another entry's bytes* as `Ok` — neither BSA nor BA2 carries a
+/// checksum (#5663). On Unix the stamp therefore also carries the device,
+/// inode and ctime; a writer can set mtime back but not ctime, and a rename
+/// replacement changes the inode. Other platforms keep length + mtime (std
+/// exposes no stable file index there).
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ArchiveStamp {
     len: u64,
     modified: Option<std::time::SystemTime>,
+    /// `(dev, ino, ctime secs, ctime nanos)`; all zero off Unix.
+    identity: (u64, u64, i64, i64),
 }
 
 impl ArchiveStamp {
@@ -358,7 +369,19 @@ impl ArchiveStamp {
         Some(Self {
             len: meta.len(),
             modified: meta.modified().ok(),
+            identity: Self::identity_of(&meta),
         })
+    }
+
+    #[cfg(unix)]
+    fn identity_of(meta: &std::fs::Metadata) -> (u64, u64, i64, i64) {
+        use std::os::unix::fs::MetadataExt;
+        (meta.dev(), meta.ino(), meta.ctime(), meta.ctime_nsec())
+    }
+
+    #[cfg(not(unix))]
+    fn identity_of(_meta: &std::fs::Metadata) -> (u64, u64, i64, i64) {
+        (0, 0, 0, 0)
     }
 }
 
@@ -1213,6 +1236,47 @@ mod tests {
             third.extract(entry).expect("extract").as_slice(),
             b"replacement bytes, longer"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// #5663 — a same-length rewrite that restores the mtime (`cp -p`,
+    /// `rsync -t --inplace`, `touch -r`) used to pass the (length, mtime) stamp,
+    /// so the reused reader returned the old table's view of the new bytes.
+    #[cfg(unix)]
+    #[test]
+    fn open_shared_rereads_a_same_length_rewrite_that_restores_the_mtime() {
+        let entry = r"textures\samelen.dds";
+        let path = write_one_entry_ba2("samelen", entry, b"aaaaaaaa", false);
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).expect("mtime");
+
+        let (first, reused) = Archive::open_shared(&path).expect("first open");
+        assert!(!reused);
+        assert_eq!(first.extract(entry).expect("extract").as_slice(), b"aaaaaaaa");
+
+        // Rewrite in place with a payload of the same length, then put the
+        // mtime back. The inode is unchanged; only the ctime moved.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let bytes = std::fs::read(&path).expect("read");
+        let rewritten: Vec<u8> = bytes
+            .windows(8)
+            .position(|w| w == b"aaaaaaaa")
+            .map(|at| {
+                let mut copy = bytes.clone();
+                copy[at..at + 8].copy_from_slice(b"bbbbbbbb");
+                copy
+            })
+            .expect("payload present");
+        let file = std::fs::OpenOptions::new().write(true).open(&path).expect("open for rewrite");
+        std::io::Write::write_all(&mut &file, &rewritten).expect("rewrite in place");
+        file.set_modified(mtime).expect("restore mtime");
+        drop(file);
+        let meta = std::fs::metadata(&path).expect("metadata");
+        assert_eq!(meta.len() as usize, rewritten.len(), "same length");
+        assert_eq!(meta.modified().expect("mtime"), mtime, "mtime restored");
+
+        let (second, reused) = Archive::open_shared(&path).expect("reopen");
+        assert!(!reused, "the ctime moved, so the cached reader must not be reused");
+        assert_eq!(second.extract(entry).expect("extract").as_slice(), b"bbbbbbbb");
         let _ = std::fs::remove_file(&path);
     }
 

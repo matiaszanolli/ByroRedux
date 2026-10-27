@@ -48,6 +48,13 @@ pub(crate) fn is_materialsbeta_cdb_path(path: &str) -> bool {
 /// keeps untrusted/modded archive sets from growing keys forever.
 pub(crate) const SF_CDB_CACHE_MAX_ENTRIES: usize = 128;
 
+/// Keyed on `"<archive source>|<in-archive path>"` and, like
+/// [`sf_cdb_index_cache`], **process-lifetime and never invalidated**: unlike
+/// `Archive::open_shared`'s registry it does not re-check the archive's file
+/// stamp (#5663). A Starfield archive replaced on disk mid-session is served
+/// from these caches until the next launch; the games index `Data` once at
+/// startup too, so that matches their behaviour.
+///
 /// Every caller takes this lock as `.unwrap_or_else(|e| e.into_inner())`,
 /// recovering rather than re-panicking on poison (#2398 — the deliberate
 /// counterpart to the ECS layer's #466 fail-fast doctrine). The map is a pure
@@ -84,7 +91,9 @@ pub(crate) type CdbIndexSlot = Arc<OnceLock<Option<Arc<MaterialIndex>>>>;
 /// keyed by the same `"<archive source>|<in-archive path>"` as
 /// [`sf_cdb_cache`] so it survives the `build_material_provider`
 /// rebuilds on every cell transition / save-load / debug-load (the
-/// #2705 rationale). A slot holding `None` memoises a failed build, so
+/// #2705 rationale). Like [`sf_cdb_cache`] it never re-checks the
+/// archive's file stamp (#5663): a CDB archive replaced mid-session is read
+/// again only on the next launch. A slot holding `None` memoises a failed build, so
 /// a corrupt CDB is re-attempted at most once per process rather than
 /// once per mesh.
 ///
