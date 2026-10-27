@@ -290,7 +290,7 @@ pub(crate) fn stream_object_lod_blocks(
     // terrain ring's twin of this flag.
     let mut starved = false;
     for (level, qx, qy) in candidates {
-        if !ctx.mesh_registry.scene_geometry_admission_open() {
+        if !ctx.mesh_registry.prop_geometry_admission_open() {
             budget.note_held_back(candidate_count - attempted);
             starved = true;
             break;
@@ -314,7 +314,7 @@ pub(crate) fn stream_object_lod_blocks(
             }
             None => match classify_lod_attempt(
                 false,
-                ctx.mesh_registry.scene_geometry_admission_open(),
+                ctx.mesh_registry.prop_geometry_admission_open(),
             ) {
                 // No baked mesh for this quad — remember so we don't
                 // re-extract on every boundary crossing.
@@ -546,14 +546,15 @@ fn spawn_object_lod_quad(
         // Lean global-only upload (no per-mesh buffers / no BLAS) — same path
         // terrain LOD uses: LOD geometry rasterizes from the global SSBO and
         // enters the TLAS only within `LOD_SHADOW_CASTER_DISTANCE`.
-        let handle = match ctx
-            .mesh_registry
-            .upload_scene_mesh_global_only(&verts, &mesh.indices)
+        let handle = match ctx.mesh_registry.with_admission_class(
+            byroredux_renderer::GeometryAdmissionClass::Prop,
+            |registry| registry.upload_scene_mesh_global_only(&verts, &mesh.indices),
+        )
         {
             Ok(h) => h,
             Err(e) => {
                 log::warn!("Object-LOD '{}' mesh upload failed: {}", path, e);
-                if !ctx.mesh_registry.scene_geometry_admission_open() {
+                if !ctx.mesh_registry.prop_geometry_admission_open() {
                     refused = true;
                     break;
                 }

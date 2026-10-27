@@ -894,6 +894,20 @@ census attributes the pool: at radius 4 around the river fixture it held
 4.95 M vertices, 4 603 of 5 315 meshes being full-detail cell props (terrain 81,
 water 12, LOD 192) — so FO4 beyond radius ~3 still exceeds even this ceiling.
 
+**Admission tiers** (`GeometryAdmissionClass`, `PROP_POOL_RESERVE_PERCENT` = 5):
+the caps are not shared equally. Placed statics and object / tree /
+placement LOD are *props*: they are admitted only up to 95 % of each cap
+(4.75 M vertices / 19 M indices) and a refusal latches a separate prop latch
+(`prop_geometry_admission_open`). Terrain, water, terrain LOD and actors are
+*essential*: they may use the full cap and keep the original global latch
+(`scene_geometry_admission_open`), so a prop refused at its ceiling can never
+close admission for the ground. Both latches reopen with the compaction a cell
+unload triggers. Measured at FO4 radius 4 around the river fixture before the
+split: the pool reached its cap, the player's head and hair were refused, and
+terrain could be; after it, only two distant Object-LOD meshes were refused
+and every terrain, water and actor upload succeeded. The reserve is carved out
+of the existing caps, so it adds no memory.
+
 **Registry overflow guard** (`667d1a28`): `NifImportRegistry` now defaults
 to a 2 048-entry LRU cap (configurable via `BYRO_NIF_CACHE_MAX=N`; `=0`
 disables the LRU). Before this guard, unbounded cell loads could silently

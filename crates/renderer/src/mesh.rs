@@ -34,6 +34,55 @@ pub const VERTEX_POOL_HARD_CAP: usize = VERTEX_POOL_SOFT_CAP;
 pub const INDEX_POOL_SOFT_CAP: usize = 20_000_000;
 pub const INDEX_POOL_HARD_CAP: usize = INDEX_POOL_SOFT_CAP;
 
+/// Share of each pool held back from [`GeometryAdmissionClass::Prop`] uploads,
+/// in percent. Placed statics and distant object/tree LOD are the pool's
+/// bulk and the easiest thing to lose; the ground, the water and the player
+/// are not. Without a reserve the first prop to hit the cap latched admission
+/// closed for everyone, so a dense FO4 view lost terrain cells (a void with no
+/// ground or water) and the player's own head while props kept their share
+/// (measured: 37 meshes refused at the old cap, terrain cells (4,0)/(4,1)
+/// among them). 5% of 5 M vertices is ~250 k, over the ~240 k that a radius-4
+/// terrain + water + LOD-terrain ring needs.
+pub const PROP_POOL_RESERVE_PERCENT: usize = 5;
+
+/// Who is asking for pool space. The class decides which ceiling and which
+/// refusal latch an upload meets; see [`PROP_POOL_RESERVE_PERCENT`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeometryAdmissionClass {
+    /// Terrain, water, terrain LOD, actors: full cap, global latch.
+    Essential,
+    /// Placed statics, object / tree / placement LOD: the reserve is kept
+    /// back, and a refusal latches only the prop latch.
+    Prop,
+}
+
+/// The pool ceilings a registry enforces. A field (defaulting to the
+/// constants above) so tests can use small numbers instead of allocating
+/// millions of vertices.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PoolLimits {
+    pub(crate) vertex_hard: usize,
+    pub(crate) index_hard: usize,
+}
+
+impl PoolLimits {
+    pub(crate) const DEFAULT: Self = Self {
+        vertex_hard: VERTEX_POOL_HARD_CAP,
+        index_hard: INDEX_POOL_HARD_CAP,
+    };
+
+    /// Hard ceilings for `class`: props stop short by the reserve.
+    pub(crate) fn for_class(self, class: GeometryAdmissionClass) -> (usize, usize) {
+        match class {
+            GeometryAdmissionClass::Essential => (self.vertex_hard, self.index_hard),
+            GeometryAdmissionClass::Prop => (
+                self.vertex_hard - self.vertex_hard / 100 * PROP_POOL_RESERVE_PERCENT,
+                self.index_hard - self.index_hard / 100 * PROP_POOL_RESERVE_PERCENT,
+            ),
+        }
+    }
+}
+
 /// Fixed duplication ceiling for a global-geometry rebuild on a device
 /// without `VK_EXT_memory_budget`: large rebuilds cannot safely keep two SSBO
 /// generations alive while allocating the replacement on mid-range GPUs.
@@ -363,6 +412,15 @@ pub struct MeshRegistry {
     /// subsequent compaction reopens admission when cell unload has reclaimed
     /// sufficient space.
     scene_geometry_admission_closed: bool,
+    /// The prop tier's own latch (see [`GeometryAdmissionClass`]): set when a
+    /// prop upload meets its reserve-reduced ceiling, reopened by the same
+    /// compaction that reopens `scene_geometry_admission_closed`. Never closes
+    /// admission for essential uploads.
+    prop_admission_closed: bool,
+    /// Class the next uploads are admitted as; see [`Self::with_admission_class`].
+    admission_class: GeometryAdmissionClass,
+    /// Pool ceilings this registry enforces.
+    pool_limits: PoolLimits,
     /// Scene uploads refused because the global geometry pool is at its limit
     /// (the hard cap tripped, or admission was already closed), counted for
     /// the life of the registry. A caller that streams geometry in bulk (the
@@ -503,6 +561,9 @@ impl MeshRegistry {
             geometry_generation: 0,
             geometry_dirty: false,
             scene_geometry_admission_closed: false,
+            prop_admission_closed: false,
+            admission_class: GeometryAdmissionClass::Essential,
+            pool_limits: PoolLimits::DEFAULT,
             scene_geometry_admission_rejections: 0,
             geometry_has_holes: false,
             ssbo_vertex_count: 0,
@@ -709,12 +770,22 @@ impl MeshRegistry {
         vertices: &[Vertex],
         indices: &[u32],
     ) -> Result<(u32, u32)> {
-        if self.scene_geometry_admission_closed {
+        let class = self.admission_class;
+        if self.scene_geometry_admission_closed
+            || (class == GeometryAdmissionClass::Prop && self.prop_admission_closed)
+        {
             self.scene_geometry_admission_rejections += 1;
             bail!(
                 "scene geometry admission is closed after reaching the resident pool limit"
             );
         }
+        let (vertex_hard, index_hard) = self.pool_limits.for_class(class);
+        // A refusal latches the tier that was refused. A prop turned away at
+        // its reserve-reduced ceiling must leave the essential tier open.
+        let latch_refusal = |this: &mut Self| match class {
+            GeometryAdmissionClass::Essential => this.scene_geometry_admission_closed = true,
+            GeometryAdmissionClass::Prop => this.prop_admission_closed = true,
+        };
 
         // Record offsets before appending.
         let v_offset = self.pending_vertices.len() as u32;
@@ -729,13 +800,13 @@ impl MeshRegistry {
         let v_warn = match check_pool_growth(
             self.pending_vertices.len(),
             new_v_len,
-            VERTEX_POOL_SOFT_CAP,
-            VERTEX_POOL_HARD_CAP,
+            VERTEX_POOL_SOFT_CAP.min(vertex_hard),
+            vertex_hard,
             "vertex",
         ) {
             Ok(warn) => warn,
             Err(error) => {
-                self.scene_geometry_admission_closed = true;
+                latch_refusal(self);
                 self.scene_geometry_admission_rejections += 1;
                 return Err(error);
             }
@@ -743,13 +814,13 @@ impl MeshRegistry {
         let i_warn = match check_pool_growth(
             self.pending_indices.len(),
             new_i_len,
-            INDEX_POOL_SOFT_CAP,
-            INDEX_POOL_HARD_CAP,
+            INDEX_POOL_SOFT_CAP.min(index_hard),
+            index_hard,
             "index",
         ) {
             Ok(warn) => warn,
             Err(error) => {
-                self.scene_geometry_admission_closed = true;
+                latch_refusal(self);
                 self.scene_geometry_admission_rejections += 1;
                 return Err(error);
             }
@@ -864,6 +935,29 @@ impl MeshRegistry {
     /// cell-unload compaction can reopen the gate.
     pub fn scene_geometry_admission_open(&self) -> bool {
         !self.scene_geometry_admission_closed
+    }
+
+    /// Whether [`GeometryAdmissionClass::Prop`] uploads may still be decoded
+    /// and uploaded. Stricter than [`Self::scene_geometry_admission_open`]:
+    /// props stop at the reserve-reduced ceiling, so this closes first, and
+    /// reopens with the same compaction.
+    pub fn prop_geometry_admission_open(&self) -> bool {
+        !self.scene_geometry_admission_closed && !self.prop_admission_closed
+    }
+
+    /// Run `f` with uploads admitted as `class`, restoring the previous class
+    /// afterwards. Callers that stream props (placed statics, object / tree /
+    /// placement LOD) wrap their uploads in `Prop`; everything else keeps the
+    /// `Essential` default.
+    pub fn with_admission_class<R>(
+        &mut self,
+        class: GeometryAdmissionClass,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = std::mem::replace(&mut self.admission_class, class);
+        let result = f(self);
+        self.admission_class = previous;
+        result
     }
 
     /// Running count of scene uploads refused at the geometry pool limit
@@ -2120,6 +2214,88 @@ mod refcount_tests {
             mesh.index_buffer.is_none() && mesh.vertex_buffer.is_none(),
             "global-only meshes intentionally carry no per-mesh buffers",
         );
+    }
+
+    /// A registry with small pool ceilings, so the admission tiers can be
+    /// driven to their limits without allocating millions of vertices.
+    fn small_pool_registry(vertex_hard: usize, index_hard: usize) -> MeshRegistry {
+        let mut reg = MeshRegistry::new();
+        reg.pool_limits = PoolLimits { vertex_hard, index_hard };
+        reg
+    }
+
+    /// `n` degenerate-but-valid vertices and the `3 * (n / 3)` indices that
+    /// walk them as triangles.
+    fn pool_mesh(n: usize) -> (Vec<Vertex>, Vec<u32>) {
+        let vertices =
+            vec![Vertex::new([0.0; 3], [1.0; 3], [0.0, 1.0, 0.0], [0.0, 0.0]); n];
+        let indices = (0..(n / 3 * 3) as u32).collect();
+        (vertices, indices)
+    }
+
+    fn upload_as(reg: &mut MeshRegistry, class: GeometryAdmissionClass, n: usize) -> Result<u32> {
+        let (vertices, indices) = pool_mesh(n);
+        reg.with_admission_class(class, |r| r.upload_scene_mesh_global_only(&vertices, &indices))
+    }
+
+    /// The reserve: props stop at `100% - PROP_POOL_RESERVE_PERCENT`, and the
+    /// refusal latches only the prop tier — terrain / water / actors still
+    /// fit in the room that was kept back, up to the full cap.
+    #[test]
+    fn a_refused_prop_leaves_the_essential_tier_open_and_using_the_reserve() {
+        use GeometryAdmissionClass::{Essential, Prop};
+        let mut reg = small_pool_registry(1000, 4000);
+        assert_eq!(PoolLimits { vertex_hard: 1000, index_hard: 4000 }.for_class(Prop), (950, 3800));
+
+        upload_as(&mut reg, Prop, 930).expect("a prop under its ceiling is admitted");
+        assert!(reg.prop_geometry_admission_open());
+
+        // 930 + 30 = 960 > 950: refused, and only the prop latch closes.
+        assert!(upload_as(&mut reg, Prop, 30).is_err(), "a prop past its ceiling is refused");
+        assert!(!reg.prop_geometry_admission_open(), "the prop tier is latched");
+        assert!(reg.scene_geometry_admission_open(), "the essential tier is not");
+
+        // The reserve is exactly what essential uploads can still use.
+        upload_as(&mut reg, Essential, 60).expect("essential geometry fits in the reserve");
+        assert_eq!(reg.pending_vertices.len(), 990);
+        assert!(upload_as(&mut reg, Essential, 30).is_err(), "the full cap still binds");
+        assert!(!reg.scene_geometry_admission_open(), "now the global latch closes");
+        assert!(!reg.prop_geometry_admission_open(), "and takes the prop tier with it");
+    }
+
+    /// A latched prop tier turns later props away without touching the pool
+    /// (the point of the latch: no decode / retry loop per remaining
+    /// placement), and still counts them for the LOD rings' held-back verdict
+    /// (#6054).
+    #[test]
+    fn a_latched_prop_tier_rejects_and_counts_without_growing_the_pool() {
+        use GeometryAdmissionClass::{Essential, Prop};
+        let mut reg = small_pool_registry(1000, 4000);
+        upload_as(&mut reg, Prop, 940).unwrap();
+        assert!(upload_as(&mut reg, Prop, 30).is_err());
+        let rejections = reg.scene_geometry_admission_rejections();
+        let before = reg.pending_vertices.len();
+        assert!(upload_as(&mut reg, Prop, 3).is_err(), "even a tiny prop is turned away");
+        assert_eq!(reg.pending_vertices.len(), before);
+        assert_eq!(reg.scene_geometry_admission_rejections(), rejections + 1);
+        // Essential uploads are not affected by the prop latch.
+        upload_as(&mut reg, Essential, 3).expect("essential still admitted");
+    }
+
+    /// The default class is `Essential`, and `with_admission_class` puts the
+    /// previous class back — a prop wrapper cannot leak `Prop` onto whatever
+    /// uploads next (terrain would then lose its reserve).
+    #[test]
+    fn the_admission_class_is_scoped() {
+        use GeometryAdmissionClass::{Essential, Prop};
+        let mut reg = MeshRegistry::new();
+        assert_eq!(reg.admission_class, Essential);
+        reg.with_admission_class(Prop, |r| {
+            assert_eq!(r.admission_class, Prop);
+            r.with_admission_class(Essential, |inner| assert_eq!(inner.admission_class, Essential));
+            assert_eq!(r.admission_class, Prop, "nesting restores the outer class");
+        });
+        assert_eq!(reg.admission_class, Essential);
     }
 
     /// #4891 — a failed scene-mesh upload must take back the geometry it fed

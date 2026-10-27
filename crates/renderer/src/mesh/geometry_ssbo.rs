@@ -266,6 +266,7 @@ impl MeshRegistry {
         // admission limit. Let the next streaming transaction fill reclaimed
         // space instead of carrying a previous scene's saturation forever.
         self.scene_geometry_admission_closed = false;
+        self.prop_admission_closed = false;
         // Pools are hole-free again until the next scene-mesh drop.
         self.geometry_has_holes = false;
 
@@ -1543,6 +1544,36 @@ mod abandoned_group_tests {
             assert_eq!(reg.refcount(handle), None);
         }
         assert_eq!(reg.len(), 3, "handles stay stable: the slots remain, empty");
+    }
+
+    /// Both admission latches reopen with the compaction a cell unload
+    /// triggers (the retry cycle of #6332), not only the global one: a prop
+    /// tier that stayed latched after the unload would keep distant LOD and
+    /// placed statics out until a restart.
+    #[test]
+    fn compaction_after_an_unload_reopens_the_prop_tier_too() {
+        use crate::mesh::{GeometryAdmissionClass::Prop, PoolLimits};
+        let mut reg = MeshRegistry::new();
+        reg.pool_limits = PoolLimits { vertex_hard: 1000, index_hard: 4000 };
+        let mesh = |n: usize| {
+            (
+                vec![Vertex::new([0.0; 3], [1.0; 3], [0.0, 1.0, 0.0], [0.0, 0.0]); n],
+                (0..(n / 3 * 3) as u32).collect::<Vec<u32>>(),
+            )
+        };
+        let upload = |reg: &mut MeshRegistry, n: usize| {
+            let (v, i) = mesh(n);
+            reg.with_admission_class(Prop, |r| r.upload_scene_mesh_global_only(&v, &i))
+        };
+        let first = upload(&mut reg, 600).unwrap();
+        upload(&mut reg, 340).unwrap();
+        assert!(upload(&mut reg, 30).is_err(), "past the prop ceiling");
+        assert!(!reg.prop_geometry_admission_open());
+
+        reg.drop_meshes(&[first]);
+        assert!(reg.plan_geometry_compaction().is_some(), "the unload left a hole to reclaim");
+        assert!(reg.prop_geometry_admission_open(), "the compaction reopened the prop tier");
+        upload(&mut reg, 30).expect("reclaimed space is usable by props again");
     }
 
     /// The unwind it replaces: the same refusal dropped with `drop_meshes` leaves a hole, and the

@@ -433,7 +433,7 @@ pub(crate) fn stream_tree_lod_blocks(
     // terrain ring's twin of this flag.
     let mut starved = false;
     for (index, &(qx, qy)) in candidates.iter().enumerate() {
-        if !ctx.mesh_registry.scene_geometry_admission_open() {
+        if !ctx.mesh_registry.prop_geometry_admission_open() {
             budget.note_held_back(candidates.len() - index);
             starved = true;
             break;
@@ -446,7 +446,7 @@ pub(crate) fn stream_tree_lod_blocks(
             Some(block) => block,
             None => match classify_lod_attempt(
                 false,
-                ctx.mesh_registry.scene_geometry_admission_open(),
+                ctx.mesh_registry.prop_geometry_admission_open(),
             ) {
                 LodAttemptVerdict::Miss => ObjectLodBlock::empty(),
                 // #6092 — pool refusal, not a missing quad: no sentinel.
@@ -505,9 +505,10 @@ fn spawn_tree_lod_quad(
     let atlas = resolve_texture(ctx, tex_provider, Some(atlas_path.as_str()));
     let atlas = if atlas == ctx.texture_registry.fallback() { 0 } else { atlas };
 
-    let handle = match ctx
-        .mesh_registry
-        .upload_scene_mesh_global_only(&mesh.vertices, &mesh.indices)
+    let handle = match ctx.mesh_registry.with_admission_class(
+            byroredux_renderer::GeometryAdmissionClass::Prop,
+            |registry| registry.upload_scene_mesh_global_only(&mesh.vertices, &mesh.indices),
+        )
     {
         Ok(handle) => handle,
         Err(e) => {

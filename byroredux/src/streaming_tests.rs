@@ -950,6 +950,13 @@ fn the_starved_arm_closes_the_boundary_and_arms_the_retry() {
         step.contains("cell_loader::lod_should_rearm_after_starvation("),
         "step_streaming must re-arm the reconcile when the pool reopens"
     );
+    // The re-arm edge reads the stricter prop query: props starve at their
+    // reserve-reduced ceiling while the essential tier is still open, and the
+    // essential query alone would restart them every frame.
+    assert!(
+        step.contains("ctx.mesh_registry.prop_geometry_admission_open()"),
+        "the LOD re-arm must wait for BOTH admission tiers to reopen"
+    );
 
     let helpers = include_str!("streaming_helpers.rs");
     assert!(
@@ -963,17 +970,26 @@ fn the_starved_arm_closes_the_boundary_and_arms_the_retry() {
 /// would permanently drop a refused quad.
 #[test]
 fn every_lod_ring_gates_on_admission_and_never_caches_a_refusal() {
-    for (name, src) in [
-        ("terrain_lod", include_str!("cell_loader/terrain_lod.rs")),
-        ("object_lod", include_str!("cell_loader/object_lod.rs")),
-        ("placement_lod", include_str!("cell_loader/placement_lod.rs")),
-        ("tree_lod", include_str!("cell_loader/tree_lod.rs")),
+    // Terrain LOD is essential geometry (full pool cap, global latch); the
+    // object / tree / placement rings are props and stop at the reserve-reduced
+    // ceiling with their own latch — each consults the query for its own tier.
+    for (name, src, admission_query) in [
+        ("terrain_lod", include_str!("cell_loader/terrain_lod.rs"), "scene_geometry_admission_open()"),
+        ("object_lod", include_str!("cell_loader/object_lod.rs"), "prop_geometry_admission_open()"),
+        ("placement_lod", include_str!("cell_loader/placement_lod.rs"), "prop_geometry_admission_open()"),
+        ("tree_lod", include_str!("cell_loader/tree_lod.rs"), "prop_geometry_admission_open()"),
     ] {
         let production = byroredux_core::source_scan::production_text_or_whole(src);
         assert!(
-            production.contains("scene_geometry_admission_open()"),
-            "{name}: the ring must check pool admission before an attempt (#6092)"
+            production.contains(admission_query),
+            "{name}: the ring must check pool admission (`{admission_query}`) before an attempt (#6092)"
         );
+        if name != "terrain_lod" {
+            assert!(
+                production.contains("GeometryAdmissionClass::Prop"),
+                "{name}: its uploads must be admitted as props, or the reserve is not kept back"
+            );
+        }
         assert!(
             production.contains("classify_lod_attempt("),
             "{name}: a no-block attempt must be classified, not cached as a miss (#6092)"

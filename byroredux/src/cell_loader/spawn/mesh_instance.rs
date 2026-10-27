@@ -819,11 +819,11 @@ pub(super) fn prepare_mesh_upload_range(
                 content_aliases.push((sub_mesh_index, fresh[representative].sub_mesh_index));
                 continue;
             }
-            if ctx.mesh_registry.scene_geometry_admission_open() {
+            if ctx.mesh_registry.prop_geometry_admission_open() {
                 bucket.push(fresh.len());
             }
         }
-        if !ctx.mesh_registry.scene_geometry_admission_open() {
+        if !ctx.mesh_registry.prop_geometry_admission_open() {
             // Exact-content and path hits remain usable without growing the
             // pool. Unseen geometry still obeys the unchanged admission cap.
             continue;
@@ -858,11 +858,9 @@ pub(super) fn prepare_mesh_upload_range(
         .collect::<Vec<_>>();
     let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     let transfer_fence = std::sync::Arc::clone(&ctx.transfer_fence);
-    match ctx.mesh_registry.upload_scene_meshes_batched(
-        upload_ctx,
-        &uploads,
-        transfer_fence.as_ref(),
-    ) {
+    match ctx.mesh_registry.with_admission_class(byroredux_renderer::GeometryAdmissionClass::Prop, |registry| {
+        registry.upload_scene_meshes_batched(upload_ctx, &uploads, transfer_fence.as_ref())
+    }) {
         Ok(handles) => {
             for (fresh_mesh, handle) in fresh.iter().zip(handles) {
                 if fresh_mesh.shareable {
@@ -886,7 +884,7 @@ pub(super) fn prepare_mesh_upload_range(
             }
         }
         Err(batch_error) => {
-            if !ctx.mesh_registry.scene_geometry_admission_open() {
+            if !ctx.mesh_registry.prop_geometry_admission_open() {
                 log::warn!(
                     "Scene geometry admission limit reached while uploading {} submeshes: \
                      {batch_error:#}; skipping remaining uncached geometry for this cell",
@@ -906,23 +904,25 @@ pub(super) fn prepare_mesh_upload_range(
             for fresh_mesh in &fresh {
                 let mesh = &imported[fresh_mesh.sub_mesh_index];
                 let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
-                let upload_result = match pc.mesh_cache_key {
-                    Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
-                        upload_ctx,
-                        &fresh_mesh.vertices,
-                        &mesh.indices,
-                        fresh_mesh.for_rt,
-                        None,
-                        (key, fresh_mesh.sub_mesh_index as u32),
-                    ),
-                    None => ctx.mesh_registry.upload_scene_mesh(
-                        upload_ctx,
-                        &fresh_mesh.vertices,
-                        &mesh.indices,
-                        fresh_mesh.for_rt,
-                        None,
-                    ),
-                };
+                let upload_result = ctx.mesh_registry.with_admission_class(byroredux_renderer::GeometryAdmissionClass::Prop, |registry| {
+                    match pc.mesh_cache_key {
+                        Some(key) => registry.register_scene_mesh_keyed(
+                            upload_ctx,
+                            &fresh_mesh.vertices,
+                            &mesh.indices,
+                            fresh_mesh.for_rt,
+                            None,
+                            (key, fresh_mesh.sub_mesh_index as u32),
+                        ),
+                        None => registry.upload_scene_mesh(
+                            upload_ctx,
+                            &fresh_mesh.vertices,
+                            &mesh.indices,
+                            fresh_mesh.for_rt,
+                            None,
+                        ),
+                    }
+                });
                 match upload_result {
                     Ok(handle) => {
                         if fresh_mesh.shareable {

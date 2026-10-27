@@ -135,10 +135,14 @@ impl App {
         );
         // #6092 — a starved LOD reconcile stopped because the geometry pool was
         // closed; nothing else tells the rings it reopened (a compaction after a
-        // cell unload does it), so this is the edge that restarts them.
+        // cell unload does it), so this is the edge that restarts them. The
+        // stricter prop query: object / tree / placement LOD starve at the prop
+        // tier's reserve-reduced ceiling while the essential tier is still
+        // open, and re-arming on the essential tier alone would restart them
+        // every frame. It is closed whenever either tier is.
         if cell_loader::lod_should_rearm_after_starvation(
             state.lod_starved,
-            ctx.mesh_registry.scene_geometry_admission_open(),
+            ctx.mesh_registry.prop_geometry_admission_open(),
         ) {
             state.lod_starved = false;
             state.lod_reconcile_pending = true;

@@ -405,7 +405,7 @@ pub(crate) fn stream_placement_lod_blocks(
     // terrain ring's twin of this flag.
     let mut starved = false;
     for (cx, cy) in candidates {
-        if !ctx.mesh_registry.scene_geometry_admission_open() {
+        if !ctx.mesh_registry.prop_geometry_admission_open() {
             budget.note_held_back(candidate_count - attempted);
             starved = true;
             break;
@@ -423,7 +423,7 @@ pub(crate) fn stream_placement_lod_blocks(
             }
             None => match classify_lod_attempt(
                 false,
-                ctx.mesh_registry.scene_geometry_admission_open(),
+                ctx.mesh_registry.prop_geometry_admission_open(),
             ) {
                 LodAttemptVerdict::Miss => {
                     blocks.insert((cx, cy), PlacementLodBlock::empty());
@@ -581,14 +581,15 @@ fn spawn_placement_lod_cell(
             }
             let verts = super::lod_support::imported_mesh_to_vertices(mesh);
 
-            let handle = match ctx
-                .mesh_registry
-                .upload_scene_mesh_global_only(&verts, &mesh.indices)
+            let handle = match ctx.mesh_registry.with_admission_class(
+            byroredux_renderer::GeometryAdmissionClass::Prop,
+            |registry| registry.upload_scene_mesh_global_only(&verts, &mesh.indices),
+        )
             {
                 Ok(h) => h,
                 Err(e) => {
                     log::warn!("Placement-LOD '{far}' mesh upload failed: {e}");
-                    if !ctx.mesh_registry.scene_geometry_admission_open() {
+                    if !ctx.mesh_registry.prop_geometry_admission_open() {
                         refused = true;
                         break;
                     }
