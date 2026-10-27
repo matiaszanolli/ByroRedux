@@ -645,6 +645,7 @@ impl ConditionFunction {
     }
 
     /// Oblivion's own `(CTDA index, function)` pairs (see `OBLIVION_DIALECT`).
+    #[cfg(test)]
     pub fn oblivion_dialect() -> &'static [(u32, ConditionFunction)] {
         OBLIVION_DIALECT
     }

@@ -184,7 +184,7 @@ impl Default for ActionBindings {
 
 impl ActionBindings {
     /// Replace the action produced by a physical keyboard key.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn bind_key(&mut self, key: KeyCode, action: InputAction) {
         self.rebind_key(key, action);
     }

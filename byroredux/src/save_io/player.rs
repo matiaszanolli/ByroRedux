@@ -65,7 +65,7 @@ impl Resource for PendingPlayerSaveActions {}
 impl PendingPlayerSaveActions {
     /// Read-only view of the still-deferred actions, so callers (and tests)
     /// can observe the queue without joining the executor's take semantics.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn queued(&self) -> &[PlayerSaveAction] {
         &self.0
     }

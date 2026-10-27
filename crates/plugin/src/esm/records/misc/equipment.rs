@@ -236,12 +236,6 @@ impl BptdRecord {
     pub fn part_count(&self) -> u32 {
         self.parts.len() as u32
     }
-
-    /// First part's name ("" when the record authors none) — the old
-    /// stub's sanity-check field.
-    pub fn first_part_name(&self) -> &str {
-        self.parts.first().map(|p| p.name.as_str()).unwrap_or("")
-    }
 }
 
 // #1057's Tier-7 note is half-retired: the full per-part array decode
@@ -556,7 +550,6 @@ mod tests {
         let b = parse_bptd(0x0009_29DC, &subs, &None);
         assert_eq!(b.editor_id, "HumanRace");
         assert_eq!(b.part_count(), 0);
-        assert_eq!(b.first_part_name(), "");
     }
 
     /// #6350 — the full per-part decode against the corpus-established
