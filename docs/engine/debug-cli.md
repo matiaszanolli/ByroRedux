@@ -1148,6 +1148,31 @@ BYRO_DEBUG_PORT=8080 cargo run -p byro-dbg  # custom port
 BYRO_DEBUG_HOST=10.0.0.5 cargo run -p byro-dbg  # remote host
 ```
 
+### Environment switches
+
+Read once at startup and cached unless noted. The first block is meant for
+users; the second is diagnostic — an A/B lever for one investigation, not a
+shipping rule.
+
+| Variable | Effect |
+|---|---|
+| `BYRO_DEBUG_SERVER` | `1` binds the debug server in a release build (debug builds bind by default); see the top of this page |
+| `BYRO_DEBUG_PORT` / `BYRO_DEBUG_HOST` | Server port (default 9876) / the host `byro-dbg` connects to |
+| `BYRO_CACHE_DIR` | Parent of every writable cache (`terrain-height/`, the Vulkan pipeline cache); default the executable's directory. See [exal-terrain-height.md](exal-terrain-height.md) |
+| `BYROREDUX_PRESENT_MODE` | `fifo`, `mailbox`, `immediate` or `fifo_relaxed`. Falls back to the default selection (mailbox, else fifo) with a warning if the surface lacks it. Use `immediate` to take the compositor's pacing out of a frame-rate investigation |
+| `BYRO_STRINGS_LANG` | String-table language for localized plugins (default `english`; `ptbr`, `zhhans`, `russian`, … are honoured verbatim) |
+| `BYROREDUX_LAUNCHER_X11` | `byro-launcher` on Linux: force the X11 backend instead of Wayland |
+| `BYRO_RELEASE` / `BYRO_COMMIT` | **Build-time** (`option_env!`), stamped by the release workflow; what `--version` prints. A source build reports itself as one |
+| `BYRO_FOG_NEAR` / `BYRO_FOG_FAR` | Override the authored fog ramp, in game units (finite, ≥ 0; logged when active) |
+| `BYRO_INTERIOR_AMBIENT_SCALE` | Replace the `INTERIOR_AMBIENT_SCALE` constant, for ambient sweeps against a reference capture (finite, ≥ 0) |
+| `BYRO_NO_CULL` | Skip the raster frustum test for static meshes (draw everything) |
+| `BYRO_RT_FRUSTUM_ONLY` | Exclude every off-frustum ray candidate from the TLAS. Off-frustum geometry can legitimately cast shadows and appear in reflections, so this changes the image; it exists to measure what the exclusion would cost and save |
+| `BYRO_DISABLE_OPAQUE_EARLY_TESTS` | Build the opaque pipeline without the early-test shader mode (read at pipeline creation); draw order and batching are unchanged |
+| `BYRO_M42_DEBUG` | Per-frame `[m42-tick]` AI-package probe |
+| `BYRO_PROFILE_FALLERS` | One-shot dump of awake falling bodies (see `BYRO_PROFILE` for the per-phase physics brackets) |
+| `BYRO_COMBUSTION_PROBE` | Add the combustion probe to the `--cornell` scene |
+| `BYROREDUX_FIXED_DT` | Fixed frame delta in seconds for non-benchmark tools; finite benches select a named mode instead |
+
 ### Fragment-shader bypass / viz bits — `BYROREDUX_RENDER_DEBUG`
 
 Parsed once at engine boot by

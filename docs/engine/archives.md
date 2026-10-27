@@ -303,6 +303,36 @@ var override (`BYROREDUX_FNV_DATA`, etc.), default Steam path, and primary
 mesh archive filename. `open_mesh_archive(Game)` picks the right reader
 and skips cleanly when the data isn't available.
 
+## Asset provider precedence and the loose tier
+
+The engine's `Archive` (`byroredux/src/asset_provider/archive.rs`) wraps a BSA, a
+BA2 or a *loose* directory behind one `extract` / `contains` surface, and a
+provider is an ordered list of them. Lookups walk the list from the **end**:
+the **last-listed archive wins** (#3637). `<stem>N.bsa` siblings of a listed
+archive (`Textures.bsa` → `Textures2.bsa`) are appended automatically.
+
+**Loose files outrank every archive** (#6200). Every Bethesda title this engine
+loads lets a file under `Data\` shadow the archived copy at the same path, so
+the loose tier is appended after all the archives and wins by the rule above.
+
+- **What is indexed.** Only the four asset roots `textures`, `meshes`,
+  `materials` and `geometries` under the game's `Data` directory (the last is
+  Starfield's external `.mesh` bodies, #6330). Root-directory case is whatever
+  the install uses; matching is case-insensitive.
+- **Keys.** Each file is keyed like an archive entry: lowercase,
+  backslash-separated, relative to `Data` (`textures\landscape\dirt01_d.dds`).
+  Two files that fold onto one key (possible on a case-sensitive filesystem)
+  log a warning and the lexicographically last path wins.
+- **Which `Data`.** The directory containing the `--esm` plugin. Without `--esm`
+  (a loose-NIF viewer run) no loose tier is opened, and a `Data` directory with
+  no loose assets opens no tier at all, so a vanilla install pays nothing.
+- **When.** Indexed once per directory per process and shared across provider
+  rebuilds (door cover, destination apply, save-load); a file added mid-session
+  is seen by the next launch, as in the games. Symlinked directories are
+  followed but each is walked once by canonical path (#6243), to a depth of 32.
+- **Size.** A loose file over the archive extract cap is refused like an
+  archived one.
+
 ## Tools
 
 ### `nif_stats` example

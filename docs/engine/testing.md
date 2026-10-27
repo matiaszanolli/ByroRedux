@@ -168,6 +168,23 @@ example binary in `crates/nif/examples/nif_stats.rs`. The plugin, bgsm,
 sfmaterial, facegen, and spt integration tests each carry their own
 small env-var-resolving `data_dir` helper following the same shape.
 
+### Test-only environment variables
+
+Besides the per-game `BYROREDUX_*_DATA` roots above (`BYROREDUX_OBL_DATA`
+is accepted alongside `BYROREDUX_OBLIVION_DATA`; `BYROREDUX_SKYRIMLE_DATA`
+points the Skyrim LE suites at their install):
+
+| Variable | Used by |
+|---|---|
+| `BYROREDUX_REGEN_BASELINES` / `BYROREDUX_REGEN_GOLDEN` | Rewrite the checked-in per-block baselines / golden images instead of comparing |
+| `BYROREDUX_REQUIRE_GAME_DATA` | Turn a missing game install from a skip into a failure |
+| `BYROREDUX_RT_ARTIFACT_DIR` | `cornell_rt_oracle`: keep every capture under `<dir>/<test name>` (the workflow sets it); unset uses a temp dir |
+| `BYROREDUX_QUALITY_GAME` / `BYROREDUX_QUALITY_CELL` | `upscaler_quality`: opt in to scoring FSR presets on real content (e.g. `fo4` / `DmndDugoutInn01`); both required |
+| `BYROREDUX_ANCHOR_*` | `renderer_anchor`: the reference-vs-candidate gate (binaries, output dir, frames, camera paths, thresholds). Assembled by `scripts/check-render-anchor.sh`; set them through the wrapper, and see the header of `byroredux/tests/renderer_anchor.rs` for the contract |
+| `BYRO_FO4_MESHES_BA2` / `BYRO_OBLIVION_MESHES_BSA` | Point the opt-in `fog.rs` shipped-mesh tests at an archive |
+| `BYRO_ARCHIVE_STRINGS` | `probe_load_screens` example: resolve strings through the Skyrim interface archive like the engine |
+| `BYRO_LOCK_ORDER_CHECK` | `1` enables the cross-thread lock-order graph in debug builds |
+
 ## Running tests
 
 ```bash
