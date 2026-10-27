@@ -2092,7 +2092,7 @@ mod tests {
     fn count(world: &World, entity: EntityId, item: u32) -> u32 {
         world
             .get::<Inventory>(entity)
-            .map_or(0, |inventory| inventory.items.iter().filter(|stack| stack.base_form_id == item).map(|stack| stack.count).sum())
+            .map_or(0, |inventory| inventory.count_of(item))
     }
 
     fn refs(forms: &[u32]) -> Vec<ObScriptValue> {

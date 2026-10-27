@@ -139,6 +139,15 @@ impl Inventory {
         self.items.get(idx.0 as usize)
     }
 
+    /// How many of `base_form_id` this inventory holds, across every row of
+    /// that form (plain and instanced alike). Saturates rather than wrapping.
+    pub fn count_of(&self, base_form_id: u32) -> u32 {
+        self.items
+            .iter()
+            .filter(|stack| stack.base_form_id == base_form_id)
+            .fold(0u32, |total, stack| total.saturating_add(stack.count))
+    }
+
     pub fn len(&self) -> usize {
         self.items.len()
     }
@@ -532,5 +541,25 @@ mod tests {
         inv.items[other.0 as usize].count = 0;
         assert_eq!(inv.add(ItemStack::new(0x1, 4)), other, "a zeroed row is reused in place");
         assert_eq!(inv.len(), 3);
+    }
+
+    /// #6363 — `count_of` sums every row of one form (plain and instanced),
+    /// ignores other forms, and saturates instead of wrapping.
+    #[test]
+    fn count_of_sums_every_row_of_one_form() {
+        let mut inv = Inventory::new();
+        assert_eq!(inv.count_of(0xF), 0);
+        inv.add(ItemStack::new(0xF, 5));
+        inv.add(ItemStack::new(0x1, 9));
+        inv.push(ItemStack {
+            instance: Some(ItemInstanceId(NonZeroU32::new(3).unwrap())),
+            ..ItemStack::new(0xF, 2)
+        });
+        assert_eq!(inv.count_of(0xF), 7);
+        assert_eq!(inv.count_of(0x1), 9);
+        assert_eq!(inv.count_of(0x2), 0);
+
+        inv.push(ItemStack::new(0xF, u32::MAX));
+        assert_eq!(inv.count_of(0xF), u32::MAX);
     }
 }

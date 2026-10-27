@@ -733,7 +733,7 @@ fn drop_removes_the_item_and_leaves_a_reference_at_the_actors_feet() {
     let c = ctx(Some(ACTOR));
     crate::obscript_cmd::run(&world, 0x1002, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(5.0)], &c);
     assert!(is_done(&run(&world, 0x1057, &[ObScriptValue::Ref(ITEM), ObScriptValue::Num(2.0)], &c)));
-    let held = world.get::<Inventory>(actor).map_or(0, |i| i.items.iter().filter(|s| s.base_form_id == ITEM).map(|s| s.count).sum::<u32>());
+    let held = world.get::<Inventory>(actor).map_or(0, |i| i.count_of(ITEM));
     assert_eq!(held, 3, "two dropped of five");
     let created = world.try_resource::<crate::CreatedReferences>().unwrap();
     assert!(created.iter().any(|r| r.base == ITEM && r.at_reference == ACTOR));

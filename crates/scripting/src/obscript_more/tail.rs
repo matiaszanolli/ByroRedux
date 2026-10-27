@@ -574,7 +574,7 @@ fn cmd_10a9(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
 fn get_gold(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
     match player(world) {
         Some(player) => {
-            answer(world.get::<Inventory>(player).map_or(0.0, |inventory| inventory.items.iter().filter(|stack| stack.base_form_id == crate::guards::CURRENCY_FORM).map(|stack| stack.count as f32).sum()))
+            answer(world.get::<Inventory>(player).map_or(0.0, |inventory| inventory.count_of(crate::guards::CURRENCY_FORM) as f32))
         }
         None => Action::Declined,
     }

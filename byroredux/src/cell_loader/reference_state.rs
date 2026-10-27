@@ -1594,7 +1594,7 @@ mod tests {
         // Resident: straight into the inventory.
         world.insert_resource(byroredux_core::ecs::resources::ItemInstancePool::new());
         assert!(deposit_into_reference(&world, CHEST, 0xAAAA, 4));
-        let aaaa: u32 = world.get::<Inventory>(chest).unwrap().items.iter().filter(|s| s.base_form_id == 0xAAAA).map(|s| s.count).sum();
+        let aaaa = world.get::<Inventory>(chest).unwrap().count_of(0xAAAA);
         assert_eq!(aaaa, 9);
 
         // No load order, no way to name the reference.

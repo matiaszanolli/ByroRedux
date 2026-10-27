@@ -151,9 +151,7 @@ impl Vm<'_> {
                     .world
                     .query::<byroredux_core::ecs::components::Inventory>()
                     .and_then(|inventories| {
-                        inventories.get(entity).map(|inventory| {
-                            inventory.items.iter().filter(|stack| stack.base_form_id == *item).map(|stack| stack.count).sum()
-                        })
+                        inventories.get(entity).map(|inventory| inventory.count_of(*item))
                     })
                     .unwrap_or(0);
                 let take = held.min(wanted as u32);

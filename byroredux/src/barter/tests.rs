@@ -110,7 +110,7 @@ fn misc(form_id: u32, name: &str, value: u32) -> ItemRecord {
 }
 
 fn count(world: &World, entity: EntityId, form: u32) -> u32 {
-    count_of(world, entity, form)
+    world.get::<Inventory>(entity).map_or(0, |inventory| inventory.count_of(form))
 }
 
 /// A merchant chest in an unloaded cell: the session stands in for it, the

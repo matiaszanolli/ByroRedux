@@ -193,7 +193,7 @@ fn confiscate_stolen_goods(world: &World, player: EntityId, chest: Option<u32>) 
     for (item, recorded) in stolen {
         let held: u32 = world
             .get::<byroredux_core::ecs::components::Inventory>(player)
-            .map_or(0, |inventory| inventory.items.iter().filter(|s| s.base_form_id == item).map(|s| s.count).sum());
+            .map_or(0, |inventory| inventory.count_of(item));
         let taken = held.min(recorded);
         if taken > 0 {
             remove_items(world, player, item, taken, None);
@@ -348,7 +348,7 @@ mod tests {
     }
 
     fn held(world: &World, player: EntityId, item: u32) -> u32 {
-        world.get::<Inventory>(player).unwrap().items.iter().filter(|s| s.base_form_id == item).map(|s| s.count).sum()
+        world.get::<Inventory>(player).unwrap().count_of(item)
     }
 
     fn start(world: &mut World, bounty: i32, stolen: &[(u32, u32)]) {

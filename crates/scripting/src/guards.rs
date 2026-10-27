@@ -100,22 +100,13 @@ pub fn faction_bounty(world: &World, actor: EntityId, faction: u32) -> (i32, i32
 /// The gold the player holds.
 pub fn player_gold(world: &World) -> i64 {
     let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world) else { return 0 };
-    world.get::<Inventory>(player).map_or(0, |inventory| {
-        inventory.items.iter().filter(|stack| stack.base_form_id == CURRENCY_FORM).map(|stack| i64::from(stack.count)).sum()
-    })
+    world.get::<Inventory>(player).map_or(0, |inventory| i64::from(inventory.count_of(CURRENCY_FORM)))
 }
 
 /// CS *CanPayCrimeGold*: whether `actor` holds at least as much gold as their
 /// bounty.
 pub fn can_pay_bounty(world: &World, actor: EntityId) -> bool {
-    let gold: u32 = world.get::<Inventory>(actor).map_or(0, |inventory| {
-        inventory
-            .items
-            .iter()
-            .filter(|stack| stack.base_form_id == CURRENCY_FORM)
-            .map(|stack| stack.count)
-            .sum()
-    });
+    let gold = world.get::<Inventory>(actor).map_or(0, |inventory| inventory.count_of(CURRENCY_FORM));
     i64::from(gold) >= i64::from(bounty_of(world, actor))
 }
 

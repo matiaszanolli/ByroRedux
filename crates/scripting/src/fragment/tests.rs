@@ -5324,11 +5324,7 @@ fn player_caps_and_reward_xp_reach_the_player() {
     let caps: u32 = world
         .get::<Inventory>(player)
         .unwrap()
-        .items
-        .iter()
-        .filter(|stack| stack.base_form_id == 0xF)
-        .map(|stack| stack.count)
-        .sum();
+        .count_of(0xF);
     assert_eq!(caps, 70);
     assert_eq!(
         world.resource::<crate::story_manager::PendingPlayerXp>().0,
@@ -6118,11 +6114,7 @@ fn item_counts_evaluate_run_time_values() {
     let gold: u32 = world
         .get::<Inventory>(player)
         .unwrap()
-        .items
-        .iter()
-        .filter(|stack| stack.base_form_id == 0xF)
-        .map(|stack| stack.count)
-        .sum();
+        .count_of(0xF);
     assert_eq!(gold, 75);
 }
 
@@ -6410,7 +6402,7 @@ fn a_quest_started_without_a_start_up_stage_runs_no_stage_fragment() {
         world
             .get::<byroredux_core::ecs::components::Inventory>(player)
             .map_or(0, |inventory| {
-                inventory.items.iter().filter(|s| s.base_form_id == 0xF).map(|s| s.count).sum::<u32>()
+                inventory.count_of(0xF)
             })
     };
     world.resource_mut::<QuestStageState>().start_quest(STARTED, None);
@@ -6447,7 +6439,7 @@ fn wait_while_polls_until_its_condition_fails() {
         world
             .get::<byroredux_core::ecs::components::Inventory>(player)
             .map_or(0, |inventory| {
-                inventory.items.iter().filter(|s| s.base_form_id == 0xF).map(|s| s.count).sum::<u32>()
+                inventory.count_of(0xF)
             })
     };
     world.resource_mut::<QuestStageState>().set_stage(Q, 1);
@@ -6487,7 +6479,7 @@ fn a_wait_inside_a_branch_resumes_into_the_branch_then_the_program() {
         world
             .get::<byroredux_core::ecs::components::Inventory>(player)
             .map_or(0, |inventory| {
-                inventory.items.iter().filter(|s| s.base_form_id == 0xF).map(|s| s.count).sum::<u32>()
+                inventory.count_of(0xF)
             })
     };
     world.resource_mut::<QuestStageState>().set_stage(Q, 1);

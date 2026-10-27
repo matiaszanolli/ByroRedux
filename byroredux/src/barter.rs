@@ -303,18 +303,6 @@ fn session(world: &World) -> Option<BarterSession> {
         .and_then(|active| active.0)
 }
 
-/// `form`'s count in `entity`'s inventory.
-fn count_of(world: &World, entity: EntityId, form: u32) -> u32 {
-    world.get::<Inventory>(entity).map_or(0, |inventory| {
-        inventory
-            .items
-            .iter()
-            .filter(|stack| stack.base_form_id == form)
-            .map(|stack| stack.count)
-            .sum()
-    })
-}
-
 /// Item counts by base form, in first-held order.
 fn grouped(world: &World, entity: EntityId) -> Vec<(u32, u32)> {
     let mut rows: Vec<(u32, u32)> = Vec::new();
@@ -416,8 +404,8 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::BarterSnapsh
         .unwrap_or_else(|| "Merchant".to_owned());
     Some(byroredux_debug_ui::BarterSnapshot {
         vendor_name,
-        player_gold: count_of(world, player, CURRENCY),
-        vendor_gold: count_of(world, session.stock, CURRENCY),
+        player_gold: world.get::<Inventory>(player).map_or(0, |inventory| inventory.count_of(CURRENCY)),
+        vendor_gold: world.get::<Inventory>(session.stock).map_or(0, |inventory| inventory.count_of(CURRENCY)),
         buy,
         sell,
     })

@@ -52,14 +52,11 @@ impl Vm<'_> {
                 }
                 let gold: u32 = self
                     .entity_of(*actor)
-                    .and_then(|entity| self.world.get::<byroredux_core::ecs::components::Inventory>(entity).map(|inventory| {
-                        inventory
-                            .items
-                            .iter()
-                            .filter(|stack| stack.base_form_id == SKYRIM_GOLD)
-                            .map(|stack| stack.count)
-                            .sum()
-                    }))
+                    .and_then(|entity| {
+                        self.world
+                            .get::<byroredux_core::ecs::components::Inventory>(entity)
+                            .map(|inventory| inventory.count_of(SKYRIM_GOLD))
+                    })
                     .unwrap_or(0);
                 Some(Value::Int(gold as i32))
             }

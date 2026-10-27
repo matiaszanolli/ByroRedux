@@ -1362,7 +1362,7 @@ mod tests {
     const ITEM: u32 = 0x0007_0001;
 
     fn stack(world: &World, holder: EntityId) -> u32 {
-        world.get::<byroredux_core::ecs::components::Inventory>(holder).map_or(0, |inv| inv.items.iter().filter(|s| s.base_form_id == ITEM).map(|s| s.count).sum())
+        world.get::<byroredux_core::ecs::components::Inventory>(holder).map_or(0, |inv| inv.count_of(ITEM))
     }
 
     fn declined_of(world: &World, owner: u32, cmd: u16) -> u32 {
