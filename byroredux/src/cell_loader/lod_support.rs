@@ -12,6 +12,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use byroredux_core::ecs::WorldBound;
 use byroredux_core::math::Vec3;
 use byroredux_nif::import::ImportedMesh;
 use byroredux_plugin::esm::reader::GameKind;
@@ -507,6 +508,30 @@ pub(crate) fn local_aabb_center_radius(positions: &[[f32; 3]]) -> (Vec3, f32) {
     let centre = (lmin + lmax) * 0.5;
     let radius = (lmax - centre).length();
     (centre, radius)
+}
+
+/// World-space bounding sphere over already-world-space `vertices`, ignoring
+/// every index for which `skip` is true (the terrain path skips hole vertices;
+/// the `.btr` path skips none). Falls back to [`WorldBound::ZERO`] when no
+/// vertex survives (the callers have already rejected empty / all-hole
+/// meshes, so this is a degenerate-input guard, not a normal result).
+pub(crate) fn vertex_bound(vertices: &[Vertex], skip: impl Fn(usize) -> bool) -> WorldBound {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for (i, v) in vertices.iter().enumerate() {
+        if skip(i) {
+            continue;
+        }
+        let p = Vec3::from_array(v.position);
+        min = min.min(p);
+        max = max.max(p);
+    }
+    if !min.is_finite() {
+        return WorldBound::ZERO;
+    }
+    let center = (min + max) * 0.5;
+    let radius = (max - center).length();
+    WorldBound::new(center, radius)
 }
 
 #[cfg(test)]
@@ -1209,5 +1234,43 @@ mod tests {
                 "{name}: rollback and normal unload must retain the same release contract"
             );
         }
+    }
+
+    fn bound_vertex(x: f32, y: f32, z: f32) -> Vertex {
+        Vertex::new([x, y, z], [1.0; 3], [0.0, 1.0, 0.0], [0.0; 2])
+    }
+
+    #[test]
+    fn vertex_bound_spans_vertices() {
+        let verts = vec![
+            bound_vertex(0.0, 0.0, 0.0),
+            bound_vertex(2.0, 0.0, 0.0),
+            bound_vertex(0.0, 0.0, 2.0),
+        ];
+        let b = vertex_bound(&verts, |_| false);
+        assert_eq!(b.center, Vec3::new(1.0, 0.0, 1.0));
+        // Half-diagonal of the [0,2]x{0}x[0,2] box from its centre.
+        assert!((b.radius - 2f32.sqrt()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn vertex_bound_empty_is_zero() {
+        assert_eq!(vertex_bound(&[], |_| false).center, WorldBound::ZERO.center);
+    }
+
+    /// The terrain path's hole mask: a skipped vertex must not stretch the
+    /// sphere, and an all-skipped set degrades to ZERO.
+    #[test]
+    fn vertex_bound_ignores_skipped_vertices() {
+        let verts = vec![
+            bound_vertex(0.0, 0.0, 0.0),
+            bound_vertex(2.0, 0.0, 0.0),
+            bound_vertex(500.0, 0.0, 500.0),
+        ];
+        let holes = [false, false, true];
+        let b = vertex_bound(&verts, |i| holes[i]);
+        assert_eq!(b.center, Vec3::new(1.0, 0.0, 0.0));
+        assert!((b.radius - 1.0).abs() < 1e-4);
+        assert_eq!(vertex_bound(&verts, |_| true).center, WorldBound::ZERO.center);
     }
 }

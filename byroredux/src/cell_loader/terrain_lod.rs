@@ -27,10 +27,9 @@ use std::collections::{HashMap, HashSet};
 
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{
-    GlobalTransform, MeshHandle, TextureHandle, Transform, World, WorldBound,
+    GlobalTransform, MeshHandle, TextureHandle, Transform, World,
 };
 use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
-use byroredux_core::math::Vec3;
 use byroredux_nif::import::MaterialTextureSet;
 use byroredux_plugin::esm::cell::CellData;
 use byroredux_plugin::esm::reader::GameKind;
@@ -47,7 +46,7 @@ use crate::streaming::LodBlock;
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
 use super::terrain::LandscapeLayerTextures;
 use super::lod_support::{
-    classify_lod_attempt, combined_lod_supported, legacy_landscape_lod_supported,
+    classify_lod_attempt, combined_lod_supported, legacy_landscape_lod_supported, vertex_bound,
     lod_source_cell_exists, retain_resident, worldspace_cell_bounds, LodAttemptVerdict,
     LodReconcileInput, LodWorkBudget,
 };
@@ -1110,7 +1109,7 @@ fn spawn_lod_block(
     // culling. Computed over all pushed vertices; hole placeholders sit at
     // y=0 inside the block footprint, so they never enlarge the sphere
     // beyond the real terrain extent.
-    let bound = block_bound(&vertices, &holes);
+    let bound = vertex_bound(&vertices, |i| holes[i]);
 
     // Distant-terrain texture. Priority:
     //   1. EXAL's authored legacy diffuse quad: Oblivion's FormID-keyed
@@ -1352,32 +1351,10 @@ fn spawn_lod_block(
     })
 }
 
-/// World-space bounding sphere over the block's non-hole vertices. Falls
-/// back to the block footprint centre with a half-diagonal radius when the
-/// block is degenerate (shouldn't happen — caller already rejected
-/// all-hole blocks).
-fn block_bound(vertices: &[Vertex], holes: &[bool]) -> WorldBound {
-    let mut min = Vec3::splat(f32::INFINITY);
-    let mut max = Vec3::splat(f32::NEG_INFINITY);
-    for (v, &hole) in vertices.iter().zip(holes.iter()) {
-        if hole {
-            continue;
-        }
-        let p = Vec3::new(v.position[0], v.position[1], v.position[2]);
-        min = min.min(p);
-        max = max.max(p);
-    }
-    if !min.is_finite() {
-        return WorldBound::ZERO;
-    }
-    let center = (min + max) * 0.5;
-    let radius = (max - center).length();
-    WorldBound::new(center, radius)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::math::Vec3;
 
     /// #4898 — the baked-quad tangent must yield the world-oriented frame the
     /// legacy LOD normal maps encode (R = east, G = north), whatever the UV

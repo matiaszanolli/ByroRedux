@@ -90,7 +90,7 @@
 
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{
-    GlobalTransform, MeshHandle, TextureHandle, Transform, World, WorldBound,
+    GlobalTransform, MeshHandle, TextureHandle, Transform, World,
 };
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::Vec3;
@@ -102,6 +102,8 @@ use crate::asset_provider::{
 };
 use crate::components::{IsLodTerrain, MaterialTextureHandles};
 use crate::streaming::LodBlock;
+
+use super::lod_support::vertex_bound;
 
 /// Archive-relative path of the distant-terrain `.btr` for a worldspace
 /// quad: `meshes\terrain\<world>\<world>.<level>.<x>.<y>.btr`.
@@ -408,7 +410,7 @@ pub(crate) fn spawn_btr_block(
     }
 
     // World-space bound over the baked (already world-space) vertices.
-    let bound = world_bound(&vertices);
+    let bound = vertex_bound(&vertices, |_| false);
 
     // Lean global-only upload (no per-mesh buffers / no BLAS) — same path the
     // synth blocks + object LOD use; LOD geometry rasterizes from the global
@@ -529,25 +531,6 @@ pub(crate) fn spawn_btr_block(
         // gate), so there is no rim to track and no skirt to hang.
         rim_mask: 0,
     })
-}
-
-/// World-space bounding sphere over already-world-space vertices. Falls back
-/// to [`WorldBound::ZERO`] for a degenerate (non-finite) set — the caller has
-/// already rejected empty meshes.
-fn world_bound(vertices: &[Vertex]) -> WorldBound {
-    let mut min = Vec3::splat(f32::INFINITY);
-    let mut max = Vec3::splat(f32::NEG_INFINITY);
-    for v in vertices {
-        let p = Vec3::new(v.position[0], v.position[1], v.position[2]);
-        min = min.min(p);
-        max = max.max(p);
-    }
-    if !min.is_finite() {
-        return WorldBound::ZERO;
-    }
-    let center = (min + max) * 0.5;
-    let radius = (max - center).length();
-    WorldBound::new(center, radius)
 }
 
 #[cfg(test)]
@@ -823,22 +806,6 @@ mod tests {
             btr_local_to_world([0.0, -437.5, 0.0], 32, 0, 0)[1],
             TAMRIEL_DEFAULT_WATER
         );
-    }
-
-    #[test]
-    fn world_bound_spans_vertices() {
-        let v =
-            |x: f32, y: f32, z: f32| Vertex::new([x, y, z], [1.0; 3], [0.0, 1.0, 0.0], [0.0; 2]);
-        let verts = vec![v(0.0, 0.0, 0.0), v(2.0, 0.0, 0.0), v(0.0, 0.0, 2.0)];
-        let b = world_bound(&verts);
-        assert_eq!(b.center, Vec3::new(1.0, 0.0, 1.0));
-        // Half-diagonal of the [0,2]×{0}×[0,2] box from its centre.
-        assert!((b.radius - 2f32.sqrt()).abs() < 1e-4);
-    }
-
-    #[test]
-    fn world_bound_empty_is_zero() {
-        assert_eq!(world_bound(&[]).center, WorldBound::ZERO.center);
     }
 
     /// #2362 / SF2D2-05 — `spawn_btr_block` must thread the already-in-
