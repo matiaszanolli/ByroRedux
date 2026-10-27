@@ -324,7 +324,7 @@ already has the surface:
   pickpocket families, FO4's `HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`/
   `LCLD`/`AOBJ`, Starfield's ship surface.
 - **Needs a producer**: crime/arrest/jail family (`ADCR ARRT ESJA JAIL
-  BRIB INTM FLAT` — no crime system yet), crafting (`CRFT`),
+  BRIB INTM FLAT` — the Oblivion/Skyrim crime pass in `byroredux/src/crime.rs` emits none of them), crafting (`CRFT`),
   pickpocket/steal (`AIPL REMP AFAV`), `DEAD`, `SKIL`, FO4's
   `HACK LOCK IRON OAAT TMEE LCLD AOBJ`, Starfield's ship surface.
 

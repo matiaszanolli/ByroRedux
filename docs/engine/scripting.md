@@ -806,7 +806,7 @@ runtime:
   `GetFactionOwner` / `GetActorOwner` read before the placed `XOWN`. A faction's crime gold
   (`SetCrimeGold` non-violent, `SetCrimeGoldViolent`, `ModCrimeGold(amount, violent)`; reads
   `GetCrimeGold` = both kinds, `GetCrimeGoldViolent`, `GetCrimeGoldNonViolent`) is the saved
-  `FactionCrimeGold`; the engine has no crime system, so scripts' writes are all of it. A modification
+  `FactionCrimeGold`; the engine's own crime pass (`charge_crime_factions`, `byroredux/src/crime.rs`) charges the same ledger on Skyrim/FO4, so a script's writes and a witnessed crime's fine compose. A modification
   below zero floors at zero, which the CK leaves open. Paying it off (`PlayerPayCrimeGold`) stays declined.
 - **Alias scripts through a cast.** A function of an alias script reached through a cast of the
   alias property (`(Alias_X as MyScript).Fn()`, where `MyScript` extends `ReferenceAlias`) is checked

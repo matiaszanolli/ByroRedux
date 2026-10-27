@@ -1,9 +1,10 @@
 //! The crime family (CHARAL): what a crime costs the criminal.
 //!
-//! Only Oblivion's fines are sourced so far, and theft, assault and murder
-//! are wired: the other fines in the CS wiki's *Crime* table (pickpocket 25,
-//! trespass 5, jailbreak 50, horse theft 250) have no consumer yet, so they
-//! are not carried here. FO3 / FNV crime is
+//! Oblivion's and Skyrim's fines are sourced ([`CrimeModel::OBLIVION`] /
+//! [`CrimeModel::SKYRIM`]), and theft, assault and murder are wired. Pickpocket
+//! (25) and trespass (5) ride as associated consts for the faction-fine path;
+//! the rest of the CS wiki's *Crime* table (jailbreak 50, horse theft 250) has
+//! no consumer yet, so it is not carried here. FO3 / FNV crime is
 //! faction-based (per-faction crime values) and a different model; a game
 //! with no model here has no crime consequence, which is a profile row
 //! saying `None`, never a branch in the consumer.

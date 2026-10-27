@@ -24,7 +24,8 @@
 //! * [`reputation`] — the reputation family: [`KarmaBand`] (FO3/FNV Karma) +
 //!   [`ReputationStanding`] (FNV Fame/Infamy 4×4 grid) classifiers.
 //! * [`crime`] — the crime family: [`CrimeModel`], what a crime costs the
-//!   criminal (Oblivion's `fCrimeGoldSteal` theft fine so far).
+//!   criminal (Oblivion's single bounty and Skyrim's per-crime-faction fines;
+//!   theft, assault and murder).
 //! * [`vats`] — [`VatsModel`]: the `fVATS*` GMST tuning family and the
 //!   FO3/FNV VATS to-hit chain, load-order-driven (#6350).
 //! * [`resistance`] — the affliction family's resistance half:
