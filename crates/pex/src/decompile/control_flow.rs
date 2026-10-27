@@ -25,9 +25,10 @@
 //! (matching Champollion's two-pass order), so `&&`/`||` conditions are
 //! already folded into a single condition node by the time control flow is
 //! rebuilt here. The residual `else` branch below (a `last`-is-conditional
-//! block left unmerged and advanced past) only fires for the `||`-shapes the
-//! boolean pass declined to collapse — see SCR-D3-01/#1732 for that tail.
-//! (SCR-D3-02/#1738: this block previously claimed the boolean pass was
+//! block left unmerged) only fires for the `||`-shapes the boolean pass
+//! declined to collapse; it is declined with an error, not advanced past —
+//! see #1732 for that tail.
+//! (#1738: this block previously claimed the boolean pass was
 //! unported.)
 
 use std::collections::BTreeMap;
@@ -213,7 +214,7 @@ impl Reconstructor {
                     // dropping the block's lifted guard + statements and
                     // emitting a wrong-but-non-panicking AST. Fail closed so the
                     // upstream recognizer cleanly declines this function rather
-                    // than matching a truncated body (SCR-D3-01 / #1732).
+                    // than matching a truncated body (#1732).
                     return Err(self.fail());
                 }
             } else {
@@ -288,7 +289,7 @@ mod tests {
         assert!(err.to_string().contains("control-flow"), "got {err}");
     }
 
-    /// SCR-D3-01 (#1732) — when the block before the false exit is itself
+    /// #1732 — when the block before the false exit is itself
     /// conditional (a `||` short-circuit the boolean pre-pass declined to
     /// collapse), `reconstruct` must fail closed (a clean `ControlFlowFailed`)
     /// rather than silently dropping the block's lifted statements and
