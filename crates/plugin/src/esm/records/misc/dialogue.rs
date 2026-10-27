@@ -1411,12 +1411,6 @@ mod tests {
         assert_eq!(info.conditions[0].param_1, 0x0002_7815);
     }
 
-    /// #3614 — TCLF ("Link From") and NAME ("Add topics") were both
-    /// dropped entirely pre-fix (3,792 and 1,044 `Oblivion.esm` INFOs
-    /// respectively). Both are FormID-array sub-records like TCLT, so
-    /// the parse+push shape mirrors `parse_info_remaps_formids_with_remap`
-    /// below, but pins the two new fields specifically rather than
-    /// TCLT/PNAM/ANAM again.
     /// FO3/FNV INFOs embed a Begin result script, the `NEXT` marker, then an
     /// End one (xEdit `wbINFO`); an end slot that compiled nothing stays empty.
     #[test]
@@ -1455,6 +1449,12 @@ mod tests {
         assert_eq!(info.response_text, "Follow me.");
     }
 
+    /// #3614 — TCLF ("Link From") and NAME ("Add topics") were both
+    /// dropped entirely pre-fix (3,792 and 1,044 `Oblivion.esm` INFOs
+    /// respectively). Both are FormID-array sub-records like TCLT, so
+    /// the parse+push shape mirrors `parse_info_remaps_formids_with_remap`
+    /// below, but pins the two new fields specifically rather than
+    /// TCLT/PNAM/ANAM again.
     #[test]
     fn parse_info_tclf_and_name_are_not_dropped() {
         let subs = vec![

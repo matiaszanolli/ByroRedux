@@ -217,6 +217,138 @@ pub fn function_line_count(src: &str, signature: &str) -> usize {
     src[line_start..at + end].matches('\n').count() + 1
 }
 
+/// The name an item declaration line introduces: `fn`, `struct`, `enum`,
+/// `trait`, `type`, `static`, `const`, `mod` or `union`, after any visibility
+/// and `async` / `unsafe` / `extern "…"` / `default` qualifiers. `None` for
+/// anything else (`impl`, `use`, a statement, a blank line).
+fn declared_item_name(line: &str) -> Option<&str> {
+    let mut rest = line.trim_start();
+    if let Some(after) = rest.strip_prefix("pub") {
+        rest = after.trim_start();
+        if rest.starts_with('(') {
+            rest = rest[rest.find(')')? + 1..].trim_start();
+        }
+    }
+    loop {
+        let before = rest;
+        for qualifier in ["async ", "unsafe ", "default ", "extern "] {
+            if let Some(after) = rest.strip_prefix(qualifier) {
+                rest = after.trim_start();
+                if qualifier == "extern " && rest.starts_with('"') {
+                    rest = rest[1..].split_once('"')?.1.trim_start();
+                }
+            }
+        }
+        if rest.len() == before.len() {
+            break;
+        }
+    }
+    let (keyword, mut tail) = rest.split_once(' ')?;
+    if keyword == "const" {
+        // `const fn name` is a function; `const NAME: T` is a constant.
+        if let Some(after) = tail.trim_start().strip_prefix("fn ") {
+            tail = after;
+        }
+    } else if !["fn", "struct", "enum", "trait", "type", "static", "mod", "union"].contains(&keyword) {
+        return None;
+    }
+    let tail = tail.trim_start();
+    let tail = tail.strip_prefix("mut ").unwrap_or(tail);
+    let end = tail.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(tail.len());
+    (end > 0).then(|| &tail[..end])
+}
+
+/// The first `` `…` `` span of `doc` that is not the label of an intra-doc link.
+fn first_backtick_span(doc: &str) -> Option<&str> {
+    let mut rest = doc;
+    let mut consumed = 0;
+    loop {
+        let open = rest.find('`')?;
+        let after = &rest[open + 1..];
+        let close = after.find('`')?;
+        let linked = doc[..consumed + open].ends_with('[');
+        if !linked {
+            return Some(&after[..close]);
+        }
+        let advance = open + close + 2;
+        consumed += advance;
+        rest = &rest[advance..];
+    }
+}
+
+/// 1-based first lines of `///` doc blocks that look spliced onto the wrong
+/// item (#6373, the #5809 / #6064 / #6268 class): the block's first backticked
+/// identifier names an item declared within the next 40 lines at the same
+/// indentation, yet the block documents a *different* item. That is what a new
+/// item inserted into the middle of an existing item's doc leaves behind: the
+/// contract of the later item now heads the earlier one.
+///
+/// A heuristic with a precise failure mode: a doc that names a nearby sibling
+/// before its own subject (rare) is flagged; fix it by leading with the subject.
+pub fn spliced_doc_blocks(src: &str) -> Vec<usize> {
+    const LOOKAHEAD: usize = 40;
+    let lines: Vec<&str> = src.lines().collect();
+    let is_doc = |l: &str| {
+        let t = l.trim_start();
+        t.starts_with("///") && !t.starts_with("////")
+    };
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if !is_doc(lines[i]) {
+            i += 1;
+            continue;
+        }
+        let first = i;
+        while i < lines.len() && is_doc(lines[i]) {
+            i += 1;
+        }
+        // The documented item: skip attributes, which may span lines.
+        let mut at = i;
+        let mut depth = 0i32;
+        while at < lines.len() {
+            let t = lines[at].trim_start();
+            if depth == 0 && !t.starts_with("#[") && !t.starts_with("#![") {
+                break;
+            }
+            depth += t.matches('[').count() as i32 - t.matches(']').count() as i32;
+            at += 1;
+        }
+        let Some(item_line) = lines.get(at) else { break };
+        let Some(own) = declared_item_name(item_line) else { continue };
+        // First backtick span of the block, when it is a bare identifier.
+        let doc: String = lines[first..i]
+            .iter()
+            .map(|l| l.trim_start().trim_start_matches('/'))
+            .collect::<Vec<_>>()
+            .join(" ");
+        // An intra-doc link (``[`name`]``) is a reference, not the subject.
+        let Some(span) = first_backtick_span(&doc) else { continue };
+        // Only a doc that LEADS with the name is claiming that name as its
+        // subject; prose that merely mentions a sibling later is not.
+        let lead = doc.trim_start();
+        if !lead.starts_with('`') {
+            continue;
+        }
+        // "`sibling`'s companion" documents the companion, not the sibling.
+        if lead[span.len() + 2..].starts_with('\'') {
+            continue;
+        }
+        if span == own || span.is_empty() || !span.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let want = indent(item_line);
+        let named_below = lines[at + 1..lines.len().min(at + 1 + LOOKAHEAD)]
+            .iter()
+            .any(|l| indent(l) == want && declared_item_name(l) == Some(span));
+        if named_below {
+            out.push(first + 1);
+        }
+    }
+    out
+}
+
 /// Every `.rs` file under `dir`, recursively. For the tests that walk a
 /// crate's own source to derive what a guard must cover, rather than naming
 /// it.
@@ -308,5 +440,46 @@ mod tests {
     fn counts_whole_identifiers_only() {
         let src = "let temp_path = x; f(&temp_path); temp_path_2; my_temp_path";
         assert_eq!(count_identifier(src, "temp_path"), 2);
+    }
+
+    #[test]
+    fn declared_item_names_read_through_qualifiers() {
+        assert_eq!(declared_item_name("pub(crate) async fn run(x: u8)"), Some("run"));
+        assert_eq!(declared_item_name("    pub const fn make() -> u8 {"), Some("make"));
+        assert_eq!(declared_item_name("const LIMIT: u32 = 4;"), Some("LIMIT"));
+        assert_eq!(declared_item_name("pub unsafe extern \"C\" fn raw()"), Some("raw"));
+        assert_eq!(declared_item_name("static mut COUNTER: u8 = 0;"), Some("COUNTER"));
+        assert_eq!(declared_item_name("impl Foo {"), None);
+        assert_eq!(declared_item_name("let x = 1;"), None);
+    }
+
+    /// #6373 — the shape every site had: the doc written for `b` heads `a`
+    /// (`a` keeps its own doc glued underneath), and `b` has none.
+    #[test]
+    fn a_doc_block_naming_the_item_below_is_flagged() {
+        let spliced = "/// `later` returns the thing.\n/// Does a's own job.\nfn a() {}\n\nfn later() {}\n";
+        assert_eq!(spliced_doc_blocks(spliced), vec![1]);
+        // Attributes between the doc and the item (even multi-line ones) are skipped.
+        let attributed = "/// `later` does it.\n#[instrument(\n    skip_all,\n)]\nfn a() {}\nfn later() {}\n";
+        assert_eq!(spliced_doc_blocks(attributed), vec![1]);
+    }
+
+    #[test]
+    fn well_placed_and_unrelated_docs_are_not_flagged() {
+        // The subject leads and is the item below.
+        assert!(spliced_doc_blocks("/// `a` does it.\nfn a() {}\nfn b() {}\n").is_empty());
+        // The first span is not an item declared nearby.
+        assert!(spliced_doc_blocks("/// Reads `n` bytes.\nfn a(n: usize) {}\nfn b() {}\n").is_empty());
+        // A same-named item at another indentation is not a sibling.
+        assert!(spliced_doc_blocks("/// `b` first.\nfn a() {\n    fn b() {}\n}\n").is_empty());
+        // Beyond the lookahead window.
+        let far = format!("/// `z` first.\nfn a() {{}}\n{}fn z() {{}}\n", "\n".repeat(60));
+        assert!(spliced_doc_blocks(&far).is_empty());
+        // A possessive documents something other than the named sibling.
+        assert!(spliced_doc_blocks("/// `b`'s companion.\nfn a() {}\nfn b() {}\n").is_empty());
+        // Prose that mentions a sibling after its own subject is not a claim on it.
+        assert!(spliced_doc_blocks("/// Does a's job, like `b`.\nfn a() {}\nfn b() {}\n").is_empty());
+        // A non-identifier first span is skipped.
+        assert!(spliced_doc_blocks("/// `Vec<u8>` of `b`.\nfn a() {}\nfn b() {}\n").is_empty());
     }
 }

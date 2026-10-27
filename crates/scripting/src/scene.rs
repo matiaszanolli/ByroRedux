@@ -187,7 +187,6 @@ pub fn install_scene_records(
     count
 }
 
-/// Notify the alias resolver that the live candidate set changed.
 /// Every playing scene entity's SCEN FormID, the lookup the dialogue and scene-package
 /// systems resolve a `SceneEvent`'s scene through.
 pub fn scene_form_ids(world: &World) -> HashMap<EntityId, u32> {
@@ -197,6 +196,7 @@ pub fn scene_form_ids(world: &World) -> HashMap<EntityId, u32> {
         .unwrap_or_default()
 }
 
+/// Notify the alias resolver that the live candidate set changed.
 pub fn mark_scene_actor_bindings_dirty(world: &World) {
     if let Some(mut bindings) = world.try_resource_mut::<SceneActorBindings>() {
         bindings.dirty = true;

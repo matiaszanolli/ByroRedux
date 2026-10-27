@@ -1096,6 +1096,42 @@ fn default_insert_scanner_matches_only_the_default_shape() {
     assert!(hand_spelled_default_inserts(mismatched).is_empty());
 }
 
+/// #6373 — a `///` block whose first backticked name is a sibling declared just
+/// below, not the item it heads, is a doc spliced onto the wrong item: the
+/// #5809 / #6064 / #6268 class, which recurred eight times in four days once
+/// the renderer-only guard (`no_item_is_spliced_into_another_items_doc_block`)
+/// stopped covering the new code. Runs the shared heuristic
+/// (`core::source_scan::spliced_doc_blocks`) over the bin and every crate.
+///
+/// Narrow by design: it only sees a doc that LEADS with the name of a sibling
+/// declared just below. A looser first-name rule flagged 126 sites, nearly all
+/// ordinary prose naming a neighbour, and none of the eight #6373 splices open
+/// with a name at all, so a doc moved onto the wrong item without one still
+/// needs a reviewer.
+#[test]
+fn no_doc_block_is_spliced_onto_the_wrong_item() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut roots = vec![manifest.join("src")];
+    for entry in std::fs::read_dir(manifest.join("../crates")).expect("crates/ readable").flatten() {
+        roots.push(entry.path().join("src"));
+    }
+    let mut found = Vec::new();
+    for root in roots {
+        visit_workspace_rs_files(&root, &mut |path, contents| {
+            for line in byroredux_core::source_scan::spliced_doc_blocks(contents) {
+                found.push(format!("{}:{line}", path.strip_prefix(manifest).unwrap_or(path).display()));
+            }
+        });
+    }
+    assert!(
+        found.is_empty(),
+        "doc block whose first `name` is a sibling item declared just below — the doc was \
+         spliced onto the wrong item. Move it to `name`, or lead the doc with its own subject \
+         (#6373):\n{}",
+        found.join("\n"),
+    );
+}
+
 /// #5856 — count a crate's example *targets* the way cargo discovers them:
 /// every top-level `examples/*.rs` plus every `examples/<name>/main.rs`.
 /// Non-target files (`examples/common/archives.rs`, a shared module) are

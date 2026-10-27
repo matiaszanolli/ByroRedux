@@ -676,23 +676,6 @@ fn bake_absorbed_refs(
     crate::cell_loader::precombined::effective_absorbed_refs(bakes, &present)
 }
 
-/// Pre-parse one exterior cell's unique, uncached static NIFs for the
-/// main-thread streaming drain.
-///
-/// The coordinator resolves the CELL, canonicalizes and deduplicates its
-/// model paths, skips the caller's cache snapshot (#862), and admits each
-/// input against the decoded-input budget; each pool task then extracts
-/// (archive read + inflate) and parses its own input (#3659).
-/// `load_one_exterior_cell` can therefore spawn cached REFR assets directly
-/// while consuming this payload only for cache misses.
-///
-/// Returns a [`LoadCellPayload`] with an empty `parsed` map when the cell is
-/// absent, has no references, or every model was cached. The main-thread drain
-/// still consumes that empty payload so its pending entry is cleared.
-///
-/// #6342 — a ref a *present* bake would absorb is parsed after all when its bake did not draw: the
-/// first pass parses the bakes and every other model, and the models of the absorbed refs wait for
-/// the bakes' results ([`drawn_absorbed_refs`]), a second pass that is empty for a healthy install.
 /// What the worker knows of one precombine bake once the first pass has run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BakeVerdict {
@@ -768,6 +751,23 @@ fn admit_model<'a>(
     }
 }
 
+/// Pre-parse one exterior cell's unique, uncached static NIFs for the
+/// main-thread streaming drain.
+///
+/// The coordinator resolves the CELL, canonicalizes and deduplicates its
+/// model paths, skips the caller's cache snapshot (#862), and admits each
+/// input against the decoded-input budget; each pool task then extracts
+/// (archive read + inflate) and parses its own input (#3659).
+/// `load_one_exterior_cell` can therefore spawn cached REFR assets directly
+/// while consuming this payload only for cache misses.
+///
+/// Returns a [`LoadCellPayload`] with an empty `parsed` map when the cell is
+/// absent, has no references, or every model was cached. The main-thread drain
+/// still consumes that empty payload so its pending entry is cleared.
+///
+/// #6342 — a ref a *present* bake would absorb is parsed after all when its bake did not draw: the
+/// first pass parses the bakes and every other model, and the models of the absorbed refs wait for
+/// the bakes' results ([`drawn_absorbed_refs`]), a second pass that is empty for a healthy install.
 #[allow(clippy::too_many_arguments)] // Worker-side parse inputs: cell id, generation, shared world context, provider, dedupe sets and pools each belong to a different owner.
 #[tracing::instrument(
     name = "pre_parse_cell",

@@ -47,6 +47,22 @@ struct VolumetricsPassInputs<'a> {
     fog_volumes: &'a [super::super::volumetrics::GpuFogVolume],
 }
 
+/// The cloud-shadow factor the caustic splat applies to its directional
+/// lights. Outdoors that light is the sun above the clouds, so the camera
+/// column's transmittance applies. Indoors it is the room's XCLL key, which
+/// no outdoor cloud shades (`exteriorCloudSunTransmittance` returns 1.0
+/// there for the same reason), while the cloud bake keeps running on the
+/// portal / default sky: passing it through made interior glass and water
+/// caustics fade with the weather outside and pulse as clouds drifted
+/// (#6245).
+fn caustic_sun_transmittance(is_exterior: bool, camera_cloud_sun_transmittance: f32) -> f32 {
+    if is_exterior {
+        camera_cloud_sun_transmittance
+    } else {
+        1.0
+    }
+}
+
 /// Select the sun seen by the scattering volume. Interior geometry still
 /// decides visibility in the inject shader; this only supplies outdoor
 /// radiance without changing the interior's surface or composite lighting.
@@ -64,22 +80,6 @@ struct VolumetricsPassInputs<'a> {
 /// camera column's cloud-shadow value (`camera_cloud_sun_transmittance`). The
 /// froxel grid spans hundreds of metres against clouds kilometres across, so
 /// one column stands for the whole grid.
-/// The cloud-shadow factor the caustic splat applies to its directional
-/// lights. Outdoors that light is the sun above the clouds, so the camera
-/// column's transmittance applies. Indoors it is the room's XCLL key, which
-/// no outdoor cloud shades (`exteriorCloudSunTransmittance` returns 1.0
-/// there for the same reason), while the cloud bake keeps running on the
-/// portal / default sky: passing it through made interior glass and water
-/// caustics fade with the weather outside and pulse as clouds drifted
-/// (#6245).
-fn caustic_sun_transmittance(is_exterior: bool, camera_cloud_sun_transmittance: f32) -> f32 {
-    if is_exterior {
-        camera_cloud_sun_transmittance
-    } else {
-        1.0
-    }
-}
-
 fn volumetric_sun(
     sky: &SkyParams,
     fog_far: f32,

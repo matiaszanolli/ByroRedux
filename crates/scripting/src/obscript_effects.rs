@@ -157,7 +157,6 @@ impl Binder {
     }
 }
 
-/// The form a reference argument resolved to; `None` for an absent or null one.
 /// The player's `FactionReputation` standing with `repu` on one axis (`fame`, else infamy), raised by
 /// `points` or (`set`) set to them — what `AddReputation`, `AddReputationExact` and `SetReputation`
 /// share (#6151); the standing is created on first use. `None` when the storage is not registered.
@@ -176,6 +175,7 @@ pub(crate) fn adjust_standing(world: &World, player: EntityId, repu: u32, fame: 
     Some(())
 }
 
+/// The form a reference argument resolved to; `None` for an absent or null one.
 pub(crate) fn form_arg(args: &[ObScriptValue], i: usize) -> Option<u32> {
     match args.get(i) {
         Some(ObScriptValue::Ref(form)) if *form != 0 => Some(*form),

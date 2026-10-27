@@ -104,10 +104,6 @@ impl LoadOrder {
         self.names.get(position).map(String::as_str)
     }
 
-    /// Build an order in which every plugin is a regular master taking a
-    /// sequential slot — the case where load-order position and slot byte
-    /// coincide. Test convenience; the real order comes from
-    /// [`parse_record_indexes_in_load_order`].
     /// Whether the slot table is populated (production orders always
     /// carry one; hand-built test fixtures may not — #6088's callers
     /// then keep the legacy byte read, where position == slot by
@@ -116,6 +112,10 @@ impl LoadOrder {
         !self.slots.is_empty()
     }
 
+    /// Build an order in which every plugin is a regular master taking a
+    /// sequential slot — the case where load-order position and slot byte
+    /// coincide. Test convenience; the real order comes from
+    /// [`parse_record_indexes_in_load_order`].
     #[cfg(test)]
     pub(crate) fn all_regular(names: Vec<String>) -> Self {
         let slots = (0..names.len())
@@ -338,6 +338,15 @@ pub(crate) struct ActiveLoadOrder(pub std::sync::Arc<LoadOrder>);
 
 impl byroredux_core::ecs::Resource for ActiveLoadOrder {}
 
+/// The load-order POSITION owning `form_id` — the slot-aware decode
+/// `plugin_for_form_id` uses, exposed for callers that hold parallel
+/// position-indexed path lists (#6088: the raw top byte is a slot, not
+/// a position, the moment an ESL precedes a regular plugin).
+pub(super) fn load_order_position_of(form_id: u32, load_order: &LoadOrder) -> Option<usize> {
+    let slot = global_slot_of(form_id);
+    load_order.slots.iter().position(|s| *s == slot)
+}
+
 /// Resolve a global FormID to the owning plugin's basename.
 /// Used by the loud-fail diagnostic when a REFR's `base_form_id` is
 /// unresolved — the audit's #561 completeness item: "name the missing
@@ -356,15 +365,6 @@ impl byroredux_core::ecs::Resource for ActiveLoadOrder {}
 /// [`GlobalSlot::compose`] — then find the plugin holding that slot. The
 /// remap that actually places geometry was never affected: it looks masters up
 /// by position and reads `slots[pos]`, keeping the two in step.
-/// The load-order POSITION owning `form_id` — the slot-aware decode
-/// `plugin_for_form_id` uses, exposed for callers that hold parallel
-/// position-indexed path lists (#6088: the raw top byte is a slot, not
-/// a position, the moment an ESL precedes a regular plugin).
-pub(super) fn load_order_position_of(form_id: u32, load_order: &LoadOrder) -> Option<usize> {
-    let slot = global_slot_of(form_id);
-    load_order.slots.iter().position(|s| *s == slot)
-}
-
 pub(super) fn plugin_for_form_id(form_id: u32, load_order: &LoadOrder) -> Option<&str> {
     let slot = global_slot_of(form_id);
     let position = load_order.slots.iter().position(|s| *s == slot)?;

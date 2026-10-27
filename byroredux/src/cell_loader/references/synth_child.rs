@@ -301,11 +301,6 @@ fn attach_esm_light(
     attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
 }
 
-/// Dispatch one synthetic child placement (SCOL/PKIN-expanded or the lone
-/// default) by record kind — NPC actor, invisible trigger volume, light-only
-/// LIGH, marker/FX skip, or the main static-mesh spawn — accumulating its
-/// telemetry into `accum`. Split verbatim out of [`load_references`] (#2058);
-/// each former `continue` (skip this child) is now an early `return`.
 /// A synthetic child that draws nothing (no statics row, an editor marker, a disabled or
 /// mesh-less light): it is still the outer REFR's logical reference — identity (#2026) and
 /// the base record's scripts — and counts as one loaded entity. Callers gate it to the
@@ -353,6 +348,11 @@ fn finish_light_synth_child(
     accum.entity_count += 1;
 }
 
+/// Dispatch one synthetic child placement (SCOL/PKIN-expanded or the lone
+/// default) by record kind — NPC actor, invisible trigger volume, light-only
+/// LIGH, marker/FX skip, or the main static-mesh spawn — accumulating its
+/// telemetry into `accum`. Split verbatim out of [`load_references`] (#2058);
+/// each former `continue` (skip this child) is now an early `return`.
 #[allow(clippy::too_many_arguments)] // One synthesized child: the cell's accumulator, world, GPU context, providers and the placement data are distinct borrows of the load.
 pub(super) fn spawn_synth_child(
     accum: &mut RefLoadAccum,
