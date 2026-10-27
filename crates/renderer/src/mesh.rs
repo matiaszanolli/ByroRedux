@@ -17,7 +17,7 @@ use std::sync::Once;
 /// resident scene's geometry; a broken cell-unload path leaks placements and
 /// grows the pool unbounded.
 ///
-/// The 4 M-vertex / 16 M-index residency ceiling (~480 MB total source
+/// The 5 M-vertex / 20 M-index residency ceiling (~600 MB total source
 /// geometry) returns `Err` from `upload_scene_mesh` so the caller can skip a
 /// placement and continue. It is deliberately the same as the historical soft
 /// threshold: each scene mesh also has upload and ray-tracing allocations, so
@@ -27,11 +27,11 @@ use std::sync::Once;
 /// See REN-D2-005 / #1016. Mirrors the `MAX_INDIRECT_DRAWS` defence-in-depth
 /// cap at `scene_buffer.rs:1326+` — these are not perf knobs, they are
 /// safety guards against unbounded-growth bugs.
-pub const VERTEX_POOL_SOFT_CAP: usize = 4_000_000;
+pub const VERTEX_POOL_SOFT_CAP: usize = 5_000_000;
 pub const VERTEX_POOL_HARD_CAP: usize = VERTEX_POOL_SOFT_CAP;
 /// Index pool caps — typical mesh ratio is ~3 indices per vertex, so the
 /// caps here track the vertex caps proportionally.
-pub const INDEX_POOL_SOFT_CAP: usize = 16_000_000;
+pub const INDEX_POOL_SOFT_CAP: usize = 20_000_000;
 pub const INDEX_POOL_HARD_CAP: usize = INDEX_POOL_SOFT_CAP;
 
 /// Fixed duplication ceiling for a global-geometry rebuild on a device
@@ -2461,7 +2461,7 @@ mod memory_budget_doc_pin_tests {
 
     /// #4961 — the VRAM Rough Budget rows for the pools and the rebuild had
     /// drifted from the sections they summarise: the pools' peak still read
-    /// "~1.66 GB cap" against ~480 MB of hard caps, and the rebuild row still
+    /// "~1.66 GB cap" against the hard caps (then ~480 MB), and the rebuild row still
     /// read "+2× projected, ≤ ~512 MB" after the gate became the 80% headroom
     /// line. The pool figure is derived here from the constants.
     #[test]
@@ -2472,7 +2472,7 @@ mod memory_budget_doc_pin_tests {
                 .find(|line| line.starts_with(&format!("| {name}")))
                 .unwrap_or_else(|| panic!("memory-budget.md lost its `{name}` rough-budget row"))
         };
-        // Decimal MB, the page's convention: 416 MB + 64 MB.
+        // Decimal MB, the page's convention: 520 MB + 80 MB.
         let pool_cap_mb = (VERTEX_POOL_HARD_CAP * std::mem::size_of::<Vertex>()
             + INDEX_POOL_HARD_CAP * std::mem::size_of::<u32>())
             / 1_000_000;
