@@ -484,6 +484,7 @@ lod.coverage                → current LOD coverage diagnostics
 terrain.seams               → terrain seam diagnostics
 terrain.height [all]        → per-layer height maps under the camera: source, state, raw height; `all` tallies every resident cell (#6195)
 terrain.blend [band]        → read/set the height-based layer blend band for this session; 0 = off (#6196)
+terrain.soften [amount]     → read/set the near-terrain distance softening toward the LOD look for this session; 0 = off
 terrain.parallax [off | <range_m> [<depth_m>]]
                             → read/set the near-camera terrain parallax (fade-out distance, relief depth, metres) for this session; off / range 0 = off (#6197)
 render.debug                → renderer debug-mode control
