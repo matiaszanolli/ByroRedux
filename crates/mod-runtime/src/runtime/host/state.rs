@@ -42,6 +42,11 @@ impl state::Host for HostState {
                 .ok_or_else(|| {
                     wasmtime::Error::msg("entity reference contains a reserved zero value")
                 })?;
+        // Same visibility rule as every other entity-targeted write: only an entity the host
+        // showed this callback may be stamped (#4119).
+        if !self.entity_projections.contains_key(&entity) {
+            wasmtime::bail!("component target is not visible in this callback");
+        }
         self.pending_commands
             .push(HostCommand::Component(ExtensionCommand::IncrementI64 {
                 entity,

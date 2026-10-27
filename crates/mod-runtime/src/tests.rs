@@ -1541,6 +1541,7 @@ fn canonical_cell_load_queues_owned_state_only_for_declared_subscriber() {
     let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
     instance.initialize().unwrap();
     let subject = EntityRef::new(1, 41).unwrap();
+    instance.set_entity_projections([EntityProjection::new(subject, None, None, None).unwrap()]);
 
     let commands = instance.on_cell_load(CellLoadEvent { subject }).unwrap();
     let component_commands = commands
@@ -1601,6 +1602,7 @@ fn canonical_hit_preserves_combat_payload_and_queues_owned_state() {
     instance.initialize().unwrap();
     let subject = EntityRef::new(1, 41).unwrap();
     let aggressor = EntityRef::new(1, 7).unwrap();
+    instance.set_entity_projections([EntityProjection::new(subject, None, None, None).unwrap()]);
 
     let commands = instance
         .on_hit(HitEvent {
@@ -2675,6 +2677,7 @@ fn activation_fixture_increments_principal_owned_state_via_deferred_batch() {
     instance.initialize().unwrap();
 
     let subject = EntityRef::new(3, 41).unwrap();
+    instance.set_entity_projections([EntityProjection::new(subject, None, None, None).unwrap()]);
     let commands = instance
         .on_activate(ActivationEvent {
             subject,
@@ -3003,6 +3006,35 @@ fn a_trapping_activation_discards_every_queued_command() {
     ));
 }
 
+/// #4119 — an `IncrementI64` against an entity the host did not show this callback is refused, like
+/// every other entity-targeted write: the guest faults and nothing is queued.
+#[test]
+fn owned_state_increment_on_an_unprojected_entity_is_refused() {
+    let runtime = runtime(SandboxConfig::default());
+    let manifest = activation_manifest();
+    let compiled = compile_wat_for(&runtime, &manifest, &activation_counter_component(1, false));
+    let mut grants = CapabilitySet::new();
+    grants.grant(EVENTS_SUBSCRIBE_CAPABILITY).unwrap();
+    grants.grant(COMPONENTS_WRITE_OWN_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+    // A different entity is projected than the one the guest increments.
+    instance.set_entity_projections([EntityProjection::new(
+        EntityRef::new(3, 99).unwrap(),
+        None,
+        None,
+        None,
+    )
+    .unwrap()]);
+    assert!(matches!(
+        instance.on_activate(ActivationEvent {
+            subject: EntityRef::new(3, 41).unwrap(),
+            activator: None,
+        }),
+        Err(SandboxError::GuestFault { phase: LifecyclePhase::Activate, .. })
+    ));
+}
+
 #[test]
 fn activation_command_budget_quarantines_only_the_producing_instance() {
     let runtime = runtime(SandboxConfig {
@@ -3017,6 +3049,13 @@ fn activation_command_budget_quarantines_only_the_producing_instance() {
     let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
     instance.initialize().unwrap();
 
+    instance.set_entity_projections([EntityProjection::new(
+        EntityRef::new(1, 1).unwrap(),
+        None,
+        None,
+        None,
+    )
+    .unwrap()]);
     assert!(matches!(
         instance.on_activate(ActivationEvent {
             subject: EntityRef::new(1, 1).unwrap(),
