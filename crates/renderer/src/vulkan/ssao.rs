@@ -20,7 +20,7 @@ use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
-use crate::vulkan::descriptors::{storage_image_info};
+use crate::vulkan::descriptors::{depth_read_only_image_info, storage_image_info};
 
 pub(super) const SSAO_COMP_SPV: &[u8] = include_bytes!("../../shaders/ssao.comp.spv");
 
@@ -269,10 +269,7 @@ impl SsaoPipeline {
 
         // Write descriptor sets.
         for i in 0..max_frames {
-            let depth_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.depth_sampler)
-                .image_view(depth_image_view)
-                .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
+            let depth_info = [depth_read_only_image_info(partial.depth_sampler, depth_image_view)];
             let ao_info = [storage_image_info(partial.ao[i].view)];
             let param_info = [vk::DescriptorBufferInfo {
                 buffer: partial.param_buffers[i].buffer,

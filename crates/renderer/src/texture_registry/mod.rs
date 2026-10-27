@@ -16,7 +16,7 @@
 
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::StagingPool;
-use crate::vulkan::descriptors::write_combined_image_sampler_at;
+use crate::vulkan::descriptors::{sampled_image_info, write_combined_image_sampler_at};
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::vulkan::texture::{Texture, TextureViewKind};
 use crate::vulkan::GpuUploadCtx;
@@ -742,12 +742,7 @@ impl TextureRegistry {
         // lockstep.
         let image_infos: Vec<vk::DescriptorImageInfo> = drained
             .iter()
-            .map(|w| {
-                vk::DescriptorImageInfo::default()
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image_view(w.image_view)
-                    .sampler(w.sampler)
-            })
+            .map(|w| sampled_image_info(w.sampler, w.image_view))
             .collect();
         let writes: Vec<vk::WriteDescriptorSet> = drained
             .iter()
@@ -795,10 +790,7 @@ impl TextureRegistry {
         // Immediate write on the current slot — safe: a completed fence
         // wait has just proven no submitted command buffer can be reading
         // `bindless_sets[self.current_slot]`.
-        let image_info = vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(image_view)
-            .sampler(sampler);
+        let image_info = sampled_image_info(sampler, image_view);
         let write = write_combined_image_sampler_at(
             self.bindless_sets[self.current_slot],
             binding,

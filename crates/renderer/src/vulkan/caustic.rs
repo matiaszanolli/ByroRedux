@@ -58,7 +58,7 @@ use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::vulkan::descriptors::{sampled_image_info, storage_image_info};
+use crate::vulkan::descriptors::{depth_read_only_image_info, sampled_image_info, storage_image_info};
 
 pub(super) const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_splat.comp.spv");
 
@@ -628,10 +628,7 @@ impl CausticPipeline {
     ) {
         let param_size = std::mem::size_of::<CausticParams>() as vk::DeviceSize;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
-            let depth_info = [vk::DescriptorImageInfo::default()
-                .sampler(self.point_sampler)
-                .image_view(depth_view)
-                .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
+            let depth_info = [depth_read_only_image_info(self.point_sampler, depth_view)];
             let normal_info = [sampled_image_info(self.point_sampler, normal_views[f])];
             let mesh_id_info = [sampled_image_info(self.point_sampler, mesh_id_views[f])];
             let light_info = [vk::DescriptorBufferInfo {

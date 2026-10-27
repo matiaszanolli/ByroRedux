@@ -69,7 +69,9 @@ use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
-use crate::vulkan::descriptors::{general_sampled_image_info, sampled_image_info, storage_image_info};
+use crate::vulkan::descriptors::{
+    depth_read_only_image_info, general_sampled_image_info, sampled_image_info, storage_image_info,
+};
 
 // #918 / REN-D10-NEW-04 — SVGF's read-previous / write-current ping-pong
 // silently aliases to the same slot if the constant is ever lowered to 1
@@ -922,10 +924,7 @@ impl SvgfPipeline {
                 let mesh_id = [sampled_image_info(self.point_sampler, mesh_id_views[f])];
                 let out_color = [storage_image_info(out_color_view)];
                 let albedo = [sampled_image_info(self.point_sampler, albedo_views[f])];
-                let depth = [vk::DescriptorImageInfo::default()
-                    .sampler(self.point_sampler)
-                    .image_view(depth_view)
-                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
+                let depth = [depth_read_only_image_info(self.point_sampler, depth_view)];
 
                 let set = self.atrous_descriptor_sets[f * ATROUS_ITERATIONS + k];
                 let writes = [

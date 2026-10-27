@@ -91,20 +91,32 @@ pub fn write_storage_image<'a>(
 /// element of a pass that reads an attachment or texture.
 #[inline]
 pub fn sampled_image_info(sampler: vk::Sampler, view: vk::ImageView) -> vk::DescriptorImageInfo {
-    vk::DescriptorImageInfo::default()
-        .sampler(sampler)
-        .image_view(view)
-        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+    image_info(sampler, view, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
 }
 
 /// A sampled image that lives in `GENERAL` (a compute pass's storage target
 /// read back through a sampler: history, mip chains, froxels).
 #[inline]
 pub fn general_sampled_image_info(sampler: vk::Sampler, view: vk::ImageView) -> vk::DescriptorImageInfo {
+    image_info(sampler, view, vk::ImageLayout::GENERAL)
+}
+
+/// A depth attachment sampled after its render pass, in
+/// `DEPTH_STENCIL_READ_ONLY_OPTIMAL` (SSAO, caustics, SVGF a-trous, composite).
+#[inline]
+pub fn depth_read_only_image_info(sampler: vk::Sampler, view: vk::ImageView) -> vk::DescriptorImageInfo {
+    image_info(sampler, view, vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+}
+
+/// A sampled image in a layout only the caller knows (composite's indirect and
+/// shadow-correction inputs fall back to a placeholder view whose layout
+/// differs). Prefer the fixed-layout helpers above when the layout is known.
+#[inline]
+pub fn image_info(sampler: vk::Sampler, view: vk::ImageView, layout: vk::ImageLayout) -> vk::DescriptorImageInfo {
     vk::DescriptorImageInfo::default()
         .sampler(sampler)
         .image_view(view)
-        .image_layout(vk::ImageLayout::GENERAL)
+        .image_layout(layout)
 }
 
 /// A `STORAGE_IMAGE` element: view in `GENERAL`, no sampler.
@@ -1084,16 +1096,15 @@ mod hand_rolled_descriptor_code_tests {
                 );
             }
         }
-        // #6148 — the three standard image-info shapes go through
-        // sampled_image_info / general_sampled_image_info / storage_image_info.
-        // What is left hand-built is the depth (DEPTH_STENCIL_READ_ONLY) and
-        // runtime-layout elements (composite's indirect / shadow correction)
-        // and the bindless texture array's sampler-less elements; a new
-        // standard-shape chain raises the count.
-        assert!(
-            raw_image_infos <= 11,
-            "{raw_image_infos} hand-built DescriptorImageInfo chains (11 recorded non-standard ones) — \
-             use descriptors::sampled_image_info / general_sampled_image_info / storage_image_info (#6148)"
+        // #6148 / #6369 — every image-info shape goes through a descriptors::
+        // helper: sampled_image_info / general_sampled_image_info /
+        // storage_image_info for the fixed layouts, depth_read_only_image_info
+        // for a sampled depth attachment, and image_info when the layout is
+        // only known at run time. None is left hand-built outside this file.
+        assert_eq!(
+            raw_image_infos, 0,
+            "{raw_image_infos} hand-built DescriptorImageInfo chains outside descriptors.rs — use the \
+             descriptors::*_image_info helpers (#6148/#6369)"
         );
     }
 

@@ -38,7 +38,9 @@ use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::layout_binding;
 use anyhow::{Context, Result};
 use ash::vk;
-use crate::vulkan::descriptors::{general_sampled_image_info, sampled_image_info};
+use crate::vulkan::descriptors::{
+    depth_read_only_image_info, general_sampled_image_info, image_info, sampled_image_info,
+};
 
 /// Composite binding 11's source: the direct-shadow spatial filter's
 /// per-frame correction views in `GENERAL`, or — with the filter absent —
@@ -869,10 +871,7 @@ impl CompositePipeline {
             let hdr_info = [sampled_image_info(partial.hdr_sampler, partial.hdr[i].view)];
             // NEAREST: preserves per-pixel denoised values; LINEAR would add
             // a second spatial-blur pass on top of what SVGF already applied.
-            let indirect_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.nearest_sampler)
-                .image_view(indirect_views[i])
-                .image_layout(indirect_layout)];
+            let indirect_info = [image_info(partial.nearest_sampler, indirect_views[i], indirect_layout)];
             let albedo_info = [sampled_image_info(partial.hdr_sampler, albedo_views[i])];
             let params_info = [vk::DescriptorBufferInfo {
                 buffer: partial.param_buffers[i].buffer,
@@ -882,10 +881,7 @@ impl CompositePipeline {
             // Depth is shared (not per-frame-in-flight) — the main render pass
             // has finished and transitioned depth to SHADER_READ_ONLY by the
             // time the composite pass runs.
-            let depth_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.hdr_sampler)
-                .image_view(depth_view)
-                .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
+            let depth_info = [depth_read_only_image_info(partial.hdr_sampler, depth_view)];
             let caustic_info = [general_sampled_image_info(partial.nearest_sampler, caustic_views[i])];
             // #1257 / Phase E of #1210 — water-side caustic sibling.
             // Same R32_UINT sampler (NEAREST) as the binding-5 caustic.
@@ -894,10 +890,7 @@ impl CompositePipeline {
             let bloom_info = [general_sampled_image_info(partial.hdr_sampler, bloom_views[i])];
             let cloud_base_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.base)];
             let cloud_detail_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.detail)];
-            let shadow_correction_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.nearest_sampler)
-                .image_view(shadow_correction.views[i])
-                .image_layout(shadow_correction.layout)];
+            let shadow_correction_info = [image_info(partial.nearest_sampler, shadow_correction.views[i], shadow_correction.layout)];
             let set = partial.descriptor_sets[i];
             let writes = [
                 write_combined_image_sampler(set, 0, &hdr_info),
@@ -1222,20 +1215,14 @@ impl CompositePipeline {
             for i in 0..MAX_FRAMES_IN_FLIGHT {
                 let hdr_info = [sampled_image_info(self.hdr_sampler, self.hdr[i].view)];
                 // NEAREST: preserves per-pixel SVGF denoised values.
-                let indirect_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.nearest_sampler)
-                    .image_view(indirect_views[i])
-                    .image_layout(indirect_layout)];
+                let indirect_info = [image_info(self.nearest_sampler, indirect_views[i], indirect_layout)];
                 let albedo_info = [sampled_image_info(self.hdr_sampler, albedo_views[i])];
                 let params_info = [vk::DescriptorBufferInfo {
                     buffer: self.param_buffers[i].buffer,
                     offset: 0,
                     range: param_size,
                 }];
-                let depth_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.hdr_sampler)
-                    .image_view(depth_view)
-                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
+                let depth_info = [depth_read_only_image_info(self.hdr_sampler, depth_view)];
                 let caustic_info = [general_sampled_image_info(self.nearest_sampler, caustic_views[i])];
                 // #1257 / Phase E of #1210 — water-side caustic sibling.
                 let water_caustic_info = [general_sampled_image_info(self.nearest_sampler, water_caustic_views[i])];
@@ -1248,10 +1235,7 @@ impl CompositePipeline {
                 // exact shape.
                 let cloud_base_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.base)];
                 let cloud_detail_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.detail)];
-                let shadow_correction_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.nearest_sampler)
-                    .image_view(shadow_correction.views[i])
-                    .image_layout(shadow_correction.layout)];
+                let shadow_correction_info = [image_info(self.nearest_sampler, shadow_correction.views[i], shadow_correction.layout)];
                 let set = self.descriptor_sets[i];
                 let writes: [vk::WriteDescriptorSet; 12] = [
                     write_combined_image_sampler(set, 0, &hdr_info),
