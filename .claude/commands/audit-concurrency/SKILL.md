@@ -64,11 +64,11 @@ artifact). "This barrier looks wrong" is a HYPOTHESIS row, not a fix.
 ## Phase 2: Launch Dimension Agents
 
 ### Dimension 1: Vulkan Queue & Acceleration-Structure Sync (CRITICAL surface)
-Paths: `crates/renderer/src/vulkan/{sync.rs,texture.rs}`, `crates/renderer/src/vulkan/context/{init,draw,sync_and_acquire_frame,resize,skinned_blas_refit}.rs`, `crates/renderer/src/vulkan/acceleration/`
+Paths: `crates/renderer/src/vulkan/{sync.rs,texture.rs}`, `crates/renderer/src/vulkan/context/{init,init_stages,draw,sync_and_acquire_frame,resize,skinned_blas_refit}.rs`, `crates/renderer/src/vulkan/acceleration/`
 First step: `git log --since=<last-report-date> --format='%h %s' -- crates/renderer/src/vulkan/{sync.rs,acceleration,context}`
 **Checklist**:
 - **Queue submission is single-Mutex.** `graphics_queue` / `present_queue` are `Arc<Mutex<vk::Queue>>`
-  (created in `context/init.rs`; `present_queue` is an `Arc::clone` of the graphics queue when the
+  (created in `context/init.rs`; the per-pass construction arms moved to `context/init_stages.rs` by #6143, 3e6f6b66a; `present_queue` is an `Arc::clone` of the graphics queue when the
   families match, so one Mutex serialises submits + presents). Vulkan requires external synchronization
   (`VUID-vkQueueSubmit-queue-00893`): bind the `MutexGuard` and keep it across `queue_submit` /
   `queue_present` even though `vk::Queue` is `Copy` (a temporary `.lock().unwrap()` drops at end of
@@ -83,8 +83,10 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   `build_skinned_blas_batched_on_cmd`, the TLAS resize, and every non-per-FIF resource. It is
   device-idle-equivalent only at `MAX_FRAMES_IN_FLIGHT == 2`. The wait is a known throughput cost (dominates GPU-bound
   frames), not a sync bug: narrowing it is tracked as #5365 (open; preconditions: per-FIF or deferred-destroy riders, the
-  #282 in-command-buffer barrier, a `BYRO_VALIDATION=1` run on both upscaler modes) — do not re-file it. Guard: the const-assert in `sync.rs`
-  (#870) and `frames_in_flight_contract_names_every_dependent_resource` (#3643) — confirm neither
+  SVGF previous-slot G-buffer read's in-command-buffer barrier — #282 is closed on the wait, the barrier is still owed — and a
+  `BYRO_VALIDATION=1` run on both upscaler modes) — do not re-file it. Guard: the const-assert in `sync.rs`
+  (#870), `the_all_slots_wait_argument_is_pinned` (the rider list; re-derive it in the same change that narrows the wait) and
+  `frames_in_flight_contract_names_every_dependent_resource` (#3643) — confirm none
   is `#[ignore]`d and a FIF bump would fail them. `image_available[frame]` must not be reused while an
   acquire is pending (comment block at the acquire → submit window); `render_finished` is per swapchain
   image (`render_finished_is_sized_and_indexed_per_swapchain_image`).
@@ -221,6 +223,11 @@ re-audit it here. This dimension owns how *systems* use it.
   a49073cc9); `find_package` held a `SceneAliasCandidate` query across `is_pickup_target` (→ `InventoryCatalog`) and
   `flee_package` read `AiCombatState` under `Transform` (ce22fcbcf — read cross-lock state before taking the guard). Attribution recipe: a temporary edge logger
   in `record_and_check`, `--test-threads=1 --nocapture`; fix by gathering under one guard, dropping it, then composing.
+- **`FormIdPool`'s entity index is a leaf mutex (#6338, ab3a604bf).** `FormIdPool::entity_with_local` rebuilds a lazily
+  cached `local → entity` map under an interior `Mutex` keyed on `FormIdComponent`'s structural generation + pool length;
+  `resolve_entity_by_global_form_id` (`crates/scripting/src/condition/eval.rs`) calls it per actor per frame with the
+  `FormIdComponent` read guard and `FormIdPool` read guard both held (storage first, then pool — the order its comment
+  records). Nothing may be acquired while that mutex is held, and a new caller must take the pair in the same order.
 - **Two resources held nested take them TypeId-sorted** (`resource_2_mut`, or its read twin `try_resource_2`), never two
   `try_resource` calls in code order: TypeIds shift with the unified feature set, so a code-order pair agrees with the
   sorted sites in one build and closes an ABBA in another — deterministic per build configuration, so it looks
@@ -276,7 +283,11 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   reads — now a `raise_kill_story_event` hop in `PARALLEL_SYSTEMS`; the cross-crate hop behind it, the scripting crate's
   `note_death` — a `KillRecords` write plus `SceneAliasCandidate` / `CreatureActor` / `FormIdComponent` / `FormIdPool` /
   `PapyrusPlayerEntity` reads — is a listed hop too, #6217 ef48dbd03; a new CTDA arm's reads must be declared on
-  `npc_dialogue_selection` the same way, 561541d6c).
+  `npc_dialogue_selection` the same way, 561541d6c). **Check #5647 (eca0c4709) against this**: all three story-event
+  producers (CLOC, AHEL, KILL) now go through `raise_story_event`, whose collision arm writes `PendingScriptStoryEvents`
+  (marker guard released first, so the two never nest). `raise_kill_story_event` is a listed hop but `raise_story_event`
+  lives in the scripting crate and is not, and `player_controller_system`'s row declares `StoryEvent` without that resource —
+  confirm whether the analyzer can see the write.
 - **Cross-stage sequencing is invisible to the analyzer** (`analyze_pair` reasons within one stage). A
   consumer in an earlier stage than its single producer silently reads last frame's value while every KPI
   stays green. Pinned today: `player_wind_read_is_declared_and_weather_writer_is_exclusive` (WindField:
@@ -356,7 +367,14 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
   Since #6146 (4cd4bacbd) every pass's `initialize_layouts` goes through the shared `texture::submit_initial_layouts`, and the
   water-caustic / SVGF / caustic / TAA init arms plus the water-caustic and TAA resize arms release a failed pass through
   `release_after_failed_submit` (destroy only on `NotSubmitted`, leak otherwise); two source scans pin it
-  (`every_initialize_layouts_body_uses_the_shared_submit`, `no_initialize_layouts_caller_destroys_without_the_in_flight_check`).
+  (`every_initialize_layouts_body_uses_the_shared_submit`, `no_initialize_layouts_caller_destroys_without_the_in_flight_check`
+  — since #6348, ad04a66b2, the second reads all six caller files incl. the pass-internal `taa.rs` / `svgf.rs` / `caustic.rs` /
+  `shadow_filter.rs`, classifies every call site as guarded destroy, keep-alive arm that returns the error, or chained result,
+  and pins per-file shape counts so a new caller fails instead of being skipped). A failed one-time layout walk fails
+  closed (#6343, 9be0666fd): the G-buffer and bloom init/resize arms dispose through `release_after_failed_submit` and
+  return `Err`, and the SVGF / TAA / caustic `recreate_on_resize` bodies return the error rather than `Ok(())` over
+  UNDEFINED images (`a_failed_layout_walk_fails_closed_instead_of_warning_and_continuing`, `context/resize.rs`; source-shape
+  only — no fault-injection hook exists, so the VUID before/after is unproven).
 - **AS cleanup on shutdown.** All `BlasEntry` buffers, `TlasState` buffers and scratch released; per-entity skin outputs kept until the entity is destroyed.
 - **Other GPU cleanup.** `scene_buffer`, `MaterialBuffer`, texture registry (incl. the `dynamic_rgba` staging
   arena), `EguiPass::destroy()` (`Option<EguiPass>` taken in `Drop`; its texture retirements are a
@@ -385,6 +403,10 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   scheduler's global pool) and uses `Arc<TextureProvider>`; BSA/BA2/CSG extraction is lock-free positional
   reads (`crates/bsa/src/read_at.rs`, `ReadAt`, commit 1b8b21f3f — concurrent on Unix, kernel-serialised on
   Windows, #4999). A shared-cursor seek+read reintroduced anywhere returns interleaved wrong bytes (threaded tests per archive, #5000).
+  The shared-archive registry (`open_shared`, `byroredux/src/asset_provider/archive.rs`) reuses a parsed reader only while its
+  `ArchiveStamp` matches — length + mtime everywhere, plus `(dev, ino, ctime)` on Unix, since a same-length rewrite that
+  restores the mtime otherwise served another entry's bytes as `Ok` (#5663, 04036a6fb); the path-keyed Starfield CDB caches
+  in `asset_provider/material/cdb.rs` are documented process-lifetime and never re-stamped.
   Streamed NIFs' textures are prefetched on the stream pool (`prefetch_textures`, `PrefetchStore`): a panicking
   read must still complete its slot, and a withdrawn key must not be waited on. Terrain-layer height maps (#6195)
   generate on their own 2-thread rayon pool (`TerrainHeightService`, `terrain_height.rs`) over a cloned

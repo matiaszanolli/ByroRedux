@@ -123,8 +123,8 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
 - **`control_flow.rs`**: shape classification (While: `last.next == current`; If: `last.next == exit`; If/Else;
   jmpt inversion negates + swaps edges). A conditional-predecessor `last` (`||` shape the boolean pass should
   have collapsed) **fails closed** (`ControlFlowFailed`, #1732; `conditional_predecessor_fails_closed`) —
-  a fix that resumes past the block drops statements. The module doc's "advanced past" wording is stale
-  (#4115 open, verified 2026-10-24).
+  a fix that resumes past the block drops statements. The module doc now says "declined with an error, not
+  advanced past" (#4115 `18ce09bff`); wording that drifts back is doc rot.
 - **Bookkept Champollion departures** — `boolean.rs`'s two (plus a third, newer guard below). `lower.rs`'s `is` → object-typed
   `Cast` departure (#4477) is closed: opcode 36 lowers to `Expr::Is` (#5443 `24f199587`, `an_is_opcode_lowers_to_an_is_expression`).
   For the **`boolean.rs`** two — adjudicate benign-or-bug, evidence = corpus rate +
@@ -145,7 +145,7 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
 - **Recursion**: `MAX_REBUILD_DEPTH = 1024` in `control_flow.rs` (`boolean.rs` derives it — not restated);
   both rebuilds return `RecursionLimit` (`rebuild_rejects_excessive_recursion_depth` exists in *both* files).
   It and `MAX_EXPR_DEPTH` (256) compose additively (~1,280) and independent edits erode the margin
-  (#4113 open, verified 2026-10-24) — check any change to either constant.
+  (#4113 still open, verified 2026-10-27) — check any change to either constant.
 - **`lower.rs` totality**: `lower_expr`/`lower_stmt` never panic on any `NodeKind`; intentional lossy lowerings
   matter only if a recognizer keys on the lost info: statement-shaped node as sub-expression → `NoneLit`
   (should be unreachable), `is` → `Cast`, `lower_binary_op` default arm →

@@ -24,8 +24,10 @@
 #   - *.bsa / *.esm / *.ba2 / *.nif — game data
 #   - URLs (contain ://)
 #
-# Advisory (never fail the gate): symbol drift (SKIP_SYMBOL_CHECK=1 silences it) and
-# closed issues described as open (needs `gh`; SKIP_ISSUE_STATE_CHECK=1 silences it, #6383).
+# Symbol drift (SKIP_SYMBOL_CHECK=1 silences it): FATAL for the audit skills and shared
+# files (exit 1), advisory for the docs/engine corpus. Advisory only (never fails the
+# gate): closed issues described as open (needs `gh`; SKIP_ISSUE_STATE_CHECK=1
+# silences it, #6383).
 #
 # Usage:
 #   .claude/commands/_audit-validate.sh           # validate, exit 1 on stale

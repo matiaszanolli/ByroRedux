@@ -30,7 +30,7 @@ The script writes the following into `$SCRATCH`:
 
 It also prints each group's weight: the changed files routed to it through `_audit-owners.md`, and the cited issues closed since the base. It exits non-zero if `groups.txt` misses an `audit-*` directory or lists one twice. A newly added audit skill must go into a group first.
 
-Look at the printed weights. If one group carries well over ~2× the median of either number, split it in `groups.txt` before fanning out. Ten groups was the right size for ~300 commits; the per-game audits each get their own group when their routed counts dwarf the rest (the 2026-10-12 run used fourteen for 239 commits, with `fo3` and `oblivion` split out of the old `fo3-oblivion` pair; the 2026-10-15 run used sixteen for 337 commits, splitting `scripting` (157 routed files, 22 cited-closed: the M47.2 VM wave) from `papyrus-character` and `fo4` from `starfield`; the 2026-10-20 run used seventeen for 379 commits, giving `performance` its own group apart from `renderer`; the 2026-10-24 run kept the same seventeen for 197 commits). Two skills' routed counts are inflated by churn, not code: `regression` (every `.claude/issues/` note) and `tech-debt` (the `docs/audits/` reports, other `docs/` edits, `.claude/commands/`). Discount those two before splitting.
+Look at the printed weights. If one group carries well over ~2× the median of either number, split it in `groups.txt` before fanning out. Ten groups was the right size for ~300 commits; the per-game audits each get their own group when their routed counts dwarf the rest (the 2026-10-12 run used fourteen for 239 commits, with `fo3` and `oblivion` split out of the old `fo3-oblivion` pair; the 2026-10-15 run used sixteen for 337 commits, splitting `scripting` (157 routed files, 22 cited-closed: the M47.2 VM wave) from `papyrus-character` and `fo4` from `starfield`; the 2026-10-20 run used seventeen for 379 commits, giving `performance` its own group apart from `renderer`; the 2026-10-24 run kept the same seventeen for 197 commits, as did the 2026-10-27 run for 198). Two skills' routed counts are inflated by churn, not code: `regression` (every `.claude/issues/` note) and `tech-debt` (the `docs/audits/` reports, other `docs/` edits, `.claude/commands/`). Discount those two before splitting.
 
 ## Phase 2: Fan out
 
@@ -65,9 +65,11 @@ After the `meta` agent finishes, fold in all the `_audit-owners.md` row proposal
 ## Phase 4: Verify
 
 ```bash
-bash .claude/commands/_audit-validate.sh 2>&1 | grep -E 'FAIL|STALE|OK:'
+bash .claude/commands/_audit-validate.sh 2>&1 | grep -E 'FAIL|STALE|OK:|ADVISORY — closed'
 git diff --stat -- .claude .agents
 ```
+
+The validator takes ~80 s. It exits 1 on a stale path or on a backticked symbol in a skill that no tracked source file contains (7f1e0db7a, #6381: the corpus now includes `scripts/*`, native sources, `.tsv` and `Cargo.lock`), and the exit happens *before* its later advisories print, so a symbol failure hides the closed-issue list until it is fixed. A passing run prints `OK:`. Its last advisory, `ADVISORY — closed issues described as open` (1f6594b18, #6383), is a free second pass over the main source of drift: every `file:line #N CLOSED` row is a cited issue GitHub now reports closed beside a "known open / still open" cue. It catches issues closed *after* the baseline too, which `cited_closed_recent_map.txt` cannot. Fix each row the way Phase 2 describes; `SKIP_ISSUE_STATE_CHECK=1` silences it.
 
 Skill-reading tests: rerun any whose matched text was touched.
 

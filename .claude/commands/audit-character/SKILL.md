@@ -24,7 +24,7 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   `essential_death_time_secs`, `BarterModel`, `PerkEntryPointDialect`; later `radiation_gauge` `e9b7bcead`,
   `level_cap_raises` #6227 `cafd3ccab`, `crime`), `derived.rs` (`DerivedStatFormula`/`DerivedInput`/`DerivedOutput`/`DerivedScope`/
   `RoundMode`), `leveling.rs`, `attribute.rs`/`skill.rs`, `fallout.rs`/`tes.rs`/`skyrim.rs` (per-family
-  ruleset builders), `regen.rs`, `affliction.rs`/`resistance.rs`, `reputation.rs`, `crime.rs` (`CrimeModel` — Oblivion and Skyrim rows; `CrimeKind`, `BountyScope`), `components.rs`.
+  ruleset builders), `regen.rs`, `affliction.rs`/`resistance.rs`, `reputation.rs`, `crime.rs` (`CrimeModel` — Oblivion and Skyrim rows; `CrimeKind`, `BountyScope`), `vats.rs` (`VatsModel`/`VatsHitInput` — the `fVATS*`/`fActionPoints*` tuning family + the to-hit chain, FO3/FNV rows, #6350), `components.rs`.
   Substrate: `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs`.
 - CHARAL-adjacent (not submodules): `crates/core/src/combat.rs` (Oblivion damage math),
   `crates/core/src/stealth.rs` (FO3/FNV sneak detection) — consumer-less or thin today; verify anyway.
@@ -34,7 +34,8 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   `crates/plugin/src/equip.rs` (`resolve_inherited_*`), `byroredux/src/cell_loader/references/`,
   `byroredux/src/inventory.rs` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/
   `Background`/`SpellList`/`RaceSpells` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`, `grant_experience`),
-  `byroredux/src/commands/{actor_value,condition}.rs`, `byroredux/src/crime.rs` (installs the `CrimeModel` resource from
+  `byroredux/src/commands/{actor_value,condition}.rs`, VATS runtime `byroredux/src/systems/vats.rs` + `components/vats.rs` (`VatsState`) +
+  `commands/vats.rs` (`vats.*`; `build_vats_model` in `npc_spawn.rs` is the one installer), `byroredux/src/crime.rs` (installs the `CrimeModel` resource from
   `index.character_rules.crime()`), `crates/scripting/src/{crime_faction,jail}.rs` (crime-faction fines, Oblivion jail).
 - Handoff: gameplay writers of `ActorValues` (consumables, restoration, combat — `byroredux/src/
   {inventory,combat}.rs`, `systems/restoration.rs`) belong to `/audit-gameplay`; CHARAL owns only whether
@@ -50,18 +51,24 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
 - FNV/FO3 **tag-skill per-level** formula undocumented, deferred; CLAS SPECIAL lives in `ATTR`, not `DATA`.
 - FO3/FNV AP (and Crit/Melee/Unarmed) NPC scope is unsourced: those rows ship `.player_only()` as the
   documented conservative choice (#2937, closed as documented), disclosed in place and pinned.
-- VATS runtime (AP pool/regen, time-pause, limb health, hit roll) absent; only AP *formulas* exist.
-- Regen: `PoolRegenConfig` has **zero production insertion sites** (`pool_regen_tick_system` is
-  registered and early-returns on every game); `affliction_tick_system` has no scheduler registration.
-  Verify still true; a change is a wiring event (Dim 5 doc sweep). Level-up is no longer absent: M47.2's
+- VATS (#6350, open umbrella): the AP pool, its regen, the mode machine with world freeze, the targeting scan and the AP-gated
+  queue/confirm (die roll per shot through the combat funnel, same-target hits folded into one `HitEvent`) are live for FO3/FNV
+  (`3dc16208e`..`1fb7e6f56`). Still absent, so not findings: a VATS menu, per-part damage routing / limb health, playback + camera,
+  Concentrated Fire's perk accuracy. The to-hit operation order is **reconstructed, not captured**; its ground-truth test is
+  `#[ignore]`d pending recorded scenarios (#6403, open) — never let the reconstruction arbitrate itself.
+- Regen: `pool_regen_tick_system` is live for FO3/FNV **ActionPoints only** — `build_vats_model` returns a `PoolRegenConfig` carrying
+  the `ActionPointsRegen` lane, installed on the first FO3/FNV cell load (`cell_loader/references/mod.rs`; #6374 `68f200ec4`
+  retired the "zero production insertion sites" claim). The Fatigue/Magicka/Willpower lanes stay inert (ids `0`; no Fallout actor
+  carries AV 0) and every other game never inserts the config; `affliction_tick_system` still has no scheduler registration.
+  Verify both, and that prose says "AP only" rather than "inert"/"live" wholesale (Dim 5 doc sweep). Level-up is no longer absent: M47.2's
   `grant_experience` (`byroredux/src/combat.rs`, shared by Fallout kill experience, `levelup xp` and Skyrim
   `Game.AdvanceSkill` rank-ups via `xp_from_skill_rank`) rolls levels through `LevelingModel::roll_levels` up to
   `level_cap()` and banks the rewards into the saved `LevelUpPoints` (Dim 3/4) — Fallout `skill_point_reward`,
   Skyrim a perk point + a pool pick (#5916 `612bd179e`); only classic-TES `SkillUse` has no XP-driven roll.
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-10-24) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
-  #4232 (`effective_actor_level` returns 0 verbatim). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
+- Open (verified 2026-10-27) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
+  the other four listed gained `ResolvedNpc` terminals, `eae8fd740`), #4232 (`effective_actor_level` returns 0 verbatim), #6403 (VATS to-hit ground truth). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
 ## Parameters
@@ -149,8 +156,8 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
 **Output**: `/tmp/audit/character/dim_2.md`
 
 ### Dimension 3: Progression, Pools, Afflictions & Reputation
-Paths: `crates/core/src/character/{leveling,regen,affliction,reputation,components,skyrim,tes}.rs`
-First step: `cargo test -p byroredux-core character::leveling character::regen character::affliction character::reputation`
+Paths: `crates/core/src/character/{leveling,regen,affliction,reputation,crime,vats,components,skyrim,tes}.rs`
+First step: `cargo test -p byroredux-core character::leveling character::regen character::affliction character::reputation character::vats`
 - **Leveling**: three models (Fallout `XpCurve`, classic-TES `SkillUse`, Skyrim `SkillXp`) are enum *data*
   variants with one consumer-side match; `level_cap()==0` = uncapped identically in all three. The roll is
   `LevelingModel::roll_levels` (#5918 `118edb1e6`): `capped = level_cap() > 0 && level >= level_cap()`, each
@@ -178,7 +185,12 @@ First step: `cargo test -p byroredux-core character::leveling character::regen c
   (`SKYRIM_POOL_BASE`, `pool_pick_gain`); `Perks::try_set_rank` rejects out-of-range rather than clamping.
 - **Regen tick**: fixed-60 Hz (`POOL_REGEN_DT`), backlog clamped (`MAX_REGEN_SUBSTEPS`), zero-dt cannot
   spin; the scheduler access declaration matches the body (`/audit-concurrency` Dim 4 owns the rule).
-  Absence of `PoolRegenConfig` insertion is known-open — verify the gap, not a comment describing it.
+  AP lane unit: `fActionPointsRestoreRate` is per second on FO3 (4) but per *frame* on FNV (0.06); `VatsModel::ap_regen_per_second`
+  divides by `POOL_REGEN_DT` (not a hard-coded 60, #6389 `f8a1b34bd`) so the installed rate is 3.6/s on FNV — a raw read of the GMST is the regression.
+- **VATS model** (`vats.rs`): every number resolves load-order-merged GMST -> compiled-in default (`with_gmst`; a bounded family rejects
+  out-of-range authored values); `FALLOUT_NV` carries the six re-tunes FalloutNV.esm authors (#6424), FO3 the wiki defaults; the model is the
+  profile's `vats()` row (#6423) — `build_vats_model` must not test the game. Check each default against `charal-fnv-fo3-ruleset.md`
+  (*VATS tuning, Action Points regen and the radiation gauge*); steps in `to_hit_chance` marked RECONSTRUCTED stay marked until #6403 lands captures.
 - **Affliction** = diff-and-reapply (remove previous band's penalty before applying the new one — a
   missing removal compounds); bands half-open and consistent; `band_for` vs `band_by_key` tie-break (#4456).
 - **Resistance/reputation**: `damage_multiplier` clamps `[0, cap]`, never negative (no healing);
@@ -271,7 +283,9 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   half is unparsed (#5338 `4957536ba`).
 - Skyrim `derive_skyrim_actor_values`: Health/Magicka/Stamina resolve **independently** (race base +
   signed ACBS offset, own AVIF; `RaceRecord.starting_*` are `Option<f32>`) — a missing pool suppresses
-  only itself. The capture's class/level term is deferred and must be disclosed in place (#4454). It also
+  only itself. For an auto-calc NPC the class/level term is implemented
+  (#5914 `b9e60846e`: `skyrim_class_pool_points` spreads `10·(level−1)` points over the three pools by the class weights, plus `5·(level−1)` Health);
+  a non-auto-calc NPC gets none, and prose still saying "race base + ACBS offset only" is doc rot (#6285 `27f022dfd`). It also
   emits the 18 skills (`7c740eca0`, `derive_skyrim_skills`): auto-calc NPCs = `SKYRIM_BASE_SKILL` 15 + race
   bonus + the class's `skyrim_skill_weights` share of 8 points/level (`skyrim_class_skill_points`, UESP *CLAS*;
   capped at 100; skills and pools share one `distribute_by_weight::<N>` routine since #6157 `f520d8d77` — equal weights break by
@@ -303,7 +317,8 @@ First step: `grep -rn 'not yet reachable\|oblivion_pool_regen_config\|when a liv
 - **Coverage matrix** (publish even with zero findings): family × {ruleset implemented, wired, derived
   stats, leveling model, regen wired, affliction wired}. Re-derive wiring from `profile.rs` arms + workspace
   greps, never from prose. Today: FO3/FNV/FO4/Skyrim wired, Oblivion blocked, FO76/Starfield absent; regen
-  and affliction inert everywhere; "leveling model" is a model, not a runtime.
+  live for FO3/FNV AP only (Fatigue/Magicka lanes inert), affliction inert everywhere; VATS runtime FO3/FNV only (Dim 3 known-open list); crime on
+  Oblivion/Skyrim rows (FO3/FNV crime is faction-based and unmodelled); "leveling model" is a model, not a runtime.
 - **Wiring events rot prose**: after any commit that wires/unwires a builder or resource, grep for the old
   claim in the `mod.rs` docstring, the capture Status columns (code ahead of capture is doc rot too),
   `docs/engine/charal.md`, `docs/feature-matrix.md`, `ROADMAP.md`, and code comments describing an

@@ -97,7 +97,11 @@ First step: `grep -rn 'type Storage = PackedStorage' crates byroredux --include=
   the incremental world-bound propagation, `physics_sync_system`'s unregistered-shape absence
   cache (`sync.rs`), `trap_contact_system`'s trap → scripted-owner map (`TrapOwnerCache`,
   `byroredux/src/systems/trap_hits.rs`, rebuilt only when the six storages it derives from change membership) and
-  `archetype_idle_system`'s settled-pass gate (`byroredux/src/systems/archetype_idle.rs`) consume them. The generation moves on insert (overwrite included) and
+  `archetype_idle_system`'s settled-pass gate (`byroredux/src/systems/archetype_idle.rs`) and
+  `FormIdPool::entity_with_local` (`crates/core/src/form_id.rs`, #6338 `ab3a604bf`: the local → entity index the
+  Flee / UseWeapon package systems resolve a target through per actor per frame, keyed on `FormIdComponent`'s
+  generation + the pool length, behind a leaf `Mutex`; a duplicate id keeps the first entity in storage order,
+  `entity_with_local_reuses_its_build_until_the_membership_moves`) consume them. The generation moves on insert (overwrite included) and
   remove, never on `get_mut` — a cache keyed on a field (the trap list on `havok_layer`) goes stale if that
   field is ever edited in place.
   `PackedStorage` keeps a dirty set (may hold duplicates —
@@ -113,7 +117,8 @@ First step: `grep -rn 'type Storage = PackedStorage' crates byroredux --include=
   A regression is a per-streaming-cycle cost.
 - `EntityId` is monotonic and never recycled (`World::spawn` `checked_add` panic #36; `despawn`
   reclaims nothing, #372/#3375). Do not describe it as generational or "fix" it by reuse (dangling
-  `Parent` refs go silent).
+  `Parent` refs go silent). The "generation-keyed" index of #6338 keys on a *storage's* `structural_generation`,
+  not on an entity generation.
 
 ### 3. Query Borrow Safety & the ECS `unsafe`
 
@@ -157,7 +162,17 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   inserts `R::default()` only when absent, leaving an existing (e.g. save-restored) value untouched (#5806
   `d0572ed94` — it replaced the hand-spelled `try_resource`/`insert_resource` idiom in scripting's `register`;
   #6136 `10360816e` moved it below `insert_resource`, which it had split from its doc block, and pinned both with
-  `init_resource_inserts_the_default_only_when_absent` / `insert_resource_keeps_its_own_doc` in `world_tests.rs`).
+  `init_resource_inserts_the_default_only_when_absent` / `insert_resource_keeps_its_own_doc` in `world_tests.rs`;
+  #6366 `f6c7c534e` converted the last five hand-spelled copies, and `no_source_spells_insert_default_if_absent_by_hand`
+  in `byroredux/src/workspace_hygiene_tests.rs` scans the bin and every crate so a fourth spelling fails the build — a
+  site inserting a *configured* value, such as `TerrainHeightService`, is legitimately different).
+- **Read accessors, one spelling each**: the bin reads the player entity only through `PlayerEntity::get(world)`
+  (`byroredux/src/systems/character.rs`, #6362 `67722b6e4` — it replaced 66 hand-spelled reads, and
+  `no_source_hand_spells_the_player_entity_read` keeps it so). It is deliberately NOT synchronised with the scripting
+  crate's `PapyrusPlayerEntity::get`, which differs in FlyCam, so a flow crossing the crate boundary reads the pair
+  knowingly. Doc blocks spliced onto the wrong item (the shape that split `insert_resource`'s doc) are scanned
+  workspace-wide by `no_doc_block_is_spliced_onto_the_wrong_item` (`core::source_scan::spliced_doc_blocks`, #6373
+  `546f5e2d4`); it only catches a doc that leads with a sibling's name.
 - **Resource vs. component choice**: mode flags and singleton state are `Resource`s (`HardcoreMode`,
   `SelectedRef`, the `*Bridge`/`*Telemetry` structs); per-actor state is a `SparseSetStorage`
   component (`ActorVitals`, `TimedRestorations`). A new per-entity fact modelled as a global map keyed
@@ -208,7 +223,9 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   #5649 `197a9e245`, which added 18 acquisitions to its row), `footstep_system`'s `PhysicsWorld` /
   `RapierHandles` reads (`footstep_declares_its_physics_reads`, #5556 `ac710964e`), and
   `cross_file_hops_and_get_forms_reach_their_acquisitions` pins that the table's cross-file hops and the
-  `get` forms actually surface types (#4994).
+  `get` forms actually surface types (#4994). The scan also counts a `PlayerEntity::get(` call as a read of
+  `PlayerEntity` (#6362: the accessor lives in another file, so the turbofish scan would otherwise go blind to
+  every player read).
   Sibling gates in `scheduler_access_tests.rs`: `scheduler_access_invariants_hold_on_the_real_schedule`
   (non-vacuous floors: ≥9 parallel systems, ≥7 analysed pairs, then 0 undeclared / 0 conflicts / 0
   unknown), `contract_bearing_exclusives_declare_their_access`, `p2_gameplay_exclusives_declare_non_empty_access`,
@@ -219,7 +236,10 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   The `player_controller_system` row's cross-file hops include `raise_kill_story_event` (the drowning death's
   `StoryEvent` write + cell-context reads, #5641 `17a84f442`) and the scripting crate's `note_death`
   (`KillRecords` write plus its `SceneAliasCandidate` / `CreatureActor` / `FormIdComponent` / `FormIdPool` /
-  `PapyrusPlayerEntity` reads, #6217 `ef48dbd03`).
+  `PapyrusPlayerEntity` reads, #6217 `ef48dbd03`). Since #5647 `eca0c4709` `raise_kill_story_event` ends in the
+  scripting crate's `story_manager::raise_story_event`, whose collision path writes the `PendingScriptStoryEvents`
+  resource — a cross-crate, non-turbofish hop the table cannot follow. At HEAD that row declares `writes::<StoryEvent>`
+  but no `PendingScriptStoryEvents` write (only the dialogue exclusive in `boot/schedule/late.rs` does): a by-hand check.
   **What the guard cannot see** (audit these by hand for every parallel system and any exclusive being
   promoted to parallel): it matches only single-type turbofish `query` / `query_mut` / `resource` /
   `resource_mut` (+ `try_`), `.get` / `.get_mut` / `.has` (#4994) and the generic
@@ -323,8 +343,11 @@ First step: `cargo test -p byroredux --bin byroredux -- rapier_release persisten
   (`StoryEvent`, the scene-package batches, …) drain in their one consumer and must not also be listed in
   the cleanup. The cleanup system also resets the Papyrus `VmFrameBudget` (#5763). Late readers
   now include `equipment_appearance_system` and `npc_dialogue_selection_system`. `timer_tick_system` never accumulates negative time.
-  Known-open #5647 (MEDIUM): `StoryEvent` is one slot per entity with several producers (CLOC, KILL, scripted
-  kills), so two player-keyed events in one frame overwrite each other.
+  `StoryEvent` is one slot per entity; since #5647 `eca0c4709` every engine producer (CLOC, AHEL, KILL) raises it
+  through `scripting::story_manager::raise_story_event` — the first event on an entity takes the marker, a second for
+  the same entity queues on `PendingScriptStoryEvents`, which the dispatcher drains in the same pass (the marker guard
+  is released before the queue is taken, so the two never nest; pinned by
+  `two_events_on_one_entity_in_a_frame_both_dispatch`). A producer inserting the marker directly is the regression.
 - **`AnimationClipRegistry`** (`animation/registry.rs`): interns by ASCII-lowercased path (#790) so
   streaming does not grow it; `release()` clears a slot but never returns it — no free list, by design
   (#2689), because a released handle may still sit on an `AnimationPlayer` / `AnimationLayer`. Every

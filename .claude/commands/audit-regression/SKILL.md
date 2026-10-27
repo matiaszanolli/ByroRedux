@@ -73,6 +73,13 @@ For each issue, work the fix → guard-test chain:
    The `byroredux` bin crate (and any workspace-resolving call) needs rustc ≥ 1.96 —
    rustup cargo per `docs/contributing.md` § Toolchain note (#4466). Never run
    `--ignored` on `byroredux-plugin` (real-master tests OOM past 20 GB).
+   A closed-HIGH/CRITICAL fix whose guard is `#[ignore]`d on real game data is
+   not run by `cargo test`: it is a line in `.github/real-data-pins.txt`
+   (`<lane> <test title>`, lanes `plugin-lib` / `plugin-esm` / `scripting-lib` /
+   `bin` / `nif-corpus`) and runs through `scripts/run-real-data-pins.sh [filter]`,
+   one cargo process per pin (the memory bound). If such a guard is not on the
+   list, that is a PARTIAL (#6224/#6354 each found closed-HIGH guards in no lane
+   at all).
 
 ## Step 3 — Assign a status
 
@@ -96,6 +103,7 @@ These contracts landed as refactors, not closed bugs, so issue discovery never s
 | ReSTIR reservoir | the per-thread `resRadiance[]` array stays *retired* (#1369) — WRS is register-local, radiance recomputed via `shadowableLightRadiance` in `crates/renderer/shaders/include/lighting.glsl`; verify it stays gone, not "intact" | grep `resRadiance` in `crates/renderer/shaders/` → only the retirement comments |
 | Scheduler access | every parallel system declares what it acquires | `cargo test -p byroredux system_access_declaration_tests` |
 | Save shape | serialized shape changes force a baseline refresh or `FORMAT_MAJOR` bump | `cargo test -p byroredux serde_default_guard_tests` |
+| Closed-HIGH real-data pins | every pin in `.github/real-data-pins.txt` still names a real `#[ignore]`d `fn` in its lane's sources and passes on the installed masters; a new closed-HIGH real-data guard appends a line (#6182, #6354 added the scripting-lib lane + five rows) | `cargo test -p byroredux every_real_data_pin_names_an_ignored_test_in_its_lane` (hosted, no game data); `scripts/run-real-data-pins.sh` (needs game data; report pass / fail / not-run, never fold not-run into a pass) |
 
 ## Output
 

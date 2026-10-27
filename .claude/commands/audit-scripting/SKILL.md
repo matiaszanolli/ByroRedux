@@ -29,10 +29,12 @@ Dim 2's lock rules cover both.
 
 ## Scope
 
-`crates/scripting/src/` (~115k LOC incl. tests; re-measure with `find crates/scripting/src -name '*.rs' | xargs wc -l`): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
+`crates/scripting/src/` (~118k LOC incl. tests; re-measure with `find crates/scripting/src -name '*.rs' | xargs wc -l`): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
 `recognizers/{quest_stage_gate,rumble,two_state_activator}`); `fragment.rs` + `fragment/{effects,populate,
 state,systems}.rs` with the per-family appliers in `fragment/effects/{resolve,deferred,inventory,placement,scene,lock,
-player_control,vehicle_cinematic,ai_combat,quest_scoped,evaluate}.rs` (#5468 split); the **Papyrus VM family**
+player_control,vehicle_cinematic,ai_combat,quest_scoped,evaluate,guards,quest_vars,actor_values,actor_lists,
+location_alias,reference_state,player_stats,messages}.rs` (#5468 split; #6142 `b269744f2` moved the older inline
+`apply_effect` arms into the last seven and `evaluate_guard`'s into `guards.rs`); the **Papyrus VM family**
 (M47.2): `fragment/vm/` (`interp.rs` the interpreter, `checker.rs` + `natives/` the `check_*` ahead-of-time checks; `vm.rs` is a ~136-LOC hub), `fragment/budget.rs` (per-frame
 statement budget, #5763), `fragment/dispatch.rs` (`run_papyrus_call` / `flush_advances`, the one budget→defer→apply
 tail every Papyrus-call system shares, #5797 `e27c93a97`), `fragment/{reference,alias_scripts,owners}.rs` (reference / alias script instances and
@@ -75,16 +77,30 @@ since shipped; still real gaps — world-query search across unloaded data, cond
 injected packages/spells/keywords/names/voice-type/combat overlays — don't re-file as discoveries), crate docstrings
 (`translate/mod.rs`, `fragment.rs`, `fragment/vm/`, `fragment/budget.rs`, `cleanup.rs` marker house rules).
 
-**Known-open — cite, don't re-file** (verified 2026-10-24 with `gh issue view`): #5646 (`GetRandomPercent` rolls
-0..=100, the CK/GECK say 0-99), #5647 (`StoryEvent` is one slot per entity with CLOC/KILL/AHEL producers — two
-same-frame events on the player overwrite; script-raised `SCPT` events use `PendingScriptStoryEvents` and are
-unaffected), #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
+**Known-open — cite, don't re-file** (verified 2026-10-27 with `gh issue view`): #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
 array/struct-holding frame cannot suspend — the budget-split residual; its idle-walk half shipped as `11685934d`,
 Dim 2),
 #5586 (`examples/mq101_conformance.rs::run` oversized — debt, not
 runtime), #5802 (hub-file growth; subsystems are migrating to their own `install` + `register_saved`, sliced in
-`bde3478db`/`e619dbbaf` — `/audit-tech-debt`). #4113/#4115 are open but live in `crates/papyrus`/`crates/pex`
-(`/audit-papyrus`). Closed since the 2026-10-21 sync: #5750 (`GetIsVoiceType` catalogued — 426 Skyrim/FO4, 427 FO3/FNV, each foreign in
+`bde3478db`/`e619dbbaf` — `/audit-tech-debt`). #4113 is open but lives in `crates/papyrus`/`crates/pex`
+(`/audit-papyrus`). Closed since the 2026-10-24 sync: #5646 (`GetRandomPercent` drew `pick(101)`, 0..=100; the CK/GECK say
+0-99 — now `pick(100)`, pinned by `get_random_percent_is_an_integer_in_zero_to_ninety_nine`, `6701086fd`), #5647 (the
+one-slot `StoryEvent` marker lost a second same-frame event on one entity — all three engine producers, `CLOC`/`AHEL`/`KILL`,
+now go through `story_manager::raise_story_event`: the first event on an entity takes the marker, a later one queues on
+`PendingScriptStoryEvents`; `two_events_on_one_entity_in_a_frame_both_dispatch`, `eca0c4709`), #6139 (the ObScript
+command chain became the `obscript_cmd.rs` table and `ObScriptCommandHost::call` was split, `bd4cabf81`..`d5d13edcc`),
+#6142 (`apply_effect` / `evaluate_guard` / `check_call` / `guard_reading` / `call_statement` split by family,
+`b269744f2`), #6221 (`GetIsPlayerBirthsign`, `GetAnimAction` and every `IsPlayerActionActive` index but the tracked
+jump (6) return `Action::Declined` instead of a constant, `c1b2b1d12`,
+`untracked_state_declines_instead_of_answering_a_constant`), #6226/#6281 (script sounds go through the bounded
+voice cache, skip decode with no device and honour SNDD attenuation and the 2D/Menu bits; ObScript `PlaySound` has no
+source reference — `NON_LOCATIONAL_SOURCE` — and is heard at the `AudioListener`, the player body only when no
+listener exists, `f04c3433d`), #6333/#6335 (per-frame cost: `collect_due` asks the stub question per due instance,
+`4f6cac254`; `StoryLocationMemo`, `80471eb78`), #6338 (`resolve_entity_by_global_form_id` answers from the
+`FormIdPool` generation-keyed index `entity_with_local`, `ab3a604bf`), #6365 (effect handlers open through
+`live_caller` / `open_actor_effects`, `bf27df84c`, `handlers_open_through_the_live_caller_helpers`), #6287 (the scalar
+`npc_refuses_dialogue` agrees with the bulk gather, `aa1016f3c`), #6286 (the alias inventory grant folds into the
+form's row, `f3c8461fc`). Closed since the 2026-10-21 sync: #5750 (`GetIsVoiceType` catalogued — 426 Skyrim/FO4, 427 FO3/FNV, each foreign in
 the other family; true for the speaker's VTCK voice type or any member of an FLST of them, the leveled base's terminal
 traits via #6228 `b76a74e45` — plus `IsCommandedActor` 700, a documented 0.0 since the engine has no summon/reanimate,
 so Skyrim's Hello greeting selects by voice again — `20d01cd6c`) and its FO3/FNV sibling #6251 (ten functions the
@@ -214,7 +230,9 @@ they cannot see:
   bare-receiver case (`receiver_object` rejects `self`; object locals resolve through
   `scope.object_locals`, alias-bound via `SceneActorBindings`); a receiver the runtime would *drive* must
   not be the player (`StartCombat`, #4323). `PlayerRef` (0x14) resolves inside the shared
-  `resolve_entity_by_global_form_id` (#4694) and its inverse `entity_global_form_id` returns 0x14 for the player
+  `resolve_entity_by_global_form_id` (#4694; every other id answers from `FormIdPool::entity_with_local`, a
+  generation-keyed index rebuilt only when `FormIdComponent` membership moves, first duplicate wins as the old scan did,
+  #6338 `ab3a604bf`) and its inverse `entity_global_form_id` returns 0x14 for the player
   (#5979 `a6e66a08c`, which deleted the per-writer copies) — a local 0x14 special-case elsewhere is drift. A VMAD
   `None` object property resolves to absent, never form 0 (`ScriptInstance::object_form_id`, #5971 `34cc809ae`). `Disable`/`Enable` classify the receiver through the same
   alias-aware `receiver_object` as their siblings (an alias-bound marker must not decline alone).
@@ -258,9 +276,11 @@ Guards: `boot/schedule/mod.rs` — `scene_and_fragment_dispatch_chain_stays_in_d
 `build_scheduler_reports_zero_access_conflicts`; and `fragment/tests.rs::{nested_lock_contract_documents_
 apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect_acquires}` (source scans over
 `fragment::SOURCES`: `apply_effect`'s doc block must name every type its per-family helpers acquire).
-- **Nested-lock safety is exclusive scheduling.** `apply_effect` (`fragment/effects.rs`: the `SetGlobalValue` arm
-  inline, the rest delegating to `apply_{inventory,placement,scene,lock,player_control,vehicle_cinematic,ai_combat}_effect`
-  + `apply_quest_scoped_effect` in `fragment/effects/*.rs`, #4340/#5468; the scans read those bodies through
+- **Nested-lock safety is exclusive scheduling.** `apply_effect` (`fragment/effects.rs`, ~120 lines: every arm
+  delegates to `apply_{quest_vars,inventory,placement,scene,lock,player_control,vehicle_cinematic,messages,
+  reference_state,player_stats,location_alias,actor_values,actor_lists,ai_combat}_effect`
+  + `apply_quest_scoped_effect` in `fragment/effects/*.rs`, #4340/#5468/#6142; `SetGlobalValue` lives in `quest_vars.rs`, and
+  `evaluate_guard` delegates to `evaluate_{quest,actor,world}_guard` in `guards.rs`; the scans read those bodies through
   `fragment::SOURCES`, which `sources_completeness` pins to every production file) runs under one `resource_2_mut::<QuestStageState, QuestObjectiveState>()`
   taken in `apply_fragment_guard_free`; `QuestStageFragments` is cloned before any quest lock (no read→write
   nesting). Safe only because every quest-resource system is `add_exclusive` — moving
@@ -430,7 +450,7 @@ the resolve and before the drain is the recurrence).
   `or_precedence_quirk_*`, `and_chain_short_circuits_on_first_false`. Function catalog per the module-doc
   table (indices verified against TES5Edit; a function is added as one `condition/catalog.rs` `ROWS` entry, in `CATALOG` order; `CATALOG` was 24 at #5380 `395d2d831`, which added 56 `GetQuestRunning`,
   74 `GetGlobalValue`, 77 `GetRandomPercent` — the last rides `StoryManagerRng`, a documented 50.0 with none
-  installed, and rolls 0..=100 against the CK's 0-99, #5646; the module-doc table and a row-count pin
+  installed, and draws an integer 0..=99 as the CK says — `pick(100)`, #5646 `6701086fd`; the module-doc table and a row-count pin
   (`the_module_doc_table_lists_the_whole_catalog`) track the catalog, #5648 `2ed7f8ec3`. `GetQuestRunning`
   reads `is_running` alone — a stopped/completed/failed quest is not running, #5636 `aac92c6ca`; the plugin-side
   `param1_is_form_id` load-order remap mirrors the catalog by index, with rows for 56/71/74 and an exhaustive
@@ -591,7 +611,8 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   children are reached only through links (#5037/#5045 `7ab87c0fb`; FO3/FNV branch-less topics without the DIAL
   Top-level flag are link-only, #5224 `305363122`). It stamps `NpcDialogueTopic` on exactly one NPC (the
   surface keys on `DialogueSurfaceState::npc`, #5038); both entry points gate on `player_can_act` and the shared
-  `npc_refuses_dialogue` (dead / `AiCombatState` / unconscious), also applied by the interaction Talk arm
+  `npc_refuses_dialogue` (dead / `AiCombatState` / unconscious — the whole `collect_unconscious` set, so also knocked
+  down, fleeing or `SetActorsAI 0`, #6287 `aa1016f3c`), also applied by the interaction Talk arm
   (#5043, `1d31ced2b`) and by `default_activation_blocked` (a script `BlockActivation`, M47.2). `DialogueSurfaceState`
   lives in `crates/scripting/src/dialogue.rs` (re-exported by `npc_dialogue.rs`). UI re-selection goes through `select_topic_by_form_id` and must re-check live
   ownership. Each menu entry records the INFO that admitted it and a click on a listed topic speaks that INFO —
@@ -693,8 +714,10 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   `CLOC` (`systems/story_events.rs`, LCTN-granularity key), `AHEL` (every opened conversation), `sm.event` console, and
   **`SCPT`**: `Keyword.SendStoryEvent(akLoc, akRef1, akRef2, aiValue1, aiValue2)` lowers to `Effect::SendStoryEvent`,
   which queues onto `PendingScriptStoryEvents` once the quest-state guards drop (a queue, not a per-entity marker, so
-  several raised in one frame all dispatch — `queued_script_events_in_one_frame_all_dispatch`; the one-slot
-  `StoryEvent` marker the other producers share is #5647); `SCPT` nodes route on condition fn 576 `GetEventData`
+  several raised in one frame all dispatch — `queued_script_events_in_one_frame_all_dispatch`; the engine producers
+  `CLOC`/`AHEL`/`KILL` share the one-slot `StoryEvent` marker through `raise_story_event`, whose second event on the same
+  entity in a frame queues on `PendingScriptStoryEvents` too — #5647 `eca0c4709`,
+  `two_events_on_one_entity_in_a_frame_both_dispatch`); `SCPT` nodes route on condition fn 576 `GetEventData`
   (K1/L1/L2 `GetIsID`, location `HasKeyword`, V1/V2 `GetValue`), and a non-optional `FromEvent` alias with an empty
   slot makes its quest ineligible so the walk continues (`a_required_from_event_alias_without_its_slot_fails_the_start`);
   crime/crafting/`LEVL` families have no producer, and `MNAM`/`XNAM` (Num quests to run / Max concurrent, named
@@ -814,10 +837,15 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   `Other`, which runs only the `Games::Any` rows). The `FALLOUT` / `OBLIVION` census lives in
   `obscript_more/tests.rs`, checked against the rows both ways. Only the VM's own statements
   (`ObScriptCommandHost::call`: `Set`, quest variables, `RemoveMe` / `DropMe`, `GetSecondsPassed`) stay outside it.
-  Anything unmodelled
+  Handlers that act on the calling actor open through
+  `obscript_effects.rs::{live_caller, open_actor_effects}` (decline when the caller is not loaded; #6365 `bf27df84c`,
+  source guard `handlers_open_through_the_live_caller_helpers`) — a hand-spelled `caller_of` + `live` prologue is the
+  recurrence. Anything unmodelled
   is a **traced no-op returning 0, counted per owner in `ObScriptQuestTimers.unknown_commands`, never faked**
   — a command that returns a guessed value, or answers state the engine does not keep, is a finding
-  (*feedback_no_guessing*; `obscript_more` answers only from a named page, engine state or the ledger); the
+  (*feedback_no_guessing*; #6221 `c1b2b1d12` turned `GetIsPlayerBirthsign`, `GetAnimAction` and every
+  `IsPlayerActionActive` index but the tracked jump into `Action::Declined`, pinned by
+  `untracked_state_declines_instead_of_answering_a_constant`; `obscript_more` answers only from a named page, engine state or the ledger); the
   remaining unmodelled tail and each command's blocker are tabled in `docs/engine/scripting.md` (M47.3 phase 3) —
   not new findings. Dialect tables (xNVSE vs xOBSE opcode
   numbering, `ObscriptDialect`) stay separate because the same number names unrelated commands.
@@ -860,6 +888,12 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   deviation: the calling script finishes before the stage's items run (the original ran them inside the
   `SetStage` statement). Same decline rules as the other hosts: an `If` whose condition reads a declined getter runs no
   arm. Any new `SCDA` path here is untrusted input (above).
+- **Sound commands** (`systems/scripted_sound.rs`, `crates/scripting/src/sound_requests.rs`): `PlaySound` is
+  non-locational (GECK) — its request carries `NON_LOCATIONAL_SOURCE` (form 0, never a placement) and plays at the
+  `AudioListener` entity, the player body only when none exists (`listener_or_player`; #6226 `f04c3433d`,
+  `a_non_locational_play_is_heard_at_the_listener`); `PlaySound3D` and a Papyrus `Sound.Play` keep their source, and a
+  record's 2D bit takes the listener too. All script plays use the byte-budgeted voice cache and skip decode on an
+  inactive `AudioWorld` (#6281 `41b53ab41`); the audio engine itself is `/audit-audio`.
 - **Ledger honesty** (#6190 `7e867cf47`): a command whose value no system, gate or UI reads back declines instead of
   storing it in the saved `ObScriptLedger` and reporting done (`AddTopic`, `ModDisposition`, `SetQuestObject`,
   `SetItemValue` were removed; `GetTalkedToPC` is written by `apply_selection`). Mod-supplied accumulators saturate

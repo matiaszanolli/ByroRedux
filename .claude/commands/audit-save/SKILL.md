@@ -74,17 +74,17 @@ finds >0 items, and it fails when the invariant is broken.
 | `live_reload_tests::live_load_drain_discards_the_outgoing_sessions_script_events` | the teardown's queued `OnCellDetach`/`OnUnload` deliveries are discarded and `ActorWatch` re-baselined after the session replacement (#6083 `4b8e62d87`) |
 | `live_reload_tests::{live_load_drain_discards_the_cell_resets_its_reload_raised, live_load_drain_discards_the_outgoing_sessions_requests}` | the reload's own `note_player_entered_cell` must not leave `PendingCellResets` queued against the outgoing clock (#6238 `078df54e1`, `discard_pending_cell_resets`), and the value-keyed request queues (`PlayerMoveRequest`, `PendingPlayerXp`, `PendingSkillAdvances`, `PendingSleep`, `PendingMusic`, `PendingScriptMessages`, `MessageBoxQueue`) straddling the drain are cleared (#6239 `337bf25c8`, `discard_outgoing_session_requests`) |
 | `registry_completeness_tests::the_schema_fingerprint_is_pinned` | `BASELINE_SCHEMA_FINGERPRINT` vs `build_save_registry().schema_fingerprint()`: a registration-row reorder (the #5802 slices' risk) or a column add/remove/rename fails CI instead of rejecting every save (#6296 `5a3f571f4`) |
-| `registry_completeness_tests::every_delta_column_is_parked_or_explicitly_not` | the **third** list: every `MUTABLE_DELTA_COLUMNS` entry is parked in a named `ReferenceState`/`ScriptState` field (`cell_loader/reference_state.rs`), carried by `ActorStreamSnapshot`, or on `NOT_PARKED` with a reason; every parked field maps to a column or `FIELDS_WITHOUT_A_COLUMN` (#6085 `3b9060701`) |
+| `registry_completeness_tests::every_delta_column_is_parked_or_explicitly_not` | the **third** list: every `MUTABLE_DELTA_COLUMNS` entry is parked in a named `ReferenceState`/`ScriptState` field (`cell_loader/reference_state.rs`), carried by `ActorStreamSnapshot`, or on `NOT_PARKED` with a reason; every parked field maps to a column or `FIELDS_WITHOUT_A_COLUMN` (#6085 `3b9060701`); no `NOT_PARKED` reason may read `UNAUDITED` — the marker's last row, `Escorted`, is parked now (#6294 `f3ab49f55`) |
 | `command_queue_tests::{a_save_taken_mid_cell_transition_is_refused_not_written, a_save_taken_while_chargen_disables_saving_is_refused_not_written, quicksave_ring_cursor_does_not_advance_on_validation_abort, player_save_actions_wait_for_the_quiescent_fifo_drain, quickload_empty_errors_and_corrupt_newest_falls_back}` | save-side refusal gates, ring, quiescent drain |
-| `live_reload_tests::post_reload_drain_steps_keep_their_order` | source-order pin inside `execute_pending_save_loads`: `restore_resources` → `restore_resident` → `reseat_ambient_packages_after_restore` → `build_form_id_remap` → `apply_deltas`, each called exactly once (#5060 `02fa8358c`; the `reconcile_worn_gear` single-call pin joined it, #5460 `bda5a1167`) |
+| `live_reload_tests::post_reload_drain_steps_keep_their_order` | source-order pin inside `execute_pending_save_loads`: `restore_resources` → `restore_resident` → `build_form_id_remap` → the `ScriptPackage` pre-seat `apply_deltas` → `reseat_ambient_packages_after_restore` → the full `apply_deltas(.. MUTABLE_DELTA_COLUMNS)` (#5060 `02fa8358c`; the remap and pre-seat moved ahead of the re-seat in #6087 `c7463c04d`; the `reconcile_worn_gear` single-call pin joined it, #5460 `bda5a1167`) |
 | `app_step.rs::the_save_drain_publishes_the_transition_flag_before_draining` | `CellTransitionInFlight` published before the drain |
+| `crates/save/src/snapshot.rs` `the_bump_ledger_is_contiguous_and_current` | the `FORMAT_MAJOR` doc ledger has every `vN -> vN+1` step with no hole and ends at the constant — a bump that edits only the constant fails (#5459 `a4ccf3b27`) |
 | `*_survives_save_load*` (`round_trip_tests.rs`, `consumable_tests.rs`) | per-type round trips incl. lock/enable ledgers, fragment/provider queues, cinematic trio, `Perks`/timed restorations, SM node state + `StoryEventAliasFill` reference FormIds |
 
 Not covered by any guard (the audit's real work): the **two-list drift** between registry and
-`MUTABLE_DELTA_COLUMNS`; staleness of `NOT_SAVED_BY_DESIGN` *reasons*; the `NOT_PARKED` rows of the eviction-row
-partition still marked `"UNAUDITED"` (seeded from the delta list by #6085; #6294 `8fc521650` gave seven their reasons and
-ratcheted the set — only `Escorted` may keep the marker, a gameplay decision on whether a finished escort repeats its fragments
-after eviction; a delta column reverting on every cell exit is the GAME-SD-01/02 class); whether a baseline refresh
+`MUTABLE_DELTA_COLUMNS`; staleness of `NOT_SAVED_BY_DESIGN` *reasons*; whether the `NOT_PARKED` reasons of the eviction-row
+partition are *true* (seeded from the delta list by #6085; #6294 `8fc521650` / `f3ab49f55` retired the `UNAUDITED` marker —
+the guard now rejects it, and `Escorted` is parked; a delta column reverting on every cell exit is the GAME-SD-01/02 class); whether a baseline refresh
 without a bump was *justified*; manual `impl Serialize` types (invisible to both serde guards);
 the extension-state payload's own versioning (Dim 2); semantic correctness of load-apply ordering beyond
 the two pinned pre-reload cases. (Path-qualified `impl byroredux_core::ecs::Resource for X` impls were
@@ -186,9 +186,9 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 119 as of 2026-10-24, with one `vN -> vN+1`
-  entry per bump from v22 on; the ledger still lacks the v32→v33 entry — #5367 `14cff35ae`, new saved resource
-  `DialogueSpokenInfoForms` — known-open #5459. Recent anchors: v36 Wave 4 `RigidBodyData.surface_material`, v37 #5542
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 119 as of 2026-10-27, with one `vN -> vN+1`
+  entry per bump from v22 on, contiguous since #5459 `a4ccf3b27` restored the v32→v33 entry (#5367 `14cff35ae`, new saved
+  resource `DialogueSpokenInfoForms`) and pinned it with `the_bump_ledger_is_contiguous_and_current`. Recent anchors: v36 Wave 4 `RigidBodyData.surface_material`, v37 #5542
   widened it `u8`→`u32`, v38 #5300 re-keyed `DialogueSpokenInfoForms` to a (speaker ref, INFO) pair, and v39–v104
   are almost entirely M47.2 scripting state — new saved resource columns, `Effect` / `FragmentGuard` / `ValueExpr`
   variants and fields reachable through queued fragment continuations (`FragmentExecutionQueue`), `CharacterLevel`
@@ -312,7 +312,8 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
 - **Strict apply sequence**: drain slot → `validate_snapshot_types` (abort, session kept) →
   `preflight_extension_state` (abort) → `restore_resources_subset(PRE_RELOAD_RESOURCES)` (only resources
   read by spawn-time code during the reload: `ReferenceEnableState`, `ReferenceLockState`, `ReferenceScriptState`,
-  `ScriptedFactionChanges` — #5919 `aa14d3e89`, replayed by `stamp_quest_reference` as NPCs respawn;
+  `ScriptedFactionChanges` — #5919 `aa14d3e89`, replayed by `stamp_quest_reference` as NPCs respawn — and
+  `ReferenceMotionTypeState`, #6237, read by `scripted_motion_type` as each collider is built;
   `pre_reload_restore_installs_the_scripted_faction_ledger`; **never**
   `ItemInstancePool` — teardown's `release_victim_item_instances` needs the live pool, #4135; the live values are
   captured first as `LiveReloadLedgers` and reinstated if this restore or the reload below fails/refuses, so a
@@ -340,9 +341,12 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   → `restore_extension_state` → wholesale
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is
   not redundant) → `restore_resident` (parked rows for resident placements, #4695) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local
-  `EntityRef` handles must not resume, #4139) → `reseat_ambient_packages_after_restore` (re-pick packages
-  against the restored clock *before* the overlay, #4815; its order against `restore_resident` and the overlay is
-  pinned by `post_reload_drain_steps_keep_their_order`, #5060 `02fa8358c`) → `build_form_id_remap` → park the snapshot rows
+  `EntityRef` handles must not resume, #4139) → `build_form_id_remap` → a `ScriptPackage`-only `apply_deltas` pre-seat (the ambient selection honours a running
+  script package over the schedule, so re-seating without it stamped the scheduled winner and the next minute's tick
+  cleared the freshly overlaid `TravelState`/`Traveled` markers and reported a spurious package-change fragment; the column
+  is replacing and idempotent, so the full overlay re-applies it harmlessly — #6087 `c7463c04d`) → `reseat_ambient_packages_after_restore` (re-pick packages
+  against the restored clock *before* the overlay, #4815; its order against `restore_resident`, the remap, the pre-seat and the
+  overlay is pinned by `post_reload_drain_steps_keep_their_order`, #5060 `02fa8358c`) → park the snapshot rows
   whose `FormIdPair` did not resolve (`unresolved_form_id_pairs` → `park_unresolved_snapshot_rows` into
   `PersistentReferenceStates`, #5054 `17e720430` — the exterior reload streams only `radius_load`, so the
   save's hysteresis-band rows were dropped and their loot duplicated; `unresolved_snapshot_rows_are_parked_for_the_next_respawn`)

@@ -20,15 +20,15 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Re-measured 2026-10-24 at dcad3669d (943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 941 / 717 / 35 at ae557b935 on 2026-10-20; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
+only 2 real blocks). Re-measured 2026-10-27 at eae8fd740 (945 / 713 / 102 / 44 at dcad3669d on 2026-10-24; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 941 / 717 / 35 at ae557b935 on 2026-10-20; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
 
-- `crates/renderer/src`: **945** word tokens — 713 `unsafe {`
+- `crates/renderer/src`: **948** word tokens — 717 `unsafe {`
   blocks, 102 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~145: prose and source-scan
   strings; the newest is `texture::submit_initial_layouts`, #6146), 44 `unsafe impl` (every one a `NoUninit`, the
   `buffer.rs` primitive macro and `[T; N]` blanket included; newest: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, then #6270
   dedf6c0d6 added `Push` (shadow filter), `AtrousPush`, `WaterPush`, `PresentationPushConstants` and both skin push structs
   and routed those casts plus the geometry / morph-weight / bind-inverse bulk views through `byte_view`, dropping their
-  hand-rolled `from_raw_parts` blocks; fc83608d3 added two in `vulkan/gpu_timers.rs` for the shadow-filter bracket), ~810 `SAFETY` mentions. Growth since 10-15 is two new
+  hand-rolled `from_raw_parts` blocks; fc83608d3 added two in `vulkan/gpu_timers.rs` for the shadow-filter bracket), ~815 `SAFETY` mentions. Growth since 10-15 is two new
   passes — `vulkan/shadow_filter.rs` (9 blocks + `unsafe fn destroy`) and the SKYAL cloud-shadow bake
   `vulkan/sky_cube/cloud_shadow.rs` (5 + `unsafe fn record` / `destroy`, c231f5b5f) — plus `descriptors::clamp_sampler`
   (`unsafe fn`, #5809 31f4919d5, which first spliced it between `memory_barrier`'s doc and item, leaving the wrong fn
@@ -40,7 +40,7 @@ only 2 real blocks). Re-measured 2026-10-24 at dcad3669d (943 tokens / 716 block
   `CStr::from_ptr` device/extension-name blocks in `vulkan/device.rs` with ash's bounded `*_as_c_str()` accessors
   (pinned by `device_names_read_through_bounded_accessors`); `vulkan/groundcover.rs` split into
   `vulkan/groundcover/{construct,frame}.rs` (16 + 10 today). Densest files: `vulkan/gpu_timers.rs` (66),
-  `vulkan/acceleration/blas_static.rs` (29), `vulkan/context/resize.rs` (27), `vulkan/groundcover_bench.rs` (26). Compare against the previous
+  `vulkan/acceleration/blas_static.rs` (29), `vulkan/context/resize.rs` (28), `vulkan/groundcover_bench.rs` (26). Compare against the previous
   report, not this text.
 - Tail: `crates/fsr3-sys` 10 blocks in `src` (one is the test-only `byro_fsr3_abi_layout` probe; Dim 1) plus 20 in the
   `examples/vulkan_context_smoke.rs` harness, `crates/nif` 1
@@ -165,7 +165,11 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
   `a_failed_layout_submit_leaks_instead_of_destroying`), and since #6146 (4cd4bacbd) the water-caustic / SVGF / caustic / TAA
   init arms and the water-caustic and TAA resize arms through `texture::release_after_failed_submit` (destroy only on
   `NotSubmitted`; the seven `initialize_layouts` walks share `submit_initial_layouts`; pinned by
-  `no_initialize_layouts_caller_destroys_without_the_in_flight_check`). Constructors push each created resource into the shared
+  `no_initialize_layouts_caller_destroys_without_the_in_flight_check`, which has scanned all six caller files with per-file
+  shape counts since #6348, ad04a66b2). The other half — a walk that fails on a pass that must not run on UNDEFINED images
+  (G-buffer, bloom, SVGF / TAA / caustic resize) — fails closed with `Err` since #6343 (9be0666fd,
+  `a_failed_layout_walk_fails_closed_instead_of_warning_and_continuing`); the failure arms are source-shape pinned only,
+  there is no fault-injection hook, so a leak-vs-destroy change there is a needs-validation hypothesis. Constructors push each created resource into the shared
   `try_or_cleanup!` partial before filling it, so a failed `write_mapped` cannot drop a buffer the cleanup never saw
   (`GpuBuffer::Drop`'s debug leak assert fires on it; #5946, 267279ac2, pinned for volumetrics by
   `every_created_resource_is_pushed_before_anything_else_runs`). Flag the reverse — an unconditional `destroy` after a submit
@@ -287,7 +291,7 @@ First step: `cargo tree -p byroredux-mod-runtime | grep -i wasi` (must print not
 (~10.7k LOC, `unsafe`-free) is reached from `main.rs` (`load_requested_extensions`, `queue_session_event`) and
 `app_events.rs` (`shutdown_extension_host`, `extension_ui_menu_sync`). Audit it as a live path.
 
-- **Absence, not promise**: the crate doc says no WASI is linked; `wasmtime` (49.0.2 since 15a6b1d2d) is declared with
+- **Absence, not promise**: the crate doc says no WASI is linked; `wasmtime` (declared `49.0.2` since 15a6b1d2d, locked 49.0.4 by 9bc11da11) is declared with
   `default-features = false, features = [anyhow, component-model, cranelift, runtime, std]`. A `wasi` feature pulled
   in transitively turns the claim false (the `wasi` / `wasip2` entries in `Cargo.lock` are *mio* / *getrandom*
   wasm-target deps — the First-step `cargo tree -p` is the check, not a lockfile grep).
