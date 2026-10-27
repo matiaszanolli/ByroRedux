@@ -226,14 +226,26 @@ pub(crate) fn live(world: &World, form: u32) -> Option<EntityId> {
     crate::condition::resolve_entity_by_global_form_id(world, form)
 }
 
-fn add_item(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+/// The calling actor's form and its live entity, or `None` when the caller is
+/// not loaded. Every handler that acts on the calling actor declines on `None`;
+/// this is that prologue, once (#6365).
+fn live_caller(world: &World, context: &Context) -> Option<(u32, EntityId)> {
     let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    live(world, caller).map(|entity| (caller, entity))
+}
+
+/// [`live_caller`] plus a fresh [`Binder`] with the caller already bound as its
+/// actor: the opening of an effects-emitting handler, which then binds its other
+/// operands on the same `Binder` and hands both to `finish_effects`.
+fn open_actor_effects(world: &World, context: &Context) -> Option<(u32, EntityId, Binder, ActorRef)> {
+    let (caller, entity) = live_caller(world, context)?;
     let mut bind = Binder::default();
     let me = bind.actor(caller);
+    Some((caller, entity, bind, me))
+}
+
+fn add_item(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+    let Some((caller, _, mut bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         let Some(item) = form_arg(args, 0) else { return Action::Declined };
         let count = num(args, 1).max(0.0) as u32;
@@ -263,13 +275,7 @@ fn add_item(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], con
 }
 
 fn equip_item(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, mut bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         let Some(item) = form_arg(args, 0) else { return Action::Declined };
         if num(args, 1) != 0.0 {
@@ -281,13 +287,7 @@ fn equip_item(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], c
 }
 
 fn kill_actor(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, mut bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         let killer = form_arg(args, 0).map(|killer| bind.actor(killer));
         vec![Effect::Kill { actor: me, killer, silent: false }]
@@ -314,13 +314,7 @@ fn set_enemy(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], co
 }
 
 fn start_combat(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, mut bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         let Some(target) = form_arg(args, 0) else { return Action::Declined };
         if live(world, target).is_none() {
@@ -332,17 +326,11 @@ fn start_combat(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue],
 }
 
 fn stop_combat(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, caller_entity, bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         // An actor has one combat target: naming another one stops nothing.
         if let Some(target) = form_arg(args, 0) {
-            let fighting = caller_entity.and_then(|actor| world.get::<crate::AiCombatState>(actor).map(|state| state.target));
+            let fighting = world.get::<crate::AiCombatState>(caller_entity).map(|state| state.target);
             if fighting.is_none() || fighting != live(world, target) {
                 return Action::Done { value: None, effect: String::new() };
             }
@@ -353,47 +341,25 @@ fn stop_combat(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], 
 }
 
 fn stop_combat_alarm(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = vec![Effect::StopCombatAlarm { actor: me }];
     finish_effects(world, cmd, context, caller, &bind, effects)
 }
 
 fn set_unconscious(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = vec![Effect::SetUnconscious { actor: me, unconscious: num(args, 0) != 0.0 }];
     finish_effects(world, cmd, context, caller, &bind, effects)
 }
 
 fn set_ghost(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = vec![Effect::SetGhost { actor: me, ghost: num(args, 0) != 0.0 }];
     finish_effects(world, cmd, context, caller, &bind, effects)
 }
 
 fn lock(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, _)) = live_caller(world, context) else { return Action::Declined };
     let mut bind = Binder::default();
     let effects: Vec<Effect> = {
         let target = bind.object(caller);
@@ -431,14 +397,10 @@ fn force_save(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], 
 // `SetOpenState <0|1>`: a door the engine tracks no open/closed state for yet gets one (the
 // two-state activator, which is saved) so the call is not lost and `GetOpenState` reads it back.
 fn set_open_state(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
     let mut bind = Binder::default();
     let effects: Vec<Effect> = {
-        if let (Some(entity), Some(mut states)) = (caller_entity, world.query_mut::<crate::vm_state::TwoStateActivator>()) {
+        if let (entity, Some(mut states)) = (caller_entity, world.query_mut::<crate::vm_state::TwoStateActivator>()) {
             if states.get(entity).is_none() {
                 states.insert(entity, crate::vm_state::TwoStateActivator::default());
             }
@@ -449,13 +411,7 @@ fn set_open_state(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue
 }
 
 fn add_to_faction(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, mut bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         let Some(faction) = form_arg(args, 0) else { return Action::Declined };
         let change = match cmd {
@@ -472,13 +428,7 @@ fn add_to_faction(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue
 // Papyrus `PlayIdle` writes (`ActorCinematicState::request_idle`), which the binary's idle
 // runtime resolves to a clip and plays.
 fn play_idle(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, mut bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         let Some(idle) = form_arg(args, 0) else { return Action::Declined };
         vec![Effect::PlayIdle { actor: me, idle: bind.object(idle) }]
@@ -501,12 +451,8 @@ fn add_note(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _co
 // `SetAlert <flag>`: the actor draws (or lowers) its weapon; `IgnoreCrime <flag>`: it neither
 // attacks the player for crime nor reports it.
 fn set_alert(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(entity) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let entity = caller_entity;
     let on = num(args, 0) != 0.0;
     if cmd == CMD_SET_ALERT {
         set_flag::<crate::obscript_state::WeaponDrawn>(world, entity, on, crate::obscript_state::WeaponDrawn)
@@ -562,12 +508,8 @@ fn release_weather_override(world: &World, _fallout: bool, _cmd: u16, _args: &[O
 // (Fallout): the calling reference casts the spell — on the target, or on itself. Every modelled
 // effect of the spell lands at once (see `magic_effects`); a spell with none is declined.
 fn cast(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(caster) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let caster = caller_entity;
     let Some(spell) = form_arg(args, 0) else { return Action::Declined };
     let target = if cmd == CMD_CAST { form_arg(args, 1).and_then(|form| live(world, form)).unwrap_or(caster) } else { caster };
     if !crate::magic_effects::cast_spell(world, Some(caster), target, spell) {
@@ -581,12 +523,8 @@ fn cast(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context
 // `magic_shaders`: the fill layer's glow is what is drawn). A zero or absent duration plays until
 // stopped.
 fn play_magic_shader(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(entity) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let entity = caller_entity;
     let Some(named) = form_arg(args, 0) else { return Action::Declined };
     let shader = if cmd == CMD_PLAY_MAGIC_EFFECT {
         match world.try_resource::<crate::magic_shaders::ShaderCatalog>().and_then(|catalog| catalog.of_effect(named)) {
@@ -606,12 +544,8 @@ fn play_magic_shader(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptVa
 
 // `StopMagicEffectVisuals <effect>` (Oblivion's `SME`): the shader the effect plays, stopped.
 fn stop_magic_shader(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(entity) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let entity = caller_entity;
     let Some(named) = form_arg(args, 0) else { return Action::Declined };
     let shader = if cmd == CMD_STOP_MAGIC_EFFECT {
         match world.try_resource::<crate::magic_shaders::ShaderCatalog>().and_then(|catalog| catalog.of_effect(named)) {
@@ -627,12 +561,8 @@ fn stop_magic_shader(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptVa
 
 // `Look <target>` / `StopLook`: forced head-tracking (see `obscript_anim::HeadLook`).
 fn look(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(actor) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let actor = caller_entity;
     let Some(target) = form_arg(args, 0).and_then(|form| live(world, form)) else { return Action::Declined };
     if !crate::obscript_anim::start_look(world, actor, target) {
         return Action::Declined;
@@ -641,12 +571,8 @@ fn look(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], contex
 }
 
 fn stop_look(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(actor) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let actor = caller_entity;
     crate::obscript_anim::stop_look(world, actor);
     Action::Done { value: None, effect: format!("StopLook {caller:08X}") }
 }
@@ -656,12 +582,8 @@ fn stop_look(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], 
 // belongs to the app (`ReviveRequest`); an actor that is neither dead nor unconscious has nothing
 // to resurrect.
 fn resurrect(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(actor) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let actor = caller_entity;
     let down = world.has::<byroredux_core::ecs::components::Dead>(actor)
         || world.get::<crate::ActorControlState>(actor).is_some_and(|state| state.unconscious);
     if !down {
@@ -688,12 +610,8 @@ fn show_warning(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValu
 
 // `Dispel <spell>`: the spell's effects on the calling reference end.
 fn dispel(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(target) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let target = caller_entity;
     let Some(spell) = form_arg(args, 0) else { return Action::Declined };
     crate::magic_effects::dispel(world, target, Some(spell));
     Action::Done { value: None, effect: format!("Dispel {spell:08X} on {caller:08X}") }
@@ -701,13 +619,9 @@ fn dispel(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], cont
 
 // `Reset3DState`: the reference's animation starts over (see `obscript_anim::reset_animation`).
 fn reset_3d_state(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
     let name = |what: &str| format!("{what} {caller:08X}");
-    let Some(entity) = caller_entity else { return Action::Declined };
+    let entity = caller_entity;
     if !crate::obscript_anim::reset_animation(world, entity) {
         return Action::Declined;
     }
@@ -716,26 +630,16 @@ fn reset_3d_state(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptVal
 
 // `PickIdle`: the calling actor picks a new idle — the request the app's idle runtime answers.
 fn pick_idle(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
     let name = |what: &str| format!("{what} {caller:08X}");
-    let Some(entity) = caller_entity else { return Action::Declined };
+    let entity = caller_entity;
     let Some(mut requests) = world.query_mut::<crate::PickIdleRequest>() else { return Action::Declined };
     requests.insert(entity, crate::PickIdleRequest);
     Action::Done { value: None, effect: name("PickIdle") }
 }
 
 fn add_spell(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, mut bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         let Some(spell) = form_arg(args, 0) else { return Action::Declined };
         let spell = bind.object(spell);
@@ -752,13 +656,7 @@ fn add_achievement(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValu
 }
 
 fn set_player_teammate(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         vec![Effect::SetPlayerTeammate { actor: me, teammate: num(args, 0) != 0.0, can_do_favor: false }]
     };
@@ -781,13 +679,7 @@ fn set_essential(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue]
 }
 
 fn set_av(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, mut bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         let Some(avif) = crate::obscript_actor_values::actor_value_form(world, num(args, 0)) else {
             return Action::Declined;
@@ -814,15 +706,11 @@ fn set_av(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], conte
 }
 
 fn mod_av(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
     let Some(avif) = crate::obscript_actor_values::actor_value_form(world, num(args, 0)) else {
         return Action::Declined;
     };
-    let Some(actor) = caller_entity else { return Action::Declined };
+    let actor = caller_entity;
     // `ForceAV` is "the equivalent of ModAV by (value - GetAV)".
     let delta = if cmd == CMD_FORCE_AV {
         num(args, 1) - actor_value_view(world, actor, avif, ActorValueView::Current)
@@ -866,13 +754,7 @@ fn enable_player_controls(world: &World, _fallout: bool, cmd: u16, args: &[ObScr
 }
 
 fn add_perk(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, mut bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         let Some(perk) = form_arg(args, 0) else { return Action::Declined };
         vec![Effect::ChangePerk { actor: me, perk: bind.object(perk), add: cmd == CMD_ADD_PERK }]
@@ -884,13 +766,7 @@ fn add_perk(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], con
 // remove the player from the faction"). The GECK also sets it on the base, so
 // every actor spawned from it later has it; here only this reference changes.
 fn set_faction_rank(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let mut bind = Binder::default();
-    let me = bind.actor(caller);
+    let Some((caller, _, mut bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {
         let Some(faction) = form_arg(args, 0) else { return Action::Declined };
         let rank = num(args, 1);
@@ -901,11 +777,7 @@ fn set_faction_rank(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptVal
 }
 
 fn set_destroyed(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, _)) = live_caller(world, context) else { return Action::Declined };
     crate::destruction::set_destroyed(world, caller, num(args, 0) != 0.0);
     Action::Done { value: None, effect: format!("SetDestroyed {caller:08X} {}", num(args, 0) != 0.0) }
 }
@@ -915,11 +787,7 @@ fn set_destroyed(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue
 // authored one is not truly deleted, but "the script on such objects is
 // removed and no longer runs".
 fn mark_for_delete(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
     if crate::reference_enabled(world, caller) {
         return Action::Done { value: None, effect: String::new() };
     }
@@ -928,19 +796,15 @@ fn mark_for_delete(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptVa
         .is_some_and(|mut created| created.delete_when_able(caller));
     if !created {
         if let Some(mut instances) = world.query_mut::<crate::obscript_objects::ObScriptInstance>() {
-            instances.remove(caller_entity.expect("checked live above"));
+            instances.remove(caller_entity);
         }
     }
     Action::Done { value: None, effect: format!("MarkForDelete {caller:08X}") }
 }
 
 fn set_restrained(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(actor) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let actor = caller_entity;
     let restrained = num(args, 0) != 0.0;
     if !crate::update_actor_control(world, actor, |state| state.set_restrained(restrained)) {
         return Action::Declined;
@@ -971,12 +835,8 @@ fn reward_karma(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue]
 // target container is specified, the items are moved ... otherwise the items
 // are destroyed". The retain-ownership flag has no ledger to carry it.
 fn remove_all_items(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(source) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let source = caller_entity;
     let destination = match form_arg(args, 0) {
         Some(form) => match live(world, form) {
             Some(entity) => Some(entity),
@@ -1001,12 +861,8 @@ fn remove_all_items(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptVa
 // nothing, so a call with none is declined. Ownership is not tracked per stack here, so the retain
 // flag and the message flag have nothing to act on.
 fn remove_all_typed_items(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(source) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let source = caller_entity;
     let code = num(args, 3);
     if !(1.0..=255.0).contains(&code) {
         return Action::Declined;
@@ -1044,11 +900,7 @@ fn remove_all_typed_items(world: &World, _fallout: bool, _cmd: u16, args: &[ObSc
 // when their cell loads. The offset is not modelled (the Papyrus path has none
 // either), so a distance is declined rather than dropped.
 fn place_at_me(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, _)) = live_caller(world, context) else { return Action::Declined };
     let Some(base) = form_arg(args, 0) else { return Action::Declined };
     let count = if args.len() > 1 { num(args, 1).clamp(0.0, 32.0) as u32 } else { 1 };
     if num(args, 2) != 0.0 {
@@ -1074,12 +926,8 @@ fn place_at_me(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue],
 // GECK: "clears all current AI behaviors from an actor. Combat, pathing, and
 // packages are re-evaluated."
 fn reset_ai(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(actor) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let actor = caller_entity;
     if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
         states.remove(actor);
     }
@@ -1093,11 +941,7 @@ fn reset_ai(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], c
 // may take: no owner, which is how a cleared one is read. `ClearOwnership` is the
 // second spelling of that.
 fn set_ownership(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, _)) = live_caller(world, context) else { return Action::Declined };
     let owner = if cmd == CMD_SET_OWNERSHIP { form_arg(args, 0).unwrap_or(0) } else { 0 };
     let Some(mut overrides) = world.try_resource_mut::<crate::OwnerOverrides>() else {
         return Action::Declined;
@@ -1111,12 +955,8 @@ fn set_ownership(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue]
 // and the call answers how many seconds it takes (CS: "useful for timing followups").
 // A topic with nothing eligible to say answers 0 and speaks nothing.
 fn say(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(speaker) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let speaker = caller_entity;
     let (target, topic) = if cmd == CMD_SAY {
         (None, form_arg(args, 0))
     } else {
@@ -1151,12 +991,8 @@ fn show_message(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue],
 // player and opens the topic, through the force-greet the dialogue runtime already has. A
 // conversation between two NPCs has no runtime, so another target is declined.
 fn start_conversation(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(speaker) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let speaker = caller_entity;
     if form_arg(args, 0) != Some(crate::PLAYER_REFERENCE) {
         return Action::Declined;
     }
@@ -1171,13 +1007,9 @@ fn start_conversation(world: &World, _fallout: bool, _cmd: u16, args: &[ObScript
 // no-equip flag ("unable to equip the item until EquipItem is called") has no state to
 // carry it, so a set flag declines, as `EquipItem`'s no-unequip flag does.
 fn unequip_item(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
     use byroredux_core::ecs::components::{EquipmentSlots, Inventory, InventoryIndex};
-    let (Some(item), Some(actor)) = (form_arg(args, 0), caller_entity) else {
+    let (Some(item), actor) = (form_arg(args, 0), caller_entity) else {
         return Action::Declined;
     };
     if num(args, 1) != 0.0 {
@@ -1205,11 +1037,7 @@ fn unequip_item(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue]
 
 // `PlaySound3D <sound>`: "plays the specified sound, at the location of the calling reference".
 fn play_sound_3d(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, _)) = live_caller(world, context) else { return Action::Declined };
     let Some(sound) = form_arg(args, 0) else { return Action::Declined };
     let Some(mut pending) = world.try_resource_mut::<crate::PendingSoundPlays>() else {
         return Action::Declined;
@@ -1239,12 +1067,8 @@ fn add_reputation(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValu
 // specified axis" (GECK) — world axes are Gamebryo's Z-up, the transform is Y-up. A child
 // entity's transform is local to its parent, so only a root entity is moved this way.
 fn set_pos(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(entity) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let entity = caller_entity;
     let axis = num(args, 0) as usize;
     if axis > 2 || world.has::<byroredux_core::ecs::components::Parent>(entity) {
         return Action::Declined;
@@ -1265,12 +1089,8 @@ fn set_pos(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], con
 // frame ("a reference can only be rotated around one axis per frame", GECK). Only a root
 // entity, and not the player — whose pitch and heading belong to the camera.
 fn set_angle(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(entity) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let entity = caller_entity;
     let axis = num(args, 0) as usize;
     if axis > 2
         || world.has::<byroredux_core::ecs::components::Parent>(entity)
@@ -1294,12 +1114,8 @@ fn set_angle(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], co
 // object with no sequence of that name, or an actor's combat group, declines. Flag `0` holds
 // the request until the current cycle finishes (#4128); `1`/`2` start at once.
 fn play_group(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(entity) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let entity = caller_entity;
     let Some(group) = crate::obscript_anim::group_name(world, num(args, 0)) else { return Action::Declined };
     let flag = num(args, 1) as i64;
     if !crate::obscript_anim::play_group(world, entity, group, flag) {
@@ -1310,12 +1126,8 @@ fn play_group(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], 
 
 // `SetScale <factor>`: "sets the scale of the calling object ... 1.0 being normal size".
 fn set_scale(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
-    let Some(entity) = caller_entity else { return Action::Declined };
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
+    let entity = caller_entity;
     let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::components::Transform>() else {
         return Action::Declined;
     };
@@ -1343,13 +1155,9 @@ fn imod(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _contex
 }
 
 fn reset_health(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
-    let caller = caller_of(context);
-    let caller_entity = live(world, caller);
-    if caller_entity.is_none() {
-        return Action::Declined;
-    }
+    let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
     let name = |what: &str| format!("{what} {caller:08X}");
-    let Some(actor) = caller_entity else { return Action::Declined };
+    let actor = caller_entity;
     if !crate::obscript_actor_values::reset_health(world, actor) {
         return Action::Declined;
     }
@@ -2036,6 +1844,20 @@ pub(crate) const GETTER_COMMANDS: &[Command] = &[
 mod tests {
     use super::*;
     use crate::obscript_cmd::run;
+
+    /// #6365 — the live-caller prologue lives in `live_caller` /
+    /// `open_actor_effects`. 45 handlers had spelled it out (four lines, plus a
+    /// `Binder` for fifteen), each a place for the "declines when the caller is
+    /// not loaded" policy to drift.
+    #[test]
+    fn handlers_open_through_the_live_caller_helpers() {
+        let production = byroredux_core::source_scan::production_text(include_str!("obscript_effects.rs"));
+        let hand_spelled = ["let caller_entity = ", "live(world, caller);"].concat();
+        assert!(
+            !production.contains(&hand_spelled),
+            "a handler re-spells the live-caller prologue — open it with `live_caller` or `open_actor_effects` (#6365)"
+        );
+    }
 
     /// A getter through the command table: the number or reference it answers, or a decline.
     fn getter(world: &World, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
