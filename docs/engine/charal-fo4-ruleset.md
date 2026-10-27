@@ -238,10 +238,13 @@ have (affine/bilinear only); modeling both as one reciprocal pair (compute Buyin
 derive Selling) rather than two independent rows is the fitting representation if
 this ever enters the canonical table. Both clamp independently (Buying ≥ 1.2, Selling
 ≤ 0.8) — CHR 16+ hits both clamps simultaneously (Buying 1.2 flat, Selling 0.8 flat).
-The game executable's additional trade-price defaults are
-`fBarterSellMax=0.95` and `fBarterBuyMin=1.05`; Fallout4.esm does not author
-them. The sale may not exceed 95% of item value, and the purchase may not fall
-below 105%, even when the modifier calculation would produce a better price.
+The `1.2` floor and `0.8` ceiling are the authored GMSTs, not literals:
+Fallout4.esm sets `fBarterBuyMax=1.2` and `fBarterSellMax=0.8` (`fBarterMax=3.5`
+and `fBarterMin=2.0` are the curve's ends). So the effective limits are 120 % of
+item value when buying and 80 % when selling, and `BarterModel` reads the buy
+floor from `fBarterBuyMax` (FO4 has no `fBarterBuyMin`). The executable's own
+defaults, `fBarterBuyMax=1.05` and `fBarterSellMax=0.95`, apply only if a load
+order removes the authored values (#6283).
 
 ### Carry Weight — LOCKED (actor-general)
 
