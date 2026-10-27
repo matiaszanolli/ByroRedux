@@ -1,0 +1,9 @@
+# Reference docs whose backticked words are game data (record names, EditorIDs,
+# GMST / ObScript / Papyrus names, NIF texture names), not repo symbols, so the
+# symbol-drift advisory in _audit-validate.sh skips them (#6381). One basename
+# glob per line. Add a doc here only when its advisories are data by design;
+# real drift in these docs is still caught by the path gate.
+charal*.md
+scripting.md
+dialogue-trees.md
+npc-spawn-ai-packages.md

@@ -575,8 +575,15 @@ if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
     # #5607 — smoke-test fixture .env files define constants the skills
     # quote (FIXTURE_GATES, FIXTURE_DATA_ENV); without them in the corpus
     # every one of those is a standing false advisory.
+    #
+    # #6381 — ~35 of the 371 advisories named symbols that DO live in tracked
+    # non-Rust files: env vars in `scripts/*.sh`, FSR native names in
+    # `crates/fsr3-sys/native/*.cpp`, crate names in `Cargo.lock`, bench
+    # telemetry labels in `.tsv`. The corpus now covers them so the remaining
+    # advisories are the actionable set. Vendored `tools/nifskope` stays out.
     git ls-files '*.rs' '*.glsl' '*.vert' '*.frag' '*.comp' '*.rgen' '*.rchit' \
-        '*.env' \
+        '*.env' '*.sh' '*.cpp' '*.h' '*.hpp' '*.tsv' 'Cargo.lock' 'scripts/*' \
+        ':!tools/nifskope' \
         | xargs cat 2>/dev/null \
         | grep -a -vE '!\s*[A-Za-z_][A-Za-z0-9_]*\s*\.contains\(|!\s*contains\(' \
         > "$src_blob" || true
@@ -598,6 +605,26 @@ if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
         local fatal="${2:-}"
         shift 2 2>/dev/null || shift 1
         local -a files=("$@")
+        # #6381 — reference docs that quote record names, EditorIDs, GMST /
+        # ObScript / Papyrus names and NIF texture names by design (listed in
+        # `_audit-validate-symbol-exempt.txt`, one basename glob per line) are
+        # dropped from the advisory corpus; their backticked words are game
+        # data, not repo symbols. Only the non-fatal corpora are filtered —
+        # the hand-curated skills (`--fatal`) never are.
+        if [[ "$fatal" != "--fatal" && -f .claude/commands/_audit-validate-symbol-exempt.txt ]]; then
+            local -a kept=()
+            local f pat exempt
+            for f in "${files[@]}"; do
+                exempt=0
+                while IFS= read -r pat; do
+                    [[ -z "$pat" || "$pat" == \#* ]] && continue
+                    # shellcheck disable=SC2053 — the pattern is a glob on purpose
+                    [[ "$(basename "$f")" == $pat ]] && { exempt=1; break; }
+                done < .claude/commands/_audit-validate-symbol-exempt.txt
+                (( exempt )) || kept+=("$f")
+            done
+            files=("${kept[@]}")
+        fi
         local suspect_count=0
         local sym
         # GitHub issue label names, read from _audit-common.md's Issue Labels
