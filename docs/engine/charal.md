@@ -663,6 +663,11 @@ while). Struck-through items are done; the remaining two are genuinely open.
    and category-spend thresholds are still PENDING (§9), so
    `SkillSet::STARFIELD` / `LevelingModel::STARFIELD` / `starfield_ruleset()`
    are not yet buildable. Still open.
+9. **VATS tuning + AP regen (FO3/FNV)** — built as `VatsModel`, a
+   `CharacterRulesProfile::vats()` row (#6350, `crates/core/src/character/vats.rs`);
+   sourcing, the FNV re-tunes and the unverified restore-rate unit are captured in
+   `charal-fnv-fo3-ruleset.md` (*VATS tuning, Action Points regen and the radiation
+   gauge*). The to-hit operation order is reconstructed, not captured (#6403).
 
 Each phase ships independently behind `cargo test` (pure derivation + ruleset unit
 tests; no Vulkan, no game data required for the unit layer — real-data validation

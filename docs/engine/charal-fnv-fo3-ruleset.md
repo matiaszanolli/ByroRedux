@@ -390,7 +390,7 @@ penalty band are the other half. **The mechanism for that other half is now BUIL
 (`crates/core/src/character/affliction.rs`, 2026-07-03: `AfflictionTable` +
 `AfflictionStatus` + `reevaluate_affliction`/`affliction_tick_system` — see
 `charal.md` §4.6); the actual FO3/FNV Rads pool→penalty threshold *numbers* are still
-pending the *Radiation poisoning* page — no shipped table exists yet, mechanism-only.
+pending the *Radiation poisoning* page — no shipped table exists yet, mechanism-only. (The HUD's RAD gauge is documented under *VATS tuning, Action Points regen and the radiation gauge* below.)
 Source: fandom *Radiation Resistance*.
 
 Poison Resistance: `(Endurance − 1)·5 = 5·END − 5`, **identical FO3==FNV**, the
@@ -500,6 +500,70 @@ The Fallout movement penalty when over-encumbered is a **0.4** speed multiplier
 (`fMoveEncumEffect`), also overridable by authored game settings. Sources:
 GECK / Creation Kit settings and the Fallout 3 executable defaults, as
 captured by the engine settings tables.
+
+## VATS tuning, Action Points regen and the radiation gauge — BUILT (#6350)
+
+`VatsModel` (`crates/core/src/character/vats.rs`) is the FO3/FNV VATS tuning
+family, a `CharacterRulesProfile::vats()` row (`VatsModel::FALLOUT3` /
+`VatsModel::FALLOUT_NV`). Every number resolves as *load-order-merged GMST →
+compiled-in default*; `build_vats_model` (`byroredux/src/npc_spawn.rs`) applies
+the load order's settings and installs the model beside a `PoolRegenConfig`
+whose `action_points` lane restores the player's `ActionPoints`.
+
+**Sources.** The compiled-in defaults are the GECK wiki *VATS Settings* and
+*FVATSScreenPercentFactor* pages. Both masters were also read with
+`crates/plugin/examples/probe_gmst_vats` (a GMST dump of one ESM), so a value
+below is either "authored by the master" or "wiki only".
+
+**`fActionPoints*` standards** (identical in both masters unless noted):
+pistol 20, rifle 25, one-hand melee 15, two-hand melee 30, unarmed 22, grenade
+35, mine 10, launcher 40, handle 20, reload 10, heal 10, power attack ×1.5, VATS
+melee ×1. A weapon's GECK Override-tab AP replaces the standard.
+
+**`fVATS*` — the settings FalloutNV.esm re-tunes** (probe, #6424). New Vegas is
+*not* "FO3 plus the restore-rate dialect":
+
+| Setting | Fallout3.esm | FalloutNV.esm |
+|---|---|---|
+| `fVATSPlayerDamageMult` | 0.1 | 0.75 |
+| `fVATSDamageToWeaponMult` | 5 | 1 |
+| `fVATSSpreadMult` | 0.5 | 1.1 |
+| `fVATSRangeSpreadMax` | 3 | 100 |
+| `fVATSRangeSpreadUncertainty` | 0.7 | 0.01 |
+| `fVATSCriticalChanceBonus` | not authored (wiki default 15) | 5 |
+| `fVATSFortuneOdds` | not authored | 0.1 (not modelled) |
+
+**Wiki-only defaults** (neither master authors them): `fVATSHitChanceMult` 1,
+`fVATSMaxChance` 95, `fVATSMaxEngageDistance` 5000, `fVATSMeleeMaxDistance` 300,
+`fVATSMeleeReachMult` 2, `fVATSStealthMult` 0.5, `fVATSAutomaticMeleeDamageMult` 2,
+`fVATSDestructibleMult` 1.25, `fVATSShotBurstTime` 0.43, `fVATSSkillFactor` 1,
+`iVATSConcentratedFireBonus` 5 (the *perk's* accuracy per extra shot: "+
+[bonus/100]×[current shot − 1]"; not yet plumbed, #6422).
+
+**Restore rate — value sourced, unit NOT.** `fActionPointsRestoreRate` is **4**
+in Fallout3.esm and **0.06** in FalloutNV.esm. The engine treats FO3's as per
+second and FNV's as per frame on a 60 Hz clock (0.06 × 60 = 3.6 AP/s). The
+masters give the numbers; **no source in this repo or the local wikis states the
+unit** (the only wiki mention is a `SetGameSetting fActionPointsRestoreRate 6`
+example). Treat the per-frame reading as *unverified*: if it is wrong, FNV AP
+regen is off by a large factor and no test can tell.
+
+**The to-hit chain is reconstructed.** The wiki documents each factor's role and
+the 95 % cap but not the operation order; `VatsModel::to_hit_chance` marks every
+reconstructed step, and its ground-truth test is a placeholder until in-game
+percentages are captured (#6403).
+
+**AP scope.** FO3/FNV AP is a player-only derived row (see the Action Points
+note above), so only the player carries an `ActionPoints` value and the regen
+lane runs for the player alone.
+
+**Radiation gauge.** `CharacterRulesProfile::radiation_gauge` is
+`("RAD", "RadiationRads")` on FO3/FNV (GECK *Actor Value Codes* 54,
+*GetRadiationLevel*: "the current radiation value of an actor use GetAV
+radiationrads"). The HUD draws the composed `RadiationRads` value against the
+master's highest radiation-sickness stage threshold (`RADS` records). It is a
+HUD-only reading: nothing accumulates rads yet and the affliction tick is not
+registered, so the gauge reads 0 outside script/console edits.
 
 ## NPC stat storage — NOTE (distinct from FO4)
 
