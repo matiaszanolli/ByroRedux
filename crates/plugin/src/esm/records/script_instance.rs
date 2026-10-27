@@ -51,6 +51,8 @@
 //! scripts decoded so far rather than panicking, matching the engine's
 //! recover-don't-crash parse philosophy.
 
+use crate::esm::sub_reader::SubReader;
+
 /// An authored Papyrus property value attached to a script instance.
 /// Only the scalar + array core types are decoded; `Object` carries the
 /// raw plugin-local FormID (the consumer applies any FormID remap).
@@ -223,7 +225,7 @@ impl ScriptInstanceData {
     /// discipline (a mis-parse, never an OOB read), but it is the
     /// untrusted-mod path that makes it worth closing.
     pub fn parse_with_consumed(data: &[u8]) -> (Self, Option<usize>) {
-        let mut c = Cursor::new(data);
+        let mut c = SubReader::new(data);
         let version = c.i16().unwrap_or(0);
         let object_format = c.i16().unwrap_or(0);
         let mut out = ScriptInstanceData {
@@ -231,7 +233,7 @@ impl ScriptInstanceData {
             object_format,
             scripts: Vec::new(),
         };
-        let Some(script_count) = c.u16() else {
+        let Ok(script_count) = c.u16() else {
             // Not even a script count: the 4-byte header may itself have been
             // short (`i16().unwrap_or(0)` above tolerates that), so `c.pos`
             // is not a boundary.
@@ -240,10 +242,10 @@ impl ScriptInstanceData {
         // Cleared by every graceful break below. Only an untouched `true`
         // means `c.pos` is a real section boundary a caller may seek to.
         let mut clean = true;
-        let (scripts, scripts_clean) = c.scripts(script_count, version, object_format);
+        let (scripts, scripts_clean) = scripts(&mut c, script_count, version, object_format);
         out.scripts = scripts;
         clean &= scripts_clean;
-        (out, clean.then_some(c.pos))
+        (out, clean.then_some(c.position()))
     }
 }
 
@@ -339,28 +341,28 @@ pub fn parse_quest_fragments(vmad: &[u8]) -> Vec<QuestScriptFragment> {
     if ScriptInstanceData::parse_with_consumed(vmad).0.version >= 6 {
         return quest_tail(vmad).fragments;
     }
-    let mut c = Cursor::new(section);
+    let mut c = SubReader::new(section);
     // Skyrim fragment sections are universally version 2; decline any
     // other value rather than misread an underived shape.
-    if c.u8() != Some(2) {
+    if c.u8().ok() != Some(2) {
         return Vec::new();
     }
-    let Some(count) = c.u16() else {
+    let Ok(count) = c.u16() else {
         return Vec::new();
     };
-    let Some(_file_name) = c.wstring() else {
+    let Ok(_file_name) = c.wstring() else {
         return Vec::new();
     };
     let mut out = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let Some(stage) = c.u16() else { break };
-        let (Some(_unk0), Some(_unk1), Some(_flags)) = (c.i16(), c.i32(), c.u8()) else {
+        let Ok(stage) = c.u16() else { break };
+        let (Ok(_unk0), Ok(_unk1), Ok(_flags)) = (c.i16(), c.i32(), c.u8()) else {
             break;
         };
-        let Some(script_name) = c.wstring() else {
+        let Ok(script_name) = c.wstring() else {
             break;
         };
-        let Some(fragment_name) = c.wstring() else {
+        let Ok(fragment_name) = c.wstring() else {
             break;
         };
         out.push(QuestScriptFragment {
@@ -469,8 +471,8 @@ fn quest_tail(vmad: &[u8]) -> QuestTail {
     let Some(section) = vmad.get(consumed..) else {
         return QuestTail::default();
     };
-    let mut c = Cursor::new(section);
-    let (Some(_unknown), Some(fragment_count), Some(file_name)) = (c.u8(), c.u16(), c.wstring()) else {
+    let mut c = SubReader::new(section);
+    let (Ok(_unknown), Ok(fragment_count), Ok(file_name)) = (c.u8(), c.u16(), c.wstring()) else {
         return QuestTail::default();
     };
     let mut fragment_script = None;
@@ -478,30 +480,30 @@ fn quest_tail(vmad: &[u8]) -> QuestTail {
         // Fallout 4 and later: the fragment script's own flags and properties.
         let has_status = data.version >= 4;
         let status = if has_status {
-            let Some(status) = c.u8() else {
+            let Ok(status) = c.u8() else {
                 return QuestTail::default();
             };
             status
         } else {
             0
         };
-        let Some(property_count) = c.u16() else {
+        let Ok(property_count) = c.u16() else {
             return QuestTail::default();
         };
         let mut properties = Vec::with_capacity(usize::from(property_count));
         for _ in 0..property_count {
-            let (Some(name), Some(ptype)) = (c.wstring(), c.u8()) else {
+            let (Ok(name), Ok(ptype)) = (c.wstring(), c.u8()) else {
                 return QuestTail::default();
             };
             let property_status = if has_status {
-                let Some(status) = c.u8() else {
+                let Ok(status) = c.u8() else {
                     return QuestTail::default();
                 };
                 status
             } else {
                 0
             };
-            match c.property_value(ptype, data.object_format) {
+            match property_value(&mut c, ptype, data.object_format) {
                 Some(PropertyValue::Unknown(_)) | None => return QuestTail::default(),
                 Some(value) => properties.push(ScriptProperty { name, status: property_status, value }),
             }
@@ -510,25 +512,25 @@ fn quest_tail(vmad: &[u8]) -> QuestTail {
     }
     let mut fragments = Vec::with_capacity(usize::from(fragment_count));
     for _ in 0..fragment_count {
-        let (Some(stage), Some(_), Some(_), Some(_), Some(script_name), Some(fragment_name)) =
+        let (Ok(stage), Ok(_), Ok(_), Ok(_), Ok(script_name), Ok(fragment_name)) =
             (c.u16(), c.i16(), c.i32(), c.u8(), c.wstring(), c.wstring())
         else {
             return QuestTail { fragment_script, fragments, ..QuestTail::default() };
         };
         fragments.push(QuestScriptFragment { stage, script_name, fragment_name });
     }
-    let Some(alias_count) = c.u16() else {
+    let Ok(alias_count) = c.u16() else {
         return QuestTail { fragment_script, fragments, ..QuestTail::default() };
     };
     let mut aliases = Vec::with_capacity(usize::from(alias_count));
     for _ in 0..alias_count {
-        let Some(PropertyValue::Object { alias, .. }) = c.property_value(1, data.object_format) else {
+        let Some(PropertyValue::Object { alias, .. }) = property_value(&mut c, 1, data.object_format) else {
             break;
         };
-        let (Some(version), Some(object_format), Some(count)) = (c.i16(), c.i16(), c.u16()) else {
+        let (Ok(version), Ok(object_format), Ok(count)) = (c.i16(), c.i16(), c.u16()) else {
             break;
         };
-        let (scripts, clean) = c.scripts(count, version, object_format);
+        let (scripts, clean) = scripts(&mut c, count, version, object_format);
         aliases.push(QuestAliasScripts {
             alias_id: alias,
             scripts: ScriptInstanceData { version, object_format, scripts },
@@ -537,7 +539,7 @@ fn quest_tail(vmad: &[u8]) -> QuestTail {
             break;
         }
     }
-    let exact = c.pos == section.len();
+    let exact = c.position() == section.len();
     QuestTail { fragment_script, fragments, aliases, exact }
 }
 
@@ -585,14 +587,14 @@ pub fn parse_scene_fragments(vmad: &[u8]) -> Vec<SceneScriptFragment> {
     let Some(section) = vmad.get(consumed..) else {
         return Vec::new();
     };
-    let mut c = Cursor::new(section);
-    if c.u8() != Some(2) {
+    let mut c = SubReader::new(section);
+    if c.u8().ok() != Some(2) {
         return Vec::new();
     }
-    let Some(scene_flags) = c.u8() else {
+    let Ok(scene_flags) = c.u8() else {
         return Vec::new();
     };
-    let Some(_file_name) = c.wstring() else {
+    let Ok(_file_name) = c.wstring() else {
         return Vec::new();
     };
 
@@ -601,11 +603,11 @@ pub fn parse_scene_fragments(vmad: &[u8]) -> Vec<SceneScriptFragment> {
         if scene_flags & (1u8 << bit) == 0 {
             continue;
         }
-        let Some(_unknown) = c.u8() else { return out };
-        let Some(script_name) = c.wstring() else {
+        let Ok(_unknown) = c.u8() else { return out };
+        let Ok(script_name) = c.wstring() else {
             return out;
         };
-        let Some(fragment_name) = c.wstring() else {
+        let Ok(fragment_name) = c.wstring() else {
             return out;
         };
         let event = match bit {
@@ -620,21 +622,21 @@ pub fn parse_scene_fragments(vmad: &[u8]) -> Vec<SceneScriptFragment> {
         });
     }
 
-    let Some(phase_count) = c.u16() else {
+    let Ok(phase_count) = c.u16() else {
         return out;
     };
     out.reserve(phase_count as usize);
     for _ in 0..phase_count {
-        let (Some(flag), Some(phase_index), Some(_unknown_i16)) = (c.u8(), c.u8(), c.i16()) else {
+        let (Ok(flag), Ok(phase_index), Ok(_unknown_i16)) = (c.u8(), c.u8(), c.i16()) else {
             break;
         };
-        let (Some(_unknown_0), Some(_unknown_1)) = (c.u8(), c.u8()) else {
+        let (Ok(_unknown_0), Ok(_unknown_1)) = (c.u8(), c.u8()) else {
             break;
         };
-        let Some(script_name) = c.wstring() else {
+        let Ok(script_name) = c.wstring() else {
             break;
         };
-        let Some(fragment_name) = c.wstring() else {
+        let Ok(fragment_name) = c.wstring() else {
             break;
         };
         let event = match flag {
@@ -694,14 +696,14 @@ pub fn parse_info_fragments(vmad: &[u8]) -> Vec<InfoScriptFragment> {
     let Some(section) = vmad.get(consumed..) else {
         return Vec::new();
     };
-    let mut c = Cursor::new(section);
-    if c.u8() != Some(2) {
+    let mut c = SubReader::new(section);
+    if c.u8().ok() != Some(2) {
         return Vec::new();
     }
-    let Some(flags) = c.u8() else {
+    let Ok(flags) = c.u8() else {
         return Vec::new();
     };
-    let Some(_file_name) = c.wstring() else {
+    let Ok(_file_name) = c.wstring() else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -709,8 +711,8 @@ pub fn parse_info_fragments(vmad: &[u8]) -> Vec<InfoScriptFragment> {
     // is authoritative per the definition, so read exactly that many entries.
     let entries = usize::from(flags & 0b1 != 0) + usize::from(flags & 0b10 != 0);
     for index in 0..entries {
-        let Some(_unknown) = c.u8() else { break };
-        let (Some(script_name), Some(fragment_name)) = (c.wstring(), c.wstring()) else {
+        let Ok(_unknown) = c.u8() else { break };
+        let (Ok(script_name), Ok(fragment_name)) = (c.wstring(), c.wstring()) else {
             break;
         };
         out.push(InfoScriptFragment {
@@ -753,14 +755,14 @@ pub fn parse_package_fragments(vmad: &[u8]) -> Vec<PackageScriptFragment> {
     let Some(section) = vmad.get(consumed..) else {
         return Vec::new();
     };
-    let mut c = Cursor::new(section);
-    if c.u8() != Some(2) {
+    let mut c = SubReader::new(section);
+    if c.u8().ok() != Some(2) {
         return Vec::new();
     }
-    let Some(flags) = c.u8() else {
+    let Ok(flags) = c.u8() else {
         return Vec::new();
     };
-    let Some(_file_name) = c.wstring() else {
+    let Ok(_file_name) = c.wstring() else {
         return Vec::new();
     };
     let events = [
@@ -770,8 +772,8 @@ pub fn parse_package_fragments(vmad: &[u8]) -> Vec<PackageScriptFragment> {
     ];
     let mut out = Vec::new();
     for (_, event) in events.into_iter().filter(|(bit, _)| flags & bit != 0) {
-        let Some(_unknown) = c.u8() else { break };
-        let (Some(script_name), Some(fragment_name)) = (c.wstring(), c.wstring()) else {
+        let Ok(_unknown) = c.u8() else { break };
+        let (Ok(script_name), Ok(fragment_name)) = (c.wstring(), c.wstring()) else {
             break;
         };
         out.push(PackageScriptFragment {
@@ -808,20 +810,20 @@ pub fn parse_indexed_fragments(vmad: &[u8]) -> Vec<IndexedScriptFragment> {
     let Some(section) = vmad.get(consumed..) else {
         return Vec::new();
     };
-    let mut c = Cursor::new(section);
-    if c.u8().is_none() {
+    let mut c = SubReader::new(section);
+    if c.u8().is_err() {
         return Vec::new();
     }
-    let (_, clean) = c.scripts(1, data.version, data.object_format);
+    let (_, clean) = scripts(&mut c, 1, data.version, data.object_format);
     if !clean {
         return Vec::new();
     }
-    let Some(count) = c.u16() else {
+    let Ok(count) = c.u16() else {
         return Vec::new();
     };
     let mut out = Vec::with_capacity(usize::from(count));
     for _ in 0..count {
-        let (Some(index), Some(_unknown), Some(script_name), Some(fragment_name)) =
+        let (Ok(index), Ok(_unknown), Ok(script_name), Ok(fragment_name)) =
             (c.u32(), c.u8(), c.wstring(), c.wstring())
         else {
             break;
@@ -831,172 +833,123 @@ pub fn parse_indexed_fragments(vmad: &[u8]) -> Vec<IndexedScriptFragment> {
     out
 }
 
-/// Minimal bounds-checked little-endian cursor over a VMAD payload.
-struct Cursor<'a> {
-    data: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
-    }
-
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let end = self.pos.checked_add(n)?;
-        let s = self.data.get(self.pos..end)?;
-        self.pos = end;
-        Some(s)
-    }
-
-    fn u8(&mut self) -> Option<u8> {
-        self.take(1).map(|b| b[0])
-    }
-    fn u16(&mut self) -> Option<u16> {
-        self.take(2).map(|b| u16::from_le_bytes([b[0], b[1]]))
-    }
-    fn i16(&mut self) -> Option<i16> {
-        self.take(2).map(|b| i16::from_le_bytes([b[0], b[1]]))
-    }
-    fn u32(&mut self) -> Option<u32> {
-        self.take(4)
-            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-    fn i32(&mut self) -> Option<i32> {
-        self.take(4)
-            .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-    fn f32(&mut self) -> Option<f32> {
-        self.take(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
-    /// u16-length-prefixed string (no null terminator).
-    fn wstring(&mut self) -> Option<String> {
-        let len = self.u16()? as usize;
-        let bytes = self.take(len)?;
-        Some(String::from_utf8_lossy(bytes).into_owned())
-    }
-
-    /// `count` script entries: name, status byte (version 4+), and the
-    /// property table. The bool is `false` when a truncated entry or a
-    /// property of unknowable width ended the decode early (what decoded is
-    /// kept).
-    fn scripts(&mut self, count: u16, version: i16, object_format: i16) -> (Vec<ScriptInstance>, bool) {
-        let c = self;
-        let mut scripts = Vec::new();
-        let has_status = version >= 4;
-        for _ in 0..count {
-            let Some(name) = c.wstring() else {
-                return (scripts, false);
+/// `count` script entries: name, status byte (version 4+), and the
+/// property table. The bool is `false` when a truncated entry or a
+/// property of unknowable width ended the decode early (what decoded is
+/// kept).
+fn scripts(c: &mut SubReader<'_>, count: u16, version: i16, object_format: i16) -> (Vec<ScriptInstance>, bool) {
+    let mut scripts = Vec::new();
+    let has_status = version >= 4;
+    for _ in 0..count {
+        let Ok(name) = c.wstring() else {
+            return (scripts, false);
+        };
+        let status = if has_status { c.u8().unwrap_or(0) } else { 0 };
+        let Ok(prop_count) = c.u16() else {
+            return (scripts, false);
+        };
+        let mut properties = Vec::with_capacity(prop_count as usize);
+        let mut script_ok = true;
+        for _ in 0..prop_count {
+            let Ok(pname) = c.wstring() else {
+                script_ok = false;
+                break;
             };
-            let status = if has_status { c.u8().unwrap_or(0) } else { 0 };
-            let Some(prop_count) = c.u16() else {
-                return (scripts, false);
+            let Ok(ptype) = c.u8() else {
+                script_ok = false;
+                break;
             };
-            let mut properties = Vec::with_capacity(prop_count as usize);
-            let mut script_ok = true;
-            for _ in 0..prop_count {
-                let Some(pname) = c.wstring() else {
-                    script_ok = false;
-                    break;
-                };
-                let Some(ptype) = c.u8() else {
-                    script_ok = false;
-                    break;
-                };
-                let pstatus = if has_status { c.u8().unwrap_or(0) } else { 0 };
-                match c.property_value(ptype, object_format) {
-                    Some(value @ PropertyValue::Unknown(_)) => {
-                        // Width of an unknown type is unknowable — keep
-                        // what we have and stop this script's props.
-                        properties.push(ScriptProperty {
-                            name: pname,
-                            status: pstatus,
-                            value,
-                        });
-                        script_ok = false;
-                        break;
-                    }
-                    Some(value) => properties.push(ScriptProperty {
+            let pstatus = if has_status { c.u8().unwrap_or(0) } else { 0 };
+            match property_value(c, ptype, object_format) {
+                Some(value @ PropertyValue::Unknown(_)) => {
+                    // Width of an unknown type is unknowable — keep
+                    // what we have and stop this script's props.
+                    properties.push(ScriptProperty {
                         name: pname,
                         status: pstatus,
                         value,
-                    }),
-                    None => {
-                        script_ok = false;
-                        break;
-                    }
+                    });
+                    script_ok = false;
+                    break;
+                }
+                Some(value) => properties.push(ScriptProperty {
+                    name: pname,
+                    status: pstatus,
+                    value,
+                }),
+                None => {
+                    script_ok = false;
+                    break;
                 }
             }
-            scripts.push(ScriptInstance {
-                name,
-                status,
-                properties,
-            });
-            if !script_ok {
-                return (scripts, false);
-            }
         }
-        (scripts, true)
+        scripts.push(ScriptInstance {
+            name,
+            status,
+            properties,
+        });
+        if !script_ok {
+            return (scripts, false);
+        }
     }
+    (scripts, true)
+}
 
-    /// Decode one property value by type tag + object format.
-    fn property_value(&mut self, ptype: u8, object_format: i16) -> Option<PropertyValue> {
-        Some(match ptype {
-            1 => {
-                // Object: byte order flips with objectFormat.
-                let (form_id, alias) = if object_format == 1 {
-                    let f = self.u32()?;
-                    let a = self.i16()?;
-                    let _unused = self.u16()?;
-                    (f, a)
-                } else {
-                    let _unused = self.u16()?;
-                    let a = self.i16()?;
-                    let f = self.u32()?;
-                    (f, a)
-                };
-                PropertyValue::Object { form_id, alias }
-            }
-            2 => PropertyValue::String(self.wstring()?),
-            3 => PropertyValue::Int32(self.i32()?),
-            4 => PropertyValue::Float(self.f32()?),
-            5 => PropertyValue::Bool(self.u8()? != 0),
-            7 => self.struct_value(object_format)?,
-            11..=15 | 17 => {
-                // Array of the base type (11 → 1, 12 → 2, …, 17 → 7).
-                let base = ptype - 10;
-                let count = self.u32()?;
-                let mut items = Vec::with_capacity(count.min(4096) as usize);
-                for _ in 0..count {
-                    match self.property_value(base, object_format)? {
-                        v @ PropertyValue::Unknown(_) => return Some(v),
-                        v => items.push(v),
-                    }
+/// Decode one property value by type tag + object format.
+fn property_value(c: &mut SubReader<'_>, ptype: u8, object_format: i16) -> Option<PropertyValue> {
+    Some(match ptype {
+        1 => {
+            // Object: byte order flips with objectFormat.
+            let (form_id, alias) = if object_format == 1 {
+                let f = c.u32().ok()?;
+                let a = c.i16().ok()?;
+                let _unused = c.u16().ok()?;
+                (f, a)
+            } else {
+                let _unused = c.u16().ok()?;
+                let a = c.i16().ok()?;
+                let f = c.u32().ok()?;
+                (f, a)
+            };
+            PropertyValue::Object { form_id, alias }
+        }
+        2 => PropertyValue::String(c.wstring().ok()?),
+        3 => PropertyValue::Int32(c.i32().ok()?),
+        4 => PropertyValue::Float(c.f32().ok()?),
+        5 => PropertyValue::Bool(c.u8().ok()? != 0),
+        7 => struct_value(c, object_format)?,
+        11..=15 | 17 => {
+            // Array of the base type (11 → 1, 12 → 2, …, 17 → 7).
+            let base = ptype - 10;
+            let count = c.u32().ok()?;
+            let mut items = Vec::with_capacity(count.min(4096) as usize);
+            for _ in 0..count {
+                match property_value(c, base, object_format)? {
+                    v @ PropertyValue::Unknown(_) => return Some(v),
+                    v => items.push(v),
                 }
-                PropertyValue::Array(items)
             }
-            other => PropertyValue::Unknown(other),
-        })
-    }
-
-    /// A [`PropertyValue::Struct`]: a u32 count of named, typed members.
-    fn struct_value(&mut self, object_format: i16) -> Option<PropertyValue> {
-        let count = self.u32()?;
-        let mut members = Vec::with_capacity(count.min(256) as usize);
-        for _ in 0..count {
-            let name = self.wstring()?;
-            let ty = self.u8()?;
-            let flags = self.u8()?;
-            match self.property_value(ty, object_format)? {
-                // A member of unknowable width ends the whole value.
-                v @ PropertyValue::Unknown(_) => return Some(v),
-                value => members.push(StructMember { name, flags, value }),
-            }
+            PropertyValue::Array(items)
         }
-        Some(PropertyValue::Struct(members))
+        other => PropertyValue::Unknown(other),
+    })
+}
+
+/// A [`PropertyValue::Struct`]: a u32 count of named, typed members.
+fn struct_value(c: &mut SubReader<'_>, object_format: i16) -> Option<PropertyValue> {
+    let count = c.u32().ok()?;
+    let mut members = Vec::with_capacity(count.min(256) as usize);
+    for _ in 0..count {
+        let name = c.wstring().ok()?;
+        let ty = c.u8().ok()?;
+        let flags = c.u8().ok()?;
+        match property_value(c, ty, object_format)? {
+            // A member of unknowable width ends the whole value.
+            v @ PropertyValue::Unknown(_) => return Some(v),
+            value => members.push(StructMember { name, flags, value }),
+        }
     }
+    Some(PropertyValue::Struct(members))
 }
 
 #[cfg(test)]

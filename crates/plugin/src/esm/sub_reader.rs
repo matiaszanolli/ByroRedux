@@ -114,6 +114,56 @@ impl<'a> SubReader<'a> {
 
     // ── Strict reads (advance only on success) ──────────────────────────
 
+    /// Read the next `n` bytes as a borrowed slice. Errors on truncation.
+    /// The slice outlives the reader borrow (`'a`), so a caller can keep it
+    /// while reading on.
+    pub fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        if self.remaining() < n {
+            bail!(
+                "SubReader::take({n}): only {} bytes remaining (pos={}, len={})",
+                self.remaining(),
+                self.pos,
+                self.data.len()
+            );
+        }
+        let out = &self.data[self.pos..self.pos + n];
+        self.pos += n;
+        Ok(out)
+    }
+
+    /// Read a `u16`-length-prefixed string with no terminator (the Papyrus
+    /// VMAD "wstring"). Lossy UTF-8; errors on truncation of the prefix or body.
+    pub fn wstring(&mut self) -> Result<String> {
+        let start = self.pos;
+        let len = usize::from(self.u16()?);
+        match self.take(len) {
+            Ok(bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
+            Err(e) => {
+                self.pos = start;
+                Err(e)
+            }
+        }
+    }
+
+    /// Read a `u32` count followed by `count * stride` bytes, returned as one
+    /// slice (the `NVNM` navmesh lists). Errors on truncation or if the byte
+    /// length overflows; the reader is left where it started in either case.
+    pub fn counted(&mut self, stride: usize) -> Result<&'a [u8]> {
+        let start = self.pos;
+        let count = self.u32()? as usize;
+        let Some(len) = count.checked_mul(stride) else {
+            self.pos = start;
+            bail!("SubReader::counted: {count} x {stride} bytes overflows");
+        };
+        match self.take(len) {
+            Ok(bytes) => Ok(bytes),
+            Err(e) => {
+                self.pos = start;
+                Err(e)
+            }
+        }
+    }
+
     /// Read one `u8`. Errors on truncation.
     pub fn u8(&mut self) -> Result<u8> {
         if self.remaining() < 1 {
@@ -262,6 +312,40 @@ impl<'a> SubReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn take_wstring_and_counted_read_the_vmad_and_nvnm_shapes() {
+        let data = [
+            0x03, 0x00, b'a', b'b', b'c', // wstring "abc"
+            0x02, 0x00, 0x00, 0x00, 1, 2, 3, 4, // counted(2): two 2-byte rows
+            0xFF, // trailing byte
+        ];
+        let mut r = SubReader::new(&data);
+        assert_eq!(r.wstring().unwrap(), "abc");
+        assert_eq!(r.counted(2).unwrap(), &[1, 2, 3, 4]);
+        assert_eq!(r.take(1).unwrap(), &[0xFF]);
+        assert!(r.is_empty());
+    }
+
+    /// A failed compound read leaves the reader where it started, so a caller
+    /// can decline and fall back without a half-consumed buffer.
+    #[test]
+    fn a_failed_compound_read_does_not_advance() {
+        // wstring promising 5 bytes with 2 present.
+        let mut r = SubReader::new(&[0x05, 0x00, b'a', b'b']);
+        assert!(r.wstring().is_err());
+        assert_eq!(r.position(), 0);
+        // counted claiming more rows than exist, and one whose length overflows.
+        let mut r = SubReader::new(&[0x09, 0x00, 0x00, 0x00, 1, 2]);
+        assert!(r.counted(4).is_err());
+        assert_eq!(r.position(), 0);
+        let mut r = SubReader::new(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        assert!(r.counted(usize::MAX).is_err());
+        assert_eq!(r.position(), 0);
+        let mut r = SubReader::new(&[1, 2]);
+        assert!(r.take(3).is_err());
+        assert_eq!(r.position(), 0);
+    }
 
     #[test]
     fn empty_reader_is_empty() {

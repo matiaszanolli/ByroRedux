@@ -420,48 +420,6 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     out
 }
 
-/// Cursor over an `NVNM` blob that refuses to read past the end.
-///
-/// Every accessor returns `None` on overrun so a wrong branch or a future
-/// format revision surfaces as "did not reconcile" instead of garbage.
-struct NvnmCursor<'a> {
-    data: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> NvnmCursor<'a> {
-    fn u32(&mut self) -> Option<u32> {
-        let raw = self.data.get(self.pos..self.pos + 4)?;
-        self.pos += 4;
-        Some(u32::from_le_bytes(raw.try_into().ok()?))
-    }
-
-    fn i16(&mut self) -> Option<i16> {
-        let raw = self.data.get(self.pos..self.pos + 2)?;
-        self.pos += 2;
-        Some(i16::from_le_bytes(raw.try_into().ok()?))
-    }
-
-    /// A `u32` count followed by `count * stride` bytes, returned as a slice.
-    fn counted(&mut self, stride: usize) -> Option<&'a [u8]> {
-        let count = self.u32()? as usize;
-        let len = count.checked_mul(stride)?;
-        let raw = self.data.get(self.pos..self.pos.checked_add(len)?)?;
-        self.pos += len;
-        Some(raw)
-    }
-
-    /// A counted block whose contents are deliberately not retained.
-    fn skip_counted(&mut self, stride: usize) -> Option<()> {
-        self.counted(stride).map(|_| ())
-    }
-
-    fn skip(&mut self, len: usize) -> Option<()> {
-        self.pos = self.pos.checked_add(len)?;
-        (self.pos <= self.data.len()).then_some(())
-    }
-}
-
 /// Largest `divisor` this decoder will honour before declaring the stream
 /// unrecognised. The segment grid is `divisor^2` counted lists, so a garbage
 /// word here is the difference between a bounded walk and a very long one.
@@ -480,19 +438,19 @@ const NVNM_MAX_DIVISOR: u32 = 64;
 ///
 /// See [`parse_navm`] for the layout and the evidence behind the branch.
 fn decode_nvnm(data: &[u8], out: &mut NavmRecord) {
-    let mut cur = NvnmCursor { data, pos: 0 };
+    let mut cur = SubReader::new(data);
     let header = (|| {
-        cur.u32()?; // unknown — tracks NVER on the typed form
-        cur.u32()?; // unknown — location-ish; not established by the corpus
-        let worldspace = cur.u32()?;
+        cur.u32().ok()?; // unknown — tracks NVER on the typed form
+        cur.u32().ok()?; // unknown — location-ish; not established by the corpus
+        let worldspace = cur.u32().ok()?;
         // Interior tiles name their cell; exterior tiles name their grid,
         // y before x. Both are four bytes, so this branch is invisible to a
         // length check — see `parse_navm` for how it was settled.
         let (cell_form, grid) = if worldspace == 0 {
-            (Some(cur.u32()?), None)
+            (Some(cur.u32().ok()?), None)
         } else {
-            let y = i32::from(cur.i16()?);
-            let x = i32::from(cur.i16()?);
+            let y = i32::from(cur.i16().ok()?);
+            let x = i32::from(cur.i16().ok()?);
             (None, Some((x, y)))
         };
         Some((worldspace, cell_form, grid))
@@ -510,7 +468,7 @@ fn decode_nvnm(data: &[u8], out: &mut NavmRecord) {
     out.grid = grid;
 
     let body = (|| {
-        let vertices: Vec<[f32; 3]> = rows(cur.counted(12)?, 12)
+        let vertices: Vec<[f32; 3]> = rows(cur.counted(12).ok()?, 12)
             .map(|r| {
                 [
                     f32::from_le_bytes([r[0], r[1], r[2], r[3]]),
@@ -523,9 +481,9 @@ fn decode_nvnm(data: &[u8], out: &mut NavmRecord) {
         // serves both. Skyrim splits the trailing `u32` into a cover marker
         // and cover flags; carrying it whole keeps one canonical field.
         let triangles: Vec<NavmTriangle> =
-            rows(cur.counted(16)?, 16).map(decode_nvtr_row).collect();
+            rows(cur.counted(16).ok()?, 16).map(decode_nvtr_row).collect();
         // Likewise identical to `NVEX`.
-        let external: Vec<NavmExternalConnection> = rows(cur.counted(10)?, 10)
+        let external: Vec<NavmExternalConnection> = rows(cur.counted(10).ok()?, 10)
             .filter_map(decode_nvex_row)
             .collect();
         // #3300 — captured rather than skipped. These go through the same
@@ -539,25 +497,25 @@ fn decode_nvnm(data: &[u8], out: &mut NavmRecord) {
         // values in the plugin's own FormID range, and the middle `u32` takes
         // exactly **one** value (`0xE48B73F3`) across every row, so it is a
         // fixed marker rather than per-door data.
-        let doors: Vec<NavmDoorTriangle> = rows(cur.counted(10)?, 10)
+        let doors: Vec<NavmDoorTriangle> = rows(cur.counted(10).ok()?, 10)
             .map(|r| NavmDoorTriangle {
                 triangle: u16::from_le_bytes([r[0], r[1]]),
                 unknown: u32::from_le_bytes([r[2], r[3], r[4], r[5]]),
                 door_form_id: u32::from_le_bytes([r[6], r[7], r[8], r[9]]),
             })
             .collect();
-        let covers: Vec<u16> = rows(cur.counted(2)?, 2)
+        let covers: Vec<u16> = rows(cur.counted(2).ok()?, 2)
             .map(|r| u16::from_le_bytes([r[0], r[1]]))
             .collect();
-        let divisor = cur.u32()?;
+        let divisor = cur.u32().ok()?;
         if divisor > NVNM_MAX_DIVISOR {
             return None;
         }
-        cur.skip(4 * 8)?; // max X/Y distance + min/max XYZ bounds
+        cur.skip(4 * 8).ok()?; // max X/Y distance + min/max XYZ bounds
         for _ in 0..(divisor * divisor) {
-            cur.skip_counted(2)?; // per-segment triangle index list
+            cur.counted(2).ok()?; // per-segment triangle index list
         }
-        (cur.pos == data.len()).then_some((vertices, triangles, external, doors, covers))
+        cur.is_empty().then_some((vertices, triangles, external, doors, covers))
     })();
 
     match body {

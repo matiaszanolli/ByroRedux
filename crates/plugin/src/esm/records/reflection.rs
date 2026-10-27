@@ -267,8 +267,10 @@ pub fn parse_bgs_reflection_with_remap(
     let mut diff_chunk: Option<(&[u8], i32)> = None;
     let mut off = 0usize;
     while off + 8 <= blob.len() {
-        let sig: [u8; 4] = blob[off..off + 4].try_into().unwrap();
-        let size = u32::from_le_bytes(blob[off + 4..off + 8].try_into().unwrap()) as usize;
+        // The loop guard leaves at least the 8 header bytes.
+        let mut header = SubReader::new(&blob[off..off + 8]);
+        let sig: [u8; 4] = header.fixed::<4>().unwrap_or_default();
+        let size = header.u32_or_default() as usize;
         if off + 8 + size > blob.len() {
             // Overflowing chunk — record nothing further; the tally
             // mismatch against `chunk_count` is the diagnostic.
@@ -294,30 +296,32 @@ pub fn parse_bgs_reflection_with_remap(
                 }
             }
             b"TYPE" if payload.len() >= 4 => {
-                out.class_count = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+                out.class_count = SubReader::new(payload).u32_or_default();
             }
             b"CLAS" if payload.len() >= 12 => {
-                let name = i32::from_le_bytes(payload[0..4].try_into().unwrap());
-                let flags = u16::from_le_bytes(payload[8..10].try_into().unwrap());
-                let field_count = u16::from_le_bytes(payload[10..12].try_into().unwrap()) as usize;
+                let mut r = SubReader::new(payload);
+                let name = r.i32_or_default();
+                r.skip_or_eof(4); // two u16s never decoded (class kind / size)
+                let flags = r.u16_or_default();
+                let field_count = usize::from(r.u16_or_default());
                 let mut class = ReflectionClass {
                     name_offset: name,
                     name: resolve_ref(name, &table),
                     flags,
                     ..ReflectionClass::default()
                 };
-                let mut p = 12usize;
                 for _ in 0..field_count {
-                    let Some(field) = payload.get(p..p + 12) else { break };
-                    let type_ref = i32::from_le_bytes(field[4..8].try_into().unwrap());
+                    let Ok(field) = r.fixed::<12>() else { break };
+                    let mut f = SubReader::new(&field);
+                    let name_ref = f.i32_or_default();
+                    let type_ref = f.i32_or_default();
                     class.fields.push(ReflectionField {
-                        name: resolve_ref(i32::from_le_bytes(field[0..4].try_into().unwrap()), &table),
+                        name: resolve_ref(name_ref, &table),
                         type_ref,
                         type_name: resolve_ref(type_ref, &table),
-                        offset: u16::from_le_bytes(field[8..10].try_into().unwrap()),
-                        size: u16::from_le_bytes(field[10..12].try_into().unwrap()),
+                        offset: f.u16_or_default(),
+                        size: f.u16_or_default(),
                     });
-                    p += 12;
                 }
                 out.classes.push(class);
             }
@@ -329,7 +333,7 @@ pub fn parse_bgs_reflection_with_remap(
                 // unknowable — the chunk is left undecoded rather than
                 // guessed. The VALUE decode (with side chunks) runs
                 // after the walk.
-                let type_ref = i32::from_le_bytes(payload[0..4].try_into().unwrap());
+                let type_ref = SubReader::new(payload).i32_or_default();
                 if out.classes.iter().any(|c| c.name_offset == type_ref) {
                     diff_chunk = Some((payload, type_ref));
                 }

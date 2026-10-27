@@ -45,6 +45,7 @@ use super::reflection::{
     MAX_NESTING_DEPTH,
 };
 use crate::esm::reader::FormIdRemap;
+use crate::esm::sub_reader::SubReader;
 
 /// The `0xFFFF` field-index terminator shared with the DIFF walk.
 const DIFF_TERMINATOR: u16 = 0xFFFF;
@@ -138,46 +139,6 @@ pub struct DiffOverride {
     pub value: ReflectionValue,
 }
 
-/// Byte cursor over one chunk payload — every read is bounds-checked;
-/// a truncation ends the decode (declines, never guesses).
-struct Cursor<'a> {
-    data: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
-    }
-
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let out = self.data.get(self.pos..self.pos + n)?;
-        self.pos += n;
-        Some(out)
-    }
-
-
-    fn u16(&mut self) -> Option<u16> {
-        Some(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
-    }
-
-    fn i32(&mut self) -> Option<i32> {
-        Some(i32::from_le_bytes(self.take(4)?.try_into().unwrap()))
-    }
-
-    fn u32(&mut self) -> Option<u32> {
-        Some(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
-    }
-
-
-
-
-
-    fn at_end(&self) -> bool {
-        self.pos == self.data.len()
-    }
-}
-
 /// The instance decoder: the complete schema (every CLAS precedes the
 /// instance chunks in authored order) plus the side-chunk queue every
 /// chunk-typed field consumes from, in authored order.
@@ -219,7 +180,7 @@ impl<'a> InstanceReader<'a> {
     /// → its own value walk. The recursion edge is depth-capped like
     /// every other cycle path (#5687 — a `Ref`-to-`Ref` chain recursed
     /// per 4 payload bytes pre-cap).
-    fn read_ref_target(&mut self, target: i32, cur: &mut Cursor) -> Option<ReflectionValue> {
+    fn read_ref_target(&mut self, target: i32, cur: &mut SubReader) -> Option<ReflectionValue> {
         self.nested(|reader| match target {
             t if t < 0 => read_builtin(t, cur, reader),
             t => reader.read_value(t, cur, false),
@@ -232,7 +193,7 @@ impl<'a> InstanceReader<'a> {
     fn read_value(
         &mut self,
         type_ref: i32,
-        cur: &mut Cursor,
+        cur: &mut SubReader,
         is_diff: bool,
     ) -> Option<ReflectionValue> {
         self.nested(|reader| {
@@ -255,11 +216,11 @@ impl<'a> InstanceReader<'a> {
     fn read_chunk_field(&mut self, type_ref: i32, is_diff: bool) -> Option<ReflectionValue> {
         if type_ref < 0 {
             let (sig, payload) = self.side.pop_front()?;
-            let mut cur = Cursor::new(payload);
+            let mut cur = SubReader::new(payload);
             match (type_ref, sig.as_slice()) {
                 (builtin::LIST, b"LIST") => {
-                    let elem_ref = cur.i32()?;
-                    let raw_count = cur.i32()?;
+                    let elem_ref = cur.i32().ok()?;
+                    let raw_count = cur.i32().ok()?;
                     if raw_count < 0 {
                         return None;
                     }
@@ -281,12 +242,12 @@ impl<'a> InstanceReader<'a> {
                         // USRD each).
                         items.push(self.read_value(elem_ref, &mut cur, is_diff)?);
                     }
-                    cur.at_end().then_some(ReflectionValue::List(items))
+                    cur.is_empty().then_some(ReflectionValue::List(items))
                 }
                 (builtin::MAP, b"MAPC") => {
-                    let key_ref = cur.i32()?;
-                    let val_ref = cur.i32()?;
-                    let raw_count = cur.i32()?;
+                    let key_ref = cur.i32().ok()?;
+                    let val_ref = cur.i32().ok()?;
+                    let raw_count = cur.i32().ok()?;
                     if raw_count < 0 {
                         return None;
                     }
@@ -297,7 +258,7 @@ impl<'a> InstanceReader<'a> {
                         let v = self.read_value(val_ref, &mut cur, is_diff)?;
                         pairs.push((k, v));
                     }
-                    cur.at_end().then_some(ReflectionValue::Map(pairs))
+                    cur.is_empty().then_some(ReflectionValue::Map(pairs))
                 }
                 _ => None,
             }
@@ -321,8 +282,8 @@ fn read_user_side_chunk(
         if !matches!(sig.as_slice(), b"USER" | b"USRD") {
             return None;
         }
-        let mut cur = Cursor::new(payload);
-        let class_ref = cur.i32()?;
+        let mut cur = SubReader::new(payload);
+        let class_ref = cur.i32().ok()?;
         if class_ref != class.name_offset {
             return None;
         }
@@ -334,8 +295,8 @@ fn read_user_side_chunk(
         }
         // Trailing u32 — purpose undocumented (Gibbed); consumed so a
         // stray tail can't leak into the next field's prefix.
-        cur.u32()?;
-        cur.at_end().then_some(ReflectionValue::Object(ReflectionObject {
+        cur.u32().ok()?;
+        cur.is_empty().then_some(ReflectionValue::Object(ReflectionObject {
             class: class.name.clone(),
             fields,
         }))
@@ -357,7 +318,7 @@ fn offset_read_order(class: &ReflectionClass) -> Vec<usize> {
 /// right after the inline ones, in encounter order.
 fn read_class_body(
     class: &ReflectionClass,
-    cur: &mut Cursor,
+    cur: &mut SubReader,
     is_diff: bool,
     reader: &mut InstanceReader,
 ) -> Option<ReflectionObject> {
@@ -377,7 +338,7 @@ fn read_class_body(
             }
         } else {
             loop {
-                let idx = cur.u16()?;
+                let idx = cur.u16().ok()?;
                 if idx == DIFF_TERMINATOR {
                     break;
                 }
@@ -410,7 +371,7 @@ fn read_class_body(
 /// load-order remap here, once, at construction.
 fn read_builtin(
     type_ref: i32,
-    cur: &mut Cursor,
+    cur: &mut SubReader,
     reader: &mut InstanceReader,
 ) -> Option<ReflectionValue> {
     let Some(&(_, _, inline)) = builtin_entry(type_ref) else {
@@ -419,15 +380,15 @@ fn read_builtin(
     Some(match inline {
         InlineValue::Nothing => ReflectionValue::Null,
         InlineValue::LengthPrefixedString => {
-            let len = cur.u16()? as usize;
-            let bytes = cur.take(len)?;
+            let len = cur.u16().ok()? as usize;
+            let bytes = cur.take(len).ok()?;
             // The CDB reader trims an embedded NUL inside the length
             // window (#2101) — same rule here.
             let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
             ReflectionValue::String(String::from_utf8_lossy(&bytes[..end]).into_owned())
         }
         InlineValue::Ref => {
-            let target = cur.i32()?;
+            let target = cur.i32().ok()?;
             let value = reader.read_ref_target(target, cur)?;
             ReflectionValue::Ref {
                 target_type: target,
@@ -435,35 +396,20 @@ fn read_builtin(
             }
         }
         InlineValue::Fixed(n) => {
-            let bytes = cur.take(n)?;
+            // A width that disagrees with the type declines instead of panicking.
+            let mut value = SubReader::new(cur.take(n).ok()?);
             match type_ref {
-                builtin::INT8 => ReflectionValue::I8(bytes[0] as i8),
-                builtin::UINT8 => ReflectionValue::U8(bytes[0]),
-                builtin::INT16 => {
-                    ReflectionValue::I16(i16::from_le_bytes(bytes.try_into().unwrap()))
-                }
-                builtin::UINT16 => {
-                    ReflectionValue::U16(u16::from_le_bytes(bytes.try_into().unwrap()))
-                }
-                builtin::INT32 => {
-                    ReflectionValue::I32(i32::from_le_bytes(bytes.try_into().unwrap()))
-                }
-                builtin::UINT32 => {
-                    ReflectionValue::U32(u32::from_le_bytes(bytes.try_into().unwrap()))
-                }
-                builtin::INT64 => {
-                    ReflectionValue::I64(i64::from_le_bytes(bytes.try_into().unwrap()))
-                }
-                builtin::UINT64 => {
-                    ReflectionValue::U64(u64::from_le_bytes(bytes.try_into().unwrap()))
-                }
-                builtin::BOOL => ReflectionValue::Bool(bytes[0] != 0),
-                builtin::FLOAT => ReflectionValue::F32(f32::from_bits(u32::from_le_bytes(
-                    bytes.try_into().unwrap(),
-                ))),
-                builtin::DOUBLE => ReflectionValue::F64(f64::from_bits(u64::from_le_bytes(
-                    bytes.try_into().unwrap(),
-                ))),
+                builtin::INT8 => ReflectionValue::I8(value.u8().ok()? as i8),
+                builtin::UINT8 => ReflectionValue::U8(value.u8().ok()?),
+                builtin::INT16 => ReflectionValue::I16(value.i16().ok()?),
+                builtin::UINT16 => ReflectionValue::U16(value.u16().ok()?),
+                builtin::INT32 => ReflectionValue::I32(value.i32().ok()?),
+                builtin::UINT32 => ReflectionValue::U32(value.u32().ok()?),
+                builtin::INT64 => ReflectionValue::I64(i64::from_le_bytes(value.fixed::<8>().ok()?)),
+                builtin::UINT64 => ReflectionValue::U64(u64::from_le_bytes(value.fixed::<8>().ok()?)),
+                builtin::BOOL => ReflectionValue::Bool(value.u8().ok()? != 0),
+                builtin::FLOAT => ReflectionValue::F32(value.f32().ok()?),
+                builtin::DOUBLE => ReflectionValue::F64(f64::from_le_bytes(value.fixed::<8>().ok()?)),
                 _ => return None, // a Fixed builtin with no arm — table drift
             }
         }
@@ -477,7 +423,7 @@ fn read_builtin(
 /// `WeatherClearTemplate`'s hook chunk). Anything else declines.
 fn read_typed_leaf(
     field: &ReflectionField,
-    cur: &mut Cursor,
+    cur: &mut SubReader,
     reader: &mut InstanceReader,
 ) -> Option<ReflectionValue> {
     if field.type_ref < 0 {
@@ -489,14 +435,14 @@ fn read_typed_leaf(
             return None;
         }
         if field.type_ref == builtin::REF {
-            let target = cur.i32()?;
+            let target = cur.i32().ok()?;
             let value = reader.read_ref_target(target, cur)?;
             return Some(ReflectionValue::Ref {
                 target_type: target,
                 value: Box::new(remap_ref_value(value, reader.remap)),
             });
         }
-        let prefix = cur.i32()?;
+        let prefix = cur.i32().ok()?;
         if prefix != field.type_ref {
             return None; // self-description disagrees with the schema
         }
@@ -566,9 +512,9 @@ pub(super) fn decode_instances(
     // (an RDIF blob has no root instance — just DIFF + side chunks).
     let root = if reader.side.front().is_some_and(|(sig, _)| *sig == *b"OBJT") {
         let (_, payload) = reader.side.pop_front().expect("front checked above");
-        let mut cur = Cursor::new(payload);
+        let mut cur = SubReader::new(payload);
         let decoded = reader.nested(|reader| {
-            let type_ref = cur.i32()?;
+            let type_ref = cur.i32().ok()?;
             let class = reader.class_for(type_ref)?;
             if class.flags & CLASS_FLAG_USER != 0 {
                 return None; // the root is a plain class, not a cast
@@ -577,7 +523,7 @@ pub(super) fn decode_instances(
         });
         // Trailing bytes decline the root: the walk and the schema must
         // account for every byte.
-        decoded.filter(|_| cur.at_end())
+        decoded.filter(|_| cur.is_empty())
     } else {
         None
     };
@@ -585,12 +531,12 @@ pub(super) fn decode_instances(
     let mut diff = None;
     if let Some((diff_payload, class_ref)) = diff_chunk {
         if let Some(class) = classes.iter().find(|c| c.name_offset == class_ref) {
-            let mut cur = Cursor::new(diff_payload);
+            let mut cur = SubReader::new(diff_payload);
             let mut overrides = Vec::new();
             let ok = reader.nested(|reader| {
-                cur.i32()?; // leading type ref, resolved at walk time
+                cur.i32().ok()?; // leading type ref, resolved at walk time
                 loop {
-                    let idx = cur.u16()?;
+                    let idx = cur.u16().ok()?;
                     if idx == DIFF_TERMINATOR {
                         return Some(());
                     }
@@ -607,7 +553,7 @@ pub(super) fn decode_instances(
                     });
                 }
             });
-            if ok.is_some() && cur.at_end() {
+            if ok.is_some() && cur.is_empty() {
                 diff = Some(overrides);
             }
         }
