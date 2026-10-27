@@ -71,14 +71,14 @@ pub struct EsmCellIndex {
     /// an `EDID` are absent here.
     pub landscape_texture_names: HashMap<u32, String>,
     /// Full decoded WRLD records, keyed by lowercased EDID. The
-    /// `worldspace_climates` map below is preserved for back-compat
-    /// with the cell loader's CLMT lookup; `worldspaces` is the
-    /// canonical exterior-render entry point and carries every other
-    /// authored field (parent, bounds, flags, water, music, map). See
+    /// `worldspace_climates` map below carries only the CLMT FormID;
+    /// `worldspaces` is the canonical exterior-render entry point and
+    /// carries every other authored field (parent, bounds, flags, water, music, map). See
     /// audit OBL-D3-NEW-01 / #965.
     pub worldspaces: HashMap<String, WorldspaceRecord>,
     /// Worldspace climate form IDs: worldspace_name_lowercase → CLMT form ID.
-    /// Extracted from the WRLD record's CNAM sub-record.
+    /// Extracted from the WRLD record's CNAM sub-record; consumed by
+    /// `env_translate::climate::resolve_worldspace_climate`.
     pub worldspace_climates: HashMap<String, u32>,
     /// Full TXST records keyed by form ID — all 8 texture slots
     /// (diffuse/normal/glow/parallax/env/env_mask/inner/specular).

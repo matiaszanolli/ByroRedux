@@ -12,8 +12,8 @@ use byroredux_core::bytes::{le_f32_at, le_u16_at};
 /// Walk the WRLD group hierarchy to find exterior cells and their placed references.
 ///
 /// Populates both `worldspaces` (full WRLD record per #965) and
-/// `worldspace_climates` (CLMT FormID lookup preserved for back-compat
-/// with the cell loader — see `resolve_worldspace_climate` in byroredux/src/env_translate/climate.rs).
+/// `worldspace_climates` (CLMT FormID per worldspace, consumed by
+/// `env_translate::climate::resolve_worldspace_climate`).
 pub(crate) fn parse_wrld_group(
     reader: &mut EsmReader,
     end: usize,
