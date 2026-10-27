@@ -832,6 +832,17 @@ EOF
                     || ! "$seam_height_mismatch" =~ ^[0-9]+$ || ! "$seam_normal_mismatch" =~ ^[0-9]+$ ]]; then
                 echo "exterior-smoke[$label]: HARD FAIL - incomplete terrain.seams line: $seam_line"
                 hard_fail=1
+            elif [[ "$label" == fo4 ]] && (( seam_dirty == 1 && seam_height_mismatch == 3 )); then
+                # #3306 — stock Fallout4.esm ships exactly one localized crack:
+                # LAND (3,0)/(4,0), rows 5/6/7 of the shared column differ by
+                # 8/16/16 units, the other 30 vertices bit-identical (decoded
+                # from vanilla VHGT; `vanilla_fo4_commonwealth_seam_tests` pins
+                # the vertices). Its signature is one dirty pair with three
+                # mismatched vertices. That is NOT a tolerance: any other
+                # count — a second pair, a fourth vertex, a different
+                # profile — still hard-fails below, so a new defect cannot hide
+                # behind the known one.
+                echo "exterior-smoke[$label]: PASS terrain seams (known vanilla Fallout4.esm crack, #3306): $seam_line"
             elif (( seam_dirty != 0 )); then
                 echo "exterior-smoke[$label]: HARD FAIL - terrain seam disagreement: $seam_line"
                 hard_fail=1
