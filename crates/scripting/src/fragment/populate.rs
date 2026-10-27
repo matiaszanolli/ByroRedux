@@ -494,32 +494,12 @@ fn populate_quest_fragments_from_script_internal(
     inserted
 }
 
-/// Decompile and lower the lifecycle fragments for one authored scene.
+/// Decompile and lower the lifecycle fragments for one authored scene,
+/// attributed to the archive package that supplied the compiled PEX.
 /// Scene fragments use the same conservative effect vocabulary and property
 /// resolution as quest-stage fragments; any function containing an unknown
 /// operation is declined as a whole. The result retains compatibility
 /// evidence from the same PEX parse used for lowering.
-pub fn populate_scene_fragments_from_pex_detailed(
-    frags: &mut SceneFragments,
-    scene_form_id: u32,
-    context: QuestFormId,
-    vmad: Option<&ScriptInstanceData>,
-    pex_bytes: &[u8],
-    bindings: &[(SceneFragmentEvent, &str)],
-) -> FragmentPexTranslation {
-    populate_scene_fragments_from_pex_detailed_internal(
-        frags,
-        scene_form_id,
-        context,
-        vmad,
-        pex_bytes,
-        bindings,
-        None,
-    )
-}
-
-/// Provider-aware scene-fragment lowering attributed to the archive package
-/// that supplied the compiled PEX.
 pub fn populate_owned_scene_fragments_from_pex_detailed_with_providers(
     frags: &mut SceneFragments,
     scene_form_id: u32,

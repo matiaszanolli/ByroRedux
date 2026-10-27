@@ -160,7 +160,7 @@ pub use fragment::{
     populate_owned_scene_fragments_from_pex_detailed_with_providers,
     populate_owned_scene_fragments_from_script_with_providers, populate_quest_fragments_from_pex,
     populate_quest_fragments_from_pex_detailed,
-    populate_scene_fragments_from_pex_detailed, quest_fragment_dispatch_system,
+    quest_fragment_dispatch_system,
     scene_fragment_dispatch_system, DeferredFragmentEffects, DialogueInfoFragments,
     FragmentExecutionQueue, FragmentPexTranslation, LockOverride, OwnedFragmentProviders,
     PendingFragmentActivations, PlayerMoveRequest, QuestStageFragments, ReferenceActivationBlocks,

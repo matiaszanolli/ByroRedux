@@ -564,19 +564,12 @@ impl PhysicsWorld {
         overlaps
     }
 
-    /// The bodies whose solid colliders overlap any collider of `body` (sensors
-    /// and the body itself excluded), each once. A shape-overlap query, so it
-    /// finds a fixed or kinematic body's touching neighbours, which the narrow
-    /// phase does not pair by default. The query pipeline must be current, as for
-    /// the floor probes.
-    pub fn bodies_overlapping_body(&self, body: RigidBodyHandle) -> Vec<RigidBodyHandle> {
-        self.bodies_overlapping_body_where(body, &|_| true)
-    }
-
     /// The bodies whose solid colliders overlap any collider of `body` and pass
     /// `include` (sensors and `body` itself excluded), each once. The predicate
     /// runs before shape intersection, so callers can avoid narrow-phase work for
-    /// irrelevant bodies.
+    /// irrelevant bodies. A shape-overlap query, so it finds a fixed or kinematic
+    /// body's touching neighbours, which the narrow phase does not pair by
+    /// default. The query pipeline must be current, as for the floor probes.
     pub fn bodies_overlapping_body_where(
         &self,
         body: RigidBodyHandle,

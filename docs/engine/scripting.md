@@ -1858,7 +1858,7 @@ activate parent, so their trigger is something else.
 CK *OnTrapHit* / *OnTrapHitStart* / *OnTrapHitStop* / *ProcessTrapHit* (`systems/trap_hits.rs`).
 A *trap* is a body on Havok layer 14 (Skyrim's Trap layer, the one the impulse multiplier table
 names) that carries Papyrus scripts; a *live target* is an actor that is not dead. Each tick the
-trap's colliders are shape-tested against solid colliders (`PhysicsWorld::bodies_overlapping_body`,
+trap's colliders are shape-tested against solid colliders (`PhysicsWorld::bodies_overlapping_body_where`,
 which also finds fixed and kinematic neighbours that the narrow phase does not pair), and a new
 (trap, actor) overlap raises `OnTrapHitStart` and `OnTrapHit` with the CK's ten arguments `(akTarget,
 afXVel, afYVel, afZVel, afXPos, afYPos, afZPos, aeMaterial, abInitialHit, aeMotionType)` through

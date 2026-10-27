@@ -36,13 +36,6 @@ pub struct NiTriShape {
     pub active_material_index: u32,
 }
 
-// Backward-compatible field access.
-impl NiTriShape {
-    pub fn name_str(&self) -> Option<&str> {
-        self.av.net.name.as_deref()
-    }
-}
-
 impl NiObject for NiTriShape {
     fn block_type_name(&self) -> &'static str {
         "NiTriShape"
