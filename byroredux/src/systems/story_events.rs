@@ -228,10 +228,8 @@ pub(crate) fn raise_hello_story_event(world: &World, greeter: EntityId, greeted:
     // closed the cycle #5066 predicted (LoadedCellIndex -> StoryEvent
     // -> LoadedCellIndex).
     let location_1 = resolve_current_lctn(world);
-    let Some(mut events) = world.query_mut::<StoryEvent>() else {
-        return;
-    };
-    events.insert(
+    byroredux_scripting::story_manager::raise_story_event(
+        world,
         greeter,
         StoryEvent {
             mnemonic: *b"AHEL",
@@ -265,10 +263,8 @@ pub(crate) fn raise_kill_story_event(world: &World, victim: EntityId, killer: Op
     // guard (`resolve_current_lctn` reads `LoadedCellIndex`).
     let location_1 = resolve_current_lctn(world);
     raise_death_event(world, victim, killer);
-    let Some(mut events) = world.query_mut::<StoryEvent>() else {
-        return;
-    };
-    events.insert(
+    byroredux_scripting::story_manager::raise_story_event(
+        world,
         victim,
         StoryEvent {
             mnemonic: *b"KILL",

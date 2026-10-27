@@ -137,6 +137,38 @@ pub struct PendingScriptStoryEvents(pub Vec<StoryEvent>);
 
 impl Resource for PendingScriptStoryEvents {}
 
+/// Raise `event` on `entity` for [`story_manager_dispatch_system`] — the one
+/// entry point the engine-side producers (`CLOC`, `AHEL`, `KILL`) share.
+///
+/// The marker is one slot per entity, so two events keyed on the same entity in
+/// one frame used to overwrite each other: a player-keyed `CLOC` and a
+/// player-victim `KILL` (the `CLOC` cursor having already advanced, so it never
+/// re-fired), or a greeter who was also the actor changing location (#5647). A
+/// second event for an entity that already carries an undrained marker goes to
+/// [`PendingScriptStoryEvents`] instead, which the dispatcher drains in the same
+/// pass. Returns whether the event was queued anywhere.
+pub fn raise_story_event(world: &World, entity: EntityId, event: StoryEvent) -> bool {
+    let collided = {
+        let Some(mut markers) = world.query_mut::<StoryEvent>() else {
+            return false;
+        };
+        if markers.get(entity).is_some() {
+            Some(event)
+        } else {
+            markers.insert(entity, event);
+            None
+        }
+    };
+    // The marker guard is released first, so the two acquisitions never nest.
+    match collided {
+        None => true,
+        Some(event) => world
+            .try_resource_mut::<PendingScriptStoryEvents>()
+            .map(|mut pending| pending.0.push(event))
+            .is_some(),
+    }
+}
+
 /// M47.2 — `Effect::Kill` requests, `(victim, killer, silent)`, queued after the
 /// quest-state guards drop and drained by the engine's death path the same
 /// frame; `NOT_SAVED_BY_DESIGN`. A silent kill (`KillSilent`) raises no KILL
@@ -657,21 +689,18 @@ pub fn emit_change_location_on_key_change(
     if key.is_none() {
         return false;
     }
-    if let Some(mut events) = world.query_mut::<StoryEvent>() {
-        events.insert(
-            actor,
-            StoryEvent {
-                mnemonic: *b"CLOC",
-                reference_1: actor,
-                reference_2: None,
-                location_1: previous_location,
-                location_2: location,
-                scripted: None,
-            },
-        );
-        return true;
-    }
-    false
+    raise_story_event(
+        world,
+        actor,
+        StoryEvent {
+            mnemonic: *b"CLOC",
+            reference_1: actor,
+            reference_2: None,
+            location_1: previous_location,
+            location_2: location,
+            scripted: None,
+        },
+    )
 }
 
 /// System: dispatch every raised [`StoryEvent`] through the [`SmTree`],
@@ -1820,6 +1849,64 @@ mod tests {
         story_manager_dispatch_system(&world);
         let stages = world.try_resource::<QuestStageState>().unwrap();
         assert!(!stages.is_started(QuestFormId(0x0999)));
+    }
+
+    /// #5647 — a `CLOC` and a `KILL` keyed on the same entity in one frame (the
+    /// player changes location the frame the player dies) used to overwrite each
+    /// other in the one-slot marker, and the `CLOC` cursor had already advanced so
+    /// it never re-fired. Both reach the dispatcher now.
+    #[test]
+    fn two_events_on_one_entity_in_a_frame_both_dispatch() {
+        let tree = build_story_manager_tree(&records(vec![
+            event_node(10, b"CLOC"),
+            quest_node(30, 10, 0, &[0xA1]),
+            event_node(11, b"KILL"),
+            quest_node(31, 11, 0, &[0xB2]),
+        ]));
+        let mut world = setup_world();
+        world.insert_resource(tree);
+        world.insert_resource(QuestStageState::default());
+        let player = world.spawn();
+        let event = |mnemonic: &[u8; 4]| StoryEvent {
+            mnemonic: *mnemonic,
+            reference_1: player,
+            reference_2: None,
+            location_1: None,
+            location_2: None,
+            scripted: None,
+        };
+        assert!(raise_story_event(&world, player, event(b"CLOC")));
+        assert!(raise_story_event(&world, player, event(b"KILL")));
+        assert_eq!(
+            world.resource::<PendingScriptStoryEvents>().0.len(),
+            1,
+            "the second event queues behind the marker instead of overwriting it"
+        );
+        story_manager_dispatch_system(&world);
+        let stages = world.resource::<QuestStageState>();
+        assert!(stages.is_started(QuestFormId(0xA1)), "the CLOC fired");
+        assert!(stages.is_started(QuestFormId(0xB2)), "the KILL fired");
+        assert!(world.resource::<PendingScriptStoryEvents>().0.is_empty(), "drained");
+        assert!(world.query::<StoryEvent>().unwrap().is_empty(), "the marker drained");
+    }
+
+    /// #5647 — events on different entities keep using their own markers.
+    #[test]
+    fn events_on_different_entities_stay_markers() {
+        let mut world = setup_world();
+        let (a, b) = (world.spawn(), world.spawn());
+        let event = |entity| StoryEvent {
+            mnemonic: *b"KILL",
+            reference_1: entity,
+            reference_2: None,
+            location_1: None,
+            location_2: None,
+            scripted: None,
+        };
+        assert!(raise_story_event(&world, a, event(a)));
+        assert!(raise_story_event(&world, b, event(b)));
+        assert_eq!(world.query::<StoryEvent>().unwrap().iter().count(), 2);
+        assert!(world.resource::<PendingScriptStoryEvents>().0.is_empty());
     }
 
     /// #5380 — a node gated on a condition function the evaluator
