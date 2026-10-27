@@ -841,14 +841,12 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // from the variable frame rate, mirroring `physics_sync_system`'s
     // accumulator (`crates/core/src/character/regen.rs`).
     //
-    // No-ops today, gated on TWO resources (#2950): `PoolRegenAccumulator`,
-    // now inserted unconditionally in `build_world` above, and
-    // `PoolRegenConfig`, which is per-game and arrives only once a live
-    // `CharacterRuleset` wiring reaches Oblivion (`build_character_ruleset`
-    // returns `None` for it today, per `npc_spawn.rs`). With the accumulator
-    // armed here, the config insertion really is the only thing left — which
-    // is what this comment used to claim while a second, undocumented gate
-    // sat one line below the first inside the system.
+    // Gated on TWO resources (#2950): `PoolRegenAccumulator`, inserted
+    // unconditionally in `build_world`, and `PoolRegenConfig`, which is
+    // per-game. FO3/FNV install it with an `ActionPoints` lane (#6350,
+    // `build_vats_model`), so the tick restores the player's AP there; every
+    // other game never inserts it and the system returns at its second line
+    // (Oblivion's Fatigue/Magicka lanes wait on a pre-AVIF resolver, #3768).
     // #2391 / ECS-D5B-03 — declared via `add_exclusive_with_access` (the
     // #1236 channel, previously unused in production). This system is
     // #2153's site: it builds a 3-deep hold stack (`PoolRegenConfig` read

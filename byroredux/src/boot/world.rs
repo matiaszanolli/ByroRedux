@@ -54,16 +54,14 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // not a requirement.
     world.insert_resource(crate::render::SceneEffectSoftCache::default());
     // #2950 — `pool_regen_tick_system` needs BOTH `PoolRegenConfig`
-    // (per-game, arrives only with Oblivion's wiring — blocked on the
-    // pre-AVIF resolver, #3768; four games already carry a live
-    // `CharacterRuleset` with no config following, because the config is
-    // Oblivion-shaped, #4460) and this accumulator.
+    // (per-game: FO3/FNV install it with an ActionPoints lane on the first
+    // cell load, #6350; the TES Fatigue/Magicka lanes wait on Oblivion's
+    // pre-AVIF resolver, #3768) and this accumulator.
     // `try_resource_mut` does not default-insert, so leaving the accumulator to
-    // the same future wiring commit would have left the tick returning at its
-    // second line forever — registered, declared in `sys.accesses`, and silently
+    // the per-game install would have left the tick returning at its second
+    // line forever — registered, declared in `sys.accesses`, and silently
     // dead. The accumulator is game-agnostic (`Default` + `Copy`, a single f32)
-    // and a no-op while no config exists, so it is armed unconditionally here
-    // and only the per-game config remains outstanding.
+    // and a no-op while no config exists, so it is armed unconditionally here.
     world.insert_resource(byroredux_core::character::PoolRegenAccumulator::default());
     world.insert_resource(byroredux_core::ecs::ScratchTelemetry::default());
     // EX-08 / #2374 — cross-subsystem ownership accounting. `Telemetry` is the

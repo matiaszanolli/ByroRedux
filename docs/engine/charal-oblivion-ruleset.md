@@ -413,15 +413,17 @@ needed). `pool_regen_tick_system(world, frame_dt)` is registered in
 `Stage::Update` via `add_exclusive_with_access`
 (`byroredux/src/boot/schedule/update.rs` — the registration moved out of
 `main.rs` under #3170's boot split; #4109 swept the stale `main.rs`/
-`boot/` references) — it no-ops today because `PoolRegenConfig`
-(the per-game resolved AVIF ids) is inserted only by unit tests: the
+`boot/` references) — on Oblivion it no-ops today because `PoolRegenConfig`
+(the per-game resolved AVIF ids) is inserted by no Oblivion path (FO3/FNV install
+it for their Action Points lane only, #6350): the
 `oblivion_pool_regen_config` constructor that once lived in `tes.rs` was
 deleted under #3848 (`git show e13985dfc` recovers it), and re-adding it
 is gated on Oblivion's ruleset actually being wired — deliberately
 blocked on the pre-AVIF actor-value resolver (#3768), not on "a live
 `CharacterRuleset` landing" (four games have one since #3170/#3848 with
-no config following, because the config is Oblivion-shaped). So the tick
-is wired and tested but has no live consumer until that resolver lands. 5
+no config following, because the Fatigue/Magicka lanes are Oblivion-shaped).
+So the Oblivion lanes are wired and tested but have no live consumer until that
+resolver lands. 5
 new tests (formula match, 60 Hz tick counting, fractional-time carry-over
 across frames, substep cap, and a full ECS integration test proving both
 Fatigue and Magicka regen end-to-end).

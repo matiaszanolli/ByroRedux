@@ -240,7 +240,8 @@ waits on that data.
 
 ```rust
 pub struct PoolRegenAccumulator { seconds: f32 }                                   // the fixed 60 Hz clock
-pub struct PoolRegenConfig { fatigue_avif: u32, magicka_avif: u32, willpower_avif: u32 }  // per-game resolved AVIF ids
+pub struct PoolRegenConfig { fatigue_avif: u32, magicka_avif: u32, willpower_avif: u32,
+                             action_points: Option<ActionPointsRegen> }                  // per-game resolved AVIF ids + the Fallout AP lane (#6350)
 ```
 
 Passive Fatigue/Magicka regeneration. Every regen rate sourced so far is expressed
@@ -259,13 +260,19 @@ out of scope):
 | Magicka | `(Willpower × 0.02 + 0.75) × (MaxMagicka / 100)` | `MAGICKA_REGEN_WILLPOWER_COEFF` / `MAGICKA_REGEN_BASE`, via `magicka_regen_per_sec` |
 | Health | **none** — no passive regen in classic Oblivion | deliberately unmodelled |
 
-**Mechanism BUILT, registered, and no-op.** `pool_regen_tick_system` is registered in
-`Stage::Update` (`byroredux/src/boot/schedule/update.rs`) and runs every frame, but early-returns
-forever: its required `PoolRegenConfig` is inserted only by unit tests, never by a
-live per-game path. (The `oblivion_pool_regen_config` builder that once made one was
-deleted under #3848 — `git show e13985dfc` recovers it; re-adding it is blocked on
-Oblivion's own wiring, #3768, not on "a live `CharacterRuleset` landing", which four
-games already have. #4460.) Same shape as §4.6 — mechanism ahead of its wiring.
+**Mechanism BUILT and registered; live for FO3/FNV Action Points only.**
+`pool_regen_tick_system` is registered in `Stage::Update`
+(`byroredux/src/boot/schedule/update.rs`) and runs every frame. Its required
+`PoolRegenConfig` is inserted by `build_vats_model` (`byroredux/src/npc_spawn.rs`) on the
+first FO3/FNV cell load (#6350), carrying the `ActionPointsRegen` lane: the player's
+`ActionPoints` restores at `fActionPointsRestoreRate` normalized to per-second
+(FO3 4/s; FNV 0.06 per frame × 60 Hz = 3.6/s — see `charal-fnv-fo3-ruleset.md`). Every
+other game never inserts the config, and the Fatigue/Magicka/Willpower lanes stay inert
+even on FO3/FNV (their ids are `0`; no actor carries AV 0). The Oblivion Fatigue/Magicka
+lanes: the `oblivion_pool_regen_config` builder that once made them was deleted under
+#3848 (`git show e13985dfc` recovers it); re-adding it is blocked on Oblivion's own
+wiring, #3768 (#4460). Same shape as §4.6 for the TES lanes — mechanism ahead of its
+wiring.
 Stunted Magicka is
 modelled in the formula (`magicka_regen_per_sec`'s `stunted` parameter) but always
 passed `false`, because no status-effect component exists to carry the flag.

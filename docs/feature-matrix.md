@@ -278,7 +278,7 @@ scheduler registration), not just present as a buildable function.
 | NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ✓ pools + 18 skills | ✓ stored `PRPS`+`DNAM` | ✗ wire layout uncaptured (#4453) | ✗ wire layout uncaptured (#4453) |
 | Creature (`CREA`) actor-value population at spawn | ✗ `CREA.DATA` layout unsourced | ✓ SPECIAL + Health | ✓ SPECIAL + Health | n/a (no `CREA`) | n/a | n/a | n/a |
 | Runtime leveling (XP grant / level-up) | ✗ | ✓ | ✓ | ~ | ~ | ✗ | ✗ |
-| Pool regen tick (Fatigue/Magicka — Health deliberately unmodelled, Stamina has no row; #4463) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
+| Pool regen tick (Fatigue/Magicka — Health deliberately unmodelled, Stamina has no row; #4463). FO3/FNV: ActionPoints lane live (#6350), Fatigue/Magicka lanes inert | ✗ inert | ~ AP only | ~ AP only | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
 | Affliction tick (radiation/disease/addiction) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
 
 `oblivion_ruleset()` (`crates/core/src/character/tes.rs`) builds a real
@@ -320,11 +320,12 @@ Oblivion, FO76 and Starfield still have no live leveling path. `grant_experience
 increments `CharacterLevel.xp`, rolls levels to the active model's cap and
 banks modeled rewards. Kill XP, `RewardPlayerXP`, `levelup xp` and Skyrim's
 `Game.AdvanceSkill` can reach it; see the Coverage Matrix above for each game's
-leveling coverage. Pool regen remains inert: `pool_regen_tick_system` is
-registered in `Stage::Update` every frame but early-returns forever because
-its required `PoolRegenConfig` resource is inserted only inside unit tests,
-never in `byroredux/src/boot/`. `affliction_tick_system` is not registered in
-the scheduler at all.
+leveling coverage. Pool regen is live for FO3/FNV Action Points only:
+`pool_regen_tick_system` runs every frame in `Stage::Update`, and
+`build_vats_model` installs its `PoolRegenConfig` (with the `ActionPoints`
+lane) on the first FO3/FNV cell load (#6350). On every other game it
+early-returns, and the Fatigue/Magicka lanes are inert everywhere.
+`affliction_tick_system` is not registered in the scheduler at all.
 
 ---
 
@@ -359,4 +360,4 @@ the scheduler at all.
 | Full Scaleform menus | In-game UI (method behavior / `_global.gfx`; native menu covers Pause/Settings/Inventory in parallel) | M48 / R4 decision |
 | Per-material footsteps (FOOT) | Correct surface audio | M44 follow-up |
 | CHARAL: player actor-value seed | The player body carries `ActorValues` seeded from the base Player `NPC_` (#4458), with the ruleset's PlayerOnly rows (FO4/FO3/FNV Health + AP) evaluated for the player at stamping (#4674). Games: FO3/FNV/FO4/Skyrim yes, Oblivion no, FO76/Starfield no (NPC stat wire layout uncaptured, #4453) | CHARAL (charal.md §7) |
-| CHARAL: Oblivion ruleset built but unwired; regen + affliction ticks inert everywhere | Derived Health/leveling formulas on Oblivion; passive Fatigue/Magicka regen (the built tick's only pools — Health deliberately unmodelled per charal.md §4.7, Stamina rates unsourced/with no row, #4463) and radiation/disease/addiction on all seven games | CHARAL (charal.md §8) |
+| CHARAL: Oblivion ruleset built but unwired; Fatigue/Magicka regen + the affliction tick inert everywhere (FO3/FNV Action Points regen is live, #6350) | Derived Health/leveling formulas on Oblivion; passive Fatigue/Magicka regen (the built tick's only pools — Health deliberately unmodelled per charal.md §4.7, Stamina rates unsourced/with no row, #4463) and radiation/disease/addiction on all seven games | CHARAL (charal.md §8) |

@@ -644,7 +644,7 @@ performance finding. The measured knob table is in
   split player/NPC — #5342), so treat that "zero mismatch" as dated, not
   standing. FO3, FNV, Skyrim and FO4 reach actors. Still open:
   - The Oblivion ruleset is unwired (see Status).
-  - `regen` no-ops until an Oblivion-shaped `PoolRegenConfig` exists.
+  - `regen` is live for FO3/FNV Action Points only (#6350); the Fatigue/Magicka lanes no-op until Oblivion gets a pre-AVIF resolver (#3768).
   - `affliction_tick_system` is never registered.
   - FO76's capture is locked with no builder; Starfield waits on pending data.
 - [ ] **MQ101 residue.** The quest plays end-to-end (live-verified

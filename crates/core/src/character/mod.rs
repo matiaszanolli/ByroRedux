@@ -34,11 +34,13 @@
 //!   [`AfflictionTable`] (pool → threshold band → SPECIAL penalty) +
 //!   [`AfflictionStatus`] (per-actor active-band memory) +
 //!   [`affliction_tick_system`] (the diff-and-reapply driver).
-//! * [`regen`] — pool regeneration (Fatigue/Magicka), the first CHARAL system
-//!   needing a **fixed 60 Hz tick** decoupled from the frame rate:
+//! * [`regen`] — pool regeneration (Fatigue/Magicka, and the FO3/FNV
+//!   ActionPoints lane, #6350), the first CHARAL system needing a **fixed
+//!   60 Hz tick** decoupled from the frame rate:
 //!   [`PoolRegenAccumulator`] (the fixed-step clock, mirrors
 //!   `crates/physics`'s accumulator) + [`PoolRegenConfig`] (per-game resolved
-//!   AVIF ids) + [`pool_regen_tick_system`] (the driver).
+//!   AVIF ids; installed for FO3/FNV only) + [`pool_regen_tick_system`] (the
+//!   driver).
 //! * [`components`] — [`CharacterLevel`] / [`LevelUpPoints`] / [`Perks`] /
 //!   [`Background`] / [`FactionReputation`] / [`FactionStanding`] /
 //!   [`PerkRank`], the structural per-actor ECS components.

@@ -1,5 +1,8 @@
-//! Pool regeneration (CHARAL) — Fatigue/Magicka per-second rates, driven by a
-//! **fixed 60 Hz tick** decoupled from the variable per-frame rate.
+//! Pool regeneration (CHARAL) — Fatigue/Magicka per-second rates and the
+//! Fallout ActionPoints lane (#6350), driven by a **fixed 60 Hz tick**
+//! decoupled from the variable per-frame rate. Live today for FO3/FNV
+//! ActionPoints only; the Fatigue/Magicka lanes are inert (no Fallout load
+//! order resolves those AVIFs, and Oblivion has no wired ruleset, #3768).
 //!
 //! ## Why fixed-timestep
 //!
@@ -120,12 +123,12 @@ impl PoolRegenAccumulator {
 
 /// Per-game resolved AVIF ids the regen tick needs — a `Resource`.
 ///
-/// **Nothing inserts it in production on any game** (#3848). Both
-/// `insert_resource(PoolRegenConfig { .. })` sites in this file are inside
-/// `mod tests`, so [`pool_regen_tick_system`] — registered as a
-/// `Stage::Update` exclusive — takes its `let … else` early return on every
-/// frame of every supported title. The system is live in the schedule and
-/// inert in effect.
+/// **Inserted in production for FO3/FNV only** (#6350):
+/// `build_vats_model` (`byroredux/src/npc_spawn.rs`) returns it with the
+/// [`ActionPointsRegen`] lane, and the cell loader installs it on the first
+/// cell load. Every other game takes [`pool_regen_tick_system`]'s `let … else`
+/// early return, and on FO3/FNV the Fatigue/Magicka/Willpower ids are `0`
+/// (no actor carries AV 0, so those lanes stay inert).
 ///
 /// Oblivion once had a `tes::oblivion_pool_regen_config` constructor for
 /// this; it was deleted under #3848 because it had zero call sites
