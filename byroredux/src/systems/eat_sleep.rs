@@ -378,14 +378,7 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
                 dt,
                 speed,
             );
-            if let Some(mut transforms) = world.query_mut::<Transform>() {
-                if let Some(transform) = transforms.get_mut(npc) {
-                    transform.translation = step.position;
-                    if let Some(rotation) = step.rotation {
-                        transform.rotation = rotation;
-                    }
-                }
-            }
+            super::navmesh_path::apply_walk_step(world, [(npc, step.position, step.rotation)]);
             let stuck = scratch.stuck_secs.entry(npc).or_insert(0.0);
             let gave_up =
                 crate::systems::locomotion::advance_stuck_repick(stuck, step.blocked, dt);

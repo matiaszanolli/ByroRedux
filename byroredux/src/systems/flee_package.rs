@@ -34,7 +34,6 @@ use byroredux_core::ecs::components::{Dead, FleePackageBehavior, GlobalTransform
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_scripting::condition::resolve_entity_by_global_form_id;
-use byroredux_scripting::{AiCombatState, AiSuspended};
 
 /// How close (world units, ground plane) to its refuge a fleeing actor
 /// counts as arrived. An engine choice: the GECK authors no arrival radius
@@ -85,11 +84,7 @@ fn flee_package_system_inner(world: &World, dt: f32, scratch: &mut FleePackageSc
     // `Transform` guard exists: `AiCombatState` is taken ahead of `Transform`
     // elsewhere, so reading it under one closes an ABBA cycle. ──
     for (entity, behavior) in behavior_q.iter() {
-        if world.has::<Dead>(entity)
-            || world.has::<AiCombatState>(entity)
-            || world.has::<AiSuspended>(entity)
-            || world.has::<super::flee::FleeState>(entity)
-        {
+        if !super::flee::ambient_package_may_run(world, entity) {
             continue;
         }
         scratch.eligible.push((entity, *behavior));
@@ -156,16 +151,7 @@ fn flee_package_system_inner(world: &World, dt: f32, scratch: &mut FleePackageSc
             scratch.moved.push((step.entity, position, turned));
         }
     }
-    if let Some(mut transforms) = world.query_mut::<Transform>() {
-        for &(entity, position, turned) in &scratch.moved {
-            if let Some(transform) = transforms.get_mut(entity) {
-                transform.translation = position;
-                if let Some(rotation) = turned {
-                    transform.rotation = rotation;
-                }
-            }
-        }
-    }
+    super::navmesh_path::apply_walk_step(world, scratch.moved.iter().copied());
 }
 
 /// The scheduler entry: [`flee_package_system_inner`] with scratch that
@@ -183,6 +169,7 @@ pub(crate) fn flee_package_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_scripting::AiCombatState;
     use byroredux_core::ecs::components::FormIdComponent;
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 

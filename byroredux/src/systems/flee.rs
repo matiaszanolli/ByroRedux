@@ -41,6 +41,19 @@ impl Component for FleeState {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Whether an ambient package (flee, find) may drive `actor` this tick: not
+/// dead, not in combat, not suspended by a script, not already fleeing (#6364).
+///
+/// Each marker is its own scoped read lock, taken and dropped in turn, so a
+/// caller holding no `Transform` guard adds no lock-order edge — the same
+/// sequence the two package systems spelled inline.
+pub(crate) fn ambient_package_may_run(world: &World, actor: EntityId) -> bool {
+    !(world.has::<Dead>(actor)
+        || world.has::<AiCombatState>(actor)
+        || world.has::<AiSuspended>(actor)
+        || world.has::<FleeState>(actor))
+}
+
 pub(crate) fn range(world: &World) -> f32 {
     let exterior = world.try_resource::<crate::components::CellLightingRes>().is_some_and(|cell| !cell.is_interior);
     world.try_resource::<crate::systems::DetectionConfig>().map_or(FALLBACK_RANGE, |config| config.range(exterior))
@@ -135,16 +148,10 @@ fn run_flights(world: &World, dt: f32) {
                 })
                 .collect()
         };
-        if let Some(mut transforms) = world.query_mut::<Transform>() {
-            for &(actor, _, position, turned, _) in &stepped {
-                if let Some(transform) = transforms.get_mut(actor) {
-                    transform.translation = position;
-                    if let Some(rotation) = turned {
-                        transform.rotation = rotation;
-                    }
-                }
-            }
-        }
+        super::navmesh_path::apply_walk_step(
+            world,
+            stepped.iter().map(|&(actor, _, position, turned, _)| (actor, position, turned)),
+        );
         if let Some(mut flights) = world.query_mut::<FleeState>() {
             for (actor, state, _, _, blocked) in stepped {
                 let held = if blocked { state.blocked + dt } else { 0.0 };

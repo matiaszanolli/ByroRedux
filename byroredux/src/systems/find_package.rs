@@ -46,7 +46,7 @@
 use super::eat_sleep::resolve_anchor;
 use super::faction_hostility::actor_would_attack;
 use super::locomotion::{advance_stuck_repick, AI_PACKAGE_DEFAULT_RADIUS, LOCOMOTION_WALK_SPEED};
-use super::navmesh_path::cached_walk_step;
+use super::navmesh_path::{apply_walk_step, cached_walk_step};
 use byroredux_core::ecs::components::{
     ActorValues, CreatureActor, Dead, EatSleepLocation, FindItemKind, FindPackageBehavior, FindProgress,
     FindTarget, GlobalTransform, Transform,
@@ -55,7 +55,7 @@ use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::Vec3;
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
 use byroredux_scripting::condition::resolve_entity_by_global_form_id;
-use byroredux_scripting::{AiCombatState, AiSuspended, SceneAliasCandidate};
+use byroredux_scripting::{AiCombatState, SceneAliasCandidate};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -273,11 +273,7 @@ fn drive_find_packages(
         *left > 0.0
     });
     for &(actor, behavior) in behaviors {
-        if world.has::<Dead>(actor)
-            || world.has::<AiCombatState>(actor)
-            || world.has::<AiSuspended>(actor)
-            || world.has::<super::flee::FleeState>(actor)
-        {
+        if !super::flee::ambient_package_may_run(world, actor) {
             continue;
         }
         let mut progress = world.get::<FindProgress>(actor).map(|p| *p).unwrap_or_default();
@@ -339,14 +335,7 @@ fn drive_find_packages(
                 .get::<crate::components::WalkSpeed>(actor)
                 .map_or(LOCOMOTION_WALK_SPEED, |s| s.0);
             let step = cached_walk_step(world, actor, current, rotation, target_at, 0.0, dt, speed);
-            if let Some(mut transforms) = world.query_mut::<Transform>() {
-                if let Some(transform) = transforms.get_mut(actor) {
-                    transform.translation = step.position;
-                    if let Some(turned) = step.rotation {
-                        transform.rotation = turned;
-                    }
-                }
-            }
+            apply_walk_step(world, [(actor, step.position, step.rotation)]);
             let stuck = scratch.stuck.entry(actor).or_insert(0.0);
             if advance_stuck_repick(stuck, step.blocked, dt) {
                 log::info!("Find package: actor {actor} cannot reach {target} and drops it");

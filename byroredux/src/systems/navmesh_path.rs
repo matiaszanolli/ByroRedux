@@ -812,6 +812,29 @@ pub(crate) trait WalkDecision {
     fn take_nav_path(&mut self) -> Option<crate::components::NavPath>;
 }
 
+/// Write one tick's walk steps into `Transform`: the translation, and the
+/// facing when the step was long enough to define one. One scoped
+/// single-type lock, taken after the caller's Pass-1 guards have dropped.
+///
+/// The `Transform` half of [`write_back_walk`], for the movers that do not
+/// carry a `NavPath` cache (flee, the flee/find packages, eat/sleep) (#6364).
+pub(crate) fn apply_walk_step(
+    world: &World,
+    moves: impl IntoIterator<Item = (EntityId, Vec3, Option<Quat>)>,
+) {
+    use byroredux_core::ecs::components::Transform;
+    if let Some(mut transforms) = world.query_mut::<Transform>() {
+        for (entity, translation, rotation) in moves {
+            if let Some(transform) = transforms.get_mut(entity) {
+                transform.translation = translation;
+                if let Some(rotation) = rotation {
+                    transform.rotation = rotation;
+                }
+            }
+        }
+    }
+}
+
 /// The Pass-2 tail shared by the six walk-to-point systems (#5580): the
 /// `Transform` write, then the `NavPath` cache insert/remove. Six verbatim
 /// copies of this used to carry the #4189 take-not-clone fix applied by
@@ -819,18 +842,12 @@ pub(crate) trait WalkDecision {
 /// single-type lock taken after every Pass-1 guard has dropped, so a caller
 /// runs its own state writes before or after this with no lock-order edge.
 pub(crate) fn write_back_walk<D: WalkDecision>(world: &World, decisions: &mut [D]) {
-    use byroredux_core::ecs::components::Transform;
-    if let Some(mut tq) = world.query_mut::<Transform>() {
-        for d in decisions.iter() {
-            if let (Some((translation, rotation)), Some(t)) = (d.movement(), tq.get_mut(d.entity()))
-            {
-                t.translation = translation;
-                if let Some(r) = rotation {
-                    t.rotation = r;
-                }
-            }
-        }
-    }
+    apply_walk_step(
+        world,
+        decisions
+            .iter()
+            .filter_map(|d| d.movement().map(|(translation, rotation)| (d.entity(), translation, rotation))),
+    );
     if let Some(mut nq) = world.query_mut::<crate::components::NavPath>() {
         // #4189 — take the path instead of cloning it: the decisions are
         // rebuilt from scratch next frame and nothing reads the path after
@@ -1030,6 +1047,38 @@ mod tests {
                 && !patrol.contains("resolve_cached_waypoints("),
             "patrol.rs must run the shared oscillating-walk system, not a copy of its body"
         );
+    }
+
+    /// #6364 — the movers without a `NavPath` cache (flee, the flee and find
+    /// packages, eat/sleep) apply their step through [`apply_walk_step`], and
+    /// the two ambient packages share one busy gate. The #5580 test above
+    /// passed these four while each re-spelled the Transform loop.
+    #[test]
+    fn cacheless_walk_movers_share_apply_walk_step() {
+        let production = byroredux_core::source_scan::production_text_or_whole;
+        for (label, src) in [
+            ("flee.rs", include_str!("flee.rs")),
+            ("flee_package.rs", include_str!("flee_package.rs")),
+            ("find_package.rs", include_str!("find_package.rs")),
+            ("eat_sleep.rs", include_str!("eat_sleep.rs")),
+        ] {
+            let src = production(src);
+            assert!(
+                !src.contains("query_mut::<Transform>()"),
+                "{label} writes its own Transform loop again instead of `apply_walk_step`"
+            );
+            assert!(src.contains("apply_walk_step("), "{label} must apply its step through `apply_walk_step`");
+        }
+        for (label, src) in [
+            ("flee_package.rs", include_str!("flee_package.rs")),
+            ("find_package.rs", include_str!("find_package.rs")),
+        ] {
+            let src = production(src);
+            assert!(
+                src.contains("ambient_package_may_run(") && !src.contains("has::<AiSuspended>"),
+                "{label} must gate on the shared `flee::ambient_package_may_run`"
+            );
+        }
     }
 
     // ── Phase 2 — cross-tile geometric join (#3802) ───────────────────
