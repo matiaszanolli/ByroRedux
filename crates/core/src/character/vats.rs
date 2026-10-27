@@ -6,8 +6,9 @@
 //! Every number VATS uses resolves as *load-order-merged GMST → compiled-in
 //! vanilla default*, exactly like [`super::LevelingModel`] / [`super::CrimeModel`]. The
 //! compiled-in defaults below are the GECK wiki *VATS Settings* /
-//! *FVATSScreenPercentFactor* pages' documented defaults (FO3/FNV share
-//! them). No gameplay constant lives anywhere else: a modded load order
+//! *FVATSScreenPercentFactor* pages' documented defaults, which the FO3
+//! master matches value-for-value; FalloutNV.esm re-tunes six of them,
+//! so [`VatsModel::FALLOUT_NV`] carries its own (#6424). No gameplay constant lives anywhere else: a modded load order
 //! that overrides `fVATSHitChanceMult` changes [`VatsModel::to_hit_chance`]
 //! output the same frame the model is rebuilt, and the acceptance test in
 //! this file pins that end-to-end.
@@ -159,8 +160,9 @@ impl Resource for VatsModel {}
 impl VatsModel {
     /// Vanilla FO3 defaults — the GECK wiki *VATS Settings* page
     /// value-for-value, plus the FO3 `fActionPoints` corpus values.
-    /// The `fVATS*` half is identical in both games; only
-    /// [`StandardActionPoints::restore_rate`] differs (see FALLOUT_NV).
+    /// FalloutNV.esm re-tunes six of the `fVATS*` settings (see
+    /// [`Self::FALLOUT_NV`]); the rest of the family, and every
+    /// `fActionPoints*` attack standard, is shared.
     pub const FALLOUT3: Self = Self {
         hit_chance_mult: 1.0,
         max_chance: 95.0,
@@ -208,9 +210,20 @@ impl VatsModel {
         },
     };
 
-    /// Vanilla FNV: the `fVATS*` half unchanged; the AP restore rate
-    /// switches to the per-frame dialect (0.06 × 60 Hz = 3.6/s).
+    /// Vanilla FNV: FO3's family with the six `fVATS*` settings
+    /// FalloutNV.esm authors differently (read with
+    /// `examples/probe_gmst_vats`, #6424), and the AP restore rate on the
+    /// per-frame dialect (0.06 × 60 Hz = 3.6/s). The wiki-only defaults
+    /// no master authors stay shared.
     pub const FALLOUT_NV: Self = Self {
+        // FNV authors 5 (the wiki's 15 is the FO3-era default; Fallout3.esm
+        // does not author the setting at all).
+        critical_chance_bonus: 5.0,
+        player_damage_mult: 0.75,
+        damage_to_weapon_mult: 1.0,
+        spread_mult: 1.1,
+        range_spread_max: 100.0,
+        range_spread_uncertainty: 0.01,
         ap: StandardActionPoints {
             restore_rate: 0.06,
             restore_rate_per_frame: true,
@@ -432,6 +445,31 @@ mod tests {
         let modded = VatsModel::FALLOUT_NV
             .with_gmst(|name| (name == "fActionPointsRestoreRate").then_some(0.1));
         assert!((modded.ap_regen_per_second() - 6.0).abs() < 1e-4);
+    }
+
+    /// #6424 — the compiled-in FNV fallbacks are FNV's own, not FO3's:
+    /// the six `fVATS*` values FalloutNV.esm authors (probe_gmst_vats on
+    /// the master) against the FO3 values Fallout3.esm authors.
+    #[test]
+    fn fnv_fallbacks_carry_the_six_values_falloutnv_esm_authors() {
+        let (fo3, fnv) = (VatsModel::FALLOUT3, VatsModel::FALLOUT_NV);
+        assert_eq!(fnv.critical_chance_bonus, 5.0);
+        assert_eq!(fnv.player_damage_mult, 0.75);
+        assert_eq!(fnv.damage_to_weapon_mult, 1.0);
+        assert_eq!(fnv.spread_mult, 1.1);
+        assert_eq!(fnv.range_spread_max, 100.0);
+        assert_eq!(fnv.range_spread_uncertainty, 0.01);
+        // FO3's own side of the same six (Fallout3.esm; the crit bonus is
+        // the GECK wiki default — the master does not author it).
+        assert_eq!(fo3.player_damage_mult, 0.1);
+        assert_eq!(fo3.damage_to_weapon_mult, 5.0);
+        assert_eq!(fo3.spread_mult, 0.5);
+        assert_eq!(fo3.range_spread_max, 3.0);
+        assert_eq!(fo3.range_spread_uncertainty, 0.7);
+        // Everything the masters do not split stays shared.
+        assert_eq!(fnv.max_chance, fo3.max_chance);
+        assert_eq!(fnv.distance_factor, fo3.distance_factor);
+        assert_eq!(fnv.concentrated_fire_bonus, fo3.concentrated_fire_bonus);
     }
 
     /// Point-blank, fully visible, skill 50, torso part (100), a 65 %
