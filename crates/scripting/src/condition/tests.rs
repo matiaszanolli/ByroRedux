@@ -1789,6 +1789,25 @@ fn subject_requirement_never_excludes_a_passing_subject() {
     );
 }
 
+/// #5646 — the CK / GECK define `GetRandomPercent` as an integer in 0-99
+/// inclusive. A 0..=100 draw made `< 25` a 25.7% gate and could return 100.
+#[test]
+fn get_random_percent_is_an_integer_in_zero_to_ninety_nine() {
+    use crate::story_manager::StoryManagerRng;
+    let mut world = World::new();
+    world.insert_resource(StoryManagerRng { state: 0x5EED });
+    let draw = cond(77, ComparisonOp::Lt, 50.0, false);
+    let (mut lowest, mut highest) = (f32::MAX, f32::MIN);
+    for _ in 0..20_000 {
+        let value =
+            evaluate_function(ConditionFunction::GetRandomPercent, &draw, EntityId::MAX, &world);
+        assert_eq!(value, value.trunc(), "an integer");
+        lowest = lowest.min(value);
+        highest = highest.max(value);
+    }
+    assert_eq!((lowest, highest), (0.0, 99.0), "reaches both ends and never 100");
+}
+
 /// #5645 — `GetRandomPercent` is stochastic: it is never folded into a
 /// once-for-everyone value, never narrows a block, and the pre-filter
 /// leaves the generator untouched. Whatever a subject's own `evaluate`

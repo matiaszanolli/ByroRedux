@@ -35,14 +35,15 @@ pub(super) fn get_global_value(condition: &Condition, world: &World) -> f32 {
 }
 
 pub(super) fn get_random_percent(world: &World) -> f32 {
-    // GetRandomPercent() → [0, 100]. Deterministic per world in
+    // GetRandomPercent() → an integer in [0, 99] (CK / GECK: "0-99 inclusive";
+    // 101 values would make `< 25` a 25.7% gate, #5646). Deterministic per world in
     // tests: the engine has no seeded general RNG on the World,
     // so this rides the StoryManagerRng when present (SM nodes
     // are its native consumer) and the quest-random state
     // otherwise; both are seeded resources.
     use crate::story_manager::StoryManagerRng;
     if let Some(mut rng) = world.try_resource_mut::<StoryManagerRng>() {
-        let value = rng.pick(101);
+        let value = rng.pick(100);
         value as f32
     } else {
         // No RNG installed (unit worlds): a constant mid-range

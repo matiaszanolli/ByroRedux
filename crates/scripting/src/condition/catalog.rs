@@ -40,7 +40,7 @@ pub enum ConditionFunction {
     /// `GetGlobalValue(global_form_id) → f32`. The GLOB's current
     /// value from the `Globals` resource. FO3/FNV/Skyrim index **74**.
     GetGlobalValue,
-    /// `GetRandomPercent() → f32`. [0, 100] — rides the SM's seeded RNG
+    /// `GetRandomPercent() → f32`. An integer in [0, 99] — rides the SM's seeded RNG
     /// when installed. FO3/FNV/Skyrim index **77**.
     GetRandomPercent,
     /// `GetDistance(target_form_id) → f32`. Squared-distance reduces
@@ -450,7 +450,7 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::GetQuestRunning, indices: &[56], name: "GetQuestRunning", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
     // 74 = GetGlobalValue(global).
     Row { func: ConditionFunction::GetGlobalValue, indices: &[74], name: "GetGlobalValue", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
-    // 77 = GetRandomPercent() — [0, 100].
+    // 77 = GetRandomPercent() — [0, 99].
     Row { func: ConditionFunction::GetRandomPercent, indices: &[77], name: "GetRandomPercent", first_param_form_id: false, reads_run_on_entity: false, deterministic: false, reads_context: false, identity_test: false },
     // M47.2 — the location family. FO3/FNV/Oblivion author none of
 // these indices (CTDA census of their masters); 610
