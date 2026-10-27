@@ -52,12 +52,17 @@ pub(crate) const fn terrain_lod_layout(game: GameKind) -> TerrainLodLayout {
 /// measured ratio rounded to the nearest simple step. One scene, two regions:
 /// a starting point to retune by eye, not a corpus calibration.
 ///
-/// **Every other game: 1.0, unmeasured.** FNV's A/B was contaminated by a
-/// radar-dish prop and its radius-6 run did not finish streaming; FO4's was not
-/// run. A guessed gain there would be the unmeasured threshold the project's
-/// no-guessing policy rules out, so those games keep the baked look until
-/// someone measures them the same way (same pose at radius 1 and radius 6,
-/// compare the ground).
+/// **FNV and FO4: 1.0, measured.** The same A/B (one pose, radius 1 against a
+/// larger radius, same screen regions) put FNV's baked ground at 1.04, 0.99
+/// and 1.09 of full detail (control region 0.99), and FO4's at 0.98 and 0.99
+/// on the ridge and slope (0.80–0.89 where the larger radius adds props;
+/// control 1.01) — no brighter than the ground they stand in for, so no
+/// correction. FO4 was compared at radius 4: radius 6 exceeds its geometry
+/// pool.
+///
+/// **Oblivion, FO76, Starfield: 1.0, unmeasured.** No guessed gain: the
+/// project's no-guessing policy rules out an unmeasured threshold, so these
+/// keep the baked look until measured the same way.
 pub(crate) const fn terrain_lod_albedo_gain(game: GameKind) -> f32 {
     match game {
         GameKind::Skyrim => 0.5,
@@ -394,7 +399,7 @@ pub(crate) fn lod_source_worldspace<'a>(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn only_skyrim_has_a_measured_terrain_lod_albedo_gain() {
+    fn only_skyrim_has_a_terrain_lod_albedo_gain() {
         use super::*;
         assert_eq!(terrain_lod_albedo_gain(GameKind::Skyrim), 0.5);
         for game in [
@@ -404,7 +409,11 @@ mod tests {
             GameKind::Fallout76,
             GameKind::Starfield,
         ] {
-            assert_eq!(terrain_lod_albedo_gain(game), 1.0, "{game:?} is unmeasured");
+            assert_eq!(
+                terrain_lod_albedo_gain(game),
+                1.0,
+                "{game:?}: measured at 1.0 (FNV, FO4) or unmeasured (the rest)"
+            );
         }
     }
 
