@@ -529,6 +529,19 @@ fn render_metrics(f: &mut ratatui::Frame, area: Rect, app: &App) {
             lines.push(Line::from(format!("  {name:<20} {value}")));
         }
     }
+    // #6278 — where the CPU frame time goes (Phase 8 / Phase 11).
+    if !m.cpu_pass_ms.is_empty() {
+        lines.push(Line::from("CPU per-pass (ms):"));
+        for (name, ms) in &m.cpu_pass_ms {
+            lines.push(Line::from(format!("  {name:<20} {ms:>6.3}")));
+        }
+    }
+    if !m.top_systems_ms.is_empty() {
+        lines.push(Line::from("Slowest systems (ms):"));
+        for (name, ms) in m.top_systems_ms.iter().take(8) {
+            lines.push(Line::from(format!("  {name:<28} {ms:>6.3}")));
+        }
+    }
     let para =
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("GPU passes"));
     f.render_widget(para, chunks[3]);

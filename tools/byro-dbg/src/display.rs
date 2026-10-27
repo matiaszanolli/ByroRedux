@@ -231,6 +231,8 @@ pub fn print_response(response: &DebugResponse) {
             vulkan_heap_used_mb,
             vulkan_heap_budget_mb,
             gpu_pass_ms,
+            cpu_pass_ms,
+            top_systems_ms,
             } = payload;
 
             println!("Metrics (sampled at unix={}):", sampled_at_secs);
@@ -272,6 +274,20 @@ pub fn print_response(response: &DebugResponse) {
                         Some(ms) => println!("    {:<20} {:>6.3} ms", name, ms),
                         None => println!("    {:<20} {:>10}", name, "n/a"),
                     }
+                }
+            }
+            // #6278 — Phase 8 / Phase 11 breakdowns that the GPU brackets above
+            // cannot see: where the CPU frame time goes.
+            if !cpu_pass_ms.is_empty() {
+                println!("  CPU passes:");
+                for (name, ms) in cpu_pass_ms {
+                    println!("    {:<20} {:>6.3} ms", name, ms);
+                }
+            }
+            if !top_systems_ms.is_empty() {
+                println!("  Slowest systems:");
+                for (name, ms) in top_systems_ms.iter().take(10) {
+                    println!("    {:<32} {:>6.3} ms", name, ms);
                 }
             }
         }

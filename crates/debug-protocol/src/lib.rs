@@ -238,9 +238,10 @@ pub enum DebugResponse {
     /// Metrics snapshot — wire twin of
     /// `byroredux_core::ecs::MetricsSnapshot`. The protocol crate
     /// doesn't depend on core so the fields are inlined here. Stays
-    /// in lockstep with the core type by hand; the
-    /// `metrics_response_mirrors_core_snapshot` test in the server
-    /// pins the field set so a one-sided drift breaks the build.
+    /// in lockstep with the core type by hand; the exhaustive
+    /// destructure in the server's `metrics_payload` (no `..`) makes a
+    /// new core field a compile error, and its
+    /// `metrics_response_mirrors_core_snapshot` test pins the values.
     Metrics(MetricsPayload),
     /// Configured game profiles — populated from
     /// `assets/debug_profiles.toml` (engine defaults) merged with
@@ -275,6 +276,16 @@ pub struct MetricsPayload {
     /// snapshot cycle — distinct from `Some(0.0)`, a bracket that
     /// genuinely completed sub-microsecond. #2513 / REN-D20-NEW-03.
     pub gpu_pass_ms: Vec<(String, Option<f32>)>,
+    /// CPU-side `draw_frame` wall-clock breakdown in milliseconds,
+    /// ordered by name (the fence wait, submit + present, recording).
+    /// #6278 — `serde(default)` so a payload from an older engine
+    /// still deserializes.
+    #[serde(default)]
+    pub cpu_pass_ms: Vec<(String, f32)>,
+    /// Per-system wall time of the latest scheduler run, descending
+    /// by milliseconds (Phase 11). #6278 — `serde(default)` as above.
+    #[serde(default)]
+    pub top_systems_ms: Vec<(String, f32)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

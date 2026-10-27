@@ -171,30 +171,56 @@ fn eval_metrics(world: &World) -> DebugResponse {
             "MetricsSnapshot resource not present (was metrics_sample_system registered?)",
         );
     };
-    DebugResponse::Metrics(byroredux_debug_protocol::MetricsPayload {
-        sampled_at_secs: snap.sampled_at_secs,
-        cpu_pct: snap.cpu_pct,
-        ram_used_mb: snap.ram_used_mb,
-        ram_total_mb: snap.ram_total_mb,
-        process_ram_mb: snap.process_ram_mb,
-        vram_used_mb: snap.vram_used_mb,
-        vram_reserved_mb: snap.vram_reserved_mb,
-        vram_budget_mb: snap.vram_budget_mb,
-        gpu_busy_pct: snap.gpu_busy_pct,
-        gpu_memory_busy_pct: snap.gpu_memory_busy_pct,
-        driver_vram_used_mb: snap.driver_vram_used_mb,
-        driver_vram_total_mb: snap.driver_vram_total_mb,
-        vulkan_heap_used_mb: snap.vulkan_heap_used_mb,
-        vulkan_heap_budget_mb: snap.vulkan_heap_budget_mb,
+    DebugResponse::Metrics(metrics_payload(&snap))
+}
+
+/// Convert the core snapshot to its wire twin. The destructure names every
+/// field and has no `..`, so a field added to `MetricsSnapshot` stops this
+/// compiling until it is mapped (#6278: `cpu_pass_ms` and `top_systems_ms`
+/// were dropped for months because nothing forced the question).
+fn metrics_payload(snap: &MetricsSnapshot) -> byroredux_debug_protocol::MetricsPayload {
+    let MetricsSnapshot {
+        sampled_at_secs,
+        cpu_pct,
+        ram_used_mb,
+        ram_total_mb,
+        process_ram_mb,
+        vram_used_mb,
+        vram_reserved_mb,
+        vram_budget_mb,
+        gpu_busy_pct,
+        gpu_memory_busy_pct,
+        driver_vram_used_mb,
+        driver_vram_total_mb,
+        vulkan_heap_used_mb,
+        vulkan_heap_budget_mb,
+        gpu_pass_ms,
+        cpu_pass_ms,
+        top_systems_ms,
+    } = snap;
+    byroredux_debug_protocol::MetricsPayload {
+        sampled_at_secs: *sampled_at_secs,
+        cpu_pct: *cpu_pct,
+        ram_used_mb: *ram_used_mb,
+        ram_total_mb: *ram_total_mb,
+        process_ram_mb: *process_ram_mb,
+        vram_used_mb: *vram_used_mb,
+        vram_reserved_mb: *vram_reserved_mb,
+        vram_budget_mb: *vram_budget_mb,
+        gpu_busy_pct: *gpu_busy_pct,
+        gpu_memory_busy_pct: *gpu_memory_busy_pct,
+        driver_vram_used_mb: *driver_vram_used_mb,
+        driver_vram_total_mb: *driver_vram_total_mb,
+        vulkan_heap_used_mb: *vulkan_heap_used_mb,
+        vulkan_heap_budget_mb: *vulkan_heap_budget_mb,
         // `BTreeMap` already iterates in key order — preserve that
         // for the wire response so the UI's rendering of pass times
         // doesn't shuffle frame-to-frame.
-        gpu_pass_ms: snap
-            .gpu_pass_ms
-            .iter()
-            .map(|(k, v)| (k.clone(), *v))
-            .collect(),
-    })
+        gpu_pass_ms: gpu_pass_ms.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        cpu_pass_ms: cpu_pass_ms.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        // Already sorted descending by the scheduler.
+        top_systems_ms: top_systems_ms.clone(),
+    }
 }
 
 /// Push a load request onto the `PendingDebugLoadSlot`. Returns `Ok`
@@ -906,6 +932,64 @@ fn resolve_entity_name(world: &World, entity: u32) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// #6278 — the guard `DebugResponse::Metrics` cites: every `MetricsSnapshot`
+    /// field, the Phase 8 / Phase 11 breakdowns included, reaches the wire.
+    #[test]
+    fn metrics_response_mirrors_core_snapshot() {
+        use super::evaluate;
+        use byroredux_core::ecs::metrics::MetricsSnapshot;
+        use byroredux_core::ecs::World;
+        use byroredux_debug_protocol::registry::ComponentRegistry;
+        use byroredux_debug_protocol::{DebugRequest, DebugResponse};
+
+        let snapshot = MetricsSnapshot {
+            sampled_at_secs: 11,
+            cpu_pct: 12.5,
+            ram_used_mb: 13,
+            ram_total_mb: 14,
+            process_ram_mb: 15,
+            vram_used_mb: 16,
+            vram_reserved_mb: 17,
+            vram_budget_mb: 18,
+            gpu_busy_pct: Some(19.5),
+            gpu_memory_busy_pct: Some(20.5),
+            driver_vram_used_mb: Some(21),
+            driver_vram_total_mb: Some(22),
+            vulkan_heap_used_mb: Some(23),
+            vulkan_heap_budget_mb: Some(24),
+            gpu_pass_ms: [("skin".to_string(), Some(0.25)), ("taa".to_string(), None)].into(),
+            cpu_pass_ms: [("fence_wait".to_string(), 1.5), ("submit".to_string(), 0.5)].into(),
+            top_systems_ms: vec![("slow_system".to_string(), 7.5), ("fast_system".to_string(), 0.0)],
+        };
+        let mut world = World::new();
+        world.insert_resource(snapshot.clone());
+        let registry = ComponentRegistry::new();
+        let DebugResponse::Metrics(wire) = evaluate(&world, &registry, &DebugRequest::Metrics) else {
+            panic!("expected a Metrics response");
+        };
+        assert_eq!(wire.sampled_at_secs, snapshot.sampled_at_secs);
+        assert_eq!(wire.cpu_pct, snapshot.cpu_pct);
+        assert_eq!(
+            (wire.ram_used_mb, wire.ram_total_mb, wire.process_ram_mb),
+            (13, 14, 15)
+        );
+        assert_eq!(
+            (wire.vram_used_mb, wire.vram_reserved_mb, wire.vram_budget_mb),
+            (16, 17, 18)
+        );
+        assert_eq!((wire.gpu_busy_pct, wire.gpu_memory_busy_pct), (Some(19.5), Some(20.5)));
+        assert_eq!((wire.driver_vram_used_mb, wire.driver_vram_total_mb), (Some(21), Some(22)));
+        assert_eq!((wire.vulkan_heap_used_mb, wire.vulkan_heap_budget_mb), (Some(23), Some(24)));
+        assert_eq!(
+            wire.gpu_pass_ms,
+            vec![("skin".to_string(), Some(0.25)), ("taa".to_string(), None)]
+        );
+        assert_eq!(
+            wire.cpu_pass_ms,
+            vec![("fence_wait".to_string(), 1.5), ("submit".to_string(), 0.5)]
+        );
+        assert_eq!(wire.top_systems_ms, snapshot.top_systems_ms, "order is the scheduler's");
+    }
 
     /// #5290 — an absolute or `..` load path is refused before it is queued,
     /// so the client sees the reason instead of an `Ok` that never loads.

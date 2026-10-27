@@ -177,6 +177,19 @@ mod tests {
     /// this test (and the matching engine-side `MetricsSnapshot`)
     /// breaks the build at the missing assertion, not at runtime
     /// against a quiet null field.
+    /// #6278 — a payload from an engine that predates `cpu_pass_ms` /
+    /// `top_systems_ms` still deserializes, with both empty.
+    #[test]
+    fn metrics_payload_without_the_breakdowns_still_deserializes() {
+        let old = r#"{"sampled_at_secs":1,"cpu_pct":2.0,"ram_used_mb":3,"ram_total_mb":4,
+            "process_ram_mb":5,"vram_used_mb":6,"vram_reserved_mb":7,"vram_budget_mb":8,
+            "gpu_busy_pct":null,"gpu_memory_busy_pct":null,"driver_vram_used_mb":null,
+            "driver_vram_total_mb":null,"vulkan_heap_used_mb":null,"vulkan_heap_budget_mb":null,
+            "gpu_pass_ms":[]}"#;
+        let payload: crate::MetricsPayload = serde_json::from_str(old).expect("old payload");
+        assert!(payload.cpu_pass_ms.is_empty() && payload.top_systems_ms.is_empty());
+    }
+
     #[test]
     fn round_trip_phase1_response_variants() {
         use crate::GameProfile;
@@ -204,6 +217,8 @@ mod tests {
                     // round-trips as `None`/JSON `null`, not `0.0`.
                     ("taa".to_string(), None),
                 ],
+                cpu_pass_ms: vec![("fence_wait".to_string(), 1.5)],
+                top_systems_ms: vec![("animation_system".to_string(), 0.75)],
             }),
             DebugResponse::GameProfiles {
                 profiles: vec![GameProfile {
