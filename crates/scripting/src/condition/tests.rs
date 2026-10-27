@@ -2532,3 +2532,55 @@ fn skyrim_crime_gold_conditions_read_the_faction_bounty() {
     let (fnv, ..) = guard_and_player(Fallout3NV);
     assert!(!is_modeled(&fnv, &condition) && is_modeled(&world, &condition));
 }
+
+/// #6338 — the resolver answers from the pool's generation-keyed index, so a spawn, a despawn and
+/// a miss must each be seen by the very next call, and a duplicate id keeps the scan's first-wins.
+mod global_form_id_index {
+    use super::*;
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+    const PLACED: u32 = 0x0001_0F90;
+
+    fn pair(local: u32) -> FormIdPair {
+        FormIdPair { plugin: PluginId::from_filename("FalloutNV.esm"), local: LocalFormId(local) }
+    }
+
+    fn world_with_pool() -> World {
+        let mut world = World::new();
+        world.register::<FormIdComponent>();
+        world.insert_resource(FormIdPool::default());
+        world
+    }
+
+    fn place(world: &mut World, local: u32) -> EntityId {
+        let handle = world.resource_mut::<FormIdPool>().intern(pair(local));
+        let entity = world.spawn();
+        world.insert(entity, FormIdComponent(handle));
+        entity
+    }
+
+    #[test]
+    fn the_index_follows_spawns_and_despawns() {
+        let mut world = world_with_pool();
+        assert_eq!(resolve_entity_by_global_form_id(&world, PLACED), None, "nothing placed yet");
+        let placed = place(&mut world, PLACED);
+        assert_eq!(resolve_entity_by_global_form_id(&world, PLACED), Some(placed));
+        assert_eq!(resolve_entity_by_global_form_id(&world, 0xDEAD), None, "an absent id stays a miss");
+        let other = place(&mut world, 0x77);
+        assert_eq!(resolve_entity_by_global_form_id(&world, 0x77), Some(other));
+        world.despawn(placed);
+        assert_eq!(resolve_entity_by_global_form_id(&world, PLACED), None, "a despawned target is gone");
+        assert_eq!(resolve_entity_by_global_form_id(&world, 0x77), Some(other));
+        world.despawn_batch(vec![other]);
+        assert_eq!(resolve_entity_by_global_form_id(&world, 0x77), None, "a batch despawn is seen too");
+    }
+
+    #[test]
+    fn a_duplicate_id_resolves_to_the_first_entity() {
+        let mut world = world_with_pool();
+        let first = place(&mut world, PLACED);
+        let _duplicate = place(&mut world, PLACED);
+        assert_eq!(resolve_entity_by_global_form_id(&world, PLACED), Some(first));
+    }
+}

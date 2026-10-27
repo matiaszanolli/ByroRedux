@@ -170,12 +170,12 @@ pub(crate) fn comparand_value(condition: &Condition, world: &World) -> f32 {
 /// CTDA `param_1` is a raw global `u32`, so this resolves through the
 /// [`FormIdPool`] instead — an entity matches when its `FormIdComponent`
 /// resolves to a pair whose `local` equals `form_id` (the cell loader stores
-/// the full global FormID as the `LocalFormId`). O(n) over entities carrying
-/// a `FormIdComponent`, which is fine for the rare condition-eval path.
+/// the full global FormID as the `LocalFormId`).
 /// Find the live entity whose `FormIdComponent` resolves (through the
-/// `FormIdPool`) to `form_id` in global-plugin space. `O(n)` over every
-/// `FormIdComponent`-tagged entity — fine for the occasional resolution
-/// this and `travel_system` (M42.4) perform, not a per-frame hot path.
+/// `FormIdPool`) to `form_id` in global-plugin space. Answered from the pool's
+/// generation-keyed entity index (#6338): `O(n)` only when the `FormIdComponent`
+/// membership moved since the last call, a hash lookup otherwise — so the per-frame
+/// package systems may call it freely.
 pub fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<EntityId> {
     use byroredux_core::ecs::components::FormIdComponent;
     use byroredux_core::form_id::FormIdPool;
@@ -195,11 +195,7 @@ pub fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<E
     }
     let q = world.query::<FormIdComponent>()?;
     let pool = world.try_resource::<FormIdPool>()?;
-    let found = q
-        .iter()
-        .find(|(_, fid)| pool.resolve(fid.0).is_some_and(|p| p.local.0 == form_id))
-        .map(|(eid, _)| eid);
-    found
+    pool.entity_with_local(&q, form_id)
 }
 
 /// The global form ID of a live entity — the inverse of

@@ -16,8 +16,13 @@
 //! the 24-bit local ID. After conversion there is no distinction between
 //! legacy and Redux-native plugins.
 
+use crate::ecs::components::FormIdComponent;
 use crate::ecs::resource::Resource;
+use crate::ecs::storage::EntityId;
+use crate::ecs::QueryRead;
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 use uuid::Uuid;
 
 /// Fixed UUID v5 namespace for deriving [`PluginId`] from legacy filenames.
@@ -170,6 +175,16 @@ pub const PLAYER_FORM_ID_PAIR: FormIdPair = FormIdPair {
 pub struct FormIdPool {
     to_runtime: HashMap<FormIdPair, FormId>,
     to_pair: Vec<FormIdPair>,
+    /// Lazily rebuilt `local → entity` index behind [`Self::entity_with_local`] (#6338).
+    entity_index: Mutex<EntityIndex>,
+}
+
+/// What [`FormIdPool::entity_with_local`] was last built from, and the result.
+#[derive(Default)]
+struct EntityIndex {
+    /// `(FormIdComponent structural generation, pool length)` of the build; `None` before the first.
+    key: Option<(u64, usize)>,
+    by_local: FxHashMap<u32, EntityId>,
 }
 
 impl FormIdPool {
@@ -177,6 +192,7 @@ impl FormIdPool {
         Self {
             to_runtime: HashMap::new(),
             to_pair: Vec::new(),
+            entity_index: Mutex::default(),
         }
     }
 
@@ -212,6 +228,43 @@ impl FormIdPool {
         self.to_runtime.get(pair).copied()
     }
 
+    /// The entity whose [`FormIdComponent`] resolves to plugin-local value `local`, or `None`.
+    ///
+    /// Answered from an index built once per `FormIdComponent` membership change instead of
+    /// scanning every tagged entity per call (about 4 µs at 2 k entities, 65–131 µs at 30–60 k;
+    /// #6338): the Flee / UseWeapon package systems resolve a target per actor per frame, and a
+    /// target that lives in another cell would otherwise cost a full miss scan every frame. The
+    /// key is the storage's structural generation (the component opts into `TRACK_CHANGES`, so
+    /// insert, overwrite, removal, batch despawn and clear all move it) plus this pool's length;
+    /// `FormIdComponent` is never mutated in place. A duplicate `local` resolves to the first
+    /// entity in storage order, exactly as the scan did.
+    ///
+    /// The interior [`Mutex`] is a leaf: nothing else is acquired while it is held.
+    pub fn entity_with_local(
+        &self,
+        members: &QueryRead<'_, FormIdComponent>,
+        local: u32,
+    ) -> Option<EntityId> {
+        let key = (members.storage().structural_generation(), self.len());
+        let mut index = self.entity_index.lock().unwrap_or_else(PoisonError::into_inner);
+        if index.key != Some(key) {
+            index.by_local.clear();
+            for (entity, form) in members.iter() {
+                if let Some(local) = self.local_of(form.0) {
+                    index.by_local.entry(local).or_insert(entity);
+                }
+            }
+            index.key = Some(key);
+        }
+        index.by_local.get(&local).copied()
+    }
+
+    /// What the current index build was keyed on (tests pin that a repeat lookup reuses it).
+    #[cfg(test)]
+    fn entity_index_key(&self) -> Option<(u64, usize)> {
+        self.entity_index.lock().unwrap_or_else(PoisonError::into_inner).key
+    }
+
     /// Number of interned form IDs.
     pub fn len(&self) -> usize {
         self.to_pair.len()
@@ -236,6 +289,46 @@ impl Resource for FormIdPool {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecs::World;
+
+    // ── entity index (#6338) ────────────────────────────────────────────
+
+    fn world_with_pool() -> World {
+        let mut world = World::new();
+        world.register::<FormIdComponent>();
+        world.insert_resource(FormIdPool::new());
+        world
+    }
+
+    fn place(world: &mut World, local: u32) -> EntityId {
+        let pair = FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(local) };
+        let handle = world.resource_mut::<FormIdPool>().intern(pair);
+        let entity = world.spawn();
+        world.insert(entity, FormIdComponent(handle));
+        entity
+    }
+
+    #[test]
+    fn entity_with_local_reuses_its_build_until_the_membership_moves() {
+        let mut world = world_with_pool();
+        let a = place(&mut world, 0x10);
+        let lookup = |world: &World, local: u32| {
+            let members = world.query::<FormIdComponent>().unwrap();
+            world.resource::<FormIdPool>().entity_with_local(&members, local)
+        };
+        assert_eq!(lookup(&world, 0x10), Some(a));
+        let built = world.resource::<FormIdPool>().entity_index_key();
+        assert!(built.is_some(), "the first lookup builds the index");
+        for _ in 0..3 {
+            assert_eq!(lookup(&world, 0x99), None, "a miss is answered from the same build");
+        }
+        assert_eq!(world.resource::<FormIdPool>().entity_index_key(), built, "no rebuild without a change");
+        let b = place(&mut world, 0x20);
+        assert_eq!(lookup(&world, 0x20), Some(b), "a spawn re-keys the index");
+        assert_ne!(world.resource::<FormIdPool>().entity_index_key(), built);
+        world.despawn(a);
+        assert_eq!(lookup(&world, 0x10), None, "a despawn re-keys it again");
+    }
 
     // ── PluginId ────────────────────────────────────────────────────────
 
