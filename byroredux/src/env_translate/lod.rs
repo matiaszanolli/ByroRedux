@@ -38,6 +38,33 @@ pub(crate) const fn terrain_lod_layout(game: GameKind) -> TerrainLodLayout {
     }
 }
 
+/// Brightness gain applied to a game's baked distant-terrain albedo so the LOD
+/// ground meets the full-detail ground it stands in for.
+///
+/// **Skyrim: 0.5, measured.** Rendering the same Whiterun view with the valley
+/// as LOD (radius 1) and as full detail (radius 6) put the baked `.btr` ground
+/// at 1.9x and 2.4x the full-detail ground's luminance (87/37 and 102/53) while
+/// the rock beside it matched (1.1x); canopy shadowing, the species-detail
+/// layer, LAND vertex colours and the vertex normals were each ruled out (every
+/// one moved the full-detail ground by ~1 point or less). The baked LOD ground
+/// diffuse is simply brighter than the layered ground it represents — a trait
+/// LOD generators correct with brightness/contrast settings — and 0.5 is the
+/// measured ratio rounded to the nearest simple step. One scene, two regions:
+/// a starting point to retune by eye, not a corpus calibration.
+///
+/// **Every other game: 1.0, unmeasured.** FNV's A/B was contaminated by a
+/// radar-dish prop and its radius-6 run did not finish streaming; FO4's was not
+/// run. A guessed gain there would be the unmeasured threshold the project's
+/// no-guessing policy rules out, so those games keep the baked look until
+/// someone measures them the same way (same pose at radius 1 and radius 6,
+/// compare the ground).
+pub(crate) const fn terrain_lod_albedo_gain(game: GameKind) -> f32 {
+    match game {
+        GameKind::Skyrim => 0.5,
+        _ => 1.0,
+    }
+}
+
 /// One authored diffuse quad translated to the common LOD-ring contract.
 /// `quad_origin` and `quad_cells` describe the image's world-cell footprint;
 /// `u_runs_west` is the image orientation over that footprint. Together they
@@ -366,6 +393,21 @@ pub(crate) fn lod_source_worldspace<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_skyrim_has_a_measured_terrain_lod_albedo_gain() {
+        use super::*;
+        assert_eq!(terrain_lod_albedo_gain(GameKind::Skyrim), 0.5);
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            assert_eq!(terrain_lod_albedo_gain(game), 1.0, "{game:?} is unmeasured");
+        }
+    }
+
     use super::*;
     use crate::env_translate::test_support::parent_child;
 

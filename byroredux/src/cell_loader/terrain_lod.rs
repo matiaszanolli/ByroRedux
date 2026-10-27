@@ -1307,19 +1307,23 @@ fn spawn_lod_block(
     // the near/far terrain shading consistent across the full-detail ring
     // boundary instead of 0.85 inside it and the render path's hardcoded 0.5
     // outside.
-    world.insert(
-        entity,
-        // #4912 — the Material's clamp matches whichever arm resolved: the
-        // authored legacy quad's CLAMP_S_CLAMP_T, or the tiled base LTEX's
-        // WRAP (the plain wrapper's default).
-        crate::material_translate::translate_texture_only_material_with_authored_msn(
-            base_texture_path,
-            // Every vanilla `.btr` normal map is model-space (see
-            // `btr_normal_path_candidates`' census); only a bound map can be.
-            combined && normal_texture_handle != 0,
-            if translated_lod.is_some() { 0 } else { 3 },
-        ),
+    // #4912 — the Material's clamp matches whichever arm resolved: the
+    // authored legacy quad's CLAMP_S_CLAMP_T, or the tiled base LTEX's
+    // WRAP (the plain wrapper's default).
+    let mut material = crate::material_translate::translate_texture_only_material_with_authored_msn(
+        base_texture_path,
+        // Every vanilla `.btr` normal map is model-space (see
+        // `btr_normal_path_candidates`' census); only a bound map can be.
+        combined && normal_texture_handle != 0,
+        if translated_lod.is_some() { 0 } else { 3 },
     );
+    // A block wearing its quad's baked diffuse takes the same gain as the
+    // prebaked `.btr` blocks beside it, so the ring has no seam of its own. The
+    // tiled-LTEX fallback is the splat terrain's own albedo: no gain.
+    if translated_lod.is_some() && combined {
+        material.diffuse_color = [crate::env_translate::terrain_lod_albedo_gain(game); 3];
+    }
+    world.insert(entity, material);
     if combined && normal_texture_handle != 0 {
         crate::material_translate::resolve_msn_z_source(world, entity);
     }

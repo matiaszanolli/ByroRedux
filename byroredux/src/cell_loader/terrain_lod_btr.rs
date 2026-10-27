@@ -504,6 +504,11 @@ pub(crate) fn spawn_btr_block(
             0,
         ),
     );
+    // The baked ground is brighter than the full-detail ground it replaces
+    // (measured per game; `terrain_lod_albedo_gain`).
+    if let Some(mut material) = world.get_mut::<byroredux_core::ecs::components::Material>(entity) {
+        material.diffuse_color = [crate::env_translate::terrain_lod_albedo_gain(game); 3];
+    }
     world.insert(entity, RenderLayer::Architecture);
     world.insert(entity, IsLodTerrain);
 
