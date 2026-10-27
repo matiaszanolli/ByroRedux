@@ -115,7 +115,7 @@ fn main() {
             split(p, '\\', true)
         }),
     ];
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity)] // A table of (label, hash function pointer) pairs.
     let hashes: Vec<(&str, fn(&[u8]) -> u32)> = vec![
         ("crc32 std (init FFFFFFFF, xor FFFFFFFF)", |d| {
             crc32(d, 0xFFFF_FFFF, 0xFFFF_FFFF)

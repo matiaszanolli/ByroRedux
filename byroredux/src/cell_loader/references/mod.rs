@@ -239,7 +239,7 @@ fn worldspace_extent_over_rt_ceiling(bounds_min: Vec3, bounds_max: Vec3) -> Opti
     skip_all,
     fields(ref_count = refs.len(), actor_count = record_index.npcs.len() + record_index.creatures.len(), race_count = races.len(), game = ?game, label = label),
 )]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Cell reference loader: the record indexes, world, GPU context and providers are separate caller-owned borrows.
 pub(super) fn load_references(
     refs: &[esm::cell::PlacedRef],
     index: &esm::cell::EsmCellIndex,

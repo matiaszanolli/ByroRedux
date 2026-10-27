@@ -202,7 +202,7 @@ pub(super) fn head_part_path(
         .next()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Per-actor prepare inputs: the NPC and race records, game, index and placement transform are independent of one another.
 pub(super) fn prepare_runtime_state(
     world: &mut World,
     npc: &NpcRecord,
@@ -638,7 +638,7 @@ pub(super) fn prepare_creature_state(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Resumable step: the actor's state, world, GPU context, providers and idle inputs are separate caller-owned borrows.
 pub(super) fn advance_runtime_unit(
     state: &mut RuntimeNpcState,
     world: &mut World,
@@ -1092,7 +1092,7 @@ pub(super) fn advance_runtime_unit(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // One head part: the actor's state, world, GPU context, record, path and providers are separate caller-owned borrows.
 pub(super) fn spawn_runtime_head(
     state: &RuntimeNpcState,
     world: &mut World,
@@ -1245,7 +1245,7 @@ pub(super) fn shared_head_mount(
         .find_map(|name| crate::name_lookup::get_case_insensitive(skeleton, name).copied())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // One skeleton-sharing part: the actor's state, world, GPU context, record, path, label, providers and pre-spawn hook are independent inputs.
 pub(super) fn spawn_shared_skeleton_part(
     state: &RuntimeNpcState,
     world: &mut World,

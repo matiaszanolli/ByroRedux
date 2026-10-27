@@ -643,7 +643,7 @@ fn main() {
     );
 }
 
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)] // Probe example threading its decoded CDB tables through a recursive walk; a struct would not make a one-off tool clearer.
 fn walk_object(
     dbid: u64,
     comps_by_object: &HashMap<u64, Vec<usize>>,
@@ -710,7 +710,7 @@ fn walk_object(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)] // Probe example threading its decoded CDB tables; a struct would not make a one-off tool clearer.
 fn print_object_components(
     dbid: u64,
     comps_by_object: &HashMap<u64, Vec<usize>>,

@@ -530,7 +530,7 @@ pub(crate) struct InteriorCellApplyJob {
     phases: CellLoadPhaseTimings,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant)] // The job is large and the result small, but one value exists per interior load and is moved, never stored in bulk; a Box would only add an allocation.
 pub(crate) enum InteriorCellApplyProgress {
     Pending(InteriorCellApplyJob),
     Complete(CellLoadResult),

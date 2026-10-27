@@ -768,7 +768,7 @@ fn admit_model<'a>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Worker-side parse inputs: cell id, generation, shared world context, provider, dedupe sets and pools each belong to a different owner.
 #[tracing::instrument(
     name = "pre_parse_cell",
     skip_all,

@@ -480,7 +480,7 @@ pub(crate) fn parse_refr_group(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Recursive group walker: the reader plus one output collection per record kind it yields, threaded through every nested group.
 fn parse_refr_group_inner(
     reader: &mut EsmReader,
     end: usize,

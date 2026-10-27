@@ -83,7 +83,7 @@ pub(super) enum PrebakedPhase {
 }
 
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Per-actor prepare inputs: the NPC record, plugin, index and placement transform are independent of one another.
 pub(super) fn prepare_prebaked_state(
     world: &mut World,
     npc: &NpcRecord,
@@ -251,7 +251,7 @@ pub(super) fn prebaked_head_fallback_paths(
     paths
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Resumable step: the actor's state, world, GPU context, providers and index are separate caller-owned borrows.
 pub(super) fn advance_prebaked_unit(
     state: &mut PrebakedNpcState,
     world: &mut World,

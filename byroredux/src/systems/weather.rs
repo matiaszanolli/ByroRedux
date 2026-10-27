@@ -409,11 +409,11 @@ pub(crate) fn advance_weather_surface(
     // stays rather than silently changing it.
     #[allow(clippy::manual_clamp)]
     let rain = precipitation[0].max(0.0).min(1.0);
-    #[allow(clippy::manual_clamp)]
+    #[allow(clippy::manual_clamp)] // NaN-masking max/min kept on purpose; see the note above.
     let snow = precipitation[1].max(0.0).min(1.0);
-    #[allow(clippy::manual_clamp)]
+    #[allow(clippy::manual_clamp)] // NaN-masking max/min kept on purpose; see the note above.
     let wind = wind_speed.max(0.0).min(1.0);
-    #[allow(clippy::manual_clamp)]
+    #[allow(clippy::manual_clamp)] // NaN-masking max/min kept on purpose; see the note above.
     let sun = (sun_intensity / crate::env_translate::SUN_INTENSITY_PEAK)
         .max(0.0)
         .min(1.0);

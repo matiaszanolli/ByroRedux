@@ -88,7 +88,7 @@ impl SettingEntry {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // A slider row is exactly its identity, labels, default and range; a builder would only rename these fields.
     pub fn slider(
         id: impl Into<String>,
         section: impl Into<String>,

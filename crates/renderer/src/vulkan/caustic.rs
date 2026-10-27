@@ -368,7 +368,7 @@ pub(super) fn caustic_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'s
 }
 
 impl CausticPipeline {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view or buffer slice per resource the shader binds.
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -408,7 +408,7 @@ impl CausticPipeline {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view or buffer slice per resource the shader binds.
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -611,7 +611,7 @@ impl CausticPipeline {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view or buffer slice per resource the shader binds.
     fn write_descriptor_sets(
         &self,
         device: &ash::Device,

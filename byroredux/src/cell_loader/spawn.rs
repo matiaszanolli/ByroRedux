@@ -276,7 +276,7 @@ fn synthesize_packed_collision_proxy(
     Some((center, CollisionShape::Cuboid { half_extents }))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // The proxy's placement (position, rotation, scale, form id, layer) is Copy scalars beside the world and the cached import.
 fn spawn_packed_collision_proxy(
     world: &mut World,
     cached: &CachedNifImport,
@@ -639,7 +639,7 @@ pub(super) fn stamp_attach_components(
     skip_all,
     fields(ref_scale = ref_scale, mesh_count = cached.meshes.len()),
 )]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // One placed instance: the placement transform and light data are Copy inputs beside the world, GPU context and provider borrows.
 pub(super) fn spawn_placed_instances(
     world: &mut World,
     ctx: &mut VulkanContext,

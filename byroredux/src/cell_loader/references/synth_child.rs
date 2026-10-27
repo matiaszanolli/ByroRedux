@@ -353,7 +353,7 @@ fn finish_light_synth_child(
     accum.entity_count += 1;
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // One synthesized child: the cell's accumulator, world, GPU context, providers and the placement data are distinct borrows of the load.
 pub(super) fn spawn_synth_child(
     accum: &mut RefLoadAccum,
     world: &mut World,

@@ -417,7 +417,7 @@ fn localize_culprits(archives: &[String]) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Probe report: each argument is one accumulated statistic it prints.
 fn report(
     stats: &HashMap<u32, ValueStats>,
     files_seen: u32,

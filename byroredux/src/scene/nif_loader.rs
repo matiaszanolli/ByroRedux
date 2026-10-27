@@ -539,7 +539,7 @@ pub(crate) fn load_nif_extracting_with_skeleton(
     (!missing).then_some(loaded)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Loader inputs: world, GPU context, byte source, providers, skeleton and the per-call overrides are independent of one another.
 fn load_nif_with_skeleton_from<'a>(
     world: &mut World,
     ctx: &mut VulkanContext,

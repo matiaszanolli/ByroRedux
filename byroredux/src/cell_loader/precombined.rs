@@ -242,7 +242,7 @@ impl PrecombinedSpawnJob {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Resumable bake step: the cell, placement root, world, GPU context, providers and frame budget are separate caller-owned borrows.
     pub(super) fn advance(
         mut self,
         cell: &CellData,

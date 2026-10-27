@@ -193,7 +193,7 @@ pub struct FrameUpscaler {
 }
 
 impl FrameUpscaler {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Vulkan handles the upscaler backend needs: instance, device, queue, pool and allocator, plus the mode and extents.
     pub fn new(
         instance: &ash::Instance,
         device: &ash::Device,
@@ -1057,7 +1057,7 @@ impl FrameUpscaler {
         std::mem::take(&mut self.dispatched_this_frame)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Vulkan handles the upscaler backend needs: instance, device, queue, pool and allocator, plus the mode and extents.
     pub fn recreate(
         &mut self,
         instance: &ash::Instance,

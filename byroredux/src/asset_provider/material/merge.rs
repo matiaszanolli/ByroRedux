@@ -755,7 +755,7 @@ struct BgsmTextureSlotState {
     nif_supplied_greyscale_lut: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // One BGSM slot pass: the file, its slot state, the target material, the pool and the exists-probe are separate borrows of the caller's frame.
 fn apply_bgsm_texture_slots(
     bgsm: &BgsmFile,
     state: &mut BgsmTextureSlotState,

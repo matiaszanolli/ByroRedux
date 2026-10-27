@@ -477,7 +477,7 @@ impl CompositePipeline {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view slice per image the composite shader samples.
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,

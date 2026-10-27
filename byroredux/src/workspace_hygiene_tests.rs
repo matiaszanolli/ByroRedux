@@ -232,6 +232,78 @@ fn every_ignore_attribute_carries_a_reason() {
     );
 }
 
+/// 1-based lines of `#[allow(clippy::…)]` attributes in `source` that carry no
+/// reason comment (#5622): none trailing the attribute, none on the contiguous
+/// comment / attribute lines above it, and none within the three lines below.
+/// A bare `too_many_arguments` allow hides whether the signature is a deliberate
+/// Vulkan / FFI shape or a parameter struct somebody skipped.
+fn bare_clippy_allows(source: &str) -> Vec<usize> {
+    let lines: Vec<&str> = source.lines().collect();
+    // The audit's standard (#5622): any comment line counts, a doc comment included — 64
+    // of the 94 `too_many_arguments` allows lean on the item's own docs to explain the
+    // signature.
+    let is_comment = |line: &str| line.trim_start().starts_with("//");
+    let mut bare = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        if !line.trim_start().starts_with("#[allow(clippy::") {
+            continue;
+        }
+        let mut reasoned = line.contains("//");
+        let mut above = at;
+        while !reasoned && above > 0 {
+            let previous = lines[above - 1].trim_start();
+            if !(previous.starts_with("//") || previous.starts_with("#[")) {
+                break;
+            }
+            reasoned = is_comment(previous);
+            above -= 1;
+        }
+        reasoned |= lines[at + 1..lines.len().min(at + 4)].iter().any(|next| is_comment(next));
+        if !reasoned {
+            bare.push(at + 1);
+        }
+    }
+    bare
+}
+
+#[test]
+fn every_clippy_allow_carries_a_reason() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut offenders = Vec::new();
+    visit_workspace_rs_files(&manifest.join(".."), &mut |path, contents| {
+        // Vendored third-party tooling is not ours to annotate.
+        if path.components().any(|part| part.as_os_str() == "nifskope") {
+            return;
+        }
+        for line in bare_clippy_allows(contents) {
+            offenders.push(format!("{}:{line}", path.display()));
+        }
+    });
+    assert!(
+        offenders.is_empty(),
+        "{} `#[allow(clippy::…)]` attribute(s) with no reason comment — add a trailing \
+         `// why` (or fold a long argument list into a parameter struct) so a reader can \
+         tell a deliberate signature from a skipped refactor (#5622):\n{}",
+        offenders.len(),
+        offenders.join("\n"),
+    );
+}
+
+#[test]
+fn bare_clippy_allow_scanner_reads_the_comment_placements() {
+    let trailing = "#[allow(clippy::too_many_arguments)] // why\nfn a() {}";
+    let above = "// why\n#[allow(clippy::too_many_arguments)]\nfn a() {}";
+    let stacked = "// why\n#[inline]\n#[allow(clippy::too_many_arguments)]\nfn a() {}";
+    let below = "#[allow(clippy::manual_clamp)]\n// why\nlet x = 1;";
+    let bare = "fn a() {}\n\n#[allow(clippy::too_many_arguments)]\nfn b() {}";
+    let doc_only = "/// docs\n#[allow(clippy::too_many_arguments)]\nfn b() {}";
+    for reasoned in [trailing, above, stacked, below] {
+        assert!(bare_clippy_allows(reasoned).is_empty(), "{reasoned}");
+    }
+    assert_eq!(bare_clippy_allows(bare), vec![3]);
+    assert!(bare_clippy_allows(doc_only).is_empty(), "the item's own docs are a reason");
+}
+
 /// #3746 — every `crates/*/examples/` directory in the workspace, plus
 /// `byroredux/examples` (none exist there today, but a future one should
 /// be covered automatically rather than needing this test widened).

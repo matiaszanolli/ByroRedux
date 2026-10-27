@@ -392,7 +392,7 @@ pub fn build_exterior_world_context(
     skip_all,
     fields(gx = gx, gy = gy),
 )]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Streaming entry point: the world, GPU context, both asset providers and the accumulator are separate caller-owned borrows.
 pub fn load_one_exterior_cell(
     wctx: &ExteriorWorldContext,
     gx: i32,

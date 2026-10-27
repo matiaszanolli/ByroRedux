@@ -960,7 +960,7 @@ impl BloomPipeline {
 }
 
 impl BloomFrame {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Vulkan resource wiring: the device, allocator, extent and the shared descriptor layouts and sampler.
     fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,

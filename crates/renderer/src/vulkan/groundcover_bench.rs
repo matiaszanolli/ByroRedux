@@ -754,7 +754,7 @@ impl GroundcoverBench {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // One handle per shader module the pipelines are built from.
     fn build_pipelines(
         &mut self,
         device: &ash::Device,

@@ -224,7 +224,7 @@ pub(super) fn spawn_nodes(
     // by recursion so an out-of-order file still works.
     let mut entities: HashMap<usize, EntityId> = HashMap::new();
     let mut worlds: HashMap<usize, (Vec3, Quat, f32)> = HashMap::new();
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Recursive parent-before-child resolver threading the shared maps and the spawn context.
     fn make(
         index: usize,
         world: &mut World,
