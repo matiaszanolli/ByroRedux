@@ -532,7 +532,7 @@ challenge.status [CHAL id]  → New Vegas challenge progress (hex CHAL form id o
 vats.enter / vats.exit        → enter/leave VATS targeting (FO3/FNV freezes the world)
 vats.scan                     → re-run the VATS limb scan against live positions
 vats.status                   → mode, per-part hit % and AP costs, queue depth (smoke observable)
-vats.queue <part>             → queue a scanned body part by name (e.g. Torso)
+vats.queue <part>             → queue a scanned body part by name (e.g. Torso); refused once the queue's AP would exceed the player's pool
 vats.confirm                  → charge AP, execute the queue through the combat funnel, exit
 hud.on / hud.off            → show or hide the active legacy HUD
 hud.values                  → inspect current HUD trait values

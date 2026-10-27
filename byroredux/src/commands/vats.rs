@@ -5,7 +5,9 @@
 
 use super::shared::*;
 use crate::components::{VatsMode, VatsState};
-use crate::systems::vats::{vats_cancel, vats_confirm, vats_queue_part, vats_scan};
+use crate::systems::vats::{
+    vats_cancel, vats_confirm, vats_queue_part, vats_scan, VatsQueueRefusal,
+};
 use byroredux_core::ecs::World;
 
 /// `vats.enter` — enter targeting (same gates as the key: model, living
@@ -135,8 +137,8 @@ impl ConsoleCommand for VatsQueueCommand {
         else {
             return CommandOutput::error(format!("vats.queue: no scanned part named {name:?}"));
         };
-        if vats_queue_part(world, matched.0, matched.1) {
-            CommandOutput::line(format!(
+        match vats_queue_part(world, matched.0, matched.1) {
+            Ok(()) => CommandOutput::line(format!(
                 "vats.queue: queued {} (ap {:.0}, reserved {:.0})",
                 name,
                 matched.2,
@@ -144,9 +146,15 @@ impl ConsoleCommand for VatsQueueCommand {
                     .try_resource::<VatsState>()
                     .map(|vats| vats.ap_reserved)
                     .unwrap_or(0.0)
-            ))
-        } else {
-            CommandOutput::error("vats.queue: part vanished from the scan")
+            )),
+            Err(VatsQueueRefusal::PartGone) => {
+                CommandOutput::error("vats.queue: part vanished from the scan")
+            }
+            Err(VatsQueueRefusal::NotEnoughAp { needed, available }) => {
+                CommandOutput::error(format!(
+                    "vats.queue: not enough AP ({needed:.0} needed, {available:.0} available)"
+                ))
+            }
         }
     }
 }
@@ -173,7 +181,7 @@ impl ConsoleCommand for VatsConfirmCommand {
         if vats_confirm(world) {
             CommandOutput::line(format!("vats.confirm: executed {queued} queued attack(s)"))
         } else {
-            CommandOutput::error("vats.confirm: execution refused (no player?)")
+            CommandOutput::error("vats.confirm: execution refused (no player, or the queue costs more AP than the pool holds)")
         }
     }
 }

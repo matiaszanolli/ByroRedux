@@ -217,6 +217,10 @@ use std::sync::Arc;
 /// Head-height offset above an actor root (Bethesda units).
 const EYE_HEIGHT_BU: f32 = 64.0;
 
+/// The skill value [`VatsModel::to_hit_chance`] treats as neutral
+/// (`skill_term = 1 + (skill/100 - 0.5)` is 1.0 at 50).
+const NEUTRAL_SKILL: f32 = 50.0;
+
 /// The per-part occlusion fan: the part's visible fraction is sampled by
 /// three rays across its vertical extent (centre ± 18 BU ≈ a limb's
 /// scale on a humanoid). Not yet the full projected-area integration
@@ -308,15 +312,25 @@ pub(crate) fn vats_scan(world: &World) {
     let Some((eye, _aim)) = camera_ray(world) else {
         return;
     };
-    let weapon = resolve_weapon(world, &index, player);
-    let skill = weapon
-        .as_ref()
-        .and_then(|w| {
-            world
-                .get::<ActorValues>(player)
-                .map(|avs| avs.current(w.skill_form))
-        })
-        .unwrap_or(50.0);
+    // No equipped weapon -> nothing to price (and no AP cost to charge):
+    // the scan yields empty and the mode exits cleanly. Pricing a
+    // weaponless part at `f32::MAX` AP once let one queued shot drive the
+    // pool to -3.4e38 (#6422).
+    let Some(weapon) = resolve_weapon(world, &index, player) else {
+        return;
+    };
+    // A weapon that names no skill (`skill_form == 0`) is priced at the
+    // neutral skill, not at the absent-AV default 0 — which would read as
+    // "unskilled" and halve the chance. A skill the player does not carry
+    // keeps the neutral value too (`ActorValues` absent altogether).
+    let skill = if weapon.skill_form == 0 {
+        NEUTRAL_SKILL
+    } else {
+        world
+            .get::<ActorValues>(player)
+            .map(|avs| avs.current(weapon.skill_form))
+            .unwrap_or(NEUTRAL_SKILL)
+    };
     let excluded_body = world
         .query::<byroredux_physics::RapierHandles>()
         .and_then(|handles| handles.get(player).map(|h| h.body));
@@ -354,8 +368,8 @@ pub(crate) fn vats_scan(world: &World) {
         } else {
             None
         };
-        let base_to_hit = weapon.as_ref().map_or(0.0, |w| w.base_to_hit);
-        let ap_cost = weapon.as_ref().map_or(f32::MAX, |w| w.ap_cost);
+        let base_to_hit = weapon.base_to_hit;
+        let ap_cost = weapon.ap_cost;
         match resolve_limb_table(&index, body_form, is_creature) {
             Some(parts) => {
                 for (part_index, part) in parts.iter().enumerate() {
@@ -373,6 +387,11 @@ pub(crate) fn vats_scan(world: &World) {
                         screen_percent: visible_fraction(
                             world, eye, position, entity, excluded_body,
                         ),
+                        // Always the first shot: the model's Concentrated Fire
+                        // step is the *perk's* bonus ("accuracy gained by the
+                        // perk", GECK iVATSConcentratedFireBonus), so a repeat
+                        // count may only reach it once the player's perk is
+                        // resolved — the perk-gated lane is still open (#6422).
                         concentrated_shot: 1,
                     });
                     targets.push(VatsTargetPart {
@@ -471,9 +490,43 @@ fn visible_fraction(
     visible as f32 / PART_FAN_OFFSETS.len() as f32
 }
 
+/// Why [`vats_queue_part`] declined a part.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum VatsQueueRefusal {
+    /// The scan no longer lists that (entity, part).
+    PartGone,
+    /// The queue's total AP would exceed what the player has.
+    NotEnoughAp { needed: f32, available: f32 },
+}
+
+/// The player's ActionPoints AVIF and its current value, when the player
+/// carries the pool. `None` on a load order that resolves no AP AVIF or a
+/// player without the stamped pool — VATS then has no AP economy to
+/// enforce (the degraded rule: a modded load order must never fail the
+/// mode, it degrades).
+fn player_ap(world: &World) -> Option<(u32, f32)> {
+    let player = world.try_resource::<PlayerEntity>().and_then(|p| p.0)?;
+    let avif = world
+        .try_resource::<LoadedCellIndex>()
+        .and_then(|index| index.0.actor_value_form_id("ActionPoints"))?;
+    let avs = world.get::<ActorValues>(player)?;
+    avs.get(avif).map(|_| (avif, avs.current(avif)))
+}
+
+/// Whether `needed` AP exceeds `available`. NaN counts as unaffordable.
+fn exceeds_ap(needed: f32, available: f32) -> bool {
+    needed.is_nan() || needed > available
+}
+
 /// Queue one part (by entity + part index). The AP reservation
-/// accumulates; the spend happens on confirm.
-pub(crate) fn vats_queue_part(world: &World, entity: EntityId, part_index: usize) -> bool {
+/// accumulates; the spend happens on confirm. A part the player cannot
+/// pay for on top of what is already reserved is refused (vanilla: the
+/// queue ends where the AP does).
+pub(crate) fn vats_queue_part(
+    world: &World,
+    entity: EntityId,
+    part_index: usize,
+) -> Result<(), VatsQueueRefusal> {
     let Some(part) = world
         .try_resource::<VatsState>()
         .and_then(|vats| {
@@ -483,13 +536,22 @@ pub(crate) fn vats_queue_part(world: &World, entity: EntityId, part_index: usize
                 .cloned()
         })
     else {
-        return false;
+        return Err(VatsQueueRefusal::PartGone);
     };
+    let reserved = world
+        .try_resource::<VatsState>()
+        .map_or(0.0, |vats| vats.ap_reserved);
+    let needed = reserved + part.ap_cost;
+    if let Some((_, available)) = player_ap(world) {
+        if exceeds_ap(needed, available) {
+            return Err(VatsQueueRefusal::NotEnoughAp { needed, available });
+        }
+    }
     if let Some(mut vats) = world.try_resource_mut::<VatsState>() {
-        vats.ap_reserved += part.ap_cost;
+        vats.ap_reserved = needed;
         vats.queue.push(part);
     }
-    true
+    Ok(())
 }
 
 /// Confirm the queue: charge the reserved AP, roll and execute every
@@ -508,14 +570,17 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
         return false;
     };
 
-    // Charge the reserved AP (vanilla charges the queue on confirm).
-    let ap_avif = world
-        .try_resource::<LoadedCellIndex>()
-        .and_then(|index| index.0.actor_value_form_id("ActionPoints"));
-    if let (Some(ap_avif), Some(mut avs_q)) = (
-        ap_avif,
-        world.query_mut::<ActorValues>(),
-    ) {
+    // Charge the reserved AP (vanilla charges the queue on confirm). The
+    // queue was gated at queue time and the world is frozen while VATS is
+    // up, but the pool is re-read here so a stale or hand-built
+    // reservation can never overdraw it.
+    let ap = player_ap(world);
+    if let Some((_, available)) = ap {
+        if exceeds_ap(reserved, available) {
+            return false;
+        }
+    }
+    if let (Some((ap_avif, _)), Some(mut avs_q)) = (ap, world.query_mut::<ActorValues>()) {
         if let Some(avs) = avs_q.get_mut(player) {
             avs.apply_damage(ap_avif, reserved.max(0.0));
         }
@@ -539,11 +604,13 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
             }
         })
         .unwrap_or(1.0);
-    let base_damage = crate::combat::attack_damage_against(world, player, queue[0].entity);
-    let damage = (base_damage * weapon_mult).max(0.0);
-    let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() else {
-        return false;
-    };
+    // Roll every queued shot first (pure), tallying the landed ones per
+    // target. `HitEvent` is one component per entity, so a second `insert`
+    // for the same target would overwrite the first: shots at one target
+    // fold into a single event carrying their summed damage (#6422). The
+    // target's own defenses then apply once to that total in the combat
+    // funnel — the Phase-4 per-part routing owns anything finer.
+    let mut landed: Vec<(EntityId, u32)> = Vec::new();
     for part in &queue {
         roll_state = roll_state
             .wrapping_mul(1_664_525)
@@ -552,8 +619,29 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
         if roll >= part.hit_chance.clamp(0.0, 100.0) {
             continue;
         }
+        match landed.iter_mut().find(|(entity, _)| *entity == part.entity) {
+            Some((_, shots)) => *shots += 1,
+            None => landed.push((part.entity, 1)),
+        }
+    }
+    // Per-shot damage is priced against each target (the aggressor's
+    // outgoing perk entry points compose per target), before the
+    // `HitEvent` write lock is taken.
+    let hits: Vec<(EntityId, f32)> = landed
+        .into_iter()
+        .map(|(target, shots)| {
+            let shot = (crate::combat::attack_damage_against(world, player, target)
+                * weapon_mult)
+                .max(0.0);
+            (target, shot * shots as f32)
+        })
+        .collect();
+    let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() else {
+        return false;
+    };
+    for (target, damage) in hits {
         events.insert(
-            part.entity,
+            target,
             byroredux_scripting::HitEvent {
                 aggressor: player,
                 source: player,
@@ -779,50 +867,156 @@ mod scan_tests {
         assert_eq!(parts[0].part_name, "Body");
     }
 
-    #[test]
-    fn confirm_spends_reserved_ap_and_leaves_the_mode() {
-        let (world, npc) = scan_world();
-        vats_scan(&world);
-        // Find the torso (guaranteed hittable chance > 0) and queue it
-        // until the roll must land: queue the same part repeatedly so
-        // the LCG sees several rolls.
-        let vats = world.resource::<VatsState>();
-        let torso = vats
+    /// Seed the player's AP pool (the tests' stand-in for the ruleset's
+    /// stamped `ActionPoints` row).
+    fn seed_ap(world: &World, base: f32) {
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        let mut avs = world.query_mut::<ActorValues>().unwrap();
+        avs.get_mut(player).unwrap().set_base(0x40AA, base);
+    }
+
+    fn ap(world: &World) -> f32 {
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        world.get::<ActorValues>(player).unwrap().current(0x40AA)
+    }
+
+    fn torso(world: &World, npc: EntityId) -> VatsTargetPart {
+        world
+            .resource::<VatsState>()
             .targets
             .iter()
             .find(|t| t.entity == npc && t.part_name == "Torso")
             .cloned()
-            .unwrap();
+            .unwrap()
+    }
+
+    #[test]
+    fn confirm_spends_reserved_ap_and_leaves_the_mode() {
+        let (world, npc) = scan_world();
+        vats_scan(&world);
+        let torso = torso(&world, npc);
         assert_eq!(torso.ap_cost, 17.0);
-        drop(vats);
+        // 8 shots x 17 AP = 136 fits a 140 pool.
+        seed_ap(&world, 140.0);
         for _ in 0..8 {
-            assert!(vats_queue_part(&world, npc, torso.part_index));
-        }
-        // Seed the player's AP pool.
-        let ap_avif = 0x40AA;
-        if let Some(mut avs) = world.query_mut::<ActorValues>() {
-            if let Some(values) = avs.get_mut(world.resource::<PlayerEntity>().0.unwrap()) {
-                values.set_base(ap_avif, 95.0);
-            }
+            assert_eq!(vats_queue_part(&world, npc, torso.part_index), Ok(()));
         }
         assert!(vats_confirm(&world));
         let vats = world.resource::<VatsState>();
         assert_eq!(vats.mode, VatsMode::None, "execution leaves VATS");
         assert!(vats.queue.is_empty());
-        let values = world
-            .get::<ActorValues>(world.resource::<PlayerEntity>().0.unwrap())
-            .unwrap();
         assert!(
-            (values.current(ap_avif) - (95.0 - 8.0 * 17.0)).abs() < 1e-3,
+            (ap(&world) - (140.0 - 8.0 * 17.0)).abs() < 1e-3,
             "8 queued shots at 17 AP: {}",
-            values.current(ap_avif)
+            ap(&world)
         );
-        // At least one of the eight torso shots landed its HitEvent.
+    }
+
+    /// #6422 — the queue ends where the AP does. 95 AP buys five 17-AP
+    /// shots (85); the sixth (102) is refused with the figures, the
+    /// reservation stays 85, and confirm charges exactly that.
+    #[test]
+    fn queue_refuses_a_part_the_pool_cannot_pay() {
+        let (world, npc) = scan_world();
+        vats_scan(&world);
+        let torso = torso(&world, npc);
+        seed_ap(&world, 95.0);
+        for _ in 0..5 {
+            assert_eq!(vats_queue_part(&world, npc, torso.part_index), Ok(()));
+        }
+        assert_eq!(
+            vats_queue_part(&world, npc, torso.part_index),
+            Err(VatsQueueRefusal::NotEnoughAp {
+                needed: 102.0,
+                available: 95.0
+            })
+        );
+        let vats = world.resource::<VatsState>();
+        assert_eq!(vats.queue.len(), 5, "the refused shot is not queued");
+        assert!((vats.ap_reserved - 85.0).abs() < 1e-3);
+        drop(vats);
+        assert!(vats_confirm(&world));
+        assert!((ap(&world) - 10.0).abs() < 1e-3, "{}", ap(&world));
+    }
+
+    /// Damage already spent (regen has not caught up) shrinks what can be
+    /// queued: the gate reads `current`, not `base`.
+    #[test]
+    fn queue_gate_reads_the_current_pool_not_the_base() {
+        let (world, npc) = scan_world();
+        vats_scan(&world);
+        let torso = torso(&world, npc);
+        seed_ap(&world, 95.0);
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        world
+            .query_mut::<ActorValues>()
+            .unwrap()
+            .get_mut(player)
+            .unwrap()
+            .apply_damage(0x40AA, 80.0);
+        assert!(matches!(
+            vats_queue_part(&world, npc, torso.part_index),
+            Err(VatsQueueRefusal::NotEnoughAp { .. })
+        ));
+    }
+
+    /// A confirm whose reservation exceeds the pool (hand-built or stale)
+    /// refuses and leaves both the pool and the queue untouched.
+    #[test]
+    fn confirm_refuses_an_overdrawn_reservation() {
+        let (world, npc) = scan_world();
+        vats_scan(&world);
+        let torso = torso(&world, npc);
+        seed_ap(&world, 10.0);
+        {
+            let mut vats = world.resource_mut::<VatsState>();
+            vats.queue.push(torso);
+            vats.ap_reserved = 17.0;
+        }
+        assert!(!vats_confirm(&world));
+        assert_eq!(ap(&world), 10.0);
+        assert_eq!(world.resource::<VatsState>().queue.len(), 1);
+    }
+
+    /// #6422 — no equipped weapon: the scan yields nothing (it used to
+    /// price every part at `f32::MAX` AP).
+    #[test]
+    fn a_weaponless_scan_yields_no_targets() {
+        let (mut world, _npc) = scan_world();
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        world.remove::<EquippedWeapon>(player);
+        vats_scan(&world);
+        assert!(world.resource::<VatsState>().targets.is_empty());
+    }
+
+    /// #6422 — `HitEvent` is one component per entity, so several landed
+    /// shots at one target must fold into a single event with the summed
+    /// damage rather than overwrite each other.
+    #[test]
+    fn landed_shots_at_one_target_sum_into_one_hit_event() {
+        let (world, npc) = scan_world();
+        vats_scan(&world);
+        let mut sure = torso(&world, npc);
+        sure.hit_chance = 100.0; // a roll is always < 100
+        seed_ap(&world, 95.0);
+        {
+            let mut vats = world.resource_mut::<VatsState>();
+            for _ in 0..3 {
+                vats.queue.push(sure.clone());
+            }
+            vats.ap_reserved = 3.0 * sure.ap_cost;
+        }
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        let one_shot = crate::combat::attack_damage_against(&world, player, npc);
+        assert!(one_shot > 0.0, "fixture must deal damage");
+        assert!(vats_confirm(&world));
+        let hit = *world
+            .get::<byroredux_scripting::HitEvent>(npc)
+            .expect("the landed shots produce a HitEvent");
         assert!(
-            world.get::<byroredux_scripting::HitEvent>(npc).is_some()
-                || world
-                    .query::<byroredux_scripting::HitEvent>()
-                    .is_some_and(|_| true)
+            (hit.damage - 3.0 * one_shot).abs() < 1e-3,
+            "3 landed shots: {} vs 3 x {one_shot}",
+            hit.damage
         );
     }
 }
