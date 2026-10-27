@@ -621,8 +621,12 @@ pub(crate) fn select_authored_lod_quads_refining(
                 }
             }
             let (cx, cy) = (qx + level / 2, qy + level / 2);
+            // Any coarser selected quad, not just the next level up: once a
+            // level-32 quad is drawn its level-16 children are suppressed and
+            // never enter `selected`, so an immediate-parent test would let the
+            // level-8 / level-4 quads beneath it through to double-draw (#6053).
             let swallowed_by_coarser = selected.iter().any(|&(l2, x2, y2)| {
-                l2 == level * 2
+                l2 > level
                     && x2 <= cx
                     && cx < x2 + l2
                     && y2 <= cy
@@ -1571,5 +1575,34 @@ mod tests {
             "the player's own ground must draw at the finest authored level"
         );
     }
-}
 
+    /// #6053 — a selected level-32 quad suppresses its level-16 children, which
+    /// then cannot swallow the level-8 / level-4 quads below them. Every
+    /// authored level must still resolve to a partition.
+    #[test]
+    fn authored_selection_partitions_across_skipped_levels() {
+        let ladder = fallout_legacy_ladder();
+        let player = (0, 0);
+        let mut authored = Vec::new();
+        for (level, lo, hi) in [(4, -20, 20), (8, -10, 10), (16, -5, 5), (32, -3, 3)] {
+            for qy in lo..hi {
+                for qx in lo..hi {
+                    authored.push((level, qx * level, qy * level));
+                }
+            }
+        }
+        let selected = select_authored_lod_quads(&authored, &ladder, player, None, &|_, _| false);
+        let mut covered: HashSet<(i32, i32)> = HashSet::new();
+        for &(level, qx, qy) in &selected {
+            for y in qy..qy + level {
+                for x in qx..qx + level {
+                    assert!(
+                        covered.insert((x, y)),
+                        "cell ({x}, {y}) covered twice, last by level-{level} quad ({qx}, {qy})"
+                    );
+                }
+            }
+        }
+        assert!(selected.iter().any(|&(l, _, _)| l == 32), "scenario must reach the level-32 band");
+    }
+}
