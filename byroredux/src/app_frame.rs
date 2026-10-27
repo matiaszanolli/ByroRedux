@@ -66,6 +66,33 @@ fn push_terrain_parallax(
     );
 }
 
+/// Push the terrain distance-softening reach onto every live tile. The setting
+/// (0 = off) moves the point of full softening inward from the full-detail
+/// ring's edge — about `radius_load + 0.5` cells from the camera — so a higher
+/// value starts the fade earlier. No exterior streaming session → off.
+fn push_terrain_lod_soften(
+    world: &byroredux_core::ecs::World,
+    streaming: Option<&crate::streaming::WorldStreamingState>,
+    ctx: &mut byroredux_renderer::VulkanContext,
+) {
+    use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+    use byroredux_debug_ui::{TERRAIN_LOD_SOFTEN_DEFAULT, TERRAIN_LOD_SOFTEN_SETTING_ID};
+    let amount = crate::setting_number(
+        world,
+        TERRAIN_LOD_SOFTEN_SETTING_ID,
+        TERRAIN_LOD_SOFTEN_DEFAULT,
+    )
+    .clamp(0.0, 1.0);
+    let end = match streaming {
+        Some(state) if amount > 0.0 => {
+            let ring_edge = (state.radius_load as f32 + 0.5) * EXTERIOR_CELL_UNITS;
+            ring_edge * (1.0 - 0.35 * amount)
+        }
+        _ => 0.0,
+    };
+    ctx.set_terrain_lod_soften_end(end);
+}
+
 /// Ensure the terrain-side Tier-3 detail atlas represents the active engine
 /// blade palette. It is a persistent bindless allocation whose image is
 /// replaced in place when a worldspace changes palette; terrain tiles receive
@@ -586,6 +613,9 @@ impl App {
             ));
             // #6197 — terrain parallax settings onto every live tile.
             push_terrain_parallax(&self.world, ctx);
+            // Terrain distance softening: the camera distance at which the
+            // full-detail terrain is fully softened toward the LOD look.
+            push_terrain_lod_soften(&self.world, self.streaming.as_ref(), ctx);
             // Stage 1 — same push pattern for the color pipeline
             // (ExposureTuning, mutated by `exposure` / `tonemap`). Absent
             // resource → renderer keeps its config-seeded state.

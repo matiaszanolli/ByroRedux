@@ -50,6 +50,15 @@ pub const TERRAIN_PARALLAX_DEPTH_DEFAULT_M: f32 = 0.08;
 pub const TERRAIN_PARALLAX_RANGE_SETTING_ID: &str = "render.terrain_parallax_range_m";
 pub const TERRAIN_PARALLAX_RANGE_DEFAULT_M: f32 = 20.0;
 
+/// Distance softening of the near terrain toward the look of the distant LOD
+/// ring: 0 = off, 1 = soften from about a fifth of the ring out. The host maps
+/// it to the camera distance at which the near terrain is fully softened.
+pub const TERRAIN_LOD_SOFTEN_SETTING_ID: &str = "render.terrain_lod_soften";
+/// A starting point to tune by eye: the baked LOD diffuse is a fixed, much
+/// lower resolution than the tiled splat layers, so the join reads as a step
+/// in detail unless the near terrain's detail gives way first.
+pub const TERRAIN_LOD_SOFTEN_DEFAULT: f32 = 0.5;
+
 /// Register settings owned by the overlay itself. The binary calls this while
 /// assembling the universal [`SettingsRegistry`]; renderer, audio, input, and
 /// gameplay modules can add their own entries through the same API over time.
@@ -166,5 +175,18 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
         60.0,
         1.0,
         " m",
+    ))?;
+    registry.register(SettingEntry::slider(
+        TERRAIN_LOD_SOFTEN_SETTING_ID,
+        "Rendering",
+        "Terrain distance softening",
+        "Softens the detail of full-detail terrain as it approaches the \
+         distant LOD ring, so the join reads as distance rather than a step \
+         in sharpness. Higher starts earlier; 0 turns it off.",
+        TERRAIN_LOD_SOFTEN_DEFAULT,
+        0.0,
+        1.0,
+        0.05,
+        "",
     ))
 }

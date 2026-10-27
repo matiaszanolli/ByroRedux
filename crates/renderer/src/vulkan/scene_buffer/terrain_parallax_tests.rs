@@ -385,7 +385,12 @@ fn squashed(code: &str) -> String {
 fn triangle_frag_reads_the_terrain_base_layer_with_the_pre_march_gradients() {
     let frag = squashed(include_str!("../../../shaders/triangle.frag"));
     for required in [
-        "textureGrad( textures[nonuniformEXT(fragTexIndex)], sampleUV, splatUVdx, splatUVdy)",
+        // The base layer reads `albedoUVdx/dy`: the pre-march gradients,
+        // optionally widened by the distance softening (the next two needles
+        // pin that it derives from them and nothing else).
+        "textureGrad( textures[nonuniformEXT(fragTexIndex)], sampleUV, albedoUVdx, albedoUVdy)",
+        "vec2 albedoUVdx = splatUVdx;",
+        "vec2 albedoUVdy = splatUVdy;",
         "textureGrad( textures[nonuniformEXT(handle)], sampleUV, splatUVdx, splatUVdy)",
         "textureGrad( textures[nonuniformEXT(mat.specularMapIndex)], sampleUV, splatUVdx, splatUVdy )",
         "textureGrad( textures[nonuniformEXT(mat.reflectanceMapIndex)], sampleUV, splatUVdx, splatUVdy )",

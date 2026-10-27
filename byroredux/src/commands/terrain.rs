@@ -121,6 +121,43 @@ impl ConsoleCommand for TerrainBlendCommand {
     }
 }
 
+/// `terrain.soften [amount]` — read or set the full-detail terrain's distance
+/// softening toward the LOD look for this session: the same setting the
+/// debug-UI "Terrain distance softening" slider edits, without saving it. 0
+/// turns it off, which is the one-binary A/B switch.
+pub(crate) struct TerrainSoftenCommand;
+impl ConsoleCommand for TerrainSoftenCommand {
+    fn name(&self) -> &str {
+        "terrain.soften"
+    }
+
+    fn description(&self) -> &str {
+        "Near-terrain distance softening toward the LOD look: terrain.soften [0..1] (0 = off)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use byroredux_core::settings::SettingsRegistry;
+        use byroredux_debug_ui::TERRAIN_LOD_SOFTEN_SETTING_ID as ID;
+        if world.try_resource::<SettingsRegistry>().is_none() {
+            return CommandOutput::line("terrain.soften: no settings registry in this session");
+        }
+        let arg = args.trim();
+        if !arg.is_empty() {
+            let Ok(amount) = arg.parse::<f32>() else {
+                return CommandOutput::line(format!("terrain.soften: '{arg}' is not a number"));
+            };
+            if let Err(error) = set_session_number(world, ID, amount) {
+                return CommandOutput::line(format!("terrain.soften: {error}"));
+            }
+        }
+        let amount = crate::setting_number(world, ID, f32::NAN);
+        CommandOutput::line(format!(
+            "terrain.soften: amount={amount:.2}{}",
+            if amount > 0.0 { "" } else { " (softening off)" }
+        ))
+    }
+}
+
 /// Set a numeric setting through the universal registry for this session
 /// only — the shared tail of the `terrain.*` A/B switches. #6204: `settings_io::
 /// save` writes every entry that moved, so without the pin the next unrelated

@@ -385,8 +385,27 @@ void main() {
     // on the base layer at relief edges, which the splat layers (already
     // explicit) did not share. For every other fragment `splatUVdx/dy` are the
     // derivatives of this same `sampleUV`, so the reads are unchanged.
+    //
+    // Distance softening: the full-detail terrain's tiled layers are far sharper
+    // than the distant LOD's baked, fixed-resolution diffuse, so the join reads
+    // as a step in detail. Widening the albedo's sampling gradients with camera
+    // distance selects blurrier mips, easing the ground toward the LOD look
+    // before the ring ends. `lodSoftenEnd` is the distance of full softening
+    // (it starts at half of it); 0 — the setting off, or a tile spawned before
+    // the broadcast — leaves the gradients untouched. Albedo only: the normal
+    // and specular loops keep the true gradients.
+    vec2 albedoUVdx = splatUVdx;
+    vec2 albedoUVdy = splatUVdy;
+    if (terrainSplatActive && terrainTile.lodSoftenEnd > 0.0) {
+        float lodSoften = smoothstep(
+            0.5 * terrainTile.lodSoftenEnd, terrainTile.lodSoftenEnd,
+            length(cameraPos.xyz - fragWorldPos));
+        float lodSoftenScale = exp2(TERRAIN_LOD_SOFTEN_MIPS * lodSoften);
+        albedoUVdx *= lodSoftenScale;
+        albedoUVdy *= lodSoftenScale;
+    }
     vec4 texColor = textureGrad(
-        textures[nonuniformEXT(fragTexIndex)], sampleUV, splatUVdx, splatUVdy);
+        textures[nonuniformEXT(fragTexIndex)], sampleUV, albedoUVdx, albedoUVdy);
     // #1653 — a BC1 diffuse carries no authored alpha channel: BC1 is
     // 1-bit punch-through, decoded as BC1_RGBA only so alpha-test cutouts
     // (aThresh>0) see it (2aac5351). With no alpha test active the
@@ -451,7 +470,7 @@ void main() {
         // opaque, the alpha-test / alpha-blend machinery below must see the
         // base's alpha, not a splat layer's.
         texColor.rgb = byroTerrainSplatAlbedo(
-            texColor.rgb, sampleUV, splatUVdx, splatUVdy,
+            texColor.rgb, sampleUV, albedoUVdx, albedoUVdy,
             terrainSplat[0], terrainSplat[1], terrainTile);
     }
 

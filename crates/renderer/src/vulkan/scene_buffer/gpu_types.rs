@@ -92,7 +92,14 @@ pub struct GpuTerrainTile {
     pub parallax_depth: f32,
     pub parallax_fade_start: f32,
     pub parallax_fade_end: f32,
-    pub parallax_reserved: f32,
+    /// Camera distance, in world units, at which the full-detail terrain is
+    /// fully softened toward the distant-LOD look (`triangle.frag` widens the
+    /// splat albedo's sampling gradients, so far ground samples blurrier mips);
+    /// it starts at half of it. 0 disables the softening. A global setting
+    /// broadcast like the band above by
+    /// `VulkanContext::set_terrain_lod_soften_end`, riding the lane that was
+    /// the named pad (the stride stays 224).
+    pub lod_soften_end: f32,
 }
 
 impl GpuTerrainTile {

@@ -93,6 +93,8 @@
 #define GROUNDCOVER_BENCH_WORKGROUP 64
 #define GROUNDCOVER_BENCH_BLADE_VERTS 8u
 
+// Terrain distance softening toward the LOD look
+#define TERRAIN_LOD_SOFTEN_MIPS 3.0
 // Ground-cover density field + scatter (#4054)
 #define GROUNDCOVER_NO_TERRAIN_TILE 4294967295u
 #define GROUNDCOVER_NO_WATER -1e30

@@ -386,6 +386,13 @@ pub const GROUNDCOVER_NO_WATER: f32 = byroredux_core::ecs::components::groundcov
 pub const GROUNDCOVER_NO_TERRAIN_TILE: u32 =
     byroredux_core::ecs::components::groundcover::GROUNDCOVER_NO_TERRAIN_TILE;
 
+/// Full-detail terrain's distance softening toward the distant-LOD look: how
+/// many mip levels coarser the splat albedo is sampled at full softening
+/// (`exp2(this)` widens the sampling gradients). 3 mips is 8x — the order of
+/// the gap between the tiled splat layers and the baked LOD diffuse's fixed
+/// resolution. A starting point to tune by eye, not a measured property.
+pub const TERRAIN_LOD_SOFTEN_MIPS: f32 = 3.0;
+
 /// `slope_gate` — terrain `normal.y` below which no ground cover grows, and
 /// above which it is unattenuated. Smoothstepped between.
 ///
@@ -2628,6 +2635,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(UintPlain GROUNDCOVER_BENCH_WORKGROUP),
     shader_define!(Uint GROUNDCOVER_BENCH_BLADE_VERTS),
     HeaderLine::Blank,
+    HeaderLine::Comment("Terrain distance softening toward the LOD look"),
+    shader_define!(Float TERRAIN_LOD_SOFTEN_MIPS),
     HeaderLine::Comment("Ground-cover density field + scatter (#4054)"),
     shader_define!(Uint GROUNDCOVER_NO_TERRAIN_TILE),
     shader_define!(Float GROUNDCOVER_NO_WATER),

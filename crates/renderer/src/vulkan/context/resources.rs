@@ -230,6 +230,20 @@ impl VulkanContext {
         self.terrain_tiles_dirty |= changed;
     }
 
+    /// Publish the distance at which near terrain is fully softened toward the
+    /// distant-LOD look (world units from the camera; 0 = off) to every live
+    /// LAND tile. Called every frame; marks the SSBO dirty only on a change.
+    pub fn set_terrain_lod_soften_end(&mut self, end: f32) {
+        let mut changed = false;
+        for tile in self.terrain_tiles.iter_mut().flatten() {
+            if tile.lod_soften_end != end {
+                tile.lod_soften_end = end;
+                changed = true;
+            }
+        }
+        self.terrain_tiles_dirty |= changed;
+    }
+
     /// Release a terrain tile slot back to the free list and schedule
     /// the SSBO to be reuploaded to every frame-in-flight. Must be
     /// called from `unload_cell` before the mesh / BLAS drop so a late

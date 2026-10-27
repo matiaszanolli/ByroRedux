@@ -1487,7 +1487,7 @@ pub(super) fn spawn_terrain_mesh(
             parallax_depth: 0.0,
             parallax_fade_start: 0.0,
             parallax_fade_end: 0.0,
-            parallax_reserved: 0.0,
+            lod_soften_end: 0.0,
         })
     } else {
         crate::terrain_height::request_heights(world, tex_provider, game, &height_lanes);

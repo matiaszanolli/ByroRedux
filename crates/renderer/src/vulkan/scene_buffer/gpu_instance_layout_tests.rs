@@ -493,7 +493,7 @@ fn gpu_terrain_tile_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuTerrainTile, parallax_depth), 208);
     assert_eq!(offset_of!(GpuTerrainTile, parallax_fade_start), 212);
     assert_eq!(offset_of!(GpuTerrainTile, parallax_fade_end), 216);
-    assert_eq!(offset_of!(GpuTerrainTile, parallax_reserved), 220);
+    assert_eq!(offset_of!(GpuTerrainTile, lod_soften_end), 220);
 }
 
 /// The shipped SPIR-V is the contract's other half. A Rust-side layout change

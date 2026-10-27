@@ -541,12 +541,14 @@ struct GpuTerrainTile {
     /// every live tile like the band above. `parallaxDepth` is the relief
     /// amplitude in world units (0 = parallax off); the effect fades to plain
     /// shading between `parallaxFadeStart` and `parallaxFadeEnd` world units
-    /// from the camera. The fourth lane pads the record to its 224-byte
-    /// std430 stride.
+    /// from the camera. The fourth lane is `lodSoftenEnd`: the camera distance
+    /// at which the full-detail terrain is fully softened toward the distant
+    /// LOD look (starting at half of it); 0 = off. It keeps the record at its
+    /// 224-byte std430 stride.
     float parallaxDepth;
     float parallaxFadeStart;
     float parallaxFadeEnd;
-    float parallaxReserved;
+    float lodSoftenEnd;
 };
 
 /// #6196 — height-based blending between terrain layers.
