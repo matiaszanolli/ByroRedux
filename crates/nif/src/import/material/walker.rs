@@ -16,17 +16,11 @@ use byroredux_core::string::StringPool;
 ///
 /// Reads `mat.vertex_color_mode` and `mat.diffuse_color` directly instead
 /// of re-walking the property list. Pre-#438 this function ignored its
-/// `_mat` parameter and re-scanned the shape + inherited properties twice
+/// `mat` parameter and re-scanned the shape + inherited properties twice
 /// (once for vertex-color mode, once for diffuse fallback), costing 3×
 /// the property-list work per NiTriShape on top of the initial
 /// `extract_material_info` scan at the caller.
-pub(crate) fn extract_vertex_colors(
-    _scene: &NifScene,
-    _shape: &NiTriShape,
-    data: &GeomData,
-    _inherited_props: &[BlockRef],
-    mat: &MaterialInfo,
-) -> Vec<[f32; 4]> {
+pub(crate) fn extract_vertex_colors(data: &GeomData, mat: &MaterialInfo) -> Vec<[f32; 4]> {
     let num_verts = data.vertices.len();
 
     // O4-03 / #695 — `Emissive` and `AmbientDiffuse` both surface the

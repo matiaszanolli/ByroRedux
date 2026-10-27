@@ -334,7 +334,6 @@ fn apply_bs_lighting_shader(
         // arrays so FO76+ meshes route through the right path. See
         // #712 / NIF-D4-01.
         if is_two_sided_from_modern_shader_flags(
-            shader.shader_flags_1,
             shader.shader_flags_2,
             &shader.sf1_crcs,
             &shader.sf2_crcs,
@@ -347,7 +346,6 @@ fn apply_bs_lighting_shader(
         // `Cloud_LOD` is the separate bit 20. See #414 / #1879.
         if is_decal_from_modern_shader_flags(
             shader.shader_flags_1,
-            shader.shader_flags_2,
             &shader.sf1_crcs,
             &shader.sf2_crcs,
         ) {
@@ -659,7 +657,6 @@ fn apply_bs_effect_shader(
         // fallback covers FO76 / Starfield where the legacy u32
         // fields are zero — see #712 / NIF-D4-01.
         if is_two_sided_from_modern_shader_flags(
-            shader.shader_flags_1,
             shader.shader_flags_2,
             &shader.sf1_crcs,
             &shader.sf2_crcs,
@@ -670,7 +667,6 @@ fn apply_bs_effect_shader(
         // the BSLightingShaderProperty branch above. See #414.
         if is_decal_from_modern_shader_flags(
             shader.shader_flags_1,
-            shader.shader_flags_2,
             &shader.sf1_crcs,
             &shader.sf2_crcs,
         ) {

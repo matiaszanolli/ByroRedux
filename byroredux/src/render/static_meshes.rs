@@ -987,7 +987,6 @@ fn build_static_draw_command(
         mat,
         normal_has_alpha,
         material_kind,
-        metalness,
         normal_map_index,
         gloss_map_index,
     ) {

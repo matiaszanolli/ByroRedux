@@ -139,9 +139,7 @@ pub(super) fn is_decal_from_legacy_shader_flags(flags1: u32, flags2: u32) -> boo
 /// the spec gate `bsver <= 130`), so without the CRC fallback every
 /// FO76+ decal silently lost its flag — see #712 / NIF-D4-01.
 ///
-/// `flags2` is unused but kept on the signature for callsite symmetry
-/// with [`is_decal_from_legacy_shader_flags`] and to make a future
-/// FO4 SLSF2 decal addition a one-line change.
+/// Takes no `flags2`: no Skyrim+/FO4 SLSF2 bit is a decal bit.
 ///
 /// The split from [`is_decal_from_legacy_shader_flags`] exists to keep
 /// flags2 bit 21 (`Cloud_LOD` on Skyrim, `Anisotropic_Lighting` on
@@ -150,7 +148,6 @@ pub(super) fn is_decal_from_legacy_shader_flags(flags1: u32, flags2: u32) -> boo
 #[inline]
 pub(super) fn is_decal_from_modern_shader_flags(
     flags1: u32,
-    _flags2: u32,
     sf1_crcs: &[u32],
     sf2_crcs: &[u32],
 ) -> bool {
@@ -172,7 +169,6 @@ pub(super) fn is_decal_from_modern_shader_flags(
 /// zero on BSVER >= 132. See #712 / NIF-D4-01.
 #[inline]
 pub(super) fn is_two_sided_from_modern_shader_flags(
-    _flags1: u32,
     flags2: u32,
     sf1_crcs: &[u32],
     sf2_crcs: &[u32],

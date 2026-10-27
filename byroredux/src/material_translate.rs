@@ -1185,8 +1185,6 @@ pub(crate) const PARALLAX_ALPHA_HEIGHT_BIT: u32 =
 /// so the gate cannot diverge between the two call sites.
 pub(crate) fn normal_alpha_spec_applies(
     material_kind: u32,
-    _metalness: f32,
-    _env_map_scale: f32,
     normal_map_index: u32,
     gloss_map_index: u32,
 ) -> bool {
@@ -1213,7 +1211,6 @@ pub(crate) fn normal_alpha_spec_binding_applies(
     material: Option<&Material>,
     normal_has_alpha: bool,
     material_kind: u32,
-    metalness: f32,
     normal_map_index: u32,
     gloss_map_index: u32,
 ) -> bool {
@@ -1242,13 +1239,7 @@ pub(crate) fn normal_alpha_spec_binding_applies(
     // consults it.
     !material.parallax_height_in_alpha
         && normal_has_alpha
-        && normal_alpha_spec_applies(
-            material_kind,
-            metalness,
-            material.env_map_scale,
-            normal_map_index,
-            gloss_map_index,
-        )
+        && normal_alpha_spec_applies(material_kind, normal_map_index, gloss_map_index)
 }
 
 /// Canonical roughness for the normal-alpha-as-spec population, or `None`
@@ -1263,7 +1254,6 @@ pub(crate) fn normal_alpha_spec_roughness(
     material_kind: u32,
     metalness: f32,
     env_map_scale: f32,
-    _glossiness: f32,
     specular_strength: f32,
     normal_map_index: u32,
     gloss_map_index: u32,
@@ -1293,13 +1283,7 @@ pub(crate) fn normal_alpha_spec_roughness(
     if bgsm_pbr_scalars_authored {
         return None;
     }
-    if !normal_alpha_spec_applies(
-        material_kind,
-        metalness,
-        env_map_scale,
-        normal_map_index,
-        gloss_map_index,
-    ) {
+    if !normal_alpha_spec_applies(material_kind, normal_map_index, gloss_map_index) {
         return None;
     }
     if normal_has_alpha {
@@ -1336,13 +1320,12 @@ pub(crate) fn resolve_normal_alpha_spec_roughness(
     entity: EntityId,
     bgsm_pbr_scalars_authored: bool,
 ) {
-    let Some((material_kind, metalness, env_map_scale, glossiness, specular_strength)) =
+    let Some((material_kind, metalness, env_map_scale, specular_strength)) =
         world.get::<Material>(entity).map(|m| {
             (
                 m.material_kind,
                 m.metalness,
                 m.env_map_scale,
-                m.glossiness,
                 m.specular_strength,
             )
         })
@@ -1363,7 +1346,6 @@ pub(crate) fn resolve_normal_alpha_spec_roughness(
         material_kind,
         metalness,
         env_map_scale,
-        glossiness,
         specular_strength,
         normal_map_index,
         gloss_map_index,
@@ -2068,7 +2050,7 @@ mod tests {
     fn alpha_normal_preserves_translate_resolved_roughness() {
         // Normal alpha is specular intensity, never gloss/roughness.
         let r = normal_alpha_spec_roughness(
-            PASS.0, PASS.1, PASS.2, 80.0, 1.0, PASS.3, PASS.4, true, false,
+            PASS.0, PASS.1, PASS.2, 1.0, PASS.3, PASS.4, true, false,
         );
         assert_eq!(r, None);
     }
@@ -2077,7 +2059,7 @@ mod tests {
     fn alphaless_normal_uses_specular_strength_when_above_neutral() {
         // specular_strength 2.0 → 0.85 - (1.0)*0.1 = 0.75.
         let r = normal_alpha_spec_roughness(
-            PASS.0, PASS.1, PASS.2, 80.0, 2.0, PASS.3, PASS.4, false, false,
+            PASS.0, PASS.1, PASS.2, 2.0, PASS.3, PASS.4, false, false,
         );
         assert!((r.unwrap() - 0.75).abs() < 1e-5, "{r:?}");
     }
@@ -2087,7 +2069,7 @@ mod tests {
         // specular_strength 1.0 (<= 1.2) and no normal alpha → None (caller
         // keeps the translate-resolved roughness, no override).
         let r = normal_alpha_spec_roughness(
-            PASS.0, PASS.1, PASS.2, 80.0, 1.0, PASS.3, PASS.4, false, false,
+            PASS.0, PASS.1, PASS.2, 1.0, PASS.3, PASS.4, false, false,
         );
         assert_eq!(r, None);
     }
@@ -2112,7 +2094,6 @@ mod tests {
                 0,   // lit material kind
                 0.0, // metalness < 0.3
                 DEFAULT_ENV_MAP_SCALE,
-                80.0,
                 2.0, // specular_mult > 1.2
                 7,   // normal map bound
                 0,   // no dedicated gloss/spec map
@@ -2149,7 +2130,6 @@ mod tests {
                 0,
                 0.0,
                 0.0,
-                80.0,
                 2.0,
                 7,
                 0,
@@ -2164,17 +2144,16 @@ mod tests {
     #[test]
     fn gate_excludes_glass_glossmapped_and_normalless_but_keeps_envmapped() {
         // material_kind >= 100 (glass/effect — own roughness).
-        assert!(!normal_alpha_spec_applies(100, 0.0, 0.0, 7, 0));
+        assert!(!normal_alpha_spec_applies(100, 7, 0));
         // Metals and environment-mapped materials still need the authored
-        // black=zero / white=full reflection mask.
-        assert!(normal_alpha_spec_applies(0, 0.3, 0.0, 7, 0));
-        assert!(normal_alpha_spec_applies(0, 0.0, 0.31, 7, 0));
+        // black=zero / white=full reflection mask — the gate takes neither
+        // metalness nor env_map_scale, so they stay eligible.
         // no normal map.
-        assert!(!normal_alpha_spec_applies(0, 0.0, 0.0, 0, 0));
+        assert!(!normal_alpha_spec_applies(0, 0, 0));
         // dedicated gloss map present.
-        assert!(!normal_alpha_spec_applies(0, 0.0, 0.0, 7, 5));
+        assert!(!normal_alpha_spec_applies(0, 7, 5));
         // baseline passes.
-        assert!(normal_alpha_spec_applies(0, 0.0, 0.0, 7, 0));
+        assert!(normal_alpha_spec_applies(0, 7, 0));
     }
 
     #[test]
@@ -2182,7 +2161,7 @@ mod tests {
         // huge specular_strength → 0.85 - big, clamped to 0.4 floor.
         assert_eq!(
             normal_alpha_spec_roughness(
-                PASS.0, PASS.1, PASS.2, 80.0, 99.0, PASS.3, PASS.4, false, false
+                PASS.0, PASS.1, PASS.2, 99.0, PASS.3, PASS.4, false, false
             ),
             Some(0.4)
         );
@@ -2192,7 +2171,7 @@ mod tests {
     fn alpha_normal_ignores_even_non_finite_glossiness() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let r = normal_alpha_spec_roughness(
-                PASS.0, PASS.1, PASS.2, bad, 1.0, PASS.3, PASS.4, true, false,
+                PASS.0, PASS.1, PASS.2, 1.0, PASS.3, PASS.4, true, false,
             );
             assert_eq!(
                 r, None,
@@ -2208,10 +2187,10 @@ mod tests {
         // the property that makes the resolve-at-spawn relocation safe to run
         // more than once (#1480).
         let first = normal_alpha_spec_roughness(
-            PASS.0, PASS.1, PASS.2, 65.0, 2.0, PASS.3, PASS.4, false, false,
+            PASS.0, PASS.1, PASS.2, 2.0, PASS.3, PASS.4, false, false,
         );
         let second = normal_alpha_spec_roughness(
-            PASS.0, PASS.1, PASS.2, 65.0, 2.0, PASS.3, PASS.4, false, false,
+            PASS.0, PASS.1, PASS.2, 2.0, PASS.3, PASS.4, false, false,
         );
         assert_eq!(first, second);
         assert!((first.unwrap() - 0.75).abs() < 1e-5, "{first:?}");
@@ -3128,26 +3107,26 @@ mod tests {
             ..Material::default()
         };
         assert!(
-            normal_alpha_spec_binding_applies(Some(&material), true, KIND, 0.0, NORMAL, GLOSS),
+            normal_alpha_spec_binding_applies(Some(&material), true, KIND, NORMAL, GLOSS),
             "the population this binding exists for must still bind"
         );
         assert!(
-            !normal_alpha_spec_binding_applies(None, true, KIND, 0.0, NORMAL, GLOSS),
+            !normal_alpha_spec_binding_applies(None, true, KIND, NORMAL, GLOSS),
             "a Material-less draw must not bind the gloss slot — its spawn-side \
              roughness counterpart never ran (#2445)"
         );
 
         // The pre-existing gates are untouched by the new guard.
         assert!(
-            !normal_alpha_spec_binding_applies(Some(&material), false, KIND, 0.0, NORMAL, GLOSS),
+            !normal_alpha_spec_binding_applies(Some(&material), false, KIND, NORMAL, GLOSS),
             "an alpha-less normal carries no per-pixel spec mask"
         );
         assert!(
-            !normal_alpha_spec_binding_applies(Some(&material), true, 100, 0.0, NORMAL, GLOSS),
+            !normal_alpha_spec_binding_applies(Some(&material), true, 100, NORMAL, GLOSS),
             "glass/effect kinds own their optics"
         );
         assert!(
-            !normal_alpha_spec_binding_applies(Some(&material), true, KIND, 0.0, NORMAL, 9),
+            !normal_alpha_spec_binding_applies(Some(&material), true, KIND, NORMAL, 9),
             "a dedicated gloss map wins over the normal-alpha fallback"
         );
 
@@ -3164,7 +3143,6 @@ mod tests {
                 Some(&height_in_alpha),
                 true,
                 KIND,
-                0.0,
                 NORMAL,
                 GLOSS
             ),

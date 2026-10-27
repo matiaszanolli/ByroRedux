@@ -155,7 +155,7 @@ pub fn extract_mesh(
     let mat = extract_material_info(scene, shape, inherited_props, pool);
 
     // Determine vertex colors: prefer per-vertex colors, then material diffuse, then white.
-    let colors = extract_vertex_colors(scene, shape, &geom, inherited_props, &mat);
+    let colors = extract_vertex_colors(&geom, &mat);
 
     // Apply Z-up → Y-up to the entity transform.
     let t = &world_transform.translation;

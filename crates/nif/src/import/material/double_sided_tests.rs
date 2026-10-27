@@ -276,14 +276,13 @@ fn is_decal_legacy_helper_matches_both_flag_sources() {
 fn is_decal_modern_helper_ignores_flag2_bit_21() {
     use super::is_decal_from_modern_shader_flags;
     // SLSF1 / F4SF1 bit 26 — shared with legacy, must classify.
-    assert!(is_decal_from_modern_shader_flags(0x0400_0000, 0, &[], &[]));
-    assert!(is_decal_from_modern_shader_flags(0x0800_0000, 0, &[], &[]));
+    assert!(is_decal_from_modern_shader_flags(0x0400_0000, &[], &[]));
+    assert!(is_decal_from_modern_shader_flags(0x0800_0000, &[], &[]));
     // Flag2 bit 21 — Cloud_LOD on Skyrim / Anisotropic_Lighting on
-    // FO4. MUST NOT classify as decal.
-    assert!(!is_decal_from_modern_shader_flags(0, 0x0020_0000, &[], &[]));
+    // FO4 — is not an input: the helper takes no flags2 word.
     // Sanity: unrelated bits, all zeros.
-    assert!(!is_decal_from_modern_shader_flags(0, 0, &[], &[]));
-    assert!(!is_decal_from_modern_shader_flags(0x1000, 0x0010, &[], &[]));
+    assert!(!is_decal_from_modern_shader_flags(0, &[], &[]));
+    assert!(!is_decal_from_modern_shader_flags(0x1000, &[], &[]));
 }
 
 /// #414 end-to-end: a FO4-shaped `BSLightingShaderProperty` with
@@ -438,8 +437,8 @@ fn starfield_unrelated_crcs_do_not_trigger_decal_or_two_sided() {
 #[test]
 fn modern_helpers_return_false_on_empty_input() {
     use super::{is_decal_from_modern_shader_flags, is_two_sided_from_modern_shader_flags};
-    assert!(!is_decal_from_modern_shader_flags(0, 0, &[], &[]));
-    assert!(!is_two_sided_from_modern_shader_flags(0, 0, &[], &[]));
+    assert!(!is_decal_from_modern_shader_flags(0, &[], &[]));
+    assert!(!is_two_sided_from_modern_shader_flags(0, &[], &[]));
 }
 
 /// Helper-level regression: legacy bits still classify (BSVER < 132
@@ -450,12 +449,7 @@ fn modern_helpers_return_false_on_empty_input() {
 fn modern_helpers_still_honour_legacy_bits_when_crcs_empty() {
     use super::{is_decal_from_modern_shader_flags, is_two_sided_from_modern_shader_flags};
     // SLSF1 / F4SF1 bit 26 == Decal — same numeric value across games.
-    assert!(is_decal_from_modern_shader_flags(0x0400_0000, 0, &[], &[]));
+    assert!(is_decal_from_modern_shader_flags(0x0400_0000, &[], &[]));
     // SLSF2 / F4SF2 bit 4 == Double_Sided.
-    assert!(is_two_sided_from_modern_shader_flags(
-        0,
-        0x0000_0010,
-        &[],
-        &[]
-    ));
+    assert!(is_two_sided_from_modern_shader_flags(0x0000_0010, &[], &[]));
 }
