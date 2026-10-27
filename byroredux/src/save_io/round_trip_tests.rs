@@ -337,7 +337,7 @@ fn binary_registry_round_trips_including_scripttimer() {
         [0.9, 0.6, 0.2],
         0x0000_0008, // LIGHT_FLAG_FLICKER
         2.0,
-        byroredux_core::ecs::LightKind::Point,
+        byroredux_core::ecs::EmitterKind::Point,
         [0.0; 3],
         0.0,
         0,

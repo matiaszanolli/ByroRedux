@@ -3306,7 +3306,7 @@ mod tests {
 /// have no `translate_*` boundary yet to test", which contradicted
 /// `docs/engine/nifal.md`'s own "converged"/"audited" verdicts for both
 /// (#2532). What those categories lack is not a boundary but a *reachable*
-/// one: `resolve_shape_inner` and `LightKind` resolution both live in
+/// one: `resolve_shape_inner` and `EmitterKind` resolution both live in
 /// `crates/nif`, below this crate in the dependency graph, so their guards
 /// cannot live here and this harness cannot be extended to cover them.
 ///

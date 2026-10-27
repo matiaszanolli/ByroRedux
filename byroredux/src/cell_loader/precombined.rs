@@ -497,7 +497,7 @@ impl PrecombinedSpawnJob {
                     // LIGH data (`light_data: None` above), so these are unused
                     // defaults, matching the `0, 0` animation/shadow flags above.
                     // The `1.0` falloff is the same inert `Emitter` default.
-                    byroredux_core::ecs::LightKind::Point,
+                    byroredux_core::ecs::EmitterKind::Point,
                     [0.0, 0.0, 0.0],
                     0.0,
                     1.0,

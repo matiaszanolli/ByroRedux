@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use byroredux_core::ecs::components::light::LightKind;
+use byroredux_core::ecs::components::light::EmitterKind;
 
 fn main() {
     let archives: Vec<String> = std::env::args().skip(1).collect();
@@ -65,7 +65,7 @@ fn main() {
             let lights = byroredux_nif::import::import_nif_lights(&scene);
             let ambient: Vec<_> = lights
                 .iter()
-                .filter(|l| l.kind == LightKind::Ambient)
+                .filter(|l| l.kind == EmitterKind::Ambient)
                 .collect();
             if ambient.is_empty() {
                 continue;
@@ -75,7 +75,7 @@ fn main() {
             *per_file_ambient_hist
                 .entry(ambient.len())
                 .or_insert(0) += 1;
-            if lights.iter().any(|l| l.kind != LightKind::Ambient) {
+            if lights.iter().any(|l| l.kind != EmitterKind::Ambient) {
                 files_ambient_plus_other += 1;
             }
             for l in &ambient {

@@ -298,17 +298,17 @@ pinned by `black_ambient_lights_stay_dropped_census_pinned`: (1) the
 gate must stay colour-based, or each black placeholder becomes a
 4096-unit omni point; (2) a non-black `NiAmbientLight` (modded content
 only) spawns as the documented 4096-omni approximation —
-`LightKind::Ambient` packs to GPU type 0.0 (point) with
+`EmitterKind::Ambient` packs to GPU type 0.0 (point) with
 `light_radius_or_default`'s attenuation-free fallback — which is a
 deliberate approximation, not the Gamebryo semantic. Affected-node
 scoping and per-node ambient accumulation stay parked until a real
 consumer (or mod content that actually ships lit ambient nodes) demands
 them; `affected_node_names` remains resolved at import for that future.
 
-`ImportedLight` resolves to a `LightKind` enum (ambient / directional / point /
+`ImportedLight` resolves to an `EmitterKind` enum (ambient / directional / point /
 spot) with a derived effective radius; the renderer never inspects the source block
-type. `LightKind` itself now lives on the canonical `LightSource` component
-(`crates/core/src/ecs/components/light.rs`) — `byroredux_nif::import::LightKind` is
+type. `EmitterKind` itself lives in `byroredux_core::lighting` and is carried by the
+canonical `LightSource` component — `byroredux_nif::import::EmitterKind` is
 a re-export of the same type, not a second copy.
 
 Was **half-stale 2026-07-27 → 2026-08-02** (NIFAL-D3-01 / #2205): `kind` /

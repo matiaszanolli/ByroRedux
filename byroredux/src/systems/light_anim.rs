@@ -24,7 +24,7 @@
 // (see the note in `animate_lights_system`). Re-enabling it means adding
 // back the `Transform` write pass and its import.
 use byroredux_core::ecs::{
-    EntityId, LightFlicker, LightKind, LightSource, World, LIGHT_FLAG_FLICKER,
+    EntityId, LightFlicker, EmitterKind, LightSource, World, LIGHT_FLAG_FLICKER,
     LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW, LIGHT_FLAG_SHADOW_MASK,
     LIGHT_FLAG_SHADOW_SPOTLIGHT, LIGHT_FLAG_SPOT,
 };
@@ -139,7 +139,7 @@ pub(crate) fn canonical_light_shadow_flags(
 /// omnidirectional point light. #2439 / NIFAL-D2-01.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LightGeometry {
-    pub kind: LightKind,
+    pub kind: EmitterKind,
     pub direction: [f32; 3],
     pub outer_angle: f32,
 }
@@ -173,7 +173,7 @@ pub(crate) fn translate_light(
     };
     if !is_spot {
         return LightGeometry {
-            kind: LightKind::Point,
+            kind: EmitterKind::Point,
             direction: [0.0, 0.0, 0.0],
             outer_angle: 0.0,
         };
@@ -209,7 +209,7 @@ pub(crate) fn translate_light(
     let outer_angle = (fov_degrees * 0.5).to_radians();
 
     LightGeometry {
-        kind: LightKind::Spot,
+        kind: EmitterKind::Spot,
         direction,
         outer_angle,
     }
@@ -443,7 +443,7 @@ mod tests {
     fn translate_light_defaults_to_point_when_spot_flag_clear() {
         let ld = light_data(0, 90.0);
         let geom = translate_light(&ld, GameKind::Skyrim, Quat::IDENTITY);
-        assert_eq!(geom.kind, LightKind::Point);
+        assert_eq!(geom.kind, EmitterKind::Point);
         assert_eq!(geom.direction, [0.0, 0.0, 0.0]);
         assert_eq!(geom.outer_angle, 0.0);
     }
@@ -455,7 +455,7 @@ mod tests {
         for game in [GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Skyrim] {
             let ld = light_data(0x400, 60.0);
             let geom = translate_light(&ld, game, Quat::IDENTITY);
-            assert_eq!(geom.kind, LightKind::Spot, "{game:?}");
+            assert_eq!(geom.kind, EmitterKind::Spot, "{game:?}");
             assert_eq!(geom.outer_angle, 30.0f32.to_radians());
         }
     }
@@ -467,18 +467,18 @@ mod tests {
         for game in [GameKind::Fallout4, GameKind::Fallout76] {
             for flags in [0x400, 0x4000, 0x4001, 0x4009] {
                 let geom = translate_light(&light_data(flags, 70.0), game, Quat::IDENTITY);
-                assert_eq!(geom.kind, LightKind::Spot, "{game:?} flags={flags:#x}");
+                assert_eq!(geom.kind, EmitterKind::Spot, "{game:?} flags={flags:#x}");
                 assert_eq!(geom.outer_angle, 35.0f32.to_radians());
             }
             for flags in [0, 0x200, 0x800, 0x1000, 0x20000] {
                 let geom = translate_light(&light_data(flags, 70.0), game, Quat::IDENTITY);
-                assert_eq!(geom.kind, LightKind::Point, "{game:?} flags={flags:#x}");
+                assert_eq!(geom.kind, EmitterKind::Point, "{game:?} flags={flags:#x}");
                 assert_eq!(geom.direction, [0.0; 3]);
             }
         }
         // Do not transfer FO4's non-shadow cone bit back to Skyrim.
         let geom = translate_light(&light_data(0x4000, 70.0), GameKind::Skyrim, Quat::IDENTITY);
-        assert_eq!(geom.kind, LightKind::Point);
+        assert_eq!(geom.kind, EmitterKind::Point);
     }
 
     #[test]
@@ -489,12 +489,12 @@ mod tests {
                 GameKind::Starfield,
                 Quat::IDENTITY,
             );
-            assert_eq!(geom.kind, LightKind::Point, "type={light_type}");
+            assert_eq!(geom.kind, EmitterKind::Point, "type={light_type}");
         }
     }
 
     /// The core regression: `LIGHT_FLAG_SPOT` set must produce
-    /// `LightKind::Spot` with the authored FOV halved into radians —
+    /// `EmitterKind::Spot` with the authored FOV halved into radians —
     /// xEdit's FOV is the FULL cone angle in degrees
     /// (`wbNormalizeToRange(0.001, 160)`, default 90), `outer_angle` is
     /// documented as the outer cone HALF-angle in radians.
@@ -502,7 +502,7 @@ mod tests {
     fn translate_light_derives_spot_kind_and_half_angle_from_fov() {
         let ld = light_data(LIGHT_FLAG_SPOT, 90.0);
         let geom = translate_light(&ld, GameKind::Skyrim, Quat::IDENTITY);
-        assert_eq!(geom.kind, LightKind::Spot);
+        assert_eq!(geom.kind, EmitterKind::Spot);
         let expected_half_angle = std::f32::consts::FRAC_PI_4; // 90° / 2, in radians
         assert!(
             (geom.outer_angle - expected_half_angle).abs() < 1e-6,
@@ -519,7 +519,7 @@ mod tests {
     fn translate_light_falls_back_to_xedit_default_fov_when_unset() {
         let ld = light_data(LIGHT_FLAG_SPOT, 0.0);
         let geom = translate_light(&ld, GameKind::Skyrim, Quat::IDENTITY);
-        assert_eq!(geom.kind, LightKind::Spot);
+        assert_eq!(geom.kind, EmitterKind::Spot);
         let expected_half_angle = std::f32::consts::FRAC_PI_4; // 90° default / 2
         assert!(
             (geom.outer_angle - expected_half_angle).abs() < 1e-6,
@@ -566,7 +566,7 @@ mod tests {
     fn translate_light_excludes_starfield_even_with_spot_bit_set() {
         let ld = light_data(LIGHT_FLAG_SPOT, 90.0);
         let geom = translate_light(&ld, GameKind::Starfield, Quat::IDENTITY);
-        assert_eq!(geom.kind, LightKind::Point);
+        assert_eq!(geom.kind, EmitterKind::Point);
         assert_eq!(geom.direction, [0.0, 0.0, 0.0]);
         assert_eq!(geom.outer_angle, 0.0);
     }
@@ -580,7 +580,7 @@ mod tests {
         for light_type in [1u8, 2] {
             let ld = light_data_typed(0, 90.0, light_type);
             let geom = translate_light(&ld, GameKind::Starfield, Quat::IDENTITY);
-            assert_eq!(geom.kind, LightKind::Spot, "light_type {light_type}");
+            assert_eq!(geom.kind, EmitterKind::Spot, "light_type {light_type}");
             assert_eq!(
                 geom.outer_angle,
                 (90.0f32 * 0.5).to_radians(),
@@ -590,7 +590,7 @@ mod tests {
         let omni = light_data_typed(0, 90.0, 0);
         assert_eq!(
             translate_light(&omni, GameKind::Starfield, Quat::IDENTITY).kind,
-            LightKind::Point
+            EmitterKind::Point
         );
     }
 

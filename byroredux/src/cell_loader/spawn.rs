@@ -660,8 +660,8 @@ pub(super) fn spawn_placed_instances(
     // boundary (`crate::systems::translate_light`), decoded by the
     // caller (which has `game` and `ref_rot` both available) the same
     // way `light_animation_flags`/`light_shadow_flags` above already are.
-    // `LightKind::Point` / `[0.0; 3]` / `0.0` when `light_data` is `None`.
-    light_kind: byroredux_core::ecs::LightKind,
+    // `EmitterKind::Point` / `[0.0; 3]` / `0.0` when `light_data` is `None`.
+    light_kind: byroredux_core::ecs::EmitterKind,
     light_direction: [f32; 3],
     light_outer_angle: f32,
     // REN-D10-2026-09-20-01 (#4514) — LIGH falloff exponent, resolved by the

@@ -569,7 +569,7 @@ pub(super) struct PlacementCtx<'a> {
     pub(super) light_animation_flags: u32,
     pub(super) light_shadow_flags: u32,
     // #2439 (NIFAL-D2-01) — see `spawn_placed_instances`'s matching params.
-    pub(super) light_kind: byroredux_core::ecs::LightKind,
+    pub(super) light_kind: byroredux_core::ecs::EmitterKind,
     pub(super) light_direction: [f32; 3],
     pub(super) light_outer_angle: f32,
     // REN-D10-2026-09-20-01 (#4514) — LIGH falloff exponent, already resolved

@@ -138,7 +138,7 @@ fn spawn_template(
         light_data: None,
         light_animation_flags: 0,
         light_shadow_flags: 0,
-        light_kind: byroredux_core::ecs::LightKind::Point,
+        light_kind: byroredux_core::ecs::EmitterKind::Point,
         light_direction: [0.0; 3],
         light_outer_angle: 0.0,
         light_falloff_exponent: 1.0,

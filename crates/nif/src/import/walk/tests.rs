@@ -419,7 +419,7 @@ mod switch_node_walker_tests {
     use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
     use crate::blocks::light::{NiDirectionalLight, NiLightBase, NiPointLight, NiSpotLight};
     use crate::blocks::node::{NiLODNode, NiNode, NiSwitchNode};
-    use crate::import::{ImportedLight, LightKind};
+    use crate::import::{ImportedLight, EmitterKind};
     use crate::types::{BlockRef, NiColor, NiMatrix3, NiTransform};
     use std::sync::Arc;
 
@@ -586,7 +586,7 @@ mod switch_node_walker_tests {
             inner_spot_angle: 15.0,
             exponent: 1.0,
         }));
-        assert_eq!(light.kind, LightKind::Spot);
+        assert_eq!(light.kind, EmitterKind::Spot);
         assert_eq!(light.direction, [0.0, 0.0, -1.0]);
         assert!((light.outer_angle - 45.0_f32.to_radians()).abs() < 1.0e-6);
     }
@@ -600,7 +600,7 @@ mod switch_node_walker_tests {
         let light = imported_single_light(Box::new(NiDirectionalLight {
             base: rotated_light_base(),
         }));
-        assert_eq!(light.kind, LightKind::Directional);
+        assert_eq!(light.kind, EmitterKind::Directional);
         assert_eq!(light.direction, [0.0, 0.0, 1.0]);
     }
 }

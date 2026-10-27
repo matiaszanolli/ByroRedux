@@ -208,7 +208,7 @@ pub(super) fn spawn_point_light(world: &mut World, pos: Vec3, radius: f32, color
             color,
             byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
             1.0,
-            byroredux_core::ecs::LightKind::Point,
+            byroredux_core::ecs::EmitterKind::Point,
             [0.0; 3],
             0.0,
             byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,

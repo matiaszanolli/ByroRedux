@@ -38,7 +38,7 @@ The NIF parser now handles the full `NiLight` hierarchy (#156):
   becomes an `ImportedLight`
   ([`crates/nif/src/import/types/light.rs`](../../crates/nif/src/import/types/light.rs)):
   world-space `translation` / `direction`, diffuse `color`, derived
-  `radius`, a `LightKind` tag, the spot `outer_angle`, the
+  `radius`, a `EmitterKind` tag, the spot `outer_angle`, the
   `affected_node_names` from the `NiDynamicEffect.Affected Nodes` Ptr
   list (#335), and the light's own block `name` (so the animation system
   can resolve `NiLight*Controller` channels onto the spawned entity, #983).

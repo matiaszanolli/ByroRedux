@@ -2,10 +2,8 @@
 
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
-use crate::lighting::{Emitter, EmitterKind, VisibilityMask};
-
-/// Backward-compatible name for the canonical emitter kind.
-pub type LightKind = EmitterKind;
+pub use crate::lighting::EmitterKind;
+use crate::lighting::{Emitter, VisibilityMask};
 
 /// A point/spot/directional light source placed in the world.
 ///
@@ -65,7 +63,7 @@ impl LightSource {
         color: [f32; 3],
         flags: u32,
         falloff_exponent: f32,
-        kind: LightKind,
+        kind: EmitterKind,
         direction: [f32; 3],
         outer_angle: f32,
         shadow_flags: u32,

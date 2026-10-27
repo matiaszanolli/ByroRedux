@@ -30,7 +30,7 @@ pub use components::{
     AnimatedTextureFlip, AnimatedUvTransform, AnimatedVisibility, BSBound, BSXFlags, Billboard,
     BillboardMode, Camera, CellFormId, CellRoot, Children, CombustionState, EmitterShape,
     FlipTextureRole, FogBounds, FogProfile, FogShape, FogSource, FogVolume, GlobalTransform,
-    LightFlicker, LightKind, LightSource, LocalBound, Material, MeshHandle, Name, Parent,
+    LightFlicker, EmitterKind, LightSource, LocalBound, Material, MeshHandle, Name, Parent,
     ParticleEmitter, ParticleForceField, ParticleSoA, RenderLayer, SceneFlags, SkinnedMesh,
     SpeedTreeWind, TextureFlipEntry, TextureHandle, Transform, WorldBound, LIGHT_FLAG_FLICKER,
     LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW, LIGHT_FLAG_SHADOW_HEMISPHERE,

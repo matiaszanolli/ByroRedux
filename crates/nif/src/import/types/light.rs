@@ -2,12 +2,10 @@
 
 use super::*;
 
-/// #2205 — the canonical kind tag now lives on `LightSource`
-/// (`crates/core/src/ecs/components/light.rs`) so the spawn boundary can
-/// carry it straight through without a second type. Re-exported here so
-/// every existing `byroredux_nif::import::LightKind` call site keeps
-/// working unchanged.
-pub use byroredux_core::ecs::components::LightKind;
+/// #2205 — the canonical kind tag lives in core (`byroredux_core::lighting`)
+/// so the spawn boundary can carry it straight through without a second
+/// type. Re-exported here as `byroredux_nif::import::EmitterKind`.
+pub use byroredux_core::lighting::EmitterKind;
 
 /// One light source extracted from a NIF scene, positioned in world space.
 ///
@@ -27,10 +25,10 @@ pub struct ImportedLight {
     /// Effective radius in Bethesda units, derived from the attenuation
     /// parameters. Zero for ambient/directional (infinite reach).
     pub radius: f32,
-    /// Light kind — the canonical `EmitterKind` (`LightKind` is its alias).
+    /// Light kind — the canonical `EmitterKind`.
     /// The GPU's numeric packing lives in `gpu_light_from_emitter`
     /// (`byroredux/src/render/lights.rs`), not here.
-    pub kind: LightKind,
+    pub kind: EmitterKind,
     /// Outer cone half-angle in radians (0.0 for non-spot).
     pub outer_angle: f32,
     /// Names of the scene-graph nodes this light is restricted to,

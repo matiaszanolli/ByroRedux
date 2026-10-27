@@ -13,7 +13,7 @@
 //! consults; testing them here pins the contract without a full
 //! cell-load harness.
 use super::*;
-use byroredux_nif::import::{ImportedLight, LightKind};
+use byroredux_nif::import::{ImportedLight, EmitterKind};
 
 fn light_with_color(rgb: [f32; 3]) -> ImportedLight {
     ImportedLight {
@@ -21,7 +21,7 @@ fn light_with_color(rgb: [f32; 3]) -> ImportedLight {
         direction: [0.0, 0.0, 0.0],
         color: rgb,
         radius: 100.0,
-        kind: LightKind::Point,
+        kind: EmitterKind::Point,
         outer_angle: 0.0,
         affected_node_names: Vec::new(),
         name: None,
@@ -45,7 +45,7 @@ fn spawn_nif_lights_attaches_light_source_for_spawnable_light() {
         direction: [0.0, 0.0, -1.0],
         color: [0.8, 0.2, 0.1],
         radius: 512.0,
-        kind: LightKind::Point,
+        kind: EmitterKind::Point,
         outer_angle: 0.0,
         affected_node_names: Vec::new(),
         name: None,
@@ -93,7 +93,7 @@ fn spawn_nif_lights_rotates_direction_by_reference_rotation() {
         direction: [1.0, 0.0, 0.0],
         color: [1.0, 1.0, 1.0],
         radius: 512.0,
-        kind: LightKind::Directional,
+        kind: EmitterKind::Directional,
         outer_angle: 0.0,
         affected_node_names: Vec::new(),
         name: None,
@@ -154,17 +154,16 @@ fn zero_color_light_is_not_spawnable() {
 /// keeps them dropped; that must stay true, or every one of those 25
 /// black placeholder nodes would spawn as a 4096-unit omnidirectional
 /// point (`light_radius_or_default`'s attenuation-free fallback with
-/// `LightKind::Ambient` packing to GPU type 0.0 = point) — a
+/// `EmitterKind::Ambient` packing to GPU type 0.0 = point) — a
 /// population-wide phantom light source. Non-black ambient lights
 /// (modded content only, zero vanilla instances) keep the documented
 /// 4096-omni approximation until a real consumer exists; see
 /// docs/engine/nifal.md's Lights leak-table entry.
 #[test]
 fn black_ambient_lights_stay_dropped_census_pinned() {
-    use byroredux_core::ecs::components::light::LightKind as CoreLightKind;
     let mut ambient = light_with_color([0.0, 0.0, 0.0]);
-    ambient.kind = LightKind::Ambient;
-    assert_eq!(ambient.kind, CoreLightKind::Ambient);
+    ambient.kind = EmitterKind::Ambient;
+    assert_eq!(ambient.kind, byroredux_core::ecs::EmitterKind::Ambient);
     assert!(
         !is_spawnable_nif_light(&ambient),
         "the census shows vanilla ambient lights are uniformly black; the \
@@ -308,7 +307,7 @@ fn spawn_nif_lights_drops_known_exporter_artifact_by_name() {
         direction: [0.8947, 0.3716, 0.2478],
         color: [1.0, 1.0, 1.0],
         radius: 512.0,
-        kind: LightKind::Directional,
+        kind: EmitterKind::Directional,
         outer_angle: 0.0,
         affected_node_names: Vec::new(),
         name: Some(std::sync::Arc::from("__max_default_light")),
@@ -358,7 +357,7 @@ fn spawn_nif_lights_does_not_deduplicate_ordinary_named_lights() {
         direction: [0.0, 0.0, -1.0],
         color: [0.9, 0.6, 0.2],
         radius: 256.0,
-        kind: LightKind::Point,
+        kind: EmitterKind::Point,
         outer_angle: 0.0,
         affected_node_names: Vec::new(),
         name: Some(std::sync::Arc::from("Torch01Light")),
@@ -431,7 +430,7 @@ fn spawn_nif_lights_never_spawns_known_exporter_artifact_lights() {
                 direction: [0.8947, 0.3716, 0.2478],
                 color: [1.0, 1.0, 1.0],
                 radius: 0.0,
-                kind: LightKind::Directional,
+                kind: EmitterKind::Directional,
                 outer_angle: 0.0,
                 affected_node_names: Vec::new(),
                 name: Some(std::sync::Arc::from("__MAX_Default_Light")),
@@ -441,7 +440,7 @@ fn spawn_nif_lights_never_spawns_known_exporter_artifact_lights() {
                 direction: [-0.8947, -0.3716, -0.2478],
                 color: [1.0, 1.0, 1.0],
                 radius: 0.0,
-                kind: LightKind::Directional,
+                kind: EmitterKind::Directional,
                 outer_angle: 0.0,
                 affected_node_names: Vec::new(),
                 name: Some(std::sync::Arc::from("__MAX_Default_Light")),
@@ -496,7 +495,7 @@ fn artifact_only_array_counts_zero_so_esm_fallback_fires() {
         direction: [0.8947, 0.3716, 0.2478],
         color: [1.0, 1.0, 1.0],
         radius: 0.0,
-        kind: LightKind::Directional,
+        kind: EmitterKind::Directional,
         outer_angle: 0.0,
         affected_node_names: Vec::new(),
         name: Some(std::sync::Arc::from("__MAX_Default_Light")),

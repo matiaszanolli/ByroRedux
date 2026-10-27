@@ -9,7 +9,7 @@ use crate::types::NiTransform;
 
 use super::super::coord::zup_point_to_yup;
 use super::super::transform::compose_transforms;
-use super::super::{ImportedLight, LightKind};
+use super::super::{ImportedLight, EmitterKind};
 use super::{as_ni_node, node_is_culled, resolve_affected_node_names, revisit_guard, switch_active_children};
 
 /// Recursively walk the scene graph accumulating world-space transforms
@@ -72,7 +72,7 @@ pub(crate) fn walk_node_lights(
             scene,
             &world,
             &l.base,
-            LightKind::Point,
+            EmitterKind::Point,
             radius,
             0.0,
         ));
@@ -89,7 +89,7 @@ pub(crate) fn walk_node_lights(
             scene,
             &world,
             &l.point.base,
-            LightKind::Spot,
+            EmitterKind::Spot,
             radius,
             l.outer_spot_angle.to_radians(),
         ));
@@ -101,7 +101,7 @@ pub(crate) fn walk_node_lights(
             scene,
             &world,
             &l.base,
-            LightKind::Ambient,
+            EmitterKind::Ambient,
             0.0,
             0.0,
         ));
@@ -113,7 +113,7 @@ pub(crate) fn walk_node_lights(
             scene,
             &world,
             &l.base,
-            LightKind::Directional,
+            EmitterKind::Directional,
             0.0,
             0.0,
         ));
@@ -125,7 +125,7 @@ pub(crate) fn imported_light_from_base(
     scene: &NifScene,
     world: &NiTransform,
     base: &crate::blocks::light::NiLightBase,
-    kind: LightKind,
+    kind: EmitterKind,
     radius: f32,
     outer_angle: f32,
 ) -> ImportedLight {
@@ -145,7 +145,7 @@ pub(crate) fn imported_light_from_base(
     // "toward the light" for directional emitters
     // (`crates/core/src/lighting.rs`; the shader uses it as `L` directly),
     // so the directional kind is negated once, here at the boundary.
-    let emission = if kind == LightKind::Directional {
+    let emission = if kind == EmitterKind::Directional {
         emission.map(|c| -c)
     } else {
         emission
@@ -229,7 +229,7 @@ mod light_dispatch_coverage_tests {
     //! completeness guard, mirroring `import::collision`'s
     //! `dispatch_coverage_tests`.
     //!
-    //! `LightKind` resolution is the same shape as `resolve_shape_inner`: a
+    //! `EmitterKind` resolution is the same shape as `resolve_shape_inner`: a
     //! `downcast_ref::<…>` chain over block types the parser dispatches. It
     //! has the same failure mode too — a light block that is parse-dispatched
     //! in `blocks/dispatch.rs` but has no arm here parses for byte correctness and
@@ -346,7 +346,7 @@ mod light_dispatch_coverage_tests {
         assert!(
             missing.is_empty(),
             "these Ni*Light blocks are parse-dispatched but never reach a \
-             LightKind arm — the authored light is silently dropped: {missing:?}"
+             EmitterKind arm — the authored light is silently dropped: {missing:?}"
         );
     }
 

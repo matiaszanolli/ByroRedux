@@ -12,7 +12,7 @@
 //! translation in `merge_external_material`; see
 //! `feedback_format_translation.md`.
 
-use byroredux_core::ecs::{EntityId, GlobalTransform, LightKind, LightSource, World};
+use byroredux_core::ecs::{EntityId, GlobalTransform, EmitterKind, LightSource, World};
 use byroredux_core::lighting::{AttenuationModel, Emitter, VisibilityMask};
 
 use crate::components::{CellLightingRes, SkyParamsRes};
@@ -77,11 +77,11 @@ pub(super) fn gpu_light_from_emitter(
     intensity_scale: f32,
 ) -> byroredux_renderer::GpuLight {
     let light_type = match emitter.kind {
-        LightKind::Point | LightKind::Ambient => 0.0,
-        LightKind::Spot => 1.0,
-        LightKind::Directional => 2.0,
+        EmitterKind::Point | EmitterKind::Ambient => 0.0,
+        EmitterKind::Spot => 1.0,
+        EmitterKind::Directional => 2.0,
     };
-    let outer_angle_cos = if emitter.kind == LightKind::Spot {
+    let outer_angle_cos = if emitter.kind == EmitterKind::Spot {
         emitter.outer_cone_cos
     } else {
         0.0
@@ -611,7 +611,7 @@ mod gi_light_priority_tests {
                 [1.0; 3],
                 0,
                 1.0,
-                byroredux_core::ecs::LightKind::Point,
+                byroredux_core::ecs::EmitterKind::Point,
                 [0.0; 3],
                 0.0,
                 0,
@@ -693,7 +693,7 @@ mod gi_light_priority_tests {
                 color,
                 0,
                 1.0,
-                byroredux_core::ecs::LightKind::Point,
+                byroredux_core::ecs::EmitterKind::Point,
                 [0.0; 3],
                 0.0,
                 shadow_flags,
@@ -876,7 +876,7 @@ mod gi_light_priority_tests {
     }
 }
 
-/// #2205 — `LightKind` resolved at NIF import (`NiDirectionalLight` /
+/// #2205 — `EmitterKind` resolved at NIF import (`NiDirectionalLight` /
 /// `NiSpotLight` / `NiPointLight`) must reach `GpuLight.color_type.w`
 /// instead of every placed `LightSource` uploading as a point light.
 /// Pre-fix, an Oblivion `NiDirectionalLight` (kind resolved correctly at
@@ -886,7 +886,7 @@ mod gi_light_priority_tests {
 #[cfg(test)]
 mod light_kind_wiring_tests {
     use super::*;
-    use byroredux_core::ecs::{LightKind, LightSource};
+    use byroredux_core::ecs::{EmitterKind, LightSource};
 
     fn spawn_light(world: &mut World, light: LightSource) {
         let e = world.spawn();
@@ -911,7 +911,7 @@ mod light_kind_wiring_tests {
                 [1.0, 1.0, 1.0],
                 0,
                 1.0,
-                LightKind::Directional,
+                EmitterKind::Directional,
                 [0.0, -1.0, 0.0],
                 0.0,
                 0,
@@ -924,7 +924,7 @@ mod light_kind_wiring_tests {
         assert_eq!(lights.len(), 1);
         assert!(
             (lights[0].color_type[3] - 2.0).abs() < 1e-6,
-            "a LightKind::Directional source must upload type 2.0 (directional), got {}",
+            "a EmitterKind::Directional source must upload type 2.0 (directional), got {}",
             lights[0].color_type[3]
         );
         assert_eq!(&lights[0].direction_angle[0..3], &[0.0, -1.0, 0.0]);
@@ -941,7 +941,7 @@ mod light_kind_wiring_tests {
                 [1.0, 1.0, 1.0],
                 0,
                 1.0,
-                LightKind::Spot,
+                EmitterKind::Spot,
                 [1.0, 0.0, 0.0],
                 outer_angle,
                 0,
@@ -954,7 +954,7 @@ mod light_kind_wiring_tests {
         assert_eq!(lights.len(), 1);
         assert!(
             (lights[0].color_type[3] - 1.0).abs() < 1e-6,
-            "a LightKind::Spot source must upload type 1.0 (spot), got {}",
+            "a EmitterKind::Spot source must upload type 1.0 (spot), got {}",
             lights[0].color_type[3]
         );
         assert_eq!(&lights[0].direction_angle[0..3], &[1.0, 0.0, 0.0]);
@@ -976,7 +976,7 @@ mod light_kind_wiring_tests {
                 [1.0, 1.0, 1.0],
                 0,
                 1.0,
-                LightKind::Point,
+                EmitterKind::Point,
                 [0.0; 3],
                 0.0,
                 0,
@@ -989,7 +989,7 @@ mod light_kind_wiring_tests {
         assert_eq!(lights.len(), 1);
         assert_eq!(
             lights[0].color_type[3], 0.0,
-            "default LightKind::Point must keep uploading type 0.0 — every \
+            "default EmitterKind::Point must keep uploading type 0.0 — every \
              pre-#2205 producer (ESM LIGH REFRs, procedural fill, sun \
              proxies) relies on this via ..Default::default()"
         );
@@ -1020,7 +1020,7 @@ mod sort_scratch_reuse_tests {
                 [brightness; 3],
                 0,
                 1.0,
-                byroredux_core::ecs::LightKind::Point,
+                byroredux_core::ecs::EmitterKind::Point,
                 [0.0; 3],
                 0.0,
                 0,
