@@ -1610,7 +1610,6 @@ fn zup_swap_scanner_recognises_both_spellings() {
 /// `spt`, …) cannot reach `test_paths` without a new dev-dependency edge, so
 /// their files wait here until that is decided.
 const HARDCODED_GAME_PATH_ALLOWLIST: &[&str] = &[
-    "byroredux/src/asset_provider/animation.rs",
     "byroredux/src/asset_provider/material/cdb.rs",
     "byroredux/src/asset_provider/tests/archive_precedence.rs",
     "byroredux/src/asset_provider/tests/facegen_texture_fallback.rs",

@@ -759,16 +759,30 @@ mod tests {
     use super::*;
     use crate::asset_provider::build_texture_provider;
 
+    /// `Skyrim.esm` + `Skyrim - Animations.bsa` of the Skyrim SE install, or `None` (after
+    /// `require_or_skip`, so the strict lane fails rather than reporting `ok`) when absent.
+    fn skyrim_se_animation_fixture() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+        let data_dir = byroredux_plugin::esm::test_paths::skyrim_se_data_dir();
+        let esm_path = data_dir.join("Skyrim.esm");
+        let animations_path = data_dir.join("Skyrim - Animations.bsa");
+        if !esm_path.is_file() || !animations_path.is_file() {
+            byroredux_plugin::esm::test_paths::require_or_skip(
+                "Skyrim SE Skyrim.esm + Skyrim - Animations.bsa",
+            );
+            return None;
+        }
+        Some((esm_path, animations_path))
+    }
+
     /// #6241 — real data: Fallout 4's `turninplaceright90.hkx` keeps its `Root` / `COM`
     /// rotations constant and turns only in its reference frame; the converted clip
     /// must carry that quarter turn right as `root_yaw`, on the accumulation root.
     #[test]
     #[ignore = "needs Fallout 4 game data on disk"]
     fn fallout_4_turn_in_place_clip_carries_its_turn_as_root_yaw() {
-        let data = std::env::var_os("BYROREDUX_FO4_DATA")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".into());
+        let data = byroredux_plugin::esm::test_paths::fo4_data_dir();
         let Ok(archive) = byroredux_bsa::Ba2Archive::open(data.join("Fallout4 - Animations.ba2")) else {
+            byroredux_plugin::esm::test_paths::require_or_skip("Fallout4 - Animations.ba2");
             return;
         };
         let read = |path: &str| archive.extract(path).unwrap_or_else(|error| panic!("{path}: {error}"));
@@ -1255,18 +1269,9 @@ mod tests {
     #[test]
     #[ignore = "needs Skyrim SE game data on disk; ~1 GB resident"]
     fn skyrim_cart_idle_catalog_installs_real_assets_when_available() {
-        let data_dir = std::env::var_os(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV)
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(
-                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
-                )
-            });
-        let esm_path = data_dir.join("Skyrim.esm");
-        let animations_path = data_dir.join("Skyrim - Animations.bsa");
-        if !esm_path.is_file() || !animations_path.is_file() {
+        let Some((esm_path, animations_path)) = skyrim_se_animation_fixture() else {
             return;
-        }
+        };
 
         let index = byroredux_plugin::esm::parse_esm(&std::fs::read(esm_path).unwrap()).unwrap();
         let provider = build_texture_provider(&[
@@ -1346,18 +1351,9 @@ mod tests {
     #[test]
     #[ignore = "needs Skyrim SE game data on disk; ~1 GB resident"]
     fn a_pending_idle_request_installs_its_clip() {
-        let data_dir = std::env::var_os(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV)
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(
-                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
-                )
-            });
-        let esm_path = data_dir.join("Skyrim.esm");
-        let animations_path = data_dir.join("Skyrim - Animations.bsa");
-        if !esm_path.is_file() || !animations_path.is_file() {
+        let Some((esm_path, animations_path)) = skyrim_se_animation_fixture() else {
             return;
-        }
+        };
         let index = byroredux_plugin::esm::parse_esm(&std::fs::read(esm_path).unwrap()).unwrap();
         let provider = build_texture_provider(&[
             "--bsa".to_owned(),
@@ -1418,18 +1414,9 @@ mod tests {
     #[test]
     #[ignore = "needs Skyrim SE game data on disk; ~1 GB resident"]
     fn draugr_combat_clips_install_real_assets_when_available() {
-        let data_dir = std::env::var_os(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV)
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(
-                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
-                )
-            });
-        let esm_path = data_dir.join("Skyrim.esm");
-        let animations_path = data_dir.join("Skyrim - Animations.bsa");
-        if !esm_path.is_file() || !animations_path.is_file() {
+        let Some((esm_path, animations_path)) = skyrim_se_animation_fixture() else {
             return;
-        }
+        };
 
         let index = byroredux_plugin::esm::parse_esm(&std::fs::read(esm_path).unwrap()).unwrap();
         let provider = build_texture_provider(&[
