@@ -17,7 +17,7 @@ use std::sync::Once;
 /// resident scene's geometry; a broken cell-unload path leaks placements and
 /// grows the pool unbounded.
 ///
-/// The 5 M-vertex / 20 M-index residency ceiling (~600 MB total source
+/// The 7 M-vertex / 28 M-index residency ceiling (~840 MB total source
 /// geometry) returns `Err` from `upload_scene_mesh` so the caller can skip a
 /// placement and continue. It is deliberately the same as the historical soft
 /// threshold: each scene mesh also has upload and ray-tracing allocations, so
@@ -27,11 +27,11 @@ use std::sync::Once;
 /// See REN-D2-005 / #1016. Mirrors the `MAX_INDIRECT_DRAWS` defence-in-depth
 /// cap at `scene_buffer.rs:1326+` — these are not perf knobs, they are
 /// safety guards against unbounded-growth bugs.
-pub const VERTEX_POOL_SOFT_CAP: usize = 5_000_000;
+pub const VERTEX_POOL_SOFT_CAP: usize = 7_000_000;
 pub const VERTEX_POOL_HARD_CAP: usize = VERTEX_POOL_SOFT_CAP;
 /// Index pool caps — typical mesh ratio is ~3 indices per vertex, so the
 /// caps here track the vertex caps proportionally.
-pub const INDEX_POOL_SOFT_CAP: usize = 20_000_000;
+pub const INDEX_POOL_SOFT_CAP: usize = 28_000_000;
 pub const INDEX_POOL_HARD_CAP: usize = INDEX_POOL_SOFT_CAP;
 
 /// Share of each pool held back from [`GeometryAdmissionClass::Prop`] uploads,
@@ -41,7 +41,7 @@ pub const INDEX_POOL_HARD_CAP: usize = INDEX_POOL_SOFT_CAP;
 /// closed for everyone, so a dense FO4 view lost terrain cells (a void with no
 /// ground or water) and the player's own head while props kept their share
 /// (measured: 37 meshes refused at the old cap, terrain cells (4,0)/(4,1)
-/// among them). 5% of 5 M vertices is ~250 k, over the ~240 k that a radius-4
+/// among them). 5% of 7 M vertices is ~350 k, over the ~240 k that a radius-4
 /// terrain + water + LOD-terrain ring needs.
 pub const PROP_POOL_RESERVE_PERCENT: usize = 5;
 
@@ -2648,7 +2648,7 @@ mod memory_budget_doc_pin_tests {
                 .find(|line| line.starts_with(&format!("| {name}")))
                 .unwrap_or_else(|| panic!("memory-budget.md lost its `{name}` rough-budget row"))
         };
-        // Decimal MB, the page's convention: 520 MB + 80 MB.
+        // Decimal MB, the page's convention: 728 MB + 112 MB.
         let pool_cap_mb = (VERTEX_POOL_HARD_CAP * std::mem::size_of::<Vertex>()
             + INDEX_POOL_HARD_CAP * std::mem::size_of::<u32>())
             / 1_000_000;

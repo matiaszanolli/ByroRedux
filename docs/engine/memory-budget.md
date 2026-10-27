@@ -869,10 +869,10 @@ terrain diffuse/normal layers they are derived from.
 | Constant | Value | VRAM |
 |---|---|---|
 | `MAX_MESH_SLOTS` | 16 777 216 (1 << 24) | handle-table slots only (not VRAM) |
-| `VERTEX_POOL_SOFT_CAP` | 5 M vertices | ~520 MB (104 B/vertex) |
-| `VERTEX_POOL_HARD_CAP` | 5 M vertices | ~520 MB (same as the admission threshold) |
-| `INDEX_POOL_SOFT_CAP` | 20 M indices | ~80 MB (4 B/index) |
-| `INDEX_POOL_HARD_CAP` | 20 M indices | ~80 MB (same as the admission threshold) |
+| `VERTEX_POOL_SOFT_CAP` | 7 M vertices | ~728 MB (104 B/vertex) |
+| `VERTEX_POOL_HARD_CAP` | 7 M vertices | ~728 MB (same as the admission threshold) |
+| `INDEX_POOL_SOFT_CAP` | 28 M indices | ~112 MB (4 B/index) |
+| `INDEX_POOL_HARD_CAP` | 28 M indices | ~112 MB (same as the admission threshold) |
 
 The vertex stride is 104 B (20 × f32 + 4 × u32 + 8 × u8 — position,
 colour (widened `vec3`→`vec4`, `cd2b5fe4`), normal, UV, bone
@@ -892,7 +892,7 @@ or water) and starved the LOD ring (`lod_starved=1`). At 5 M the same route
 settles with ~10 % more resident entities. The `BYROREDUX_GEOMETRY_CENSUS=1`
 census attributes the pool: at radius 4 around the river fixture it held
 4.95 M vertices, 4 603 of 5 315 meshes being full-detail cell props (terrain 81,
-water 12, LOD 192) — so FO4 beyond radius ~3 still exceeds even this ceiling.
+water 12, LOD 192) — so FO4 beyond radius ~3 exceeded even 5 M / 20 M, and the caps were raised again to 7 M / 28 M (+208 MB vertices, +32 MB indices at the caps) so FO4 radius 4's distant object LOD (686 quads held back at 5 M) fits.
 
 **Admission tiers** (`GeometryAdmissionClass`, `PROP_POOL_RESERVE_PERCENT` = 5):
 the caps are not shared equally. Placed statics and object / tree /
@@ -1241,8 +1241,8 @@ authoritative rather than re-derived.
 | Bloom pyramid (2 FIF) | ~11 MB (1080p) | ~44 MB (4K) |
 | Volumetrics froxel grid (6 volumes, 44 B/froxel/slot, 2 FIF) | ~183 MB (1080p native) | **~730 MB (4K native)** — ~81 MB at 1080p / ~324 MB at 4K with FSR Quality |
 | FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K). Both this row and the SDK's own working memory are now billed to the BLAS residency reservation (#3988); the SDK figure is still allocated outside `gpu-allocator` and so does not appear in `ctx.memory` |
-| Vertex / index pools (one global geometry SSBO generation) | ~208 MB | ~600 MB cap (`VERTEX_POOL_HARD_CAP` 5 M × 104 B + `INDEX_POOL_HARD_CAP` 20 M × 4 B, see [Mesh Registry](#mesh-registry)) |
-| Global geometry SSBO rebuild (#3298 / #3443) | — (idle) | +1× projected — the replacement generation, allocated while the old one still serves draws, so up to ~600 MB at the pool caps (~1.2 GB with the old one). Admitted only while device-local usage stays at or under 80% of the live `VK_EXT_memory_budget` budget, and under 256 MiB without a reading; see [the rebuild section](#global-geometry-ssbo-rebuild-3298--3463). Plus up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
+| Vertex / index pools (one global geometry SSBO generation) | ~208 MB | ~840 MB cap (`VERTEX_POOL_HARD_CAP` 7 M × 104 B + `INDEX_POOL_HARD_CAP` 28 M × 4 B, see [Mesh Registry](#mesh-registry)) |
+| Global geometry SSBO rebuild (#3298 / #3443) | — (idle) | +1× projected — the replacement generation, allocated while the old one still serves draws, so up to ~840 MB at the pool caps (~1.7 GB with the old one). Admitted only while device-local usage stays at or under 80% of the live `VK_EXT_memory_budget` budget, and under 256 MiB without a reading; see [the rebuild section](#global-geometry-ssbo-rebuild-3298--3463). Plus up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
 | Sky bake + cloud noise + ground cover (fixed size, see [Sky and Ground Cover](#sky-and-ground-cover-fixed-size)) | ~155 MB | ~155 MB |
 | Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~33 MB during a resize (one deferred-destroy copy of the engine image) + a second logical device |
 | MenuXml HUD overlay texture (1 × swapchain extent, RGBA8, see [its section](#menuxml-hud-overlay-texture-1--swapchain-extent-4892)) | ~8.3 MB (1080p) | ~33 MB (4K) |
@@ -1251,7 +1251,7 @@ authoritative rather than re-derived.
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~2.18 GB** | **~4.96 GB at native 4K** — #6035 corrected the ReSTIR row to its 44 B/px slot (+49 / +199 MB) and added the shadow-filter row (+100 / +398 MB). every resolution-scaled row at 4K, the fixed-size rows and the scene-SSBO peak, plus the content rows (vertex / index pools, textures, BLAS, TLAS) at their *typical* figures: a typical FNV interior rendered at 4K, not every cap at once. Neither total counts the geometry-rebuild transient or the Scaleform rows. So the pools row's cap correction (~1.66 GB → ~480 MB, #4961; later ~600 MB, below) moved neither total. Includes the fixed volumetric medium/aperture index budget (~6.5 MB). #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount. #4892 then collapsed that overlay to one texture (−16.6 / −66.4 MB) and ledgered the dynamic-RGBA staging arenas (+16.6 / +66.4 MB), so neither total moved. #4413 corrected the fixed-size sky / ground-cover row from ~20 MB to its section's own sum (~79 MB): the blade arena had grown to 64 MiB in `7996edf61` without it, and the authored-model tier adds 8.3 MiB. While a worldspace has authored cover the scene-SSBO row also grows by the tier's 14 MiB instance tail |
+| **Estimated total** | **~2.18 GB** | **~4.96 GB at native 4K** — #6035 corrected the ReSTIR row to its 44 B/px slot (+49 / +199 MB) and added the shadow-filter row (+100 / +398 MB). every resolution-scaled row at 4K, the fixed-size rows and the scene-SSBO peak, plus the content rows (vertex / index pools, textures, BLAS, TLAS) at their *typical* figures: a typical FNV interior rendered at 4K, not every cap at once. Neither total counts the geometry-rebuild transient or the Scaleform rows. So the pools row's cap correction (~1.66 GB → ~480 MB, #4961; later ~840 MB, below) moved neither total. Includes the fixed volumetric medium/aperture index budget (~6.5 MB). #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount. #4892 then collapsed that overlay to one texture (−16.6 / −66.4 MB) and ledgered the dynamic-RGBA staging arenas (+16.6 / +66.4 MB), so neither total moved. #4413 corrected the fixed-size sky / ground-cover row from ~20 MB to its section's own sum (~79 MB): the blade arena had grown to 64 MiB in `7996edf61` without it, and the authored-model tier adds 8.3 MiB. While a worldspace has authored cover the scene-SSBO row also grows by the tier's 14 MiB instance tail |
 
 The 6 GB RT-minimum and 4 GB whole-renderer target remain design targets.
 Static BLAS residency is separately enforced at 1 GiB, so a Vulkan driver
