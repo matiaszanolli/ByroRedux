@@ -8,11 +8,13 @@
 //!   from the NPC's class/level, per the documented GECK auto-calculate
 //!   model, and resolves each to its `AVIF` FormID (the original #1663 path,
 //!   below).
-//! - **Skyrim (race + offset + class skills):** seeds Health, Magicka and
-//!   Stamina each from its race's `RACE.DATA` starting value plus the
-//!   NPC's signed `ACBS` offset, and all 18 skills by the UESP `CLAS`
-//!   formula (`derive_skyrim_skills`); a non-auto-calc NPC keeps its
-//!   authored `DNAM` values as written.
+//! - **Skyrim (race + offset + class term + class skills):** seeds Health,
+//!   Magicka and Stamina each from its race's `RACE.DATA` starting value plus
+//!   the NPC's signed `ACBS` offset and, for an auto-calc NPC, the class/level
+//!   term (`10·(level−1)` points by class weight, Health `5·(level−1)` more,
+//!   #5914), and all 18 skills by the UESP `CLAS` formula
+//!   (`derive_skyrim_skills`); a non-auto-calc NPC keeps its authored `DNAM`
+//!   values as written.
 //! - **FO4+ (stored):** FO4 stores actor values rather than deriving them
 //!   — the `NPC_` `PRPS` property array already *is* `(AVIF FormID, value)`
 //!   pairs, with baked `Calculated Health`/`Action Points` in `DNAM`. The
@@ -136,8 +138,9 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 ///   verbatim, plus the baked `DNAM` Calculated Health / Action Points.
 ///   See [`derive_stored_actor_values`].
 /// - **Skyrim**: Health, Magicka, and Stamina are their respective
-///   `RACE.DATA` starting values plus signed `NPC_.ACBS` offsets, resolved
-///   through the load order's canonical AVIF records.
+///   `RACE.DATA` starting values plus signed `NPC_.ACBS` offsets and, for an
+///   auto-calc NPC, the class/level term (#5914), resolved through the load
+///   order's canonical AVIF records.
 /// - **FNV / FO3**: actor values are *auto-calculated* from the NPC's class
 ///   base SPECIAL (the documented GECK model) — the 7 SPECIAL, the profile's
 ///   exact skill roster, and its sourced Health curve. See

@@ -306,7 +306,7 @@ Nothing arms combat ambiently, though, so most creatures still never attack.
 
 Skyrim's NPC population derives Health, Magicka and Stamina, each
 independently from its own `RACE.DATA` starting value plus its own signed
-`ACBS` offset, and all 18 skills by the UESP `CLAS` formula
+`ACBS` offset (plus, for an auto-calc NPC, the class/level term, #5914), and all 18 skills by the UESP `CLAS` formula
 (`derive_skyrim_actor_values` + `derive_skyrim_skills`, `7c740eca0`;
 a non-auto-calc NPC keeps its authored `DNAM` skill values). FO4 is the
 only game whose "stored" mechanism populates actors (`NPC_` `PRPS` property

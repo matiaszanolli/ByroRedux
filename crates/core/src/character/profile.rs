@@ -397,19 +397,15 @@ impl CharacterRulesProfile {
     pub const SKYRIM: Self = Self {
         name: "Skyrim",
         skills: SkillSet::SKYRIM,
-        // #4454 — `RaceBaseOffsets` implements 2 of the capture's 3 pool
-        // composition terms (race base + ACBS offset); the "0–10/level
-        // from class" term is uncaptured in detail and uncoded, so leveled
-        // NPCs get flat pools until the CK per-class growth table is
-        // sourced. See `derive_skyrim_actor_values`'s documented gap.
+        // `RaceBaseOffsets` seeds the pools from race base + signed ACBS offset;
+        // for an auto-calc NPC `derive_skyrim_actor_values` adds the class/level
+        // term (#5914: `10·(level−1)` points spread over Health/Magicka/Stamina by
+        // the class weights, plus `5·(level−1)` Health).
         npc_stats: NpcStatModel::RaceBaseOffsets,
         creature_stats: NpcStatModel::None,
-        // #3170 / #3848 — the cheapest step that makes
-        // `LevelingModel::with_gmst`'s one handled variant (`SkillXp`,
-        // Skyrim's own) production-reachable at all: every other
-        // `RulesetBuilder` arm carries `XpCurve` (Fallout) or falls through
-        // `RulesetBuilder::None` (Oblivion), so without this arm `with_gmst`
-        // executed only inside its own unit test.
+        // #3170 / #3848 — Skyrim was the first family wired to
+        // `LevelingModel::with_gmst` (`SkillXp`); the Fallout `XpCurve` arm
+        // followed in #5915, and Oblivion falls through `RulesetBuilder::None`.
         body_condition_base: None,
         vital_pools: &[("Health", "Health"), ("Magicka", "Magicka"), ("Stamina", "Stamina")],
         radiation_gauge: None,
