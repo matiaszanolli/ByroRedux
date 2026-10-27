@@ -260,6 +260,23 @@ fn parallel_walk_matches_the_inline_walk_on_a_localized_master_chain() {
         );
     }
 
+    // #6426 — the merged index carries the load order's file names
+    // (lower-cased, in order). `CharacterRulesProfile::level_cap_raise`
+    // keys on them (#6227); without this line New Vegas silently falls
+    // back to a cap of 30 with every test still green.
+    let expected_files: Vec<String> = paths
+        .iter()
+        .map(|p| {
+            std::path::Path::new(p)
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_lowercase()
+        })
+        .collect();
+    assert_eq!(inline.plugin_files, expected_files, "plugin_files = the load order");
+
     // Repeat to vary which pool thread walks which plugin.
     for run in 0..8 {
         let (parallel, actual) = walk(PluginWalk::Parallel);

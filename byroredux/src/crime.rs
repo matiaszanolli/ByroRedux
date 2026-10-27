@@ -922,3 +922,61 @@ mod rush_tests {
         assert!(!rushed(&world, near), "no model, no rule");
     }
 }
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+    use byroredux_core::character::CharacterRulesProfile;
+    use byroredux_plugin::esm::reader::GameKind;
+    use byroredux_plugin::esm::records::{GameSetting, SettingValue};
+
+    fn index(game: GameKind, profile: CharacterRulesProfile) -> EsmIndex {
+        EsmIndex { game, character_rules: profile, ..Default::default() }
+    }
+
+    /// #6426 — the profile row picks the model and the load order's GMSTs
+    /// overlay it: Oblivion installs its fines with an authored
+    /// `iCrimeGoldAttackMin` replacing the default, and Skyrim installs the
+    /// per-crime-faction dialect.
+    #[test]
+    fn the_profile_row_installs_the_model_and_the_load_order_overlays_it() {
+        let mut world = World::new();
+        let mut oblivion = index(GameKind::Oblivion, CharacterRulesProfile::OBLIVION);
+        oblivion.insert_game_setting(GameSetting {
+            form_id: 0x1,
+            editor_id: "iCrimeGoldAttackMin".to_string(),
+            value: SettingValue::Int(750),
+        });
+        install_crime_model(&mut world, &oblivion);
+        let model = *world.resource::<CrimeModel>();
+        assert_eq!(model.rush_bounty, 750, "the authored setting overlays the default");
+        assert_eq!(
+            CrimeModel { rush_bounty: CrimeModel::OBLIVION.rush_bounty, ..model },
+            CrimeModel::OBLIVION,
+            "nothing else moved"
+        );
+
+        install_crime_model(&mut world, &index(GameKind::Skyrim, CharacterRulesProfile::SKYRIM));
+        assert_eq!(*world.resource::<CrimeModel>(), CrimeModel::SKYRIM);
+    }
+
+    /// A game with no crime model clears whatever the previous load
+    /// installed, so a stale Oblivion/Skyrim model never survives a switch.
+    #[test]
+    fn a_profile_without_a_crime_model_clears_the_previous_one() {
+        for (game, profile) in [
+            (GameKind::Fallout3NV, CharacterRulesProfile::FALLOUT3),
+            (GameKind::Fallout3NV, CharacterRulesProfile::FALLOUT_NEW_VEGAS),
+            (GameKind::Fallout4, CharacterRulesProfile::FALLOUT4),
+        ] {
+            let mut world = World::new();
+            world.insert_resource(CrimeModel::OBLIVION);
+            install_crime_model(&mut world, &index(game, profile));
+            assert!(
+                world.try_resource::<CrimeModel>().is_none(),
+                "{} must clear a stale crime model",
+                profile.name()
+            );
+        }
+    }
+}

@@ -722,6 +722,41 @@ mod tests {
         assert_eq!(CharacterRulesProfile::FALLOUT4.barter().unwrap().perk_hooks, None);
     }
 
+    /// #6426 — the `crime` and `radiation_gauge` rows: only Oblivion and
+    /// Skyrim carry a crime model (the two fine dialects, told apart by the
+    /// row), and exactly FO3/FNV carry the RAD gauge. Compile-time
+    /// exhaustiveness covers *stating* a row, not *which* value; swapping
+    /// the Oblivion and Skyrim rows would otherwise pass every test.
+    #[test]
+    fn crime_and_radiation_gauge_rows_are_stated_on_every_profile() {
+        let crime = |profile: CharacterRulesProfile| profile.crime();
+        assert_eq!(crime(CharacterRulesProfile::OBLIVION), Some(CrimeModel::OBLIVION));
+        assert_eq!(crime(CharacterRulesProfile::SKYRIM), Some(CrimeModel::SKYRIM));
+        for profile in [
+            CharacterRulesProfile::NONE,
+            CharacterRulesProfile::FALLOUT3,
+            CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            CharacterRulesProfile::FALLOUT4,
+            CharacterRulesProfile::FALLOUT76,
+            CharacterRulesProfile::STARFIELD,
+        ] {
+            assert_eq!(profile.crime(), None, "{}", profile.name());
+        }
+        let rad = Some(("RAD", "RadiationRads"));
+        assert_eq!(CharacterRulesProfile::FALLOUT3.radiation_gauge(), rad);
+        assert_eq!(CharacterRulesProfile::FALLOUT_NEW_VEGAS.radiation_gauge(), rad);
+        for profile in [
+            CharacterRulesProfile::NONE,
+            CharacterRulesProfile::OBLIVION,
+            CharacterRulesProfile::SKYRIM,
+            CharacterRulesProfile::FALLOUT4,
+            CharacterRulesProfile::FALLOUT76,
+            CharacterRulesProfile::STARFIELD,
+        ] {
+            assert_eq!(profile.radiation_gauge(), None, "{}", profile.name());
+        }
+    }
+
     /// #6423 — the VATS model is a profile row: only FO3 and FNV carry one,
     /// and the two dialects are told apart by the row, not by the game.
     #[test]

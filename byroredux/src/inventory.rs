@@ -4287,6 +4287,59 @@ mod tests {
         );
     }
 
+    /// #6426 — the RAD gauge comes from the profile row plus the master's
+    /// authored sickness stages: FNV installs it (scale = the highest stage
+    /// threshold), Skyrim never does, and an FNV load order without the
+    /// `RadiationRads` AVIF or without stages degrades to no gauge.
+    #[test]
+    fn install_catalog_installs_the_rad_gauge_only_where_the_profile_says() {
+        use byroredux_core::character::CharacterRulesProfile;
+        use byroredux_plugin::esm::records::{AvifRecord, RadiationStageRecord};
+        let master = |game: GameKind, profile: CharacterRulesProfile, stages: bool| {
+            let mut index = EsmIndex {
+                game,
+                character_rules: profile,
+                ..Default::default()
+            };
+            index.actor_values.insert(
+                0x5E4,
+                AvifRecord {
+                    form_id: 0x5E4,
+                    editor_id: "RadiationRads".to_owned(),
+                    ..Default::default()
+                },
+            );
+            if stages {
+                for (id, threshold) in [(1u32, 200u32), (2, 1000)] {
+                    index.radiation_stages.insert(
+                        id,
+                        RadiationStageRecord { threshold, ..Default::default() },
+                    );
+                }
+            }
+            index
+        };
+        let radiation = |index: &EsmIndex| {
+            let mut world = World::new();
+            install_catalog(&mut world, index);
+            let vitals = world.try_resource::<PlayerVitals>().unwrap();
+            vitals.radiation
+        };
+
+        let fnv = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
+        assert_eq!(
+            radiation(&master(GameKind::Fallout3NV, fnv, true)),
+            Some(("RAD", 0x5E4, 1000.0))
+        );
+        // No stages authored -> no scale -> no gauge (the degraded rule).
+        assert_eq!(radiation(&master(GameKind::Fallout3NV, fnv, false)), None);
+        // Skyrim carries no gauge row, whatever the master holds.
+        assert_eq!(
+            radiation(&master(GameKind::Skyrim, CharacterRulesProfile::SKYRIM, true)),
+            None
+        );
+    }
+
     /// #4674 (CHAR-2026-09-21-D4-01) — the real-master leg. Reads the
     /// actual Player `NPC_` 0x7 records: FO4's PRPS authors Health 40 /
     /// ActionPoints 0 and DNAM pushes calc_health 150 / calc_ap 100 after
