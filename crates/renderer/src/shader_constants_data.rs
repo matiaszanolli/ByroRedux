@@ -393,6 +393,13 @@ pub const GROUNDCOVER_NO_TERRAIN_TILE: u32 =
 /// resolution. A starting point to tune by eye, not a measured property.
 pub const TERRAIN_LOD_SOFTEN_MIPS: f32 = 3.0;
 
+/// Where the softening ramp starts, as a fraction of the distance of full
+/// softening (`terrainTile.lodSoftenEnd`): the shader smoothsteps from
+/// `ONSET_FRACTION * end` to `end`. The host's setting-to-distance mapping
+/// reads the same value, so the documented onset cannot drift from the shader's.
+/// A starting point to tune by eye, not a measured property.
+pub const TERRAIN_LOD_SOFTEN_ONSET_FRACTION: f32 = 0.5;
+
 /// `slope_gate` — terrain `normal.y` below which no ground cover grows, and
 /// above which it is unattenuated. Smoothstepped between.
 ///
@@ -2637,6 +2644,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Blank,
     HeaderLine::Comment("Terrain distance softening toward the LOD look"),
     shader_define!(Float TERRAIN_LOD_SOFTEN_MIPS),
+    shader_define!(Float TERRAIN_LOD_SOFTEN_ONSET_FRACTION),
     HeaderLine::Comment("Ground-cover density field + scatter (#4054)"),
     shader_define!(Uint GROUNDCOVER_NO_TERRAIN_TILE),
     shader_define!(Float GROUNDCOVER_NO_WATER),

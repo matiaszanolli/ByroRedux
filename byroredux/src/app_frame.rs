@@ -86,11 +86,45 @@ fn push_terrain_lod_soften(
     let end = match streaming {
         Some(state) if amount > 0.0 => {
             let ring_edge = (state.radius_load as f32 + 0.5) * EXTERIOR_CELL_UNITS;
-            ring_edge * (1.0 - 0.35 * amount)
+            terrain_lod_soften_end(ring_edge, amount)
         }
         _ => 0.0,
     };
     ctx.set_terrain_lod_soften_end(end);
+}
+
+/// How far inward from the ring edge full softening moves at setting 1, as a
+/// fraction of the ring edge. At setting 1 the near terrain is fully softened
+/// at `1 - this` = 0.65 of the ring edge, and (the shader ramping up from
+/// `TERRAIN_LOD_SOFTEN_ONSET_FRACTION` of that) starts softening at ~0.325 of
+/// it. A starting point to tune by eye, not a measured property.
+const TERRAIN_LOD_SOFTEN_REACH_SHRINK: f32 = 0.35;
+
+/// The camera distance of full softening for a `0..=1` setting `amount` and a
+/// full-detail `ring_edge` distance (the setting-to-distance mapping the shader
+/// reads as `terrainTile.lodSoftenEnd`).
+fn terrain_lod_soften_end(ring_edge: f32, amount: f32) -> f32 {
+    ring_edge * (1.0 - TERRAIN_LOD_SOFTEN_REACH_SHRINK * amount)
+}
+
+#[cfg(test)]
+mod terrain_lod_soften_tests {
+    use super::*;
+    use byroredux_renderer::shader_constants::TERRAIN_LOD_SOFTEN_ONSET_FRACTION;
+
+    /// The setting's documented reach: 0 leaves the ring edge, 1 fully softens
+    /// at 0.65 of it and starts at about a third (not a fifth, #6455).
+    #[test]
+    fn the_setting_maps_to_the_documented_distances() {
+        let ring_edge = 1000.0;
+        assert_eq!(terrain_lod_soften_end(ring_edge, 0.0), ring_edge);
+        let full = terrain_lod_soften_end(ring_edge, 1.0);
+        assert!((full - 650.0).abs() < 1e-3, "full softening at 0.65 of the edge, got {full}");
+        let onset = TERRAIN_LOD_SOFTEN_ONSET_FRACTION * full;
+        assert!((onset - 325.0).abs() < 1e-3, "onset at 0.325 of the edge, got {onset}");
+        // A higher setting starts the fade earlier.
+        assert!(terrain_lod_soften_end(ring_edge, 0.75) < terrain_lod_soften_end(ring_edge, 0.25));
+    }
 }
 
 /// Ensure the terrain-side Tier-3 detail atlas represents the active engine

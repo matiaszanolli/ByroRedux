@@ -391,14 +391,15 @@ void main() {
     // as a step in detail. Widening the albedo's sampling gradients with camera
     // distance selects blurrier mips, easing the ground toward the LOD look
     // before the ring ends. `lodSoftenEnd` is the distance of full softening
-    // (it starts at half of it); 0 — the setting off, or a tile spawned before
+    // (it starts at `TERRAIN_LOD_SOFTEN_ONSET_FRACTION` of it); 0 — the setting off, or a tile spawned before
     // the broadcast — leaves the gradients untouched. Albedo only: the normal
     // and specular loops keep the true gradients.
     vec2 albedoUVdx = splatUVdx;
     vec2 albedoUVdy = splatUVdy;
     if (terrainSplatActive && terrainTile.lodSoftenEnd > 0.0) {
         float lodSoften = smoothstep(
-            0.5 * terrainTile.lodSoftenEnd, terrainTile.lodSoftenEnd,
+            TERRAIN_LOD_SOFTEN_ONSET_FRACTION * terrainTile.lodSoftenEnd,
+            terrainTile.lodSoftenEnd,
             length(cameraPos.xyz - fragWorldPos));
         float lodSoftenScale = exp2(TERRAIN_LOD_SOFTEN_MIPS * lodSoften);
         albedoUVdx *= lodSoftenScale;

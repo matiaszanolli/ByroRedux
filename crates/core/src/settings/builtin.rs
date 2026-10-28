@@ -51,7 +51,8 @@ pub const TERRAIN_PARALLAX_RANGE_SETTING_ID: &str = "render.terrain_parallax_ran
 pub const TERRAIN_PARALLAX_RANGE_DEFAULT_M: f32 = 20.0;
 
 /// Distance softening of the near terrain toward the look of the distant LOD
-/// ring: 0 = off, 1 = soften from about a fifth of the ring out. The host maps
+/// ring: 0 = off, 1 = soften from about a third of the ring out (fully
+/// softened at 0.65 of the ring edge, ramping from half of that). The host maps
 /// it to the camera distance at which the near terrain is fully softened.
 pub const TERRAIN_LOD_SOFTEN_SETTING_ID: &str = "render.terrain_lod_soften";
 /// A starting point to tune by eye: the baked LOD diffuse is a fixed, much

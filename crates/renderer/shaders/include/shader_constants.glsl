@@ -95,6 +95,7 @@
 
 // Terrain distance softening toward the LOD look
 #define TERRAIN_LOD_SOFTEN_MIPS 3.0
+#define TERRAIN_LOD_SOFTEN_ONSET_FRACTION 0.5
 // Ground-cover density field + scatter (#4054)
 #define GROUNDCOVER_NO_TERRAIN_TILE 4294967295u
 #define GROUNDCOVER_NO_WATER -1e30
