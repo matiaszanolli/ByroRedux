@@ -211,7 +211,7 @@ use byroredux_core::ecs::components::{
 use byroredux_core::math::Vec3;
 use byroredux_plugin::esm::records::{BptdPart, DEFAULT_BODY_PART_DATA, ItemKind};
 use byroredux_physics::RigidBodyHandle;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Head-height offset above an actor root (Bethesda units).
@@ -336,23 +336,33 @@ pub(crate) fn vats_scan(world: &World) {
         .and_then(|handles| handles.get(player).map(|h| h.body));
 
     let mut targets = Vec::new();
-    let Some(actors) = world.query::<GlobalTransform>() else {
-        return;
+    // #6444 — gather the candidates and drop the `GlobalTransform` guard
+    // before pricing anything (the #5954 gather-then-filter pattern). Holding
+    // it across the loop took `ActorVitals`, `RapierHandles`, the pools and a
+    // second `GlobalTransform` read under it, closing the existing
+    // `ActorVitals -> RapierHandles -> GlobalTransform` chain.
+    let candidates: Vec<(EntityId, Vec3)> = {
+        let Some(actors) = world.query::<GlobalTransform>() else {
+            return;
+        };
+        actors.iter().map(|(entity, transform)| (entity, transform.translation)).collect()
     };
-    for (entity, transform) in actors.iter() {
+    // Built once per scan, not once per priced part.
+    let bodies_by_target = target_bodies_by_owner(world);
+    for (entity, translation) in candidates {
         // Actor-ness is the vitals marker; the form id reaches the
         // creature's PNAM limb-table link. Single-component queries +
         // `world.get` per the #4104 house pattern.
         if world.get::<ActorVitals>(entity).is_none() {
             continue;
         }
-        let Some(form) = world.get::<FormIdComponent>(entity) else {
+        let Some(form_id) = world.get::<FormIdComponent>(entity).map(|form| form.0) else {
             continue;
         };
         if entity == player || world.get::<Dead>(entity).is_some() {
             continue;
         }
-        let center = transform.translation + Vec3::Y * EYE_HEIGHT_BU;
+        let center = translation + Vec3::Y * EYE_HEIGHT_BU;
         let center_distance = (center - eye).length();
         if center_distance > model.max_engage_distance {
             continue;
@@ -362,7 +372,7 @@ pub(crate) fn vats_scan(world: &World) {
         // FormId resolves through the pool (`FormIdPool::local_of`).
         let global_form = world
             .try_resource::<byroredux_core::form_id::FormIdPool>()
-            .and_then(|pool| pool.local_of(form.0));
+            .and_then(|pool| pool.local_of(form_id));
         let body_form = if is_creature {
             global_form.and_then(|form| index.creatures.get(&form).and_then(|r| r.body_part_form))
         } else {
@@ -385,7 +395,7 @@ pub(crate) fn vats_scan(world: &World) {
                         distance,
                         skill,
                         screen_percent: visible_fraction(
-                            world, eye, position, entity, excluded_body,
+                            world, &bodies_by_target, eye, position, entity, excluded_body,
                         ),
                         // Always the first shot: the model's Concentrated Fire
                         // step is the *perk's* bonus ("accuracy gained by the
@@ -416,7 +426,7 @@ pub(crate) fn vats_scan(world: &World) {
                         distance: center_distance,
                         skill,
                         screen_percent: visible_fraction(
-                            world, eye, center, entity, excluded_body,
+                            world, &bodies_by_target, eye, center, entity, excluded_body,
                         ),
                         concentrated_shot: 1,
                     }),
@@ -443,12 +453,35 @@ fn bone_position(world: &World, actor: EntityId, node: &str) -> Option<Vec3> {
     world.get::<GlobalTransform>(bone).map(|t| t.translation)
 }
 
+/// Every actor-collider body, grouped by the actor it belongs to (#6444): the
+/// bodies a ray may touch without counting as cover. One pass over the physics
+/// handles per scan; the owner lookups run with the `RapierHandles` guard
+/// already dropped.
+fn target_bodies_by_owner(world: &World) -> HashMap<EntityId, HashSet<RigidBodyHandle>> {
+    let bodies: Vec<(EntityId, RigidBodyHandle)> = world
+        .query::<byroredux_physics::RapierHandles>()
+        .map(|handles| handles.iter().map(|(owner, handles)| (owner, handles.body)).collect())
+        .unwrap_or_default();
+    let mut by_target: HashMap<EntityId, HashSet<RigidBodyHandle>> = HashMap::new();
+    for (owner, body) in bodies {
+        if let Some(target) = world
+            .get::<byroredux_physics::ActorColliderOwner>(owner)
+            .map(|owner| owner.0)
+        {
+            by_target.entry(target).or_default().insert(body);
+        }
+    }
+    by_target
+}
+
 /// The fraction of a part's occlusion fan that reaches the target
 /// unobstructed: partial cover degrades the chance instead of gating
 /// it (the area-not-point rule; see `PART_FAN_OFFSETS`). A ray is
-/// blocked when it stops short on a body that is not the target's own.
+/// blocked when it stops short on a body that is not the target's own
+/// (`bodies_by_target`, from [`target_bodies_by_owner`]).
 fn visible_fraction(
     world: &World,
+    bodies_by_target: &HashMap<EntityId, HashSet<RigidBodyHandle>>,
     eye: Vec3,
     target_point: Vec3,
     target: EntityId,
@@ -457,20 +490,8 @@ fn visible_fraction(
     let Some(physics) = world.try_resource::<byroredux_physics::PhysicsWorld>() else {
         return 1.0;
     };
-    let target_bodies: HashSet<_> = world
-        .query::<byroredux_physics::RapierHandles>()
-        .map(|handles| {
-            handles
-                .iter()
-                .filter(|(owner, _)| {
-                    world
-                        .get::<byroredux_physics::ActorColliderOwner>(*owner)
-                        .is_some_and(|owner| owner.0 == target)
-                })
-                .map(|(_, handles)| handles.body)
-                .collect()
-        })
-        .unwrap_or_default();
+    let empty = HashSet::new();
+    let target_bodies = bodies_by_target.get(&target).unwrap_or(&empty);
     let mut visible = 0usize;
     for offset in PART_FAN_OFFSETS {
         let point = target_point + Vec3::Y * offset;
