@@ -161,7 +161,15 @@ debug_command 'save.info 0' "$LOG_DIR/saveinfo0.log" || fail 'save.info 0 failed
 grep -Fq 'slot 0: VALID' "$LOG_DIR/saveinfo0.log" || fail 'quicksave slot 0 did not validate'
 
 # ── Gate 2 — a second quicksave after real displacement lands in slot 1 ────
-move_at_least move1 "$LOG_DIR/pose0.status" 120
+# 20 frames, not 120 (#6501): the character covers ~7 units a frame, so on the
+# FO3 saloon 120 backward frames drive the body into the back wall (x~1286,
+# z~45) after ~25. There the character controller bobs the body up to ~1.8 units
+# and lets it creep back to the floor over several seconds, and the
+# `grounded=true` read that ends wait_grounded lands mid-bob: the quicksaved pose
+# was a transient 0.2-1.6 units above the floor, and the (exact) restore, which
+# settles on the floor, looked like a miss. 20 frames displace the body ~140
+# units (far past the 10-unit floor) and stop well short of the wall.
+move_at_least move1 "$LOG_DIR/pose0.status" 20
 debug_command 'input.press quicksave' "$LOG_DIR/press2.log" || fail 'second quicksave press failed'
 grep -Fq 'action=Quicksave binding=F5' "$LOG_DIR/press2.log" \
     || fail 'second F5 press was not recognized'
