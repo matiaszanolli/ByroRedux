@@ -1,3 +1,10 @@
+# regenerated: 2026-10-28 (#6498 — every row re-captured in ONE renderer-static run, engine ca8d26bc5; all five cells in the same run)
+# RT-7 (folded into #6498): draw rows 1514/511b/65c raster 1285 -> 1515/516b/62c
+# raster 1289. Entities, lights, skin, tex rows and the camera pose are unchanged.
+# Already present at 011ad0c07 (2026-10-20), byte-identical at HEAD; gpu_calls
+# improved (65 -> 62), cmds +1 / batches +5 — within tolerance, unattributed to a
+# single commit (not bisected). Invariant batches <= raster <= cmds holds
+# (516 <= 1289 <= 1515).
 # regenerated: 2026-10-05 (#5132 — light_count_spot row added; light rows
 # re-captured in ONE renderer-static run per game, engine f75ac66cb)
 # RT-2026-09-29-06: the schema had no spot-light row, so the b9e961eeb
@@ -151,9 +158,9 @@ light_count_directional	0
 skin_pool_live	3
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	87.3
-bench_fps_avg	87.3
-bench_draws_cmds	1514
-bench_draws_raster_cmds	1285
-bench_draws_batches	511
-bench_draws_gpu_calls	65
+bench_fps_p50	84.3
+bench_fps_avg	84.3
+bench_draws_cmds	1515
+bench_draws_raster_cmds	1289
+bench_draws_batches	516
+bench_draws_gpu_calls	62

@@ -1,3 +1,20 @@
+# regenerated: 2026-10-28 (#6498 / #6499 — every row re-captured in ONE renderer-static run, engine ca8d26bc5; all five cells in the same run)
+# RT-3: entities_total 9499 -> 9809 (+3.3 %), cmds 2494 -> 2495, skin_pool_live 122 ->
+# 123. ATTRIBUTION (#6499): `entities_total` is `World::next_entity_id()` — the
+# monotonic id high-water mark, not a live count. The +327 at `a649b55b4` (M47.2
+# defaultSetStageTrigScript recognizer, 9508 -> 9835 between bisect idx 620/621) is
+# 327 ids burnt by `populate_quest_trigger_approaches`
+# (byroredux/src/asset_provider/script.rs): it spawns a probe entity per recognized
+# trigger script across the whole parsed load order, reads the QuestAdvanceOnActivate
+# off it and despawns it. The newly recognized defaultSetStageTrigScript instances
+# (not BaseForm-gated, so none is installed: 'Prepared 40 ... trigger approaches'
+# before and after) each burn an id. Verified by an A/B of dbc80585f vs a649b55b4 on
+# this cell: identical entity counts for all 71 inspectable components and identical
+# Name/Transform/Mesh sets; every entity after the cell's REFRs is shifted by exactly
+# 327; a spawn backtrace puts the extra ids inside populate_quest_trigger_approaches.
+# Not a leak or duplicate spawn. Smaller later steps (9835 -> 9847 -> 9863, then
+# -> 9809 after 2026-10-20) and the cmds +1 / skin_live +1 (before idx 307) are NOT
+# bisected. Camera pose, lights, tex and the other draw rows unchanged.
 # regenerated: 2026-10-05 (#5132 — light_count_spot row added; light rows
 # re-captured in ONE renderer-static run per game, engine f75ac66cb)
 # RT-2026-09-29-06: the schema had no spot-light row, so the b9e961eeb
@@ -167,19 +184,19 @@
 bench_mode	renderer-static
 bench_camera_pos	-448.000,-200.000,128.000
 bench_camera_forward	-0.016797,0.000000,-0.999859
-entities_total	9499
+entities_total	9809
 tex_missing_base_color	0
 tex_missing_all_slots	2
 mesh_cache_failed_count	0
 light_count_spot	0
 light_count_point	28
 light_count_directional	0
-skin_pool_live	122
+skin_pool_live	123
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	177.4
-bench_fps_avg	177.4
-bench_draws_cmds	2494
+bench_fps_p50	160.2
+bench_fps_avg	160.2
+bench_draws_cmds	2495
 bench_draws_raster_cmds	1786
 bench_draws_batches	643
 bench_draws_gpu_calls	34

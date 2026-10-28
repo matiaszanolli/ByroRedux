@@ -1,3 +1,10 @@
+# regenerated: 2026-10-28 (#6498 — every row re-captured in ONE renderer-static run, engine ca8d26bc5; all five cells in the same run)
+# RT-7 (folded into #6498): draw rows 2069/500b/120c -> 2069/503b/118c. Entities,
+# cmds, lights, skin, tex rows and the camera pose are unchanged. The move was
+# already present at 011ad0c07 (2026-10-20) and is byte-identical at HEAD;
+# gpu_calls improved (120 -> 118), batches grew by 3 — within tolerance and
+# unattributed to a single commit (not bisected). Re-captured so the loose
+# `<=` draw gates stop letting the old 500b/120c values return.
 # regenerated: 2026-10-05 (#5132 — light_count_spot row added; light rows
 # re-captured in ONE renderer-static run per game, engine f75ac66cb)
 # RT-2026-09-29-06: the schema had no spot-light row, so the b9e961eeb
@@ -127,9 +134,9 @@ light_count_directional	0
 skin_pool_live	106
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	133.5
-bench_fps_avg	133.5
+bench_fps_p50	141.5
+bench_fps_avg	141.5
 bench_draws_cmds	2069
 bench_draws_raster_cmds	1284
-bench_draws_batches	500
-bench_draws_gpu_calls	120
+bench_draws_batches	503
+bench_draws_gpu_calls	118

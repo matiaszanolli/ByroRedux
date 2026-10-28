@@ -1,3 +1,11 @@
+# regenerated: 2026-10-28 (#6498 — every row re-captured in ONE renderer-static run, engine ca8d26bc5; all five cells in the same run)
+# RT-2: entities_total 928 -> 969 (+4.4 %), skin_pool_live 9 -> 10, cmds 335 -> 336.
+# Dominant step `1b45763fa` (Fix #5487, Oblivion's own NPC body table and race body
+# skins): one-commit A/B 928 -> 966 entities, 335 -> 336 cmds, 9 -> 10 skin_live
+# (bisect idx 290 -> 291); a further +3 landed between idx 307 and 615. Intended
+# correctness fix — HEAD log: `Player body: assembled from NPC_ 00000007 (Oblivion)
+# ... meshes=20 equipment_parts=4`. Camera pose, lights, tex and the other draw rows
+# unchanged.
 # regenerated: 2026-10-05 (#5132 — light_count_spot row added; light rows
 # re-captured in ONE renderer-static run per game, engine f75ac66cb)
 # RT-2026-09-29-06: the schema had no spot-light row, so the b9e961eeb
@@ -162,19 +170,19 @@
 bench_mode	renderer-static
 bench_camera_pos	266.899,382.821,-204.473
 bench_camera_forward	-0.058378,0.000000,0.998294
-entities_total	928
+entities_total	969
 tex_missing_base_color	0
 tex_missing_all_slots	0
 mesh_cache_failed_count	0
 light_count_spot	0
 light_count_point	8
 light_count_directional	0
-skin_pool_live	9
+skin_pool_live	10
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	172.9
-bench_fps_avg	172.9
-bench_draws_cmds	335
+bench_fps_p50	171.3
+bench_fps_avg	171.3
+bench_draws_cmds	336
 bench_draws_raster_cmds	20
 bench_draws_batches	18
 bench_draws_gpu_calls	2

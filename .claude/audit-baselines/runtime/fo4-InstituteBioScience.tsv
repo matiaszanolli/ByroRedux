@@ -1,3 +1,19 @@
+# regenerated: 2026-10-28 (#6498 — every row re-captured in ONE renderer-static run, engine ca8d26bc5; all five cells in the same run)
+# RT-1: entities_total 16885 -> 14061 (-16.7 %); draws 3971/700b/108c raster 3618 ->
+# 2471/710b/110c raster 2247; skin_pool_live 132 -> 258. Dominant step `777351ec1`
+# (Fix #5484, precombine skip set from XCRI pairs, not XPRI): one-commit A/B 17266 ->
+# 14237 entities, cmds 4002 -> 2376, raster 3649 -> 2152, batches 719 -> 690 —
+# an intended correctness fix. Many small commits moved entities both ways
+# (16885 -> 17266 before idx 287; 14237 -> 14776 -> 15165 through 10-14 (M47.2);
+# 15049 -> 15057 at #6077; 15057 -> 14061 after 2026-10-20, NOT bisected).
+# skin_pool_live doubling (advisory) is unattributed. Camera pose unchanged; lights
+# (680 point / 5 spot) and tex rows unchanged. HEAD log: `502 REFRs skipped via FO4
+# PreCombined absorption`, `PreCombined: 13 hashes - 1722 entities spawned`.
+# COVERAGE NOTE: the raster prefix (2247) is now BELOW DRAW_SORT_PARALLEL_THRESHOLD
+# (3000), so this cell no longer exercises the parallel draw-sort branch that the
+# 2026-09-30 regen recorded it for. No other baseline cell exercises it either
+# (raster counts are all below 3000) — which cell should carry that coverage is an
+# open decision, not made here.
 # regenerated: 2026-10-05 (#5132 — light_count_spot row added; light rows
 # re-captured in ONE renderer-static run per game, engine f75ac66cb)
 # RT-2026-09-29-06: the schema had no spot-light row, so the b9e961eeb
@@ -184,19 +200,19 @@
 bench_mode	renderer-static
 bench_camera_pos	426.895,364.248,-162.693
 bench_camera_forward	0.781582,0.000000,-0.623802
-entities_total	16885
+entities_total	14061
 tex_missing_base_color	1
 tex_missing_all_slots	2
 mesh_cache_failed_count	0
 light_count_spot	5
 light_count_point	680
 light_count_directional	0
-skin_pool_live	132
+skin_pool_live	258
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	44.4
-bench_fps_avg	44.4
-bench_draws_cmds	3971
-bench_draws_raster_cmds	3618
-bench_draws_batches	700
-bench_draws_gpu_calls	108
+bench_fps_p50	62.3
+bench_fps_avg	62.3
+bench_draws_cmds	2471
+bench_draws_raster_cmds	2247
+bench_draws_batches	710
+bench_draws_gpu_calls	110
