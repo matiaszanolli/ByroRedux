@@ -208,6 +208,40 @@ sweep_survivors() {
     return 0
 }
 
+# Poll until pid `$1` has exited, at most `$2` seconds. 0 = exited in time,
+# 1 = still alive. Never kills anything: the caller decides what a straggler
+# earns (#6503).
+wait_for_exit() {
+    local pid="$1" deadline="${2:-5}" i
+    for ((i = 0; i < deadline * 5; i++)); do
+        kill -0 "${pid}" 2>/dev/null || return 0
+        sleep 0.2
+    done
+    kill -0 "${pid}" 2>/dev/null && return 1
+    return 0
+}
+
+# Kill every X server started with `-auth $1` (TERM, then KILL). 0 once none
+# remain. `xvfb-run` is a dash script whose only cleanup is `trap clean_up
+# EXIT`; a TERM that lands while it is reaping its child aborts that trap
+# before `kill "$XVFBPID"`, and the Xvfb reparents to `systemd --user` (#6503).
+# Each run gives xvfb-run its own `-f` auth file, so this run's server is the
+# one whose `-auth` names it. Keyed on the full path, never on `Xvfb` alone — a
+# neighbouring run's (or the user's own) server must survive.
+sweep_xvfb() {
+    local authfile="$1" i
+    pgrep -f -- "-auth ${authfile}" >/dev/null 2>&1 || return 0
+    pkill -TERM -f -- "-auth ${authfile}" 2>/dev/null || true
+    for ((i = 0; i < 10; i++)); do
+        pgrep -f -- "-auth ${authfile}" >/dev/null 2>&1 || return 0
+        sleep 0.5
+    done
+    pkill -KILL -f -- "-auth ${authfile}" 2>/dev/null || true
+    sleep 0.5
+    pgrep -f -- "-auth ${authfile}" >/dev/null 2>&1 && return 1
+    return 0
+}
+
 # --- self-test ---------------------------------------------------------------
 
 if [[ "${1:-}" == "--self-test" ]]; then
@@ -336,6 +370,50 @@ EOF
     trap - EXIT
     rm -rf "${scratch}"
 
+    # #6503 — `wait_for_exit` is bounded and non-destructive: a process that
+    # exits inside the window reads 0, a long-lived one reads 1 and is left
+    # alone (the caller TERMs it only then, never pre-emptively).
+    ( sleep 1 ) &
+    quick=$!
+    wait_for_exit "${quick}" 5 || die "self-test: a 1 s process must be seen to exit within 5 s"
+    wait "${quick}" 2>/dev/null || true
+    sleep 30 &
+    slow=$!
+    if wait_for_exit "${slow}" 1; then
+        kill "${slow}" 2>/dev/null || true
+        die "self-test: a 30 s process must not read as exited after 1 s"
+    fi
+    kill -0 "${slow}" 2>/dev/null || die "self-test: wait_for_exit must not kill the process it waits on"
+    kill "${slow}" 2>/dev/null || true
+    wait "${slow}" 2>/dev/null || true
+
+    # #6503 — the orphan-Xvfb case: a server whose command line carries this
+    # run's `-auth` file is swept; one carrying another run's file survives.
+    xscratch="$(mktemp -d)"
+    cp "$(command -v bash)" "${xscratch}/bxselfxvfb"
+    mkfifo "${xscratch}/block"
+    ours="${xscratch}/ours.Xauthority"
+    theirs="${xscratch}/theirs.Xauthority"
+    "${xscratch}/bxselfxvfb" -c "read -r _ < '${xscratch}/block'" -auth "${ours}" \
+        >/dev/null 2>&1 </dev/null &
+    our_x=$!
+    "${xscratch}/bxselfxvfb" -c "read -r _ < '${xscratch}/block'" -auth "${theirs}" \
+        >/dev/null 2>&1 </dev/null &
+    their_x=$!
+    trap 'kill "${our_x}" "${their_x}" 2>/dev/null || true; rm -rf "${xscratch}"' EXIT
+    for _ in $(seq 1 25); do
+        pgrep -f -- "-auth ${theirs}" >/dev/null 2>&1 &&
+            pgrep -f -- "-auth ${ours}" >/dev/null 2>&1 && break
+        sleep 0.2
+    done
+    sweep_xvfb "${ours}" || die "self-test: sweep_xvfb left this run's server alive"
+    pgrep -f -- "-auth ${ours}" >/dev/null 2>&1 && die "self-test: this run's Xvfb survived the sweep"
+    kill -0 "${their_x}" 2>/dev/null || die "self-test: sweep_xvfb killed another run's server"
+    sweep_xvfb "${theirs}" || die "self-test: second sweep failed"
+    wait "${our_x}" "${their_x}" 2>/dev/null || true
+    trap - EXIT
+    rm -rf "${xscratch}"
+
     # `pgrep -f` self-match: the trap the issue names. This script's own
     # command line carries the engine path, so the `-f` form reports a hit
     # with no engine running at all.
@@ -409,7 +487,12 @@ settings_file="${OUT}/${label}.settings.toml"
 rm -f -- "${settings_file}"
 BYROREDUX_SETTINGS_PATH="${settings_file}" \
 BYRO_DEBUG_SERVER=1 BYRO_DEBUG_PORT="${DEBUG_PORT}" \
-xvfb-run -a --server-args="-screen 0 1280x720x24" \
+# #6503 — `-f` pins the auth file, so the Xvfb this run starts is identifiable
+# by its `-auth` argument and teardown can sweep it if xvfb-run's own cleanup is
+# pre-empted.
+xvfb_auth="${OUT}/${label}.Xauthority"
+rm -f -- "${xvfb_auth}"
+xvfb-run -a -f "${xvfb_auth}" --server-args="-screen 0 1280x720x24" \
     "${ENGINE_BIN}" --game "${GAME}" ${CELL:+--cell "${CELL}"} \
     --bench-frames "${FRAMES}" --bench-mode "${BENCH_MODE}" --bench-hold \
     >"${engine_log}" 2>&1 &
@@ -428,8 +511,17 @@ teardown() {
     kill -TERM "${engine_pid}" 2>/dev/null || true
     sleep 2
     kill -KILL "${engine_pid}" 2>/dev/null || true
-    kill -TERM "${wrapper_pid}" 2>/dev/null || true
+    # #6503 — let xvfb-run reap the engine and run its own cleanup (`kill
+    # $XVFBPID`) before it is signalled: a TERM that lands mid-reap aborts that
+    # trap and orphans the X server. It normally exits on its own within a
+    # moment of the engine dying; TERM it only if it is still alive after.
+    if ! wait_for_exit "${wrapper_pid}" 5; then
+        kill -TERM "${wrapper_pid}" 2>/dev/null || true
+    fi
     wait "${wrapper_pid}" 2>/dev/null || true
+    sweep_xvfb "${xvfb_auth}" ||
+        log "WARNING: an Xvfb server survived the sweep (${xvfb_auth}) — kill it by PID"
+    rm -f -- "${xvfb_auth}"
     sweep_survivors "${ENGINE_PROC}" ||
         log "WARNING: an engine process survived the sweep — do NOT start another capture"
 }
