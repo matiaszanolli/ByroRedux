@@ -414,6 +414,14 @@ EOF
     trap - EXIT
     rm -rf "${xscratch}"
 
+    # The engine launch's env prefix (BYRO_DEBUG_SERVER=1 above all) must run straight
+    # into `xvfb-run`: a comment or statement between them turns the assignments into
+    # plain shell variables and the engine boots with its debug server disabled.
+    if ! awk '/^BYRO_DEBUG_SERVER=1 BYRO_DEBUG_PORT=.*\\$/ { getline nxt; found = (nxt ~ /^xvfb-run /) }
+              END { exit !found }' "${BASH_SOURCE[0]}"; then
+        die "self-test: the BYRO_DEBUG_SERVER env prefix no longer continues straight into xvfb-run"
+    fi
+
     # `pgrep -f` self-match: the trap the issue names. This script's own
     # command line carries the engine path, so the `-f` form reports a hit
     # with no engine running at all.
@@ -485,13 +493,15 @@ log "launching ${label}"
 # baselines were captured with.
 settings_file="${OUT}/${label}.settings.toml"
 rm -f -- "${settings_file}"
-BYROREDUX_SETTINGS_PATH="${settings_file}" \
-BYRO_DEBUG_SERVER=1 BYRO_DEBUG_PORT="${DEBUG_PORT}" \
 # #6503 — `-f` pins the auth file, so the Xvfb this run starts is identifiable
 # by its `-auth` argument and teardown can sweep it if xvfb-run's own cleanup is
-# pre-empted.
+# pre-empted. Set up BEFORE the env-assignment prefix below: any line between
+# that prefix and `xvfb-run` detaches it (the engine then logs "Debug server
+# disabled" and every capture dies), which `--self-test` pins.
 xvfb_auth="${OUT}/${label}.Xauthority"
 rm -f -- "${xvfb_auth}"
+BYROREDUX_SETTINGS_PATH="${settings_file}" \
+BYRO_DEBUG_SERVER=1 BYRO_DEBUG_PORT="${DEBUG_PORT}" \
 xvfb-run -a -f "${xvfb_auth}" --server-args="-screen 0 1280x720x24" \
     "${ENGINE_BIN}" --game "${GAME}" ${CELL:+--cell "${CELL}"} \
     --bench-frames "${FRAMES}" --bench-mode "${BENCH_MODE}" --bench-hold \
