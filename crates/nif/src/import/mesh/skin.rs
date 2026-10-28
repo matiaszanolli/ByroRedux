@@ -631,6 +631,10 @@ pub fn widen_packed_bone_indices(bone_indices: &[[u8; 4]]) -> Vec<[u16; 4]> {
         .collect()
 }
 
+/// Decoded SSE skin payload: per-vertex `(weights, skin-global bone
+/// indices)`, returned by [`decode_sse_skin_payload`].
+pub type SseSkinPayload = (Vec<[f32; 4]>, Vec<[u8; 4]>);
+
 /// Resolve `shape.skin_ref` → `NiSkinPartition` → `SseSkinGlobalBuffer`
 /// and decode the per-vertex skin payload (4 × half-float weights +
 /// 4 × u8 skin-global bone indices). Returns `None` when the
@@ -638,10 +642,6 @@ pub fn widen_packed_bone_indices(bone_indices: &[[u8; 4]]) -> Vec<[u16; 4]> {
 /// missing / malformed.
 ///
 /// The caller widens the packed indices without partition remapping.
-/// Decoded SSE skin payload: per-vertex `(weights, skin-global bone
-/// indices)`, returned by [`decode_sse_skin_payload`].
-pub type SseSkinPayload = (Vec<[f32; 4]>, Vec<[u8; 4]>);
-
 pub fn decode_sse_skin_payload(scene: &NifScene, shape: &BsTriShape) -> Option<SseSkinPayload> {
     let skin_idx = shape.skin_ref.index()?;
     let partition_ref = if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {

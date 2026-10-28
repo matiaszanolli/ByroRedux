@@ -97,3 +97,34 @@ fn packed_sse_indices_match_partition_palette_expansion_on_real_data() {
         "packed indices are already skin-global, not partition-local"
     );
 }
+
+/// #6513: the "no partition remap" contract (#613/#2577) must head
+/// `decode_sse_skin_payload`, not the `SseSkinPayload` alias declared next to
+/// it. `spliced_doc_blocks` can't see this — the doc doesn't open with a
+/// sibling's name — so pin it directly.
+#[test]
+fn no_remap_contract_docs_decode_fn_not_payload_alias() {
+    let src = include_str!("skin.rs");
+    let doc_before = |item: &str| -> String {
+        let at = src.find(item).unwrap_or_else(|| panic!("`{item}` not found"));
+        let mut lines: Vec<&str> = Vec::new();
+        for l in src[..at].lines().rev() {
+            if l.trim_start().starts_with("///") {
+                lines.push(l);
+            } else {
+                break;
+            }
+        }
+        lines.join("\n")
+    };
+    let fn_doc = doc_before("pub fn decode_sse_skin_payload(");
+    let alias_doc = doc_before("pub type SseSkinPayload");
+    assert!(
+        fn_doc.contains("without partition remapping"),
+        "decode_sse_skin_payload lost its no-remap contract doc"
+    );
+    assert!(
+        !alias_doc.contains("remap"),
+        "no-remap contract is spliced onto the SseSkinPayload alias"
+    );
+}
