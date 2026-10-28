@@ -697,6 +697,8 @@ choice is deliberately unmade, and each would be its own follow-up issue.
    real validation point for the shared FormID-resolution index both
    halves need.
 
+   **Superseded (#6171):** the `CellRootRefIndex` / `PersistentRefIndex` family (`persistent_ref_index`, `cell_root_ref_index`, `form_id_root_index`) was deleted in #3884 (`9bd432f8f`, 2026-09-06) once EX-16 closed; this note records the design as it was.
+
    **§7 step 1 landed (2026-08-23)**: `CellRootRefIndex`
    (`byroredux/src/components.rs`) + `cell_loader::cell_root_ref_index` —
    the ordinary-cell-root sibling of `PersistentRefIndex`, resolving a
@@ -837,7 +839,7 @@ transitions, saves, and load-order changes.
    missing is test coverage: only coordinate-conversion and radius-arg unit
    tests exist in `transition.rs` today — add one that exercises the full
    multi-field restore end-to-end (grid + pose + time + weather together).
-3. [x] **Duplicate-persistent-ref guard** — done. Landed
+3. [x] **Duplicate-persistent-ref guard** — done (**superseded, #6171:** the index was deleted in #3884). Landed
    `PersistentRefIndex` (`byroredux/src/components.rs`) + its build/query
    logic (`cell_loader::persistent_ref_index::{resolve_persistent_ref,
    invalidate}`): an `O(1)`-after-rebuild `FormId(u32, global load-order
@@ -1149,7 +1151,7 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    `spawn_npc_entity` with package state re-initialized from scratch —
    confirmed correct, that half of the premise stands.
 
-   What doesn't stand: `PersistentRefIndex` is scoped to entities whose
+   What doesn't stand (`PersistentRefIndex` has since been deleted, #3884): `PersistentRefIndex` is scoped to entities whose
    `CellRoot` equals the worldspace's `persistent_root`
    (`cell_loader::persistent_ref_index::rebuild`'s `owned_by_persistent_cell`
    check) — and a persistent-flagged actor's `CellRoot` IS
@@ -1212,6 +1214,8 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    sequencing: the shared FormID-resolution index first, then C2's
    (smaller, lower-risk) reconcile half, then this item's snapshot/restore
    mechanism last. No code lands from the design doc itself.
+
+   **Superseded (#6171):** the index family was deleted in #3884; EX-16 (#2737, #3299) is closed.
 
    **Step 1 of that sequencing landed (2026-08-23)**: `CellRootRefIndex`
    — see EX-14/15 item C2's note above for the full description (it's the
