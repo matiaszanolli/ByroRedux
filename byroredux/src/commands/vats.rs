@@ -6,12 +6,14 @@
 use super::shared::*;
 use crate::components::{VatsMode, VatsState};
 use crate::systems::vats::{
-    vats_cancel, vats_confirm, vats_queue_part, vats_scan, VatsQueueRefusal,
+    vats_active, vats_cancel, vats_confirm, vats_entry_refusal, vats_queue_part, vats_scan,
+    VatsQueueRefusal,
 };
 use byroredux_core::ecs::World;
 
-/// `vats.enter` — enter targeting (same gates as the key: model, living
-/// player, enabled control domain). Runs the scan.
+/// `vats.enter` — enter targeting (the key's gates, [`vats_entry_refusal`]:
+/// model, living player in the character mode, enabled control domain).
+/// Runs the scan.
 pub(crate) struct VatsEnterCommand;
 
 impl ConsoleCommand for VatsEnterCommand {
@@ -31,14 +33,8 @@ impl ConsoleCommand for VatsEnterCommand {
         {
             return CommandOutput::line("vats: already active");
         }
-        if !crate::systems::player_can_act(world) {
-            return CommandOutput::error("vats: player cannot act");
-        }
-        if world
-            .try_resource::<byroredux_core::character::VatsModel>()
-            .is_none()
-        {
-            return CommandOutput::error("vats: no VATS tuning (non-Fallout load?)");
+        if let Some(why) = vats_entry_refusal(world) {
+            return CommandOutput::error(format!("vats: {why}"));
         }
         if let Some(mut vats) = world.try_resource_mut::<VatsState>() {
             vats.mode = VatsMode::TargetSelect;
@@ -63,6 +59,9 @@ impl ConsoleCommand for VatsScanCommand {
         "Re-run the VATS limb scan against live positions"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        if !vats_active(world) {
+            return CommandOutput::error("vats.scan: not in VATS (vats.enter first)");
+        }
         vats_scan(world);
         let count = world
             .try_resource::<VatsState>()
@@ -147,6 +146,9 @@ impl ConsoleCommand for VatsQueueCommand {
                     .map(|vats| vats.ap_reserved)
                     .unwrap_or(0.0)
             )),
+            Err(VatsQueueRefusal::NotInVats) => {
+                CommandOutput::error("vats.queue: not in VATS (vats.enter first)")
+            }
             Err(VatsQueueRefusal::PartGone) => {
                 CommandOutput::error("vats.queue: part vanished from the scan")
             }
@@ -171,6 +173,9 @@ impl ConsoleCommand for VatsConfirmCommand {
         "Charge AP, execute the queued VATS attacks through the combat funnel, exit"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        if !vats_active(world) {
+            return CommandOutput::error("vats.confirm: not in VATS (vats.enter first)");
+        }
         let queued = world
             .try_resource::<VatsState>()
             .map(|vats| vats.queue.len())

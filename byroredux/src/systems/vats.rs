@@ -45,20 +45,7 @@ pub(crate) fn vats_mode_system(world: &World, _dt: f32) {
         }
         return;
     }
-    // Entry gates.
-    if world.try_resource::<VatsModel>().is_none() {
-        return;
-    }
-    if !player_can_act(world) {
-        return;
-    }
-    if world
-        .try_resource::<PlayerMode>()
-        .is_none_or(|mode| *mode == PlayerMode::FlyCam)
-    {
-        return;
-    }
-    if !control_vats_enabled(world) {
+    if vats_entry_refusal(world).is_some() {
         return;
     }
     if let Some(mut vats) = world.try_resource_mut::<VatsState>() {
@@ -67,6 +54,28 @@ pub(crate) fn vats_mode_system(world: &World, _dt: f32) {
     // Entering is a scan: fill the target list the overlay and queue
     // read. Re-runs (`vats.scan`) re-price against live positions.
     vats_scan(world);
+}
+
+/// Why VATS cannot be entered right now, or `None` when it can: the one list
+/// of entry gates the key ([`vats_mode_system`]) and `vats.enter` share, so
+/// the two cannot drift apart (#6469). The caller has already read the mode.
+pub(crate) fn vats_entry_refusal(world: &World) -> Option<&'static str> {
+    if world.try_resource::<VatsModel>().is_none() {
+        return Some("no VATS tuning (non-Fallout load?)");
+    }
+    if !player_can_act(world) {
+        return Some("player cannot act");
+    }
+    if world
+        .try_resource::<PlayerMode>()
+        .is_none_or(|mode| *mode == PlayerMode::FlyCam)
+    {
+        return Some("no player body (fly-cam)");
+    }
+    if !control_vats_enabled(world) {
+        return Some("the VATS control is disabled");
+    }
+    None
 }
 
 /// The `Control::Vats` input-enable domain — the first reader of the
@@ -195,6 +204,34 @@ mod tests {
         press_vats(&world);
         vats_mode_system(&world, 0.0);
         assert_eq!(world.resource::<VatsState>().mode, VatsMode::TargetSelect);
+    }
+
+    /// #6469 — the key and `vats.enter` share one gate list, so each reason the key refuses for is a
+    /// reason the console refuses for too (it used to skip the fly-cam and control-domain gates).
+    #[test]
+    fn the_entry_refusal_covers_every_gate_the_key_applies() {
+        assert_eq!(vats_entry_refusal(&armed_world()), None);
+
+        let mut world = armed_world();
+        world.remove_resource::<VatsModel>();
+        assert!(vats_entry_refusal(&world).is_some_and(|why| why.contains("tuning")));
+
+        let mut world = armed_world();
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        world.insert(player, Dead);
+        assert!(vats_entry_refusal(&world).is_some_and(|why| why.contains("cannot act")));
+
+        let mut world = armed_world();
+        world.remove_resource::<PlayerMode>();
+        world.insert_resource(PlayerMode::FlyCam);
+        assert!(vats_entry_refusal(&world).is_some_and(|why| why.contains("fly-cam")));
+
+        let mut world = armed_world();
+        let mut layers = InputLayers::default();
+        let layer = layers.create();
+        layers.set_enabled(layer, Control::Vats, false);
+        world.insert_resource(layers);
+        assert!(vats_entry_refusal(&world).is_some_and(|why| why.contains("disabled")));
     }
 }
 
@@ -518,6 +555,15 @@ pub(crate) enum VatsQueueRefusal {
     PartGone,
     /// The queue's total AP would exceed what the player has.
     NotEnoughAp { needed: f32, available: f32 },
+    /// VATS is not active: nothing to queue into (#6469).
+    NotInVats,
+}
+
+/// Whether any VATS mode is up.
+pub(crate) fn vats_active(world: &World) -> bool {
+    world
+        .try_resource::<VatsState>()
+        .is_some_and(|vats| vats.mode != VatsMode::None)
 }
 
 /// The player's ActionPoints AVIF and its current value, when the player
@@ -548,6 +594,9 @@ pub(crate) fn vats_queue_part(
     entity: EntityId,
     part_index: usize,
 ) -> Result<(), VatsQueueRefusal> {
+    if !vats_active(world) {
+        return Err(VatsQueueRefusal::NotInVats);
+    }
     let Some(part) = world
         .try_resource::<VatsState>()
         .and_then(|vats| {
@@ -580,6 +629,9 @@ pub(crate) fn vats_queue_part(
 /// a session-deterministic LCG (`VatsState::roll_state`) so gates and
 /// tests can rely on it.
 pub(crate) fn vats_confirm(world: &World) -> bool {
+    if !vats_active(world) {
+        return false;
+    }
     let (queue, reserved, mut roll_state) = world
         .try_resource::<VatsState>()
         .map(|vats| (vats.queue.clone(), vats.ap_reserved, vats.roll_state))
@@ -949,6 +1001,31 @@ mod scan_tests {
             vats_queue_part(&world, npc, torso.part_index),
             Err(VatsQueueRefusal::NotEnoughAp { .. })
         ));
+    }
+
+    /// #6469 — with no VATS mode up there is nothing to queue into or confirm: a
+    /// dead or absent player cannot land VATS hits from the console.
+    #[test]
+    fn queue_and_confirm_refuse_outside_vats() {
+        let (world, npc) = scan_world();
+        vats_scan(&world);
+        let torso = torso(&world, npc);
+        seed_ap(&world, 140.0);
+        assert_eq!(vats_queue_part(&world, npc, torso.part_index), Ok(()));
+        world.resource_mut::<VatsState>().exit_all();
+        // `exit_all` cleared the queue; refill it by hand as a stale reservation would.
+        {
+            let mut vats = world.resource_mut::<VatsState>();
+            vats.queue.push(torso.clone());
+            vats.ap_reserved = 17.0;
+        }
+        assert_eq!(
+            vats_queue_part(&world, npc, torso.part_index),
+            Err(VatsQueueRefusal::NotInVats)
+        );
+        assert!(!vats_confirm(&world), "no mode, no execution");
+        assert_eq!(ap(&world), 140.0, "and no AP was spent");
+        assert!(world.get::<byroredux_scripting::HitEvent>(npc).is_none());
     }
 
     /// A confirm whose reservation exceeds the pool (hand-built or stale)
