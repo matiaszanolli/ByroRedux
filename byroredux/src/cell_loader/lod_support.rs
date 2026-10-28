@@ -67,8 +67,28 @@ pub(crate) struct LodReconcileInput<'a> {
     /// Chebyshev radius (`radius_unload`) within which a full-detail cell may be
     /// resident. The terrain bands subdivide to the finest level wherever a
     /// coarse quad would reach it (#6094): their refine thresholds were tuned
-    /// against a ~6-cell streaming radius, not the default 12.
+    /// against a ~6-cell streaming radius, not the default 12. Consumers feed
+    /// it through [`coarse_refine_radius`], which adds the one-cell margin
+    /// (#6452).
     pub(crate) full_detail_radius: i32,
+}
+
+/// #6452 — cells of finest-band ground kept between a coarse LOD quad and the
+/// hysteresis-resident ring. Only the finest band is holed against residency
+/// and carries skirts / rim keys (#6409); a coarse quad (a skirtless `.btr`, or
+/// a synth block whose rebuild key is `(0, 0)`) touching a cell at
+/// `radius_unload` would bring back the sky-coloured ribbon #6409 fixed.
+pub(crate) const COARSE_LOD_RESIDENT_MARGIN_CELLS: i32 = 1;
+
+/// The Chebyshev radius within which a coarse terrain quad subdivides, for a
+/// resident full-detail radius of `full_detail_radius` (`-1` disables, as for
+/// `LodBandSelection::refine_within`).
+pub(crate) const fn coarse_refine_radius(full_detail_radius: i32) -> i32 {
+    if full_detail_radius < 0 {
+        full_detail_radius
+    } else {
+        full_detail_radius + COARSE_LOD_RESIDENT_MARGIN_CELLS
+    }
 }
 
 /// Whether `game` ships Bethesda's prebaked **combined** distant LOD — the

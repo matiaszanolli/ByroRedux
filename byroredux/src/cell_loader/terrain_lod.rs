@@ -46,7 +46,7 @@ use crate::streaming::LodBlock;
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
 use super::terrain::LandscapeLayerTextures;
 use super::lod_support::{
-    classify_lod_attempt, combined_lod_supported, legacy_landscape_lod_supported, vertex_bound,
+    classify_lod_attempt, coarse_refine_radius, combined_lod_supported, legacy_landscape_lod_supported, vertex_bound,
     lod_source_cell_exists, retain_resident, worldspace_cell_bounds, LodAttemptVerdict,
     LodReconcileInput, LodWorkBudget,
 };
@@ -599,7 +599,7 @@ pub(crate) fn stream_lod_blocks(
                     player_grid,
                     worldspace_cell_bounds(wctx),
                     &lod_source_cell_exists(wctx),
-                    input.full_detail_radius,
+                    coarse_refine_radius(input.full_detail_radius),
                 )
             })
             .unwrap_or_default()
@@ -612,8 +612,10 @@ pub(crate) fn stream_lod_blocks(
             // every coordinate that is not actually resident at full detail.
             -1,
             // #6094 — and any coarse quad reaching the resident region
-            // subdivides to that finest, hole-masked band.
-            input.full_detail_radius,
+            // subdivides to that finest, hole-masked band — one cell further
+            // out than residency, so a coarse quad never abuts a resident
+            // cell (#6452).
+            coarse_refine_radius(input.full_detail_radius),
             worldspace_cell_bounds(wctx),
             |level, qx, qy| lod_blocks.contains_key(&(level, qx, qy)),
             // #3385 — memoised: the probe allocates several `String`s and hashes
@@ -667,8 +669,9 @@ pub(crate) fn stream_lod_blocks(
     for &(level, qx, qy) in &desired {
         // Only the finest band can touch the full-detail region or need
         // per-cell holes: selection subdivides any coarse quad that would
-        // reach the resident ring (`LodReconcileInput::full_detail_radius`,
-        // #6094), so the baked coarse meshes stay outside it.
+        // reach the resident ring or its one-cell margin
+        // (`LodReconcileInput::full_detail_radius`, #6094 / #6452), so the
+        // baked coarse meshes stay outside it.
         let (mask, rim) = if level == k {
             (
                 block_hole_mask(cells_map, qx, qy, resident_full_cells),
@@ -1355,6 +1358,7 @@ fn spawn_lod_block(
 
 #[cfg(test)]
 mod tests {
+    use super::super::lod_support::COARSE_LOD_RESIDENT_MARGIN_CELLS;
     use super::*;
     use byroredux_core::math::Vec3;
 
@@ -1832,13 +1836,16 @@ mod tests {
                             && quad_min_chebyshev(qx, qy, level, player) <= radius_unload
                     });
 
-                    let quads = desired(radius_unload);
+                    let quads = desired(coarse_refine_radius(radius_unload));
                     for &(level, qx, qy) in &quads {
+                        // #6452 — one finest-band cell of margin, so a coarse
+                        // quad never abuts a hysteresis-resident cell.
                         assert!(
                             level == LOD_BLOCK_CELLS
-                                || quad_min_chebyshev(qx, qy, level, player) > radius_unload,
+                                || quad_min_chebyshev(qx, qy, level, player)
+                                    > radius_unload + COARSE_LOD_RESIDENT_MARGIN_CELLS,
                             "{game:?} level-{level} quad ({qx}, {qy}) reaches inside \
-                             radius_unload {radius_unload} from {player:?}"
+                             radius_unload {radius_unload} + margin from {player:?}"
                         );
                     }
                     let bad = cells_not_covered_exactly_once(&quads, player, radius_unload + 10);
@@ -1888,13 +1895,15 @@ mod tests {
                     level > LOD_BLOCK_CELLS
                         && quad_min_chebyshev(qx, qy, level, player) <= radius_unload
                 });
-                let quads = select(radius_unload);
+                let quads = select(coarse_refine_radius(radius_unload));
                 for &(level, qx, qy) in &quads {
+                    // #6452 — one finest-band cell of margin (see the `.btr` twin).
                     assert!(
                         level == LOD_BLOCK_CELLS
-                            || quad_min_chebyshev(qx, qy, level, player) > radius_unload,
+                            || quad_min_chebyshev(qx, qy, level, player)
+                                > radius_unload + COARSE_LOD_RESIDENT_MARGIN_CELLS,
                         "legacy level-{level} quad ({qx}, {qy}) reaches inside \
-                         radius_unload {radius_unload} from {player:?}"
+                         radius_unload {radius_unload} + margin from {player:?}"
                     );
                 }
                 // The ring itself is tiled exactly once, and nothing just past it
