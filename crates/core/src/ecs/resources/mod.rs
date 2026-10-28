@@ -1419,9 +1419,34 @@ pub struct TerrainSeamStats {
     /// this produces an actual visible lighting seam can fold it back into
     /// the hard-fail criterion if warranted.
     pub normal_mismatch_pairs: u32,
+    /// The lexicographically smallest height-dirty pair as `(a, b)` grid cells
+    /// (`a` west/south of `b`), or `None` when no pair is dirty (#6458). The
+    /// smallest, not the first met, so the field does not depend on the
+    /// resident set's iteration order. It lets a gate tell *which* seam is
+    /// cracked: counts alone cannot distinguish a known stock crack from a new
+    /// one of the same size elsewhere.
+    pub first_dirty_pair: Option<((i32, i32), (i32, i32))>,
 }
 
 impl TerrainSeamStats {
+    /// Fold a height-dirty pair into [`Self::first_dirty_pair`], keeping the
+    /// lexicographically smallest.
+    pub fn note_dirty_pair(&mut self, a: (i32, i32), b: (i32, i32)) {
+        let pair = (a, b);
+        if self.first_dirty_pair.is_none_or(|cur| pair < cur) {
+            self.first_dirty_pair = Some(pair);
+        }
+    }
+
+    /// [`Self::first_dirty_pair`] as the machine line spells it:
+    /// `gx,gy/gx,gy` (e.g. `3,0/4,0`), or `none`.
+    pub fn first_dirty_pair_label(&self) -> String {
+        match self.first_dirty_pair {
+            Some(((ax, ay), (bx, by))) => format!("{ax},{ay}/{bx},{by}"),
+            None => "none".to_string(),
+        }
+    }
+
     /// Stable three-state verdict, same shape as
     /// [`LodCoverageStats::verdict`] (no `UNSUPPORTED` state, unlike the
     /// four-state [`RtIntegrityStats::verdict`]). Height-only
@@ -1442,12 +1467,14 @@ impl TerrainSeamStats {
     pub fn machine_line(&self) -> String {
         format!(
             "terrain-seams: sampled={} pairs_checked={} pairs_dirty={} \
-             height_mismatch_vertices={} normal_mismatch_pairs={} verdict={}",
+             height_mismatch_vertices={} normal_mismatch_pairs={} \
+             first_dirty_pair={} verdict={}",
             u8::from(self.sampled),
             self.pairs_checked,
             self.pairs_dirty,
             self.height_mismatch_vertices,
             self.normal_mismatch_pairs,
+            self.first_dirty_pair_label(),
             self.verdict(),
         )
     }
@@ -1883,13 +1910,55 @@ mod tests {
             pairs_dirty: 0,
             height_mismatch_vertices: 0,
             normal_mismatch_pairs: 0,
+            first_dirty_pair: None,
         };
         assert_eq!(clean.verdict(), "PASS");
         assert_eq!(
             clean.machine_line(),
             "terrain-seams: sampled=1 pairs_checked=12 pairs_dirty=0 \
-             height_mismatch_vertices=0 normal_mismatch_pairs=0 verdict=PASS"
+             height_mismatch_vertices=0 normal_mismatch_pairs=0 first_dirty_pair=none \
+             verdict=PASS"
         );
+    }
+
+    /// #6458 — the machine line names the dirty pair, so a gate can exempt a
+    /// specific known crack rather than a count signature.
+    #[test]
+    fn terrain_seam_stats_machine_line_names_the_dirty_pair() {
+        let mut dirty = TerrainSeamStats {
+            sampled: true,
+            pairs_checked: 17,
+            pairs_dirty: 1,
+            height_mismatch_vertices: 3,
+            normal_mismatch_pairs: 15,
+            first_dirty_pair: None,
+        };
+        dirty.note_dirty_pair((3, 0), (4, 0));
+        assert_eq!(
+            dirty.machine_line(),
+            "terrain-seams: sampled=1 pairs_checked=17 pairs_dirty=1 \
+             height_mismatch_vertices=3 normal_mismatch_pairs=15 first_dirty_pair=3,0/4,0 \
+             verdict=FAIL"
+        );
+        // Negative coordinates keep the `gx,gy/gx,gy` shape.
+        dirty.first_dirty_pair = None;
+        dirty.note_dirty_pair((-2, 5), (-1, 5));
+        assert_eq!(dirty.first_dirty_pair_label(), "-2,5/-1,5");
+    }
+
+    /// The reported pair is the smallest dirty one, whatever order the
+    /// resident set is walked in.
+    #[test]
+    fn terrain_seam_stats_keeps_the_smallest_dirty_pair() {
+        let pairs = [((5, 1), (6, 1)), ((3, 0), (3, 1)), ((3, 0), (4, 0)), ((7, -2), (8, -2))];
+        for rotation in 0..pairs.len() {
+            let mut stats = TerrainSeamStats::default();
+            for i in 0..pairs.len() {
+                let (a, b) = pairs[(i + rotation) % pairs.len()];
+                stats.note_dirty_pair(a, b);
+            }
+            assert_eq!(stats.first_dirty_pair, Some(((3, 0), (3, 1))), "rotation {rotation}");
+        }
     }
 
     #[test]
@@ -1905,6 +1974,7 @@ mod tests {
             pairs_dirty: 1,
             height_mismatch_vertices: 3,
             normal_mismatch_pairs: 0,
+            first_dirty_pair: Some(((3, 0), (4, 0))),
         };
         assert_eq!(dirty.verdict(), "FAIL");
     }
@@ -1925,6 +1995,7 @@ mod tests {
             pairs_dirty: 0,
             height_mismatch_vertices: 0,
             normal_mismatch_pairs: 15,
+            first_dirty_pair: None,
         };
         assert_eq!(
             normal_only.verdict(),

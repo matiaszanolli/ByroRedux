@@ -430,6 +430,9 @@ fn update_terrain_seam_stats(
     let mut pairs_dirty = 0u32;
     let mut height_mismatch_vertices = 0u32;
     let mut normal_mismatch_pairs = 0u32;
+    // #6458 — `note_dirty_pair` keeps the smallest dirty pair, so the field is
+    // independent of `state.loaded`'s iteration order.
+    let mut dirty_pairs = byroredux_core::ecs::TerrainSeamStats::default();
 
     let mut check_pair = |a: (i32, i32), b: (i32, i32), direction: cell_loader::SeamDirection| {
         let (Some(land_a), Some(land_b)) = (
@@ -460,6 +463,7 @@ fn update_terrain_seam_stats(
         // correct this and fold it back into `pairs_dirty` if warranted.
         if !report.height_mismatches.is_empty() {
             pairs_dirty += 1;
+            dirty_pairs.note_dirty_pair(a, b);
         }
         height_mismatch_vertices += report.height_mismatches.len() as u32;
         if report.normal_bytes_differ == Some(true) {
@@ -486,6 +490,7 @@ fn update_terrain_seam_stats(
     stats.pairs_dirty = pairs_dirty;
     stats.height_mismatch_vertices = height_mismatch_vertices;
     stats.normal_mismatch_pairs = normal_mismatch_pairs;
+    stats.first_dirty_pair = dirty_pairs.first_dirty_pair;
 }
 
 /// Distinct grid cells containing at least one resident

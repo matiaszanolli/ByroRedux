@@ -45,6 +45,53 @@
 
 set -euo pipefail
 
+# ── the FO4 known-seam-crack exemption, as a pure decision ───────────
+#
+# #6458 — the `terrain-seams:` gate exempts the one localized crack stock
+# Fallout4.esm ships (#3306): LAND (3,0)/(4,0), three mismatched vertices. Counts
+# alone cannot tell that crack from a NEW 3-vertex crack elsewhere (a run where
+# the known pair is not resident, or a mod that fixes it), so the exemption also
+# requires the machine line's `first_dirty_pair` to be exactly that pair.
+#
+# Args:  <profile label> <pairs_dirty> <height_mismatch_vertices> <first_dirty_pair>
+# Returns 0 when the dirty pair is the known vanilla crack.
+fo4_known_seam_crack() {
+    [[ "$1" == fo4 && "$2" == 1 && "$3" == 3 && "$4" == "3,0/4,0" ]]
+}
+
+if [[ "${1:-}" == "--self-test" ]]; then
+    fails=0
+    check() {
+        local want="$1"
+        shift
+        local got=reject
+        if fo4_known_seam_crack "$@"; then got=exempt; fi
+        if [[ "$got" != "$want" ]]; then
+            echo "  self-test FAIL: fo4_known_seam_crack($*) = $got, want $want"
+            fails=1
+        else
+            echo "  ok: fo4_known_seam_crack($*) = $got"
+        fi
+    }
+    echo "smoke[m-exteriors]: --self-test — FO4 known-seam-crack exemption"
+    # The known vanilla crack, exactly.
+    check exempt fo4 1 3 "3,0/4,0"
+    # Same counts, different pair: a new crack must not hide behind the known one.
+    check reject fo4 1 3 "7,2/8,2"
+    check reject fo4 1 3 "3,0/3,1"
+    check reject fo4 1 3 none
+    # The right pair but a different signature, or a different profile.
+    check reject fo4 1 4 "3,0/4,0"
+    check reject fo4 2 3 "3,0/4,0"
+    check reject fnv 1 3 "3,0/4,0"
+    if (( fails != 0 )); then
+        echo "smoke[m-exteriors]: --self-test FAILED"
+        exit 1
+    fi
+    echo "smoke[m-exteriors]: --self-test PASS"
+    exit 0
+fi
+
 GAME="${1:-all}"
 MODE="${2:-static}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -820,28 +867,31 @@ EOF
         if [[ -z "$seam_line" ]]; then
             echo "exterior-smoke[$label]: WARN - terrain.seams reported nothing (pre-#2371-item-7 binary, or an interior-only profile)"
         else
-            local seam_sampled seam_checked seam_dirty seam_height_mismatch seam_normal_mismatch
+            local seam_sampled seam_checked seam_dirty seam_height_mismatch seam_normal_mismatch seam_first_pair
             seam_sampled="$(grep -oE 'sampled=[01]' <<< "$seam_line" | cut -d= -f2 || true)"
             seam_checked="$(grep -oE 'pairs_checked=[0-9]+' <<< "$seam_line" | cut -d= -f2 || true)"
             seam_dirty="$(grep -oE 'pairs_dirty=[0-9]+' <<< "$seam_line" | cut -d= -f2 || true)"
             seam_height_mismatch="$(grep -oE 'height_mismatch_vertices=[0-9]+' <<< "$seam_line" | cut -d= -f2 || true)"
             seam_normal_mismatch="$(grep -oE 'normal_mismatch_pairs=[0-9]+' <<< "$seam_line" | cut -d= -f2 || true)"
+            seam_first_pair="$(grep -oE 'first_dirty_pair=[^ ]+' <<< "$seam_line" | cut -d= -f2 || true)"
             if [[ "$seam_sampled" != "1" ]]; then
                 echo "exterior-smoke[$label]: WARN - terrain.seams never sampled (no adjacent resident-cell pair with LAND on both sides this traversal)"
             elif [[ ! "$seam_checked" =~ ^[0-9]+$ || ! "$seam_dirty" =~ ^[0-9]+$ \
                     || ! "$seam_height_mismatch" =~ ^[0-9]+$ || ! "$seam_normal_mismatch" =~ ^[0-9]+$ ]]; then
                 echo "exterior-smoke[$label]: HARD FAIL - incomplete terrain.seams line: $seam_line"
                 hard_fail=1
-            elif [[ "$label" == fo4 ]] && (( seam_dirty == 1 && seam_height_mismatch == 3 )); then
+            elif fo4_known_seam_crack "$label" "$seam_dirty" "$seam_height_mismatch" "$seam_first_pair"; then
                 # #3306 — stock Fallout4.esm ships exactly one localized crack:
                 # LAND (3,0)/(4,0), rows 5/6/7 of the shared column differ by
                 # 8/16/16 units, the other 30 vertices bit-identical (decoded
                 # from vanilla VHGT; `vanilla_fo4_commonwealth_seam_tests` pins
                 # the vertices). Its signature is one dirty pair with three
-                # mismatched vertices. That is NOT a tolerance: any other
-                # count — a second pair, a fourth vertex, a different
-                # profile — still hard-fails below, so a new defect cannot hide
-                # behind the known one.
+                # mismatched vertices, and (#6458) that pair is named by the
+                # line's `first_dirty_pair`. That is NOT a tolerance: any other
+                # count, any other pair — a second pair, a fourth vertex, a
+                # 3-vertex crack elsewhere, a different profile — still
+                # hard-fails below, so a new defect cannot hide behind the
+                # known one (`--self-test` exercises the decision).
                 echo "exterior-smoke[$label]: PASS terrain seams (known vanilla Fallout4.esm crack, #3306): $seam_line"
             elif (( seam_dirty != 0 )); then
                 echo "exterior-smoke[$label]: HARD FAIL - terrain seam disagreement: $seam_line"
