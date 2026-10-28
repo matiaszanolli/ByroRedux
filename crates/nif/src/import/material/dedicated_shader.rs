@@ -328,7 +328,8 @@ fn apply_bs_lighting_shader(
         // check is NOT shared with the FO3/FNV PPLighting path.
         //
         // For BSVER >= 132 (FO76 / Starfield) the parser stores the
-        // legacy u32 fields as literal zeros (`shader.rs:604-608`)
+        // legacy u32 fields as literal zeros (`BSLightingShaderProperty::parse_fo76_plus`,
+        // `blocks/shader/lighting.rs`)
         // and writes the same flag identifiers into `sf1_crcs` /
         // `sf2_crcs` instead. The helpers below also test the CRC
         // arrays so FO76+ meshes route through the right path. See
@@ -451,7 +452,8 @@ fn apply_bs_lighting_shader(
         // #3507 / FO4-2026-08-27-D5-01 — `Texture Clamp Mode` is an
         // unconditional `BSLightingShaderProperty` field (nif.xml:6597, no
         // `vercond`) parsed on Skyrim, FO4, FO76 and Starfield alike
-        // (`shader.rs:923/1060/1243`), but this arm never copied it — every
+        // (`parse_skyrim` / `parse_fo4` / `parse_fo76_plus` in
+        // `blocks/shader/lighting.rs`), but this arm never copied it — every
         // FO4+ lit material fell through to `MaterialInfo`'s WRAP_S_WRAP_T
         // default regardless of what was authored. Same `_consumed`
         // precedence gate #2328 established: a legacy `NiTexturingProperty`
@@ -462,7 +464,8 @@ fn apply_bs_lighting_shader(
         }
         // PBR scalars on every BSLSP body — none of these were
         // surfaced before #1241 (NIF-DIM4-NEW-01). The parser
-        // captures them per BSVER gate at `shader.rs:679-695`;
+        // captures them per BSVER gate in `parse_fo76_plus`
+        // (`blocks/shader/lighting.rs`);
         // out-of-band BSVERs leave the parser-side defaults
         // (matching MaterialInfo's own defaults), so the copy
         // is a literal forward in every era.

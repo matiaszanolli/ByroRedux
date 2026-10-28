@@ -104,13 +104,13 @@ as `version::bsver::*` constants (the doctrine — see §5 Pattern A, corrected
 | `bsver > 34` | FO3/FNV (≤34) vs Skyrim+ (>34) | 8+ across `base.rs`, `particle.rs`, `tri_shape/`, `extra_data.rs`, `collision/` |
 | `bsver < FALLOUT4 (130)` | Pre-FO4 vs FO4+ | 12+ across `shader.rs`, `node.rs`, `light.rs`, `particle.rs`, `tri_shape/`, `texture.rs` |
 | `bsver == 155` (strict) | FO76 only | 4+ in `particle.rs`, `tri_shape/bs_tri_shape.rs`, `shader.rs` |
-| `bsver in [83..=139]` | Skyrim/FO4 legacy shader type | 1 in `shader.rs:786` |
+| `bsver in [83..=139]` | Skyrim/FO4 legacy shader type | 1 in `shader/lighting.rs::parse_shader_type_data` |
 | `bsver in [130..=139]` | FO4-only sub-block | 1 in `shader.rs::BSLightingShaderProperty::parse` |
 | `bsver >= 132` | FO4_CRC_FLAGS — CRC32 shader-flag encoding | 3+ in `shader.rs` |
-| `bsver >= 152` | FO76 SF2 CRCs | 1 in `shader.rs:400` |
+| `bsver >= 152` | FO76 SF2 CRCs | 1 in `shader/lighting.rs::parse_fo76_plus` |
 | `bsver >= 173` | Starfield dev-build form_id field | 1 in `node.rs:798` |
-| `bsver > 14` | FO3_REFRACTION trailing fields | 1 in `shader.rs:82` |
-| `bsver > 24` | FO3_PARALLAX (strict `>` — FO3@24 must NOT carry) | 1 in `shader.rs:90` |
+| `bsver > 14` | FO3_REFRACTION trailing fields | 1 in `shader/legacy.rs::BSShaderPPLightingProperty::parse` |
+| `bsver > 24` | FO3_PARALLAX (strict `>` — FO3@24 must NOT carry) | 1 in `shader/legacy.rs::BSShaderPPLightingProperty::parse` |
 | `bsver <= 28` | Pre-anim-notes (Oblivion / early FO3) | 1 in `controller/sequence.rs:154` |
 | `bsver < 9` | Pre-collision-v2 | 1 in `collision/collision_object.rs:67` |
 | `bsver <= 34` (binary-extra-data tangent legacy) | FO3/FNV tangent blob layout | 1 in `extra_data.rs:1133` |
@@ -124,7 +124,7 @@ bypassed helper predicates; most sites above now compare against a named
 number.
 
 **`BSLightingShaderProperty::parse` split into per-variant parsers, landed**
-(`shader.rs:903 parse_skyrim`, `:1009 parse_fo4`, `:1159 parse_fo76_plus`,
+(`shader/lighting.rs`: `parse_skyrim`, `parse_fo4`, `parse_fo76_plus`,
 plus `parse_shader_type_data_fo4` / `_fo76`) — the monolith this section
 used to describe as "the textbook candidate for splitting" no longer exists
 as a monolith.
@@ -145,8 +145,8 @@ as a monolith.
    default routes 4→env, 5→env_mask). FO3/FNV `BSShaderPPLightingProperty` has
    no equivalent routing — slot 4 is always env_map.
 3. **Shader-flag bit collision across eras** — `flags2 bit 21` is `ALPHA_DECAL`
-   on FO3/FNV, `Cloud_LOD` on Skyrim, `Anisotropic_Lighting` on FO4. Three
-   different meanings on the same bit position. `is_decal_from_legacy_shader_flags`
+   on FO3/FNV, `Anisotropic_Lighting` on Skyrim and FO4 (Skyrim's `Cloud_LOD`
+   is the separate bit 20). Two different meanings on the same bit position. `is_decal_from_legacy_shader_flags`
    vs `is_decal_from_modern_shader_flags` routes around this — but the consumer
    doesn't know which path produced the result.
 4. **FO76+ CRC32 shader-flag fallback** — when BSVER ≥ 132 the parser writes
@@ -519,8 +519,8 @@ Six of eight starter tasks landed on `feat/nif-translation-layer-epic`:
 **Task 2 (split `BSLightingShaderProperty::parse` into variant dispatch)** —
 **LANDED** (correction 2026-08-30, #3795; this row previously read "deferred
 to a dedicated session" long after the fact). `BSLightingShaderProperty`
-now dispatches to `parse_skyrim` (`shader.rs:903`), `parse_fo4` (`:1009`),
-and `parse_fo76_plus` (`:1159`), plus dedicated `parse_shader_type_data_fo4`
+now dispatches to `parse_skyrim`, `parse_fo4`, and `parse_fo76_plus`
+(`blocks/shader/lighting.rs`), plus dedicated `parse_shader_type_data_fo4`
 / `_fo76` helpers — the 12+-BSVER-comparison monolith this row used to
 describe as future work no longer exists in that shape.
 

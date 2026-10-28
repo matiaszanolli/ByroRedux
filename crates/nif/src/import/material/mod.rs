@@ -100,8 +100,8 @@ const _: () = assert!(
 const _: () = assert!(
     crate::shader_flags::fo4_slsf1::DYNAMIC_DECAL == crate::shader_flags::fo3nv_f1::DYNAMIC_DECAL
 );
-// FO3/FNV-specific decal bit on flags2 — collides with Skyrim's
-// `Cloud_LOD` on the same bit. Only tested on FO3/FNV `BSShader*Property`
+// FO3/FNV-specific decal bit on flags2 — collides with Skyrim/FO4's
+// `Anisotropic_Lighting` on the same bit (bit 21). Only tested on FO3/FNV `BSShader*Property`
 // paths; Skyrim+ `BSLightingShaderProperty` goes through SLSF1 bits
 // 26/27 only (see #176 closure).
 const ALPHA_DECAL_F2: u32 = crate::shader_flags::fo3nv_f2::ALPHA_DECAL;
@@ -117,8 +117,8 @@ const ALPHA_DECAL_F2: u32 = crate::shader_flags::fo3nv_f2::ALPHA_DECAL;
 /// rendered as opaque coplanar quads).
 ///
 /// **Must not be called on Skyrim+ or FO4 properties.** Bit 21 of the
-/// second flag word on those games is `Cloud_LOD` (Skyrim) or
-/// `Anisotropic_Lighting` (FO4), NOT a decal bit — using this helper
+/// second flag word on those games is `Anisotropic_Lighting` (Skyrim and
+/// FO4; Skyrim's `Cloud_LOD` is the separate bit 20), NOT a decal bit — using this helper
 /// on `BSLightingShaderProperty` would spuriously classify those
 /// meshes as decals. Modern properties route through
 /// [`is_decal_from_modern_shader_flags`] instead. See #414 / FO4-D3-M1.
@@ -135,16 +135,16 @@ pub(super) fn is_decal_from_legacy_shader_flags(flags1: u32, flags2: u32) -> boo
 /// `sf1_crcs` + `sf2_crcs` CRC32 arrays for the corresponding
 /// `BSShaderCRC32::DECAL` / `DYNAMIC_DECAL` identifiers per nif.xml
 /// lines 6532/6533. The legacy u32 fields are written as literal
-/// zeros on BSVER >= 132 (parser branch in `shader.rs:604-608` per
-/// the spec gate `bsver <= 130`), so without the CRC fallback every
+/// zeros on BSVER >= 132 (parser branch in `parse_fo76_plus`,
+/// `blocks/shader/lighting.rs`, per the spec gate `bsver <= 130`), so without the CRC fallback every
 /// FO76+ decal silently lost its flag — see #712 / NIF-D4-01.
 ///
 /// Takes no `flags2`: no Skyrim+/FO4 SLSF2 bit is a decal bit.
 ///
 /// The split from [`is_decal_from_legacy_shader_flags`] exists to keep
-/// flags2 bit 21 (`Cloud_LOD` on Skyrim, `Anisotropic_Lighting` on
-/// FO4, `Alpha_Decal` on FO3/FNV — three different semantics on the
-/// same bit) out of the modern decal test. See #414 / FO4-D3-M1.
+/// flags2 bit 21 (`Anisotropic_Lighting` on Skyrim and FO4,
+/// `Alpha_Decal` on FO3/FNV — two different semantics on the same bit)
+/// out of the modern decal test. See #414 / FO4-D3-M1.
 #[inline]
 pub(super) fn is_decal_from_modern_shader_flags(
     flags1: u32,
@@ -1247,7 +1247,7 @@ impl Default for MaterialInfo {
             // BSLightingShaderProperty PBR scalars — defaults mirror
             // `BSLightingShaderProperty::material_reference_stub`
             // (function name, not a line number — #2590 / SKY-D7-02:
-            // the prior `shader.rs:739-749` citation had drifted onto
+            // the prior line-number citation into the old single-file `shader.rs` had drifted onto
             // unrelated struct-field docs since the #1279 three-arm
             // parser split) so the no-author fallback is the same as
             // the stopcond fallback. Since #2589 (SKY-D7-01), the

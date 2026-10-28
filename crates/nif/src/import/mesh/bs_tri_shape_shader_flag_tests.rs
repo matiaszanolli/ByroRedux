@@ -275,7 +275,7 @@ fn extract_bs_tri_shape_pulls_effect_shader_emissive_uv_alpha_normal() {
 
 /// #414 / FO4-D3-M1 — `shader_flags_2 & 0x0020_0000` on a modern
 /// `BSEffectShaderProperty` is **not** a decal flag. It's
-/// `Cloud_LOD` on Skyrim and `Anisotropic_Lighting` on FO4.
+/// `Anisotropic_Lighting` on Skyrim and FO4 (Skyrim's `Cloud_LOD` is bit 20).
 ///
 /// Pre-#414 the shared decal helper treated this bit as the
 /// FO3/FNV `Alpha_Decal` regardless of property game-era — an
@@ -290,7 +290,7 @@ fn effect_shader_flag2_bit_21_is_not_decal_on_modern_properties() {
     scene.blocks.push(Box::new(effect_shader(0x0020_0000)));
     assert!(
         !import(&scene, &renderable_shape(0)).material.is_decal,
-        "flags2 bit 21 is Cloud_LOD (Skyrim) / Anisotropic_Lighting (FO4), not a decal bit"
+        "flags2 bit 21 is Anisotropic_Lighting (Skyrim and FO4), not a decal bit"
     );
 }
 

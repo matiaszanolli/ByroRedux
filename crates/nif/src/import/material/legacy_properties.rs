@@ -592,7 +592,8 @@ fn apply_pp_lighting_property(
         }
         // `BSShaderPPLightingProperty.parallax_max_passes` /
         // `parallax_scale` (parsed since BSVER >= 24 per
-        // `blocks/shader.rs:70`) flow through, converted (`parallax_scale`
+        // `BSShaderPPLightingProperty::parse` in
+        // `blocks/shader/legacy.rs`) flow through, converted (`parallax_scale`
         // → engine `heightScale`) and gated on authored POM — FO3-D1-02 /
         // #2317. Pre-fix these were written unconditionally: any mesh
         // with a bound texture-slot-3 path got them regardless of
@@ -623,7 +624,7 @@ fn apply_pp_lighting_property(
         }
         // #773 / FO3-4-01 — `texture_clamp_mode` mirror. Pre-fix
         // the FO3/FNV PPLighting branch dropped this u32 enum
-        // (parsed at `blocks/shader.rs:84` via
+        // (parsed in `blocks/shader/legacy.rs` via
         // `BSShaderPropertyData::parse_fo3`), so CLAMP-authored
         // decals / scope reticles / glow planes silently fell
         // back to default WRAP. The Skyrim+ BSEffectShader path
@@ -692,7 +693,8 @@ fn apply_pp_lighting_property(
         // heat-haze, matching the Skyrim+ `BSLightingShaderProperty`
         // path in `dedicated_shader.rs::apply_shader_type_data`. FO3/FNV
         // decodes `refraction_strength`/`refraction_fire_period` at
-        // `blocks/shader.rs:83` (bsver > FO3_REFRACTION) but neither
+        // `BSShaderPPLightingProperty::parse` in
+        // `blocks/shader/legacy.rs` (bsver > FO3_REFRACTION) but neither
         // value was ever forwarded into `MaterialInfo` — the only
         // writer of `info.refraction_strength` was the Skyrim path,
         // and the only site promoting `material_kind = 103`
@@ -719,7 +721,7 @@ fn apply_pp_lighting_property(
         }
         // #4243 / FO3-2026-09-11-D2-02 — `refraction_fire_period` (the
         // sibling scalar decoded alongside `refraction_strength` above,
-        // `blocks/shader.rs:55`) has NO `MaterialInfo`/`Material` sink and
+        // `blocks/shader/legacy.rs`) has NO `MaterialInfo`/`Material` sink and
         // is deliberately left unwired: the renderer's fire-refraction warp
         // (`material_kind = 103` below) is a static per-frame distortion
         // with no scroll-phase input to drive, on either the FO3/FNV or
@@ -797,9 +799,8 @@ fn apply_no_lighting_property(
         });
         // #773 / FO3-4-PPMAT SIBLING —
         // `BSShaderNoLightingProperty` carries the same
-        // `texture_clamp_mode` (parsed at `blocks/shader.rs:140`)
-        // and `BSShaderPropertyData.env_map_scale` (line 139's
-        // embedded base) as the PPLighting block above. Pre-#773
+        // `texture_clamp_mode` (parsed in `blocks/shader/legacy.rs`)
+        // and `BSShaderPropertyData.env_map_scale` (the embedded base) as the PPLighting block above. Pre-#773
         // both fields fell off the import path here too. CLAMP-on-
         // edge HUD scope crosshairs / VATS overlays / blood
         // splats authoring `texture_clamp_mode != 3` (WRAP)

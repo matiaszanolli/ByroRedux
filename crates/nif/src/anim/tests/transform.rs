@@ -353,8 +353,8 @@ fn extract_transform_channel_emits_constant_pose_for_lookat() {
 /// materialise it as a real key, or the apply phase writes infinity
 /// to the bone's Transform and skinned vertices fly off-screen
 /// (FNV Doc Mitchell finger bones / FO3 TestQAHairM 31→0 vanish).
-/// Same FLT_MAX-as-no-value convention as BSShaderPPLighting's
-/// rimlight gate at `crates/nif/src/blocks/shader.rs:977-978`.
+/// Same FLT_MAX-as-no-value convention as `BSLightingShaderProperty`'s
+/// rimlight gate (`parse_fo4` in `crates/nif/src/blocks/shader/lighting.rs`).
 #[test]
 fn extract_transform_channel_drops_flt_max_pose_axes_for_lookat() {
     use crate::types::{BlockRef, NiPoint3, NiQuatTransform};

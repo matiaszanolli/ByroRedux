@@ -40,7 +40,7 @@ fn empty_net() -> NiObjectNETData {
 /// to non-default sentinel values. The walker should propagate every
 /// value unchanged into `MaterialInfo` regardless of which BSVER the
 /// block was parsed for — gating happens parser-side at
-/// `crates/nif/src/blocks/shader.rs:679-695`; once the struct exists
+/// `parse_fo76_plus` in `crates/nif/src/blocks/shader/lighting.rs`; once the struct exists
 /// the walker just copies fields.
 #[allow(clippy::too_many_arguments)] // Mirrors the eight independent shader scalars.
 fn bslsp_with_pbr_scalars(
@@ -220,8 +220,8 @@ fn plain_refraction_keeps_authored_lighting_shader_type() {
 
 /// `MaterialInfo::default()` must mirror
 /// `BSLightingShaderProperty::material_reference_stub` (function name,
-/// not a line number — #2590 / SKY-D7-02: the prior `shader.rs:739-749`
-/// citation had drifted onto unrelated struct-field docs since the
+/// not a line number — #2590 / SKY-D7-02: the prior line-number
+/// citation into the old single-file `shader.rs` had drifted onto unrelated struct-field docs since the
 /// #1279 three-arm parser split) so the no-author fallback is the same
 /// as the FO4/FO76+ stopcond fallback. If either side drifts the
 /// renderer would see different rim/SSS/fresnel defaults depending on

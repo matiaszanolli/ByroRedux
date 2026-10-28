@@ -322,7 +322,7 @@ fn parse_bs_lighting_fo76_editor_label_does_not_short_circuit() {
         "stopcond must not fire for non-path Name (pre-#749 it did)",
     );
     // Spot-check that the trailing body actually populated.
-    // Wire smoothness 0.6 → 60.0 after FO4+ normalize (see shader.rs:876).
+    // Wire smoothness 0.6 → 60.0 after FO4+ normalize (see `parse_fo76_plus` in `blocks/shader/lighting.rs`).
     // 1e-4 tolerance because 0.6_f32 * 100.0 = 60.000004.
     assert!((prop.glossiness - 60.0).abs() < 1e-4);
     assert!((prop.fresnel_power - 4.2).abs() < 1e-6);

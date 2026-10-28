@@ -519,7 +519,8 @@ pub mod bsver {
     /// The previous interpretation (`env_map_scale` "moves inside
     /// wetness" at this BSVER) was empirically wrong — gating wetness
     /// env_map_scale on this threshold dropped Starfield Meshes01
-    /// parse rate from 97.21% → 95.77%. See `shader.rs:943-957` for
+    /// parse rate from 97.21% → 95.77%. See the `FO4_DLC_UPPER`-gated `env_map_scale` comment in
+    /// `blocks/shader/lighting.rs` (`parse_shader_type_data_fo4`) for
     /// the empirical evidence and #1223 for the fix that obsoleted
     /// the wetness claim.
     pub const FO4_DLC_UPPER: u32 = 140;

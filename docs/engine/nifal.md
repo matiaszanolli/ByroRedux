@@ -678,8 +678,8 @@ constants in one file (`shader_flags.rs` — `fo3nv_f1`, `skyrim_slsf1`, `fo4_sl
 + FO76/Starfield CRC32 arrays), dispatched by **block type** (the wire format
 already discriminates the game), with `#[test]`-gated runtime equivalence asserts
 (bits 26/27, e.g. `fo3nv_and_skyrim_decal_bits_agree`) guarding the bit-meaning
-collisions (e.g. bit 21 flags2 = Alpha_Decal/Cloud_LOD/Anisotropic across three
-games). The `ShaderFlags<'a>` typed view that used to wrap these constants was
+collisions (e.g. bit 21 flags2 = Alpha_Decal on FO3/FNV vs Anisotropic_Lighting on
+Skyrim/FO4). The `ShaderFlags<'a>` typed view that used to wrap these constants was
 deleted as transitively dead (#1897); production import reads the constants
 directly via `is_decal_from_legacy_shader_flags` / `is_decal_from_modern_shader_flags`
 / `is_two_sided_from_modern_shader_flags` (`crates/nif/src/import/material/mod.rs`).

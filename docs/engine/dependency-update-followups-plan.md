@@ -142,8 +142,9 @@ Comments that already describe rapier 0.22 in the past tense (e.g.
 - `crates/audio/src/lib.rs:177`, `:192`, `:211`, `:859`, `:1150`: cite kira 0.10.x.
   The quoted values and limitations are unchanged in 0.12; only the version numbers
   are wrong.
-- `crates/audio/src/lib.rs:1619`: says `from_cursor` needs `'static`. kira 0.12.4
-  relaxed that. No caller benefits, but the comment is wrong.
+- The `from_cursor` doc in `crates/audio/src/cache.rs`: said `from_cursor` needs
+  `'static`. kira 0.12.4 relaxed that. No caller benefits, but the comment was wrong
+  (the audio crate's `lib.rs` has since been split, so the old line cite is gone).
 - `crates/bsa/src/ba2.rs:846`, `:2193`, `:2312`: cite lz4_flex 0.11.6. Re-check each
   claim against 0.14 and update it. The `catch_unwind` at `ba2.rs:873` stays, because
   0.14 still documents that it "may panic".

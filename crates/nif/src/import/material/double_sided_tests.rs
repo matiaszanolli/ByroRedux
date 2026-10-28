@@ -268,8 +268,8 @@ fn is_decal_legacy_helper_matches_both_flag_sources() {
 }
 
 /// #414 / FO4-D3-M1 regression — the modern (Skyrim+/FO4) decal
-/// helper MUST NOT test flag2 bit 21. On Skyrim that bit is
-/// `Cloud_LOD`; on FO4 it's `Anisotropic_Lighting`. Neither is a
+/// helper MUST NOT test flag2 bit 21. On Skyrim and FO4 that bit is
+/// `Anisotropic_Lighting` (Skyrim's `Cloud_LOD` is bit 20). Not a
 /// decal flag, and the pre-fix `is_decal_from_shader_flags` helper
 /// misclassified those meshes as decals → unwanted depth-bias.
 #[test]
@@ -278,8 +278,8 @@ fn is_decal_modern_helper_ignores_flag2_bit_21() {
     // SLSF1 / F4SF1 bit 26 — shared with legacy, must classify.
     assert!(is_decal_from_modern_shader_flags(0x0400_0000, &[], &[]));
     assert!(is_decal_from_modern_shader_flags(0x0800_0000, &[], &[]));
-    // Flag2 bit 21 — Cloud_LOD on Skyrim / Anisotropic_Lighting on
-    // FO4 — is not an input: the helper takes no flags2 word.
+    // Flag2 bit 21 — Anisotropic_Lighting on Skyrim and FO4 — is
+    // not an input: the helper takes no flags2 word.
     // Sanity: unrelated bits, all zeros.
     assert!(!is_decal_from_modern_shader_flags(0, &[], &[]));
     assert!(!is_decal_from_modern_shader_flags(0x1000, &[], &[]));
@@ -327,7 +327,7 @@ fn skyrim_bs_lighting_flags2_zero_leaves_default_culling() {
 
 /// Inject CRC arrays into a `BSLightingShaderProperty` whose legacy
 /// flag pair is zero — the FO76/Starfield shape on disk per
-/// `shader.rs:604-608`.
+/// `BSLightingShaderProperty::parse_fo76_plus` (`blocks/shader/lighting.rs`).
 fn make_bs_lighting_with_crcs(sf1: Vec<u32>, sf2: Vec<u32>) -> BSLightingShaderProperty {
     let mut shader = make_bs_lighting_with_flags(0, 0);
     shader.sf1_crcs = sf1;

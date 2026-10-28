@@ -519,8 +519,8 @@ pub fn extract_texture_transform_channel(
 /// of translation / rotation / scale) for channels whose B-spline
 /// payload omits that TRS axis — the runtime is meant to fall through
 /// to the bone's bind-pose for the absent axis. Same FLT_MAX-as-no-
-/// value convention as BSShaderPPLighting's rimlight gate
-/// ([shader.rs:977-978]); threshold sits below the literal so float-
+/// value convention as `BSLightingShaderProperty`'s rimlight gate
+/// (`parse_fo4` in `blocks/shader/lighting.rs`); threshold sits below the literal so float-
 /// precision noise on the authoring round-trip doesn't slip through.
 /// Without this gate the B-spline fallback path materialises FLT_MAX
 /// as a real frame-0 key, the animation system writes it to the
