@@ -722,7 +722,7 @@ One record per LAND tile slot (`MAX_TERRAIN_TILES`), indexed by the slot in
 | 208 | `parallax_depth` | Terrain parallax relief amplitude in world units (#6197); 0 = off |
 | 212 | `parallax_fade_start` | Camera distance (world units) where the parallax starts to fade |
 | 216 | `parallax_fade_end` | Camera distance where it reaches plain shading |
-| 220 | `lod_soften_end` | Camera distance (world units) at which near terrain is fully softened toward the LOD look; 0 = off. Rode the named pad, stride unchanged |
+| 220 | `lod_soften_end` | Camera distance (world units) at which near terrain is fully softened toward the LOD look; 0 = off. Rode the named pad, stride unchanged; onset/reach in [`exal.md` §5.4.2](exal.md#542-the-terrain-lod-join-20261026-27) |
 
 `height_blend_band` is not per-cell data: the `render.terrain_height_blend_band`
 setting (debug-UI slider, `terrain.blend`) is broadcast into every tile by

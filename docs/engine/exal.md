@@ -645,6 +645,59 @@ Markarth's name table mixes two quad generations (most of its level-4 names sit
 on `x, y == 0 (mod 4)`, a minority on the descriptor's lattice), so no single
 origin tiles all of it; the descriptor's cell is what is used.
 
+### 5.4.2 The terrain-LOD join (2026-10-26/27)
+
+Where the full-detail terrain ends and the distant-LOD ring begins is its own
+seam, and four engine choices live there. All four are EXAL decisions made at
+the translation tier (`env_translate/lod.rs`, `cell_loader/terrain_lod*.rs`),
+never in a shader or per game at render time.
+
+- **Albedo gain (`terrain_lod_albedo_gain`).** A per-game table of the
+  brightness the baked distant ground takes so it meets the full-detail ground
+  it stands in for. Skyrim **0.36**, measured on one scene (Whiterun, overcast
+  noon, valley as LOD against the same valley at full detail, 24 sample boxes:
+  median 2.01x before, 0.99 after) — a starting point to retune by eye, **not**
+  a corpus calibration. FNV and FO4 **1.0**, measured (within ~±10% of full
+  detail). Oblivion, FO76 and Starfield are 1.0 *unmeasured*, deliberately: the
+  no-guessing policy rules out an unmeasured threshold. The row applies to every
+  block wearing a baked quad diffuse, prebaked `.btr` and synth alike, so a row
+  measured later for a legacy game reaches its blocks without consumer edits
+  (#6453). The tiled-LTEX fallback is the splat terrain's own albedo and takes
+  none. The derivation lives in the function's rustdoc.
+- **Baked colours on the boundary block (`74e1b0788`, `btr_quad_texture`).** The
+  finest-band block beside resident ground needs per-cell holes and skirts a
+  baked mesh cannot carry, so it takes the synth path. On Skyrim/FO4 that block
+  now samples its own quad's baked `.btr` diffuse and model-space normal map
+  (UVs matching the `.btr` mesh, MSN material flag, alpha-derived Z source)
+  instead of a tiled base LTEX, so the join does not read as a flat,
+  differently-coloured band. A quad with no baked diffuse falls back to the
+  tiled LTEX.
+- **Skirts and the rim mask (#6409).** A synth block hangs a skirt under every
+  quad edge that borders a resident full-detail cell, looking the neighbour up
+  by cell (it can sit in the next block). A `LodBlock` therefore carries a
+  *rim mask* (one bit per cell just outside its four edges) beside its hole
+  mask; the ring rebuilds a block when either moves, caches an attempted miss
+  against the pair, and takes the prebaked `.btr` only when both are empty.
+  Only the finest band carries holes, skirts and rim keys, so coarse quads must
+  never touch a resident cell: coarse quads subdivide within `radius_unload`
+  plus a one-cell margin (#6094, #6452).
+- **Distance softening (`e71451d08`).** Full-detail terrain's tiled layers are
+  far sharper than the baked LOD diffuse, so the near terrain's albedo sampling
+  gradients widen with camera distance toward the LOD look (albedo only; normal
+  and specular keep their true gradients). The ramp is `TERRAIN_LOD_SOFTEN_MIPS`
+  (3) mips at full softening, starting at `TERRAIN_LOD_SOFTEN_ONSET_FRACTION`
+  (0.5) of the distance of full softening. The host maps the
+  `render.terrain_lod_soften` setting (default 0.5, 0 = off, also the session-only
+  `terrain.soften` command) to that distance each frame: at setting 1 it is
+  0.65x the ring edge (`TERRAIN_LOD_SOFTEN_REACH_SHRINK` = 0.35), so softening
+  starts about a third of the way out (#6455). All three numbers are tune-by-eye
+  starting points, not measured properties. The reach rides `GpuTerrainTile`
+  lane 220 (`lod_soften_end`, see
+  [`shader-pipeline.md`](shader-pipeline.md)).
+
+Ground cover's own join with the near terrain is specified in
+[`exal-groundcover.md`](exal-groundcover.md).
+
 ## 5.5 Ground cover (procedural grass) — see [`exal-groundcover.md`](exal-groundcover.md)
 
 The vegetation stratum on the terrain surface — grass, ferns, moss, low scrub —

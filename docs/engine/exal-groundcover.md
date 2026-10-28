@@ -4,6 +4,8 @@ A focused sub-document of [`exal.md`](exal.md), in the same relation to it as
 the `charal-*-ruleset.md` files are to [`charal.md`](charal.md). EXAL owns the
 outdoors environment; **ground cover** is the vegetation stratum that sits on
 the terrain surface — grass, ferns, moss, low scrub.
+The terrain-LOD join it stands beside (albedo gain, skirts, distance softening)
+is [`exal.md` §5.4.2](exal.md#542-the-terrain-lod-join-20261026-27).
 
 **Status**: Phase 0 IMPLEMENTED (2026-08-12); Phase 5 palette resolution
 IMPLEMENTED (2026-09-06, #3807); §11.1's terrain-attribute sampling question
