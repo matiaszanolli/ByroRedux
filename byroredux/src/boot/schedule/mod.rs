@@ -679,6 +679,7 @@ mod system_access_declaration_tests {
     // so they are listed explicitly like every other cross-file hop.
     const DIALOGUE_VOICE_SRC: &str = include_str!("../../systems/dialogue_voice.rs");
     const STORY_EVENTS_SRC: &str = include_str!("../../systems/story_events.rs");
+    const STORY_MANAGER_SRC: &str = include_str!("../../../../crates/scripting/src/story_manager.rs");
     const OBSCRIPT_STATE_SRC: &str = include_str!("../../../../crates/scripting/src/obscript_state.rs");
     // #5069 — equipment_appearance_system's mid-life gear-import hop lives
     // in npc_spawn/loot_appearance.rs; exclusive rows are invisible to the
@@ -774,6 +775,10 @@ mod system_access_declaration_tests {
                 // `resolve_current_lctn` cell-context reads live in
                 // story_events.rs, a different file from the callee walk.
                 (STORY_EVENTS_SRC, "raise_kill_story_event"),
+                // #6447 — and `raise_kill_story_event` funnels into the scripting
+                // crate's `raise_story_event`, whose collision arm appends to
+                // `PendingScriptStoryEvents` (no turbofish at the call site).
+                (STORY_MANAGER_SRC, "raise_story_event"),
                 // #6217 — `raise_death_event` funnels into the scripting crate's
                 // `note_death` (d1b298921): the kill record write and the victim's
                 // identity reads.

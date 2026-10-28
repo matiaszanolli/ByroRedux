@@ -79,6 +79,10 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             // index / current cell context. Declared so the access analyzer
             // sees them against `npc_dialogue`'s and the dispatcher's rows.
             .writes::<byroredux_scripting::story_manager::StoryEvent>()
+            // #6447 / #5647 — `raise_story_event` (scripting crate, no turbofish
+            // at the call site) appends to this queue instead of overwriting when
+            // the player already carries a `StoryEvent` marker that frame.
+            .writes_resource::<byroredux_scripting::story_manager::PendingScriptStoryEvents>()
             .writes::<byroredux_scripting::OnDeathEvent>()
             .reads_resource::<crate::cell_loader::LoadedCellIndex>()
             .reads_resource::<crate::cell_loader::CurrentCellContext>()
