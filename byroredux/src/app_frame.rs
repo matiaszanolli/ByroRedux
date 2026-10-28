@@ -107,26 +107,6 @@ fn terrain_lod_soften_end(ring_edge: f32, amount: f32) -> f32 {
     ring_edge * (1.0 - TERRAIN_LOD_SOFTEN_REACH_SHRINK * amount)
 }
 
-#[cfg(test)]
-mod terrain_lod_soften_tests {
-    use super::*;
-    use byroredux_renderer::shader_constants::TERRAIN_LOD_SOFTEN_ONSET_FRACTION;
-
-    /// The setting's documented reach: 0 leaves the ring edge, 1 fully softens
-    /// at 0.65 of it and starts at about a third (not a fifth, #6455).
-    #[test]
-    fn the_setting_maps_to_the_documented_distances() {
-        let ring_edge = 1000.0;
-        assert_eq!(terrain_lod_soften_end(ring_edge, 0.0), ring_edge);
-        let full = terrain_lod_soften_end(ring_edge, 1.0);
-        assert!((full - 650.0).abs() < 1e-3, "full softening at 0.65 of the edge, got {full}");
-        let onset = TERRAIN_LOD_SOFTEN_ONSET_FRACTION * full;
-        assert!((onset - 325.0).abs() < 1e-3, "onset at 0.325 of the edge, got {onset}");
-        // A higher setting starts the fade earlier.
-        assert!(terrain_lod_soften_end(ring_edge, 0.75) < terrain_lod_soften_end(ring_edge, 0.25));
-    }
-}
-
 /// Ensure the terrain-side Tier-3 detail atlas represents the active engine
 /// blade palette. It is a persistent bindless allocation whose image is
 /// replaced in place when a worldspace changes palette; terrain tiles receive
@@ -1870,4 +1850,24 @@ fn collect_groundcover_bench_cells(
             .then(a.origin_xz[1].total_cmp(&b.origin_xz[1]))
     });
     cells
+}
+
+#[cfg(test)]
+mod terrain_lod_soften_tests {
+    use super::*;
+    use byroredux_renderer::shader_constants::TERRAIN_LOD_SOFTEN_ONSET_FRACTION;
+
+    /// The setting's documented reach: 0 leaves the ring edge, 1 fully softens
+    /// at 0.65 of it and starts at about a third (not a fifth, #6455).
+    #[test]
+    fn the_setting_maps_to_the_documented_distances() {
+        let ring_edge = 1000.0;
+        assert_eq!(terrain_lod_soften_end(ring_edge, 0.0), ring_edge);
+        let full = terrain_lod_soften_end(ring_edge, 1.0);
+        assert!((full - 650.0).abs() < 1e-3, "full softening at 0.65 of the edge, got {full}");
+        let onset = TERRAIN_LOD_SOFTEN_ONSET_FRACTION * full;
+        assert!((onset - 325.0).abs() < 1e-3, "onset at 0.325 of the edge, got {onset}");
+        // A higher setting starts the fade earlier.
+        assert!(terrain_lod_soften_end(ring_edge, 0.75) < terrain_lod_soften_end(ring_edge, 0.25));
+    }
 }
