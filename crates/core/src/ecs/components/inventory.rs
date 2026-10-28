@@ -148,6 +148,16 @@ impl Inventory {
             .fold(0u32, |total, stack| total.saturating_add(stack.count))
     }
 
+    /// How many items this inventory holds across every form in `base_form_ids`
+    /// (a form list's members). A row counts once even if its form is listed
+    /// twice. Saturates like [`Self::count_of`] (#6470).
+    pub fn count_of_any(&self, base_form_ids: &[u32]) -> u32 {
+        self.items
+            .iter()
+            .filter(|stack| base_form_ids.contains(&stack.base_form_id))
+            .fold(0u32, |total, stack| total.saturating_add(stack.count))
+    }
+
     pub fn len(&self) -> usize {
         self.items.len()
     }
@@ -561,5 +571,21 @@ mod tests {
 
         inv.push(ItemStack::new(0xF, u32::MAX));
         assert_eq!(inv.count_of(0xF), u32::MAX);
+    }
+
+    /// #6470 — `count_of_any` sums a form list's members, counts a row once when
+    /// a form is listed twice, ignores other forms, and saturates across rows.
+    #[test]
+    fn count_of_any_sums_the_listed_forms_and_saturates() {
+        let mut inv = Inventory::new();
+        assert_eq!(inv.count_of_any(&[0xF, 0x1]), 0);
+        inv.add(ItemStack::new(0xF, 5));
+        inv.add(ItemStack::new(0x1, 9));
+        inv.add(ItemStack::new(0x2, 100));
+        assert_eq!(inv.count_of_any(&[0xF, 0x1]), 14);
+        assert_eq!(inv.count_of_any(&[0xF, 0xF]), 5, "a listed-twice form counts its rows once");
+        assert_eq!(inv.count_of_any(&[]), 0);
+        inv.push(ItemStack::new(0x1, u32::MAX));
+        assert_eq!(inv.count_of_any(&[0xF, 0x1]), u32::MAX);
     }
 }

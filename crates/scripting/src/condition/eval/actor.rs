@@ -226,13 +226,7 @@ pub(crate) fn item_count(world: &World, container: EntityId, item: u32) -> f32 {
     let Some(inventory) = world.get::<Inventory>(container) else {
         return 0.0;
     };
-    let count: u32 = inventory
-        .items
-        .iter()
-        .filter(|stack| items.contains(&stack.base_form_id))
-        .map(|stack| stack.count)
-        .sum();
-    count as f32
+    inventory.count_of_any(&items) as f32
 }
 
 /// `GetHealthPercentage` (FO3/FNV CTDA 431, ObScript `0x11af`): GECK "how
