@@ -81,6 +81,10 @@ thread_local! {
     static WARNED_RECURSIVE_READ_TYPES: RefCell<HashSet<TypeId>> = RefCell::new(HashSet::new());
     #[cfg(test)]
     static RECURSIVE_READ_WARNINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Test-only: the `(file, line)` the last recursive-read warning named (#6502).
+    #[cfg(test)]
+    static LAST_RECURSIVE_READ_SITE: std::cell::Cell<Option<(&'static str, u32)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Record a read lock acquisition. Panics if a write lock is already held
@@ -95,6 +99,12 @@ thread_local! {
 /// bisect (how ECS-2026-08-24-01 was actually found).
 #[track_caller]
 pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
+    // #6502 — captured HERE, not inside the closure below: `Location::caller()`
+    // reports the nearest `#[track_caller]` frame's caller, and the
+    // `LOCKS.with(|locks| ..)` closure is not one, so evaluating it in there
+    // always named the closure itself (`lock_tracker.rs:172`) — #3249's fix
+    // never reported a user call site.
+    let caller = std::panic::Location::caller();
     LOCKS.with(|locks| {
         let recursive_read = {
             let map = locks.borrow();
@@ -169,7 +179,6 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
             if entry.read_count == 1
                 && WARNED_RECURSIVE_READ_TYPES.with(|warned| warned.borrow_mut().insert(type_id))
             {
-                let caller = std::panic::Location::caller();
                 log::warn!(
                     "ECS recursive-read hazard: a second `{type_name}` read guard is live on \
                      this thread, acquired at {caller}; reuse/drop the first guard when both \
@@ -178,7 +187,11 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
                      are not logged."
                 );
                 #[cfg(test)]
-                RECURSIVE_READ_WARNINGS.with(|count| count.set(count.get() + 1));
+                {
+                    RECURSIVE_READ_WARNINGS.with(|count| count.set(count.get() + 1));
+                    LAST_RECURSIVE_READ_SITE
+                        .with(|site| site.set(Some((caller.file(), caller.line()))));
+                }
             }
             entry.read_count = entry.read_count.saturating_add(1);
             return;
@@ -622,6 +635,11 @@ pub(crate) fn is_clean() -> bool {
 }
 
 #[cfg(test)]
+fn take_recursive_read_warning_site() -> Option<(&'static str, u32)> {
+    LAST_RECURSIVE_READ_SITE.with(|site| site.take())
+}
+
+#[cfg(test)]
 fn take_recursive_read_warning_count() -> usize {
     RECURSIVE_READ_WARNINGS.with(|count| count.replace(0))
 }
@@ -666,6 +684,33 @@ mod tests {
         untrack_read(id);
         untrack_read(id);
         assert!(is_clean());
+    }
+
+    struct FakeSite;
+    impl Component for FakeSite {
+        type Storage = SparseSetStorage<Self>;
+    }
+
+    /// #6502 — the recursive-read warning names the USER call site (the second
+    /// `World::query`), not the tracker's own closure. `Location::caller()` in
+    /// the `LOCKS.with` closure reported `lock_tracker.rs:172` for every hazard,
+    /// so the one diagnostic built to locate a nested read could not.
+    #[test]
+    fn recursive_read_warning_names_the_users_call_site() {
+        let mut world = World::new();
+        world.register::<FakeSite>();
+        take_recursive_read_warning_count();
+        take_recursive_read_warning_site();
+
+        let _first = world.query::<FakeSite>().unwrap();
+        let expected_line = line!() + 1;
+        let _second = world.query::<FakeSite>().unwrap();
+
+        assert_eq!(take_recursive_read_warning_count(), 1);
+        let (file, line) = take_recursive_read_warning_site()
+            .expect("the recursive read must have recorded its site");
+        assert_eq!(line, expected_line, "named {file}:{line}, not the second query's line");
+        assert!(file.ends_with("lock_tracker.rs"), "this test's own file, got {file}");
     }
 
     struct FakeRecursiveCycle;
