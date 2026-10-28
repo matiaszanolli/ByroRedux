@@ -30,7 +30,8 @@
 //! - **Another friendly actor** is walked to and stood beside; a conversation
 //!   between two NPCs does not exist here.
 //! - **Anything else** (an activator) is activated: an `ActivateEvent` with
-//!   the actor as activator.
+//!   the actor as activator, queued through `PendingFragmentActivations` so
+//!   every Update consumer sees it next frame (#6466).
 //!
 //! ## v0 scope
 //!
@@ -374,8 +375,15 @@ fn drive_find_packages(
             }
             Arrival::Activate => {
                 log::info!("Find package: actor {actor} activates {target}");
-                if let Some(mut events) = world.query_mut::<byroredux_scripting::ActivateEvent>() {
-                    events.insert(target, byroredux_scripting::ActivateEvent { activator: actor });
+                // This system runs in PostUpdate, after every Update `ActivateEvent` consumer
+                // (door, container, two-state activator, the OnActivate dispatch), so a direct
+                // insert would reach only the Late readers before cleanup drained it. Queue it
+                // for delivery at the head of the next frame (#6466, as #2654 / #3936 / #4712).
+                match world.try_resource_mut::<byroredux_scripting::PendingFragmentActivations>() {
+                    Some(mut queue) => queue.push(target, actor),
+                    None => log::warn!(
+                        "Find package: no activation queue installed; {actor}'s activation of {target} is lost"
+                    ),
                 }
                 progress.done = true;
             }
@@ -590,6 +598,35 @@ mod tests {
         run(&world, 120);
         assert_eq!(world.get::<AiCombatState>(actor).map(|s| s.target), Some(creature));
         assert!(world.get::<FindProgress>(actor).is_some_and(|p| p.done));
+    }
+
+    /// #6466 — an activator target is activated through the next-frame queue, not a
+    /// direct `ActivateEvent` insert (this system runs after the Update consumers,
+    /// which would never see it): nothing on the target until the queue is flushed,
+    /// then the event carrying the actor as activator.
+    #[test]
+    fn an_activator_target_is_activated_through_the_next_frame_queue() {
+        let mut world = world();
+        world.register::<byroredux_scripting::ActivateEvent>();
+        world.insert_resource(byroredux_scripting::PendingFragmentActivations::default());
+        let door = place(&mut world, 0x7002, 0x301, Vec3::new(0.0, 0.0, 100.0));
+        let actor = finder(
+            &mut world,
+            FindPackageBehavior {
+                target: FindTarget::Reference(0x301),
+                count: 1,
+                area: EatSleepLocation::NearCurrentLocation,
+                area_radius: 0.0,
+            },
+        );
+        run(&world, 120);
+        assert!(world.get::<FindProgress>(actor).is_some_and(|p| p.done), "arrived and finished");
+        assert!(!world.has::<byroredux_scripting::ActivateEvent>(door), "not inserted past the Update consumers");
+        assert_eq!(world.resource::<byroredux_scripting::PendingFragmentActivations>().len(), 1);
+
+        byroredux_scripting::fragment_activation_flush_system(&world, 0.0);
+        let event = world.get::<byroredux_scripting::ActivateEvent>(door).map(|e| e.activator);
+        assert_eq!(event, Some(actor), "delivered at the head of the next frame");
     }
 
     /// A target the actor cannot reach is dropped, and tried again once the
