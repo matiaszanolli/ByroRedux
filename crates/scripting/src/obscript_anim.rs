@@ -177,37 +177,43 @@ pub fn apply_pending_group_swaps(world: &World) {
         return;
     };
     let mut ready: Vec<(EntityId, u32)> = Vec::new();
-    // Collect under read borrows only; the apply loop below takes the
-    // player storage mutably, and the engine's per-storage RwLocks make a
-    // held read borrow and a fresh write borrow of the same storage on one
-    // thread an ABBA self-deadlock, so this query is scoped and dropped
-    // before it.
-    {
-        let Some(players) = world.query::<AnimationPlayer>() else {
-            return;
-        };
+    // #6443 — snapshot the held requests first and drop that guard:
+    // `sequence_player` takes `NamedSequences` and queries `AnimationPlayer`,
+    // so calling it with `PendingGroupSwap` (or the player storage) held
+    // records the `PendingGroupSwap -> AnimationPlayer` edge against the
+    // `AnimationPlayer -> PendingGroupSwap` one and recurses a read of the
+    // player storage. Each step below holds one guard at a time, and none is
+    // alive when the apply loop takes the player storage mutably (a held read
+    // and a fresh write of one storage on one thread is an ABBA self-deadlock).
+    let pending: Vec<(EntityId, u32)> = {
         let Some(pendings) = world.query::<PendingGroupSwap>() else {
             return;
         };
-        for (object, pending) in pendings.iter() {
-            let Some(player_entity) = sequence_player(world, object) else {
-                continue;
-            };
-            let Some(player) = players.get(player_entity) else {
-                continue;
-            };
-            let crossed_end = match registry.get(player.clip_handle) {
-                // An unresolvable or zero-length clip has no cycle to finish.
-                None => true,
-                Some(clip) if clip.duration <= 0.0 => true,
-                Some(clip) => match clip.cycle_type {
-                    CycleType::Loop => player.prev_time > player.local_time,
-                    _ => !player.playing || player.local_time + 1e-5 >= clip.duration,
-                },
-            };
-            if crossed_end {
-                ready.push((object, pending.clip_handle));
-            }
+        pendings.iter().map(|(object, pending)| (object, pending.clip_handle)).collect()
+    };
+    for (object, pending_handle) in pending {
+        let Some(player_entity) = sequence_player(world, object) else {
+            continue;
+        };
+        let Some((clip_handle, playing, local_time, prev_time)) = world
+            .query::<AnimationPlayer>()
+            .and_then(|players| {
+                players.get(player_entity).map(|p| (p.clip_handle, p.playing, p.local_time, p.prev_time))
+            })
+        else {
+            continue;
+        };
+        let crossed_end = match registry.get(clip_handle) {
+            // An unresolvable or zero-length clip has no cycle to finish.
+            None => true,
+            Some(clip) if clip.duration <= 0.0 => true,
+            Some(clip) => match clip.cycle_type {
+                CycleType::Loop => prev_time > local_time,
+                _ => !playing || local_time + 1e-5 >= clip.duration,
+            },
+        };
+        if crossed_end {
+            ready.push((object, pending_handle));
         }
     }
     for (object, handle) in ready {
