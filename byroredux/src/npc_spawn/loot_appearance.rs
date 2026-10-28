@@ -1085,12 +1085,27 @@ impl GearImportLoader {
         }
     }
 
+    /// Drop the failed sets of wearers whose slots can no longer be read (#6446).
+    ///
+    /// [`Self::failed_set`] only prunes the wearer it is asked about, and entity
+    /// ids are never recycled, so an NPC that streams out with a still-worn
+    /// failed piece would otherwise keep its entry until process exit. This runs
+    /// once per [`Self::step`] over the (small, usually empty) map, one wearer's
+    /// storage reads at a time.
+    fn prune_unreadable_wearers(&mut self, world: &World) {
+        if self.failed_forms.is_empty() {
+            return;
+        }
+        self.failed_forms.retain(|&wearer, _| equipped_forms(world, wearer).is_some());
+    }
+
     pub(crate) fn step(
         &mut self,
         world: &mut World,
         ctx: &mut VulkanContext,
         providers: &mut AppearanceProviders,
     ) {
+        self.prune_unreadable_wearers(world);
         self.step_releases(world, ctx);
         self.step_imports(world, ctx, providers);
     }
@@ -2160,6 +2175,35 @@ mod tests {
         let bare = world.spawn();
         assert!(loader.hold_out(&world, bare, 0xCCC).is_empty());
         assert!(!loader.failed_forms.contains_key(&bare), "an unreadable wearer keeps no entry");
+    }
+
+    /// #6446 — a wearer that streams out (despawns) with a failed piece still
+    /// worn must not keep its entry for the session: the per-step prune drops it
+    /// without the wearer ever hitting another failed import.
+    #[test]
+    fn a_despawned_wearers_failed_set_is_reclaimed() {
+        let (mut world, wearer) = wearer_with_slots(&[0xAAA, 0xBBB]);
+        let (_, survivor) = {
+            let survivor = world.spawn();
+            let slots = world.get::<EquipmentSlots>(wearer).unwrap().clone();
+            let inventory = world.get::<Inventory>(wearer).unwrap().clone();
+            world.insert(survivor, slots);
+            world.insert(survivor, inventory);
+            ((), survivor)
+        };
+        let mut loader = GearImportLoader::default();
+        loader.hold_out(&world, wearer, 0xAAA);
+        loader.hold_out(&world, survivor, 0xBBB);
+        assert_eq!(loader.failed_forms.len(), 2);
+
+        // Nothing changed: both wearers are still readable, both entries stay.
+        loader.prune_unreadable_wearers(&world);
+        assert_eq!(loader.failed_forms.len(), 2);
+
+        world.despawn(wearer);
+        loader.prune_unreadable_wearers(&world);
+        assert!(!loader.failed_forms.contains_key(&wearer), "a despawned wearer leaked its entry");
+        assert!(loader.failed_forms.contains_key(&survivor), "a live wearer lost its entry");
     }
 
     /// #5031 — the loader's mid-drain re-check reads the live slots:
