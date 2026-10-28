@@ -19,7 +19,8 @@ use byroredux_core::ecs::components::{
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Component, World};
 use byroredux_plugin::esm::records::misc::pack::{
-    PROCEDURE_DIALOGUE, PROCEDURE_EAT, PROCEDURE_SLEEP, PROCEDURE_USE_WEAPON,
+    PROCEDURE_AMBUSH, PROCEDURE_DIALOGUE, PROCEDURE_EAT, PROCEDURE_FLEE_NOT_COMBAT, PROCEDURE_SLEEP,
+    PROCEDURE_USE_WEAPON,
 };
 use byroredux_plugin::esm::records::{
     PackDataValue, PackLocation, PackLocationTarget, PackRecord, PackTargetKind,
@@ -173,7 +174,8 @@ fn find_behavior(package: &PackRecord, world: &World) -> Option<FindPackageBehav
 }
 
 /// Whether selection may pick `package`: a Dialogue-procedure package must be
-/// one the installer would take (#5499 / #5722), and so must a UseWeapon one;
+/// one the installer would take (#5499 / #5722), and so must a UseWeapon one,
+/// and a FleeNotCombat or Ambush one (their conditions fully modelled, #6468);
 /// every other procedure passes. Shared by the schedule scan and the
 /// script-package slot so a scripted Say-To / off-target Dialogue package
 /// cannot win and then install nothing (#6051).
@@ -186,6 +188,7 @@ fn selectable_by_installer(package: &PackRecord, world: &World) -> bool {
     match package.procedure_type {
         PROCEDURE_DIALOGUE => dialogue_installs_ambient(package, world),
         PROCEDURE_USE_WEAPON => use_weapon_behavior(package, world).is_some(),
+        PROCEDURE_FLEE_NOT_COMBAT | PROCEDURE_AMBUSH => package_conditions_fully_modeled(&package.conditions, world),
         _ => true,
     }
 }
@@ -381,13 +384,16 @@ impl AmbientBehavior {
                 actor_form_id,
             })
         } else if package.is_flee_not_combat() {
-            Some(Self::Flee {
+            // Flee and Ambush take the actor over, so like Find / UseWeapon / Dialogue they install
+            // only from a condition pass decided on modelled terms (#5376 rule; #6468): a quest-gated
+            // flee with an uncatalogued gate would otherwise fire on first contact.
+            package_conditions_fully_modeled(&package.conditions, world).then(|| Self::Flee {
                 threat_form_id: target_reference,
                 min_distance: target_distance,
                 refuge_form_id: location_reference,
             })
         } else if package.is_ambush() {
-            Some(Self::Ambush {
+            package_conditions_fully_modeled(&package.conditions, world).then(|| Self::Ambush {
                 wait_form_id: location_reference,
                 wait_radius: location_radius,
                 ambush: AmbushBehavior {
@@ -2212,6 +2218,34 @@ mod tests {
         ambient_ai_package_system(&world, 0.0);
         assert!(world.has::<FleePackageBehavior>(actor), "the gate opened, Flee wins");
         assert!(!world.has::<WanderBehavior>(actor));
+    }
+
+    /// #6468 — FleeNotCombat and Ambush take the actor over, so a condition list the evaluator
+    /// cannot fully model (FNV fn 79 `GetQuestVariable`, the #5376 example) declines the package
+    /// instead of passing fail-open; the next package still wins.
+    #[test]
+    fn flee_and_ambush_are_declined_on_a_fail_open_condition_pass() {
+        use byroredux_core::ecs::components::AmbushBehavior;
+        use byroredux_plugin::esm::records::misc::pack::{PROCEDURE_AMBUSH, PROCEDURE_FLEE_NOT_COMBAT};
+
+        for procedure in [PROCEDURE_FLEE_NOT_COMBAT, PROCEDURE_AMBUSH] {
+            let mut unmodeled = pack(0x100, procedure, None);
+            unmodeled.conditions = vec![Condition {
+                function_index: 79,
+                comparator: ComparisonOp::Eq,
+                comparand: ConditionValue::Literal(0.0),
+                ..Default::default()
+            }];
+            let (world, actor) = setup_actor(10.0, vec![unmodeled.clone(), pack(0x200, PROCEDURE_GUARD, None)]);
+            assert!(
+                !world.has::<FleePackageBehavior>(actor) && !world.has::<AmbushBehavior>(actor),
+                "procedure {procedure}: an unmodelled gate must not install"
+            );
+            assert!(world.has::<GuardBehavior>(actor), "procedure {procedure}: the lower package still wins");
+            // Selection agrees with the installer, so a declined package cannot win and install nothing.
+            assert!(!selectable_by_installer(&unmodeled, &world), "procedure {procedure}: not selectable");
+            assert!(selectable_by_installer(&pack(0x300, procedure, None), &world), "procedure {procedure}: modelled is");
+        }
     }
 
     #[test]

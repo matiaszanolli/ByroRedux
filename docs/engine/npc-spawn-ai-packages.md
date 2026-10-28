@@ -528,7 +528,8 @@ animation-clip swap).
   — the GECK's minimum distance, 256–2500 on all 23 vanilla FNV/FO3
   packages — or walk to a `NearReference` `PLDT` refuge and hold; the
   GECK's start-location-then-keep-away sequence, non-reference refuges,
-  navmesh routing and a cower animation are not modeled); and UseWeapon
+  navmesh routing and a cower animation are not modeled; it installs only
+  from fully modelled conditions, the #5376 rule, #6468); and UseWeapon
   (`UseWeaponPackageBehavior` + `use_weapon_package_system`). In a
   UseWeapon package `PTDT` is the *weapon*, `PTD2` the target to shoot and
   `PKW3` the fire pattern (flags, fire rate, fire count, bursts, volley
@@ -576,7 +577,8 @@ animation-clip swap).
   (`FFER15FindDeadBrahmin`). Live-gated for install and hunt only; the pickup
   and the attack are unit-gated.
   Ambush
-  (`AmbushBehavior` + Guard): the actor waits at the `PLDT` wait location on
+  (`AmbushBehavior` + Guard; installed only from fully modelled conditions,
+  like Flee, #6468): the actor waits at the `PLDT` wait location on
   Guard's runtime, and `faction_hostility_system` gates its fights - an
   ambusher attacks only an enemy inside the `PLD2` ambush location, a
   `PTDT` target filter if one is named, and the player also inside
