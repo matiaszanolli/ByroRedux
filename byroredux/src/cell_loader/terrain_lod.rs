@@ -51,6 +51,14 @@ use super::lod_support::{
     LodReconcileInput, LodWorkBudget,
 };
 
+/// The albedo gain a synth block takes: the EXAL table's row for `game` when the
+/// block wears its quad's baked diffuse, none for the tiled-LTEX fallback (the
+/// splat terrain's own albedo). The table is the only per-game decision here —
+/// the legacy rows must reach a legacy block once they are measured (#6453).
+fn synth_block_albedo_gain(game: GameKind, wears_baked_quad: bool) -> Option<f32> {
+    wears_baked_quad.then(|| crate::env_translate::terrain_lod_albedo_gain(game))
+}
+
 /// Cells per LOD-block edge. A block is one merged mesh covering
 /// `LOD_BLOCK_CELLS²` cells (4×4 = 16 cells = 16384×16384 BU). Bigger
 /// blocks → fewer draw entities; smaller → finer hole-out granularity at
@@ -1324,8 +1332,8 @@ fn spawn_lod_block(
     // A block wearing its quad's baked diffuse takes the same gain as the
     // prebaked `.btr` blocks beside it, so the ring has no seam of its own. The
     // tiled-LTEX fallback is the splat terrain's own albedo: no gain.
-    if translated_lod.is_some() && combined {
-        material.diffuse_color = [crate::env_translate::terrain_lod_albedo_gain(game); 3];
+    if let Some(gain) = synth_block_albedo_gain(game, translated_lod.is_some()) {
+        material.diffuse_color = [gain; 3];
     }
     world.insert(entity, material);
     if combined && normal_texture_handle != 0 {
@@ -1861,6 +1869,30 @@ mod tests {
                 reached_before_fix,
                 "{game:?}: the radius-13 premise is gone — without the fix no coarse \
                  quad reaches the ring, so this test no longer exercises #6094"
+            );
+        }
+    }
+
+    /// #6453 — the gain is the EXAL table's call for every game that bakes a
+    /// quad diffuse; the consumer must not re-gate it on the Combined family,
+    /// or a measured legacy row would silently never reach a block.
+    #[test]
+    fn synth_block_albedo_gain_follows_the_table_for_every_game() {
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+        ] {
+            assert_eq!(
+                synth_block_albedo_gain(game, true),
+                Some(crate::env_translate::terrain_lod_albedo_gain(game)),
+                "{game:?}: a block wearing a baked quad takes the table row"
+            );
+            assert_eq!(
+                synth_block_albedo_gain(game, false),
+                None,
+                "{game:?}: the tiled-LTEX fallback takes no gain"
             );
         }
     }

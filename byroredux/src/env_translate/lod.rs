@@ -41,6 +41,11 @@ pub(crate) const fn terrain_lod_layout(game: GameKind) -> TerrainLodLayout {
 /// Brightness gain applied to a game's baked distant-terrain albedo so the LOD
 /// ground meets the full-detail ground it stands in for.
 ///
+/// Applies to every block wearing a baked quad diffuse — prebaked `.btr` and
+/// synth blocks alike, whatever the game family — so a row measured for a
+/// legacy game (Oblivion, FO3, FNV) reaches its blocks without consumer edits
+/// (#6453).
+///
 /// **Skyrim: 0.36, measured.** Rendering the same Whiterun view with the valley
 /// as LOD (radius 1) and as full detail (radius 6) put the baked `.btr` ground
 /// at a median 2.01x (mean 1.89x) the full-detail ground's luminance over 24
