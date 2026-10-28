@@ -369,7 +369,8 @@ pub const LVLI_MAX_DEPTH: u32 = 8;
 /// full set; the constants below name every bit a `ResolvedNpc` terminal
 /// consumes. Only `0x0200` Script and `0x0400` Def Pack List are parsed and
 /// stored with no consumer yet (#4137) — Script's real consumer is the M47
-/// VMAD attach path, not the `NPC_` TPLT walk.
+/// VMAD attach path, not the `NPC_` TPLT walk — and Skyrim's `0x0800` Use
+/// Attack Data names a block (`ATKD`) the parser does not read at all.
 pub const TEMPLATE_FLAG_USE_TRAITS: u16 = 0x0001;
 pub const TEMPLATE_FLAG_USE_STATS: u16 = 0x0002;
 /// "Use Factions" — consumed by [`resolve_inherited_factions`] (#4093 /
@@ -404,6 +405,13 @@ pub const TEMPLATE_FLAG_USE_BASE_DATA: u16 = 0x0080;
 /// model-less `CREA` in `FalloutNV.esm` carry this bit. Consumed through
 /// [`ResolvedNpc::model`].
 pub const TEMPLATE_FLAG_USE_MODEL_ANIMATION: u16 = 0x0040;
+/// #6515 — "Use Keywords" (Skyrim `u16 @ 18` bit 12, FO4's "Keywords" — the
+/// 13th `TPTA` slot): the actor's own `KWDA` comes from the template. Skyrim.esm
+/// sets it on 768 of 5,118 `NPC_`, 716 of them authoring no `KWDA`, so a
+/// templated shell (`LvlHorse`, `E3demoGiant01`) answers `HasKeyword` from its
+/// template's list. Consumed through [`ResolvedNpc::keywords`] /
+/// [`keywords_terminal`].
+pub const TEMPLATE_FLAG_USE_KEYWORDS: u16 = 0x1000;
 
 /// Maximum TPLT recursion depth for [`resolve_inherited_record`] and its
 /// public wrappers ([`resolve_inherited_inventory`],
@@ -490,6 +498,23 @@ pub fn traits_terminal<'a>(
     index: &'a EsmIndex,
 ) -> &'a crate::esm::records::actor::NpcRecord {
     resolve_inherited_traits(shell, crate::esm::records::effective_actor_level(shell), index)
+}
+
+/// #6515 — the "Use Keywords" terminal of `shell` at the shell's own effective
+/// level: the record [`ResolvedNpc::resolve`] takes `keywords` from, for the
+/// readers that hold a base FormID rather than a spawn's resolution (the
+/// `HasKeyword` base table).
+pub fn keywords_terminal<'a>(
+    shell: &'a crate::esm::records::actor::NpcRecord,
+    index: &'a EsmIndex,
+) -> &'a crate::esm::records::actor::NpcRecord {
+    resolve_inherited_record(
+        shell,
+        crate::esm::records::effective_actor_level(shell),
+        index,
+        TEMPLATE_FLAG_USE_KEYWORDS,
+        0,
+    )
 }
 
 /// Resolve the NPC record that should supply faction membership for this
@@ -717,6 +742,8 @@ pub struct ResolvedNpc<'a> {
     /// on a tie), so a spawner shell takes the model of the creature the
     /// other categories resolve to.
     pub model: &'a crate::esm::records::actor::NpcRecord,
+    /// #6515 — "Use Keywords" chain terminal: the actor's own `KWDA`.
+    pub keywords: &'a crate::esm::records::actor::NpcRecord,
     /// The Use-Stats chain shell-first including the terminal, cached so
     /// [`Self::authored_stat_field`] needs no second traversal.
     stats_chain: Vec<&'a crate::esm::records::actor::NpcRecord>,
@@ -795,6 +822,13 @@ impl<'a> ResolvedNpc<'a> {
                 shell_level,
                 index,
                 TEMPLATE_FLAG_USE_MODEL_ANIMATION,
+                0,
+            ),
+            keywords: resolve_inherited_record(
+                shell,
+                shell_level,
+                index,
+                TEMPLATE_FLAG_USE_KEYWORDS,
                 0,
             ),
             stats_chain,

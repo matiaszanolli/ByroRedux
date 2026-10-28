@@ -13,7 +13,8 @@
 //!   you can use ResetKeyword." Keyed by the reference's FormID, so a change
 //!   outlives its cell's unload, and saved;
 //! * the keywords of every alias the reference fills (`QuestAliasInjectedOverlays`);
-//! * the base object's `KWDA` — and, for an actor, its race's: Skyrim.esm
+//! * the base object's `KWDA` — and, for an actor, its race's (both read from the
+//!   template terminal when "Use Keywords" / "Use Traits" is set, #6515): Skyrim.esm
 //!   authors `ActorTypeDaedra` on 4 `RACE`s and 1 `NPC_`, and the CK
 //!   *Keyword* page has Banish "only affect Actors that have the
 //!   'ActorTypeDaedra' Keyword".
@@ -27,7 +28,8 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Resource, World};
 use byroredux_plugin::esm::records::EsmIndex;
 
-/// Base object → its keywords (an actor's include its race's).
+/// Base object → its keywords (an actor's include its race's; a templated
+/// actor's come from its Use-Keywords / Use-Traits terminals).
 /// `NOT_SAVED_BY_DESIGN`: rebuilt from the records every boot.
 #[derive(Debug, Default, Clone)]
 pub struct KeywordTable(HashMap<u32, HashSet<u32>>);
@@ -38,8 +40,10 @@ impl KeywordTable {
     pub fn from_index(index: &EsmIndex) -> Self {
         let mut table: HashMap<u32, HashSet<u32>> = HashMap::new();
         for npc in index.npcs.values() {
-            let race = index.races.get(&npc.race_form_id);
-            let keywords: HashSet<u32> = npc
+            // #6515 / #6434 — `KWDA` is a Use-Keywords field and race a Use-Traits
+            // field: a templated shell's own are not its body's.
+            let race = index.races.get(&byroredux_plugin::equip::traits_terminal(npc, index).race_form_id);
+            let keywords: HashSet<u32> = byroredux_plugin::equip::keywords_terminal(npc, index)
                 .keywords
                 .iter()
                 .chain(race.into_iter().flat_map(|race| race.keywords.iter()))

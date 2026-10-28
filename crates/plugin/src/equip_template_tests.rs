@@ -238,3 +238,35 @@ fn a_model_less_spawner_shell_takes_the_leveled_picks_model() {
     shell.template_flags = TEMPLATE_FLAG_USE_STATS;
     assert_eq!(ResolvedNpc::resolve(&shell, &index).model.form_id, 1);
 }
+
+/// #6515 — Skyrim "Use Keywords" (0x1000): a templated shell's `KWDA` is its
+/// template's, through an `LVLN` pick as for `LvlHorse`; without the bit the
+/// shell keeps its own.
+#[test]
+fn a_use_keywords_shell_takes_the_leveled_picks_keywords() {
+    let mut index = EsmIndex::default();
+    index.npcs.insert(
+        4,
+        NpcRecord {
+            form_id: 4,
+            keywords: vec![0xAA, 0xBB],
+            ..Default::default()
+        },
+    );
+    index.leveled_npcs.insert(2, list(2, &[(1, 4)]));
+    let mut shell = NpcRecord {
+        form_id: 1,
+        template_form_id: 2,
+        template_flags: TEMPLATE_FLAG_USE_KEYWORDS,
+        level: 1,
+        ..Default::default()
+    };
+    assert_eq!(TEMPLATE_FLAG_USE_KEYWORDS, 0x1000);
+    let resolved = ResolvedNpc::resolve(&shell, &index);
+    assert_eq!(resolved.keywords.form_id, 4);
+    assert_eq!(resolved.keywords.keywords, vec![0xAA, 0xBB]);
+    assert_eq!(keywords_terminal(&shell, &index).form_id, 4);
+    // Another category's flag does not pull the keywords.
+    shell.template_flags = TEMPLATE_FLAG_USE_STATS;
+    assert_eq!(ResolvedNpc::resolve(&shell, &index).keywords.form_id, 1);
+}

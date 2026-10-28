@@ -3350,11 +3350,13 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
     // #6228 — the Use-Traits readers that hold a base FormID rather than a
     // spawn's resolution (the dialogue voice key, the actor traits behind
     // GetIsSex / GetVoiceType / GetLeveledActorBase, the gendered animation
-    // subgraph) must read sex, voice and race off the terminal, not the shell.
+    // subgraph, the HasKeyword base table) must read sex, voice and race off the terminal, not the shell.
     for (file, source) in [
         ("systems/dialogue_voice.rs", include_str!("../systems/dialogue_voice.rs")),
         ("scripting/actor_base_traits.rs", include_str!("../../../crates/scripting/src/actor_base_traits.rs")),
         ("scripting/anim_subgraph.rs", include_str!("../../../crates/scripting/src/anim_subgraph.rs")),
+        // #6434 — the `HasKeyword` base table's race is a Use-Traits field too.
+        ("scripting/keywords.rs", include_str!("../../../crates/scripting/src/keywords.rs")),
     ] {
         let code = source
             .lines()
