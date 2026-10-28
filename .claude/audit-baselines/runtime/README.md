@@ -30,6 +30,7 @@ entities_total	5885
 tex_missing_base_color	0
 tex_missing_all_slots	0
 mesh_cache_failed_count	0
+light_count_spot	0
 light_count_point	12
 light_count_directional	1
 skin_pool_live	686
@@ -67,6 +68,9 @@ The key set above mirrors the committed TSVs exactly.
 - **`light_count_point`** is the count of `kind=Point` rows in `light.dump`,
   not its `LightSource emitters: N` total, which includes directional
   emitters (#4419).
+- **`light_count_spot`** (#5132) is the count of `kind=Spot` rows in the same
+  `light.dump`. It exists so a Point -> Spot reclassification (`b9e961eeb`)
+  reads as a reclassification, not as a point-count regression.
 
 - **`tex_missing_base_color` / `tex_missing_all_slots`** (#3550, RT-4) — split
   from the single old `tex_missing_unique_paths` row. `#3349` widened
