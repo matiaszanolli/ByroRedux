@@ -278,6 +278,49 @@ fn fnv_karma_good_global_decodes_float_payload_before_narrowing() {
     assert_eq!(karma.value.as_f32(), 250.0);
 }
 
+/// #3816 — FNV's `MSET` census (2026-10-28): 32 battle / 81 location / 23
+/// dungeon / 4 incidental sets, and every `RDSI` that resolves names an
+/// incidental set whose day/night `SOUN`s are folder-form.
+#[test]
+#[ignore = "needs FNV game data on disk"]
+fn fnv_media_sets_decode_and_rdsi_names_incidental_sets() {
+    use byroredux_plugin::esm::records::{MediaSetKind, RegionDataPayload};
+    let Some(data) = data_dir(
+        test_paths::FNV_ENV,
+        test_paths::FNV_DEFAULT,
+    ) else {
+        eprintln!("[FNV/MSET] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+    let count = |kind| index.media_sets.values().filter(|m| m.kind == kind).count();
+    assert_eq!(
+        [MediaSetKind::Battle, MediaSetKind::Location, MediaSetKind::Dungeon, MediaSetKind::Incidental].map(count),
+        [32, 81, 23, 4]
+    );
+    let desert = index.media_sets[&0x0014_E860].incidental().expect("musSetINCDesert is incidental");
+    assert_eq!((desert.day_min, desert.day_max, desert.night_min, desert.night_max), (4.0, 16.0, 6.0, 12.0));
+    assert_eq!(desert.day_sound, Some(0x0014_E85D));
+    assert!(index.sounds[&0x0014_E85D].is_folder(), "fx\\mus\\inc\\day\\ is a folder of variants");
+
+    let rdsi: Vec<u32> = index
+        .regions
+        .values()
+        .flat_map(|r| &r.entries)
+        .filter_map(|e| match &e.payload {
+            RegionDataPayload::Sound { incidental, .. } => *incidental,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rdsi.len(), 11);
+    let incidental = rdsi
+        .iter()
+        .filter(|f| index.media_sets.get(f).is_some_and(|m| m.incidental().is_some()))
+        .count();
+    assert_eq!(incidental, 10, "the 11th RDSI (0x010276B2) dangles");
+}
+
 #[test]
 #[ignore = "needs Oblivion game data on disk"]
 fn oblivion_spawn_time_global_decodes_float_payload_before_narrowing() {

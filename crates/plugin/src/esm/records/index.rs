@@ -16,7 +16,7 @@ use super::{
     HdptRecord,
     IdleRecord, ImadRecord, LctnRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
     LeveledList, LgtmRecord, LoadScreenRecord, LoadScreenTransform, MesgRecord, MgefRecord,
-    MinimalEsmRecord, MuscRecord, RadiationStageRecord, ResolvedLoadScreenModel,
+    MediaSetRecord, MinimalEsmRecord, MuscRecord, RadiationStageRecord, ResolvedLoadScreenModel,
     NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
     RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SmNodeRecord, SounRecord, SpelRecord,
@@ -602,8 +602,8 @@ pub struct EsmIndex {
     pub default_objects: HashMap<u32, MinimalEsmRecord>,
     /// `MICN` menu icon.
     pub menu_icons: HashMap<u32, MinimalEsmRecord>,
-    /// `MSET` media set.
-    pub media_sets: HashMap<u32, MinimalEsmRecord>,
+    /// `MSET` media set (FNV) — what REGN `RDSI`/`RDSB` point at (#3816).
+    pub media_sets: HashMap<u32, MediaSetRecord>,
     /// `MUSC` music type.
     pub music_types: HashMap<u32, MuscRecord>,
     /// `SOUN` sound. Upgraded from the `MinimalEsmRecord` long-tail stub

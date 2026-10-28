@@ -226,8 +226,8 @@ pub(crate) fn dispatch_region_ambient_music(
     // (`misc/music.rs`, consumed by scripted `PlayMusic`), but no REGN-driven
     // runtime exists for Skyrim `MUSC`/`MUST` or FNV `MSET` (#3816 tracks them
     // — #3787 and #3811 closed doc-only, and #3915 folded FNV's `MSET` into
-    // #3816; `MSET` is already parsed into `EsmIndex::media_sets`, nothing
-    // reads it), so this path is structurally unsupported on every game
+    // #3816; `MSET` is decoded into `EsmIndex::media_sets`, but no playback
+    // policy reads it yet), so this path is structurally unsupported on every game
     // rather than a content gap; log it once so "no archive supplied" (silent,
     // the common case per the doc above) is distinguishable from "an
     // ambient directive was authored but this engine build can't resolve
@@ -241,7 +241,7 @@ pub(crate) fn dispatch_region_ambient_music(
                 "REGN ambient: music_form did not resolve as a SOUN record on any \
                  supported game — Oblivion's RDMD is a music-category enum (not a \
                  FormID), Skyrim's RDMO targets MUSC, and FNV's RDSB/RDSI target MSET \
-                 (Media Set); none of those target types are decoded by this engine \
+                 (Media Set); none of those target types has a playback runtime \
                  yet, so region ambient music is unsupported pending that work \
                  (#3816), not a missing-archive content gap"
             );

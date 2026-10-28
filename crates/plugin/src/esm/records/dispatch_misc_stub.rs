@@ -87,10 +87,9 @@ pub(super) fn dispatch_misc_stub_group(
                 .menu_icons
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
+        // #3816 — the FNV music container REGN `RDSI`/`RDSB` name. See `media_set.rs`.
         b"MSET" => extract_records(reader, end, b"MSET", &mut |fid, subs| {
-            index
-                .media_sets
-                .insert(fid, parse_minimal_esm_record(fid, subs));
+            index.media_sets.insert(fid, parse_mset(fid, subs, &remap));
         })?,
         b"MUSC" => extract_records(reader, end, b"MUSC", &mut |fid, subs| {
             index.music_types.insert(fid, parse_musc(fid, subs, game));

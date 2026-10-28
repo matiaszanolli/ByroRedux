@@ -749,9 +749,9 @@ pub enum RegionDataPayload {
         ///   record types plus a track-selection policy for the "Plays One
         ///   Selection"/"Cycle Tracks" flags), not a doc-fix-sized change.
         /// - **FNV `RDSB`**: `MSET` (Media Set) — census-confirmed 44/44
-        ///   (#3787), not `SOUN`. `MSET` is parsed into
-        ///   `EsmIndex::media_sets` (`dispatch_misc_stub.rs`) but no
-        ///   runtime reads it yet — tracked by #3816.
+        ///   (#3787), not `SOUN`. `MSET` is decoded into
+        ///   `EsmIndex::media_sets` (`media_set.rs`) but no runtime reads it
+        ///   yet — tracked by #3816.
         ///
         /// `dispatch_region_ambient_music` (`byroredux/src/asset_provider/
         /// audio.rs`) resolves this against the parsed `SounRecord` map
@@ -764,7 +764,9 @@ pub enum RegionDataPayload {
         music: Option<u32>,
         /// `RDSI` incidental sound form (FNV). Same caveat as `music`
         /// above: census-confirmed 10 of 11 `RDSI` targets are `MSET`, not
-        /// `SOUN` (#3787).
+        /// `SOUN` (#3787) — all ten an `Incidental Set`
+        /// ([`MediaSetRecord::incidental`](super::MediaSetRecord::incidental));
+        /// the eleventh dangles.
         incidental: Option<u32>,
         sounds: Vec<RegionSound>,
     },

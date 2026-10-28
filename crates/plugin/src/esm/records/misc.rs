@@ -39,6 +39,7 @@ mod effects;
 mod equipment;
 mod imagespace;
 mod location;
+mod media_set;
 mod music;
 mod relationship;
 mod magic;
@@ -69,6 +70,7 @@ pub use equipment::{
 };
 pub use imagespace::{parse_imad, ImadColorKey, ImadRecord, ImadScalarKey};
 pub use location::{parse_lctn, LctnRecord};
+pub use media_set::{parse_mset, IncidentalMediaSet, MediaSetKind, MediaSetRecord};
 pub use music::{parse_musc, MuscRecord};
 pub use relationship::{parse_rela, RelaRecord};
 pub use magic::{
