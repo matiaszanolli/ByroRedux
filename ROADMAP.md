@@ -681,7 +681,7 @@ performance finding. The measured knob table is in
     (HUNG/DEHY/SLPD) — FNV Hardcore needs; `charal-fnv` has no consumer.
   - `recipe_records` / `recipe_categories` (RCPE/RCCT) — crafting.
   - `camera_shots` / `camera_paths` (CAMS/CPTH) — the load-screen MOD2 camera
-    paths in open #6194.
+    paths (not modelled; the cover uses a fixed stage camera, #6194).
   - `default_objects` (DOBJ) — engine default forms.
 
   No owner yet, so candidates to drop (the group then falls to
