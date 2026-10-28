@@ -97,9 +97,12 @@ fn skyrimse_data_dir() -> Option<PathBuf> {
 }
 
 fn skyrimle_data_dir() -> Option<PathBuf> {
-    std::env::var_os("BYROREDUX_SKYRIMLE_DATA")
-        .map(PathBuf::from)
-        .filter(|path| path.is_dir())
+    // Not a Steam install: the reference copy lives in a Wine prefix (same
+    // path as `Game::SkyrimLE.default_path()` in `crates/nif/tests/common`).
+    data_dir(
+        "BYROREDUX_SKYRIMLE_DATA",
+        "/home/matias/Games/skyrim-original/drive_c/Program Files (x86)/The Elder Scrolls V Skyrim/Data",
+    )
 }
 
 fn fo3_data_dir() -> Option<PathBuf> {
@@ -321,7 +324,7 @@ fn fo3_fnv_and_skyrimse_bsa_corpus_census() {
 #[ignore = "needs Skyrim LE game data on disk; set BYROREDUX_SKYRIMLE_DATA"]
 fn skyrimle_bsa_corpus_full_extract_zero_errors() {
     let Some(data) = skyrimle_data_dir() else {
-        eprintln!("[Skyrim LE] set BYROREDUX_SKYRIMLE_DATA to enable corpus sweep");
+        eprintln!("[Skyrim LE] BYROREDUX_SKYRIMLE_DATA not set and default path missing");
         return;
     };
     let mut paths: Vec<_> = std::fs::read_dir(&data)
@@ -678,4 +681,30 @@ fn skyrim_fuz_container_shape() {
         "[fuz] {} sampled .fuz files: FUZE v1 + raw lip + RIFF/XWMA at 12 + lip_size",
         fuzzes.len()
     );
+}
+
+/// #6517 — every game's data-dir helper must go through `data_dir`, so each gets
+/// the dev-machine fallback and the strict lane's `require_game_data`. An
+/// env-only helper silently reports `ok` for an absent install (the LE sweep
+/// did, until this pin).
+#[test]
+fn every_game_data_dir_helper_routes_through_data_dir() {
+    let src = include_str!("bsa_real.rs");
+    let mut helpers = 0;
+    // Built at runtime so this test's own text does not match.
+    let signature = ["_data_dir() -> Option<", "PathBuf> {"].concat();
+    for (at, _) in src.match_indices(&signature) {
+        let body_start = at + src[at..].find('{').unwrap();
+        let body_end = body_start + src[body_start..].find("\n}\n").unwrap();
+        let body = &src[body_start..body_end];
+        let name_start = src[..at].rfind("fn ").unwrap();
+        assert!(
+            body.contains("data_dir(\n") || body.contains("data_dir(\""),
+            "`{}` does not route through `data_dir`: no fallback, and the strict lane \
+             cannot fail an absent install",
+            &src[name_start..at + "_data_dir".len()]
+        );
+        helpers += 1;
+    }
+    assert!(helpers >= 5, "found only {helpers} data-dir helpers — pattern drifted");
 }
