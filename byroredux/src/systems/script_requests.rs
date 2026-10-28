@@ -58,7 +58,17 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
     let Some(index) = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|index| index.0.clone()) else {
         return;
     };
+    // Unconscious / bleeding out / knocked down or fleeing / `SetActorsAI 0`: collected before the loop
+    // takes its own queries (#5017). The volley survives a package handover (`clear_ambient_behavior`
+    // leaves it), so it must be stopped here too (#6467).
+    let mut incapacitated = Vec::new();
+    byroredux_scripting::collect_unconscious(world, &mut incapacitated);
     for (actor, run) in runs {
+        if incapacitated.contains(&actor) {
+            log::info!("UseWeapon: actor {actor} is incapacitated; the volley ends");
+            end_run(world, actor);
+            continue;
+        }
         let target = byroredux_scripting::condition::resolve_entity_by_global_form_id(world, run.request.target);
         let actor_form = byroredux_scripting::obscript_state::reference_form(world, actor);
         let alive = |entity: EntityId| world.get::<ActorVitals>(entity).is_none() || !world.has::<Dead>(entity);
@@ -406,6 +416,68 @@ pub(crate) fn reload_system(world: &World, _dt: f32) {
 mod tests {
     use super::*;
     use byroredux_core::math::Vec3;
+
+    /// #6467 — a volley under way ends when its shooter is knocked down or fleeing (`AiSuspended`),
+    /// held out by `SetActorsAI 0`, or unconscious; it neither turns the actor nor fires again. A
+    /// standing shooter keeps its volley.
+    #[test]
+    fn an_incapacitated_shooter_does_not_keep_its_volley() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        use byroredux_plugin::esm::records::{common::CommonItemFields, EsmIndex, ItemRecord};
+        use byroredux_scripting::{ActorControlState, AiSuspended};
+
+        const WEAPON: u32 = 0xA1;
+        const TARGET: u32 = 0x0001_59E2;
+        let mut world = World::new();
+        world.register::<UseWeaponRun>();
+        world.register::<UseWeaponRequest>();
+        world.register::<FormIdComponent>();
+        world.register::<GlobalTransform>();
+        world.register::<Transform>();
+        world.register::<AiSuspended>();
+        world.register::<ActorControlState>();
+        let mut index = EsmIndex::default();
+        index.items.insert(
+            WEAPON,
+            ItemRecord {
+                form_id: WEAPON,
+                common: CommonItemFields::default(),
+                kind: ItemKind::weapon_stub(3, 30).with_weapon_speed(1.0),
+            },
+        );
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert_resource(FormIdPool::new());
+        let place = |world: &mut World, local: u32, at: Vec3| {
+            let id = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+                plugin: PluginId::from_filename("FalloutNV.esm"),
+                local: LocalFormId(local),
+            });
+            let entity = world.spawn();
+            world.insert(entity, FormIdComponent(id));
+            world.insert(entity, Transform::from_translation(at));
+            world.insert(entity, GlobalTransform::new(at, Quat::IDENTITY, 1.0));
+            entity
+        };
+        place(&mut world, TARGET, Vec3::new(10.0, 0.0, 0.0));
+        let standing = place(&mut world, 0x101, Vec3::ZERO);
+        let knocked_down = place(&mut world, 0x102, Vec3::ZERO);
+        let unconscious = place(&mut world, 0x103, Vec3::ZERO);
+        world.insert(knocked_down, AiSuspended);
+        world.insert(unconscious, ActorControlState { unconscious: true, ..Default::default() });
+        for actor in [standing, knocked_down, unconscious] {
+            world.insert(actor, UseWeaponRequest { weapon: WEAPON, target: TARGET, shots: 5, harmless: false });
+        }
+
+        use_weapon_system(&world, 0.016);
+
+        assert!(world.has::<UseWeaponRun>(standing), "a standing shooter keeps its volley");
+        assert_ne!(world.get::<Transform>(standing).unwrap().rotation, Quat::IDENTITY, "and turns to the target");
+        for (name, actor) in [("knocked down", knocked_down), ("unconscious", unconscious)] {
+            assert!(!world.has::<UseWeaponRun>(actor), "{name}: the volley ends");
+            assert_eq!(world.get::<Transform>(actor).unwrap().rotation, Quat::IDENTITY, "{name}: no turning to the target");
+        }
+    }
 
     #[test]
     fn facing_points_the_forward_axis_at_the_target() {

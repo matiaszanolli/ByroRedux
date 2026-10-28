@@ -54,12 +54,17 @@ fn requested_shots(behavior: &UseWeaponPackageBehavior, index: &EsmIndex) -> u32
 }
 
 pub(crate) fn use_weapon_package_system(world: &World, _dt: f32) {
+    // An incapacitated actor does not start its volley (`use_weapon_system` would end it at once and
+    // `UseWeaponPackageStarted` would stop the package asking again); it waits (#6467).
+    let mut incapacitated = Vec::new();
+    byroredux_scripting::collect_unconscious(world, &mut incapacitated);
     let pending: Vec<(EntityId, UseWeaponPackageBehavior)> = match world.query::<UseWeaponPackageBehavior>() {
         Some(behaviors) if !behaviors.is_empty() => behaviors
             .iter()
             .filter(|&(actor, _)| {
                 !world.has::<UseWeaponPackageStarted>(actor)
                     && !world.has::<Dead>(actor)
+                    && !incapacitated.contains(&actor)
                     // A scripted volley already in hand: this one waits.
                     && !world.has::<super::script_requests::UseWeaponRun>(actor)
             })
@@ -202,5 +207,20 @@ mod tests {
         world.insert(actor, Dead);
         use_weapon_package_system(&world, 0.0);
         assert_eq!(request_of(&world, actor), None, "a dead actor does not fire");
+    }
+
+    /// #6467 — a knocked-down or fleeing actor (`AiSuspended`) does not start its volley, and the
+    /// package is still to start, so it fires once the actor is back on its feet.
+    #[test]
+    fn an_incapacitated_actor_waits_to_start_its_volley() {
+        let (mut world, actor) = world_with(behavior(None, 0, false), true);
+        world.register::<byroredux_scripting::AiSuspended>();
+        world.insert(actor, byroredux_scripting::AiSuspended);
+        use_weapon_package_system(&world, 0.0);
+        assert_eq!(request_of(&world, actor), None);
+        assert!(!world.has::<UseWeaponPackageStarted>(actor));
+        world.remove::<byroredux_scripting::AiSuspended>(actor);
+        use_weapon_package_system(&world, 0.0);
+        assert!(request_of(&world, actor).is_some(), "it starts once it is back on its feet");
     }
 }
