@@ -1109,8 +1109,9 @@ fn spawn_lod_block(
     // World-space bound from the emitted (non-hole) vertices for frustum
     // culling. Computed over all pushed vertices; hole placeholders sit at
     // y=0 inside the block footprint, so they never enlarge the sphere
-    // beyond the real terrain extent.
-    let bound = vertex_bound(&vertices, |i| holes[i]);
+    // beyond the real terrain extent. `holes` covers only the grid samples;
+    // the skirt vertices `append_lod_skirts` pushed after them are never holes.
+    let bound = vertex_bound(&vertices, |i| holes.get(i).copied().unwrap_or(false));
 
     // Distant-terrain texture. Priority:
     //   1. EXAL's authored legacy diffuse quad: Oblivion's FormID-keyed
