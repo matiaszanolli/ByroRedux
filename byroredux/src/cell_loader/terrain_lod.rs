@@ -2018,8 +2018,6 @@ mod tests {
         assert!(!block_may_use_prebaked(3, 8));
     }
 
-    /// #6409 — the streaming step keys both the rebuild and the attempted-miss cache on the pair,
-    /// and gates the `.btr` path on it.
     /// The synth block must decode LAND VNML through the full-detail terrain's
     /// own decoder: the bytes are signed `i8` (#4059). Its private unsigned
     /// `(b - 128) / 127` copy turned flat ground into a sideways normal, so
@@ -2042,6 +2040,8 @@ mod tests {
         assert!(n[1] > 0.99, "flat ground must decode to world up, got {n:?}");
     }
 
+    /// #6409 — the streaming step keys both the rebuild and the attempted-miss cache on the pair,
+    /// and gates the `.btr` path on it.
     #[test]
     fn the_ring_rebuilds_and_gates_on_the_hole_and_rim_pair() {
         let production = byroredux_core::source_scan::production_text(include_str!("terrain_lod.rs"));

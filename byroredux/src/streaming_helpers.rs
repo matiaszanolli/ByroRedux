@@ -556,15 +556,6 @@ fn flush_pending_lod_textures(ctx: &mut byroredux_renderer::VulkanContext) {
     }
 }
 
-/// Drain every rootless distant-LOD owner out of a worldspace-streaming state,
-/// returning the resident blocks and worldspace water plane so the caller can hand each to its
-/// canonical reclaim fn (`unload_lod_block` / `unload_object_lod_block` /
-/// `unload_placement_lod_block` / `unload_lod_water_plane`). Pure over the
-/// containers (no `World` /
-/// `VulkanContext`) so the "LOD blocks are part of the worldspace-drain
-/// reclaim set" contract is unit-testable without a GPU device — these
-/// blocks carry no `CellRoot`, so the only thing that proves they're
-/// reclaimed on a mid-session transition is this collection step (#1536).
 /// Per-cell pool cost of the ground, measured at FO4 radius 4 with the
 /// geometry census (`BYROREDUX_GEOMETRY_CENSUS=1`, nothing refused): 81 terrain
 /// meshes = 88 209 vertices (33 x 33 = 1089 each) and 497 664 indices (32 x 32 x
@@ -599,6 +590,16 @@ pub(crate) fn exterior_pool_reserve(radius_unload: i32) -> byroredux_renderer::P
     }
 }
 
+/// Drain every rootless distant-LOD owner out of a worldspace-streaming state,
+/// returning the resident blocks and worldspace water plane so the caller can
+/// hand each to its canonical reclaim fn (`unload_lod_block` /
+/// `unload_object_lod_block` / `unload_placement_lod_block` /
+/// `unload_lod_water_plane`). Pure over the containers (no `World` /
+/// `VulkanContext`) so the "LOD blocks are part of the worldspace-drain
+/// reclaim set" contract is unit-testable without a GPU device — these
+/// blocks carry no `CellRoot`, so the only thing that proves they're
+/// reclaimed on a mid-session transition is this collection step (#1536).
+///
 /// Mirrors the `collect_victim_gpu_handles` (#1341) extraction in
 /// `cell_loader::unload`. `placement_lod_blocks` (#1726) and
 /// `object_lod_blocks` are mutually exclusive per game, but both are drained
