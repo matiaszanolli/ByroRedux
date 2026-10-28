@@ -14,7 +14,8 @@ const CRVA_TAIL_LEN: usize = 20;
 #[derive(Debug, Clone, Copy)]
 pub struct FactionRelation {
     pub other_faction: u32,
-    /// Modifier (-100..100, larger means more friendly).
+    /// Modifier, larger meaning more friendly. Usually within -100..=100, but the
+    /// on-disk value is a full `i32` and vanilla Oblivion authors -200 (#6504).
     pub modifier: i32,
     /// Combat reaction (0=neutral, 1=enemy, 2=ally, 3=friend).
     ///

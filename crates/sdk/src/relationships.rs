@@ -54,9 +54,11 @@ impl FactionRelationship {
         if target.local() == 0 {
             return Err(FactionRelationshipError::NullTarget);
         }
-        if !(-100..=100).contains(&modifier) {
-            return Err(FactionRelationshipError::ModifierOutOfRange(modifier));
-        }
+        // #6504 — no range check: the record carries a full `i32` (and the WIT
+        // `s32` forwards one), no source documents a bound, and vanilla
+        // `Oblivion.esm` authors -200 (the Shivering Isles crystal-war
+        // hostility edges). A clamp here dropped those four edges and flagged the
+        // catalog `truncated` for content that is not an error.
         Ok(Self {
             source,
             target,
@@ -144,8 +146,6 @@ pub enum FactionRelationshipError {
     NullSource,
     #[error("target faction identity reserves local zero")]
     NullTarget,
-    #[error("faction relationship modifier {0} is outside -100..=100")]
-    ModifierOutOfRange(i32),
     #[error("faction relationship count exceeds {maximum}")]
     RelationshipBudgetExceeded { maximum: usize },
     #[error("duplicate faction relationship from {from_faction:?} to {to_faction:?}")]
@@ -180,13 +180,29 @@ mod tests {
         assert!(catalog.truncated());
     }
 
+    /// #6504 — vanilla Oblivion's Shivering Isles factions author -200
+    /// (`SE08OrderFaction` -> `SE08GoldenSaintFaction`); the modifier is an
+    /// `i32` end to end, so the catalog keeps the whole value.
+    #[test]
+    fn modifiers_beyond_one_hundred_are_kept_as_authored() {
+        let source = form(1, 0x10);
+        let target = form(2, 0x20);
+        for modifier in [-200, 200, i32::MIN, i32::MAX] {
+            let edge = FactionRelationship::new(source, target, modifier, 0).unwrap();
+            assert_eq!(edge.modifier(), modifier);
+            let catalog = FactionRelationshipCatalog::new([edge], false).unwrap();
+            assert_eq!(catalog.relationship(source, target).unwrap().modifier(), modifier);
+            assert!(!catalog.truncated());
+        }
+    }
+
     #[test]
     fn invalid_or_duplicate_edges_are_rejected() {
         let source = form(1, 0x10);
         let target = form(2, 0x20);
         assert_eq!(
-            FactionRelationship::new(source, target, 101, 0),
-            Err(FactionRelationshipError::ModifierOutOfRange(101))
+            FactionRelationship::new(FormRef::new(1u128.to_be_bytes(), 0), target, 0, 0),
+            Err(FactionRelationshipError::NullSource)
         );
         let edge = FactionRelationship::new(source, target, 0, 0).unwrap();
         assert!(matches!(

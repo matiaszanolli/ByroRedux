@@ -341,6 +341,50 @@ fn oblivion_spawn_time_global_decodes_float_payload_before_narrowing() {
     assert_eq!(spawn_time.value.as_f32(), 4.0);
 }
 
+/// #6504 — vanilla `Oblivion.esm` authors exactly four faction `XNAM` edges outside
+/// -100..=100, all -200 Shivering Isles crystal-war hostility: `SE08OrderFaction`
+/// (0005282C) -> `SE08GoldenSaintFaction` / `SE08DarkSeducerFaction`, and both of those ->
+/// `SEOrderFaction` (000134D4). The modifier is an `i32` on disk, so the SDK catalog must
+/// keep all four rather than drop them and flag itself `truncated`.
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn oblivion_faction_xnam_edges_beyond_one_hundred_are_the_four_shivering_isles_hostilities() {
+    let Some(data) = data_dir(test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT) else {
+        eprintln!("[Oblivion/FACT] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+    let mut wide: Vec<(String, u32, i32)> = index
+        .factions
+        .values()
+        .flat_map(|faction| {
+            faction
+                .relations
+                .iter()
+                .filter(|relation| !(-100..=100).contains(&relation.modifier))
+                .map(|relation| (faction.editor_id.clone(), relation.other_faction, relation.modifier))
+        })
+        .collect();
+    wide.sort();
+    let name_of = |form: u32| index.factions.get(&form).map(|f| f.editor_id.as_str());
+    let mut got: Vec<(String, String, i32)> = wide
+        .iter()
+        .map(|(source, other, modifier)| {
+            (source.clone(), name_of(*other).unwrap_or("?").to_owned(), *modifier)
+        })
+        .collect();
+    got.sort();
+    let want = [
+        ("SE08DarkSeducerFaction", "SEOrderFaction", -200),
+        ("SE08GoldenSaintFaction", "SEOrderFaction", -200),
+        ("SE08OrderFaction", "SE08DarkSeducerFaction", -200),
+        ("SE08OrderFaction", "SE08GoldenSaintFaction", -200),
+    ]
+    .map(|(a, b, m)| (a.to_owned(), b.to_owned(), m));
+    assert_eq!(got, want, "the four vanilla |modifier| > 100 edges");
+}
+
 #[test]
 #[ignore = "needs FNV game data on disk"]
 fn fnv_actor_value_roster_and_health_resolve_on_shipped_master() {
