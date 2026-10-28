@@ -234,16 +234,18 @@ impl GroundCoverSpecies {
     /// Guarantees that a game supplying no vegetation data at all still renders
     /// organic ground cover, which is the stated "generic" requirement (§7
     /// precedence 3). Sizes are in Gamebryo units, where an exterior cell is
-    /// 4096 across and a human is ~128 tall — so a 9–21 unit blade is
-    /// shin-height. (It was 6–14, ankle-height, and read as stubble; raised
-    /// 1.5x on review, with the width raised 1.25x so the taller blade does not
-    /// turn into a needle.)
+    /// 4096 across and a human is ~128 tall — so an 11–26 unit blade (mean 18.5)
+    /// is shin-height. (It was 6–14, ankle-height, and read as stubble; raised
+    /// 1.5x to 9–21 on review, with the width raised 1.25x so the taller blade
+    /// does not turn into a needle, then retuned to 11–26 / 1.2–2.35 — about
+    /// 1.25x taller and 1.35x wider again — for a fuller sward.)
     pub const DEFAULT_TEMPERATE: Self = Self {
         // The earlier 6–14 BU envelope made the fully populated near field
         // read as isolated sprouts at player height. A temperate sward needs
-        // enough vertical and projected area for its four-ribbon tuft to
-        // The fallback stays deliberately short: isolated procedural ribbons
-        // must resolve as cover before the authored card LOD takes over.
+        // enough vertical and projected area for its four-ribbon tuft to read
+        // as cover. The fallback is still kept short of full authored-grass
+        // height: isolated procedural ribbons must resolve as cover before the
+        // authored card LOD takes over.
         //
         // Retuned 11–26 / 1.2–2.35 (1.25x taller, 1.35x wider) on a "Skyrim
         // grass needs way more volume" review: at the 9–21 / 0.9–1.75 envelope

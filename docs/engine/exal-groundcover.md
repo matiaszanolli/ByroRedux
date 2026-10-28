@@ -1057,7 +1057,14 @@ now encoded in the script instead of only in audit prose (#4482, #4509):
    * `GROUNDCOVER_CANOPY_LEAF_AREA_DENSITY = 0.4` per unit — leaf area per unit
      of canopy depth at `d_ground == 1`. A dense temperate sward has a leaf
      area index of 3–5; LAI = 4 over the ~10-unit canopy the default temperate
-     species stands up gives 0.4.
+     species stood up when this was derived (the 6–14 envelope, mean 10) gives
+     0.4. **That premise has since moved**: the temperate default is now 11–26
+     (mean 18.5, `c9433d501`), so the unchanged 0.4 implies LAI ≈ 7.4 there
+     (the same derivation at LAI = 4 would give ≈ 0.22; the arid default, mean
+     9.75, still lands at ≈ 3.9). The constant is deliberately not retuned in a
+     doc pass — it moves the canopy shadow and sky occlusion of every cover
+     tuft and needs a visual A/B — so treat 0.4 as the pre-retune value until
+     that is done.
 
    Their product is the old `k = 0.2`, so a full-density sward transmits
    `exp(−2) ≈ 0.14` of vertical sun to the ground — the measured order for
@@ -1899,8 +1906,9 @@ midpoint, so every blade was a straight stick tilted about its root. It now stay
 over the root along the up axis and carries 5-30% of the lean per blade
 (`GROUNDCOVER_BEZIER_BEND_CARRY_*`), so the blade rises vertically and bows
 toward its tip. Wind, lean and interaction still act on the control point and tip
-only, at both clock samples. Default blades are 1.5x taller (temperate 9-21,
-arid 6-13.5 units).
+only, at both clock samples. Default blades were made 1.5x taller at this point (temperate 9-21,
+arid 6-13.5 units); the temperate default has since been retuned to 11-26
+(`c9433d501`, see §12.16).
 
 **LOD (§6 is superseded where it differs).** A 512-unit chunk draws at exactly one
 tier chosen from the camera distance to its centre (`include/groundcover_lod.glsl`,
@@ -2007,7 +2015,8 @@ with `z` a Box–Muller normal over two independent seed streams (0 and 13).
   and no CV. The built-in species therefore carry `moment_matched_length` of
   their existing `height_range`: mean at the midpoint, `σ = (max − min)/√12`,
   i.e. the first two moments of the uniform draw this replaces (temperate:
-  15 units, CV 0.231; arid: 9.75 units, CV 0.222). Only the shape changes, no
+  18.5 units, CV 0.234 for the shipped 11–26 range; arid: 9.75 units, CV
+  0.222). Only the shape changes, no
   number is invented, and the placeholder status is recorded on the field's doc
   comment. Replacing it needs a measured within-sward length spread for a
   species the palette stands for; the rangeland study on ryegrass tiller-length
