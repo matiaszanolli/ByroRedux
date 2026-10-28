@@ -2690,8 +2690,17 @@ fn fact_crime_tab_round_trips_for_skyrim() {
 
     // A faction that authors no crime data has none.
     assert!(parse_fact_crime(&[sub(b"EDID", b"Plain\0")], &None).is_none());
-    // The optional tail of CRVA (Skyrim lets it end after `unknown`).
-    let short = [sub(b"CRVA", &crva[..14])];
-    let values = parse_fact_crime(&short, &None).unwrap().values.unwrap();
-    assert_eq!((values.murder, values.steal_multiplier), (1000, 0.0));
+    // The optional tail of CRVA: record versions 30 and below ship 12 or 16 bytes
+    // (UESP `struct[12/16/20]`), #6516.
+    let twelve = [sub(b"CRVA", &crva[..12])];
+    let values = parse_fact_crime(&twelve, &None).unwrap().values.unwrap();
+    assert!(values.arrest && values.attack_on_sight);
+    assert_eq!((values.murder, values.pickpocket), (1000, 25));
+    assert_eq!((values.steal_multiplier, values.escape, values.werewolf), (0.0, 0, 0));
+    let sixteen = [sub(b"CRVA", &crva[..16])];
+    let values = parse_fact_crime(&sixteen, &None).unwrap().values.unwrap();
+    assert_eq!((values.murder, values.steal_multiplier), (1000, 0.5));
+    assert_eq!((values.escape, values.werewolf), (0, 0));
+    // Below the 12-byte base the record is not a CRVA.
+    assert!(parse_fact_crime(&[sub(b"CRVA", &crva[..11])], &None).is_none());
 }

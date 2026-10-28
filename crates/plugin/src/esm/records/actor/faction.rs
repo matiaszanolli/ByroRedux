@@ -2,12 +2,14 @@ use super::super::common::{read_zstring, remap_fid, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
-/// Shortest `CRVA` the parser decodes: Skyrim lets the record end after the
-/// `unknown` word (14 bytes; the `actor/tests.rs` short-CRVA case truncates
-/// there), so the steal multiplier / escape / werewolf tail is optional.
-const CRVA_MIN_LEN: usize = 14;
-/// `CRVA` length at which the optional tail (steal multiplier f32, escape u16,
-/// werewolf u16) is fully present.
+/// Shortest `CRVA` the parser decodes: arrest u8 + attack-on-sight u8 + five
+/// u16 words (murder, assault, trespass, pickpocket, unknown) = 12 bytes. UESP
+/// lists the record as `struct[12/16/20]`; the rest is optional (#6516).
+const CRVA_MIN_LEN: usize = 12;
+/// `CRVA` length at which the steal multiplier (f32) is present (record
+/// versions 30 and below ship 12 or 16 bytes).
+const CRVA_STEAL_LEN: usize = 16;
+/// `CRVA` length at which the escape u16 and werewolf u16 are also present.
 const CRVA_TAIL_LEN: usize = 20;
 
 /// Faction-to-faction relation.
@@ -334,7 +336,8 @@ pub fn parse_fact_crime(subs: &[SubRecord], remap: &Option<FormIdRemap>) -> Opti
             b"CRGR" if sub.data.len() >= 4 => crime.shared_crime_factions = form(sub),
             b"JOUT" if sub.data.len() >= 4 => crime.jail_outfit = form(sub),
             // CRVA: arrest u8, attack on sight u8, murder, assault, trespass, pickpocket, unknown (u16 each),
-            // steal multiplier f32, escape u16, werewolf u16. The tail after `unknown` is optional.
+            // steal multiplier f32, escape u16, werewolf u16. The record may end after `unknown`
+            // (12 bytes) or after the steal multiplier (16); each tier is read only if present.
             b"CRVA" if sub.data.len() >= CRVA_MIN_LEN => {
                 let mut r = SubReader::new(&sub.data);
                 let arrest = r.u8_or_default() != 0;
@@ -342,6 +345,7 @@ pub fn parse_fact_crime(subs: &[SubRecord], remap: &Option<FormIdRemap>) -> Opti
                 let (murder, assault, trespass, pickpocket) =
                     (r.u16_or_default(), r.u16_or_default(), r.u16_or_default(), r.u16_or_default());
                 let _unknown = r.u16_or_default();
+                let steal = sub.data.len() >= CRVA_STEAL_LEN;
                 let tail = sub.data.len() >= CRVA_TAIL_LEN;
                 crime.values = Some(CrimeValues {
                     arrest,
@@ -350,7 +354,7 @@ pub fn parse_fact_crime(subs: &[SubRecord], remap: &Option<FormIdRemap>) -> Opti
                     assault,
                     trespass,
                     pickpocket,
-                    steal_multiplier: if tail { r.f32_or_default() } else { 0.0 },
+                    steal_multiplier: if steal { r.f32_or_default() } else { 0.0 },
                     escape: if tail { r.u16_or_default() } else { 0 },
                     werewolf: if tail { r.u16_or_default() } else { 0 },
                 });
