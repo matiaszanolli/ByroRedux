@@ -481,46 +481,36 @@ fn read_fog_power(record: &mut WeatherRecord, r: &mut SubReader) {
 /// Parse a WTHR record from its sub-records.
 ///
 /// Game-specific schema dispatch:
-/// - **Oblivion / FO3 / FNV / Starfield** — Gamebryo/FO3-era layout.
+/// - **Oblivion / FO3 / FNV** — Gamebryo/FO3-era layout, decoded here.
 ///   10-group × 6-TOD NAM0 (160 or 240 bytes on disk;
 ///   synthesise HIGH_NOON / MIDNIGHT when the on-disk record only
 ///   ships 4 slots — see #533).
-/// - **Skyrim** — re-routes to [`parse_wthr_skyrim`], which handles
-///   the 17-group × 4-TOD NAM0 (272 B), 8-float FNAM, 19-B DATA, and
-///   4× 32-B DALC ambient cube. See #539 / M33-04..07.
-/// - **FO4 / FO76** — Creation-era NAM0 uses 17 or 19 groups and 4 or
-///   8 authored TOD slots. The shared table retains the first 10 groups
-///   and synthesises HIGH_NOON/MIDNIGHT from DAY/NIGHT. FO4's 72-byte
-///   FNAM retains all 18 xEdit-defined floats. Cloud textures come from
-///   Skyrim's `00TX`..`O0TX` list (#6039).
+/// - **Skyrim / FO4 / FO76 / Starfield** — the Creation-era layout, one
+///   decoder for all four ([`parse_wthr_creation`], #6223): the 32-layer
+///   `00TX`..`O0TX` cloud list, IMSP, JNAM/RNAM/QNAM/PNAM/NAM1 cloud controls
+///   and the FNAM fog extension, with the per-version NAM0 / FNAM shapes
+///   chosen by [`nam0_layout`] and the FNAM gates.
 pub fn parse_wthr(
     form_id: u32,
     subs: &[SubRecord],
     game: GameKind,
     remap: &Option<FormIdRemap>,
 ) -> WeatherRecord {
-    if matches!(game, GameKind::Skyrim) {
-        return parse_wthr_skyrim(form_id, subs, remap);
+    if matches!(
+        game,
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
+    ) {
+        return parse_wthr_creation(form_id, subs, game, remap);
     }
 
     let mut record = WeatherRecord {
         form_id,
         ..WeatherRecord::default()
     };
-    // FO4 / FO76 / Starfield author Skyrim's 32-layer cloud table (#6039).
-    let creation_era = matches!(
-        game,
-        GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
-    );
-    let mut creation_layers = CreationCloudLayers::default();
 
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
-            // #4416 — FO4 authors IMSP like Skyrim (FO3/FNV never do).
-            b"IMSP" if sub.data.len() >= 16 => {
-                record.image_spaces = parse_image_spaces(&sub.data, remap);
-            }
             // FO3/FNV per-TOD IMADs (`\x00IAD`..`\x05IAD`). The code byte is
             // the slot index; FO4's IMSP-era records never carry them.
             [slot @ 0..=5, b'I', b'A', b'D']
@@ -540,36 +530,8 @@ pub fn parse_wthr(
             //     `[[SkyColor; 6]; 10]` struct layout remains authoritative for
             //     downstream consumers (`weather_system` 7-key interpolator,
             //     `build_tod_keys`). See #533 / audit M33-01.
-            b"NAM0"
-                if matches!(game, GameKind::Fallout4 | GameKind::Fallout76)
-                    && creation_nam0_shape(sub.data.len()).is_some() =>
-            {
-                let (on_disk_groups, on_disk_slots) =
-                    creation_nam0_shape(sub.data.len()).expect("shape checked by match guard");
-                for group in 0..SKY_COLOR_GROUPS.min(on_disk_groups) {
-                    for slot in 0..4 {
-                        let offset = (group * on_disk_slots + slot) * 4;
-                        record.sky_colors[group][slot] = sky_color_at(&sub.data, offset);
-                    }
-                    synthesize_noon_midnight(&mut record.sky_colors[group]);
-                }
-            }
             b"NAM0" if sub.data.len() >= SKY_COLOR_GROUPS * 4 * 4 => {
-                let on_disk_slots = if sub.data.len() >= SKY_COLOR_GROUPS * SKY_TIME_SLOTS * 4 {
-                    SKY_TIME_SLOTS
-                } else {
-                    4
-                };
-                let mut offset = 0;
-                for group in 0..SKY_COLOR_GROUPS {
-                    for slot in 0..on_disk_slots {
-                        record.sky_colors[group][slot] = sky_color_at(&sub.data, offset);
-                        offset += 4;
-                    }
-                    if on_disk_slots < SKY_TIME_SLOTS {
-                        synthesize_noon_midnight(&mut record.sky_colors[group]);
-                    }
-                }
+                read_fo3_stride_nam0(&mut record, &sub.data);
                 // #6258 — Oblivion's cloud tints live in NAM0 (it authors
                 // no PNAM): `Clouds-Lower` → layer 0 (`CNAM`, #6041),
                 // `Clouds-Upper` → layer 1 (`DNAM`). The fourth byte is
@@ -587,22 +549,11 @@ pub fn parse_wthr(
             }
 
             // FNAM: fog distances. Four f32 at offsets 0/4/8/12:
-            // `[day_near, day_far, night_near, night_far]`. Game-dependent
-            // total size: 16 B in Oblivion, 24 B in FNV/FO3 (the trailing
-            // 8 B are day/night power — xEdit `wbWeatherFogDistance`,
-            // `wbGameMode > gmTES4R`; every vanilla FO3/FNV WTHR ships the
-            // 24-byte form, #6042), and 72 B in FO4 and Starfield.
-            //
-            // FO4's exact xEdit-defined tail is day/night power + max,
-            // followed by ten height-fog values introduced across form
-            // versions 119 and 120. #5001 (SF-2026-09-29-D4-02):
-            // xEdit SF1 (`wbDefinitionsSF1.pas:18870`) gives Starfield the
-            // SAME `wbWeatherFogDistance` struct, and every vanilla
-            // `Starfield.esm` WTHR ships a 72-byte FNAM matching that
-            // shape (`DefaultWeather`: powers 0.4, max 0.9, height
-            // 10/120/…/900) — so Starfield joins the FO4/FO76 gates
-            // instead of keeping `power`/`max` at 1.0 defaults and
-            // `fog_height` at None.
+            // `[day_near, day_far, night_near, night_far]`. 16 B in Oblivion,
+            // 24 B in FNV/FO3 (the trailing 8 B are day/night power — xEdit
+            // `wbWeatherFogDistance`, `wbGameMode > gmTES4R`; every vanilla
+            // FO3/FNV WTHR ships the 24-byte form, #6042). The Creation-era
+            // 32- and 72-byte forms are `read_creation_fnam`'s.
             //
             // Pre-fix the FNAM arm had an empty body with a comment
             // ("fallback when HNAM is absent"). But FNV and FO3 do not
@@ -614,33 +565,6 @@ pub fn parse_wthr(
                 read_fog_head(&mut record, &mut r);
                 if matches!(game, GameKind::Fallout3NV) && sub.data.len() >= FO3NV_FNAM_SIZE {
                     read_fog_power(&mut record, &mut r);
-                }
-                if matches!(
-                    game,
-                    GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
-                ) && sub.data.len() >= SKYRIM_FNAM_SIZE
-                {
-                    read_fog_power(&mut record, &mut r);
-                    record.fog_day_max = r.f32().unwrap_or(1.0);
-                    record.fog_night_max = r.f32().unwrap_or(1.0);
-                }
-                if matches!(
-                    game,
-                    GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
-                ) && sub.data.len() >= FO4_FNAM_SIZE
-                {
-                    record.fog_height = Some(WeatherHeightFog {
-                        day_near_height_mid: r.f32().unwrap_or(0.0),
-                        day_near_height_range: r.f32().unwrap_or(10000.0),
-                        night_near_height_mid: r.f32().unwrap_or(0.0),
-                        night_near_height_range: r.f32().unwrap_or(10000.0),
-                        day_high_density_scale: r.f32().unwrap_or(1.0),
-                        night_high_density_scale: r.f32().unwrap_or(1.0),
-                        day_far_height_mid: r.f32().unwrap_or(0.0),
-                        day_far_height_range: r.f32().unwrap_or(10000.0),
-                        night_far_height_mid: r.f32().unwrap_or(0.0),
-                        night_far_height_range: r.f32().unwrap_or(10000.0),
-                    });
                 }
             }
 
@@ -727,22 +651,7 @@ pub fn parse_wthr(
             }
             b"PNAM" if sub.data.len() >= 64 => {
                 let slots = cloud_color_slots(game, sub.data.len());
-                if creation_era {
-                    parse_cloud_colors(&mut creation_layers.colors, &sub.data, slots);
-                } else {
-                    parse_cloud_colors(&mut record.cloud_layer_colors, &sub.data, slots);
-                }
-            }
-            // Creation-era cloud controls, one entry per authored layer (see
-            // `parse_wthr_skyrim`); the four drawn slots are chosen after the
-            // record is read.
-            b"RNAM" if creation_era => creation_layers.read_velocity_component(&sub.data, 1),
-            b"QNAM" if creation_era => creation_layers.read_velocity_component(&sub.data, 0),
-            b"JNAM" if creation_era && sub.data.len() >= 64 => {
-                parse_cloud_alphas(&mut creation_layers.alphas, &sub.data)
-            }
-            b"NAM1" if creation_era && sub.data.len() >= 4 => {
-                creation_layers.disabled = u32::from_le_bytes(sub.data[0..4].try_into().unwrap());
+                parse_cloud_colors(&mut record.cloud_layer_colors, &sub.data, slots);
             }
 
             // Cloud texture paths. Per-game sub-record FourCCs — verified
@@ -771,23 +680,31 @@ pub fn parse_wthr(
             b"CNAM" => record.cloud_textures[1] = Some(read_zstring(&sub.data)),
             b"ANAM" => record.cloud_textures[2] = Some(read_zstring(&sub.data)),
             b"BNAM" => record.cloud_textures[3] = Some(read_zstring(&sub.data)),
-            // #6039 — FO4/FO76/Starfield share Skyrim's `00TX`..`O0TX` cloud
-            // list (xEdit `wbWeatherCloudTextures` for every non-FO3 game):
-            // FO4 authors `00TX` on 63 of 71 weathers, FO76 on 123 of 123.
-            // FO3/FNV never author these FourCCs (#535).
-            sub_type if creation_era && skyrim_cloud_layer_index(sub_type).is_some() =>
-            {
-                set_creation_cloud_texture(&mut record, sub_type, &sub.data);
-            }
-
             _ => {}
         }
     }
-
-    if creation_era {
-        select_creation_cloud_layers(&mut record, &creation_layers);
-    }
     record
+}
+
+/// A FO3-stride NAM0 body: 10 groups, 6 TOD slots when the payload carries
+/// them (240 B) and 4 otherwise (160 B — Oblivion, FO3, older FNV DLC),
+/// HIGH_NOON / MIDNIGHT synthesised for the 4-slot form (#533 / M33-01).
+fn read_fo3_stride_nam0(record: &mut WeatherRecord, data: &[u8]) {
+    let on_disk_slots = if data.len() >= SKY_COLOR_GROUPS * SKY_TIME_SLOTS * 4 {
+        SKY_TIME_SLOTS
+    } else {
+        4
+    };
+    let mut offset = 0;
+    for group in 0..SKY_COLOR_GROUPS {
+        for slot in 0..on_disk_slots {
+            record.sky_colors[group][slot] = sky_color_at(data, offset);
+            offset += 4;
+        }
+        if on_disk_slots < SKY_TIME_SLOTS {
+            synthesize_noon_midnight(&mut record.sky_colors[group]);
+        }
+    }
 }
 
 /// `IMSP` — the first four IMGS FormIDs (Sunrise, Day, Sunset, Night),
@@ -1130,11 +1047,120 @@ fn parse_glare_table(dst: &mut [SkyColor; 4], data: &[u8]) {
     }
 }
 
-/// Parse a Skyrim WTHR record. Called by [`parse_wthr`] when
-/// `game == GameKind::Skyrim`; mirrors the FO3-era branch's shape but
-/// handles the Skyrim-specific NAM0 stride (17 groups × 4 TOD slots
-/// = 272 B), 32-byte FNAM (8 floats), 19-byte DATA, and the 4× DALC
-/// sub-record set that ships the 6-axis directional ambient cube.
+/// How a Creation-era WTHR's `NAM0` lays out the shared sky table, by game and
+/// payload size (#6223).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Nam0Layout {
+    /// Skyrim: `groups` groups × 4 TOD slots, the first ten into the shared table
+    /// and the rest into the Skyrim side table (form-version prefixes, #6038).
+    Skyrim { groups: usize },
+    /// FO4 / FO76: `groups` groups × `slots` TOD slots; the first ten groups' first
+    /// four slots feed the shared table, the rest is not retained.
+    Creation { groups: usize, slots: usize },
+    /// The FO3-shaped 10 × 6 (or 10 × 4) read. Starfield's 608-byte NAM0 lands here
+    /// because no xEdit SF1 definition of its group/slot layout is on hand to route
+    /// it to [`Nam0Layout::Creation`] — an open question, not a decision; the read is
+    /// kept exactly as it was before the decoders were unified.
+    Fo3Stride,
+}
+
+/// The NAM0 shape table: `None` when the payload is not a layout the game uses.
+fn nam0_layout(game: GameKind, size: usize) -> Option<Nam0Layout> {
+    let fo3_stride = || (size >= SKY_COLOR_GROUPS * 4 * 4).then_some(Nam0Layout::Fo3Stride);
+    match game {
+        GameKind::Skyrim => skyrim_nam0_groups(size).map(|groups| Nam0Layout::Skyrim { groups }),
+        GameKind::Fallout4 | GameKind::Fallout76 => creation_nam0_shape(size)
+            .map(|(groups, slots)| Nam0Layout::Creation { groups, slots })
+            .or_else(fo3_stride),
+        _ => fo3_stride(),
+    }
+}
+
+/// Decode a Creation-era NAM0 into the shared sky table by its [`nam0_layout`].
+fn read_creation_nam0(record: &mut WeatherRecord, data: &[u8], game: GameKind) {
+    match nam0_layout(game, data.len()) {
+        None => {}
+        Some(Nam0Layout::Fo3Stride) => read_fo3_stride_nam0(record, data),
+        Some(Nam0Layout::Creation { groups, slots }) => {
+            for group in 0..SKY_COLOR_GROUPS.min(groups) {
+                for slot in 0..4 {
+                    let offset = (group * slots + slot) * 4;
+                    record.sky_colors[group][slot] = sky_color_at(data, offset);
+                }
+                synthesize_noon_midnight(&mut record.sky_colors[group]);
+            }
+        }
+        Some(Nam0Layout::Skyrim { groups }) => {
+            let mut offset = 0;
+            for group in 0..groups {
+                for slot in 0..SKYRIM_NAM0_TOD_SLOTS {
+                    // Skyrim ships sunrise / day / sunset / night in the same
+                    // TOD-index order as `TOD_SUNRISE`..`TOD_NIGHT`.
+                    let color = sky_color_at(data, offset);
+                    if group < SKY_COLOR_GROUPS {
+                        record.sky_colors[group][slot] = color;
+                    } else if (10..17).contains(&group) {
+                        record.skyrim_extra_colors[group - 10][slot] = color;
+                    }
+                    offset += 4;
+                }
+                // HIGH_NOON / MIDNIGHT for the first ten groups, so the shared
+                // `[group][6]` table is dense for `weather_system`.
+                if group < SKY_COLOR_GROUPS {
+                    synthesize_noon_midnight(&mut record.sky_colors[group]);
+                }
+            }
+        }
+    }
+}
+
+/// Decode a Creation-era FNAM. Four fog distances, then day/night power and max from
+/// 32 bytes (Skyrim's whole record), then — FO4, FO76 and Starfield — the ten
+/// height-fog values at 72 bytes (form versions 119 and 120). #5001: xEdit SF1
+/// (`wbDefinitionsSF1.pas:18870`) gives Starfield the same `wbWeatherFogDistance`
+/// struct as FO4, and every vanilla `Starfield.esm` WTHR ships the 72-byte form.
+/// Skyrim reads nothing from a record shorter than 32 bytes.
+fn read_creation_fnam(record: &mut WeatherRecord, data: &[u8], game: GameKind) {
+    let skyrim = matches!(game, GameKind::Skyrim);
+    if data.len() < if skyrim { SKYRIM_FNAM_SIZE } else { 16 } {
+        return;
+    }
+    let mut r = SubReader::new(data);
+    read_fog_head(record, &mut r);
+    if data.len() >= SKYRIM_FNAM_SIZE {
+        read_fog_power(record, &mut r);
+        record.fog_day_max = r.f32().unwrap_or(1.0);
+        record.fog_night_max = r.f32().unwrap_or(1.0);
+    }
+    if !skyrim && data.len() >= FO4_FNAM_SIZE {
+        record.fog_height = Some(WeatherHeightFog {
+            day_near_height_mid: r.f32().unwrap_or(0.0),
+            day_near_height_range: r.f32().unwrap_or(10000.0),
+            night_near_height_mid: r.f32().unwrap_or(0.0),
+            night_near_height_range: r.f32().unwrap_or(10000.0),
+            day_high_density_scale: r.f32().unwrap_or(1.0),
+            night_high_density_scale: r.f32().unwrap_or(1.0),
+            day_far_height_mid: r.f32().unwrap_or(0.0),
+            day_far_height_range: r.f32().unwrap_or(10000.0),
+            night_far_height_mid: r.f32().unwrap_or(0.0),
+            night_far_height_range: r.f32().unwrap_or(10000.0),
+        });
+    }
+}
+
+/// Parse a Creation-era WTHR record: Skyrim, FO4, FO76 and Starfield. Called by
+/// [`parse_wthr`] for those games (#6223); the FO3-era games are its own branch.
+///
+/// Every game here shares the 32-layer cloud list, IMSP, JNAM/RNAM/QNAM/PNAM/NAM1
+/// cloud controls, and the FNAM/NAM0 decoders above. What only Skyrim reads — its
+/// 272-byte NAM0 side table, 19-byte DATA with the directional-wind flag, DALC
+/// ambient cube, NAM2/NAM3 glare tables, MNAM and NNAM effect references — is gated
+/// on `game`: FO4, FO76 and Starfield author those sub-records too, but nothing
+/// consumes them for those games yet, and decoding them is a renderer-visible change.
+///
+/// Skyrim in detail: the 17-group × 4-TOD NAM0 (272 B), 32-byte FNAM (8 floats),
+/// 19-byte DATA, and the 4× DALC sub-record set that ships the 6-axis directional
+/// ambient cube.
 ///
 /// **NAM0 mapping**: the first 9 of Skyrim's 17 groups align with the
 /// FO3-era group constants (`SKY_UPPER` .. `SKY_HORIZON`) — sky upper,
@@ -1159,11 +1185,13 @@ fn parse_glare_table(dst: &mut [SkyColor; 4], data: &[u8]) {
 /// so a future renderer-side 6-axis ambient consumer has authored
 /// per-direction values to drive diffuse shading instead of falling
 /// back to a single procedural ambient. See [`SkyrimAmbientCube`].
-fn parse_wthr_skyrim(
+fn parse_wthr_creation(
     form_id: u32,
     subs: &[SubRecord],
+    game: GameKind,
     remap: &Option<FormIdRemap>,
 ) -> WeatherRecord {
+    let skyrim = matches!(game, GameKind::Skyrim);
     let mut record = WeatherRecord {
         form_id,
         ..WeatherRecord::default()
@@ -1180,58 +1208,29 @@ fn parse_wthr_skyrim(
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
 
-            // NAM0 — up to 17 groups × 4 TOD slots × 4 bytes RGBA = 272 B.
-            // First 9 groups align with the FO3-era constants and slot
-            // straight into the shared `[10][6]` array. Group 9 is the
-            // Effects Lighting table; groups 10..16 are retained in the
-            // Creation-only side table so cloud LOD, fog far, sky statics,
-            // water multiplier, sun glare, and moon glare are not lost.
-            // Older form versions author a prefix of the table (#6038, see
+            // NAM0 — by `nam0_layout`. Skyrim: up to 17 groups × 4 TOD slots × 4
+            // bytes RGBA = 272 B. The first 9 groups align with the FO3-era constants
+            // and slot straight into the shared `[10][6]` array, group 9 is the
+            // Effects Lighting table, and groups 10..16 are retained in the
+            // Skyrim-only side table so cloud LOD, fog far, sky statics, water
+            // multiplier, sun glare, and moon glare are not lost. Older form
+            // versions author a prefix of the table (#6038, see
             // `SKYRIM_NAM0_GROUPS`); the groups they lack stay default.
-            b"NAM0" if skyrim_nam0_groups(sub.data.len()).is_some() => {
-                let groups =
-                    skyrim_nam0_groups(sub.data.len()).expect("shape checked by match guard");
-                let mut offset = 0;
-                for group in 0..groups {
-                    for slot in 0..SKYRIM_NAM0_TOD_SLOTS {
-                        // Skyrim ships sunrise / day / sunset / night
-                        // in the same TOD-index order as the engine's
-                        // `TOD_SUNRISE`..`TOD_NIGHT` constants.
-                        let color = sky_color_at(&sub.data, offset);
-                        if group < SKY_COLOR_GROUPS {
-                            record.sky_colors[group][slot] = color;
-                        } else if (10..17).contains(&group) {
-                            record.skyrim_extra_colors[group - 10][slot] = color;
-                        }
-                        offset += 4;
-                    }
-                    // Synthesise HIGH_NOON / MIDNIGHT for the first
-                    // 10 groups so the shared `[group][6]` table is
-                    // dense for `weather_system`. Mirrors the Oblivion
-                    // / FO3 short-NAM0 fallback above.
-                    if group < SKY_COLOR_GROUPS {
-                        synthesize_noon_midnight(&mut record.sky_colors[group]);
-                    }
-                }
-            }
+            b"NAM0" => read_creation_nam0(&mut record, &sub.data, game),
 
-            // FNAM — 32 bytes = 8 × f32 on Skyrim. First 4 are fog
-            // distances (compatible with the FO3-era 4-distance
-            // model). Trailing 4 are day/night fog power + max.
-            b"FNAM" if sub.data.len() >= SKYRIM_FNAM_SIZE => {
-                let mut r = SubReader::new(&sub.data);
-                read_fog_head(&mut record, &mut r);
-                read_fog_power(&mut record, &mut r);
-                record.fog_day_max = r.f32().unwrap_or(1.0);
-                record.fog_night_max = r.f32().unwrap_or(1.0);
-            }
+            // FNAM — see `read_creation_fnam`. Skyrim: 32 bytes = 8 × f32, the four
+            // fog distances (compatible with the FO3-era 4-distance model) then
+            // day/night fog power + max.
+            b"FNAM" => read_creation_fnam(&mut record, &sub.data, game),
 
             // DATA — 19 bytes. Decode the exact shared prefix plus Skyrim's
             // visual-effect and directional-wind tail. The classification
             // flag is byte 11; byte 14 is the blue lightning channel.
-            b"DATA" if sub.data.len() >= SKYRIM_DATA_SIZE => {
+            // FO4 / FO76 / Starfield ship 19..21 bytes and keep the common-prefix
+            // decode without the Skyrim directional-wind flag.
+            b"DATA" if sub.data.len() >= if skyrim { SKYRIM_DATA_SIZE } else { 15 } => {
                 parse_weather_data(&mut record, &sub.data);
-                record.wind_direction_authored = true;
+                record.wind_direction_authored = skyrim;
             }
 
             // Skyrim authored cloud controls, one entry per authored layer.
@@ -1245,7 +1244,7 @@ fn parse_wthr_skyrim(
             b"PNAM" if sub.data.len() >= 64 => parse_cloud_colors(
                 &mut creation_layers.colors,
                 &sub.data,
-                cloud_color_slots(GameKind::Skyrim, sub.data.len()),
+                cloud_color_slots(game, sub.data.len()),
             ),
             b"JNAM" if sub.data.len() >= 64 => {
                 parse_cloud_alphas(&mut creation_layers.alphas, &sub.data)
@@ -1253,15 +1252,15 @@ fn parse_wthr_skyrim(
             b"NAM1" if sub.data.len() >= 4 => {
                 creation_layers.disabled = u32::from_le_bytes(sub.data[0..4].try_into().unwrap());
             }
-            b"NAM2" if sub.data.len() >= 16 => {
+            b"NAM2" if skyrim && sub.data.len() >= 16 => {
                 parse_glare_table(&mut record.skyrim_sun_glare, &sub.data)
             }
-            b"NAM3" if sub.data.len() >= 16 => {
+            b"NAM3" if skyrim && sub.data.len() >= 16 => {
                 parse_glare_table(&mut record.skyrim_moon_glare, &sub.data)
             }
             // #4069 — MNAM is a SPGD (precipitation shader-particle
             // geometry) cross-reference, so it takes the load-order remap.
-            b"MNAM" => {
+            b"MNAM" if skyrim => {
                 if let Ok(form) = SubReader::new(&sub.data).u32() {
                     record.skyrim_precipitation_effect = Some(remap_fid(form, remap));
                 }
@@ -1270,7 +1269,7 @@ fn parse_wthr_skyrim(
                 record.image_spaces = parse_image_spaces(&sub.data, remap);
             }
             // #4069 — NNAM is an RFCT (visual effect) cross-reference.
-            b"NNAM" => {
+            b"NNAM" if skyrim => {
                 if let Ok(form) = SubReader::new(&sub.data).u32() {
                     record.skyrim_visual_effect = Some(remap_fid(form, remap));
                 }
@@ -1284,7 +1283,9 @@ fn parse_wthr_skyrim(
             // Captured into `skyrim_ambient_cube`. Out-of-order or
             // extra entries clamp at 4 — Bethesda content always ships
             // exactly 4 in sunrise/day/sunset/night order per UESP.
-            b"DALC" if sub.data.len() >= SKYRIM_DALC_AXES_SIZE && dalc_idx < dalc_buf.len() => {
+            b"DALC"
+                if skyrim && sub.data.len() >= SKYRIM_DALC_AXES_SIZE && dalc_idx < dalc_buf.len() =>
+            {
                 let cube = parse_skyrim_dalc(&sub.data);
                 dalc_buf[dalc_idx] = Some(cube);
                 dalc_idx += 1;
@@ -2248,7 +2249,7 @@ mod tests {
     #[test]
     fn parse_skyrim_routes_through_dedicated_branch() {
         // The dispatch in `parse_wthr` must re-route Skyrim records to
-        // `parse_wthr_skyrim` — not run them through the FO3-era
+        // `parse_wthr_creation` — not run them through the FO3-era
         // branch (which would over-read NAM0 by 32 B and corrupt FNAM).
         // Sanity check: an empty Skyrim record must produce default
         // sky_colors but a non-default `editor_id` if EDID is present.

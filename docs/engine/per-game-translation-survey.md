@@ -207,8 +207,9 @@ as a monolith.
   size-autodetect which collapsed because 24 is a multiple of both 8 and 12.
 - `WEAP`/`ARMO`/`AMMO` DATA dispatch ([`records/items.rs:143-449`](../../crates/plugin/src/esm/records/items.rs#L143))
   — explicit `match game` on each record's DATA/DNAM layout.
-- `WTHR` Skyrim split ([`records/weather.rs:278`](../../crates/plugin/src/esm/records/weather.rs#L278))
-  — `if matches!(game, GameKind::Skyrim) { return parse_wthr_skyrim(...); }`.
+- `WTHR` Creation-era split (`parse_wthr` in [`records/weather.rs`](../../crates/plugin/src/esm/records/weather.rs))
+  — `if matches!(game, Skyrim | Fallout4 | Fallout76 | Starfield) { return parse_wthr_creation(...); }`
+  (#6223); NAM0/FNAM shapes per game and size via `nam0_layout` / `read_creation_fnam`.
 - `NPC_` Oblivion ATTR/DNAM/VNAM/PNAM/UNAM/XNAM ([`records/actor/npc.rs`](../../crates/plugin/src/esm/records/actor/npc.rs))
   — `is_oblivion` cached, used per sub-record.
 

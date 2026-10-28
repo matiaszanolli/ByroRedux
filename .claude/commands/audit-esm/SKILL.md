@@ -174,9 +174,9 @@ any fn returning `SubRecord` built from a parameter 4-CC, not only fixed names).
   them, `parse_wthr_00tx_fourccs_are_inert`); Oblivion `CNAM` is the lower layer 0 and `DATA`
   bytes 1-2 the layer speeds (#6041), and its cloud tints are `NAM0` group 2 (Clouds-Lower →
   `cloud_layer_colors[0]`) and group 9 (Clouds-Upper → `[1]`) — read as FO3/FNV's Unused until
-  `7ed4c7dca` (#6258; `SKY_GROUP_2`/`SKY_GROUP_9`); FO3/FNV 24-byte `FNAM` carries fog power (#6042). The two arms (`parse_wthr`, `parse_wthr_skyrim`) share the RGBA unpack
+  `7ed4c7dca` (#6258; `SKY_GROUP_2`/`SKY_GROUP_9`); FO3/FNV 24-byte `FNAM` carries fog power (#6042). The two decoders (`parse_wthr` for Oblivion/FO3/FNV, `parse_wthr_creation` for Skyrim/FO4/FO76/Starfield) share the RGBA unpack
   `sky_color_at`, the noon/midnight synthesis `synthesize_noon_midnight` and the fog head
-  `read_fog_head` / `read_fog_power` (`ac9fa19a8`, part of #6223 — FO4/FO76/Starfield are deliberately **not** routed through the Skyrim decoder yet): a WTHR fix applied to one arm's copy of those is the regression.
+  `read_fog_head` / `read_fog_power` (`ac9fa19a8`, #6223); FO4/FO76/Starfield now run the Skyrim-lineage decoder with a per-game NAM0 shape table (`nam0_layout`) and FNAM reader (`read_creation_fnam`), and Skyrim-only reads (DALC, NAM2/NAM3, MNAM/NNAM, the 272-byte side table, the wind flag) are gated on `game`. Starfield's 608-byte NAM0 still takes the FO3-stride read (`Nam0Layout::Fo3Stride`) — no xEdit SF1 layout was on hand to move it; check before touching. A WTHR fix applied to one copy of the shared pieces is the regression. `cargo run -p byroredux-plugin --example dump_wthr_records` before/after diffs every real master byte-for-byte.
 - Strings: terminator consumed exactly once; a missing terminator cannot read past the
   sub-record.
 - Leveled lists (`parse_leveled_list_for_game`): FO76 split `LVLO` (4 B ref) + float

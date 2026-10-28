@@ -120,7 +120,7 @@ fn legacy_index_placements_keep_authored_units() {
 /// magnitude-matched to the metric LGTM corpus (`DefaultLightingTemplate`
 /// 750 / 12000 m). Shared by the Starfield-lift and legacy-passthrough
 /// tests below (#5134). `hedr_version` 1.71 (Skyrim SE) pads FNAM to the
-/// 32-byte schema that `parse_wthr_skyrim` requires; the other versions
+/// 32-byte schema that `parse_wthr_creation` requires for Skyrim; the other versions
 /// take the 16-byte Gamebryo/FO3-era form.
 fn weather_plugin(hedr_version: f32) -> Vec<u8> {
     let mut hedr = hedr_version.to_le_bytes().to_vec();
