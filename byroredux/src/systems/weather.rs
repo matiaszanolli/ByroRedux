@@ -1261,6 +1261,19 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     //
     // Wrap scroll at 1.0 so it never grows unboundedly; sampler
     // REPEAT makes the wrap invisible.
+    //
+    // #6445 — `SkyParamsRes` is read (for the drift cap) into a local BEFORE
+    // the `CloudSimState` write guard is taken: the render sky pass holds
+    // `SkyParamsRes` and then reads `CloudSimState`, so reading it under the
+    // write guard here would be the opposite order.
+    let cloud_tile_scales = world.try_resource::<SkyParamsRes>().map(|sky| {
+        [
+            sky.cloud_tile_scale,
+            sky.cloud_tile_scale_1,
+            sky.cloud_tile_scale_2,
+            sky.cloud_tile_scale_3,
+        ]
+    });
     if let Some(mut clouds) = world.try_resource_mut::<CloudSimState>() {
         let mut scroll_vectors = cloud_scroll_vectors(
             cloud_layer_velocities,
@@ -1268,16 +1281,8 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             cloud_scroll_rate,
             wind_direction,
         );
-        if let Some(sky) = world.try_resource::<SkyParamsRes>() {
-            cap_cloud_layer_drift(
-                &mut scroll_vectors,
-                [
-                    sky.cloud_tile_scale,
-                    sky.cloud_tile_scale_1,
-                    sky.cloud_tile_scale_2,
-                    sky.cloud_tile_scale_3,
-                ],
-            );
+        if let Some(tile_scales) = cloud_tile_scales {
+            cap_cloud_layer_drift(&mut scroll_vectors, tile_scales);
         }
         advance_cloud_scroll(&mut clouds.cloud_scroll, scroll_vectors[0], dt);
         advance_cloud_scroll(&mut clouds.cloud_scroll_1, scroll_vectors[1], dt);
