@@ -59,11 +59,11 @@ fn main() -> anyhow::Result<()> {
     })?;
 
     // Correlation table: for every weapon whose VATS sub-record authors
-    // an AP override (#3324 layout: f32 @12), line it up against the
-    // DNAM columns at @28 (base to-hit) and @68 (the standard AP cost)
+    // a special-attack AP (#3324 layout: f32 @12), line it up against the
+    // DNAM columns at @40 (base to-hit, u8) and @68 (the regular AP cost)
     // plus the parser's own decode of the same record.
     let parsed = parse_esm(&bytes).expect("parse");
-    println!("  correlation: formid | edid | parsed dmg | dnam@28 | dnam@68 | vats_ap_override");
+    println!("  correlation: formid | edid | parsed dmg | dnam@40 (u8 to-hit) | dnam@68 | vats_special_attack_ap");
     let mut reader = EsmReader::new(&bytes);
     let _ = reader.read_file_header()?;
     let mut printed = 0usize;
@@ -100,7 +100,7 @@ fn main() -> anyhow::Result<()> {
                         _ => "-".to_string(),
                     })
                     .unwrap_or_else(|| "-".into());
-                let at28 = f32_at(&d, 28);
+                let at28 = d.get(40).map(|&chance| f32::from(chance));
                 let at68 = f32_at(&d, 68);
                 println!(
                     "    {:08X} {edid:<30} {parsed_damage:>6} {:>7} {:>7} {vats_ap:>14.0}",

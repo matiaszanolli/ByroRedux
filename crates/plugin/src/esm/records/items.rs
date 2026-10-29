@@ -16,18 +16,20 @@ use crate::esm::sub_reader::SubReader;
 mod consumable;
 pub use consumable::ConsumableEffect;
 
-/// FNV `WEAP.VATS` — the per-weapon VATS inputs FO3/FO4 do not author here.
+/// FNV `WEAP.VATS` — the melee VATS **special attack** (xEdit
+/// `wbDefinitionsFNV.pas:8881-8889`: *Effect (SPEL), Skill, Dam. Mult, AP, Silent, Mod
+/// Required*), which FO3 and FO4 do not author.
 ///
 /// #3324 — `ap_cost` used to be pinned to `0.0` for every FO3/FNV weapon
-/// because the parser searched `DNAM` for it, and the in-code comment said
-/// its "true DNAM offset is unconfirmed". #6350 re-measured and split the
-/// naming: the **standard** AP cost lives at `DNAM` offset 68 (wiki-pinned
-/// — see the `DNAM` arm), and this sub-record's offset 12 is the GECK
-/// *Override*-tab "Action Points" ("overrides the standard number of
-/// action points the weapon uses", per the GECK wiki Weapons page), which
-/// only 45 FNV weapons author. Where the two disagree, the wiki's AP
-/// column tracks `DNAM@68` (lead pipe: DNAM 24 = wiki, override 30 ≠), so
-/// `ap_cost` reads `DNAM` and the override is carried separately here.
+/// because the parser searched `DNAM` for it. #6350 then called this
+/// sub-record's offset 12 the "Override-tab" cost and `DNAM@68` the standard
+/// one; #6450 re-measured and inverted the labels. All 45 FNV weapons with a
+/// non-zero value here are melee weapons (Super Sledge, Ripper, Lead Pipe,
+/// knives, machetes) with skill requirement 50, damage multipliers 0.5-2.0 and
+/// a `…KnockdownSpell` effect — the special-move block — so offset 12 is the
+/// special attack's own AP. The weapon's regular attack cost is `DNAM@68`
+/// (xEdit: "Override - Action Points", present on exactly the records with
+/// Flags 2 `0x8` set; 0 otherwise, which falls back to the engine default).
 ///
 /// Layout established from the archive, not from a remembered spec — see
 /// `crates/plugin/examples/probe_weap_vats.rs`, which decodes every payload
@@ -53,10 +55,11 @@ pub struct WeaponVats {
     pub required_skill: f32,
     /// Damage multiplier applied to the VATS attack.
     pub damage_mult: f32,
-    /// Override-tab "Action Points" (#6350): replaces the standard
-    /// `ap_cost` where an author sets it — 45 FNV weapons do. `0.0`
-    /// everywhere else, including all of FO3.
-    pub ap_override: f32,
+    /// Action points of the special attack (offset 12; 45 FNV weapons, all
+    /// melee, 14.0..=48.0). Not the weapon's regular VATS cost — that is
+    /// `ItemKind::Weapon::ap_cost` — so a regular attack is never charged this
+    /// (#6450). `0.0` where the weapon has no special attack, and all of FO3.
+    pub special_attack_ap: f32,
     /// Silence level. Vanilla FNV authors only `0` and `1`; the wider enum
     /// domain is deliberately not asserted, since the corpus does not
     /// evidence it. Feeds stealth detection alongside VATS.
@@ -211,19 +214,22 @@ pub enum ItemKind {
         clip_size: u16,
         /// Animation type (0 = handgun, 1 = rifle, 2 = launcher, ...).
         anim_type: u8,
-        /// Action point cost (VATS), the standard per-weapon cost.
-        /// FO3/FNV read it from `DNAM` offset 68 and FO4 from `DNAM`
-        /// offset 112 (#6350 wiki-pinned: 10mm 17, hunting rifle 40,
-        /// sniper 27, minigun 30, super sledge 38 — both games' columns).
-        /// FNV's rare Override-tab replacement lives in
-        /// [`WeaponVats::ap_override`], not here.
+        /// Action point cost (VATS) of the weapon's regular attack.
+        /// FO3/FNV read it from `DNAM` offset 68 — xEdit's "Override -
+        /// Action Points", authored where Flags 2 `0x8` is set and 0
+        /// (engine default) otherwise (#6450) — and FO4 from `DNAM` offset
+        /// 112 (wiki-pinned: 10mm 17, hunting rifle 40, sniper 27, minigun
+        /// 30, super sledge 38). The melee special attack's cost is
+        /// [`WeaponVats::special_attack_ap`], not here.
         ap_cost: f32,
         /// Base VATS to-hit chance (percent, authored per weapon — "set
-        /// based upon the size of the weapon" per the GECK wiki; melee
-        /// authors 0). FO3/FNV `DNAM` offset 28 (#6350: 10mm 65, sniper
-        /// 25, torso-scale clustering corpus-wide). Factored into the
-        /// VATS hit chance before distance, skill and screen percentage.
-        /// `0.0` on games whose DNAM layout is not decoded yet.
+        /// based upon the size of the weapon" per the GECK wiki). FO3/FNV
+        /// `DNAM` offset 40, a `u8` (#6449; 10mm 15, sniper 16, laser rifle
+        /// 45, minigun 45, super sledge 45). Offset 28 is Sight FOV — the
+        /// iron-sights angle, 0 on every melee weapon — which an earlier
+        /// reading took for this. Factored into the VATS hit chance before
+        /// distance, skill and screen percentage. `0.0` on games whose DNAM
+        /// layout is not decoded yet.
         vats_base_to_hit: f32,
         /// Skill required form (AVIF).
         skill_form: u32,
@@ -439,27 +445,25 @@ pub fn parse_weap(
                 // TBD (may or may not duplicate the NAM6 spread). Not
                 // stored; NAM6 remains the authoritative spread source.
                 let _offset_20 = r.f32_or_default();
-                // Offset 28 — Base VATS To-Hit Chance (f32, percent).
-                // #6350: wiki-pinned against the per-weapon tables —
-                // FNV 10mm 65, laser rifle 40, sniper 25, melee 0; the
-                // FO3 column clusters identically. Reads past a short
-                // payload leave the 0.0 default (modded records must
-                // parse, never fail).
-                r.skip_or_eof(4);
-                vats_base_to_hit = r.f32_or_default();
-                // Offset 68 — Action Points (f32), the standard VATS
-                // cost. #6350: the #3324 note that "AP cost is not in
-                // DNAM on FNV" was half right — the VATS sub-record
-                // carries the rare Override-tab value, but the standard
-                // cost every weapon authors lives HERE. Wiki-pinned:
-                // FNV 10mm 17, laser rifle 18, hunting rifle 40,
-                // sniper 27, minigun 30, super sledge 38, ripper 65;
-                // FO3's column matches the same slot (10mm 17, super
-                // sledge 38, minigun 30). Where a weapon also authors
-                // the override and the two disagree, the wiki's AP
-                // column tracks this slot (lead pipe: 24 here, 30 in
-                // the override).
-                r.skip_or_eof(36);
+                // Offset 28 — Sight FOV (f32; xEdit `wbDefinitionsFNV.pas:8749-8755`),
+                // the iron-sights view angle: 0 on every melee weapon, 38-70 on
+                // ranged ones. #6350 mistook it for the base VATS chance; the real
+                // one is the `u8` at offset 40 (#6449). Not stored: nothing reads it.
+                //
+                // Offset 40 — Base VATS To-Hit Chance (u8, percent; GECK: "set based
+                // upon the size of the weapon"): FNV 10mm 15, sniper 16, laser rifle
+                // 45, hunting rifle 42, minigun 45, super sledge 45. Read from the
+                // payload by index so a short record leaves the 0.0 default (modded
+                // records must parse, never fail).
+                vats_base_to_hit = sub.data.get(40).map_or(0.0, |&chance| f32::from(chance));
+                // Offset 68 — Action Points (f32), the regular VATS cost: xEdit's
+                // "Override - Action Points", authored on exactly the records with
+                // Flags 2 `0x8` set and 0 (the engine default) on the rest (FNV 203
+                // set / 58 unset; FO3 117 / 43). Wiki-pinned: FNV 10mm 17, laser
+                // rifle 18, hunting rifle 40, sniper 27, minigun 30, super sledge
+                // 38, ripper 65; FO3's column matches (10mm 17, super sledge 38).
+                // The `VATS` sub-record's AP is the melee special attack (#6450).
+                r.skip_or_eof(44);
                 ap_cost = r.f32_or_default();
             }
             // FNV `VATS` — the per-weapon VATS inputs, in their own
@@ -484,17 +488,18 @@ pub fn parse_weap(
                 };
                 let required_skill = r.f32_or_default();
                 let damage_mult = r.f32_or_default();
-                // Offset 12 — the Override-tab "Action Points" (#6350
-                // re-measured; #3324 read this as the standard AP cost,
-                // but the wiki tables track DNAM@68 — see the DNAM arm
-                // and [`WeaponVats::ap_override`]).
-                let ap_override = r.f32_or_default();
+                // Offset 12 — the special attack's AP (#6450: all 45 non-zero
+                // values are melee weapons' special moves; #3324 read it as the
+                // standard cost, #6350 as an "Override-tab" one). The regular
+                // cost is DNAM@68 — see the DNAM arm and
+                // [`WeaponVats::special_attack_ap`].
+                let special_attack_ap = r.f32_or_default();
                 let silence_level = sub.data.get(16).copied().unwrap_or(0);
                 vats = Some(WeaponVats {
                     effect_form,
                     required_skill,
                     damage_mult,
-                    ap_override,
+                    special_attack_ap,
                     silence_level,
                 });
             }
@@ -1779,16 +1784,19 @@ mod tests {
         }
     }
 
-    /// #6350 — the FO3/FNV DNAM slots the VATS model consumes: base
-    /// to-hit at offset 28, standard AP cost at offset 68. Fixture
-    /// values are the wiki-pinned `Weap10mmPistol` pair (65 % / 17 AP);
-    /// the blob mirrors the vanilla 136-byte FO3 DNAM shape.
+    /// #6350 / #6449 — the FO3/FNV DNAM slots the VATS model consumes: base
+    /// to-hit (a `u8`) at offset 40, regular AP cost at offset 68. Sight FOV
+    /// at offset 28 (65.0 here, the vanilla 10mm's) must NOT leak into the
+    /// to-hit chance. Fixture values are the measured `Weap10mmPistol` triple
+    /// (15 % to-hit / 17 AP / 65 FOV); the blob mirrors the vanilla 136-byte
+    /// FO3 DNAM shape.
     #[test]
     fn fallout_dnam_decodes_base_to_hit_and_ap_cost() {
         let mut dnam = vec![0u8; 136];
         dnam[0] = 3; // anim type
         dnam[16..20].copy_from_slice(&0.5f32.to_le_bytes()); // min spread
-        dnam[28..32].copy_from_slice(&65.0f32.to_le_bytes()); // base VATS to-hit
+        dnam[28..32].copy_from_slice(&65.0f32.to_le_bytes()); // sight FOV
+        dnam[40] = 15; // base VATS to-hit
         dnam[68..72].copy_from_slice(&17.0f32.to_le_bytes()); // AP cost
         let subs = vec![
             sub(b"EDID", b"Weap10mmPistol\0"),
@@ -1803,7 +1811,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(ap_cost, 17.0, "standard AP cost is DNAM offset 68");
-                assert_eq!(vats_base_to_hit, 65.0, "base VATS to-hit is DNAM offset 28");
+                assert_eq!(vats_base_to_hit, 15.0, "base VATS to-hit is the u8 at DNAM offset 40, not the sight FOV at 28");
                 assert_eq!(min_spread, 0.5);
             }
             _ => panic!("expected Weapon kind"),
@@ -1811,10 +1819,9 @@ mod tests {
         // A short DNAM (the 120/124/196/204-byte classes, or a mod's
         // truncated blob) must decode what it carries and default the
         // rest — never fail the record.
-        let short = vec![0u8; 40]; // reaches offset 28, not 68
-        let mut d28 = short.clone();
-        d28[28..32].copy_from_slice(&45.0f32.to_le_bytes());
-        let subs = vec![sub(b"EDID", b"ShortDnam\0"), sub(b"DNAM", &d28)];
+        let mut d40 = vec![0u8; 41]; // reaches offset 40, not 68
+        d40[40] = 45;
+        let subs = vec![sub(b"EDID", b"ShortDnam\0"), sub(b"DNAM", &d40)];
         match parse_weap(0x1003, &subs, GameKind::Fallout3NV, &None).kind {
             ItemKind::Weapon {
                 ap_cost,
@@ -1828,16 +1835,15 @@ mod tests {
         }
     }
 
-    /// #3324/#6350 — FNV authors the VATS override block in its own `VATS`
-    /// sub-record. The bytes below are the verbatim payload of vanilla
+    /// #3324/#6350/#6450 — FNV authors the melee VATS special-attack block in
+    /// its own `VATS` sub-record. The bytes below are the verbatim payload of vanilla
     /// `WeapKnifeCombatCass` (`FalloutNV.esm`), which the census reported as
     /// `effect=00000000 @4=50.00 @8=0.70 @12=14.00 @16=1`.
     ///
-    /// #6350 renamed the load-bearing slot: offset 12 is the GECK
-    /// Override-tab "Action Points" (`ap_override`), NOT the standard AP
-    /// cost — the standard cost is `DNAM@68` (wiki-pinned; Cass's knife
+    /// Offset 12 is the special attack's AP (`special_attack_ap`), NOT the
+    /// weapon's regular cost — that is `DNAM@68` (wiki-pinned; Cass's knife
     /// itself charges 17, not 14). The unit fixture carries no DNAM, so
-    /// `ap_cost` stays 0.0 here and the override decodes separately.
+    /// `ap_cost` stays 0.0 here and the special-attack AP decodes separately.
     #[test]
     fn fnv_weap_vats_decodes_the_override_block() {
         let mut vats = Vec::new();
@@ -1857,13 +1863,13 @@ mod tests {
         match item.kind {
             ItemKind::Weapon { ap_cost, vats, .. } => {
                 // No DNAM in this fixture: the standard cost stays at its
-                // default and the override must NOT leak into it (#6350).
+                // default and the special-attack AP must NOT leak into it (#6450).
                 assert_eq!(ap_cost, 0.0);
                 let vats = vats.expect("FNV WEAP with a VATS sub-record must decode it");
                 assert_eq!(vats.effect_form, 0);
                 assert_eq!(vats.required_skill, 50.0);
                 assert!((vats.damage_mult - 0.7).abs() < 1e-6);
-                assert_eq!(vats.ap_override, 14.0);
+                assert_eq!(vats.special_attack_ap, 14.0);
                 assert_eq!(vats.silence_level, 1);
             }
             _ => panic!("expected Weapon kind"),
@@ -1871,7 +1877,7 @@ mod tests {
     }
 
     /// Three vanilla FNV payloads are 16 bytes and stop before the silence
-    /// byte. They must still yield their AP override rather than being
+    /// byte. They must still yield their special-attack AP rather than being
     /// rejected or over-read.
     #[test]
     fn fnv_weap_vats_accepts_the_short_sixteen_byte_payload() {
@@ -1885,9 +1891,9 @@ mod tests {
         let subs = vec![sub(b"EDID", b"ShortVats\0"), sub(b"VATS", &vats)];
         match parse_weap(0x1001, &subs, GameKind::Fallout3NV, &None).kind {
             ItemKind::Weapon { ap_cost, vats, .. } => {
-                assert_eq!(ap_cost, 0.0, "standard cost comes from DNAM, not the override");
+                assert_eq!(ap_cost, 0.0, "the regular cost comes from DNAM, not the special attack");
                 let vats = vats.expect("short payload still decodes");
-                assert_eq!(vats.ap_override, 48.0);
+                assert_eq!(vats.special_attack_ap, 48.0);
                 assert_eq!(vats.silence_level, 0);
             }
             _ => panic!("expected Weapon kind"),

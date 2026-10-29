@@ -284,21 +284,19 @@ fn resolve_weapon(
         ap_cost,
         vats_base_to_hit,
         skill_form,
-        vats,
         ..
     } = &index.items.get(&base_form_id)?.kind
     else {
         return None;
     };
-    // The GECK Override-tab value replaces the standard cost where an
-    // author set one (#6350's split — 45 FNV weapons); a weapon with
-    // neither authored falls to the per-anim-type standard (pistol for
-    // this gate — the anim-type mapping is Phase-4 polish).
-    let overridden = vats.filter(|v| v.ap_override > 0.0).map(|v| v.ap_override);
+    // The weapon's regular cost is DNAM@68 (`ap_cost`); a weapon that authors none falls to
+    // the per-anim-type standard (pistol for this gate — the anim-type mapping is Phase-4
+    // polish). The `VATS` sub-record's AP is the melee special attack's (#6450), not this
+    // attack's, so it is never charged here.
     Some(VatsWeapon {
         base_to_hit: *vats_base_to_hit,
-        ap_cost: overridden
-            .or_else(|| (*ap_cost > 0.0).then_some(*ap_cost))
+        ap_cost: (*ap_cost > 0.0)
+            .then_some(*ap_cost)
             .unwrap_or(world.resource::<VatsModel>().ap.attack_pistol),
         skill_form: *skill_form,
     })
