@@ -263,7 +263,9 @@ mod material_texture_set_tests {
     /// instead of re-derived — the #4422 class this pins against.
     #[test]
     fn dark_role_has_one_writer_and_carries_its_census_doc() {
-        let types_src = include_str!("material.rs");
+        // Production text only: this module's own needles would otherwise
+        // match themselves and the doc half could not fail (#6474).
+        let types_src = byroredux_core::source_scan::production_text(include_str!("material.rs"));
         assert!(
             types_src.contains("#4523 census, 2026-09-20")
                 && types_src.contains("8 meshes in 6 files"),
