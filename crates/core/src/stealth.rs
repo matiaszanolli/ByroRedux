@@ -183,6 +183,13 @@ impl DetectorState {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DetectionInputs {
     /// World-unit distance between detector and target (~64 units/meter).
+    ///
+    /// **Precondition: `distance <= locale.max_distance()`.** The source's
+    /// `((MaxDist - d) / MaxDist)^2` attenuation is squared and states nothing
+    /// for `d > MaxDist`, so past the range it rises again (`d = 2 * MaxDist`
+    /// scores the same as `d = 0`) and an unguarded far call reports
+    /// "Detected". [`detection_score`] transcribes the formula as given and does
+    /// not clamp; the caller gates on range first.
     pub distance: f32,
     pub locale: Locale,
     /// Whether the detector has an unobstructed line of sight to the target.
@@ -789,6 +796,22 @@ mod tests {
                 approx(detection_score(&inputs), expected, "Attenuation");
             }
         }
+    }
+
+    /// The source states nothing past `MaxDist`, and the squared expression
+    /// rises again there (`d = 2·MaxDist` equals `d = 0`). Pins the documented
+    /// `DetectionInputs::distance` precondition: callers gate on range.
+    #[test]
+    fn attenuation_past_max_distance_is_not_clamped() {
+        let at = |distance| {
+            detection_score(&DetectionInputs {
+                distance,
+                target_action_sound: ActionSound::Loud,
+                ..isolated()
+            })
+        };
+        approx(at(10_000.0), at(0.0), "d = 2·MaxDist repeats d = 0");
+        assert!(at(10_000.0) > at(5_000.0));
     }
 
     /// `TargetSkill = SneakSkill + 5·(TargetLevel − DetectorLevel)
