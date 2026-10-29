@@ -441,7 +441,7 @@ mod ambient_locomotion_default_on_tests {
         assert!(
             setup.contains("make_forcegreet_system(super::ai_locomotion_enabled())"),
             "the force-greet walk step must take the BYRO_NO_AI_LOCOMOTION \
-             kill switch (boot/schedule/update.rs)"
+             kill switch (boot/schedule/update/)"
         );
         assert!(
             after.contains(&format!("crate::systems::{}()", "make_combat_feedback_system")),

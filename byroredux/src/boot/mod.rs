@@ -5,7 +5,7 @@
 //!
 //! #3855 — split from a single 3229-line `boot.rs` into one file per
 //! concern. The five `register_*_systems` bodies #3739 had already carved
-//! out of `build_scheduler` became `schedule/{early,update,post_update,
+//! out of `build_scheduler` became `schedule/{early,update/,post_update,
 //! physics,late}.rs` verbatim; `build_world`, `install_runtime_registries`
 //! and the CLI expanders each got their own file. Every `pub(crate)` entry
 //! point is re-exported below, so no call site outside this directory
@@ -63,7 +63,12 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("mod.rs"),
     include_str!("world.rs"),
     include_str!("schedule/early.rs"),
-    include_str!("schedule/update.rs"),
+    include_str!("schedule/update/mod.rs"),
+    include_str!("schedule/update/interaction_and_crime.rs"),
+    include_str!("schedule/update/combat.rs"),
+    include_str!("schedule/update/quest_scene.rs"),
+    include_str!("schedule/update/script_runtime.rs"),
+    include_str!("schedule/update/player_animation.rs"),
     include_str!("schedule/post_update.rs"),
     include_str!("schedule/physics.rs"),
     include_str!("schedule/late.rs"),

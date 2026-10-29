@@ -1244,6 +1244,18 @@ fn per_frame_driver_functions_stay_within_their_size_pins() {
     const STATIC_MESHES_RS: &str = include_str!("render/static_meshes.rs");
     const REFERENCES_RS: &str = include_str!("cell_loader/references/mod.rs");
     const SYNTH_CHILD_RS: &str = include_str!("cell_loader/references/synth_child.rs");
+    // #6359 — the Update / Late registration functions are straight-line
+    // sequences that only ever grew (`register_update_systems` 854 -> 981 -> 998
+    // in 14 commits). Update is now an orchestrator over five contiguous order
+    // segments; a new system joins the segment whose producer / consumer slot it
+    // fills, or opens a new segment, and does not raise a pin.
+    const UPDATE_MOD_RS: &str = include_str!("boot/schedule/update/mod.rs");
+    const UPDATE_INTERACTION_RS: &str = include_str!("boot/schedule/update/interaction_and_crime.rs");
+    const UPDATE_COMBAT_RS: &str = include_str!("boot/schedule/update/combat.rs");
+    const UPDATE_QUEST_RS: &str = include_str!("boot/schedule/update/quest_scene.rs");
+    const UPDATE_SCRIPT_RS: &str = include_str!("boot/schedule/update/script_runtime.rs");
+    const UPDATE_PLAYER_RS: &str = include_str!("boot/schedule/update/player_animation.rs");
+    const LATE_RS: &str = include_str!("boot/schedule/late.rs");
     for (source, declaration, pin) in [
         // about_to_wait was 822 when #4342 was filed and 1044 by #5096;
         // #6143 moved the bench summary, the screenshot state machine and the
@@ -1262,6 +1274,13 @@ fn per_frame_driver_functions_stay_within_their_size_pins() {
         // Not extracted by #6143 (a placement is one long straight-line
         // spawn); pinned at its 2026-10-26 size so growth is deliberate.
         (SYNTH_CHILD_RS, "fn spawn_synth_child(", 605),
+        (UPDATE_MOD_RS, "fn register_update_systems(", 10),
+        (UPDATE_INTERACTION_RS, "fn register_interaction_and_crime(", 225),
+        (UPDATE_COMBAT_RS, "fn register_combat(", 160),
+        (UPDATE_QUEST_RS, "fn register_quest_story_scene_and_packages(", 195),
+        (UPDATE_SCRIPT_RS, "fn register_script_runtime(", 150),
+        (UPDATE_PLAYER_RS, "fn register_player_and_animation(", 285),
+        (LATE_RS, "fn register_late_systems(", 858),
     ] {
         let measured = byroredux_core::source_scan::function_line_count(source, declaration);
         assert!(
