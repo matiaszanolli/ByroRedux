@@ -680,6 +680,20 @@ pub const WATER_SWELL_SHOAL_GAIN_MAX: f32 = 1.6;
 pub const WATER_SHORE_REFRACT_DEPTH: f32 = 900.0;
 /// The largest share of the heading that refraction turns toward the shore.
 pub const WATER_SHORE_REFRACT_MAX: f32 = 0.7;
+/// The share of the shore refraction by which the authored ripple pair (`dirA` /
+/// `dirB`) turns toward the shore: `refraction * WATER_SHORE_RIPPLE_TURN_SHARE`.
+/// A chosen value; the swell turns by the full refraction (#6419).
+pub const WATER_SHORE_RIPPLE_TURN_SHARE: f32 = 0.6;
+/// Upper edge of the ramp by which a swell travelling toward the shore turns
+/// into it: `smoothstep(0, WATER_SWELL_SHORE_TOWARD_RAMP, dot(heading, shoreDir))`,
+/// so it is fully turned 60° off the shore normal and not at all when perpendicular.
+pub const WATER_SWELL_SHORE_TOWARD_RAMP: f32 = 0.5;
+/// Shortest shoreward (bank) vector, in the bed gradient's normalised units, that
+/// still names a direction. Below it the bed is locally flat and there is no shore
+/// to turn toward; normalising a vector this short would flip the heading from one
+/// vertex to the next. Read by `water.vert`, the CPU crest sampler and
+/// [`WaterFlow::over_bed`].
+pub const WATER_SHORE_MIN_UPHILL_LEN: f32 = 0.1;
 
 // ── River current over the bed ──────────────────────────────────────────
 //
@@ -890,7 +904,7 @@ impl WaterFlow {
         let flow_len = (self.direction[0] * self.direction[0] + self.direction[2] * self.direction[2]).sqrt();
         let bank_len = (bed.uphill[0] * bed.uphill[0] + bed.uphill[1] * bed.uphill[1]).sqrt();
         let mut direction = self.direction;
-        if flow_len > 1.0e-4 && bank_len > 0.1 {
+        if flow_len > 1.0e-4 && bank_len > WATER_SHORE_MIN_UPHILL_LEN {
             let flow = [self.direction[0] / flow_len, self.direction[2] / flow_len];
             let mut along = [-bed.uphill[1] / bank_len, bed.uphill[0] / bank_len];
             if along[0] * flow[0] + along[1] * flow[1] < 0.0 {

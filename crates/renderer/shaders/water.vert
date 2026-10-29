@@ -201,13 +201,13 @@ void main() {
         float bedDepth = bedValid ? inColor.r * WATER_BED_DEPTH_MAX : 1.0e6;
         vec2 uphill = bedValid ? inColor.gb * 2.0 - 1.0 : vec2(0.0);
         float uphillLen = length(uphill);
-        vec2 shoreDir = uphillLen > 0.1 ? uphill / uphillLen : vec2(0.0);
+        vec2 shoreDir = uphillLen > WATER_SHORE_MIN_UPHILL_LEN ? uphill / uphillLen : vec2(0.0);
         vShore = vec4(bedDepth, shoreDir, bedValid ? 1.0 : 0.0);
         // Waves feel the bed: below WATER_SHORE_REFRACT_DEPTH the crests turn
         // toward the shore (refraction), so a swell arriving at an angle ends
         // up running parallel to the beach.
         float refraction = 0.0;
-        if (bedValid && uphillLen > 0.1) {
+        if (bedValid && uphillLen > WATER_SHORE_MIN_UPHILL_LEN) {
             refraction = (1.0 - smoothstep(0.25 * WATER_SHORE_REFRACT_DEPTH,
                                            WATER_SHORE_REFRACT_DEPTH, bedDepth))
                 * WATER_SHORE_REFRACT_MAX;
@@ -219,8 +219,8 @@ void main() {
         dirA = normalize(dirA);
         dirB = normalize(dirB);
         if (refraction > 0.0) {
-            dirA = normalize(mix(dirA, shoreDir, refraction * 0.6));
-            dirB = normalize(mix(dirB, shoreDir, refraction * 0.6));
+            dirA = normalize(mix(dirA, shoreDir, refraction * WATER_SHORE_RIPPLE_TURN_SHARE));
+            dirB = normalize(mix(dirB, shoreDir, refraction * WATER_SHORE_RIPPLE_TURN_SHARE));
         }
         float spatialA = max(abs(water.tune.x), WATER_WAVE_SPATIAL_FLOOR_A);
         float spatialB = max(abs(water.tune.y), WATER_WAVE_SPATIAL_FLOOR_B);
@@ -275,7 +275,7 @@ void main() {
             // running offshore would mix to a near-zero vector at half share,
             // and normalising that flips the heading from vertex to vertex.
             if (refraction > 0.0) {
-                float toward = smoothstep(0.0, 0.5, dot(swellDir, shoreDir));
+                float toward = smoothstep(0.0, WATER_SWELL_SHORE_TOWARD_RAMP, dot(swellDir, shoreDir));
                 swellDir = normalize(mix(swellDir, shoreDir, refraction * toward));
             }
             float swellK = 6.2831853 / WATER_SWELL_WAVELENGTH_BU;

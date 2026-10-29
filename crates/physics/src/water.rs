@@ -40,7 +40,8 @@ use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{
     WaterBedField, WaterContact, WaterCurrentVolume, WaterFlow, WaterKind, WaterMaterial,
     WaterPlane, WaterSurfaceMesh, WaterVolume, WATERLINE_HYSTERESIS, WATER_SHORE_REFRACT_DEPTH,
-    WATER_SHORE_REFRACT_MAX, WATER_SWELL_BREAK_RATIO, WATER_WAVE_AMPLITUDE_MAX, WATER_WAVE_DEFAULT_SCROLL_A,
+    WATER_SHORE_MIN_UPHILL_LEN, WATER_SHORE_REFRACT_MAX, WATER_SHORE_RIPPLE_TURN_SHARE,
+    WATER_SWELL_BREAK_RATIO, WATER_SWELL_SHORE_TOWARD_RAMP, WATER_WAVE_AMPLITUDE_MAX, WATER_WAVE_DEFAULT_SCROLL_A,
     WATER_WAVE_DEFAULT_SCROLL_B, WATER_WAVE_FALLBACK_DIR_A, WATER_WAVE_FALLBACK_DIR_B,
     WATER_WAVE_MIX_A, WATER_WAVE_MIX_B, WATER_WAVE_PHASE_B_RATE, WATER_WAVE_RATE_MAX,
     WATER_WAVE_RATE_MIN, WATER_WAVE_SPATIAL_FLOOR_A, WATER_WAVE_SPATIAL_FLOOR_B,
@@ -491,7 +492,7 @@ fn turn_toward(dir: [f32; 2], shore_dir: [f32; 2], share: f32) -> [f32; 2] {
 /// heading from one vertex to the next.
 fn refract_swell(heading: [f32; 2], shore_dir: [f32; 2], refraction: f32) -> [f32; 2] {
     let cosine = heading[0] * shore_dir[0] + heading[1] * shore_dir[1];
-    let t = (cosine / 0.5).clamp(0.0, 1.0);
+    let t = (cosine / WATER_SWELL_SHORE_TOWARD_RAMP).clamp(0.0, 1.0);
     turn_toward(heading, shore_dir, refraction * t * t * (3.0 - 2.0 * t))
 }
 
@@ -519,7 +520,7 @@ pub fn authored_wave_height_over_bed(
     // zone `water.vert` bends in (`WATER_SHORE_REFRACT_DEPTH`).
     let shore_dir = sample.map_or([0.0, 0.0], |sample| sample.uphill);
     let shore_len = (shore_dir[0] * shore_dir[0] + shore_dir[1] * shore_dir[1]).sqrt();
-    let refraction = if sample.is_some() && shore_len > 0.1 {
+    let refraction = if sample.is_some() && shore_len > WATER_SHORE_MIN_UPHILL_LEN {
         let t = ((bed_depth - 0.25 * WATER_SHORE_REFRACT_DEPTH)
             / (0.75 * WATER_SHORE_REFRACT_DEPTH))
             .clamp(0.0, 1.0);
@@ -573,8 +574,8 @@ pub fn authored_wave_height_over_bed(
     let mut dir_a = direction(scroll_a, WATER_WAVE_FALLBACK_DIR_A);
     let mut dir_b = direction(scroll_b, WATER_WAVE_FALLBACK_DIR_B);
     if refraction > 0.0 {
-        dir_a = turn(dir_a, refraction * 0.6);
-        dir_b = turn(dir_b, refraction * 0.6);
+        dir_a = turn(dir_a, refraction * WATER_SHORE_RIPPLE_TURN_SHARE);
+        dir_b = turn(dir_b, refraction * WATER_SHORE_RIPPLE_TURN_SHARE);
     }
     let rate = |scroll: [f32; 2], reference: f32| {
         ((scroll[0] * scroll[0] + scroll[1] * scroll[1]).sqrt() / reference)

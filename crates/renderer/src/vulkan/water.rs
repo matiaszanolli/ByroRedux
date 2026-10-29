@@ -1359,8 +1359,22 @@ mod tests {
             "min(water.optical.z * shoal, WATER_SWELL_BREAK_RATIO * bedDepth)",
             "amplitude = min(amplitude, WATER_SWELL_BREAK_RATIO * bedDepth);",
             "vec2(cos(water.optical.w), sin(water.optical.w))",
+            // #6419 — the shore-refraction shape parameters are owned in core and
+            // read by name here and in the CPU crest sampler, never retyped.
+            "uphillLen > WATER_SHORE_MIN_UPHILL_LEN",
+            "smoothstep(0.0, WATER_SWELL_SHORE_TOWARD_RAMP, dot(swellDir, shoreDir))",
+            "refraction * WATER_SHORE_RIPPLE_TURN_SHARE",
         ] {
             assert!(vert.contains(needle), "water.vert lost `{needle}`");
+        }
+        for retyped in ["uphillLen > 0.1", "refraction * 0.6", "smoothstep(0.0, 0.5, dot(swellDir"] {
+            assert!(!vert.contains(retyped), "water.vert retypes a shore constant: `{retyped}`");
+        }
+        let cpu = crate::source_scan::production_text(include_str!(
+            "../../../physics/src/water.rs"
+        ));
+        for retyped in ["shore_len > 0.1", "refraction * 0.6", "cosine / 0.5"] {
+            assert!(!cpu.contains(retyped), "the CPU crest sampler retypes a shore constant: `{retyped}`");
         }
         let frag = include_str!("../../shaders/water.frag");
         for needle in [
