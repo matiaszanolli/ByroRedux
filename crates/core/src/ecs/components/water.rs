@@ -403,7 +403,7 @@ pub struct WaterMaterial {
     /// geometry within this distance below the water surface; fades
     /// to zero past it. ~30 wu matches Skyrim's vanilla shoreline.
     pub shoreline_width: f32,
-    /// Refraction IOR. 1.33 = clean water; bumping up to 1.5 for
+    /// Refraction IOR. [`WATER_CLEAN_IOR`] = clean water; bumping up to 1.5 for
     /// stylised reads or thick visc fluid. Glass at 1.5.
     pub ior: f32,
     /// Vertex-displacement magnitude (world units) authored in WATR
@@ -494,7 +494,7 @@ impl Default for WaterMaterial {
             // their stronger/slower whitewater profiles in EXAL.
             foam_strength: 0.65,
             shoreline_width: 32.0,
-            ior: 1.33,
+            ior: WATER_CLEAN_IOR,
             // SENTINEL (WATAL §4): matches `WaterParams::default` so a
             // record that omits wave data resolves identically across
             // all games.
@@ -680,6 +680,12 @@ pub const WATER_SWELL_SHOAL_GAIN_MAX: f32 = 1.6;
 pub const WATER_SHORE_REFRACT_DEPTH: f32 = 900.0;
 /// The largest share of the heading that refraction turns toward the shore.
 pub const WATER_SHORE_REFRACT_MAX: f32 = 0.7;
+/// Refractive index of clean water, the default for a plane that authors none
+/// (`WaterMaterial::default`) and the one index the underwater god-ray march in
+/// `composite.frag` refracts the sun by (#6418). The CPU submersion state does not
+/// carry the submerged plane's own index yet, so a plane that authors another one
+/// (Skyrim, FO4 and Starfield do) still gets this value in the shafts.
+pub const WATER_CLEAN_IOR: f32 = 1.33;
 /// The share of the shore refraction by which the authored ripple pair (`dirA` /
 /// `dirB`) turns toward the shore: `refraction * WATER_SHORE_RIPPLE_TURN_SHARE`.
 /// A chosen value; the swell turns by the full refraction (#6419).

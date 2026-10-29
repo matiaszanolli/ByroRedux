@@ -1840,6 +1840,7 @@ pub const WATER_SHORE_REFRACT_DEPTH: f32 =
     byroredux_core::ecs::components::water::WATER_SHORE_REFRACT_DEPTH;
 pub const WATER_SHORE_REFRACT_MAX: f32 =
     byroredux_core::ecs::components::water::WATER_SHORE_REFRACT_MAX;
+pub const WATER_CLEAN_IOR: f32 = byroredux_core::ecs::components::water::WATER_CLEAN_IOR;
 pub const WATER_SHORE_RIPPLE_TURN_SHARE: f32 =
     byroredux_core::ecs::components::water::WATER_SHORE_RIPPLE_TURN_SHARE;
 pub const WATER_SWELL_SHORE_TOWARD_RAMP: f32 =
@@ -3051,6 +3052,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float WATER_BED_VALID_ALPHA_TOL),
     shader_define!(Float WATER_SHORE_REFRACT_DEPTH),
     shader_define!(Float WATER_SHORE_REFRACT_MAX),
+    shader_define!(Float WATER_CLEAN_IOR),
     shader_define!(Float WATER_SHORE_RIPPLE_TURN_SHARE),
     shader_define!(Float WATER_SWELL_SHORE_TOWARD_RAMP),
     shader_define!(Float WATER_SHORE_MIN_UPHILL_LEN),

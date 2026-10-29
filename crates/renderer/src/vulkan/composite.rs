@@ -1934,7 +1934,7 @@ mod composite_params_layout_tests {
         let shader = include_str!("../../shaders/composite.frag");
         for needle in [
             "if (params.depth_params.x > 0.5\n        && params.underwater.w > 0.0 && params.sun_dir.w > 0.0)",
-            "vec3 travel = refract(-sunDirection, vec3(0.0, 1.0, 0.0), 1.0 / 1.333);",
+            "vec3 travel = refract(-sunDirection, vec3(0.0, 1.0, 0.0), 1.0 / WATER_CLEAN_IOR);",
             "float surfaceY = params.camera_pos.y + depthBelowSurface;",
             "vec2 entry = p.xz - travel.xz * sunPath;",
             "* underwaterGodRays(viewDir, sunDirection, rayLength, blueNoiseRank());",
@@ -1944,6 +1944,13 @@ mod composite_params_layout_tests {
                 "composite underwater shaft term must retain `{needle}`"
             );
         }
+        // #6418 — the index is the core default that `WaterMaterial` and the caustic ray read,
+        // not a literal retyped in the march.
+        assert!(!shader.contains("1.333"), "the god-ray march retypes the water IOR");
+        assert_eq!(
+            crate::shader_constants::WATER_CLEAN_IOR,
+            byroredux_core::ecs::components::water::WaterMaterial::default().ior
+        );
     }
 
     /// Compact local media often cover only a handful of froxel columns.

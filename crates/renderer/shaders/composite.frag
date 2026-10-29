@@ -571,7 +571,9 @@ vec3 underwaterGodRays(vec3 viewDir, vec3 sunDirection, float rayLength, float j
     float span = max(params.caustic_flags.w, 1.0);
     if (depthBelowSurface <= 0.0 || sunDirection.y < 0.05) return vec3(0.0);
 
-    vec3 travel = refract(-sunDirection, vec3(0.0, 1.0, 0.0), 1.0 / 1.333);
+    // Air to clean water: the index `WaterMaterial` defaults to (#6418). The submerged plane's
+    // own index is not in the submersion state yet.
+    vec3 travel = refract(-sunDirection, vec3(0.0, 1.0, 0.0), 1.0 / WATER_CLEAN_IOR);
     if (travel.y > -0.05) return vec3(0.0);
 
     float surfaceY = params.camera_pos.y + depthBelowSurface;
