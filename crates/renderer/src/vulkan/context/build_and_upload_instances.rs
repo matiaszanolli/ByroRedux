@@ -9,6 +9,7 @@
 //! pre-clear — is unchanged from the pre-split `draw_frame`.
 
 use super::super::descriptors::memory_barrier;
+use crate::vulkan::gpu_timers::TimerPass;
 use super::super::material::GpuMaterial;
 use super::super::pipeline::PipelineKey;
 use super::super::scene_buffer::{
@@ -1585,7 +1586,7 @@ impl VulkanContext {
                     log::warn!("sky cubemap upload_params failed: {e}");
                 }
                 if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_sky_cube_start(&self.device, cmd, frame);
+                    timers.cmd_start(TimerPass::SkyCube, &self.device, cmd, frame);
                 }
                 // SAFETY: `cmd` is this frame's primary command buffer, in
                 // the recording state; `frame` indexes this frame's own cube,
@@ -1596,16 +1597,16 @@ impl VulkanContext {
                 // the sky-cube one (which keeps including it).
                 if sky_cube.has_cloud_shadow() {
                     if let Some(ref mut timers) = self.gpu_timers {
-                        timers.cmd_cloud_shadow_start(&self.device, cmd, frame);
+                        timers.cmd_start(TimerPass::CloudShadow, &self.device, cmd, frame);
                     }
                     // SAFETY: as `record_bake` above, for this slot's map.
                     unsafe { sky_cube.record_cloud_shadow(&self.device, cmd, frame, bindless_set) };
                     if let Some(ref mut timers) = self.gpu_timers {
-                        timers.cmd_cloud_shadow_end(&self.device, cmd, frame);
+                        timers.cmd_end(TimerPass::CloudShadow, &self.device, cmd, frame);
                     }
                 }
                 if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_sky_cube_end(&self.device, cmd, frame);
+                    timers.cmd_end(TimerPass::SkyCube, &self.device, cmd, frame);
                 }
             }
         }

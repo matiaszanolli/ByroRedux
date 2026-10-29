@@ -6,6 +6,7 @@
 //! `draw_frame`.
 
 use super::super::descriptors::memory_barrier;
+use crate::vulkan::gpu_timers::TimerPass;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::{DrawCommand, VulkanContext};
 use ash::vk;
@@ -532,7 +533,7 @@ impl VulkanContext {
                         // themselves, not the barrier transition cost
                         // which lands inside the BLAS refit window).
                         if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_skin_dispatch_start(&self.device, cmd, frame);
+                            timers.cmd_start(TimerPass::SkinDispatch, &self.device, cmd, frame);
                         }
                         // SAFETY: `cmd` is recording; `skin_pipeline`, each `slot`'s descriptors, and the global vertex / bone input buffers are live for this frame. The pipeline is bound ONCE for the whole batch below (#4205, `SkinComputePipeline::bind`); each `dispatch` binds only that entity's slot descriptor set at the COMPUTE bind point (pinned by `slot_dispatch_does_not_rebind_the_pipeline_per_entity`). The loop records sequentially with no concurrent use of `cmd`.
                         unsafe {
@@ -609,7 +610,7 @@ impl VulkanContext {
                         // #1194 — END of skin compute dispatch bracket
                         // (before the COMPUTE→AS_BUILD barrier).
                         if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_skin_dispatch_end(&self.device, cmd, frame);
+                            timers.cmd_end(TimerPass::SkinDispatch, &self.device, cmd, frame);
                         }
                         // SAFETY: `cmd` is recording. The COMPUTE_SHADER_WRITE -> (AS_BUILD | FRAGMENT)_READ barrier sequences the skin outputs before they are read as BLAS build inputs and before triangle.frag / water.frag dereference them via `skinnedVertexAddress` (#2403); the first-sight builds and refits share `blas_scratch_buffer` and self-emit AS_WRITE->AS_WRITE scratch-serialize barriers between builds; the closing AS_BUILD_WRITE -> AS_BUILD_READ barrier hands refit results to the TLAS build below.
                         unsafe {
@@ -801,7 +802,7 @@ impl VulkanContext {
                             // is right after the AS_BUILD→AS_BUILD
                             // barrier closes the refit window.
                             if let Some(ref mut timers) = self.gpu_timers {
-                                timers.cmd_blas_refit_start(&self.device, cmd, frame);
+                                timers.cmd_start(TimerPass::BlasRefit, &self.device, cmd, frame);
                             }
                             for &(entity_id, _, idx_buffer, idx_count, vertex_count) in &dispatches
                             {
@@ -901,7 +902,7 @@ impl VulkanContext {
                         // #1194 — END of skinned-BLAS refit bracket
                         // (after the AS_BUILD→AS_BUILD barrier).
                         if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_blas_refit_end(&self.device, cmd, frame);
+                            timers.cmd_end(TimerPass::BlasRefit, &self.device, cmd, frame);
                         }
                     }
 

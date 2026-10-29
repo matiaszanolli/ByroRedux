@@ -1,6 +1,7 @@
 //! Frame recording and submission — the per-frame hot path.
 
 use super::super::descriptors::memory_barrier;
+use crate::vulkan::gpu_timers::TimerPass;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::assemble_camera_and_lights::CameraAssemblyOutput;
 use super::begin_frame_recording::BeginFrameOutput;
@@ -371,11 +372,11 @@ impl VulkanContext {
             // `crates/renderer/shaders/triangle.frag` (soft-fade block).
             if has_effect_soft_material {
                 if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_depth_history_copy_start(&self.device, cmd, frame);
+                    timers.cmd_start(TimerPass::DepthHistoryCopy, &self.device, cmd, frame);
                 }
                 self.copy_depth_to_history(cmd);
                 if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_depth_history_copy_end(&self.device, cmd, frame);
+                    timers.cmd_end(TimerPass::DepthHistoryCopy, &self.device, cmd, frame);
                 }
             }
             // #3308 — the render pass leaves the depth image in

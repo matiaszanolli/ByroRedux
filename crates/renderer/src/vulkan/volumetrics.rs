@@ -20,6 +20,7 @@
 //! and transparency/composition masks.
 
 use super::allocator::SharedAllocator;
+use crate::vulkan::gpu_timers::TimerPass;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
     image_barrier_general_read_to_write, image_barrier_general_write_to_read,
@@ -990,7 +991,7 @@ impl VolumetricsPipeline {
         );
 
         if let Some(timers) = timers.as_deref_mut() {
-            timers.cmd_volumetrics_inject_start(device, cmd, frame);
+            timers.cmd_start(TimerPass::VolumetricsInject, device, cmd, frame);
         }
         // ── Stage C: dispatch injection ──────────────────────────────
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
@@ -1007,7 +1008,7 @@ impl VolumetricsPipeline {
         let inj_groups_z = self.extent.depth.div_ceil(WORKGROUP_Z);
         device.cmd_dispatch(cmd, inj_groups_x, inj_groups_y, inj_groups_z);
         if let Some(timers) = timers.as_deref_mut() {
-            timers.cmd_volumetrics_inject_end(device, cmd, frame);
+            timers.cmd_end(TimerPass::VolumetricsInject, device, cmd, frame);
         }
 
         // ── Stage D: barrier between injection and integration ──────
@@ -1045,7 +1046,7 @@ impl VolumetricsPipeline {
         );
 
         if let Some(timers) = timers.as_deref_mut() {
-            timers.cmd_volumetrics_integrate_start(device, cmd, frame);
+            timers.cmd_start(TimerPass::VolumetricsIntegrate, device, cmd, frame);
         }
         // ── Stage E: dispatch integration ────────────────────────────
         device.cmd_bind_pipeline(
@@ -1067,7 +1068,7 @@ impl VolumetricsPipeline {
         let int_groups_y = self.extent.height.div_ceil(WORKGROUP_Y);
         device.cmd_dispatch(cmd, int_groups_x, int_groups_y, 1);
         if let Some(timers) = timers {
-            timers.cmd_volumetrics_integrate_end(device, cmd, frame);
+            timers.cmd_end(TimerPass::VolumetricsIntegrate, device, cmd, frame);
         }
 
         // ── Stage F: post-integration barrier ────────────────────────

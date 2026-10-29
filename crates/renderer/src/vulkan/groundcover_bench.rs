@@ -66,6 +66,7 @@
 //! mesh's vertices.
 
 use crate::vulkan::descriptors::{layout_binding, DescriptorPoolBuilder};
+use crate::vulkan::gpu_timers::TimerPass;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -1179,9 +1180,9 @@ impl GroundcoverBench {
         // path B's setup cost is reported rather than smeared into whichever
         // variant happened to share the frame.
         if self.baked_signature != Some(signature) {
-            timers.cmd_groundcover_bench_start(device, cmd, frame);
+            timers.cmd_start(TimerPass::GroundcoverBench, device, cmd, frame);
             self.record_bake(device, cmd, frame);
-            timers.cmd_groundcover_bench_end(device, cmd, frame);
+            timers.cmd_end(TimerPass::GroundcoverBench, device, cmd, frame);
             self.baked_signature = Some(signature);
             self.images_initialised = true;
             let texels =
@@ -1210,13 +1211,13 @@ impl GroundcoverBench {
         };
         let path = variant.path();
 
-        timers.cmd_groundcover_bench_start(device, cmd, frame);
+        timers.cmd_start(TimerPass::GroundcoverBench, device, cmd, frame);
         if variant.is_raster() {
             self.record_raster(device, cmd, frame, path, &push);
         } else {
             self.record_scatter(device, cmd, frame, path, &push, chunk_count);
         }
-        timers.cmd_groundcover_bench_end(device, cmd, frame);
+        timers.cmd_end(TimerPass::GroundcoverBench, device, cmd, frame);
 
         let samples = if variant.is_raster() {
             chunk_count as u64 * self.blades_per_chunk as u64 * GROUNDCOVER_BENCH_BLADE_VERTS as u64

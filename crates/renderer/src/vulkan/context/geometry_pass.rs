@@ -5,6 +5,7 @@
 //! unchanged from the pre-split `draw_frame`.
 
 use super::super::gpu_timers::GeometryTimerPhase;
+use crate::vulkan::gpu_timers::TimerPass;
 use super::super::pipeline::{PipelineKey, default_depth_compare_op, depth_compare_op};
 use super::super::water::{WaterDrawCommand, water_instance_slot};
 use super::frame_params::{DrawBatch, group_state, needs_two_sided_blend_split, should_use_indirect_draws};
@@ -31,7 +32,7 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording (begin_command_buffer succeeded above) and `framebuffers[frame]` / `render_pass` / pipeline layout + descriptor sets / global VB+IB are all live for this frame. `cmd_begin_render_pass` opens the pass; viewport/scissor/cull/depth dynamic state is set before any draw; all binds use the GRAPHICS bind point with the matching `pipeline_layout`; `cmd` is recorded by this thread only and `end_command_buffer` closes it. The fence wait at frame start guarantees no in-flight frame is still using this buffer or its bound resources.
         unsafe {
             if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_main_render_start(&self.device, cmd, frame);
+                timers.cmd_start(TimerPass::MainRender, &self.device, cmd, frame);
             }
             self.device
                 .cmd_begin_render_pass(cmd, render_pass_begin, vk::SubpassContents::INLINE);
@@ -775,7 +776,7 @@ impl VulkanContext {
 
             self.device.cmd_end_render_pass(cmd);
             if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_main_render_end(&self.device, cmd, frame);
+                timers.cmd_end(TimerPass::MainRender, &self.device, cmd, frame);
             }
         }
     }

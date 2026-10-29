@@ -32,6 +32,7 @@
 //! 3. The geometry pass draws [`GroundCoverModelTier::shape_draws`].
 
 use crate::vulkan::descriptors::{layout_binding, DescriptorPoolBuilder};
+use crate::vulkan::gpu_timers::TimerPass;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -799,7 +800,7 @@ impl GroundCoverModelTier {
             ],
         };
         if let Some(timers) = timers.as_deref_mut() {
-            timers.cmd_groundcover_models_start(device, cmd, frame);
+            timers.cmd_start(TimerPass::GroundcoverModels, device, cmd, frame);
         }
         // SAFETY: `cmd` is recording outside a render pass; the pipeline,
         // layout, set and every bound buffer are live for the frame.
@@ -876,7 +877,7 @@ impl GroundCoverModelTier {
             );
         }
         if let Some(timers) = timers {
-            timers.cmd_groundcover_models_end(device, cmd, frame);
+            timers.cmd_end(TimerPass::GroundcoverModels, device, cmd, frame);
         }
         self.pending_stats[frame] = true;
         self.frame_recorded = true;
@@ -1276,10 +1277,10 @@ mod tests {
     fn model_timer_encloses_all_phases_and_stats_copy() {
         let source = crate::source_scan::production_text(include_str!("groundcover_models.rs"));
         let start = source
-            .find("timers.cmd_groundcover_models_start(device, cmd, frame)")
+            .find("timers.cmd_start(TimerPass::GroundcoverModels, device, cmd, frame)")
             .expect("model tier must begin its GPU bracket");
         let end = source
-            .find("timers.cmd_groundcover_models_end(device, cmd, frame)")
+            .find("timers.cmd_end(TimerPass::GroundcoverModels, device, cmd, frame)")
             .expect("model tier must end its GPU bracket");
         let bracket = &source[start..end];
         for command in [
@@ -1294,24 +1295,15 @@ mod tests {
                 "GPU bracket must include {command}"
             );
         }
+        // The stages and the active bit live in the pass's `TimerPass::row` entry (#6358).
         let timers = crate::source_scan::production_text(include_str!("gpu_timers.rs"));
-        let start_method = timers
-            .split("pub fn cmd_groundcover_models_start(")
-            .nth(1)
-            .unwrap()
-            .split("pub fn cmd_groundcover_models_end(")
-            .next()
-            .unwrap();
-        assert!(start_method.contains("vk::PipelineStageFlags::COMPUTE_SHADER"));
-        let end_method = timers
-            .split("pub fn cmd_groundcover_models_end(")
-            .nth(1)
-            .unwrap()
-            .split("pub fn cmd_volumetrics_inject_start(")
-            .next()
-            .unwrap();
-        assert!(end_method.contains("vk::PipelineStageFlags::BOTTOM_OF_PIPE"));
-        assert!(end_method.contains("self.active_bits[frame] |= BIT_GROUNDCOVER_MODELS"));
+        let row = timers
+            .lines()
+            .find(|line| line.contains("Self::GroundcoverModels => PassRow"))
+            .expect("GroundcoverModels has a TimerPass row");
+        assert!(row.contains("start_stage: S::COMPUTE_SHADER"));
+        assert!(row.contains("end_stage: S::BOTTOM_OF_PIPE"));
+        assert!(row.contains("bit: BIT_GROUNDCOVER_MODELS"));
     }
 
     /// #5220 — the tier's placement totals must not outlive the frame that

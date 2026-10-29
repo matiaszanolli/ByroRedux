@@ -8,6 +8,7 @@
 //! post-pass sequence.
 
 use super::super::descriptors::memory_barrier;
+use crate::vulkan::gpu_timers::TimerPass;
 use super::super::frame_upscaler::{FsrFrameParameters, UpscaleDispatchInputs};
 use super::super::presentation::{ImageSpaceModifier, PresentationFrame, UiOverlayDraw};
 use super::{SkyParams, VulkanContext};
@@ -453,7 +454,7 @@ impl VulkanContext {
                     // above (#961 / REN-D10-NEW-04 fold). This call
                     // only records the SVGF compute dispatch.
                     if let Some(ref mut timers) = self.gpu_timers {
-                        timers.cmd_svgf_start(&self.device, cmd, frame);
+                        timers.cmd_start(TimerPass::Svgf, &self.device, cmd, frame);
                     }
                     // Infallible (#3981) — the fallible half of the pair is
                     // `svgf.upload_params`, which `build_and_upload_instances`
@@ -466,7 +467,7 @@ impl VulkanContext {
                     // nested `gpu_shadow_filter` bracket (#5959).
                     filter_dispatched = self.record_shadow_filter(cmd, frame);
                     if let Some(ref mut timers) = self.gpu_timers {
-                        timers.cmd_svgf_end(&self.device, cmd, frame);
+                        timers.cmd_end(TimerPass::Svgf, &self.device, cmd, frame);
                     }
                 }
             }
@@ -485,13 +486,13 @@ impl VulkanContext {
             return false;
         }
         if let Some(ref mut timers) = self.gpu_timers {
-            timers.cmd_shadow_filter_start(&self.device, cmd, frame);
+            timers.cmd_start(TimerPass::ShadowFilter, &self.device, cmd, frame);
         }
         if let Some(filter) = self.shadow_filter_active() {
             filter.dispatch(&self.device, cmd, frame, &self.reservoir_buffers);
         }
         if let Some(ref mut timers) = self.gpu_timers {
-            timers.cmd_shadow_filter_end(&self.device, cmd, frame);
+            timers.cmd_end(TimerPass::ShadowFilter, &self.device, cmd, frame);
         }
         true
     }
@@ -569,12 +570,12 @@ impl VulkanContext {
                         caustic.sun_transmittance =
                             caustic_sun_transmittance(is_exterior, self.camera_cloud_sun_transmittance);
                         if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_caustic_splat_start(&self.device, cmd, frame);
+                            timers.cmd_start(TimerPass::CausticSplat, &self.device, cmd, frame);
                         }
                         let caustic_result =
                             caustic.dispatch(&self.device, cmd, frame, history_valid);
                         if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_caustic_splat_end(&self.device, cmd, frame);
+                            timers.cmd_end(TimerPass::CausticSplat, &self.device, cmd, frame);
                         }
                         match caustic_result {
                             Ok(()) => true,
@@ -938,7 +939,7 @@ impl VulkanContext {
                                 ],
                             };
                             if let Some(ref mut timers) = self.gpu_timers {
-                                timers.cmd_volumetrics_start(&self.device, cmd, frame);
+                                timers.cmd_start(TimerPass::Volumetrics, &self.device, cmd, frame);
                             }
                             let vol_result =
                                 vol.dispatch(&self.device, cmd, frame, &vol_params, fog_volumes,
@@ -946,7 +947,7 @@ impl VulkanContext {
                                         self.renderer_config.rt_test_ray_quality_tier,
                                     ).quality_tier, fog_cluster_ns);
                             if let Some(ref mut timers) = self.gpu_timers {
-                                timers.cmd_volumetrics_end(&self.device, cmd, frame);
+                                timers.cmd_end(TimerPass::Volumetrics, &self.device, cmd, frame);
                             }
                             match vol_result {
                                 Ok(()) => true,
@@ -1036,13 +1037,13 @@ impl VulkanContext {
                 if let Some(ref mut taa) = self.post.taa {
                     // #1194 — bracket the TAA compute dispatch.
                     if let Some(ref mut timers) = self.gpu_timers {
-                        timers.cmd_taa_start(&self.device, cmd, frame);
+                        timers.cmd_start(TimerPass::Taa, &self.device, cmd, frame);
                     }
                     // Infallible (#3981) — see `latch_taa_failure` for where
                     // the reachable TAA failure is handled.
                     taa.dispatch(&self.device, cmd, frame);
                     if let Some(ref mut timers) = self.gpu_timers {
-                        timers.cmd_taa_end(&self.device, cmd, frame);
+                        timers.cmd_end(TimerPass::Taa, &self.device, cmd, frame);
                     }
                 }
             }
@@ -1146,7 +1147,7 @@ impl VulkanContext {
                     [vp[12], vp[13], vp[14], vp[15]],
                 ];
                 if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_ssao_start(&self.device, cmd, frame);
+                    timers.cmd_start(TimerPass::Ssao, &self.device, cmd, frame);
                 }
                 // #markarth-precision — SSAO reconstructs world from the
                 // RELATIVE inv_view_proj and uses it only in differences
@@ -1161,7 +1162,7 @@ impl VulkanContext {
                 let ssao_result =
                     ssao.dispatch(&self.device, cmd, frame, &vp_arr, &inv_vp_arr, ssao_cam_rel);
                 if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_ssao_end(&self.device, cmd, frame);
+                    timers.cmd_end(TimerPass::Ssao, &self.device, cmd, frame);
                 }
                 if let Err(e) = ssao_result {
                     log::warn!("SSAO dispatch failed: {e}");
@@ -1227,7 +1228,7 @@ impl VulkanContext {
             // and the missing-resource `else`, so a frame that never ran the
             // meter reads inactive rather than ~0 ms.
             if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_exposure_meter_start(&self.device, cmd, frame);
+                timers.cmd_start(TimerPass::ExposureMeter, &self.device, cmd, frame);
             }
             meter.dispatch(
                 &self.device,
@@ -1238,7 +1239,7 @@ impl VulkanContext {
                 exposure.view(frame),
             );
             if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_exposure_meter_end(&self.device, cmd, frame);
+                timers.cmd_end(TimerPass::ExposureMeter, &self.device, cmd, frame);
             }
         }
     }
@@ -1313,7 +1314,7 @@ impl VulkanContext {
                     let scene_image = composite.scene_image(frame);
                     let scene_view = composite.scene_view(frame);
                     if let Some(ref mut timers) = self.gpu_timers {
-                        timers.cmd_bloom_start(&self.device, cmd, frame);
+                        timers.cmd_start(TimerPass::Bloom, &self.device, cmd, frame);
                     }
                     // Infallible (#3981) — bloom's params are uploaded once
                     // at construction (#2037), so unlike TAA/SVGF there is no
@@ -1321,7 +1322,7 @@ impl VulkanContext {
                     bloom.dispatch(&self.device, cmd, frame, scene_view);
                     bloom.apply_to_scene(&self.device, cmd, frame, scene_image, scene_view);
                     if let Some(ref mut timers) = self.gpu_timers {
-                        timers.cmd_bloom_end(&self.device, cmd, frame);
+                        timers.cmd_end(TimerPass::Bloom, &self.device, cmd, frame);
                     }
                 }
             }
@@ -1353,11 +1354,11 @@ impl VulkanContext {
             if let Some(ref composite) = self.post.composite {
                 let bindless_set = self.texture_registry.descriptor_set(frame);
                 if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_composite_start(&self.device, cmd, frame);
+                    timers.cmd_start(TimerPass::Composite, &self.device, cmd, frame);
                 }
                 composite.dispatch(&self.device, cmd, frame, bindless_set);
                 if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_composite_end(&self.device, cmd, frame);
+                    timers.cmd_end(TimerPass::Composite, &self.device, cmd, frame);
                 }
             }
         }
@@ -1424,7 +1425,7 @@ impl VulkanContext {
             };
             let exposure_image = Some(self.post.exposure.image(frame));
             if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_upscale_start(&self.device, cmd, frame);
+                timers.cmd_start(TimerPass::Upscale, &self.device, cmd, frame);
             }
             // #2146 — `record` is infallible on purpose. It runs after
             // `svgf.dispatch`/`taa.dispatch` have latched
@@ -1459,7 +1460,7 @@ impl VulkanContext {
                     force_native_debug,
                 );
             if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_upscale_end(&self.device, cmd, frame);
+                timers.cmd_end(TimerPass::Upscale, &self.device, cmd, frame);
             }
             // #2519 — a dispatch rejected *inside* `record` fails after this
             // frame's geometry pass already rendered with the FSR jitter
@@ -1552,7 +1553,7 @@ impl VulkanContext {
                 });
             }
             if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_presentation_start(&self.device, cmd, frame);
+                timers.cmd_start(TimerPass::Presentation, &self.device, cmd, frame);
             }
             self.post
                 .presentation
@@ -1576,7 +1577,7 @@ impl VulkanContext {
                     overlay,
                 );
             if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_presentation_end(&self.device, cmd, frame);
+                timers.cmd_end(TimerPass::Presentation, &self.device, cmd, frame);
             }
         }
     }

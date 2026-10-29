@@ -4,6 +4,7 @@
 //! constants and the struct live in `groundcover.rs`; construction lives
 //! in `construct.rs`.
 use super::*;
+use crate::vulkan::gpu_timers::TimerPass;
 use crate::vulkan::descriptors::write_storage_buffer;
 
 impl GroundCoverPipeline {
@@ -332,7 +333,7 @@ impl GroundCoverPipeline {
         // waited, and the set is not yet bound in `cmd`.
         unsafe { device.update_descriptor_sets(&[write], &[]) };
         if let Some(timers) = timers.as_deref_mut() {
-            timers.cmd_groundcover_scatter_start(device, cmd, frame);
+            timers.cmd_start(TimerPass::GroundcoverScatter, device, cmd, frame);
         }
         // Staged, not committed: the flip is promoted after the submit succeeds
         // (`promote_field_commit`, #6291).
@@ -488,7 +489,7 @@ impl GroundCoverPipeline {
             );
         }
         if let Some(timers) = timers {
-            timers.cmd_groundcover_scatter_end(device, cmd, frame);
+            timers.cmd_end(TimerPass::GroundcoverScatter, device, cmd, frame);
         }
         self.pending_chunks[frame] = self.frame_active_chunk_count;
         self.pending_chunk_slots[frame] = self.frame_chunk_count;

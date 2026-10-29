@@ -476,6 +476,115 @@ const BIT_VOLUMETRICS_INTEGRATE: u32 = 1 << 22;
 const BIT_SHADOW_FILTER: u32 = 1 << 23;
 const BIT_CLOUD_SHADOW: u32 = 1 << 24;
 
+/// A named START/END timestamp bracket. One row of [`TimerPass::row`] holds everything the two timestamp
+/// writes vary on, so adding a pass is a variant, a row and its `Q_*` / `BIT_*` constants — not two methods.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimerPass {
+    SkinDispatch,
+    SkinPalette,
+    BlasRefit,
+    Taa,
+    MainRender,
+    TlasBuild,
+    GroundcoverBench,
+    ClusterCull,
+    Svgf,
+    Composite,
+    Ssao,
+    Bloom,
+    CausticSplat,
+    Volumetrics,
+    Upscale,
+    Presentation,
+    DepthHistoryCopy,
+    SkyCube,
+    GroundcoverScatter,
+    ExposureMeter,
+    GroundcoverModels,
+    VolumetricsInject,
+    ShadowFilter,
+    CloudShadow,
+    VolumetricsIntegrate,
+}
+
+/// The query slots, active bit and pipeline stages of one [`TimerPass`].
+#[derive(Clone, Copy)]
+struct PassRow {
+    start: u32,
+    end: u32,
+    bit: u32,
+    start_stage: vk::PipelineStageFlags,
+    end_stage: vk::PipelineStageFlags,
+}
+
+impl TimerPass {
+    /// Stage flags are per row because `vkCmdWriteTimestamp` takes a single stage and the right one is the
+    /// pass's producer (or a later stage when the bracket must include trailing barriers); do not
+    /// normalise them.
+    const fn row(self) -> PassRow {
+        use vk::PipelineStageFlags as S;
+        match self {
+            Self::SkinDispatch => PassRow { start: Q_SKIN_DISPATCH_START, end: Q_SKIN_DISPATCH_END, bit: BIT_SKIN_DISPATCH, start_stage: S::TOP_OF_PIPE, end_stage: S::COMPUTE_SHADER },
+            // Covers the GPU bone-world / bind-inverse transfer commands and `skin_palette.comp`. Host-side staging
+            // writes happen before the command buffer is submitted, so they are not part of this measurement. END is
+            // COMPUTE_SHADER: after the transfer-to-compute barriers and the palette dispatch.
+            Self::SkinPalette => PassRow { start: Q_SKIN_PALETTE_START, end: Q_SKIN_PALETTE_END, bit: BIT_SKIN_PALETTE, start_stage: S::TOP_OF_PIPE, end_stage: S::COMPUTE_SHADER },
+            // BLAS refit. END is ACCELERATION_STRUCTURE_BUILD_KHR, as for the TLAS.
+            Self::BlasRefit => PassRow { start: Q_BLAS_REFIT_START, end: Q_BLAS_REFIT_END, bit: BIT_BLAS_REFIT, start_stage: S::TOP_OF_PIPE, end_stage: S::ACCELERATION_STRUCTURE_BUILD_KHR },
+            Self::Taa => PassRow { start: Q_TAA_START, end: Q_TAA_END, bit: BIT_TAA, start_stage: S::TOP_OF_PIPE, end_stage: S::COMPUTE_SHADER },
+            // START is written immediately before `cmd_begin_render_pass` and END right after `cmd_end_render_pass`.
+            // START uses COMPUTE_SHADER so earlier compute work, including the sky-cube bake recorded before this pass,
+            // completes before the interval begins; END uses BOTTOM_OF_PIPE so it waits for the last fragment shader and
+            // colour-attachment write to retire (the cost the bracket measures).
+            Self::MainRender => PassRow { start: Q_MAIN_RENDER_START, end: Q_MAIN_RENDER_END, bit: BIT_MAIN_RENDER, start_stage: S::COMPUTE_SHADER, end_stage: S::BOTTOM_OF_PIPE },
+            // TLAS build / refit. END is ACCELERATION_STRUCTURE_BUILD_KHR so the bracket waits for the actual
+            // AS-build pipeline stage to retire.
+            Self::TlasBuild => PassRow { start: Q_TLAS_BUILD_START, end: Q_TLAS_BUILD_END, bit: BIT_TLAS_BUILD, start_stage: S::TOP_OF_PIPE, end_stage: S::ACCELERATION_STRUCTURE_BUILD_KHR },
+            // The ground-cover §11.1 sampling bench (#4052).
+            // Unlike every other bracket, this one does not name a fixed pass: `GroundcoverBench` round-robins four
+            // variants across frames and owns the attribution, so the snapshot only reports "the bench ran and took this
+            // long". See `groundcover_bench.rs` for why the variants are not given four brackets of their own.
+            Self::GroundcoverBench => PassRow { start: Q_GROUNDCOVER_BENCH_START, end: Q_GROUNDCOVER_BENCH_END, bit: BIT_GROUNDCOVER_BENCH, start_stage: S::TOP_OF_PIPE, end_stage: S::BOTTOM_OF_PIPE },
+            Self::ClusterCull => PassRow { start: Q_CLUSTER_CULL_START, end: Q_CLUSTER_CULL_END, bit: BIT_CLUSTER_CULL, start_stage: S::TOP_OF_PIPE, end_stage: S::COMPUTE_SHADER },
+            Self::Svgf => PassRow { start: Q_SVGF_START, end: Q_SVGF_END, bit: BIT_SVGF, start_stage: S::TOP_OF_PIPE, end_stage: S::COMPUTE_SHADER },
+            // END uses BOTTOM_OF_PIPE so the timestamp waits for the fragment shader + colour-attachment write to
+            // retire (the actual cost of the fullscreen pass).
+            Self::Composite => PassRow { start: Q_COMPOSITE_START, end: Q_COMPOSITE_END, bit: BIT_COMPOSITE, start_stage: S::TOP_OF_PIPE, end_stage: S::BOTTOM_OF_PIPE },
+            Self::Ssao => PassRow { start: Q_SSAO_START, end: Q_SSAO_END, bit: BIT_SSAO, start_stage: S::TOP_OF_PIPE, end_stage: S::COMPUTE_SHADER },
+            Self::Bloom => PassRow { start: Q_BLOOM_START, end: Q_BLOOM_END, bit: BIT_BLOOM, start_stage: S::TOP_OF_PIPE, end_stage: S::COMPUTE_SHADER },
+            Self::CausticSplat => PassRow { start: Q_CAUSTIC_SPLAT_START, end: Q_CAUSTIC_SPLAT_END, bit: BIT_CAUSTIC_SPLAT, start_stage: S::TOP_OF_PIPE, end_stage: S::COMPUTE_SHADER },
+            Self::Volumetrics => PassRow { start: Q_VOLUMETRICS_START, end: Q_VOLUMETRICS_END, bit: BIT_VOLUMETRICS, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            // Brackets whichever render-to-output path ran: the FSR compute dispatch, or the native blit that stands in
+            // for it. END is BOTTOM_OF_PIPE rather than this bracket's producer stage: `vkCmdWriteTimestamp` takes a
+            // single `VkPipelineStageFlagBits`, and the two paths end in different stages (an SDK compute dispatch vs.
+            // a `cmd_blit_image`).
+            Self::Upscale => PassRow { start: Q_UPSCALE_START, end: Q_UPSCALE_END, bit: BIT_UPSCALE, start_stage: S::TOP_OF_PIPE, end_stage: S::BOTTOM_OF_PIPE },
+            Self::Presentation => PassRow { start: Q_PRESENTATION_START, end: Q_PRESENTATION_END, bit: BIT_PRESENTATION, start_stage: S::TOP_OF_PIPE, end_stage: S::BOTTOM_OF_PIPE },
+            // The soft-particle depth-history copy. The caller only emits this bracket when the scene-level material
+            // feature bit says a soft effect can sample the history image. The copy and its restoring barriers are
+            // transfer work, but END is BOTTOM_OF_PIPE so the bracket includes both image barriers as well as the copy.
+            Self::DepthHistoryCopy => PassRow { start: Q_DEPTH_HISTORY_COPY_START, end: Q_DEPTH_HISTORY_COPY_END, bit: BIT_DEPTH_HISTORY_COPY, start_stage: S::TOP_OF_PIPE, end_stage: S::BOTTOM_OF_PIPE },
+            // END is BOTTOM_OF_PIPE rather than COMPUTE_SHADER, so the bracket includes the bake's own `GENERAL` ->
+            // `SHADER_READ_ONLY_OPTIMAL` barrier that follows the dispatch inside `record_bake`.
+            Self::SkyCube => PassRow { start: Q_SKY_CUBE_START, end: Q_SKY_CUBE_END, bit: BIT_SKY_CUBE, start_stage: S::TOP_OF_PIPE, end_stage: S::BOTTOM_OF_PIPE },
+            // END is BOTTOM_OF_PIPE for the same reason the sky-cube bake uses it: the scatter's trailing barrier — the one
+            // publishing the blade buffer and indirect list to the draw, and the counters to the readback copy — is part of
+            // this bracket's cost.
+            Self::GroundcoverScatter => PassRow { start: Q_GROUNDCOVER_SCATTER_START, end: Q_GROUNDCOVER_SCATTER_END, bit: BIT_GROUNDCOVER_SCATTER, start_stage: S::TOP_OF_PIPE, end_stage: S::BOTTOM_OF_PIPE },
+            // END is BOTTOM_OF_PIPE, so the trailing barrier that publishes the exposure texel to FSR and the presentation
+            // pass is inside the bracket.
+            Self::ExposureMeter => PassRow { start: Q_EXPOSURE_METER_START, end: Q_EXPOSURE_METER_END, bit: BIT_EXPOSURE_METER, start_stage: S::TOP_OF_PIPE, end_stage: S::BOTTOM_OF_PIPE },
+            Self::GroundcoverModels => PassRow { start: Q_GROUNDCOVER_MODELS_START, end: Q_GROUNDCOVER_MODELS_END, bit: BIT_GROUNDCOVER_MODELS, start_stage: S::COMPUTE_SHADER, end_stage: S::BOTTOM_OF_PIPE },
+            Self::VolumetricsInject => PassRow { start: Q_VOLUMETRICS_INJECT_START, end: Q_VOLUMETRICS_INJECT_END, bit: BIT_VOLUMETRICS_INJECT, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            // #5959 — opens inside the SVGF bracket.
+            Self::ShadowFilter => PassRow { start: Q_SHADOW_FILTER_START, end: Q_SHADOW_FILTER_END, bit: BIT_SHADOW_FILTER, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            // #6316 — opens inside the sky-cube bracket.
+            Self::CloudShadow => PassRow { start: Q_CLOUD_SHADOW_START, end: Q_CLOUD_SHADOW_END, bit: BIT_CLOUD_SHADOW, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            Self::VolumetricsIntegrate => PassRow { start: Q_VOLUMETRICS_INTEGRATE_START, end: Q_VOLUMETRICS_INTEGRATE_END, bit: BIT_VOLUMETRICS_INTEGRATE, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+        }
+    }
+}
+
 /// Consecutive raster phases inside the inclusive main-render bracket.
 ///
 /// Both timestamps use BOTTOM_OF_PIPE: each boundary observes completion of
@@ -1004,903 +1113,36 @@ impl GpuPerFrameTimers {
         self.fragment_invocation_active[frame] = true;
     }
 
-    /// Write the skin-dispatch START timestamp. Caller must pair
-    /// with `cmd_skin_dispatch_end` in the same command buffer.
-    pub fn cmd_skin_dispatch_start(
+    /// Write `pass`'s START timestamp. The caller pairs it with [`Self::cmd_end`] for the same pass in
+    /// the same command buffer; the row's stage flags are documented on [`TimerPass::row`].
+    pub fn cmd_start(
         &mut self,
+        pass: TimerPass,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
     ) {
+        let row = pass.row();
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_SKIN_DISPATCH_START,
-            );
+            device.cmd_write_timestamp(cmd, row.start_stage, self.pools[frame], row.start);
         }
     }
 
-    /// Write the skin-dispatch END timestamp.
-    pub fn cmd_skin_dispatch_end(
+    /// Write `pass`'s END timestamp and mark its bracket active for this frame's readback.
+    pub fn cmd_end(
         &mut self,
+        pass: TimerPass,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
     ) {
+        let row = pass.row();
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_SKIN_DISPATCH_END,
-            );
+            device.cmd_write_timestamp(cmd, row.end_stage, self.pools[frame], row.end);
         }
-        self.active_bits[frame] |= BIT_SKIN_DISPATCH;
-    }
-
-    /// Write the skin-palette START timestamp. This bracket covers the GPU
-    /// bone-world / bind-inverse transfer commands and `skin_palette.comp`.
-    /// Host-side staging writes happen before the command buffer is submitted
-    /// and are therefore not part of this GPU measurement.
-    pub fn cmd_skin_palette_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_SKIN_PALETTE_START,
-            );
-        }
-    }
-
-    /// Write the skin-palette END timestamp. COMPUTE_SHADER is after the
-    /// transfer-to-compute barriers and palette dispatch in this bracket.
-    pub fn cmd_skin_palette_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_SKIN_PALETTE_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_SKIN_PALETTE;
-    }
-
-    /// Write the BLAS-refit START timestamp.
-    pub fn cmd_blas_refit_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_BLAS_REFIT_START,
-            );
-        }
-    }
-
-    /// Write the BLAS-refit END timestamp.
-    pub fn cmd_blas_refit_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                self.pools[frame],
-                Q_BLAS_REFIT_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_BLAS_REFIT;
-    }
-
-    /// Write the TAA-dispatch START timestamp.
-    pub fn cmd_taa_start(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_TAA_START,
-            );
-        }
-    }
-
-    /// Write the TAA-dispatch END timestamp.
-    pub fn cmd_taa_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_TAA_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_TAA;
-    }
-
-    /// Write the main-render-pass START timestamp. Caller writes
-    /// this immediately before `cmd_begin_render_pass`; the END goes right
-    /// after `cmd_end_render_pass`. Use `COMPUTE_SHADER` for the START so
-    /// earlier compute work, including the sky-cube bake recorded before
-    /// this pass, completes before the interval begins.
-    pub fn cmd_main_render_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_MAIN_RENDER_START,
-            );
-        }
-    }
-
-    /// Write the main-render-pass END timestamp. `BOTTOM_OF_PIPE`
-    /// on end so the timestamp waits for the last fragment shader
-    /// and color-attachment write to retire (the actual cost the
-    /// bracket is measuring).
-    pub fn cmd_main_render_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.pools[frame],
-                Q_MAIN_RENDER_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_MAIN_RENDER;
-    }
-
-    /// Write the TLAS-build / refit START timestamp.
-    pub fn cmd_tlas_build_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_TLAS_BUILD_START,
-            );
-        }
-    }
-
-    /// Write the TLAS-build / refit END timestamp. End-stage is
-    /// `ACCELERATION_STRUCTURE_BUILD_KHR` so the bracket waits
-    /// for the actual AS-build pipeline stage to retire.
-    pub fn cmd_tlas_build_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                self.pools[frame],
-                Q_TLAS_BUILD_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_TLAS_BUILD;
-    }
-
-    /// Write the ground-cover §11.1 sampling-bench START timestamp (#4052).
-    ///
-    /// Unlike every other bracket here, this one does not name a fixed pass:
-    /// `GroundcoverBench` round-robins four variants across frames and owns
-    /// the attribution, so the snapshot only reports "the bench ran and took
-    /// this long". See `groundcover_bench.rs` for why the variants are not
-    /// given four brackets of their own.
-    pub fn cmd_groundcover_bench_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_GROUNDCOVER_BENCH_START,
-            );
-        }
-    }
-
-    /// Write the ground-cover §11.1 sampling-bench END timestamp (#4052).
-    pub fn cmd_groundcover_bench_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // BOTTOM_OF_PIPE, not COMPUTE_SHADER: the bracket wraps a compute
-        // dispatch on two of its four variants and a draw on the other two,
-        // so no single earlier stage covers every case.
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.pools[frame],
-                Q_GROUNDCOVER_BENCH_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_GROUNDCOVER_BENCH;
-    }
-
-    /// Write the cluster-cull-dispatch START timestamp.
-    pub fn cmd_cluster_cull_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_CLUSTER_CULL_START,
-            );
-        }
-    }
-
-    /// Write the cluster-cull-dispatch END timestamp.
-    pub fn cmd_cluster_cull_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_CLUSTER_CULL_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_CLUSTER_CULL;
-    }
-
-    /// Write the SVGF-dispatch START timestamp.
-    pub fn cmd_svgf_start(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_SVGF_START,
-            );
-        }
-    }
-
-    /// Write the SVGF-dispatch END timestamp.
-    pub fn cmd_svgf_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_SVGF_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_SVGF;
-    }
-
-    // ── Phase-7 brackets (closing the 438ms gap) ─────────────────
-
-    pub fn cmd_composite_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_COMPOSITE_START,
-            );
-        }
-    }
-
-    /// Composite END uses BOTTOM_OF_PIPE so the timestamp waits for
-    /// the fragment shader + color-attachment-write to retire (the
-    /// actual cost of the fullscreen pass).
-    pub fn cmd_composite_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.pools[frame],
-                Q_COMPOSITE_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_COMPOSITE;
-    }
-
-    pub fn cmd_ssao_start(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_SSAO_START,
-            );
-        }
-    }
-
-    pub fn cmd_ssao_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_SSAO_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_SSAO;
-    }
-
-    pub fn cmd_bloom_start(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_BLOOM_START,
-            );
-        }
-    }
-
-    pub fn cmd_bloom_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_BLOOM_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_BLOOM;
-    }
-
-    pub fn cmd_caustic_splat_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_CAUSTIC_SPLAT_START,
-            );
-        }
-    }
-
-    pub fn cmd_caustic_splat_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_CAUSTIC_SPLAT_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_CAUSTIC_SPLAT;
-    }
-
-    pub fn cmd_volumetrics_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_VOLUMETRICS_START,
-            );
-        }
-    }
-
-    pub fn cmd_volumetrics_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_VOLUMETRICS_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_VOLUMETRICS;
-    }
-
-    /// Write the frame-upscale START timestamp. Brackets whichever
-    /// render-to-output path ran: the FSR compute dispatch, or the native
-    /// blit that stands in for it.
-    pub fn cmd_upscale_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_UPSCALE_START,
-            );
-        }
-    }
-
-    /// Write the frame-upscale END timestamp. `BOTTOM_OF_PIPE` rather than
-    /// this bracket's producer stage: `vkCmdWriteTimestamp` takes a single
-    /// `VkPipelineStageFlagBits`, and the two paths this bracket covers end
-    /// in different stages (an SDK compute dispatch vs. a `cmd_blit_image`).
-    pub fn cmd_upscale_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.pools[frame],
-                Q_UPSCALE_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_UPSCALE;
-    }
-
-    /// Write the presentation START timestamp.
-    pub fn cmd_presentation_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_PRESENTATION_START,
-            );
-        }
-    }
-
-    /// Write the presentation END timestamp.
-    pub fn cmd_presentation_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.pools[frame],
-                Q_PRESENTATION_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_PRESENTATION;
-    }
-
-    /// Write the soft-particle depth-history-copy START timestamp. The
-    /// caller only emits this bracket when the scene-level material feature
-    /// bit says a soft effect can sample the history image.
-    pub fn cmd_depth_history_copy_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_DEPTH_HISTORY_COPY_START,
-            );
-        }
-    }
-
-    /// Write the soft-particle depth-history-copy END timestamp. The copy
-    /// and its restoring barriers are transfer work, but BOTTOM_OF_PIPE is
-    /// used so the bracket includes both image barriers as well as the copy.
-    pub fn cmd_depth_history_copy_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.pools[frame],
-                Q_DEPTH_HISTORY_COPY_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_DEPTH_HISTORY_COPY;
-    }
-
-    pub fn cmd_sky_cube_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_SKY_CUBE_START,
-            );
-        }
-    }
-
-    /// Write the sky-cubemap bake END timestamp. `BOTTOM_OF_PIPE` rather
-    /// than `COMPUTE_SHADER`, so the bracket includes the bake's own
-    /// `GENERAL` -> `SHADER_READ_ONLY_OPTIMAL` barrier that follows the
-    /// dispatch inside `record_bake`.
-    pub fn cmd_sky_cube_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.pools[frame],
-                Q_SKY_CUBE_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_SKY_CUBE;
-    }
-
-    pub fn cmd_groundcover_scatter_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_GROUNDCOVER_SCATTER_START,
-            );
-        }
-    }
-
-    /// Write the ground-cover scatter END timestamp. `BOTTOM_OF_PIPE` for the
-    /// same reason the sky-cube bake uses it: the scatter's trailing barrier —
-    /// the one publishing the blade buffer and indirect list to the draw, and
-    /// the counters to the readback copy — is part of this bracket's cost.
-    pub fn cmd_groundcover_scatter_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.pools[frame],
-                Q_GROUNDCOVER_SCATTER_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_GROUNDCOVER_SCATTER;
-    }
-
-    pub fn cmd_exposure_meter_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                self.pools[frame],
-                Q_EXPOSURE_METER_START,
-            );
-        }
-    }
-
-    /// Write the exposure-meter END timestamp. `BOTTOM_OF_PIPE`, so the
-    /// trailing barrier that publishes the exposure texel to FSR and the
-    /// presentation pass is inside the bracket.
-    pub fn cmd_exposure_meter_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.pools[frame],
-                Q_EXPOSURE_METER_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_EXPOSURE_METER;
-    }
-
-    pub fn cmd_groundcover_models_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_GROUNDCOVER_MODELS_START,
-            );
-        }
-    }
-
-    pub fn cmd_groundcover_models_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                self.pools[frame],
-                Q_GROUNDCOVER_MODELS_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_GROUNDCOVER_MODELS;
-    }
-
-    pub fn cmd_volumetrics_inject_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_VOLUMETRICS_INJECT_START,
-            );
-        }
-    }
-
-    pub fn cmd_volumetrics_inject_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_VOLUMETRICS_INJECT_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_VOLUMETRICS_INJECT;
-    }
-
-    /// #5959 — open the direct-shadow filter's bracket, inside the SVGF one.
-    pub fn cmd_shadow_filter_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_SHADOW_FILTER_START,
-            );
-        }
-    }
-
-    pub fn cmd_shadow_filter_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_SHADOW_FILTER_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_SHADOW_FILTER;
-    }
-
-    /// #6316 — open the cloud-shadow bake's bracket, inside the sky-cube one.
-    pub fn cmd_cloud_shadow_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_CLOUD_SHADOW_START,
-            );
-        }
-    }
-
-    pub fn cmd_cloud_shadow_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_CLOUD_SHADOW_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_CLOUD_SHADOW;
-    }
-
-    pub fn cmd_volumetrics_integrate_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_VOLUMETRICS_INTEGRATE_START,
-            );
-        }
-    }
-
-    pub fn cmd_volumetrics_integrate_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
-        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
-        unsafe {
-            device.cmd_write_timestamp(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                self.pools[frame],
-                Q_VOLUMETRICS_INTEGRATE_END,
-            );
-        }
-        self.active_bits[frame] |= BIT_VOLUMETRICS_INTEGRATE;
+        self.active_bits[frame] |= row.bit;
     }
 
     /// Destroy every query pool. Caller must wait for queue idle
@@ -2318,6 +1560,30 @@ mod tests {
             assert_eq!(bit.count_ones(), 1, "active bit {bit:#x} must be one bit");
             assert_eq!(union & bit, 0, "active bit {bit:#x} used twice");
             union |= bit;
+        }
+    }
+
+    /// #6358 — every named `Q_*_START` bracket is reached through exactly one [`TimerPass`] row, and the
+    /// row names that bracket's own END slot and active bit. A constant added without a row would have a
+    /// slot the readback decodes but nothing ever writes; a row naming another pass's END would write the
+    /// wrong slot silently. Read out of production text, like the uniqueness pin above.
+    #[test]
+    fn every_named_bracket_has_exactly_one_pass_row() {
+        let src = crate::source_scan::production_text(include_str!("gpu_timers.rs"));
+        let rows: Vec<&str> = src.lines().filter(|line| line.contains("=> PassRow {")).collect();
+        let starts: Vec<&str> = src
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("const Q_")?.split_once(": u32")?.0.strip_suffix("_START"))
+            .collect();
+        assert!(starts.len() >= 20, "parsed too few named brackets");
+        assert_eq!(rows.len(), starts.len(), "one TimerPass row per named bracket");
+        for name in starts {
+            let wanted = format!("start: Q_{name}_START, end: Q_{name}_END, bit: BIT_{name},");
+            assert_eq!(
+                rows.iter().filter(|row| row.contains(&wanted)).count(),
+                1,
+                "bracket {name} needs exactly one `TimerPass` row naming its own slots and bit"
+            );
         }
     }
 

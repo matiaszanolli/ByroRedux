@@ -9,6 +9,7 @@
 //! order are unchanged from the pre-split `draw_frame`.
 
 use super::super::descriptors::memory_barrier;
+use crate::vulkan::gpu_timers::TimerPass;
 use super::frame_params::{next_clean_skin_frames, should_skip_skin_gpu_refresh};
 use super::{DrawCommand, FrameTimings, VulkanContext};
 use ash::vk;
@@ -78,7 +79,7 @@ impl VulkanContext {
             !skip_skin_gpu_refresh && self.scene_buffers.bone_input_upload_bytes(frame) > 0;
         if bone_world_copy_recorded {
             if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_skin_palette_start(&self.device, cmd, frame);
+                timers.cmd_start(TimerPass::SkinPalette, &self.device, cmd, frame);
                 skin_palette_timer_started = true;
             }
         }
@@ -136,7 +137,7 @@ impl VulkanContext {
         if pending_capped > 0 {
             if !skin_palette_timer_started {
                 if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_skin_palette_start(&self.device, cmd, frame);
+                    timers.cmd_start(TimerPass::SkinPalette, &self.device, cmd, frame);
                     skin_palette_timer_started = true;
                 }
             }
@@ -204,7 +205,7 @@ impl VulkanContext {
             {
                 if !skin_palette_timer_started {
                     if let Some(ref mut timers) = self.gpu_timers {
-                        timers.cmd_skin_palette_start(&self.device, cmd, frame);
+                        timers.cmd_start(TimerPass::SkinPalette, &self.device, cmd, frame);
                         skin_palette_timer_started = true;
                     }
                 }
@@ -263,7 +264,7 @@ impl VulkanContext {
 
         if skin_palette_timer_started {
             if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_skin_palette_end(&self.device, cmd, frame);
+                timers.cmd_end(TimerPass::SkinPalette, &self.device, cmd, frame);
             }
         }
 
@@ -326,7 +327,7 @@ impl VulkanContext {
             if let Some(ref mut accel) = self.accel_manager {
                 if let Some(alloc) = self.allocator.as_ref() {
                     if let Some(ref mut timers) = self.gpu_timers {
-                        timers.cmd_tlas_build_start(&self.device, cmd, frame);
+                        timers.cmd_start(TimerPass::TlasBuild, &self.device, cmd, frame);
                     }
                     let tlas_build_failed = if let Err(e) = accel.build_tlas(
                         &self.device,
@@ -368,7 +369,7 @@ impl VulkanContext {
                         true
                     } else {
                         if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_tlas_build_end(&self.device, cmd, frame);
+                            timers.cmd_end(TimerPass::TlasBuild, &self.device, cmd, frame);
                         }
                         false
                     };
@@ -511,11 +512,11 @@ impl VulkanContext {
                 );
 
                 if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_cluster_cull_start(&self.device, cmd, frame);
+                    timers.cmd_start(TimerPass::ClusterCull, &self.device, cmd, frame);
                 }
                 cc.dispatch(&self.device, cmd, frame);
                 if let Some(ref mut timers) = self.gpu_timers {
-                    timers.cmd_cluster_cull_end(&self.device, cmd, frame);
+                    timers.cmd_end(TimerPass::ClusterCull, &self.device, cmd, frame);
                 }
                 // Barrier: compute writes → fragment reads on cluster SSBOs.
                 // COMPUTE_SHADER → FRAGMENT_SHADER (cluster SSBO outputs)
