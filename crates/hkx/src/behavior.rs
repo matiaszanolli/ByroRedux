@@ -729,6 +729,11 @@ const MAX_INLINED_REFERENCES: usize = 64;
 /// sub-behavior inlined into one graph may add, together. [`MAX_GRAPH_STEPS`] bounds one decode
 /// and every unit weighed here cost at least one step to decode, so the inlined volume stays
 /// within one maximal graph's worth however the references repeat.
+///
+/// #6479 — "every unit cost at least one step" only bounds the weight from *below* the decode
+/// unless the weigh counts what the decode charged for: a clip's triggers and a modifier's leaf
+/// tables are charged per entry, so [`machine_weight`] counts them too (it used to weigh a clip
+/// or a modifier list as 1 while each held up to ~a million owned entries).
 const MAX_INLINED_WEIGHT: usize = MAX_GRAPH_STEPS;
 
 /// What inlining may still spend (#6212): resolves and weight, shared by the whole recursion,
@@ -849,6 +854,37 @@ fn offset_machine_modifier_ids(machine: &mut StateMachine, offset: u32) {
     }
 }
 
+/// A clip's size for [`machine_weight`]: itself and the clip triggers it keeps (up to 1,024 a
+/// clip), each of which the decode charged a step for (#6479).
+fn clip_weight(clip: &StateClip) -> usize {
+    1 + clip.triggers.len()
+}
+
+/// A modifier's size for [`machine_weight`]: itself, the leaf tables it owns (assign-variable
+/// bindings, event ranges, expressions — the entries the decode charged a step each, #6211) and
+/// every modifier nested inside it, through lists, modify-once and event-driven wrappers (#6479).
+/// `for_each_modifier_mut` yields only a generator's top-level modifier, so a list of 1,024
+/// expression modifiers used to weigh 1 while owning a million strings. A node several parents
+/// point at is counted once per parent, as the decode charged it once per parent: an over-count
+/// of what the shared `Arc` holds, never an under-count of what `Arc::make_mut` copies out.
+fn modifier_weight(node: &ModifierNode) -> usize {
+    1 + match &node.kind {
+        Modifier::AssignVariables { floats, ints } => floats.len() + ints.len(),
+        Modifier::ModifyOnce { on_activate, on_deactivate } => {
+            on_activate.iter().chain(on_deactivate.iter()).map(|inner| modifier_weight(inner)).sum()
+        }
+        Modifier::EventsFromRange { ranges, .. } => ranges.len(),
+        Modifier::EvaluateExpression { expressions } => expressions.len(),
+        Modifier::EventDriven { inner, .. } => inner.as_ref().map_or(0, |inner| modifier_weight(inner)),
+        Modifier::List(children) => children.iter().map(|child| modifier_weight(child)).sum(),
+        Modifier::EventOnDeactivate { .. }
+        | Modifier::EventEveryNEvents { .. }
+        | Modifier::Timer { .. }
+        | Modifier::RandomAlarm { .. }
+        | Modifier::TimeStep { .. } => 0,
+    }
+}
+
 /// A machine's size for [`MAX_INLINED_WEIGHT`]: its states, transitions, clips, sequences and
 /// modifiers, nested machines included (a machine a generator holds is counted through both the
 /// generator and the flattened list: an over-count, never an under-count).
@@ -857,13 +893,13 @@ fn machine_weight(machine: &mut StateMachine) -> usize {
     for state in &mut machine.states {
         weight += 1
             + state.transitions.len()
-            + usize::from(state.clip.is_some())
-            + state.content.blended_clips.len()
+            + state.clip.as_ref().map_or(0, clip_weight)
+            + state.content.blended_clips.iter().map(clip_weight).sum::<usize>()
             + state.content.sequences.len();
         if let Some(generator) = &mut state.content.generator {
             let mut nodes = 0usize;
-            generator.for_each_clip_mut(&mut |_| nodes += 1);
-            generator.for_each_modifier_mut(&mut |_| nodes += 1);
+            generator.for_each_clip_mut(&mut |clip| nodes += clip_weight(clip));
+            generator.for_each_modifier_mut(&mut |modifier| nodes += modifier_weight(modifier));
             weight += nodes;
         }
         for inner in &mut state.content.machines {
@@ -2233,6 +2269,43 @@ mod tests {
         });
         let inlined = parent.machine.unwrap().states[0].content.reference_machines.iter().flatten().count();
         assert!(inlined < 10, "{inlined} heavy behaviors inlined past the weight budget");
+        assert!(resolved <= inlined + 1, "{resolved} resolves: loading stops once the budget is spent");
+    }
+
+    /// #6479 — the weight counts what a unit holds, not just that it exists. A sub-behavior whose
+    /// one state wraps a `hkbModifierList` of expression modifiers each owning a table of
+    /// expressions weighed 3 (the visitor yields only the top-level modifier, a list is one
+    /// node), so 64 references inlined 64 deep copies of ~a million strings each. With the
+    /// leaf tables and the nested modifiers counted, the shared budget stops it at a handful.
+    #[test]
+    fn a_modifier_list_of_expression_tables_is_weighed_by_what_it_holds() {
+        let expressions = vec![ExpressionData { text: "x".into(), event_mode: 0 }; 1000];
+        let child_modifier = |id| Arc::new(ModifierNode { id, kind: Modifier::EvaluateExpression { expressions: expressions.clone() } });
+        let list = Arc::new(ModifierNode { id: 0, kind: Modifier::List((1..=500).map(child_modifier).collect()) });
+        let heavy_state = state_of(
+            0,
+            None,
+            StateContent { generator: Some(Generator::Modified { modifiers: vec![list], inner: None }), ..Default::default() },
+        );
+        let heavy = BehaviorGraph { variables: Vec::new(), events: Vec::new(), machine: Some(machine_of(0, vec![heavy_state])) };
+        assert!(machine_weight(heavy.clone().machine.as_mut().unwrap()) > 500 * 1000, "the tables are in the weight");
+
+        let references: Vec<String> = (0..MAX_INLINED_REFERENCES).map(|index| format!("Heavy{index}.hkx")).collect();
+        let mut parent = BehaviorGraph {
+            variables: Vec::new(),
+            events: Vec::new(),
+            machine: Some(machine_of(
+                0,
+                vec![state_of(0, None, StateContent { behavior_references: references, ..Default::default() })],
+            )),
+        };
+        let mut resolved = 0;
+        parent.inline_references(&mut |_| {
+            resolved += 1;
+            Some(heavy.clone())
+        });
+        let inlined = parent.machine.unwrap().states[0].content.reference_machines.iter().flatten().count();
+        assert!((1..=MAX_INLINED_WEIGHT / (500 * 1000)).contains(&inlined), "{inlined} inlined copies of a ~500k-entry behavior");
         assert!(resolved <= inlined + 1, "{resolved} resolves: loading stops once the budget is spent");
     }
 
