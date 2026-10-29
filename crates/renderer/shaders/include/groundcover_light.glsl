@@ -129,7 +129,7 @@ float byroGcCharlieD(float roughness, float NdotH) {
     float cos2h = NdotH * NdotH;
     // Floored so the `pow` cannot see zero at grazing.
     float sin2h = max(1.0 - cos2h, 0.0078125);
-    return (2.0 + invR) * pow(sin2h, invR * 0.5) * (1.0 / 6.2831853);
+    return (2.0 + invR) * pow(sin2h, invR * 0.5) * (1.0 / GROUNDCOVER_TWO_PI);
 }
 
 /// Ashikhmin's visibility term — the cheap companion to Charlie, and the one
