@@ -514,12 +514,19 @@ pub fn authored_wave_height_over_bed(
     if !time_secs.is_finite() {
         return 0.0;
     }
-    let sample = bed.and_then(|bed| bed.sample(position.x, position.z));
+    let sample = bed.and_then(|bed| bed.sample_baked(position.x, position.z));
     let bed_depth = sample.map_or(f32::INFINITY, |sample| sample.depth);
     // Refraction toward the shore: only where the bed rises, and only in the
     // zone `water.vert` bends in (`WATER_SHORE_REFRACT_DEPTH`).
-    let shore_dir = sample.map_or([0.0, 0.0], |sample| sample.uphill);
-    let shore_len = (shore_dir[0] * shore_dir[0] + shore_dir[1] * shore_dir[1]).sqrt();
+    // The baked direction's length is its border fade (#6420): gate on it, then use the unit
+    // heading, as `water.vert` does with the interpolated vertex colour.
+    let uphill = sample.map_or([0.0, 0.0], |sample| sample.uphill);
+    let shore_len = (uphill[0] * uphill[0] + uphill[1] * uphill[1]).sqrt();
+    let shore_dir = if shore_len > WATER_SHORE_MIN_UPHILL_LEN {
+        [uphill[0] / shore_len, uphill[1] / shore_len]
+    } else {
+        [0.0, 0.0]
+    };
     let refraction = if sample.is_some() && shore_len > WATER_SHORE_MIN_UPHILL_LEN {
         let t = ((bed_depth - 0.25 * WATER_SHORE_REFRACT_DEPTH)
             / (0.75 * WATER_SHORE_REFRACT_DEPTH))
@@ -1237,7 +1244,7 @@ fn apply_buoyancy_with_scratch(
                     let local_flow = s.flow.map(|flow| {
                         match (s.kind, s.bed.as_ref()) {
                             (WaterKind::River | WaterKind::Rapids, Some(bed)) => bed
-                                .sample(reference_point.x, reference_point.z)
+                                .sample_baked(reference_point.x, reference_point.z)
                                 .map_or(flow, |sample| flow.over_bed(sample)),
                             _ => flow,
                         }

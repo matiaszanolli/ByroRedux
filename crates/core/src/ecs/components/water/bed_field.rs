@@ -9,7 +9,8 @@
 //! [`WaterBedField`] that the renderer bakes into the water mesh's vertices
 //! (`cell_loader/water.rs`) and that physics reads for the same position. One
 //! sampler, so the visible wave and the buoyancy crest cannot disagree about
-//! how deep the water is.
+//! how deep the water is, nor — through [`WaterBedField::sample_baked`], which
+//! carries the mesh's border fade — which way the shore lies (#6420).
 
 use std::sync::Arc;
 
@@ -51,6 +52,11 @@ impl Component for WaterBedField {
 /// Depths whose gradient is below this (world units of depth per world unit
 /// of distance) read as a flat bed with no shoreward direction.
 const FLAT_BED_GRADIENT: f32 = 1.0e-4;
+
+/// How close, in lattice steps, a point must sit to the grid border (or to one step in) for
+/// [`WaterBedField::sample_baked`] to snap its fade to exactly 0 (or 1) instead of a float-noise
+/// fraction, so a lattice vertex keeps exactly the colour the bake always gave it.
+const EDGE_FADE_SNAP: f32 = 1.0e-3;
 
 impl WaterBedField {
     /// Build a field. `depth` is the signed surface-minus-bed depth,
@@ -106,6 +112,31 @@ impl WaterBedField {
         Some(WaterBedSample { depth, uphill })
     }
 
+    /// [`Self::sample`] as the water mesh carries it: the shoreward direction fades to nothing at the
+    /// grid's border (#6420). A vertex on the plane's edge is shared with the neighbouring cell's mesh and
+    /// each cell derives its direction from its own side, so the bake drops the direction on the border
+    /// vertices to keep the shared edge from cracking; the GPU then interpolates from that zero to the
+    /// first interior vertex. This scales `uphill` by the point's distance from the border in lattice
+    /// steps (0 on the border, 1 from one step in), so the vector's length is the fade and the consumer
+    /// gates on it (`WATER_SHORE_MIN_UPHILL_LEN`) and normalises, exactly as `water.vert` does. The depth
+    /// is the same on both sides of an edge and is untouched. The bake and the CPU crest and current
+    /// samplers all read this, so the visible and buoyancy shore directions share one rule.
+    pub fn sample_baked(&self, x: f32, z: f32) -> Option<WaterBedSample> {
+        let mut sample = self.sample(x, z)?;
+        let max = (self.side - 1) as f32;
+        let (fx, fz) = ((x - self.origin[0]) / self.spacing, (z - self.origin[1]) / self.spacing);
+        let steps_from_border = fx.min(fz).min(max - fx).min(max - fz);
+        let fade = if steps_from_border <= EDGE_FADE_SNAP {
+            0.0
+        } else if steps_from_border >= 1.0 - EDGE_FADE_SNAP {
+            1.0
+        } else {
+            steps_from_border
+        };
+        sample.uphill = [sample.uphill[0] * fade, sample.uphill[1] * fade];
+        Some(sample)
+    }
+
     /// World units between samples.
     pub fn spacing(&self) -> f32 {
         self.spacing
@@ -139,6 +170,30 @@ mod tests {
         let s = field.sample(150.0, 50.0).expect("inside");
         assert!((s.depth - 150.0).abs() < 1e-3, "{s:?}");
         assert!((s.uphill[0] + 1.0).abs() < 1e-5 && s.uphill[1].abs() < 1e-5, "{s:?}");
+    }
+
+    /// #6420 — the baked rule: depth untouched, the shoreward direction 0 on the border, ramping to full
+    /// one lattice step in, and identical to `sample` from there on.
+    #[test]
+    fn the_baked_sample_fades_the_shore_direction_to_nothing_at_the_border() {
+        let field = beach();
+        // Interior (x = 150 is 1.5 steps from the -X border, but z = 150 is 1.5 from the -Z one).
+        let inside = field.sample_baked(150.0, 150.0).unwrap();
+        assert_eq!(inside, field.sample(150.0, 150.0).unwrap(), "from one step in nothing changes");
+        // On each border: no direction, same depth.
+        for (x, z) in [(0.0, 150.0), (300.0, 150.0), (150.0, 0.0), (150.0, 300.0), (0.0, 0.0)] {
+            let raw = field.sample(x, z).unwrap();
+            let baked = field.sample_baked(x, z).unwrap();
+            assert_eq!(baked.uphill, [0.0, 0.0], "({x}, {z}) is on the border");
+            assert_eq!(baked.depth, raw.depth);
+        }
+        // Half a step in: half the vector, the same heading.
+        let raw = field.sample(150.0, 50.0).unwrap();
+        let half = field.sample_baked(150.0, 50.0).unwrap();
+        assert!((half.uphill[0] - raw.uphill[0] * 0.5).abs() < 1e-5, "{half:?} vs {raw:?}");
+        assert!(half.uphill[1].abs() < 1e-5);
+        // Outside is still outside.
+        assert!(field.sample_baked(-0.5, 10.0).is_none());
     }
 
     #[test]

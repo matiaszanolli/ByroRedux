@@ -244,20 +244,15 @@ fn build_full_detail_water_grid(
     let bed = terrain.and_then(|land| bed_field_from_land(land, water_height_zup, [-1.0, -1.0], 1.0));
     let vertex = |x: f32, z: f32| Vertex {
         position: [x, 0.0, z],
-        color: bed_vertex_color(bed.as_ref().and_then(|field| {
-            let mut sample = field.sample(x, z)?;
-            // A vertex on the plane's edge is shared with the neighbouring
-            // cell's mesh, and each cell derives its shoreward direction from
-            // its own side of the edge, so the two disagree. The swell turns
-            // toward that direction, which would displace the shared vertex
-            // differently on each side and open a hairline crack along the
-            // cell border. The depth is the same on both sides (LAND edges
-            // match); only the direction is dropped there.
-            if x.abs() >= 1.0 - BORDER_EPSILON || z.abs() >= 1.0 - BORDER_EPSILON {
-                sample.uphill = [0.0, 0.0];
-            }
-            Some(sample)
-        })),
+        // A vertex on the plane's edge is shared with the neighbouring cell's
+        // mesh, and each cell derives its shoreward direction from its own side
+        // of the edge, so the two disagree. The swell turns toward that
+        // direction, which would displace the shared vertex differently on each
+        // side and open a hairline crack along the cell border. The depth is the
+        // same on both sides (LAND edges match); only the direction is dropped
+        // there, by `WaterBedField::sample_baked` - the rule the CPU crest and
+        // current samplers read too (#6420).
+        color: bed_vertex_color(bed.as_ref().and_then(|field| field.sample_baked(x, z))),
         normal: [0.0, 1.0, 0.0],
         // UVs are world-distance based so adjacent cells keep the same
         // normal-map derivative and wave phase.
@@ -2059,6 +2054,43 @@ mod tests {
                 sample.depth
             );
         }
+    }
+
+    /// #6420 — the shoreward direction too, not just the depth: every vertex's baked direction is what
+    /// the physics sampler reads at the same position (`WaterBedField::sample_baked`), so the visible
+    /// and buoyancy crests turn the same way, and the plane's border vertices carry none.
+    #[test]
+    fn the_physics_bed_field_agrees_with_the_baked_shore_direction() {
+        let land = beach_land();
+        let field = bed_field_from_land(&land, 0.0, [10_000.0 - 2048.0, -20_000.0 - 2048.0], 2048.0)
+            .expect("a LAND tile gives a field");
+        let (vertices, _) = build_full_detail_water_grid(2048.0, Some(&land), 0.0);
+        let (mut border, mut sloped_interior) = (0, 0);
+        for vertex in &vertices {
+            let world = (
+                10_000.0 + vertex.position[0] * 2048.0,
+                -20_000.0 + vertex.position[2] * 2048.0,
+            );
+            let sample = field.sample_baked(world.0, world.1).expect("inside the plane");
+            let baked = [vertex.color[1] * 2.0 - 1.0, vertex.color[2] * 2.0 - 1.0];
+            for axis in 0..2 {
+                assert!(
+                    (sample.uphill[axis] - baked[axis]).abs() < 1.0e-4,
+                    "physics {:?} vs mesh {baked:?} at {world:?}",
+                    sample.uphill
+                );
+            }
+            let on_edge = vertex.position[0].abs() >= 1.0 - BORDER_EPSILON
+                || vertex.position[2].abs() >= 1.0 - BORDER_EPSILON;
+            if on_edge {
+                border += 1;
+                assert_eq!(baked, [0.0, 0.0], "a border vertex carries no shoreward direction");
+            } else if baked != [0.0, 0.0] {
+                sloped_interior += 1;
+            }
+        }
+        assert!(border > 8, "the plane has border vertices, found {border}");
+        assert!(sloped_interior > 8, "the beach slopes under interior vertices, found {sloped_interior}");
     }
 
     #[test]
