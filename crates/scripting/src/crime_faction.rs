@@ -115,9 +115,9 @@ pub fn faction_fine(crime: &FactionCrime, model: &CrimeModel, kind: CrimeKind, t
     let amount = match (kind, authored) {
         (CrimeKind::Steal, None) => model.theft_bounty(theft_value),
         (CrimeKind::Steal, Some(values)) => CrimeModel { steal_value_mult: values.steal_multiplier, ..*model }.theft_bounty(theft_value),
-        (CrimeKind::Pickpocket, None) => CrimeModel::PICKPOCKET_GOLD,
+        (CrimeKind::Pickpocket, None) => model.pickpocket_gold,
         (CrimeKind::Pickpocket, Some(values)) => i32::from(values.pickpocket),
-        (CrimeKind::Trespass, None) => CrimeModel::TRESPASS_GOLD,
+        (CrimeKind::Trespass, None) => model.trespass_gold,
         (CrimeKind::Trespass, Some(values)) => i32::from(values.trespass),
         (CrimeKind::Attack, None) => model.attack_gold,
         (CrimeKind::Attack, Some(values)) => i32::from(values.assault),
@@ -196,6 +196,15 @@ mod tests {
         assert_eq!(fine(CrimeKind::Trespass, 0), Some((false, 5)));
         assert_eq!(fine(CrimeKind::Pickpocket, 0), Some((false, 25)));
         assert_eq!(fine(CrimeKind::Steal, 101), Some((false, 50)), "half the value, rounded down");
+    }
+
+    #[test]
+    fn a_retuned_trespass_or_pickpocket_setting_reaches_the_default_fine() {
+        use byroredux_plugin::esm::records::crime_flags::*;
+        let model = CrimeModel { trespass_gold: 12, pickpocket_gold: 60, ..CrimeModel::SKYRIM };
+        let defaults = tab(TRACK_CRIME | USE_DEFAULT_CRIME_GOLD, None);
+        assert_eq!(faction_fine(&defaults, &model, CrimeKind::Trespass, 0), Some((false, 12)));
+        assert_eq!(faction_fine(&defaults, &model, CrimeKind::Pickpocket, 0), Some((false, 60)));
     }
 
     #[test]

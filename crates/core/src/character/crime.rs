@@ -67,6 +67,12 @@ pub struct CrimeModel {
     /// `iCrimeGoldMurder`: the bounty for a murder (CS wiki, default 1000;
     /// Oblivion.esm does not author it).
     pub murder_gold: i32,
+    /// `iCrimeGoldTresspass` (sic, the setting's own spelling): the bounty for a trespass (CS
+    /// wiki, default 5; Oblivion.esm does not author it).
+    pub trespass_gold: i32,
+    /// `iCrimeGoldPickpocket`: the bounty for a pickpocket (CS wiki, default 25; Oblivion.esm does
+    /// not author it).
+    pub pickpocket_gold: i32,
     /// UESP *Oblivion:Infamy*: one infamy point for "doing anything that
     /// increases your bounty by 1000. Can be done repeatedly." Counted per
     /// incident, so a murder is one point and a 700-gold theft none. A wiki
@@ -109,6 +115,8 @@ impl CrimeModel {
         steal_value_mult: 0.5,
         attack_gold: 40,
         murder_gold: 1000,
+        trespass_gold: 5,
+        pickpocket_gold: 25,
         infamy_bounty_step: 1000,
         prison_days_divisor: 100,
         alarm_distance: 4000.0,
@@ -130,11 +138,6 @@ impl CrimeModel {
         ..Self::OBLIVION
     };
 
-    /// The fine for a trespass (5) and a pickpocket (25), the only two the Oblivion defaults do not
-    /// already carry as fields; the same in both games (UESP *Crime* pages).
-    pub const TRESPASS_GOLD: i32 = 5;
-    pub const PICKPOCKET_GOLD: i32 = 25;
-
     /// The model with each setting the load order authors replacing its
     /// default. A non-finite or negative authored value is ignored.
     #[must_use]
@@ -145,6 +148,8 @@ impl CrimeModel {
                 .unwrap_or(self.steal_value_mult),
             attack_gold: Self::authored_gold(&gmst, "iCrimeGoldAttack", self.attack_gold),
             murder_gold: Self::authored_gold(&gmst, "iCrimeGoldMurder", self.murder_gold),
+            trespass_gold: Self::authored_gold(&gmst, "iCrimeGoldTresspass", self.trespass_gold),
+            pickpocket_gold: Self::authored_gold(&gmst, "iCrimeGoldPickpocket", self.pickpocket_gold),
             infamy_bounty_step: self.infamy_bounty_step,
             prison_days_divisor: Self::authored_gold(&gmst, "iCrimeDaysInPrisonMod", self.prison_days_divisor).max(1),
             alarm_distance: gmst("iCrimeAlarmRecDistance")
@@ -275,6 +280,18 @@ mod tests {
             _ => None,
         });
         assert_eq!((model.attack_gold, model.murder_gold), (60, 1000), "junk keeps the default");
+    }
+
+    #[test]
+    fn the_trespass_and_pickpocket_fines_are_authored_settings() {
+        assert_eq!((CrimeModel::OBLIVION.trespass_gold, CrimeModel::OBLIVION.pickpocket_gold), (5, 25));
+        assert_eq!((CrimeModel::SKYRIM.trespass_gold, CrimeModel::SKYRIM.pickpocket_gold), (5, 25));
+        let model = CrimeModel::OBLIVION.with_gmst(|name| match name {
+            "iCrimeGoldTresspass" => Some(10.0),
+            "iCrimeGoldPickpocket" => Some(f32::NAN),
+            _ => None,
+        });
+        assert_eq!((model.trespass_gold, model.pickpocket_gold), (10, 25), "junk keeps the default");
     }
 
     #[test]
