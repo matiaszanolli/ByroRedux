@@ -8,6 +8,7 @@
 //! cargo run --release -p byroredux-plugin --example inspect -- sound-names <ESM> < names.txt
 //! cargo run --release -p byroredux-plugin --example inspect -- script-cells <ESM> <script>...
 //! cargo run --release -p byroredux-plugin --example inspect -- quest-dialogue <ESM> <quest|grep:text|speaker:npc>
+//! cargo run --release -p byroredux-plugin --example inspect -- wthr-dump <oblivion|fo3nv|skyrim|fo4|fo76|starfield> <ESM>
 //! ```
 
 use byroredux_plugin::esm::parse_esm;
@@ -22,6 +23,7 @@ fn main() -> anyhow::Result<()> {
         "sound-names" => sound_names(&rest),
         "script-cells" => script_cells(&rest),
         "quest-dialogue" => quest_dialogue(&rest),
+        "wthr-dump" => wthr_dump(&rest),
         other => anyhow::bail!("unknown subcommand {other:?} (see the module doc)"),
     }
 }
@@ -306,6 +308,36 @@ fn quest_dialogue(args: &[String]) -> anyhow::Result<()> {
                 println!("    NAME {:08X?}", info.added_topics);
             }
         }
+    }
+    Ok(())
+}
+
+/// `wthr-dump <game> <ESM>` — every decoded `WeatherRecord`, sorted by FormID, as `Debug` text. A
+/// refactor pin for `parse_wthr` (#6223): dump a master before and after the change and `diff` the
+/// two files; a behaviour-preserving refactor leaves them byte-identical, which the hand-built
+/// per-game fixtures cannot show for real content.
+fn wthr_dump(args: &[String]) -> anyhow::Result<()> {
+    use byroredux_plugin::esm::reader::{EsmReader, GameKind};
+    let game = match args[0].as_str() {
+        "oblivion" => GameKind::Oblivion,
+        "fo3nv" => GameKind::Fallout3NV,
+        "skyrim" => GameKind::Skyrim,
+        "fo4" => GameKind::Fallout4,
+        "fo76" => GameKind::Fallout76,
+        "starfield" => GameKind::Starfield,
+        other => anyhow::bail!("unknown game {other:?}"),
+    };
+    let bytes = std::fs::read(&args[1])?;
+    let mut reader = EsmReader::new(&bytes);
+    reader.read_file_header()?;
+    let mut records = Vec::new();
+    reader.for_each_record(bytes.len(), Some(b"WTHR"), |header, subs| {
+        records.push(byroredux_plugin::esm::records::parse_wthr(header.form_id, &subs, game, &None));
+    })?;
+    records.sort_by_key(|record| record.form_id);
+    println!("# {} WTHR records from {}", records.len(), args[1]);
+    for record in &records {
+        println!("{record:#?}");
     }
     Ok(())
 }
