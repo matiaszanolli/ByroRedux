@@ -365,6 +365,20 @@ authors its big streaked deck (`CloudsLower04_d`, layer 2) at alpha 0, and the
 old 4-slot read of the 1,024-byte JNAM gave that layer layer 1's 0.75. The
 muted lavender is the weather as authored (`fo4_jnam_alphas_use_the_eight_slot_stride`).
 
+**Textured-layer drift cap (2026-10-26).** The authored scroll rates are UV per
+second with no notion of altitude, so on the 9 km shell a legacy layer would
+travel at up to ~1 700 m/s (Oblivion's layer 0: 0.0143 UV/s under a 0.075 tile
+scale). `cap_cloud_layer_drift` (`systems/weather.rs`) bounds every textured
+layer to `CLOUD_LAYER_MAX_DRIFT_M_PER_S` = 20 m/s of ground drift, scaling the
+scroll vector down and keeping its heading. The ground speed of a scroll `s` is
+`s / tile_scale * CLOUD_UPPER_PLANE_ALTITUDE`, so the cap on the UV rate is
+`tile_scale * 20 / CLOUD_UPPER_PLANE_ALTITUDE`; a layer with no texture is left
+alone. The 20 m/s is a calibration chosen with the user ("near real life"), **not
+an authored value**: it silently overrides the WTHR scroll rate, so an authored
+rate that does not match the rendered motion is this cap, not a decode bug. The
+volumetric deck's own wind advection is untouched. Rationale and measurements:
+[`watal.md`](watal.md) (the "sky layers are capped" paragraph).
+
 ### 2.4.1 The game's temperature and mood are the base (2026-10-20)
 
 The per-world colour temperature — FO3/FNV and every DLC author their own: the
@@ -415,7 +429,8 @@ deck base, so receivers at any altitude look up their own crossing. The
 directional upload (`compute_directional_upload`) is now the sun **above** the
 clouds; every direct-sun site multiplies by the map
 (`exteriorCloudSunTransmittance` — `lighting.glsl`'s two directional arms,
-grass, the water glint), and passes that light with one sun value — the froxel
+the effect-lit one-light pass in `triangle.frag` (#6244), grass, the water
+glint), and passes that light with one sun value — the froxel
 volumetrics, the interior portal sun, caustics — use the camera's own column,
 read back from the bake after its fence (`camera_cloud_sun_transmittance`).
 Beyond the map's edge there is no local cloud data, so the bake fades each
