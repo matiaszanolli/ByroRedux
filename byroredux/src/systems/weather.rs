@@ -1549,7 +1549,6 @@ mod cloud_drift_cap_tests {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod cloud_scroll_vectors_tests {
     //! Regression tests for #3985 (REN-2026-09-06-D18-01) — two
     //! independent fixes to `cloud_scroll_vectors`'s prior value-based
