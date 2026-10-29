@@ -1559,6 +1559,7 @@ impl VulkanContext {
             underwater_surface: underwater.surface,
             water_caustic_active: self.post.water_caustic_accum.is_some(),
             shadow_filter_active: self.shadow_filter_active().is_some(),
+            camera_cloud_sun_transmittance: self.camera_cloud_sun_transmittance,
         };
         let composite_params = build_composite_params(composite_inputs);
         if let Some(ref mut composite) = self.post.composite {

@@ -258,7 +258,10 @@ pub struct CompositeParams {
     /// cloud field and the upper plane are anchored to the world through it
     /// (`SkyDome::cloud_origin`). Absolute, unlike `camera_pos`.
     pub cloud_origin: [f32; 4],
-    /// x = populated box-aperture count. Remaining lanes reserved.
+    /// x = populated box-aperture count. y = the camera column's cloud-shadow
+    /// transmittance (`0.0..=1.0`, `1.0` = clear sky) as `f32` bits, which the
+    /// underwater god rays scale the sun by (#6415); read with `uintBitsToFloat`.
+    /// zw reserved.
     pub sky_aperture_count: [u32; 4],
     /// Authored window planes in render-origin-relative coordinates.
     pub sky_apertures: [CompositeSkyAperture; MAX_SKY_APERTURES],

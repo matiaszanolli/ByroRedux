@@ -1281,6 +1281,19 @@ mod tests {
         let post = crate::source_scan::production_text(include_str!("context/post_passes.rs"));
         assert!(post.contains("caustic_sun_transmittance(is_exterior, self.camera_cloud_sun_transmittance);"));
         assert!(post.contains("self.camera_cloud_sun_transmittance,\n                    );"));
+        // #6415 — composite's underwater god rays are a direct-sun consumer too: a camera under
+        // water has no world position to look up, so they take the camera column's transmittance,
+        // which the host packs into `sky_aperture_count.y`.
+        let composite = include_str!("../../shaders/composite.frag");
+        assert!(
+            composite.contains("uintBitsToFloat(params.sky_aperture_count.y)")
+                && composite.contains("params.sun_dir.w * 0.12 * cameraCloudSunT"),
+            "composite's underwater god rays lost the camera cloud-shadow transmittance"
+        );
+        let frame_params = include_str!("context/frame_params.rs");
+        assert!(frame_params.contains("pack_camera_cloud_sun_transmittance(camera_cloud_sun_transmittance)"));
+        let instances = include_str!("context/build_and_upload_instances.rs");
+        assert!(instances.contains("camera_cloud_sun_transmittance: self.camera_cloud_sun_transmittance,"));
         // #6244 — derived, not listed: every directional-light arm of the main
         // fragment shader (the effect-lit one-light pass was missed) applies
         // the map before its block closes.

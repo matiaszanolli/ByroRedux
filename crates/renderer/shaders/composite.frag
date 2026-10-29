@@ -92,6 +92,8 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 sun_illuminance;
     // SKYAL — xyz = camera world position in metres; anchors the cloud field.
     vec4 cloud_origin;
+    // x = populated aperture count; y = the camera column's cloud-shadow transmittance as float bits
+    // (the underwater god rays' sun scale, #6415); zw reserved.
     uvec4 sky_aperture_count;
     SkyAperture sky_apertures[MAX_COMPOSITE_SKY_APERTURES];
 } params;
@@ -942,7 +944,12 @@ void main() {
             params.sun_color.rgb,
             0.35
         );
-        combined += shaftColor * params.sun_dir.w * 0.12
+        // The sun here is the TOD disc colour and intensity: the cloud deck is not in it. Every
+        // direct-sun site multiplies by the cloud-shadow transmittance; a camera under water has no
+        // world position to look up, so the camera's own column stands in (the same value the
+        // caustics and the froxel sun take, #6415).
+        float cameraCloudSunT = clamp(uintBitsToFloat(params.sky_aperture_count.y), 0.0, 1.0);
+        combined += shaftColor * params.sun_dir.w * 0.12 * cameraCloudSunT
             * underwaterGodRays(viewDir, sunDirection, rayLength, blueNoiseRank());
     }
 

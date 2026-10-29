@@ -809,6 +809,11 @@ pub(super) struct CompositeParamsInputs<'a> {
     /// The direct-shadow spatial filter ran this frame, so composite's
     /// binding 11 holds this frame's correction (`caustic_flags.y`).
     pub(super) shadow_filter_active: bool,
+    /// The cloud-shadow map's transmittance of the camera's own column
+    /// (`VulkanContext::camera_cloud_sun_transmittance`, 1.0 = clear): the
+    /// direct-sun scale for light that reaches the camera, which the underwater
+    /// shafts take (#6415). Carried in `sky_aperture_count.y` as `f32` bits.
+    pub(super) camera_cloud_sun_transmittance: f32,
 }
 
 /// The camera's underwater state for one frame. All zero while its head is out
@@ -822,6 +827,17 @@ pub struct UnderwaterView {
     /// march: `x` = camera depth below the surface (world units), `y` = the
     /// authored fog span the extinction ramp saturates over.
     pub surface: [f32; 4],
+}
+
+/// `CompositeParams::sky_aperture_count.y`: the camera column's cloud-shadow transmittance as
+/// `f32` bits, clamped to `0..=1`; a non-finite reading (no bake read back yet) is clear sky (#6415).
+fn pack_camera_cloud_sun_transmittance(transmittance: f32) -> u32 {
+    if transmittance.is_finite() {
+        transmittance.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+    .to_bits()
 }
 
 /// Assemble this frame's `CompositeParams` (#2255 / TD1-NEW-02, extracted
@@ -856,6 +872,7 @@ pub(super) fn build_composite_params(
         underwater_surface,
         water_caustic_active,
         shadow_filter_active,
+        camera_cloud_sun_transmittance,
     } = inputs;
     let is_exterior = sky_params.is_exterior;
     let interior_show_sky = !is_exterior && sky_params.interior_show_sky;
@@ -1000,7 +1017,14 @@ pub(super) fn build_composite_params(
         // SKYAL — the directional light surfaces receive; lights the clouds.
         sun_illuminance: dome.sun_illuminance,
         cloud_origin: dome.cloud_origin,
-        sky_aperture_count: [aperture_count as u32, 0, 0, 0],
+        // y = the camera column's cloud-shadow transmittance, as `f32` bits (#6415); a
+        // non-finite reading (no bake yet) is clear sky.
+        sky_aperture_count: [
+            aperture_count as u32,
+            pack_camera_cloud_sun_transmittance(camera_cloud_sun_transmittance),
+            0,
+            0,
+        ],
         sky_apertures,
     }
 }
@@ -1292,6 +1316,7 @@ mod composite_params_tests {
             underwater_surface: [0.0; 4],
             water_caustic_active: false,
             shadow_filter_active: false,
+            camera_cloud_sun_transmittance: 1.0,
         };
         let composite = build_composite_params(inputs);
         let cube = build_sky_cube_params(inputs, &composite);
@@ -1302,6 +1327,11 @@ mod composite_params_tests {
         // Both the marked cone and box window are valid exterior apertures;
         // the unmarked beam is excluded by its profile flag.
         assert_eq!(composite.sky_aperture_count[0], 2);
+        assert_eq!(
+            f32::from_bits(composite.sky_aperture_count[1]),
+            1.0,
+            "a clear camera column rides the shaft lane as 1.0 (#6415)"
+        );
         assert_eq!(composite.sky_apertures[0].camera_local_origin[..3], [-100.0, -200.0, -300.0]);
         assert_eq!(composite.sky_apertures[0].half_extents[..2], [10.0, 20.0]);
         assert_eq!(cube.depth_params[0], 1.0);
@@ -1444,6 +1474,7 @@ mod composite_params_tests {
             underwater_surface: [0.0; 4],
             water_caustic_active: false,
             shadow_filter_active: false,
+            camera_cloud_sun_transmittance: 1.0,
         };
         let room_composite = build_composite_params(base);
         let cube = build_sky_cube_params(base, &room_composite);
@@ -1508,6 +1539,7 @@ mod composite_params_tests {
             underwater_surface: [75.0, 600.0, 0.0, 0.0],
             water_caustic_active: true,
             shadow_filter_active: false,
+            camera_cloud_sun_transmittance: 0.25,
         });
 
         // `fog_params` carries near/far/clip/power in that exact order —
@@ -1552,6 +1584,11 @@ mod composite_params_tests {
             params.caustic_flags[0], 1.0,
             "water_caustic_active must map through to caustic_flags.x"
         );
+        assert_eq!(
+            f32::from_bits(params.sky_aperture_count[1]),
+            0.25,
+            "the camera column's cloud transmittance maps through to sky_aperture_count.y (#6415)"
+        );
     }
 
     /// Regression for #2508: `water_caustic_active: false` must map to
@@ -1586,6 +1623,7 @@ mod composite_params_tests {
             underwater_surface: [0.0; 4],
             water_caustic_active: false,
             shadow_filter_active: false,
+            camera_cloud_sun_transmittance: 1.0,
         });
         assert_eq!(params.caustic_flags[0], 0.0);
     }
@@ -3011,5 +3049,24 @@ mod should_use_indirect_draws_tests {
     #[test]
     fn true_for_an_empty_batch_list() {
         assert!(should_use_indirect_draws(true, true, true, 0));
+    }
+}
+
+#[cfg(test)]
+mod camera_cloud_sun_transmittance_tests {
+    use super::pack_camera_cloud_sun_transmittance;
+
+    /// #6415 — the shaft scale rides a `u32` lane as `f32` bits: in-range values survive, anything
+    /// out of range is clamped, and a non-finite reading (no bake read back yet) is clear sky.
+    #[test]
+    fn the_shaft_lane_packs_a_clamped_finite_transmittance() {
+        let unpack = |t: f32| f32::from_bits(pack_camera_cloud_sun_transmittance(t));
+        assert_eq!(unpack(0.25), 0.25);
+        assert_eq!(unpack(0.0), 0.0);
+        assert_eq!(unpack(1.0), 1.0);
+        assert_eq!(unpack(-0.5), 0.0);
+        assert_eq!(unpack(7.0), 1.0);
+        assert_eq!(unpack(f32::NAN), 1.0);
+        assert_eq!(unpack(f32::INFINITY), 1.0);
     }
 }

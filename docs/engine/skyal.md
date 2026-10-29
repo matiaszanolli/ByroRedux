@@ -430,7 +430,8 @@ directional upload (`compute_directional_upload`) is now the sun **above** the
 clouds; every direct-sun site multiplies by the map
 (`exteriorCloudSunTransmittance` — `lighting.glsl`'s two directional arms,
 the effect-lit one-light pass in `triangle.frag` (#6244), grass, the water
-glint), and passes that light with one sun value — the froxel
+glint, and composite's underwater god rays, which take the camera's own column
+through `sky_aperture_count.y` (#6415)), and passes that light with one sun value — the froxel
 volumetrics, the interior portal sun, caustics — use the camera's own column,
 read back from the bake after its fence (`camera_cloud_sun_transmittance`).
 Beyond the map's edge there is no local cloud data, so the bake fades each
