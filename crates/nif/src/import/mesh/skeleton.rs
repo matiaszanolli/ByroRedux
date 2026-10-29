@@ -42,7 +42,9 @@
 //! resolves correctly or declines, and declining is exactly the prior
 //! behaviour.
 
-use crate::blocks::node::NiNode;
+use crate::import::transform::compose_transforms;
+use crate::import::walk::any_ni_node;
+use crate::types::NiTransform;
 use crate::blocks::skin::BsSkinBoneTrans;
 use crate::blocks::traits::{HasAVObject, HasObjectNET};
 use crate::scene::NifScene;
@@ -70,14 +72,19 @@ impl SkeletonBones {
 
     /// Compose every named `NiNode`'s world translation.
     ///
-    /// Full rotation+translation composition down the parent chain —
+    /// Full rotation+scale+translation composition down the parent chain —
     /// translation-only composition is meaningless once a joint rotates, and
-    /// produces a blob near the origin rather than a figure.
+    /// produces a blob near the origin rather than a figure. The fold is
+    /// `compose_transforms` (the one place the child translation is scaled by
+    /// the parent and the #4549 sanitiser runs), and node lookups go through
+    /// `any_ni_node` so a `BSMultiBoundNode` / `NiSwitchNode` parent does not
+    /// break the chain (#6473, the same fix #6303 made for `extract_np_ragdoll`).
     pub fn from_scene(scene: &NifScene) -> Self {
         let n = scene.blocks.len();
+        let node_at = |i: usize| scene.blocks.get(i).and_then(|b| any_ni_node(b.as_ref()));
         let mut parent = vec![usize::MAX; n];
         for i in 0..n {
-            if let Some(node) = scene.get_as::<NiNode>(i) {
+            if let Some(node) = node_at(i) {
                 for child in &node.children {
                     if let Some(ci) = child.index() {
                         if ci < n {
@@ -90,7 +97,7 @@ impl SkeletonBones {
 
         let mut joints = Vec::new();
         for i in 0..n {
-            let Some(node) = scene.get_as::<NiNode>(i) else {
+            let Some(node) = node_at(i) else {
                 continue;
             };
             let Some(name) = node.name().map(Arc::<str>::from) else {
@@ -103,30 +110,14 @@ impl SkeletonBones {
                 cur = parent[cur];
                 guard += 1;
             }
-            let mut rot = [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-            let mut pos = [0.0f32; 3];
+            let mut world = NiTransform::default();
             for &idx in chain.iter().rev() {
-                let Some(nd) = scene.get_as::<NiNode>(idx) else {
-                    continue;
-                };
-                let lr = nd.transform().rotation.rows;
-                let lt = nd.transform().translation;
-                let next = [
-                    pos[0] + rot[0][0] * lt.x + rot[0][1] * lt.y + rot[0][2] * lt.z,
-                    pos[1] + rot[1][0] * lt.x + rot[1][1] * lt.y + rot[1][2] * lt.z,
-                    pos[2] + rot[2][0] * lt.x + rot[2][1] * lt.y + rot[2][2] * lt.z,
-                ];
-                let mut nr = [[0.0f32; 3]; 3];
-                for a in 0..3 {
-                    for b in 0..3 {
-                        nr[a][b] =
-                            rot[a][0] * lr[0][b] + rot[a][1] * lr[1][b] + rot[a][2] * lr[2][b];
-                    }
+                if let Some(nd) = node_at(idx) {
+                    world = compose_transforms(&world, nd.transform());
                 }
-                rot = nr;
-                pos = next;
             }
-            joints.push((pos, name));
+            let t = world.translation;
+            joints.push(([t.x, t.y, t.z], name));
         }
         Self { joints }
     }
@@ -322,6 +313,50 @@ pub fn resolve_external_bone_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn named_node(name: &str, translation: [f32; 3], scale: f32, children: Vec<crate::types::BlockRef>) -> crate::blocks::node::NiNode {
+        use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+        use crate::types::{BlockRef, NiPoint3};
+        crate::blocks::node::NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData { name: Some(Arc::from(name)), extra_data_refs: Vec::new(), controller_ref: BlockRef::NULL },
+                flags: 0,
+                transform: NiTransform {
+                    translation: NiPoint3 { x: translation[0], y: translation[1], z: translation[2] },
+                    scale,
+                    ..NiTransform::default()
+                },
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children,
+            effects: Vec::new(),
+        }
+    }
+
+    /// #6473 — the world translation folds the parent's scale into the child's
+    /// offset, and a non-`NiNode` parent (`NiSwitchNode` here) keeps the chain
+    /// connected. The hand fold had no scale term and a bare `NiNode` downcast.
+    #[test]
+    fn from_scene_scales_child_offsets_and_walks_switch_node_parents() {
+        use crate::types::BlockRef;
+        let mut scene = NifScene::default();
+        // 0 Root (scale 2, at x=1) -> 1 Switch (at y=3) -> 2 Hand (at x=1).
+        scene.blocks.push(Box::new(named_node("Root", [1.0, 0.0, 0.0], 2.0, vec![BlockRef(1)])));
+        scene.blocks.push(Box::new(crate::blocks::node::NiSwitchNode {
+            base: named_node("Switch", [0.0, 3.0, 0.0], 1.0, vec![BlockRef(2)]),
+            switch_flags: 0,
+            index: 0,
+        }));
+        scene.blocks.push(Box::new(named_node("Hand", [1.0, 0.0, 0.0], 1.0, Vec::new())));
+
+        let s = SkeletonBones::from_scene(&scene);
+        let at = |name: &str| s.joints.iter().find(|(_, n)| &**n == name).unwrap().0;
+        // Switch: Root.t + Root.scale * (0,3,0) = (1, 6, 0).
+        assert_eq!(at("Switch"), [1.0, 6.0, 0.0]);
+        // Hand: that + scale 2 * (1,0,0) = (3, 6, 0) — the unscaled fold gave (2, 3, 0).
+        assert_eq!(at("Hand"), [3.0, 6.0, 0.0]);
+    }
 
     fn skel(joints: &[([f32; 3], &str)]) -> SkeletonBones {
         SkeletonBones::from_joints(joints.iter().map(|(p, n)| (*p, Arc::from(*n))).collect())
