@@ -22,7 +22,7 @@ mod walk;
 // the internal module path.
 pub use attach_light::{find_attach_light_offset, find_projectile_node_offset, ATTACH_LIGHT_NODE, PROJECTILE_NODE};
 pub use material::{
-    canonical_shader_type, slot_to_colocated_role, slot_to_role, unrouted_texture_slot_bindings,
+    canonical_shader_type, is_character_skin_texture, slot_to_colocated_role, slot_to_role, unrouted_texture_slot_bindings,
     BsEffectShaderData, NoLightingFalloff, ShaderTypeFields, TextureRole, TextureSlotContext,
     TextureSlotLayout,
 };

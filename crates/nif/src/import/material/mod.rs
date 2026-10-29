@@ -1526,6 +1526,10 @@ impl MaterialInfo {
         let no_pbr_signal = self.has_no_pbr_classifier_signal();
         let has_alpha = self.effective_alpha_blend(mesh_name, pool);
         let textures = self.texture_set(pool);
+        let character_skin = textures
+            .base_color
+            .and_then(|sym| pool.resolve(sym))
+            .is_some_and(is_character_skin_texture);
         let shader_type_fields = self.shader_type_fields();
 
         super::types::ImportedMaterial {
@@ -1534,6 +1538,7 @@ impl MaterialInfo {
             water_shader_flags: self.water_shader_flags,
             is_water_shader: self.is_water_shader,
             fallout_hair: self.fallout_hair,
+            character_skin,
             material_path: self.material_path,
             // #4282 — the FO4+/FO76+ wetness/luminance captures cross the
             // boundary here; `translate_material` forwards them to the
@@ -1941,5 +1946,35 @@ mod texture_clamp_mode_default_tests {
             Material::default().texture_clamp_mode,
             "CLAMP_S_CLAMP_T must be distinguishable from the unset default"
         );
+    }
+}
+
+/// Whether an authored base-colour path is a race-skin texture (#6090, #6477): it lives under
+/// `textures\characters\`, and its file is not an underwear / groin cover. FO3/FNV keep their
+/// underwear under `textures\armor\underwear\` (outside the family already); Oblivion authors the
+/// underwear as a second sub-mesh of each body NIF in the *same* folder (`underwear.dds`,
+/// `groinmale.dds`), which the race skin must not repaint. The pool interns lowercase.
+pub fn is_character_skin_texture(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
+    let Some(rest) = path.strip_prefix("textures\\characters\\") else {
+        return false;
+    };
+    let stem = rest.rsplit('\\').next().unwrap_or(rest);
+    !(stem.starts_with("underwear") || stem.starts_with("groin"))
+}
+
+#[cfg(test)]
+mod character_skin_tests {
+    use super::is_character_skin_texture;
+
+    #[test]
+    fn the_skin_family_excludes_oblivions_underwear_sub_meshes() {
+        assert!(is_character_skin_texture(r"textures\characters\imperial\female\upperbodyfemale.dds"));
+        assert!(is_character_skin_texture(r"Textures\Characters\Imperial\Male\LegMale.dds"));
+        assert!(!is_character_skin_texture(r"textures\characters\imperial\female\underwear.dds"));
+        assert!(!is_character_skin_texture(r"textures\characters\imperial\male\groinmale.dds"));
+        // FO3/FNV underwear and gore caps live outside the family.
+        assert!(!is_character_skin_texture(r"textures\armor\underwear\malebriefs.dds"));
+        assert!(!is_character_skin_texture(r"textures\gore\headgore.dds"));
     }
 }

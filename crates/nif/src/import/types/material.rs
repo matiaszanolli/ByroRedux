@@ -367,6 +367,13 @@ pub struct ImportedMaterial {
     /// colours are a tint mask, not a colour (#6130). Raw-tier fact for the
     /// NPC spawn hook; no canonical component reads it.
     pub fallout_hair: bool,
+    /// The base colour is a race-skin texture: authored under
+    /// `textures\characters\`, and not one of Oblivion's underwear / groin
+    /// sub-meshes that share that folder (#6090, #6477). Raw-tier fact for the
+    /// NPC spawn hook's race-skin override; no canonical component reads it.
+    /// Decided here, where the authored path is in hand, so the hook needs no
+    /// pool snapshot and no spawn-order luck (#6476).
+    pub character_skin: bool,
     pub textures: MaterialTextureSet<Option<FixedString>>,
     /// Per-role source retained for cold-path diagnostics. A role with no
     /// path is still treated as absent downstream regardless of this value.
@@ -573,6 +580,7 @@ impl Default for ImportedMaterial {
             water_shader_flags: 0,
             is_water_shader: false,
             fallout_hair: false,
+            character_skin: false,
             textures: MaterialTextureSet::default(),
             texture_sources: MaterialTextureSet::default(),
             detail_neutral: byroredux_core::ecs::components::material::DETAIL_NEUTRAL_MODULATE2X,
