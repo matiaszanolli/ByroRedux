@@ -1198,14 +1198,23 @@ fn cover_density_inputs(
         .try_resource::<byroredux_core::ecs::components::groundcover::AuthoredCover>()
         .filter(|cover| cover.localised)
     {
-        for (affinity, grasses) in layer_affinity
+        // #6411 — the engine's default land texture (`ltex_form_id == None`: ATXT
+        // form 0, and the unauthored BTXT base) has no `LTEX.GNAM` to read: it is an
+        // exe-side texture, and `union_density(&[])` would turn "no authored list"
+        // into "authored no grass". Those lanes keep the editor-ID classification
+        // (#6256), a grass layer on FO4.
+        for ((affinity, grasses), layer) in layer_affinity
             .iter_mut()
             .zip(authored_grass.iter())
-            .take(splat_layers.layers.len())
+            .zip(splat_layers.layers.iter())
         {
-            *affinity = cover.union_density(grasses);
+            if layer.ltex_form_id.is_some() {
+                *affinity = cover.union_density(grasses);
+            }
         }
-        base_affinity = cover.union_density(&base_authored_grass);
+        if normalize_base_ltex(base_ltex).is_some() {
+            base_affinity = cover.union_density(&base_authored_grass);
+        }
     }
     CoverDensityInputs {
         layer_affinity,
@@ -1621,6 +1630,82 @@ pub(super) fn spawn_terrain_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6411 — on a localised load order the authored `LTEX.GNAM` list replaces a
+    /// layer's keyword affinity, but the engine's default land texture (ATXT form 0,
+    /// an unauthored BTXT base: `ltex_form_id == None`) has no list to read and keeps
+    /// its editor-ID classification. FO4's default is a grass layer (#6256); the
+    /// override used to turn it into "authored no grass" (`union_density(&[]) == 0`).
+    #[test]
+    fn a_localised_cover_keeps_the_default_land_textures_classification() {
+        use byroredux_core::ecs::components::groundcover::{
+            AuthoredCover, AuthoredCoverRecord, Climate, ClimateWeights, CoverWaterRule,
+        };
+        use byroredux_plugin::esm::reader::GameKind;
+        const AUTHORED: u32 = 0x0A01;
+        const GRASS: u32 = 0x0B01;
+        let mut world = World::new();
+        world.insert_resource(AuthoredCover {
+            records: vec![AuthoredCoverRecord {
+                form_id: GRASS,
+                editor_id: String::new(),
+                model_path: String::new(),
+                climate_weight: ClimateWeights::UNIFORM,
+                density: 0.5,
+                water_rule: CoverWaterRule::AboveAtLeast,
+                water_distance: 0.0,
+                height_range: 0.0,
+                position_range: 0.0,
+                uniform_scaling: true,
+                fit_to_slope: false,
+                nominal_height: None,
+            }],
+            grid_spacing: 80.0,
+            climate: Climate::Temperate,
+            localised: true,
+            generation: 1,
+        });
+        let fo4 = DefaultLandTexture::for_game(GameKind::Fallout4);
+        let default_affinity = crate::groundcover_translate::layer_affinity(fo4.unwrap().editor_id);
+        assert!(default_affinity > 0.5, "FO4's default land texture is a grass layer");
+        let layer = |ltex_form_id, cover_affinity| CellSplatLayer {
+            ltex_form_id,
+            cover_affinity,
+            diffuse_index: 1,
+            normal_index: 0,
+            specular_index: 0,
+            height_sources: None,
+            per_quadrant_alpha: Default::default(),
+        };
+        let splat_layers = CellSplatLayers {
+            layers: vec![layer(None, default_affinity), layer(Some(AUTHORED), 0.9)],
+        };
+        let landscape_grasses = HashMap::from([(AUTHORED, vec![GRASS])]);
+        let inputs = cover_density_inputs(
+            &world,
+            &splat_layers,
+            None, // an unauthored BTXT base: the default land texture too
+            fo4,
+            &HashMap::new(),
+            &landscape_grasses,
+            None,
+        );
+        assert_eq!(inputs.layer_affinity[0], default_affinity, "the default-texture lane keeps its classification");
+        assert!((inputs.layer_affinity[1] - 0.5).abs() < 1e-6, "an authored lane takes its GNAM list's density");
+        assert_eq!(inputs.base_affinity, default_affinity, "so does an unauthored base");
+
+        // An authored base still takes its own list (here none: "authored no grass").
+        let inputs = cover_density_inputs(
+            &world,
+            &splat_layers,
+            Some(0x0C01),
+            fo4,
+            &HashMap::new(),
+            &landscape_grasses,
+            None,
+        );
+        assert_eq!(inputs.base_affinity, 0.0);
+    }
 
     /// Every Oblivion LTEX must resolve to a texture that ships. Oblivion's
     /// `ICON` is relative to the landscape folder; before that was applied at
