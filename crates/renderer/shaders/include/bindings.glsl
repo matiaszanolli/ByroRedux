@@ -532,7 +532,7 @@ struct GpuTerrainTile {
     /// the base failed to resolve.
     uint baseDiffuseIndex;
     /// #6195 — per-layer `[0, 1]` height maps (BC4), base then splat lanes.
-    /// Zero = no height (yet). Appended at the tail; stride 176 → 208.
+    /// Zero = no height (yet). Appended at the tail: stride 176 → 208 at #6195/#6196, 224 since #6197.
     uint baseHeightIndex;
     uint layerHeightIndex[TERRAIN_SPLAT_LAYERS];
     /// #6196 — height-blend transition band; 0 = height blending off.

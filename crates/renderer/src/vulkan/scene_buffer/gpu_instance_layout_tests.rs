@@ -466,8 +466,9 @@ fn gpu_terrain_tile_is_224_bytes() {
 
 #[test]
 fn gpu_terrain_tile_field_offsets_match_shader_contract() {
-    // Matches `OpDecorate ... ArrayStride 160` + members at 0 / 32 / 64 /
-    // 96 / 112 / 128 / 136 / 140 / 144 in the shipped triangle.frag.spv.
+    // Matches `OpDecorate ... ArrayStride 224` + members at 0 / 32 / 64 /
+    // 96 / 112 / 128 / 136 / 140 / 144 / 160 / 164 / 168 / 172 / 204 / 208 /
+    // 212 / 216 / 220 in the shipped triangle.frag.spv.
     assert_eq!(offset_of!(GpuTerrainTile, layer_diffuse_index), 0);
     assert_eq!(offset_of!(GpuTerrainTile, layer_normal_index), 32);
     assert_eq!(offset_of!(GpuTerrainTile, layer_specular_index), 64);

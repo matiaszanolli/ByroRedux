@@ -77,7 +77,7 @@ pub struct GpuTerrainTile {
     /// (`byroTerrainHeightBlend`), in normalised height units; 0 disables it.
     /// A global setting, broadcast to every live tile by
     /// `VulkanContext::set_terrain_height_blend_band`, riding the slot that
-    /// was the std430 tail pad (the stride stays 208) rather than growing the
+    /// was the std430 tail pad (the stride was 208 at #6196, 224 since #6197) rather than growing the
     /// camera UBO and its five mirrors.
     pub height_blend_band: f32,
     /// #6197 — near-camera terrain parallax occlusion, three more global
