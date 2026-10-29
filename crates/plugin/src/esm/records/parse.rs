@@ -32,11 +32,10 @@ use std::collections::{HashMap, HashSet};
 ///
 /// #4278 — `sf_smoke` kept its own hand-written copy of this list and it
 /// drifted twice (SECH/AOPF, then OMOD/LVSP/SCEN), each time reporting
-/// live dispatch arms as "skip" and understating coverage. (#4437 — an
-/// earlier version of this history also listed LCTN, but LCTN has never
-/// had a top-level dispatch arm; `sf_smoke` correctly reporting it "skip"
-/// was not a drift, and re-adding LCTN to the list would over-report
-/// coverage — the regression class inverted.)
+/// live dispatch arms as "skip" and understating coverage. (#4437 listed
+/// LCTN in an earlier version of this history when it had no arm; it has
+/// one now — the misc-stub arm below routes it, so it belongs in the list,
+/// and removing it would under-report coverage — #5830, #6451.)
 /// The list lives next to the match it describes, and
 /// `dispatch_handled_fourccs_matches_the_live_dispatch_arms` fails if the
 /// two ever disagree.

@@ -435,9 +435,9 @@ it grew from 18 maps in Session 12 to ~90 today. The struct opens with
 - **Oblivion-unique base records** (#966) — `birthsigns` (BSGN),
   `clothing` (CLOT), `apparatuses` (APPA), `sigil_stones` (SGST),
   `soul_gems` (SLGM).
-- **Typed but unconsumed** (#6180) — eight maps have a full typed parser and
+- **Typed but unconsumed** (#6180) — seven maps have a full typed parser and
   are retained for the whole session, but nothing outside `records/` reads
-  them yet: `enchantments` (ENCH), `body_parts` (BPTD), `reputations` (REPU),
+  them yet: `enchantments` (ENCH), `reputations` (REPU),
   `explosions` (EXPL; only the `probe_form` example reads it),
   `combat_styles` (CSTY), `impacts` (IPCT), `impact_data_sets` (IPDS) and
   `recipes` (COBJ). They back cross-reference resolution and the census /

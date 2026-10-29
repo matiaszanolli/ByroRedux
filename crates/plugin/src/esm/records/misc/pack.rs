@@ -1266,7 +1266,9 @@ pub fn parse_pack(
             }
             // FO3/FNV PTD2 — the second target, the same 16-byte layout as
             // PTDT. Only Use Weapon authors one in vanilla (all 82 FNV and
-            // 55 of the 56 FO3 packages): there PTDT names the *weapon* and
+            // 46 of the 56 FO3 packages — the other 10, scripted set pieces
+            // such as the baseball pitching / batting and MS01 mine
+            // packages, author none and are declined, #6462): there PTDT names the *weapon* and
             // PTD2 the thing to shoot (fopdoc "Target 2"; the Oliver
             // Ranger snipers' PTD2 is the player, `0x14`).
             b"PTD2" if sub.data.len() >= PACK_LOCATION_LEN => {

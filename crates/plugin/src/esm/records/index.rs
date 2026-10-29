@@ -509,10 +509,12 @@ pub struct EsmIndex {
     /// pre-Skyrim games (those equip from inventory directly).
     /// See #896.
     pub outfits: HashMap<u32, OtftRecord>,
-    /// `BPTD` body-part-data records — per-NPC dismemberment
-    /// routing (head, torso, limbs) + biped slot count.
+    /// `BPTD` body-part-data records — the per-actor limb table (head,
+    /// torso, limbs): VATS targets, damage routing, dismemberment metadata.
     ///
-    /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map.
+    /// Read by `byroredux/src/systems/vats.rs` (`resolve_limb_table`, #6350);
+    /// the dismemberment half (the gore tail of `BPND`, `NAM1`/`NAM4`/`NAM5`,
+    /// `RAGA`) is still unconsumed.
     pub body_parts: HashMap<u32, BptdRecord>,
     /// `TREE` tree base records — Oblivion / FO3 / FNV reference an
     /// external SpeedTree binary (`.spt`) here; Skyrim+ points at a

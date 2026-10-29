@@ -137,9 +137,9 @@ hours on FO3/FNV/Oblivion, minutes on the 12-byte Skyrim+ layout, #6210; `days` 
 of the location-type variants carry a resolvable FormID), and `PTDT`
 (`PackTarget { target_type, target, count_or_distance }`, M42.5 — only 2
 of the 4 target-type variants carry a resolvable FormID). `PTD2` (a
-second target, for two-target procedures like Escort-someone-to-someone)
-is **not parsed** — Escort's own v0 runtime (§9) only ever escorts one
-actor, so no implemented procedure needs it yet.
+second target) is parsed (`PackRecord::target2`) and only UseWeapon
+reads it (the thing to shoot); Escort-someone-to-someone's second target
+is unused — Escort's own v0 runtime (§9) only ever escorts one actor.
 `NpcRecord.ai_packages: Vec<u32>`
 (`crates/plugin/src/esm/records/actor/npc.rs:237`, from `PKID`
 sub-records) holds the NPC's package list in priority order.
@@ -351,8 +351,9 @@ being new. New `PackTarget`/`PackTargetKind` types
 (`crates/plugin/src/esm/records/misc/pack.rs`) mirror
 `PackLocation`/`PackLocationTarget`'s exact shape — only `SpecificReference`/
 `ObjectId` target types get named, resolvable-FormID variants; the rest
-fold into `Other`. `PTD2` (a second target) is not decoded — no
-implemented procedure needs one yet.
+fold into `Other`. `PTD2` (a second target) is decoded into
+`target2`, but only UseWeapon reads it — no other implemented procedure
+needs one yet.
 
 Follow's defining difference from both Wander and Travel: it's the first
 procedure to track a **live** target rather than a fixed point. Wired at
@@ -430,8 +431,9 @@ v0 scope, mirroring Follow/Travel: no animation-clip swap; no
 per-frame package re-evaluation; target-entity resolution happens only
 once (not retried on a later miss); destination is frozen once resolved
 (a `NearReference` destination that moves after resolution isn't
-re-tracked, unlike the live collect phase); no `PTD2` (two-target
-Escort variants aren't decoded, so v0 only ever escorts one actor); one
+re-tracked, unlike the live collect phase); no use of `PTD2` for Escort (the
+second target is decoded but only UseWeapon reads it, so v0 only ever
+escorts one actor); one
 settle tick on the collect→lead transition is avoided by resolving and
 taking the first lead-phase step on the same tick collection completes
 (mirrors `travel_system` moving on the tick it resolves).
@@ -638,7 +640,7 @@ animation-clip swap).
   procedure's own state (target point, phase, resolved destination)
   intact. `CTDA` conditions are re-evaluated on each of those passes
   against the current game hour and world state, not just at spawn.
-  `PTD2` (a second target) still isn't parsed.
+  `PTD2` (a second target) is parsed, but only UseWeapon reads it.
 - **Pathing is single-tile.** Superseded 2026-08-23: the six locomotion
   procedures route through `navmesh_path::path_from_resident_tiles` (A\*
   over one NAVM tile's triangle adjacency, waypoints from shared-edge
