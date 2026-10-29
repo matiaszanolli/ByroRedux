@@ -6392,12 +6392,16 @@ fn fnv_bptd_vats_limb_tables_and_crea_linkage() {
         .find(|p| p.name == "Head")
         .expect("Default part named Head");
     // The classic Fallout limb profile: heads take double damage, are
-    // the *hardest* VATS shot (20 %), carry the head-condition AV (25)
-    // and the least health (30 % of total).
+    // the hardest VATS shot (30 % base), carry the head-condition AV (25)
+    // and the least health (20 % of total). BPND layout per xEdit
+    // (#6448): @4 flags (head 59), @5 part type (head 1), @6 health
+    // percent, @8 to-hit chance.
     assert_eq!(head.damage_mult, 2.0);
-    assert_eq!(head.to_hit_chance, 20);
+    assert_eq!(head.flags, 59);
+    assert_eq!(head.part_type, 1);
+    assert_eq!(head.to_hit_chance, 30);
     assert_eq!(head.actor_value, 25);
-    assert_eq!(head.health_percent, 30);
+    assert_eq!(head.health_percent, 20);
     let torso = default_bptd
         .parts
         .iter()
@@ -6407,12 +6411,13 @@ fn fnv_bptd_vats_limb_tables_and_crea_linkage() {
     assert_eq!(torso.to_hit_chance, 60);
     assert_eq!(torso.actor_value, 26);
     assert_eq!(torso.health_percent, 60);
+    assert_eq!((torso.flags, torso.part_type), (8, 0));
 
-    // PlayerBodyPartData (0x1C) — the player's own target profile:
-    // same limb health authoring, different (generous) hit chances —
-    // torso 255, the "always" sentinel; head 75. This pair is what
-    // separated @6 (to-hit, varies per record) from @8 (health,
-    // identical across both) during the #6350 spike.
+    // PlayerBodyPartData (0x1C) — the player's own body profile: the
+    // same per-part to-hit chances (@8: head 30, torso 60), a different
+    // health share (@6: head 75, torso 255). The pair separated @6
+    // (health percent, differs per record) from @8 (to-hit, identical
+    // across both) — the #6350 spike had them the other way round.
     let player_bptd = index
         .body_parts
         .get(&PLAYER_BODY_PART_DATA)
@@ -6423,14 +6428,15 @@ fn fnv_bptd_vats_limb_tables_and_crea_linkage() {
         .iter()
         .find(|p| p.name == "Torso")
         .expect("Player part named Torso");
-    assert_eq!(player_torso.to_hit_chance, 255);
-    assert_eq!(player_torso.health_percent, torso.health_percent);
+    assert_eq!(player_torso.health_percent, 255);
+    assert_eq!(player_torso.to_hit_chance, torso.to_hit_chance);
     let player_head = player_bptd
         .parts
         .iter()
         .find(|p| p.name == "Head")
         .expect("Player part named Head");
-    assert_eq!(player_head.to_hit_chance, 75);
+    assert_eq!(player_head.health_percent, 75);
+    assert_eq!(player_head.to_hit_chance, 30);
     assert_eq!(player_head.damage_mult, 1.0);
 
     let total_parts: usize = index.body_parts.values().map(|b| b.parts.len()).sum();

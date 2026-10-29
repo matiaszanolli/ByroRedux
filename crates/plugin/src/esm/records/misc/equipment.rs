@@ -173,28 +173,31 @@ pub struct BptdPart {
     pub bpni: String,
     /// `BPND` @0 — damage multiplier applied to hits on this part.
     pub damage_mult: f32,
-    /// `BPND` @4 — part-type byte (wide, creature-flavored enum);
-    /// stored raw, semantics pinned at Phase 4.
-    pub part_type: u8,
-    /// `BPND` @5 — flags. Corpus evidence: bit0 tracks "severable"
-    /// exactly (head = 1, torso = 0 across both games' vanilla sets).
+    /// `BPND` @4 — flags (xEdit `wbDefinitionsFNV.pas:5963-5982`, FO3 the same): Severable 0x01,
+    /// IK Data 0x02, IK Biped 0x04, Explodable 0x08, IK Is Head 0x10, IK Headtracking 0x20,
+    /// To-Hit Absolute 0x40. Measured on `DefaultBodyPartData`: head 59 (severable, IK, explodable,
+    /// is-head, headtracking), torso 8 (explodable only), limbs 9 / 15.
     pub flags: u8,
-    /// `BPND` @6 — base to-hit chance in VATS (percent). Authors may
-    /// exceed 100: vanilla `PlayerBodyPartData` ships torso 255 (the
-    /// "always" sentinel) and head 75, while `DefaultBodyPartData`
-    /// authors torso 60 / head 20 — the engine clamps downstream.
-    pub to_hit_chance: u8,
+    /// `BPND` @5 — part type, the `wbBodyLocationEnum` (torso 0, head 1, left arm 3, right arm 5,
+    /// left leg 7, right leg 10, ...). Not a flag: the "head = 1, torso = 0" pattern an earlier
+    /// reading took for a severable bit is this enum (#6448).
+    pub part_type: u8,
+    /// `BPND` @6 — the part's health as a percent of the actor's total. Differs per record
+    /// (`PlayerBodyPartData` 75 head / 255 torso, NPC default 20 / 60), which fits a share of the
+    /// actor's health, not a hit chance (#6448).
+    pub health_percent: u8,
     /// `BPND` @7 — limb-condition actor-value enum (`25..=31` in the
     /// FO3/FNV AV layout; `255` = none). Parts sharing a value group
     /// into one VATS UI entry.
     pub actor_value: u8,
-    /// `BPND` @8 — limb health as a percent of the actor's total.
-    pub health_percent: u8,
+    /// `BPND` @8 — base to-hit chance in VATS (percent). The same on both default records'
+    /// peers (head 30, torso 60, arms 45, legs 50), which fits a per-part VATS chance.
+    pub to_hit_chance: u8,
     /// `BPND` @9 — chance the part explodes when destroyed (percent;
     /// torso 0, arms 30-50, heads 95-100 in vanilla).
     pub explosion_chance: u8,
-    /// `BPND` @10 — debris count.
-    pub debris_count: u8,
+    /// `BPND` @10 — debris count (`u16`).
+    pub debris_count: u16,
     /// `BPND` @12 — generic debris FormID (DEBR; 0 = none).
     pub generic_debris: u32,
     /// `BPND` @16 — explosion FormID (EXPL; 0 = none).
@@ -237,6 +240,10 @@ impl BptdRecord {
         self.parts.len() as u32
     }
 }
+
+/// The `BPND` payload length of the dialect [`parse_bptd`] decodes (FO3 / FNV, and Skyrim's
+/// 84-byte payloads). A longer payload is another layout (#6465).
+const BPND_LEGACY_LEN: usize = 84;
 
 // #1057's Tier-7 note is half-retired: the full per-part array decode
 // landed with VATS (#6350) because targeting needs the limb table. The
@@ -283,16 +290,24 @@ pub fn parse_bptd(
                     d.get(o..o + 4)
                         .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 };
-                part.damage_mult = f32_at(0);
-                part.part_type = u8_at(4);
-                part.flags = u8_at(5);
-                part.to_hit_chance = u8_at(6);
-                part.actor_value = u8_at(7);
-                part.health_percent = u8_at(8);
-                part.explosion_chance = u8_at(9);
-                part.debris_count = u8_at(10);
-                part.generic_debris = remap_fid(u32_at(12), remap);
-                part.explosion = remap_fid(u32_at(16), remap);
+                // #6465 — this is the 84-byte FO3 / FNV (and Skyrim) dialect. FO4's BPND is 101
+                // bytes with a different layout: decoding it here made every field garbage and fed
+                // bogus FormIDs (float 1.0 = 0x3F800000) through `remap_fid`, 152 false warnings on a
+                // vanilla load. Leave it undecoded until a sourced FO4 layout is in hand; the name
+                // run (BPTN / BPNN / BPNT / BPNI) is kept.
+                if d.len() <= BPND_LEGACY_LEN {
+                    let u16_at = |o: usize| d.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
+                    part.damage_mult = f32_at(0);
+                    part.flags = u8_at(4);
+                    part.part_type = u8_at(5);
+                    part.health_percent = u8_at(6);
+                    part.actor_value = u8_at(7);
+                    part.to_hit_chance = u8_at(8);
+                    part.explosion_chance = u8_at(9);
+                    part.debris_count = u16_at(10);
+                    part.generic_debris = remap_fid(u32_at(12), remap);
+                    part.explosion = remap_fid(u32_at(16), remap);
+                }
                 out.parts.push(std::mem::take(&mut part));
             }
             _ => {}
@@ -570,14 +585,13 @@ mod tests {
                     expl_form: u32| {
             let mut d = Vec::new();
             d.extend_from_slice(&damage.to_le_bytes());
-            d.push(part_type);
             d.push(flags);
-            d.push(hit);
-            d.push(av);
+            d.push(part_type);
             d.push(health);
+            d.push(av);
+            d.push(hit);
             d.push(boom);
-            d.push(debris_n);
-            d.push(0); // @11 — always zero in the corpus; padding
+            d.extend_from_slice(&u16::from(debris_n).to_le_bytes());
             d.extend_from_slice(&debris_form.to_le_bytes());
             d.extend_from_slice(&expl_form.to_le_bytes());
             d.extend_from_slice(&[0u8; 84 - 20]); // gore tail, Phase 4
@@ -592,14 +606,14 @@ mod tests {
             sub(b"BPNI", b"GoreHead\0"),
             sub(
                 b"BPND",
-                bpnd(2.0, 59, 1, 40, 25, 30, 95, 3, 0x000A_0001, 0x000B_0002),
+                bpnd(2.0, 1, 59, 30, 25, 20, 95, 3, 0x000A_0001, 0x000B_0002),
             ),
             sub(b"NAM1", [0]),
             sub(b"BPTN", b"Torso\0"),
             sub(b"BPNN", b"Bip01 Spine1\0"),
             sub(b"BPNT", b"Bip01 Spine1\0"),
             sub(b"BPNI", b"\0"),
-            sub(b"BPND", bpnd(1.0, 0, 0, 100, 26, 50, 0, 0, 0, 0)),
+            sub(b"BPND", bpnd(1.0, 0, 8, 60, 26, 60, 0, 0, 0, 0)),
         ];
         // A mod-plugin remap so the embedded DEBR/EXPL refs prove the
         // #3714 path: this plugin's first master lives at global slot
@@ -616,11 +630,11 @@ mod tests {
         assert_eq!(head.vats_target_node, "Bip01 Head");
         assert_eq!(head.bpni, "GoreHead");
         assert_eq!(head.damage_mult, 2.0);
-        assert_eq!(head.part_type, 59);
-        assert_eq!(head.flags, 1);
-        assert_eq!(head.to_hit_chance, 40);
+        assert_eq!(head.part_type, 1, "the body-location enum: head");
+        assert_eq!(head.flags, 59, "severable | IK | explodable | is-head | headtracking");
+        assert_eq!(head.to_hit_chance, 30);
         assert_eq!(head.actor_value, 25);
-        assert_eq!(head.health_percent, 30);
+        assert_eq!(head.health_percent, 20);
         assert_eq!(head.explosion_chance, 95);
         assert_eq!(head.debris_count, 3);
         assert_eq!(head.generic_debris, 0x010A_0001);
@@ -628,9 +642,32 @@ mod tests {
 
         let torso = &b.parts[1];
         assert_eq!(torso.actor_value, 26);
-        assert_eq!(torso.to_hit_chance, 100);
+        assert_eq!(torso.part_type, 0);
+        assert_eq!(torso.flags, 8);
+        assert_eq!(torso.to_hit_chance, 60);
+        assert_eq!(torso.health_percent, 60);
         assert_eq!(torso.generic_debris, 0);
         assert_eq!(torso.explosion, 0);
+    }
+
+    /// #6465 — FO4's BPND is 101 bytes in a different layout. It must neither populate the fields
+    /// nor reach `remap_fid`: `0x3F800000` (the float 1.0 at @12) is a mod-index-63 FormID that a
+    /// one-master plugin logs as an out-of-range remap. The name run still lands.
+    #[test]
+    fn parse_bptd_leaves_an_fo4_sized_bpnd_undecoded() {
+        let mut fo4 = Vec::new();
+        fo4.extend_from_slice(&1.0f32.to_le_bytes());
+        fo4.extend_from_slice(&[0u8; 8]);
+        fo4.extend_from_slice(&1.0f32.to_le_bytes()); // @12: 0x3F800000 if misread as a FormID
+        fo4.resize(101, 0);
+        let subs = vec![sub(b"BPTN", b"Head\0"), sub(b"BPNN", b"Head\0"), sub(b"BPND", fo4)];
+        let b = parse_bptd(0x0000_001D, &subs, &Some(FormIdRemap::regular(2, vec![1])));
+        assert_eq!(b.parts.len(), 1);
+        let part = &b.parts[0];
+        assert_eq!(part.name, "Head");
+        assert_eq!(part.damage_mult, 0.0, "undecoded, not read at the 84-byte offsets");
+        assert_eq!(part.generic_debris, 0);
+        assert_eq!(part.explosion, 0);
     }
 
     /// #6350 — short BPND payloads decode what they carry and default
