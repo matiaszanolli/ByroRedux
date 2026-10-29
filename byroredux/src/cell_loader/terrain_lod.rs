@@ -142,8 +142,9 @@ fn cell_is_full_detail(gx: i32, gy: i32, resident_full_cells: &HashSet<(i32, i32
 //                 625 blocks × 1536 idx  = 960 000 idx  (~6.0% soft cap)
 // Skirts (`append_lod_skirts`) hang only along the edges that border a
 // resident full-detail cell, so they scale with the perimeter of the resident
-// region (at most 15 x 15 cells, 4 samples a cell: 240 edges, 2 vertices and 6
-// indices each), not with the ring's area. The allowance below is ~8x that.
+// region (at most 25 x 25 cells at the default streaming radius of 12, 4
+// samples a cell: 400 edges, 2 vertices and 6 indices each — 800 / 2 400), not
+// with the ring's area. The allowance below is ~5x / ~3x that.
 const LOD_SKIRT_VERTEX_ALLOWANCE: usize = 4096;
 const LOD_SKIRT_INDEX_ALLOWANCE: usize = 8192;
 const LOD_RING_VERTEX_FOOTPRINT: usize = {
@@ -898,12 +899,6 @@ fn synth_base_texture_path(
     layer_textures.texture_set(ltex)?.diffuse
 }
 
-/// Build + spawn one finest-band LOD block whose SW-corner cell is
-/// `(bx0, by0)`. Returns `None`
-/// (nothing spawned) when the block is entirely holes — every cell either
-/// missing, landscape-less, or actually resident at full detail — or the
-/// upload fails. On success returns the [`LodBlock`] for streaming tracking.
-#[allow(clippy::too_many_arguments)]
 /// How far a skirt hangs below the LOD edge it hides a seam for, world units.
 /// Terrain's deviation from a straight 1 024-unit chord between two LOD samples
 /// is tens to a few hundred units on rugged ground; 640 covers that with room.
@@ -957,6 +952,11 @@ fn append_lod_skirts(
     }
 }
 
+/// Build + spawn one finest-band LOD block whose SW-corner cell is
+/// `(bx0, by0)`. Returns `None`
+/// (nothing spawned) when the block is entirely holes — every cell either
+/// missing, landscape-less, or actually resident at full detail — or the
+/// upload fails. On success returns the [`LodBlock`] for streaming tracking.
 #[allow(clippy::too_many_arguments)] // One LOD block's spawn inputs (world, GPU context, asset providers, cell data, block coords, game/worldspace); a struct would only rename them.
 fn spawn_lod_block(
     world: &mut World,

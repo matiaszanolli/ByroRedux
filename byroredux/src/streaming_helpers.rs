@@ -872,11 +872,6 @@ where
     salvaged
 }
 
-/// `salvage` is whether a cancel mid-FinishImports still owes the registry the
-/// payload's remaining imports. A boundary cancel on the frame loop does (the
-/// worker lives on); a worldspace drain does not — the state, worker and its
-/// skip filters die with it, so there is nothing left whose premise a salvage
-/// would repair (#5715).
 /// Finish at most ONE import from the owed-salvage queue (#5715), returning
 /// whether it did. The unit of work the frame budget charges: the caller yields
 /// between calls, so a stale payload's hundreds of imports spread across frames
@@ -895,6 +890,11 @@ fn salvage_one_queued_import(
     true
 }
 
+/// `salvage` is whether a cancel mid-FinishImports still owes the registry the
+/// payload's remaining imports. A boundary cancel on the frame loop does (the
+/// worker lives on); a worldspace drain does not — the state, worker and its
+/// skip filters die with it, so there is nothing left whose premise a salvage
+/// would repair (#5715).
 fn cancel_streaming_apply_job(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
