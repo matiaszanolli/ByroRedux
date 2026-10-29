@@ -4201,6 +4201,30 @@ mod tests {
         assert_eq!(vitals_snapshot(&world).unwrap().len(), 3, "HP, AP, RAD");
     }
 
+    /// #6428 — the HUD gauge and the affliction model read the rad pool from
+    /// the same layer, so one write moves both.
+    #[test]
+    fn the_rad_gauge_and_the_affliction_pool_read_one_write() {
+        use byroredux_core::character::AfflictionTable;
+        let mut world = World::new();
+        world.register::<byroredux_core::ecs::components::ActorValues>();
+        let player = world.spawn();
+        world.insert_resource(PlayerEntity(Some(player)));
+        world.insert_resource(PlayerVitals {
+            bars: vec![("HP", 1000)],
+            by_editor_id: FxHashMap::from_iter([("Health", 1000), ("RadiationRads", 0x5E4)]),
+            radiation: Some(("RAD", 0x5E4, 1000.0)),
+        });
+        let mut values = byroredux_core::ecs::components::ActorValues::new();
+        values.set_base(1000, 200.0);
+        values.mod_temporary(0x5E4, 250.0);
+        world.insert(player, values);
+        let table = AfflictionTable { pool_avif: 0x5E4, bands: vec![] };
+        let pool = table.pool_value(&world.get::<byroredux_core::ecs::components::ActorValues>(player).unwrap());
+        let gauge = vitals_snapshot(&world).unwrap().pop().unwrap().current;
+        assert_eq!((pool, gauge), (250.0, 250.0));
+    }
+
     #[test]
     fn vitals_snapshot_without_a_player_or_bars_is_none() {
         let mut world = World::new();

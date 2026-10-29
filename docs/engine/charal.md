@@ -219,9 +219,13 @@ pub struct AfflictionStatus { entries: Vec<ActiveAffliction> }             // Ac
 
 The **pool/threshold half** of the affliction family (§0 — Radiation, Poison, Disease,
 …; [`character::resistance`] owns the resistance-percentage half). The pool itself
-needs no new storage — it's the existing `ActorValue::damage` layer on whatever AV
-represents it (Rads, a poison total, …), read via `AfflictionTable::pool_value`, not
-`ActorValues::current` (which subtracts damage — the pool *is* the damage).
+needs no new storage — it's the **composed** value of whatever AV represents it (Rads, a
+poison total, …), read via `AfflictionTable::pool_value` = `ActorValues::current`, the
+same value `GetAV radiationrads` and the HUD rad gauge read (GECK *Actor Value Codes* 54 /
+*GetRadiationLevel*). Writers accumulate it on the modifier layers (`mod_temporary` /
+`mod_permanent`), **not** on `damage`, which subtracts from `current` (#6428). Rad
+accumulation (an exposure system) and RADS-stage penalties are **unbuilt**; nothing writes
+the pool in production yet.
 `AfflictionStatus` is the missing piece: `ActorValues::mod_temporary` is a bare
 additive delta with no expiration, so a threshold-crossing tick needs to remember
 which band it last applied to reverse *exactly* that delta before applying a new one.

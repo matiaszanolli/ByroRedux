@@ -2,18 +2,21 @@
 //! affliction family (CHARAL). [`super::resistance`] owns the other half (the
 //! resistance-percentage descriptor); this module is the mechanism every
 //! game's Radiation / Poison / Disease affliction plugs into, per the
-//! `{pool damage + resistance AV + SPECIAL-penalty via temporary_mod}` shape
+//! `{pool + resistance AV + SPECIAL-penalty via temporary_mod}` shape
 //! (`docs/engine/charal-fnv-fo3-ruleset.md`, `charal-fo4-ruleset.md`,
 //! `charal-fo76-ruleset.md`).
 //!
 //! ## Why a new mechanism, not just `ActorValues`
 //!
 //! The **pool** half needs no new storage: an affliction's accumulating pool
-//! (Rads, a poison-damage total, …) is just the existing `damage` layer on
-//! whatever actor value represents it — [`ActorValue::damage`] is already
-//! "accumulates, floors at zero, restored separately by name" (RadAway calls
-//! [`ActorValues::restore`] exactly the way it cures Rads). No pool type is
-//! introduced here; [`AfflictionTable::pool_value`] just reads that layer.
+//! (Rads, a poison total, …) is the composed value of whatever actor value
+//! represents it. Writers accumulate it on the modifier layers
+//! (`mod_temporary` / `mod_permanent`) and cure it by subtracting there;
+//! [`AfflictionTable::pool_value`] reads `ActorValues::current`, the same
+//! composed value `GetAV radiationrads` and the HUD rad gauge read, so every
+//! reader agrees on one write (#6428). The `damage` layer is not the pool: it
+//! subtracts from `current`. Rad accumulation (an exposure system) and the
+//! RADS-stage penalties are unbuilt; nothing writes the pool in production yet.
 //!
 //! The **missing** half is applying/removing a **threshold-gated temporary
 //! SPECIAL penalty** as the pool crosses band boundaries.
@@ -74,20 +77,23 @@ pub struct AfflictionBand {
 /// shipped table is empty today (see module docs).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AfflictionTable {
-    /// The actor value whose `damage` layer holds this affliction's
+    /// The actor value whose composed value holds this affliction's
     /// accumulated pool (e.g. `Rads`).
     pub pool_avif: u32,
     pub bands: Vec<AfflictionBand>,
 }
 
 impl AfflictionTable {
-    /// The affliction's current pool level for `avs` — the accumulated
-    /// `damage` on [`Self::pool_avif`], **not** `ActorValues::current` (that
-    /// formula subtracts damage; the pool *is* the damage). `0.0` if the
-    /// actor doesn't carry the pool AV yet (healthy default).
+    /// The affliction's current pool level for `avs` — the composed
+    /// `ActorValues::current` of [`Self::pool_avif`], the same value
+    /// `GetAV radiationrads` and the HUD rad gauge read (GECK *Actor Value
+    /// Codes* 54 / *GetRadiationLevel*), so every reader agrees on one write.
+    /// Writers accumulate the pool on the modifier layers (`mod_temporary` /
+    /// `mod_permanent`), not on `damage`, which would subtract from it. `0.0`
+    /// if the actor doesn't carry the pool AV yet (healthy default).
     #[inline]
     pub fn pool_value(&self, avs: &ActorValues) -> f32 {
-        avs.get(self.pool_avif).map_or(0.0, |v| v.damage)
+        avs.current(self.pool_avif)
     }
 
     /// Index of the active band for `pool_value` — the reached band with the
@@ -286,14 +292,15 @@ mod tests {
     }
 
     #[test]
-    fn pool_value_reads_the_damage_layer_not_current() {
+    fn pool_value_reads_the_composed_value_not_the_damage_layer() {
         let mut avs = ActorValues::new();
-        avs.apply_damage(RADS, 250.0);
-        // `current()` would read −250 (damage is subtracted); the pool reads
-        // the raw accumulated damage instead.
-        assert_eq!(avs.current(RADS), -250.0);
+        avs.mod_temporary(RADS, 250.0);
         let table = stand_in_radiation_table();
         assert_eq!(table.pool_value(&avs), 250.0);
+        assert_eq!(avs.current(RADS), 250.0);
+        // Damage on the pool AV is not rads: it subtracts, like every other AV.
+        avs.apply_damage(RADS, 100.0);
+        assert_eq!(table.pool_value(&avs), 150.0);
     }
 
     #[test]
@@ -353,11 +360,11 @@ mod tests {
         // reverses exactly those.
         let mut status = AfflictionStatus::default();
         let mut avs = ActorValues::new();
-        avs.apply_damage(RADS, 650.0); // into the duplicated 600 band
+        avs.mod_temporary(RADS, 650.0); // into the duplicated 600 band
         reevaluate_affliction(&mut status, &mut avs, &table);
         assert_eq!(avs.current(STR), -1.0, "band 1's STR penalty applied");
         assert_eq!(avs.current(AGI), -1.0, "band 1's AGI penalty applied");
-        avs.restore(RADS, 650.0); // back to healthy
+        avs.mod_temporary(RADS, -650.0); // back to healthy
         reevaluate_affliction(&mut status, &mut avs, &table);
         assert_eq!(avs.current(STR), 0.0, "penalties net to zero");
         assert_eq!(avs.current(AGI), 0.0, "penalties net to zero");
@@ -378,7 +385,7 @@ mod tests {
         let mut status = AfflictionStatus::default();
         let mut avs = ActorValues::new();
 
-        avs.apply_damage(RADS, 250.0); // into band 0 (min_pool 200.0)
+        avs.mod_temporary(RADS, 250.0); // into band 0 (min_pool 200.0)
         reevaluate_affliction(&mut status, &mut avs, &table);
         assert_eq!(avs.current(STR), -1.0, "band 0 penalty applied");
         assert_eq!(status.band_of(RADS), Some(200.0));
@@ -388,7 +395,7 @@ mod tests {
         // its result survives the reorder too.
         table.bands.reverse();
 
-        avs.restore(RADS, 250.0); // back to healthy
+        avs.mod_temporary(RADS, -250.0); // back to healthy
         reevaluate_affliction(&mut status, &mut avs, &table);
         assert_eq!(
             avs.current(STR),
@@ -406,7 +413,7 @@ mod tests {
         let table = stand_in_radiation_table();
         let mut status = AfflictionStatus::default();
         let mut avs = ActorValues::new();
-        avs.apply_damage(RADS, 250.0); // into band 0
+        avs.mod_temporary(RADS, 250.0); // into band 0
 
         reevaluate_affliction(&mut status, &mut avs, &table);
 
@@ -419,7 +426,7 @@ mod tests {
         let table = stand_in_radiation_table();
         let mut status = AfflictionStatus::default();
         let mut avs = ActorValues::new();
-        avs.apply_damage(RADS, 250.0);
+        avs.mod_temporary(RADS, 250.0);
 
         reevaluate_affliction(&mut status, &mut avs, &table);
         reevaluate_affliction(&mut status, &mut avs, &table);
@@ -433,7 +440,7 @@ mod tests {
         let table = stand_in_radiation_table();
         let mut status = AfflictionStatus::default();
         let mut avs = ActorValues::new();
-        avs.apply_damage(RADS, 250.0);
+        avs.mod_temporary(RADS, 250.0);
         reevaluate_affliction(&mut status, &mut avs, &table);
         assert_eq!(avs.current(STR), -1.0);
         assert_eq!(avs.current(AGI), 0.0);
@@ -441,7 +448,7 @@ mod tests {
         // Pool climbs into band 1: STR penalty stays (both bands apply it),
         // AGI penalty newly applies. The old band's deltas are reversed
         // first, so this must NOT double the STR penalty.
-        avs.apply_damage(RADS, 400.0); // total 650 → band 1
+        avs.mod_temporary(RADS, 400.0); // total 650 → band 1
         reevaluate_affliction(&mut status, &mut avs, &table);
 
         assert_eq!(avs.current(STR), -1.0, "still exactly −1, not −2");
@@ -454,12 +461,12 @@ mod tests {
         let table = stand_in_radiation_table();
         let mut status = AfflictionStatus::default();
         let mut avs = ActorValues::new();
-        avs.apply_damage(RADS, 250.0);
+        avs.mod_temporary(RADS, 250.0);
         reevaluate_affliction(&mut status, &mut avs, &table);
         assert_eq!(avs.current(STR), -1.0);
 
         // RadAway: restore the pool back to 0 (cured).
-        avs.restore(RADS, 250.0);
+        avs.mod_temporary(RADS, -250.0);
         reevaluate_affliction(&mut status, &mut avs, &table);
 
         assert_eq!(avs.current(STR), 0.0, "penalty fully reversed");
@@ -481,8 +488,8 @@ mod tests {
         };
         let mut status = AfflictionStatus::default();
         let mut avs = ActorValues::new();
-        avs.apply_damage(RADS, 250.0);
-        avs.apply_damage(POISON_POOL, 60.0);
+        avs.mod_temporary(RADS, 250.0);
+        avs.mod_temporary(POISON_POOL, 60.0);
 
         reevaluate_affliction(&mut status, &mut avs, &radiation);
         reevaluate_affliction(&mut status, &mut avs, &poison);
@@ -496,7 +503,7 @@ mod tests {
         assert_eq!(status.entries.len(), 2);
 
         // Curing radiation must not touch poison's tracked band.
-        avs.restore(RADS, 250.0);
+        avs.mod_temporary(RADS, -250.0);
         reevaluate_affliction(&mut status, &mut avs, &radiation);
         assert_eq!(avs.current(STR), 0.0);
         assert_eq!(avs.current(AGI), -2.0, "poison penalty untouched");
@@ -511,7 +518,7 @@ mod tests {
         };
         let mut status = AfflictionStatus::default();
         let mut avs = ActorValues::new();
-        avs.apply_damage(RADS, 10_000.0);
+        avs.mod_temporary(RADS, 10_000.0);
 
         reevaluate_affliction(&mut status, &mut avs, &table);
 
@@ -529,7 +536,7 @@ mod tests {
         world
             .get_mut::<ActorValues>(tracked)
             .unwrap()
-            .apply_damage(RADS, 250.0);
+            .mod_temporary(RADS, 250.0);
 
         // An actor with ActorValues but no AfflictionStatus is untouched —
         // opting in is the spawn path's job, not this system's.
@@ -538,7 +545,7 @@ mod tests {
         world
             .get_mut::<ActorValues>(untracked)
             .unwrap()
-            .apply_damage(RADS, 900.0);
+            .mod_temporary(RADS, 900.0);
 
         affliction_tick_system(&world, &[stand_in_radiation_table()]);
 
@@ -549,7 +556,7 @@ mod tests {
         assert_eq!(
             world.get::<ActorValues>(untracked).unwrap().current(STR),
             0.0,
-            "untracked actor's pool damage never gets a penalty applied"
+            "untracked actor's pool never gets a penalty applied"
         );
     }
 
