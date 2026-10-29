@@ -926,3 +926,18 @@ fn a_command_this_module_does_not_run_is_left_for_the_host() {
     assert_eq!(run(&world, 0x1fff, &[], &context(Some(ACTOR))), Action::Unhandled);
     assert_eq!(getter(&world, 0x1fff, &[], &context(Some(ACTOR))), Action::Unhandled);
 }
+
+/// #6478 — these ids are other commands in Oblivion (0x10ab `IsPlayerInJail`, 0x10c0
+/// `CloseCurrentOblivionGate`, 0x1078 `PositionWorld`, 0x1079 `PositionCell`, 0x105f `Yield`). A
+/// `Games::Any` row answered them with a Fallout command's effect before the Oblivion getter route
+/// (which owns `IsPlayerInJail`) was reached, and a faked `Done` for a gate close that never ran.
+#[test]
+fn fallout_only_opcodes_do_not_shadow_oblivions() {
+    let (fallout, _, _) = world();
+    let mut oblivion = World::new();
+    oblivion.insert_resource(crate::ScriptGame(GameKind::Oblivion));
+    for id in [CMD_IGNORE_CRIME, CMD_GET_IGNORE_CRIME, CMD_SET_ENEMY, CMD_SET_ALLY, CMD_SEND_ASSAULT_ALARM] {
+        assert_eq!(run(&oblivion, id, &[], &context(Some(ACTOR))), Action::Unhandled, "{id:#06x} must be left to Oblivion's own handling");
+        assert!(!matches!(run(&fallout, id, &[], &context(Some(ACTOR))), Action::Unhandled), "{id:#06x} is still a Fallout command");
+    }
+}

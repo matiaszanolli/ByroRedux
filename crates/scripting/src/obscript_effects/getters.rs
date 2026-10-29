@@ -536,7 +536,7 @@ pub(crate) const GETTER_COMMANDS: &[Command] = &[
     Command { id: CMD_GET_DETECTED, games: Games::Any, needs_caller: true, handler: get_detected },
     Command { id: CMD_IS_KILLER, games: Games::Any, needs_caller: true, handler: is_killer },
     Command { id: CMD_IS_WEAPON_OUT, games: Games::Any, needs_caller: true, handler: is_weapon_out },
-    Command { id: CMD_GET_IGNORE_CRIME, games: Games::Any, needs_caller: true, handler: get_ignore_crime },
+    Command { id: CMD_GET_IGNORE_CRIME, games: Games::Fallout, needs_caller: true, handler: get_ignore_crime },
     Command { id: CMD_GET_OPEN_STATE, games: Games::Any, needs_caller: true, handler: get_open_state },
     Command { id: CMD_GET_SITTING, games: Games::Any, needs_caller: true, handler: get_sitting },
     Command { id: CMD_IS_ANIM_PLAYING, games: Games::Any, needs_caller: true, handler: is_anim_playing },
