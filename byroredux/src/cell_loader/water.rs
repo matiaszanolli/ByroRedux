@@ -165,7 +165,9 @@ where
 
 /// LAND is 32 segments (33 vertices) per exterior cell side.
 const LAND_BED_SEGMENTS: usize = 32;
-/// How close to the plane's `±1` edge a normalized vertex counts as on it.
+/// How close to the plane's `±1` edge a normalized vertex counts as on it. Only the tests ask: the
+/// bake's border rule is `WaterBedField::sample_baked`'s (#6420).
+#[cfg(test)]
 const BORDER_EPSILON: f32 = 1.0e-4;
 
 /// The bed under a water plane, sampled from the cell's LAND heightfield.
