@@ -139,7 +139,7 @@ fn delta_columns_removed_at_runtime_have_a_load_reconciler() {
     /// Every `MUTABLE_DELTA_COLUMNS` type with a production (non-test)
     /// removal site, paired with its audited disposition.
     const RECONCILED: &[(&str, RemovalDisposition)] = &[
-        // inventory.rs' `reconcile_equipped_weapon` else-arm, reached from
+        // inventory/actions.rs' `reconcile_equipped_weapon` else-arm, reached from
         // the pause menu's unequip action (main.rs' `inventory_actions`).
         (
             "EquippedWeapon",
@@ -240,7 +240,7 @@ fn delta_columns_removed_at_runtime_have_a_load_reconciler() {
         if path
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| stem.ends_with("_tests"))
+            .is_some_and(|stem| stem == "tests" || stem.ends_with("_tests"))
             || path.components().any(|part| part.as_os_str() == "tests")
         {
             continue;

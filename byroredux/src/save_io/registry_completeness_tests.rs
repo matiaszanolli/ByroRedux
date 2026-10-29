@@ -1037,7 +1037,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         if path
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| stem.ends_with("_tests"))
+            .is_some_and(|stem| stem == "tests" || stem.ends_with("_tests"))
             || path.components().any(|part| part.as_os_str() == "tests")
         {
             continue;
@@ -1237,7 +1237,7 @@ fn every_delta_column_is_parked_or_explicitly_not() {
         ),
         (
             "TimedRestorations",
-            "the only production insert is on the player (inventory.rs); the player is never evicted",
+            "the only production insert is on the player (inventory/); the player is never evicted",
         ),
         (
             "GuardState",

@@ -3369,7 +3369,7 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
         );
     }
 
-    const INVENTORY_RS: &str = include_str!("../inventory.rs");
+    const INVENTORY_RS: &str = crate::inventory::SOURCES;
     let counts = [
         ("npc_spawn.rs", count_calls(NPC_SPAWN_RS, &call_names)),
         (
