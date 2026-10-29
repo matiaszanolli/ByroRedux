@@ -240,7 +240,9 @@ float gcSeedStream(uint seed, uint stream) {
 /// coefficient of variation, clamped to its `sizeRange.xy`.
 ///
 /// For mean `m` and CV `c`: `s2 = ln(1 + c^2)`, `mu = ln(m) - s2/2`, so the
-/// untruncated draw has mean `m` and CV `c`. The normal variate is Box–Muller
+/// untruncated draw has mean `m` and CV `c` (the clamp then trims the tails: for
+/// the built-in species ~5.6 % of blades land exactly on the maximum and σ is
+/// ~9.5 % below the matched value, #6413). The normal variate is Box–Muller
 /// over two independent seed streams. A species with no mean (or a zero spread)
 /// keeps the uniform draw it had before, so a record that never set the lanes
 /// is unchanged. The distribution and its parameters are cited in

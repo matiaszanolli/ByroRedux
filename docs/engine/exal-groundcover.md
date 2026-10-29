@@ -2014,11 +2014,17 @@ with `z` a Box–Muller normal over two independent seed streams (0 and 13).
 - *The numbers:* **not sourced.** Barre et al. publish no within-sward spread
   and no CV. The built-in species therefore carry `moment_matched_length` of
   their existing `height_range`: mean at the midpoint, `σ = (max − min)/√12`,
-  i.e. the first two moments of the uniform draw this replaces (temperate:
-  18.5 units, CV 0.234 for the shipped 11–26 range; arid: 9.75 units, CV
-  0.222). Only the shape changes, no
-  number is invented, and the placeholder status is recorded on the field's doc
-  comment. Replacing it needs a measured within-sward length spread for a
+  i.e. the first two moments of the *unclamped* distribution are those of the
+  uniform draw this replaces (temperate: 18.5 units, CV 0.234 for the shipped
+  11–26 range; arid: 9.75 units, CV 0.222). No number is invented, and the
+  placeholder status is recorded on the field's doc comment. The shader then
+  clamps to `height_range`, which is only ±√3 σ of that distribution, so the
+  delivered draw is not exactly matched (#6413; numeric replay of the shader's
+  formula, 400 k draws): temperate σ 4.33 → 3.92 (−9.6 %), mean 18.50 → 18.36,
+  5.6 % of blades exactly at the maximum and 1.6 % at the minimum; arid σ 2.17 →
+  1.96 (−9.4 %), mean 9.75 → 9.68, 5.6 % / 1.8 %. A faint flat top at the
+  species maximum is that clamp, not a decode fault; reflecting instead of
+  clamping, or rescaling the CV, would remove it and is a visual change. Replacing it needs a measured within-sward length spread for a
   species the palette stands for; the rangeland study on ryegrass tiller-length
   CVs seen in the same search was not retrievable.
 

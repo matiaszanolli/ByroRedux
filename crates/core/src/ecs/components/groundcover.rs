@@ -132,8 +132,11 @@ pub const NO_WATER_HEIGHT: f32 = -1.0e30;
 pub const GROUNDCOVER_NO_TERRAIN_TILE: u32 = u32::MAX;
 
 /// `(mean, coefficient of variation)` of a uniform draw over `range`: the mean
-/// at the midpoint and `σ = (max − min) / √12`, so a log-normal built from it
-/// reproduces the spread of the uniform it replaces (#6201).
+/// at the midpoint and `σ = (max − min) / √12`, so the *unclamped* log-normal
+/// built from it has the first two moments of the uniform it replaces (#6201).
+/// The shader then clamps to `range`, which is only ±√3 σ of that distribution,
+/// so the delivered draw is slightly narrower (#6413): see
+/// [`GroundCoverSpecies::blade_length_mean`].
 pub const fn moment_matched_length(range: (f32, f32)) -> (f32, f32) {
     /// `1 / √12`, the standard deviation of a unit-width uniform.
     const UNIFORM_SIGMA_PER_WIDTH: f32 = 0.288_675_13;
@@ -156,9 +159,13 @@ pub struct GroundCoverSpecies {
     /// where within it a typical blade of the species sits.
     ///
     /// Not a sourced botanical figure: the built-in species carry
-    /// [`moment_matched_length`] of their own `height_range`, i.e. exactly the
-    /// first two moments the uniform draw it replaces already had, so only the
-    /// distribution's *shape* changes. Barre, Turner & Escobar-Gutiérrez 2015
+    /// [`moment_matched_length`] of their own `height_range`, i.e. the first two
+    /// moments of the *unclamped* distribution are those of the uniform draw it
+    /// replaces. The clamp to `height_range` (±√3 σ) trims the tails, so the
+    /// delivered draw is not exactly moment-matched: measured on the built-ins,
+    /// σ is ~9.5 % low (temperate 4.33 → 3.92, arid 2.17 → 1.96), the mean moves
+    /// by under 1 %, and ~5.6 % of blades sit exactly at the maximum and ~1.7 %
+    /// at the minimum (#6413). Barre, Turner & Escobar-Gutiérrez 2015
     /// (§13) establishes that leaf length varies within a species and with leaf
     /// rank, but publishes no within-sward spread to replace the placeholder.
     pub blade_length_mean: f32,

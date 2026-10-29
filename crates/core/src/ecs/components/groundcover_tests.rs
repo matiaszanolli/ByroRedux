@@ -31,7 +31,9 @@ fn malformed_species_are_rejected() {
 }
 
 /// #6201 — the built-in species' mean and spread are the first two moments of
-/// the uniform `height_range` draw they replace, not new numbers.
+/// the uniform `height_range` draw they replace, not new numbers. (Of the
+/// unclamped log-normal: the shader's clamp to `height_range` trims ~6 % of
+/// blades to the limits and narrows σ by ~9.5 %, #6413.)
 #[test]
 fn default_blade_length_matches_the_moments_of_the_uniform_it_replaced() {
     let (mean, cv) = moment_matched_length((9.0, 21.0));
@@ -275,4 +277,42 @@ fn union_density_combines_the_listed_records() {
     assert_eq!(cover.union_density(&[99]), 0.0, "an unplaceable record adds nothing");
     assert!((cover.union_density(&[20, 99]) - 0.50).abs() < 1.0e-6);
     assert_eq!(cover.union_density(&[10, 30]), 1.0);
+}
+
+/// #6413 — the documented consequence of clamping the log-normal to `height_range`: it is only
+/// ±√3 σ of the matched distribution, so ~5.6 % of blades pin at the maximum, ~1.7 % at the minimum
+/// and σ falls ~9.5 % short. Replays `groundcover_blade.vert`'s `byroGcBladeLength` (Box–Muller over
+/// a stratified grid of the two seed streams, so the result is deterministic) and pins the numbers
+/// the field docs and `exal-groundcover.md` §12.16 quote.
+#[test]
+fn the_clamped_blade_length_draw_is_narrower_than_the_matched_moments() {
+    const GRID: usize = 600;
+    for species in [GroundCoverSpecies::DEFAULT_TEMPERATE, GroundCoverSpecies::DEFAULT_ARID] {
+        let (lo, hi) = species.height_range;
+        let (mean, cv) = (species.blade_length_mean, species.blade_length_cv);
+        let s2 = (1.0 + cv as f64 * cv as f64).ln();
+        let (mut sum, mut sum_sq, mut at_max, mut at_min) = (0.0f64, 0.0f64, 0usize, 0usize);
+        for i in 0..GRID {
+            for j in 0..GRID {
+                let u0 = ((i as f64 + 0.5) / GRID as f64).max(1.0e-6);
+                let u1 = (j as f64 + 0.5) / GRID as f64;
+                let z = (-2.0 * u0.ln()).sqrt() * (std::f64::consts::TAU * u1).cos();
+                let raw = ((mean as f64).ln() - 0.5 * s2 + s2.sqrt() * z).exp();
+                let v = raw.clamp(lo as f64, hi as f64);
+                sum += v;
+                sum_sq += v * v;
+                at_max += usize::from(v >= hi as f64);
+                at_min += usize::from(v <= lo as f64);
+            }
+        }
+        let n = (GRID * GRID) as f64;
+        let (m, sigma) = (sum / n, (sum_sq / n - (sum / n).powi(2)).sqrt());
+        let target_sigma = (cv * mean) as f64;
+        assert!((m - mean as f64).abs() / (mean as f64) < 0.02, "mean moves by under 2 %: {m} vs {mean}");
+        let shortfall = 1.0 - sigma / target_sigma;
+        assert!((0.08..0.11).contains(&shortfall), "sigma ~9.5 % low, got {:.1} %", shortfall * 100.0);
+        let (max_share, min_share) = (at_max as f64 / n, at_min as f64 / n);
+        assert!((0.05..0.065).contains(&max_share), "~5.6 % at the maximum, got {:.1} %", max_share * 100.0);
+        assert!((0.010..0.025).contains(&min_share), "~1.7 % at the minimum, got {:.1} %", min_share * 100.0);
+    }
 }
