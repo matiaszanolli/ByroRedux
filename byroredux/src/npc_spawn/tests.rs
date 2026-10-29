@@ -3282,7 +3282,7 @@ fn bannered_mare_outfits_keep_every_inam_entry_on_real_skyrim_data() {
 /// deliberately rather than drift past it unnoticed.
 #[test]
 fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
-    const NPC_SPAWN_RS: &str = include_str!("../npc_spawn.rs");
+    const NPC_SPAWN_RS: &str = super::SOURCES;
     const RESUMABLE_RS: &str = include_str!("resumable/mod.rs");
     const RESUMABLE_RUNTIME_RS: &str = include_str!("resumable/runtime.rs");
     const RESUMABLE_PREBAKED_RS: &str = include_str!("resumable/prebaked.rs");

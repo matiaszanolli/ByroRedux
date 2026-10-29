@@ -2787,13 +2787,12 @@ mod tests {
     /// stays out; `scene.rs` is in, with its demo primitives exempted by
     /// name. See that test's doc for the full scope and the exemptions
     /// recorded elsewhere.
-    const SPAWNER_ROOTS: [&str; 6] = [
+    const SPAWNER_ROOTS: [&str; 5] = [
         "cell_loader",
         "cell_loader.rs",
         "scene",
         "scene.rs",
         "npc_spawn",
-        "npc_spawn.rs",
     ];
 
     /// Remove every top-level `#[cfg(test)] mod … { … }` block from `src`,
