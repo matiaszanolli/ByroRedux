@@ -937,9 +937,12 @@ pub(super) fn spawn_placed_instances(
     // imports of the same models animate correctly.
     //
     // M47.3 — the model's named animation sequences, for an object script's
-    // `PlayGroup`. #3602 — the first plays from spawn (Oblivion's gates and
-    // machinery, FNV's flags spawned frozen without it), on a player of its
-    // own (#6253): the standalone controllers and the sequence each keep
+    // `PlayGroup`. #3602 — the object's idle plays from spawn (Oblivion's gates
+    // and machinery, FNV's flags spawned frozen without it), on a player of its
+    // own (#6253). #6471 — only the idle (`Idle`, else `SpecialIdle`): the
+    // first listed sequence is usually a clamped activation clip, and playing
+    // it loaded every animated door open and every activator activated. With
+    // no idle nothing plays and the object keeps its bind pose. The standalone controllers and the sequence each keep
     // their own cycle type, frequency and phase. Merged into one clip, the
     // standalone envelope won (a looping flag played once) and the
     // sequence's non-transform channels were dropped (a gate's idle showed
@@ -950,18 +953,19 @@ pub(super) fn spawn_placed_instances(
     // one doesn't (an Oblivion gate's flash-plane alpha and blade visibility, a
     // terminal pod's monitor UV scroll), so every sequence's sinks are attached
     // here, not only the one that plays from spawn. Sinks are insert-if-missing.
-    let mut first_sequence = None;
+    let mut spawn_sequence = None;
     if let Some(key) = mesh_cache_key {
         if let Some(sequences) = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences) {
             let handles: Vec<u32> = sequences.0.iter().map(|(_, handle)| *handle).collect();
-            first_sequence = handles.first().copied();
+            spawn_sequence = sequences.spawn_handle();
             world.insert(placement_root, sequences);
-            for handle in handles.into_iter().skip(1) {
+            // The playing sequence's sinks are attached by the loop below.
+            for handle in handles.into_iter().filter(|&handle| Some(handle) != spawn_sequence) {
                 crate::anim_convert::attach_clip_sinks(world, handle, ctx, tex_provider, placement_root);
             }
         }
     }
-    for handle in clip_handle.into_iter().chain(first_sequence) {
+    for handle in clip_handle.into_iter().chain(spawn_sequence) {
         // #2221 — attach the `Animated*` sinks this clip's non-transform
         // channels write into, BEFORE the player starts ticking.
         // `animation_system` can only write into components that already
@@ -1862,9 +1866,11 @@ mod placement_player_tests {
     }
 
     #[test]
-    fn spawn_plays_the_first_named_sequence_beside_the_standalone_clip() {
-        let spawn = include_str!("spawn.rs");
-        assert!(spawn.contains("for handle in clip_handle.into_iter().chain(first_sequence) {"));
-        assert!(spawn.contains("let first = sequences.0.first().map(|(_, handle)| *handle);"));
+    fn spawn_plays_the_idle_sequence_beside_the_standalone_clip() {
+        // Production text only: the needles below would match this test's own source (#6474 class).
+        let spawn = byroredux_core::source_scan::production_text(include_str!("spawn.rs"));
+        assert!(spawn.contains("for handle in clip_handle.into_iter().chain(spawn_sequence) {"));
+        assert!(spawn.contains("spawn_sequence = sequences.spawn_handle();"));
+        assert!(!spawn.contains("handles.first()"), "the first listed sequence is a catalog entry, not the idle (#6471)");
     }
 }

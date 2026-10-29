@@ -1,7 +1,7 @@
 //! The named animation sequences of placed objects (M47.3).
 //!
-//! A model with several `NiControllerSequence`s plays the first on spawn; the rest are what an
-//! ObScript `PlayGroup Forward` chooses among. Each unique model's sequences are converted and
+//! A model with several `NiControllerSequence`s plays its idle on spawn (#6471; none when it has no
+//! `Idle` / `SpecialIdle`); the rest are what an ObScript `PlayGroup Forward` chooses among. Each unique model's sequences are converted and
 //! registered once per process, here, and every placement of it carries the same
 //! [`NamedSequences`] handle table. The clip registry never recycles a slot, so the handles stay
 //! valid whatever the NIF cache evicts.
