@@ -529,14 +529,12 @@ fn seat_at_marker(
     let is_sleep = matches!(kind, EatOrSleep::Sleep);
     let use_sleep_markers = is_sleep && !frame_seats.sleep(world).is_empty();
     if is_sleep && !use_sleep_markers {
-        // #5390 — on FO3/FNV this is not "no bed found" but "no bed can
-        // EVER resolve": legacy markers author animation_type 0 and the
-        // translate boundary reads them all as Sit (see the module doc).
-        // The fallback is the legacy sleep path by design until Phase C
-        // decodes furnituremarkerNN.
+        // #5390 — legacy beds (position ref 1..=10) resolve to Sleep at the
+        // importer; every other legacy marker is the v0 Sit default (see the
+        // module doc). Reaching here means the cell has no bed marker in
+        // range, so the fallback is the nearest sit marker.
         log::debug!(
-            "[m42] sleep npc={npc}: no decodable Sleep marker in range — \
-             legacy cells author none (animation_type 0 over-match, #5390); \
+            "[m42] sleep npc={npc}: no Sleep marker in range — \
              seating at the nearest sit marker"
         );
     }

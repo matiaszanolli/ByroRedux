@@ -63,8 +63,9 @@ pub(crate) fn furniture_component(
                 kind: match m.animation_type {
                     2 => FurnitureMarkerKind::Sleep,
                     3 => FurnitureMarkerKind::Lean,
-                    // 1 = explicit Skyrim+ Sit; 0 = legacy (Oblivion/FO3/FNV,
-                    // no AnimationType authored at all) — v0 default, the
+                    // 1 = explicit Skyrim+ Sit; 0 = a legacy (Oblivion/FO3/FNV)
+                    // marker the importer did not read as a bed (beds, position
+                    // ref 1..=10, arrive as 2) — the v0 Sit default, the
                     // dominant furniture kind in target cells.
                     _ => FurnitureMarkerKind::Sit,
                 },

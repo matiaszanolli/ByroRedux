@@ -23,12 +23,13 @@ use crate::ecs::storage::Component;
 ///
 /// Skyrim+ `AnimationType` maps directly. Legacy Oblivion/FO3/FNV markers
 /// author no `AnimationType` at all — the position kind is implied by the
-/// referenced `furnituremarkerXX.nif`, which isn't resolved at this
-/// layer — so legacy markers take the same v0 default the pre-fix
-/// `is_sit_marker` proxy used implicitly: [`Sit`](Self::Sit), the
-/// dominant furniture kind in the target cells (bars, offices). A real
-/// per-marker decode is deferred to Phase C; this field is where that
-/// future resolution lands, not a new consumer-side heuristic.
+/// referenced `furnituremarkerXX.nif`. The importer
+/// (`imported_furniture_marker`) reads the bed range of that reference
+/// (1..=10, CS *GetFurnitureMarkerID*) as Sleep; every other legacy marker
+/// takes the v0 default: [`Sit`](Self::Sit), the dominant furniture kind in
+/// the target cells (bars, offices). Telling the remaining legacy kinds
+/// apart is not decoded; this field is where that resolution lands, not a
+/// new consumer-side heuristic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub enum FurnitureMarkerKind {
