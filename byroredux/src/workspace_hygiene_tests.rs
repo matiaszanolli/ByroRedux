@@ -1556,12 +1556,22 @@ fn hand_rolled_zup_swaps(src: &str) -> Vec<(usize, &str)> {
                 (Some(pa), Some(pb), Some(pc)) => pa == pb && pb == pc,
                 _ => false,
             }
-        });
+        }) || scattered_name_swap(a, c);
         if swapped {
             hits.push((src[..start].matches('\n').count() + 1, line));
         }
     }
     hits
+}
+
+/// #6472 — the scattered-name spelling: the swap's three arguments share no
+/// prefix (`world_x, mid_height + 200.0, -world_y`). Matches an `a` that is a
+/// bare `x` or ends in `_x` against a `c` that is a bare `y` or ends in `_y`;
+/// a real Y-up literal that happens to look like this must be rewritten or
+/// the matcher narrowed, not allowlisted blind.
+fn scattered_name_swap(a: &str, c: &str) -> bool {
+    let ends = |arg: &str, axis: &str| arg == axis || arg.ends_with(&format!("_{axis}"));
+    ends(a, "x") && ends(c, "y")
 }
 
 /// The whitespace-stripped top-level arguments of a call whose opening paren
@@ -1599,9 +1609,11 @@ fn zup_swap_scanner_recognises_both_spellings() {
                // let d = Vec3::new(x, z, -y);\n\
                let e = Vec3::new(x, y, -z);\n\
                let f = Vec3::new(p[0], q[2], -p[1]);\n\
-               let g = Vec3::new(cos, 0.0, -sin);\n";
+               let g = Vec3::new(cos, 0.0, -sin);\n\
+               let h = Vec3::new(world_x, mid_height + 200.0, -world_y);\n\
+               let i = Vec3::new(world_x, h, -world_z);\n";
     let lines: Vec<usize> = hand_rolled_zup_swaps(src).into_iter().map(|(n, _)| n).collect();
-    assert_eq!(lines, vec![1, 2, 4]);
+    assert_eq!(lines, vec![1, 2, 4, 9]);
 }
 
 /// Test files that still hold the dev machine's Steam library root. Every other

@@ -239,8 +239,8 @@ impl ExteriorCellApplyJob {
             let mid_height = land.heights[16 * 33 + 16];
             let world_x = gx as f32 * EXTERIOR_CELL_UNITS + 16.0 * 128.0;
             let world_y = gy as f32 * EXTERIOR_CELL_UNITS + 16.0 * 128.0;
-            // Z-up → Y-up: (x, height, -y), plus 200 units above ground.
-            Vec3::new(world_x, mid_height + 200.0, -world_y)
+            // 200 units above ground, Z-up → Y-up through the canonical helper.
+            Vec3::from(byroredux_core::math::coord::zup_to_yup_pos([world_x, world_y, mid_height + 200.0]))
         });
         // EX-16 item 2 (#2372) — make this tile's NAVM tiles resident.
         // Must run before `last_entity` is captured below so the spawned
