@@ -920,7 +920,7 @@ impl Effect {
 
 impl Effect {
     /// #5807 — the variant-name table the two conformance harnesses
-    /// (`mq101_conformance.rs`, `fragment_coverage.rs`) each pasted as a
+    /// (`mq101_conformance/`, `fragment_coverage.rs`) each pasted as a
     /// ~99-line match, edited by hand on every new variant (a missed copy
     /// mis-reports that harness's coverage). One home, next to
     /// `is_placeholder`; the exhaustive match means a new variant without

@@ -32,7 +32,7 @@ use super::*;
 /// [`ScriptLibrary`](crate::translate::effects::ScriptLibrary).
 ///
 /// `pub` (#2658 / SCR-D5-NEW11-03) — so `examples/fragment_coverage.rs`
-/// and `examples/mq101_conformance.rs` can build the same per-script set
+/// and `examples/mq101_conformance/main.rs` can build the same per-script set
 /// this function's one production caller
 /// ([`populate_quest_fragments_from_script`]) does, and measure
 /// `lower_fragment_with_quest_properties` (what production actually
