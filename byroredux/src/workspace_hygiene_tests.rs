@@ -1727,3 +1727,29 @@ fn no_test_region_hardcodes_the_dev_machine_game_path() {
         stale.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n"),
     );
 }
+
+/// #6378 — `docs/engine/game-loop.md`'s live-schedule table omitted the
+/// systems that landed 10-22..25 (VATS, the AI package procedures, crime).
+/// Pins that each system registered by those families is named in the table
+/// so a new registration in them is not silently undocumented again. A
+/// partial guard by design: it names the families the audit found missing,
+/// not every `scheduler.add*` call.
+#[test]
+fn the_live_schedule_table_names_the_vats_package_and_crime_systems() {
+    const GAME_LOOP_DOC: &str = include_str!("../../docs/engine/game-loop.md");
+    for system in [
+        "vats_mode_system",
+        "make_flee_package_system",
+        "make_find_package_system",
+        "use_weapon_package_system",
+        "jail_bed_system",
+        "evidence_deposit_system",
+        "make_guard_rush_system",
+    ] {
+        assert!(
+            GAME_LOOP_DOC.contains(system),
+            "docs/engine/game-loop.md's live-schedule table does not name `{system}` \
+             (register it in the table, #6378)"
+        );
+    }
+}
