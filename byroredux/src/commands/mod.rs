@@ -187,6 +187,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(quest::ChallengeStatusCommand);
     registry.register(gameplay::InvUseCommand);
     registry.register(gameplay::InvDropCommand);
+    registry.register(gameplay::CraftCommand);
     registry.register(gameplay::MagicCastCommand);
     registry.register(gameplay::MagicEffectsCommand);
     registry.register(gameplay::ActorReviveCommand);

@@ -13,9 +13,9 @@ reset windows over save-persistent node state. M43 follow-ups
 (2026-10-30): the walk honors *Num quests to run* (`MNAM`) and *Max
 concurrent quests* (`XNAM`); `ADIA` (NPC-to-NPC random conversations — the
 largest event family, with the CK's interrupt hold), `LEVL`, `ASSU`, `AIPL`,
-`SKIL`, `JAIL`, `CHRR` and FO4's `LCLD` joined `KILL`/`CLOC`/`AHEL`/`SCPT` as
-producers (§6.4). What is left (§6.4 names the missing piece of each):
-`REMP`, `CAST`, `DEAD`, the natural `AHEL`, `ARRT`/`ESJA`, `CRFT`, `NVPE`, and
+`SKIL`, `JAIL`, `CHRR`, `REMP`, `CAST`, `CRFT` and FO4's `LCLD` joined
+`KILL`/`CLOC`/`AHEL`/`SCPT` as producers (§6.4). What is left (§6.4 names the
+missing piece of each): `DEAD`, the natural `AHEL`, `ARRT`/`ESJA`, `NVPE`, and
 FO4's `AOBJ`/`HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`. The corpus's `FromEvent`
 fills and node conditions read only `R1`/`R2`/`L1`/`L2`, so a form slot
 (`F1`) is only needed by scripts. Unconsumed fields: `HNAM` (FO4+ node-level reset; semantics not
@@ -383,23 +383,45 @@ already has the surface:
   what each carries: `AIPL` quests read the container (`R2`) and location,
   `REMP` the *item reference* (`R2`), `CAST` caster/target/location, `DEAD`
   the corpse (`R2`), `CHRR` both actors.
+- **Gameplay built for the Story Manager's sake (M43)**: `REMP` needed an item
+  drop, `CAST` a caster on the cast, `CRFT` crafting — none existed.
+  *Drop*: the inventory menu's Drop action (and `inv.drop`) removes one item
+  and places a created reference of its base at the player's feet (the same
+  mechanism `PlaceAtMe` uses; the pickup path takes it back); `REMP` carries
+  that reference in `R2` and is raised once it has spawned
+  (`dropped_item_story_event_system`). Live on Skyrim: the drop spawned
+  `FF800000` and started `WIRemoveItem05` through `WIPlayerRemoveItemAnyNode`
+  (`m43-item-drop.sh`; the radiant nodes roll a random percent, so the gate
+  retries). *Cast*: `cast_spell` with a caster raises `CAST` (caster `R1`,
+  target `R2`); the `magic.cast` console stands in for the player's cast. The
+  `CAST` quests are the world-interaction reactions to a spell cast at an
+  actor (`WICastMagic…`); there is still no player cast input, so only
+  scripts and the console cast. *Crafting* (`crafting.rs`): Skyrim `COBJ`
+  recipes (ingredients `CNTO`, yield `NAM1`, bench keyword `BNAM`, perk
+  conditions `CTDA`; 592 of 601 install) and the `KWDA` of every `FURN`
+  (typed since this change) make a placed furniture a bench when it carries
+  a recipe's keyword. Activating a bench ("Craft") opens the native crafting
+  page: the recipes the bench offers that the player's conditions allow, each
+  with ingredients held against needed and a Craft button; `craft list` /
+  `craft make <recipe>` drive the same two halves at the nearest bench. A
+  craft consumes the ingredients, adds the yield and raises `CRFT` with the
+  bench in `R1`. Live on Skyrim: crafting leather strips at the nearest
+  bench started `WICraftItem01` through `WICraftItemNode`
+  (`m43-crafting.sh`). **Not modelled**: crafting skill XP, perk-improved
+  yields (Arcane Blacksmith, Steel Smithing's rating bonus), the crafting
+  animation and Fallout 4's component-based `COBJ` (`FVPA`).
 - **Still open, with the missing piece named** (per-mnemonic quest counts,
-  2026-10-30, quests reachable under each `SMEN` root — Skyrim: `CRFT` 10,
-  `CAST` 6, `REMP` 5, `ESJA` 2, `DEAD` 2, `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4:
-  `AOBJ` 16, `AHEL` 9, `OAAT` 4, `HACK` 3, `LOCK` 3, `TMEE` 1, `IRON` 1):
-  `REMP` needs a dropped-item reference — its quests fill `R2` with the
-  item, and the engine has no drop (consuming has no reference); `CAST` —
-  the quests are the world-interaction reactions to a spell cast at an actor
-  (`WICastMagic…`) and the CK does not say whose casts raise it, while the
-  engine only casts from scripts; `DEAD` (corpse discovery) and the natural
-  `AHEL` (NPCs passing each other) — no setting in Skyrim.esm or the CK
-  pages gives a detection distance (`fCheckDeadBodyTimer` is a Fallout
-  leftover absent from the master); `ARRT`/`ESJA` — Skyrim's guards are
-  package-driven and the engine's crime pass is the Oblivion/FNV class-flag
-  model, so a wanted-player greeting by a guard cannot occur on a game that
-  has a Story Manager; `CRFT` — no crafting; `NVPE` — no shouts. FO4's
-  events are named by their SMEN editor ids (`AOBJ`: shooting at / switching
-  workshop objects, `HACK`: `PlayerHackSuccess`, `LOCK`:
+  2026-10-30, quests reachable under each `SMEN` root — Skyrim: `ESJA` 2,
+  `DEAD` 2, `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4: `AOBJ` 16, `AHEL` 9, `OAAT` 4,
+  `HACK` 3, `LOCK` 3, `TMEE` 1, `IRON` 1):
+  `DEAD` (corpse discovery) and the natural `AHEL` (NPCs passing each other)
+  — no setting in Skyrim.esm or the CK pages gives a detection distance
+  (`fCheckDeadBodyTimer` is a Fallout leftover absent from the master);
+  `ARRT`/`ESJA` — Skyrim's guards are package-driven and the engine's crime
+  pass is the Oblivion/FNV class-flag model, so a wanted-player greeting by
+  a guard cannot occur on a game that has a Story Manager; `NVPE` — no
+  shouts. FO4's events are named by their SMEN editor ids (`AOBJ`: shooting
+  at / switching workshop objects, `HACK`: `PlayerHackSuccess`, `LOCK`:
   `PlayerLockpickSuccess` / `CA_PickLock`, `OAAT`: attach events such as
   `REDeadActorAttach`, `TMEE`: `TriggerMineExplosionEvent`, `IRON`:
   `IronSights`), but what their `R1`/`R2` slots hold is not documented and is

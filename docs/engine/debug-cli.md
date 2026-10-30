@@ -340,7 +340,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**145**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**147**) grouped by
 purpose:
 
 ```
@@ -517,6 +517,8 @@ perk.run                    → run a perk entry's fragment on the player (perk,
 terminal.select             → pick a terminal menu item by reference + item id, running its fragment
 quest.effects               → inspect the quest effect log
 inv.use <form_id>            → use (consume) a player inventory item through the menu's Consume action
+inv.drop <form_id>           → drop one of a player inventory item into the world through the menu's Drop action (M43; raises the Story Manager's REMP)
+craft list | make <recipe>   → list the recipes of the workbench nearest the player / craft one through the crafting page's action (M43; raises CRFT)
 magic.cast <spell> [target]  → cast a spell through the caster runtime ObScript Cast uses (M47.3)
 actor.look <entity|.> <target|none> → force an actor's head to track a reference like ObScript Look (M47.3)
 actor.revive <entity|.>      → bring a dead or unconscious actor back like ObScript Resurrect (M47.3)

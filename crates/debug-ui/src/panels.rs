@@ -71,6 +71,8 @@ pub struct PanelSnapshot {
     pub message_box: Option<MessageBoxView>,
     /// The open barter session, populated while one is in progress.
     pub barter: Option<BarterSnapshot>,
+    /// The open crafting bench, populated while its page is up.
+    pub crafting: Option<CraftingSnapshot>,
     /// `(entity_id, name)` pairs. `None` until the operator opens
     /// the Entities panel — populating this on every frame would
     /// be unnecessary work for an overlay that's hidden most of
@@ -113,6 +115,33 @@ pub struct BarterItemView {
 pub enum BarterAction {
     Buy { form_id: u32 },
     Sell { form_id: u32 },
+}
+
+/// One recipe a workbench offers, with what the player holds of each ingredient.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CraftingRecipeView {
+    pub form_id: u32,
+    /// The item it makes.
+    pub name: String,
+    /// How many it yields.
+    pub count: u32,
+    /// `(ingredient name, needed, held)`.
+    pub ingredients: Vec<(String, u32, u32)>,
+    /// The player holds every ingredient.
+    pub craftable: bool,
+}
+
+/// The crafting page: the bench's name and its recipes.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CraftingSnapshot {
+    pub bench_name: String,
+    pub recipes: Vec<CraftingRecipeView>,
+}
+
+/// The crafting page's mutation: craft one recipe at the open bench.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CraftingAction {
+    Craft { recipe: u32 },
 }
 
 /// Allocation-free native prompt assembled from the active binding and the
@@ -410,6 +439,8 @@ pub struct PanelOutputs {
     pub message_box_choice: Option<usize>,
     /// Trades the player made on the barter page, applied in order.
     pub barter_actions: Vec<BarterAction>,
+    /// Recipes the crafting page asked to craft.
+    pub crafting_actions: Vec<CraftingAction>,
     /// Renderer-independent Studio mutations for the host to apply.
     pub studio_commands: Vec<StudioCommand>,
     /// True when the operator asked to refresh the entity list.
@@ -434,6 +465,7 @@ pub enum GameMenuPage {
     Dialogue,
     MessageBox,
     Barter,
+    Crafting,
 }
 
 /// Persistent navigation state for the player-facing native menu.
@@ -475,6 +507,7 @@ pub fn draw_game_menu(
         GameMenuPage::Dialogue => "Conversation",
         GameMenuPage::MessageBox => "Message",
         GameMenuPage::Barter => "Barter",
+        GameMenuPage::Crafting => "Crafting",
     };
     Window::new(title)
         .id(Id::new("game_menu_window"))
@@ -490,6 +523,7 @@ pub fn draw_game_menu(
             GameMenuPage::Dialogue => egui::vec2(760.0, 560.0),
             GameMenuPage::MessageBox => egui::vec2(520.0, 320.0),
             GameMenuPage::Barter => egui::vec2(900.0, 620.0),
+            GameMenuPage::Crafting => egui::vec2(900.0, 620.0),
         })
         .frame(
             Frame::window(&ctx.global_style())
@@ -511,7 +545,71 @@ pub fn draw_game_menu(
                 draw_message_box_page(ui, snapshot.message_box.as_ref(), state, outputs)
             }
             GameMenuPage::Barter => draw_barter_page(ui, snapshot.barter.as_ref(), state, outputs),
+            GameMenuPage::Crafting => draw_crafting_page(ui, snapshot.crafting.as_ref(), state, outputs),
         });
+}
+
+/// The crafting page: the bench's recipes, each with the ingredients held against needed; a recipe
+/// the player can afford has a Craft button. Closing is the shared resume path, which ends the
+/// session.
+fn draw_crafting_page(
+    ui: &mut egui::Ui,
+    crafting: Option<&CraftingSnapshot>,
+    state: &mut GameMenuState,
+    outputs: &mut PanelOutputs,
+) {
+    let Some(crafting) = crafting else {
+        ui.label("There is nothing to craft here.");
+        ui.add_space(12.0);
+        if wide_button(ui, "Close (Esc)").clicked() {
+            outputs.resume_game = true;
+            state.visible = false;
+        }
+        return;
+    };
+    ui.heading(crafting.bench_name.clone());
+    ui.add_space(8.0);
+    egui::ScrollArea::vertical()
+        .id_salt("native_crafting_recipes")
+        .max_height(470.0)
+        .show(ui, |ui| {
+            ui.set_min_width(840.0);
+            if crafting.recipes.is_empty() {
+                ui.label("No recipes.");
+            }
+            for recipe in &crafting.recipes {
+                ui.horizontal(|ui| {
+                    let title = if recipe.count > 1 {
+                        format!("{} ×{}", recipe.name, recipe.count)
+                    } else {
+                        recipe.name.clone()
+                    };
+                    let colour = if recipe.craftable {
+                        Color32::from_rgb(225, 222, 210)
+                    } else {
+                        Color32::from_gray(120)
+                    };
+                    ui.label(RichText::new(title).strong().color(colour));
+                    let needs: Vec<String> = recipe
+                        .ingredients
+                        .iter()
+                        .map(|(name, need, have)| format!("{name} {have}/{need}"))
+                        .collect();
+                    ui.label(RichText::new(needs.join(", ")).color(Color32::from_gray(150)));
+                    if ui
+                        .add_enabled(recipe.craftable, egui::Button::new("Craft"))
+                        .clicked()
+                    {
+                        outputs.crafting_actions.push(CraftingAction::Craft { recipe: recipe.form_id });
+                    }
+                });
+            }
+        });
+    ui.add_space(12.0);
+    if wide_button(ui, "Close (Esc)").clicked() {
+        outputs.resume_game = true;
+        state.visible = false;
+    }
 }
 
 /// The barter page: the merchant's goods (buy) beside the player's goods the

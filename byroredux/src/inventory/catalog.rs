@@ -61,6 +61,11 @@ impl InventoryCatalog {
         Self { entries, player_base_form_id: 0x14, ..Self::default() }
     }
 
+    /// One item's catalogued display name, if it has one.
+    pub(crate) fn item_name(&self, base_form_id: u32) -> Option<&str> {
+        self.entries.get(&base_form_id).map(|definition| definition.name.as_str())
+    }
+
     /// One `base_form_id` item's weight; 0 for an item outside the catalog.
     pub(crate) fn item_weight(&self, base_form_id: u32) -> f32 {
         self.entries

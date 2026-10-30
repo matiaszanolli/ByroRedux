@@ -153,6 +153,54 @@ impl ConsoleCommand for InvDropCommand {
     }
 }
 
+/// `craft.list` / `craft.make <recipe>` — the crafting page's two halves from the console, at the
+/// placed bench nearest the player: the recipes it offers (with the ingredients held), and one craft
+/// through the page's own action.
+pub(crate) struct CraftCommand;
+
+impl ConsoleCommand for CraftCommand {
+    fn name(&self) -> &str {
+        "craft"
+    }
+
+    fn description(&self) -> &str {
+        "Craft at the nearest workbench: craft list | craft make <recipe_form_hex>"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut parts = args.split_whitespace();
+        let Some(bench) = crate::crafting::nearest_bench(world) else {
+            return CommandOutput::error("craft: no workbench is loaded");
+        };
+        match parts.next() {
+            Some("list") => {
+                let recipes = crate::crafting::recipes_at(world, bench);
+                let mut lines = vec![format!("bench entity {bench}: {} recipe(s)", recipes.len())];
+                for recipe in recipes.iter().take(60) {
+                    lines.push(format!(
+                        "{:08X} {}{} [{}]",
+                        recipe.form_id,
+                        recipe.name,
+                        if recipe.output_count > 1 { format!(" x{}", recipe.output_count) } else { String::new() },
+                        if recipe.craftable { "can craft" } else { "missing ingredients" },
+                    ));
+                }
+                CommandOutput::lines(lines)
+            }
+            Some("make") => {
+                let Some(recipe) = parts.next().and_then(parse_console_form_id) else {
+                    return CommandOutput::error("usage: craft make <recipe_form_hex>");
+                };
+                match crate::crafting::craft(world, recipe, bench) {
+                    Ok(line) => CommandOutput::line(line),
+                    Err(reason) => CommandOutput::error(format!("craft: {reason}")),
+                }
+            }
+            _ => CommandOutput::error("usage: craft list | craft make <recipe_form_hex>"),
+        }
+    }
+}
+
 /// `magic.cast <spell> [target|.]` — cast a spell on a reference (the player when none) through the
 /// caster runtime ObScript `Cast` uses; `magic.effects [entity|.]` lists the effects running on one.
 pub(crate) struct MagicCastCommand;

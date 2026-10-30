@@ -970,7 +970,32 @@ impl App {
         }
         self.close_dialogue_menu_if_goodbye_ended();
         self.present_barter_menu();
+        self.present_crafting_menu();
         self.present_script_messages();
+    }
+
+    /// M43 — a bench the player activated: the crafting page replaces any open page (ending an open
+    /// conversation, as the Inventory key does).
+    fn present_crafting_menu(&mut self) {
+        let Some(bench) = crate::crafting::take_crafting_request(&self.world) else {
+            return;
+        };
+        let dialogue_page = self
+            .debug_ui
+            .as_ref()
+            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
+        Self::leave_dialogue_page(&self.world, dialogue_page);
+        match crate::crafting::begin_crafting(&self.world, bench) {
+            Ok(()) => {
+                if let Some(ui) = self.debug_ui.as_mut() {
+                    ui.open_crafting_menu();
+                    self.release_world_input_for_ui();
+                } else {
+                    crate::crafting::end_crafting(&self.world);
+                }
+            }
+            Err(reason) => crate::notifications::push(&self.world, reason),
+        }
     }
 
     /// M47.2 — a script's `ShowBarterMenu`: the barter page replaces any

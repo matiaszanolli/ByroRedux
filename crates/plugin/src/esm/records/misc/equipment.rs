@@ -1,6 +1,7 @@
 //! Equipment / crafting / generic-record records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
+use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::records::common::remap_fid;
 use crate::esm::sub_reader::SubReader;
@@ -337,11 +338,20 @@ pub struct CobjRecord {
     /// `BNAM` — workbench filter form ID (which workbench category
     /// the recipe shows up under).
     pub workbench_form: u32,
+    /// Skyrim `CNTO` — the ingredients: `(item form, count)` in authored order. Empty on the games
+    /// whose `COBJ` carries components another way (Fallout 4's `FVPA`).
+    pub components: Vec<(u32, u32)>,
+    /// Skyrim `NAM1` — how many of the created item one craft yields (1 when absent).
+    pub created_count: u32,
+    /// Skyrim `CTDA` — the conditions the player must meet to craft it (perk gates such as
+    /// `HasPerk`). Empty = always craftable at its bench.
+    pub conditions: ConditionList,
 }
 
 pub fn parse_cobj(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> CobjRecord {
     let mut out = CobjRecord {
         form_id,
+        created_count: 1,
         ..Default::default()
     };
     // #2414 / TD2-117 — the universal named fields come from the
@@ -360,6 +370,19 @@ pub fn parse_cobj(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             }
             b"BNAM" if sub.data.len() >= 4 => {
                 out.workbench_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+            }
+            // Skyrim ingredient: item FormID + count.
+            b"CNTO" if sub.data.len() >= 8 => {
+                let mut r = SubReader::new(&sub.data);
+                let item = remap_fid(r.u32_or_default(), remap);
+                let count = r.u32_or_default();
+                if item != 0 {
+                    out.components.push((item, count));
+                }
+            }
+            b"CTDA" | b"CIS1" | b"CIS2" => push_ctda(sub, remap, &mut out.conditions),
+            b"NAM1" if sub.data.len() >= 2 => {
+                out.created_count = u32::from(u16::from_le_bytes([sub.data[0], sub.data[1]])).max(1);
             }
             _ => {}
         }
@@ -490,6 +513,32 @@ pub fn parse_slgm(form_id: u32, subs: &[SubRecord]) -> SlgmRecord {
 mod tests {
     use super::*;
     use crate::esm::records::test_support::sub;
+
+    /// Skyrim `COBJ`: ingredients in `CNTO`, the yield in `NAM1`, the output in `CNAM`, the bench
+    /// keyword in `BNAM`; a record with no `NAM1` yields one.
+    #[test]
+    fn parse_cobj_reads_skyrim_ingredients_yield_and_bench() {
+        let pair = |item: u32, count: u32| {
+            let mut v = Vec::new();
+            v.extend_from_slice(&item.to_le_bytes());
+            v.extend_from_slice(&count.to_le_bytes());
+            v
+        };
+        let subs = vec![
+            sub(b"EDID", b"RecipeIronDagger\0"),
+            sub(b"COCT", 2u32.to_le_bytes()),
+            sub(b"CNTO", pair(0x5ACE4, 1)),
+            sub(b"CNTO", pair(0x800E4, 3)),
+            sub(b"CNAM", 0x12EB7u32.to_le_bytes()),
+            sub(b"BNAM", 0x88105u32.to_le_bytes()),
+            sub(b"NAM1", 2u16.to_le_bytes()),
+        ];
+        let cobj = parse_cobj(0x1, &subs, &None);
+        assert_eq!(cobj.components, vec![(0x5ACE4, 1), (0x800E4, 3)]);
+        assert_eq!((cobj.created_form, cobj.workbench_form, cobj.created_count), (0x12EB7, 0x88105, 2));
+        let cobj = parse_cobj(0x2, &subs[..6], &None);
+        assert_eq!(cobj.created_count, 1, "no NAM1 yields one");
+    }
 
     #[test]
     fn parse_arma_picks_edid_biped_flags_dt_dr() {

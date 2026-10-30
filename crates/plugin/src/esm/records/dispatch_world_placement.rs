@@ -23,8 +23,27 @@ pub(super) fn dispatch_world_placement_group(
         // but no record-side parser yet. TREE was here too pre-#TREE
         // (SpeedTree Phase 1.1) but split out below so ICON / SNAM /
         // CNAM / BNAM / PFIG don't silently fall on the floor.
-        b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"FLOR" | b"IDLM" | b"BNDS" | b"ADDN" | b"TACT" => {
+        b"STAT" | b"MSTT" | b"DOOR" | b"FLOR" | b"IDLM" | b"BNDS" | b"ADDN" | b"TACT" => {
             parse_modl_group(reader, end, statics)?;
+        }
+        // FURN — the same placement entry, plus the `KWDA` keywords a crafting bench is recognised
+        // by (a `COBJ`'s `BNAM` names one of them).
+        b"FURN" => {
+            let remap = reader.get_form_id_remap();
+            extract_records_with_modl(reader, end, b"FURN", statics, &mut |fid, subs| {
+                let keywords: Vec<u32> = subs
+                    .iter()
+                    .filter(|sub| &sub.sub_type == b"KWDA")
+                    .flat_map(|sub| sub.data.chunks_exact(4))
+                    .map(|raw| {
+                        let id = u32::from_le_bytes(raw.try_into().expect("four-byte chunk"));
+                        remap.as_ref().map_or(id, |mapping| mapping.remap(id))
+                    })
+                    .collect();
+                if !keywords.is_empty() {
+                    index.furniture_keywords.insert(fid, keywords);
+                }
+            })?
         }
         // TREE — dual-target: typed `EsmIndex.trees` entry AND
         // `cells.statics` for the existing REFR placement path.

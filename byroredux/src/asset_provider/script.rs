@@ -1061,6 +1061,11 @@ pub(crate) fn populate_scene_runtime(
     populate_terminal_fragments(world, index);
     populate_perk_fragments(world, index);
     crate::inventory::install_catalog(world, index);
+    // M43 — Skyrim `COBJ` recipes and the keywords that make a furniture a crafting bench.
+    let recipes = crate::crafting::install_crafting(world, index);
+    if recipes > 0 {
+        log::info!("Installed {recipes} crafting recipes");
+    }
     // #4415 — canonical spells for runtime `AddSpell` / `RemoveSpell`.
     world.insert_resource(byroredux_scripting::SpellCatalog::from_index(index));
     // #4414 — the ambient-hostility detection range (`fSneakMaxDistance`).

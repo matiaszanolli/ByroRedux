@@ -36,6 +36,7 @@ mod game_profiles;
 mod groundcover_translate;
 mod helpers;
 mod interaction;
+mod crafting;
 mod inventory;
 mod notifications;
 mod objectives;
@@ -1472,6 +1473,7 @@ impl App {
             .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
         Self::leave_dialogue_page(&self.world, dialogue_page);
         crate::barter::end_barter(&mut self.world);
+        crate::crafting::end_crafting(&self.world);
         let opened = self
             .debug_ui
             .as_mut()
@@ -1492,6 +1494,7 @@ impl App {
             .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
         Self::leave_dialogue_page(&self.world, dialogue_page);
         crate::barter::end_barter(&mut self.world);
+        crate::crafting::end_crafting(&self.world);
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.open_inventory_menu();
             self.release_world_input_for_ui();
@@ -1531,6 +1534,7 @@ impl App {
             .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
         Self::leave_dialogue_page(&self.world, dialogue_page);
         crate::barter::end_barter(&mut self.world);
+        crate::crafting::end_crafting(&self.world);
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.close_game_menu();
         }
@@ -1624,6 +1628,7 @@ fn build_debug_ui_snapshot(
         // Empty outside a script message box: the queue drains as answered.
         message_box: crate::notifications::front_message_box(world),
         barter: crate::barter::snapshot(world),
+        crafting: crate::crafting::snapshot(world),
         entities,
         studio: studio_host::snapshot(world),
     }
@@ -1736,6 +1741,12 @@ fn apply_debug_ui_outputs(
     // M47.2 — barter trades, one unit each; a refusal is player feedback.
     for action in outputs.barter_actions {
         if let Err(reason) = crate::barter::apply_action(world, action) {
+            crate::notifications::push(world, reason);
+        }
+    }
+    // M43 — crafting at the open bench; a refusal is player feedback.
+    for action in outputs.crafting_actions {
+        if let Err(reason) = crate::crafting::apply_action(world, action) {
             crate::notifications::push(world, reason);
         }
     }

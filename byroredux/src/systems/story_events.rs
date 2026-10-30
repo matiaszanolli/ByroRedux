@@ -345,6 +345,28 @@ pub(crate) fn raise_remove_from_player_story_event(world: &World, player: Entity
     );
 }
 
+/// M43 — `CRFT` (Craft Item): the player crafted something at `bench`.
+/// `OnStoryCraftItem(akBench, akLocation, akCreatedItem)`: R1 = the bench reference, L1 = the
+/// session LCTN. The created item is a form the event slots do not carry; the real `CRFT` quests
+/// read only the bench. A no-op on pre-Creation titles (no SM tree installed).
+pub(crate) fn raise_craft_story_event(world: &World, player: EntityId, bench: EntityId) {
+    use byroredux_scripting::story_manager::StoryEvent;
+    // #5372 — resolve the location BEFORE taking the StoryEvent write guard.
+    let location_1 = resolve_current_lctn(world);
+    byroredux_scripting::story_manager::raise_story_event(
+        world,
+        player,
+        StoryEvent {
+            mnemonic: *b"CRFT",
+            reference_1: bench,
+            reference_2: None,
+            location_1,
+            location_2: None,
+            scripted: None,
+        },
+    );
+}
+
 /// #5434 — `KILL` (Actor Kill), raised from every LIVE death producer
 /// (combat damage, NPC/player drowning, the SDK actor-value batch) — never
 /// from corpse restores, which re-assert a death that already fired.

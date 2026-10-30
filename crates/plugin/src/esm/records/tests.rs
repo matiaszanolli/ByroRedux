@@ -1973,7 +1973,8 @@ fn categories_table_row_count_pinned() {
     //   AnimArchetype keywords `ChangeAnimArchetype` swaps between).
     // Bumped 109 → 111 in #5757 (layered_material_swaps + material_path_forms
     //   — Starfield LMSW / MTPT, what REFR `XLMS` resolves through).
-    assert_eq!(EsmIndex::categories().len(), 111);
+    // Bumped 111 → 112 in M43 (furniture_keywords — FURN `KWDA`, what marks a crafting bench).
+    assert_eq!(EsmIndex::categories().len(), 112);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

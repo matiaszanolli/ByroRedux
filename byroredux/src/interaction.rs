@@ -745,6 +745,9 @@ pub(crate) enum InteractionKind {
     /// are candidates (a patron owned by no running quest has no authored
     /// dialogue route yet).
     Npc,
+    /// A crafting bench (a furniture carrying a keyword some recipe is crafted at): activation opens
+    /// the crafting page ([`crate::crafting`]).
+    Craft,
     /// A bed the player can rest in to serve a jail sentence
     /// ([`crate::crime::jail_bed_system`]); offered only while serving one.
     Sleep,
@@ -759,6 +762,7 @@ impl InteractionKind {
             Self::Pickup => "Take",
             Self::Npc => "Talk",
             Self::Sleep => "Sleep",
+            Self::Craft => "Craft",
         }
     }
 }
@@ -1337,6 +1341,23 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
             candidates.entry(entity).or_insert(InteractionKind::Npc);
         }
     }
+    // M43 — crafting benches: placed furniture whose base carries a recipe keyword.
+    let benches: Vec<EntityId> = world
+        .try_resource::<crate::crafting::CraftingBook>()
+        .and_then(|book| {
+            let identities = world.query::<byroredux_scripting::SceneAliasCandidate>()?;
+            Some(
+                identities
+                    .iter()
+                    .filter(|(_, identity)| book.is_bench_base(identity.base_form_id))
+                    .map(|(entity, _)| entity)
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    for entity in benches {
+        candidates.entry(entity).or_insert(InteractionKind::Craft);
+    }
     // A jail cell's bed: resting in it is how a sentence ends, so a bed is offered only then.
     if byroredux_scripting::jail::player_in_jail(world) {
         for entity in crate::crime::bed_entities(world) {
@@ -1556,6 +1577,9 @@ fn activate_target(world: &World, target: InteractionTarget) {
                 format!("{event_outcome}; door queue failed: {error}")
             }
         }
+    } else if target.kind == InteractionKind::Craft {
+        crate::crafting::request_crafting(world, target.entity);
+        format!("{event_outcome}; crafting page requested")
     } else {
         event_outcome
     };

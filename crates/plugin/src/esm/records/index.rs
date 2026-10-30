@@ -568,6 +568,9 @@ pub struct EsmIndex {
     ///
     /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map.
     pub recipes: HashMap<u32, CobjRecord>,
+    /// `FURN` base form → its `KWDA` keywords (Skyrim+; absent for a furniture with none). A crafting
+    /// bench is a furniture carrying the keyword a `COBJ`'s `BNAM` names.
+    pub furniture_keywords: HashMap<u32, Vec<u32>>,
     // ── #810 / FNV-D2-NEW-03 — long-tail catch-all stubs ────────────
     //
     // 31 record types in the FNV catch-all-skip long tail. None has
@@ -1005,6 +1008,7 @@ impl EsmIndex {
             map_category!("impacts", impacts),
             map_category!("impact_data_sets", impact_data_sets),
             map_category!("recipes", recipes),
+            map_category!("furniture_keywords", furniture_keywords),
             // #810 / FNV-D2-NEW-03 — long-tail minimal stubs.
             map_category!("audio_locations", audio_locations),
             map_category!("animation_objects", animation_objects),
