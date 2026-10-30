@@ -106,7 +106,7 @@ pub use misc::{
     QuestObjectiveTargetKind, QuestStage, QuestStageLogEntry, QustRecord, RadiationStageRecord, RegionArea,
     RegionDataEntry, RegionDataKind, RegionDataPayload, RegionSound, RegionWeather, RegnRecord,
     RepuRecord, ScenRecord, SceneAction, SceneActionType, SceneActor, ScenePhase, SlgmRecord,
-    SmNodeKind, SmNodePolicies, SmNodeRecord, SmQuestLink, SpelRecord, TermRecord, WatrRecord,
+    SmNodeKind, SmNodePolicies, SmNodeRecord, SmQuestLink, SpelRecord, SM_DNAM_NUM_QUESTS_TO_RUN, TermRecord, WatrRecord,
     ALIAS_FLAG_ACTORS_ONLY, ALIAS_FLAG_ALLOW_CLEARED,
     ALIAS_FLAG_ALLOW_DEAD, ALIAS_FLAG_ALLOW_DESTROYED, ALIAS_FLAG_ALLOW_DISABLED,
     ALIAS_FLAG_ALLOW_RESERVED, ALIAS_FLAG_ALLOW_REUSE, ALIAS_FLAG_APPLY_TO_NON_ALIASED_REFS,

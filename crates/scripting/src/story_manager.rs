@@ -207,6 +207,12 @@ pub struct SmTreeNode {
     /// `DNAM` node policies (random / do-all-before-repeating /
     /// shares-event), decoded at parse (#5366 Phase 3).
     pub policies: SmNodePolicies,
+    /// *Num quests to run* — quests tried per pass (`MNAM` behind the
+    /// `DNAM & 0x40000` box); always at least 1.
+    pub num_quests_to_run: u32,
+    /// *Max concurrent quests* (`XNAM`): no further quest from this node's
+    /// pool starts while this many are running; `0` = uncapped.
+    pub max_concurrent: u32,
 }
 
 /// The dispatchable Story Manager tree. Built once per load order from
@@ -418,6 +424,8 @@ pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree 
             first_child: None,
             quests: record.quests.clone(),
             policies: record.policies,
+            num_quests_to_run: record.num_quests_to_run(),
+            max_concurrent: record.max_concurrent_quests(),
         });
     }
 
@@ -737,7 +745,7 @@ pub fn story_manager_dispatch_system(world: &World) {
     let hours = world
         .try_resource::<StoryClock>()
         .map_or(0.0, |clock| clock.hours);
-    let outcome = {
+    let candidates = {
         let Some(tree) = world.try_resource::<SmTree>() else {
             return;
         };
@@ -748,7 +756,6 @@ pub fn story_manager_dispatch_system(world: &World) {
             .map(|stages| stages.statuses());
         let node_state = world.try_resource::<StoryManagerNodeState>();
         let mut candidates = Vec::new();
-        let mut wraps = Vec::new();
         for event in &events {
             let mut walk = WalkState {
                 event,
@@ -760,12 +767,10 @@ pub fn story_manager_dispatch_system(world: &World) {
                 node_state: node_state.as_deref(),
                 hours,
                 consumed: false,
-                pending_wraps: Vec::new(),
             };
             dispatch_story_event(world, &tree, &mut walk);
-            wraps.append(&mut walk.pending_wraps);
         }
-        (candidates, wraps)
+        candidates
     };
     // Phase 2's post-start writes (`StoryEventAliasFill` + the
     // `SceneActorBindings` dirty flag) are deferred past the stages
@@ -782,8 +787,21 @@ pub fn story_manager_dispatch_system(world: &World) {
         return;
     };
     let mut started = Vec::new();
-    for candidate in &outcome.0 {
+    for candidate in &candidates {
         if stages.is_running(candidate.quest) {
+            continue;
+        }
+        // *Max concurrent quests*: phase A counted the running pool from a
+        // snapshot, so a second event in the same frame (or an earlier
+        // start of this very pass) is only visible here.
+        if candidate.max_concurrent > 0
+            && candidate
+                .pool
+                .iter()
+                .filter(|quest| stages.is_running(**quest))
+                .count()
+                >= candidate.max_concurrent as usize
+        {
             continue;
         }
         // #5406 — the CK resets a quest on start unless it is Run Once
@@ -829,10 +847,11 @@ pub fn story_manager_dispatch_system(world: &World) {
     if !started.is_empty() {
         if let Some(mut node_state) = world.try_resource_mut::<StoryManagerNodeState>() {
             for candidate in started {
-                // A wrap clears the fired set only when its node actually
-                // started something this dispatch — otherwise the wrap is
-                // re-derived on the next fire.
-                if outcome.1.contains(&candidate.node) {
+                // A wrap clears the fired set when the first quest picked
+                // after it actually starts — otherwise the wrap is
+                // re-derived on the next fire. Earlier picks of the same
+                // pass belong to the old round and are marked before it.
+                if candidate.wrap_first {
                     if let Some(runtime) = node_state.nodes.get_mut(&candidate.node) {
                         for fired in &mut runtime.fired {
                             *fired = false;
@@ -913,6 +932,13 @@ struct QuestStartCandidate {
     /// (do-all `fired`, `RNAM` `last_fire_hours`).
     node: u32,
     pool_index: usize,
+    /// This pick is the first after a do-all wrap: phase B clears the
+    /// node's fired set before marking it.
+    wrap_first: bool,
+    /// *Max concurrent quests* of the owning node, `0` = uncapped, with
+    /// the pool it counts over (empty when uncapped).
+    max_concurrent: u32,
+    pool: Vec<QuestFormId>,
 }
 
 /// Bundles the per-event walk state so the recursive step stays under
@@ -938,9 +964,6 @@ struct WalkState<'a> {
     /// `true` once a non-sharing quest node that fired a quest consumed
     /// the event (#5404) — every remaining sibling walk stops.
     consumed: bool,
-    /// Nodes whose do-all fired set wraps this event (every eligible
-    /// entry had run); phase B clears them when applying the new mark.
-    pending_wraps: Vec<u32>,
 }
 
 fn dispatch_story_event(
@@ -1206,51 +1229,85 @@ fn process_quest_node(world: &World, tree: &SmTree, state: &mut WalkState<'_>, i
         return;
     }
 
-    let preferred: Vec<usize> = if node.policies.do_all_before_repeating {
-        let unfired: Vec<usize> = eligible
-            .iter()
-            .copied()
-            .filter(|&i| !fired.get(i).copied().unwrap_or(false))
-            .collect();
-        if unfired.is_empty() {
-            // Every eligible entry has run — the authored wrap point.
-            state.pending_wraps.push(node.form_id);
-            eligible
+    // *Num quests to run*: up to that many quests per pass, each chosen by
+    // the node's policy from what is left; fewer when fewer are eligible
+    // (CK *SM Event Node*). *Max concurrent quests* stops the pass once
+    // that many of the pool are running, counting this pass's own picks.
+    let running = node
+        .quests
+        .iter()
+        .filter(|link| {
+            state
+                .stages
+                .and_then(|stages| stages.get(&QuestFormId(link.form_id)))
+                == Some(&QuestStatus::Running)
+        })
+        .count();
+    let mut remaining = eligible;
+    let mut wrapped = false;
+    let mut picks = 0usize;
+    while picks < node.num_quests_to_run as usize && !remaining.is_empty() {
+        if node.max_concurrent > 0 && running + picks >= node.max_concurrent as usize {
+            break;
+        }
+        let mut wrap_first = false;
+        let preferred: Vec<usize> = if node.policies.do_all_before_repeating && !wrapped {
+            let unfired: Vec<usize> = remaining
+                .iter()
+                .copied()
+                .filter(|&i| !fired.get(i).copied().unwrap_or(false))
+                .collect();
+            if unfired.is_empty() {
+                // Every eligible entry has run — the authored wrap point.
+                // Picks of this pass made before it stay in the old round.
+                wrapped = true;
+                wrap_first = true;
+                remaining.clone()
+            } else {
+                unfired
+            }
         } else {
-            unfired
-        }
-    } else {
-        eligible
-    };
+            remaining.clone()
+        };
 
-    let pick = if node.policies.random {
-        // Scoped to the draw, for the same reason as the shuffle in
-        // `walk_siblings` (#5628).
-        match world.try_resource_mut::<StoryManagerRng>() {
-            Some(mut rng) => preferred[rng.pick(preferred.len())],
-            None => preferred[0],
-        }
-    } else {
-        preferred[0]
-    };
+        let pick = if node.policies.random {
+            // Scoped to the draw, for the same reason as the shuffle in
+            // `walk_siblings` (#5628).
+            match world.try_resource_mut::<StoryManagerRng>() {
+                Some(mut rng) => preferred[rng.pick(preferred.len())],
+                None => preferred[0],
+            }
+        } else {
+            preferred[0]
+        };
+        remaining.retain(|&i| i != pick);
+        picks += 1;
 
-    let quest = QuestFormId(node.quests[pick].form_id);
-    state.candidates.push(QuestStartCandidate {
-        quest,
-        start_up_stage: state
-            .registry
-            .and_then(|registry| registry.start_up_stage(quest)),
-        editor_id: state
-            .registry
-            .and_then(|registry| registry.editor_id(quest))
-            .unwrap_or("?")
-            .to_owned(),
-        node_editor_id: node.editor_id.clone(),
-        mnemonic: state.event.mnemonic,
-        slots: state.slots,
-        node: node.form_id,
-        pool_index: pick,
-    });
+        let quest = QuestFormId(node.quests[pick].form_id);
+        state.candidates.push(QuestStartCandidate {
+            quest,
+            start_up_stage: state
+                .registry
+                .and_then(|registry| registry.start_up_stage(quest)),
+            editor_id: state
+                .registry
+                .and_then(|registry| registry.editor_id(quest))
+                .unwrap_or("?")
+                .to_owned(),
+            node_editor_id: node.editor_id.clone(),
+            mnemonic: state.event.mnemonic,
+            slots: state.slots,
+            node: node.form_id,
+            pool_index: pick,
+            wrap_first,
+            max_concurrent: node.max_concurrent,
+            pool: if node.max_concurrent > 0 {
+                node.quests.iter().map(|link| QuestFormId(link.form_id)).collect()
+            } else {
+                Vec::new()
+            },
+        });
+    }
 }
 
 /// M47.2 — the CK *Quest Alias Tab*: an alias not flagged Optional that
@@ -1349,6 +1406,7 @@ mod tests {
 
     use super::*;
     use byroredux_plugin::esm::records::condition::RunOn;
+    use byroredux_plugin::esm::records::SM_DNAM_NUM_QUESTS_TO_RUN;
 
     /// Components must be registered on a fresh World before storages
     /// resolve (`query_mut` on an unregistered component returns `None`,
@@ -1455,6 +1513,8 @@ mod tests {
             first_child: None,
             quests: Vec::new(),
             policies: Default::default(),
+            num_quests_to_run: 1,
+            max_concurrent: 0,
         }
     }
 
@@ -2955,6 +3015,148 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
             vec![true, false, false],
             "the wrap cleared the round-robin before the new mark"
         );
+    }
+
+    /// Raise one `KILL` and run the dispatcher.
+    fn fire_kill(world: &mut World) {
+        let actor = world.spawn();
+        if let Some(mut events) = world.query_mut::<StoryEvent>() {
+            events.insert(
+                actor,
+                StoryEvent {
+                    mnemonic: *b"KILL",
+                    reference_1: actor,
+                    reference_2: None,
+                    location_1: None,
+                    location_2: None,
+                    scripted: None,
+                },
+            );
+        }
+        story_manager_dispatch_system(world);
+    }
+
+    fn running(world: &World, quests: &[u32]) -> Vec<u32> {
+        let stages = world.try_resource::<QuestStageState>().unwrap();
+        quests
+            .iter()
+            .copied()
+            .filter(|q| stages.is_running(QuestFormId(*q)))
+            .collect()
+    }
+
+    fn pool_world(node: SmNodeRecord) -> World {
+        let tree = build_story_manager_tree(&records(vec![event_node(10, b"KILL"), node]));
+        let mut world = setup_world();
+        world.insert_resource(tree);
+        world.insert_resource(QuestStageState::default());
+        world.insert_resource(StoryManagerNodeState::default());
+        world.insert_resource(StoryEventAliasFill::default());
+        world
+    }
+
+    /// *Num quests to run*: a pass starts up to that many pool quests in
+    /// the node's order, and as many as exist when fewer are eligible.
+    #[test]
+    fn num_quests_to_run_starts_several_pool_quests() {
+        let mut node = quest_node_full(30, 10, 0, &[0x111, 0x222, 0x333, 0x444], Default::default());
+        node.dnam = Some(SM_DNAM_NUM_QUESTS_TO_RUN);
+        node.mnam = Some(3);
+        let mut world = pool_world(node);
+        fire_kill(&mut world);
+        assert_eq!(running(&world, &[0x111, 0x222, 0x333, 0x444]), vec![0x111, 0x222, 0x333]);
+
+        let mut node = quest_node_full(30, 10, 0, &[0x111, 0x222], Default::default());
+        node.dnam = Some(SM_DNAM_NUM_QUESTS_TO_RUN);
+        node.mnam = Some(5);
+        let mut world = pool_world(node);
+        fire_kill(&mut world);
+        assert_eq!(running(&world, &[0x111, 0x222]), vec![0x111, 0x222], "fewer eligible than asked");
+
+        // An unchecked box ignores a stray MNAM.
+        let mut node = quest_node_full(30, 10, 0, &[0x111, 0x222], Default::default());
+        node.mnam = Some(2);
+        let mut world = pool_world(node);
+        fire_kill(&mut world);
+        assert_eq!(running(&world, &[0x111, 0x222]), vec![0x111]);
+    }
+
+    /// *Max concurrent quests*: the pass stops at the cap, counting the
+    /// pool's already-running quests, and resumes once one stops.
+    #[test]
+    fn max_concurrent_quests_caps_the_running_pool() {
+        let mut node = quest_node_full(30, 10, 0, &[0x111, 0x222, 0x333], Default::default());
+        node.dnam = Some(SM_DNAM_NUM_QUESTS_TO_RUN);
+        node.mnam = Some(3);
+        node.xnam = Some(2);
+        let mut world = pool_world(node);
+        fire_kill(&mut world);
+        assert_eq!(running(&world, &[0x111, 0x222, 0x333]), vec![0x111, 0x222]);
+        fire_kill(&mut world);
+        assert_eq!(
+            running(&world, &[0x111, 0x222, 0x333]),
+            vec![0x111, 0x222],
+            "two running = at the cap, nothing more starts"
+        );
+        world.try_resource_mut::<QuestStageState>().unwrap().stop(QuestFormId(0x111));
+        fire_kill(&mut world);
+        assert_eq!(
+            running(&world, &[0x111, 0x222, 0x333]),
+            vec![0x111, 0x222],
+            "one slot freed: the stopped quest is eligible again and stacked order picks it first"
+        );
+    }
+
+    /// Two events in one frame see the same stage snapshot in phase A, so
+    /// the cap is enforced again when phase B starts the second event's pick.
+    #[test]
+    fn max_concurrent_holds_across_events_in_one_frame() {
+        let mut node = quest_node_full(30, 10, 0, &[0x111, 0x222, 0x333], Default::default());
+        node.xnam = Some(1);
+        let mut world = pool_world(node);
+        for _ in 0..2 {
+            let actor = world.spawn();
+            if let Some(mut events) = world.query_mut::<StoryEvent>() {
+                events.insert(
+                    actor,
+                    StoryEvent {
+                        mnemonic: *b"KILL",
+                        reference_1: actor,
+                        reference_2: None,
+                        location_1: None,
+                        location_2: None,
+                        scripted: None,
+                    },
+                );
+            }
+        }
+        story_manager_dispatch_system(&world);
+        assert_eq!(running(&world, &[0x111, 0x222, 0x333]).len(), 1);
+    }
+
+    /// A do-all pass that runs out of unfired quests mid-way wraps: the
+    /// pick before the wrap belongs to the old round and is cleared, the
+    /// pick after it opens the new one.
+    #[test]
+    fn do_all_wraps_mid_pass_when_several_quests_run() {
+        let mut node = quest_node_full(
+            30,
+            10,
+            0,
+            &[0x111, 0x222, 0x333],
+            SmNodePolicies { do_all_before_repeating: true, ..Default::default() },
+        );
+        node.dnam = Some(SM_DNAM_NUM_QUESTS_TO_RUN);
+        node.mnam = Some(2);
+        let mut world = pool_world(node);
+        world.try_resource_mut::<StoryManagerNodeState>().unwrap().nodes.insert(
+            30,
+            SmNodeRuntime { fired: vec![true, true, false], last_fire_hours: vec![0.0; 3] },
+        );
+        fire_kill(&mut world);
+        assert_eq!(running(&world, &[0x111, 0x222, 0x333]), vec![0x111, 0x333]);
+        let state = world.try_resource::<StoryManagerNodeState>().unwrap();
+        assert_eq!(state.nodes[&30].fired, vec![true, false, false]);
     }
 
     /// Phase 3 — `RNAM` reset window: a fired pool entry is blocked

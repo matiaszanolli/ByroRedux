@@ -105,7 +105,9 @@ pub use scene::{
     SCENE_BEGIN_ON_QUEST_START, SCENE_INTERRUPTIBLE, SCENE_REPEAT_CONDITIONS, SCENE_SHOW_ALL_TEXT,
     SCENE_STOP_QUEST_ON_END,
 };
-pub use story_manager::{parse_sm_node, SmNodeKind, SmNodePolicies, SmNodeRecord, SmQuestLink};
+pub use story_manager::{
+    parse_sm_node, SmNodeKind, SmNodePolicies, SmNodeRecord, SmQuestLink, SM_DNAM_NUM_QUESTS_TO_RUN,
+};
 pub use water::{parse_watr, WaterParams, WatrRecord};
 pub use world::{
     parse_acti, parse_cndf, parse_kywd, parse_eczn, parse_imgs, parse_lgtm, parse_navi, parse_navm, parse_regn, parse_term,

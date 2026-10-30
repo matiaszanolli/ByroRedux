@@ -209,6 +209,33 @@ pub struct SmNodeRecord {
     pub extras: Vec<([u8; 4], Vec<u8>)>,
 }
 
+/// `DNAM & 0x40000` — the CK's **Num quests to run** checkbox on a quest
+/// node. Corpus census (2026-10-30): set on exactly the nodes that author
+/// an `MNAM`, in Skyrim, Fallout 4 and Starfield alike.
+pub const SM_DNAM_NUM_QUESTS_TO_RUN: u32 = 0x4_0000;
+
+impl SmNodeRecord {
+    /// How many quests the Story Manager tries to start each time this
+    /// node passes: the authored `MNAM` when the Num-quests-to-run box is
+    /// checked, else one (CK *SM Event Node*: "attempt to start multiple
+    /// quests (up to the number given)"). A checked box with a zero or
+    /// missing count still starts one.
+    pub fn num_quests_to_run(&self) -> u32 {
+        if self.dnam.unwrap_or(0) & SM_DNAM_NUM_QUESTS_TO_RUN == 0 {
+            return 1;
+        }
+        self.mnam.unwrap_or(1).max(1)
+    }
+
+    /// The node's **Max concurrent quests** cap (`XNAM`); `0` = no cap.
+    /// The CK exposes it as a checkbox plus a number, and vanilla writes
+    /// `0` for every node that leaves it unchecked (Skyrim: 3 capped nodes
+    /// of 441 quest nodes carry 1 or 2; Starfield authors up to 57).
+    pub fn max_concurrent_quests(&self) -> u32 {
+        self.xnam.unwrap_or(0)
+    }
+}
+
 /// Parse one `SMBN` / `SMEN` / `SMQN` record's subrecords into an
 /// [`SmNodeRecord`]. `kind` comes from the group label the dispatch
 /// already matched on. Best-effort like the sibling stub parsers:
@@ -323,6 +350,28 @@ pub fn parse_sm_node(
 
 #[cfg(test)]
 mod tests {
+    /// *Num quests to run* needs both the checkbox and a count; *Max
+    /// concurrent* reads `XNAM` with `0` meaning uncapped.
+    #[test]
+    fn num_quests_and_concurrency_decode_from_dnam_mnam_xnam() {
+        let node = |dnam, mnam, xnam| SmNodeRecord {
+            dnam,
+            mnam,
+            xnam,
+            ..Default::default()
+        };
+        assert_eq!(node(None, None, None).num_quests_to_run(), 1);
+        assert_eq!(node(Some(0), Some(7), None).num_quests_to_run(), 1, "box unchecked");
+        assert_eq!(node(Some(SM_DNAM_NUM_QUESTS_TO_RUN), None, None).num_quests_to_run(), 1);
+        assert_eq!(node(Some(SM_DNAM_NUM_QUESTS_TO_RUN), Some(0), None).num_quests_to_run(), 1);
+        assert_eq!(
+            node(Some(SM_DNAM_NUM_QUESTS_TO_RUN | 0x1), Some(3), None).num_quests_to_run(),
+            3
+        );
+        assert_eq!(node(None, None, None).max_concurrent_quests(), 0);
+        assert_eq!(node(None, None, Some(2)).max_concurrent_quests(), 2);
+    }
+
     use super::*;
     use crate::esm::records::test_support::sub;
 

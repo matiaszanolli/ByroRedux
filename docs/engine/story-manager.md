@@ -105,8 +105,8 @@ verification below should be treated as decoded.
 | `DNAM` u32 | all | node-policy flags — 0x1 random, 0x10000 do-all-before-repeating, 0x20000 shares-event (Phase-3 decode, §3.3); 0x2 warn-if-no-child-quest-started, 0x40000 the Num-quests-to-run checkbox | **[decoded]** — #5420 closed the last two bits from xEdit `TES5.pas`; the runtime still consumes only the Phase-3 three |
 | `RNAM` f32 | SMQN | per-quest hours-until-reset window, follows its `NNAM` | **[decoded]** (Phase 3; §3.3) |
 | `HNAM` u32 (as f32) | SMQN, FO4+ | **Hours until reset** (xEdit FO4+/SF1) — 72.0 on the Minutemen node, 0.3–24.0 elsewhere | **[named]** #5420 (typed-raw since Phase 4; runtime does not gate) |
-| `MNAM` u32 | SMQN, FO4 rare / SF common | **Num quests to run** (xEdit FO4/SF1) — observed 1–22 | **[named]** #5420; the runtime still starts one quest per node |
-| `XNAM` u32 | all | **Max concurrent quests** (xEdit `TES5.pas:7056-7111`) — observed 0/1/2 | **[named]** #5420 |
+| `MNAM` u32 | SMQN, FO4 rare / SF common | **Num quests to run** (xEdit FO4/SF1) — observed 1–22; present exactly when `DNAM & 0x40000` is set (0 exceptions over Skyrim, FO4, Starfield) | **[consumed]** — the walk starts up to `MNAM` pool quests per pass (`SmNodeRecord::num_quests_to_run`) |
+| `XNAM` u32 | all | **Max concurrent quests** (xEdit `TES5.pas:7056-7111`) — observed 0 (dominant) up to 57; nonzero with or without the Num-quests box | **[consumed]** — nonzero caps the pool's running quests, `0` = uncapped (`SmNodeRecord::max_concurrent_quests`); enforced in phase A and again at start |
 | `QNAM` u32 | SMQN | **Quest Count** — the `NNAM` array's `SetCountPath`; census `QNAM == count(NNAM)` on 448/448 Skyrim, 219/219 FO4, 354/354 Starfield | **[named]** #5420 (not a priority/repeat knob) |
 | `FNAM` u32 | SMQN, TES5 | **24 Hours Till Reset** bool (xEdit `TES5.pas`; 5 vanilla SMQNs) | **[named]** #5420 (raw; no runtime consumer) |
 | `UNAM` u32 | SMQN, FO76 | **Priority**, per quest (xEdit FO76) | **[named]** #5420 (raw; no runtime consumer) |

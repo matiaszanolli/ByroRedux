@@ -6076,6 +6076,40 @@ fn story_manager_skyrim_node_policy_floor() {
     }
 }
 
+/// M43 — the Num-quests-to-run / Max-concurrent decode rests on one
+/// corpus fact: `DNAM & 0x40000` is set on exactly the quest nodes that
+/// author an `MNAM` (2026-10-30 census over Skyrim, Fallout 4 and
+/// Starfield: 0 exceptions), while a nonzero `XNAM` appears with or
+/// without it (Skyrim has 3 capped nodes without the box).
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn story_manager_skyrim_num_quests_checkbox_matches_mnam() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim SM num-quests] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    use byroredux_plugin::esm::records::{SmNodeKind, SM_DNAM_NUM_QUESTS_TO_RUN};
+
+    let (mut multi, mut capped, mut mismatched) = (0, 0, Vec::new());
+    for node in index
+        .story_manager_nodes
+        .values()
+        .filter(|node| node.kind == SmNodeKind::Quest)
+    {
+        let boxed = node.dnam.unwrap_or(0) & SM_DNAM_NUM_QUESTS_TO_RUN != 0;
+        if boxed != node.mnam.is_some() {
+            mismatched.push(node.editor_id.as_str());
+        }
+        multi += usize::from(node.num_quests_to_run() > 1);
+        capped += usize::from(node.max_concurrent_quests() > 0);
+    }
+    assert!(mismatched.is_empty(), "checkbox and MNAM must agree: {mismatched:?}");
+    assert!(multi >= 12, "multi-quest nodes floor (measured 14): {multi}");
+    assert_eq!(capped, 3, "Skyrim's capped nodes (measured 3)");
+}
+
 /// #5366 Phase 4 — the FO4 dialect: same `DNAM` policy vocabulary
 /// (2026-10-08 census: shares-bit on ≥140 `SMQN`s, `SMEN` roots all 0),
 /// authored quest pools at Skyrim-unseen scale (`RETravelQuests` 44),
