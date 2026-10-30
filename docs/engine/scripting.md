@@ -2616,7 +2616,9 @@ nearest the player — on the player. `Resurrect` revives in place (`revive.rs`:
 back, the ragdoll freed and the bones' collision bodies restored, the idle and the AI package stack re-armed; live:
 Sunny Smiles killed, brought back, standing, the count kept); the get-up animation is not modelled. `DropMe`,
 `RemoveAllTypedItems` (the FOSE type codes), `GetGS` (and `ShowWarning`), `IsSwimming`, `AutoSave`, `GetSitting`
-round out the tail. `obscript.cmd` runs any of these through the real host from the console, which is how the
+round out the tail. Oblivion's `IsPlayerInJail` (the served-sentence state `jail.rs` keeps, the same one CTDA 171 reads)
+and `GetWeaponAnimType` (the `WEAP` `DATA` type grouped into the CS page's 0 hand-to-hand/staff, 1 one-handed,
+2 two-handed, 3 bow; `ItemKind::Weapon::oblivion_type`) run since 2026-10-30. `obscript.cmd` runs any of these through the real host from the console, which is how the
 smoke gate drives them.
 
 **What stays declined, and what it waits for.** Every one is a counted decline (`obscript_tools live`,
@@ -2628,7 +2630,9 @@ smoke gate drives them.
 | `EnableLinkedPathPoints` / `DisableLinkedPathPoints` (Oblivion, 71 / 69 scripts) | Oblivion path grids: the engine paths on navmeshes |
 | the crime consumers behind `GetPCFame` / `GetPCInfamy` / `ModPCFame` / `GetCrimeGold` / `ModCrimeGold` / `SetPCExpelled` / `SetPCEnemyOfFaction` / `SetFactionReaction` | these commands run: they read and write the saved `ObScriptLedger` (`obscript_ledger.rs`; `obscript_more/state.rs`). The engine raises the bounty for three crimes so far, on Oblivion (`byroredux/src/crime.rs`, `CrimeModel`): a witnessed theft (`item value × fCrimeGoldSteal`, rounded up, minimum 1), an assault on a non-hostile NPC (`iCrimeGoldAttack`, once per victim) and a murder (`iCrimeGoldMurder`, plus infamy). The Steal / Murder / Attack faction flags are set without a witness. Authored guard dialogue can read the bounty (the Oblivion condition dialect in `condition/catalog.rs`, `guards.rs`). `PayFine`, `PayFineThief` and `GoToJail` run (`jail.rs`). A sentence ends by resting in a cell bed. A witnessed crime calls the guards, and a guard who sees a wanted player (bounty at or past `iCrimeGoldAttackMin`) rushes them (`crime.rs`), Skyrim reports each witnessed crime to the witness's crime faction's bounty (`FactionCrimeGold`, fined by the faction's Crime tab), and every game records who saw a crime in `CrimeKnowledge`, which `GetCrime` (CTDA 122) and `GetCrimeKnown` read. The confiscated goods are delivered to the jail's `StolenGoods` chest. Still missing: pickpocket and trespass fines, witness disposition drops, guards that read the bounty (arrest, pay, jail), Expelled, and FO3 / FNV's faction-based crime |
 | `GetDisposition` / `ModDisposition`, `AddTopic`, `SetQuestObject`, `SetItemValue` | a per-NPC disposition value, a topic-known gate on the opening menu (#5350), a quest-item flag and a script-overridable base value — each has no reader in the engine, so it declines rather than store a value nothing consults |
-| `GetDayOfWeek` | the game calendar's epoch: the weekday of day 0 is in no record |
+| `GetDayOfWeek` | the game calendar's epoch: the weekday of day 0 is in no record, and neither the CS nor the GECK page says which weekday a new game starts on |
+| `CloseCurrentOblivionGate` (Oblivion, 16 scripts) | the Oblivion-gate quest machinery: the gate's open state and the Sigil Stone it spawns have no runtime |
+| `ModPCSkill`, and every other Oblivion `GetAV` / `SetAV` / `ModAV` | Oblivion has no `AVIF` records, so its hard-coded attributes and skills have no key in `ActorValues` yet: it needs an Oblivion CHARAL ruleset first (`ModPCSkill` also moves the skill-usage counter, CS page *ModPCSkill* §Issues) |
 | `EnableFastTravel`, `UnlockChallenge`, `SetReputation` (no GECK page) | no fast-travel or challenge UI exists to honour them |
 | `PushActorAway`, `UseWeapon` / `FireWeapon`, `OnGrab` / `OnRelease` / `OnFire` | a knockdown cycle (the ragdoll teardown above is the first half), a scripted attack, and a player grab |
 | `SetCombatStyle`, `SetTalkingActivatorActor`, `PlayMusic`, `SetVATSTarget`, `ShowMap` ... | each its own missing state; none is an ObScript-layer gap |
