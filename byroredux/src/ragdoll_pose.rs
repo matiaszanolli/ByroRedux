@@ -163,9 +163,10 @@
 //! the placement, and its `XRGD` is pose-only data. The humanoid rig
 //! (`characters\_male\skeleton.nif`, the same 18 bodies in both games,
 //! [`FALLOUT_HUMANOID_RAGDOLL_BODIES`]) passes #5015's checks by order, as the
-//! Skyrim humanoid does: over 202 FNV and 307 FO3 dead-base humanoid corpses
+//! Skyrim humanoid does: over 202 FNV and 310 FO3 dead-base humanoid corpses
 //! (every one with 18 entries but three FO3 19-entry poses, which the count gate
-//! refuses), each entry's offset matches its body's bone within 3 % for 17/17
+//! refuses, so 202 and 307 are posed — both pinned by the `--ignored`
+//! `fnv_xrgd_…` / `fo3_xrgd_…` tests, #6463), each entry's offset matches its body's bone within 3 % for 17/17
 //! bones — the NIF's local offset for the legs, spine, neck, head and upper
 //! arms, the elbow and wrist hinges' child pivot (19.591, 16.170) for the
 //! forearms and hands, whose NIF offsets (17.364, 18.129) put the elbow 2.2

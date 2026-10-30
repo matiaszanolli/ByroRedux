@@ -919,28 +919,24 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
     assert!(mapped * 100 >= corpses * 95, "at least 95% resolve, got {mapped} of {corpses}");
 }
 
-/// #6252 — against the shipped data: `FalloutNV.esm`'s dead-base humanoid
-/// corpses that author an `XRGD` pose are parked, and every one lines up
-/// entry-for-body with the humanoid skeleton's ragdoll, which is the verified
-/// FO3/FNV body set. A pose on a live base is not parked.
-///
-///   cargo test -p byroredux --bin byroredux fnv_xrgd -- --ignored --nocapture
-#[test]
-#[ignore = "needs Fallout New Vegas game data on disk"]
-fn fnv_xrgd_corpse_poses_line_up_with_the_humanoid_ragdoll() {
+/// The Fallout 3 / New Vegas census behind #6252's pins: a title's dead-base humanoid corpses that
+/// author an `XRGD` pose, how many are parked, how many of those line up entry-for-body with the
+/// humanoid skeleton's ragdoll (the verified FO3/FNV body set), and how many poses sit on live
+/// bases. `None` when the game data is absent (asserts under `BYROREDUX_REQUIRE_GAME_DATA=1`).
+fn fallout_xrgd_census(env: &str, default: &str, esm: &str) -> Option<(usize, usize, usize)> {
     use byroredux_plugin::esm::reader::GameKind;
-    let data = std::env::var("BYROREDUX_FNV_DATA")
+    let data = std::env::var(env)
         .ok()
         .filter(|s| !s.is_empty())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data".into());
-    let (esm, meshes) = (data.join("FalloutNV.esm"), data.join("Fallout - Meshes.bsa"));
+        .unwrap_or_else(|| default.into());
+    let (esm, meshes) = (data.join(esm), data.join("Fallout - Meshes.bsa"));
     if !esm.is_file() || !meshes.is_file() {
         assert!(
             std::env::var("BYROREDUX_REQUIRE_GAME_DATA").map_or(true, |v| v == "0"),
             "BYROREDUX_REQUIRE_GAME_DATA is set, but {esm:?} / {meshes:?} are missing"
         );
-        return;
+        return None;
     }
     let archive = byroredux_bsa::BsaArchive::open(&meshes).unwrap();
     let skeleton = archive.extract(r"meshes\characters\_male\skeleton.nif").unwrap();
@@ -969,7 +965,47 @@ fn fnv_xrgd_corpse_poses_line_up_with_the_humanoid_ragdoll() {
     for cells in index.cells.exterior_cells.values() {
         cells.values().flat_map(|cell| cell.references.iter()).for_each(&mut visit);
     }
+    Some((parked, posable, live_posed))
+}
+
+/// #6252 — against the shipped data: `FalloutNV.esm`'s dead-base humanoid
+/// corpses that author an `XRGD` pose are parked, and every one lines up
+/// entry-for-body with the humanoid skeleton's ragdoll, which is the verified
+/// FO3/FNV body set. A pose on a live base is not parked.
+///
+///   cargo test -p byroredux --bin byroredux fnv_xrgd -- --ignored --nocapture
+#[test]
+#[ignore = "needs Fallout New Vegas game data on disk"]
+fn fnv_xrgd_corpse_poses_line_up_with_the_humanoid_ragdoll() {
+    let Some((parked, posable, live_posed)) = fallout_xrgd_census(
+        "BYROREDUX_FNV_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+        "FalloutNV.esm",
+    ) else {
+        return;
+    };
     eprintln!("FNV: {parked} parked corpse poses, {posable} posable, {live_posed} on live bases");
     assert_eq!((parked, posable), (202, 202));
     assert_eq!(live_posed, 1, "the one indexed pose on a live base is not a corpse's");
+}
+
+/// #6463 — the FO3 leg of #6252, against `Fallout3.esm`: the same humanoid rig, the same parked /
+/// posable split. Three FO3 poses author 19 entries, which the count gate refuses.
+///
+///   cargo test -p byroredux --bin byroredux fo3_xrgd -- --ignored --nocapture
+#[test]
+#[ignore = "needs Fallout 3 game data on disk"]
+fn fo3_xrgd_corpse_poses_line_up_with_the_humanoid_ragdoll() {
+    let Some((parked, posable, live_posed)) = fallout_xrgd_census(
+        "BYROREDUX_FO3_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+        "Fallout3.esm",
+    ) else {
+        return;
+    };
+    eprintln!("FO3: {parked} parked corpse poses, {posable} posable, {live_posed} on live bases");
+    // Measured 2026-10-29: 310 dead-base humanoid poses, 307 with the 18 entries the rig takes and
+    // the 3 nineteen-entry poses refused by the count gate; no pose on a live base.
+    assert_eq!((parked, posable), (310, 307));
+    assert_eq!(live_posed, 0);
 }
