@@ -236,6 +236,7 @@ pub fn cast_spell(world: &World, caster: Option<EntityId>, target: EntityId, spe
     // only the actors and the location. Only a cast with a caster raises it.
     if let (true, Some(caster)) = (started, caster) {
         let location = world.try_resource::<crate::location::PlayerLocation>().and_then(|here| here.0);
+        log::debug!("story manager: CAST raised (caster {caster}, target {target}, location {location:?})");
         crate::story_manager::raise_story_event(
             world,
             caster,

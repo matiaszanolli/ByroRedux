@@ -396,7 +396,16 @@ already has the surface:
   target `R2`); the `magic.cast` console stands in for the player's cast. The
   `CAST` quests are the world-interaction reactions to a spell cast at an
   actor (`WICastMagic…`); there is still no player cast input, so only
-  scripts and the console cast. *Crafting* (`crafting.rs`): Skyrim `COBJ`
+  scripts and the console cast. Live: a console cast raised `CAST` (caster,
+  target) — no quest started, because `WICastMagic01` requires its `Location`
+  alias (`L1`) and the spawn cell of the grid run authors no location, so
+  `PlayerLocation` was `None`; a hand-raised `CAST` with a location did not
+  start one either (the nodes also gate on cooldown globals and a random roll),
+  so the live gate for this producer is the raise itself, not a started quest.
+  The crafting page was opened in the running game (`craft open`, the same
+  request activation makes) and shows the bench heading, each recipe with
+  ingredients held against needed, and a Craft button that is disabled while
+  an ingredient is missing. *Crafting* (`crafting.rs`): Skyrim `COBJ`
   recipes (ingredients `CNTO`, yield `NAM1`, bench keyword `BNAM`, perk
   conditions `CTDA`; 592 of 601 install) and the `KWDA` of every `FURN`
   (typed since this change) make a placed furniture a bench when it carries

@@ -164,7 +164,7 @@ impl ConsoleCommand for CraftCommand {
     }
 
     fn description(&self) -> &str {
-        "Craft at the nearest workbench: craft list | craft make <recipe_form_hex>"
+        "Craft at the nearest workbench: craft list | craft open | craft make <recipe_form_hex>"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
@@ -187,6 +187,11 @@ impl ConsoleCommand for CraftCommand {
                 }
                 CommandOutput::lines(lines)
             }
+            // The activation's own door: the app opens the crafting page next frame.
+            Some("open") => {
+                crate::crafting::request_crafting(world, bench);
+                CommandOutput::line(format!("requested the crafting page at bench entity {bench}"))
+            }
             Some("make") => {
                 let Some(recipe) = parts.next().and_then(parse_console_form_id) else {
                     return CommandOutput::error("usage: craft make <recipe_form_hex>");
@@ -196,7 +201,7 @@ impl ConsoleCommand for CraftCommand {
                     Err(reason) => CommandOutput::error(format!("craft: {reason}")),
                 }
             }
-            _ => CommandOutput::error("usage: craft list | craft make <recipe_form_hex>"),
+            _ => CommandOutput::error("usage: craft list | craft open | craft make <recipe_form_hex>"),
         }
     }
 }

@@ -267,6 +267,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::CraftingSnap
                 .try_resource::<crate::cell_loader::LoadedCellIndex>()
                 .and_then(|index| index.0.cells.statics.get(&base).map(|object| object.editor_id.clone()))
         })
+        .map(|name| bench_display_name(&name))
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Workbench".to_owned());
     let recipes = recipes_at(world, bench)
@@ -280,6 +281,21 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::CraftingSnap
         })
         .collect();
     Some(byroredux_debug_ui::CraftingSnapshot { bench_name, recipes })
+}
+
+/// A bench's editor id as a heading: `CraftingTanningRackMarker` -> `Tanning Rack` (the `Crafting`
+/// prefix and `Marker` suffix are authoring words; camel-case words are split).
+fn bench_display_name(editor_id: &str) -> String {
+    let trimmed = editor_id.strip_prefix("Crafting").unwrap_or(editor_id);
+    let trimmed = trimmed.strip_suffix("Marker").unwrap_or(trimmed);
+    let mut out = String::new();
+    for (i, ch) in trimmed.chars().enumerate() {
+        if i > 0 && ch.is_ascii_uppercase() {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Apply the page's action at the open bench.
@@ -373,6 +389,29 @@ mod tests {
 
     fn give(world: &mut World, player: EntityId, item: u32, count: u32) {
         world.get_mut::<Inventory>(player).unwrap().push(ItemStack::new(item, count));
+    }
+
+    #[test]
+    fn bench_editor_ids_read_as_headings() {
+        assert_eq!(bench_display_name("CraftingTanningRackMarker"), "Tanning Rack");
+        assert_eq!(bench_display_name("CraftingSmithingForge"), "Smithing Forge");
+        assert_eq!(bench_display_name("Skyforge"), "Skyforge");
+    }
+
+    /// The page's own action crafts at the open bench and refuses with none open.
+    #[test]
+    fn the_pages_craft_action_works_at_the_open_bench_only() {
+        let (mut world, player, forge, _cookpot) = world_with_bench();
+        world.insert_resource(ActiveCrafting::default());
+        give(&mut world, player, IRON_INGOT, 1);
+        give(&mut world, player, LEATHER, 1);
+        let action = byroredux_debug_ui::CraftingAction::Craft { recipe: RECIPE };
+        assert!(apply_action(&world, action).is_err(), "no bench open");
+        begin_crafting(&world, forge).unwrap();
+        assert!(apply_action(&world, action).is_ok());
+        assert_eq!(world.get::<Inventory>(player).unwrap().count_of(IRON_DAGGER), 1);
+        end_crafting(&world);
+        assert!(snapshot(&world).is_none());
     }
 
     /// Only a bench that carries the recipe's keyword offers it, a recipe shows what is held, and a
