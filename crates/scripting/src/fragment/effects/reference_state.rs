@@ -60,16 +60,23 @@ pub(super) fn apply_reference_state_effect(
         Effect::SetRelationshipRank { actor, other, rank } => {
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             let other = guard_actor(other, context, vmad, world, deferred)?;
-            let (Some(actor), Some(other)) = (
+            let (Some(actor_base), Some(other_base)) = (
                 crate::relationships::actor_base(world, actor),
                 crate::relationships::actor_base(world, other),
             ) else {
                 log::debug!("fragment SetRelationshipRank skipped: an actor has no base");
                 return None;
             };
-            deferred
+            let pair = crate::relationships::pair(actor_base, other_base);
+            // A change earlier in the same fragment is the "old" rank here.
+            let old = deferred
                 .relationship_changes
-                .push((crate::relationships::pair(actor, other), *rank));
+                .iter()
+                .rev()
+                .find(|(changed, _)| *changed == pair)
+                .map_or_else(|| crate::relationships::relationship_rank(world, actor, other), |&(_, rank)| rank);
+            deferred.relationship_changes.push((pair, *rank));
+            crate::relationships::raise_relationship_change(world, actor, other, old, *rank);
             None
         }
         Effect::Kill { actor, killer, silent } => {

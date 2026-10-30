@@ -40,6 +40,32 @@ pub struct ScriptedRelationships(
 
 impl Resource for ScriptedRelationships {}
 
+/// M43 — the Story Manager's `CHRR` (Change Relationship Rank): `OnStoryRelationshipChange(akActor1,
+/// akActor2, aiOldRelationship, aiNewRelationship)`. R1 / R2 are the two actors, `V1` the old rank
+/// and `V2` the new one. Raised only when the rank actually changes. A no-op on pre-Creation titles
+/// (no SM tree installed).
+pub fn raise_relationship_change(world: &World, actor: EntityId, other: EntityId, old: i8, new: i8) {
+    if old == new {
+        return;
+    }
+    crate::story_manager::raise_story_event(
+        world,
+        actor,
+        crate::story_manager::StoryEvent {
+            mnemonic: *b"CHRR",
+            reference_1: actor,
+            reference_2: Some(other),
+            location_1: None,
+            location_2: None,
+            scripted: Some(crate::story_manager::ScriptedStoryEvent {
+                keyword: 0,
+                values: [i32::from(old), i32::from(new)],
+                has_reference_1: true,
+            }),
+        },
+    );
+}
+
 /// Install the load order's [`AuthoredRelationships`]; returns how many.
 pub fn install_relationships(world: &mut World, index: &EsmIndex) -> usize {
     let ranks: HashMap<(u32, u32), i8> = index
@@ -92,6 +118,23 @@ pub fn relationship_rank(world: &World, a: EntityId, b: EntityId) -> i8 {
 
 #[cfg(test)]
 mod tests {
+    /// M43 — `CHRR` carries both actors and the old / new rank, and only a real change raises it.
+    #[test]
+    fn a_rank_change_raises_chrr_with_the_old_and_new_rank() {
+        let mut world = World::new();
+        crate::story_manager::register(&mut world);
+        let (a, b) = (world.spawn(), world.spawn());
+        raise_relationship_change(&world, a, b, 2, 2);
+        assert!(world.query::<crate::story_manager::StoryEvent>().is_none_or(|e| e.iter().next().is_none()));
+        raise_relationship_change(&world, a, b, 0, 3);
+        let event = world
+            .query::<crate::story_manager::StoryEvent>()
+            .and_then(|events| events.iter().map(|(_, e)| *e).find(|e| e.mnemonic == *b"CHRR"))
+            .expect("raised on the change");
+        let slots = event.slots();
+        assert_eq!((slots.reference_1, slots.reference_2, slots.values), (Some(a), Some(b), [0, 3]));
+    }
+
     use super::*;
     use byroredux_plugin::esm::records::RelaRecord;
 

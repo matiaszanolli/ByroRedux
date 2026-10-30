@@ -123,6 +123,10 @@ impl Vm<'_> {
                     };
                     if unique && rank == 0 {
                         self.deferred.relationship_changes.push((pair, 1));
+                        // M43 — the Story Manager's `CHRR`: the actor became the player's friend.
+                        if let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(self.world) {
+                            crate::relationships::raise_relationship_change(self.world, entity, player, 0, 1);
+                        }
                     }
                 }
                 Some(Value::None)

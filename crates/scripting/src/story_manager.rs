@@ -701,7 +701,7 @@ pub fn emit_change_location_on_key_change(
     if key.is_none() {
         return false;
     }
-    raise_story_event(
+    let raised = raise_story_event(
         world,
         actor,
         StoryEvent {
@@ -712,7 +712,27 @@ pub fn emit_change_location_on_key_change(
             location_2: location,
             scripted: None,
         },
-    )
+    );
+    // Fallout 4's `LCLD` (the SMEN editor ids name it *Location Loaded*: `MinRecruitLocationLoadedStub`
+    // and kin; its quests fill one `L1`) — the location that just came into the session, raised with
+    // the change. The game fires it when a location's cells load, which can precede the player's
+    // arrival; this engine has one moment for both, so the two events coincide. Skyrim authors no
+    // `LCLD` root, so the walk finds nothing there.
+    if let Some(entered) = location {
+        raise_story_event(
+            world,
+            actor,
+            StoryEvent {
+                mnemonic: *b"LCLD",
+                reference_1: actor,
+                reference_2: None,
+                location_1: Some(entered),
+                location_2: None,
+                scripted: Some(ScriptedStoryEvent { keyword: 0, values: [0, 0], has_reference_1: false }),
+            },
+        );
+    }
+    raised
 }
 
 /// System: dispatch every raised [`StoryEvent`] through the [`SmTree`],
@@ -2217,6 +2237,31 @@ mod tests {
         story_manager_dispatch_system(&world);
         let stages = world.try_resource::<QuestStageState>().unwrap();
         assert!(!stages.is_started(QuestFormId(0x777)));
+    }
+
+    /// A location change that resolves an LCTN raises `LCLD` with the entered location in `L1` beside
+    /// `CLOC`; one with no LCTN raises only `CLOC`. The FO4 `LCLD` quests fill one `L1`.
+    #[test]
+    fn a_resolved_location_also_raises_location_loaded() {
+        let mut world = setup_world();
+        world.insert_resource(StoryLocationCursor::default());
+        let actor = world.spawn();
+        assert!(emit_change_location_on_key_change(&world, Some(1), actor, Some(0xABC)));
+        let mut mnemonics: Vec<[u8; 4]> = world
+            .query::<StoryEvent>()
+            .map(|events| events.iter().map(|(_, e)| e.mnemonic).collect())
+            .unwrap_or_default();
+        mnemonics.extend(world.resource::<PendingScriptStoryEvents>().0.iter().map(|e| e.mnemonic));
+        mnemonics.sort();
+        assert_eq!(mnemonics, vec![*b"CLOC", *b"LCLD"]);
+        let lcld = world
+            .resource::<PendingScriptStoryEvents>()
+            .0
+            .iter()
+            .find(|e| e.mnemonic == *b"LCLD")
+            .copied()
+            .expect("the second event on one entity queues");
+        assert_eq!((lcld.slots().location_1, lcld.slots().reference_1), (Some(0xABC), None));
     }
 
     /// The CLOC producer dedupes on the location key: first sight fires,
