@@ -1,6 +1,6 @@
 # Story Manager event dispatch
 
-**Status**: Phases 0–4 **landed 2026-10-07/08** (#5366). The runtime is
+**Status**: Phases 0–4 **landed 2026-10-07/08** (#5366); M43 **closed 2026-10-30** with the producers and gameplay below. The runtime is
 complete for the Skyrim dialect and the FO4/SF decode is in: the
 `SMBN`/`SMEN`/`SMQN` parse (`crates/plugin/src/esm/records/misc/story_manager.rs`
 → `EsmIndex.story_manager_nodes`, FO4/SF tail typed-raw), the `SmTree`
