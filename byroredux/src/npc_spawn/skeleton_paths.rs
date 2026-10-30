@@ -1,6 +1,7 @@
 //! Skeleton, body and creature mesh path resolution, plus the prebaked FaceGen sidecar paths.
 
 use super::*;
+use byroredux_scripting::load_order::plugin_local_object_id;
 
 /// Path inside the meshes archive for the default humanoid skeleton.
 ///
@@ -349,12 +350,17 @@ pub fn facegen_sidecar_path(head_nif_path: &str, extension: &str) -> Option<Stri
 /// tint DDS in `Skyrim - Textures0.bsa`):
 ///
 /// ```text
-/// meshes\actors\character\facegendata\facegeom\<plugin>\<formid:08x>.nif
+/// meshes\actors\character\facegendata\facegeom\<plugin>\<local id:08x>.nif
 /// ```
 ///
 /// The `<plugin>` segment is the lowercase basename including the
-/// `.esm` / `.esp` extension. The `<formid:08x>` is the NPC's
-/// load-order-global FormID rendered as 8 lowercase hex digits.
+/// `.esm` / `.esp` extension. The file name is the NPC's
+/// **plugin-local** id (slot bits stripped, [`plugin_local_object_id`]) as 8
+/// lowercase hex digits: every shipped DLC / Creation Club archive names its
+/// files with a zero top byte (`DLCCoast.esm\00002162.NIF`,
+/// `dawnguard.esm\00002b6c.nif`), while `form_id` here is the load-order-global
+/// id whose top byte is the plugin's slot (#6096). `form_id` must be global so
+/// the slot class (regular / light / medium) can be recovered.
 pub fn prebaked_facegen_nif_path(plugin_name: &str, form_id: u32) -> Option<String> {
     if plugin_name.is_empty() {
         return None;
@@ -362,14 +368,16 @@ pub fn prebaked_facegen_nif_path(plugin_name: &str, form_id: u32) -> Option<Stri
     Some(format!(
         r"meshes\actors\character\facegendata\facegeom\{}\{:08x}.nif",
         plugin_name.to_ascii_lowercase(),
-        form_id,
+        plugin_local_object_id(form_id),
     ))
 }
 
 /// Companion path to [`prebaked_facegen_nif_path`] for the per-NPC
-/// face-tint DDS. Same plugin / FormID structure under
-/// `textures\actors\character\facegendata\facetint\` instead of
-/// `meshes\...\facegeom\`. Returns `None` on empty plugin.
+/// face-tint DDS, with the same plugin / plugin-local-id structure under
+/// `textures\actors\character\facegendata\facetint\`. **Skyrim only**: FO4
+/// and Starfield ship no `facetint` files (FO4's facegeom NIFs reference
+/// `FaceCustomization\...` textures inline), so the caller must not probe it
+/// for them (#6099). Returns `None` on empty plugin.
 pub fn prebaked_facegen_tint_path(plugin_name: &str, form_id: u32) -> Option<String> {
     if plugin_name.is_empty() {
         return None;
@@ -377,6 +385,20 @@ pub fn prebaked_facegen_tint_path(plugin_name: &str, form_id: u32) -> Option<Str
     Some(format!(
         r"textures\actors\character\facegendata\facetint\{}\{:08x}.dds",
         plugin_name.to_ascii_lowercase(),
-        form_id,
+        plugin_local_object_id(form_id),
     ))
+}
+
+/// [`prebaked_facegen_tint_path`] gated on the games that ship facetint
+/// textures: Skyrim only (#6099). FO4 / FO76 / Starfield return `None`
+/// without the per-NPC wasted archive probe.
+pub(super) fn prebaked_tint_path_for(
+    game: GameKind,
+    plugin_name: &str,
+    form_id: u32,
+) -> Option<String> {
+    if game != GameKind::Skyrim {
+        return None;
+    }
+    prebaked_facegen_tint_path(plugin_name, form_id)
 }

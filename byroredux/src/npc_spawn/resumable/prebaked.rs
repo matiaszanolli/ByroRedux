@@ -151,7 +151,8 @@ pub(super) fn prepare_prebaked_state(
         // facetint ids come from the terminal, and `plugin_name` is the
         // terminal's owner - the caller resolves it from the same chain.
         facegen_path: prebaked_facegen_nif_path(plugin_name, traits.form_id),
-        tint_path: prebaked_facegen_tint_path(plugin_name, traits.form_id),
+        // #6099 — Skyrim-only; see `prebaked_tint_path_for`.
+        tint_path: prebaked_tint_path_for(game, plugin_name, traits.form_id),
         armor,
         facegen_hidden_mask,
         equipped_armor_count: 0,

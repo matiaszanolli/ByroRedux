@@ -898,13 +898,8 @@ pub(crate) fn scol_derived_cm_path(
     base_form_id: u32,
     load_order: &super::load_order::LoadOrder,
 ) -> Option<String> {
-    use byroredux_plugin::esm::reader::GlobalSlot;
     let owner = super::load_order::plugin_for_form_id(base_form_id, load_order)?;
-    let local = match byroredux_scripting::load_order::global_slot_of(base_form_id) {
-        GlobalSlot::Regular(_) => base_form_id & 0x00FF_FFFF,
-        GlobalSlot::Medium(_) => base_form_id & 0x0000_FFFF,
-        GlobalSlot::Light(_) => base_form_id & 0x0000_0FFF,
-    };
+    let local = byroredux_scripting::load_order::plugin_local_object_id(base_form_id);
     Some(format!("meshes\\scol\\{owner}\\cm{local:08x}.nif"))
 }
 

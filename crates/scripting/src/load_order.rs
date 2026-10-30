@@ -81,6 +81,15 @@ fn object_id_mask(slot: GlobalSlot) -> u32 {
     }
 }
 
+/// The plugin-local object id of a load-order-global FormID: the part the
+/// owning plugin's file stores, with the slot bits stripped (24 bits for a
+/// regular slot, 12 for a light master, 16 for a Starfield medium master).
+/// Archive paths keyed by the authoring plugin (`facegeom\<plugin>\<local>`,
+/// `scol\<plugin>\cm<local>`) name files by this value, never the global id.
+pub fn plugin_local_object_id(form_id: u32) -> u32 {
+    form_id & object_id_mask(global_slot_of(form_id))
+}
+
 /// Inverse of [`GlobalSlot::compose`]: which slot owns this global FormID.
 /// `0xFE` is the light-master space (12-bit sub-index below the top byte),
 /// `0xFD` the Starfield medium-master space (8-bit sub-index, #4639); anything
@@ -100,6 +109,15 @@ pub fn global_slot_of(form_id: u32) -> GlobalSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_local_object_id_strips_the_slot_bits_per_slot_kind() {
+        assert_eq!(plugin_local_object_id(0x0001_A670), 0x0001_A670);
+        assert_eq!(plugin_local_object_id(0x0200_2B6C), 0x0000_2B6C);
+        assert_eq!(plugin_local_object_id(0xFE00_08F6), 0x0000_08F6);
+        assert_eq!(plugin_local_object_id(0xFD00_0E90), 0x0000_0E90);
+        assert_eq!(plugin_local_object_id(0xFD12_0E90), 0x0000_0E90);
+    }
 
     #[test]
     fn form_refs_round_trip_through_every_slot_kind() {

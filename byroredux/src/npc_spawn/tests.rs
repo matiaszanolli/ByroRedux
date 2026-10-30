@@ -465,11 +465,36 @@ fn prebaked_facegen_nif_path_matches_vanilla_layout() {
         prebaked_facegen_nif_path("Skyrim.esm", 0x00013BBE),
         Some(r"meshes\actors\character\facegendata\facegeom\skyrim.esm\00013bbe.nif".to_string(),),
     );
-    // Plugin name is lower-cased; FormID rendered as 8 lowercase hex.
+    // Plugin name is lower-cased; the file name is the PLUGIN-LOCAL id as 8
+    // lowercase hex (#6096). Serana (`DLC1Serana`) is global 0x02002B6C in the
+    // standard order (Dawnguard = slot 2); the shipped file is
+    // `dawnguard.esm\00002b6c.nif`.
     assert_eq!(
-        prebaked_facegen_nif_path("Dawnguard.esm", 0x0001684C),
+        prebaked_facegen_nif_path("Dawnguard.esm", 0x0200_2B6C),
         Some(
-            r"meshes\actors\character\facegendata\facegeom\dawnguard.esm\0001684c.nif".to_string(),
+            r"meshes\actors\character\facegendata\facegeom\dawnguard.esm\00002b6c.nif".to_string(),
+        ),
+    );
+    // FO4 DLC: `DLCCoast.esm\00002162.NIF`, DLCCoast = slot 1.
+    assert_eq!(
+        prebaked_facegen_nif_path("DLCCoast.esm", 0x0100_2162),
+        Some(
+            r"meshes\actors\character\facegendata\facegeom\dlccoast.esm\00002162.nif".to_string(),
+        ),
+    );
+    // Light master (ESL / Creation Club): global `FExxxyyy` -> 12-bit local.
+    assert_eq!(
+        prebaked_facegen_nif_path("ccBGSSSE001-Fish.esm", 0xFE00_08F6),
+        Some(
+            r"meshes\actors\character\facegendata\facegeom\ccbgssse001-fish.esm\000008f6.nif"
+                .to_string(),
+        ),
+    );
+    // Starfield medium master (`FDxxyyyy`): 16-bit local.
+    assert_eq!(
+        prebaked_facegen_nif_path("SFBGS003.esm", 0xFD00_0E90),
+        Some(
+            r"meshes\actors\character\facegendata\facegeom\sfbgs003.esm\00000e90.nif".to_string(),
         ),
     );
 }
@@ -480,6 +505,23 @@ fn prebaked_facegen_tint_path_mirrors_geom_layout() {
         prebaked_facegen_tint_path("Skyrim.esm", 0x00013BBE),
         Some(r"textures\actors\character\facegendata\facetint\skyrim.esm\00013bbe.dds".to_string(),),
     );
+    // Plugin-local id for a DLC owner, same as the geom path (#6096).
+    assert_eq!(
+        prebaked_facegen_tint_path("Dawnguard.esm", 0x0200_2B6C),
+        Some(
+            r"textures\actors\character\facegendata\facetint\dawnguard.esm\00002b6c.dds"
+                .to_string(),
+        ),
+    );
+}
+
+/// #6099 — only Skyrim ships `facegendata\facetint`.
+#[test]
+fn only_skyrim_probes_a_facetint_path() {
+    for game in [GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield] {
+        assert_eq!(prebaked_tint_path_for(game, "Fallout4.esm", 0x0001_A00C), None, "{game:?}");
+    }
+    assert!(prebaked_tint_path_for(GameKind::Skyrim, "Skyrim.esm", 0x0001_A00C).is_some());
 }
 
 #[test]
