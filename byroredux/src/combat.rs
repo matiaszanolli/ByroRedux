@@ -103,6 +103,13 @@ impl Component for MeleeState {
 #[derive(Debug, Default)]
 pub(crate) struct PendingDeathReconciliations {
     actors: Vec<EntityId>,
+    /// Corpses a cell load is still assembling (#6133): authored Starts-Dead
+    /// actors and parked-dead restores. Reconciling one builds its awake
+    /// ragdoll from the current bone poses, and statics later in the cell's
+    /// reference order have no collider yet, so the body would fall past
+    /// them. They wait here until the cell's reference load completes
+    /// ([`release_held_dead_actor_reconciliations`]) and then join `actors`.
+    held: Vec<EntityId>,
 }
 
 impl Resource for PendingDeathReconciliations {}
@@ -113,6 +120,11 @@ impl PendingDeathReconciliations {
     pub(crate) fn queued(&self) -> &[EntityId] {
         &self.actors
     }
+
+    /// The corpses held back until their cell's reference load completes.
+    pub(crate) fn held(&self) -> &[EntityId] {
+        &self.held
+    }
 }
 
 pub(crate) fn queue_dead_actor_reconciliation(world: &World, actor: EntityId) {
@@ -122,6 +134,38 @@ pub(crate) fn queue_dead_actor_reconciliation(world: &World, actor: EntityId) {
     };
     if !pending.actors.contains(&actor) {
         pending.actors.push(actor);
+    }
+}
+
+/// Queue a corpse's death teardown like [`queue_dead_actor_reconciliation`],
+/// but hold it until the cell load that is spawning it completes (#6133): the
+/// ragdoll is dynamic and awake from the first step, so building it before the
+/// cell's later statics have colliders drops the body past them. Used only by
+/// the load-time corpse stamps (`apply_starts_dead`, the parked-dead restore);
+/// every runtime death queues immediately.
+pub(crate) fn queue_dead_actor_reconciliation_after_cell_load(world: &World, actor: EntityId) {
+    let Some(mut pending) = world.try_resource_mut::<PendingDeathReconciliations>() else {
+        log::error!("PendingDeathReconciliations missing; actor {actor} remains unreconciled");
+        return;
+    };
+    if !pending.actors.contains(&actor) && !pending.held.contains(&actor) {
+        pending.held.push(actor);
+    }
+}
+
+/// A cell's reference load completed (or a resident-restore sweep finished):
+/// hand the corpses it held to the Late-stage sink. Statics spawned by the
+/// load register their colliders at the next physics sync, which runs before
+/// that sink in the same scheduler pass.
+pub(crate) fn release_held_dead_actor_reconciliations(world: &World) {
+    let Some(mut pending) = world.try_resource_mut::<PendingDeathReconciliations>() else {
+        return;
+    };
+    let held = std::mem::take(&mut pending.held);
+    for actor in held {
+        if !pending.actors.contains(&actor) {
+            pending.actors.push(actor);
+        }
     }
 }
 
@@ -2762,5 +2806,37 @@ mod tests {
         }
 
         combat_input_system(&world, 1.0 / 60.0);
+    }
+}
+
+/// #6133 — a load-time corpse waits for its cell's reference load, and a
+/// release is idempotent and de-duplicating.
+#[cfg(test)]
+mod held_death_reconciliation_tests {
+    use super::*;
+
+    #[test]
+    fn a_held_corpse_joins_the_queue_only_on_release() {
+        let mut world = World::new();
+        world.insert_resource(PendingDeathReconciliations::default());
+        let late_static_corpse = world.spawn();
+        let combat_kill = world.spawn();
+
+        queue_dead_actor_reconciliation_after_cell_load(&world, late_static_corpse);
+        // A second stamp of the same corpse (restore then apply_starts_dead) is one entry.
+        queue_dead_actor_reconciliation_after_cell_load(&world, late_static_corpse);
+        // A runtime death is never held.
+        queue_dead_actor_reconciliation(&world, combat_kill);
+        {
+            let pending = world.resource::<PendingDeathReconciliations>();
+            assert_eq!(pending.held(), &[late_static_corpse]);
+            assert_eq!(pending.queued(), &[combat_kill]);
+        }
+
+        release_held_dead_actor_reconciliations(&world);
+        release_held_dead_actor_reconciliations(&world);
+        let pending = world.resource::<PendingDeathReconciliations>();
+        assert!(pending.held().is_empty());
+        assert_eq!(pending.queued(), &[combat_kill, late_static_corpse]);
     }
 }

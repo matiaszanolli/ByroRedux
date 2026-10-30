@@ -571,8 +571,10 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
         // #5161's sanity bound that builds an origin ragdoll, beyond it the
         // activation is rejected with the `AnimationPlayer` strip already
         // applied and nothing to retry. The Late drain runs after PostUpdate
-        // propagation, so the seed reads real bone globals.
-        crate::combat::queue_dead_actor_reconciliation(world, entity);
+        // propagation, so the seed reads real bone globals. #6133 — and held
+        // until the cell's reference load completes, so the ragdoll is not
+        // built before the cell's later statics have colliders.
+        crate::combat::queue_dead_actor_reconciliation_after_cell_load(world, entity);
     }
     if state.picked_up {
         // The item left with the player in a previous session/visit; the
@@ -636,7 +638,10 @@ pub(crate) fn apply_starts_dead(world: &mut World, entity: EntityId) {
         return;
     }
     world.insert(entity, Dead);
-    crate::combat::queue_dead_actor_reconciliation(world, entity);
+    // #6133 — held until the cell's reference load completes: statics later in
+    // the REFR order have no collider yet, and the awake ragdoll would fall
+    // past them.
+    crate::combat::queue_dead_actor_reconciliation_after_cell_load(world, entity);
 }
 
 /// The base script's `SCRI` FormID for one placed reference, resolving
@@ -2199,12 +2204,24 @@ mod tests {
         apply_starts_dead(&mut world, corpse);
         assert!(world.get::<Dead>(corpse).is_some());
         assert!(crate::inventory::is_loot_source(&world, corpse));
+        // #6133 — held while the cell's references are still loading, then
+        // handed to the Late sink when the load completes.
+        {
+            let pending = world.resource::<crate::combat::PendingDeathReconciliations>();
+            assert_eq!(pending.held(), &[corpse]);
+            assert!(pending.queued().is_empty(), "not reconciled mid-load");
+        }
+        crate::combat::release_held_dead_actor_reconciliations(&world);
         assert_eq!(
             world
                 .resource::<crate::combat::PendingDeathReconciliations>()
                 .queued(),
             &[corpse]
         );
+        assert!(world
+            .resource::<crate::combat::PendingDeathReconciliations>()
+            .held()
+            .is_empty());
 
         let restored = reference(&mut world, "Skyrim.esm", 0x301);
         world.insert(restored, Dead);
@@ -2249,9 +2266,17 @@ mod tests {
         assert_eq!(
             world
                 .resource::<crate::combat::PendingDeathReconciliations>()
+                .held(),
+            &[corpse],
+            "the death teardown must be held for the cell load, not run synchronously (#6133)"
+        );
+        crate::combat::release_held_dead_actor_reconciliations(&world);
+        assert_eq!(
+            world
+                .resource::<crate::combat::PendingDeathReconciliations>()
                 .queued(),
             &[corpse],
-            "the death teardown must be queued, not run synchronously"
+            "the cell load's completion queues it for the Late sink"
         );
         assert!(
             world.get::<AnimationPlayer>(corpse).is_some(),

@@ -28,6 +28,9 @@ pub(super) fn complete_reference_load(
     label: &str,
     load_order: &LoadOrder,
 ) -> ReferenceLoadProgress {
+    // #6133 — every placement of this cell now exists (statics included), so
+    // the corpses it stamped can build their ragdolls against real colliders.
+    crate::combat::release_held_dead_actor_reconciliations(world);
     let ReferenceLoadJob {
         cache_hits_at_entry,
         cache_misses_at_entry,

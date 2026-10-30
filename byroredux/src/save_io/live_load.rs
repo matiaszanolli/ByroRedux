@@ -675,6 +675,8 @@ pub fn execute_pending_save_loads(
     // inventory/equipment/weapon/actor-values/dead rows. Rows whose
     // reference is not resident stay parked for the next eviction.
     let restored_rows = crate::cell_loader::reference_state::restore_resident(world);
+    // #6133 — a dead row restored here is on an already-resident placement.
+    crate::combat::release_held_dead_actor_reconciliations(world);
     if restored_rows > 0 {
         log::debug!(
             "save load: {restored_rows} parked reference row(s) applied to resident placements"
