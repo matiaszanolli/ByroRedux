@@ -11,19 +11,14 @@ force-greet), `RunOn::EventData` over the corpus-decoded R1/R2/L1/L2
 slots, `FromEvent` alias fills, and the `DNAM` policies with `RNAM`
 reset windows over save-persistent node state. M43 follow-ups
 (2026-10-30): the walk honors *Num quests to run* (`MNAM`) and *Max
-concurrent quests* (`XNAM`); `ADIA` (NPC-to-NPC random conversations —
-the largest event family), `LEVL` and `ASSU` joined `KILL`/`CLOC`/`AHEL`/
-`SCPT` as producers (§6.4). What is left needs subsystems M43 does not own:
-Skyrim's crime-group family (`ADCR`/`JAIL`/`ESJA`/`ARRT`, plus pay-fine and
-served-time) has no gameplay event to hang on (the engine's jail is the
-Oblivion `GoToJail` sentence model, with no arrest-by-guard or escape), and
-the item/spell families (`CRFT`/`CAST`/`AIPL`/`REMP`) need crafting,
-menu casting and typed acquire/remove, which do not exist; the corpus's
-`FromEvent` fills and node conditions read only `R1`/`R2`/`L1`/`L2`, so a
-form slot (`F1`) is only needed by scripts. `DEAD`
-needs corpse discovery; `SKIL`/`NVPE`/`LOCK`/`HACK`/`IRON`/`OAAT`/`TMEE`/
-`LCLD`/`AOBJ` and Starfield's ship surface each need their own gameplay
-event. Unconsumed fields: `HNAM` (FO4+ node-level reset; semantics not
+concurrent quests* (`XNAM`); `ADIA` (NPC-to-NPC random conversations — the
+largest event family, with the CK's interrupt hold), `LEVL`, `ASSU`, `AIPL`,
+`SKIL` and `JAIL` joined `KILL`/`CLOC`/`AHEL`/`SCPT` as producers (§6.4).
+What is left (§6.4 names the missing piece of each): `REMP`, `CAST`, `CHRR`,
+`DEAD`, the natural `AHEL`, `ARRT`/`ESJA`, `CRFT`, `NVPE`, and FO4's
+`LCLD`/`AOBJ`/`HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`. The corpus's `FromEvent`
+fills and node conditions read only `R1`/`R2`/`L1`/`L2`, so a form slot
+(`F1`) is only needed by scripts. Unconsumed fields: `HNAM` (FO4+ node-level reset; semantics not
 settled), `FNAM` (always `2` in the corpus, beside reset windows of 0, 4 and
 24 h — not the 0/1 "24 Hours Till Reset" bool xEdit names it), `QNAM` (a
 redundant pool count), `UNAM` (FO76 only), and `DNAM 0x2` (an editor-side
@@ -353,20 +348,46 @@ already has the surface:
   radius 2), 34 s in — `random conversation: 8358 -> 8443`, then
   `started quest 0x00016FA6 ('DialogueGenericSceneSpecial01') via node
   'GenericScenesSpecial' on 'ADIA' event` and its scene `DGSceneSpecial01`
-  playing phases 0 → 3 to *Finished*. **Not modelled**: the initiator
-  walking over to `iAISocialDistanceToTriggerEvent` and the partner stopping
-  (the ambient movers do not yield to another driver, so the event is raised
-  from where the pair stands), the *complex scene* flag, and the wait of
-  `fAISocialTimerToWaitForEvent` for a scene to start. The CK does not say
-  which valid partner a roll picks; the nearest is used.
-- **Deferred until their subsystems land**: `LEVL`/`SKIL` (no level-up/skill-increment
-  transition site), `DEAD` (no dead-body discovery logic), the crime/arrest/
-  crafting/pickpocket families, FO4's `HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`/
-  `LCLD`/`AOBJ`, Starfield's ship surface. Per-mnemonic quest counts
-  (2026-10-30, quests reachable under each `SMEN` root): Skyrim `ADIA` 786,
+  playing phases 0 → 3 to *Finished*. Once a roll succeeds the pair is
+  **held** (`ConversationHold`, the CK's "interrupt behavior"): both ambient
+  packages are suspended and the package system skips them, the initiator
+  walks to `iAISocialDistanceToTriggerEvent` of the partner on the shared
+  navmesh step (a stuck initiator starts from where it stands;
+  `BYRO_NO_AI_LOCOMOTION=1` raises the event without walking), the partner
+  stops and faces it, `ADIA` is raised on arrival, and after
+  `fAISocialTimerToWaitForEvent` the hold continues while a scene runs for
+  either actor and otherwise releases both. **Not modelled**: the *complex
+  scene* flag, and the scene's Phase 0 waiting for `fAIMinGreetingDistance`.
+  The CK does not say which valid partner a roll picks; the nearest is used.
+  The live run's pair was already inside the trigger distance, so the walk
+  itself is covered by the unit test (teleport into range) and the shared
+  step, not by that run.
+- **Also landed (M43, 2026-10-30)**: `LEVL` (new level in `V1`), `ASSU`
+  (victim `R1`, attacker `R2`, `L1`, crime flag `V1`), `AIPL` (Player Add Item
+  — container `R2` from a loot transfer, `L1`, acquire type `V1`; pickups
+  carry no container), `SKIL` (once per skill that gains levels, from
+  `Game.AdvanceSkill`) and `JAIL` (a sentence starting, gold in `V1`). A census
+  of the event slots the real quests read (`R1`/`R2`/`L1`/`L2` only) picked
+  what each carries: `AIPL` quests read the container (`R2`) and location,
+  `REMP` the *item reference* (`R2`), `CAST` caster/target/location, `DEAD`
+  the corpse (`R2`), `CHRR` both actors.
+- **Still open, with the missing piece named** (per-mnemonic quest counts,
+  2026-10-30, quests reachable under each `SMEN` root — Skyrim: `ADIA` 786,
   `SCPT` 190, `CLOC` 148, `KILL` 13, `CRFT` 10, `LEVL` 8, `CAST` 6, `REMP`
-  5, `AIPL` 5, `ASSU` 4, `JAIL` 3; FO4 `SCPT` 322, `ADIA` 298, `CLOC` 85,
-  `AOBJ` 16, `LCLD` 13, `AHEL` 9, `AIPL` 7.
+  5, `AIPL` 5, `ASSU` 4, `JAIL` 3, `SKIL` 2, `ESJA` 2, `DEAD` 2, `CHRR` 2,
+  `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4: `SCPT` 322, `ADIA` 298, `CLOC` 85,
+  `AOBJ` 16, `LCLD` 13, `AHEL` 9, `AIPL` 7):
+  `REMP` needs a dropped-item reference (the engine has no drop; consuming
+  has no reference); `CAST` — the CK does not say whose casts raise it and the
+  engine only casts from scripts; `CHRR` — rank changes are keyed on base
+  pairs, with no base-to-reference lookup for `R1`/`R2`; `DEAD` and the
+  natural `AHEL` (NPCs noticing corpses / passing each other) — the CK gives
+  no detection distances and no setting names them; `ARRT`/`ESJA` — no
+  arrest-by-guard or escape in the engine's Oblivion-style jail; `CRFT` — no
+  crafting; `NVPE` — no shouts; FO4's `LCLD`/`AOBJ`/`HACK`/`LOCK`/`IRON`/
+  `OAAT`/`TMEE` — the mnemonics appear in no local or reachable
+  documentation (the UESP SMEN page lists the Skyrim codes only), and the
+  policy is not to guess an event's meaning.
 
 ### 6.5 Persistence
 
