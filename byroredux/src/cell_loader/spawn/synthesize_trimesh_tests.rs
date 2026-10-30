@@ -608,3 +608,57 @@ fn effect_shader_sheets_do_not_synthesize_collision() {
     tested.alpha_test = true;
     assert!(!render_geometry_can_collide(&tested));
 }
+
+/// #6459 — FO3 / FNV light beams, light rays and glow fills are `BSShaderNoLightingProperty` +
+/// a blended `NiAlphaProperty`: no effect shader and no alpha test. The unlit + blended pair is
+/// the canonical "light made visible" signal; an unlit opaque mesh (a sign) is still a body.
+#[test]
+fn unlit_blended_sheets_do_not_synthesize_collision() {
+    let mut beam = ImportedMaterial::default();
+    beam.material_kind = byroredux_renderer::MATERIAL_KIND_NO_LIGHTING;
+    beam.has_alpha = true;
+    assert!(!render_geometry_can_collide(&beam));
+
+    let mut unlit_sign = ImportedMaterial::default();
+    unlit_sign.material_kind = byroredux_renderer::MATERIAL_KIND_NO_LIGHTING;
+    assert!(render_geometry_can_collide(&unlit_sign));
+
+    let mut blended_lit = ImportedMaterial::default();
+    blended_lit.has_alpha = true;
+    assert!(render_geometry_can_collide(&blended_lit), "alpha blending alone (glass, foliage cards) is not VFX");
+}
+
+/// #6459 — against the shipped data: FNV's census bases (the largest by placement count) are
+/// unlit blended VFX sheets and synthesize no collider. Every mesh of every NIF below must fail
+/// `render_geometry_can_collide`.
+///
+///   cargo test -p byroredux --bin byroredux fnv_light_vfx -- --ignored
+#[test]
+#[ignore = "needs Fallout New Vegas game data on disk"]
+fn fnv_light_vfx_sheets_synthesize_no_collider() {
+    let meshes = byroredux_plugin::esm::test_paths::fnv_data_dir().join("Fallout - Meshes.bsa");
+    if !meshes.is_file() {
+        byroredux_plugin::esm::test_paths::require_or_skip(&format!("{meshes:?}"));
+        return;
+    }
+    let archive = byroredux_bsa::BsaArchive::open(&meshes).unwrap();
+    let wanted = ["fxlightbeam", "fxglowsimp", "fxbrightspot", "indfxlightrays"];
+    let mut checked = 0usize;
+    for path in archive.list_files() {
+        let lower = path.to_ascii_lowercase();
+        if !lower.starts_with("meshes\\effects\\") || !lower.ends_with(".nif") || !wanted.iter().any(|w| lower.contains(w)) {
+            continue;
+        }
+        let scene = byroredux_nif::parse_nif(&archive.extract(&path).unwrap()).unwrap();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+        for mesh in &imported.meshes {
+            assert!(
+                !render_geometry_can_collide(&mesh.material),
+                "{path}: an unlit blended VFX sheet would synthesize a solid collider"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 20, "only {checked} census meshes found — the probe read nothing");
+}

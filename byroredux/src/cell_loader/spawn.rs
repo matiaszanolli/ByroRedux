@@ -80,13 +80,27 @@ enum MissingCollisionFallback {
 /// with. A synthesised trimesh from one of those is a zero-thickness wall
 /// across open ground — the Riverwood `FXrapidsBig01` sheets wedged the
 /// character capsule on the riverbank.
+///
+/// #6459 — FO3 / FNV author the same VFX sheets (light beams, light rays,
+/// glow fills, dust shafts, bright spots) as `BSShaderNoLightingProperty` plus
+/// a blended `NiAlphaProperty`: no effect shader, no alpha test, so they used
+/// to pass. The dialect-independent signal is the canonical material: an
+/// unlit ([`MATERIAL_KIND_NO_LIGHTING`]) alpha-blended surface is light made
+/// visible, not a body. (FNV census: 98 non-marker STAT bases, 6,763 REFRs,
+/// 6,726 under `meshes\effects\`.) An unlit *opaque* mesh (a sign, a screen)
+/// is still solid.
+///
+/// [`MATERIAL_KIND_NO_LIGHTING`]: byroredux_renderer::MATERIAL_KIND_NO_LIGHTING
 fn render_geometry_can_collide(
     material: &byroredux_nif::import::ImportedMaterial,
 ) -> bool {
+    let unlit_blended_sheet = material.material_kind == byroredux_renderer::MATERIAL_KIND_NO_LIGHTING
+        && material.has_alpha;
     !material.is_decal
         && !material.alpha_test
         && material.effect_shader.is_none()
         && material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+        && !unlit_blended_sheet
 }
 
 fn missing_collision_fallback(

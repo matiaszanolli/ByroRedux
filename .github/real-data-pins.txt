@@ -77,6 +77,8 @@ bin riverwater_flowne_real_record_layers_run_downstream
 bin fo4_mswp_canvas_swap_matches_the_picture_frame_nif
 bin installed_default_idle_clips_exist_in_the_meshes_archive
 bin installed_fallout_spawner_shells_resolve_a_model
+# #6459 - FNV light-beam / glow VFX sheets synthesize no collider
+bin fnv_light_vfx_sheets_synthesize_no_collider
 # nif whole-corpus harnesses that cite closed-HIGH fixes but sit
 # outside the three binaries the corpus job names. #5784: the first two
 # are Dim 3 real-data tests whose names carry no game token, so no corpus
