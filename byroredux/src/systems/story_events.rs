@@ -248,6 +248,52 @@ pub(crate) fn raise_death_event(world: &World, victim: EntityId, killer: Option<
     }
 }
 
+/// M43 — `LEVL` (Increase Level): the player reached `level`.
+/// `OnStoryIncreaseLevel(aiNewLevel)` carries one integer, `V1`. The CK fires it "when you
+/// increase a stat and exit from the perk menu"; this engine has no such menu step, so it is
+/// raised as the level is awarded. On pre-Creation titles a no-op (no SM tree installed).
+pub(crate) fn raise_level_story_event(world: &World, player: EntityId, level: u32) {
+    use byroredux_scripting::story_manager::{ScriptedStoryEvent, StoryEvent};
+    byroredux_scripting::story_manager::raise_story_event(
+        world,
+        player,
+        StoryEvent {
+            mnemonic: *b"LEVL",
+            reference_1: player,
+            reference_2: None,
+            location_1: None,
+            location_2: None,
+            scripted: Some(ScriptedStoryEvent {
+                keyword: 0,
+                values: [i32::try_from(level).unwrap_or(i32::MAX), 0],
+                has_reference_1: false,
+            }),
+        },
+    );
+}
+
+/// M43 — `ASSU` (Assault Actor): `attacker` struck `victim`. `OnStoryAssaultActor(akVictim,
+/// akAttacker, akLocation, aiCrime)`: R1 = the victim, R2 = the attacker, L1 = the session
+/// LCTN, `V1` = whether it was a crime (the CK sends a bool as an int). On pre-Creation titles a
+/// no-op (no SM tree installed).
+pub(crate) fn raise_assault_story_event(world: &World, victim: EntityId, attacker: EntityId, crime: bool) {
+    use byroredux_scripting::story_manager::{ScriptedStoryEvent, StoryEvent};
+    // #5372 — resolve the location BEFORE taking the StoryEvent write guard.
+    let location_1 = resolve_current_lctn(world);
+    byroredux_scripting::story_manager::raise_story_event(
+        world,
+        victim,
+        StoryEvent {
+            mnemonic: *b"ASSU",
+            reference_1: victim,
+            reference_2: Some(attacker),
+            location_1,
+            location_2: None,
+            scripted: Some(ScriptedStoryEvent { keyword: 0, values: [i32::from(crime), 0], has_reference_1: true }),
+        },
+    );
+}
+
 /// #5434 — `KILL` (Actor Kill), raised from every LIVE death producer
 /// (combat damage, NPC/player drowning, the SDK actor-value batch) — never
 /// from corpse restores, which re-assert a death that already fired.
@@ -300,6 +346,33 @@ mod tests {
         assert_eq!(event.reference_2, Some(greeted));
         assert_eq!(event.location_1, None, "no loaded index — no session LCTN");
         assert_eq!(event.location_2, None);
+    }
+
+    /// M43 — `LEVL` carries the new level in `V1` and no `R1`/`K1`; `ASSU` carries
+    /// victim/attacker/location in `R1`/`R2`/`L1` and the crime flag in `V1`.
+    #[test]
+    fn level_and_assault_events_carry_their_values_in_the_slots() {
+        let mut world = world_in_located_cell();
+        let player = world.spawn();
+        raise_level_story_event(&world, player, 7);
+        let raised = |world: &World, mnemonic: &[u8; 4]| {
+            world
+                .query::<byroredux_scripting::story_manager::StoryEvent>()
+                .and_then(|events| events.iter().map(|(_, event)| *event).find(|event| &event.mnemonic == mnemonic))
+        };
+        let event = raised(&world, b"LEVL").expect("the level marker is raised on the player");
+        let slots = event.slots();
+        assert_eq!(slots.values, [7, 0]);
+        assert_eq!((slots.reference_1, slots.reference_2, slots.keyword), (None, None, None));
+
+        let victim = world.spawn();
+        raise_assault_story_event(&world, victim, player, true);
+        let event = raised(&world, b"ASSU").expect("the assault marker is raised on the victim");
+        let slots = event.slots();
+        assert_eq!((slots.reference_1, slots.reference_2), (Some(victim), Some(player)));
+        assert_eq!(slots.location_1, Some(0x0001_0A0B));
+        assert_eq!(slots.values, [1, 0]);
+        assert_eq!(slots.keyword, None, "an engine integer payload is not a keyword");
     }
 
     /// #5434 — a world whose session sits in a cell that authors LCTN

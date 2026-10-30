@@ -711,6 +711,8 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
     for level in &reached {
         log::info!("Player reached level {level}");
         crate::notifications::push(world, format!("Level up! You reached level {level}"));
+        // M43 — the Story Manager's `LEVL` (Increase Level) event.
+        crate::systems::story_events::raise_level_story_event(world, player, u32::from(*level));
     }
     let Some(leveling) = leveling else {
         return;

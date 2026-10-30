@@ -87,6 +87,10 @@ pub struct StoryEvent {
 /// shares: the keyword (`K1`), the two integers (`V1` / `V2`), and whether
 /// `akRef1` was given — the marker rides `reference_1` either way, so an
 /// absent `akRef1` must not read as one.
+///
+/// An engine producer whose `OnStory*` event carries integers (`LEVL`'s new
+/// level, `ASSU`'s is-a-crime flag) uses the same payload with `keyword: 0`,
+/// which reads as no `K1` (a keyword FormID is never 0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScriptedStoryEvent {
     pub keyword: u32,
@@ -106,7 +110,7 @@ impl StoryEvent {
             reference_2: self.reference_2,
             location_1: self.location_1,
             location_2: self.location_2,
-            keyword: scripted.map(|data| data.keyword),
+            keyword: scripted.map(|data| data.keyword).filter(|keyword| *keyword != 0),
             values: scripted.map_or([0, 0], |data| data.values),
         }
     }

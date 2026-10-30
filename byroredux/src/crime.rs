@@ -286,6 +286,9 @@ pub(crate) fn report_strike(world: &World, player: EntityId, victim: EntityId, k
         if let Some(mut marks) = world.query_mut::<AssaultedByPlayer>() {
             marks.insert(victim, AssaultedByPlayer);
         }
+        // M43 — the Story Manager's `ASSU` (Assault Actor) event, once per victim like the
+        // charge (`report_strike` is only called for a strike judged a crime).
+        crate::systems::story_events::raise_assault_story_event(world, victim, player, true);
     }
     if model.scope == BountyScope::CrimeFaction {
         return charge_crime_factions(world, model, kind, &seen_by, 0);
