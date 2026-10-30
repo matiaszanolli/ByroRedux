@@ -248,6 +248,10 @@ pub enum ItemKind {
         /// Attack speed multiplier (1.0 = authored baseline cadence).
         /// Same `0.0`-means-unset convention as `reach`.
         speed: f32,
+        /// Oblivion `DATA` weapon type (0 Blade1H, 1 Blade2H, 2 Blunt1H, 3 Blunt2H, 4 Staff, 5 Bow —
+        /// the CS `GetWeaponAnimType` page's grouping is derived from it). `0` on every other game, whose
+        /// weapons carry [`anim_type`](Self::Weapon::anim_type) instead.
+        oblivion_type: u8,
         /// Reload animation (0..n).
         reload_anim: u8,
         /// FNV `VATS` payload — VATS effect spell, required skill, damage
@@ -279,6 +283,7 @@ impl ItemKind {
             crit_mult: 1.0,
             reach: 0.0,
             speed: 0.0,
+            oblivion_type: 0,
             reload_anim: 0,
             vats: None,
         }
@@ -348,6 +353,7 @@ pub fn parse_weap(
     let mut damage = 0u32;
     let mut clip_size = 0u16;
     let mut anim_type = 0u8;
+    let mut oblivion_type = 0u8;
     let mut ap_cost = 0.0f32;
     let mut vats_base_to_hit = 0.0f32;
     let mut skill_form = 0u32;
@@ -389,7 +395,7 @@ pub fn parse_weap(
                     // — no vanilla master ships a record shorter than its
                     // measured width (Dim-2 census).
                     GameKind::Oblivion if sub.data.len() >= 30 => {
-                        let _type = r.u32_or_default();
+                        oblivion_type = r.u32_or_default().min(u32::from(u8::MAX)) as u8;
                         speed = r.f32_or_default();
                         reach = r.f32_or_default();
                         let _flags = r.u32_or_default();
@@ -597,6 +603,7 @@ pub fn parse_weap(
             crit_mult,
             reach,
             speed,
+            oblivion_type,
             reload_anim,
             vats,
         },
@@ -1473,13 +1480,13 @@ mod tests {
         let stub = ItemKind::weapon_stub(22, 12);
         let ItemKind::Weapon {
             ammo_form, damage, clip_size, anim_type, ap_cost, vats_base_to_hit, skill_form,
-            min_spread, spread, crit_mult, reach, speed, reload_anim, vats,
+            min_spread, spread, crit_mult, reach, speed, oblivion_type, reload_anim, vats,
         } = stub.clone()
         else {
             panic!("weapon_stub builds a Weapon");
         };
         assert_eq!((damage, clip_size), (22, 12));
-        assert_eq!((ammo_form, anim_type, skill_form, reload_anim), (0, 0, 0, 0));
+        assert_eq!((ammo_form, anim_type, skill_form, reload_anim, oblivion_type), (0, 0, 0, 0, 0));
         assert_eq!((ap_cost, vats_base_to_hit, min_spread, spread, reach, speed), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
         assert_eq!(crit_mult, 1.0);
         assert!(vats.is_none());
@@ -2478,8 +2485,10 @@ mod tests {
                 clip_size,
                 reach,
                 speed,
+                oblivion_type,
                 ..
             } => {
+                assert_eq!(oblivion_type, 1, "DATA type u32 at offset 0: Blade2H");
                 assert_eq!(damage, 14, "damage u16 at offset 28");
                 assert_eq!(clip_size, 0, "Oblivion has no magazine system");
                 assert!(

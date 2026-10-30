@@ -77,7 +77,7 @@ const OBLIVION: &[u16] = &[
     0x10c3, 0x10c4, 0x10c5, 0x10c6, 0x10c7, 0x10d1, 0x10d8, 0x10df, 0x10f8, 0x10f9, 0x10fb, 0x1109, 0x110d, 0x1116,
     0x111c, 0x1122, 0x1132, 0x1134, 0x1137, 0x1145, 0x1147, 0x114e, 0x1151, 0x1156, 0x1159, 0x115a, 0x115b, 0x115c,
     0x115d, 0x1161, 0x1162, 0x1164, 0x1165, 0x116b, 0x116c, 0x116d, 0x116e, 0x116f, 0x1170, 0x10aa, 0x112a, 0x112b, 0x1129, 0x10db, 0x114d, 0x105b, 0x1167, 0x110c,
-    0x1030, 0x1057, 0x1062, 0x106b, 0x107b, 0x107c, 0x107d, 0x107e, 0x1083, 0x108d, 0x10a9, 0x10b0, 0x10b7, 0x10c8, 0x10d2, 0x10d3, 0x10d9, 0x10da, 0x10e0, 0x10ea, 0x10eb, 0x10f0, 0x10fc, 0x10fd, 0x1111, 0x1135, 0x1138, 0x114c, 0x1154, 0x1155, 0x1168, 0x1141, 0x10ab,
+    0x1030, 0x1057, 0x1062, 0x106b, 0x107b, 0x107c, 0x107d, 0x107e, 0x1083, 0x108d, 0x10a9, 0x10b0, 0x10b7, 0x10c8, 0x10d2, 0x10d3, 0x10d9, 0x10da, 0x10e0, 0x10ea, 0x10eb, 0x10f0, 0x10fc, 0x10fd, 0x1111, 0x1135, 0x1138, 0x114c, 0x1154, 0x1155, 0x1168, 0x1141, 0x106c, 0x10ab,
 ];
 
 
@@ -673,6 +673,34 @@ fn is_player_in_jail_follows_the_sentence() {
     assert_eq!(value(run(&world, 0x10ab, &[], &c)), 1.0);
     world.resource_mut::<crate::obscript_ledger::ObScriptLedger>().jail = None;
     assert_eq!(value(run(&world, 0x10ab, &[], &c)), 0.0);
+}
+
+/// CS *GetWeaponAnimType* on Oblivion: the equipped weapon's `DATA` type grouped into 0 hand-to-hand
+/// (no weapon, or a staff), 1 one-handed, 2 two-handed, 3 bow.
+#[test]
+fn oblivion_weapon_anim_type_groups_the_data_type() {
+    use byroredux_plugin::esm::records::{EsmIndex, ItemKind, ItemRecord};
+    let (mut world, actor, ..) = world(GameKind::Oblivion);
+    let mut index = EsmIndex::default();
+    index.game = GameKind::Oblivion;
+    // Blade1H, Blade2H, Blunt1H, Blunt2H, Staff, Bow.
+    for (form, weapon_type) in (0x100u32..).zip(0u8..6) {
+        let mut kind = ItemKind::weapon_stub(10, 0);
+        if let ItemKind::Weapon { oblivion_type, .. } = &mut kind {
+            *oblivion_type = weapon_type;
+        }
+        index.items.insert(form, ItemRecord { form_id: form, common: Default::default(), kind });
+    }
+    world.insert_resource(crate::obscript_state::WeaponAnimTypes::from_index(&index));
+    let c = ctx(Some(ACTOR));
+    assert_eq!(value(run(&world, 0x106c, &[], &c)), 0.0, "no weapon: hand-to-hand");
+    let equip = |world: &mut World, base_form_id| {
+        world.insert(actor, EquippedWeapon { inventory_index: byroredux_core::ecs::components::InventoryIndex(0), base_form_id, damage: 1.0, reach: 0.0, speed: 1.0 });
+    };
+    for (form, expected) in [(0x100, 1.0), (0x101, 2.0), (0x102, 1.0), (0x103, 2.0), (0x104, 0.0), (0x105, 3.0)] {
+        equip(&mut world, form);
+        assert_eq!(value(run(&world, 0x106c, &[], &c)), expected, "weapon {form:#x}");
+    }
 }
 
 /// Fallout compiles `GetPCMiscStat "Times Addicted"` to stat code 10 (CGTutorial's addiction

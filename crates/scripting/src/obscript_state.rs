@@ -415,8 +415,10 @@ pub struct SwimQuery(pub fn(&World, EntityId) -> bool);
 
 impl Resource for SwimQuery {}
 
-/// The `DNAM` animation type of every weapon, by base FormID (`GetWeaponAnimType`). Fallout 3 / New Vegas
-/// only (Oblivion's weapons carry no such byte). `NOT_SAVED_BY_DESIGN`: rebuilt from the records.
+/// The animation type of every weapon, by base FormID (`GetWeaponAnimType`). Fallout 3 / New Vegas hold
+/// the `DNAM` byte as authored (`get_weapon_anim_type` groups it into the GECK's codes); Oblivion holds
+/// the CS page's code itself, derived from the `DATA` weapon type — 0 hand-to-hand or staff, 1 one-handed,
+/// 2 two-handed, 3 bow. Other games hold none. `NOT_SAVED_BY_DESIGN`: rebuilt from the records.
 #[derive(Debug, Default, Clone)]
 pub struct WeaponAnimTypes(std::collections::HashMap<u32, u8>);
 
@@ -424,16 +426,20 @@ impl Resource for WeaponAnimTypes {}
 
 impl WeaponAnimTypes {
     pub fn from_index(index: &byroredux_plugin::esm::records::EsmIndex) -> Self {
+        use byroredux_plugin::esm::reader::GameKind;
         use byroredux_plugin::esm::records::ItemKind;
-        if index.game != byroredux_plugin::esm::reader::GameKind::Fallout3NV {
-            return Self::default();
-        }
+        let fallout = match index.game {
+            GameKind::Fallout3NV => true,
+            GameKind::Oblivion => false,
+            _ => return Self::default(),
+        };
         Self(
             index
                 .items
                 .iter()
                 .filter_map(|(&form, item)| match &item.kind {
-                    ItemKind::Weapon { anim_type, .. } => Some((form, *anim_type)),
+                    ItemKind::Weapon { anim_type, .. } if fallout => Some((form, *anim_type)),
+                    ItemKind::Weapon { oblivion_type, .. } => Some((form, oblivion_anim_type(*oblivion_type))),
                     _ => None,
                 })
                 .collect(),
@@ -442,6 +448,18 @@ impl WeaponAnimTypes {
 
     pub fn get(&self, weapon: u32) -> Option<u8> {
         self.0.get(&weapon).copied()
+    }
+}
+
+/// CS *GetWeaponAnimType* for an Oblivion `WEAP` `DATA` type (0 Blade1H, 1 Blade2H, 2 Blunt1H, 3 Blunt2H,
+/// 4 Staff, 5 Bow): "0 = hand-to-hand (no weapon or staff), 1 = 1 handed weapon, 2 = 2 handed weapon,
+/// 3 = bow".
+pub(crate) fn oblivion_anim_type(weapon_type: u8) -> u8 {
+    match weapon_type {
+        0 | 2 => 1,
+        1 | 3 => 2,
+        5 => 3,
+        _ => 0,
     }
 }
 

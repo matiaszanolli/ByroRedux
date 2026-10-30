@@ -445,11 +445,16 @@ fn cmd_1068(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
 // 4 OneHandPistol (ballistic and energy), 5 TwoHandRifle (ballistic and energy), 6 TwoHandAutomatic,
 // 7 TwoHandHandle, 8 TwoHandLauncher, 9 OneHandGrenade (and thrown), 10 OneHandMine,
 // 11 OneHandLunchboxMine — from the equipped weapon's `DNAM` animation type.
-fn get_weapon_anim_type(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
+//
+// Oblivion (CS page): 0 hand-to-hand or staff, 1 one-handed, 2 two-handed, 3 bow — already the stored code.
+fn get_weapon_anim_type(world: &World, fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller(world, ctx) {
         Some((_, actor)) => {
             let base = world.get::<byroredux_core::ecs::components::EquippedWeapon>(actor).map(|w| w.base_form_id);
             let raw = base.and_then(|base| world.try_resource::<crate::obscript_state::WeaponAnimTypes>()?.get(base));
+            if !fallout {
+                return answer(f32::from(raw.unwrap_or(0)));
+            }
             answer(match raw {
                 None => 0.0,
                 Some(0) => 1.0,
@@ -559,7 +564,7 @@ pub(crate) const HEAD_COMMANDS: &[Command] = &[
     Command { id: 0x1062, games: Games::Both, needs_caller: false, handler: cmd_1062 },
     Command { id: 0x1063, games: Games::Both, needs_caller: false, handler: cmd_1063 },
     Command { id: 0x1068, games: Games::Fallout, needs_caller: false, handler: cmd_1068 },
-    Command { id: 0x106c, games: Games::Fallout, needs_caller: false, handler: get_weapon_anim_type },
+    Command { id: 0x106c, games: Games::Both, needs_caller: false, handler: get_weapon_anim_type },
     Command { id: 0x106e, games: Games::Both, needs_caller: false, handler: get_current_ai_package },
     Command { id: 0x108f, games: Games::Both, needs_caller: false, handler: get_current_ai_procedure },
     Command { id: 0x1070, games: Games::Both, needs_caller: false, handler: is_idle_playing },
