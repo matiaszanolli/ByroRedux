@@ -9,7 +9,8 @@
 #      fAISocialTimerForConversationsMin and Max (30-60 s) and, at expiry,
 #      looks for a partner in fAISocialRadiusToTriggerConversation, rolling
 #      fAISocialchanceForConversation (25 %).
-#   3. The producer logs `random conversation: <initiator> -> <partner>` and
+#   3. The producer logs `random conversation: <initiator> -> <partner>`, the pair is
+#      held and the initiator walks over (`... reached ...`), and
 #      the Story Manager's own attribution line names the quest, node and
 #      event: `started quest ... on 'ADIA' event`. Then the conversation
 #      quest's scene must play: a `SCEN ... Playing` transition for it.
@@ -85,6 +86,8 @@ wait_log "$LOG_DIR/session.stderr" 'Installed Story Manager tree: 571 nodes'
 
 # The producer raised an event, and the Story Manager started a quest on it.
 wait_log "$LOG_DIR/session.stderr" 'random conversation: [0-9]+ -> [0-9]+'
+# The initiator walked to its partner (the hold system's arrival line) before the event.
+wait_log "$LOG_DIR/session.stderr" 'random conversation: [0-9]+ reached [0-9]+'
 wait_log "$LOG_DIR/session.stderr" "started quest 0x[0-9A-F]+ \('[^']+'\) via node '[^']+' on 'ADIA' event"
 
 # The started quest's scene begins: a Dormant -> Playing transition follows the

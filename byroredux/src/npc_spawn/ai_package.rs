@@ -1156,6 +1156,10 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         due.retain(|&actor| combat.get(actor).is_none());
     }
     due.retain(|actor| !unconscious.contains(actor));
+    // M43 — an actor in a random conversation is taken over by `conversation_hold_system` until it ends.
+    if let Some(held) = world.query::<crate::systems::random_conversation::ConversationHold>() {
+        due.retain(|&actor| held.get(actor).is_none());
+    }
     if due.is_empty() {
         return;
     }

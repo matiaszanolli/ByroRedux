@@ -11,6 +11,10 @@ use super::*;
 fn register_random_conversations(scheduler: &mut Scheduler) {
     if std::env::var_os("BYRO_NO_RANDOM_CONVERSATIONS").is_none() {
         scheduler.add_exclusive(Stage::Update, crate::systems::random_conversation::random_conversation_system);
+        // The hold system walks / releases the pairs it takes over; `BYRO_NO_AI_LOCOMOTION=1` leaves the
+        // walk out (the event is then raised from where the initiator stands).
+        let walk = std::env::var_os("BYRO_NO_AI_LOCOMOTION").is_none();
+        scheduler.add_exclusive(Stage::Update, crate::systems::random_conversation::make_conversation_hold_system(walk));
     }
 }
 

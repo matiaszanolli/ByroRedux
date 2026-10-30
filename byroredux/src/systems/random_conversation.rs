@@ -25,14 +25,21 @@
 //! - each actor re-arms a timer between `fAISocialTimerForConversationsMin`
 //!   and `…Max` after every attempt.
 //!
-//! Not modelled, and why: the CK has the initiator walk over to
-//! `iAISocialDistanceToTriggerEvent` and the target stop; the ambient movers
-//! (sandbox, patrol, guard, eat) do not yield to another driver, so the event
-//! is raised from where the pair stands and the scene's own lines carry the
-//! conversation. The *complex scene* flag and the player's "important
-//! conversation" are approximated by the open dialogue surface.
+//! Once a roll succeeds the pair is held (CK: "the AI code controls both
+//! actors with interrupt behavior"): both packages are suspended, the
+//! initiator walks to `iAISocialDistanceToTriggerEvent` of the partner while
+//! the partner stops and turns to face it, `ADIA` is raised on arrival, and
+//! after `fAISocialTimerToWaitForEvent` the hold either continues while a
+//! scene runs for them or ends (no conversation started). When the scene is
+//! over the hold ends and the actors' packages are re-selected.
+//!
+//! Not modelled: the *complex scene* flag and the player's "important
+//! conversation" are approximated by the open dialogue surface, and the
+//! scene's Phase 0 does not wait for `fAIMinGreetingDistance`.
 
-use byroredux_core::ecs::components::{EatBehavior, GlobalTransform, GuardBehavior, PatrolBehavior, SandboxBehavior};
+use byroredux_core::ecs::components::{EatBehavior, GlobalTransform, GuardBehavior, PatrolBehavior, SandboxBehavior, Transform};
+use byroredux_core::ecs::sparse_set::SparseSetStorage;
+use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
@@ -58,6 +65,14 @@ const DEFAULT_CHANCE_INTERIOR: f32 = 25.0;
 const DEFAULT_SAME_NPC_TIMER: f32 = 120.0;
 const DEFAULT_TIMER_MIN: f32 = 30.0;
 const DEFAULT_TIMER_MAX: f32 = 60.0;
+const DEFAULT_TRIGGER_DISTANCE: f32 = 120.0;
+const DEFAULT_WAIT_FOR_EVENT: f32 = 0.5;
+/// A hold that has not reached its partner after this long ends (a pair that cannot path to each
+/// other) rather than holding two actors for the rest of the session.
+const MAX_APPROACH_SECS: f32 = 90.0;
+/// The longest a conversation scene holds its pair. Vanilla conversation scenes run seconds; this
+/// only bounds a scene that never finishes.
+const MAX_TALK_SECS: f32 = 600.0;
 
 /// The game settings that tune random conversations, resolved once per pass.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,6 +85,10 @@ pub(crate) struct SocialSettings {
     pub same_npc_timer: f32,
     pub timer_min: f32,
     pub timer_max: f32,
+    /// `iAISocialDistanceToTriggerEvent`: how close the initiator gets before the event is sent.
+    pub trigger_distance: f32,
+    /// `fAISocialTimerToWaitForEvent`: how long it waits for a scene to start.
+    pub wait_for_event: f32,
 }
 
 impl SocialSettings {
@@ -84,6 +103,8 @@ impl SocialSettings {
             same_npc_timer: setting("fAItalktosameNPCTimer", DEFAULT_SAME_NPC_TIMER),
             timer_min,
             timer_max: setting("fAISocialTimerForConversationsMax", DEFAULT_TIMER_MAX).max(timer_min),
+            trigger_distance: setting("iAISocialDistanceToTriggerEvent", DEFAULT_TRIGGER_DISTANCE).max(1.0),
+            wait_for_event: setting("fAISocialTimerToWaitForEvent", DEFAULT_WAIT_FOR_EVENT).max(0.0),
         }
     }
 
@@ -150,6 +171,31 @@ pub(crate) struct RandomConversationState {
 }
 
 impl Resource for RandomConversationState {}
+
+/// Where a held pair's conversation stands. Only the initiator's phase drives the hold.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum HoldPhase {
+    /// The initiator is walking to its partner (seconds so far).
+    Approaching(f32),
+    /// `ADIA` has been raised; waiting for a scene to start (seconds so far).
+    Waiting(f32),
+    /// A scene holds the pair (seconds so far).
+    Talking(f32),
+}
+
+/// Marks an actor taken over by a random conversation: the ambient package system skips it, and
+/// [`conversation_hold_system`] walks / releases the pair. `NOT_SAVED_BY_DESIGN`: a load drops the
+/// conversation and re-selects the packages.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ConversationHold {
+    pub partner: EntityId,
+    pub initiator: bool,
+    pub phase: HoldPhase,
+}
+
+impl Component for ConversationHold {
+    type Storage = SparseSetStorage<Self>;
+}
 
 fn pair(a: EntityId, b: EntityId) -> (EntityId, EntityId) {
     if a <= b {
@@ -221,9 +267,13 @@ fn collect_participants(world: &World) -> Vec<Participant> {
     }
     let in_scene = byroredux_scripting::actors_in_running_scenes(world);
     let player = crate::systems::PlayerEntity::get(world);
+    let held: HashSet<EntityId> = world
+        .query::<ConversationHold>()
+        .map(|query| query.iter().map(|(actor, _)| actor).collect())
+        .unwrap_or_default();
     allowed
         .into_iter()
-        .filter(|actor| Some(*actor) != player && !in_scene.contains(actor))
+        .filter(|actor| Some(*actor) != player && !in_scene.contains(actor) && !held.contains(actor))
         .filter(|actor| crate::systems::npc_dialogue::npc_refuses_dialogue(world, *actor).is_none())
         .filter_map(|actor| {
             let position = world.get::<GlobalTransform>(actor)?.translation;
@@ -304,18 +354,221 @@ pub(crate) fn random_conversation_system(world: &World, dt: f32) {
 
     for (initiator, target) in raised {
         log::debug!("random conversation: {initiator:?} -> {target:?}");
-        raise_story_event(
-            world,
-            initiator,
-            StoryEvent {
-                mnemonic: ADIA,
-                reference_1: initiator,
-                reference_2: Some(target),
-                location_1: location.location,
-                location_2: None,
-                scripted: None,
-            },
-        );
+        begin_conversation(world, initiator, target);
+    }
+}
+
+/// Take the pair over: suspend both ambient packages (the package system skips a held actor), and
+/// let [`conversation_hold_system`] walk the initiator over and raise `ADIA`.
+fn begin_conversation(world: &World, initiator: EntityId, target: EntityId) {
+    crate::npc_spawn::ai_package::suspend_ambient_behavior_for_combat(world, initiator);
+    crate::npc_spawn::ai_package::suspend_ambient_behavior_for_combat(world, target);
+    if let Some(mut holds) = world.query_mut::<ConversationHold>() {
+        holds.insert(initiator, ConversationHold { partner: target, initiator: true, phase: HoldPhase::Approaching(0.0) });
+        holds.insert(target, ConversationHold { partner: initiator, initiator: false, phase: HoldPhase::Waiting(0.0) });
+    }
+}
+
+/// End a hold on both actors; the ambient package system re-selects their packages on its next tick
+/// (suspension left their evaluation clock reset).
+fn release_pair(world: &World, a: EntityId, b: EntityId) {
+    if let Some(mut holds) = world.query_mut::<ConversationHold>() {
+        holds.remove(a);
+        holds.remove(b);
+    }
+}
+
+fn raise_actor_dialogue(world: &World, initiator: EntityId, target: EntityId) {
+    // #5372 — the location is resolved before the StoryEvent write guard.
+    let location = crate::systems::story_events::derive_location(world).location;
+    raise_story_event(
+        world,
+        initiator,
+        StoryEvent {
+            mnemonic: ADIA,
+            reference_1: initiator,
+            reference_2: Some(target),
+            location_1: location,
+            location_2: None,
+            scripted: None,
+        },
+    );
+}
+
+/// What one held initiator does this frame.
+enum HoldStep {
+    Release,
+    Walk { new_pos: Vec3, rotation: Option<byroredux_core::math::Quat> },
+    Arrived,
+    Phase(HoldPhase),
+}
+
+/// System: walk each conversation initiator to its partner, turn the partner to face it, raise `ADIA`
+/// on arrival and release the pair when no scene takes them (or the scene ends). Production registers
+/// [`make_conversation_hold_system`]; the kill switch `BYRO_NO_AI_LOCOMOTION` makes the initiator
+/// raise the event from where it stands, like the force-greet's arrival-in-radius path.
+#[cfg(test)]
+pub(crate) fn conversation_hold_system(world: &World, dt: f32) {
+    conversation_hold_inner(world, dt, true, &mut HashMap::new());
+}
+
+pub(crate) fn make_conversation_hold_system(walk_enabled: bool) -> impl FnMut(&World, f32) + Send + Sync {
+    let mut stuck_secs: HashMap<EntityId, f32> = HashMap::new();
+    move |world: &World, dt: f32| conversation_hold_inner(world, dt, walk_enabled, &mut stuck_secs)
+}
+
+fn conversation_hold_inner(world: &World, dt: f32, walk_enabled: bool, stuck_secs: &mut HashMap<EntityId, f32>) {
+    let initiators: Vec<(EntityId, ConversationHold)> = world
+        .query::<ConversationHold>()
+        .map(|query| query.iter().filter(|(_, hold)| hold.initiator).map(|(actor, hold)| (actor, *hold)).collect())
+        .unwrap_or_default();
+    if initiators.is_empty() {
+        stuck_secs.clear();
+        return;
+    }
+    stuck_secs.retain(|actor, _| initiators.iter().any(|(initiator, _)| initiator == actor));
+    let settings = SocialSettings::from_world(world);
+    let in_scene = byroredux_scripting::actors_in_running_scenes(world);
+
+    // Pass 1 — decide each step under storage guards only (the physics resource is taken alone,
+    // inside the walk helper, as in the other movers).
+    let mut steps: Vec<(EntityId, ConversationHold, HoldStep)> = Vec::with_capacity(initiators.len());
+    for (initiator, hold) in initiators {
+        let partner = hold.partner;
+        let step = (|| {
+            let usable = |actor| {
+                world.get::<GlobalTransform>(actor).is_some()
+                    && crate::systems::npc_dialogue::npc_refuses_dialogue(world, actor).is_none()
+            };
+            if !usable(initiator) || !usable(partner) || !world.has::<ConversationHold>(partner) {
+                return HoldStep::Release;
+            }
+            match hold.phase {
+                HoldPhase::Approaching(elapsed) => {
+                    let (Some(me), Some(them)) = (
+                        world.get::<GlobalTransform>(initiator).map(|t| t.translation),
+                        world.get::<GlobalTransform>(partner).map(|t| t.translation),
+                    ) else {
+                        return HoldStep::Release;
+                    };
+                    let flat = Vec3::new(them.x - me.x, 0.0, them.z - me.z).length();
+                    if flat <= settings.trigger_distance || !walk_enabled {
+                        return HoldStep::Arrived;
+                    }
+                    if elapsed >= MAX_APPROACH_SECS {
+                        return HoldStep::Release;
+                    }
+                    let speed = world
+                        .get::<crate::components::WalkSpeed>(initiator)
+                        .map(|speed| speed.0)
+                        .unwrap_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED);
+                    let rotation = world.get::<Transform>(initiator).map(|t| t.rotation).unwrap_or_default();
+                    let walk = crate::systems::navmesh_path::cached_walk_step(
+                        world,
+                        initiator,
+                        me,
+                        rotation,
+                        them,
+                        crate::systems::follow::FOLLOW_REPATH_THRESHOLD,
+                        dt,
+                        speed,
+                    );
+                    let timer = stuck_secs.entry(initiator).or_insert(0.0);
+                    if crate::systems::locomotion::advance_stuck_repick(timer, walk.blocked, dt) {
+                        // Held against architecture: no closer approach exists, so start from here.
+                        return HoldStep::Arrived;
+                    }
+                    HoldStep::Walk { new_pos: walk.position, rotation: walk.rotation }
+                }
+                HoldPhase::Waiting(waited) => {
+                    let waited = waited + dt;
+                    if waited < settings.wait_for_event {
+                        HoldStep::Phase(HoldPhase::Waiting(waited))
+                    } else if in_scene.contains(&initiator) || in_scene.contains(&partner) {
+                        HoldStep::Phase(HoldPhase::Talking(0.0))
+                    } else {
+                        // No conversation quest took the pair: back to what they were doing.
+                        HoldStep::Release
+                    }
+                }
+                HoldPhase::Talking(talked) => {
+                    let talked = talked + dt;
+                    if talked >= MAX_TALK_SECS || !(in_scene.contains(&initiator) || in_scene.contains(&partner)) {
+                        HoldStep::Release
+                    } else {
+                        HoldStep::Phase(HoldPhase::Talking(talked))
+                    }
+                }
+            }
+        })();
+        steps.push((initiator, hold, step));
+    }
+
+    // Pass 2 — apply.
+    if let Some(mut transforms) = world.query_mut::<Transform>() {
+        for (initiator, _, step) in &steps {
+            if let HoldStep::Walk { new_pos, rotation } = step {
+                if let Some(t) = transforms.get_mut(*initiator) {
+                    t.translation = *new_pos;
+                    if let Some(rotation) = rotation {
+                        t.rotation = *rotation;
+                    }
+                }
+            }
+        }
+    }
+    // The partner stops and turns to face the initiator while it is held.
+    let faces: Vec<(EntityId, f32, f32)> = steps
+        .iter()
+        .filter(|(_, _, step)| !matches!(step, HoldStep::Release))
+        .filter_map(|(initiator, hold, _)| {
+            let me = world.get::<GlobalTransform>(*initiator)?.translation;
+            let them = world.get::<GlobalTransform>(hold.partner)?.translation;
+            Some((hold.partner, me.x - them.x, me.z - them.z))
+        })
+        .collect();
+    if let Some(mut transforms) = world.query_mut::<Transform>() {
+        for (partner, dx, dz) in faces {
+            if let Some(t) = transforms.get_mut(partner) {
+                if dx != 0.0 || dz != 0.0 {
+                    t.rotation = crate::systems::script_requests::facing(dx, dz);
+                }
+            }
+        }
+    }
+    for (initiator, hold, step) in steps {
+        match step {
+            HoldStep::Release => {
+                stuck_secs.remove(&initiator);
+                release_pair(world, initiator, hold.partner);
+            }
+            HoldStep::Walk { .. } => {
+                if let Some(mut holds) = world.query_mut::<ConversationHold>() {
+                    if let Some(entry) = holds.get_mut(initiator) {
+                        if let HoldPhase::Approaching(elapsed) = entry.phase {
+                            entry.phase = HoldPhase::Approaching(elapsed + dt);
+                        }
+                    }
+                }
+            }
+            HoldStep::Arrived => {
+                stuck_secs.remove(&initiator);
+                log::debug!("random conversation: {initiator:?} reached {:?}", hold.partner);
+                raise_actor_dialogue(world, initiator, hold.partner);
+                if let Some(mut holds) = world.query_mut::<ConversationHold>() {
+                    if let Some(entry) = holds.get_mut(initiator) {
+                        entry.phase = HoldPhase::Waiting(0.0);
+                    }
+                }
+            }
+            HoldStep::Phase(phase) => {
+                if let Some(mut holds) = world.query_mut::<ConversationHold>() {
+                    if let Some(entry) = holds.get_mut(initiator) {
+                        entry.phase = phase;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -391,6 +644,8 @@ mod tests {
             world.register::<AmbientPackageRuntime>();
             world.register::<GlobalTransform>();
             world.register::<SandboxBehavior>();
+            world.register::<ConversationHold>();
+            world.register::<Transform>();
             world.insert_resource(RandomConversationState::default());
             // The social roll is a dice throw; a chance past 100 % makes it certain.
             let mut index = byroredux_plugin::esm::records::EsmIndex::default();
@@ -430,12 +685,15 @@ mod tests {
                 );
                 actor
             };
-            let (a, b) = (spawn(0.0), spawn(300.0));
+            let (a, b) = (spawn(0.0), spawn(100.0));
             // The first step arms each timer at 30-60 s (random); two more
             // 50 s steps run every possible value out.
             for _ in 0..3 {
                 random_conversation_system(&world, 50.0);
             }
+            // A successful roll holds the pair; the initiator is already in range, so the hold
+            // system raises the event on its first step.
+            conversation_hold_system(&world, 0.1);
             let event = world.query::<StoryEvent>().and_then(|events| events.iter().next().map(|(_, event)| *event));
             event.inspect(|event| {
                 assert_eq!(event.mnemonic, ADIA);
@@ -445,6 +703,49 @@ mod tests {
         };
         assert!(run(PKDT_INTERRUPT_RANDOM_CONVERSATIONS).is_some(), "flagged pair converses");
         assert!(run(0x0001).is_none(), "hellos alone do not allow random conversations");
+    }
+
+    /// A pair beyond the trigger distance: the initiator is held and walks (no event yet), the partner
+    /// is held and faces it; once in range `ADIA` is raised, and with no scene to take the pair after
+    /// the wait both are released (CK: "wait ... to see if a Scene is initiated").
+    #[test]
+    fn a_far_pair_is_held_while_the_initiator_walks_then_released_without_a_scene() {
+        use crate::components::AmbientPackageRuntime;
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<AmbientPackageRuntime>();
+        world.register::<GlobalTransform>();
+        world.register::<Transform>();
+        world.register::<ConversationHold>();
+        let mut spawn = |x: f32| {
+            let actor = world.spawn();
+            world.insert(actor, GlobalTransform { translation: Vec3::new(x, 0.0, 0.0), ..Default::default() });
+            world.insert(actor, Transform { translation: Vec3::new(x, 0.0, 0.0), ..Default::default() });
+            actor
+        };
+        let (a, b) = (spawn(0.0), spawn(1000.0));
+        begin_conversation(&world, a, b);
+        assert_eq!(world.get::<ConversationHold>(a).map(|h| h.initiator), Some(true));
+        assert_eq!(world.get::<ConversationHold>(b).map(|h| h.partner), Some(a));
+
+        conversation_hold_system(&world, 0.1);
+        assert!(
+            world.query::<StoryEvent>().is_none_or(|events| events.iter().next().is_none()),
+            "out of range: no event yet"
+        );
+        assert!(matches!(world.get::<ConversationHold>(a).map(|h| h.phase), Some(HoldPhase::Approaching(_))));
+
+        // Teleport the initiator into range (the walk itself rides the shared KCC step).
+        world.query_mut::<GlobalTransform>().unwrap().get_mut(a).unwrap().translation = Vec3::new(950.0, 0.0, 0.0);
+        conversation_hold_system(&world, 0.1);
+        let raised = world.query::<StoryEvent>().and_then(|events| events.iter().next().map(|(_, e)| *e));
+        let event = raised.expect("in range: ADIA raised");
+        assert_eq!((event.reference_1, event.reference_2), (a, Some(b)));
+        assert!(matches!(world.get::<ConversationHold>(a).map(|h| h.phase), Some(HoldPhase::Waiting(_))));
+
+        // No scene starts: after fAISocialTimerToWaitForEvent (0.5 s) both are released.
+        conversation_hold_system(&world, 1.0);
+        assert!(world.get::<ConversationHold>(a).is_none() && world.get::<ConversationHold>(b).is_none());
     }
 
     #[test]

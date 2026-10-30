@@ -449,6 +449,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::PatrolBehavior>();
     world.register::<byroredux_core::ecs::components::PatrolState>();
     world.register::<crate::components::AmbientPackageRuntime>();
+    world.register::<crate::systems::random_conversation::ConversationHold>();
     world.register::<crate::components::IdleResume>();
     world.register::<crate::systems::knockdown::KnockedDown>();
     world.register::<crate::systems::flee::FleeState>();
