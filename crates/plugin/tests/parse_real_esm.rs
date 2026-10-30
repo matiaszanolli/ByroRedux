@@ -6576,3 +6576,25 @@ fn fo3_use_land_data_children_inherit_the_wasteland_landscape() {
          GNRroofWorld 58 + MegatonWorld 5), filled {filled}"
     );
 }
+
+/// #6464 — FO4's "Use Land Data" child worldspaces (Goodneighbor, plus DLCNukaWorld's
+/// NukaWorldMarket and NukaWorldAmphitheater) author their cells with no LAND of their own;
+/// without the #5505 inheritance those cells have no ground. Fallout4.esm alone carries
+/// Goodneighbor (parent Commonwealth): 109 cells, none with its own LAND; 108 take the
+/// Commonwealth's terrain (measured 2026-10-29). The DLC pair is out of this single-master pin's reach (the audit
+/// census: 59 + 63 cells, 8 + 7 LAND-less cells with references).
+#[test]
+#[ignore = "needs FO4 game data on disk"]
+fn fo4_goodneighbor_inherits_the_commonwealth_landscape() {
+    let Some(data) = data_dir(test_paths::FO4_ENV, test_paths::FO4_DEFAULT) else {
+        eprintln!("[FO4 LAND] skipping: game data unavailable");
+        return;
+    };
+    let mut index = parse_esm(&std::fs::read(data.join("Fallout4.esm")).unwrap()).unwrap();
+    let filled = index.cells.inherit_parent_landscapes();
+    eprintln!("[FO4 LAND] filled {filled}");
+    assert!(
+        (100..=109).contains(&filled),
+        "expected ~108 inherited landscapes (Goodneighbor's 109 cells), filled {filled}"
+    );
+}

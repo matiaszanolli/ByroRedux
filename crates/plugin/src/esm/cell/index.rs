@@ -523,9 +523,11 @@ impl EsmCellIndex {
     /// (the parent may live in a master). Returns the cells filled.
     ///
     /// The caller gates on the game: measured co-located on Oblivion's
-    /// city worlds (#5505) and on FO3's four "Use Land Data" children —
+    /// city worlds (#5505), on FO3's four "Use Land Data" children —
     /// Oasis and ParadiseFalls decisively, GNRroofWorld and MegatonWorld
-    /// consistent though not separately proven (#6089).
+    /// consistent though not separately proven (#6089) — and on FO4's
+    /// NukaWorldMarket / NukaWorldAmphitheater (decisive) and Goodneighbor
+    /// (#6464).
     pub fn inherit_parent_landscapes(&mut self) -> usize {
         // A WNAM chain is a few links long; the cap only stops a cycle.
         const MAX_CHAIN: usize = 16;

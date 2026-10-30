@@ -607,7 +607,9 @@ pub(crate) fn parse_record_indexes_in_load_order(
 fn needs_exterior_processing(game: esm::reader::GameKind) -> bool {
     matches!(
         game,
-        esm::reader::GameKind::Oblivion | esm::reader::GameKind::Fallout3NV
+        esm::reader::GameKind::Oblivion
+            | esm::reader::GameKind::Fallout3NV
+            | esm::reader::GameKind::Fallout4
     )
 }
 
@@ -619,8 +621,14 @@ fn needs_exterior_processing(game: esm::reader::GameKind) -> bool {
 /// 166 units against the parent's VHGT vs 2,480 for a shifted control)
 /// and `ParadiseFalls` (46 vs 4,126): the four FO3 "Use Land Data"
 /// children (Oasis, ParadiseFalls, GNRroofWorld, MegatonWorld) stand
-/// on the Wasteland's terrain. Idempotent; a no-op on every other
-/// game, so an index of those is ready for both kinds of session.
+/// on the Wasteland's terrain. #6464 — and on FO4's: `NukaWorldMarket`
+/// (median |dz| 69 against the parent's VHGT vs 448+ for shifted controls)
+/// and `NukaWorldAmphitheater` (168 vs 713+) are decisive; `Goodneighbor`'s
+/// dense city makes its median inconclusive but 14 % of its statics sit within
+/// 48 units of the Commonwealth terrain vs 0.8-4 % for the controls. 29
+/// LAND-less content cells across the three had no ground before. Idempotent;
+/// a no-op on every other game, so an index of those is ready for both kinds
+/// of session.
 fn apply_exterior_processing(index: &mut esm::records::EsmIndex) {
     if needs_exterior_processing(index.game) {
         let filled = index.cells.inherit_parent_landscapes();
@@ -683,7 +691,7 @@ impl SharedParseCache {
     /// The parse of `plugin_paths`, from the memo when it holds exactly this
     /// set. `exterior` asks for the index as an exterior session needs it; an
     /// index parsed for an interior is reused for one only when that needs no
-    /// extra processing ([`needs_exterior_processing`]: Oblivion and FO3/FNV
+    /// extra processing ([`needs_exterior_processing`]: Oblivion, FO3/FNV and FO4
     /// do), otherwise it parses again -
     /// `EsmIndex` is shared and not `Clone`, so it cannot be processed in place.
     fn get_or_parse(
@@ -1948,6 +1956,16 @@ mod shared_parse_tests {
 
     /// The step's gate and the cache's `exterior_ready` are one predicate: every game the step
     /// processes is re-parsed for an exterior session, and no other is.
+    #[test]
+    fn use_land_data_children_inherit_on_oblivion_fo3_fnv_and_fo4_only() {
+        use esm::reader::GameKind;
+        for game in [GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Fallout4] {
+            assert!(needs_exterior_processing(game), "{game:?}");
+        }
+        // Skyrim has not been measured (nothing here claims it does not need it).
+        assert!(!needs_exterior_processing(GameKind::Skyrim));
+    }
+
     #[test]
     fn the_cache_and_the_processing_step_share_one_gate() {
         use esm::reader::GameKind;
