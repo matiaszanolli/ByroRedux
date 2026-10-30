@@ -176,7 +176,10 @@ impl Resource for ActivePackages {}
 /// Report that `actor`'s package changed from `from` to `to`.
 pub fn report_package_transition(world: &World, actor: EntityId, from: Option<u32>, to: Option<u32>) {
     // Before the no-change early return: a spawn that reports no package must
-    // still clear what an earlier occupant of a reused entity id left.
+    // still leave its row absent. Ids are never recycled and an unload retires
+    // its rows (`retire_active_packages`, #5870), so this is a no-op for a
+    // fresh actor; it only matters after a `set_next_entity` rewind (the save
+    // driver's `restore_world`, tests only), which can reissue an id.
     if let Some(mut active) = world.try_resource_mut::<ActivePackages>() {
         match to {
             Some(package) => {

@@ -1937,7 +1937,7 @@ CK *GetCurrentPackage - Actor*: the package the actor runs now. The AI already r
 every package change to the package fragments (`report_package_transition`: the spawn
 winner, a re-selection, a combat suspension), and that report now also keeps
 `ActivePackages` (entity → package, unsaved: the AI reports again when an actor spawns after
-a load, and a report of "no package" clears a reused entity id's stale entry). The VM reads
+a load, and a report of "no package" keeps the row absent — ids are never recycled and an unload retires its rows, #6137). The VM reads
 it as a value; an actor running none reads None.
 
 ### Perk fragments (M47.2)

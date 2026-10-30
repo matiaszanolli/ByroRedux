@@ -992,8 +992,12 @@ pub(super) fn apply_ai_package_behavior(
     // load, the restored clock exist, so the first-tick confirmation may pick
     // a different package; reporting `None -> A` now would run A's
     // Begin/Change for a package the actor never ran. The first tick
-    // (`last_evaluated_game_minute: None`) reports the confirmed winner. This
-    // call only clears what an earlier occupant of a reused entity id left.
+    // (`last_evaluated_game_minute: None`) reports the confirmed winner. The
+    // `(None, None)` call keeps the actor's `ActivePackages` row absent: entity
+    // ids are never recycled (`World::spawn`, #372) and an unload retires its
+    // rows through `retire_active_packages` (#5870), so a fresh actor finds
+    // none unless a `restore_world` rewind of `next_entity` (save driver,
+    // tests only) reissued an id.
     byroredux_scripting::report_package_transition(world, placement_root, None, None);
     world.insert(
         placement_root,
