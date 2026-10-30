@@ -586,7 +586,19 @@ pub(crate) struct NifImportRegistry {
     /// A shared (non-precombine) model has been LRU-evicted: the cap is below
     /// the streaming ring's working set (#6114). Latch for the one warning.
     pub(super) warned_shared_eviction: bool,
+    /// A streaming batch is in flight (#6114): eviction waits for it, up to
+    /// [`DEFERRED_EVICTION_HEADROOM`] x the cap. The worker's `cached_keys`
+    /// snapshot and dispatch-batch memo skip a model on the premise it is
+    /// resident when a later cell applies; evicting mid-batch turns that skip
+    /// into a main-thread re-parse of work already done.
+    pub(super) eviction_deferred: bool,
 }
+
+/// How far past `max_entries` the registry may grow while a streaming batch is
+/// in flight (#6114). Fallout 4's default radius peaks near 9,700 distinct
+/// models against the 2,048 default, so 8x covers it; the ceiling keeps a
+/// pathological load order bounded rather than unlimited.
+pub(super) const DEFERRED_EVICTION_HEADROOM: usize = 8;
 
 /// FO4 `_oc.nif` precombine entries are keyed by a path unique to one cell
 /// (`meshes\precombined\<cell>_<hash>_oc.nif`) and never serve another cell, so
@@ -625,6 +637,7 @@ impl NifImportRegistry {
             evictions: 0,
             clip_handles: HashMap::new(),
             warned_shared_eviction: false,
+            eviction_deferred: false,
         }
     }
 
@@ -856,9 +869,46 @@ impl NifImportRegistry {
         let inserted_key = key.clone();
         self.access_tick.insert(key, t);
 
+        self.evict_over_cap(Some(inserted_key.as_str()))
+    }
+
+    /// The entry count eviction enforces right now: the cap, or
+    /// [`DEFERRED_EVICTION_HEADROOM`] x the cap while a streaming batch is in
+    /// flight (#6114). Meaningless in unlimited mode (`max_entries == 0`).
+    fn effective_cap(&self) -> usize {
+        if self.eviction_deferred {
+            self.max_entries.saturating_mul(DEFERRED_EVICTION_HEADROOM)
+        } else {
+            self.max_entries
+        }
+    }
+
+    /// Hold or release the eviction deferral (#6114). Releasing trims straight
+    /// back to the cap (least-recently-touched first, per-cell precombines
+    /// first) and returns the freed clip handles, which the caller MUST release
+    /// from the `AnimationClipRegistry`, exactly as for [`Self::insert`].
+    #[must_use = "evicted clip handles must be released into AnimationClipRegistry to free their keyframe arrays — see #863"]
+    pub(crate) fn set_eviction_deferred(&mut self, deferred: bool) -> Vec<u32> {
+        let was = std::mem::replace(&mut self.eviction_deferred, deferred);
+        if was && !deferred {
+            self.evict_over_cap(None)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Whether an in-flight streaming batch is currently holding eviction off.
+    pub(crate) fn eviction_deferred(&self) -> bool {
+        self.eviction_deferred
+    }
+
+    /// Evict until the registry is within [`Self::effective_cap`], never
+    /// choosing `protected` (the entry the calling insert just wrote).
+    fn evict_over_cap(&mut self, protected: Option<&str>) -> Vec<u32> {
         let mut freed_clip_handles: Vec<u32> = Vec::new();
         if self.max_entries > 0 {
-            while self.core.len() > self.max_entries {
+            let cap = self.effective_cap();
+            while self.core.len() > cap {
                 // #3705 / ECS-2026-08-30-D10-05 — plain LRU has no way to
                 // tell whether a live `AnimationPlayer` / `AnimationLayer`
                 // elsewhere in the `World` still plays a clip handle
@@ -893,7 +943,7 @@ impl NifImportRegistry {
                     .access_tick
                     .iter()
                     .filter(|(k, _)| {
-                        k.as_str() != inserted_key.as_str()
+                        Some(k.as_str()) != protected
                             && is_cell_unique_key(k)
                             && !self.clip_handles.contains_key(k.as_str())
                     })
@@ -903,7 +953,7 @@ impl NifImportRegistry {
                         self.access_tick
                             .iter()
                             .filter(|(k, _)| {
-                                k.as_str() != inserted_key.as_str()
+                                Some(k.as_str()) != protected
                                     && !self.clip_handles.contains_key(k.as_str())
                             })
                             .min_by_key(|(_, &tick)| tick)
@@ -912,7 +962,7 @@ impl NifImportRegistry {
                     .or_else(|| {
                         self.access_tick
                             .iter()
-                            .filter(|(k, _)| k.as_str() != inserted_key.as_str())
+                            .filter(|(k, _)| Some(k.as_str()) != protected)
                             .min_by_key(|(_, &tick)| tick)
                             .map(|(k, _)| k.clone())
                     });

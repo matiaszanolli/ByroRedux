@@ -54,6 +54,40 @@ impl App {
     const BOUNDARY_LOD_RECONCILE_SAFETY_CEILING: Duration = Duration::from_millis(500);
 
     pub(crate) fn step_streaming(&mut self) {
+        self.step_streaming_session();
+        self.sync_nif_cache_eviction();
+    }
+
+    /// #6114 — hold `NifImportRegistry` LRU eviction off while a cell load is
+    /// in flight, then trim back to the cap once the batch settles. Runs after
+    /// every streaming step (and when the session is gone), so the deferral
+    /// can never outlive the batch it was raised for.
+    fn sync_nif_cache_eviction(&mut self) {
+        let in_flight = self
+            .streaming
+            .as_ref()
+            .is_some_and(streaming::WorldStreamingState::cell_load_in_progress);
+        let freed = {
+            let Some(mut reg) = self.world.try_resource_mut::<cell_loader::NifImportRegistry>() else {
+                return;
+            };
+            if reg.eviction_deferred() == in_flight {
+                return;
+            }
+            reg.set_eviction_deferred(in_flight)
+        };
+        // #863 — an evicted entry's embedded-clip handle goes back to the registry.
+        if !freed.is_empty() {
+            let mut clips = self
+                .world
+                .resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+            for handle in freed {
+                clips.release(handle);
+            }
+        }
+    }
+
+    fn step_streaming_session(&mut self) {
         let Some(ctx) = self.renderer.as_mut() else {
             return;
         };

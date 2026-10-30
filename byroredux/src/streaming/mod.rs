@@ -514,10 +514,17 @@ impl WorldStreamingState {
     /// defers that rebuild while this returns true and masks appended ranges
     /// from raster/TLAS through `MeshRegistry::is_geometry_resident`.
     pub fn geometry_batch_in_progress(&self) -> bool {
+        self.cell_load_in_progress() || self.lod_reconcile_pending
+    }
+
+    /// A cell load is queued, parsing or applying. The NIF import registry
+    /// holds LRU eviction off for as long as this is true (#6114), so a model
+    /// the pre-parse worker skipped as already cached is still resident when
+    /// the later cell that needs it applies.
+    pub fn cell_load_in_progress(&self) -> bool {
         !self.pending.is_empty()
             || self.active_apply.is_some()
             || self.persistent_apply.is_some()
-            || self.lod_reconcile_pending
     }
 
     /// Construct from an already-resolved [`ExteriorWorldContext`] and

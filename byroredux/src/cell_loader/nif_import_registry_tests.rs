@@ -114,6 +114,7 @@ fn registry_with_cap(max_entries: usize) -> NifImportRegistry {
         evictions: 0,
         clip_handles: HashMap::new(),
         warned_shared_eviction: false,
+        eviction_deferred: false,
     }
 }
 
@@ -726,4 +727,60 @@ fn lru_evicts_per_cell_precombine_entries_before_shared_models() {
     let _ = reg.insert("crate.nif".into(), Some(dummy_cached()));
     let _ = reg.insert("pole.nif".into(), Some(dummy_cached()));
     assert!(reg.warned_shared_eviction);
+}
+
+/// #6114 - while a streaming batch is in flight the worker's skip filters
+/// assume every model it skipped stays resident, so eviction waits for the
+/// batch instead of turning those skips into main-thread re-parses; once the
+/// batch settles the registry trims back to its cap.
+#[test]
+fn deferred_eviction_keeps_the_batch_resident_then_trims_to_the_cap() {
+    let mut reg = registry_with_cap(3);
+    assert!(reg.set_eviction_deferred(true).is_empty());
+    for n in 0..9 {
+        let freed = reg.insert(format!("m{n}.nif"), Some(dummy_cached()));
+        assert!(freed.is_empty());
+    }
+    assert_eq!(reg.len(), 9, "the whole batch stays resident past the cap");
+    assert_eq!(reg.evictions, 0);
+
+    // Every entry animated: no non-animated preference to apply, so the trim is
+    // plain LRU and each victim's clip handle comes back, oldest first.
+    for n in 0..9u32 {
+        reg.set_clip_handle(format!("m{n}.nif"), 100 + n);
+    }
+    let freed = reg.set_eviction_deferred(false);
+    assert_eq!(reg.len(), 3, "settling the batch trims back to the cap");
+    assert_eq!(reg.evictions, 6);
+    for kept in ["m6.nif", "m7.nif", "m8.nif"] {
+        assert!(reg.core.cache.contains_key(kept), "{kept} is the most recently inserted");
+    }
+    assert_eq!(freed, (100..106).collect::<Vec<_>>(), "the trim hands back the evicted entries' clip handles");
+    assert!(reg.set_eviction_deferred(false).is_empty(), "releasing twice is a no-op");
+}
+
+/// #6114 - the deferral is bounded: a load order past the headroom still
+/// evicts instead of growing without limit.
+#[test]
+fn deferred_eviction_is_bounded_by_the_headroom() {
+    let mut reg = registry_with_cap(2);
+    let _ = reg.set_eviction_deferred(true);
+    let ceiling = 2 * super::nif_import_registry::DEFERRED_EVICTION_HEADROOM;
+    for n in 0..ceiling + 5 {
+        let _ = reg.insert(format!("m{n}.nif"), Some(dummy_cached()));
+    }
+    assert_eq!(reg.len(), ceiling);
+    assert_eq!(reg.evictions, 5);
+}
+
+/// #6114 - unlimited mode (`BYRO_NIF_CACHE_MAX=0`) is unaffected by the deferral.
+#[test]
+fn deferral_does_not_cap_an_unlimited_registry() {
+    let mut reg = registry_with_cap(0);
+    let _ = reg.set_eviction_deferred(true);
+    for n in 0..50 {
+        let _ = reg.insert(format!("m{n}.nif"), Some(dummy_cached()));
+    }
+    assert!(reg.set_eviction_deferred(false).is_empty());
+    assert_eq!(reg.len(), 50);
 }

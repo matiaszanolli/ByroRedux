@@ -987,7 +987,17 @@ NIF when multiple REFRs reference it.
 |---|---|
 | Default cap | 2 048 entries |
 | Override | `BYRO_NIF_CACHE_MAX=N` env var (`=0` disables LRU entirely) |
-| Eviction strategy | LRU by last-access tick; smallest tick = victim on overflow |
+| Eviction strategy | LRU by last-access tick; smallest tick = victim on overflow; per-cell FO4 `_oc.nif` precombines go first (#6114) |
+| Streaming deferral | While a cell load is queued, parsing or applying, eviction waits: the registry may hold up to 8x the cap (`DEFERRED_EVICTION_HEADROOM`) and trims back to the cap when the batch settles (#6114) |
+
+The pre-parse worker skips a model as already cached (the request's
+`cached_keys` snapshot, the dispatch-batch memo) on the premise it is resident
+when a later cell of the batch applies; evicting mid-batch turned those skips
+into main-thread re-parses (Fallout 4's default radius peaks near 9,700 distinct
+models against a 2,048 cap). The deferral is a transient peak, not a larger
+steady cap: per-entry RAM at the peak is **not measured** (check
+`mesh.cache` entries and process RSS during an FO4 boot before raising the
+headroom).
 
 The cap bounds *scene count*, not VRAM. Each cached entry holds
 `ImportedScene` in CPU RAM (vertex data, block tree); the GPU resources
