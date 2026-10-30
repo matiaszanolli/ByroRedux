@@ -141,6 +141,23 @@ pub fn advance_skill(world: &World, player: byroredux_core::ecs::storage::Entity
     if let Some(mut stored) = world.try_resource_mut::<SkillProgress>() {
         stored.0.insert(skill, progress);
     }
+    // M43 — the Story Manager's `SKIL` (Skill Increase). CK *OnStoryIncreaseSkill*: "If the skill has
+    // gained multiple levels at the same time, this event still gets triggered only once." Its one
+    // parameter is the skill's name, which no event slot carries.
+    if !reached.is_empty() {
+        crate::story_manager::raise_story_event(
+            world,
+            player,
+            crate::story_manager::StoryEvent {
+                mnemonic: *b"SKIL",
+                reference_1: player,
+                reference_2: None,
+                location_1: None,
+                location_2: None,
+                scripted: None,
+            },
+        );
+    }
     reached
 }
 
@@ -172,6 +189,23 @@ mod tests {
         let player = world.spawn();
         world.insert(player, ActorValues::from_pairs([(LOCKPICKING, level)]));
         (world, player)
+    }
+
+    /// A skill that gains several levels raises `SKIL` once; one that only banks XP raises nothing.
+    #[test]
+    fn a_skill_increase_raises_one_story_event() {
+        let (mut world, player) = world_with_lockpicking(15.0);
+        crate::story_manager::register(&mut world);
+        let raised = |world: &World| {
+            world
+                .query::<crate::story_manager::StoryEvent>()
+                .map(|events| events.iter().filter(|(_, e)| e.mnemonic == *b"SKIL").count())
+                .unwrap_or(0)
+        };
+        advance_skill(&world, player, "Lockpicking", 0.0);
+        assert_eq!(raised(&world), 0, "banked XP only");
+        assert!(advance_skill(&world, player, "Lockpicking", 50.0).len() >= 5);
+        assert_eq!(raised(&world), 1, "several levels, one event");
     }
 
     /// UESP's own example: 50 XP of Lockpicking is `50 × 45 + 10 = 2260` skill

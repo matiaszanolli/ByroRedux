@@ -294,6 +294,34 @@ pub(crate) fn raise_assault_story_event(world: &World, victim: EntityId, attacke
     );
 }
 
+/// M43 — `AIPL` (Player Add Item): the player gained an item.
+/// `OnStoryAddToPlayer(akOwner, akContainer, akLocation, akItemBase, aiAcquireType)`: R2 = the
+/// container it came out of (`None` for a placed item), L1 = the session LCTN, `V1` = the acquire
+/// type (1 steal, 4 pick up; buying and pickpocketing are not distinguished here). The owner (`R1`)
+/// is a base record in this engine's ownership model, not a reference, so it is left unset. A
+/// no-op on pre-Creation titles (no SM tree installed).
+pub(crate) fn raise_add_to_player_story_event(world: &World, player: EntityId, container: Option<EntityId>, stolen: bool) {
+    use byroredux_scripting::story_manager::{ScriptedStoryEvent, StoryEvent};
+    // #5372 — resolve the location BEFORE taking the StoryEvent write guard.
+    let location_1 = resolve_current_lctn(world);
+    byroredux_scripting::story_manager::raise_story_event(
+        world,
+        player,
+        StoryEvent {
+            mnemonic: *b"AIPL",
+            reference_1: player,
+            reference_2: container,
+            location_1,
+            location_2: None,
+            scripted: Some(ScriptedStoryEvent {
+                keyword: 0,
+                values: [if stolen { 1 } else { 4 }, 0],
+                has_reference_1: false,
+            }),
+        },
+    );
+}
+
 /// #5434 — `KILL` (Actor Kill), raised from every LIVE death producer
 /// (combat damage, NPC/player drowning, the SDK actor-value batch) — never
 /// from corpse restores, which re-assert a death that already fired.
@@ -373,6 +401,23 @@ mod tests {
         assert_eq!(slots.location_1, Some(0x0001_0A0B));
         assert_eq!(slots.values, [1, 0]);
         assert_eq!(slots.keyword, None, "an engine integer payload is not a keyword");
+    }
+
+    /// M43 — `AIPL` carries the container in `R2`, the location in `L1` and the acquire type in
+    /// `V1`, with no `R1` (the owner is a base record here).
+    #[test]
+    fn add_to_player_event_carries_container_location_and_acquire_type() {
+        let mut world = world_in_located_cell();
+        let (player, chest) = (world.spawn(), world.spawn());
+        raise_add_to_player_story_event(&world, player, Some(chest), true);
+        let event = world
+            .query::<byroredux_scripting::story_manager::StoryEvent>()
+            .and_then(|events| events.iter().map(|(_, e)| *e).find(|e| e.mnemonic == *b"AIPL"))
+            .expect("raised on the player");
+        let slots = event.slots();
+        assert_eq!((slots.reference_1, slots.reference_2), (None, Some(chest)));
+        assert_eq!(slots.location_1, Some(0x0001_0A0B));
+        assert_eq!(slots.values, [1, 0], "stolen");
     }
 
     /// #5434 — a world whose session sits in a cell that authors LCTN

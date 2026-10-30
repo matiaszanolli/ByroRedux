@@ -265,6 +265,7 @@ pub fn go_to_jail(world: &World) -> bool {
         return false;
     }
     let Some(jail) = nearest_jail(world, player) else { return false };
+    let sentence_gold = bounty_of(world, player).max(0);
     let days = model.sentence_days(bounty_of(world, player));
     confiscate_stolen_goods(world, player, jail.evidence_chest);
     if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
@@ -272,7 +273,30 @@ pub fn go_to_jail(world: &World) -> bool {
         ledger.jail = Some(JailSentence { exit_marker: jail.exit_marker, days });
     }
     crate::crime_knowledge::forgive_player(world);
-    request_move(world, jail.cell_marker)
+    let sent = request_move(world, jail.cell_marker);
+    if sent {
+        // M43 — the Story Manager's `JAIL` (Jail Event): `OnStoryJail(akGuard, akCrimeGroup,
+        // akLocation, aiCrimeGold)`. This path has no guard reference or crime group; `L1` is the
+        // location the player was sent from and the gold rides `V1`.
+        let location = world.try_resource::<crate::location::PlayerLocation>().and_then(|here| here.0);
+        crate::story_manager::raise_story_event(
+            world,
+            player,
+            crate::story_manager::StoryEvent {
+                mnemonic: *b"JAIL",
+                reference_1: player,
+                reference_2: None,
+                location_1: location,
+                location_2: None,
+                scripted: Some(crate::story_manager::ScriptedStoryEvent {
+                    keyword: 0,
+                    values: [i32::try_from(sentence_gold).unwrap_or(i32::MAX), 0],
+                    has_reference_1: false,
+                }),
+            },
+        );
+    }
+    sent
 }
 
 /// Whether the player is serving a sentence (CS *IsPlayerInJail*).
@@ -438,6 +462,20 @@ mod tests {
         assert_eq!(world.resource::<PlayerMoveRequest>().0, Some(1), "to the cell, not the exit");
         assert!(player_in_jail(&world));
         assert!(!go_to_jail(&world), "already serving");
+    }
+
+    /// M43 — a sentence that starts raises `JAIL` once, with the gold in `V1`.
+    #[test]
+    fn going_to_jail_raises_the_jail_story_event() {
+        let (mut world, _player) = world_with_player(BRAVIL, [900.0, 0.0, 0.0], 0);
+        crate::story_manager::register(&mut world);
+        start(&mut world, 250, &[]);
+        assert!(go_to_jail(&world));
+        let event = world
+            .query::<crate::story_manager::StoryEvent>()
+            .and_then(|events| events.iter().map(|(_, e)| *e).find(|e| e.mnemonic == *b"JAIL"))
+            .expect("JAIL raised");
+        assert_eq!(event.slots().values, [250, 0]);
     }
 
     #[test]

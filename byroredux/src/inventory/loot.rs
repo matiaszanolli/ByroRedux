@@ -266,6 +266,8 @@ pub(crate) fn transfer_loot(
                 stolen,
             }),
     );
+    // M43 — the Story Manager's `AIPL` (Player Add Item), once per transfer.
+    crate::systems::story_events::raise_add_to_player_story_event(world, player, Some(source), stolen);
     let noun = if outcome.item_count == 1 { "item" } else { "items" };
     crate::notifications::push(
         world,
@@ -526,6 +528,10 @@ pub(crate) fn take_placed_item(
     }
     if let Some(owner) = stolen_from {
         crate::crime::report_theft(world, player, owner, &[(base, count)]);
+    }
+    // M43 — the Story Manager's `AIPL`; only the player's own pickups (an NPC taker is not "to player").
+    if player_is_taker {
+        crate::systems::story_events::raise_add_to_player_story_event(world, player, None, stolen);
     }
     byroredux_scripting::emit_item_transfers(
         world,
