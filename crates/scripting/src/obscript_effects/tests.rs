@@ -937,6 +937,12 @@ fn fallout_only_opcodes_do_not_shadow_oblivions() {
     let mut oblivion = World::new();
     oblivion.insert_resource(crate::ScriptGame(GameKind::Oblivion));
     for id in [CMD_IGNORE_CRIME, CMD_GET_IGNORE_CRIME, CMD_SET_ENEMY, CMD_SET_ALLY, CMD_SEND_ASSAULT_ALARM] {
+        // 0x10ab is Oblivion's `IsPlayerInJail` (a row in `obscript_more`): it answers a flag, never
+        // the `IgnoreCrime` effect.
+        if id == CMD_IGNORE_CRIME {
+            assert_eq!(run(&oblivion, id, &[], &context(None)), Action::number(0.0));
+            continue;
+        }
         assert_eq!(run(&oblivion, id, &[], &context(Some(ACTOR))), Action::Unhandled, "{id:#06x} must be left to Oblivion's own handling");
         assert!(!matches!(run(&fallout, id, &[], &context(Some(ACTOR))), Action::Unhandled), "{id:#06x} is still a Fallout command");
     }

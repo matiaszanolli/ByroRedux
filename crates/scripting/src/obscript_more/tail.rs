@@ -586,6 +586,11 @@ fn cmd_10e0(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], 
     Action::Declined
 }
 
+// CS *IsPlayerInJail*: "1 if the player is currently 'in jail'" — a sentence being served (`jail.rs`).
+fn is_player_in_jail(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+    flag(crate::jail::player_in_jail(world))
+}
+
 // CS *IsGuard*: "1 if the NPC's class is marked as a Guard class" — the `CLAS` Guard flag (Oblivion's).
 fn is_guard(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller(world, ctx) {
@@ -848,6 +853,7 @@ pub(crate) const TAIL_COMMANDS: &[Command] = &[
     Command { id: 0x1138, games: Games::Oblivion, needs_caller: false, handler: cmd_1138 },
     Command { id: 0x1137, games: Games::Oblivion, needs_caller: false, handler: cmd_1137 },
     Command { id: 0x10bc, games: Games::Fallout, needs_caller: false, handler: get_pc_sleep_hours },
+    Command { id: 0x10ab, games: Games::Oblivion, needs_caller: false, handler: is_player_in_jail },
 ];
 
 
