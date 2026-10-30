@@ -1189,6 +1189,11 @@ impl App {
             let applied = crate::asset_provider::apply_texture_swap(&self.world, ctx, provider, &swap);
             log::info!("SwapTexture {:?} -> {:?}: {applied} mesh(es) changed", swap.slot, swap.texture);
         }
+        // #6111 — a swap's `resolve_texture` miss reserves a bindless slot (descriptor =
+        // fallback) and only queues the DDS; nothing on the frame path drains that queue, so
+        // an interior (or an idle exterior) would show the checker until some unrelated
+        // batch flushed. Upload it now; a no-op when every swap hit the cache.
+        crate::scene::flush_pending_loose_textures(ctx);
     }
 
     /// ObScript `PlayIdle` on the `.kf` games: resolve the `.kf` of an IDLE an actor is waiting on with
@@ -1622,6 +1627,23 @@ mod tests {
             "the flag must be published BEFORE the drain it guards, in the same \
              call (sync {sync_at}, drain {drain_at})"
         );
+    }
+
+    /// #6111 — `step_texture_swaps` queues DDS uploads through `resolve_texture` and must
+    /// flush them itself, after the swap loop.
+    #[test]
+    fn texture_swaps_flush_the_uploads_they_queue() {
+        let src = include_str!("app_step.rs");
+        let fn_start = src
+            .find("fn step_texture_swaps(")
+            .expect("step_texture_swaps must still exist");
+        let body = &src[fn_start..];
+        let body = &body[..body.find("\n    }\n").expect("body boundary not found")];
+        let apply_at = body.find("apply_texture_swap(").expect("the swap loop");
+        let flush_at = body
+            .find("flush_pending_loose_textures(ctx)")
+            .expect("step_texture_swaps must flush the DDS uploads its swaps queue (#6111)");
+        assert!(apply_at < flush_at, "the flush must follow the swap loop");
     }
 
     /// #3671 — interior transitions must retain the resumable reference
