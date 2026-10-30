@@ -13,10 +13,10 @@ reset windows over save-persistent node state. M43 follow-ups
 (2026-10-30): the walk honors *Num quests to run* (`MNAM`) and *Max
 concurrent quests* (`XNAM`); `ADIA` (NPC-to-NPC random conversations — the
 largest event family, with the CK's interrupt hold), `LEVL`, `ASSU`, `AIPL`,
-`SKIL` and `JAIL` joined `KILL`/`CLOC`/`AHEL`/`SCPT` as producers (§6.4).
-What is left (§6.4 names the missing piece of each): `REMP`, `CAST`, `CHRR`,
-`DEAD`, the natural `AHEL`, `ARRT`/`ESJA`, `CRFT`, `NVPE`, and FO4's
-`LCLD`/`AOBJ`/`HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`. The corpus's `FromEvent`
+`SKIL`, `JAIL`, `CHRR` and FO4's `LCLD` joined `KILL`/`CLOC`/`AHEL`/`SCPT` as
+producers (§6.4). What is left (§6.4 names the missing piece of each):
+`REMP`, `CAST`, `DEAD`, the natural `AHEL`, `ARRT`/`ESJA`, `CRFT`, `NVPE`, and
+FO4's `AOBJ`/`HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`. The corpus's `FromEvent`
 fills and node conditions read only `R1`/`R2`/`L1`/`L2`, so a form slot
 (`F1`) is only needed by scripts. Unconsumed fields: `HNAM` (FO4+ node-level reset; semantics not
 settled), `FNAM` (always `2` in the corpus, beside reset windows of 0, 4 and
@@ -357,7 +357,14 @@ already has the surface:
   stops and faces it, `ADIA` is raised on arrival, and after
   `fAISocialTimerToWaitForEvent` the hold continues while a scene runs for
   either actor and otherwise releases both. **Not modelled**: the *complex
-  scene* flag, and the scene's Phase 0 waiting for `fAIMinGreetingDistance`.
+  scene* flag. The scene's Phase 0 waits "until the initiating actor reaches
+  `fAIMinGreetingDistance`" (150), nearer than Skyrim's authored
+  `iAISocialDistanceToTriggerEvent` (200), so the event is raised at the
+  nearer of the two and the scene begins once that holds. The settings in
+  play are the master's: Skyrim.esm authors radius 500 / 500, chance 10 % /
+  10 %, timers 10-30 s and trigger distance 200 (the CK page's 2000 / 25 % /
+  30-60 s are its documented defaults, used only where a master omits one;
+  the same-NPC timer and the 0.5 s wait are not authored in Skyrim.esm).
   The CK does not say which valid partner a roll picks; the nearest is used.
   The live run's pair was already inside the trigger distance, so the walk
   itself is covered by the unit test (teleport into range) and the shared
@@ -366,28 +373,38 @@ already has the surface:
   (victim `R1`, attacker `R2`, `L1`, crime flag `V1`), `AIPL` (Player Add Item
   — container `R2` from a loot transfer, `L1`, acquire type `V1`; pickups
   carry no container), `SKIL` (once per skill that gains levels, from
-  `Game.AdvanceSkill`) and `JAIL` (a sentence starting, gold in `V1`). A census
+  `Game.AdvanceSkill`), `JAIL` (a sentence starting, gold in `V1`), `CHRR`
+  (a script changing a relationship rank: both actors in `R1`/`R2`, old and
+  new rank in `V1`/`V2`) and Fallout 4's `LCLD` (the SMEN editor ids —
+  `MinRecruitLocationLoadedStub` and kin — name it *Location Loaded*; its
+  quests fill one `L1`; raised with `CLOC`, since the engine has one moment for
+  the cells loading and the player arriving). A census
   of the event slots the real quests read (`R1`/`R2`/`L1`/`L2` only) picked
   what each carries: `AIPL` quests read the container (`R2`) and location,
   `REMP` the *item reference* (`R2`), `CAST` caster/target/location, `DEAD`
   the corpse (`R2`), `CHRR` both actors.
 - **Still open, with the missing piece named** (per-mnemonic quest counts,
-  2026-10-30, quests reachable under each `SMEN` root — Skyrim: `ADIA` 786,
-  `SCPT` 190, `CLOC` 148, `KILL` 13, `CRFT` 10, `LEVL` 8, `CAST` 6, `REMP`
-  5, `AIPL` 5, `ASSU` 4, `JAIL` 3, `SKIL` 2, `ESJA` 2, `DEAD` 2, `CHRR` 2,
-  `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4: `SCPT` 322, `ADIA` 298, `CLOC` 85,
-  `AOBJ` 16, `LCLD` 13, `AHEL` 9, `AIPL` 7):
-  `REMP` needs a dropped-item reference (the engine has no drop; consuming
-  has no reference); `CAST` — the CK does not say whose casts raise it and the
-  engine only casts from scripts; `CHRR` — rank changes are keyed on base
-  pairs, with no base-to-reference lookup for `R1`/`R2`; `DEAD` and the
-  natural `AHEL` (NPCs noticing corpses / passing each other) — the CK gives
-  no detection distances and no setting names them; `ARRT`/`ESJA` — no
-  arrest-by-guard or escape in the engine's Oblivion-style jail; `CRFT` — no
-  crafting; `NVPE` — no shouts; FO4's `LCLD`/`AOBJ`/`HACK`/`LOCK`/`IRON`/
-  `OAAT`/`TMEE` — the mnemonics appear in no local or reachable
-  documentation (the UESP SMEN page lists the Skyrim codes only), and the
-  policy is not to guess an event's meaning.
+  2026-10-30, quests reachable under each `SMEN` root — Skyrim: `CRFT` 10,
+  `CAST` 6, `REMP` 5, `ESJA` 2, `DEAD` 2, `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4:
+  `AOBJ` 16, `AHEL` 9, `OAAT` 4, `HACK` 3, `LOCK` 3, `TMEE` 1, `IRON` 1):
+  `REMP` needs a dropped-item reference — its quests fill `R2` with the
+  item, and the engine has no drop (consuming has no reference); `CAST` —
+  the quests are the world-interaction reactions to a spell cast at an actor
+  (`WICastMagic…`) and the CK does not say whose casts raise it, while the
+  engine only casts from scripts; `DEAD` (corpse discovery) and the natural
+  `AHEL` (NPCs passing each other) — no setting in Skyrim.esm or the CK
+  pages gives a detection distance (`fCheckDeadBodyTimer` is a Fallout
+  leftover absent from the master); `ARRT`/`ESJA` — Skyrim's guards are
+  package-driven and the engine's crime pass is the Oblivion/FNV class-flag
+  model, so a wanted-player greeting by a guard cannot occur on a game that
+  has a Story Manager; `CRFT` — no crafting; `NVPE` — no shouts. FO4's
+  events are named by their SMEN editor ids (`AOBJ`: shooting at / switching
+  workshop objects, `HACK`: `PlayerHackSuccess`, `LOCK`:
+  `PlayerLockpickSuccess` / `CA_PickLock`, `OAAT`: attach events such as
+  `REDeadActorAttach`, `TMEE`: `TriggerMineExplosionEvent`, `IRON`:
+  `IronSights`), but what their `R1`/`R2` slots hold is not documented and is
+  not guessed; `HACK`/`LOCK`/`IRON` quests read no slot at all and wait on
+  the player actions themselves.
 
 ### 6.5 Persistence
 

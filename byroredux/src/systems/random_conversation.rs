@@ -33,9 +33,11 @@
 //! scene runs for them or ends (no conversation started). When the scene is
 //! over the hold ends and the actors' packages are re-selected.
 //!
-//! Not modelled: the *complex scene* flag and the player's "important
-//! conversation" are approximated by the open dialogue surface, and the
-//! scene's Phase 0 does not wait for `fAIMinGreetingDistance`.
+//! The scene's Phase 0 "waits until the initiator reaches `fAIMinGreetingDistance`":
+//! the event is raised at the nearer of that and the trigger distance, so the
+//! scene begins once it holds. Not modelled: the *complex scene* flag and the
+//! player's "important conversation" are approximated by the open dialogue
+//! surface.
 
 use byroredux_core::ecs::components::{EatBehavior, GlobalTransform, GuardBehavior, PatrolBehavior, SandboxBehavior, Transform};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
@@ -57,7 +59,9 @@ pub(crate) const ADIA: [u8; 4] = *b"ADIA";
 const STEP_SECS: f32 = 1.0;
 
 /// The CK's defaults (*Controlling Random Conversations*), used where the load
-/// order authors no value.
+/// order authors no value. Skyrim.esm authors its own (radius 500 / 500, chance 10 % / 10 %,
+/// timers 10-30 s, trigger distance 200; none for the same-NPC timer, the wait or the greeting
+/// distance), so the values in play there are the master's, not these.
 const DEFAULT_RADIUS_EXTERIOR: f32 = 2000.0;
 const DEFAULT_RADIUS_INTERIOR: f32 = 1000.0;
 const DEFAULT_CHANCE_EXTERIOR: f32 = 25.0;
@@ -66,6 +70,7 @@ const DEFAULT_SAME_NPC_TIMER: f32 = 120.0;
 const DEFAULT_TIMER_MIN: f32 = 30.0;
 const DEFAULT_TIMER_MAX: f32 = 60.0;
 const DEFAULT_TRIGGER_DISTANCE: f32 = 120.0;
+const DEFAULT_MIN_GREETING_DISTANCE: f32 = 150.0;
 const DEFAULT_WAIT_FOR_EVENT: f32 = 0.5;
 /// A hold that has not reached its partner after this long ends (a pair that cannot path to each
 /// other) rather than holding two actors for the rest of the session.
@@ -85,7 +90,8 @@ pub(crate) struct SocialSettings {
     pub same_npc_timer: f32,
     pub timer_min: f32,
     pub timer_max: f32,
-    /// `iAISocialDistanceToTriggerEvent`: how close the initiator gets before the event is sent.
+    /// How close the initiator gets before the event is sent: `iAISocialDistanceToTriggerEvent`, or
+    /// `fAIMinGreetingDistance` when that is nearer (the scene's Phase 0 waits for it).
     pub trigger_distance: f32,
     /// `fAISocialTimerToWaitForEvent`: how long it waits for a scene to start.
     pub wait_for_event: f32,
@@ -103,7 +109,12 @@ impl SocialSettings {
             same_npc_timer: setting("fAItalktosameNPCTimer", DEFAULT_SAME_NPC_TIMER),
             timer_min,
             timer_max: setting("fAISocialTimerForConversationsMax", DEFAULT_TIMER_MAX).max(timer_min),
-            trigger_distance: setting("iAISocialDistanceToTriggerEvent", DEFAULT_TRIGGER_DISTANCE).max(1.0),
+            // The CK holds the triggered scene in Phase 0 "until the initiating actor reaches
+            // fAIMinGreetingDistance"; raising the event at the nearer of the two distances starts the
+            // scene when that holds, which is the same moment its first line begins.
+            trigger_distance: setting("iAISocialDistanceToTriggerEvent", DEFAULT_TRIGGER_DISTANCE)
+                .min(setting("fAIMinGreetingDistance", DEFAULT_MIN_GREETING_DISTANCE))
+                .max(1.0),
             wait_for_event: setting("fAISocialTimerToWaitForEvent", DEFAULT_WAIT_FOR_EVENT).max(0.0),
         }
     }
