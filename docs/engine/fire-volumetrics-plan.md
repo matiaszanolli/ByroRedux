@@ -171,10 +171,10 @@ same cost, measured against the Phase 0 baseline.
    with a placed explosion) were not captured: the baseline uses the
    game-data-free `--combustion-lab`, which is an interior room. Which cells do
    you want as the real-content scenes?
-2. The fly-through flicker review needs a frame sequence or clip. The engine
-   can only write one screenshot per run (`--screenshot`, final frame). A small
-   `--bench-capture-every N` option would fix that but is a code change, so it
-   was not made in Phase 0. Add it as the first step of Phase 2?
+2. ~~Frame-sequence capture for the flicker review.~~ **Answered:** approved.
+   `--bench-capture-every N --bench-capture-dir DIR` is implemented (documented
+   in `game-loop.md`); it was added during Phase 0 as tooling, not as Phase 2
+   work. The baseline sequences themselves are still to be captured.
 
 ## Reference list
 

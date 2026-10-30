@@ -204,10 +204,17 @@ Screenshots (final frame, run 1 of 5): [s1](fire-volumetrics-baseline/s1_close_f
 
 ## 7. Not done, and why
 
-- **No fly-through clip.** A single screenshot per run is all the engine writes;
-  video capture of an Xvfb window came out black (the swapchain is not visible
-  to `x11grab`). Temporal stability therefore has not been captured, and I have
-  not judged it. See the plan's open questions.
+- **No fly-through clip, until the frame-sequence option.** The engine used to
+  write only one screenshot per run; one attempt to record the Xvfb display with
+  `x11grab` came out black. The cause was not diagnosed: the engine had also
+  already exited before recording started, and `x11grab` only sees an X display,
+  so it cannot record a Wayland session at all. Screen-recording the engine is
+  not a reliable route either way. Matías approved `--bench-capture-every N
+  --bench-capture-dir DIR` (see `game-loop.md`), which writes the frames from
+  inside the renderer. Checked on the oil lab, 60 frames, stride 4 and stride 3:
+  every due frame landed (0 skipped) and the frames two runs share are
+  byte-identical. **No flicker review has been done yet:** the baseline
+  sequences have not been captured, and I have not judged temporal stability.
 - **No real-game scenes** (see §5).
 - **Not verified:** whether the derived fire lights visibly light smoke inside
   the froxel inject loop; the per-pass cost split inside `volumetrics_inject.comp`

@@ -18,6 +18,7 @@ mod asset_provider;
 mod barter;
 mod bench;
 mod bench_camera;
+mod bench_capture;
 mod boot;
 pub(crate) mod cell_loader;
 mod cli_args;
@@ -777,6 +778,9 @@ struct App {
     /// `bench_frames_target` to be set (otherwise there is no
     /// deterministic capture frame). See `--screenshot`.
     screenshot_path: Option<String>,
+    /// `--bench-capture-every N --bench-capture-dir DIR`: PNG of every Nth
+    /// rendered frame of a finite bench run (see `bench_capture`).
+    bench_capture: Option<crate::bench_capture::FrameSequenceCapture>,
     /// Optional override for the computed initial camera position —
     /// `--camera-pos x,y,z`. Applied during scene setup before the
     /// first frame. None = use the default auto-frame-scene placement.
@@ -1306,6 +1310,7 @@ impl App {
             bench_frame_timings: byroredux_renderer::FrameTimings::default(),
             bench_cpu_frame_ms: Vec::new(),
             screenshot_path: None,
+            bench_capture: None,
             camera_pos_override: None,
             camera_forward_override: None,
             screenshot_requested: false,

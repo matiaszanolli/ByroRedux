@@ -50,6 +50,7 @@ Selected modifier / diagnostic flags (all read from `effective_args()`):
 | `--bench-camera PATH` | Non-static frame-indexed path required by `renderer-stepped` (`pan`, `orbit`, `dolly`, `grid-cross`, `cut`) |
 | `--bench-hold` | Keep running after the bench summary so `byro-dbg` can attach |
 | `--screenshot PATH` | Capture a PNG on the bench-exit frame (requires `--bench-frames`) |
+| `--bench-capture-every N` / `--bench-capture-dir DIR` | Write `DIR/frame_NNNNN.png` for every Nth rendered frame (N ≥ 3; needs `--bench-frames`; the last 3 frames are left to `--screenshot`). Byte-identical across runs under `renderer-stepped`. A capture mode: screenshots stall their frame, so take `bench:` timings from a separate run |
 | `--render-debug-mode MODE` | Seed a named renderer correctness view before the first frame |
 | `--camera-pos x,y,z` / `--camera-forward x,y,z` | Override the auto-framed initial camera pose |
 | `--fly` / `--player` | Start in fly-camera vs kinematic-character mode (M28.5) |

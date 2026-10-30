@@ -211,6 +211,12 @@ pub(crate) fn run() -> Result<()> {
     // rendering diagnostics / visual regression baselines.
     let screenshot_path = parse_string_arg(&args, "--screenshot");
 
+    // --bench-capture-every N --bench-capture-dir DIR: a PNG every N rendered
+    // frames, for reviewing temporal behaviour a single final-frame
+    // `--screenshot` cannot show. See `bench_capture`.
+    let bench_capture = crate::bench_capture::FrameSequenceCapture::from_args(&args, bench_frames)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
     // Seed a named correctness view before the first rendered frame. This is
     // primarily useful for deterministic captures of very large scenes: a
     // categorical material view avoids entering the full RT path merely to
@@ -528,6 +534,7 @@ pub(crate) fn run() -> Result<()> {
     app.groundcover_debug_points = groundcover_debug_points;
     app.groundcover_off = groundcover_off;
     app.screenshot_path = screenshot_path;
+    app.bench_capture = bench_capture;
     app.bench_camera = bench_camera;
     app.camera_pos_override = camera_pos;
     app.camera_forward_override = camera_forward;

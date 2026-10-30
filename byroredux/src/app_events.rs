@@ -526,6 +526,75 @@ impl App {
         false
     }
 
+    /// Drive `--bench-capture-every`: collect the PNG of the capture in flight,
+    /// then request the next one when the current frame is due. Shares the
+    /// `ScreenshotBridge` (CLI owner) with the final `--screenshot`, so it never
+    /// requests inside `TAIL_GUARD_FRAMES` of the end of the run. Returns `true`
+    /// while a capture is still in flight, so the bench summary waits for it.
+    fn advance_frame_sequence_capture(&mut self) -> bool {
+        use byroredux_core::ecs::resources::SCREENSHOT_OWNER_CLI;
+        let Some(target) = self.bench_frames_target else {
+            return false;
+        };
+        let frame = self.bench_frames_count;
+        let Some(cap) = self.bench_capture.as_mut() else {
+            return false;
+        };
+        let Some(bridge) = self
+            .world
+            .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
+        else {
+            return false;
+        };
+
+        if let Some((idx, left)) = cap.pending {
+            if let Some(bytes) = bridge.take_result_for(SCREENSHOT_OWNER_CLI) {
+                let path = cap.path_for(idx);
+                match std::fs::create_dir_all(&cap.dir).and_then(|()| std::fs::write(&path, &bytes))
+                {
+                    Ok(()) => cap.written += 1,
+                    Err(e) => eprintln!("bench-capture: failed to write {}: {e}", path.display()),
+                }
+                cap.pending = None;
+            } else if left == 0 {
+                eprintln!("bench-capture: frame {idx} timed out waiting for its PNG");
+                bridge.cancel();
+                cap.skipped += 1;
+                cap.pending = None;
+            } else {
+                cap.pending = Some((idx, left - 1));
+            }
+        }
+
+        if cap.last_seen != Some(frame) {
+            cap.last_seen = Some(frame);
+            if cap.frame_due(frame, target) {
+                if cap.pending.is_none() && bridge.try_claim(SCREENSHOT_OWNER_CLI) {
+                    cap.pending =
+                        Some((frame, crate::bench_capture::CAPTURE_DEADLINE_FRAMES));
+                } else {
+                    eprintln!("bench-capture: frame {frame} skipped, bridge busy");
+                    cap.skipped += 1;
+                }
+            }
+        }
+        cap.pending.is_some()
+    }
+
+    /// One line at the end of a capture run: how many frames landed and whether
+    /// the sequence has gaps.
+    fn report_frame_sequence_capture(&self) {
+        if let Some(cap) = self.bench_capture.as_ref() {
+            println!(
+                "bench-capture: wrote {} frames to {} (every {}), {} skipped",
+                cap.written,
+                cap.dir.display(),
+                cap.every,
+                cap.skipped
+            );
+        }
+    }
+
     /// Mirror the per-frame engine and renderer telemetry into the resources the
     /// console, the debug server and the bench summary read: frame-time and
     /// handle-count stats, scratch-Vec rows, image health, skin / RT / shadow /
@@ -1553,6 +1622,7 @@ impl ApplicationHandler for App {
         // loop; MAILBOX present mode still vsyncs the actual
         // presentation but `between_frames` drops to the
         // GPU+CPU-bound minimum.
+        let capture_in_flight = self.advance_frame_sequence_capture();
         if self.window.is_some() && self.renderer.is_some() {
             self.render_one_frame(event_loop);
         }
@@ -1598,7 +1668,7 @@ impl ApplicationHandler for App {
                 } else {
                     self.bench_frames_count >= target
                 };
-                if path_complete && !self.bench_summary_printed {
+                if path_complete && !self.bench_summary_printed && !capture_in_flight {
                     self.emit_bench_summary();
 
                     if self.advance_screenshot_request() {
@@ -1620,6 +1690,7 @@ impl ApplicationHandler for App {
                     // scene. See `--bench-hold` in main() and the FNV-D5
                     // audit's coverage gap.
                     self.bench_summary_printed = true;
+                    self.report_frame_sequence_capture();
                     if !self.bench_hold {
                         event_loop.exit();
                     } else if let Some(endpoint) = self.debug_server_endpoint() {
