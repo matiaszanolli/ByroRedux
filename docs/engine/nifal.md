@@ -391,6 +391,17 @@ When any of those consumer features lands, its slice translates the parked field
 the canonical ECS concept (the data is already captured, so no parser/import change is
 needed then). Until then this table is the record that the gap is known and bounded.
 
+One **canonical-tier** field is parked the same way: `Material::source_shader_type`
+(#4256, saved column, `FORMAT_MAJOR` 113). It is **reserved with no reader** (#6138):
+every consumer that needs the authored `BSLightingShaderType` today (the REFR overlay's
+`TextureSlotContext`, `select_facegen_diffuse`, the FO3/FNV hair branch) runs on the
+imported tier *before* `translate_material`, so it reads
+`ImportedMaterial.shader_type`; downstream of the boundary only the shader reads
+`material_kind`. The first planned reader is a post-boundary consumer of the authored
+type that the glass reassignment of `material_kind` would otherwise hide (NIFAL-SD-03).
+If none lands, fold the field at the next `FORMAT_MAJOR` bump rather than carry a
+dead 4 B per row.
+
 ### Particles — **emitter base params converged (2026-05-28)**
 
 The scene builder still seeds a **name-heuristic preset** (torch_flame / smoke /

@@ -237,6 +237,12 @@ pub struct Material {
     /// raw `ImportedMaterial` tier. `0` (Default) for materials with no
     /// dedicated `BSLightingShaderProperty`. Set only at the single
     /// `translate_material` boundary; never re-derived or mutated afterwards.
+    ///
+    /// **Reserved, no reader yet** (#6138): the consumers that need the
+    /// authored type today run on the imported tier before this component
+    /// exists and read `ImportedMaterial.shader_type`. Recorded as
+    /// parked-not-leak in `docs/engine/nifal.md`; foldable at the next
+    /// `FORMAT_MAJOR` bump if no reader lands.
     pub source_shader_type: u32,
     /// `NiWireframeProperty` flag (flags=1 enables wireframe rendering).
     /// When true the renderer routes the batch through the
