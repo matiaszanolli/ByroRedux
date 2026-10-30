@@ -64,15 +64,51 @@ fn fnv_dialogue_declined_by_unmodeled_conditions() {
     // (427) and GetScriptVariable (53). #5750 catalogued GetIsVoiceType (FO3/FNV
     // 427, Skyrim/FO4 426), which took 2,673 of those with it: what is left is
     // GetScriptVariable (53) and the like.
-    assert_eq!(declined_infos, 989, "declined FNV INFOs moved");
-    // Declined by GetIsVoiceType (16 of the 20 — #5750 catalogued it), IsChild
-    // (365, foreign on FNV), GetTalkedToPC (50) and IsInList (372).
-    assert_eq!(declined_quests, 4, "declined FNV quest dialogue gates moved");
+    //
+    // #6460 then catalogued the ten script getters still missing (IsChild 365,
+    // GetTalkedToPC 50, GetHasNote 382, IsInList 372, GetLocked 5, GetCurrentTime 18,
+    // GetInSameCell 32, GetBaseActorValue 277, GetDestructionStage 471,
+    // GetMapMarkerVisible 492), bridged to the VM's own bodies: 989 -> 650.
+    assert_eq!(declined_infos, 650, "declined FNV INFOs moved");
+    // Four quests were declined whole by IsChild (GenericAdultCombat, GenericKids),
+    // IsInList (Followers) and GetTalkedToPC (DialogueCrimeKarma) until #6460.
+    assert_eq!(declined_quests, 0, "declined FNV quest dialogue gates moved");
     // Objective targets (`QSTA`): 284 of the 772 conditioned ones were declined,
     // 198 only by catalogued-since getters (GetDisabled ×94 among them). What
-    // is left is PlayerInRegion (612), GetInCellParam (230) and the like.
+    // is left is PlayerInRegion (612), GetInCellParam (230) and the like (#6460 took
+    // GetDestructionStage 471 and GetMapMarkerVisible 492: 86 -> 70).
     assert_eq!(targets.len(), 772, "conditioned FNV objective targets moved");
-    assert_eq!(declined_targets, 86, "declined FNV objective targets moved");
+    assert_eq!(declined_targets, 70, "declined FNV objective targets moved");
+}
+
+fn fo3_index() -> Option<EsmIndex> {
+    let dir = std::env::var(test_paths::FO3_ENV).unwrap_or_else(|_| test_paths::FO3_DEFAULT.into());
+    let bytes = std::fs::read(PathBuf::from(dir).join("Fallout3.esm")).ok()?;
+    byroredux_plugin::esm::parse_esm(&bytes).ok()
+}
+
+/// #6460 — the FO3 leg: before the script getters were catalogued, `IsInList` (372) and
+/// `GetTalkedToPC` (50) alone declined 21 FO3 quests whole — 5,377 of 22,327 INFOs (24 %). Now no quest
+/// is declined whole and 1,777 INFOs (8 %) are, by the functions still uncatalogued.
+#[test]
+#[ignore = "needs Fallout3.esm on disk"]
+fn fo3_dialogue_declined_by_unmodeled_conditions() {
+    let Some(index) = fo3_index() else {
+        common::require_or_skip("Fallout3.esm", &"fo3_index()");
+        eprintln!("SKIP: Fallout3.esm not found");
+        return;
+    };
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+    world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Fallout3NV));
+    byroredux_scripting::install_actor_value_names(&mut world, &index);
+    let declines = |conditions: &[Condition]| conditions.iter().any(|c| !is_modeled(&world, c));
+    let infos: Vec<_> = index.dialogues.values().flat_map(|dial| dial.infos.iter()).collect();
+    let declined_infos = infos.iter().filter(|info| declines(&info.conditions)).count();
+    let declined_quests = index.quests.values().filter(|quest| declines(&quest.dialogue_conditions)).count();
+    eprintln!("FO3 declined INFOs {declined_infos} of {}, quests {declined_quests}", infos.len());
+    assert_eq!(declined_infos, 1777, "declined FO3 INFOs moved");
+    assert_eq!(declined_quests, 0, "declined FO3 quest dialogue gates moved");
 }
 
 fn skyrim_index() -> Option<EsmIndex> {

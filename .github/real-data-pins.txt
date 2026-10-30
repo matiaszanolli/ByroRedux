@@ -8,7 +8,7 @@
 # (`every_real_data_pin_names_an_ignored_test_in_its_lane`) checks on every
 # hosted run that each title is a real `#[ignore]`d `fn` in its lane's sources.
 #
-# New closed-HIGH pins append here. Lanes: plugin-lib, plugin-esm, scripting-lib, bin, nif-corpus.
+# New closed-HIGH pins append here. Lanes: plugin-lib, plugin-esm, scripting-lib, scripting-catalog, bin, nif-corpus.
 # Run them with `scripts/run-real-data-pins.sh [filter]` (#5799, #6182, #6183).
 
 # plugin lib (records / actor / cell integration)
@@ -55,6 +55,9 @@ plugin-esm fo3_corpses_key_on_base_health_not_xrgd
 # #6354 - #5629 (references resolve against the SCRO-only list) and #5989 (GetActorValue enum code read as a FormID)
 scripting-lib fnv_patch04_quest_script_targets_its_own_scro_quests
 scripting-lib authored_actor_value_indices_resolve_in_the_vanilla_masters
+# #6460 - the script getters catalogued as CTDA functions: FNV / FO3 declined-dialogue counts
+scripting-catalog fnv_dialogue_declined_by_unmodeled_conditions
+scripting-catalog fo3_dialogue_declined_by_unmodeled_conditions
 # byroredux bin (inventory / asset provider / npc spawn / cell loader)
 bin starfield_cydonia_pack_ins_instance_their_template_cells
 bin fo3_fnv_script_killed_corpses_match_the_measured_census

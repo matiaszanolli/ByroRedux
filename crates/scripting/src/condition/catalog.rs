@@ -256,8 +256,8 @@ pub enum ConditionFunction {
     /// `GetPlayerInSEWorld → f32` (#5778, Oblivion): 1.0 while the engine's
     /// Shivering Isles flag is set (CS *SetPlayerInSEWorld*; CS wiki: "used
     /// extensively by Oblivion.esm to activate/deactivate quests (and thus
-    /// standard dialog)"). Reads no Run-On. Index **365** on Oblivion only —
-    /// every later game authors 365 as `IsChild` ([`FOREIGN_INDICES`]).
+    /// standard dialog)"). Reads no Run-On. Index **365** on Oblivion only, through
+    /// [`OBLIVION_DIALECT`] — every later game authors 365 as `IsChild` (#6460).
     GetPlayerInSEWorld,
     /// `GetIsSex(sex) → f32` (#5778): 1.0 when the Run-On actor's base is
     /// female and `param_1` is 1, or male and `param_1` is 0
@@ -331,6 +331,39 @@ pub enum ConditionFunction {
     /// FO3 / FNV index **546** (Skyrim / FO4 moved it to 543, not catalogued
     /// here).
     GetQuestCompleted,
+    /// `IsChild → f32` (#6460): 1.0 when the Run-On actor's race carries the RACE Child flag.
+    /// Index **365** on FO3 / FNV (Oblivion authors 365 as `GetPlayerInSEWorld`, see
+    /// [`OBLIVION_DIALECT`]). Answered by the ObScript getter of the same index, so the dialogue
+    /// gate and a script read one implementation.
+    IsChild,
+    /// `GetTalkedToPC → f32` (#6460): 1.0 when the Run-On actor has ever spoken to the player.
+    /// FO3 / FNV index **50**; the ObScript getter's body.
+    GetTalkedToPC,
+    /// `GetHasNote(note) → f32` (#6460): 1.0 when the player has the Pip-Boy note `param_1`. FO3 /
+    /// FNV index **382**; the ObScript getter's body. Reads no Run-On.
+    GetHasNote,
+    /// `IsInList(form_list) → f32` (#6460): 1.0 when the Run-On actor's base is in `param_1`. FO3 /
+    /// FNV index **372**; the ObScript getter's body.
+    IsInList,
+    /// `GetLocked → f32` (#6460): 1.0 while the Run-On reference is locked. FO3 / FNV index **5**;
+    /// the ObScript getter's body.
+    GetLocked,
+    /// `GetCurrentTime → f32` (#6460): the game clock's hour (4:30 am = 4.5). FO3 / FNV index
+    /// **18**; the ObScript getter's body. Reads no Run-On.
+    GetCurrentTime,
+    /// `GetInSameCell(reference) → f32` (#6460): 1.0 when the Run-On reference and `param_1` are in
+    /// the same cell. FO3 / FNV index **32**; the ObScript getter's body.
+    GetInSameCell,
+    /// `GetBaseActorValue(actor_value) → f32` (#6460): the Run-On actor's base (undamaged,
+    /// unmodified) value of the actor value `param_1` names, by the GECK enum code. FO3 / FNV index
+    /// **277**; the ObScript getter's body.
+    GetBaseActorValue,
+    /// `GetDestructionStage → f32` (#6460): the Run-On object's destruction stage. FO3 / FNV index
+    /// **471**; the ObScript getter's body.
+    GetDestructionStage,
+    /// `GetMapMarkerVisible → f32` (#6460): 0 undiscovered, 1 visible, 2 visible and travelable.
+    /// FO3 / FNV index **492**; the ObScript getter's body.
+    GetMapMarkerVisible,
     /// Oblivion's `GetCrimeGold` (CTDA **116**; FO3 / FNV author 116 as
     /// `GetMinorCrimeCount`, Skyrim as `IsIntimidatedbyPlayer`, so it answers
     /// only through [`OBLIVION_DIALECT`]). The Run-On actor's bounty: the
@@ -481,7 +514,7 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::HasKeyword, indices: &[560], name: "HasKeyword", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetIsGhost, indices: &[237], name: "GetIsGhost", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetIsPlayableRace, indices: &[254], name: "GetIsPlayableRace", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
-    Row { func: ConditionFunction::GetPlayerInSEWorld, indices: &[365], name: "GetPlayerInSEWorld", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetPlayerInSEWorld, indices: &[], name: "GetPlayerInSEWorld", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
     // #5750 — 426 Skyrim / FO4, 427 FO3 / FNV: the game-variant pair shape
     // `HasPerk` already has (both map to the same behaviour; each is foreign
     // in the other family, see `FOREIGN_INDICES`).
@@ -503,6 +536,19 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::GetObjectiveDisplayed, indices: &[421], name: "GetObjectiveDisplayed", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetHealthPercentage, indices: &[431], name: "GetHealthPercentage", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetQuestCompleted, indices: &[546], name: "GetQuestCompleted", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    // #6460 — the FO3 / FNV getters the ObScript VM already answers (command id `0x1000 +` the
+    // index), bridged to the VM's own bodies in the evaluator (`vm_getter_command`). 365 is the
+    // game-variant pair: IsChild here, `GetPlayerInSEWorld` in `OBLIVION_DIALECT`.
+    Row { func: ConditionFunction::IsChild, indices: &[365], name: "IsChild", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetTalkedToPC, indices: &[50], name: "GetTalkedToPC", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetHasNote, indices: &[382], name: "GetHasNote", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::IsInList, indices: &[372], name: "IsInList", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetLocked, indices: &[5], name: "GetLocked", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetCurrentTime, indices: &[18], name: "GetCurrentTime", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetInSameCell, indices: &[32], name: "GetInSameCell", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetBaseActorValue, indices: &[277], name: "GetBaseActorValue", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetDestructionStage, indices: &[471], name: "GetDestructionStage", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetMapMarkerVisible, indices: &[492], name: "GetMapMarkerVisible", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     // The Oblivion dialect: these answer to no index of their own (the same
     // numbers are other functions in FO3 / FNV / Skyrim); `OBLIVION_DIALECT`
     // maps the Oblivion index to them. Indices and names from xEdit
@@ -539,6 +585,8 @@ const OBLIVION_DIALECT: &[(u32, ConditionFunction)] = &[
     (329, ConditionFunction::IsTurnArrest),
     (193, ConditionFunction::GetPCExpelled),
     (171, ConditionFunction::IsPlayerInJail),
+    // 365 is `IsChild` everywhere else (#6460); Oblivion's is the Shivering Isles flag.
+    (365, ConditionFunction::GetPlayerInSEWorld),
 ];
 
 /// CTDA function indices that are a *different* function in some games than
@@ -554,7 +602,6 @@ const OBLIVION_DIALECT: &[(u32, ConditionFunction)] = &[
 /// | 550 | `IsSceneActionComplete` (Skyrim/FO4) | FO3/FNV: `IsGoreDisabled` |
 /// | 555 | `HasLoaded3D` (Skyrim/FO4) | FO3/FNV: `GetSpellUsageNum` |
 /// | 630 | `GetVMScriptVariable` (Skyrim) | FO4: `GetCombatAudioDetection` |
-/// | 365 | `GetPlayerInSEWorld` (Oblivion) | FO3/FNV, Skyrim, FO4, FO76, Starfield: `IsChild` |
 /// | 131 | `GetPCIsSex` (Oblivion, FO3/FNV, Skyrim) | FO4, FO76, Starfield: `GetSceneActionPercent` |
 /// | 426 | `GetIsVoiceType` (Skyrim/FO4) | FO3/FNV: a different function (theirs is 427) |
 /// | 427 | `GetIsVoiceType` (FO3/FNV) | Skyrim, FO4: a different function (theirs is 426) |
@@ -562,7 +609,7 @@ const OBLIVION_DIALECT: &[(u32, ConditionFunction)] = &[
 ///
 /// Index 79 (`GetQuestVariable`) is the opposite shape — valid only on the
 /// pre-Papyrus games — and keeps its own check in the evaluator. A game not
-/// named in a row is left as it was: for every row but 365, 131 and 431 no
+/// named in a row is left as it was: for every row but 131 and 431 no
 /// FO76 or Starfield definition has been read, so nothing claims the index is
 /// foreign there.
 const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
@@ -581,16 +628,6 @@ const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
     (630, &[GameKind::Fallout4]),
     (131, &[GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield]),
     (431, &[GameKind::Starfield]),
-    (
-        365,
-        &[
-            GameKind::Fallout3NV,
-            GameKind::Skyrim,
-            GameKind::Fallout4,
-            GameKind::Fallout76,
-            GameKind::Starfield,
-        ],
-    ),
 ];
 
 /// Whether CTDA function `index` is a different function in `game` than the
@@ -652,7 +689,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 77] = [
+    pub const CATALOG: [ConditionFunction; 87] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -717,6 +754,16 @@ impl ConditionFunction {
         Self::GetObjectiveDisplayed,
         Self::GetHealthPercentage,
         Self::GetQuestCompleted,
+        Self::IsChild,
+        Self::GetTalkedToPC,
+        Self::GetHasNote,
+        Self::IsInList,
+        Self::GetLocked,
+        Self::GetCurrentTime,
+        Self::GetInSameCell,
+        Self::GetBaseActorValue,
+        Self::GetDestructionStage,
+        Self::GetMapMarkerVisible,
         Self::GetCrimeGold,
         Self::CanPayCrimeGold,
         Self::GetPCFame,
@@ -751,6 +798,27 @@ impl ConditionFunction {
     /// then fails until the plugin table agrees (#5637).
     pub fn first_param_is_form_id(self) -> bool {
         !matches!(self, Self::Unknown(_)) && self.row().first_param_form_id
+    }
+
+    /// The ObScript command id (`0x1000 +` the CTDA index) of the script getter whose body answers
+    /// this function, for the ones the evaluator bridges to the VM instead of re-implementing
+    /// (#6460: one implementation shared by the dialogue gates and the scripts). `None` for every
+    /// other function.
+    pub(crate) fn vm_getter_command(self) -> Option<u16> {
+        matches!(
+            self,
+            Self::IsChild
+                | Self::GetTalkedToPC
+                | Self::GetHasNote
+                | Self::IsInList
+                | Self::GetLocked
+                | Self::GetCurrentTime
+                | Self::GetInSameCell
+                | Self::GetBaseActorValue
+                | Self::GetDestructionStage
+                | Self::GetMapMarkerVisible
+        )
+        .then(|| 0x1000 + self.row().indices[0] as u16)
     }
 
     /// The canonical xEdit function name (for console listing / parsing).
@@ -938,6 +1006,16 @@ mod tests {
                 ConditionFunction::GetObjectiveDisplayed |
                 ConditionFunction::GetHealthPercentage |
                 ConditionFunction::GetQuestCompleted |
+                ConditionFunction::IsChild |
+                ConditionFunction::GetTalkedToPC |
+                ConditionFunction::GetHasNote |
+                ConditionFunction::IsInList |
+                ConditionFunction::GetLocked |
+                ConditionFunction::GetCurrentTime |
+                ConditionFunction::GetInSameCell |
+                ConditionFunction::GetBaseActorValue |
+                ConditionFunction::GetDestructionStage |
+                ConditionFunction::GetMapMarkerVisible |
                 ConditionFunction::GetCrimeGold |
                 ConditionFunction::CanPayCrimeGold |
                 ConditionFunction::GetPCFame |
@@ -1017,6 +1095,11 @@ mod tests {
         // index, and every dialect function has a row.
         for &(index, function) in OBLIVION_DIALECT {
             assert_eq!(ConditionFunction::from_index_in(Some(GameKind::Oblivion), index), function);
+            // 365 is the one dialect index a row shares: `IsChild` (#6460) everywhere but Oblivion.
+            if index == 365 {
+                assert_eq!(ConditionFunction::from_index_in(Some(GameKind::Fallout3NV), index), ConditionFunction::IsChild);
+                continue;
+            }
             for other in [None, Some(GameKind::Fallout3NV), Some(GameKind::Skyrim)] {
                 assert_eq!(ConditionFunction::from_index_in(other, index), ConditionFunction::Unknown(index));
             }

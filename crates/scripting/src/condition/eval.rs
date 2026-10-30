@@ -99,6 +99,10 @@ pub fn is_modeled(world: &World, condition: &Condition) -> bool {
     match function_of(world, condition.function_index) {
         ConditionFunction::Unknown(_) => false,
         ConditionFunction::GetQuestVariable => uses_obscript_quest_variables(world),
+        // #6460 — the ObScript getters the catalog bridges to: modeled where the VM has the row.
+        function if function.vm_getter_command().is_some() => {
+            function.vm_getter_command().is_some_and(|cmd| crate::obscript_cmd::getter_answers_conditions(world, cmd))
+        }
         // An authored enum index is readable once it translates to a loaded
         // AVIF (#5989); one that cannot (Oblivion has no AVIFs, an index the
         // record set lacks) is declined by the fail-closed gates.
@@ -613,6 +617,20 @@ pub fn evaluate_function(
         ConditionFunction::GetKeywordDataForLocation => {
             crate::location_keyword_data(world, condition.param_1, condition.param_2)
         }
+        // #6460 — the ObScript getter of the same index, its one body: the Run-On's reference and
+        // entity are the call's subject, `param_1` its argument (a FormID, or the actor-value code).
+        ConditionFunction::IsChild
+        | ConditionFunction::GetTalkedToPC
+        | ConditionFunction::GetHasNote
+        | ConditionFunction::IsInList
+        | ConditionFunction::GetLocked
+        | ConditionFunction::GetCurrentTime
+        | ConditionFunction::GetInSameCell
+        | ConditionFunction::GetBaseActorValue
+        | ConditionFunction::GetDestructionStage
+        | ConditionFunction::GetMapMarkerVisible => {
+            vm_getter_value(function, condition, entity, world)
+        }
         // #6251 — the state the ObScript getters of the same index read.
         ConditionFunction::GetDisabled => truth(
             entity_global_form_id(world, entity)
@@ -756,4 +774,23 @@ pub(crate) fn or_blocks(
         i += 1; // step past the block for next iteration
         Some(block_start..=block_end_inclusive)
     })
+}
+
+/// #6460 — a bridged function's value from the ObScript getter that implements it. A getter that
+/// declines (no Run-On reference, state it cannot read) reads 0.0, the evaluator's "no data" value.
+fn vm_getter_value(function: ConditionFunction, condition: &Condition, entity: EntityId, world: &World) -> f32 {
+    use crate::obscript_vm::ObScriptValue;
+    let Some(cmd) = function.vm_getter_command() else {
+        return 0.0;
+    };
+    let args = match function {
+        ConditionFunction::GetBaseActorValue => vec![ObScriptValue::Num(condition.param_1 as f32)],
+        f if f.first_param_is_form_id() => vec![ObScriptValue::Ref(condition.param_1)],
+        _ => Vec::new(),
+    };
+    let subject = function
+        .reads_run_on_entity()
+        .then(|| entity_global_form_id(world, entity).map(|form| (form, entity)))
+        .flatten();
+    crate::obscript_cmd::run_getter_for_condition(world, cmd, &args, subject).unwrap_or(0.0)
 }

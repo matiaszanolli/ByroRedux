@@ -150,6 +150,33 @@ fn run_row(row: &Command, world: &World, game: Game, args: &[ObScriptValue], con
     (row.handler)(world, game == Game::Fallout, row.id, args, context)
 }
 
+/// Whether the script getter `cmd` can answer a CTDA condition in `world` (#6460): the loaded game is
+/// Fallout 3 / New Vegas — the games these getters' ids were aligned with the CTDA indices of — and
+/// the table has a row for it there.
+pub(crate) fn getter_answers_conditions(world: &World, cmd: u16) -> bool {
+    Game::of(world) == Game::Fallout && find(cmd, Game::Fallout).is_some()
+}
+
+/// The number the script getter `cmd` answers for a CTDA condition (#6460): the dialogue and
+/// objective gates read these functions through the one body the scripts do. `subject` is the Run-On
+/// reference (its FormID and entity). `None` when the getter declines — no subject it needs, or
+/// state it cannot read — or does not answer a number.
+pub(crate) fn run_getter_for_condition(
+    world: &World,
+    cmd: u16,
+    args: &[ObScriptValue],
+    subject: Option<(u32, byroredux_core::ecs::storage::EntityId)>,
+) -> Option<f32> {
+    if !getter_answers_conditions(world, cmd) {
+        return None;
+    }
+    let context = Context { caller: subject.map(|(form, _)| form), known: subject, ..Context::default() };
+    match run_row(find(cmd, Game::Fallout)?, world, Game::Fallout, args, &context) {
+        Action::Done { value: Some(ObScriptValue::Num(number)), .. } => Some(number),
+        _ => None,
+    }
+}
+
 /// Run `cmd` if the table owns it; `Unhandled` otherwise, so the host keeps looking.
 pub(crate) fn run(world: &World, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
     let game = Game::of(world);

@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **77 functions** at their canonical CTDA
+//! lineage. This catalog ships **87 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -78,7 +78,7 @@
 //! | 560   | HasKeyword             | `keywords`                  |
 //! | 237   | GetIsGhost             | `ActorControlState`         |
 //! | 254   | GetIsPlayableRace      | `PlayableRaces` (RACE flag) |
-//! | 365   | GetPlayerInSEWorld     | ObScript ledger (Oblivion)  |
+//! | 365   | GetPlayerInSEWorld     | ObScript ledger (Oblivion dialect) |
 //! | 70    | GetIsSex               | `ActorBaseTraits` (ACBS)    |
 //! | 426 / 427 | GetIsVoiceType     | `ActorBaseTraits` (VTCK) + `FormLists` |
 //! | 700   | IsCommandedActor       | none (no summon mechanic)   |
@@ -93,6 +93,16 @@
 //! | 421   | GetObjectiveDisplayed  | `QuestObjectiveState` (FNV) |
 //! | 431   | GetHealthPercentage    | `ActorValues` Health (FO3/FNV) |
 //! | 546   | GetQuestCompleted      | `QuestStageState` (FO3/FNV) |
+//! | 365   | IsChild                | the ObScript getter (FO3/FNV; Oblivion's 365 is below) |
+//! | 50    | GetTalkedToPC          | the ObScript getter (FO3/FNV) |
+//! | 382   | GetHasNote             | the ObScript getter (FO3/FNV) |
+//! | 372   | IsInList               | the ObScript getter (FO3/FNV) |
+//! | 5     | GetLocked              | the ObScript getter (FO3/FNV) |
+//! | 18    | GetCurrentTime         | the ObScript getter (FO3/FNV) |
+//! | 32    | GetInSameCell          | the ObScript getter (FO3/FNV) |
+//! | 277   | GetBaseActorValue      | the ObScript getter (FO3/FNV) |
+//! | 471   | GetDestructionStage    | the ObScript getter (FO3/FNV) |
+//! | 492   | GetMapMarkerVisible    | the ObScript getter (FO3/FNV) |
 //! | 116   | GetCrimeGold           | `ObScriptLedger` bounty (Oblivion dialect) |
 //! | 125   | IsGuard                | `GuardClasses`, the `CLAS` Guard flag (Oblivion / FO3 / FNV) |
 //! | 122   | GetCrime               | `CrimeKnowledge` (every game) |

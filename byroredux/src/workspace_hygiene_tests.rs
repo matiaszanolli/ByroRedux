@@ -1366,9 +1366,11 @@ fn real_data_pin_lane_sources(root: &std::path::Path, lane: &str) -> Option<Vec<
         "plugin-lib" => add_dir("crates/plugin/src"),
         "scripting-lib" => add_dir("crates/scripting/src"),
         "bin" => add_dir("byroredux/src"),
-        "plugin-esm" | "nif-corpus" => {
+        "plugin-esm" | "nif-corpus" | "scripting-catalog" => {
             let files: &[&str] = if lane == "plugin-esm" {
                 &["crates/plugin/tests/parse_real_esm.rs"]
+            } else if lane == "scripting-catalog" {
+                &["crates/scripting/tests/condition_catalog_real_data.rs"]
             } else {
                 &[
                     "crates/nif/tests/normal_synthesis_corpus.rs",

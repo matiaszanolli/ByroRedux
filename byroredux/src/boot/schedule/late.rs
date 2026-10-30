@@ -547,7 +547,7 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive_with_access(
         Stage::Late,
         crate::systems::npc_dialogue::make_npc_dialogue_selection_system(),
-        Access::new()
+        bridged_script_getter_reads(Access::new())
             .reads::<byroredux_scripting::ActivateEvent>()
             .reads::<byroredux_scripting::SceneAliasCandidate>()
             .reads::<byroredux_core::ecs::components::Dead>()
@@ -864,4 +864,22 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
     // batches (OnAdd / OnDrop / OnEquip / OnUnequip) before the cleanup drains them.
     scheduler.add_exclusive(Stage::Late, byroredux_scripting::obscript_objects::obscript_item_system);
     scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);
+}
+
+/// #6460 — what the CTDA functions bridged to the ObScript getters (`IsChild`, `GetTalkedToPC`,
+/// `GetHasNote`, `IsInList`, `GetLocked`, `GetCurrentTime`, `GetInSameCell`, `GetBaseActorValue`,
+/// `GetDestructionStage`, `GetMapMarkerVisible`) read: the same state those getters do. Declared on
+/// `npc_dialogue_selection`, which evaluates the INFO conditions. A helper rather than more lines of
+/// `register_late_systems`, which is size-pinned (#6359).
+fn bridged_script_getter_reads(access: Access) -> Access {
+    access
+        .reads::<byroredux_core::ecs::components::Locked>()
+        .reads_resource::<byroredux_scripting::obscript_more::ChildRaces>()
+        .reads_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()
+        .reads_resource::<byroredux_scripting::obscript_state::PipBoyNotes>()
+        .reads_resource::<byroredux_scripting::FormLists>()
+        .reads_resource::<byroredux_scripting::FormListAdditions>()
+        .reads_resource::<byroredux_scripting::fragment::ScriptUpdates>()
+        .reads_resource::<byroredux_scripting::map_markers::MapMarkers>()
+        .reads_resource::<byroredux_scripting::map_markers::AuthoredMapMarkers>()
 }

@@ -143,10 +143,6 @@ fn colliding_indices_are_unmodeled_on_the_games_that_reuse_them() {
         (550, Fallout3NV, Skyrim),
         (555, Fallout3NV, Fallout4),
         (630, Fallout4, Skyrim),
-        // #5778 — 365 is Oblivion's GetPlayerInSEWorld, IsChild everywhere else.
-        (365, Fallout3NV, Oblivion),
-        (365, Skyrim, Oblivion),
-        (365, Starfield, Oblivion),
     ];
     let mut world = World::new();
     crate::register(&mut world);
@@ -2443,6 +2439,10 @@ fn a_citizen_is_not_a_guard_and_is_turn_arrest_needs_a_guard_and_a_bounty() {
 fn the_crime_dialect_indices_are_oblivions_alone() {
     use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Oblivion, Skyrim};
     for &(index, _) in ConditionFunction::oblivion_dialect() {
+        // 365 is Oblivion's GetPlayerInSEWorld and `IsChild` on FO3 / FNV (#6460): modeled on both.
+        if index == 365 {
+            continue;
+        }
         let condition = cond(index, ComparisonOp::Eq, 1.0, false);
         let (oblivion, ..) = guard_and_player(Oblivion);
         assert!(is_modeled(&oblivion, &condition), "{index} on Oblivion");
@@ -2602,4 +2602,39 @@ mod global_form_id_index {
         let _duplicate = place(&mut world, PLACED);
         assert_eq!(resolve_entity_by_global_form_id(&world, PLACED), Some(first));
     }
+}
+
+/// #6460 — FO3 / FNV CTDA functions the ObScript VM already answers read the VM's own getter body:
+/// modeled on FO3 / FNV only (the games their command ids were aligned with the CTDA indices of),
+/// declined by the fail-closed gates on every other game.
+#[test]
+fn script_getter_functions_are_modeled_on_fallout_only_and_read_the_vms_body() {
+    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Oblivion, Skyrim};
+    // IsChild, GetTalkedToPC, GetHasNote, IsInList, GetLocked, GetCurrentTime, GetInSameCell,
+    // GetBaseActorValue, GetDestructionStage, GetMapMarkerVisible.
+    let indices = [365, 50, 382, 372, 5, 18, 32, 277, 471, 492];
+    for index in indices {
+        let condition = cond(index, ComparisonOp::Eq, 1.0, false);
+        for game in [Fallout3NV, Oblivion, Skyrim, Fallout4] {
+            let mut world = World::new();
+            crate::register(&mut world);
+            world.insert_resource(crate::ScriptGame(game));
+            // 365 on Oblivion is the dialect's GetPlayerInSEWorld, modeled in its own right.
+            let expected = game == Fallout3NV || (index == 365 && game == Oblivion);
+            assert_eq!(is_modeled(&world, &condition), expected, "{index} on {game:?}");
+        }
+    }
+
+    // GetCurrentTime (18) reads the hour of the game clock, exactly as the script getter does: day 1,
+    // 06:30 is 6.5 whatever the subject.
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(Fallout3NV));
+    crate::script_update_system(&world, 0.0, Some(30.5));
+    let subject = world.spawn();
+    assert!(evaluate_condition(&cond(18, ComparisonOp::Eq, 6.5, false), &world, &ctx(subject)));
+    assert!(!evaluate_condition(&cond(18, ComparisonOp::Eq, 12.0, false), &world, &ctx(subject)));
+    // Oblivion's 365 is the Shivering Isles flag, a different function from FO3 / FNV's IsChild.
+    assert_eq!(ConditionFunction::from_index_in(Some(Oblivion), 365), ConditionFunction::GetPlayerInSEWorld);
+    assert_eq!(ConditionFunction::from_index_in(Some(Fallout3NV), 365), ConditionFunction::IsChild);
 }
