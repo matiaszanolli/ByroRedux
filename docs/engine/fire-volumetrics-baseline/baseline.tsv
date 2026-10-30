@@ -77,3 +77,16 @@ s4_orbit_oil_lab	volumetrics	0.639	0.449	0.761	5
 s4_orbit_oil_lab	volumetrics_inject	0.601	0.422	0.720	5
 s4_orbit_oil_lab	volumetrics_integrate	0.034	0.024	0.039	5
 s4_orbit_oil_lab	#meta	sim_time_s=15.033276	camera_pos=177.913,140.000,353.629	froxel=160x90x64	transport_armed=1 state_hash=['859d387e602679e1', '859d387e602679e1', '859d387e602679e1', '859d387e602679e1', '859d387e602679e1']
+s5_skyrim_mare_hearth	main_render	10.741	10.323	11.141	5
+s5_skyrim_mare_hearth	svgf	1.368	1.065	2.277	5
+s5_skyrim_mare_hearth	shadow_filter	0.800	0.534	1.707	5
+s5_skyrim_mare_hearth	sky_cube	0.220	0.215	0.252	5
+s5_skyrim_mare_hearth	cluster_cull	0.193	0.184	0.233	5
+s5_skyrim_mare_hearth	composite	0.074	0.071	0.077	5
+s5_skyrim_mare_hearth	bloom	0.039	0.039	0.040	5
+s5_skyrim_mare_hearth	taa	0.067	0.066	0.067	5
+s5_skyrim_mare_hearth	presentation	0.014	0.014	0.014	5
+s5_skyrim_mare_hearth	volumetrics	0.646	0.641	0.655	5
+s5_skyrim_mare_hearth	volumetrics_inject	0.620	0.614	0.625	5
+s5_skyrim_mare_hearth	volumetrics_integrate	0.024	0.022	0.027	5
+s5_skyrim_mare_hearth	#meta	sim_time_s=4.033330	camera_pos=-121.000,140.000,520.000	froxel=160x90x64	transport_armed=1 state_hash=['f07aa8b31baa7d65', 'f07aa8b31baa7d65', 'f07aa8b31baa7d65', 'f07aa8b31baa7d65', 'f07aa8b31baa7d65']

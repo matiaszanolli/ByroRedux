@@ -143,7 +143,8 @@ game-data-free `--combustion-lab` (a 6×4×8 m Cornell room with a persistent
 cells. It is deterministic and runs anywhere. It is an *interior* room, so the
 requested "exterior with oil fire and nuclear explosion fog profiles" is
 represented by the oil and nuclear profiles in the lab, not by an exterior cell.
-Real-content scenes are an open question (plan, "Open questions").
+One real-content scene, `s5`, was added afterwards (below); the rest of the
+real-content question is still open.
 
 | Scene | Run | What it shows |
 |---|---|---|
@@ -151,6 +152,7 @@ Real-content scenes are an open question (plan, "Open questions").
 | `s2a_oil_blast_2s` / `s2b_oil_plume_7s` | lab, default camera, 600 / 900 frames (t = 10 / 15 s) | Oil explosion 2 s and 7 s after the blast |
 | `s3a_nuclear_blast_2s` / `s3b_nuclear_cloud_7s` | `--combustion-lab-nuclear`, same frames | Nuclear profile |
 | `s4_orbit_oil_lab` | lab, `--bench-camera orbit`, 900 frames | Moving camera through the plume (final frame only) |
+| `s5_skyrim_mare_hearth` | Skyrim SE `WhiterunBanneredMare`, camera pinned 1.6 m above and in front of the hearth (`--camera-pos -121,140,520 --camera-forward 0,-0.51,-0.86`), 240 frames (t = 4 s) | Real flame emitter close up. Skipped by `capture.sh` when the game is not installed |
 
 Method: `renderer-stepped` (fixed dt = 1/60, frame-indexed camera), 1280×720,
 TAA, headless under Xvfb, release build at `e7f949ec1`, RTX 4070 Ti, driver
@@ -168,7 +170,9 @@ Reproduce: `docs/engine/fire-volumetrics-baseline/capture.sh OUT_DIR [REPS] [PRE
 
 Milliseconds, median of 5 runs with (min–max). Each run contributes ONE frame's
 timestamp reading (the last frame); there are no per-run averages. Before
-numbers for every later phase come from this table, commit `e7f949ec1`.
+numbers for every later phase come from this table. Rows s1–s4 were measured at
+`e7f949ec1`; row s5 at `f7194719f` (only the capture option differs between the
+two, no renderer code).
 
 | scene | sim t | inject | integrate | composite | main_render | svgf |
 |---|---|---|---|---|---|---|
@@ -178,6 +182,7 @@ numbers for every later phase come from this table, commit `e7f949ec1`.
 | s3a_nuclear_blast_2s | 10.0 s | 0.606 (0.530–0.907) | 0.035 (0.030–0.043) | 0.102 (0.098–0.587) | 4.590 (3.922–5.216) | 1.536 (1.380–2.251) |
 | s3b_nuclear_cloud_7s | 15.0 s | 0.664 (0.597–0.746) | 0.036 (0.034–0.041) | 0.104 (0.100–0.106) | 5.635 (4.538–6.075) | 1.988 (1.610–3.369) |
 | s4_orbit_oil_lab | 15.0 s | 0.601 (0.422–0.720) | 0.034 (0.024–0.039) | 0.103 (0.063–0.108) | 4.892 (3.589–6.096) | 1.642 (1.202–1.989) |
+| s5_skyrim_mare_hearth | 4.0 s | 0.620 (0.614–0.625) | 0.024 (0.022–0.027) | 0.074 (0.071–0.077) | 10.741 (10.323–11.141) | 1.368 (1.065–2.277) |
 
 Full table (bloom, TAA, cluster cull, sky cube, shadow filter, presentation, and
 the volumetrics total): [baseline.tsv](fire-volumetrics-baseline/baseline.tsv).
@@ -200,7 +205,8 @@ Screenshots (final frame, run 1 of 5): [s1](fire-volumetrics-baseline/s1_close_f
 [s2b](fire-volumetrics-baseline/s2b_oil_plume_7s.png),
 [s3a](fire-volumetrics-baseline/s3a_nuclear_blast_2s.png),
 [s3b](fire-volumetrics-baseline/s3b_nuclear_cloud_7s.png),
-[s4](fire-volumetrics-baseline/s4_orbit_oil_lab.png).
+[s4](fire-volumetrics-baseline/s4_orbit_oil_lab.png),
+[s5](fire-volumetrics-baseline/s5_skyrim_mare_hearth.png).
 
 ## 7. Not done, and why
 
@@ -215,7 +221,24 @@ Screenshots (final frame, run 1 of 5): [s1](fire-volumetrics-baseline/s1_close_f
   every due frame landed (0 skipped) and the frames two runs share are
   byte-identical. **No flicker review has been done yet:** the baseline
   sequences have not been captured, and I have not judged temporal stability.
-- **No real-game scenes** (see §5).
+- **Real content, what was found (not a census).** I loaded a handful of cells and
+  read `fog_volume_count` from the last frame of each; I did not check whether
+  that count is before or after frustum culling. Skyrim `WhiterunBanneredMare` 9,
+  `WhiterunDragonsreach` 33; FO3 `MegatonPlayerHouse` 2, `MegatonMoriartysSaloon`
+  1; Skyrim Whiterun exterior (grid 2,-4, radius 2) 1; FNV
+  `GSProspectorSaloonInterior` 0, FNV Goodsprings exterior (grid -1,-1, radius 2)
+  0; Oblivion `ICMarketDistrictTheGildedCarafe` 0. Only the Mare became a
+  baseline scene (`s5`); the spawn cameras of the other cells do not look at
+  their fires, so each needs its own pinned pose first.
+- **No exterior fire scene and no placed explosion.** None of the probed
+  exteriors has more than one volume, and I found no cell with a placed
+  explosion. The vanilla explosion NIFs exist in the archives (FO3
+  `meshes\effects\explosionbigfiry.nif`, `explosionlarge01.nif`,
+  `fxmegatonnuke01.nif`, FNV `meshes\dlc03\effects\dlc03orbitalstrikeexplosion.nif`)
+  and loading them with `--mesh` does create 2–4 volumes, but every frame I
+  captured of them was empty sky. Whether that is the camera framing, the
+  emitter start delay or a bug is **not diagnosed**, so no explosion baseline
+  from real content exists.
 - **Not verified:** whether the derived fire lights visibly light smoke inside
   the froxel inject loop; the per-pass cost split inside `volumetrics_inject.comp`
   (transport vs RT visibility rays) — only the whole pass is timed.

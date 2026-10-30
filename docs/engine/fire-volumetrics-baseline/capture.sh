@@ -43,6 +43,15 @@ SCENES=(
   "s3a_nuclear_blast_2s|--combustion-lab --combustion-lab-nuclear --bench-mode renderer-stepped --bench-camera pan --bench-frames 600"
   "s3b_nuclear_cloud_7s|--combustion-lab --combustion-lab-nuclear --bench-mode renderer-stepped --bench-camera pan --bench-frames 900"
   "s4_orbit_oil_lab|--combustion-lab --bench-mode renderer-stepped --bench-camera orbit --bench-frames 900"
+  # Real content (needs the game installed; skipped when it is not). The pose is
+  # pinned because the cell's spawn camera does not look at the fire: 1.6 m from
+  # the hearth's `FlamesSmall03` emitter, looking down into it.
+  "s5_skyrim_mare_hearth|--game skyrim_se --cell WhiterunBanneredMare --bench-mode renderer-stepped --bench-camera pan --bench-frames 240 --camera-pos -121,140,520 --camera-forward 0,-0.51,-0.86"
+)
+
+# Scenes that read game data: name prefix -> directory that must exist.
+declare -A NEEDS_DATA=(
+  [s5]="${BYRO_GAMES_ROOT:-/mnt/data/SteamLibrary/steamapps/common}/Skyrim Special Edition/Data"
 )
 
 cd "$ROOT"
@@ -50,6 +59,11 @@ for entry in "${SCENES[@]}"; do
   name="${entry%%|*}"
   args="${entry#*|}"
   [[ -z "$ONLY" || "$name" == "$ONLY"* ]] || continue
+  need="${NEEDS_DATA[${name%%_*}]:-}"
+  if [[ -n "$need" && ! -d "$need" ]]; then
+    echo "SKIP: $name needs game data at $need" >&2
+    continue
+  fi
   for rep in $(seq 1 "$REPS"); do
     # shellcheck disable=SC2086
     env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 BYRO_DEBUG_SERVER=1 \

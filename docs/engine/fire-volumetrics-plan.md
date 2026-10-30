@@ -167,10 +167,11 @@ same cost, measured against the Phase 0 baseline.
 
 ## Open questions for Matías
 
-1. Real-content baseline scenes (an FNV/Skyrim interior with a fire, an exterior
-   with a placed explosion) were not captured: the baseline uses the
-   game-data-free `--combustion-lab`, which is an interior room. Which cells do
-   you want as the real-content scenes?
+1. Real-content baseline scenes. **Partly answered.** One exists (`s5`, Skyrim
+   Whiterun Bannered Mare hearth). An exterior fire and a real explosion do not
+   yet; see the phase-0 document §7 for what was tried. Still needed from
+   Matías: whether a loose vanilla explosion NIF (`--mesh`) is acceptable as the
+   explosion scene, or whether it has to be a placed one in a cell.
 2. ~~Frame-sequence capture for the flicker review.~~ **Answered:** approved.
    `--bench-capture-every N --bench-capture-dir DIR` is implemented (documented
    in `game-loop.md`); it was added during Phase 0 as tooling, not as Phase 2
