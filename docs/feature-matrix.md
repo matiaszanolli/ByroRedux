@@ -105,13 +105,14 @@ speed (M42.11). v0 scope limits still apply: package selection (schedule
 in-game minute by `ambient_ai_package_system` (M42.9 / #2652) — not per
 frame — and movement remains straight-line within a single resident NAVM
 tile. Their shared walk-to-point step routes through NAVM A*
-(`byroredux/src/systems/navmesh_path.rs`, #2372). The remaining 7
-procedures (Find/Accompany/UseItemAt/Ambush/FleeNotCombat/
-CastMagic/UseWeapon) are parse-only — each blocked on a subsystem
-(item use beyond Sandbox's seat-snap, magic) that doesn't
-exist in the engine yet, or (UseWeapon) on `PACK` not yet driving combat:
-both the P2 melee slice and the MQ101 `npc_combat_ai_system` are
-player- or script-initiated, never package-selected (see Gameplay/Combat
+(`byroredux/src/systems/navmesh_path.rs`, #2372). Flee, UseWeapon, UseItemAt
+and Find run too (2026-10-24); Accompany rides Follow and Ambush rides
+Guard. Only CastMagic (no FO3/FNV package uses it) and Find for the
+non-item object types remain, and UseWeapon declines packages with
+unmodelled conditions (60 of 82 FNV packages qualify). UseWeapon raises
+the ObScript `UseWeaponRequest`; it does not drive package combat
+(the P2 melee slice and the MQ101 `npc_combat_ai_system` stay player- or
+script-initiated; see Gameplay/Combat
 below). See
 [docs/engine/npc-spawn-ai-packages.md](engine/npc-spawn-ai-packages.md) for
 the full trace.
@@ -355,7 +356,7 @@ early-returns, and the Fatigue/Magicka lanes are inert everywhere.
 | Starfield Havok `.hkx` loader | Starfield animation | M41.x follow-up |
 | General NPC locomotion from `.hkx` / behavior graphs | Skyrim actors animating outside the MQ101 cart-idle catalog; FO4 ambient NPC walking | M41.x follow-up |
 | `.btr` terrain normal maps | distant-terrain normal detail on Skyrim SE/FO4. Distance-based multi-band selection is **no longer a gap** — the four-level ladder shipped in #2371 and runs on every quad-based scheme, FO3/FNV included (#3508) | M35 |
-| Remaining `PACK` procedures (Find/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/UseWeapon) | NPCs perform item-use/combat/magic behaviors | M42 (Tier 7) |
+| Remaining `PACK` procedures (CastMagic; Find for non-item object types; UseWeapon's unmodelled conditions) | NPCs cast spells; find flora/furniture targets | M42 (Tier 7) |
 | Full Papyrus transpiler (M47.2) + VM | Arbitrary script execution on real content — the recognizer slice ships the static path and the bounded VM (`fragment/vm.rs`) runs the scripts the lowering declines | M47.2 (Tier 3) |
 | Script-extender compatibility layer verified against real mods | Confidence that SKSE-family mod scripts (StorageUtil / JContainers / ModEvent consumers) actually run. The layer *exists* — ~23.9k LOC, six provider families, tested in-crate — but no audit pass has exercised it against shipped mod content, so its real-world coverage is unmeasured, not zero and not proven (#3953) | M47.2 follow-up |
 | Full Scaleform menus | In-game UI (method behavior / `_global.gfx`; native menu covers Pause/Settings/Inventory in parallel) | M48 / R4 decision |

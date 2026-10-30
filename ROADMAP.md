@@ -95,8 +95,9 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
 - Redux-native plugin loading: the manifest → `DataStore` →
   `DependencyResolver` layer (`crates/plugin`) has no production caller —
   the live path is `parse_esm_with_load_order` (#5609).
-- AI beyond locomotion: 7 of ~17 package procedures need subsystems that do
-  not exist (item use, package combat, magic). NAVM pathfinding
+- AI beyond locomotion: only CastMagic (no FO3/FNV package uses it) and Find
+  for non-item object types remain unbuilt, and UseWeapon declines packages
+  with unmodelled conditions. NAVM pathfinding
   covers the five pre-FO4 games including cross-tile joins (#3802); FO4's
   compressed `NVNM` body is still undecoded.
 - FO76/Starfield actors have no walk-clip source (FO4's run through its Havok
