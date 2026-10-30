@@ -120,7 +120,7 @@ done
 # exits 77 on missing data and never joined these lists (the third recurrence of the class);
 # w2-dynamic-water is game-parameterised, so it is in the fixture loop above.
 for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript fo4-ragdoll \
-    p4-fnv-quest-route p5-fnv-quest-persistence m42-package-procedures vats-targeting m43-adia-conversations; do
+    p4-fnv-quest-route p5-fnv-quest-persistence m42-package-procedures vats-targeting m43-adia-conversations m43-item-drop; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"

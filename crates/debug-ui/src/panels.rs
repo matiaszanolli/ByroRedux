@@ -168,6 +168,8 @@ pub struct InventoryItemView {
 pub enum InventoryAction {
     ToggleEquip { index: u32 },
     Consume { index: u32, form_id: u32 },
+    /// Drop one of the row's items into the world at the player's feet.
+    Drop { index: u32, form_id: u32 },
 }
 
 /// One selectable row of the dialogue surface's topic list — the DIALs the
@@ -975,6 +977,17 @@ fn draw_inventory_page(
                 ui.end_row();
             });
         columns[1].add_space(24.0);
+        if !item.equipped
+            && columns[1]
+                .add_sized([220.0, 32.0], egui::Button::new("Drop"))
+                .clicked()
+        {
+            outputs.inventory_actions.push(InventoryAction::Drop {
+                index: item.index,
+                form_id: item.form_id,
+            });
+        }
+        columns[1].add_space(8.0);
         if item.consumable {
             if columns[1]
                 .add_sized([220.0, 42.0], egui::Button::new("Use"))

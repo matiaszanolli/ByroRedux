@@ -153,6 +153,20 @@ pub(crate) fn queue_consume_by_form_id(world: &World, form_id: u32) -> Result<St
     Ok(format!("queued use of row {index} (form {form_id:08X})"))
 }
 
+/// Queue the menu's own `Drop` of one item of the player's row carrying `form_id` (`inv.drop`).
+pub(crate) fn queue_drop_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
+    let player = PlayerEntity::get(world).ok_or_else(|| "no player".to_string())?;
+    let index = world
+        .get::<Inventory>(player)
+        .and_then(|inventory| inventory.items.iter().position(|stack| stack.base_form_id == form_id && stack.count > 0))
+        .ok_or_else(|| format!("no inventory row with form {form_id:08X}"))?;
+    let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
+        return Err("inventory action queue unavailable".to_string());
+    };
+    pending.0.push(byroredux_debug_ui::InventoryAction::Drop { index: index as u32, form_id });
+    Ok(format!("queued drop of row {index} (form {form_id:08X})"))
+}
+
 /// Drain the queued inventory actions through the canonical menu door.
 /// Called on the main thread beside the other player-action steps.
 pub(crate) fn drain_pending_inventory_actions(world: &mut World) {

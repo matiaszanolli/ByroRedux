@@ -66,6 +66,8 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MutationResult {
     Consumed,
+    /// One item left the inventory for the world (a created reference at the player).
+    Dropped,
     Equipped,
     Unequipped,
     Unavailable,
@@ -205,6 +207,136 @@ pub(super) fn consume_item(world: &mut World, index: u32, form_id: u32) -> Mutat
     MutationResult::Consumed
 }
 
+/// Drop one item of an inventory row into the world: it leaves the inventory (the row keeps its
+/// position, like a use) and a created reference of the same base stands where the player does, which
+/// the ordinary placement spawns and the pickup path can take back. Refused for an equipped row, a
+/// dead player, an item with an unresolvable instance, or a base the pickup path would not take (a
+/// container, an uncatalogued form) — a dropped item must be one the player can pick up again.
+///
+/// The Story Manager's `REMP` (Player Remove Item) needs the dropped reference as `R2`; the entity
+/// exists only once the placement spawns it, so the drop is queued on [`PendingDroppedItems`] and
+/// `dropped_item_story_event_system` raises the event then.
+pub(super) fn drop_item(world: &mut World, index: u32, form_id: u32) -> MutationResult {
+    use byroredux_core::ecs::resources::ItemInstancePool;
+    if !crate::systems::player_can_act(world) {
+        return MutationResult::Unavailable;
+    }
+    let Some(player) = PlayerEntity::get(world) else {
+        return MutationResult::Unavailable;
+    };
+    let Some(stack) = world
+        .get::<Inventory>(player)
+        .and_then(|inventory| inventory.items.get(index as usize).copied())
+        .filter(|stack| stack.base_form_id == form_id && stack.count > 0)
+    else {
+        return MutationResult::Unavailable;
+    };
+    if world
+        .get::<EquipmentSlots>(player)
+        .is_some_and(|slots| slots.is_equipped(InventoryIndex(index)))
+        || !world
+            .try_resource::<InventoryCatalog>()
+            .is_some_and(|catalog| catalog.is_pickup_base(form_id))
+        || stack.instance.is_some_and(|instance| {
+            world
+                .try_resource::<ItemInstancePool>()
+                .is_none_or(|pool| pool.get(instance).is_none())
+        })
+    {
+        return MutationResult::Unavailable;
+    }
+    // Where it lands: the player's own spot, in the cell the player occupies.
+    let Some(placement) = player_drop_placement(world, player) else {
+        return MutationResult::Unavailable;
+    };
+    let Some(created) = world.try_resource::<byroredux_scripting::CreatedReferences>().map(|created| created.scripted_ids()) else {
+        return MutationResult::Unavailable;
+    };
+    let Some(reference) = created.next() else {
+        return MutationResult::Unavailable;
+    };
+    let released = {
+        let inventory = world.get_mut::<Inventory>(player).unwrap();
+        let row = &mut inventory.items[index as usize];
+        row.count -= 1;
+        if row.count == 0 {
+            row.instance.take()
+        } else {
+            None
+        }
+    };
+    if let Some(instance) = released {
+        world.resource_mut::<ItemInstancePool>().release(instance);
+    }
+    {
+        let mut created = world.resource_mut::<byroredux_scripting::CreatedReferences>();
+        created.create_scripted(reference, form_id, byroredux_scripting::PLAYER_REFERENCE, false);
+        created.place(reference, placement);
+    }
+    byroredux_scripting::emit_item_transfers(
+        world,
+        player,
+        [byroredux_scripting::ItemTransfer { item_form_id: form_id, count: 1, added: false, stolen: false }],
+    );
+    if let Some(mut pending) = world.try_resource_mut::<PendingDroppedItems>() {
+        pending.0.push((reference, 0.0));
+    }
+    let name = world
+        .try_resource::<InventoryCatalog>()
+        .and_then(|catalog| catalog.entries.get(&form_id).map(|entry| entry.name.clone()))
+        .unwrap_or_else(|| format!("Item {form_id:08X}"));
+    crate::notifications::push(world, format!("Dropped {name}"));
+    MutationResult::Dropped
+}
+
+/// The player's own position as a created reference's placement (Z-up world units).
+fn player_drop_placement(world: &World, player: byroredux_core::ecs::EntityId) -> Option<byroredux_scripting::CreatedPlacement> {
+    let position = byroredux_core::math::coord::yup_to_zup_pos(
+        world.get::<byroredux_core::ecs::components::GlobalTransform>(player)?.translation.to_array(),
+    );
+    crate::cell_loader::created::placement_at_position(world, position)
+}
+
+/// Dropped items whose reference has not spawned yet, with the seconds they have waited: the
+/// Story Manager's `REMP` is raised when the entity exists. `NOT_SAVED_BY_DESIGN`: the created
+/// reference itself is saved; only the not-yet-raised event is dropped by a load.
+#[derive(Default)]
+pub(crate) struct PendingDroppedItems(pub(crate) Vec<(u32, f32)>);
+
+impl byroredux_core::ecs::Resource for PendingDroppedItems {}
+
+/// How long a drop waits for its placement to spawn before its `REMP` is abandoned (the cell may
+/// have unloaded around it).
+const DROP_EVENT_WAIT_SECS: f32 = 10.0;
+
+/// System: raise `REMP` for each dropped item whose reference has spawned.
+pub(crate) fn dropped_item_story_event_system(world: &World, dt: f32) {
+    let Some(mut pending) = world.try_resource_mut::<PendingDroppedItems>() else {
+        return;
+    };
+    if pending.0.is_empty() {
+        return;
+    }
+    let spawned = world
+        .try_resource::<crate::cell_loader::created::CreatedReferenceEntities>();
+    let mut ready = Vec::new();
+    pending.0.retain_mut(|(reference, waited)| {
+        if let Some(entity) = spawned.as_ref().and_then(|spawned| spawned.0.get(reference).copied()) {
+            ready.push(entity);
+            return false;
+        }
+        *waited += dt;
+        *waited < DROP_EVENT_WAIT_SECS
+    });
+    drop(spawned);
+    drop(pending);
+    if let Some(player) = PlayerEntity::get(world) {
+        for item in ready {
+            crate::systems::story_events::raise_remove_from_player_story_event(world, player, item);
+        }
+    }
+}
+
 /// Apply a native-menu action to the canonical player components.
 ///
 /// #4707 — a refusal is told to the player, not only logged: every
@@ -218,6 +350,7 @@ pub(crate) fn apply_action(
     let result = match action {
         InventoryAction::Consume { index, form_id } => consume_item(world, index, form_id),
         InventoryAction::ToggleEquip { index } => toggle_equip(world, index),
+        InventoryAction::Drop { index, form_id } => drop_item(world, index, form_id),
     };
     if result == MutationResult::Unavailable {
         notify_refused_action(world, action);
@@ -232,6 +365,7 @@ pub(super) fn notify_refused_action(world: &World, action: byroredux_debug_ui::I
     use byroredux_debug_ui::InventoryAction;
     let (verb, form_id) = match action {
         InventoryAction::Consume { form_id, .. } => ("use", Some(form_id)),
+        InventoryAction::Drop { form_id, .. } => ("drop", Some(form_id)),
         InventoryAction::ToggleEquip { index } => (
             "equip",
             PlayerEntity::get(world)

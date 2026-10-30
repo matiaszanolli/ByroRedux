@@ -366,6 +366,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::systems::archetype_idle::ArchetypeIdleSeen::default());
     world.insert_resource(crate::systems::story_events::StoryLocationMemo::default());
     world.insert_resource(crate::systems::random_conversation::RandomConversationState::default());
+    world.insert_resource(crate::inventory::PendingDroppedItems::default());
     world.insert_resource(crate::asset_provider::PendingActorGraphs::default());
     world.register::<crate::systems::archetype_idle::ArchetypeIdle>();
     world.insert_resource(crate::components::SeatReservations::default());

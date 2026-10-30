@@ -2750,3 +2750,65 @@ fn a_refused_caster_item_is_unavailable_in_the_catalog() {
     assert!(!catalog.script_effects.contains_key(&10) && !catalog.restorations.contains_key(&10));
     assert_eq!(catalog.entries[&10].details, "Consumable (effects unavailable)");
 }
+
+/// M43 — dropping an item: it leaves the inventory, a created reference of the base stands at the
+/// player's spot, and once that reference has spawned the Story Manager's `REMP` is raised with the
+/// reference in `R2` (a drop that never spawns raises nothing).
+#[test]
+fn dropping_an_item_creates_a_reference_and_raises_remove_from_player() {
+    use byroredux_core::ecs::components::GlobalTransform;
+    let (mut world, player) = fixture();
+    byroredux_scripting::register(&mut world);
+    world.register::<GlobalTransform>();
+    world.insert(player, GlobalTransform { translation: byroredux_core::math::Vec3::new(10.0, 2.0, -30.0), ..Default::default() });
+    world.insert_resource(crate::notifications::PlayerNotifications::default());
+    world.insert_resource(byroredux_scripting::CreatedReferences::default());
+    world.insert_resource(PendingDroppedItems::default());
+    world.insert_resource(crate::cell_loader::created::CreatedReferenceEntities::default());
+    world.insert_resource(crate::cell_loader::CurrentCellContext {
+        cell_editor_id: "Whiterun".to_owned(),
+        esm_path: String::new(),
+        masters: Vec::new(),
+    });
+    world.resource_mut::<InventoryCatalog>().containers.clear();
+
+    let action = byroredux_debug_ui::InventoryAction::Drop { index: 1, form_id: 0x5678 };
+    assert_eq!(apply_action(&mut world, action), MutationResult::Dropped);
+    assert_eq!(world.get::<Inventory>(player).unwrap().items[1].count, 11);
+
+    let created = world.resource::<byroredux_scripting::CreatedReferences>();
+    let record = created.iter().next().expect("one created reference").clone();
+    drop(created);
+    assert_eq!(record.base, 0x5678);
+    let placement = record.placement.expect("placed where the player stands");
+    assert_eq!(placement.position_zup, [10.0, 30.0, 2.0], "Y-up (10, 2, -30) is Z-up (10, 30, 2)");
+
+    // Not spawned yet: nothing raised.
+    dropped_item_story_event_system(&world, 0.1);
+    let raised = |world: &World| {
+        world
+            .query::<byroredux_scripting::story_manager::StoryEvent>()
+            .map(|events| events.iter().filter(|(_, e)| e.mnemonic == *b"REMP").count())
+            .unwrap_or(0)
+    };
+    assert_eq!(raised(&world), 0);
+
+    // Spawned: REMP, once, with the reference in R2.
+    let item = world.spawn();
+    world.resource_mut::<crate::cell_loader::created::CreatedReferenceEntities>().0.insert(record.form_id, item);
+    dropped_item_story_event_system(&world, 0.1);
+    dropped_item_story_event_system(&world, 0.1);
+    assert_eq!(raised(&world), 1);
+    let event = world
+        .query::<byroredux_scripting::story_manager::StoryEvent>()
+        .and_then(|events| events.iter().map(|(_, e)| *e).find(|e| e.mnemonic == *b"REMP"))
+        .unwrap();
+    assert_eq!((event.slots().reference_2, event.slots().values), (Some(item), [4, 0]));
+
+    // An equipped row cannot be dropped, nor a base the pickup path would not take.
+    world.get_mut::<EquipmentSlots>(player).unwrap().equip(1 << 12, InventoryIndex(0));
+    assert_eq!(
+        apply_action(&mut world, byroredux_debug_ui::InventoryAction::Drop { index: 0, form_id: 0x1234 }),
+        MutationResult::Unavailable
+    );
+}

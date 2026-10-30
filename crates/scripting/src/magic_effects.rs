@@ -229,7 +229,27 @@ pub fn cast_spell(world: &World, caster: Option<EntityId>, target: EntityId, spe
         Some(effects) => effects,
         None => return false,
     };
-    start_effects(world, target, caster, spell, &effects, false) > 0
+    let started = start_effects(world, target, caster, spell, &effects, false) > 0;
+    // M43 — the Story Manager's `CAST` (Cast Magic Event): `OnStoryCastMagic(akCastingActor, akSpell,
+    // akTarget1, akTarget2)`. References fill in order: R1 = the caster, R2 = the target (when it is
+    // not the caster). The spell is a form the event slots do not carry; the real `CAST` quests read
+    // only the actors and the location. Only a cast with a caster raises it.
+    if let (true, Some(caster)) = (started, caster) {
+        let location = world.try_resource::<crate::location::PlayerLocation>().and_then(|here| here.0);
+        crate::story_manager::raise_story_event(
+            world,
+            caster,
+            crate::story_manager::StoryEvent {
+                mnemonic: *b"CAST",
+                reference_1: caster,
+                reference_2: (target != caster).then_some(target),
+                location_1: location,
+                location_2: None,
+                scripted: None,
+            },
+        );
+    }
+    started
 }
 
 /// Stop the effects `source` put on `target` (every effect when `source` is `None`): their `Finish` blocks
@@ -500,6 +520,28 @@ mod tests {
 
     fn pending_kills(world: &World) -> Vec<(EntityId, Option<EntityId>, bool)> {
         world.resource::<crate::story_manager::PendingScriptKills>().0.clone()
+    }
+
+    /// M43 — a cast with a caster raises `CAST` (caster `R1`, target `R2`); a cast with none, or one
+    /// onto its own caster, leaves `R2` unset / raises nothing.
+    #[test]
+    fn a_cast_raises_the_cast_magic_story_event() {
+        let (mut world, target) = world_with(index_with_value_effect(MGEF_FLAG_DETRIMENTAL, 5.0, 0));
+        crate::story_manager::register(&mut world);
+        let caster = world.spawn();
+        let casts = |world: &World| -> Vec<crate::story_manager::StoryEvent> {
+            world
+                .query::<crate::story_manager::StoryEvent>()
+                .map(|events| events.iter().map(|(_, e)| *e).filter(|e| e.mnemonic == *b"CAST").collect())
+                .unwrap_or_default()
+        };
+        assert!(cast_spell(&world, None, target, 0x500));
+        assert!(casts(&world).is_empty(), "no caster, no event");
+        assert!(cast_spell(&world, Some(caster), target, 0x500));
+        let events = casts(&world);
+        assert_eq!(events.len(), 1);
+        let slots = events[0].slots();
+        assert_eq!((slots.reference_1, slots.reference_2), (Some(caster), Some(target)));
     }
 
     /// #6232 — a lethal instant effect queues the death every other Health

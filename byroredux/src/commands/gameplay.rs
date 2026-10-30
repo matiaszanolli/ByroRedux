@@ -129,6 +129,30 @@ impl ConsoleCommand for InvUseCommand {
     }
 }
 
+/// `inv.drop <form_id>` — drop one of the player's items into the world by the menu's own `Drop`
+/// action (a created reference at the player's feet that can be picked up again).
+pub(crate) struct InvDropCommand;
+
+impl ConsoleCommand for InvDropCommand {
+    fn name(&self) -> &str {
+        "inv.drop"
+    }
+
+    fn description(&self) -> &str {
+        "Drop one of a player inventory item into the world (usage: inv.drop <form_id_hex>)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(form_id) = parse_console_form_id(args.trim()) else {
+            return CommandOutput::error("usage: inv.drop <form_id_hex>");
+        };
+        match crate::inventory::queue_drop_by_form_id(world, form_id) {
+            Ok(message) => CommandOutput::line(message),
+            Err(error) => CommandOutput::error(format!("inv.drop: {error}")),
+        }
+    }
+}
+
 /// `magic.cast <spell> [target|.]` — cast a spell on a reference (the player when none) through the
 /// caster runtime ObScript `Cast` uses; `magic.effects [entity|.]` lists the effects running on one.
 pub(crate) struct MagicCastCommand;
@@ -157,7 +181,10 @@ impl ConsoleCommand for MagicCastCommand {
                 None => return CommandOutput::error("magic.cast: no player"),
             },
         };
-        if byroredux_scripting::magic_effects::cast_spell(world, None, target, spell) {
+        // The console stands in for the player's own cast: the player is the caster, so the cast is
+        // an event the Story Manager sees (`CAST`).
+        let caster = crate::systems::PlayerEntity::get(world);
+        if byroredux_scripting::magic_effects::cast_spell(world, caster, target, spell) {
             CommandOutput::line(format!("cast {spell:08X} on entity {target}"))
         } else {
             CommandOutput::error(format!("magic.cast: {spell:08X} is unknown or has no effect the runtime models"))

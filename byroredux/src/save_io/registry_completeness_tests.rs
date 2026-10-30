@@ -568,6 +568,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("StoryLocationCursor", "session-local CLOC change-detection cursor; reset by execute_pending_save_loads on every in-process load (#5435), so every load — like a fresh boot — raises one CLOC with L1 = None"),
         ("StoryClock", "total game hours derived every frame from the saved GameTimeRes (#5366 Phase 3)"),
         ("ConversationHold", "an NPC-to-NPC random conversation in progress (partner, phase); a load drops the conversation and the ambient package system re-selects both actors packages (M43)"),
+        ("PendingDroppedItems", "dropped items whose REMP story event waits for the created reference to spawn (seconds); the created reference itself is saved, only the not-yet-raised event is lost on a load (M43)"),
         ("RandomConversationState", "ambient NPC-to-NPC conversation attempt timers (30-60 s) and pair cooldowns; a load re-arms them like a fresh boot, and which ADIA a post-load pick raises is not state anything reads back (M43)"),
         ("StoryManagerRng", "selection RNG for random node policies (#5366 Phase 3); which radiant a post-load pick chooses is not state anything reads back"),
         // ── Dialogue trees (#5367) ──────────────────────────────────

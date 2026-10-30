@@ -322,6 +322,29 @@ pub(crate) fn raise_add_to_player_story_event(world: &World, player: EntityId, c
     );
 }
 
+/// M43 — `REMP` (Player Remove Item): the player dropped `item`.
+/// `OnStoryRemoveFromPlayer(akOwner, akItem, akLocation, akItemBase, aiRemoveType)`: R2 = the item
+/// reference (the dropped, now-spawned created reference), L1 = the session LCTN, `V1` = the remove
+/// type (4, dropped). The owner (`R1`) is unset: a dropped item is the player's own. A no-op on
+/// pre-Creation titles (no SM tree installed).
+pub(crate) fn raise_remove_from_player_story_event(world: &World, player: EntityId, item: EntityId) {
+    use byroredux_scripting::story_manager::{ScriptedStoryEvent, StoryEvent};
+    // #5372 — resolve the location BEFORE taking the StoryEvent write guard.
+    let location_1 = resolve_current_lctn(world);
+    byroredux_scripting::story_manager::raise_story_event(
+        world,
+        player,
+        StoryEvent {
+            mnemonic: *b"REMP",
+            reference_1: player,
+            reference_2: Some(item),
+            location_1,
+            location_2: None,
+            scripted: Some(ScriptedStoryEvent { keyword: 0, values: [4, 0], has_reference_1: false }),
+        },
+    );
+}
+
 /// #5434 — `KILL` (Actor Kill), raised from every LIVE death producer
 /// (combat damage, NPC/player drowning, the SDK actor-value batch) — never
 /// from corpse restores, which re-assert a death that already fired.
