@@ -6076,6 +6076,31 @@ fn story_manager_skyrim_node_policy_floor() {
     }
 }
 
+/// M43 — `PKDT` Interrupt Flags (Skyrim+ u16 @ 8): *Random conversations*
+/// (`0x2`) marks the packages whose actors may start an NPC-to-NPC
+/// conversation (CK *Package Flags*), the gate of the `ADIA` Story
+/// Manager producer.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skyrim_package_random_conversation_flag_floor() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim PKDT interrupt] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    let total = index.packages.len();
+    let random = index
+        .packages
+        .values()
+        .filter(|pack| pack.allows_random_conversations())
+        .count();
+    eprintln!("Skyrim.esm packages: {total}, random-conversation flag: {random}");
+    assert!(total >= 2000, "package census floor: {total}");
+    assert!(random >= 2500, "random-conversation packages floor (measured 2904): {random}");
+    assert!(random < total, "the flag is not universal");
+}
+
 /// M43 — the Num-quests-to-run / Max-concurrent decode rests on one
 /// corpus fact: `DNAM & 0x40000` is set on exactly the quest nodes that
 /// author an `MNAM` (2026-10-30 census over Skyrim, Fallout 4 and

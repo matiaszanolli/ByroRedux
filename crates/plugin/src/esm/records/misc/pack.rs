@@ -37,6 +37,12 @@ pub struct PackRecord {
     /// Flags bitfield from PKDT (schedule / location repeat / weapon
     /// draw / etc.). Low 16 bits on FO3/FNV, u32 on Skyrim+.
     pub package_flags: u32,
+    /// Skyrim+ `PKDT` **Interrupt Flags** (u16 @ offset 8): the package-level
+    /// behaviours the actor may still perform while it runs — bit `0x1`
+    /// *Hellos to player*, `0x2` *Random conversations*, `0x4` *Observe
+    /// combat*, … (xEdit `wbPKDTInterruptFlags`). `0` on FO3/FNV/Oblivion
+    /// records, whose `PKDT` carries no such word.
+    pub interrupt_flags: u16,
     /// Procedure type — the FO3/FNV package-type enum (0..=16):
     /// 0 Find, 1 Follow, 2 Escort, 3 Eat, 4 Sleep, 5 Wander, 6 Travel,
     /// 7 Accompany, 8 UseItemAt, 9 Ambush, 10 FleeNotCombat,
@@ -330,6 +336,9 @@ pub enum PackTargetKind {
 /// FO3/FNV package procedure-type index for `Sandbox` — idle activities
 /// in an area (sit, wander, use furniture). 56 % of vanilla FNV NPCs
 /// carry one; it's the dominant ambient idle behavior. See M42.
+/// `PKDT` Interrupt Flags bit: *Random conversations*.
+pub const PKDT_INTERRUPT_RANDOM_CONVERSATIONS: u16 = 0x0002;
+
 pub const PROCEDURE_SANDBOX: u32 = 12;
 
 /// FO3/FNV package procedure-type index for `Wander` — walk to random
@@ -704,6 +713,13 @@ impl PackRecord {
             Some(topic) => ForceGreetLine::Topic(topic),
             None => ForceGreetLine::GenericGreeting,
         }
+    }
+
+    /// Whether the package lets its actor take part in NPC-to-NPC random
+    /// conversations (`PKDT` interrupt flag `0x2`, CK *Package Flags*:
+    /// "Allow the actor to participate in random conversations").
+    pub fn allows_random_conversations(&self) -> bool {
+        self.interrupt_flags & PKDT_INTERRUPT_RANDOM_CONVERSATIONS != 0
     }
 
     /// True when this package's procedure is `Sandbox` (the idle-in-area
@@ -1122,6 +1138,13 @@ pub fn parse_pack(
             b"PKDT" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 out.package_flags = r.u32_or_default();
+                // Skyrim+ (12-byte PKDT, type byte 18/19): u8 type, u8
+                // interrupt override, u8 preferred speed, u8 unknown, then
+                // the u16 interrupt flags @ 8 (xEdit `wbDefinitionsTES5.pas`
+                // PKDT). FO3/FNV's 8-byte PKDT has no word there.
+                if sub.data.len() >= 10 && matches!(sub.data[4], 18 | 19) {
+                    out.interrupt_flags = u16::from_le_bytes([sub.data[8], sub.data[9]]);
+                }
                 // FO3/FNV PKDT: the procedure type is a single BYTE at
                 // offset 4, followed by type-specific / flags2 bytes.
                 // Reading it as a u32 (the pre-M42 bug) polluted the
@@ -1471,6 +1494,33 @@ mod tests {
         assert_eq!(p.package_flags, 0x0000_0421);
         assert_eq!(p.procedure_type, 6);
         assert!(!p.is_sandbox());
+    }
+
+    /// Skyrim+ `PKDT`: u32 flags, u8 type (18/19), u8 interrupt override,
+    /// u8 speed, u8 unknown, u16 interrupt flags @ 8. *Random conversations*
+    /// is `0x2`; an FO3/FNV record, whose same offset is something else,
+    /// never reads it.
+    #[test]
+    fn skyrim_pkdt_interrupt_flags_carry_random_conversations() {
+        let skyrim = |flags: u16| {
+            let mut pkdt = Vec::new();
+            pkdt.extend_from_slice(&0u32.to_le_bytes());
+            pkdt.extend_from_slice(&[18, 0, 0, 0]);
+            pkdt.extend_from_slice(&flags.to_le_bytes());
+            pkdt.extend_from_slice(&[0, 0]);
+            parse_pack(0x1, &[sub(b"PKDT", &pkdt)], &None, GameKind::default())
+        };
+        assert!(skyrim(0x0003).allows_random_conversations(), "hellos | random conversations");
+        assert!(!skyrim(0x0001).allows_random_conversations(), "hellos alone");
+        assert!(!skyrim(0).allows_random_conversations());
+
+        let mut fnv = Vec::new();
+        fnv.extend_from_slice(&0u32.to_le_bytes());
+        fnv.extend_from_slice(&[12, 0, 0, 0]);
+        fnv.extend_from_slice(&0x0002u16.to_le_bytes());
+        fnv.extend_from_slice(&[0, 0]);
+        let fnv = parse_pack(0x1, &[sub(b"PKDT", &fnv)], &None, GameKind::default());
+        assert!(!fnv.allows_random_conversations(), "a FO3/FNV PKDT word is not the Skyrim one");
     }
 
     /// `force_greet` across both dialects. The FO3/FNV arm is the

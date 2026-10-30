@@ -316,17 +316,44 @@ already has the surface:
 
 - **Landed**: `KILL` (combat death site, Phase 1), `CLOC`
   (cell-transition at LCTN granularity, Phase 2), `AHEL` (every opened
-  conversation — activation greeting and force-greet, Phase 4).
-- **Deferred until their subsystems land**: `SCPT` (needs the Papyrus
-  `SendStoryEvent` native-call surface — no native runtime yet),
-  `LEVL`/`SKIL` (no level-up/skill-increment transition site),
-  `DEAD` (no dead-body discovery logic), crime/arrest/crafting/
-  pickpocket families, FO4's `HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`/
-  `LCLD`/`AOBJ`, Starfield's ship surface.
-- **Needs a producer**: crime/arrest/jail family (`ADCR ARRT ESJA JAIL
-  BRIB INTM FLAT` — the Oblivion/Skyrim crime pass in `byroredux/src/crime.rs` emits none of them), crafting (`CRFT`),
-  pickpocket/steal (`AIPL REMP AFAV`), `DEAD`, `SKIL`, FO4's
-  `HACK LOCK IRON OAAT TMEE LCLD AOBJ`, Starfield's ship surface.
+  conversation — activation greeting and force-greet, Phase 4), `SCPT`
+  (the Papyrus `SendStoryEvent` native, M47.2), and `ADIA` (below).
+- **`ADIA`, the Actor Dialogue Event** (M43, `systems/random_conversation.rs`).
+  The largest family by far: it gates 786 of Skyrim.esm's SM-started quests
+  and 298 of Fallout4.esm's (the NPC-to-NPC conversation scenes), and was the
+  one thing in the tree nothing produced. The CK's rules (*Scenes →
+  Controlling Random Conversations*) are implemented with every number a
+  game setting: an actor whose active package allows *Random conversations*
+  (`PKDT` interrupt flag `0x2`, `PackRecord::allows_random_conversations`)
+  and is running Sandbox, Guard, Patrol or Eat looks, every
+  `fAISocialTimerForConversationsMin..Max` seconds, for the nearest valid
+  partner inside `fAISocialRadiusToTriggerConversation` (`…Interior` indoors;
+  a Sandbox package's own radius replaces it), rolls
+  `fAISocialchanceForConversation`, and raises `ADIA` with R1 = the initiator,
+  R2 = the partner and L1 = the session LCTN (`OnStoryDialogue(akLocation,
+  akActor1, akActor2)`). A valid partner also allows random conversations, is
+  not in a running scene (`actors_in_running_scenes`), in combat, dead or
+  unconscious, and has not talked to the initiator within
+  `fAItalktosameNPCTimer`. The system only runs when the tree has an `ADIA`
+  root (so never on Oblivion/FO3/FNV) and `BYRO_NO_RANDOM_CONVERSATIONS=1`
+  leaves it out. **Live-gated 2026-10-30**: Skyrim exterior (Whiterun grid,
+  radius 2), 34 s in — `random conversation: 8358 -> 8443`, then
+  `started quest 0x00016FA6 ('DialogueGenericSceneSpecial01') via node
+  'GenericScenesSpecial' on 'ADIA' event` and its scene `DGSceneSpecial01`
+  playing phases 0 → 3 to *Finished*. **Not modelled**: the initiator
+  walking over to `iAISocialDistanceToTriggerEvent` and the partner stopping
+  (the ambient movers do not yield to another driver, so the event is raised
+  from where the pair stands), the *complex scene* flag, and the wait of
+  `fAISocialTimerToWaitForEvent` for a scene to start. The CK does not say
+  which valid partner a roll picks; the nearest is used.
+- **Deferred until their subsystems land**: `LEVL`/`SKIL` (no level-up/skill-increment
+  transition site), `DEAD` (no dead-body discovery logic), the crime/arrest/
+  crafting/pickpocket families, FO4's `HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`/
+  `LCLD`/`AOBJ`, Starfield's ship surface. Per-mnemonic quest counts
+  (2026-10-30, quests reachable under each `SMEN` root): Skyrim `ADIA` 786,
+  `SCPT` 190, `CLOC` 148, `KILL` 13, `CRFT` 10, `LEVL` 8, `CAST` 6, `REMP`
+  5, `AIPL` 5, `ASSU` 4, `JAIL` 3; FO4 `SCPT` 322, `ADIA` 298, `CLOC` 85,
+  `AOBJ` 16, `LCLD` 13, `AHEL` 9, `AIPL` 7.
 
 ### 6.5 Persistence
 

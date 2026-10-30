@@ -50,6 +50,7 @@ pub(crate) mod sandbox;
 pub(crate) mod forcegreet;
 // #5366 — Story Manager event producers (CLOC via the cell-loader
 // location contexts; KILL lives at the combat death site).
+pub(crate) mod random_conversation;
 pub(crate) mod story_events;
 mod travel;
 mod graph_locomotion;

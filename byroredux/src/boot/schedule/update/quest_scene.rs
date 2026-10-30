@@ -5,6 +5,15 @@
 
 use super::*;
 
+/// M43 — the `ADIA` producer (NPC-to-NPC random conversations). Registered ahead of the Story Manager
+/// dispatch so the event is walked the same frame; `BYRO_NO_RANDOM_CONVERSATIONS=1` leaves it out,
+/// like the locomotion kill switch.
+fn register_random_conversations(scheduler: &mut Scheduler) {
+    if std::env::var_os("BYRO_NO_RANDOM_CONVERSATIONS").is_none() {
+        scheduler.add_exclusive(Stage::Update, crate::systems::random_conversation::random_conversation_system);
+    }
+}
+
 /// Papyrus-demo dispatchers, quest / story / scene playback, package fragments, and the ObScript quest and dialogue lanes.
 pub(super) fn register_quest_story_scene_and_packages(scheduler: &mut Scheduler) {
     // M47.0 Phase 1 — R5 papyrus_demo dispatchers. These are
@@ -95,6 +104,7 @@ pub(super) fn register_quest_story_scene_and_packages(scheduler: &mut Scheduler)
     // combat damage system raises is drained here too, one frame later
     // at the latest.
     scheduler.add_exclusive(Stage::Update, story_change_location_dispatch);
+    register_random_conversations(scheduler);
     scheduler.add_exclusive(Stage::Update, story_manager_dispatch);
     // Quest aliases are a general QUST facility, not a SCEN implementation
     // detail. Refresh after startup/cell candidate changes even when the load

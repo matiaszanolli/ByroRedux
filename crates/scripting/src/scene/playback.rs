@@ -195,6 +195,53 @@ fn snapshot_entities<T: Component>(world: &World) -> HashSet<EntityId> {
         .unwrap_or_default()
 }
 
+/// The actors a running scene holds: every `SCEN` actor slot of every scene
+/// whose player is waiting or playing, resolved through the quest's alias
+/// bindings. CK *Scenes → Controlling Random Conversations*: an NPC already in
+/// a scene does not start another conversation, and is not a target.
+///
+/// Takes each guard alone and releases it before the next (the scene
+/// system's own order: players, then the registry, then the bindings).
+pub fn actors_in_running_scenes(world: &World) -> HashSet<EntityId> {
+    let running: Vec<u32> = world
+        .query::<ScenePlayer>()
+        .map(|query| {
+            query
+                .iter()
+                .filter(|(_, player)| player.is_running())
+                .map(|(_, player)| player.scene_form_id)
+                .collect()
+        })
+        .unwrap_or_default();
+    if running.is_empty() {
+        return HashSet::new();
+    }
+    let slots: Vec<(QuestFormId, u32)> = {
+        let Some(registry) = world.try_resource::<SceneRegistry>() else {
+            return HashSet::new();
+        };
+        running
+            .into_iter()
+            .filter_map(|scene| registry.definition_arc(scene))
+            .flat_map(|scene| {
+                let quest = scene.quest_form_id.map(QuestFormId);
+                scene
+                    .actors
+                    .iter()
+                    .filter_map(move |actor| quest.map(|quest| (quest, actor.actor_id)))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    let Some(bindings) = world.try_resource::<SceneActorBindings>() else {
+        return HashSet::new();
+    };
+    slots
+        .into_iter()
+        .filter_map(|(quest, alias)| bindings.resolve(quest, i32::try_from(alias).ok()?))
+        .collect()
+}
+
 /// Clone every `T` currently in the world, keyed by entity. Shared by the
 /// scene, dialogue and package runtimes (#4350).
 pub(crate) fn snapshot<T: Component + Clone>(world: &World) -> HashMap<EntityId, T> {

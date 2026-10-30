@@ -43,9 +43,9 @@ fn player_cell_kind(world: &World) -> Option<byroredux_scripting::cell_kind::Cel
 /// What the per-frame system derives from the session's cell contexts: the kind of cell, its LCTN
 /// and the CLOC change key.
 #[derive(Clone, Copy, Default)]
-struct DerivedLocation {
-    kind: Option<byroredux_scripting::cell_kind::CellKind>,
-    location: Option<u32>,
+pub(crate) struct DerivedLocation {
+    pub(crate) kind: Option<byroredux_scripting::cell_kind::CellKind>,
+    pub(crate) location: Option<u32>,
     key: Option<u64>,
 }
 
@@ -89,7 +89,7 @@ fn context_identity(world: &World) -> u64 {
 /// an exterior grid step, so deriving it every frame was two allocations and several string-hash
 /// lookups for nothing (#6335). Takes no guard across the derivation: `resolve_current_lctn` reads
 /// `LoadedCellIndex` (#5372).
-fn derive_location(world: &World) -> DerivedLocation {
+pub(crate) fn derive_location(world: &World) -> DerivedLocation {
     let identity = context_identity(world);
     if let Some(memo) = world.try_resource::<StoryLocationMemo>() {
         if memo.identity == Some(identity) {
