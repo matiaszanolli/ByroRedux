@@ -186,6 +186,8 @@ pub struct DialogueTopicEntryView {
 pub struct DialogueTopicSnapshot {
     /// The speaking NPC's entity id — echoed back in every topic click.
     pub npc: u32,
+    /// The speaker's authored full name (`FULL` of its NPC record); empty when it authors none.
+    pub speaker_name: String,
     pub topic_form_id: u32,
     pub topic_name: String,
     pub info_form_id: u32,
@@ -649,6 +651,14 @@ fn draw_dialogue_page(
 ) {
     ui.add_space(4.0);
     if let Some(dialogue) = dialogue {
+        if !dialogue.speaker_name.is_empty() {
+            ui.label(
+                egui::RichText::new(dialogue.speaker_name.clone())
+                    .size(20.0)
+                    .strong()
+                    .color(Color32::from_rgb(235, 220, 170)),
+            );
+        }
         ui.heading(dialogue.topic_name.clone());
         ui.add_space(10.0);
         // The response: a fixed-height, scrolling read-only panel so long
@@ -2220,6 +2230,7 @@ mod tests {
         let snapshot = PanelSnapshot {
             dialogue: Some(DialogueTopicSnapshot {
                 npc: 7,
+                speaker_name: "Eltrys".into(),
                 topic_form_id: 0x2010,
                 topic_name: "MS01EltrysTopic".into(),
                 info_form_id: 0x2011,
@@ -2309,6 +2320,7 @@ mod tests {
         let snapshot = PanelSnapshot {
             dialogue: Some(DialogueTopicSnapshot {
                 npc: 7,
+                speaker_name: "Eltrys".into(),
                 topic_form_id: 0x2010,
                 topic_name: "MS01EltrysTopic".into(),
                 info_form_id: 0x2011,

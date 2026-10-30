@@ -934,6 +934,21 @@ pub(crate) fn select_topic_by_form_id(
     Ok(message)
 }
 
+/// The speaker's authored full name: its `NPC_` record's `FULL`, found through the placement's base
+/// form. Empty when the actor has no base the index knows or the record authors no name.
+fn speaker_full_name(world: &World, npc: EntityId) -> String {
+    let Some(base) = world
+        .get::<byroredux_scripting::SceneAliasCandidate>(npc)
+        .map(|identity| identity.base_form_id)
+    else {
+        return String::new();
+    };
+    world
+        .try_resource::<crate::cell_loader::LoadedCellIndex>()
+        .and_then(|index| index.0.npcs.get(&base).map(|record| record.full_name.clone()))
+        .unwrap_or_default()
+}
+
 /// The response surface's snapshot — the plain-data twin the debug-ui
 /// crate renders (it cannot see this crate's component types). `None`
 /// when no NPC is selected or the selected NPC no longer carries a topic.
@@ -948,6 +963,7 @@ pub(crate) fn dialogue_snapshot(
     let topic = world.get::<NpcDialogueTopic>(npc)?.clone();
     Some(byroredux_debug_ui::DialogueTopicSnapshot {
         npc,
+        speaker_name: speaker_full_name(world, npc),
         topic_form_id: topic.topic_form_id,
         topic_name: topic.topic_name.clone(),
         info_form_id: topic.info_form_id,
@@ -1029,6 +1045,30 @@ mod voice_lifetime_source_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dialogue page names its speaker: the `FULL` of the placement's base `NPC_`.
+    #[test]
+    fn the_speaker_is_named_from_its_base_npc_record() {
+        use byroredux_plugin::esm::records::{EsmIndex, NpcRecord};
+        let mut world = World::new();
+        world.register::<byroredux_scripting::SceneAliasCandidate>();
+        let mut index = EsmIndex::default();
+        index.npcs.insert(0x1000, NpcRecord { form_id: 0x1000, full_name: "Eltrys".into(), ..Default::default() });
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(index)));
+        let known = world.spawn();
+        world.insert(
+            known,
+            byroredux_scripting::SceneAliasCandidate {
+                reference_form_id: 0x2000,
+                base_form_id: 0x1000,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        let unknown = world.spawn();
+        assert_eq!(speaker_full_name(&world, known), "Eltrys");
+        assert_eq!(speaker_full_name(&world, unknown), "", "no base: no name rather than a guess");
+    }
 
     /// #6287 — the scalar refusal (activation, topic clicks, `forcegreet`, barter, the open-partner
     /// check) and the bulk one (the HUD's Talk prompt) answer alike over every refusing state:
