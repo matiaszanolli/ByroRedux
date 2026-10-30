@@ -114,7 +114,7 @@ impl SaveRegistry {
     /// component with the deserialized row, which would wipe those fields
     /// back to their serde default; `preserve` runs first (when the live
     /// entity carries a `T`) so the freshly re-imported values survive
-    /// (#5686: `RigidBodyData::part_surface_materials`). The
+    /// (#5686: `Transform` / `keep_live_translation`). The
     /// `restore_world` path never applies deltas, so the hook is
     /// overlay-only.
     pub fn register_component_preserving<T>(

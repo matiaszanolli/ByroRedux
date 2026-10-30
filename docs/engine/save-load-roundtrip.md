@@ -224,11 +224,10 @@ survive edits:
     state when streamed in.
 12. **Overlay deltas**: `apply_deltas` (`crates/save/src/driver.rs`) —
     additive-only, over `MUTABLE_DELTA_COLUMNS` (`save_io.rs`), a curated
-    mutable-column set of 24 entries (`Transform`, `Inventory`,
-    `EquipmentSlots`, `ActorValues`, `Dead`, the M42 AI-procedure states,
-    `CharacterController`, `RigidBodyData` — registered *preserving* so
-    its `serde(skip)` `part_surface_materials` survives the overlay,
-    #5686 — …) — see that constant's own doc for the session-stability
+    mutable-column set of 30 entries (`Transform` — registered
+    *preserving* so the live translation survives the overlay, #5686 —
+    `Inventory`, `EquipmentSlots`, `ActorValues`, `Dead`, the M42
+    AI-procedure states, `CharacterController`, …) — see that constant's own doc for the session-stability
     checklist a new entry must pass, and step 13 for why *this* list
     can't just be "everything registered." Structural columns and
     `AnimationPlayer`/`AnimationStack` are deliberately excluded — their
