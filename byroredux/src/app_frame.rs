@@ -66,6 +66,52 @@ fn push_terrain_parallax(
     );
 }
 
+/// #4052 — EXAL ground cover §11.1. Stand the harness up on the first frame
+/// with a device, then publish this frame's resident exterior terrain cells.
+/// Both are no-ops without `--bench-groundcover-sampling`. (Extracted from
+/// `render_one_frame` to keep it inside its size pin, #5096 / #6143.)
+fn drive_groundcover_bench(
+    config: Option<crate::bench::GroundcoverBenchConfig>,
+    started: &mut bool,
+    world: &byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::VulkanContext,
+) {
+    let Some(config) = config else {
+        return;
+    };
+    if !*started {
+        *started = true;
+        if let Err(error) =
+            ctx.enable_groundcover_bench(config.samples_per_thread, config.blades_per_chunk)
+        {
+            log::error!("--bench-groundcover-sampling: setup failed: {error:#}");
+        }
+    }
+    ctx.set_groundcover_bench_cells(collect_groundcover_bench_cells(world));
+}
+
+/// Mirror the material table's per-frame counters into `ScratchTelemetry`.
+///
+/// #1428 added a `debug_assert_eq!` on the overflow count to catch any frame
+/// that silently degraded over-cap materials to slot 0. #2795 removed it:
+/// exceeding `MAX_MATERIALS` is a supported, documented degrade —
+/// `MaterialTable::intern_by_hash` already fires a `Once`-gated `log::warn!` on
+/// first overflow and routes every over-cap material to the neutral-default
+/// slot 0 for the rest of the session (see `docs/engine/memory-budget.md`) —
+/// not a bug to crash a debug build over. `MAX_INSTANCES` made the same call
+/// for the same reason (#956/#992, also documented there). The `ctx.scratch`
+/// console command and this telemetry still surface the per-frame overflow
+/// count in every build.
+fn publish_material_table_telemetry(
+    world: &byroredux_core::ecs::World,
+    material_table: &byroredux_renderer::MaterialTable,
+) {
+    let mut tlm = world.resource_mut::<ScratchTelemetry>();
+    tlm.materials_unique = material_table.unique_user_count();
+    tlm.materials_interned = material_table.interned_count();
+    tlm.materials_overflow = material_table.overflow_count();
+}
+
 /// Push the terrain distance-softening reach onto every live tile. The setting
 /// (0 = off) moves the point of full softening inward from the full-detail
 /// ring's edge — about `radius_load + 0.5` cells from the camera — so a higher
@@ -370,40 +416,14 @@ impl App {
             // #6195 — bind terrain height maps that finished generating.
             crate::terrain_height::apply_ready_heights(&self.world, ctx);
 
-            // #4052 — EXAL ground cover §11.1. Stand the harness up on the
-            // first frame with a device, then publish this frame's resident
-            // exterior terrain cells. Both are no-ops without
-            // `--bench-groundcover-sampling`.
-            if let Some(config) = self.groundcover_bench {
-                if !self.groundcover_bench_started {
-                    self.groundcover_bench_started = true;
-                    if let Err(error) = ctx.enable_groundcover_bench(
-                        config.samples_per_thread,
-                        config.blades_per_chunk,
-                    ) {
-                        log::error!("--bench-groundcover-sampling: setup failed: {error:#}");
-                    }
-                }
-                ctx.set_groundcover_bench_cells(collect_groundcover_bench_cells(&self.world));
-            }
-
-            {
-                let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
-                tlm.materials_unique = self.material_table.unique_user_count();
-                tlm.materials_interned = self.material_table.interned_count();
-                tlm.materials_overflow = self.material_table.overflow_count();
-            }
-            // #1428 added a `debug_assert_eq!` here to catch any frame that
-            // silently degraded over-cap materials to slot 0. #2795 removed
-            // it: exceeding `MAX_MATERIALS` is a supported, documented
-            // degrade — `MaterialTable::intern_by_hash` already fires a
-            // `Once`-gated `log::warn!` on first overflow and routes every
-            // over-cap material to the neutral-default slot 0 for the rest
-            // of the session (see `docs/engine/memory-budget.md`) — not a
-            // bug to crash a debug build over. `MAX_INSTANCES` made the same
-            // call for the same reason (#956/#992, also documented there).
-            // The `ctx.scratch` console command and `ScratchTelemetry` above
-            // still surface the per-frame overflow count in every build.
+            // #4052 — EXAL ground cover §11.1; no-ops without `--bench-groundcover-sampling`.
+            drive_groundcover_bench(
+                self.groundcover_bench,
+                &mut self.groundcover_bench_started,
+                &self.world,
+                ctx,
+            );
+            publish_material_table_telemetry(&self.world, &self.material_table);
 
             // Defer the rebuild while a streaming batch is in progress — but only
             // for a bounded time, or a long load (FO4's default radius 12) keeps
