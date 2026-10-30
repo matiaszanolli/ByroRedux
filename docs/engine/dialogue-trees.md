@@ -1,15 +1,18 @@
 # Dialogue trees: the greeting, line-lifetime, and force-greet layers
 
-**Status**: Phases G, L and F **landed 2026-10-07** (#5367),
-live-gated by
-[`dt1-dialogue-layers.sh`](../smoke-tests/dt1-dialogue-layers.sh).
-Remaining: Phase 4 (Skyrim force-greet behind the PKDT decode), the SM
-`ADIA` tie-in, and Phase V (voice). This document was the scoping pass
+**Status**: Phases G, L, F, the Skyrim force-greet dialect and V (voice —
+FO3/FNV `.ogg`, Oblivion `.mp3`, Skyrim+ `.fuz`) are **all landed**
+(#5367, #5912), live-gated by
+[`dt1-dialogue-layers.sh`](../smoke-tests/dt1-dialogue-layers.sh) and
+`dt2-skyrim-forcegreet.sh`. This document was the scoping pass
 for the dialogue remainder of M43's open scope and the `Dialogue` item
 on M42's blocked-procedure list. The activation-driven core is already
 shipped; this doc scopes what the corpus proves is missing on top of
 it. The Story Manager landed first (#5366 Phases 0–1) because SM events
-are dialogue-adjacent producers; this is its natural follower.
+are dialogue-adjacent producers; this is its natural follower. The Story
+Manager's `ADIA` event — NPC-to-NPC random conversation scenes — is not a
+dialogue-tree layer; it is the SM producer in `systems/random_conversation.rs`
+([`story-manager.md`](story-manager.md) §6.4).
 
 ## 1. What already exists (do not re-scope)
 
@@ -193,8 +196,9 @@ see §5 phase 5.
    FO3/FNV arm applies. `dialogue.forcegreet` installs either dialect;
    `dt2-skyrim-forcegreet.sh` gates the resolution arms (own-tree and
    instance) and the activation-less open (DialogueGenericHello). The
-   SM `ADIA` tie-in remains deferred with the ADIA-family decode
-   (#5366 §3.1).
+   SM's `ADIA` (Actor Dialogue Event) is NPC-to-NPC conversation scenes and
+   ships as a Story Manager producer, not as part of this tree
+   ([`story-manager.md`](story-manager.md) §6.4).
 5. **V — voice. Landed 2026-10-08.** The authored FNV file-name
    convention is `sound\voice\<plugin>\<voice-type EDID>\<quest>_<topic>_<local
    id 8-hex>_<n>.ogg` — composed from the owning quest's and topic's
@@ -220,8 +224,10 @@ see §5 phase 5.
    missing audio is the common modded shape, not an error. `.fuz`
    (Skyrim+) is a different container (`FUZE`, u32 version, u32 lip size,
    raw `.lip` bytes, then a RIFF **xWMA** audio stream — not XMA2;
-   `skyrim_fuz_container_shape`, #5464) — deliberately V2 scope (tracked by #5912); its
-   decoder is xWMA. Live gate (`dt1-dialogue-layers.sh` leg 3):
+   `skyrim_fuz_container_shape`, #5464). **#5912 landed it**: the payload is plain
+   WMA v2 (fmt tag `0x0161`, 40/40 vanilla files) and the line is decoded through
+   the host's optional `ffmpeg` (no WMA decoder exists in the Rust audio stack;
+   without it the line keeps the subtitle estimate). Live gate (`dt1-dialogue-layers.sh` leg 3):
    the fresh-boot greeting resolves 1 segment / 5.0 s in
    `maleuniquedocmitchell`.
    **Two conventions, not one universal rule.** The above is FO3/FNV.

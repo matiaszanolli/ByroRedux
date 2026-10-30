@@ -9,12 +9,25 @@ three producers (`KILL` at combat death, `CLOC` at `XLCN` LCTN
 granularity, `AHEL` at conversation open — activation greeting and
 force-greet), `RunOn::EventData` over the corpus-decoded R1/R2/L1/L2
 slots, `FromEvent` alias fills, and the `DNAM` policies with `RNAM`
-reset windows over save-persistent node state. Remaining under the
-Phase-4 umbrella: breadth producers whose subsystems have not landed
-(`SCPT` needs the Papyrus `SendStoryEvent` native surface, `LEVL` a
-level-up transition, crime/crafting/pickpocket their systems) and the
-unconsumed `DNAM`/`HNAM`/`MNAM`/`XNAM`/`QNAM` semantics — named from
-xEdit since #5420, awaiting runtime consumers. This document remains the design authority; it is the
+reset windows over save-persistent node state. M43 follow-ups
+(2026-10-30): the walk honors *Num quests to run* (`MNAM`) and *Max
+concurrent quests* (`XNAM`); `ADIA` (NPC-to-NPC random conversations —
+the largest event family), `LEVL` and `ASSU` joined `KILL`/`CLOC`/`AHEL`/
+`SCPT` as producers (§6.4). What is left needs subsystems M43 does not own:
+Skyrim's crime-group family (`ADCR`/`JAIL`/`ESJA`/`ARRT`, plus pay-fine and
+served-time) has no gameplay event to hang on (the engine's jail is the
+Oblivion `GoToJail` sentence model, with no arrest-by-guard or escape), and
+the item/spell families (`CRFT`/`CAST`/`AIPL`/`REMP`) need crafting,
+menu casting and typed acquire/remove, which do not exist; the corpus's
+`FromEvent` fills and node conditions read only `R1`/`R2`/`L1`/`L2`, so a
+form slot (`F1`) is only needed by scripts. `DEAD`
+needs corpse discovery; `SKIL`/`NVPE`/`LOCK`/`HACK`/`IRON`/`OAAT`/`TMEE`/
+`LCLD`/`AOBJ` and Starfield's ship surface each need their own gameplay
+event. Unconsumed fields: `HNAM` (FO4+ node-level reset; semantics not
+settled), `FNAM` (always `2` in the corpus, beside reset windows of 0, 4 and
+24 h — not the 0/1 "24 Hours Till Reset" bool xEdit names it), `QNAM` (a
+redundant pool count), `UNAM` (FO76 only), and `DNAM 0x2` (an editor-side
+warning). This document remains the design authority; it is the
 scoping pass for the Story Manager half of M43's open scope ("Story
 Manager event payloads and search") and the M47.2 row's "ESM-native
 event dispatch / Story Manager" item.
@@ -108,9 +121,9 @@ verification below should be treated as decoded.
 | `MNAM` u32 | SMQN, FO4 rare / SF common | **Num quests to run** (xEdit FO4/SF1) — observed 1–22; present exactly when `DNAM & 0x40000` is set (0 exceptions over Skyrim, FO4, Starfield) | **[consumed]** — the walk starts up to `MNAM` pool quests per pass (`SmNodeRecord::num_quests_to_run`) |
 | `XNAM` u32 | all | **Max concurrent quests** (xEdit `TES5.pas:7056-7111`) — observed 0 (dominant) up to 57; nonzero with or without the Num-quests box | **[consumed]** — nonzero caps the pool's running quests, `0` = uncapped (`SmNodeRecord::max_concurrent_quests`); enforced in phase A and again at start |
 | `QNAM` u32 | SMQN | **Quest Count** — the `NNAM` array's `SetCountPath`; census `QNAM == count(NNAM)` on 448/448 Skyrim, 219/219 FO4, 354/354 Starfield | **[named]** #5420 (not a priority/repeat knob) |
-| `FNAM` u32 | SMQN, TES5 | **24 Hours Till Reset** bool (xEdit `TES5.pas`; 5 vanilla SMQNs) | **[named]** #5420 (raw; no runtime consumer) |
+| `FNAM` u32 | SMQN, TES5 | named **24 Hours Till Reset** (xEdit `TES5.pas`); 7 vanilla quest links in 5 nodes, value **always 2** (not a 0/1 bool), beside `RNAM` windows of 0, 4 and 24 h (2026-10-30 census) | **[named, semantics unsettled]** — raw; deliberately not consumed, since the data does not match the name |
 | `UNAM` u32 | SMQN, FO76 | **Priority**, per quest (xEdit FO76) | **[named]** #5420 (raw; no runtime consumer) |
-| `SNAM` u32 | SMBN/SMEN | when present, points at another node — see §5 | **[open]** (distinct from the sibling use on SMQN) |
+| `SNAM` u32 | SMBN/SMEN | previous-sibling link, as on `SMQN` (#5385: xEdit `Previous Node` on every game) | **[verified]** |
 | FO4+: repeated `NNAM` pool + `RNAM` | SMQN | pools at Skyrim-unseen scale (`RETravelQuests` 44; the Minutemen node's pool measured **14**, not the 16 this doc first guessed), `RNAM` pairing identical to Skyrim's | **[decoded]** (Phase 4 census; same bits, same `RNAM` semantics) |
 | SF: `MNAM` | SMQN | Num quests to run (#5420) | **[named]** |
 
