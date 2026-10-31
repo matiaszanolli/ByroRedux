@@ -86,14 +86,22 @@ pub(crate) fn install_complex_scene_object(world: &mut World, index: &byroredux_
     world.insert_resource(ComplexSceneObject(index.complex_scene_object));
 }
 
-/// Whether a `ComplexSceneMarker` is placed in a loaded cell — the CK's "complex scene" count is non-zero.
+/// Whether an *enabled* `ComplexSceneMarker` is placed in a loaded cell — the CK's "complex scene" count is
+/// non-zero. A marker that is initially disabled, or whose enable parent is off (`XESP`), does not count: the
+/// vanilla marker beside Whiterun is parented to a quest-driven reference, and counting it while dormant held
+/// back every conversation in the city (found by running the game).
 pub(crate) fn complex_scene_active(world: &World) -> bool {
     let Some(marker) = world.try_resource::<ComplexSceneObject>().and_then(|object| object.0) else {
         return false;
     };
     world
         .query::<byroredux_scripting::SceneAliasCandidate>()
-        .is_some_and(|candidates| candidates.iter().any(|(_, candidate)| candidate.base_form_id == marker))
+        .is_some_and(|candidates| {
+            candidates.iter().any(|(_, candidate)| {
+                candidate.base_form_id == marker
+                    && (candidate.reference_form_id == 0 || byroredux_scripting::reference_enabled(world, candidate.reference_form_id))
+            })
+        })
 }
 
 /// The `SMEN` mnemonic of the Actor Hello Event (moving actors passing each other).
@@ -949,6 +957,22 @@ mod tests {
         };
         assert!(run(false), "no marker: the pair converses");
         assert!(!run(true), "a ComplexSceneMarker is placed: nobody starts a conversation");
+    }
+
+    /// A marker whose reference is switched off (initially disabled, or an enable parent that is off) is not part
+    /// of the complex-scene count; switching it on makes it count.
+    #[test]
+    fn a_dormant_complex_scene_marker_does_not_count() {
+        const MARKER: u32 = 0x1C035;
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(ComplexSceneObject(Some(MARKER)));
+        let marker = world.spawn();
+        world.insert(marker, byroredux_scripting::SceneAliasCandidate { reference_form_id: 0x9A781, base_form_id: MARKER, ..Default::default() });
+        world.resource_mut::<byroredux_scripting::ReferenceEnableState>().set_enabled(0x9A781, false);
+        assert!(!complex_scene_active(&world), "switched off: it does not count");
+        world.resource_mut::<byroredux_scripting::ReferenceEnableState>().set_enabled(0x9A781, true);
+        assert!(complex_scene_active(&world), "switched on: it does");
     }
 
     /// A pair beyond the trigger distance: the initiator is held and walks (no event yet), the partner

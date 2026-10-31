@@ -356,8 +356,10 @@ already has the surface:
   stops and faces it, `ADIA` is raised on arrival, and after
   `fAISocialTimerToWaitForEvent` the hold continues while a scene runs for
   either actor and otherwise releases both. The CK's *complex scene* flag
-  holds back every new conversation and hello while a `ComplexSceneMarker` is placed in a
-  loaded cell (`complex_scene_active`; the marker is the `DOBJ` `CMPX` object, Skyrim's
+  holds back every new conversation and hello while an *enabled* `ComplexSceneMarker` is placed in a
+  loaded cell (one whose enable parent, `XESP`, is off does not count — Skyrim's marker beside Whiterun is
+  parented to a quest-driven reference, and counting it while dormant silenced every conversation in the city;
+  the first live run caught it) (`complex_scene_active`; the marker is the `DOBJ` `CMPX` object, Skyrim's
   `ComplexSceneMARKER` — 5 placements in Skyrim.esm, none in Fallout4.esm; xEdit's `SCEN` has no such
   flag). **Sources:** CK *Scenes* ("not if the global complex scene flag is set"),
   *SetSceneIsComplex* (a count of the markers in attached cells), xEdit (`CMPX` default object). What
