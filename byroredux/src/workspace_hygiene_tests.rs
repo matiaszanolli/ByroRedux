@@ -1253,7 +1253,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         ("hkx", 14, 863),
         ("menuxml", 1, 197),
         ("nif", 38, 4289),
-        ("pex", 3, 1215),
+        // M43 — +1: `pex_list_fns.rs`, which prints a script's typed function signatures; it read the
+        // FO4 `OnStory*` event payloads out of `Quest.pex` (docs/engine/story-manager.md §6.4).
+        ("pex", 4, 1241),
         // #6350 re-measure: +3 corpus probes (probe_bptd — the BPTD spike,
         // probe_weap_dnam — DNAM VATS-slot alignment, probe_gmst_vats — the
         // fVATS/fActionPoints defaults dump). All three carry wiki-pinned
