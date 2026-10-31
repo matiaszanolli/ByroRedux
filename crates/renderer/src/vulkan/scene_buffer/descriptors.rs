@@ -413,6 +413,13 @@ impl super::buffers::SceneBuffers {
             buf.destroy(device, allocator);
         }
         self.selected_ray_probe_buffers.clear();
+        // #6250 / #6521 — the ReSTIR moved-surface lists. Missed here when they
+        // were added, which leaked the allocator `Arc` and failed the teardown
+        // `unwrap` (SAFE-2026-10-27-01).
+        for buf in &mut self.moved_surface_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.moved_surface_buffers.clear();
         for staging in &mut self.terrain_tile_staging_buffers {
             if let Some(staging) = staging.take() {
                 staging.destroy();

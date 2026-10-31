@@ -35,6 +35,8 @@ pub use light_history::sort_lights_by_priority_with_ids;
 pub use ray_budget::{GpuRayBudget, RtLodTelemetry};
 
 #[cfg(test)]
+mod destroy_coverage_tests;
+#[cfg(test)]
 mod gpu_instance_layout_tests;
 #[cfg(test)]
 mod indirect_hash_tests;
