@@ -592,6 +592,7 @@ pub fn evaluate_function(
         }
         ConditionFunction::HasLoaded3D => reference::has_loaded_3d(entity, world),
         ConditionFunction::IsHardcore => global::is_hardcore(world),
+        ConditionFunction::EpTemperingItemIsEnchanted => truth(crate::tempering::item_is_enchanted(world)),
         ConditionFunction::HasPerk => actor::has_perk(condition, entity, world),
         ConditionFunction::GetReputation => actor::get_reputation(condition, entity, world),
         ConditionFunction::GetReputationThreshold => actor::get_reputation_threshold(condition, entity, world),

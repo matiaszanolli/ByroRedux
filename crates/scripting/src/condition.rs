@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **87 functions** at their canonical CTDA
+//! lineage. This catalog ships **88 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -53,6 +53,7 @@
 //! | 573   | GetReputation          | `FactionReputation` (FNV)   |
 //! | 575   | GetReputationThreshold | `FactionReputation` + bands |
 //! | 586   | IsHardcore             | `HardcoreMode` (FNV)        |
+//! | 659   | EPTemperingItemIsEnchanted | `TemperingItem` (Skyrim) |
 //! | 629   | GetVMQuestVariable     | `QuestScriptVariables`      |
 //! | 630   | GetVMScriptVariable    | `ScriptVariables`           |
 //! | 359   | GetInCurrentLoc        | `LocationTable` + cell      |

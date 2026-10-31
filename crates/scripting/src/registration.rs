@@ -78,6 +78,7 @@ pub fn register(world: &mut World) {
     loc_ref_types::install(world);
     skills::install(world);
     words_of_power::install(world);
+    tempering::install(world);
     // M47.2 — Papyrus animation event registrations (saved).
     world.init_resource::<AnimationEventRegistrations>();
     // M47.2 — Papyrus hit event registrations (saved).

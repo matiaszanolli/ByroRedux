@@ -97,6 +97,9 @@ pub mod skyrim {
     pub const MOD_SNEAK_ATTACK_MULT: u8 = 18;
     pub const MOD_ATTACK_DAMAGE: u8 = 35;
     pub const MOD_INCOMING_DAMAGE: u8 = 36;
+    /// `Mod Tempering Health` (xEdit `wbPerkEntryPoints`, TES5 index 76): what the Smithing material perks
+    /// (Steel Smithing and kin) multiply when improving an item.
+    pub const MOD_TEMPERING_HEALTH: u8 = 76;
 }
 
 /// The value math of one entry, resolved from its function byte and EPFD.

@@ -504,10 +504,19 @@ already has the surface:
   bench started `WICraftItem01` through `WICraftItemNode`
   (`m43-crafting.sh`). A craft at a forge (`CraftingSmithingForge`,
   `CraftingSmithingSkyforge`) raises Smithing by UESP's `3 × item value^0.65 + 25`
-  through the `AdvanceSkill` queue, so it can raise `SKIL`. **Not modelled**: the
-  perk-improved yields (Arcane Blacksmith and Steel Smithing act on *improving* an
-  item, not crafting one), the crafting animation and Fallout 4's
-  component-based `COBJ` (`FVPA`).
+  through the `AdvanceSkill` queue, so it can raise `SKIL`. **Improving** (the perk-improved
+  yields — they act on tempering, not on the forge craft): a grindstone or armor workbench lists the
+  improvements of the items the player holds, raises one held copy's quality (a per-instance `quality` in the
+  saved item pool, `FORMAT_MAJOR` 122; a copy out of a stack is split off) and earns UESP's
+  `3.8 × Δvalue^0.5 × ΔQ^0.5` XP. The quality is the highest unlocked by the player's Smithing level in UESP's
+  table (*Skyrim:Smithing*, "Item Quality": six tiers, with and without the material perk); an improved weapon
+  hits harder by the tier's rating bonus. The data supplies the perks: the recipes carry `EPTemperingItemIsEnchanted
+  != 1 OR HasPerk(ArcaneBlacksmith)` (condition 659, new in the catalog) and the material perks are
+  `Mod Tempering Health` (entry point 76) × 2.0 conditioned on the item's keyword, composed with the item as the
+  tab subject. **Engine policy / not modelled:** qualities past Legendary (they need Fortify Smithing), the
+  *armor rating* bonus (the engine has no armor rating — the quality is stored and shown), the animation; and
+  the "with perk" column is read as "any material perk applies". Fallout 4's component-based `COBJ` (`FVPA`)
+  and the forge-craft animation are also unmodelled.
 - **The leftover events and their payloads** (per-mnemonic quest counts,
   2026-10-30, quests reachable under each `SMEN` root — Skyrim: `ESJA` 2,
   `DEAD` 2, `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4: `AOBJ` 16, `AHEL` 9, `OAAT` 4,

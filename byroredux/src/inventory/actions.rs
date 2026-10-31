@@ -579,11 +579,16 @@ pub(super) fn reconcile_equipped_weapon(
     inventory_index: Option<InventoryIndex>,
 ) {
     let candidate = inventory_index.and_then(|inventory_index| {
-        let form_id = world
+        let stack = world
             .get::<Inventory>(player)
             .and_then(|inventory| inventory.get(inventory_index).copied())
-            .filter(|stack| stack.count > 0)
-            .map(|stack| stack.base_form_id)?;
+            .filter(|stack| stack.count > 0)?;
+        let form_id = stack.base_form_id;
+        // M43 — an improved weapon (Skyrim tempering) hits harder by its quality's rating bonus.
+        let quality_bonus = stack
+            .instance
+            .and_then(|instance| world.try_resource::<byroredux_core::ecs::resources::ItemInstancePool>()?.get(instance).map(|inst| inst.quality))
+            .map_or(0.0, crate::smithing::weapon_bonus);
         let (damage, reach, speed) =
             world
                 .try_resource::<InventoryCatalog>()
@@ -594,7 +599,7 @@ pub(super) fn reconcile_equipped_weapon(
         Some(EquippedWeapon {
             inventory_index,
             base_form_id: form_id,
-            damage,
+            damage: damage + quality_bonus,
             reach,
             speed,
         })

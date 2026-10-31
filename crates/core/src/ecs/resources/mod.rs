@@ -1549,9 +1549,10 @@ impl Resource for SelectedRef {}
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ItemInstance {
-    /// Reserved for now. Real fields land alongside the consuming
-    /// gameplay system (M45 save round-trip; FO4 OMOD wiring).
-    _reserved: (),
+    /// The improvement quality (Skyrim tempering): `0` unimproved, then `1` Fine, `2` Superior, `3`
+    /// Exquisite, `4` Flawless, `5` Epic, `6` Legendary (UESP *Skyrim:Smithing*, *Item Quality*). Required
+    /// (no default on the wire): a snapshot from before it has no record of an item's improvement.
+    pub quality: u8,
 }
 
 /// Sparse arena for [`ItemInstance`]s with a free-list for slot reuse.
@@ -1620,6 +1621,12 @@ impl ItemInstancePool {
             self.free.push(slot);
         }
         Some(taken)
+    }
+
+    pub fn get_mut(&mut self, id: ItemInstanceId) -> Option<&mut ItemInstance> {
+        self.instances
+            .get_mut(id.0.get() as usize)
+            .and_then(|cell| cell.as_mut())
     }
 
     pub fn get(&self, id: ItemInstanceId) -> Option<&ItemInstance> {

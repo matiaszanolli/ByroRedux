@@ -38,6 +38,7 @@ mod helpers;
 mod interaction;
 mod crafting;
 mod lockpick;
+mod smithing;
 mod inventory;
 mod notifications;
 mod objectives;

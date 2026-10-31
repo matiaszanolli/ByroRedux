@@ -773,7 +773,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 121;
+    const BASELINE_MAJOR: u16 = 122;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1163,7 +1163,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `ObtainWord`, which a saved fragment continuation can serialize.
     // Node reset window — v121 is a genuine bump: `SmNodeRuntime::last_node_fire_hours` is a new required
     // field on a registered resource (when a node last started a quest, for the node-level `HNAM` window).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x611e_c377_a868_ec9a;
+    // Item quality — v122 is a genuine bump: `ItemInstance::quality` (the Skyrim tempering level) is a new
+    // required field on the registered `ItemInstancePool`.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0639_f33a_066d_0ab1;
     // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
     // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
     // keys each shape by its file, so the move alone shifted it; a dump of

@@ -420,6 +420,9 @@ pub struct CommonItemFields {
     /// `KWDA` keyword FormIDs (Skyrim+), what a vendor's buy/sell list
     /// matches. Empty on the games without keywords.
     pub keywords: Vec<u32>,
+    /// `EITM` — the item's object effect (an `ENCH`), `0` when it carries none. An item with one is
+    /// *enchanted*, which tempering (improving) is gated on (`EPTemperingItemIsEnchanted`).
+    pub enchantment: u32,
 }
 
 impl CommonItemFields {
@@ -447,6 +450,11 @@ impl CommonItemFields {
             has_script: named.has_script,
             script_instance: named.script_instance,
             keywords: named.keywords,
+            enchantment: subs
+                .iter()
+                .find(|sub| &sub.sub_type == b"EITM" && sub.data.len() >= 4)
+                .map(|sub| remap_fid(u32::from_le_bytes(sub.data[..4].try_into().unwrap()), remap))
+                .unwrap_or(0),
             ..Self::default()
         }
     }

@@ -602,7 +602,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v120 -> v121 (node reset window): `SmNodeRuntime` gained the required `last_node_fire_hours` (when a
 /// Story Manager node last started a quest, for the node-level `HNAM` window), so a v120 node record no
 /// longer decodes.
-pub const FORMAT_MAJOR: u16 = 121;
+///
+/// v121 -> v122 (item quality): `ItemInstance` gained the required `quality` (the Skyrim tempering level), so
+/// a v121 item instance no longer decodes.
+pub const FORMAT_MAJOR: u16 = 122;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

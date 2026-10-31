@@ -2812,3 +2812,47 @@ fn dropping_an_item_creates_a_reference_and_raises_remove_from_player() {
         MutationResult::Unavailable
     );
 }
+
+/// M43 — an improved weapon (quality in its item instance) hits harder by the quality's rating bonus when it is
+/// equipped; an unimproved copy of the same base does not.
+#[test]
+fn an_improved_weapons_instance_adds_its_quality_bonus_to_the_equipped_damage() {
+    use byroredux_core::ecs::components::{EquippedWeapon, InventoryIndex};
+    use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
+    const SWORD: u32 = 0x13989;
+    let mut world = World::new();
+    world.register::<Inventory>();
+    world.register::<EquippedWeapon>();
+    let player = world.spawn();
+    let mut pool = ItemInstancePool::new();
+    let improved = pool.allocate(ItemInstance { quality: 3 }); // Exquisite: +5 damage
+    world.insert_resource(pool);
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(SWORD, 1));
+    inventory.push(ItemStack { base_form_id: SWORD, count: 1, instance: Some(improved) });
+    world.insert(player, inventory);
+    world.insert_resource(InventoryCatalog {
+        restorations: Default::default(),
+        script_effects: Default::default(),
+        containers: Default::default(),
+        player_base_form_id: PLAYER_NPC_FORM_ID,
+        entries: FxHashMap::from_iter([(
+            SWORD,
+            InventoryItemDefinition {
+                name: "Steel Sword".to_owned(),
+                category: "Weapon",
+                value: 45,
+                weight: 10.0,
+                details: String::new(),
+                equip_target: None,
+                weapon_damage: Some(8.0),
+                weapon_reach: 0.0,
+                weapon_speed: 0.0,
+            },
+        )]),
+    });
+    super::actions::reconcile_equipped_weapon(&mut world, player, Some(InventoryIndex(0)));
+    assert_eq!(world.get::<EquippedWeapon>(player).unwrap().damage, 8.0, "the plain sword");
+    super::actions::reconcile_equipped_weapon(&mut world, player, Some(InventoryIndex(1)));
+    assert_eq!(world.get::<EquippedWeapon>(player).unwrap().damage, 13.0, "8 + the Exquisite bonus of 5");
+}

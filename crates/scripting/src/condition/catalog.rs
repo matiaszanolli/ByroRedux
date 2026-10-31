@@ -128,6 +128,10 @@ pub enum ConditionFunction {
     HasPerk,
     /// New Vegas CTDA 586: the saved Hardcore selection.
     IsHardcore,
+    /// Skyrim CTDA 659 `EPTemperingItemIsEnchanted` (xEdit): 1.0 while the item being tempered carries an
+    /// object effect. Read by the tempering recipes' gate (`item is not enchanted OR HasPerk
+    /// ArcaneBlacksmith`) from [`crate::tempering::TemperingItem`], which the improve action sets.
+    EpTemperingItemIsEnchanted,
     /// `GetReputation(reputation_form_id, axis) → f32`. The Run-On actor's
     /// raw Fame/Infamy with `param_1` (a FNV `REPU` FormID) from its
     /// `FactionReputation` component; `param_2` selects the axis
@@ -468,6 +472,7 @@ const ROWS: &[Row] = &[
 // same behaviour.
     Row { func: ConditionFunction::HasPerk, indices: &[448, 449], name: "HasPerk", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::IsHardcore, indices: &[586], name: "IsHardcore", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::EpTemperingItemIsEnchanted, indices: &[659], name: "EPTemperingItemIsEnchanted", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetXPForNextLevel, indices: &[533], name: "GetXPForNextLevel", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::IsSceneActionComplete, indices: &[550], name: "IsSceneActionComplete", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::HasLoaded3D, indices: &[555], name: "HasLoaded3D", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
@@ -689,7 +694,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 87] = [
+    pub const CATALOG: [ConditionFunction; 88] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -706,6 +711,7 @@ impl ConditionFunction {
         Self::GetEquipped,
         Self::HasPerk,
         Self::IsHardcore,
+        Self::EpTemperingItemIsEnchanted,
         Self::GetXPForNextLevel,
         Self::IsSceneActionComplete,
         Self::HasLoaded3D,
@@ -964,6 +970,7 @@ mod tests {
                 ConditionFunction::GetIsID |
                 ConditionFunction::HasPerk |
                 ConditionFunction::IsHardcore |
+                ConditionFunction::EpTemperingItemIsEnchanted |
                 ConditionFunction::GetReputation |
                 ConditionFunction::GetReputationThreshold |
                 ConditionFunction::GetVMScriptVariable |
