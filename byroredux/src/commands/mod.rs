@@ -186,6 +186,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(story_actions::StartReleaseCommand);
     registry.register(story_actions::PlaceAtCommand);
     registry.register(story_actions::SmNodesCommand);
+    registry.register(story_actions::ConvStatusCommand);
+    registry.register(story_actions::EntityMoveCommand);
     registry.register(HardcoreCommand);
     registry.register(SettingsStatusCommand);
     registry.register(WaterDumpCommand);

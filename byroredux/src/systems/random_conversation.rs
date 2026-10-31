@@ -334,7 +334,7 @@ impl RandomConversationState {
 
 /// Every actor that may take part now: a live ambient package allowing random
 /// conversations, outside a scene and not interrupted.
-fn collect_participants(world: &World) -> Vec<Participant> {
+pub(crate) fn collect_participants(world: &World) -> Vec<Participant> {
     use crate::components::AmbientPackageRuntime;
     // The runtime query is released before the registry is taken: no two
     // guards are ever held together here.

@@ -9,6 +9,8 @@
 //! - `place.at <base_hex> [dx dy dz]` — create a reference of any base beside the player (the machinery `PlaceAtMe`
 //!   and item drops use), to bring an actor and an object together at runtime.
 //! - `sm.nodes [filter]` — the loaded Story Manager quest nodes that carry a node-level reset window (`HNAM`).
+//! - `conv.status` / `entity.move <entity> <dx> <dy> <dz>` — the actors the random-conversation pass can use, and a nudge
+//!   of one actor's position (renderer Y-up units), to stage a mover for the hello event.
 //! - `jail.escape` — the player walks out of the cell to the jail's exit without serving: `ESJA`.
 
 use super::shared::*;
@@ -217,5 +219,68 @@ impl ConsoleCommand for SmNodesCommand {
         let mut lines = vec![format!("{} of {} node(s) carry a reset window (HNAM)", windowed.len(), tree.nodes.len())];
         lines.extend(windowed.iter().take(40).map(|(name, hours, quests)| format!("node {name} reset {hours} h quests {quests}")));
         CommandOutput::lines(lines)
+    }
+}
+
+pub(crate) struct ConvStatusCommand;
+
+impl ConsoleCommand for ConvStatusCommand {
+    fn name(&self) -> &str {
+        "conv.status"
+    }
+    fn description(&self) -> &str {
+        "List the actors the random-conversation pass can use (a live package that allows random conversations)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let participants = crate::systems::random_conversation::collect_participants(world);
+        let mut lines = vec![format!("{} conversation participant(s)", participants.len())];
+        for p in participants.iter().take(40) {
+            lines.push(format!(
+                "participant {} at ({:.1}, {:.1}, {:.1}) initiates={}",
+                p.entity, p.position.x, p.position.y, p.position.z, p.can_initiate
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+pub(crate) struct EntityMoveCommand;
+
+impl ConsoleCommand for EntityMoveCommand {
+    fn name(&self) -> &str {
+        "entity.move"
+    }
+    fn description(&self) -> &str {
+        "Nudge an entity's position by an offset in renderer Y-up units: entity.move <entity> <dx> <dy> <dz>"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let parts: Vec<&str> = args.split_whitespace().collect();
+        let (Some(entity), Some(dx), Some(dy), Some(dz)) = (
+            parts.first().and_then(|p| p.parse::<u32>().ok()),
+            parts.get(1).and_then(|p| p.parse::<f32>().ok()),
+            parts.get(2).and_then(|p| p.parse::<f32>().ok()),
+            parts.get(3).and_then(|p| p.parse::<f32>().ok()),
+        ) else {
+            return CommandOutput::error("usage: entity.move <entity> <dx> <dy> <dz>");
+        };
+        let delta = byroredux_core::math::Vec3::new(dx, dy, dz);
+        let mut moved = false;
+        if let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::components::Transform>() {
+            if let Some(transform) = transforms.get_mut(entity) {
+                transform.translation += delta;
+                moved = true;
+            }
+        }
+        if let Some(mut globals) = world.query_mut::<GlobalTransform>() {
+            if let Some(global) = globals.get_mut(entity) {
+                global.translation += delta;
+                moved = true;
+            }
+        }
+        if moved {
+            CommandOutput::line(format!("entity {entity} moved by ({dx}, {dy}, {dz})"))
+        } else {
+            CommandOutput::error(format!("entity {entity} has no position"))
+        }
     }
 }

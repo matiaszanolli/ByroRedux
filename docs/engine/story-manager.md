@@ -477,9 +477,13 @@ already has the surface:
   settings. An actor is moving when it travelled 10 units since the previous one-second pass
   (the CK gives no speed). `AHEL` is raised on the spot with `R1` the initiator, `R2` the
   partner, `L1` the location — nobody is held or walked. Movement decides it: an initiator that is moving says hello,
-  one standing at its post converses (a moving Sandbox actor says hello, unit-tested). Unit-tested only: the
-  Whiterun grid raised no hello in 7 minutes — an initiator must be moving *and* hold a package that allows random
-  conversations, and the vanilla data offers almost none — so a hello has not been observed live.
+  one standing at its post converses (a moving Sandbox actor says hello, unit-tested). **Live-gated** by [`m43-hello.sh`](../smoke-tests/m43-hello.sh) (2026-10-31): Whiterun's real
+  conversation participants are all idle sandboxers (7 minutes of plain play raised none), so the gate stages movers —
+  `conv.status` lists the participants and `entity.move` pushes four of them back and forth — and the real pass then
+  logged `actor hello: 8444 -> 8359`; the same staging raised one in Fallout 4's `CabotHouse01` (`4587 -> 4934`,
+  after bringing the pair inside the social radius). In that Fallout 4 run the Story Manager started no quest from
+  the hello: the only window node under the hello event, `CabotHouseHellosGeneral`, sits behind a node whose two
+  conditions test the same event slot for both 1 and 0, so its window gating has still not been watched live.
 - **Also landed (M43, 2026-10-30)**: `LEVL` (new level in `V1`), `ASSU`
   (victim `R1`, attacker `R2`, `L1`, crime flag `V1`), `AIPL` (Player Add Item
   — container `R2` from a loot transfer, `L1`, acquire type `V1`; pickups
