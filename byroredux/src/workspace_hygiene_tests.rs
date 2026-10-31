@@ -136,6 +136,67 @@ fn visit_workspace_rs_files(dir: &std::path::Path, visit: &mut dyn FnMut(&std::p
     }
 }
 
+/// #6522 — the one "bin + every crate + every tool" root walk the workspace-wide
+/// scans share: the binary's `src`, then each `crates/*` and `tools/*` member
+/// (vendored `nifskope` excluded). `whole_crate` visits the member directory
+/// itself (its `tests/`, `examples/` and `benches/` too, for the scans whose idiom
+/// had fixture copies); otherwise only its `src`. Enumerated from the manifest
+/// outward, so a new crate or tool is covered without widening a list, and a
+/// directory that is not a crate (no `src`) drops out.
+fn production_scan_roots(whole_crate: bool) -> Vec<std::path::PathBuf> {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut roots = vec![manifest.join("src")];
+    for group in ["../crates", "../tools"] {
+        let Ok(entries) = std::fs::read_dir(manifest.join(group)) else {
+            continue;
+        };
+        let mut members: Vec<_> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir() && path.file_name().is_some_and(|n| n != "nifskope"))
+            .filter(|path| path.join("src").is_dir())
+            .collect();
+        members.sort();
+        for member in members {
+            roots.push(if whole_crate { member } else { member.join("src") });
+        }
+    }
+    roots
+}
+
+#[test]
+fn the_shared_scan_roots_cover_the_bin_every_crate_and_every_tool() {
+    // #6522 — five scans claimed workspace-wide coverage while walking `crates/` only.
+    let roots: Vec<String> = production_scan_roots(false)
+        .iter()
+        .map(|root| root.to_string_lossy().replace('\\', "/"))
+        .collect();
+    for needle in ["/src", "crates/core/src", "tools/byro-dbg/src", "tools/texture-upscale/src"] {
+        assert!(
+            roots.iter().any(|root| root.ends_with(needle)),
+            "production_scan_roots(false) lacks `{needle}`: {roots:?}"
+        );
+    }
+    assert!(
+        !roots.iter().any(|root| root.contains("nifskope")),
+        "the vendored nifskope tree is out of scope: {roots:?}"
+    );
+    let whole = production_scan_roots(true);
+    assert!(
+        whole.iter().any(|root| root.ends_with("tools/byro-dbg")),
+        "whole-crate roots visit the member directory itself: {whole:?}"
+    );
+}
+
+/// Whether `path` is test-only source (`*_tests.rs`, `tests.rs`, anything under `tests/`),
+/// which the production-code scans skip: fixtures may spell an idiom out on purpose.
+fn is_test_source(path: &std::path::Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    name.ends_with("_tests.rs")
+        || name == "tests.rs"
+        || path.components().any(|c| c.as_os_str() == "tests")
+}
+
 /// #3749 (TD9-2026-08-30-01) — collect every source file line whose bare
 /// `#[ignore]` (no `= "reason"`) makes a gated test's skip condition
 /// undiscoverable without reading the function body. Only exact
@@ -985,20 +1046,12 @@ fn no_production_code_reads_le_ints_by_hand() {
 /// spelled-out step, and for the deleted copy's name.
 #[test]
 fn no_production_code_spells_the_pool_to_local_walk_by_hand() {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_crates = manifest.join("../crates");
-    let mut roots = vec![manifest.join("src")];
-    for entry in std::fs::read_dir(&workspace_crates).expect("crates/ readable").flatten() {
-        if entry.path().is_dir() {
-            roots.push(entry.path().join("src"));
-        }
-    }
+    let roots = production_scan_roots(false);
     let mut found = Vec::new();
     for root in roots {
         visit_workspace_rs_files(&root, &mut |path, contents| {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let in_test_dir = path.components().any(|c| c.as_os_str() == "tests");
-            if name.ends_with("_tests.rs") || name == "tests.rs" || in_test_dir || name == "form_id.rs" {
+            if is_test_source(path) || name == "form_id.rs" {
                 return;
             }
             let production = byroredux_core::source_scan::production_text_or_whole(contents);
@@ -1055,12 +1108,7 @@ fn hand_spelled_default_inserts(source: &str) -> Vec<usize> {
 #[test]
 fn no_source_spells_insert_default_if_absent_by_hand() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut roots = vec![manifest.join("src")];
-    for entry in std::fs::read_dir(manifest.join("../crates")).expect("crates/ readable").flatten() {
-        if entry.path().is_dir() {
-            roots.push(entry.path());
-        }
-    }
+    let roots = production_scan_roots(true);
     let mut found = Vec::new();
     for root in roots {
         visit_workspace_rs_files(&root, &mut |path, contents| {
@@ -1112,10 +1160,7 @@ fn default_insert_scanner_matches_only_the_default_shape() {
 #[test]
 fn no_doc_block_is_spliced_onto_the_wrong_item() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut roots = vec![manifest.join("src")];
-    for entry in std::fs::read_dir(manifest.join("../crates")).expect("crates/ readable").flatten() {
-        roots.push(entry.path().join("src"));
-    }
+    let roots = production_scan_roots(false);
     let mut found = Vec::new();
     for root in roots {
         visit_workspace_rs_files(&root, &mut |path, contents| {
@@ -1170,12 +1215,7 @@ fn no_source_hand_spells_the_player_entity_read() {
 fn weapon_fixtures_go_through_weapon_stub() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let needle = ["reload_", "anim:"].concat();
-    let mut roots = vec![manifest.join("src")];
-    for entry in std::fs::read_dir(manifest.join("../crates")).expect("crates/ readable").flatten() {
-        if entry.path().is_dir() {
-            roots.push(entry.path());
-        }
-    }
+    let roots = production_scan_roots(true);
     let mut found = Vec::new();
     for root in roots {
         visit_workspace_rs_files(&root, &mut |path, contents| {
@@ -1503,21 +1543,12 @@ pub(crate) fn crate_visible_ignored() {}
 /// spell the swap out on purpose.
 #[test]
 fn no_production_vec3_hand_rolls_the_zup_to_yup_swap() {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut roots = vec![manifest.join("src")];
-    for entry in std::fs::read_dir(manifest.join("../crates")).expect("workspace crates/ directory") {
-        let src = entry.expect("unreadable crates/ entry").path().join("src");
-        if src.is_dir() {
-            roots.push(src);
-        }
-    }
+    let roots = production_scan_roots(false);
 
     let mut found = Vec::new();
     for root in &roots {
         visit_workspace_rs_files(root, &mut |path, contents| {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let in_tests_dir = path.components().any(|c| c.as_os_str() == "tests");
-            if name.ends_with("_tests.rs") || name == "tests.rs" || in_tests_dir {
+            if is_test_source(path) {
                 return;
             }
             // Line numbers would be of the stripped text, so name the line.
