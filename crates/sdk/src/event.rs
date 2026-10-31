@@ -722,6 +722,7 @@ impl InputAction {
             "inventory" => Self::Inventory,
             "quicksave" => Self::Quicksave,
             "quickload" => Self::Quickload,
+            "vats" => Self::Vats,
             "pause" => Self::Pause,
             _ => return None,
         })
@@ -861,4 +862,63 @@ pub struct EquipmentEvent {
 pub struct UpdateEvent {
     /// Actual engine time accumulated since this subscriber's previous fire.
     pub elapsed_seconds: f32,
+}
+
+/// #6528 — `parse` is hand-written beside `as_str`, so a variant added to one
+/// and not the other (`Vats`, 818eba7f4) made a manifest's own spelling of an
+/// action fail validation. Every variant must round-trip; the exhaustive
+/// `match`es fail to compile when a variant is added without being listed.
+#[cfg(test)]
+mod spelling_roundtrip_tests {
+    use super::*;
+
+    #[test]
+    fn every_input_action_round_trips_through_its_manifest_spelling() {
+        let all = [
+            InputAction::MoveForward,
+            InputAction::MoveBackward,
+            InputAction::StrafeLeft,
+            InputAction::StrafeRight,
+            InputAction::Jump,
+            InputAction::Sprint,
+            InputAction::Activate,
+            InputAction::Attack,
+            InputAction::Block,
+            InputAction::Inventory,
+            InputAction::Quicksave,
+            InputAction::Quickload,
+            InputAction::Vats,
+            InputAction::Pause,
+        ];
+        for action in all {
+            // Exhaustive: adding a variant breaks the build here until it is listed above.
+            match action {
+                InputAction::MoveForward
+                | InputAction::MoveBackward
+                | InputAction::StrafeLeft
+                | InputAction::StrafeRight
+                | InputAction::Jump
+                | InputAction::Sprint
+                | InputAction::Activate
+                | InputAction::Attack
+                | InputAction::Block
+                | InputAction::Inventory
+                | InputAction::Quicksave
+                | InputAction::Quickload
+                | InputAction::Vats
+                | InputAction::Pause => {}
+            }
+            assert_eq!(InputAction::parse(action.as_str()), Some(action), "{action:?}");
+        }
+    }
+
+    #[test]
+    fn every_session_phase_round_trips_through_its_manifest_spelling() {
+        for phase in [SessionPhase::NewGame, SessionPhase::SaveComplete, SessionPhase::LoadComplete] {
+            match phase {
+                SessionPhase::NewGame | SessionPhase::SaveComplete | SessionPhase::LoadComplete => {}
+            }
+            assert_eq!(SessionPhase::parse(phase.as_str()), Some(phase), "{phase:?}");
+        }
+    }
 }
