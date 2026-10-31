@@ -242,6 +242,7 @@ pub(crate) fn apply_effect(
         | Effect::SetPlayerTeammate { .. }
         | Effect::SetDoingFavor { .. }
         | Effect::AdvanceSkill { .. }
+        | Effect::ObtainWord { .. }
         | Effect::AddAchievement { .. }
         | Effect::IncrementStat { .. }
         | Effect::PlayerCaps { .. } => {

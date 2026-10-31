@@ -176,6 +176,7 @@ pub(super) fn apply_quest_scoped_effect(
         | Effect::IncrementStat { .. }
         | Effect::AddAchievement { .. }
         | Effect::AdvanceSkill { .. }
+        | Effect::ObtainWord { .. }
         | Effect::SetLinkedRef { .. }
         | Effect::SetLocRefType { .. }
         | Effect::MoveToEditorLocation { .. }

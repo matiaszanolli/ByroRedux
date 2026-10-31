@@ -123,6 +123,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::AdvanceSkill`s, queued on
     /// [`crate::PendingSkillAdvances`] after the guards drop.
     pub(super) skill_advances: Vec<(String, f32)>,
+    /// M43 — `Effect::ObtainWord`s (`WOOP` FormIDs), applied through
+    /// [`crate::words_of_power::obtain_word`] after the guards drop.
+    pub(super) word_gains: Vec<u32>,
     /// M47.2 — `Effect::SetLinkedRef`s: (source, keyword, target), applied to
     /// [`crate::LinkedRefOverrides`] after the guards drop.
     pub(super) linked_ref_changes: Vec<(u32, u32, u32)>,
@@ -315,6 +318,7 @@ impl DeferredFragmentEffects {
             misc_stats: Vec::new(),
             achievements: Vec::new(),
             skill_advances: Vec::new(),
+            word_gains: Vec::new(),
             linked_ref_changes: Vec::new(),
             loc_ref_type_changes: Vec::new(),
             crime_faction_changes: Vec::new(),
@@ -429,6 +433,7 @@ impl DeferredFragmentEffects {
         self.flush_form_list_changes(world);
         self.flush_loc_ref_type_changes(world);
         self.flush_skill_advances(world);
+        self.flush_word_gains(world);
         self.flush_achievements(world);
         self.flush_misc_stats(world);
         self.flush_player_xp(world);
@@ -829,6 +834,12 @@ impl DeferredFragmentEffects {
                 pending.0.append(&mut self.skill_advances);
             }
             self.skill_advances.clear();
+        }
+    }
+
+    fn flush_word_gains(&mut self, world: &World) {
+        for word in std::mem::take(&mut self.word_gains) {
+            crate::words_of_power::obtain_word(world, word);
         }
     }
 

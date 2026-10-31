@@ -516,6 +516,8 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::EventRegistrations>("EventRegistrations");
     // M47.2 — Game.AdvanceSkill's banked usage XP per skill.
     byroredux_scripting::skills::register_saved(&mut r);
+    // M43 — Game.TeachWord / UnlockWord: the words of power the player has.
+    byroredux_scripting::words_of_power::register_saved(&mut r);
     r
         // M47.2 — script AddKeyword / RemoveKeyword changes.
         .register_resource::<byroredux_scripting::keywords::ScriptedKeywords>("ScriptedKeywords")

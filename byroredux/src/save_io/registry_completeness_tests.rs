@@ -1353,9 +1353,9 @@ fn every_delta_column_is_parked_or_explicitly_not() {
 /// regression — put the row back where it was.
 #[test]
 fn the_schema_fingerprint_is_pinned() {
-    // Crime knowledge — `CrimeKnowledge` joined the registry as a new resource (who knows of which
-    // crime), registered after `ObScriptLedger`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x28a8_2a40_9627_56e4;
+    // Words of power — `KnownWords` joined the registry as a new resource (which words of power the
+    // player has obtained), registered after `SkillProgress`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xd2b0_3894_ed0d_b7aa;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

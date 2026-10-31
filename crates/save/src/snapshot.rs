@@ -594,7 +594,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v118 -> v119 (crime knowledge): the `CrimeKnowledge` resource joined the registry (who knows of
 /// which crime), so a v118 save has no record of it and the schema no longer matches.
-pub const FORMAT_MAJOR: u16 = 119;
+///
+/// v119 -> v120 (words of power): the `KnownWords` resource joined the registry (which words of power
+/// the player has obtained, `Game.TeachWord` / `UnlockWord`), so a v119 save has no record of it and the
+/// schema no longer matches.
+pub const FORMAT_MAJOR: u16 = 120;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

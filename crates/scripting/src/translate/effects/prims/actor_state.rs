@@ -88,6 +88,16 @@ pub(super) fn prim_advance_skill(e: &Expr, _scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `Game.TeachWord(WordOfPower akWord)` / `Game.UnlockWord(WordOfPower akWord)` naming a script
+/// property (CK *TeachWord - Game*, *UnlockWord - Game*).
+pub(super) fn prim_obtain_word(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let args = static_call(e, "Game", "TeachWord").or_else(|| static_call(e, "Game", "UnlockWord"))?;
+    if args.len() != 1 {
+        return None;
+    }
+    Some(Effect::ObtainWord { word: receiver_object(&args[0].value.node, scope)? })
+}
+
 /// `Actor.SetRelationshipRank(Actor akOther, int aiRank)` with a literal rank
 /// in the CK's −4 … +4.
 pub(super) fn prim_set_relationship_rank(e: &Expr, scope: &Scope) -> Option<Effect> {

@@ -369,6 +369,13 @@ already has the surface:
   The live run's pair was already inside the trigger distance, so the walk
   itself is covered by the unit test (teleport into range) and the shared
   step, not by that run.
+- **`NVPE`, New Voice Power** (M43, `words_of_power.rs`). CK *New Voice Power*: "whenever the player
+  obtains a new Word of Power". `Game.TeachWord` and `Game.UnlockWord` (one `Effect::ObtainWord`: they
+  differ only in the shout item `TeachWord` adds, which is not modelled) record the word in the saved
+  `KnownWords` (`FORMAT_MAJOR` 120) and raise `NVPE` with the player in `R1` the first time a word is
+  new. The word itself is a form the quests never read and no event slot carries. Shouting, dragon
+  souls and a shout menu are not modelled; nothing in the engine yet calls these natives except scripts
+  (the word walls are the Papyrus `WordWallScript`). Unit- and VM-tested; not live-gated.
 - **`DEAD`, Discover Dead Body** (M43, `systems/dead_body.rs`). CK *Dead Body*: "an actor discovers a dead
   body", with the discoverer, the dead actor and the location. No setting or page gives a discovery
   distance (`fCheckDeadBodyTimer` is a Fallout leftover absent from the master), so the one perception model
@@ -447,8 +454,7 @@ already has the surface:
 
   `ARRT`/`ESJA` — Skyrim's guards are package-driven and the engine's crime
   pass is the Oblivion/FNV class-flag model, so a wanted-player greeting by
-  a guard cannot occur on a game that has a Story Manager; `NVPE` — no
-  shouts. FO4's events are named by their SMEN editor ids (`AOBJ`: shooting
+  a guard cannot occur on a game that has a Story Manager. FO4's events are named by their SMEN editor ids (`AOBJ`: shooting
   at / switching workshop objects, `HACK`: `PlayerHackSuccess`, `LOCK`:
   `PlayerLockpickSuccess` / `CA_PickLock`, `OAAT`: attach events such as
   `REDeadActorAttach`, `TMEE`: `TriggerMineExplosionEvent`, `IRON`:

@@ -67,6 +67,7 @@ pub mod messages;
 pub mod name_table;
 pub mod scanning;
 pub mod skills;
+pub mod words_of_power;
 pub mod speechcraft;
 pub mod misc_stats;
 pub mod location;

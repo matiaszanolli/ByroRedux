@@ -48,6 +48,11 @@ pub(super) fn apply_player_stats_effect(
             deferred.skill_advances.push((skill.clone(), *magnitude));
             None
         }
+        Effect::ObtainWord { word } => {
+            let word = resolve_property_form_id(vmad, word.property_name())?;
+            deferred.word_gains.push(word);
+            None
+        }
         Effect::AddAchievement { id } => {
             deferred.achievements.push(*id);
             None

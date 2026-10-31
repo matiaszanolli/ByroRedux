@@ -6087,6 +6087,26 @@ fn a_call_on_none_is_ignored_for_effect_and_stops_for_a_value() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 15, "the value call stopped the run");
 }
 
+/// `Game.TeachWord` / `Game.UnlockWord` give the player a word of power and raise `NVPE` once.
+#[test]
+fn teaching_a_word_records_it_and_raises_new_voice_power() {
+    let script = parsed_source(
+        "ScriptName QF_VmTest extends Quest\n\
+         Form Property Marker Auto\n\
+         Function Fragment_1()\n Game.TeachWord(Marker)\n Game.UnlockWord(Marker)\n EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::words_of_power::KnownWords>().0.iter().copied().collect::<Vec<_>>(), [MARKER]);
+    let raised = world
+        .query::<crate::story_manager::StoryEvent>()
+        .map(|events| events.iter().filter(|(_, e)| e.mnemonic == *b"NVPE").count())
+        .unwrap_or(0);
+    assert_eq!(raised, 1, "the second call finds the word known");
+}
+
 /// `Game.AdvanceSkill` queues the usage XP for the host's skill system.
 #[test]
 fn advance_skill_queues_the_usage_xp() {

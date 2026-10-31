@@ -649,6 +649,10 @@ pub enum Effect {
     /// M47.2 — `Game.AdvanceSkill(asSkillName, afMagnitude)` with literal
     /// arguments ([`crate::skills`]).
     AdvanceSkill { skill: String, magnitude: f32 },
+    /// M43 — `Game.TeachWord(akWord)` / `Game.UnlockWord(akWord)`: the player obtains a word of
+    /// power (the Story Manager's `NVPE`). The two differ only in the shout item `TeachWord` adds,
+    /// which this engine does not model, so one effect covers both.
+    ObtainWord { word: ObjectRef },
     /// M47.2 — `<actor>.SetPlayerTeammate([abTeammate], [abCanDoFavor])`
     /// ([`crate::FollowerState`]).
     SetPlayerTeammate {
@@ -966,6 +970,7 @@ impl Effect {
             Effect::IncrementStat { .. } => "IncrementStat",
             Effect::AddAchievement { .. } => "AddAchievement",
             Effect::AdvanceSkill { .. } => "AdvanceSkill",
+            Effect::ObtainWord { .. } => "ObtainWord",
             Effect::SetLinkedRef { .. } => "SetLinkedRef",
             Effect::SetLocRefType { .. } => "SetLocRefType",
             Effect::MoveToEditorLocation { .. } => "MoveToEditorLocation",

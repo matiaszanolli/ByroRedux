@@ -116,6 +116,7 @@ pub(super) const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_loc_ref_type,
     prim_damage_actor_value,
     prim_advance_skill,
+    prim_obtain_word,
     prim_set_player_teammate,
     prim_set_doing_favor,
     prim_player_caps,
