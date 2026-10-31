@@ -297,8 +297,8 @@ unusually expensive unit can overshoot the 16 ms nominal budget by
 providers (`terrain_lod.rs`/`object_lod.rs`/`placement_lod.rs`, all
 call `budget.try_take()`) on the identical shared wall-clock deadline.
 **What's still genuinely true**: the global vertex/index SSBO rebuild
-(`MeshRegistry::rebuild_geometry_ssbo`, `crates/renderer/src/mesh.rs:1004-1083`,
-calling `build_geometry_ssbo`, `mesh.rs:921-995`) is a single atomic Vulkan call
+(`MeshRegistry::rebuild_geometry_ssbo`, `crates/renderer/src/mesh/geometry_ssbo.rs`,
+calling `build_geometry_ssbo`, same file) is a single atomic Vulkan call
 with zero internal yield capability — the only surrounding logic
 (`WorldStreamingState::geometry_batch_in_progress`, `streaming/mod.rs` —
 the cite predates the #5092 split,
