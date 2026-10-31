@@ -1521,7 +1521,7 @@ fn unlock_with_carried_key(world: &World, target: EntityId, commit: bool) -> boo
     }
     if picked {
         crate::notifications::push(world, "Picked the lock");
-        crate::lockpick::raise_lockpick_event(world);
+        crate::lockpick::raise_lockpick_event(world, target);
     } else {
         crate::notifications::push(world, "Unlocked with key");
     }
@@ -3113,6 +3113,7 @@ mod tests {
         assert_eq!(crate::notifications::drain(&world), vec!["Picked the lock".to_owned()]);
         let event = world.get::<byroredux_scripting::story_manager::StoryEvent>(player).map(|e| *e).expect("LOCK raised");
         assert_eq!(event.mnemonic, crate::lockpick::LOCK);
+        assert_eq!(event.reference_2, Some(door), "the lock rides in R2");
         assert_eq!(world.get::<Inventory>(player).unwrap().count_of(PIN), 3, "the pick is not used up");
     }
 }

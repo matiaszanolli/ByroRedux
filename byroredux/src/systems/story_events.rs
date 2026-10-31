@@ -374,6 +374,35 @@ pub(crate) fn raise_craft_story_event(world: &World, player: EntityId, bench: En
 /// drowning), L1 = the session's current LCTN (`WIKill06` authors a
 /// KILL→L1 alias fill). On pre-Creation titles this is a no-op (no SM tree
 /// installed).
+/// M43 — `OAAT` (Actor Attach): an actor was placed into a loaded cell. `OnStoryActorAttach(akActor,
+/// akLocation)` (read from `Quest.pex`): the actor in `R1`, the session location in `L1`. The code is read as
+/// the actor-attach event from its child quests (`REDeadActorAttach` and kin); its `SMEN` authors no
+/// editor id. Idle on a title whose tree has no `OAAT` root.
+pub(crate) fn raise_actor_attach_story_event(world: &World, actor: EntityId) {
+    use byroredux_scripting::story_manager::StoryEvent;
+    const OAAT: [u8; 4] = *b"OAAT";
+    if !world
+        .try_resource::<byroredux_scripting::story_manager::SmTree>()
+        .is_some_and(|tree| tree.roots_by_mnemonic.contains_key(&OAAT))
+    {
+        return;
+    }
+    // #5372 — the location is resolved before the StoryEvent write guard.
+    let location_1 = resolve_current_lctn(world);
+    byroredux_scripting::story_manager::raise_story_event(
+        world,
+        actor,
+        StoryEvent {
+            mnemonic: OAAT,
+            reference_1: actor,
+            reference_2: None,
+            location_1,
+            location_2: None,
+            scripted: None,
+        },
+    );
+}
+
 pub(crate) fn raise_kill_story_event(world: &World, victim: EntityId, killer: Option<EntityId>) {
     use byroredux_scripting::story_manager::StoryEvent;
     // #5372 — resolve the location BEFORE taking the StoryEvent write
@@ -397,6 +426,35 @@ pub(crate) fn raise_kill_story_event(world: &World, victim: EntityId, killer: Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M43 — `OAAT` rides `OnStoryActorAttach(akActor, akLocation)`: the actor in `R1`; idle without the root.
+    #[test]
+    fn an_attached_actor_raises_actor_attach_when_the_tree_has_the_root() {
+        use byroredux_plugin::esm::records::{SmNodeKind, SmNodeRecord};
+        let build = |root: bool| {
+            let mut world = World::new();
+            byroredux_scripting::register(&mut world);
+            let records = if root {
+                std::collections::HashMap::from([(
+                    0x10,
+                    SmNodeRecord { form_id: 0x10, kind: SmNodeKind::Event, event_mnemonic: Some(*b"OAAT"), ..Default::default() },
+                )])
+            } else {
+                std::collections::HashMap::new()
+            };
+            byroredux_scripting::story_manager::install_story_manager(&mut world, &records);
+            world
+        };
+        let mut world = build(true);
+        let actor = world.spawn();
+        raise_actor_attach_story_event(&world, actor);
+        let event = world.get::<byroredux_scripting::story_manager::StoryEvent>(actor).map(|e| *e).expect("raised");
+        assert_eq!((event.mnemonic, event.reference_1, event.reference_2), (*b"OAAT", actor, None));
+        let mut world = build(false);
+        let actor = world.spawn();
+        raise_actor_attach_story_event(&world, actor);
+        assert!(world.get::<byroredux_scripting::story_manager::StoryEvent>(actor).is_none(), "no OAAT root");
+    }
 
     /// #5366 Phase 4 — the AHEL producer stamps the hello shape the CK
     /// documents (`OnStoryHello(akLocation, akActor1, akActor2)`):

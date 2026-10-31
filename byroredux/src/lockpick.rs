@@ -14,8 +14,9 @@
 //! - **Where it applies.** Only on a title whose Story Manager tree has a `LOCK` root (Fallout 4 and later);
 //!   every other game keeps "a lock without its key stays shut" until its own lock rules are sourced.
 //!
-//! A picked lock is recorded like a key unlock (the persistent lock ledger), and `LOCK` is raised with the
-//! player in `R1` — the slots of that event are undocumented, and the quests under it read none.
+//! A picked lock is recorded like a key unlock (the persistent lock ledger), and `LOCK` is raised as
+//! `OnStoryPickLock(akActor, akLock)` — the player in `R1`, the lock's reference in `R2` (the signature is
+//! read from `Quest.pex` in `Fallout4 - Misc.ba2`).
 
 use byroredux_core::ecs::components::{Inventory, Locked};
 use byroredux_core::ecs::resource::Resource;
@@ -69,8 +70,9 @@ pub(crate) fn can_pick(world: &World, target: EntityId) -> bool {
         .unwrap_or(false)
 }
 
-/// The lock on the player's activated target was picked: raise `LOCK`.
-pub(crate) fn raise_lockpick_event(world: &World) {
+/// The lock on `target` was picked by the player: raise `LOCK` with `OnStoryPickLock(akActor, akLock)`'s
+/// two references — the player in `R1`, the lock's reference in `R2` (`Quest.pex` of `Fallout4 - Misc.ba2`).
+pub(crate) fn raise_lockpick_event(world: &World, target: EntityId) {
     let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world) else {
         return;
     };
@@ -80,7 +82,7 @@ pub(crate) fn raise_lockpick_event(world: &World) {
         StoryEvent {
             mnemonic: LOCK,
             reference_1: player,
-            reference_2: None,
+            reference_2: Some(target),
             location_1: None,
             location_2: None,
             scripted: None,
@@ -139,9 +141,10 @@ mod tests {
 
     #[test]
     fn a_pick_success_raises_lock_on_the_player() {
-        let (w, player, _door) = setup(true, 1);
-        raise_lockpick_event(&w);
+        let (mut w, player, _door) = setup(true, 1);
+        let lock = w.spawn();
+        raise_lockpick_event(&w, lock);
         let event = w.get::<StoryEvent>(player).map(|e| *e).expect("raised");
-        assert_eq!((event.mnemonic, event.reference_1), (LOCK, player));
+        assert_eq!((event.mnemonic, event.reference_1, event.reference_2), (LOCK, player, Some(lock)));
     }
 }

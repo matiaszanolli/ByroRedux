@@ -4,8 +4,8 @@
 //! smallest one, and it is **engine policy**: the player aims while holding the Attack/Block-secondary button
 //! (the right mouse button, bound to [`InputAction::Block`]) with a weapon equipped that *uses ammo* — the
 //! plain data difference between a gun or bow and a melee weapon, with no per-game animation-type enum
-//! involved. The event fires on the frame the aim begins (the rising edge), with the player in `R1`; the
-//! slots of the event are undocumented and the quests under it read none. There is no zoom, spread change or
+//! involved. The event fires on the frame the aim begins (the rising edge), with the player in `R1`
+//! (`OnStoryIronSights(akActor, akWeapon)`, read from `Quest.pex`; the weapon is a form, not an event slot). There is no zoom, spread change or
 //! camera change: aiming here is a state and an event, nothing the renderer sees. Idle on a title whose
 //! Story Manager tree has no `IRON` root.
 

@@ -849,6 +849,8 @@ fn advance_actor_synth(
                 // fields Skyrim quest-alias resolution consumes.
                 if synth_idx == 0 {
                     stamp_quest_reference(world, root, placed_ref, load_order);
+                    // M43 — the Story Manager's `OAAT` (Actor Attach).
+                    crate::systems::story_events::raise_actor_attach_story_event(world, root);
                     // #4814 — an authored corpse ("Starts Dead"):
                     // dead from its first frame, through the same
                     // death teardown a parked `dead` row takes in

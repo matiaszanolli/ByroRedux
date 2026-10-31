@@ -373,13 +373,16 @@ already has the surface:
   The live run's pair was already inside the trigger distance, so the walk
   itself is covered by the unit test (teleport into range) and the shared
   step, not by that run.
+- **`OAAT`, Actor Attach** (M43, `story_events::raise_actor_attach_story_event`, called where a placed actor
+  is stamped): `OnStoryActorAttach(akActor, akLocation)` — the actor in `R1`, the session location in `L1`,
+  raised for each actor placed into a loaded cell. Unit-tested; not live-gated.
 - **`LOCK` and `IRON`, Fallout 4's player actions** (M43; **engine policy**, no local source documents
   FO4's lock or aim rules). `lockpick.rs`: a lock of level 0-100 (the CK's FO4 `GetLockLevel` tiers; 251-255
   are Barred / Chained / Terminal Only / Inaccessible / Requires Key) is a target and opens for a player
   holding a pick (the misc item whose editor id is `BobbyPin`, or `Lockpick` in older games — checked
   against `Fallout4.esm`); no minigame, the pick is not used up, no tier needs a perk, and it applies only
   on a title whose tree has a `LOCK` root. A picked lock is recorded like a key unlock and raises `LOCK`
-  (player in `R1`). `systems/iron_sights.rs`: holding the secondary-attack button (right mouse, `Block`)
+  (`OnStoryPickLock`: player in `R1`, the lock's reference in `R2`). `systems/iron_sights.rs`: holding the secondary-attack button (right mouse, `Block`)
   with an equipped weapon that uses ammo is aiming, and the rising edge raises `IRON` (player in `R1`); no
   zoom, spread or camera change. Unit-tested; not live-gated.
 - **`ARRT` / `ESJA`, arrest and jail escape** (M43, `jail.rs`). Skyrim's guard dialogue calls
@@ -479,12 +482,18 @@ already has the surface:
   `DEAD` 2, `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4: `AOBJ` 16, `AHEL` 9, `OAAT` 4,
   `HACK` 3, `LOCK` 3, `TMEE` 1, `IRON` 1):
 
-  FO4's remaining events are named by their SMEN editor ids (`AOBJ`: shooting
-  at / switching workshop objects, `HACK`: `PlayerHackSuccess`, `OAAT`: attach
-  events such as `REDeadActorAttach`, `TMEE`: `TriggerMineExplosionEvent`), but what
-  their `R1`/`R2` slots hold is not documented and is not guessed, and the engine
-  has no hacking, workshop or mines for them to hang from; `HACK` quests read no
-  slot at all and wait on the player action itself.
+  **FO4's event payloads are now a primary source**: the game's own compiled `Scripts\Quest.pex`
+  (`Fallout4 - Misc.ba2`, read with `cargo run -p byroredux-pex --example pex_list_fns`) carries every
+  `OnStory*` signature, so the `R1`/`R2` slots of these events are no longer guesses:
+  `HACK` (`SMEN` editor id `HackComputer`) = `OnStoryHackTerminal(akComputer, abSucceeded)`;
+  `TMEE` (`TriggerMineExplosionEvent`) = `OnStoryMineExplosion(akVictim, akAttacker)`;
+  `IRON` (`IronSights`) = `OnStoryIronSights(akActor, akWeapon)`; `LOCK` = `OnStoryPickLock(akActor,
+  akLock)`; `OAAT` = `OnStoryActorAttach(akActor, akLocation)` (its `SMEN` authors no editor id; the code is
+  read from its child quests, `REDeadActorAttach` and kin); `AOBJ` = `OnStoryAttractionObject(akActor,
+  akObject, akLocation, abCommanded)` (no editor id either, so the code is inferred from the name pair and
+  the workshop "attraction" the CK describes). `OAAT`, `LOCK` and `IRON` have producers. **Still without
+  one:** `HACK` (the engine has no terminal interaction or hacking), `TMEE` (no mines, no explosions —
+  `projectiles.rs` says the explosion a record names is not modelled) and `AOBJ` (no workshop).
 
 ### 6.5 Persistence
 
