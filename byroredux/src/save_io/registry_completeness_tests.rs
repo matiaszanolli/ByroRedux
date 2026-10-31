@@ -701,6 +701,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // FragmentExecutionQueue: FIXED — registered (#2381 /
         // SAVE-D1-16), no longer allowlisted here.
         ("HitEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("HitShots", "#6440 — shot count riding beside a HitEvent, drained with it every frame by event_cleanup_system"),
         ("SplashEvent", "one-shot water-surface event marker drained every frame by event_cleanup_system"),
         ("RippleEvent", "one-frame water-surface event marker drained every frame by event_cleanup_system"),
         // HorseTetherState: FIXED — registered (#2380 / SAVE-D1-15), no

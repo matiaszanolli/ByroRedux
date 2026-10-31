@@ -151,7 +151,7 @@ pub use equipment::{
 };
 pub use events::{
     papyrus_activations, ActivateEvent, NativeActivation, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
-    EquipmentEventBatch, HitEvent, ItemEventBatch, ItemTransfer, OnCellLoadEvent, OnDeathEvent, OnInitEvent,
+    EquipmentEventBatch, HitEvent, HitShots, ItemEventBatch, ItemTransfer, OnCellLoadEvent, OnDeathEvent, OnInitEvent,
     OnTriggerEnterEvent, OnTriggerLeaveEvent, RippleEvent, SplashEvent, TimerExpired,
 };
 pub use fragment::{

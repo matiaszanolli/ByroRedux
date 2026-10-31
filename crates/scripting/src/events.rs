@@ -85,6 +85,22 @@ impl Component for HitEvent {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// #6440 — how many equal shots the sibling [`HitEvent`] folds together.
+///
+/// `HitEvent` is one component per entity, so several shots at one target in a
+/// frame (a VATS queue) fold into a single event whose `damage` is the summed
+/// total. The target's Damage Threshold is a per-shot defence (GECK
+/// *fMinDamMultiplier*: "from a shot"), so the combat funnel needs the count to
+/// apply it once per shot — `max(N·d − DT, N·d·m)` and `N·max(d − DT, d·m)` are
+/// different numbers. Absent means one shot. Transient: drained with the
+/// `HitEvent` it describes by `event_cleanup_system`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HitShots(pub u32);
+
+impl Component for HitShots {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Fired when an actor enters or re-enters a water surface. The event lands
 /// on the water-plane entity so audio, gameplay and presentation systems can
 /// consume the same source interaction without inventing a second queue.

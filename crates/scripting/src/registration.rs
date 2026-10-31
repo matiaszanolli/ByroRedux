@@ -107,6 +107,7 @@ pub fn register(world: &mut World) {
     world.register::<ActivateEvent>();
     world.register::<NativeActivation>();
     world.register::<HitEvent>();
+    world.register::<HitShots>();
     world.register::<SplashEvent>();
     world.register::<RippleEvent>();
     world.register::<TimerExpired>();

@@ -400,12 +400,20 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         let damage = if event.blocked || byroredux_scripting::is_ghost(world, target) {
             0.0
         } else {
+            // #6440 — DT is a per-shot defence: a folded VATS volley carries its shot
+            // count beside the event, and each shot meets the threshold on its own
+            // (`max(d − DT, d·m)` per shot, not `max(N·d − DT, N·d·m)` on the sum).
+            let shots = world
+                .get::<byroredux_scripting::HitShots>(target)
+                .map_or(1, |shots| shots.0.max(1));
+            let per_shot = event.damage.max(0.0) / shots as f32;
             // Skyrim: the wearer's armor rating takes its share (a no-op where the book is empty).
-            crate::armor::mitigate(
-                world,
-                target,
-                apply_damage_threshold(world, event.aggressor, target, event.damage.max(0.0)),
-            )
+            shots as f32
+                * crate::armor::mitigate(
+                    world,
+                    target,
+                    apply_damage_threshold(world, event.aggressor, target, per_shot),
+                )
         };
         // Judged before the strike lands: a kill clears the victim's combat state.
         let crime = crate::crime::player_strike_is_crime(world, event.aggressor, target);
@@ -1772,6 +1780,43 @@ mod tests {
         combat_damage_system(&world, 0.0);
         let last = world.resource::<CombatState>().last.clone().unwrap();
         assert_eq!((last.incoming, last.damage), (20.0, 4.0));
+    }
+
+    /// #6440 — Damage Threshold is a per-shot defence: a folded volley of
+    /// three 10-damage shots at DT 15 (`fMinDamMultiplier` 0.2) is
+    /// 3 × max(10 − 15, 10 × 0.2) = 6, where applying DT once to the summed 30
+    /// would leave max(30 − 15, 6) = 15. A lone hit (no `HitShots`) is one shot.
+    #[test]
+    fn damage_threshold_applies_once_per_folded_shot() {
+        use byroredux_core::ecs::components::{EquipmentSlots, Inventory, ItemStack};
+        const LEGATE_ARMOR: u32 = 0x0010_0001;
+        let build = |shots: Option<u32>| {
+            let (mut world, _aggressor, target) = damage_fixture(500.0, Some(30.0), false);
+            world.register::<Inventory>();
+            world.register::<EquipmentSlots>();
+            world.insert_resource(DamageThresholdRules {
+                actor_value: 0x5FA,
+                min_damage_mult: 0.2,
+                armor_dt: HashMap::from([(LEGATE_ARMOR, 15.0)]),
+            });
+            let mut inventory = Inventory::new();
+            inventory.push(ItemStack::new(LEGATE_ARMOR, 1));
+            world.insert(target, inventory);
+            let mut slots = EquipmentSlots::new();
+            slots.equip(0x4, InventoryIndex(0));
+            world.insert(target, slots);
+            if let Some(shots) = shots {
+                world.insert(target, byroredux_scripting::HitShots(shots));
+            }
+            combat_damage_system(&world, 0.0);
+            let last = world.resource::<CombatState>().last.clone().unwrap();
+            (last.incoming, last.damage)
+        };
+        let (incoming, damage) = build(Some(3));
+        assert_eq!(incoming, 30.0, "the trace keeps the summed incoming damage");
+        assert!((damage - 6.0).abs() < 1e-4, "3 shots of 10 at DT 15 land for 6, got {damage}");
+        let (_, single) = build(None);
+        assert!((single - 15.0).abs() < 1e-4, "one 30-damage shot at DT 15 lands for 15, got {single}");
     }
 
     /// M47.2 — a script `Kill` takes a plain actor through the death path

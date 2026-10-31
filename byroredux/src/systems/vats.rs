@@ -678,9 +678,10 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
     // Roll every queued shot first (pure), tallying the landed ones per
     // target. `HitEvent` is one component per entity, so a second `insert`
     // for the same target would overwrite the first: shots at one target
-    // fold into a single event carrying their summed damage (#6422). The
-    // target's own defenses then apply once to that total in the combat
-    // funnel — the Phase-4 per-part routing owns anything finer.
+    // fold into a single event carrying their summed damage (#6422), with
+    // the shot count beside it (`HitShots`, #6440) so the combat funnel
+    // applies the target's per-shot defences (Damage Threshold) once per
+    // shot — the Phase-4 per-part routing owns anything finer.
     let mut landed: Vec<(EntityId, u32)> = Vec::new();
     for part in &queue {
         roll_state = roll_state
@@ -698,19 +699,19 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
     // Per-shot damage is priced against each target (the aggressor's
     // outgoing perk entry points compose per target), before the
     // `HitEvent` write lock is taken.
-    let hits: Vec<(EntityId, f32)> = landed
+    let hits: Vec<(EntityId, f32, u32)> = landed
         .into_iter()
         .map(|(target, shots)| {
             let shot = (crate::combat::attack_damage_against(world, player, target)
                 * weapon_mult)
                 .max(0.0);
-            (target, shot * shots as f32)
+            (target, shot * shots as f32, shots)
         })
         .collect();
     let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() else {
         return false;
     };
-    for (target, damage) in hits {
+    for &(target, damage, _) in &hits {
         events.insert(
             target,
             byroredux_scripting::HitEvent {
@@ -726,6 +727,13 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
         );
     }
     drop(events);
+    // Guards are taken one at a time: the shot counts land after the events
+    // guard is released, still before the funnel runs.
+    if let Some(mut shot_counts) = world.query_mut::<byroredux_scripting::HitShots>() {
+        for &(target, _, shots) in &hits {
+            shot_counts.insert(target, byroredux_scripting::HitShots(shots));
+        }
+    }
     if let Some(mut vats) = world.try_resource_mut::<VatsState>() {
         vats.roll_state = roll_state;
         vats.exit_all();
@@ -763,6 +771,7 @@ mod scan_tests {
         world.register::<FormIdComponent>();
         world.register::<GlobalTransform>();
         world.register::<byroredux_scripting::HitEvent>();
+        world.register::<byroredux_scripting::HitShots>();
         world.insert_resource(VatsState {
             mode: VatsMode::TargetSelect,
             ..Default::default()
@@ -1083,6 +1092,12 @@ mod scan_tests {
             (hit.damage - 3.0 * one_shot).abs() < 1e-3,
             "3 landed shots: {} vs 3 x {one_shot}",
             hit.damage
+        );
+        // #6440 — the funnel needs the count to apply DT once per shot.
+        assert_eq!(
+            world.get::<byroredux_scripting::HitShots>(npc).map(|shots| shots.0),
+            Some(3),
+            "the fold carries its shot count beside the event"
         );
     }
 }
