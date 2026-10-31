@@ -23,7 +23,8 @@ use crate::ecs::storage::Component;
 ///
 /// The interaction path removes a lock when its matching key is carried and
 /// records the unlock in the same persistent ledger used by scripting effects.
-/// Lock-level-gated lockpicking is still deferred.
+/// Lock-level-gated lockpicking is still deferred, except on a title with the Story Manager's `LOCK`
+/// event, where the binary's `lockpick.rs` opens a level 0-100 lock for a player holding a pick.
 ///
 /// Sparse storage — locked REFRs are a small minority of placements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

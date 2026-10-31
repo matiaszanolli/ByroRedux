@@ -33,6 +33,7 @@ mod loading_model;
 mod escort;
 pub(crate) mod dead_body;
 pub(crate) mod faction_hostility;
+pub(crate) mod iron_sights;
 mod flee_package;
 mod find_package;
 mod follow;

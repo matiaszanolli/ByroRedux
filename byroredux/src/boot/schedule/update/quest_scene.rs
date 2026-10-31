@@ -13,6 +13,8 @@ fn register_random_conversations(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, crate::inventory::dropped_item_story_event_system);
     // `DEAD`: an actor that sees a corpse discovers it (idle when the tree has no `DEAD` root).
     scheduler.add_exclusive(Stage::Update, crate::systems::dead_body::dead_body_discovery_system);
+    // `IRON`: the player begins aiming a gun (idle when the tree has no `IRON` root).
+    scheduler.add_exclusive(Stage::Update, crate::systems::iron_sights::iron_sights_system);
     if std::env::var_os("BYRO_NO_RANDOM_CONVERSATIONS").is_none() {
         scheduler.add_exclusive(Stage::Update, crate::systems::random_conversation::random_conversation_system);
         // The hold system walks / releases the pairs it takes over; `BYRO_NO_AI_LOCOMOTION=1` leaves the

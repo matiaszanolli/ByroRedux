@@ -717,6 +717,12 @@ impl ActionState {
         self.held = next_held;
     }
 
+    /// Hold `action` down, for tests of the systems that read it.
+    #[cfg(test)]
+    pub(crate) fn press_for_test(&mut self, action: InputAction) {
+        self.held |= action.bit();
+    }
+
     pub(crate) fn is_held(&self, action: InputAction) -> bool {
         self.held & action.bit() != 0
     }
@@ -988,6 +994,12 @@ fn snapshot_interaction_candidates(world: &World, rows: &mut [InteractionCandida
                         .any(|stack| stack.base_form_id == key && stack.count > 0);
                 }
             }
+        }
+    }
+    // M43 — a lock the player can pick is a target, key or no key.
+    for row in rows.iter_mut().filter(|row| row.blocked) {
+        if crate::lockpick::can_pick(world, row.entity) {
+            row.blocked = false;
         }
     }
     if let Some(doors) = world.query::<byroredux_scripting::papyrus_demo::mg07_door::MG07LabyrinthianDoor>() {
@@ -1443,7 +1455,10 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
 }
 
 fn activation_is_blocked(world: &World, entity: EntityId) -> bool {
-    if world.get::<Locked>(entity).is_some() && carried_unlock_key(world, entity).is_none() {
+    if world.get::<Locked>(entity).is_some()
+        && carried_unlock_key(world, entity).is_none()
+        && !crate::lockpick::can_pick(world, entity)
+    {
         return true;
     }
     world
@@ -1475,7 +1490,9 @@ fn unlock_with_carried_key(world: &World, target: EntityId, commit: bool) -> boo
     if world.get::<Locked>(target).is_none() {
         return true;
     }
-    if carried_unlock_key(world, target).is_none() {
+    // M43 — no key: a pick may open it (engine policy, see `lockpick.rs`).
+    let picked = carried_unlock_key(world, target).is_none();
+    if picked && !crate::lockpick::can_pick(world, target) {
         return false;
     }
     let form = world
@@ -1502,7 +1519,12 @@ fn unlock_with_carried_key(world: &World, target: EntityId, commit: bool) -> boo
             .resource_mut::<byroredux_scripting::ReferenceLockState>()
             .set_unlocked(form);
     }
-    crate::notifications::push(world, "Unlocked with key");
+    if picked {
+        crate::notifications::push(world, "Picked the lock");
+        crate::lockpick::raise_lockpick_event(world);
+    } else {
+        crate::notifications::push(world, "Unlocked with key");
+    }
     true
 }
 
@@ -3052,5 +3074,45 @@ mod tests {
         assert!(unlock_with_carried_key(&world, door, true));
         assert!(world.get::<Locked>(door).is_none());
         assert_eq!(crate::notifications::drain(&world), vec!["Unlocked with key".to_owned()]);
+    }
+
+    /// M43 — with a `LOCK` root and a pick in the inventory, a keyless lock at a pickable level opens (and
+    /// raises `LOCK`); a refused check spends nothing, and a lock above Master stays shut.
+    #[test]
+    fn a_held_pick_opens_a_pickable_lock_and_raises_the_lockpick_event() {
+        use byroredux_core::ecs::components::{Inventory, ItemStack};
+        use byroredux_plugin::esm::records::{SmNodeKind, SmNodeRecord};
+        const PIN: u32 = 0xA;
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<Locked>();
+        world.register::<Inventory>();
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
+        let player = world.spawn();
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
+        world.insert(player, Inventory { items: vec![ItemStack::new(PIN, 3)] });
+        world.insert_resource(crate::lockpick::LockpickItem(Some(PIN)));
+        let records = std::collections::HashMap::from([(
+            0x10,
+            SmNodeRecord { form_id: 0x10, kind: SmNodeKind::Event, event_mnemonic: Some(crate::lockpick::LOCK), ..Default::default() },
+        )]);
+        byroredux_scripting::story_manager::install_story_manager(&mut world, &records);
+        let door = world.spawn();
+        world.insert(door, Locked { lock_level: 75, key_form_id: None });
+        let barred = world.spawn();
+        world.insert(barred, Locked { lock_level: 251, key_form_id: None });
+
+        assert!(!activation_is_blocked(&world, door), "a pickable lock is a target");
+        assert!(activation_is_blocked(&world, barred), "Barred cannot be picked");
+        assert!(unlock_with_carried_key(&world, door, false));
+        assert!(world.get::<Locked>(door).is_some(), "a check spends nothing");
+        assert!(!unlock_with_carried_key(&world, barred, true));
+
+        assert!(unlock_with_carried_key(&world, door, true));
+        assert!(world.get::<Locked>(door).is_none());
+        assert_eq!(crate::notifications::drain(&world), vec!["Picked the lock".to_owned()]);
+        let event = world.get::<byroredux_scripting::story_manager::StoryEvent>(player).map(|e| *e).expect("LOCK raised");
+        assert_eq!(event.mnemonic, crate::lockpick::LOCK);
+        assert_eq!(world.get::<Inventory>(player).unwrap().count_of(PIN), 3, "the pick is not used up");
     }
 }
