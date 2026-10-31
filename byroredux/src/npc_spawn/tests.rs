@@ -3399,6 +3399,8 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
         ("scripting/anim_subgraph.rs", include_str!("../../../crates/scripting/src/anim_subgraph.rs")),
         // #6434 — the `HasKeyword` base table's race is a Use-Traits field too.
         ("scripting/keywords.rs", include_str!("../../../crates/scripting/src/keywords.rs")),
+        // #6435 — the player body's race and walk-clip gender share one terminal.
+        ("player_body.rs", include_str!("../player_body.rs")),
     ] {
         let code = source
             .lines()
@@ -3460,7 +3462,9 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
         ("npc_spawn/resumable/prebaked.rs", 0),
         ("npc_spawn/ai_package.rs", 0),
         ("cell_loader/references/mod.rs", 1),
-        ("player_body.rs", 1),
+        // #6435 — the player body reads its Use-Traits terminal through
+        // `traits_terminal` (race and walk-clip gender both), no raw call.
+        ("player_body.rs", 0),
         ("esm/records/actor_value_derive.rs", 0),
         ("inventory.rs", 0),
     ];
