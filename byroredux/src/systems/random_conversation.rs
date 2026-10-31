@@ -33,6 +33,15 @@
 //! scene runs for them or ends (no conversation started). When the scene is
 //! over the hold ends and the actors' packages are re-selected.
 //!
+//! The *Actor Hello* event (`AHEL`, CK *Actor Hello Event*) is the same attempt made by an actor that is
+//! **moving past** another: "the initiating actor must be moving, not in a scene, and have picked up a new
+//! headtrack target; the valid target is not the player and not in a scene". The engine has no ambient
+//! head-tracking, so the new target is the partner an attempt picks (the nearest valid actor inside the
+//! social radius) when it differs from the one the actor last greeted; the timers, radius, chance and
+//! same-pair cooldown are the conversation settings above. A passing hello takes nobody over: no hold, no
+//! walk — the event is raised where the pair stands (`OnStoryHello(akLocation, akActor1, akActor2)`).
+//! An actor counts as moving when it travelled [`MOVING_UNITS_PER_PASS`] since the last pass.
+//!
 //! The scene's Phase 0 "waits until the initiator reaches `fAIMinGreetingDistance`":
 //! the event is raised at the nearer of that and the trigger distance, so the
 //! scene begins once it holds. Not modelled: the *complex scene* flag and the
@@ -57,6 +66,13 @@ pub(crate) const ADIA: [u8; 4] = *b"ADIA";
 /// timers, so a one-second pass loses nothing and keeps the per-actor scan
 /// off the other 59 frames.
 const STEP_SECS: f32 = 1.0;
+
+/// The `SMEN` mnemonic of the Actor Hello Event (moving actors passing each other).
+pub(crate) const AHEL: [u8; 4] = *b"AHEL";
+
+/// How far an actor must have travelled since the previous one-second pass to be "moving". The CK gives
+/// no speed; any real stride covers this, an idle actor's animation sway does not.
+const MOVING_UNITS_PER_PASS: f32 = 10.0;
 
 /// The CK's defaults (*Controlling Random Conversations*), used where the load
 /// order authors no value. Skyrim.esm authors its own (radius 500 / 500, chance 10 % / 10 %,
@@ -179,6 +195,10 @@ pub(crate) struct RandomConversationState {
     timers: HashMap<EntityId, f32>,
     /// Pairs (ordered by entity) and the seconds left on their cooldown.
     cooldowns: HashMap<(EntityId, EntityId), f32>,
+    /// Each actor's position at the previous pass, to tell who is moving.
+    last_positions: HashMap<EntityId, Vec3>,
+    /// The partner each actor last greeted in passing: a hello needs a *new* target.
+    hello_targets: HashMap<EntityId, EntityId>,
 }
 
 impl Resource for RandomConversationState {}
@@ -217,6 +237,20 @@ fn pair(a: EntityId, b: EntityId) -> (EntityId, EntityId) {
 }
 
 impl RandomConversationState {
+    /// The actors that travelled [`MOVING_UNITS_PER_PASS`] since the previous pass; records the new
+    /// positions and forgets the actors gone from `participants`.
+    fn moving(&mut self, participants: &[Participant]) -> HashSet<EntityId> {
+        let moving = participants
+            .iter()
+            .filter(|p| self.last_positions.get(&p.entity).is_some_and(|before| (p.position - *before).length() >= MOVING_UNITS_PER_PASS))
+            .map(|p| p.entity)
+            .collect();
+        self.last_positions = participants.iter().map(|p| (p.entity, p.position)).collect();
+        let live: HashSet<EntityId> = participants.iter().map(|p| p.entity).collect();
+        self.hello_targets.retain(|actor, _| live.contains(actor));
+        moving
+    }
+
     fn talked_recently(&self, a: EntityId, b: EntityId) -> bool {
         self.cooldowns.contains_key(&pair(a, b))
     }
@@ -224,7 +258,19 @@ impl RandomConversationState {
     /// Run `step_secs` of the clock: tick cooldowns, then every actor in
     /// `participants` that has no timer gets one rolled by `roll` and the
     /// rest count down. Returns the initiators whose timer ran out.
-    fn advance(&mut self, step_secs: f32, participants: &[Participant], mut roll: impl FnMut() -> f32) -> Vec<EntityId> {
+    #[cfg(test)]
+    fn advance(&mut self, step_secs: f32, participants: &[Participant], roll: impl FnMut() -> f32) -> Vec<EntityId> {
+        self.advance_where(step_secs, participants, roll, |p| p.can_initiate)
+    }
+
+    /// [`Self::advance`] with the test of who may act when their timer runs out.
+    fn advance_where(
+        &mut self,
+        step_secs: f32,
+        participants: &[Participant],
+        mut roll: impl FnMut() -> f32,
+        may_act: impl Fn(&Participant) -> bool,
+    ) -> Vec<EntityId> {
         self.cooldowns.retain(|_, remaining| {
             *remaining -= step_secs;
             *remaining > 0.0
@@ -239,7 +285,7 @@ impl RandomConversationState {
                 }
                 Some(remaining) => {
                     *remaining -= step_secs;
-                    if *remaining <= 0.0 && participant.can_initiate {
+                    if *remaining <= 0.0 && may_act(participant) {
                         due.push(participant.entity);
                     }
                 }
@@ -293,6 +339,7 @@ fn collect_participants(world: &World) -> Vec<Participant> {
                 || world.has::<GuardBehavior>(actor)
                 || world.has::<PatrolBehavior>(actor)
                 || world.has::<EatBehavior>(actor);
+            // Any actor allowed to chat takes part in the pass; a mover also initiates a hello.
             Some(Participant {
                 entity: actor,
                 position,
@@ -308,10 +355,11 @@ fn collect_participants(world: &World) -> Vec<Participant> {
 /// Manager tree (Oblivion, Fallout 3, New Vegas), nor with
 /// `BYRO_NO_RANDOM_CONVERSATIONS=1`.
 pub(crate) fn random_conversation_system(world: &World, dt: f32) {
-    let has_adia = world
+    let (has_adia, has_ahel) = world
         .try_resource::<SmTree>()
-        .is_some_and(|tree| tree.roots_by_mnemonic.contains_key(&ADIA));
-    if !has_adia {
+        .map(|tree| (tree.roots_by_mnemonic.contains_key(&ADIA), tree.roots_by_mnemonic.contains_key(&AHEL)))
+        .unwrap_or_default();
+    if !has_adia && !has_ahel {
         return;
     }
     let Some(mut state) = world.try_resource_mut::<RandomConversationState>() else {
@@ -344,28 +392,47 @@ pub(crate) fn random_conversation_system(world: &World, dt: f32) {
     let Some(mut state) = world.try_resource_mut::<RandomConversationState>() else {
         return;
     };
-    let due = state.advance(step, &participants, roll_timer);
+    let movers = state.moving(&participants);
+    let due = state.advance_where(step, &participants, roll_timer, |p| {
+        (p.can_initiate && has_adia) || (has_ahel && movers.contains(&p.entity))
+    });
     let mut raised = Vec::new();
+    let mut hellos = Vec::new();
     for initiator in due {
         let Some(me) = participants.iter().find(|p| p.entity == initiator) else {
             continue;
         };
         // Re-arm first: every attempt, hit or miss, restarts the clock.
         state.timers.insert(initiator, roll_timer());
+        // An actor that is already going somewhere says hello in passing; one that stands at its
+        // sandbox / guard post starts a conversation.
+        let hello = has_ahel && movers.contains(&initiator) && !(me.can_initiate && has_adia);
         let Some(target) = pick_target(me, &participants, settings.radius(interior), |a, b| state.talked_recently(a, b)) else {
             continue;
         };
+        if hello && state.hello_targets.get(&initiator) == Some(&target) {
+            continue;
+        }
         if unit().map_or(0.0, |unit| unit * 100.0) >= settings.chance(interior) {
             continue;
         }
         state.cooldowns.insert(pair(initiator, target), settings.same_npc_timer.max(STEP_SECS));
-        raised.push((initiator, target));
+        if hello {
+            state.hello_targets.insert(initiator, target);
+            hellos.push((initiator, target));
+        } else {
+            raised.push((initiator, target));
+        }
     }
     drop(state);
 
     for (initiator, target) in raised {
         log::debug!("random conversation: {initiator:?} -> {target:?}");
         begin_conversation(world, initiator, target);
+    }
+    for (initiator, target) in hellos {
+        log::debug!("actor hello: {initiator:?} -> {target:?}");
+        raise_pair_event(world, AHEL, initiator, target);
     }
 }
 
@@ -390,13 +457,19 @@ fn release_pair(world: &World, a: EntityId, b: EntityId) {
 }
 
 fn raise_actor_dialogue(world: &World, initiator: EntityId, target: EntityId) {
+    raise_pair_event(world, ADIA, initiator, target);
+}
+
+/// Raise `mnemonic` for a pair of actors: `R1` the initiator, `R2` the partner, `L1` the session location
+/// (`OnStoryDialogue` / `OnStoryHello(akLocation, akActor1, akActor2)`).
+fn raise_pair_event(world: &World, mnemonic: [u8; 4], initiator: EntityId, target: EntityId) {
     // #5372 — the location is resolved before the StoryEvent write guard.
     let location = crate::systems::story_events::derive_location(world).location;
     raise_story_event(
         world,
         initiator,
         StoryEvent {
-            mnemonic: ADIA,
+            mnemonic,
             reference_1: initiator,
             reference_2: Some(target),
             location_1: location,
@@ -714,6 +787,72 @@ mod tests {
         };
         assert!(run(PKDT_INTERRUPT_RANDOM_CONVERSATIONS).is_some(), "flagged pair converses");
         assert!(run(0x0001).is_none(), "hellos alone do not allow random conversations");
+    }
+
+    /// CK *Actor Hello Event*: a **moving** actor with a valid target raises `AHEL` in passing (no hold,
+    /// no walk), once per new target; an actor that stands still raises nothing.
+    #[test]
+    fn a_moving_actor_says_hello_to_a_new_target_once() {
+        use crate::components::AmbientPackageRuntime;
+        use byroredux_plugin::esm::records::{GameSetting, PackRecord, SettingValue, SmNodeKind, SmNodeRecord};
+        use byroredux_scripting::package::PackageRegistry;
+
+        let run = |walk: bool| -> Vec<StoryEvent> {
+            let mut world = World::new();
+            byroredux_scripting::register(&mut world);
+            world.register::<AmbientPackageRuntime>();
+            world.register::<GlobalTransform>();
+            world.register::<ConversationHold>();
+            world.register::<Transform>();
+            world.insert_resource(RandomConversationState::default());
+            let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+            index.insert_game_setting(GameSetting {
+                form_id: 0x1,
+                editor_id: "fAISocialchanceForConversation".into(),
+                value: SettingValue::Float(101.0),
+            });
+            world.insert_resource(byroredux_scripting::obscript_state::GameSettings::from_index(&index));
+            let records = HashMap::from([(
+                0x10,
+                SmNodeRecord { form_id: 0x10, kind: SmNodeKind::Event, event_mnemonic: Some(AHEL), ..Default::default() },
+            )]);
+            byroredux_scripting::story_manager::install_story_manager(&mut world, &records);
+            world.insert_resource(PackageRegistry::from_records([PackRecord {
+                form_id: 0x77,
+                interrupt_flags: PKDT_INTERRUPT_RANDOM_CONVERSATIONS,
+                ..Default::default()
+            }]));
+            let mut spawn = |x: f32| {
+                let actor = world.spawn();
+                world.insert(actor, GlobalTransform { translation: Vec3::new(x, 0.0, 0.0), ..Default::default() });
+                world.insert(
+                    actor,
+                    AmbientPackageRuntime {
+                        package_candidates: vec![0x77],
+                        active_package_form_id: Some(0x77),
+                        actor_form_id: 0x1000 + actor,
+                        last_evaluated_game_minute: None,
+                    },
+                );
+                actor
+            };
+            let (mover, _still) = (spawn(0.0), spawn(100.0));
+            for step in 0..6 {
+                if walk {
+                    // Walking along the pair's own axis, always inside the 500-unit radius.
+                    world.get_mut::<GlobalTransform>(mover).unwrap().translation = Vec3::new(step as f32 * 20.0, 0.0, 0.0);
+                }
+                random_conversation_system(&world, 50.0);
+            }
+            assert!(world.query::<ConversationHold>().is_none_or(|holds| holds.iter().next().is_none()), "a hello holds nobody");
+            let events = world.query::<StoryEvent>().map(|events| events.iter().map(|(_, e)| *e).collect()).unwrap_or_default();
+            events
+        };
+        let walked = run(true);
+        assert_eq!(walked.len(), 1, "one hello for the one new target: {walked:?}");
+        assert_eq!(walked[0].mnemonic, AHEL);
+        assert!(walked[0].reference_2.is_some());
+        assert!(run(false).is_empty(), "nobody moved");
     }
 
     /// A pair beyond the trigger distance: the initiator is held and walks (no event yet), the partner

@@ -369,6 +369,15 @@ already has the surface:
   The live run's pair was already inside the trigger distance, so the walk
   itself is covered by the unit test (teleport into range) and the shared
   step, not by that run.
+- **Natural `AHEL`** (M43, `systems/random_conversation.rs`). The CK's *Actor Hello Event*
+  is the random-conversation attempt made by an actor "moving past" another: the initiator is
+  moving, not in a scene and has picked up a new headtrack target; the target is not the player
+  and not in a scene. The engine has no ambient head-tracking, so the new target is the partner
+  an attempt picks (the nearest valid actor inside the social radius) when it differs from the
+  one last greeted; timers, radius, chance and the same-pair cooldown are the conversation
+  settings. An actor is moving when it travelled 10 units since the previous one-second pass
+  (the CK gives no speed). `AHEL` is raised on the spot with `R1` the initiator, `R2` the
+  partner, `L1` the location — nobody is held or walked. Unit-tested; not live-gated.
 - **Also landed (M43, 2026-10-30)**: `LEVL` (new level in `V1`), `ASSU`
   (victim `R1`, attacker `R2`, `L1`, crime flag `V1`), `AIPL` (Player Add Item
   — container `R2` from a loot transfer, `L1`, acquire type `V1`; pickups
@@ -427,9 +436,8 @@ already has the surface:
   2026-10-30, quests reachable under each `SMEN` root — Skyrim: `ESJA` 2,
   `DEAD` 2, `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4: `AOBJ` 16, `AHEL` 9, `OAAT` 4,
   `HACK` 3, `LOCK` 3, `TMEE` 1, `IRON` 1):
-  `DEAD` (corpse discovery) and the natural `AHEL` (NPCs passing each other)
-  — no setting in Skyrim.esm or the CK pages gives a detection distance
-  (`fCheckDeadBodyTimer` is a Fallout leftover absent from the master);
+  `DEAD` (corpse discovery) — no setting in Skyrim.esm or the CK pages gives a
+  detection distance (`fCheckDeadBodyTimer` is a Fallout leftover absent from the master);
   `ARRT`/`ESJA` — Skyrim's guards are package-driven and the engine's crime
   pass is the Oblivion/FNV class-flag model, so a wanted-player greeting by
   a guard cannot occur on a game that has a Story Manager; `NVPE` — no
