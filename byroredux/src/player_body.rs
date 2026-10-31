@@ -160,13 +160,8 @@ pub(crate) fn attach_player_body(
     // Same race resolution the reference loader feeds `NpcSpawnJob::runtime`
     // (Use-Traits terminal, so a template-authored race wins over the
     // shell's own RNAM).
-    let resolved_race_form_id = byroredux_plugin::equip::resolve_inherited_traits(
-        &npc,
-        byroredux_plugin::esm::records::effective_actor_level(&npc),
-        &index,
-    )
-    .race_form_id;
-    let race = index.races.get(&resolved_race_form_id);
+    let traits = byroredux_plugin::equip::traits_terminal(&npc, &index);
+    let race = index.races.get(&traits.race_form_id);
 
     let mut job = if game.has_runtime_facegen_recipe() {
         NpcSpawnJob::runtime(&npc, race, game, feet_pos, Quat::IDENTITY, 1.0)
@@ -230,6 +225,7 @@ pub(crate) fn attach_player_body(
         root,
         game,
         &npc,
+        traits,
         race.map(|race| race.race_flags),
         &tex_provider,
     );
@@ -355,6 +351,7 @@ fn attach_player_locomotion_animation(
     root: EntityId,
     game: GameKind,
     npc: &byroredux_plugin::esm::records::actor::NpcRecord,
+    traits: &byroredux_plugin::esm::records::actor::NpcRecord,
     race_flags: Option<u32>,
     tex_provider: &TextureProvider,
 ) {
@@ -402,8 +399,9 @@ fn attach_player_locomotion_animation(
     // Walk: the same resolution ladder the NPC finalize uses — KF games
     // the per-body-class clip (gender from ACBS, the FO3/FNV child race
     // flag through the shared `is_child_race` translation), Skyrim+ the
-    // decoded HKX walk.
-    let gender = Gender::from_acbs_flags(npc.acbs_flags);
+    // decoded HKX walk. Gender is a Use-Traits field (ACBS bit 0), read from
+    // the same terminal as the race (#6435, the NPC path's #6080).
+    let gender = Gender::from_acbs_flags(traits.acbs_flags);
     let is_child = crate::npc_spawn::is_child_race(game, race_flags);
     let walk_handle = if game.has_kf_animations() {
         crate::npc_spawn::humanoid_walk_kf_path(game, gender, is_child)
@@ -1011,6 +1009,7 @@ mod tests {
             root,
             GameKind::Skyrim,
             &player_npc(),
+            &player_npc(),
             None,
             &provider,
         );
@@ -1080,6 +1079,7 @@ mod tests {
             root,
             GameKind::Fallout3NV,
             &player_npc(),
+            &player_npc(),
             None,
             &provider,
         );
@@ -1103,6 +1103,48 @@ mod tests {
         );
     }
 
+    /// #6435 — gender is a Use-Traits field like race: a player shell that
+    /// templates its traits takes the walk clip of the terminal's sex, not
+    /// its own ACBS bit.
+    #[test]
+    fn kf_capsule_walk_gender_follows_the_traits_terminal() {
+        let male_path = r"meshes\characters\_male\locomotion\male\mtforward.kf";
+        let female_path = r"meshes\characters\_male\locomotion\female\mtforward.kf";
+        let mut world = World::new();
+        register_animation_storages(&mut world);
+        let mut registry = AnimationClipRegistry::new();
+        registry.get_or_insert_by_path(male_path.to_string(), || stub_clip("m"));
+        let female_handle =
+            registry.get_or_insert_by_path(female_path.to_string(), || stub_clip("f"));
+        world.insert_resource(registry);
+        let (player, _skeleton, root) = spawn_animated_body(&mut world);
+        let provider = crate::asset_provider::build_texture_provider(&["byroredux".into()]);
+        // The shell's own ACBS says male; its Use-Traits terminal is female.
+        let female_terminal = byroredux_plugin::esm::records::actor::NpcRecord {
+            acbs_flags: 1,
+            ..player_npc()
+        };
+
+        attach_player_locomotion_animation(
+            &mut world,
+            player,
+            root,
+            GameKind::Fallout3NV,
+            &player_npc(),
+            &female_terminal,
+            None,
+            &provider,
+        );
+
+        assert_eq!(
+            world
+                .get::<crate::components::WalkAnimation>(player)
+                .map(|walk| walk.walk_handle),
+            Some(female_handle),
+            "the walk clip's sex comes from the traits terminal, not the shell"
+        );
+    }
+
     #[test]
     fn no_skeleton_or_no_clip_leaves_the_capsule_unanimated() {
         // Body root without AnimationTarget — the assembly failed to give a
@@ -1119,6 +1161,7 @@ mod tests {
             player,
             bare_root,
             GameKind::Skyrim,
+            &player_npc(),
             &player_npc(),
             None,
             &provider,
@@ -1137,6 +1180,7 @@ mod tests {
             player,
             root,
             GameKind::Skyrim,
+            &player_npc(),
             &player_npc(),
             None,
             &provider,
