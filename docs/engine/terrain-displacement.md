@@ -33,7 +33,7 @@ an existing measurement in this repo, **[unmeasured]** = needs the spike.
 | Layer textures repeat 6× per cell: one repeat = **9.75 m**; height maps are ≤1024² → **~0.95 cm/texel** (Oblivion's 512² maps: 1.9 cm). | `LAND_TEXTURE_TILES_PER_CELL`, TSD-1 cap |
 | The collider is a **separate ghost entity** built from the whole LAND tile; the render entity is at identity. Physics never reads the render mesh. | `spawn_land_collider` |
 | Whole LAND quadrants can already be dropped from the index buffer (XCLC Hide Quad). | `land_tile_indices(hidden_quadrants)` |
-| Vertices are **104 B**; raster and RT hit shading both read the *global vertex pool* (cap 4 M verts = 416 MB, 16 M indices). Mesh handles are **never reused**; every upload goes through `pending_vertices` and a global geometry-SSBO (re)build with an idle-reclaim path. | `mesh.rs`, `mesh/geometry_ssbo.rs` |
+| Vertices are **104 B**; raster and RT hit shading both read the *global vertex pool* (cap 7 M verts = 728 MB, 28 M indices; was 4 M / 416 MB / 16 M before bb97be77c). Mesh handles are **never reused**; every upload goes through `pending_vertices` and a global geometry-SSBO (re)build with an idle-reclaim path. | `mesh.rs`, `mesh/geometry_ssbo.rs` |
 | Global vertex buffer usage = `STORAGE_BUFFER \| VERTEX_BUFFER` (+ AS build input) — compute can write it. | `geometry_ssbo.rs:345` |
 | Skinned meshes already run **compute → position buffer → per-frame BLAS refit** (`skin_vertices.comp`, `blas_skinned.rs`; rebuild after 600 refits to reset bounds). | `skin_compute.rs`, `acceleration/constants.rs` |
 | Cell crossings are a measured hot path: single-hash apply up to ~300 ms, batched BLAS submission 20–55 ms, residual frame spikes "tied to global geometry work". | `exterior-readiness-plan.md` [anchor] |
@@ -136,7 +136,7 @@ Vertex 104 B + index 12 B/triangle; patch lattice spacing × radius:
 | 10 m | 393 k / 25.1 | 175 k / 11.2 | 98 k / 6.3 | 44 k / 2.8 |
 
 (disc area only; the 24-slot square-patch pool is 197 k triangles / 12.9 MB.) Against the pool
-cap of 4 M vertices (416 MB) it is **2.5 % of the vertex pool**. The 5.7 cm lattice is the
+cap of 7 M vertices (728 MB) it is **~1.4 % of the vertex pool** (2.5 % at the old 4 M cap). The 5.7 cm lattice is the
 sensible floor: the source height texels are ~1 cm, so 4 cm geometry buys little over what
 TSD-3 already resolves.
 

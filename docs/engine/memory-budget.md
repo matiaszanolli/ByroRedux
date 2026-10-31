@@ -894,19 +894,31 @@ census attributes the pool: at radius 4 around the river fixture it held
 4.95 M vertices, 4 603 of 5 315 meshes being full-detail cell props (terrain 81,
 water 12, LOD 192) — so FO4 beyond radius ~3 exceeded even 5 M / 20 M, and the caps were raised again to 7 M / 28 M (+208 MB vertices, +32 MB indices at the caps) so FO4 radius 4's distant object LOD (686 quads held back at 5 M) fits.
 
-**Admission tiers** (`GeometryAdmissionClass`, `PROP_POOL_RESERVE_PERCENT` = 5):
-the caps are not shared equally. Placed statics and object / tree /
-placement LOD are *props*: they are admitted only up to 95 % of each cap
-(4.75 M vertices / 19 M indices) and a refusal latches a separate prop latch
-(`prop_geometry_admission_open`). Terrain, water, terrain LOD and actors are
-*essential*: they may use the full cap and keep the original global latch
-(`scene_geometry_admission_open`), so a prop refused at its ceiling can never
-close admission for the ground. Both latches reopen with the compaction a cell
-unload triggers. Measured at FO4 radius 4 around the river fixture before the
-split: the pool reached its cap, the player's head and hair were refused, and
-terrain could be; after it, only two distant Object-LOD meshes were refused
-and every terrain, water and actor upload succeeded. The reserve is carved out
-of the existing caps, so it adds no memory.
+**Admission tiers** (`GeometryAdmissionClass`, `PoolReserve`): the caps are
+not shared equally. There are three tiers, in priority order ground > actors >
+props, and each stops short of the cap by the reserves of the tiers above it:
+
+| Tier (`GeometryAdmissionClass`) | Who | Ceiling | Refusal latch |
+|---|---|---|---|
+| `Essential` | terrain, water, terrain LOD | the full cap | global (`scene_geometry_admission_open`) |
+| `Actor` | the player and NPC bodies | cap less the ground reserve | actor (`actor_geometry_admission_open`) |
+| `Prop` | placed statics, object / tree / placement LOD | cap less the ground *and* actor reserves | prop (`prop_geometry_admission_open`) |
+
+A prop refused at its ceiling can therefore never close admission for the
+ground. Every latch reopens with the compaction a cell unload triggers.
+
+The reserve (`PoolReserve`: ground and actor, vertices and indices) defaults to
+`DEFAULT_GROUND_RESERVE_PERCENT` = 3 % and `DEFAULT_ACTOR_RESERVE_PERCENT` = 2 %
+of each cap (props get 95 %, as the first version of the reserve did) until the
+host sizes it for the real exterior radius with `MeshRegistry::set_pool_reserve`
+(`streaming_helpers::exterior_pool_reserve`: the ground's need grows with the
+radius, plus a bounded terrain-LOD ring and room for actors). The host's request
+is clamped so props and actors keep at least half of each pool. Measured at FO4
+radius 4 around the river fixture before the split: the pool reached its cap,
+the player's head and hair were refused, and terrain could be; after it, only
+two distant Object-LOD meshes were refused and every terrain, water and actor
+upload succeeded. The reserve is carved out of the existing caps, so it adds no
+memory.
 
 **Registry overflow guard** (`667d1a28`): `NifImportRegistry` now defaults
 to a 2 048-entry LRU cap (configurable via `BYRO_NIF_CACHE_MAX=N`; `=0`

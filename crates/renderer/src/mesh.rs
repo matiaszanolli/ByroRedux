@@ -2321,9 +2321,11 @@ mod refcount_tests {
         reg.with_admission_class(class, |r| r.upload_scene_mesh_global_only(&vertices, &indices))
     }
 
-    /// The reserve: props stop at `100% - PROP_POOL_RESERVE_PERCENT`, and the
-    /// refusal latches only the prop tier — terrain / water / actors still
-    /// fit in the room that was kept back, up to the full cap.
+    /// The reserve: props stop at the cap less the ground and actor reserves
+    /// (`DEFAULT_GROUND_RESERVE_PERCENT` + `DEFAULT_ACTOR_RESERVE_PERCENT`, 95%
+    /// with the defaults), and the refusal latches only the prop tier —
+    /// terrain / water / actors still fit in the room that was kept back, up to
+    /// the full cap.
     #[test]
     fn a_refused_prop_leaves_the_essential_tier_open_and_using_the_reserve() {
         use GeometryAdmissionClass::{Essential, Prop};
