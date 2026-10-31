@@ -357,13 +357,16 @@ pub(crate) fn vats_scan(world: &World) {
     // A weapon that names no skill (`skill_form == 0`) is priced at the
     // neutral skill, not at the absent-AV default 0 — which would read as
     // "unskilled" and halve the chance. A skill the player does not carry
-    // keeps the neutral value too (`ActorValues` absent altogether).
+    // keeps the neutral value too — whether the `ActorValues` component is
+    // absent altogether or merely lacks that entry (`ActorValues::current`
+    // reads 0.0 for an absent entry, so the entry is looked up, #6441). A
+    // carried skill that really is 0 stays 0.
     let skill = if weapon.skill_form == 0 {
         NEUTRAL_SKILL
     } else {
         world
             .get::<ActorValues>(player)
-            .map(|avs| avs.current(weapon.skill_form))
+            .and_then(|avs| avs.get(weapon.skill_form).map(|av| av.current()))
             .unwrap_or(NEUTRAL_SKILL)
     };
     let excluded_body = world
@@ -891,6 +894,38 @@ mod scan_tests {
         assert!(torso.hit_chance <= 65.0 + 1e-3);
         assert!(head.hit_chance > 0.0, "a visible head is hittable");
         assert_eq!(head.ap_cost, 17.0, "the weapon's authored standard cost");
+    }
+
+    /// #6441 — a skill the player does not carry prices at the neutral 50, as
+    /// the fallback comment says, not at `ActorValues::current`'s absent-AV
+    /// 0.0 (which reads as "unskilled" and shrinks the chance); a carried
+    /// skill is honoured, including a real 0.
+    #[test]
+    fn an_uncarried_weapon_skill_prices_at_the_neutral_skill() {
+        const SKILL: u32 = 0x40BB; // the fixture weapon's skill AVIF
+        let torso_chance = |world: &World, npc: EntityId| {
+            vats_scan(world);
+            world
+                .resource::<VatsState>()
+                .targets
+                .iter()
+                .find(|t| t.entity == npc && t.part_name == "Torso")
+                .expect("the torso is priced")
+                .hit_chance
+        };
+        let (world, npc) = scan_world();
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        // The fixture's `ActorValues` is present but carries no skill entry.
+        let uncarried = torso_chance(&world, npc);
+        world.query_mut::<ActorValues>().unwrap().get_mut(player).unwrap().set_base(SKILL, 50.0);
+        let neutral = torso_chance(&world, npc);
+        assert!(
+            (uncarried - neutral).abs() < 1e-4,
+            "an uncarried skill must price like the neutral 50: {uncarried} vs {neutral}"
+        );
+        world.query_mut::<ActorValues>().unwrap().get_mut(player).unwrap().set_base(SKILL, 0.0);
+        let unskilled = torso_chance(&world, npc);
+        assert!(unskilled < neutral, "a carried skill of 0 stays unskilled: {unskilled} vs {neutral}");
     }
 
     #[test]
