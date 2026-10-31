@@ -37,6 +37,7 @@ mod groundcover_translate;
 mod helpers;
 mod interaction;
 mod crafting;
+mod armor;
 mod lockpick;
 mod smithing;
 mod inventory;

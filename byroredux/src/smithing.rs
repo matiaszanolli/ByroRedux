@@ -17,9 +17,8 @@
 //!
 //! Qualities continue past Legendary up to the table's 44th (a Smithing level above 100, which only Fortify
 //! Smithing gives; the level read is the actor value's current value, modifiers included). The weapon bonus acts
-//! on the equipped damage; the *armor rating* bonus is stored, shown in the item's name and details, and
-//! added to the displayed armor rating, but the engine has no armor mitigation for it to act on. Not modelled:
-//! the improve animation.
+//! on the equipped damage; the *armor rating* bonus joins the piece's base rating in [`crate::armor`], where the
+//! worn armor reduces physical damage. Not modelled: the improve animation.
 
 /// One row of the UESP *Smithing Qualities* table.
 #[derive(Debug, Clone, Copy, PartialEq)]

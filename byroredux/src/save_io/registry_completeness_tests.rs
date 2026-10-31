@@ -588,6 +588,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("AttractionState", "per-pair attraction reaction timers and the scan clock; ambient scheduling a load re-arms (M43)"),
         ("TemperingItem", "whether the item being improved is enchanted, set for the length of one condition evaluation and cleared; never outlives a call (M43)"),
         ("TemperingSubject", "the scratch entity an item's base form is lent to so item-tab perk conditions have a subject; created at boot (M43)"),
+        ("ArmorBook", "every armor record's base rating and type (Skyrim only), for the armor damage reduction; rebuilt from the records every boot (M43)"),
         ("StoryManagerRng", "selection RNG for random node policies (#5366 Phase 3); which radiant a post-load pick chooses is not state anything reads back"),
         // ── Dialogue trees (#5367) ──────────────────────────────────
         ("DialogueRandomState", "selection RNG; which greeting an old save rolled is not state anything reads back"),

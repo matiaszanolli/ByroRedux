@@ -1094,3 +1094,27 @@ impl ConsoleCommand for AttractionStatusCommand {
         ))
     }
 }
+
+
+/// `armor.status` — the player's armor (M43): the displayed armor rating and the physical damage reduction it
+/// and the hidden per-piece bonus give (Skyrim, UESP *Armor Rating*), for the live gate.
+pub(crate) struct ArmorStatusCommand;
+
+impl ConsoleCommand for ArmorStatusCommand {
+    fn name(&self) -> &str {
+        "armor.status"
+    }
+    fn description(&self) -> &str {
+        "Show the player's displayed armor rating, worn pieces and physical damage reduction (Skyrim)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(player) = crate::systems::PlayerEntity::get(world) else {
+            return CommandOutput::error("armor.status: no player");
+        };
+        let totals = crate::armor::totals(world, player);
+        CommandOutput::line(format!(
+            "armor rating {:.0}; pieces {}; physical damage reduction {:.2}%",
+            totals.displayed_rating, totals.pieces, totals.reduction_percent
+        ))
+    }
+}

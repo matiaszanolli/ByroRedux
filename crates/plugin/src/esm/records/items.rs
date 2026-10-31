@@ -174,8 +174,10 @@ pub enum ItemKind {
         /// Armor rating × 100. Sourced from DATA on Oblivion, FNAM on FO4,
         /// and DNAM on Skyrim+. 0 on FO3/FNV, which use `dt`/`dr` instead.
         armor_rating_x100: u32,
-        /// Skyrim+: armor type from BOD2 second u32 (0=light, 1=clothing,
-        /// 2=heavy). `None` on pre-Skyrim games.
+        /// Skyrim+: armor type from BOD2 second u32 — xEdit `wbArmorTypeEnum`:
+        /// 0 = Light Armor, 1 = Heavy Armor, 2 = Clothing (an earlier comment had
+        /// clothing and heavy swapped; the armor-rating code in `byroredux/src/armor.rs`
+        /// is the first consumer, and a live run caught it). `None` on pre-Skyrim games.
         armor_type: Option<u32>,
         /// Oblivion / FO3 / FNV female biped mesh (`MOD3`). The male mesh
         /// is `common.model_path` (`MODL`); this is the female counterpart

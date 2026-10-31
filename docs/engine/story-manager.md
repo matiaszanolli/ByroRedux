@@ -524,9 +524,16 @@ already has the surface:
   Smithing level above 100, i.e. Fortify Smithing — the level read is the actor value's current value,
   modifiers included). The inventory page shows an improved item's quality, its bonus (`+N damage`, or `+N armor
   rating` — the cuirass column for the biped body slot, bit 2 of the Skyrim `BOD2` flags) and its raised value.
-  **Engine policy / not modelled:** the armor-rating bonus has nothing to act on (the engine has no Skyrim armor
-  mitigation — it is stored and shown, not applied), the animation, and the "with perk" column is read as "any
-  material perk applies". Fallout 4's component-based `COBJ` (`FVPA`)
+  The armor-rating bonus is applied: `armor.rs` implements UESP's Skyrim armor model (*Armor Rating*, *Armor Cap*) —
+  a piece's rating is `CEILING[(base + quality bonus) × (1 + 0.4 × armor skill / 100)]` (NPCs: `1.5`), the displayed
+  rating is the sum over worn pieces, and physical damage is reduced by `rating × 0.12 % + 3 % per piece worn`
+  (clothing carries none), capped at 80 %; every weapon, projectile and explosion hit goes through it, Skyrim only.
+  The piece's type comes from `BOD2` (xEdit `wbArmorTypeEnum`: 0 light, 1 heavy, 2 clothing — the old comment
+  on the record field had them swapped; the first live run caught it). **Live-gated** by
+  [`m43-armor.sh`](../smoke-tests/m43-armor.sh): the starting outfit read 65 over 4 pieces = 19.80 %, and equipping
+  iron armor read 38 over 3 = 13.56 %, both exactly the formula. **Not modelled:** the perk multipliers on a piece
+  (Custom Fit / Well Fitted, Matching Set, Agile Defender / Juggernaut) and armor effects (Oakflesh, the Lord
+  Stone); and the animation. The "with perk" quality column is read as "any material perk applies". Fallout 4's component-based `COBJ` (`FVPA`)
   and the forge-craft animation are also unmodelled. **Live-gated** by
   [`m43-tempering.sh`](../smoke-tests/m43-tempering.sh) (2026-10-31, release build, Skyrim `HaltedStreamCamp01`'s
   grindstone: `craft benches` found the wheel, `craft list` offered `Improve Steel Sword`, `craft make` improved the

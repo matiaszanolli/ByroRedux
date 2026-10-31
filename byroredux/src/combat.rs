@@ -400,7 +400,12 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         let damage = if event.blocked || byroredux_scripting::is_ghost(world, target) {
             0.0
         } else {
-            apply_damage_threshold(world, event.aggressor, target, event.damage.max(0.0))
+            // Skyrim: the wearer's armor rating takes its share (a no-op where the book is empty).
+            crate::armor::mitigate(
+                world,
+                target,
+                apply_damage_threshold(world, event.aggressor, target, event.damage.max(0.0)),
+            )
         };
         // Judged before the strike lands: a kill clears the victim's combat state.
         let crime = crate::crime::player_strike_is_crime(world, event.aggressor, target);
