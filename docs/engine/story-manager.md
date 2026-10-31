@@ -373,6 +373,19 @@ already has the surface:
   The live run's pair was already inside the trigger distance, so the walk
   itself is covered by the unit test (teleport into range) and the shared
   step, not by that run.
+- **`TMEE`, Mine Explosion** (M43, `systems/mines.rs`). `OnStoryMineExplosion(akVictim, akAttacker)`. The
+  game's data defines a mine as a projectile with the *Alt. Trigger* flag, a trigger distance, a fuse and an
+  explosion (xEdit `wbPROJ`; the layout was verified on `Fallout4.esm`: the frag mine is flags `0x66`,
+  proximity 100, timer 1.5, explosion `fragMineExplosion` — damage 100, inner radius 100, outer 500), and
+  Fallout4.esm places **390** such mines (340 frag). The parsers now decode FO4's `PROJ` `DNAM` and the
+  Skyrim/FO4 `EXPL` `DATA` (the old reads only matched the FO3/FNV layout). A live actor within the proximity
+  distance trips a placed mine (nearest = victim), the record's timer burns as a fuse, then every live actor in
+  the outer radius is hit (full damage to the inner radius, linear to nothing at the outer radius), `TMEE` is
+  raised with the victim in `R1` (`R2` none: a placed mine has no owner) and the mine is hidden and disabled in
+  the persistent ledger. **Engine policy:** no friend/foe or detection delay (`fMinesDelayMin`,
+  `fMineExteriorRadiusMult`, `iProjectileMineShooterCanTrigger` unused), the timer read as a post-trigger fuse,
+  the falloff curve. **Not modelled:** player-placed mines, force/stagger, the explosion's visuals and sound.
+  Unit-tested; not run in the live engine.
 - **`OAAT`, Actor Attach** (M43, `story_events::raise_actor_attach_story_event`, called where a placed actor
   is stamped): `OnStoryActorAttach(akActor, akLocation)` — the actor in `R1`, the session location in `L1`,
   raised for each actor placed into a loaded cell. Unit-tested; not live-gated.
@@ -491,9 +504,8 @@ already has the surface:
   akLock)`; `OAAT` = `OnStoryActorAttach(akActor, akLocation)` (its `SMEN` authors no editor id; the code is
   read from its child quests, `REDeadActorAttach` and kin); `AOBJ` = `OnStoryAttractionObject(akActor,
   akObject, akLocation, abCommanded)` (no editor id either, so the code is inferred from the name pair and
-  the workshop "attraction" the CK describes). `OAAT`, `LOCK` and `IRON` have producers. **Still without
-  one:** `HACK` (the engine has no terminal interaction or hacking), `TMEE` (no mines, no explosions —
-  `projectiles.rs` says the explosion a record names is not modelled) and `AOBJ` (no workshop).
+  the workshop "attraction" the CK describes). `OAAT`, `LOCK`, `IRON` and `TMEE` have producers. **Still
+  without one:** `HACK` (the engine has no terminal interaction or hacking) and `AOBJ` (no workshop).
 
 ### 6.5 Persistence
 

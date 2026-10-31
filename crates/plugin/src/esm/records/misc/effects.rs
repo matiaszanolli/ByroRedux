@@ -142,6 +142,13 @@ pub struct ProjRecord {
     pub collision_radius: f32,
     /// `DATA` offset 76 (Skyrim+ only) — lifetime in seconds.
     pub lifetime: f32,
+    /// "Explosion - Alt. Trigger - Proximity" (xEdit `wbPROJ`): how close a target must come for an
+    /// alternate-trigger projectile — a mine — to go off. `DATA` offset 28 on FO3/FNV/Skyrim, `DNAM`
+    /// offset 24 on Fallout 4. `0.0` when not authored.
+    pub alt_trigger_proximity: f32,
+    /// "Explosion - Alt. Trigger - Timer": seconds before an alternate-trigger projectile goes off by itself
+    /// (`DATA` 32 / Fallout 4 `DNAM` 28).
+    pub alt_trigger_timer: f32,
 }
 
 impl ProjRecord {
@@ -157,6 +164,12 @@ impl ProjRecord {
     /// Correction, 11 Rotation).
     pub fn projectile_flags(&self) -> u16 {
         (self.flags & 0xFFFF) as u16
+    }
+
+    /// `Alt. Trigger` (flag bit 2) with a proximity distance and an explosion to detonate: a mine. A bullet
+    /// or grenade (no alt trigger) and a timed charge (no proximity) are not.
+    pub fn is_proximity_mine(&self) -> bool {
+        self.projectile_flags() & 0x4 != 0 && self.alt_trigger_proximity > 0.0 && self.explosion != 0
     }
 }
 
@@ -189,9 +202,11 @@ pub fn parse_proj(
                 out.gravity = r.f32_or_default();
                 out.muzzle_speed = r.f32_or_default();
                 out.range = r.f32_or_default();
-                // Offsets 16..36 are lights, tracer chance and the alt-trigger
-                // proximity / timer.
-                r.skip_or_eof(20);
+                // Offsets 16..28 are the two lights and the tracer chance; then the alt-trigger
+                // proximity (28) and timer (32).
+                r.skip_or_eof(12);
+                out.alt_trigger_proximity = r.f32_or_default();
+                out.alt_trigger_timer = r.f32_or_default();
                 let explosion = r.u32_or_default();
                 out.explosion = if explosion == 0 { 0 } else { remap_fid(explosion, remap) };
                 // 40..52 are the impact-force pair's neighbours (sound
@@ -214,6 +229,28 @@ pub fn parse_proj(
                     out.collision_radius = r.f32_or_default();
                     out.lifetime = r.f32_or_default();
                 }
+            }
+            // Fallout 4 moved the struct to `DNAM` (xEdit `wbDefinitionsFO4.pas` `wbPROJ`): flags u16, type
+            // u16, gravity, speed, range, two lights, then the alt-trigger proximity (24), timer (28) and
+            // the explosion (32); impact force at 48, collision radius 68, lifetime 72.
+            b"DNAM" if game == crate::esm::reader::GameKind::Fallout4 && sub.data.len() >= 76 => {
+                let mut r = SubReader::new(&sub.data);
+                let flags = r.u16_or_default();
+                let kind = r.u16_or_default();
+                out.flags = (u32::from(kind) << 16) | u32::from(flags);
+                out.gravity = r.f32_or_default();
+                out.muzzle_speed = r.f32_or_default();
+                out.range = r.f32_or_default();
+                r.skip_or_eof(8); // the two lights
+                out.alt_trigger_proximity = r.f32_or_default();
+                out.alt_trigger_timer = r.f32_or_default();
+                let explosion = r.u32_or_default();
+                out.explosion = if explosion == 0 { 0 } else { remap_fid(explosion, remap) };
+                r.skip_or_eof(12);
+                out.impact_force = r.f32_or_default();
+                r.skip_or_eof(16);
+                out.collision_radius = r.f32_or_default();
+                out.lifetime = r.f32_or_default();
             }
             _ => {}
         }
@@ -379,13 +416,18 @@ pub struct ExplRecord {
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
-    /// `DATA` offset 8..12 — damage in HP per direct hit (f32).
+    /// Damage in HP per direct hit (f32): `DATA` offset 8..12 on Oblivion/FO3/FNV, offset 28 on Skyrim and
+    /// Fallout 4.
     pub damage: f32,
-    /// `DATA` offset 12..16 — explosion blast radius in game units (f32).
+    /// Explosion blast radius in game units (f32): `DATA` offset 12..16 on Oblivion/FO3/FNV, the single
+    /// `Radius` at 32 on Skyrim, and Fallout 4's `Outer Radius` at 36.
     pub radius: f32,
+    /// Fallout 4's `Inner Radius` (`DATA` offset 32); equal to [`Self::radius`] on every other game, which
+    /// author one radius.
+    pub inner_radius: f32,
 }
 
-pub fn parse_expl(form_id: u32, subs: &[SubRecord]) -> ExplRecord {
+pub fn parse_expl(form_id: u32, subs: &[SubRecord], game: crate::esm::reader::GameKind) -> ExplRecord {
     let mut out = ExplRecord {
         form_id,
         ..Default::default()
@@ -399,11 +441,27 @@ pub fn parse_expl(form_id: u32, subs: &[SubRecord]) -> ExplRecord {
     out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
+            // Skyrim and Fallout 4 (xEdit `wbEXPL`): six form ids (24 bytes), then force (24), damage (28) and
+            // the radius — Skyrim's single `Radius` at 32, Fallout 4's `Outer Radius` at 36 after an `Inner
+            // Radius` at 32.
+            b"DATA" if matches!(game, crate::esm::reader::GameKind::Skyrim | crate::esm::reader::GameKind::Fallout4) && sub.data.len() >= 40 => {
+                let mut r = SubReader::new(&sub.data);
+                r.skip_or_eof(28);
+                out.damage = r.f32_or_default();
+                if game == crate::esm::reader::GameKind::Fallout4 {
+                    out.inner_radius = r.f32_or_default();
+                    out.radius = r.f32_or_default();
+                } else {
+                    out.radius = r.f32_or_default();
+                    out.inner_radius = out.radius;
+                }
+            }
             b"DATA" if sub.data.len() >= 16 => {
                 let mut r = SubReader::new(&sub.data);
                 r.skip_or_eof(8); // damage starts at offset 8
                 out.damage = r.f32_or_default();
                 out.radius = r.f32_or_default();
+                out.inner_radius = out.radius;
             }
             _ => {}
         }
@@ -666,11 +724,42 @@ mod tests {
             sub(b"FULL", b"Frag Grenade\0"),
             sub(b"DATA", data),
         ];
-        let e = parse_expl(0x0006_6EF8, &subs);
+        let e = parse_expl(0x0006_6EF8, &subs, crate::esm::reader::GameKind::Fallout3NV);
         assert_eq!(e.editor_id, "FragGrenade");
         assert!((e.damage - 50.0).abs() < 1e-3);
         assert!((e.radius - 350.0).abs() < 1e-3);
     }
+    /// A Fallout 4 mine (`FragMineProjectile` from `Fallout4.esm`): flags 0x66 (Explosion | Alt. Trigger | Can
+    /// Be Disabled | Can Be Picked Up), type Lobber, proximity 100, timer 1.5, explosion 0xEECE9 — and its
+    /// `fragMineExplosion` (damage 100, inner radius 100, outer 500).
+    #[test]
+    fn a_fallout4_mine_projectile_and_explosion_decode_from_their_dnam_and_data() {
+        let mut dnam = vec![0u8; 93];
+        dnam[0..2].copy_from_slice(&0x66u16.to_le_bytes());
+        dnam[2..4].copy_from_slice(&2u16.to_le_bytes());
+        dnam[12..16].copy_from_slice(&15000.0f32.to_le_bytes());
+        dnam[24..28].copy_from_slice(&100.0f32.to_le_bytes());
+        dnam[28..32].copy_from_slice(&1.5f32.to_le_bytes());
+        dnam[32..36].copy_from_slice(&0x000E_ECE9u32.to_le_bytes());
+        let p = parse_proj(0xE56C3, &[sub(b"EDID", b"FragMineProjectile\0"), sub(b"DNAM", &dnam)], crate::esm::reader::GameKind::Fallout4, &None);
+        assert_eq!((p.alt_trigger_proximity, p.alt_trigger_timer, p.explosion), (100.0, 1.5, 0x000E_ECE9));
+        assert_eq!(p.projectile_type(), 2);
+        assert!(p.is_proximity_mine());
+        // The same projectile without the alt-trigger flag (a thrown grenade) is not a mine.
+        let mut grenade = dnam.clone();
+        grenade[0..2].copy_from_slice(&0x2u16.to_le_bytes());
+        let g = parse_proj(1, &[sub(b"DNAM", &grenade)], crate::esm::reader::GameKind::Fallout4, &None);
+        assert!(!g.is_proximity_mine());
+
+        let mut data = vec![0u8; 84];
+        data[24..28].copy_from_slice(&2000.0f32.to_le_bytes());
+        data[28..32].copy_from_slice(&100.0f32.to_le_bytes());
+        data[32..36].copy_from_slice(&100.0f32.to_le_bytes());
+        data[36..40].copy_from_slice(&500.0f32.to_le_bytes());
+        let e = parse_expl(0xEECE9, &[sub(b"EDID", b"fragMineExplosion\0"), sub(b"DATA", &data)], crate::esm::reader::GameKind::Fallout4);
+        assert_eq!((e.damage, e.inner_radius, e.radius), (100.0, 100.0, 500.0));
+    }
+
     #[test]
     fn parse_ipct_picks_edid_modl() {
         // `MetalImpactSet` shape: EDID + MODL pointing at the impact

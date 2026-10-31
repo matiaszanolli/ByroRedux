@@ -368,6 +368,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::systems::random_conversation::RandomConversationState::default());
     world.insert_resource(crate::systems::dead_body::DeadBodyState::default());
     world.insert_resource(crate::systems::iron_sights::IronSightsState::default());
+    world.insert_resource(crate::systems::mines::MineClock::default());
     world.insert_resource(byroredux_scripting::jail::JailEscapeWatch::default());
     world.insert_resource(crate::inventory::PendingDroppedItems::default());
     world.insert_resource(crate::crafting::ActiveCrafting::default());
@@ -456,6 +457,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::PatrolState>();
     world.register::<crate::components::AmbientPackageRuntime>();
     world.register::<crate::systems::random_conversation::ConversationHold>();
+    world.register::<crate::systems::mines::ArmedMine>();
+    world.register::<crate::systems::mines::SpentMine>();
     world.register::<crate::components::IdleResume>();
     world.register::<crate::systems::knockdown::KnockedDown>();
     world.register::<crate::systems::flee::FleeState>();
