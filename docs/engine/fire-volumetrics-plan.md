@@ -70,10 +70,99 @@ The baseline screenshot `s1_close_flame` shows the cost of that choice: at
 Stop-and-ask check before starting: does the new grid need to be saved
 (M45)? Today nothing in `byroredux/src/save_io*` or `crates/save` refers to the
 combustion or froxel state, so the transported field is not saved.
+**Answered (Matías, 2026-10-31): no.** The local grid is transient, like the
+froxel field today: it is rebuilt from the `FogVolume` sources after a load. No
+`FORMAT_MAJOR` bump and no schema-fingerprint change.
 
 **Done when:** flame detail at close range clearly improves over the baseline
 screenshots (confirmed by Matías), distant fires look unchanged, cost reported
 against the baseline.
+
+### Phase 1 design (proposal, nothing built yet)
+
+**Why the froxels look blocky.** At 1.6 m a froxel is only a few centimetres
+across the screen (the exact figure depends on the field of view) but 0.63 m deep (first 5 m are only 8 slices). The flame is sampled
+coarsely along the view direction, which is the lattice seen in
+`s1_close_flame`. A grid with equal-sized cubic cells removes that.
+
+**What makes the port cheaper than it looks.** The transport is already written
+in world space. Every read of the old field goes through one function,
+`samplePreviousTransport(worldPos)`, which calls `reprojectHistory` (the only
+place that turns a world position into a froxel coordinate). The sources
+(`applyCombustionSources`) take a world position plus a segment. The finite
+differences take three basis steps (`stepX/Y/Z`), which for a cubic grid are
+just the three axes. So the chemistry, BFECC, curl noise, wind, pressure and
+boundary tests can move into a shared include
+(`include/combustion_transport.glsl`) used by both the froxel pass and a new
+local-grid pass; only the sampler and the step vectors differ. The soot,
+heat and fuel rates stay in `combustion.rs`.
+
+**Pieces.**
+
+1. **Local grid** (`volumetrics/local_grid.rs`, new). World-space, axis-aligned,
+   cubic cells, three RGBA16F volumes (state, dynamics, optical) like the froxel
+   field, ping-ponged per frame in flight. Anchored on the emitter clusters the
+   16 m fog cluster grid already finds (`fog_clusters.rs`), so no new culling.
+   Transient (see above).
+2. **Local sim pass** (`volumetrics_local_sim.comp`, new). One thread per cell,
+   same update as today but sampling the local grid instead of reprojecting.
+3. **Local ray-march pass** (`volumetrics_local_march.comp`, new). Per screen
+   pixel the ray is clipped to the grid box and to the opaque depth, then marched
+   with the same exact slab integral as `volumetrics_integrate.comp`. Output:
+   radiance and transmittance for the clipped segment.
+4. **Hand-off to the froxels.** Inside a local grid the froxel pass stops
+   simulating and instead fills its three combustion volumes by averaging the
+   local cells under each froxel (coarse density and emission only, which is what
+   the acceptance criterion asks for). Everything that reads those volumes today
+   (fire-light moments, sun and light self-shadowing, the thermal-emission
+   history) keeps working unchanged. Froxels inside the box are told to leave the
+   transported medium out of the fog they integrate, so the fire is not drawn
+   twice.
+5. **Composite.** `composite.frag` already reads the integrated fog volume at the
+   surface depth. With a local grid on screen it reads the fog at three depths
+   (box entry, box exit, surface) and combines them: fog before the box, then the
+   local fire, then fog after it. This is where the depth-aware part of the
+   acceptance criterion lives.
+
+**Decisions I need from Matías before building.**
+
+- **Dense boxes or sparse bricks?** The issue says sparse blocks. A dense box per
+  emitter cluster is much simpler (hardware trilinear filtering, no indirection)
+  and is enough to prove the resolution win; bricks only save memory and
+  dispatch time. Proposal: ship dense boxes first, with a fixed cell size chosen
+  per box (about 2.5 cm for a candle or torch, 5 cm for a campfire, 20 cm and up
+  for explosions), and add bricks only if the measured cost needs them. A 128³
+  box with three RGBA16F volumes ping-ponged is about 100 MB, so the number of
+  boxes has to be capped (proposal: 4).
+- **Explosions that outgrow the largest box** (the nuclear profile spans tens of
+  metres) stay on the froxels, as they do today. Proposal: accept that for
+  Phase 1; Phase 6's burning-particle work is the real answer for large blasts.
+- **Lighting inside the local march (the main open risk).** The froxel pass
+  gets sun and light visibility from ray queries, which is too expensive per
+  screen pixel. Proposal: the march uses the fire's own emission plus a lighting
+  value read from the froxel pass at the same place, and a short march inside the
+  local grid for self-shadowing. That needs one extra froxel-resolution volume
+  holding visibility-weighted sun and light radiance without the phase function.
+  I do not know yet whether that looks right for thick smoke; it is the first
+  thing to check in screenshots.
+
+**Staging, each commit measured on the GPU and `Refs #6533` only.**
+
+| Stage | Change | Visible? | Check |
+|---|---|---|---|
+| 1a | Move transport into the shared include; froxel output byte-identical | no | Simulation-state hash equal to baseline on s1–s5; per-pass GPU time unchanged |
+| 1b | Local grid + sim pass, written but not yet drawn | no | Hash of local grid over 5 runs identical; sim pass ms reported |
+| 1c | Local march + composite combine + froxel hand-off | **yes** | s1 and s5 screenshots, per-pass ms, review by Matías |
+
+**Risks to plan around.**
+
+- Many tests read `volumetrics_inject.comp` as text and split on function names
+  (35 references in `volumetrics.rs` alone, more in `gpu_timers.rs`, `reflect.rs`,
+  `shader_constants*.rs` and others). Moving code into an include silently
+  weakens them unless each is repointed in the same commit.
+- `check-shader-artifacts.sh` has to pass, and shaders must be recompiled with
+  plain `-V` (the reflection test needs `OpName`).
+- No GPU, no measurement: if the machine is busy with the user's engine, wait.
 
 ## Phase 2: Integration quality
 
@@ -167,7 +256,10 @@ same cost, measured against the Phase 0 baseline.
 
 ## Open questions for Matías
 
-1. Real-content baseline scenes. **Partly answered.** One exists (`s5`, Skyrim
+1. Real-content baseline scenes. **Waived for sequencing (Matías,
+   2026-10-31):** a loose `--mesh` explosion NIF is acceptable as the explosion
+   scene, so Phase 1 may start. The empty-sky frames from those NIFs still need
+   diagnosing before they can serve as a baseline. Earlier status: **partly answered.** One exists (`s5`, Skyrim
    Whiterun Bannered Mare hearth). An exterior fire and a real explosion do not
    yet; see the phase-0 document §7 for what was tried. Still needed from
    Matías: whether a loose vanilla explosion NIF (`--mesh`) is acceptable as the
