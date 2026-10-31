@@ -113,6 +113,10 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
     // a parallel write would conflict with every reader. Exclusive Early
     // also runs after the parallel batch, i.e. after this frame's
     // `ActionState` edges exist.
+    //
+    // #6429 — entering VATS runs `vats_scan` (the targeting scan), so the
+    // declaration covers the scan's reads too, not just the mode switch's.
+    // Exclusive, so this is for the `sys.accesses` report, not for safety.
     scheduler.add_exclusive_with_access(
         Stage::Early,
         crate::systems::vats::vats_mode_system,
@@ -123,7 +127,27 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads_resource::<crate::systems::PlayerMode>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads::<byroredux_core::ecs::components::Dead>()
-            .reads_resource::<byroredux_scripting::input_layers::InputLayers>(),
+            .reads_resource::<byroredux_scripting::input_layers::InputLayers>()
+            // `vats_scan`: the loaded index, weapon + skill, actor roster.
+            .reads_resource::<crate::cell_loader::LoadedCellIndex>()
+            .reads::<byroredux_core::ecs::components::ActorValues>()
+            .reads::<byroredux_core::ecs::components::ActorVitals>()
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .reads::<byroredux_core::ecs::components::CreatureActor>()
+            .reads::<byroredux_core::ecs::components::EquippedWeapon>()
+            .reads_resource::<byroredux_core::form_id::FormIdPool>()
+            // Limb positions: bone name -> node -> world pose.
+            .reads_resource::<byroredux_core::string::StringPool>()
+            .reads_resource::<crate::components::SubtreeCache>()
+            .reads::<GlobalTransform>()
+            // `camera_ray`: the active camera's pose + the boom length.
+            .reads_resource::<ActiveCamera>()
+            .reads::<Transform>()
+            .reads_resource::<crate::player_body::PlayerCameraView>()
+            // `visible_fraction` / `target_bodies_by_owner`: the cover fan.
+            .reads_resource::<byroredux_physics::PhysicsWorld>()
+            .reads::<byroredux_physics::RapierHandles>()
+            .reads::<byroredux_physics::ActorColliderOwner>(),
     );
     // #3111 — weather writes WindField while the player controller samples it
     // for water waves. Keep weather in the same stage but serialize it after
