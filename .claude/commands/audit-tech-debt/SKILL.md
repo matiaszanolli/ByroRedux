@@ -85,21 +85,22 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    `allow(dead_code)` 39 (41 on 2026-10-25, #6397/#6398 retired two; 12 of them are `cfg(test)` TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 —
    not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 373 (unchanged since 2026-10-25; 368 on 2026-10-24, 363 on 2026-10-21, 352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
    earlier reports scoped to `crates`+`byroredux` read lower; none runs on a hosted runner),
-   production >2000 LOC: **2** — `crates/renderer/src/shader_constants_data.rs` (3150, a data table, Dim 1) and
-   `crates/scripting/examples/mq101_conformance.rs` (2157). Three left the list through real splits since 2026-10-25:
+   production >2000 LOC: **1** at the 2026-10-25 measure — `crates/renderer/src/shader_constants_data.rs` (3150, a data table, Dim 1); the
+   other, `crates/scripting/examples/mq101_conformance/`, was split by #6360 on 2026-10-28 (re-measure it by its children). Three left the list through real splits since 2026-10-25:
    `crates/audio/src/` (#6140, b2e542eee — `lib.rs` is a ~200-LOC hub over `dsp`/`world`/`components`/`system`/`cache`, largest child ~610),
-   `crates/nif/src/import/types/` (#6141, 5559074be — eight files, largest ~570) and `crates/scripting/src/obscript_effects.rs`
-   (2034 at d5d13edcc → 1842 after #6365/#6373, now a watch-list row, not a split). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
+   `crates/nif/src/import/types/` (#6141, 5559074be — eight files, largest ~570) and `crates/scripting/src/obscript_effects/`
+   (2034 at d5d13edcc → 1842 after #6365/#6373, then split into per-domain handler modules by #6355 on 2026-10-28). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
    `crates/scripting/src/fragment/vm.rs`, `crates/scripting/src/translate/effects.rs`, `crates/scripting/src/condition.rs`,
    `byroredux/src/save_io.rs` and `crates/plugin/src/esm/cell/mod.rs` are now ~70–150-LOC hubs over `vm/`, `effects/`,
    `condition/`, `save_io/` and `cell/` directories, the largest child ~1400 — as did `byroredux/src/components.rs` (#5467) and
    `crates/scripting/src/fragment/effects.rs` (#5468) before them. **Split-hub hazard:** a path-scoped `git log` / `grep` on a hub
    file silently sees only the hub (`git log -- byroredux/src/save_io.rs` returned 0 commits where the directory returned 24);
    scope Dim 1 deltas to the `<stem>/` directory and measure a split by its children, not by the parent shrinking. Watch-list
-   within 5%: `byroredux/src/inventory.rs` (1944), `crates/debug-ui/src/panels.rs` (1938),
-   `crates/renderer/src/vulkan/gpu_timers.rs` (1929) and `byroredux/src/npc_spawn.rs` (1901); just under the band:
+   within 5%: `byroredux/src/inventory/` (1944), `crates/debug-ui/src/panels.rs` (1938),
+   `crates/renderer/src/vulkan/gpu_timers.rs` (1929) and `byroredux/src/npc_spawn/` (1901); just under the band:
    `crates/plugin/src/esm/records/misc/world.rs` (1870), `crates/renderer/src/mesh.rs` (1864),
-   `byroredux/src/asset_provider/material/merge.rs` (1860) and `crates/scripting/src/obscript_effects.rs` (1842).
+   `byroredux/src/asset_provider/material/merge.rs` (1860). `byroredux/src/inventory/` (#6356) and `byroredux/src/npc_spawn/` (#6357) were split
+   again on 2026-10-28; measure them by children.
    `crates/renderer/src/vulkan/context/init.rs` (1950 on 2026-10-25) left the band — 3e6f6b66a (#6143) split the frame and
    Vulkan drivers into `init_stages.rs` and the per-stage `context/` files, each pinned by `function_size_pin_tests.rs`;
    the instance list is regenerated every audit from `dim1_big.txt` — trust the recipe and the count delta over the names;

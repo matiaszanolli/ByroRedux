@@ -105,7 +105,7 @@ to actor spawn. A pre-fix regression test name preserves the symptom:
 "61 statics hits, 0 NPCs spawned" for a 31-NPC test cell.
 
 Dispatch branches on FaceGen strategy: `game.has_runtime_facegen_recipe()`
-→ `npc_spawn::spawn_npc_entity` (`byroredux/src/npc_spawn.rs:671`, FO3/FNV
+→ `npc_spawn::spawn_npc_entity` (`byroredux/src/npc_spawn/:671`, FO3/FNV
 — morphs computed at load time); `game.uses_prebaked_facegen()` →
 `npc_spawn::spawn_prebaked_npc_entity` (`npc_spawn.rs:1549`, Skyrim+ —
 resolves a pre-baked FaceGen NIF by plugin+FormID).
@@ -632,7 +632,7 @@ animation-clip swap).
 - **Selection re-runs once per in-game minute, not per frame.**
   Superseded 2026 by M42.9 / #2652: `ambient_ai_package_system`
   (`npc_spawn/ai_package.rs`, registered *unconditionally* at
-  `byroredux/src/boot/schedule/update.rs` — unlike the seven locomotion systems, this one is not
+  `byroredux/src/boot/schedule/update/` — unlike the seven locomotion systems, this one is not
   behind an env gate) re-selects the winning package once per in-game
   minute per actor, and immediately on an `EvaluatePackageRequest`. The
   behavior component is swapped only when the winning PACK **FormID**

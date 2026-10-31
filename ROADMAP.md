@@ -20,14 +20,14 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 105, 2026-10-26. Workspace numbers (tests, LOC,
+**Last session close:** Session 106, 2026-10-30. Workspace numbers (tests, LOC,
 files, issue dirs) live in [Project Stats](#project-stats) only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
 bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
 --workspace -- -D warnings` was **clean** at the last run (2026-10-22, after the
-Session 103 `head_look` lint was fixed; `--all-targets` is not, Known Issues). All 11 461 tests
-pass (2026-10-26). The lock-order detector is clean across the workspace
+Session 103 `head_look` lint was fixed; `--all-targets` is not, Known Issues). All 11 600 tests
+pass (2026-10-30). The lock-order detector is clean across the workspace
 (`BYRO_LOCK_ORDER_CHECK=1`, `--exclude byroredux-ui`, 2026-10-24; it caught
 Session 104's Find and Flee, and a bare `cargo test` does not run it). The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
 regression, **R6a-regress-22**, was the bench camera moving with `b9e961eeb`'s
@@ -78,11 +78,11 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
   the RACE `SPLO` racial pair (#4415).
   Dialogue: NPC activation selects a topic, a native response surface
   presents the INFO, and its `TIF_` fragments dispatch (P4).
-  Story Manager (#5366 Phases 0–4, 2026-10-07 → 10-08): Skyrim+ quests autostart
-  from the authored event tree — `SMBN`/`SMEN`/`SMQN` decode, `KILL` /
-  `CLOC` producers, condition-gated dispatch through the M47.1
-  evaluator into the canonical quest lifecycle, live-gated by
-  [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh).
+  Story Manager (#5366; M43 closed 2026-10-30): Skyrim+ quests autostart
+  from the authored event tree — `SMBN`/`SMEN`/`SMQN` decode, fourteen event
+  producers (`KILL`, `CLOC`, `ADIA` NPC-to-NPC conversations, `CRFT` crafting, …),
+  condition-gated dispatch through the M47.1 evaluator into the canonical quest
+  lifecycle, live-gated by [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh).
 - **Save/load.** Full-ECS snapshot with validation gates, atomic write and
   live load-apply (M45/M45.1).
 - **Audio.** kira spatial audio: footsteps, ambient, music, per-cell reverb,
@@ -101,11 +101,9 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
   (#3802); FO4's compressed `NVNM` body is still undecoded.
 - FO76/Starfield actors have no walk-clip source (FO4's run through its Havok
   2014 behavior graphs).
-- Dialogue: Skyrim+ `.fuz` voice (#5912). The greeting, line-lifetime, force-greet
-  and FO3/FNV voice layers are live (#5367,
-  [`dialogue-trees.md`](docs/engine/dialogue-trees.md)). Story Manager
-  producer breadth is open (#5366 — `SCPT` awaits the `SendStoryEvent`
-  native, `LEVL`/`SKIL` a leveling transition).
+- Dialogue UI beyond the speaker's name and the topic list (M48). The dialogue layers
+  and voice are live ([`dialogue-trees.md`](docs/engine/dialogue-trees.md)); the Story
+  Manager producers that wait on other gameplay are named in the M43 row.
 - Starfield CDB materials: `.mat` texture slots merge from the streaming CDB
   index (`224a19372`, `18fce7e43`); #3398 stays open until its definition of
   done is checked.
@@ -119,12 +117,8 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
 - The [playable vertical slice](#playable-vertical-slice) is **complete**
   (P0–P5, closed 2026-10-01). Its follow-ons are listed there; none of them
   blocks the slice.
-- Story Manager (#5366): **Phases 0–4 shipped**, the Skyrim-dialect runtime
-  plus the FO4/SF decode (detail in the M43 row under Tier 7). Remaining:
-  producer breadth as subsystems land and the open `DNAM`/`HNAM`/`MNAM`
-  semantics ([`story-manager.md`](docs/engine/story-manager.md)).
-- Dialogue trees (#5367): all layers landed and live-gated (`dt1`/`dt2`
-  smokes); remaining is Skyrim+ `.fuz` voice (#5912).
+- Quests & dialogue (M43, #5366/#5367) **closed 2026-10-30** — what it leaves to
+  other milestones is named in its row ([`story-manager.md`](docs/engine/story-manager.md)).
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
   in [`rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
 - WATAL: W0 and W1 are closed on FNV and Skyrim (2026-10-26); distant water is per
@@ -569,10 +563,11 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   is +0.5–1.2 ms on Cornell, Whiterun and MedTek, unattributed (742-commit
   window: ReSTIR `c2647d468` / `17e0b7464` / `6110b6078`, GI sampling `0b56f1133`,
   SVGF history `1092b5b9e` / `24eb7dba8`, cloud-shadow map `c231f5b5f`). Next:
-  bisect Cornell `gpu_main`. The record is 231 commits old at the Session 105
+  bisect Cornell `gpu_main`. The record is 399 commits old at the Session 106
   close (renderer paths since: shadow filter `0999490b9`, ReSTIR taint
-  `bed162262`, terrain-LOD skirts `7eac91637`, caustics `dc8091139`, water
-  waves/shores `7dd294ee3`); none was re-benched, so re-run before citing it.
+  `bed162262`, water waves/shores `7dd294ee3`, geometry-pool caps and admission
+  tiers `bb97be77c` / `22d6e1a80`, terrain softening `e71451d08`); none was
+  re-benched, so re-run before citing it.
 - [ ] **Papyrus interpreter: what the frame budget does not bound** (#5764).
   #5763 gave the four exclusive `Update` systems a shared 10 000-statement
   frame allowance (runaway frame 13.6 → 1.4 ms; a never-ending handler dies at
@@ -710,16 +705,16 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-26, HEAD `870722b99`: all figures re-counted at the Session 105 close.
+Ground-truth as of 2026-10-30, HEAD `b03a4f79a`: all figures re-counted at the Session 106 close.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | 868 742                       |
-| Rust total lines (all `.rs`, excl. `target/`) | 925 830                  |
-| Source files (`.rs`, excl. `target/`)   | 1588 total · 1486 outside `tests/` dirs (+36 / +35 since the Session 104 close) |
+| Rust source lines (`src/` dirs)         | 874 937                       |
+| Rust total lines (all `.rs`, excl. `target/`) | 932 331                  |
+| Source files (`.rs`, excl. `target/`)   | 1620 total · 1517 outside `tests/` dirs (+32 / +31 since the Session 105 close) |
 | Workspace members                       | 35 (count the `[workspace] members` block only; 30 crates — `terrain-height` joined in Session 103 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **11 461 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-26; 371 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 6398 (`.claude/issues/`)     |
+| Tests                                   | **11 600 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-30; 380 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 6493 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-10-03, #4628). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

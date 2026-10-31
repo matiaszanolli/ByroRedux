@@ -123,7 +123,7 @@ both produces scale² geometry while ragdoll articulation remains scale¹ (#3064
 > wording here claimed "the whole per-game seam" was the constraint decode alone,
 > which contradicted §1 and the table twenty lines below it (#2883).
 >
-> `humanoid_skeleton_path(GameKind)` (`byroredux/src/npc_spawn.rs`) game-branches
+> `humanoid_skeleton_path(GameKind)` (`byroredux/src/npc_spawn/`) game-branches
 > *which* skeleton asset feeds this pipeline. That is asset resolution, not
 > physics translation — no physics semantics, not a fourth seam.
 

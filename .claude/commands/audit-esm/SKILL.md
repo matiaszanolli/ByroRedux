@@ -482,7 +482,7 @@ First step: `cargo test -p byroredux-plugin strings_table`
 **Output**: `/tmp/audit/esm/dim_6.md`
 
 ### Dimension 7: `EsmIndex` → ECS Handoff & the Redux-Native Tier
-Paths: `crates/plugin/src/{record,datastore,resolver,manifest,equip}.rs`, `esm/records/index.rs`; consumers `byroredux/src/cell_loader/references/`, `byroredux/src/npc_spawn.rs`
+Paths: `crates/plugin/src/{record,datastore,resolver,manifest,equip}.rs`, `esm/records/index.rs`; consumers `byroredux/src/cell_loader/references/`, `byroredux/src/npc_spawn/`
 First step: `grep -rn 'resolve_entity_by_global_form_id\|find_by_form_id' byroredux/src | head -20`
 **Checklist**:
 - `EsmIndex` is a session-long bag of `HashMap<u32, _>`; nothing evicts it. Check growth on

@@ -28,11 +28,11 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   Substrate: `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs`.
 - CHARAL-adjacent (not submodules): `crates/core/src/combat.rs` (Oblivion damage math),
   `crates/core/src/stealth.rs` (FO3/FNV sneak detection) — consumer-less or thin today; verify anyway.
-- **Population boundary**: `byroredux/src/npc_spawn.rs` (`build_character_ruleset`, the only ruleset
+- **Population boundary**: `byroredux/src/npc_spawn/` (`build_character_ruleset`, the only ruleset
   construction site) + `npc_spawn/resumable/`, `npc_spawn/ai_package.rs`, `crates/plugin/src/esm/records/
   actor_value_derive.rs`, `crates/plugin/src/esm/records/actor/mod.rs` (`effective_actor_level`),
   `crates/plugin/src/equip.rs` (`resolve_inherited_*`), `byroredux/src/cell_loader/references/`,
-  `byroredux/src/inventory.rs` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/
+  `byroredux/src/inventory/` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/
   `Background`/`SpellList`/`RaceSpells` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`, `grant_experience`),
   `byroredux/src/commands/{actor_value,condition}.rs`, VATS runtime `byroredux/src/systems/vats.rs` + `components/vats.rs` (`VatsState`) +
   `commands/vats.rs` (`vats.*`; `build_vats_model` in `npc_spawn.rs` is the one installer), `byroredux/src/crime.rs` (installs the `CrimeModel` resource from
@@ -94,7 +94,7 @@ Delta-first: for each dimension run `git log --since=<last report date> --format
 skim dimensions whose Paths did not change (constants only move when a capture or formula commit lands).
 
 ### Dimension 1: Ruleset Seam & Doctrine
-Paths: `crates/core/src/character/{ruleset,profile,mod}.rs`, `byroredux/src/npc_spawn.rs`
+Paths: `crates/core/src/character/{ruleset,profile,mod}.rs`, `byroredux/src/npc_spawn/`
 First step: `grep -rn 'GameKind\|\.game ==\|game_kind' crates/core/src/character byroredux/src/npc_spawn* crates/plugin/src/esm/records/actor_value_derive.rs byroredux/src/{encumbrance,barter,combat}.rs crates/scripting/src/{bleedout,perk_entry_points}.rs`
 - **Doctrine**: the per-game seam is *data in the tables*, never a branch in a consumer. Report every
   `game ==` / `GameKind` / master-name test in CHARAL population or consumers (weight = `/audit-nifal`'s
@@ -208,7 +208,7 @@ First step: `cargo test -p byroredux-core character::leveling character::regen c
 **Output**: `/tmp/audit/character/dim_3.md`
 
 ### Dimension 4: Population Boundary (parse → ruleset → actor) — highest yield
-Paths: `byroredux/src/npc_spawn*`, `crates/plugin/src/esm/records/{actor_value_derive,actor/mod}.rs`, `crates/plugin/src/equip.rs`, `byroredux/src/inventory.rs`, `byroredux/src/cell_loader/references/`
+Paths: `byroredux/src/npc_spawn*`, `crates/plugin/src/esm/records/{actor_value_derive,actor/mod}.rs`, `crates/plugin/src/equip.rs`, `byroredux/src/inventory/`, `byroredux/src/cell_loader/references/`
 First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_sites_are_enumerated_and_pinned; git log --since=<last report> --format='%h %cs %s' -- <Paths>`
 - **One derivation, one implementation** (the class that keeps recurring): `effective_actor_level` lives
   once in `actor/mod.rs` and is `.max(0)` on the non-multiplier branch — a second copy or a `.max(1)` (also

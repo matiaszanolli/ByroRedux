@@ -266,8 +266,8 @@ out of scope):
 
 **Mechanism BUILT and registered; live for FO3/FNV Action Points only.**
 `pool_regen_tick_system` is registered in `Stage::Update`
-(`byroredux/src/boot/schedule/update.rs`) and runs every frame. Its required
-`PoolRegenConfig` is inserted by `build_vats_model` (`byroredux/src/npc_spawn.rs`) on the
+(`byroredux/src/boot/schedule/update/`) and runs every frame. Its required
+`PoolRegenConfig` is inserted by `build_vats_model` (`byroredux/src/npc_spawn/`) on the
 first FO3/FNV cell load (#6350), carrying the `ActionPointsRegen` lane: the player's
 `ActionPoints` restores at `fActionPointsRestoreRate` normalized to per-second
 (FO3 4/s; FNV 0.06 per frame × 60 Hz = 3.6/s — see `charal-fnv-fo3-ruleset.md`). Every

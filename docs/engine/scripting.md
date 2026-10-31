@@ -140,7 +140,7 @@ in the design narrative.
 |---|---|---|---|
 | `ActivateEvent` | `activator: EntityId` | `OnActivate` | shared interaction path used by gameplay input and diagnostics |
 | `HitEvent` | `aggressor`, `source`, `projectile: EntityId` + damage/attack flags | `OnHit` | combat runtime |
-| `EquipmentEventBatch` | `Vec<EquipmentChange>` (`item_form_id`, `equipped`), keyed by the wearer entity | actor `OnObjectEquipped` / `OnObjectUnequipped` | **live** — [`emit_equipment_changes`](../../crates/scripting/src/equipment.rs) appends to the wearer's one-frame batch (`get_mut`-then-`extend`); callers are [`byroredux/src/inventory.rs`](../../byroredux/src/inventory.rs) and the `EquipItem` fragment effect |
+| `EquipmentEventBatch` | `Vec<EquipmentChange>` (`item_form_id`, `equipped`), keyed by the wearer entity | actor `OnObjectEquipped` / `OnObjectUnequipped` | **live** — [`emit_equipment_changes`](../../crates/scripting/src/equipment.rs) appends to the wearer's one-frame batch (`get_mut`-then-`extend`); callers are [`byroredux/src/inventory/`](../../byroredux/src/inventory.rs) and the `EquipItem` fragment effect |
 | `TimerExpired` | `timer_id: u32` | `OnTimer` | `timer_tick_system` — **dormant** (#5608): nothing starts a `ScriptTimer`; FO4 `OnTimer` ships via the update-registration registry |
 | `AnimationTextKeyEvents` | `Vec<AnimationTextKeyEvent { label: FixedString, time: f32 }>` | KF text keys | `byroredux::systems::animation` (live — fires on every clip) |
 | `OnUpdateEvent` | (unit) | `OnUpdate` | `recurring_update_tick_system` |
@@ -2268,7 +2268,7 @@ neither path can attach behavior.
 every pre-Papyrus game, not just Oblivion: `install_quest_scripts`
 (`asset_provider/script.rs`) resolves each quest's `script_ref` into the
 obscript runtime with no game gate, and the 5 s GameMode tick
-(`obscript_quest_tick_system`, registered in `boot/schedule/update.rs`) runs
+(`obscript_quest_tick_system`, registered in `boot/schedule/update/`) runs
 whatever it installed. Command ids are shared across the three games (measured
 per id and per game in `obscript_quests.rs`'s evidence table, #6015 — the one
 exception is `0x1000` `MessageBox`, which no Fallout script compiles to and the

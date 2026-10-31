@@ -506,7 +506,7 @@ captured by the engine settings tables.
 `VatsModel` (`crates/core/src/character/vats.rs`) is the FO3/FNV VATS tuning
 family, a `CharacterRulesProfile::vats()` row (`VatsModel::FALLOUT3` /
 `VatsModel::FALLOUT_NV`). Every number resolves as *load-order-merged GMST →
-compiled-in default*; `build_vats_model` (`byroredux/src/npc_spawn.rs`) applies
+compiled-in default*; `build_vats_model` (`byroredux/src/npc_spawn/`) applies
 the load order's settings and installs the model beside a `PoolRegenConfig`
 whose `action_points` lane restores the player's `ActionPoints`.
 

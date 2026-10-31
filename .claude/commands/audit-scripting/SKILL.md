@@ -80,7 +80,7 @@ injected packages/spells/keywords/names/voice-type/combat overlays — don't re-
 **Known-open — cite, don't re-file** (verified 2026-10-27 with `gh issue view`): #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
 array/struct-holding frame cannot suspend — the budget-split residual; its idle-walk half shipped as `11685934d`,
 Dim 2),
-#5586 (`examples/mq101_conformance.rs::run` oversized — debt, not
+#5586 (`examples/mq101_conformance/::run` oversized — debt, not
 runtime), #5802 (hub-file growth; subsystems are migrating to their own `install` + `register_saved`, sliced in
 `bde3478db`/`e619dbbaf` — `/audit-tech-debt`). #4113 is open but lives in `crates/papyrus`/`crates/pex`
 (`/audit-papyrus`). Closed since the 2026-10-24 sync: #5646 (`GetRandomPercent` drew `pick(101)`, 0..=100; the CK/GECK say
@@ -390,7 +390,7 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
   of its sources (`OnDeathEvent` — drained first, ahead of the early-out — bleedout/combat/player-location changes,
   `OnCellLoadEvent`, `OnInitEvent`, `ActivateEvent`, `OnTriggerEnterEvent`, `HitEvent`; #5764 part, `11685934d`): a new
   delivery source not added to that gate is silently never delivered.
-- **Delivery systems** (all exclusive `Update`; order in `boot/schedule/update.rs`): (`obscript_object_system`, Dim 6) →
+- **Delivery systems** (all exclusive `Update`; order in `boot/schedule/update/`): (`obscript_object_system`, Dim 6) →
   `check_alias_scripts_dispatch` →
   `alias_script_event_system` → `reference_script_event_system` (ahead of quest dispatch so a stage a script sets
   runs its fragment the same frame; drains `OnDeathEvent` at its head; every marker but `HitEvent`) → `activate_parent_relay_system` →
@@ -795,7 +795,7 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
 **Output**: `/tmp/audit/scripting/dim_5.md`
 
 ### Dimension 6: Legacy ObScript Execution (Oblivion/FO3/FNV; M47.3 quest + object scripts)
-Paths: `crates/scripting/src/obscript{,_runtime,_vm,_quests,_objects,_cmd,_effects,_actions,_actor_values,_anim,_speech,_state,_ledger,_more}.rs`, `crates/scripting/src/obscript_more/`, `crates/scripting/src/{magic_effects,magic_shaders,script_packages,challenges}.rs`, `byroredux/src/cell_loader/references/attach.rs` (`attach_scpt_script`, `obscript_dialect_for`, `attach_object_script` call), `byroredux/src/asset_provider/script.rs` (`install_quest_scripts` / `install_object_scripts` / `install_item_scripts` calls), the request consumers `byroredux/src/systems/{script_requests,script_queries,revive,knockdown,flee,magic_shader,head_look}.rs`
+Paths: `crates/scripting/src/obscript{,_runtime,_vm,_quests,_objects,_cmd,_actions,_actor_values,_anim,_speech,_state,_ledger,_more}.rs`, `crates/scripting/src/obscript_more/`, `crates/scripting/src/obscript_effects/`, `crates/scripting/src/{magic_effects,magic_shaders,script_packages,challenges}.rs`, `byroredux/src/cell_loader/references/attach.rs` (`attach_scpt_script`, `obscript_dialect_for`, `attach_object_script` call), `byroredux/src/asset_provider/script.rs` (`install_quest_scripts` / `install_object_scripts` / `install_item_scripts` calls), the request consumers `byroredux/src/systems/{script_requests,script_queries,revive,knockdown,flee,magic_shader,head_look}.rs`
 First step: `cargo test -p byroredux-scripting -- obscript`; `cargo test -p byroredux --bin byroredux -- attach::tests`; `git log -p --since=<last report> -- crates/scripting/src/obscript_vm.rs`
 Untrusted-Input: Yes — `SCDA` bytecode comes from mod-supplied plugins. Distinct from the (unbuilt) `.psc`-side
 SCTX frontend (`ScriptSource::Obscript` placeholder).

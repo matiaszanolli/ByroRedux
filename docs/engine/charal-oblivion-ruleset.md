@@ -411,7 +411,7 @@ constant `FATIGUE_REGEN_PER_SEC = 10.0` is applied via `ActorValues::restore`
 (which already floors damage at `0.0`, so no separate max-pool clamp is
 needed). `pool_regen_tick_system(world, frame_dt)` is registered in
 `Stage::Update` via `add_exclusive_with_access`
-(`byroredux/src/boot/schedule/update.rs` — the registration moved out of
+(`byroredux/src/boot/schedule/update/` — the registration moved out of
 `main.rs` under #3170's boot split; #4109 swept the stale `main.rs`/
 `boot/` references) — on Oblivion it no-ops today because `PoolRegenConfig`
 (the per-game resolved AVIF ids) is inserted by no Oblivion path (FO3/FNV install
