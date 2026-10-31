@@ -280,7 +280,7 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
             // deliberately does NOT enforce (it is a caller contract; the
             // sibling consumer in `scripting/condition.rs` checks it). This
             // loop runs over EVERY entity carrying `ActorValues`, and
-            // Oblivion's max-Magicka formula is `.player_only()` precisely
+            // Oblivion's max-Magicka formula is `.player_only()` (an unsourced analogy, #6431) precisely
             // because NPCs ship baked pool values. Evaluating it here gave
             // every NPC a regen rate derived from the player-only
             // `2 × Intelligence` curve instead of its own baked base.

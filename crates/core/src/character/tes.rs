@@ -32,16 +32,23 @@ use super::ruleset::CharacterRuleset;
 use super::skill::SkillSet;
 
 /// Oblivion Health = `2 × Endurance` (starting/base pool; per-level accrual is
-/// a leveling concern). Player-scoped, matching the Fallout convention where
-/// NPCs ship baked pool values. `endurance_av` is the resolved Endurance AVIF
-/// FormID.
+/// a leveling concern). `endurance_av` is the resolved Endurance AVIF FormID.
+///
+/// **Scope is UNsourced (#6431).** `player_only` is an analogy to the Fallout
+/// convention where NPCs ship baked pool values — and that convention is itself
+/// FO4-evidence-specific. `charal-oblivion-ruleset.md` states no player/NPC
+/// scope for any pool formula (contrast the Armor Rating rows, `ActorGeneral`
+/// with the capture saying the source is silent). Pinned by
+/// `oblivion_pool_rows_are_player_only_pending_a_source`; revisit with
+/// #3768, the first point at which Oblivion has a wired ruleset.
 #[must_use]
 pub fn oblivion_health_formula(endurance_av: u32) -> DerivedStatFormula {
     DerivedStatFormula::affine(DerivedInput::actor_value(endurance_av), 2.0, 0.0).player_only()
 }
 
-/// Oblivion Magicka = `2 × Intelligence`. Player-scoped (NPCs bake it).
-/// `intelligence_av` is the resolved Intelligence AVIF FormID.
+/// Oblivion Magicka = `2 × Intelligence`. `intelligence_av` is the resolved
+/// Intelligence AVIF FormID. Scope is `player_only` but UNsourced — see
+/// [`oblivion_health_formula`] (#6431).
 #[must_use]
 pub fn oblivion_magicka_formula(intelligence_av: u32) -> DerivedStatFormula {
     DerivedStatFormula::affine(DerivedInput::actor_value(intelligence_av), 2.0, 0.0).player_only()
@@ -70,7 +77,7 @@ pub const ARMOR_RATING_SKILL_BIAS: f32 = 0.35;
 /// Oblivion Fatigue = `Strength + Willpower + Agility + Endurance` (UESP).
 ///
 /// Returned as the four affine rows (coefficient 1.0 each, uncapped,
-/// player-scoped) to register under a single Fatigue output id; their sum via
+/// `player_only` — scope UNsourced, see [`oblivion_health_formula`], #6431) to register under a single Fatigue output id; their sum via
 /// [`CharacterRuleset::derived_value`](super::ruleset::CharacterRuleset::derived_value)
 /// is the pool. Arguments are the resolved AVIF FormIDs of the four governing
 /// attributes.
@@ -234,6 +241,50 @@ mod tests {
         let avs = ActorValues::from_pairs([(INT, 50.0)]);
         assert_eq!(f.eval(&avs, 1), 100.0);
         assert_eq!(f.scope, DerivedScope::PlayerOnly);
+    }
+
+    /// #6431 — Oblivion's Health / Magicka / Fatigue rows are `player_only` as
+    /// an UNsourced analogy to the Fallout convention (the capture states no
+    /// pool scope; contrast the sourced-silent `ActorGeneral` Armor Rating
+    /// rows). Pin the chosen scopes so a silent flip — either way — is a
+    /// reviewed edit that also updates the capture's "Pool scope" note.
+    #[test]
+    fn oblivion_pool_rows_are_player_only_pending_a_source() {
+        for row in oblivion_fatigue_formulas(1, 2, 3, 4) {
+            assert_eq!(row.scope, DerivedScope::PlayerOnly);
+        }
+        // Health and Magicka are pinned beside their formulas above; the
+        // armor-rating rows are the deliberate `ActorGeneral` contrast.
+        let rs = oblivion_ruleset(|id| {
+            Some(match id {
+                "Strength" => 0x1F,
+                "Intelligence" => 0x20,
+                "Willpower" => 0x21,
+                "Agility" => 0x22,
+                "Endurance" => 0x23,
+                "Health" => 0x90,
+                "Magicka" => 0x92,
+                "Fatigue" => 0x93,
+                "LightArmor" => 0x24,
+                "HeavyArmor" => 0x25,
+                "LightArmorRating" => 0x94,
+                "HeavyArmorRating" => 0x95,
+                _ => return None,
+            })
+        });
+        for pool in [0x90, 0x92, 0x93] {
+            assert_eq!(
+                rs.derived_formula(pool).unwrap().scope,
+                DerivedScope::PlayerOnly,
+                "{pool:#04X}: pool scope is unsourced (#6431)"
+            );
+        }
+        for rating in [0x94, 0x95] {
+            assert_eq!(
+                rs.derived_formula(rating).unwrap().scope,
+                DerivedScope::ActorGeneral
+            );
+        }
     }
 
     #[test]

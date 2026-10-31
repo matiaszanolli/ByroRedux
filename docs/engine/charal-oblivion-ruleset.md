@@ -457,6 +457,19 @@ Fortify Fatigue effects pushing current above max keep paying off past the
 nominal ceiling. A real, sourced confirmation of the earlier "combat-system
 consumer" formula's edge behavior, not a new formula.
 
+## Pool scope (Health / Magicka / Fatigue) — player-only is UNsourced (#6431)
+
+None of the Fatigue, Health or Magicka captures states whether the formula
+applies to NPCs or only to the player. The three base-pool rows in
+`crates/core/src/character/tes.rs` are `.player_only()` as an **analogy to the
+Fallout convention** (NPCs ship baked pool values) — and that convention is itself
+FO4-evidence-specific (FO4 NPCs read a baked `DNAM`). It is a conservative choice,
+not a captured fact: the sibling Armor Rating rows above are `ActorGeneral` because
+the source is silent on a player/NPC split there. Oblivion has no wired ruleset
+today, so nothing observes the choice; it matters when #3768 lands. Pinned by
+`oblivion_pool_rows_are_player_only_pending_a_source`. Resolve by finding a
+citation (or an in-engine NPC pool check) and update this note and the code together.
+
 ## Health — both built formulas cross-checked; vanilla has ZERO passive regen; Remastered's is a 3-input cross-term formula
 
 Source: UESP *Oblivion:Health*, 2026-07-04. Both already-BUILT pieces
