@@ -82,12 +82,28 @@ pub struct SmQuestLink {
     /// `FNAM` — declared `wbUnknown(FNAM)` by xEdit's current `wbDefinitionsTES5.pas` and
     /// `wbDefinitionsFO4.pas` (nested per quest, next to `NNAM`/`RNAM`); an earlier reading named it
     /// "24 Hours Till Reset", which the current definitions and the data both contradict (Skyrim.esm:
-    /// 5 nodes, 7 links, always `2`; Fallout4.esm: none). Raw u32, deliberately unconsumed. #5515 moved
+    /// 5 nodes, 7 links, always `2`; Fallout4.esm: none). Raw u32; bit 2 is consumed as an INFERRED per-link shares-event (`SM_LINK_FNAM_SHARES_EVENT`). #5515 moved
     /// it off the node — a node-level field made each later quest's value overwrite the earlier ones'.
     pub fnam: Option<u32>,
     /// `UNAM` — **Priority** (#5420, xEdit `FO76.pas:11029-11035`:
     /// nested per quest). FO76 only; raw u32, no runtime consumer.
     pub unam: Option<u32>,
+}
+
+/// `FNAM` bit 2 — **inferred** per-link "shares event" (2026-10-31, user-approved build).
+///
+/// No source documents `FNAM`; the only evidence is the census (7 links in 5 Skyrim nodes,
+/// always `2`) and that `2` is the "Shares event" bit of the quest flags. Treated as the
+/// per-link counterpart of the node-level `DNAM` Shares Event bit. Remove this and
+/// [`SmQuestLink::keeps_event`] if a source ever says otherwise.
+pub const SM_LINK_FNAM_SHARES_EVENT: u32 = 0x2;
+
+impl SmQuestLink {
+    /// The inferred per-link share: starting this quest leaves the raising event unconsumed
+    /// for later siblings, whatever the owning node's own policy says.
+    pub fn keeps_event(&self) -> bool {
+        self.fnam.is_some_and(|bits| bits & SM_LINK_FNAM_SHARES_EVENT != 0)
+    }
 }
 
 /// `DNAM` node-policy bits, decoded (#5366 Phase 3 census, 2026-10-07).

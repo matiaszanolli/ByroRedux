@@ -970,6 +970,9 @@ struct QuestStartCandidate {
     /// the pool it counts over (empty when uncapped).
     max_concurrent: u32,
     pool: Vec<QuestFormId>,
+    /// The picked link's `FNAM` shares-event bit (inferred, see
+    /// `SM_LINK_FNAM_SHARES_EVENT`): this start does not consume the event.
+    keeps_event: bool,
 }
 
 /// Bundles the per-event walk state so the recursive step stays under
@@ -1174,7 +1177,11 @@ fn walk_siblings(
             // #5404 — did THIS node's own pool put a quest up for start?
             // Taken before the subtree walk so a child's candidate does
             // not count for the parent.
-            let node_fired = state.candidates.len() > queued_before;
+            // A start whose link carries the inferred `FNAM` share bit does not
+            // consume the event (`SM_LINK_FNAM_SHARES_EVENT`).
+            let node_fired = state.candidates[queued_before..]
+                .iter()
+                .any(|candidate| !candidate.keeps_event);
             frame.after_subtree = Some((index, queued_before, node_fired));
             if let Some(child) = node.first_child {
                 if stack.len() >= MAX_WALK_DEPTH {
@@ -1345,6 +1352,7 @@ fn process_quest_node(world: &World, tree: &SmTree, state: &mut WalkState<'_>, i
             } else {
                 Vec::new()
             },
+            keeps_event: node.quests[pick].keeps_event(),
         });
     }
 }
@@ -2984,6 +2992,49 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
             stages.is_started(QuestFormId(0x222)),
             "node 30 fired nothing, so it must not consume — node 31 fires"
         );
+    }
+
+    /// `FNAM` bit 2 (inferred per-link "shares event", user-approved build): a
+    /// non-sharing node whose picked link carries it leaves the event for the sibling
+    /// below, exactly as a node-level Shares Event would; a link without it consumes.
+    #[test]
+    fn link_fnam_share_bit_keeps_the_event_for_the_next_sibling() {
+        let run = |fnam: Option<u32>| {
+            let mut first = quest_node(30, 10, 0, &[0x111]);
+            first.quests[0].fnam = fnam;
+            let tree = build_story_manager_tree(&records(vec![
+                event_node(10, b"KILL"),
+                first,
+                quest_node(31, 10, 30, &[0x222]),
+            ]));
+            let mut world = setup_world();
+            world.insert_resource(tree);
+            world.insert_resource(QuestStageState::default());
+            world.insert_resource(StoryEventAliasFill::default());
+            let actor = world.spawn();
+            if let Some(mut events) = world.query_mut::<StoryEvent>() {
+                events.insert(
+                    actor,
+                    StoryEvent {
+                        mnemonic: *b"KILL",
+                        reference_1: actor,
+                        reference_2: None,
+                        location_1: None,
+                        location_2: None,
+                        scripted: None,
+                    },
+                );
+            }
+            story_manager_dispatch_system(&world);
+            let stages = world.try_resource::<QuestStageState>().unwrap();
+            (
+                stages.is_started(QuestFormId(0x111)),
+                stages.is_started(QuestFormId(0x222)),
+            )
+        };
+        assert_eq!(run(None), (true, false), "no FNAM: the first node consumes");
+        assert_eq!(run(Some(0)), (true, false), "FNAM without bit 2 consumes");
+        assert_eq!(run(Some(2)), (true, true), "FNAM bit 2: the sibling still fires");
     }
 
     /// Phase 3 — do-all-before-repeating: across fires the pool cycles
