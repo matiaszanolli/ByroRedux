@@ -249,7 +249,13 @@ and `fBarterMin=2.0` are the curve's ends). So the effective limits are 120 % of
 item value when buying and 80 % when selling, and `BarterModel` reads the buy
 floor from `fBarterBuyMax` (FO4 has no `fBarterBuyMin`). The executable's own
 defaults, `fBarterBuyMax=1.05` and `fBarterSellMax=0.95`, apply only if a load
-order removes the authored values (#6283).
+order removes the authored values (#6283). The same table gives the curve's own
+ends: `fBarterMax=2.5` and `fBarterMin=1.5` (against the master's 3.5 / 2.0). The
+compiled-in `BarterModel` carries 2.5 / 1.5, so a code-vs-capture comparison that
+sees 2.5 against 3.5 is looking at the no-overlay fallback, not a wrong value;
+moving the literals toward the master values would silently change it (#6442).
+Read method: `Fallout4.exe`'s static setting-default table (the 2026-10-27 audit's
+`exe_ini_default_tables` read).
 
 ### Carry Weight — LOCKED (actor-general)
 

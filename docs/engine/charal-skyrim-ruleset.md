@@ -113,6 +113,12 @@ Trade price cap: sellPrice ≤ itemValue × 0.95,  buyPrice ≥ itemValue × 1.0
 ```
 The sell ceiling is the executable default `fBarterSellMax=0.95`; the buy
 floor is `fBarterBuyMin=1.05`. Skyrim.esm does not author either setting.
+The curve's own ends also have executable defaults, `fBarterMax=2.4` and
+`fBarterMin=1.4` (against the master's 3.3 / 2.0). The compiled-in `BarterModel`
+carries 2.4 / 1.4, so a code-vs-capture comparison that sees 2.4 against 3.3 is
+looking at the no-overlay fallback, not a wrong value; moving the literals toward
+the master values would silently change it (#6442). Read method: `SkyrimSE.exe`'s
+static setting-default table (the 2026-10-27 audit's `exe_ini_default_tables` read).
 `HagglingS` = 1.10/1.15/1.20/1.25/1.30 at ranks 1–5; `AllureS` = 1.10.
 `HagglingB` is the **reciprocal of `HagglingS`, rounded to 2 decimal places**
 (0.91/0.87/0.83/0.80/0.77) — the wiki explicitly warns not to use the

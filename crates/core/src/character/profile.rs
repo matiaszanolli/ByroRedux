@@ -419,6 +419,8 @@ impl CharacterRulesProfile {
             skill_scale: 100.0,
             // "skill levels over 100 have no effect".
             skill_cap: Some(100.0),
+            // SkyrimSE.exe setting table (`fBarterMax` / `fBarterMin`), the
+            // no-overlay fallback — Skyrim.esm authors 3.3 / 2.0 (#6442).
             barter_max: 2.4,
             barter_min: 1.4,
             buy_floor_setting: "fBarterBuyMin",
@@ -453,6 +455,8 @@ impl CharacterRulesProfile {
             skill: "Charisma",
             skill_scale: 10.0,
             skill_cap: None,
+            // Fallout4.exe setting table (`fBarterMax` / `fBarterMin`), the
+            // no-overlay fallback — Fallout4.esm authors 3.5 / 2.0 (#6442).
             barter_max: 2.5,
             barter_min: 1.5,
             buy_floor_setting: "fBarterBuyMax",
