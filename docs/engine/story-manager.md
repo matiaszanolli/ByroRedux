@@ -385,7 +385,10 @@ already has the surface:
   drawn between the rule's minimum and maximum, repeating while they stay. **Engine policy:** that reading of
   "delay". **Not modelled:** rules with *Combat Target* (nothing says what it changes, so the workshop-resource
   rule is left out rather than guessed), `SetAttractionActive` switching an object off, race keywords, the
-  workshop *commanded* path. Unit-tested; not run in the live engine.
+  workshop *commanded* path. Unit-tested; the parse plumbing is **live-gated** against the real master by
+  [`m43-attraction.sh`](../smoke-tests/m43-attraction.sh) (2026-10-31: 13 modelled keywords, 22 object bases and 118
+  NPC bases from `Fallout4.esm`, 2 attraction objects placed in `AndrewStation01`). An actor reacting to an object
+  in the running game has not been observed.
 - **`HACK`, Hack Terminal** (M43, `lockpick.rs`): a locked terminal (a reference whose base is a `TERM`) at lock
   level 0-100 in a game whose tree has a `HACK` root is hacked on activation — no item and no word game, so it
   always succeeds (engine policy; the Hacker perk ranks are not modelled). It unlocks and raises
@@ -403,7 +406,9 @@ already has the surface:
   the persistent ledger. **Engine policy:** no friend/foe or detection delay (`fMinesDelayMin`,
   `fMineExteriorRadiusMult`, `iProjectileMineShooterCanTrigger` unused), the timer read as a post-trigger fuse,
   the falloff curve. **Not modelled:** player-placed mines, force/stagger, the explosion's visuals and sound.
-  Unit-tested; not run in the live engine.
+  Unit-tested and **live-gated** by [`m43-mines.sh`](../smoke-tests/m43-mines.sh) (2026-10-31, release build,
+  Fallout 4 interior `AndrewStation01`: `mine.status` tracked all 9 frag mines, the player was walked onto one,
+  and the log read `tripped` then `detonated` 2 s later with the mine `spent`).
 - **`OAAT`, Actor Attach** (M43, `story_events::raise_actor_attach_story_event`, called where a placed actor
   is stamped): `OnStoryActorAttach(akActor, akLocation)` — the actor in `R1`, the session location in `L1`,
   raised for each actor placed into a loaded cell. Unit-tested; not live-gated.
@@ -513,9 +518,13 @@ already has the surface:
   hits harder by the tier's rating bonus. The data supplies the perks: the recipes carry `EPTemperingItemIsEnchanted
   != 1 OR HasPerk(ArcaneBlacksmith)` (condition 659, new in the catalog) and the material perks are
   `Mod Tempering Health` (entry point 76) × 2.0 conditioned on the item's keyword, composed with the item as the
-  tab subject. **Engine policy / not modelled:** qualities past Legendary (they need Fortify Smithing), the
-  *armor rating* bonus (the engine has no armor rating — the quality is stored and shown), the animation; and
-  the "with perk" column is read as "any material perk applies". Fallout 4's component-based `COBJ` (`FVPA`)
+  tab subject. The quality table is UESP's whole 44 levels (levels 7-44 are displayed "Legendary" and need a
+  Smithing level above 100, i.e. Fortify Smithing — the level read is the actor value's current value,
+  modifiers included). The inventory page shows an improved item's quality, its bonus (`+N damage`, or `+N armor
+  rating` — the cuirass column for the biped body slot, bit 2 of the Skyrim `BOD2` flags) and its raised value.
+  **Engine policy / not modelled:** the armor-rating bonus has nothing to act on (the engine has no Skyrim armor
+  mitigation — it is stored and shown, not applied), the animation, and the "with perk" column is read as "any
+  material perk applies". Fallout 4's component-based `COBJ` (`FVPA`)
   and the forge-craft animation are also unmodelled.
 - **The leftover events and their payloads** (per-mnemonic quest counts,
   2026-10-30, quests reachable under each `SMEN` root — Skyrim: `ESJA` 2,

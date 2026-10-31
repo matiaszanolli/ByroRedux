@@ -102,6 +102,33 @@ pub(crate) fn install_attraction_book(world: &mut World, index: &EsmIndex) -> us
     count
 }
 
+impl AttractionBook {
+    /// `(rules, object bases, NPC bases)` the book models.
+    pub(crate) fn counts(&self) -> (usize, usize, usize) {
+        (self.rules.len(), self.objects.len(), self.actors.len())
+    }
+}
+
+/// The placed objects and live actors that currently carry a modelled attraction keyword, for the console.
+pub(crate) fn tracked(world: &World) -> (usize, usize) {
+    let Some(book) = world.try_resource::<AttractionBook>().map(|book| book.clone()) else {
+        return (0, 0);
+    };
+    let mut objects = 0;
+    let mut actors = 0;
+    if let Some(candidates) = world.query::<byroredux_scripting::SceneAliasCandidate>() {
+        for (entity, candidate) in candidates.iter() {
+            if book.objects.contains_key(&candidate.base_form_id) {
+                objects += 1;
+            }
+            if book.actors.contains_key(&candidate.base_form_id) && world.get::<Dead>(entity).is_none() {
+                actors += 1;
+            }
+        }
+    }
+    (objects, actors)
+}
+
 /// Per-pair reaction timers and the scan clock. `NOT_SAVED_BY_DESIGN`: ambient reactions a load re-arms.
 #[derive(Debug, Default)]
 pub(crate) struct AttractionState {

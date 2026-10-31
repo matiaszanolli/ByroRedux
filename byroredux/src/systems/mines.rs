@@ -57,6 +57,12 @@ pub(crate) struct MineBook(Arc<HashMap<u32, MineSpec>>);
 
 impl Resource for MineBook {}
 
+impl MineBook {
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 pub(crate) fn install_mine_book(world: &mut World, index: &EsmIndex) -> usize {
     let mines: HashMap<u32, MineSpec> = index
         .projectiles
@@ -149,6 +155,41 @@ fn hide(world: &World, entity: EntityId) {
     }
 }
 
+/// One placed mine as the console shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MineView {
+    pub entity: EntityId,
+    pub position: Vec3,
+    pub base: u32,
+    /// `armed` (tripped, burning its fuse), `spent` (gone off) or `waiting`.
+    pub state: &'static str,
+}
+
+/// Every placed mine in the world, nearest-first order not implied.
+pub(crate) fn placed_mines(world: &World) -> Vec<MineView> {
+    let Some(book) = world.try_resource::<MineBook>().map(|book| book.0.clone()) else {
+        return Vec::new();
+    };
+    let candidates: Vec<(EntityId, u32)> = world
+        .query::<byroredux_scripting::SceneAliasCandidate>()
+        .map(|all| all.iter().filter(|(_, c)| book.contains_key(&c.base_form_id)).map(|(e, c)| (e, c.base_form_id)).collect())
+        .unwrap_or_default();
+    candidates
+        .into_iter()
+        .filter_map(|(entity, base)| {
+            let position = world.get::<GlobalTransform>(entity)?.translation;
+            let state = if world.has::<SpentMine>(entity) {
+                "spent"
+            } else if world.has::<ArmedMine>(entity) {
+                "armed"
+            } else {
+                "waiting"
+            };
+            Some(MineView { entity, position, base, state })
+        })
+        .collect()
+}
+
 /// System: trip mines on approach, burn their fuse, and blast.
 pub(crate) fn mine_system(world: &World, dt: f32) {
     let book = match world.try_resource::<MineBook>() {
@@ -209,6 +250,7 @@ pub(crate) fn mine_system(world: &World, dt: f32) {
             .filter(|(_, distance)| *distance <= spec.proximity)
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((victim, _)) = nearest {
+            log::info!("mine {mine:?} tripped by {victim:?}: {:.1}s fuse", spec.fuse);
             if let Some(mut mines) = world.query_mut::<ArmedMine>() {
                 mines.insert(mine, ArmedMine { victim, fuse_left: spec.fuse });
             }
@@ -226,6 +268,7 @@ fn detonate(world: &World, book: &HashMap<u32, MineSpec>, mine: EntityId, victim
     let Some(at) = world.get::<GlobalTransform>(mine).map(|t| t.translation) else {
         return;
     };
+    log::info!("mine {mine:?} detonated: victim {victim:?}, damage {} out to {}", spec.damage, spec.outer_radius);
     // The blast: a hit on every live actor inside the outer radius, scaled by the falloff.
     let hits: Vec<(EntityId, f32)> = live_actors(world)
         .into_iter()

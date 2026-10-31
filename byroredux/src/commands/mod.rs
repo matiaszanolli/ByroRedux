@@ -174,6 +174,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(LevelUpCommand);
     registry.register(InvEquipCommand);
     registry.register(InventoryStatusCommand);
+    registry.register(MineStatusCommand);
+    registry.register(AttractionStatusCommand);
     registry.register(HardcoreCommand);
     registry.register(SettingsStatusCommand);
     registry.register(WaterDumpCommand);

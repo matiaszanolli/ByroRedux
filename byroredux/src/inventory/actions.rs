@@ -13,6 +13,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
         .get::<EquipmentSlots>(player)
         .map(|equipment| (*equipment).clone());
     let catalog = world.try_resource::<InventoryCatalog>();
+    let pool = world.try_resource::<byroredux_core::ecs::resources::ItemInstancePool>();
 
     let mut items = Vec::with_capacity(inventory.items.len());
     for (raw_index, stack) in inventory.items.iter().enumerate() {
@@ -24,6 +25,12 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
             .and_then(|catalog| catalog.entries.get(&stack.base_form_id));
         let weight = definition.map_or(0.0, |definition| definition.weight);
         let index = raw_index as u32;
+        // M43 — an improved item (Skyrim tempering) shows its quality, its rating bonus and its raised value.
+        let quality = stack
+            .instance
+            .and_then(|instance| pool.as_ref()?.get(instance).map(|inst| inst.quality))
+            .unwrap_or(0);
+        let improvement = (quality > 0).then(|| crate::smithing::describe(quality, definition));
         items.push(byroredux_debug_ui::InventoryItemView {
             index,
             form_id: stack.base_form_id,
@@ -32,9 +39,13 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
                 |definition| definition.name.clone(),
             ),
             category: definition.map_or("Unknown", |definition| definition.category),
-            details: definition.map_or_else(String::new, |definition| definition.details.clone()),
+            details: match (&improvement, definition) {
+                (Some(improved), Some(definition)) if definition.details.is_empty() => improved.clone(),
+                (Some(improved), Some(definition)) => format!("{} | {improved}", definition.details),
+                (_, definition) => definition.map_or_else(String::new, |definition| definition.details.clone()),
+            },
             count: stack.count,
-            value: definition.map_or(0, |definition| definition.value),
+            value: definition.map_or(0, |definition| ((definition.value as f32) * crate::smithing::value_mult(quality)).round() as u32),
             weight,
             // #3112 — `is_equipped`, not a bare `occupants` scan: the
             // wielded weapon lives outside the biped array and would

@@ -1027,3 +1027,54 @@ mod level_up_tests {
         assert!(bad.contains("usage"), "{bad}");
     }
 }
+
+
+/// `mine.status` — the placed proximity mines (M43 `TMEE`): how many the load order defines, and each placed
+/// mine's position (renderer Y-up) and state, for the live gate.
+pub(crate) struct MineStatusCommand;
+
+impl ConsoleCommand for MineStatusCommand {
+    fn name(&self) -> &str {
+        "mine.status"
+    }
+    fn description(&self) -> &str {
+        "List the placed proximity mines and their state (waiting / armed / spent)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let defined = world.try_resource::<crate::systems::mines::MineBook>().map_or(0, |book| book.len());
+        let mines = crate::systems::mines::placed_mines(world);
+        let mut lines = vec![format!("mine types defined: {defined}; placed mines: {}", mines.len())];
+        for mine in mines.iter().take(40) {
+            lines.push(format!(
+                "mine {} base {:08X} at ({:.1}, {:.1}, {:.1}) {}",
+                mine.entity, mine.base, mine.position.x, mine.position.y, mine.position.z, mine.state
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+
+/// `attraction.status` — the attraction system (M43 `AOBJ`): the rules and the object / NPC bases the load
+/// order gives it, and how many placed objects and live actors currently carry one.
+pub(crate) struct AttractionStatusCommand;
+
+impl ConsoleCommand for AttractionStatusCommand {
+    fn name(&self) -> &str {
+        "attraction.status"
+    }
+    fn description(&self) -> &str {
+        "Show the attraction rules, the object / NPC bases that carry them, and how many are placed now"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(book) = world.try_resource::<crate::systems::attraction::AttractionBook>() else {
+            return CommandOutput::line("attraction: no book installed");
+        };
+        let (rules, object_bases, actor_bases) = book.counts();
+        drop(book);
+        let (objects, actors) = crate::systems::attraction::tracked(world);
+        CommandOutput::line(format!(
+            "attraction rules: {rules}; object bases: {object_bases}; npc bases: {actor_bases}; placed objects: {objects}; live actors: {actors}"
+        ))
+    }
+}

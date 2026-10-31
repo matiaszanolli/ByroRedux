@@ -2856,3 +2856,50 @@ fn an_improved_weapons_instance_adds_its_quality_bonus_to_the_equipped_damage() 
     super::actions::reconcile_equipped_weapon(&mut world, player, Some(InventoryIndex(1)));
     assert_eq!(world.get::<EquippedWeapon>(player).unwrap().damage, 13.0, "8 + the Exquisite bonus of 5");
 }
+
+/// M43 — the inventory page shows an improved item's quality, its rating bonus and its raised value; a plain copy
+/// of the same base is untouched.
+#[test]
+fn the_inventory_snapshot_shows_an_improved_weapons_quality_and_value() {
+    use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
+    const SWORD: u32 = 0x13989;
+    let mut world = World::new();
+    world.register::<Inventory>();
+    world.register::<EquipmentSlots>();
+    let player = world.spawn();
+    let mut pool = ItemInstancePool::new();
+    let improved = pool.allocate(ItemInstance { quality: 2 }); // Superior: +3 damage, value x1.333
+    world.insert_resource(pool);
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(SWORD, 1));
+    inventory.push(ItemStack { base_form_id: SWORD, count: 1, instance: Some(improved) });
+    world.insert(player, inventory);
+    world.insert(player, EquipmentSlots::new());
+    world.insert_resource(PlayerEntity(Some(player)));
+    world.insert_resource(InventoryCatalog {
+        restorations: Default::default(),
+        script_effects: Default::default(),
+        containers: Default::default(),
+        player_base_form_id: PLAYER_NPC_FORM_ID,
+        entries: FxHashMap::from_iter([(
+            SWORD,
+            InventoryItemDefinition {
+                name: "Steel Sword".to_owned(),
+                category: "Weapon",
+                value: 45,
+                weight: 10.0,
+                details: "Damage 8".to_owned(),
+                equip_target: Some(EquipTarget::Weapon),
+                weapon_damage: Some(8.0),
+                weapon_reach: 0.0,
+                weapon_speed: 0.0,
+            },
+        )]),
+    });
+    let items = super::actions::snapshot(&world).expect("snapshot").items;
+    let plain = items.iter().find(|item| item.index == 0).unwrap();
+    let better = items.iter().find(|item| item.index == 1).unwrap();
+    assert_eq!((plain.value, plain.details.as_str()), (45, "Damage 8"));
+    assert_eq!(better.value, 60, "45 x 1.333");
+    assert_eq!(better.details, "Damage 8 | Improved: Superior (+3 damage)");
+}
