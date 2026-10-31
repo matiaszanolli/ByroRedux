@@ -140,6 +140,31 @@ echo "smoke[dt1-dialogue-layers]: Phase G PASS — quest-less activation greets"
 wait_log "$LOG_DIR/session.stderr" "voice type 'maleuniquedocmitchell', plugin falloutnv.esm"
 echo "smoke[dt1-dialogue-layers]: Phase V PASS — greeting voice resolved and scheduled"
 
+# ── Phase P: the page's presentation of the open line (M43) ───────
+# `dialogue.status` ends with the snapshot the native page is drawn from: the speaker, the speaking cue
+# (on while the line is presented — the voice duration, else the subtitle estimate), whether real voice
+# plays, whether the list is the line's replies or the topic menu, and the topics already said.
+read_page() {  # byro-dbg prints a multi-line reply as one quoted string with literal \n
+    debug_command 'dialogue.status' "$LOG_DIR/page.log" >/dev/null 2>&1 || return 1
+    sed -i 's/\\n/\n/g' "$LOG_DIR/page.log"
+}
+read_page || fail 'dialogue.status unavailable'
+page="$(grep -E '^page: ' "$LOG_DIR/page.log" | head -1 || true)"
+[[ -n "$page" ]] || fail "Phase P: no page snapshot in dialogue.status: $(sed -n '1,8p' "$LOG_DIR/page.log")"
+grep -Fq "speaker 'Doc Mitchell'" <<<"$page" || fail "Phase P: the page does not name the speaker: $page"
+grep -Eq 'list=(replies|topics)' <<<"$page" || fail "Phase P: no list mode: $page"
+grep -Fq 'speaking=true' <<<"$page" || fail "Phase P: the speaking cue is off right after the greeting: $page"
+deadline=$((SECONDS + 90))
+# The greeting is a Goodbye line: when its presentation ends the conversation closes and the page is gone, or
+# (a line that stays open) the cue reads speaking=false. Either is the cue ending with the line.
+cue_ended() { grep -Fq 'speaking=false' "$LOG_DIR/page.log" || ! grep -Eq '^page: ' "$LOG_DIR/page.log"; }
+until cue_ended; do
+    (( SECONDS < deadline )) || fail "Phase P: the speaking cue never ended: $(grep -E '^page: ' "$LOG_DIR/page.log" | head -1)"
+    sleep 2
+    read_page || true
+done
+echo "smoke[dt1-dialogue-layers]: Phase P PASS — $page; the cue ended with the line"
+
 # ── Phase F: the force-greet package opens without activation ─────
 # End the G conversation first so the F assertion reads a fresh serial.
 sleep 2

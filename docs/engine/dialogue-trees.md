@@ -95,7 +95,10 @@ close already uses); the response as a **subtitle**, full strength while the lin
 (`>`) and an entry whose line the NPC has already said (the spoken-set) is tagged `(said)`. The layout and
 wording are this engine's own; the data behind each is the INFO's links, the spoken-set and the voice
 timing. Unit-tested on both sides (`dialogue_page_marks_speaking_replies_and_said_topics`,
-`the_snapshot_reports_the_speaking_window_and_said_topics`); not looked at in the live engine.
+`the_snapshot_reports_the_speaking_window_and_said_topics`) and live-gated at the snapshot level by
+`dt1-dialogue-layers.sh` Phase P (2026-10-31, FNV, Doc Mitchell: `dialogue.status` reports `page: speaker 'Doc
+Mitchell' speaking=true voiced=true list=topics said=[GREETING]`, and the cue ends with the line). The drawn
+pixels have not been looked at.
 
 ## 4. Design
 

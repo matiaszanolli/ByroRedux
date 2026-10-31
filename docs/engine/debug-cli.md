@@ -340,7 +340,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**150**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**156**) grouped by
 purpose:
 
 ```
@@ -437,6 +437,12 @@ player.view [first|third]   → show or switch the player camera view (V key)
 player.body                 → report the assembled player body (root, meshes, view, equipment parts)
 inventory.status            → report the player's live inventory/equipment state
 craft benches              → list every loaded crafting bench with its base form and position (M43)
+lock.status                 → locked references with their level and how the player could bypass each (pick / hack / none), M43
+lock.open <entity>          → open a locked reference the way activating it does (key, pick or hack); raises LOCK / HACK
+word.teach <form>           → give the player a word of power (Game.TeachWord); raises NVPE for a new word
+jail.send <faction> [fake]  → Faction.SendPlayerToJail as a guard's dialogue calls it; raises ARRT (and JAIL for a real jail)
+start.release               → release the launch's explicit start pin (what the first key/mouse press does) so scripted player moves take effect
+jail.escape                 → take the player to the jail exit without serving the sentence; raises ESJA once outside (M43)
 armor.status                → the player's displayed armor rating, worn pieces and physical damage reduction (Skyrim, M43)
 mine.status                 → list the placed proximity mines and their state (waiting / armed / spent), M43 TMEE
 attraction.status           → the attraction keywords, object / NPC bases and placed carriers the load order gives the AOBJ system, M43

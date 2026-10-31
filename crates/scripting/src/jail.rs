@@ -353,6 +353,7 @@ pub fn send_player_to_jail(world: &World, faction: u32, guard: Option<EntityId>,
             },
         );
     };
+    log::info!("SendPlayerToJail: faction {faction:08X}, real={real_jail}; raising ARRT");
     // `OnStoryArrest(akArrestingGuard, akCriminal, akLocation, aiCrime)`.
     raise(*b"ARRT", guard.unwrap_or(player), Some(player), [-1, 0]);
     if !real_jail || world.try_resource::<ObScriptLedger>().is_none_or(|ledger| ledger.jail.is_some()) {
@@ -449,6 +450,7 @@ pub fn detect_escape(world: &World) -> bool {
                     scripted: None,
                 },
             );
+            log::info!("jail escape detected; raising ESJA");
             true
         }
         _ => false,

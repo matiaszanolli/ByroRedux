@@ -1537,6 +1537,12 @@ fn unlock_with_carried_key(world: &World, target: EntityId, commit: bool) -> boo
     true
 }
 
+/// The activation path's own unlock, for the console: open the lock on `target` with a carried key, a held pick
+/// or a hack, exactly as activating it does. True when it opened.
+pub(crate) fn open_lock_for_console(world: &World, target: EntityId) -> bool {
+    world.get::<Locked>(target).is_some() && unlock_with_carried_key(world, target, true)
+}
+
 /// Return the first forward intersection of a normalized camera ray with an
 /// interaction bound. Kept crate-visible so the console can report the exact
 /// selection inputs used by [`select_interaction_target`].

@@ -115,7 +115,7 @@ verification below should be treated as decoded.
 | `MNAM` u32 | SMQN, FO4 rare / SF common | **Num quests to run** (xEdit FO4/SF1) — observed 1–22; present exactly when `DNAM & 0x40000` is set (0 exceptions over Skyrim, FO4, Starfield) | **[consumed]** — the walk starts up to `MNAM` pool quests per pass (`SmNodeRecord::num_quests_to_run`) |
 | `XNAM` u32 | all | **Max concurrent quests** (xEdit `TES5.pas:7056-7111`) — observed 0 (dominant) up to 57; nonzero with or without the Num-quests box | **[consumed]** — nonzero caps the pool's running quests, `0` = uncapped (`SmNodeRecord::max_concurrent_quests`); enforced in phase A and again at start |
 | `QNAM` u32 | SMQN | **Quest Count** — the `NNAM` array's `SetCountPath`; census `QNAM == count(NNAM)` on 448/448 Skyrim, 219/219 FO4, 354/354 Starfield | **[named]** #5420 (not a priority/repeat knob) |
-| `FNAM` u32 | SMQN, TES5 | **unknown** — xEdit's current `wbDefinitionsTES5.pas` and `wbDefinitionsFO4.pas` both declare `wbUnknown(FNAM)` (an earlier reading of "24 Hours Till Reset" does not survive them); 7 vanilla quest links in 5 Skyrim nodes, value **always 2**, none in Fallout4.esm (2026-10-30 census) | **[unknown]** — raw; deliberately not consumed |
+| `FNAM` u32 | SMQN, TES5 | **unknown** — xEdit's current `wbDefinitionsTES5.pas` and `wbDefinitionsFO4.pas` both declare `wbUnknown(FNAM)` (an earlier reading of "24 Hours Till Reset" does not survive them); 7 vanilla quest links in 5 Skyrim nodes, value **always 2**, none in Fallout4.esm (2026-10-30 census) | **[unknown]** — raw; deliberately not consumed. 2026-10-31 census of what it sits on: 7 links in 5 nodes, all quests named `Dialogue…Scene…` (the ambient conversation scenes: `MarkarthEndonsHouseConvoScenes` 2 of 2 links, `RoriksteadMiscScenes` 1 of 2, `RiverwoodSleepingGiantScenes` 2 of 9, `RiverwoodMiscScenes` 1 of 14, `GenericScenesSpecial` 1 of 3); the links without it in the same nodes behave identically in data; it shows no correlation with the `RNAM` window (present beside 24 h and 4 h windows and beside none). No data-derivable behaviour; it needs the original engine's observed behaviour or a source |
 | `UNAM` u32 | SMQN, FO76 | **Priority**, per quest (xEdit FO76) | **[named]** #5420 (raw; no runtime consumer) |
 | `SNAM` u32 | SMBN/SMEN | previous-sibling link, as on `SMQN` (#5385: xEdit `Previous Node` on every game) | **[verified]** |
 | FO4+: repeated `NNAM` pool + `RNAM` | SMQN | pools at Skyrim-unseen scale (`RETravelQuests` 44; the Minutemen node's pool measured **14**, not the 16 this doc first guessed), `RNAM` pairing identical to Skyrim's | **[decoded]** (Phase 4 census; same bits, same `RNAM` semantics) |
@@ -395,7 +395,9 @@ already has the surface:
   level 0-100 in a game whose tree has a `HACK` root is hacked on activation — no item and no word game, so it
   always succeeds (engine policy; the Hacker perk ranks are not modelled). It unlocks and raises
   `OnStoryHackTerminal(akComputer, abSucceeded)`: the terminal in `R1`, success in `V1`. The terminal's menu
-  and body text are a separate surface and are not built. Unit-tested; not run in the live engine.
+  and body text are a separate surface and are not built. Unit-tested and **live-gated** by
+  [`m43-fo4-actions.sh`](../smoke-tests/m43-fo4-actions.sh) (2026-10-31, FO4 `GNN01`: `lock.status` listed the
+  cell's locked terminal as `bypass hack`, `lock.open` hacked it and the engine logged `raising HACK`).
 - **`TMEE`, Mine Explosion** (M43, `systems/mines.rs`). `OnStoryMineExplosion(akVictim, akAttacker)`. The
   game's data defines a mine as a projectile with the *Alt. Trigger* flag, a trigger distance, a fuse and an
   explosion (xEdit `wbPROJ`; the layout was verified on `Fallout4.esm`: the frag mine is flags `0x66`,
@@ -422,7 +424,9 @@ already has the surface:
   on a title whose tree has a `LOCK` root. A picked lock is recorded like a key unlock and raises `LOCK`
   (`OnStoryPickLock`: player in `R1`, the lock's reference in `R2`). `systems/iron_sights.rs`: holding the secondary-attack button (right mouse, `Block`)
   with an equipped weapon that uses ammo is aiming, and the rising edge raises `IRON` (player in `R1`); no
-  zoom, spread or camera change. Unit-tested; not live-gated.
+  zoom, spread or camera change. Unit-tested and **live-gated** by `m43-fo4-actions.sh` (the same run: bobby pin from
+  `Fallout4.esm`'s `BobbyPin`, a level-50 lock read `bypass pick` and opened — `raising LOCK` — then a 10mm pistol
+  equipped and `input.hold block` logged `raising IRON`).
 - **`ARRT` / `ESJA`, arrest and jail escape** (M43, `jail.rs`). Skyrim's guard dialogue calls
   `akSpeaker.GetCrimeFaction().SendPlayerToJail()` (CK *Creating a Custom Crime Faction*); that native is
   now a VM call (`sendplayertojail`, `abRemoveInventory`/`abRealJail` both default true). It raises `ARRT`
@@ -436,14 +440,22 @@ already has the surface:
   escaped (`detect_escape`, run by `jail_bed_system`): the sentence ends and `ESJA` is raised with the
   location. **Not modelled:** the escape bounty (`CRVA`'s escape gold — the sentence does not remember its
   faction), the guard-initiated *Arrest* with its force-greet and the crime type, the quest-item hiding of
-  a real jail, and a guard arresting an actor other than the player. Unit- and VM-tested; not live-gated.
+  a real jail, and a guard arresting an actor other than the player. Unit- and VM-tested, and **live-gated** by
+  `m43-skyrim-actions.sh` (2026-10-31, starting in `WhiterunDragonsreachBasement`: `jail.send` of
+  `CrimeFactionWhiterun` logged `raising ARRT` and sent the player to the cell; `jail.escape` to the exit logged
+  `jail escape detected; raising ESJA`). Observed on the way: an *exterior-to-jail* swap (Whiterun grid to the
+  Dragonsreach basement) loses the Vulkan device on the dev machine — reproducibly, at radius 1 and 2, while FNV door
+  transitions are fine — so the gate starts inside the jail; the cause is not in this code (no renderer change)
+  and is not investigated here.
 - **`NVPE`, New Voice Power** (M43, `words_of_power.rs`). CK *New Voice Power*: "whenever the player
   obtains a new Word of Power". `Game.TeachWord` and `Game.UnlockWord` (one `Effect::ObtainWord`: they
   differ only in the shout item `TeachWord` adds, which is not modelled) record the word in the saved
   `KnownWords` (`FORMAT_MAJOR` 120) and raise `NVPE` with the player in `R1` the first time a word is
   new. The word itself is a form the quests never read and no event slot carries. Shouting, dragon
   souls and a shout menu are not modelled; nothing in the engine yet calls these natives except scripts
-  (the word walls are the Papyrus `WordWallScript`). Unit- and VM-tested; not live-gated.
+  (the word walls are the Papyrus `WordWallScript`). Unit- and VM-tested, and **live-gated** by
+  [`m43-skyrim-actions.sh`](../smoke-tests/m43-skyrim-actions.sh) (`word.teach` of a real `WOOP` logged
+  `raising NVPE`; teaching it again was a no-op).
 - **`DEAD`, Discover Dead Body** (M43, `systems/dead_body.rs`). CK *Dead Body*: "an actor discovers a dead
   body", with the discoverer, the dead actor and the location. No setting or page gives a discovery
   distance (`fCheckDeadBodyTimer` is a Fallout leftover absent from the master), so the one perception model
@@ -451,7 +463,8 @@ already has the surface:
   hostility pass sees a target — inside `fSneakMaxDistance` (scaled outdoors) with a clear physics line
   (`actor_sees_corpse`). This is engine policy, not the original's rule: no view cone or detection meter,
   and the player is not a discoverer (its view cone is not modelled). The nearest seeing actor discovers each
-  body once, `R1` the discoverer, `R2` the corpse, `L1` the location. Unit-tested; not live-gated.
+  body once, `R1` the discoverer, `R2` the corpse, `L1` the location. Unit-tested and observed live (2026-10-31, the
+  Whiterun grid: an NPC found two bodies, logged as `dead body discovered`).
 - **Natural `AHEL`** (M43, `systems/random_conversation.rs`). The CK's *Actor Hello Event*
   is the random-conversation attempt made by an actor "moving past" another: the initiator is
   moving, not in a scene and has picked up a new headtrack target; the target is not the player
@@ -460,7 +473,8 @@ already has the surface:
   one last greeted; timers, radius, chance and the same-pair cooldown are the conversation
   settings. An actor is moving when it travelled 10 units since the previous one-second pass
   (the CK gives no speed). `AHEL` is raised on the spot with `R1` the initiator, `R2` the
-  partner, `L1` the location — nobody is held or walked. Unit-tested; not live-gated.
+  partner, `L1` the location — nobody is held or walked. Unit-tested only: the Whiterun grid raised no hello in
+  five minutes (the initiator must be moving *and* hold a conversation-allowing package), so it has not been observed.
 - **Also landed (M43, 2026-10-30)**: `LEVL` (new level in `V1`), `ASSU`
   (victim `R1`, attacker `R2`, `L1`, crime flag `V1`), `AIPL` (Player Add Item
   — container `R2` from a loot transfer, `L1`, acquire type `V1`; pickups

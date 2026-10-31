@@ -1002,6 +1002,19 @@ impl ConsoleCommand for DialogueStatusCommand {
                 ));
             }
         }
+        drop(topics);
+        // M43 — what the page shows for the open line: the speaking cue, voice, replies-vs-topics mode and the
+        // said-markers (the snapshot the native page is drawn from).
+        if let Some(page) = crate::systems::npc_dialogue::dialogue_snapshot(world) {
+            lines.push(format!(
+                "page: speaker '{}' speaking={} voiced={} list={} said=[{}]",
+                page.speaker_name,
+                page.speaking,
+                page.voiced,
+                if page.choices { "replies" } else { "topics" },
+                page.topics.iter().filter(|entry| entry.said).map(|entry| entry.name.as_str()).collect::<Vec<_>>().join(", "),
+            ));
+        }
         if count == 0 {
             return CommandOutput::line(
                 "dialogue: no NPC carries a selected topic — activate an \

@@ -40,6 +40,7 @@ pub fn obtain_word(world: &World, word: u32) -> bool {
     if !new {
         return false;
     }
+    log::info!("word of power {word:08X} obtained; raising NVPE");
     if let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world) {
         crate::story_manager::raise_story_event(
             world,

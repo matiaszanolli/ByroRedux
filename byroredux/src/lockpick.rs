@@ -116,6 +116,7 @@ pub(crate) fn raise_hack_event(world: &World, target: EntityId) {
     let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world) else {
         return;
     };
+    log::info!("terminal hacked: {target:?}; raising HACK");
     raise_story_event(
         world,
         player,
@@ -136,6 +137,7 @@ pub(crate) fn raise_lockpick_event(world: &World, target: EntityId) {
     let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world) else {
         return;
     };
+    log::info!("lock picked: {target:?}; raising LOCK");
     raise_story_event(
         world,
         player,

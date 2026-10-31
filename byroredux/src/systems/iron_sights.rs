@@ -71,6 +71,7 @@ pub(crate) fn iron_sights_system(world: &World, _dt: f32) {
         None => false,
     };
     if let (true, Some(player)) = (began, player) {
+        log::info!("iron sights: the player began aiming; raising IRON");
         raise_story_event(
             world,
             player,

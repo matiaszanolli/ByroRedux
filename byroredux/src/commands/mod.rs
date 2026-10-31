@@ -50,6 +50,7 @@ mod physics;
 mod quest;
 mod ragdoll_status;
 mod scene;
+mod story_actions;
 // #3445 — widened to `pub(crate)` so `studio_host::snapshot` (outside
 // `commands`) can reuse `resolve_entity_name`'s canonical `Name ->
 // StringPool` acquisition order instead of re-deriving it.
@@ -177,6 +178,12 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MineStatusCommand);
     registry.register(AttractionStatusCommand);
     registry.register(ArmorStatusCommand);
+    registry.register(story_actions::LockStatusCommand);
+    registry.register(story_actions::LockOpenCommand);
+    registry.register(story_actions::WordTeachCommand);
+    registry.register(story_actions::JailSendCommand);
+    registry.register(story_actions::JailEscapeCommand);
+    registry.register(story_actions::StartReleaseCommand);
     registry.register(HardcoreCommand);
     registry.register(SettingsStatusCommand);
     registry.register(WaterDumpCommand);
