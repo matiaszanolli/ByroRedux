@@ -78,6 +78,10 @@ pub(super) fn dispatch_misc_stub_group(
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
         b"DOBJ" => extract_records(reader, end, b"DOBJ", &mut |fid, subs| {
+            // `DNAM` is a run of (4-char code, FormID) pairs; `CMPX` is the Complex Scene Object.
+            if let Some(object) = complex_scene_object(subs, &remap) {
+                index.complex_scene_object = Some(object);
+            }
             index
                 .default_objects
                 .insert(fid, parse_minimal_esm_record(fid, subs));
@@ -304,4 +308,36 @@ pub(super) fn dispatch_misc_stub_group(
         _ => unreachable!("dispatch_misc_stub_group: unexpected label {label:?}"),
     }
     Ok(())
+}
+
+/// The `CMPX` entry of a `DOBJ` record's `DNAM` (pairs of a 4-char code and a FormID), load-order remapped.
+fn complex_scene_object(subs: &[crate::esm::reader::SubRecord], remap: &Option<crate::esm::reader::FormIdRemap>) -> Option<u32> {
+    let dnam = subs.iter().find(|sub| &sub.sub_type == b"DNAM")?;
+    dnam.data
+        .chunks_exact(8)
+        .find(|pair| &pair[..4] == b"CMPX")
+        .map(|pair| super::common::remap_fid(u32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]), remap))
+        .filter(|form| *form != 0)
+}
+
+#[cfg(test)]
+mod complex_scene_tests {
+    use super::*;
+
+    fn dnam(pairs: &[(&[u8; 4], u32)]) -> crate::esm::reader::SubRecord {
+        let mut data = Vec::new();
+        for (code, form) in pairs {
+            data.extend_from_slice(*code);
+            data.extend_from_slice(&form.to_le_bytes());
+        }
+        crate::esm::reader::SubRecord { sub_type: *b"DNAM", data }
+    }
+
+    #[test]
+    fn the_complex_scene_object_is_the_cmpx_pair() {
+        let subs = [dnam(&[(b"WMAL", 0x11), (b"CMPX", 0x1C035), (b"LKPT", 0x22)])];
+        assert_eq!(complex_scene_object(&subs, &None), Some(0x1C035));
+        assert_eq!(complex_scene_object(&[dnam(&[(b"WMAL", 0x11)])], &None), None);
+        assert_eq!(complex_scene_object(&[dnam(&[(b"CMPX", 0)])], &None), None, "a null entry is none");
+    }
 }

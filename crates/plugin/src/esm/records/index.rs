@@ -413,6 +413,11 @@ pub struct EsmIndex {
     /// test indexes that insert into `dialogues` directly — consumers
     /// fall back to the scan there.
     pub generic_greeting_form: Option<u32>,
+    /// The `DOBJ` `CMPX` entry — the "Complex Scene Object" default object (Skyrim and later: the
+    /// `ComplexSceneMARKER` static). A placed reference to it makes the engine's complex-scene count
+    /// non-zero, which holds back random NPC conversations (CK *Scenes*, *SetSceneIsComplex*). `None`
+    /// before a merge and on games without a `DOBJ`; a later plugin's entry replaces an earlier one's.
+    pub complex_scene_object: Option<u32>,
     /// Skyrim+ `DLBR` dialogue branches, keyed by form id — the
     /// Top-Level / Blocking structure `DialRecord::branch` points into
     /// (#5037). Empty on Oblivion / FO3 / FNV.
@@ -1459,6 +1464,9 @@ impl EsmIndex {
     }
 
     pub fn merge_from(&mut self, mut other: EsmIndex) {
+        if other.complex_scene_object.is_some() {
+            self.complex_scene_object = other.complex_scene_object;
+        }
         // M41.0 Phase 1b — preserve the latest plugin's game variant on the
         // merged index. Multi-plugin loads always share a single game in
         // practice (master + DLC of the same game), so last-write-wins is
@@ -2051,6 +2059,12 @@ mod tests {
             (
                 "generic_greeting_form",
                 "derived cache of `dialogues` (the greeting topic's FormID, resolved at merge end)",
+            ),
+            // M43 — one `DOBJ` default-object entry (`CMPX`), a scalar the record walk reads out of the
+            // `default_objects` record's `DNAM` pairs; not an independent record map.
+            (
+                "complex_scene_object",
+                "scalar read from the DOBJ `CMPX` entry; the DOBJ record itself is counted in `default_objects`",
             ),
             // #6350 — a resolution side-table, not an independent record
             // map: lower-cased EditorID → winning FormID, maintained by

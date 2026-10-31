@@ -42,6 +42,14 @@
 //! walk — the event is raised where the pair stands (`OnStoryHello(akLocation, akActor1, akActor2)`).
 //! An actor counts as moving when it travelled [`MOVING_UNITS_PER_PASS`] since the last pass.
 //!
+//! **The complex-scene flag.** CK *Scenes*: an NPC does not send the random-conversation event if "the global
+//! complex scene flag is set". The CK's *SetSceneIsComplex* describes that flag as a count of
+//! `ComplexSceneMarker` references inside attached cells (non-zero = complex), and the marker is the `DOBJ`
+//! `CMPX` "Complex Scene Object"; xEdit's `SCEN` has no such flag, so it is runtime state. Here a placed
+//! reference to that object in a loaded cell holds back every new conversation and hello
+//! ([`complex_scene_active`]); a pair already in a conversation finishes it. The console form of the CK's
+//! command (forcing the count) is not modelled.
+//!
 //! The scene's Phase 0 "waits until the initiator reaches `fAIMinGreetingDistance`":
 //! the event is raised at the nearer of that and the trigger distance, so the
 //! scene begins once it holds. Not modelled: the *complex scene* flag and the
@@ -66,6 +74,27 @@ pub(crate) const ADIA: [u8; 4] = *b"ADIA";
 /// timers, so a one-second pass loses nothing and keeps the per-actor scan
 /// off the other 59 frames.
 const STEP_SECS: f32 = 1.0;
+
+/// The base form of the Complex Scene Object (`DOBJ` `CMPX`). `NOT_SAVED_BY_DESIGN`: rebuilt from the records
+/// every boot.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ComplexSceneObject(pub(crate) Option<u32>);
+
+impl Resource for ComplexSceneObject {}
+
+pub(crate) fn install_complex_scene_object(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) {
+    world.insert_resource(ComplexSceneObject(index.complex_scene_object));
+}
+
+/// Whether a `ComplexSceneMarker` is placed in a loaded cell — the CK's "complex scene" count is non-zero.
+pub(crate) fn complex_scene_active(world: &World) -> bool {
+    let Some(marker) = world.try_resource::<ComplexSceneObject>().and_then(|object| object.0) else {
+        return false;
+    };
+    world
+        .query::<byroredux_scripting::SceneAliasCandidate>()
+        .is_some_and(|candidates| candidates.iter().any(|(_, candidate)| candidate.base_form_id == marker))
+}
 
 /// The `SMEN` mnemonic of the Actor Hello Event (moving actors passing each other).
 pub(crate) const AHEL: [u8; 4] = *b"AHEL";
@@ -372,6 +401,10 @@ pub(crate) fn random_conversation_system(world: &World, dt: f32) {
     let step = std::mem::take(&mut state.pending_secs);
     drop(state);
 
+    // No new ambient conversation starts while a complex-scene marker is in a loaded cell.
+    if complex_scene_active(world) {
+        return;
+    }
     // No ambient conversation starts under an open player dialogue.
     if world
         .try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>()
@@ -853,6 +886,69 @@ mod tests {
         assert_eq!(walked[0].mnemonic, AHEL);
         assert!(walked[0].reference_2.is_some());
         assert!(run(false).is_empty(), "nobody moved");
+    }
+
+    /// CK *Scenes*: with a `ComplexSceneMarker` placed in a loaded cell, no random conversation or hello
+    /// starts; without one the same pair converses.
+    #[test]
+    fn a_placed_complex_scene_marker_holds_back_random_conversations() {
+        use crate::components::AmbientPackageRuntime;
+        use byroredux_plugin::esm::records::{GameSetting, PackRecord, SettingValue, SmNodeKind, SmNodeRecord};
+        use byroredux_scripting::package::PackageRegistry;
+        const MARKER: u32 = 0x1C035;
+
+        let run = |marker_placed: bool| -> bool {
+            let mut world = World::new();
+            byroredux_scripting::register(&mut world);
+            world.register::<AmbientPackageRuntime>();
+            world.register::<GlobalTransform>();
+            world.register::<SandboxBehavior>();
+            world.register::<ConversationHold>();
+            world.register::<Transform>();
+            world.insert_resource(RandomConversationState::default());
+            world.insert_resource(ComplexSceneObject(Some(MARKER)));
+            let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+            index.insert_game_setting(GameSetting {
+                form_id: 0x1,
+                editor_id: "fAISocialchanceForConversation".into(),
+                value: SettingValue::Float(101.0),
+            });
+            world.insert_resource(byroredux_scripting::obscript_state::GameSettings::from_index(&index));
+            let records = HashMap::from([(
+                0x10,
+                SmNodeRecord { form_id: 0x10, kind: SmNodeKind::Event, event_mnemonic: Some(ADIA), ..Default::default() },
+            )]);
+            byroredux_scripting::story_manager::install_story_manager(&mut world, &records);
+            world.insert_resource(PackageRegistry::from_records([PackRecord {
+                form_id: 0x77,
+                interrupt_flags: PKDT_INTERRUPT_RANDOM_CONVERSATIONS,
+                ..Default::default()
+            }]));
+            for x in [0.0, 100.0] {
+                let actor = world.spawn();
+                world.insert(actor, GlobalTransform { translation: Vec3::new(x, 0.0, 0.0), ..Default::default() });
+                world.insert(actor, SandboxBehavior { search_radius: None });
+                world.insert(
+                    actor,
+                    AmbientPackageRuntime {
+                        package_candidates: vec![0x77],
+                        active_package_form_id: Some(0x77),
+                        actor_form_id: 0x1000 + actor,
+                        last_evaluated_game_minute: None,
+                    },
+                );
+            }
+            if marker_placed {
+                let stone = world.spawn();
+                world.insert(stone, byroredux_scripting::SceneAliasCandidate { base_form_id: MARKER, ..Default::default() });
+            }
+            for _ in 0..3 {
+                random_conversation_system(&world, 50.0);
+            }
+            world.query::<ConversationHold>().is_some_and(|holds| holds.iter().next().is_some())
+        };
+        assert!(run(false), "no marker: the pair converses");
+        assert!(!run(true), "a ComplexSceneMarker is placed: nobody starts a conversation");
     }
 
     /// A pair beyond the trigger distance: the initiator is held and walks (no event yet), the partner

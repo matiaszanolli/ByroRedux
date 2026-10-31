@@ -598,7 +598,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v119 -> v120 (words of power): the `KnownWords` resource joined the registry (which words of power
 /// the player has obtained, `Game.TeachWord` / `UnlockWord`), so a v119 save has no record of it and the
 /// schema no longer matches.
-pub const FORMAT_MAJOR: u16 = 120;
+///
+/// v120 -> v121 (node reset window): `SmNodeRuntime` gained the required `last_node_fire_hours` (when a
+/// Story Manager node last started a quest, for the node-level `HNAM` window), so a v120 node record no
+/// longer decodes.
+pub const FORMAT_MAJOR: u16 = 121;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

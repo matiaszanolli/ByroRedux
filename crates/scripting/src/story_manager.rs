@@ -217,6 +217,8 @@ pub struct SmTreeNode {
     /// *Max concurrent quests* (`XNAM`): no further quest from this node's
     /// pool starts while this many are running; `0` = uncapped.
     pub max_concurrent: u32,
+    /// The node-level `HNAM` reset window in game hours ([`SmNodeRecord::reset_hours`]); `0.0` = none.
+    pub reset_hours: f32,
 }
 
 /// The dispatchable Story Manager tree. Built once per load order from
@@ -277,6 +279,9 @@ pub struct SmNodeRuntime {
     /// Game-hours timestamp of each pool entry's last start (for the
     /// `RNAM` reset window); `0.0` = never.
     pub last_fire_hours: Vec<f32>,
+    /// Game-hours timestamp of the node's last start of any quest (for the node-level `HNAM` reset
+    /// window, [`SmNodeRecord::reset_hours`]); `0.0` = never.
+    pub last_node_fire_hours: f32,
 }
 
 /// Total elapsed game hours, synced each frame by the engine from its
@@ -430,6 +435,7 @@ pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree 
             policies: record.policies,
             num_quests_to_run: record.num_quests_to_run(),
             max_concurrent: record.max_concurrent_quests(),
+            reset_hours: record.reset_hours(),
         });
     }
 
@@ -891,6 +897,7 @@ pub fn story_manager_dispatch_system(world: &World) {
                 }
                 runtime.fired[candidate.pool_index] = true;
                 runtime.last_fire_hours[candidate.pool_index] = hours as f32;
+                runtime.last_node_fire_hours = hours as f32;
             }
         }
     }
@@ -1215,6 +1222,14 @@ fn process_quest_node(world: &World, tree: &SmTree, state: &mut WalkState<'_>, i
     let runtime = state
         .node_state
         .and_then(|states| states.nodes.get(&node.form_id));
+    // Node-level `HNAM` window: a node that started a quest is passed over until it has run out.
+    if !hours_gate_open(
+        node.reset_hours,
+        runtime.map(|rt| rt.last_node_fire_hours),
+        state.hours,
+    ) {
+        return;
+    }
     let fired = runtime.map(|rt| rt.fired.as_slice()).unwrap_or(&[]);
     let last_fire = runtime
         .map(|rt| rt.last_fire_hours.as_slice())
@@ -1539,6 +1554,7 @@ mod tests {
             policies: Default::default(),
             num_quests_to_run: 1,
             max_concurrent: 0,
+            reset_hours: 0.0,
         }
     }
 
@@ -3200,7 +3216,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
         let mut world = pool_world(node);
         world.try_resource_mut::<StoryManagerNodeState>().unwrap().nodes.insert(
             30,
-            SmNodeRuntime { fired: vec![true, true, false], last_fire_hours: vec![0.0; 3] },
+            SmNodeRuntime { fired: vec![true, true, false], last_fire_hours: vec![0.0; 3], last_node_fire_hours: 0.0 },
         );
         fire_kill(&mut world);
         assert_eq!(running(&world, &[0x111, 0x222, 0x333]), vec![0x111, 0x333]);
@@ -3293,6 +3309,67 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
             let state = world.try_resource::<StoryManagerNodeState>().unwrap();
             assert_eq!(state.nodes[&30].last_fire_hours, vec![150.0, 110.0]);
         }
+    }
+
+    /// FO4+ node-level `HNAM` ("Hours until reset"): once a node has started a quest it is passed over
+    /// until the window has run out, whichever pool entry would be picked.
+    #[test]
+    fn hnam_node_reset_window_gates_the_whole_node() {
+        let node = SmNodeRecord {
+            form_id: 30,
+            parent: 10,
+            previous_sibling: 0,
+            kind: SmNodeKind::Quest,
+            quests: vec![
+                SmQuestLink { form_id: 0x111, reset_hours: 0.0, ..Default::default() },
+                SmQuestLink { form_id: 0x222, reset_hours: 0.0, ..Default::default() },
+            ],
+            hnam: Some(12.0f32.to_bits()),
+            policies: SmNodePolicies { shares_event: true, ..Default::default() },
+            ..Default::default()
+        };
+        assert_eq!(node.reset_hours(), 12.0);
+        assert_eq!(SmNodeRecord { hnam: Some(0.0f32.to_bits()), ..Default::default() }.reset_hours(), 0.0);
+        assert_eq!(SmNodeRecord::default().reset_hours(), 0.0);
+        let tree = build_story_manager_tree(&records(vec![event_node(10, b"KILL"), node]));
+        let mut world = setup_world();
+        world.insert_resource(tree);
+        world.insert_resource(QuestStageState::default());
+        world.insert_resource(StoryManagerNodeState::default());
+        world.insert_resource(StoryEventAliasFill::default());
+        world.insert_resource(StoryClock { hours: 100.0 });
+        let fire = |world: &mut World| {
+            let actor = world.spawn();
+            if let Some(mut events) = world.query_mut::<StoryEvent>() {
+                events.insert(
+                    actor,
+                    StoryEvent {
+                        mnemonic: *b"KILL",
+                        reference_1: actor,
+                        reference_2: None,
+                        location_1: None,
+                        location_2: None,
+                        scripted: None,
+                    },
+                );
+            }
+            story_manager_dispatch_system(world);
+        };
+        let stop = |world: &World| {
+            let mut stages = world.try_resource_mut::<QuestStageState>().unwrap();
+            stages.stop(QuestFormId(0x111));
+            stages.stop(QuestFormId(0x222));
+        };
+        let running = |world: &World| -> usize { self::running(world, &[0x111, 0x222]).len() };
+        fire(&mut world);
+        assert_eq!(running(&world), 1, "the first fire starts a quest");
+        stop(&world);
+        world.insert_resource(StoryClock { hours: 105.0 });
+        fire(&mut world);
+        assert_eq!(running(&world), 0, "5 h in: inside the 12 h window, neither entry is tried");
+        world.insert_resource(StoryClock { hours: 112.0 });
+        fire(&mut world);
+        assert_eq!(running(&world), 1, "12 h after the first fire the node passes again");
     }
 
     /// #5406 — phase B honors `start_quest`'s refusal and applies the

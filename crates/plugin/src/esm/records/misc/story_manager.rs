@@ -79,11 +79,11 @@ pub struct SmQuestLink {
     /// `RNAM` game-hours reset window; `0.0` when no `RNAM` follows the
     /// `NNAM` (the ignored-by-contract default).
     pub reset_hours: f32,
-    /// `FNAM` — **24 Hours Till Reset** bool (#5420, xEdit
-    /// `TES5.pas:7089-7094`: nested per quest, next to `NNAM`/`RNAM`).
-    /// TES5 only; raw u32, no runtime consumer yet. #5515 moved it off
-    /// the node — a node-level field made each later quest's value
-    /// overwrite the earlier ones'.
+    /// `FNAM` — declared `wbUnknown(FNAM)` by xEdit's current `wbDefinitionsTES5.pas` and
+    /// `wbDefinitionsFO4.pas` (nested per quest, next to `NNAM`/`RNAM`); an earlier reading named it
+    /// "24 Hours Till Reset", which the current definitions and the data both contradict (Skyrim.esm:
+    /// 5 nodes, 7 links, always `2`; Fallout4.esm: none). Raw u32, deliberately unconsumed. #5515 moved
+    /// it off the node — a node-level field made each later quest's value overwrite the earlier ones'.
     pub fnam: Option<u32>,
     /// `UNAM` — **Priority** (#5420, xEdit `FO76.pas:11029-11035`:
     /// nested per quest). FO76 only; raw u32, no runtime consumer.
@@ -187,7 +187,7 @@ pub struct SmNodeRecord {
     /// raw u32 whose f32 LE reading is hours-magnitude: 72.0 on
     /// `MinutemenRecruitmentPostMin02`, 24.0/12.0/1.0 on FO4 encounter
     /// nodes, 0.3 on Starfield conversation nodes. FO4+/Starfield only;
-    /// the runtime does not gate on it yet.
+    /// the runtime gates the node on it ([`Self::reset_hours`]).
     pub hnam: Option<u32>,
     /// `MNAM` — **Num quests to run** (#5420, xEdit FO4/SF1 SM nodes;
     /// TES5.pas shares the definition). FO4 (rare) / Starfield (common,
@@ -215,6 +215,18 @@ pub struct SmNodeRecord {
 pub const SM_DNAM_NUM_QUESTS_TO_RUN: u32 = 0x4_0000;
 
 impl SmNodeRecord {
+    /// The node-level **Hours until reset** (`HNAM`): after the node starts a quest it is passed over until
+    /// this many game hours have gone by; `0.0` (and an absent field) is no window, as at quest level where
+    /// "if this number is 0.0000, this check is ignored" (CK *SM Event Node*). xEdit names the field on every
+    /// FO4+ node (`wbFloat(HNAM, 'Hours until reset')`, unscaled — unlike the per-quest `RNAM`, which it
+    /// scales by 1/24) and the corpus fits hours: 17 FO4 nodes, 0.5-140, on the random radiant pools
+    /// (`RETravelQuestsNIGHT` 12, `REChokepointQuests` 24, the `EE_*` ambient conversations 0.5-1,
+    /// `MinutemenRandomEvents` 72). That it is a *node* cooldown rather than anything else is inferred from
+    /// the name and those values; no in-game timing test has confirmed it.
+    pub fn reset_hours(&self) -> f32 {
+        self.hnam.map(f32::from_bits).filter(|hours| hours.is_finite() && *hours > 0.0).unwrap_or(0.0)
+    }
+
     /// How many quests the Story Manager tries to start each time this
     /// node passes: the authored `MNAM` when the Num-quests-to-run box is
     /// checked, else one (CK *SM Event Node*: "attempt to start multiple

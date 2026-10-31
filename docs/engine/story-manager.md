@@ -18,9 +18,8 @@ largest event family, with the CK's interrupt hold), `LEVL`, `ASSU`, `AIPL`,
 missing piece of each): `DEAD`, the natural `AHEL`, `ARRT`/`ESJA`, `NVPE`, and
 FO4's `AOBJ`/`HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`. The corpus's `FromEvent`
 fills and node conditions read only `R1`/`R2`/`L1`/`L2`, so a form slot
-(`F1`) is only needed by scripts. Unconsumed fields: `HNAM` (FO4+ node-level reset; semantics not
-settled), `FNAM` (always `2` in the corpus, beside reset windows of 0, 4 and
-24 h — not the 0/1 "24 Hours Till Reset" bool xEdit names it), `QNAM` (a
+(`F1`) is only needed by scripts. `HNAM` is consumed as the FO4+ node-level reset window (§3). Unconsumed fields: `FNAM` (xEdit
+declares it `wbUnknown` in both the TES5 and FO4 definitions; always `2` in the corpus), `QNAM` (a
 redundant pool count), `UNAM` (FO76 only), and `DNAM 0x2` (an editor-side
 warning). This document remains the design authority; it is the
 scoping pass for the Story Manager half of M43's open scope ("Story
@@ -112,11 +111,11 @@ verification below should be treated as decoded.
 | `NNAM` u32 | SMQN | the QUST this node starts | **[verified]** — Skyrim 425/448 resolve to QUST records via EDID cross-check (e.g. `MS05KingOlafsFestivalStarter` → its QUST) |
 | `DNAM` u32 | all | node-policy flags — 0x1 random, 0x10000 do-all-before-repeating, 0x20000 shares-event (Phase-3 decode, §3.3); 0x2 warn-if-no-child-quest-started, 0x40000 the Num-quests-to-run checkbox | **[decoded]** — #5420 closed the last two bits from xEdit `TES5.pas`; the runtime still consumes only the Phase-3 three |
 | `RNAM` f32 | SMQN | per-quest hours-until-reset window, follows its `NNAM` | **[decoded]** (Phase 3; §3.3) |
-| `HNAM` u32 (as f32) | SMQN, FO4+ | **Hours until reset** (xEdit FO4+/SF1) — 72.0 on the Minutemen node, 0.3–24.0 elsewhere | **[named]** #5420 (typed-raw since Phase 4; runtime does not gate) |
+| `HNAM` u32 (as f32) | SMQN, FO4+ | **Hours until reset** (xEdit FO4+/SF1) — 72.0 on the Minutemen node, 0.3–24.0 elsewhere | **[consumed, inferred]** — the node is passed over until `HNAM` hours after it last started a quest (`SmNodeRecord::reset_hours`, `SmNodeRuntime::last_node_fire_hours`, `FORMAT_MAJOR` 121). **Sources:** xEdit `wbDefinitionsFO4.pas` — `wbFloat(HNAM, 'Hours until reset')`, no scale, unlike the per-quest `RNAM` (`1/24`); the CK's quest-level meaning of the same name; and a 2026-10-30 census of Fallout4.esm — 17 `SMQN`s, values 0.5, 1 (×7), 12 (×2), 24 (×3), 48, 72 (×2), 140, all on random radiant pools (`RETravelQuestsNIGHT` 12, `REChokepointQuests` 24, the `EE_*` ambient conversations 0.5-1, `MinutemenRandomEvents` 72). That it is a *node* cooldown is inferred from the name and those values; **no in-game timing test has confirmed it**. Census also fixed `RNAM`'s unit: Skyrim's raw 576 (250 of 296 links) and FO4's (180 of 296) read 24 h at the xEdit scale, so the stored float is hours × 24 (#5386, unchanged) |
 | `MNAM` u32 | SMQN, FO4 rare / SF common | **Num quests to run** (xEdit FO4/SF1) — observed 1–22; present exactly when `DNAM & 0x40000` is set (0 exceptions over Skyrim, FO4, Starfield) | **[consumed]** — the walk starts up to `MNAM` pool quests per pass (`SmNodeRecord::num_quests_to_run`) |
 | `XNAM` u32 | all | **Max concurrent quests** (xEdit `TES5.pas:7056-7111`) — observed 0 (dominant) up to 57; nonzero with or without the Num-quests box | **[consumed]** — nonzero caps the pool's running quests, `0` = uncapped (`SmNodeRecord::max_concurrent_quests`); enforced in phase A and again at start |
 | `QNAM` u32 | SMQN | **Quest Count** — the `NNAM` array's `SetCountPath`; census `QNAM == count(NNAM)` on 448/448 Skyrim, 219/219 FO4, 354/354 Starfield | **[named]** #5420 (not a priority/repeat knob) |
-| `FNAM` u32 | SMQN, TES5 | named **24 Hours Till Reset** (xEdit `TES5.pas`); 7 vanilla quest links in 5 nodes, value **always 2** (not a 0/1 bool), beside `RNAM` windows of 0, 4 and 24 h (2026-10-30 census) | **[named, semantics unsettled]** — raw; deliberately not consumed, since the data does not match the name |
+| `FNAM` u32 | SMQN, TES5 | **unknown** — xEdit's current `wbDefinitionsTES5.pas` and `wbDefinitionsFO4.pas` both declare `wbUnknown(FNAM)` (an earlier reading of "24 Hours Till Reset" does not survive them); 7 vanilla quest links in 5 Skyrim nodes, value **always 2**, none in Fallout4.esm (2026-10-30 census) | **[unknown]** — raw; deliberately not consumed |
 | `UNAM` u32 | SMQN, FO76 | **Priority**, per quest (xEdit FO76) | **[named]** #5420 (raw; no runtime consumer) |
 | `SNAM` u32 | SMBN/SMEN | previous-sibling link, as on `SMQN` (#5385: xEdit `Previous Node` on every game) | **[verified]** |
 | FO4+: repeated `NNAM` pool + `RNAM` | SMQN | pools at Skyrim-unseen scale (`RETravelQuests` 44; the Minutemen node's pool measured **14**, not the 16 this doc first guessed), `RNAM` pairing identical to Skyrim's | **[decoded]** (Phase 4 census; same bits, same `RNAM` semantics) |
@@ -356,8 +355,13 @@ already has the surface:
   `BYRO_NO_AI_LOCOMOTION=1` raises the event without walking), the partner
   stops and faces it, `ADIA` is raised on arrival, and after
   `fAISocialTimerToWaitForEvent` the hold continues while a scene runs for
-  either actor and otherwise releases both. **Not modelled**: the *complex
-  scene* flag. The scene's Phase 0 waits "until the initiating actor reaches
+  either actor and otherwise releases both. The CK's *complex scene* flag
+  holds back every new conversation and hello while a `ComplexSceneMarker` is placed in a
+  loaded cell (`complex_scene_active`; the marker is the `DOBJ` `CMPX` object, Skyrim's
+  `ComplexSceneMARKER` — 5 placements in Skyrim.esm, none in Fallout4.esm; xEdit's `SCEN` has no such
+  flag). **Sources:** CK *Scenes* ("not if the global complex scene flag is set"),
+  *SetSceneIsComplex* (a count of the markers in attached cells), xEdit (`CMPX` default object). What
+  other systems the flag gates, and the console override, are not documented and not modelled. The scene's Phase 0 waits "until the initiating actor reaches
   `fAIMinGreetingDistance`" (150), nearer than Skyrim's authored
   `iAISocialDistanceToTriggerEvent` (200), so the event is raised at the
   nearer of the two and the scene begins once that holds. The settings in

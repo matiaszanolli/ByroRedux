@@ -578,6 +578,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("LockpickItem", "the base form of the player's picks (BobbyPin / Lockpick); rebuilt from the load order by install_lockpick_item every boot (M43)"),
         ("AimWeapons", "weapon bases that use ammo, the data difference the aim state reads; rebuilt from the load order by install_aim_weapons every boot (M43)"),
         ("IronSightsState", "whether the player is holding the aim button with a gun; held input re-read every frame (M43)"),
+        ("ComplexSceneObject", "the base form of the DOBJ CMPX Complex Scene Object; rebuilt from the load order every boot (M43)"),
         ("StoryManagerRng", "selection RNG for random node policies (#5366 Phase 3); which radiant a post-load pick chooses is not state anything reads back"),
         // ── Dialogue trees (#5367) ──────────────────────────────────
         ("DialogueRandomState", "selection RNG; which greeting an old save rolled is not state anything reads back"),
