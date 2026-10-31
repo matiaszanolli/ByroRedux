@@ -183,7 +183,8 @@ pub(crate) use lod_coverage::{
     find_full_detail_overlaps, find_overlaps, find_terrain_full_detail_overlaps, ChurnTracker,
 };
 pub(crate) use lod_support::{
-    lod_should_rearm_after_starvation, resolve_lod_grid_origin, LodReconcileInput, LodWorkBudget,
+    actor_tier_edge, lod_should_rearm_after_starvation, resolve_lod_grid_origin, ActorTierEdge,
+    LodReconcileInput, LodWorkBudget,
 };
 pub(crate) use object_lod::{
     object_lod_scheme, stream_object_lod_blocks, unload_object_lod_block, ObjectLodBlock,

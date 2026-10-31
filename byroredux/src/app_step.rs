@@ -182,6 +182,25 @@ impl App {
             state.lod_reconcile_pending = true;
             log::info!("Geometry pool admission reopened — retrying the held-back LOD quads");
         }
+        // #6527 — the actor tier's own latch had no reader: a closed tier refuses NPC and
+        // player bodies at spawn (they warn per mesh, but nothing said why or when it ended).
+        match cell_loader::actor_tier_edge(
+            state.actor_tier_closed,
+            ctx.mesh_registry.actor_geometry_admission_open(),
+        ) {
+            Some(cell_loader::ActorTierEdge::Closed) => {
+                state.actor_tier_closed = true;
+                log::warn!(
+                    "Geometry pool actor tier closed — NPC and player bodies uploaded from now on \
+                     are refused until a cell unload compacts the pool"
+                );
+            }
+            Some(cell_loader::ActorTierEdge::Reopened) => {
+                state.actor_tier_closed = false;
+                log::info!("Geometry pool actor tier reopened");
+            }
+            None => {}
+        }
         let grid_changed = state.last_player_grid != Some(player_grid);
         if grid_changed {
             let dispatch_started = Instant::now();

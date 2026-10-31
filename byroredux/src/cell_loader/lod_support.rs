@@ -441,6 +441,26 @@ pub(crate) fn lod_should_rearm_after_starvation(starved: bool, admission_open: b
     starved && admission_open
 }
 
+/// A change of the geometry pool's actor admission tier between two looks (#6527).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActorTierEdge {
+    /// The tier closed: NPC and player bodies are refused until a compaction.
+    Closed,
+    /// The tier is open again.
+    Reopened,
+}
+
+/// The edge, if any, between the tier's last-seen state (`was_closed`) and now. Unlike
+/// the prop tier there is nothing to re-arm — a refused actor spawn is not retried by a
+/// ring — so this only drives the log that explains a body that failed to upload.
+pub(crate) fn actor_tier_edge(was_closed: bool, admission_open: bool) -> Option<ActorTierEdge> {
+    match (was_closed, admission_open) {
+        (false, false) => Some(ActorTierEdge::Closed),
+        (true, true) => Some(ActorTierEdge::Reopened),
+        _ => None,
+    }
+}
+
 /// Apply the shared closest-first ordering used by every LOD provider.
 ///
 /// Providers supply their own distance metric (terrain block distance, object
@@ -890,6 +910,16 @@ mod tests {
         assert!(!lod_should_rearm_after_starvation(true, false), "still closed");
         assert!(lod_should_rearm_after_starvation(true, true), "reopened");
         assert!(!lod_should_rearm_after_starvation(false, true), "never starved");
+    }
+
+    /// #6527 — the actor tier's latch is read as an edge: closing is announced once,
+    /// reopening once, and a steady state is silent.
+    #[test]
+    fn the_actor_tier_is_logged_on_its_edges_only() {
+        assert_eq!(actor_tier_edge(false, false), Some(ActorTierEdge::Closed));
+        assert_eq!(actor_tier_edge(true, true), Some(ActorTierEdge::Reopened));
+        assert_eq!(actor_tier_edge(true, false), None, "still closed: already announced");
+        assert_eq!(actor_tier_edge(false, true), None, "open and was open");
     }
 
     #[test]

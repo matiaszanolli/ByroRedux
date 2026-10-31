@@ -448,6 +448,11 @@ pub struct WorldStreamingState {
     /// stopped. Cleared, and `lod_reconcile_pending` re-armed, the first frame
     /// the pool admits uploads again.
     pub lod_starved: bool,
+    /// #6527 — the actor admission tier was closed the last time `step_streaming`
+    /// looked. Edge-detects the tier closing (actor uploads are refused from now
+    /// on) and reopening (the compaction after a cell unload), so a refused NPC
+    /// body is explained in the log. See `cell_loader::actor_tier_edge`.
+    pub actor_tier_closed: bool,
     /// Set whenever `loaded` gains or loses an entry since the diagnostics
     /// in `reconcile_lod_rings` last sampled it — a boundary-crossing unload
     /// (`app_step.rs`) or a full-detail cell finishing its apply
@@ -589,6 +594,7 @@ impl WorldStreamingState {
             applied_region_ambient: None,
             lod_reconcile_pending: false,
             lod_starved: false,
+            actor_tier_closed: false,
             loaded_residency_changed: false,
             lod_water_dirty: false,
             lod_water_dirty_since: None,
