@@ -201,6 +201,13 @@ pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
                 // over-computes an NPC's AP) rather than guessing
                 // ActorGeneral off the `fAVD`-prefix heuristic with no
                 // citation backing it for these two games specifically.
+                // #6436 — one weak lead exists: GECK *fAVDActionPointsBase*
+                // ("base amount of action points available to an actor") and
+                // *fAVDActionPointsMult* ("how many additional action points
+                // an actor has") word the formula per actor, while *Stats Tab
+                // — NPC* lists no AP (#5240). Not conclusive, so the scope
+                // stays player_only pending an engine-side check; the AP regen
+                // lane does not contradict it (NPCs carry no AP AV).
                 .player_only(),
         );
     }

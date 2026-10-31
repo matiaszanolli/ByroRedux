@@ -415,7 +415,16 @@ Points*.
 > covers crit, unarmed and both resists as NPC-derived — has **no Action Points
 > entry at all**, consistent with the conservative `player_only` choice below;
 > absence of evidence is still not a scope citation, so the row stays
-> conservative pending an engine-side check.) Unlike Carry Weight above ("actor-general (NPCs/companions too)"), nothing
+> conservative pending an engine-side check.) **A scope lead, recorded under #6436:**
+> the GECK pages for the formula's two GMSTs word it per *actor* — *fAVDActionPointsBase*:
+> "the base amount of action points available to **an actor** regardless of their
+> agility value"; *fAVDActionPointsMult*: "how many additional action points **an
+> actor** has for each point of agility" (`geck-uesp-wiki/(main)/FAVDActionPointsBase.wiki`
+> and `…Mult.wiki`; masters author FNV `65`/`3`, FO3 `65`/`2`). That is weak wording —
+> it does not say NPCs derive AP this way, and *Stats Tab — NPC* still has no AP entry
+> — so it does not move the scope off `player_only`. It also does not contradict it:
+> FO3/FNV NPCs carry no AP actor value, so the live AP lane runs for the player only
+> regardless. Keep `player_only` until an engine-side check settles it. Unlike Carry Weight above ("actor-general (NPCs/companions too)"), nothing
 > cited for Action Points states whether FO3/FNV NPCs derive AP the same way the
 > player does, derive it differently, or ship a baked value (the way FO4 NPCs read
 > `DNAM`, which *is* sourced — but that evidence is FO4-specific). `fallout.rs`
