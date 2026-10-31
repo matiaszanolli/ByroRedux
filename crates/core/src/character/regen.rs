@@ -1,7 +1,7 @@
 //! Pool regeneration (CHARAL) — Fatigue/Magicka per-second rates and the
 //! Fallout ActionPoints lane (#6350), driven by a **fixed 60 Hz tick**
 //! decoupled from the variable per-frame rate. Live today for FO3/FNV
-//! ActionPoints only; the Fatigue/Magicka lanes are inert (no Fallout load
+//! ActionPoints only; the Fatigue/Magicka lanes are off (no Fallout load
 //! order resolves those AVIFs, and Oblivion has no wired ruleset, #3768).
 //!
 //! ## Why fixed-timestep
@@ -127,8 +127,9 @@ impl PoolRegenAccumulator {
 /// `build_vats_model` (`byroredux/src/npc_spawn.rs`) returns it with the
 /// [`ActionPointsRegen`] lane, and the cell loader installs it on the first
 /// cell load. Every other game takes [`pool_regen_tick_system`]'s `let … else`
-/// early return, and on FO3/FNV the Fatigue/Magicka/Willpower ids are `0`
-/// (no actor carries AV 0, so those lanes stay inert).
+/// early return, and on FO3/FNV the Fatigue/Magicka/Willpower ids are `None`
+/// (the TES lanes are disabled outright, #6430 — not by a sentinel id that
+/// no actor happens to carry).
 ///
 /// Oblivion once had a `tes::oblivion_pool_regen_config` constructor for
 /// this; it was deleted under #3848 because it had zero call sites
@@ -137,9 +138,12 @@ impl PoolRegenAccumulator {
 /// wiring pass wants the Fatigue/Magicka/Willpower EditorID set back.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PoolRegenConfig {
-    pub fatigue_avif: u32,
-    pub magicka_avif: u32,
-    pub willpower_avif: u32,
+    /// #6430 — `None` on every game that resolves no TES pool AVIF (all of
+    /// today's loads): the lane is off, rather than keyed on an id `0` that
+    /// an actor holding a stray AV 0 would arm.
+    pub fatigue_avif: Option<u32>,
+    pub magicka_avif: Option<u32>,
+    pub willpower_avif: Option<u32>,
     /// #6350 — the Fallout ActionPoints lane. `None` on the TES games
     /// (and on any Fallout load whose AP AVIF failed to resolve, which
     /// disables regen rather than force-populating a zero entry — the
@@ -254,8 +258,8 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
         // instead of no-oping the whole system for want of a storage that
         // was never going to exist.
         let level = world.get::<CharacterLevel>(entity).map_or(1, |cl| cl.level);
-        if avs.get(config.fatigue_avif).is_some() {
-            avs.restore(config.fatigue_avif, FATIGUE_REGEN_PER_SEC * elapsed);
+        if let Some(fatigue) = config.fatigue_avif.filter(|&id| avs.get(id).is_some()) {
+            avs.restore(fatigue, FATIGUE_REGEN_PER_SEC * elapsed);
         }
         // #6350 — the AP lane: flat per-second restore on the same tick,
         // actors without the AV simply skip it. VATS needs no special
@@ -267,8 +271,11 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
                 avs.restore(ap.avif, ap.per_second * elapsed);
             }
         }
-        if let Some(base_max) = avs.get(config.magicka_avif).map(|av| av.base) {
-            let willpower = avs.current(config.willpower_avif);
+        if let Some((magicka, base_max)) = config
+            .magicka_avif
+            .and_then(|id| avs.get(id).map(|av| (id, av.base)))
+        {
+            let willpower = config.willpower_avif.map_or(0.0, |id| avs.current(id));
             // #2932 — honour `DerivedScope`, which `derived_value`
             // deliberately does NOT enforce (it is a caller contract; the
             // sibling consumer in `scripting/condition.rs` checks it). This
@@ -286,13 +293,13 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
             // regenerated nothing at all.
             let scoped_max = ruleset.as_ref().and_then(|ruleset| {
                 ruleset
-                    .derived_formula(config.magicka_avif)
+                    .derived_formula(magicka)
                     .filter(|f| f.scope == DerivedScope::ActorGeneral)
-                    .and_then(|_| ruleset.derived_value(config.magicka_avif, avs, level))
+                    .and_then(|_| ruleset.derived_value(magicka, avs, level))
             });
             let max_magicka = scoped_max.unwrap_or(base_max);
             let rate = magicka_regen_per_sec(willpower, max_magicka, false);
-            avs.restore(config.magicka_avif, rate * elapsed);
+            avs.restore(magicka, rate * elapsed);
         }
     }
 }
@@ -308,9 +315,9 @@ mod tests {
         const AP: u32 = 0x2A;
         let mut world = World::new();
         world.insert_resource(PoolRegenConfig {
-            fatigue_avif: 0x01,
-            magicka_avif: 0x10,
-            willpower_avif: 0x11,
+            fatigue_avif: Some(0x01),
+            magicka_avif: Some(0x10),
+            willpower_avif: Some(0x11),
             action_points: Some(ActionPointsRegen {
                 avif: AP,
                 // FNV's authored 0.06 per frame, normalized to per-second.
@@ -342,6 +349,35 @@ mod tests {
         assert!(world.get::<ActorValues>(other).unwrap().get(AP).is_none());
     }
 
+    /// #6430 — the TES lanes are disabled by `None`, not by an id that no
+    /// actor happens to carry: an actor holding an ActorValue keyed `0`
+    /// (a failed upstream `resolve`, a fixture) must not arm Fatigue or
+    /// Magicka regen.
+    #[test]
+    fn unset_tes_lanes_ignore_an_actor_holding_av_zero() {
+        let mut world = World::new();
+        world.insert_resource(PoolRegenConfig {
+            fatigue_avif: None,
+            magicka_avif: None,
+            willpower_avif: None,
+            action_points: None,
+        });
+        world.insert_resource(PoolRegenAccumulator::default());
+        let entity = world.spawn();
+        let mut avs = ActorValues::default();
+        avs.set_base(0, 100.0);
+        avs.apply_damage(0, 60.0);
+        world.insert(entity, avs);
+        for _ in 0..60 {
+            pool_regen_tick_system(&world, POOL_REGEN_DT);
+        }
+        let current = world.get::<ActorValues>(entity).unwrap().current(0);
+        assert!(
+            (current - 40.0).abs() < 1e-4,
+            "AV 0 must not regenerate with the TES lanes unset: got {current}"
+        );
+    }
+
     /// Regression for #2932 — the tick must honour `DerivedScope`.
     ///
     /// `derived_value` deliberately does not enforce scope (it is a caller
@@ -371,9 +407,9 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(rs);
         world.insert_resource(PoolRegenConfig {
-            fatigue_avif: 0x01,
-            magicka_avif: MAGICKA,
-            willpower_avif: WILLPOWER,
+            fatigue_avif: Some(0x01),
+            magicka_avif: Some(MAGICKA),
+            willpower_avif: Some(WILLPOWER),
             action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
@@ -426,9 +462,9 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(rs);
         world.insert_resource(PoolRegenConfig {
-            fatigue_avif: 0x01,
-            magicka_avif: MAGICKA,
-            willpower_avif: WILLPOWER,
+            fatigue_avif: Some(0x01),
+            magicka_avif: Some(MAGICKA),
+            willpower_avif: Some(WILLPOWER),
             action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
@@ -584,9 +620,9 @@ mod tests {
 
         let mut world = World::new();
         world.insert_resource(PoolRegenConfig {
-            fatigue_avif: FATIGUE,
-            magicka_avif: MAGICKA,
-            willpower_avif: WILLPOWER,
+            fatigue_avif: Some(FATIGUE),
+            magicka_avif: Some(MAGICKA),
+            willpower_avif: Some(WILLPOWER),
             action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
@@ -666,9 +702,9 @@ mod tests {
 
         let mut world = World::new();
         world.insert_resource(PoolRegenConfig {
-            fatigue_avif: FATIGUE,
-            magicka_avif: MAGICKA,
-            willpower_avif: WILLPOWER,
+            fatigue_avif: Some(FATIGUE),
+            magicka_avif: Some(MAGICKA),
+            willpower_avif: Some(WILLPOWER),
             action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());

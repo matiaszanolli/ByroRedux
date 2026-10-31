@@ -261,7 +261,7 @@ pub fn build_character_ruleset(
 /// [`VatsModel`](byroredux_core::character::VatsModel), and — when the
 /// load order resolves an `ActionPoints` AVIF — the regen lane for
 /// [`PoolRegenConfig`](byroredux_core::character::regen::PoolRegenConfig)
-/// (its first production consumer; the TES lanes stay inert because no
+/// (its first production consumer; the TES lanes are `None` because no
 /// Fallout load order resolves Fatigue/Magicka AVIFs). `None` on every
 /// game whose profile carries no VATS row.
 pub fn build_vats_model(
@@ -282,14 +282,13 @@ pub fn build_vats_model(
             per_second: model.ap_regen_per_second(),
         });
     // Fatigue/Magicka/Willpower are TES pools: no Fallout load order
-    // resolves them, so the per-actor AV gates keep those lanes inert —
-    // but they still must name *something* for the Copy struct.
+    // resolves them, so those lanes are off (#6430).
     Some((
         model,
         byroredux_core::character::regen::PoolRegenConfig {
-            fatigue_avif: 0,
-            magicka_avif: 0,
-            willpower_avif: 0,
+            fatigue_avif: None,
+            magicka_avif: None,
+            willpower_avif: None,
             action_points,
         },
     ))
