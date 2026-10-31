@@ -369,6 +369,14 @@ already has the surface:
   The live run's pair was already inside the trigger distance, so the walk
   itself is covered by the unit test (teleport into range) and the shared
   step, not by that run.
+- **`DEAD`, Discover Dead Body** (M43, `systems/dead_body.rs`). CK *Dead Body*: "an actor discovers a dead
+  body", with the discoverer, the dead actor and the location. No setting or page gives a discovery
+  distance (`fCheckDeadBodyTimer` is a Fallout leftover absent from the master), so the one perception model
+  the engine has is reused: a living, placed, non-player actor discovers a body it *sees* the way the ambient
+  hostility pass sees a target — inside `fSneakMaxDistance` (scaled outdoors) with a clear physics line
+  (`actor_sees_corpse`). This is engine policy, not the original's rule: no view cone or detection meter,
+  and the player is not a discoverer (its view cone is not modelled). The nearest seeing actor discovers each
+  body once, `R1` the discoverer, `R2` the corpse, `L1` the location. Unit-tested; not live-gated.
 - **Natural `AHEL`** (M43, `systems/random_conversation.rs`). The CK's *Actor Hello Event*
   is the random-conversation attempt made by an actor "moving past" another: the initiator is
   moving, not in a scene and has picked up a new headtrack target; the target is not the player
@@ -436,8 +444,7 @@ already has the surface:
   2026-10-30, quests reachable under each `SMEN` root — Skyrim: `ESJA` 2,
   `DEAD` 2, `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4: `AOBJ` 16, `AHEL` 9, `OAAT` 4,
   `HACK` 3, `LOCK` 3, `TMEE` 1, `IRON` 1):
-  `DEAD` (corpse discovery) — no setting in Skyrim.esm or the CK pages gives a
-  detection distance (`fCheckDeadBodyTimer` is a Fallout leftover absent from the master);
+
   `ARRT`/`ESJA` — Skyrim's guards are package-driven and the engine's crime
   pass is the Oblivion/FNV class-flag model, so a wanted-player greeting by
   a guard cannot occur on a game that has a Story Manager; `NVPE` — no

@@ -366,6 +366,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::systems::archetype_idle::ArchetypeIdleSeen::default());
     world.insert_resource(crate::systems::story_events::StoryLocationMemo::default());
     world.insert_resource(crate::systems::random_conversation::RandomConversationState::default());
+    world.insert_resource(crate::systems::dead_body::DeadBodyState::default());
     world.insert_resource(crate::inventory::PendingDroppedItems::default());
     world.insert_resource(crate::crafting::ActiveCrafting::default());
     world.insert_resource(crate::crafting::CraftingRequest::default());

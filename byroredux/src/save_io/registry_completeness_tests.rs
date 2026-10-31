@@ -573,6 +573,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CraftingRequest", "a bench the player just activated, waiting for the app to open its page; drained the same frame (M43)"),
         ("PendingDroppedItems", "dropped items whose REMP story event waits for the created reference to spawn (seconds); the created reference itself is saved, only the not-yet-raised event is lost on a load (M43)"),
         ("RandomConversationState", "ambient NPC-to-NPC conversation attempt timers (30-60 s) and pair cooldowns; a load re-arms them like a fresh boot, and which ADIA a post-load pick raises is not state anything reads back (M43)"),
+        ("DeadBodyState", "the DEAD discovery scan's pass clock and the bodies already found; a load re-arms the scan, so a body found before the save can be found once more (the node's reset window bounds how often that starts a quest) (M43)"),
         ("StoryManagerRng", "selection RNG for random node policies (#5366 Phase 3); which radiant a post-load pick chooses is not state anything reads back"),
         // ── Dialogue trees (#5367) ──────────────────────────────────
         ("DialogueRandomState", "selection RNG; which greeting an old save rolled is not state anything reads back"),

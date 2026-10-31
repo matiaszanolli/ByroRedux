@@ -163,6 +163,27 @@ pub(crate) fn actor_detects(world: &World, observer: EntityId, target: EntityId)
     sight_is_clear(world, from, to)
 }
 
+/// Whether `observer` sees the body of `corpse` — the sight test the hostility pass uses on a living target
+/// (`fSneakMaxDistance`, scaled outdoors, through a clear line), asked of a dead one for the Story Manager's
+/// `DEAD` (CK *Dead Body*: "an actor discovers a dead body"). `false` for a dead or unplaced observer, and
+/// without a detection config (the game authors none). No source documents a corpse-specific range.
+pub(crate) fn actor_sees_corpse(world: &World, observer: EntityId, corpse: EntityId) -> bool {
+    let Some(config) = world.try_resource::<DetectionConfig>().map(|c| *c) else {
+        return false;
+    };
+    let exterior = world
+        .try_resource::<crate::components::CellLightingRes>()
+        .is_some_and(|cell| !cell.is_interior);
+    let centre = Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT;
+    let (Some((from, _)), Some(body)) = (
+        sight_points(world, observer, observer),
+        world.get::<GlobalTransform>(corpse).map(|t| t.translation + centre),
+    ) else {
+        return false;
+    };
+    from.distance(body) <= config.range(exterior) && sight_is_clear(world, from, body)
+}
+
 /// The points sight rays between two actors start and end at; `None` when either is dead or unplaced.
 fn sight_points(world: &World, observer: EntityId, target: EntityId) -> Option<(Vec3, Vec3)> {
     let player = crate::systems::PlayerEntity::get(world);

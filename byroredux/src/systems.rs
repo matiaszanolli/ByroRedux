@@ -31,6 +31,7 @@ pub(crate) mod vats;
 mod debug;
 mod loading_model;
 mod escort;
+pub(crate) mod dead_body;
 pub(crate) mod faction_hostility;
 mod flee_package;
 mod find_package;
