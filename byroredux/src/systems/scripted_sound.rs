@@ -54,6 +54,15 @@ fn emitter_position(
     }
 }
 
+/// Whether a play is placed in the world. An ObScript `PlaySound` (no
+/// reference) and a `2D` / `Menu Sound` record are not: placing them at the
+/// listener (#6226, #6281) is not enough, because kira's ear model plays a
+/// source at the head centre ~11 dB down and pans it as the player moves, so
+/// they also skip the ear model (#6437).
+fn is_positional(record: &SounRecord, source: u32) -> bool {
+    source != byroredux_scripting::NON_LOCATIONAL_SOURCE && !record.non_positional
+}
+
 /// Where a non-locational play is heard: the audio listener (the camera), else
 /// the player body when no listener exists yet.
 fn listener_or_player(
@@ -113,6 +122,7 @@ pub(crate) fn scripted_sound_system(world: &World, _dt: f32) {
                 .map(|transform| transform.translation)
         };
         let heard_at = listener_or_player(listener_translation(world), translation(player));
+        let positional = is_positional(record, play.source);
         let position = if play.source == byroredux_scripting::NON_LOCATIONAL_SOURCE {
             // ObScript `PlaySound`: no reference, heard at the listener (#6226).
             heard_at
@@ -134,6 +144,7 @@ pub(crate) fn scripted_sound_system(world: &World, _dt: f32) {
             &path,
             position,
             attenuation_for(record),
+            positional,
             "script sound",
         ) {
             log::debug!("Sound.Play {:08X}: {path}", play.sound);
@@ -237,6 +248,17 @@ mod tests {
         assert_eq!(emitter_position(&menu, None, None), None);
     }
 
+    /// #6437 — a non-locational `PlaySound` and a `2D` / `Menu Sound` record
+    /// both play un-placed (no ear model); everything else stays positional.
+    #[test]
+    fn only_world_placed_plays_are_positional() {
+        let mut menu = record(1, false, &["ui\\a.wav"]);
+        assert!(is_positional(&menu, 0x1234));
+        assert!(!is_positional(&menu, byroredux_scripting::NON_LOCATIONAL_SOURCE));
+        menu.non_positional = true;
+        assert!(!is_positional(&menu, 0x1234));
+    }
+
     /// #6281 — without a device a play decodes nothing: the bounded cache
     /// stays empty even for a path the provider could serve.
     #[test]
@@ -249,6 +271,7 @@ mod tests {
             "sound\\fx\\a.wav",
             byroredux_core::math::Vec3::ZERO,
             Attenuation::default(),
+            true,
             "script sound",
         );
         assert!(!played);

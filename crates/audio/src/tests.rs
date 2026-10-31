@@ -2083,3 +2083,45 @@ fn voice_cache_negatives_are_capped_and_counted() {
         .is_none());
     assert_eq!(probes, 0, "negative hit must skip the loader");
 }
+
+/// #6437 — `play_oneshot_non_positional` carries the same drop-on-inactive
+/// contract as `play_oneshot` (#853): a headless world counts the request
+/// and queues nothing.
+#[test]
+fn play_oneshot_non_positional_drops_on_inactive_audio() {
+    let mut audio = AudioWorld::headless();
+    let before = audio.oneshots_requested();
+    audio.play_oneshot_non_positional(test_sound(), Vec3::ZERO, 1.0);
+    assert_eq!(audio.oneshots_requested(), before + 1);
+    assert_eq!(audio.pending_oneshot_count(), 0);
+}
+
+/// #6437 — a non-positional play must reach kira with the ear model and the
+/// distance falloff switched off. At kira's default `spatialization_strength`
+/// of 0.75 a source at the listener's head centre sits opposite both ears'
+/// facing and plays ~11 dB down; the builder's fields are private to kira, so
+/// pin the two calls in `apply_placement` and the queue-to-track hand-off
+/// (`p.positional`) by source shape.
+#[test]
+fn non_positional_plays_disable_the_ear_model_and_falloff() {
+    let src = squeeze_whitespace(PRODUCTION_SOURCE);
+    assert!(
+        src.contains(
+            "builder.spatialization_strength(0.0).attenuation_function(None)"
+        ),
+        "a non-positional track must set spatialization_strength(0.0) and drop the \
+         attenuation function (#6437)"
+    );
+    assert!(
+        src.contains("p.attenuation, p.positional,"),
+        "the queued one-shot's `positional` flag must reach build_spatial_track (#6437)"
+    );
+    assert!(
+        src.contains("p.attenuation, // Emitter-backed sounds are always placed in the world. true,"),
+        "emitter-backed sounds stay positional (#6437)"
+    );
+    assert!(
+        src.contains("fn apply_placement(builder: SpatialTrackBuilder, positional: bool)"),
+        "the placement switch has one definition (#6437)"
+    );
+}

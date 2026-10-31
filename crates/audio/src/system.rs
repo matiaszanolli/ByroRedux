@@ -208,6 +208,25 @@ pub(crate) fn sync_listener_pose(world: &World, audio_world: &mut AudioWorld) {
 /// associated `EntityId`. Logs at WARN if a single tick drains more
 /// than 32 items — that's footstep-tempo gone wrong, audible signal
 /// that something upstream is firing per-frame instead of per-stride.
+/// #6437 — strip kira's spatialization from a non-positional track.
+///
+/// A "non-positional" sound (ObScript `PlaySound`, a `2D` / `Menu Sound`
+/// SOUN) is *placed* at the listener, but a source at the head centre is not
+/// neutral to kira's ear model: each ear (±0.1 m off centre) sees it opposite
+/// its facing, so at the default `spatialization_strength` of 0.75 every
+/// channel carries 0.25 + 0.75·0.038 ≈ 0.28 (−11 dB), folded to mono, and the
+/// frozen dispatch point then pans and attenuates as the player walks. A
+/// strength of `0.0` skips the ear model entirely, and `None` for the
+/// attenuation function holds a constant volume, so the play is heard at its
+/// nominal level, centred, wherever the listener goes.
+fn apply_placement(builder: SpatialTrackBuilder, positional: bool) -> SpatialTrackBuilder {
+    if positional {
+        builder
+    } else {
+        builder.spatialization_strength(0.0).attenuation_function(None)
+    }
+}
+
 /// #5738 — the shared spatial one-shot start both dispatch loops run:
 /// the distance-windowed builder, the Phase-6 reverb send, the
 /// underwater filter and the kira sub-track. Each new send/filter
@@ -215,11 +234,17 @@ pub(crate) fn sync_listener_pose(world: &World, audio_world: &mut AudioWorld) {
 /// hand; now it lands here once. The play itself stays at the call
 /// sites — the emitter path needs `loop_region(..)` before it. `Err`
 /// is a pre-localised message the callers log with their own context.
+///
+/// `positional == false` (#6437) is a 2D / menu / "non-locational" play: the
+/// builder drops kira's ear model and distance falloff (see
+/// [`apply_placement`]) so the sound is heard at nominal level and centred
+/// wherever the listener walks or turns.
 pub(crate) fn build_spatial_track(
     mgr: &mut AudioManager,
     listener_id: kira::listener::ListenerId,
     position: byroredux_core::math::Vec3,
     attenuation: Attenuation,
+    positional: bool,
     reverb: Option<&SendTrackHandle>,
     reverb_db: f32,
     underwater: bool,
@@ -229,6 +254,7 @@ pub(crate) fn build_spatial_track(
     // (#3178 — the position handed to kira alongside them is converted
     // from BU by `bu_to_audio_space`), falloff between is linear.
     let track_builder = SpatialTrackBuilder::new().distances(attenuation.distance_range());
+    let track_builder = apply_placement(track_builder, positional);
     let track_builder = apply_reverb_send(track_builder, reverb, reverb_db);
     let mut track_builder = track_builder;
     let underwater_filter = apply_underwater_filter(&mut track_builder, underwater);
@@ -293,6 +319,7 @@ pub(crate) fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
             listener_id,
             p.position,
             p.attenuation,
+            p.positional,
             audio_world.reverb_send.as_ref(),
             audio_world.reverb_send_db,
             audio_world.underwater,
@@ -423,6 +450,8 @@ pub(crate) fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld)
             listener_id,
             p.position,
             p.attenuation,
+            // Emitter-backed sounds are always placed in the world.
+            true,
             audio_world.reverb_send.as_ref(),
             audio_world.reverb_send_db,
             audio_world.underwater,

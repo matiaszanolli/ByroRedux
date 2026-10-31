@@ -131,6 +131,10 @@ pub(crate) struct PendingOneShot {
     pub(crate) position: Vec3,
     pub(crate) attenuation: Attenuation,
     pub(crate) volume: f32,
+    /// #6437 — `false` for a 2D / menu / non-locational play: the track
+    /// is built without kira's ear model or distance falloff
+    /// (`apply_placement`), so it is heard at nominal level and centred.
+    pub(crate) positional: bool,
     /// #5410 — `Detached` for plain `play_oneshot`; `Anchored(entity)`
     /// for a voice line whose speaker may walk while talking.
     pub(crate) source: SoundSource,
@@ -381,7 +385,34 @@ impl AudioWorld {
         attenuation: Attenuation,
         volume: f32,
     ) {
-        self.queue_oneshot(SoundSource::Detached, sound, position, attenuation, volume);
+        self.queue_oneshot(SoundSource::Detached, sound, position, attenuation, volume, true);
+    }
+
+    /// #6437 — as [`Self::play_oneshot`] for a sound that is not placed in the
+    /// world: ObScript `PlaySound` ("non-locational") and `2D` / `Menu Sound`
+    /// SOUN records. The track is built without kira's ear model and distance
+    /// falloff, so the play is heard at its nominal level, centred, and does
+    /// not pan or fade as the listener moves. Placing such a sound at the
+    /// listener's position (#6226, #6281) is not enough: a source at the head
+    /// centre sits opposite both ears' facing and plays ~11 dB down.
+    ///
+    /// `position` is only the track's nominal anchor; it never shapes the
+    /// output. Same drop-on-inactive and 256-entry queue contract as
+    /// [`Self::play_oneshot`].
+    pub fn play_oneshot_non_positional(
+        &mut self,
+        sound: Arc<StaticSoundData>,
+        position: Vec3,
+        volume: f32,
+    ) {
+        self.queue_oneshot(
+            SoundSource::Detached,
+            sound,
+            position,
+            Attenuation::default(),
+            volume,
+            false,
+        );
     }
 
     /// #5410 — as [`Self::play_oneshot`], but the dispatched sound is
@@ -403,7 +434,14 @@ impl AudioWorld {
         attenuation: Attenuation,
         volume: f32,
     ) {
-        self.queue_oneshot(SoundSource::Anchored(entity), sound, position, attenuation, volume);
+        self.queue_oneshot(
+            SoundSource::Anchored(entity),
+            sound,
+            position,
+            attenuation,
+            volume,
+            true,
+        );
     }
 
     /// The shared tail of [`Self::play_oneshot`] / [`Self::play_oneshot_following`]: claim a
@@ -415,11 +453,19 @@ impl AudioWorld {
         position: Vec3,
         attenuation: Attenuation,
         volume: f32,
+        positional: bool,
     ) {
         if !self.oneshot_slot_ready() {
             return;
         }
-        self.pending_oneshots.push_back(PendingOneShot { sound, position, attenuation, volume, source });
+        self.pending_oneshots.push_back(PendingOneShot {
+            sound,
+            position,
+            attenuation,
+            volume,
+            positional,
+            source,
+        });
     }
 
     /// #5410 — fade out every active sound coupled to `entity` (both the

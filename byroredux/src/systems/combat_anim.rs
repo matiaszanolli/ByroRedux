@@ -429,11 +429,17 @@ fn enqueue_oneshot(
     data: std::sync::Arc<byroredux_audio::Sound>,
     position: Vec3,
     attenuation: byroredux_audio::Attenuation,
+    positional: bool,
 ) -> bool {
     let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
         return false;
     };
-    audio.play_oneshot(data, position, attenuation, 1.0);
+    if positional {
+        audio.play_oneshot(data, position, attenuation, 1.0);
+    } else {
+        // #6437 — a 2D / non-locational play skips kira's ear model.
+        audio.play_oneshot_non_positional(data, position, 1.0);
+    }
     true
 }
 
@@ -456,7 +462,7 @@ pub(crate) fn play_oneshot_cached(world: &World, path: &str, position: Vec3) -> 
     let Some(data) = data else {
         return false;
     };
-    enqueue_oneshot(world, data, position, COMBAT_ATTENUATION)
+    enqueue_oneshot(world, data, position, COMBAT_ATTENUATION, true)
 }
 
 /// [`play_oneshot_cached`] for an open-ended keyspace (#6281): the path was
@@ -464,6 +470,10 @@ pub(crate) fn play_oneshot_cached(world: &World, path: &str, position: Vec3) -> 
 /// byte-budgeted LRU [`byroredux_audio::VoiceSoundCache`] (#5382) rather
 /// than the unbounded `SoundCache`, and nothing is extracted or decoded
 /// unless the `AudioWorld` has a device to play it on.
+///
+/// `positional == false` (#6437) plays the sound un-placed — no ear model,
+/// no distance falloff — for ObScript `PlaySound` and `2D` / `Menu Sound`
+/// records; `position` and `attenuation` then only anchor the track.
 ///
 /// Lock order is cache → provider, `combat_anim`'s and the voice path's
 /// (#5383): the loader reads the archive provider under the cache write
@@ -473,6 +483,7 @@ pub(crate) fn play_oneshot_bounded(
     path: &str,
     position: Vec3,
     attenuation: byroredux_audio::Attenuation,
+    positional: bool,
     role: &str,
 ) -> bool {
     let audible = world
@@ -489,7 +500,7 @@ pub(crate) fn play_oneshot_bounded(
     let Some(data) = data else {
         return false;
     };
-    enqueue_oneshot(world, data, position, attenuation)
+    enqueue_oneshot(world, data, position, attenuation, positional)
 }
 
 /// System factory — returns a closure with persistent scratch, mirroring
