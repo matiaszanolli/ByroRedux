@@ -272,6 +272,16 @@ if [[ "${1:-}" == "--selftest" ]]; then
     expect_spec ignore "separator is not a path" "--"
     expect_spec ignore "bare word is not a pathspec" "world_setup.rs"
 
+    # #6525 — the closed-issue advisory's cue rules (the eleven past-tense
+    # citations it once flagged, and the true positives it must keep).
+    if command -v python3 >/dev/null 2>&1; then
+        if ! python3 -I .claude/commands/_audit-issue-advisory.py --selftest; then
+            selftest_failures=$((selftest_failures + 1))
+        fi
+    else
+        echo "SELFTEST: python3 missing; the issue-advisory rules were not exercised."
+    fi
+
     if (( selftest_failures > 0 )); then
         echo "SELFTEST: $selftest_failures failure(s)."
         exit 1
@@ -726,12 +736,13 @@ fi
 # AFTER a sync re-stales every skill that lists it as "known open" until the
 # next tech-debt Dim 4 pass (#4369, #5606, #5742, #6173 each fixed instances,
 # never the class). This reads each skill/shared/specialist file for a `#N`
-# with an "is still open" cue within ~160 characters and asks GitHub, once,
+# with an "is still open" cue in the same sentence and asks GitHub, once,
 # which of those numbers are CLOSED.
 #
 # Advisory and best-effort like SKIP_SYMBOL_CHECK: skipped when `gh` or
 # `python3` is missing or offline (`SKIP_ISSUE_STATE_CHECK=1` also skips it).
-# "open" as a verb (`open conversation`, `fail-open`, `half-open`, `open the`)
+# A fixed/closed word earlier in the sentence, or "is closed" after the number, resolves it
+# (#6525; rules and self-test in `_audit-issue-advisory.py`). "open" as a verb (`open conversation`, `fail-open`, `half-open`, `open the`)
 # is not a cue.
 # ---------------------------------------------------------------------------
 if [[ "${SKIP_ISSUE_STATE_CHECK:-0}" != "1" ]] && command -v gh >/dev/null 2>&1 \
@@ -740,52 +751,8 @@ if [[ "${SKIP_ISSUE_STATE_CHECK:-0}" != "1" ]] && command -v gh >/dev/null 2>&1 
     if gh issue list --state all --limit 20000 --json number,state \
             --jq '.[] | "\(.number) \(.state)"' > "$issue_states" 2>/dev/null \
             && [[ -s "$issue_states" ]]; then
-        python3 -I - "$issue_states" "${command_files[@]}" <<'PYEOF' || true
-import re, sys
-
-states = dict(line.split() for line in open(sys.argv[1]))
-window_cue = re.compile(
-    r"known[- ]open|still[- ]open|stays? open|do not re-file|don't re-file",
-    re.I,
-)
-# "regression guard, do not re-file" marks a CLOSED fix on purpose.
-guard_idiom = re.compile(r"regression[- ]guard", re.I)
-# "open" as a verb, or part of a compound, is never a cue.
-not_cue = re.compile(r"fail-open|half-open|open-ended|open[- ]source|open conversation", re.I)
-num = re.compile(r"#(\d{3,6})\b")
-hits = []
-for path in sys.argv[2:]:
-    try:
-        lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
-    except OSError:
-        continue
-    for lineno, line in enumerate(lines, 1):
-        for m in num.finditer(line):
-            n = m.group(1)
-            if states.get(n) != "CLOSED":
-                continue
-            window = not_cue.sub("", line[max(0, m.start() - 160): m.end() + 160])
-            after = not_cue.sub("", line[m.end(): m.end() + 40])
-            before = line[max(0, m.start() - 6): m.start()]
-            # `open #N`, or "open" within 25 non-sentence characters after `#N`.
-            adjacent = re.search(r"\bopen $", before, re.I) or re.match(r"[^.;]{0,25}\bopen\b", after, re.I)
-            # A citation that says it is fixed/closed/retired just before `#N` is
-            # already correct (the "Fixed … regression guard, do not re-file" idiom).
-            resolved = re.search(r"\b(?:fixed|closed|resolved|shipped|retired|landed|superseded)\b[^#]{0,80}$",
-                                 line[max(0, m.start() - 100): m.start()], re.I)
-            cued = (window_cue.search(window) and not guard_idiom.search(window)) or adjacent
-            if cued and not resolved:
-                hits.append((path, lineno, n))
-seen = set()
-rows = [h for h in hits if not (h in seen or seen.add(h))]
-if rows:
-    print()
-    print("ADVISORY — closed issues described as open (an \"open\" cue within ~160 chars):")
-    for path, lineno, n in rows:
-        print(f"  {path}:{lineno} #{n} CLOSED")
-    print(f"  {len(rows)} citation(s). Re-read each: if the work is genuinely unbuilt, point it at a")
-    print("  live tracker; if it was fixed, drop the \"known open\" framing. Not a failure.")
-PYEOF
+        # The rules live in `_audit-issue-advisory.py` (#6525), which `--selftest` also runs.
+        python3 -I .claude/commands/_audit-issue-advisory.py "$issue_states" "${command_files[@]}" || true
     fi
     rm -f "$issue_states"
 fi
