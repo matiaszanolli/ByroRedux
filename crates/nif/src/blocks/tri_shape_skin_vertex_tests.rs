@@ -1209,7 +1209,8 @@ fn bs_tri_shape_data_size_mismatch_uses_derived_stride() {
 
     // Patch vertex_desc (offset 100, 8 bytes): set
     // vertex_size_quads = 3 in low nibble, set VF_VERTEX (bit 0 of
-    // the high u16, raw value 0x001 — see tri_shape.rs:331).
+    // the high u16, raw value 0x001 — see `VF_VERTEX` in
+    // `blocks/tri_shape/bs_tri_shape.rs`).
     let vertex_desc: u64 = 3 | ((/* VF_VERTEX = */0x001u64) << 44);
     let vd_offset = 100;
     bytes[vd_offset..vd_offset + 8].copy_from_slice(&vertex_desc.to_le_bytes());

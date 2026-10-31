@@ -358,8 +358,8 @@ pub struct NpcRecord {
     ///
     /// **Parse-but-don't-consume gate (TD5-013):** gated on M41.0.5
     /// (GPU per-vertex morph runtime, Tier 5). The sibling field
-    /// `runtime_facegen` IS consumed in `npc_spawn.rs:619` (M41.0
-    /// Phase 3b); `face_morphs` unlocks when the `.tri`-morph weight
+    /// `runtime_facegen` IS consumed by `NpcSpawnJob::runtime`
+    /// (`npc_spawn/resumable/`, M41.0 Phase 3b); `face_morphs` unlocks when the `.tri`-morph weight
     /// application pass lands.
     pub face_morphs: Option<NpcFaceMorphs>,
     /// Pre-FO4 FaceGen recipe (FGGS/FGGA/FGTS slider arrays + HCLR /

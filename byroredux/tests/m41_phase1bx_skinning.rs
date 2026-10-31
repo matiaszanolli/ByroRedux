@@ -19,7 +19,7 @@
 //! sessions / different export-time precision).
 //!
 //! **What this is NOT**: this is *not* the catastrophic spike artifact
-//! described in `byroredux/src/npc_spawn.rs:402-431`. A 0.11-unit
+//! described in #841 (M41-PHASE-1BX, the spike-cause note). A 0.11-unit
 //! offset on a few bones produces a slight per-vertex shift, not a
 //! "long-spike vertex artifact emanating from the head." The spike
 //! requires either a NaN, a near-zero scale, or a bone-resolution
@@ -284,7 +284,7 @@ fn skeleton_and_body_agree_on_bone_bind_pose() {
     // actor scale, propagated as a constant Z offset from Bip01 Spine
     // up the chain). It is NOT large enough to explain the
     // catastrophic spike artifact described in
-    // `byroredux/src/npc_spawn.rs:402-431`. Pinned at 0.2 so the test
+    // #841 (M41-PHASE-1BX, the spike-cause note). Pinned at 0.2 so the test
     // fails loud if the disagreement *grows* (e.g. an importer change
     // that breaks one NIF more than the other), but accepts the
     // current ~0.11 baseline as documented authoring drift.

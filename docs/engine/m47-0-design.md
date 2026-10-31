@@ -23,7 +23,7 @@ ESM parse (already done):
   EsmIndex.npcs / activators / containers / terminals / items
                           : each has `script_form_id: u32` (0 = no script)
 
-REFR spawn (cell_loader/references.rs:169 — the existing per-REFR loop):
+REFR spawn (`load_references_budgeted` in cell_loader/references/mod.rs — the existing per-REFR loop):
   placed_ref.base_form_id → base record (NPC_ / ACTI / CONT / TERM / ITEM)
   base_record.script_form_id → SCPT FormID (or 0)
 

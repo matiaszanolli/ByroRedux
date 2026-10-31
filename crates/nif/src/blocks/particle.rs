@@ -1107,7 +1107,8 @@ pub fn parse_particle_system(
         // Material data: num_materials(u32) + (name_idx, extra_data)[N] +
         // active_material_index(u32) + dirty_flag(u8 since v20.2.0.7).
         // Present since v20.2.0.5, only on the pre-SSE branch — same
-        // gate `NiTriShape::parse` uses (see tri_shape.rs:108).
+        // gate `NiTriShape::parse` uses (`active_material_index` in
+        // `blocks/tri_shape/ni_tri_shape.rs`).
         if stream.version() >= NifVersion::V20_2_0_5 {
             let num_materials = stream.read_u32_le()?;
             // Each entry is 8 on-disk bytes (name_idx + extra_data); bound

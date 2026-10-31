@@ -613,8 +613,8 @@ mod tests {
     fn npc_spawn_topology_propagates_to_deep_bone_chain() {
         let mut world = World::new();
         // Step 1: placement_root with EXPLICIT GT (mirrors
-        // npc_spawn.rs:319-323 — both Transform AND GlobalTransform
-        // get inserted at spawn time so the renderer can read a valid
+        // `spawn_placement_root` in `npc_spawn/resumable/mod.rs` — both
+        // Transform AND GlobalTransform get inserted at spawn time so the renderer can read a valid
         // pose on frame 0 before propagation runs).
         let placement_root = world.spawn();
         let ref_pos = Vec3::new(2288.76, 7360.0, -2244.41);

@@ -1166,7 +1166,7 @@ fn spawn_placement_root(
     }
     // #1214 / D1-NEW-03 — attach BSXFlags on the placement root when
     // the NIF authored them. Editor-marker bit (0x20) is filtered at
-    // parse time (`references.rs:840`), so any cached entry reaching
+    // parse time (`cell_loader/references/import.rs`), so any cached entry reaching
     // here either has the bit clear OR comes from a `.spt` /
     // generated path with `bsx_flags = 0`.
     if cached.bsx_flags != 0 {

@@ -38,6 +38,21 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Files that exist only upstream (a vendored/dependency crate), cited with a line number
+/// on purpose: rapier's `control/character_controller.rs`, which the character controller
+/// and the surface probe mirror.
+const UPSTREAM_FILES: &[&str] = &["character_controller.rs"];
+/// Docs whose subject is upstream code, so every `.rs:LINE` in them names the dependency's file.
+const UPSTREAM_DOCS: &[&str] = &["dependency-update-followups-plan.md"];
+
+/// Whether a reference to a basename with no in-tree file is a deliberate upstream citation.
+fn is_upstream_reference(base: &str, file: &Path) -> bool {
+    UPSTREAM_FILES.contains(&base)
+        || file
+            .file_name()
+            .is_some_and(|name| UPSTREAM_DOCS.contains(&name.to_string_lossy().as_ref()))
+}
+
 /// Whether a `line` reference is out of range for every candidate file, given
 /// each candidate's line count. No candidate at all is "not checkable", not stale.
 fn is_stale(line: usize, candidate_lens: &[usize]) -> bool {
@@ -110,6 +125,7 @@ fn line_references_stay_inside_the_files_they_name() {
     let this_file = Path::new(file!()).file_name().unwrap().to_owned();
     let mut line_counts: HashMap<PathBuf, usize> = HashMap::new();
     let mut stale = Vec::new();
+    let mut missing = Vec::new();
     let scanned = files
         .iter()
         .filter(|f| f.extension().is_some_and(|e| e == "rs"))
@@ -121,7 +137,19 @@ fn line_references_stay_inside_the_files_they_name() {
         let Ok(text) = std::fs::read_to_string(file) else { continue };
         for (name, line, at, cited) in line_references(&text) {
             let base = name.rsplit('/').next().unwrap();
-            let Some(all) = sources.get(base) else { continue };
+            let Some(all) = sources.get(base) else {
+                // #6523 — a basename that resolves to no in-tree file is the case a
+                // split leaves behind (`references.rs:840` after `references/`), and
+                // the one a line number can never be checked against. It is stale
+                // unless it cites an upstream crate's file.
+                if !is_upstream_reference(base, file) {
+                    missing.push(format!(
+                        "{}:{at}: `{name}:{line}` names no `.rs` file in this tree (a split removed it?)",
+                        file.strip_prefix(&root).unwrap().display(),
+                    ));
+                }
+                continue;
+            };
             // A cite that names directories (`crates/audio/src/lib.rs:859`) is
             // checked against the files that path actually matches; a bare
             // basename, or a path matching nothing, against every same-named file.
@@ -148,6 +176,13 @@ fn line_references_stay_inside_the_files_they_name() {
             }
         }
     }
+    assert!(
+        missing.is_empty(),
+        "line references into a `.rs` file that no longer exists in the tree — a split deleted \
+         it, so the number means nothing. Cite the symbol and its module instead; a genuine \
+         upstream-crate citation goes in `UPSTREAM_FILES` or the doc in `UPSTREAM_DOCS` (#6523):\n{}",
+        missing.join("\n")
+    );
     assert!(
         stale.is_empty(),
         "line references past the end of the file they name — cite the symbol and its module \
@@ -185,4 +220,18 @@ fn the_scanner_keeps_the_cited_directory_prefix() {
     let refs = line_references("see `crates/audio/src/lib.rs:859` and [x](../a-b.rs#L7) and bare.rs:3");
     let paths: Vec<_> = refs.into_iter().map(|(_, _, _, p)| p).collect();
     assert_eq!(paths, vec!["crates/audio/src/lib.rs", "a-b.rs", "bare.rs"]);
+}
+
+#[test]
+fn a_reference_to_a_split_away_file_is_not_an_upstream_citation() {
+    // #6523: `references.rs` was split into `references/`; a line number into it can
+    // never be checked, so it must be reported rather than skipped.
+    assert!(!is_upstream_reference("references.rs", Path::new("byroredux/src/a.rs")));
+    assert!(!is_upstream_reference("tri_shape.rs", Path::new("docs/engine/x.md")));
+    // The deliberate exceptions: rapier's file, and a doc whose subject is upstream code.
+    assert!(is_upstream_reference("character_controller.rs", Path::new("crates/physics/src/a.rs")));
+    assert!(is_upstream_reference(
+        "anything.rs",
+        Path::new("docs/engine/dependency-update-followups-plan.md")
+    ));
 }

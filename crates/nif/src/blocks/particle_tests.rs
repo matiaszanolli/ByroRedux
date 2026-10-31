@@ -459,7 +459,7 @@ fn make_header_oblivion() -> NifHeader {
 /// `parse_geometry_data_base` consumes for the supplied (version,
 /// num_vertices, has_vertices, has_additional_data) shape, with
 /// data_flags/normals/colors/UVs all empty. Mirrors the reader at
-/// `crates/nif/src/blocks/tri_shape.rs:787` exactly so test fixtures
+/// `parse_geometry_data_base` (`crates/nif/src/blocks/tri_shape/ni_tri_shape.rs`) exactly so test fixtures
 /// stay in lockstep with the schema gates.
 fn nigeo_base_bytes(num_vertices: u16, version: NifVersion) -> Vec<u8> {
     let mut d = Vec::new();

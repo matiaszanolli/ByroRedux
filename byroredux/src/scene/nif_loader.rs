@@ -375,7 +375,7 @@ pub(super) fn parse_import_and_merge(
         }
     }
     // #1215 / D2 FIND-1 — sibling of the cell-loader zero-contribution
-    // warn at `cell_loader/references.rs:885+`. A loose NIF that parses
+    // warn in `cell_loader/references/import.rs`. A loose NIF that parses
     // cleanly but yields zero meshes can be:
     //   - CSG-deferred precombined `_oc.nif` (the user passing one
     //     directly via `--mesh meshes\precombined\...`) — #1188

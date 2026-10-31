@@ -120,7 +120,7 @@ pub(crate) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeD
     let fields = capture_shader_type_fields(data);
     // #623 / SK-D3-07: GpuInstance packs `multi_layer_envmap_strength`
     // into the `w` slot of the `hair_tint_{r,g,b,_}` vec4 to save
-    // alignment padding (scene_buffer.rs:240-263). The packing is
+    // alignment padding (`GpuInstance` in `vulkan/scene_buffer/gpu_types.rs`). The packing is
     // safe only because `ShaderTypeData` is a single-tag enum, so
     // `capture_shader_type_fields` populates one or the other but
     // never both. If a future variant or refactor breaks that, the

@@ -105,9 +105,9 @@ to actor spawn. A pre-fix regression test name preserves the symptom:
 "61 statics hits, 0 NPCs spawned" for a 31-NPC test cell.
 
 Dispatch branches on FaceGen strategy: `game.has_runtime_facegen_recipe()`
-→ `npc_spawn::spawn_npc_entity` (`byroredux/src/npc_spawn/:671`, FO3/FNV
+→ `NpcSpawnJob::runtime` (`byroredux/src/npc_spawn/resumable/`, FO3/FNV
 — morphs computed at load time); `game.uses_prebaked_facegen()` →
-`npc_spawn::spawn_prebaked_npc_entity` (`npc_spawn.rs:1549`, Skyrim+ —
+`NpcSpawnJob::prebaked` (same module, Skyrim+ —
 resolves a pre-baked FaceGen NIF by plugin+FormID).
 
 ## 2. What spawn produces
@@ -167,7 +167,7 @@ real — honoring the common `GetIsID` / `GetActorValue` /
 `GetFactionRank` / `GetStage` cases without regressing the rest.
 
 More significant: **selection runs exactly once, at spawn time**
-(`npc_spawn.rs:1433-1479`), against whatever `GameTimeRes.hour` happens
+(`select_active_package`, `npc_spawn/ai_package.rs`), against whatever `GameTimeRes.hour` happens
 to be at that instant. There is no per-frame or per-hour
 re-evaluation — an NPC picked for a 20:00-22:00 sandbox slot keeps that
 `SandboxBehavior` tag forever, regardless of in-game time passing. Of

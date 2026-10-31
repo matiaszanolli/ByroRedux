@@ -675,7 +675,7 @@ mod tests {
     }
 
     /// Mirror of the Z-up → Y-up convention REFR placements use
-    /// (`references.rs:198-202`): `(x, y, z)_zup → (x, z, -y)_yup`.
+    /// (`cell_loader/references/mod.rs`, via `zup_to_yup_pos`): `(x, y, z)_zup → (x, z, -y)_yup`.
     /// Pin the helper against three canonical orientations.
     #[test]
     fn position_zup_to_yup_matches_refr_convention() {

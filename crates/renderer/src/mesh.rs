@@ -25,7 +25,7 @@ use std::sync::Once;
 /// enough process memory for Linux to invoke the OOM killer.
 ///
 /// See REN-D2-005 / #1016. Mirrors the `MAX_INDIRECT_DRAWS` defence-in-depth
-/// cap at `scene_buffer.rs:1326+` — these are not perf knobs, they are
+/// cap (`MAX_INDIRECT_DRAWS`, `vulkan/scene_buffer/constants.rs`) — these are not perf knobs, they are
 /// safety guards against unbounded-growth bugs.
 pub const VERTEX_POOL_SOFT_CAP: usize = 7_000_000;
 pub const VERTEX_POOL_HARD_CAP: usize = VERTEX_POOL_SOFT_CAP;

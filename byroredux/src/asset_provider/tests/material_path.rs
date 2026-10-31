@@ -64,7 +64,7 @@ fn normalize_mesh_path_accepts_forward_slash_prefix() {
 fn normalize_mesh_path_is_idempotent() {
     // Callers that already pre-normalised must round-trip without
     // double-prefixing — the cell-loader static-spawn path at
-    // `cell_loader/references.rs:421-426` predates the centralised
+    // `cell_loader/references/` predates the centralised
     // normaliser and still pre-prepends `meshes\` itself; the
     // double-normalise must be a no-op.
     let once = normalize_mesh_path(r"armor\powdergang\powdergang03.NIF");
