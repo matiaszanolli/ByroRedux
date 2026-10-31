@@ -417,9 +417,12 @@ already has the surface:
   craft consumes the ingredients, adds the yield and raises `CRFT` with the
   bench in `R1`. Live on Skyrim: crafting leather strips at the nearest
   bench started `WICraftItem01` through `WICraftItemNode`
-  (`m43-crafting.sh`). **Not modelled**: crafting skill XP, perk-improved
-  yields (Arcane Blacksmith, Steel Smithing's rating bonus), the crafting
-  animation and Fallout 4's component-based `COBJ` (`FVPA`).
+  (`m43-crafting.sh`). A craft at a forge (`CraftingSmithingForge`,
+  `CraftingSmithingSkyforge`) raises Smithing by UESP's `3 × item value^0.65 + 25`
+  through the `AdvanceSkill` queue, so it can raise `SKIL`. **Not modelled**: the
+  perk-improved yields (Arcane Blacksmith and Steel Smithing act on *improving* an
+  item, not crafting one), the crafting animation and Fallout 4's
+  component-based `COBJ` (`FVPA`).
 - **Still open, with the missing piece named** (per-mnemonic quest counts,
   2026-10-30, quests reachable under each `SMEN` root — Skyrim: `ESJA` 2,
   `DEAD` 2, `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4: `AOBJ` 16, `AHEL` 9, `OAAT` 4,

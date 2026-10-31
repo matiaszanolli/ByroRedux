@@ -13,9 +13,16 @@
 //! `R1` and the session location in `L1`
 //! (`OnStoryCraftItem(akBench, akLocation, akCreatedItem)`).
 //!
-//! Not modelled: skill XP for the craft, the perk-improved yield (Arcane
-//! Blacksmith's enchanted tempering, Steel Smithing's armor-rating bonus), and
-//! the crafting animation. Fallout 4's component-based `COBJ` (`FVPA`) is a
+//! Crafting at a forge raises Smithing: UESP *Skyrim:Smithing* gives the XP of
+//! smithing an item as `3 × item value^0.65 + 25` ([`smithing_xp`]), in the
+//! skill's usage units, so it banks through the same `AdvanceSkill` path a script
+//! uses (`PendingSkillAdvances`). The same page names the benches that give none:
+//! a smelter and a tanning rack ("does not give skill increases"); only the
+//! forges (`CraftingSmithingForge`, `CraftingSmithingSkyforge`) are credited here.
+//!
+//! Not modelled: the perk-improved yield (Arcane Blacksmith's enchanted
+//! tempering, Steel Smithing's armor-rating bonus — both act on *improving* an
+//! item, which is a different action from crafting one), and the crafting animation. Fallout 4's component-based `COBJ` (`FVPA`) is a
 //! different recipe format and reads as no ingredients, so it offers nothing.
 
 use crate::inventory::InventoryCatalog;
@@ -49,6 +56,20 @@ pub(crate) struct CraftingBook {
     bench_keywords: Arc<HashMap<u32, Vec<u32>>>,
     /// Furniture bases that carry a keyword some recipe is crafted at.
     bench_bases: Arc<std::collections::HashSet<u32>>,
+    /// The bench keywords whose crafts raise Smithing ([`SMITHING_FORGE_KEYWORDS`]).
+    forge_keywords: Arc<std::collections::HashSet<u32>>,
+}
+
+/// The editor ids of the bench keywords at which crafting gives Smithing XP.
+const SMITHING_FORGE_KEYWORDS: [&str; 2] = ["CraftingSmithingForge", "CraftingSmithingSkyforge"];
+
+/// The skill a forge craft raises.
+const SMITHING_SKILL: &str = "Smithing";
+
+/// UESP *Skyrim:Smithing*, "Crafting Items": the skill XP of smithing one item is
+/// `3 × item value^0.65 + 25`.
+pub(crate) fn smithing_xp(item_value: u32) -> f32 {
+    3.0 * (item_value as f32).powf(0.65) + 25.0
 }
 
 impl Resource for CraftingBook {}
@@ -77,10 +98,17 @@ impl CraftingBook {
             .filter(|(_, keywords)| keywords.iter().any(|keyword| crafted_at.contains(keyword)))
             .map(|(base, _)| *base)
             .collect();
+        let forge_keywords = index
+            .keywords
+            .values()
+            .filter(|keyword| SMITHING_FORGE_KEYWORDS.contains(&keyword.editor_id.as_str()))
+            .map(|keyword| keyword.form_id)
+            .collect();
         Self {
             recipes: Arc::new(recipes),
             bench_keywords: Arc::new(index.furniture_keywords.clone()),
             bench_bases: Arc::new(bench_bases),
+            forge_keywords: Arc::new(forge_keywords),
         }
     }
 
@@ -180,7 +208,7 @@ pub(crate) fn craft(world: &World, recipe_form: u32, bench: EntityId) -> Result<
         return Err("you cannot craft now".to_owned());
     }
     let player = PlayerEntity::get(world).ok_or("no player")?;
-    let (recipe, keywords) = {
+    let (recipe, keywords, forge) = {
         let book = world.try_resource::<CraftingBook>().ok_or("no recipes are loaded")?;
         let recipe = book
             .recipes
@@ -191,7 +219,8 @@ pub(crate) fn craft(world: &World, recipe_form: u32, bench: EntityId) -> Result<
         let keywords = base_of(world, bench)
             .and_then(|base| book.bench_keywords.get(&base).cloned())
             .unwrap_or_default();
-        (recipe, keywords)
+        let forge = book.forge_keywords.contains(&recipe.bench_keyword);
+        (recipe, keywords, forge)
     };
     if !keywords.contains(&recipe.bench_keyword) {
         return Err("this bench does not make that".to_owned());
@@ -209,6 +238,12 @@ pub(crate) fn craft(world: &World, recipe_form: u32, bench: EntityId) -> Result<
     crate::inventory::add_item(world, recipe.output, recipe.output_count)
         .ok_or("the crafted item could not be added")?;
     let name = item_name(world, recipe.output);
+    if forge {
+        let value = world.try_resource::<InventoryCatalog>().map_or(0, |catalog| catalog.item_value(recipe.output));
+        if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingSkillAdvances>() {
+            pending.0.push((SMITHING_SKILL.to_owned(), smithing_xp(value)));
+        }
+    }
     crate::systems::story_events::raise_craft_story_event(world, player, bench);
     let line = if recipe.output_count > 1 {
         format!("Crafted {name} ({})", recipe.output_count)
@@ -364,6 +399,9 @@ mod tests {
         );
         index.furniture_keywords.insert(FORGE, vec![FORGE_KW]);
         index.furniture_keywords.insert(COOKPOT, vec![COOK_KW]);
+        for (form_id, editor_id) in [(FORGE_KW, "CraftingSmithingForge"), (COOK_KW, "CraftingCookpot")] {
+            index.keywords.insert(form_id, byroredux_plugin::esm::records::KywdRecord { form_id, editor_id: editor_id.into() });
+        }
         crate::crafting::install_crafting(&mut world, &index);
         world.insert_resource(crate::notifications::PlayerNotifications::default());
         let player = world.spawn();
@@ -441,5 +479,29 @@ mod tests {
             .and_then(|events| events.iter().map(|(_, e)| *e).find(|e| e.mnemonic == *b"CRFT"))
             .expect("CRFT raised");
         assert_eq!(event.slots().reference_1, Some(forge));
+    }
+
+    /// UESP *Skyrim:Smithing* works two examples: an iron dagger (value 10) gives 38.4 XP and iron armor
+    /// (value 125) gives 94.2; every item carries the flat 25.
+    #[test]
+    fn smithing_xp_follows_the_uesp_formula() {
+        assert!((smithing_xp(10) - 38.4).abs() < 0.05, "the page's iron dagger example");
+        assert!((smithing_xp(125) - 94.2).abs() < 0.05, "the page's iron armor example");
+        assert!((smithing_xp(0) - 25.0).abs() < f32::EPSILON);
+    }
+
+    /// A forge craft queues Smithing XP for the item's value; a craft at any other bench queues none.
+    #[test]
+    fn a_forge_craft_banks_smithing_xp_and_other_benches_do_not() {
+        let (mut world, player, forge, _cookpot) = world_with_bench();
+        world.insert_resource(crate::inventory::InventoryCatalog::with_pickup_bases(&[IRON_DAGGER]));
+        world.insert_resource(byroredux_scripting::PendingSkillAdvances::default());
+        give(&mut world, player, IRON_INGOT, 1);
+        give(&mut world, player, LEATHER, 1);
+        craft(&world, RECIPE, forge).unwrap();
+        let queued = world.resource::<byroredux_scripting::PendingSkillAdvances>().0.clone();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].0, "Smithing");
+        assert!((queued[0].1 - smithing_xp(1)).abs() < 1e-4, "the catalog's value for the dagger is 1");
     }
 }
