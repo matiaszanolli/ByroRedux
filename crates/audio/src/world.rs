@@ -335,24 +335,6 @@ impl AudioWorld {
         self.oneshots_requested
     }
 
-    /// Fire-and-forget one-shot dispatch from a context that cannot
-    /// allocate ECS entities (i.e., a System with `&World`). The
-    /// next `audio_system` tick drains the queue and plays each
-    /// pending entry through a fresh spatial sub-track at the
-    /// authored position.
-    ///
-    /// **Drops on inactive audio (#853 / C4-NEW-01).** When the
-    /// manager is `None` (headless CI, no device, init failure),
-    /// `audio_system` early-returns before drain. Pre-#853 the
-    /// queue still filled to its 256-entry cap, pinning ~12 KB +
-    /// one `Arc<StaticSoundData>` strong-count per cached sound
-    /// for the lifetime of the engine. Now we drop the call up
-    /// front and the queue stays empty.
-    ///
-    /// When audio IS active and the system is running, the queue
-    /// is bounded at 256 entries via FIFO drop-oldest as a safety
-    /// net against a runaway producer (256 = ~8 s of footsteps
-    /// at 32 Hz; real gameplay never approaches it).
     /// #5738 — the shared `play_oneshot*` prologue: the requested-count
     /// bump, the inactive-manager gate, and the 256-entry FIFO cap
     /// (O(1) front-pop — `Vec::remove(0)` was O(n); see #852). Returns
@@ -374,6 +356,24 @@ impl AudioWorld {
         true
     }
 
+    /// Fire-and-forget one-shot dispatch from a context that cannot
+    /// allocate ECS entities (i.e., a System with `&World`). The
+    /// next `audio_system` tick drains the queue and plays each
+    /// pending entry through a fresh spatial sub-track at the
+    /// authored position.
+    ///
+    /// **Drops on inactive audio (#853 / C4-NEW-01).** When the
+    /// manager is `None` (headless CI, no device, init failure),
+    /// `audio_system` early-returns before drain. Pre-#853 the
+    /// queue still filled to its 256-entry cap, pinning ~12 KB +
+    /// one `Arc<StaticSoundData>` strong-count per cached sound
+    /// for the lifetime of the engine. Now we drop the call up
+    /// front and the queue stays empty.
+    ///
+    /// When audio IS active and the system is running, the queue
+    /// is bounded at 256 entries via FIFO drop-oldest as a safety
+    /// net against a runaway producer (256 = ~8 s of footsteps
+    /// at 32 Hz; real gameplay never approaches it).
     pub fn play_oneshot(
         &mut self,
         sound: Arc<StaticSoundData>,
