@@ -172,11 +172,6 @@ mod tests {
         }
     }
 
-    /// Phase 1 — same lockstep pin for the new response variants.
-    /// Adding a field to `DebugResponse::Metrics` without updating
-    /// this test (and the matching engine-side `MetricsSnapshot`)
-    /// breaks the build at the missing assertion, not at runtime
-    /// against a quiet null field.
     /// #6278 — a payload from an engine that predates `cpu_pass_ms` /
     /// `top_systems_ms` still deserializes, with both empty.
     #[test]
@@ -190,6 +185,11 @@ mod tests {
         assert!(payload.cpu_pass_ms.is_empty() && payload.top_systems_ms.is_empty());
     }
 
+    /// Phase 1 — same lockstep pin for the new response variants.
+    /// Adding a field to `DebugResponse::Metrics` without updating
+    /// this test (and the matching engine-side `MetricsSnapshot`)
+    /// breaks the build at the missing assertion, not at runtime
+    /// against a quiet null field.
     #[test]
     fn round_trip_phase1_response_variants() {
         use crate::GameProfile;
