@@ -64,6 +64,7 @@ docs/smoke-tests/m43-mines.sh                     # FO4: a placed proximity mine
 docs/smoke-tests/m43-attraction.sh                # FO4: the attraction rules, keywords and carriers load from the real master (M43 AOBJ)
 docs/smoke-tests/m43-attraction-reaction.sh       # FO4: a created matching NPC and object (Deacon + his info object) bring an AOBJ reaction live (M43)
 docs/smoke-tests/m43-hello.sh                      # Skyrim SE: staged movers among Whiterun's real conversation participants raise AHEL (M43)
+docs/smoke-tests/m43-node-window.sh                # FO4: a node's HNAM reset window blocks a re-fire for 48 h and lets it through after (M43)
 docs/smoke-tests/m43-tempering.sh                 # Skyrim SE: a held Steel Sword is improved in place at the grindstone (M43)
 docs/smoke-tests/m43-armor.sh                      # Skyrim SE: a worn cuirass gives an armor rating and physical damage reduction per UESP's formula (M43)
 docs/smoke-tests/m43-fo4-actions.sh                # FO4: a locked terminal is hacked, a lock picked with a bobby pin, a pistol aimed — HACK / LOCK / IRON raised live (M43)

@@ -1228,7 +1228,7 @@ impl ConsoleCommand for SmEventCommand {
     }
 
     fn description(&self) -> &str {
-        "Raise a Story Manager event (sm.event KILL r1=<formid|player> [r2=…] [l1=…] [l2=…])"
+        "Raise a Story Manager event (sm.event KILL r1=<formid|player> [r2=…] [l1=…] [l2=…] [kw=<keyword> v1=… v2=…])"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
@@ -1249,11 +1249,26 @@ impl ConsoleCommand for SmEventCommand {
         let mut reference_2 = None;
         let mut location_1 = None;
         let mut location_2 = None;
+        // M43 — a script event's payload (`Keyword.SendStoryEvent(akLoc, akRef1, akRef2, aiValue1, aiValue2)`).
+        let mut keyword: Option<u32> = None;
+        let mut values = [0i32; 2];
         for token in tokens {
             let Some((slot, value)) = token.split_once('=') else {
                 return CommandOutput::error(format!("bad slot `{token}` (expected r1=/r2=/l1=/l2=)"));
             };
             match slot {
+                "kw" => {
+                    let Some(form) = parse_console_u32(value) else {
+                        return CommandOutput::error(format!("bad keyword FormID `{value}`"));
+                    };
+                    keyword = Some(form);
+                }
+                "v1" | "v2" => {
+                    let Ok(number) = value.parse::<i32>() else {
+                        return CommandOutput::error(format!("bad value `{value}`"));
+                    };
+                    values[usize::from(slot == "v2")] = number;
+                }
                 "l1" | "l2" => {
                     let Some(form) = parse_console_u32(value) else {
                         return CommandOutput::error(format!("bad LCTN FormID `{value}`"));
@@ -1310,7 +1325,11 @@ impl ConsoleCommand for SmEventCommand {
             reference_2,
             location_1,
             location_2,
-            scripted: None,
+            scripted: keyword.map(|keyword| byroredux_scripting::story_manager::ScriptedStoryEvent {
+                keyword,
+                values,
+                has_reference_1: true,
+            }),
         };
         let Some(mut events) = world.query_mut::<byroredux_scripting::story_manager::StoryEvent>()
         else {
