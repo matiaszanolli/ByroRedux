@@ -14,9 +14,9 @@ reset windows over save-persistent node state. M43 follow-ups
 concurrent quests* (`XNAM`); `ADIA` (NPC-to-NPC random conversations — the
 largest event family, with the CK's interrupt hold), `LEVL`, `ASSU`, `AIPL`,
 `SKIL`, `JAIL`, `CHRR`, `REMP`, `CAST`, `CRFT` and FO4's `LCLD` joined
-`KILL`/`CLOC`/`AHEL`/`SCPT` as producers (§6.4). What is left (§6.4 names the
-missing piece of each): `DEAD`, the natural `AHEL`, `ARRT`/`ESJA`, `NVPE`, and
-FO4's `AOBJ`/`HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`. The corpus's `FromEvent`
+`KILL`/`CLOC`/`AHEL`/`SCPT` as producers (§6.4). The rest of M43's leftover list — `DEAD`, the natural `AHEL`,
+`ARRT`/`ESJA`, `NVPE` and FO4's `AOBJ`/`HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE` — has producers
+as of 2026-10-30 (§6.4 states which rules are the engine's own policy). The corpus's `FromEvent`
 fills and node conditions read only `R1`/`R2`/`L1`/`L2`, so a form slot
 (`F1`) is only needed by scripts. `HNAM` is consumed as the FO4+ node-level reset window (§3). Unconsumed fields: `FNAM` (xEdit
 declares it `wbUnknown` in both the TES5 and FO4 definitions; always `2` in the corpus), `QNAM` (a
@@ -508,7 +508,7 @@ already has the surface:
   perk-improved yields (Arcane Blacksmith and Steel Smithing act on *improving* an
   item, not crafting one), the crafting animation and Fallout 4's
   component-based `COBJ` (`FVPA`).
-- **Still open, with the missing piece named** (per-mnemonic quest counts,
+- **The leftover events and their payloads** (per-mnemonic quest counts,
   2026-10-30, quests reachable under each `SMEN` root — Skyrim: `ESJA` 2,
   `DEAD` 2, `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4: `AOBJ` 16, `AHEL` 9, `OAAT` 4,
   `HACK` 3, `LOCK` 3, `TMEE` 1, `IRON` 1):
