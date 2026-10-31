@@ -6,6 +6,9 @@
 //! - `lock.open <entity>` — open one the way activating it does (key, pick or hack); raises `LOCK` / `HACK`.
 //! - `word.teach <wordofpower_hex>` — `Game.TeachWord`'s effect; raises `NVPE` for a new word.
 //! - `jail.send <faction_hex> [fake]` — `Faction.SendPlayerToJail`'s effect; raises `ARRT`, and `JAIL` for a real jail.
+//! - `place.at <base_hex> [dx dy dz]` — create a reference of any base beside the player (the machinery `PlaceAtMe`
+//!   and item drops use), to bring an actor and an object together at runtime.
+//! - `sm.nodes [filter]` — the loaded Story Manager quest nodes that carry a node-level reset window (`HNAM`).
 //! - `jail.escape` — the player walks out of the cell to the jail's exit without serving: `ESJA`.
 
 use super::shared::*;
@@ -146,5 +149,73 @@ impl ConsoleCommand for StartReleaseCommand {
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         crate::components::ExplicitStartPin::release(world);
         CommandOutput::line("explicit start released: scripted player moves now take control")
+    }
+}
+
+pub(crate) struct PlaceAtCommand;
+
+impl ConsoleCommand for PlaceAtCommand {
+    fn name(&self) -> &str {
+        "place.at"
+    }
+    fn description(&self) -> &str {
+        "Create a reference of a base beside the player (PlaceAtMe's machinery): place.at <base_hex> [dx dy dz] (Z-up offsets)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut parts = args.split_whitespace();
+        let Some(base) = parts.next().and_then(parse_console_form_id) else {
+            return CommandOutput::error("usage: place.at <base_hex> [dx dy dz]");
+        };
+        let offset: Vec<f32> = parts.filter_map(|part| part.parse().ok()).collect();
+        let offset = [offset.first().copied().unwrap_or(0.0), offset.get(1).copied().unwrap_or(0.0), offset.get(2).copied().unwrap_or(0.0)];
+        let Some(player) = crate::systems::PlayerEntity::get(world) else {
+            return CommandOutput::error("place.at: no player");
+        };
+        let Some(at) = world.get::<GlobalTransform>(player).map(|t| t.translation) else {
+            return CommandOutput::error("place.at: the player has no position");
+        };
+        let zup = byroredux_core::math::coord::yup_to_zup_pos(at.to_array());
+        let position = [zup[0] + offset[0], zup[1] + offset[1], zup[2] + offset[2]];
+        let Some(placement) = crate::cell_loader::created::placement_at_position(world, position) else {
+            return CommandOutput::error("place.at: no current cell to place into");
+        };
+        let Some(ids) = world.try_resource::<byroredux_scripting::CreatedReferences>().map(|created| created.scripted_ids()) else {
+            return CommandOutput::error("place.at: no created-reference registry");
+        };
+        let Some(reference) = ids.next() else {
+            return CommandOutput::error("place.at: created form ids are exhausted");
+        };
+        if let Some(mut created) = world.try_resource_mut::<byroredux_scripting::CreatedReferences>() {
+            created.create_scripted(reference, base, byroredux_scripting::PLAYER_REFERENCE, false);
+            created.place(reference, placement);
+        }
+        CommandOutput::line(format!("placed base {base:08X} as reference {reference:08X} at ({:.0}, {:.0}, {:.0})", position[0], position[1], position[2]))
+    }
+}
+
+pub(crate) struct SmNodesCommand;
+
+impl ConsoleCommand for SmNodesCommand {
+    fn name(&self) -> &str {
+        "sm.nodes"
+    }
+    fn description(&self) -> &str {
+        "List the loaded Story Manager quest nodes with a node-level reset window (HNAM): sm.nodes [editor-id filter]"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(tree) = world.try_resource::<byroredux_scripting::story_manager::SmTree>() else {
+            return CommandOutput::error("sm.nodes: no Story Manager tree installed");
+        };
+        let filter = args.trim().to_ascii_lowercase();
+        let mut windowed: Vec<(&str, f32, usize)> = tree
+            .nodes
+            .iter()
+            .filter(|node| node.reset_hours > 0.0 && node.editor_id.to_ascii_lowercase().contains(&filter))
+            .map(|node| (node.editor_id.as_str(), node.reset_hours, node.quests.len()))
+            .collect();
+        windowed.sort_by(|a, b| a.0.cmp(b.0));
+        let mut lines = vec![format!("{} of {} node(s) carry a reset window (HNAM)", windowed.len(), tree.nodes.len())];
+        lines.extend(windowed.iter().take(40).map(|(name, hours, quests)| format!("node {name} reset {hours} h quests {quests}")));
+        CommandOutput::lines(lines)
     }
 }

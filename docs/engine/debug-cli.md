@@ -340,7 +340,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**156**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**158**) grouped by
 purpose:
 
 ```
@@ -441,6 +441,8 @@ lock.status                 → locked references with their level and how the p
 lock.open <entity>          → open a locked reference the way activating it does (key, pick or hack); raises LOCK / HACK
 word.teach <form>           → give the player a word of power (Game.TeachWord); raises NVPE for a new word
 jail.send <faction> [fake]  → Faction.SendPlayerToJail as a guard's dialogue calls it; raises ARRT (and JAIL for a real jail)
+place.at <base> [dx dy dz]  → create a reference of a base beside the player (PlaceAtMe's machinery), e.g. to bring an actor and an attraction object together (M43)
+sm.nodes [filter]           → the loaded Story Manager quest nodes with a node-level reset window (HNAM), M43
 start.release               → release the launch's explicit start pin (what the first key/mouse press does) so scripted player moves take effect
 jail.escape                 → take the player to the jail exit without serving the sentence; raises ESJA once outside (M43)
 armor.status                → the player's displayed armor rating, worn pieces and physical damage reduction (Skyrim, M43)

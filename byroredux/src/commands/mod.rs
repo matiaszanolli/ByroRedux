@@ -184,6 +184,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(story_actions::JailSendCommand);
     registry.register(story_actions::JailEscapeCommand);
     registry.register(story_actions::StartReleaseCommand);
+    registry.register(story_actions::PlaceAtCommand);
+    registry.register(story_actions::SmNodesCommand);
     registry.register(HardcoreCommand);
     registry.register(SettingsStatusCommand);
     registry.register(WaterDumpCommand);

@@ -434,8 +434,11 @@ pub(crate) fn random_conversation_system(world: &World, dt: f32) {
         return;
     };
     let movers = state.moving(&participants);
+    // CK *Actor Hello Event*: the hello is the moving variant of the attempt, so an actor that is moving says
+    // hello (when the tree has the event) and one that stands at its post starts a conversation.
+    let hello_for = |entity: EntityId| has_ahel && movers.contains(&entity);
     let due = state.advance_where(step, &participants, roll_timer, |p| {
-        (p.can_initiate && has_adia) || (has_ahel && movers.contains(&p.entity))
+        hello_for(p.entity) || (p.can_initiate && has_adia)
     });
     let mut raised = Vec::new();
     let mut hellos = Vec::new();
@@ -447,7 +450,7 @@ pub(crate) fn random_conversation_system(world: &World, dt: f32) {
         state.timers.insert(initiator, roll_timer());
         // An actor that is already going somewhere says hello in passing; one that stands at its
         // sandbox / guard post starts a conversation.
-        let hello = has_ahel && movers.contains(&initiator) && !(me.can_initiate && has_adia);
+        let hello = hello_for(initiator);
         let Some(target) = pick_target(me, &participants, settings.radius(interior), |a, b| state.talked_recently(a, b)) else {
             continue;
         };
@@ -957,6 +960,62 @@ mod tests {
         };
         assert!(run(false), "no marker: the pair converses");
         assert!(!run(true), "a ComplexSceneMarker is placed: nobody starts a conversation");
+    }
+
+    /// A moving initiator that could also start a conversation (it has a Sandbox behaviour) says hello instead:
+    /// the hello is the moving variant. Standing still, the same actor converses (the ADIA test above).
+    #[test]
+    fn a_moving_sandbox_actor_says_hello_not_converses() {
+        use crate::components::AmbientPackageRuntime;
+        use byroredux_plugin::esm::records::{GameSetting, PackRecord, SettingValue, SmNodeKind, SmNodeRecord};
+        use byroredux_scripting::package::PackageRegistry;
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<AmbientPackageRuntime>();
+        world.register::<GlobalTransform>();
+        world.register::<SandboxBehavior>();
+        world.register::<ConversationHold>();
+        world.register::<Transform>();
+        world.insert_resource(RandomConversationState::default());
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.insert_game_setting(GameSetting { form_id: 0x1, editor_id: "fAISocialchanceForConversation".into(), value: SettingValue::Float(101.0) });
+        world.insert_resource(byroredux_scripting::obscript_state::GameSettings::from_index(&index));
+        let records = HashMap::from([
+            (0x10, SmNodeRecord { form_id: 0x10, kind: SmNodeKind::Event, event_mnemonic: Some(ADIA), ..Default::default() }),
+            (0x11, SmNodeRecord { form_id: 0x11, kind: SmNodeKind::Event, event_mnemonic: Some(AHEL), ..Default::default() }),
+        ]);
+        byroredux_scripting::story_manager::install_story_manager(&mut world, &records);
+        world.insert_resource(PackageRegistry::from_records([PackRecord {
+            form_id: 0x77,
+            interrupt_flags: PKDT_INTERRUPT_RANDOM_CONVERSATIONS,
+            ..Default::default()
+        }]));
+        let mut spawn = |x: f32, sandbox: bool| {
+            let actor = world.spawn();
+            world.insert(actor, GlobalTransform { translation: Vec3::new(x, 0.0, 0.0), ..Default::default() });
+            if sandbox {
+                world.insert(actor, SandboxBehavior { search_radius: None });
+            }
+            world.insert(
+                actor,
+                AmbientPackageRuntime {
+                    package_candidates: vec![0x77],
+                    active_package_form_id: Some(0x77),
+                    actor_form_id: 0x1000 + actor,
+                    last_evaluated_game_minute: None,
+                },
+            );
+            actor
+        };
+        // Only the mover could start a conversation; the other is a plain participant (a valid target).
+        let (mover, _other) = (spawn(0.0, true), spawn(100.0, false));
+        for step in 0..6 {
+            world.get_mut::<GlobalTransform>(mover).unwrap().translation = Vec3::new(step as f32 * 20.0, 0.0, 0.0);
+            random_conversation_system(&world, 50.0);
+        }
+        let events: Vec<[u8; 4]> = world.query::<StoryEvent>().map(|e| e.iter().map(|(_, e)| e.mnemonic).collect()).unwrap_or_default();
+        assert!(events.contains(&AHEL), "the mover said hello: {events:?}");
+        assert!(world.query::<ConversationHold>().is_none_or(|holds| holds.iter().next().is_none()), "and held nobody");
     }
 
     /// A marker whose reference is switched off (initially disabled, or an enable parent that is off) is not part

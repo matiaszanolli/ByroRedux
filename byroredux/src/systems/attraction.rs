@@ -250,6 +250,7 @@ pub(crate) fn attraction_system(world: &World, dt: f32) {
     // #5372 — the location is resolved before the StoryEvent write guard.
     let location = crate::systems::story_events::derive_location(world).location;
     for (actor, object) in due {
+        log::info!("attraction: actor {actor:?} reacts to object {object:?}; raising AOBJ");
         raise_story_event(
             world,
             actor,

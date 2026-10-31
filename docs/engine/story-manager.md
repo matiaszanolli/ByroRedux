@@ -111,7 +111,7 @@ verification below should be treated as decoded.
 | `NNAM` u32 | SMQN | the QUST this node starts | **[verified]** — Skyrim 425/448 resolve to QUST records via EDID cross-check (e.g. `MS05KingOlafsFestivalStarter` → its QUST) |
 | `DNAM` u32 | all | node-policy flags — 0x1 random, 0x10000 do-all-before-repeating, 0x20000 shares-event (Phase-3 decode, §3.3); 0x2 warn-if-no-child-quest-started, 0x40000 the Num-quests-to-run checkbox | **[decoded]** — #5420 closed the last two bits from xEdit `TES5.pas`; the runtime still consumes only the Phase-3 three |
 | `RNAM` f32 | SMQN | per-quest hours-until-reset window, follows its `NNAM` | **[decoded]** (Phase 3; §3.3) |
-| `HNAM` u32 (as f32) | SMQN, FO4+ | **Hours until reset** (xEdit FO4+/SF1) — 72.0 on the Minutemen node, 0.3–24.0 elsewhere | **[consumed, inferred]** — the node is passed over until `HNAM` hours after it last started a quest (`SmNodeRecord::reset_hours`, `SmNodeRuntime::last_node_fire_hours`, `FORMAT_MAJOR` 121). **Sources:** xEdit `wbDefinitionsFO4.pas` — `wbFloat(HNAM, 'Hours until reset')`, no scale, unlike the per-quest `RNAM` (`1/24`); the CK's quest-level meaning of the same name; and a 2026-10-30 census of Fallout4.esm — 17 `SMQN`s, values 0.5, 1 (×7), 12 (×2), 24 (×3), 48, 72 (×2), 140, all on random radiant pools (`RETravelQuestsNIGHT` 12, `REChokepointQuests` 24, the `EE_*` ambient conversations 0.5-1, `MinutemenRandomEvents` 72). That it is a *node* cooldown is inferred from the name and those values; **no in-game timing test has confirmed it**. Census also fixed `RNAM`'s unit: Skyrim's raw 576 (250 of 296 links) and FO4's (180 of 296) read 24 h at the xEdit scale, so the stored float is hours × 24 (#5386, unchanged) |
+| `HNAM` u32 (as f32) | SMQN, FO4+ | **Hours until reset** (xEdit FO4+/SF1) — 72.0 on the Minutemen node, 0.3–24.0 elsewhere | **[consumed, inferred]** — the node is passed over until `HNAM` hours after it last started a quest (`SmNodeRecord::reset_hours`, `SmNodeRuntime::last_node_fire_hours`, `FORMAT_MAJOR` 121). **Sources:** xEdit `wbDefinitionsFO4.pas` — `wbFloat(HNAM, 'Hours until reset')`, no scale, unlike the per-quest `RNAM` (`1/24`); the CK's quest-level meaning of the same name; and a 2026-10-30 census of Fallout4.esm — 17 `SMQN`s, values 0.5, 1 (×7), 12 (×2), 24 (×3), 48, 72 (×2), 140, all on random radiant pools (`RETravelQuestsNIGHT` 12, `REChokepointQuests` 24, the `EE_*` ambient conversations 0.5-1, `MinutemenRandomEvents` 72). That it is a *node* cooldown is inferred from the name and those values; **no in-game timing test has confirmed it** (the loading is live-gated: `m43-attraction.sh` reads `sm.nodes` from the running engine — 17 of 311 nodes carry a window, `REChokepointQuests` 24 h, `MinutemenRandomEvents` 72 h). Census also fixed `RNAM`'s unit: Skyrim's raw 576 (250 of 296 links) and FO4's (180 of 296) read 24 h at the xEdit scale, so the stored float is hours × 24 (#5386, unchanged) |
 | `MNAM` u32 | SMQN, FO4 rare / SF common | **Num quests to run** (xEdit FO4/SF1) — observed 1–22; present exactly when `DNAM & 0x40000` is set (0 exceptions over Skyrim, FO4, Starfield) | **[consumed]** — the walk starts up to `MNAM` pool quests per pass (`SmNodeRecord::num_quests_to_run`) |
 | `XNAM` u32 | all | **Max concurrent quests** (xEdit `TES5.pas:7056-7111`) — observed 0 (dominant) up to 57; nonzero with or without the Num-quests box | **[consumed]** — nonzero caps the pool's running quests, `0` = uncapped (`SmNodeRecord::max_concurrent_quests`); enforced in phase A and again at start |
 | `QNAM` u32 | SMQN | **Quest Count** — the `NNAM` array's `SetCountPath`; census `QNAM == count(NNAM)` on 448/448 Skyrim, 219/219 FO4, 354/354 Starfield | **[named]** #5420 (not a priority/repeat knob) |
@@ -390,7 +390,10 @@ already has the surface:
   workshop *commanded* path. Unit-tested; the parse plumbing is **live-gated** against the real master by
   [`m43-attraction.sh`](../smoke-tests/m43-attraction.sh) (2026-10-31: 13 modelled keywords, 22 object bases and 118
   NPC bases from `Fallout4.esm`, 2 attraction objects placed in `AndrewStation01`). An actor reacting to an object
-  in the running game has not been observed.
+  in the running game is **live-gated** by [`m43-attraction-reaction.sh`](../smoke-tests/m43-attraction-reaction.sh)
+  (2026-10-31: `place.at` created `AO_DeaconGiveInfo_Object` and `DeaconAtGoodneighbor` side by side — a real keyword
+  pair that no plain cell places together — and the engine logged `attraction: actor ... reacts to object ...; raising
+  AOBJ`).
 - **`HACK`, Hack Terminal** (M43, `lockpick.rs`): a locked terminal (a reference whose base is a `TERM`) at lock
   level 0-100 in a game whose tree has a `HACK` root is hacked on activation — no item and no word game, so it
   always succeeds (engine policy; the Hacker perk ranks are not modelled). It unlocks and raises
@@ -473,8 +476,10 @@ already has the surface:
   one last greeted; timers, radius, chance and the same-pair cooldown are the conversation
   settings. An actor is moving when it travelled 10 units since the previous one-second pass
   (the CK gives no speed). `AHEL` is raised on the spot with `R1` the initiator, `R2` the
-  partner, `L1` the location — nobody is held or walked. Unit-tested only: the Whiterun grid raised no hello in
-  five minutes (the initiator must be moving *and* hold a conversation-allowing package), so it has not been observed.
+  partner, `L1` the location — nobody is held or walked. Movement decides it: an initiator that is moving says hello,
+  one standing at its post converses (a moving Sandbox actor says hello, unit-tested). Unit-tested only: the
+  Whiterun grid raised no hello in 7 minutes — an initiator must be moving *and* hold a package that allows random
+  conversations, and the vanilla data offers almost none — so a hello has not been observed live.
 - **Also landed (M43, 2026-10-30)**: `LEVL` (new level in `V1`), `ASSU`
   (victim `R1`, attacker `R2`, `L1`, crime flag `V1`), `AIPL` (Player Add Item
   — container `R2` from a loot transfer, `L1`, acquire type `V1`; pickups
