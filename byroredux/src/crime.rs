@@ -349,6 +349,10 @@ pub(crate) fn bed_entities(world: &World) -> Vec<EntityId> {
 /// the world each frame of a sentence, ahead of an event that rarely comes, was the cost. The
 /// targets are collected before `Furniture` is touched, so the two guards are never held together.
 pub(crate) fn jail_bed_system(world: &World, _dt: f32) {
+    // Stepping out into the open air before serving the sentence is an escape (M43, `ESJA`).
+    if byroredux_scripting::jail::detect_escape(world) {
+        crate::notifications::push(world, "You have escaped from jail");
+    }
     if !byroredux_scripting::jail::player_in_jail(world) {
         return;
     }

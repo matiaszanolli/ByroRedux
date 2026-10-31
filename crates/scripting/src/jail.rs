@@ -32,6 +32,18 @@
 //! releases the evidence. A jail whose chest authors its own contents is not
 //! used (a deposit never replaces them), and its goods stay in the evidence.
 //!
+//! **Skyrim** (`Faction.SendPlayerToJail`): the CK's *Creating a Custom Crime Faction* has a guard's
+//! dialogue call `akSpeaker.GetCrimeFaction().SendPlayerToJail()`. The jail is the one whose exit is the
+//! faction's `JAIL` "Exterior Jail Marker"; the sentence is the faction's crime gold over
+//! `iCrimeDaysInPrisonMod`; `abRemoveInventory` moves everything the player holds into the faction's `PLCN`
+//! "Player Inventory Container" (nothing is taken when the faction has none: the goods would vanish);
+//! `abRealJail = false` is the "fake" jail a script stages itself, so nobody is moved. The Story Manager's
+//! `ARRT` (Arrest Event) is raised with the speaking guard in `R1`, the player in `R2` and the location in
+//! `L1`; the crime type (`aiCrime`) is not known to the call and rides as none (`-1`, the CK's value).
+//! Leaving the cell for the open air while the sentence runs, without serving it, is an escape
+//! ([`detect_escape`]): the sentence ends and `ESJA` is raised. The escape bounty (`CRVA`'s escape gold) is
+//! not charged: the sentence does not remember its faction.
+//!
 //! Not modelled: the skill loss for time served (UESP gives no rule for which
 //! skill).
 
@@ -321,6 +333,128 @@ pub fn serve_sentence(world: &World) -> bool {
     request_move(world, sentence.exit_marker)
 }
 
+/// `Faction.SendPlayerToJail(abRemoveInventory, abRealJail)` on crime faction `faction`, called by `guard`
+/// (the speaker of the dialogue line that ran it). Raises `ARRT`; a real jail then starts the sentence and
+/// moves the player, and a fake one stops there. Returns whether the player was sent to a cell.
+pub fn send_player_to_jail(world: &World, faction: u32, guard: Option<EntityId>, remove_inventory: bool, real_jail: bool) -> bool {
+    let Some(player) = player_of(world) else { return false };
+    let location = world.try_resource::<crate::location::PlayerLocation>().and_then(|here| here.0);
+    let raise = |mnemonic: [u8; 4], reference_1: EntityId, reference_2: Option<EntityId>, values: [i32; 2]| {
+        crate::story_manager::raise_story_event(
+            world,
+            player,
+            crate::story_manager::StoryEvent {
+                mnemonic,
+                reference_1,
+                reference_2,
+                location_1: location,
+                location_2: None,
+                scripted: Some(crate::story_manager::ScriptedStoryEvent { keyword: 0, values, has_reference_1: false }),
+            },
+        );
+    };
+    // `OnStoryArrest(akArrestingGuard, akCriminal, akLocation, aiCrime)`.
+    raise(*b"ARRT", guard.unwrap_or(player), Some(player), [-1, 0]);
+    if !real_jail || world.try_resource::<ObScriptLedger>().is_none_or(|ledger| ledger.jail.is_some()) {
+        return false;
+    }
+    let Some(crime) = world.try_resource::<crate::crime_faction::CrimeFactionData>().and_then(|data| data.get(faction).cloned()) else {
+        return false;
+    };
+    let Some(jail) = world
+        .try_resource::<JailTable>()
+        .and_then(|table| table.jails().iter().find(|jail| jail.exit_marker == crime.exterior_jail_marker).copied())
+    else {
+        return false;
+    };
+    let model = world.try_resource::<CrimeModel>().map_or(CrimeModel::SKYRIM, |model| *model);
+    let (nonviolent, violent) = world.try_resource::<crate::FactionCrimeGold>().map_or((0, 0), |gold| gold.of(faction));
+    let sentence_gold = nonviolent.saturating_add(violent).max(0);
+    if let Some(mut gold) = world.try_resource_mut::<crate::FactionCrimeGold>() {
+        for violent in [false, true] {
+            gold.apply(crate::CrimeGoldChange::Set { faction, violent, amount: 0 });
+        }
+    }
+    if remove_inventory && crime.player_inventory_container != 0 {
+        deposit_inventory(world, player, crime.player_inventory_container);
+    }
+    if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
+        ledger.jail = Some(JailSentence { exit_marker: jail.exit_marker, days: model.sentence_days(sentence_gold) });
+    }
+    crate::crime_knowledge::forgive_player(world);
+    let sent = request_move(world, jail.cell_marker);
+    if sent {
+        // `OnStoryJail(akGuard, akCrimeGroup, akLocation, aiCrimeGold)`.
+        raise(*b"JAIL", guard.unwrap_or(player), None, [i32::try_from(sentence_gold).unwrap_or(i32::MAX), 0]);
+    }
+    sent
+}
+
+/// Everything the player holds, into the chest `chest` (queued as deposits: the chest need not be loaded).
+fn deposit_inventory(world: &World, player: EntityId, chest: u32) {
+    let held: Vec<(u32, u32)> = world
+        .get::<byroredux_core::ecs::components::Inventory>(player)
+        .map(|inventory| inventory.items.iter().map(|stack| (stack.base_form_id, stack.count)).collect())
+        .unwrap_or_default();
+    for (item, count) in held {
+        remove_items(world, player, item, count, None);
+        if let Some(mut deposits) = world.try_resource_mut::<PendingEvidenceDeposits>() {
+            deposits.0.push(EvidenceDeposit { chest, item, count });
+        }
+    }
+}
+
+/// Watches a served-or-not sentence for an escape. `NOT_SAVED_BY_DESIGN`: set once the player has been
+/// seen inside the cell, so the frames before the move to it land are not an escape.
+#[derive(Debug, Default)]
+pub struct JailEscapeWatch(pub bool);
+
+impl Resource for JailEscapeWatch {}
+
+/// A player serving a sentence who steps out into the open air without serving it has escaped: the
+/// sentence ends and the Story Manager's `ESJA` (Escape Jail) is raised (`OnStoryEscapeJail(akLocation,
+/// akCrimeGroup)`: `L1` the location; the crime group is not an event slot). True on the frame it happens.
+pub fn detect_escape(world: &World) -> bool {
+    let Some(player) = player_of(world) else { return false };
+    if !player_in_jail(world) {
+        if let Some(mut watch) = world.try_resource_mut::<JailEscapeWatch>() {
+            watch.0 = false;
+        }
+        return false;
+    }
+    match cell_kind_of(world, player) {
+        Some(CellKind::Interior) => {
+            if let Some(mut watch) = world.try_resource_mut::<JailEscapeWatch>() {
+                watch.0 = true;
+            }
+            false
+        }
+        Some(CellKind::Exterior { .. }) if world.try_resource::<JailEscapeWatch>().is_some_and(|watch| watch.0) => {
+            if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
+                ledger.jail = None;
+            }
+            if let Some(mut watch) = world.try_resource_mut::<JailEscapeWatch>() {
+                watch.0 = false;
+            }
+            let location = world.try_resource::<crate::location::PlayerLocation>().and_then(|here| here.0);
+            crate::story_manager::raise_story_event(
+                world,
+                player,
+                crate::story_manager::StoryEvent {
+                    mnemonic: *b"ESJA",
+                    reference_1: player,
+                    reference_2: None,
+                    location_1: location,
+                    location_2: None,
+                    scripted: None,
+                },
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
 fn request_move(world: &World, reference: u32) -> bool {
     match world.try_resource_mut::<PlayerMoveRequest>() {
         Some(mut request) => {
@@ -516,5 +650,100 @@ mod tests {
         start(&mut world, 40, &[]);
         world.remove_resource::<CrimeModel>();
         assert!(!pay_fine_thief(&world) && !pay_fine(&world) && !go_to_jail(&world));
+    }
+
+    const WHITERUN: u32 = 0x28170;
+    const GUARD: u32 = 0x777;
+    const CHEST: u32 = 0xC4E57;
+
+    /// A Skyrim player with a crime faction whose exterior jail marker is jail 2's exit, 150 gold of crime
+    /// on it, and `ARRT` / `JAIL` / `ESJA` roots in the tree.
+    fn skyrim_world() -> (World, EntityId, EntityId) {
+        let (mut world, player) = world_with_player(BRAVIL, [0.0; 3], 100);
+        world.insert_resource(CrimeModel::SKYRIM);
+        world.insert_resource(ObScriptLedger::default());
+        world.insert_resource(crate::FactionCrimeGold::default());
+        world.resource_mut::<crate::FactionCrimeGold>().apply(crate::CrimeGoldChange::Mod { faction: WHITERUN, violent: true, amount: 150 });
+        world.insert_resource(crate::crime_faction::CrimeFactionData::from_map(std::collections::HashMap::from([(
+            WHITERUN,
+            byroredux_plugin::esm::records::FactionCrime { exterior_jail_marker: 2, player_inventory_container: CHEST, ..Default::default() },
+        )])));
+        let guard = world.spawn();
+        (world, player, guard)
+    }
+
+    /// The markers on entities plus the events a collision queued instead (one marker per entity).
+    fn raised(world: &World) -> Vec<crate::story_manager::StoryEvent> {
+        let mut events: Vec<_> = world
+            .query::<crate::story_manager::StoryEvent>()
+            .map(|events| events.iter().map(|(_, e)| *e).collect())
+            .unwrap_or_default();
+        if let Some(pending) = world.try_resource::<crate::story_manager::PendingScriptStoryEvents>() {
+            events.extend(pending.0.iter().copied());
+        }
+        events
+    }
+
+    /// `SendPlayerToJail()`: `ARRT` names the guard and the player, the sentence runs the faction's gold, the
+    /// faction is forgiven, the inventory goes to the `PLCN` chest, and the player is sent to the jail whose
+    /// exit is the faction's marker.
+    #[test]
+    fn a_real_jail_sends_the_player_to_the_factions_cell_and_takes_everything() {
+        let (world, player, guard) = skyrim_world();
+        assert!(send_player_to_jail(&world, WHITERUN, Some(guard), true, true));
+        assert_eq!(world.resource::<PlayerMoveRequest>().0, Some(1), "jail 2's cell marker is 1");
+        assert_eq!(world.resource::<ObScriptLedger>().jail, Some(JailSentence { exit_marker: 2, days: 1.5 }));
+        assert_eq!(world.resource::<crate::FactionCrimeGold>().of(WHITERUN), (0, 0));
+        assert_eq!(held(&world, player, CURRENCY_FORM) + held(&world, player, ARROW), 0);
+        let deposits = &world.resource::<PendingEvidenceDeposits>().0;
+        assert_eq!(deposits.len(), 2);
+        assert!(deposits.iter().all(|d| d.chest == CHEST));
+        let events = raised(&world);
+        assert!(events.iter().any(|e| e.mnemonic == *b"ARRT" && e.reference_1 == guard && e.reference_2 == Some(player)));
+        assert!(events.iter().any(|e| e.mnemonic == *b"JAIL" && e.reference_1 == guard));
+    }
+
+    /// A fake jail, a faction with no jail of its own, and a player already serving all stop at `ARRT`.
+    #[test]
+    fn a_fake_jail_or_a_jailless_faction_only_arrests() {
+        let (world, player, guard) = skyrim_world();
+        assert!(!send_player_to_jail(&world, WHITERUN, Some(guard), true, false), "abRealJail = false");
+        assert_eq!(world.resource::<PlayerMoveRequest>().0, None);
+        assert_eq!(held(&world, player, ARROW), 10, "nothing taken");
+        assert!(world.resource::<ObScriptLedger>().jail.is_none());
+        assert!(raised(&world).iter().any(|e| e.mnemonic == *b"ARRT" && e.reference_1 == guard && e.reference_2 == Some(player)));
+
+        let (world, _, guard) = skyrim_world();
+        assert!(!send_player_to_jail(&world, 0xDEAD, Some(guard), true, true), "no crime data for the faction");
+    }
+
+    /// Without a `PLCN` container the goods would vanish, so nothing is taken.
+    #[test]
+    fn nothing_is_taken_without_a_player_inventory_container() {
+        let (mut world, player, guard) = skyrim_world();
+        world.insert_resource(crate::crime_faction::CrimeFactionData::from_map(std::collections::HashMap::from([(
+            WHITERUN,
+            byroredux_plugin::esm::records::FactionCrime { exterior_jail_marker: 2, ..Default::default() },
+        )])));
+        assert!(send_player_to_jail(&world, WHITERUN, Some(guard), true, true));
+        assert_eq!(held(&world, player, ARROW), 10);
+    }
+
+    /// Stepping out into the open without serving ends the sentence and raises `ESJA` — but not on the
+    /// frames before the move into the cell lands (the player is still outside).
+    #[test]
+    fn leaving_the_jail_for_the_open_air_is_an_escape() {
+        let (mut world, _player, guard) = skyrim_world();
+        world.insert_resource(JailEscapeWatch::default());
+        assert!(send_player_to_jail(&world, WHITERUN, Some(guard), false, true));
+        assert!(!detect_escape(&world), "still outside: the move has not landed yet");
+        assert!(player_in_jail(&world));
+        world.insert_resource(crate::cell_kind::PlayerCellKind(Some(CellKind::Interior)));
+        assert!(!detect_escape(&world), "inside the cell");
+        world.insert_resource(crate::cell_kind::PlayerCellKind(Some(CellKind::Exterior { worldspace: BRAVIL })));
+        assert!(detect_escape(&world));
+        assert!(!player_in_jail(&world));
+        assert!(raised(&world).iter().any(|e| e.mnemonic == *b"ESJA"));
+        assert!(!detect_escape(&world), "once");
     }
 }

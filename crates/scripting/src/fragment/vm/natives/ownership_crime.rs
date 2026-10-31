@@ -19,6 +19,7 @@ pub(super) const READS: &[&str] = &[
     "getcrimegoldviolent",
     "getcrimegoldnonviolent",
     "getcrimefaction",
+    "sendplayertojail",
 ];
 
 impl Vm<'_> {
@@ -99,6 +100,15 @@ impl Vm<'_> {
                     _ => return stop(format!("{name} as written")),
                 }
             }
+            // CK *SendPlayerToJail - Faction*: `(abRemoveInventory = True, abRealJail = True)`. The
+            // arresting guard is the speaker of the line that runs it (the CK's own example is
+            // `akSpeaker.GetCrimeFaction().SendPlayerToJail()`). See [`crate::jail::send_player_to_jail`].
+            (Value::Form(faction), "sendplayertojail") if args.len() <= 2 && crate::is_faction(self.world, *faction) => {
+                let values = self.eval_args(frame, args)?;
+                let flag = |i: usize| values.get(i).map_or(true, Value::truthy);
+                self.deferred.jail_sends.push((*faction, self.deferred.speaker, flag(0), flag(1)));
+                Some(Value::None)
+            }
             // CK *GetCrimeFaction - Actor*: the faction this actor reports its
             // crimes to — a script's `SetCrimeFaction`, else the base's `CRIF`.
             (Value::Form(actor), "getcrimefaction") if args.is_empty() => {
@@ -149,6 +159,13 @@ impl Checker<'_> {
                 return Some(Kind::Num);
             }
             (Kind::Object | Kind::Player, "getcrimefaction") if arg_kinds.is_empty() => return Some(Kind::Object),
+            (Kind::Object, "sendplayertojail")
+                if statement
+                    && arg_kinds.len() <= 2
+                    && arg_kinds.iter().all(|a| matches!(a, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool))) =>
+            {
+                return Some(Kind::None);
+            }
             (Kind::Object | Kind::Player, "setactorcause")
                 if statement && matches!(arg_kinds, [Arg::Kind(Kind::Object | Kind::Player | Kind::None) | Arg::Literal(Expr::NoneLit)]) =>
             {

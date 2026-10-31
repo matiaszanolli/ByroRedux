@@ -4364,6 +4364,56 @@ fn owners_and_crime_gold_follow_their_setters() {
     assert_eq!(world.resource::<crate::FactionCrimeGold>().of(FACTION), (45, 25));
 }
 
+/// `Faction.SendPlayerToJail` runs: `ARRT` is raised (with the player as the arrested actor) and a
+/// fake jail (`abRealJail = False`) moves nobody.
+#[test]
+fn send_player_to_jail_raises_the_arrest_event() {
+    const FACTION: u32 = 0x0001_0F78;
+    let script = parsed_source(
+        "ScriptName QF_VmJail extends Quest\n\
+         Faction Property Police Auto\n\
+         Function Fragment_1()\n Police.SendPlayerToJail(True, False)\n EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmJail".into(),
+                status: 0,
+                properties: vec![ScriptProperty { name: "Police".into(), status: 1, value: PropertyValue::Object { form_id: FACTION, alias: -1 } }],
+            }],
+        },
+    );
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.factions.insert(
+        FACTION,
+        byroredux_plugin::esm::records::FactionRecord {
+            form_id: FACTION,
+            editor_id: String::new(),
+            full_name: String::new(),
+            flags: 0,
+            relations: Vec::new(),
+            ranks: Vec::new(),
+            reputation: None,
+            vendor: None,
+            crime: None,
+        },
+    );
+    crate::install_owner_kinds(&mut world, &index);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let arrests = world
+        .query::<crate::story_manager::StoryEvent>()
+        .map(|events| events.iter().filter(|(_, e)| e.mnemonic == *b"ARRT").count())
+        .unwrap_or(0);
+    assert_eq!(arrests, 1);
+    assert!(world.resource::<crate::PlayerMoveRequest>().0.is_none(), "a fake jail moves nobody");
+}
+
 /// A function of a script on an alias, reached through a cast of the alias
 /// property, runs with an alias as `Self`: its `GetActorRef()` checks.
 #[test]

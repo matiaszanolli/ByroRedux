@@ -369,6 +369,20 @@ already has the surface:
   The live run's pair was already inside the trigger distance, so the walk
   itself is covered by the unit test (teleport into range) and the shared
   step, not by that run.
+- **`ARRT` / `ESJA`, arrest and jail escape** (M43, `jail.rs`). Skyrim's guard dialogue calls
+  `akSpeaker.GetCrimeFaction().SendPlayerToJail()` (CK *Creating a Custom Crime Faction*); that native is
+  now a VM call (`sendplayertojail`, `abRemoveInventory`/`abRealJail` both default true). It raises `ARRT`
+  (`OnStoryArrest`: the speaker as guard in `R1`, the player in `R2`, the location in `L1`; `aiCrime` rides
+  `V1` as `-1`, the CK's "none", since the call does not know the crime) and, for a real jail, starts the
+  sentence in the jail whose exit is the faction's `JAIL` "Exterior Jail Marker": the faction's crime gold
+  over `iCrimeDaysInPrisonMod` days, the gold cleared, witnesses forgiving, the player's inventory moved
+  into the faction's `PLCN` container (nothing is taken without one: the goods would vanish), the player
+  sent to the cell marker, and `JAIL` raised with the guard in `R1`. `abRealJail = False` stops at `ARRT`.
+  A player serving a sentence who reaches an exterior cell after having been seen in the jail interior has
+  escaped (`detect_escape`, run by `jail_bed_system`): the sentence ends and `ESJA` is raised with the
+  location. **Not modelled:** the escape bounty (`CRVA`'s escape gold — the sentence does not remember its
+  faction), the guard-initiated *Arrest* with its force-greet and the crime type, the quest-item hiding of
+  a real jail, and a guard arresting an actor other than the player. Unit- and VM-tested; not live-gated.
 - **`NVPE`, New Voice Power** (M43, `words_of_power.rs`). CK *New Voice Power*: "whenever the player
   obtains a new Word of Power". `Game.TeachWord` and `Game.UnlockWord` (one `Effect::ObtainWord`: they
   differ only in the shout item `TeachWord` adds, which is not modelled) record the word in the saved
@@ -452,9 +466,7 @@ already has the surface:
   `DEAD` 2, `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4: `AOBJ` 16, `AHEL` 9, `OAAT` 4,
   `HACK` 3, `LOCK` 3, `TMEE` 1, `IRON` 1):
 
-  `ARRT`/`ESJA` — Skyrim's guards are package-driven and the engine's crime
-  pass is the Oblivion/FNV class-flag model, so a wanted-player greeting by
-  a guard cannot occur on a game that has a Story Manager. FO4's events are named by their SMEN editor ids (`AOBJ`: shooting
+  FO4's events are named by their SMEN editor ids (`AOBJ`: shooting
   at / switching workshop objects, `HACK`: `PlayerHackSuccess`, `LOCK`:
   `PlayerLockpickSuccess` / `CA_PickLock`, `OAAT`: attach events such as
   `REDeadActorAttach`, `TMEE`: `TriggerMineExplosionEvent`, `IRON`:

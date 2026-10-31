@@ -189,6 +189,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — faction crime gold edits, applied to [`crate::FactionCrimeGold`]
     /// after the guards drop (and visible to the run's own later reads).
     pub(crate) crime_gold_changes: Vec<crate::CrimeGoldChange>,
+    /// M43 — `Faction.SendPlayerToJail` calls: (faction, guard, remove inventory, real jail), applied by
+    /// [`crate::jail::send_player_to_jail`] after the crime gold changes of the same run.
+    pub(crate) jail_sends: Vec<(u32, Option<EntityId>, bool, bool)>,
     /// M47.2 — `Effect::SetLocationKeywordData`s: (location, keyword, data),
     /// applied to [`crate::LocationKeywordData`] after the guards drop.
     pub(super) location_keyword_changes: Vec<(u32, u32, f32)>,
@@ -345,6 +348,7 @@ impl DeferredFragmentEffects {
             reference_flag_changes: Vec::new(),
             owner_changes: Vec::new(),
             crime_gold_changes: Vec::new(),
+            jail_sends: Vec::new(),
             location_keyword_changes: Vec::new(),
             alias_collections: Vec::new(),
             event_requests: Vec::new(),
@@ -417,6 +421,7 @@ impl DeferredFragmentEffects {
         self.flush_reference_flag_changes(world);
         self.flush_owner_changes(world);
         self.flush_crime_gold_changes(world);
+        self.flush_jail_sends(world);
         self.flush_shakes(world);
         self.flush_trap_hits(world);
         self.flush_sound_plays(world);
@@ -642,6 +647,12 @@ impl DeferredFragmentEffects {
                 }
             }
             self.crime_gold_changes.clear();
+        }
+    }
+
+    fn flush_jail_sends(&mut self, world: &World) {
+        for (faction, guard, remove_inventory, real_jail) in std::mem::take(&mut self.jail_sends) {
+            crate::jail::send_player_to_jail(world, faction, guard, remove_inventory, real_jail);
         }
     }
 
