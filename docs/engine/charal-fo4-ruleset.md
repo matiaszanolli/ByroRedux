@@ -73,7 +73,12 @@ HP = 77.5 + Endurance·4.5 + Level·2.5 + (Level · Endurance)/2
 ```
 
 Verified against the page's own example: END 2, Level 2 → 77.5 + 9 + 5 + 2 =
-**93.5** (the Pip-Boy truncates the display to 93; the actual value is the float).
+**93.5** as the unrounded formula result — the Pip-Boy shows 93. Whether the
+*stored* value is that float or its floor is not settled by this page: the
+Endurance (FO4) page below states `TotalHP = floor(…)`, which is what the code
+implements (`.floored()`), and the two differ by 0.5 HP only where END and Level are both even
+(#6432). Adjudicate with an xEdit or `Fallout4.exe` read before relying on either
+reading; until then the floor stands.
 Endurance may exceed 10, and health rescales **dynamically** with any Endurance /
 level change — there is no permanent/temporary split for player HP.
 

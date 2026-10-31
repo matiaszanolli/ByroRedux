@@ -142,7 +142,10 @@ pub fn melee_damage_config<F: Fn(&str) -> Option<u32>>(resolve: F) -> Option<Mel
 pub fn fallout4_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
     let mut rs = CharacterRuleset::new(LevelingModel::FO4).with_attributes(AttributeSet::FALLOUT);
     let strength = resolve("Strength");
-    // Health = floor(77.5 + 4.5·END + 2.5·L + 0.5·L·END).
+    // Health = floor(77.5 + 4.5·END + 2.5·L + 0.5·L·END). The floor is the
+    // Endurance (FO4) page's `TotalHP = floor(…)`; the Health page's worked
+    // example (93.5, shown as 93) leaves open whether the stored value is the
+    // float — a 0.5 HP difference where END and L are both even, unadjudicated (#6432).
     if let (Some(out), Some(e)) = (resolve("Health"), resolve("Endurance")) {
         rs.push_derived(
             out,
