@@ -230,20 +230,22 @@ pub fn cast_spell(world: &World, caster: Option<EntityId>, target: EntityId, spe
         None => return false,
     };
     let started = start_effects(world, target, caster, spell, &effects, false) > 0;
-    // M43 — the Story Manager's `CAST` (Cast Magic Event): `OnStoryCastMagic(akCastingActor, akSpell,
-    // akTarget1, akTarget2)`. References fill in order: R1 = the caster, R2 = the target (when it is
-    // not the caster). The spell is a form the event slots do not carry; the real `CAST` quests read
-    // only the actors and the location. Only a cast with a caster raises it.
+    // M43 — the Story Manager's `CAST` (Cast Magic Event): `OnStoryCastMagic(akCastingActor,
+    // akSpellTarget, akLocation, akSpell)`. R1 = the caster, L1 = the session location. The CK page:
+    // "akSpellTarget always returns none" — so R2 stays unset whatever the cast's target (the quests'
+    // `SpellTarget` alias is optional for the same reason). The spell is a form the event slots do not
+    // carry; the real `CAST` quests read only the caster and the location. Only a cast with a caster
+    // raises it.
     if let (true, Some(caster)) = (started, caster) {
         let location = world.try_resource::<crate::location::PlayerLocation>().and_then(|here| here.0);
-        log::debug!("story manager: CAST raised (caster {caster}, target {target}, location {location:?})");
+        log::debug!("story manager: CAST raised (caster {caster}, location {location:?})");
         crate::story_manager::raise_story_event(
             world,
             caster,
             crate::story_manager::StoryEvent {
                 mnemonic: *b"CAST",
                 reference_1: caster,
-                reference_2: (target != caster).then_some(target),
+                reference_2: None,
                 location_1: location,
                 location_2: None,
                 scripted: None,
@@ -523,8 +525,8 @@ mod tests {
         world.resource::<crate::story_manager::PendingScriptKills>().0.clone()
     }
 
-    /// M43 — a cast with a caster raises `CAST` (caster `R1`, target `R2`); a cast with none, or one
-    /// onto its own caster, leaves `R2` unset / raises nothing.
+    /// M43 — a cast with a caster raises `CAST` (caster `R1`; the CK: the spell target "always returns
+    /// none", so `R2` stays unset); a cast with no caster raises nothing.
     #[test]
     fn a_cast_raises_the_cast_magic_story_event() {
         let (mut world, target) = world_with(index_with_value_effect(MGEF_FLAG_DETRIMENTAL, 5.0, 0));
@@ -542,7 +544,7 @@ mod tests {
         let events = casts(&world);
         assert_eq!(events.len(), 1);
         let slots = events[0].slots();
-        assert_eq!((slots.reference_1, slots.reference_2), (Some(caster), Some(target)));
+        assert_eq!((slots.reference_1, slots.reference_2), (Some(caster), None), "the target is never reported");
     }
 
     /// #6232 — a lethal instant effect queues the death every other Health

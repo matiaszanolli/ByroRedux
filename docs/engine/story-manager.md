@@ -141,7 +141,7 @@ integer — the CTDA tail (`extra_data_id`) when `run_on == 7`
 | Tag | Value | Holds (per mnemonic, Papyrus `OnStory*` param order) |
 |---|---|---|
 | `R1` | `0x3152` | first reference — KILL victim, CLOC actor, CAST caster, SCPT ref1 |
-| `R2` | `0x3252` | second reference — KILL killer, CAST target, SCPT ref2 |
+| `R2` | `0x3252` | second reference — KILL killer, SCPT ref2 (`CAST`'s `akSpellTarget` is documented as always none) |
 | `L1` | `0x314C` | first location — CLOC old, SCPT/SendStoryEvent `akLoc` |
 | `L2` | `0x324C` | second location — CLOC new |
 
@@ -381,7 +381,7 @@ already has the surface:
   the cells loading and the player arriving). A census
   of the event slots the real quests read (`R1`/`R2`/`L1`/`L2` only) picked
   what each carries: `AIPL` quests read the container (`R2`) and location,
-  `REMP` the *item reference* (`R2`), `CAST` caster/target/location, `DEAD`
+  `REMP` the *item reference* (`R2`), `CAST` caster/location (its target is always none), `DEAD`
   the corpse (`R2`), `CHRR` both actors.
 - **Gameplay built for the Story Manager's sake (M43)**: `REMP` needed an item
   drop, `CAST` a caster on the cast, `CRFT` crafting — none existed.
@@ -392,8 +392,9 @@ already has the surface:
   (`dropped_item_story_event_system`). Live on Skyrim: the drop spawned
   `FF800000` and started `WIRemoveItem05` through `WIPlayerRemoveItemAnyNode`
   (`m43-item-drop.sh`; the radiant nodes roll a random percent, so the gate
-  retries). *Cast*: `cast_spell` with a caster raises `CAST` (caster `R1`,
-  target `R2`); the `magic.cast` console stands in for the player's cast. The
+  retries). *Cast*: `cast_spell` with a caster raises `CAST` (caster `R1`, location `L1`;
+  the CK's `OnStoryCastMagic` page says `akSpellTarget` "always returns none", so `R2` is
+  never set); the `magic.cast` console stands in for the player's cast. The
   `CAST` quests are the world-interaction reactions to a spell cast at an
   actor (`WICastMagic…`); there is still no player cast input, so only
   scripts and the console cast. Live: a console cast raised `CAST` (caster,
