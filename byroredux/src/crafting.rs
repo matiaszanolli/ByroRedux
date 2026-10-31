@@ -519,6 +519,22 @@ pub(crate) fn apply_action(world: &World, action: byroredux_debug_ui::CraftingAc
 }
 
 /// The placed bench nearest the player, for the console door.
+/// Every loaded bench with its base form and position, for the console.
+pub(crate) fn loaded_benches(world: &World) -> Vec<(EntityId, u32, byroredux_core::math::Vec3)> {
+    let Some(book) = world.try_resource::<CraftingBook>() else {
+        return Vec::new();
+    };
+    let found: Vec<(EntityId, u32)> = world
+        .query::<byroredux_scripting::SceneAliasCandidate>()
+        .map(|all| all.iter().filter(|(_, identity)| book.is_bench_base(identity.base_form_id)).map(|(entity, identity)| (entity, identity.base_form_id)).collect())
+        .unwrap_or_default();
+    drop(book);
+    found
+        .into_iter()
+        .filter_map(|(entity, base)| Some((entity, base, world.get::<byroredux_core::ecs::components::GlobalTransform>(entity)?.translation)))
+        .collect()
+}
+
 pub(crate) fn nearest_bench(world: &World) -> Option<EntityId> {
     let player = PlayerEntity::get(world)?;
     let here = world.get::<byroredux_core::ecs::components::GlobalTransform>(player)?.translation;

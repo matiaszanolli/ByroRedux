@@ -173,9 +173,25 @@ impl ConsoleCommand for CraftCommand {
             return CommandOutput::error("craft: no workbench is loaded");
         };
         match parts.next() {
+            Some("benches") => {
+                let lines = crate::crafting::loaded_benches(world)
+                    .into_iter()
+                    .take(60)
+                    .map(|(entity, base, at)| format!("bench {entity} base {base:08X} at ({:.1}, {:.1}, {:.1})", at.x, at.y, at.z))
+                    .collect::<Vec<_>>();
+                CommandOutput::lines(std::iter::once(format!("{} loaded bench(es)", lines.len())).chain(lines).collect())
+            }
             Some("list") => {
                 let recipes = crate::crafting::recipes_at(world, bench);
-                let mut lines = vec![format!("bench entity {bench}: {} recipe(s)", recipes.len())];
+                let base = world.get::<byroredux_scripting::SceneAliasCandidate>(bench).map_or(0, |identity| identity.base_form_id);
+                let at = world.get::<byroredux_core::ecs::components::GlobalTransform>(bench).map(|t| t.translation).unwrap_or_default();
+                let mut lines = vec![format!(
+                    "bench entity {bench}: {} recipe(s) (base {base:08X} at ({:.0}, {:.0}, {:.0}))",
+                    recipes.len(),
+                    at.x,
+                    at.y,
+                    at.z
+                )];
                 for recipe in recipes.iter().take(60) {
                     lines.push(format!(
                         "{:08X} {}{} [{}]",

@@ -369,6 +369,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::systems::dead_body::DeadBodyState::default());
     world.insert_resource(crate::systems::iron_sights::IronSightsState::default());
     world.insert_resource(crate::systems::mines::MineClock::default());
+    // Per-instance item state (an improved item's quality): saved with the world, and read by equip, the
+    // inventory page and the improve action — created here, since nothing else does.
+    world.init_resource::<byroredux_core::ecs::resources::ItemInstancePool>();
     world.insert_resource(crate::systems::attraction::AttractionState::default());
     world.insert_resource(byroredux_scripting::jail::JailEscapeWatch::default());
     world.insert_resource(crate::inventory::PendingDroppedItems::default());
