@@ -76,6 +76,8 @@ impl ScaleformResourceProvider for BsaArchive {
 pub struct ScaleformResourceLoad {
     pub request_url: String,
     pub archive_path: String,
+    /// The length of the body served to Ruffle — post-shim (#5480), so for a
+    /// CWS dependency it is the inflated FWS length, not the archive entry's.
     pub byte_len: usize,
     /// Ruffle currently starts `ImportAssets` children at preload frame zero.
     /// This is true when a leading frame boundary was synthesized to keep
@@ -289,8 +291,12 @@ fn load_archive_resource(
     // here, and both the import scan below and Ruffle read the result
     // (the scan no longer re-normalizes — UI-D1-01's extra scan inflate
     // is gone). Idempotent for the root movie, which `prepare_movie`
-    // already normalized, and `None` (no change) keeps the raw bytes —
-    // an unpatched CWS still reaches Ruffle compressed, as before.
+    // already normalized. A CWS body always comes back `Some`: one inflate,
+    // re-emitted as FWS with a corrected length whether or not any record was
+    // patched, so every well-formed CWS dependency reaches Ruffle
+    // UNCOMPRESSED (it takes the copy path, no second inflate). `None` keeps
+    // the raw bytes only for conforming FWS, ZWS, foreign containers, and a
+    // CWS that fails to inflate or overruns its declared length.
     if let Some(normalized) = crate::prepare::normalize_scaleform_dialect(&body) {
         body = normalized;
     }

@@ -750,9 +750,10 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has **116 default tests plus 3 ignored** installed-corpus smokes
-(measured 2026-10-17 with `cargo test -p byroredux-ui`; the 13 extra over the
-2026-10-12 count of 103 are the #5719 ceiling pins, the #5732 callback /
+The UI crate has **118 default tests plus 3 ignored** installed-corpus smokes
+(measured 2026-10-31 with `cargo test -p byroredux-ui`; the two extra over the
+2026-10-17 count of 116 are the #6225 and #5480 pins. The 13 extra over the
+2026-10-12 count of 103 were the #5719 ceiling pins, the #5732 callback /
 empty-`ImportAssets` pins, and the #5966/#5967 pins: the declared-length
 ceiling on every decode site, and the measured `SwfDecodeCounts` over real
 CWS movies). #5274's
@@ -881,8 +882,11 @@ profile with a ninth font slot).
   `parent()`/`sibling()` ops resolve against the wrapper).
 - `prepare.rs` (Scaleform profiles) — `normalize_scaleform_dialect`
   (#4470, #5456, #5479): the choke point every root and `ImportAssets`
-  movie passes through before Ruffle sees it (a movie a running menu loads
-  through `Loader.load` / `loadClip` reaches Ruffle un-shimmed, #5480), owning the vanilla dialect patches
+  movie passes through before Ruffle sees it (the resource navigator shims
+  every SWF body it serves, including a movie a running menu loads through
+  `Loader.load` / `loadClip`, #5480; a well-formed CWS dependency is served
+  inflated as FWS, so `ScaleformResourceLoad::byte_len` is the post-shim
+  length), owning the vanilla dialect patches
   (the #5456/#5479 PlaceObject3 family) on the uncompressed/freshly
   inflated stream; conforming FWS/ZWS containers return `None` and take
   the stock path. Whatever this shim accepts is the dialect contract —
